@@ -15,6 +15,9 @@ fn main() {
     let mut keyboard_manager = KeyboardManager::new();
     let mut mouse_manager = MouseManager::new();
 
+    // Track the last cursor position
+    let mut last_cursor_position = (0.0, 0.0);
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
@@ -67,6 +70,25 @@ fn main() {
                         "Mouse Button: {:?}, State: {:?}, Repeat: {}",
                         event.button, event.state, event.repeat
                     );
+                }
+
+                // Accumulated motion
+                let motion = mouse_manager.get_accumulated_motion();
+                if motion != (0.0, 0.0) {
+                    println!("Mouse motion: x = {}, y = {}", motion.0, motion.1);
+                }
+
+                // Accumulated scroll
+                let scroll = mouse_manager.get_accumulated_scroll();
+                if scroll != (0.0, 0.0) {
+                    println!("Mouse scroll: x = {}, y = {}", scroll.0, scroll.1);
+                }
+
+                // Cursor position tracking - only print if it has changed
+                let cursor_position = mouse_manager.get_cursor_position();
+                if cursor_position != last_cursor_position {
+                    println!("Cursor Position: x = {}, y = {}", cursor_position.0, cursor_position.1);
+                    last_cursor_position = cursor_position; // Update the last position
                 }
 
                 // Exit on Escape key press
