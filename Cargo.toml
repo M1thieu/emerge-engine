@@ -1,0 +1,23 @@
+[package]
+name = "emerge-engine"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight modular game engine."
+license = "Apache"
+
+[workspace]
+members = [
+    "crates/input",
+    "crates/math",
+    "crates/physics",
+    "crates/window",
+    "crates/render"
+]
+
+[dependencies]
+input = { path = "crates/input" }
+math = { path = "crates/math" }
+physics = { path = "crates/physics" }
+window = { path = "crates/window" }
+render = { path = "crates/render" }
+winit = "0.28.7"
