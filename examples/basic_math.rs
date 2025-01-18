@@ -1,4 +1,4 @@
-use math::{Vec2, Rect, Circle, Triangle};
+use emerge_math::{Vec2, Rect, Circle, Triangle};
 
 fn main() {
     // Vec2

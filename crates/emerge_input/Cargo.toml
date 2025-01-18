@@ -1,8 +1,7 @@
 [package]
-name = "render"
+name = "emerge_input"
 version = "0.1.0"
 edition = "2021"
 
-
 [dependencies]
-wgpu = "0.16"
+winit = "0.28.7"

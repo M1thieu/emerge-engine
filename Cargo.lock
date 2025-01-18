@@ -328,11 +328,40 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 name = "emerge-engine"
 version = "0.1.0"
 dependencies = [
- "input",
- "math",
- "physics",
- "render",
- "window",
+ "emerge_input",
+ "emerge_math",
+ "emerge_physics",
+ "emerge_render",
+ "emerge_window",
+ "winit",
+]
+
+[[package]]
+name = "emerge_input"
+version = "0.1.0"
+dependencies = [
+ "winit",
+]
+
+[[package]]
+name = "emerge_math"
+version = "0.1.0"
+
+[[package]]
+name = "emerge_physics"
+version = "0.1.0"
+
+[[package]]
+name = "emerge_render"
+version = "0.1.0"
+dependencies = [
+ "wgpu",
+]
+
+[[package]]
+name = "emerge_window"
+version = "0.1.0"
+dependencies = [
  "winit",
 ]
 
@@ -510,13 +539,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "input"
-version = "0.1.0"
-dependencies = [
- "winit",
-]
-
-[[package]]
 name = "instant"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -631,10 +653,6 @@ checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "math"
-version = "0.1.0"
 
 [[package]]
 name = "memchr"
@@ -929,10 +947,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
-name = "physics"
-version = "0.1.0"
-
-[[package]]
 name = "pkg-config"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1013,13 +1027,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03a862b389f93e68874fbf580b9de08dd02facb9a788ebadaf4a3fd33cf58834"
 dependencies = [
  "bitflags 2.8.0",
-]
-
-[[package]]
-name = "render"
-version = "0.1.0"
-dependencies = [
- "wgpu",
 ]
 
 [[package]]
@@ -1563,13 +1570,6 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
-
-[[package]]
-name = "window"
-version = "0.1.0"
-dependencies = [
- "winit",
-]
 
 [[package]]
 name = "windows"

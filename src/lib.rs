@@ -1,15 +1,19 @@
 pub mod input {
-    pub use input::*;
+    pub use emerge_input::*;
 }
 
 pub mod math {
-    pub use math::*;
+    pub use emerge_math::*;
 }
 
 pub mod physics {
-    pub use physics::*;
+    pub use emerge_physics::*;
 }
 
 pub mod window {
-    pub use window::*;
+    pub use emerge_window::*;
+}
+
+pub mod render {
+    pub use emerge_render::*;
 }
