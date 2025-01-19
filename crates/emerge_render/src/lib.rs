@@ -1,3 +1,3 @@
-pub mod device;
-
-pub use device::RenderDevice;
+pub fn placeholder() {
+    println!("Emerge Render is ready to use!");
+}

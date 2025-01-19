@@ -1,75 +1,44 @@
-use emerge_math::{Vec2, Rect, Circle, Triangle};
+use nalgebra::{Vector2 as Vec2, Point2, Matrix3, Rotation2};
 
 fn main() {
-    // Vec2
+    // Vec2 operations
     let vec = Vec2::new(3.0, 4.0);
     println!("Vector: {:?}", vec);
-    println!("Length: {}", vec.length());
+    println!("Norm (Length): {}", vec.norm()); // Use norm() for vector length
 
-    // Rect
-    let rect = Rect::new(Vec2::new(0.0, 0.0), Vec2::new(4.0, 5.0));
-    println!("Rectangle: {:?}", rect);
-    println!("Area: {}", rect.area());
-    println!(
-        "Does rect contain {:?}? {}",
-        Vec2::new(2.0, 2.0),
-        rect.contains(Vec2::new(2.0, 2.0))
-    );
-    println!(
-        "Does rect contain {:?}? {}",
-        Vec2::new(5.0, 5.0),
-        rect.contains(Vec2::new(5.0, 5.0))
-    );
+    let normalized_vec = vec.normalize();
+    println!("Normalized Vector: {:?}", normalized_vec);
 
-    let rect2 = Rect::new(Vec2::new(2.0, 2.0), Vec2::new(3.0, 3.0));
-    println!("Another Rectangle: {:?}", rect2);
-    println!(
-        "Do the rectangles intersect? {}",
-        rect.intersects(&rect2)
-    );
+    // Point2 operations
+    let point1 = Point2::new(0.0, 0.0);
+    let point2 = Point2::new(3.0, 4.0);
+    println!("Point 1: {:?}", point1);
+    println!("Point 2: {:?}", point2);
 
-    if let Some(intersection) = rect.intersection(&rect2) {
-        println!("Intersection: {:?}", intersection);
-    } else {
-        println!("No intersection found.");
-    }
+    let distance = nalgebra::distance(&point1, &point2); // Compute distance between points
+    println!("Distance between points: {}", distance);
 
-    // Circle
-    let circle = Circle::new(Vec2::new(0.0, 0.0), 5.0);
-    println!("Circle: {:?}", circle);
-    println!(
-        "Does circle contain {:?}? {}",
-        Vec2::new(3.0, 4.0),
-        circle.contains(&Vec2::new(3.0, 4.0))
-    );
+    // Scaling using a scalar
+    let scale_factor = 2.0;
+    let scaled_vec = vec * scale_factor;
+    println!("Scaled Vector: {:?}", scaled_vec);
 
-    let another_circle = Circle::new(Vec2::new(7.0, 0.0), 3.0);
-    println!(
-        "Do the circles intersect? {}",
-        circle.intersects(&another_circle)
-    );
+    // Rotation using Rotation2
+    let rotation = Rotation2::new(std::f32::consts::PI / 4.0); // Rotate by 45 degrees
+    let rotated_vec = rotation * vec;
+    println!("Rotated Vector: {:?}", rotated_vec);
 
-    // Triangle
-    let tri = Triangle::new(
-        Vec2::new(0.0, 0.0),
-        Vec2::new(4.0, 0.0),
-        Vec2::new(0.0, 3.0),
+    // Combining transformations using Matrix3
+    let scaling_matrix = Matrix3::new(
+        2.0, 0.0, 0.0,  // Scale x by 2
+        0.0, 2.0, 0.0,  // Scale y by 2
+        0.0, 0.0, 1.0,  // Homogeneous coordinate
     );
-    println!("Triangle: {:?}", tri);
-    println!("Area: {}", tri.area());
-    println!(
-        "Does triangle contain {:?}? {}",
-        Vec2::new(1.0, 1.0),
-        tri.contains(&Vec2::new(1.0, 1.0))
-    );
+    let rotation_matrix = rotation.to_homogeneous();
+    let combined_transform = rotation_matrix * scaling_matrix;
+    println!("Combined Transformation Matrix: {:?}", combined_transform);
 
-    let other_tri = Triangle::new(
-        Vec2::new(2.0, 1.0),
-        Vec2::new(5.0, 1.0),
-        Vec2::new(2.0, 4.0),
-    );
-    println!(
-        "Do triangles intersect? {}",
-        tri.intersects(&other_tri)
-    );
+    // Applying the transformation to a point
+    let transformed_point = combined_transform.transform_point(&point1);
+    println!("Transformed Point: {:?}", transformed_point);
 }

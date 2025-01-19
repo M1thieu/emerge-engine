@@ -8,16 +8,19 @@ license = "Apache"
 [workspace]
 members = [
     "crates/emerge_input",
-    "crates/emerge_math",
-    "crates/emerge_physics",
+    # "crates/emerge_math", # Unused for now
+    # "crates/emerge_physics", # Unused for now
     "crates/emerge_window",
     "crates/emerge_render"
 ]
 
 [dependencies]
 emerge_input = { path = "crates/emerge_input" }
-emerge_math = { path = "crates/emerge_math" }
-emerge_physics = { path = "crates/emerge_physics" }
+# emerge_math = { path = "crates/emerge_math" } # Unused for now
+# emerge_math = { path = "crates/emerge_physics" } # Unused for now
 emerge_window = { path = "crates/emerge_window" }
 emerge_render = { path = "crates/emerge_render" }
 winit = "0.28.7"
+nalgebra = "0.33.2"
+rapier2d = "0.23.0"
+wgpu = "24.0.0"
