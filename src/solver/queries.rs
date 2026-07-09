@@ -1,0 +1,211 @@
+//! Read-only diagnostics, tag-group, and spatial-query API on `Simulation`.
+//!
+//! Split out of `solver/mod.rs` -- everything here reads state (or, for the
+//! tag-group setters, writes a small uniform slice of it) rather than
+//! advancing the simulation. Distinct from `solver::query`, which holds the
+//! free `BodyState`-aggregation functions these methods call into.
+
+use glam::Vec2;
+
+use super::Simulation;
+use super::query::{self, BodyState, body_state_of};
+use crate::diagnostics::{SimSnapshot, collect_snapshot};
+
+impl Simulation {
+    pub fn diagnostics_snapshot(&self) -> SimSnapshot {
+        let mut snap = collect_snapshot(
+            self.frame_index,
+            &self.particles,
+            &self.grid,
+            &self.config,
+            self.last_step_dt,
+            self.last_substeps,
+        );
+        snap.vel_clamp_count = self.last_vel_clamp_count;
+        snap.j_projection_count = self.last_j_projection_count;
+        snap.sim_time_dropped = self.last_sim_time_dropped;
+        snap.active_count = self.active_count;
+        snap.sleeping_count = self.particles.len().saturating_sub(self.active_count);
+        snap.timing = self.last_timing;
+        snap
+    }
+
+    // ── Tag-based group API ───────────────────────────────────────────────────
+
+    /// Aggregate physics state for all particles with `tag`. O(group_size).
+    pub fn group_state(&self, tag: u32) -> BodyState {
+        let mut s = BodyState::default();
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                s.accumulate(
+                    self.particles.x[i],
+                    self.particles.v[i].length(),
+                    self.particles.plastic_volume_ratio[i],
+                    self.particles.deformation_gradient[i].determinant(),
+                    self.particles.density[i],
+                );
+            }
+        }
+        s.finalize();
+        s
+    }
+
+    /// Center of mass for all particles with `tag`. O(group_size).
+    pub fn group_centroid(&self, tag: u32) -> glam::Vec2 {
+        let indices = match self.tag_index.get(&tag) {
+            Some(s) if !s.is_empty() => s,
+            _ => return glam::Vec2::ZERO,
+        };
+        let sum: glam::Vec2 = indices.iter().map(|&i| self.particles.x[i]).sum();
+        sum / indices.len() as f32
+    }
+
+    /// Number of particles with `tag`. O(1).
+    pub fn group_count(&self, tag: u32) -> usize {
+        self.tag_index.get(&tag).map_or(0, |v| v.len())
+    }
+
+    /// Set `activation` uniformly on all particles with `tag`. O(group_size).
+    pub fn set_group_activation(&mut self, tag: u32, value: f32) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.activation[i] = value.clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    /// Set `activation` per particle using a spatial function. O(group_size).
+    pub fn set_group_activation_fn(&mut self, tag: u32, f: impl Fn(glam::Vec2) -> f32) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.activation[i] = f(self.particles.x[i]).clamp(0.0, 1.0);
+            }
+        }
+    }
+
+    /// Set `temperature` uniformly on all particles with `tag`. O(group_size).
+    pub fn set_group_temperature(&mut self, tag: u32, value: f32) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.temperature[i] = value;
+            }
+        }
+    }
+
+    /// Apply a velocity impulse to all particles with `tag`, with optional distance falloff. O(group_size).
+    pub fn apply_group_impulse(
+        &mut self,
+        tag: u32,
+        impulse: glam::Vec2,
+        falloff_center: Option<glam::Vec2>,
+    ) {
+        let indices: Vec<usize> = match self.tag_index.get(&tag) {
+            Some(s) => s.iter().copied().collect(),
+            None => return,
+        };
+        // Linear falloff: full strength at center, zero at 10 cells.
+        const FALLOFF_PER_CELL: f32 = 0.1;
+        for i in indices {
+            let scale = match falloff_center {
+                None => 1.0,
+                Some(c) => (1.0 - (self.particles.x[i] - c).length() * FALLOFF_PER_CELL).max(0.0),
+            };
+            self.particles.v[i] += impulse * scale;
+        }
+    }
+
+    // ── Query & Transition API ────────────────────────────────────────────────
+
+    /// Aggregate state for all particles of a given material.
+    pub fn material_state(&self, material_id: u32) -> BodyState {
+        body_state_of(&self.particles, material_id)
+    }
+
+    /// Aggregate state for all particles within `radius` grid-cells of `center`.
+    pub fn region_state(&self, center: Vec2, radius: f32) -> BodyState {
+        let r2 = radius * radius;
+        let mut s = query::BodyState::default();
+        for i in self.spatial_hash.query(center, radius) {
+            if (self.particles.x[i] - center).length_squared() <= r2 {
+                s.accumulate(
+                    self.particles.x[i],
+                    self.particles.v[i].length(),
+                    self.particles.plastic_volume_ratio[i],
+                    self.particles.deformation_gradient[i].determinant(),
+                    self.particles.density[i],
+                );
+            }
+        }
+        s.finalize();
+        s
+    }
+
+    /// Iterate indices of active particles within `radius` grid-cells of `center`.
+    ///
+    /// Returns indices only — read particle data via `solver.particles().x[i]` etc.
+    /// O(candidates) via spatial hash, not O(N).
+    pub fn particles_near(&self, center: Vec2, radius: f32) -> impl Iterator<Item = usize> + '_ {
+        let r2 = radius * radius;
+        self.spatial_hash
+            .query(center, radius)
+            .filter(move |&i| (self.particles.x[i] - center).length_squared() <= r2)
+    }
+
+    /// Count active particles of a given material within `radius` of `center`.
+    /// O(candidates) via spatial hash, not O(N).
+    pub fn count_near(&self, center: Vec2, radius: f32, material_id: u32) -> usize {
+        let r2 = radius * radius;
+        self.spatial_hash
+            .query(center, radius)
+            .filter(|&i| {
+                self.particles.material_id[i] == material_id
+                    && (self.particles.x[i] - center).length_squared() <= r2
+            })
+            .count()
+    }
+
+    /// Indices of the `k` active particles nearest to `center`, sorted by
+    /// distance ascending -- a real topological neighbor rule (Ballerini et al.
+    /// 2008, PNAS: real starling flocks track their ~6-7 nearest neighbors
+    /// regardless of physical distance, not everything within a fixed radius).
+    /// `particles_near`/`count_near` can't express this: a fixed radius pulls
+    /// in more neighbors in dense regions and fewer in sparse ones, exactly the
+    /// density-fragility topological neighbor rules are empirically shown to
+    /// avoid (the same paper found this rule is what makes real flocks robust
+    /// to predator-induced density changes).
+    ///
+    /// Exact, not approximate: expands the search radius geometrically until
+    /// at least `k` candidates are found within it, then returns the true `k`
+    /// closest by exact distance. Correctness relies on `SpatialHash::query`
+    /// returning every particle in the queried box, never a sample -- once `k`
+    /// candidates are confirmed within some radius R, the true k-nearest are
+    /// guaranteed to already be included, so sorting and truncating what's
+    /// been gathered is exact.
+    ///
+    /// Returns fewer than `k` if the active particle set itself has fewer.
+    pub fn particles_knn(&self, center: Vec2, k: usize) -> Vec<usize> {
+        if k == 0 || self.active_count == 0 {
+            return Vec::new();
+        }
+        let domain_diag =
+            self.config.grid_res as f32 * self.config.grid_cell_size * std::f32::consts::SQRT_2;
+        let mut radius = self.config.grid_cell_size * (k as f32).sqrt().max(1.0);
+        let mut candidates: Vec<(usize, f32)>;
+        loop {
+            let r2 = radius * radius;
+            candidates = self
+                .spatial_hash
+                .query(center, radius)
+                .map(|i| (i, (self.particles.x[i] - center).length_squared()))
+                .filter(|&(_, d2)| d2 <= r2)
+                .collect();
+            if candidates.len() >= k || radius >= domain_diag {
+                break;
+            }
+            radius *= 2.0;
+        }
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+        candidates.truncate(k);
+        candidates.into_iter().map(|(i, _)| i).collect()
+    }
+}
