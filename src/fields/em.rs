@@ -1,10 +1,13 @@
 //! Electromagnetic force fields for MPM particles.
 //!
-//! Bridges `electromagnetics::` field math into the `Field` substep hook.
+//! `UniformElectricField` applies a spatially-constant external E-field to charged particles
+//! via the `Field` substep hook. This is a standalone Lorentz-force (F = qE) implementation --
+//! it does NOT call into `electromagnetics::`, which holds separate, so-far-unwired field-query
+//! and EM-wave math (see that module's own doc for why).
 //!
-//! `UniformElectricField` applies a spatially-constant external E-field to charged particles.
-//! This is distinct from `CoulombField` (which models point-source interactions).
-//! Use it for capacitor plates, external confinement fields, or EM traps.
+//! Distinct from `CoulombField` (`fields::coulomb`), which models discrete point-source
+//! interactions rather than a uniform field. Use `UniformElectricField` for capacitor plates,
+//! external confinement fields, or EM traps.
 
 use std::collections::HashMap;
 
