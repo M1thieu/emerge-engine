@@ -204,36 +204,20 @@ impl ScalarDiffusionField {
 
         // --- Laplacian FD + decay: explicit Euler, output into grid_work ---
         // grid_norm = φ_old (read-only from here). grid_work = φ_new (write).
-        // Layout: column-major (x * res + y), matching mechanics grid.
-        // ∇²φ ≈ φ[x-1,y] + φ[x+1,y] + φ[x,y-1] + φ[x,y+1] − 4·φ[x,y]
         let d_dt = self.config.diffusivity * sub_dt;
+        super::stencil::laplacian_step(
+            &self.grid_norm,
+            &mut self.grid_work,
+            self.grid_res,
+            d_dt,
+            self.config.ambient,
+        );
+        // Decay pulls toward zero (not ambient — a real, deliberate
+        // difference from ThermalDiffusion's Newton cooling, see module doc).
         let decay_factor = 1.0 - self.config.decay_rate * sub_dt;
-        for x in 0..self.grid_res {
-            for y in 0..self.grid_res {
-                let c = x * self.grid_res + y;
-                let phi_c = self.grid_norm[c];
-                let phi_xm = if x > 0 {
-                    self.grid_norm[c - self.grid_res]
-                } else {
-                    self.config.ambient
-                };
-                let phi_xp = if x + 1 < self.grid_res {
-                    self.grid_norm[c + self.grid_res]
-                } else {
-                    self.config.ambient
-                };
-                let phi_ym = if y > 0 {
-                    self.grid_norm[c - 1]
-                } else {
-                    self.config.ambient
-                };
-                let phi_yp = if y + 1 < self.grid_res {
-                    self.grid_norm[c + 1]
-                } else {
-                    self.config.ambient
-                };
-                let laplacian = phi_xm + phi_xp + phi_ym + phi_yp - 4.0 * phi_c;
-                self.grid_work[c] = (phi_c + d_dt * laplacian) * decay_factor;
+        if decay_factor != 1.0 {
+            for v in self.grid_work.iter_mut() {
+                *v *= decay_factor;
             }
         }
 

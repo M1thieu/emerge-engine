@@ -146,37 +146,14 @@ impl ThermalDiffusion {
 
         // --- Laplacian: explicit Euler FD, output into grid_work ---
         // grid_temp = T_old (read-only). grid_work = T_new (write).
-        // Layout: column-major, idx = x * res + y — matches mechanics grid.
-        // ∇²T ≈ T[x-1,y] + T[x+1,y] + T[x,y-1] + T[x,y+1] − 4·T[x,y]
         let alpha_dt = self.config.alpha_grid() * sub_dt;
-        for x in 0..self.grid_res {
-            for y in 0..self.grid_res {
-                let c = x * self.grid_res + y;
-                let t_c = self.grid_temp[c];
-                let t_xm = if x > 0 {
-                    self.grid_temp[c - self.grid_res]
-                } else {
-                    self.config.ambient
-                };
-                let t_xp = if x + 1 < self.grid_res {
-                    self.grid_temp[c + self.grid_res]
-                } else {
-                    self.config.ambient
-                };
-                let t_ym = if y > 0 {
-                    self.grid_temp[c - 1]
-                } else {
-                    self.config.ambient
-                };
-                let t_yp = if y + 1 < self.grid_res {
-                    self.grid_temp[c + 1]
-                } else {
-                    self.config.ambient
-                };
-                let laplacian = t_xm + t_xp + t_ym + t_yp - 4.0 * t_c;
-                self.grid_work[c] = t_c + alpha_dt * laplacian;
-            }
-        }
+        super::stencil::laplacian_step(
+            &self.grid_temp,
+            &mut self.grid_work,
+            self.grid_res,
+            alpha_dt,
+            self.config.ambient,
+        );
 
         // --- G2P: gather Δ T = (T_new − T_old) back to particles ---
         // Delta scatter preserves per-particle state at sparse/edge regions.
