@@ -14,6 +14,9 @@ pub use cutoff::smooth_cutoff;
 pub use density::compute_density_grid;
 pub use handle::{MaterialHandle, ParticleGroup};
 pub use query::{BodyState, body_state_of, region_body_state_of};
+// Only consumed by systems::gpu's own CFL scan -- unused (and correctly
+// warned about) in a build without that feature.
+#[cfg(feature = "gpu")]
 pub(crate) use step::{affine_cfl_speed_contribution, cfl_bound};
 
 use std::collections::{HashMap, HashSet};

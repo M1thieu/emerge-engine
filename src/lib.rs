@@ -11,31 +11,30 @@
 //   ├── forces/          Forces domain: boundary (BoundaryCondition + impls),
 //   │                    fields (Field trait + impls: gravity, Coulomb, EM, confinement)
 //   ├── transfer         P2G / G2P transfer kernels
-//   ├── control/         Lnn (Liquid Time-constant Network locomotion controller)
+//   ├── information/     Information domain: control (Lnn), measures (entropy/MI) [experimental]
 //   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
 //   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
-//   ├── diagnostics/     health monitoring · plugin-based stats collection
 //   └── runtime/         FixedStepController
 //
-//   Compute backends (feature-gated)
-//   ├── gpu/             GpuSimulation + WGSL shaders        [feature = "gpu"]
-//   └── render/          Instanced particle debug draw    [feature = "render"]
+//   Systems domain -- pure orchestration, no IRL counterpart (feature-gated where relevant)
+//   ├── systems::diagnostics  health monitoring, plugin-based stats collection
+//   ├── systems::gpu          GpuSimulation + WGSL shaders        [feature = "gpu"]
+//   └── systems::render       Instanced particle debug draw    [feature = "render"]
 //
 //   Extended physics (experimental, not part of LP-stable API)
 //   ├── forces::electromagnetics  E/B field-query math       [feature = "experimental"]
-//   ├── energy::electromagnetics  EM waves + optical MaterialProperties [feature = "experimental"]
-//   └── measures/        O(N) entropy (spatial · kinetic · phase) · local MI · KL divergence
+//   └── energy::electromagnetics  EM waves + optical MaterialProperties [feature = "experimental"]
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Core ─────────────────────────────────────────────────────────────────────
-pub mod control;
-pub mod diagnostics;
 pub mod energy;
 pub mod forces;
 pub mod grid;
+pub mod information;
 pub mod matter;
 pub mod runtime;
 pub mod solver;
+pub mod systems;
 pub mod transfer;
 
 // Domain folders re-export their contents at the old crate-root paths --
@@ -46,18 +45,16 @@ pub use energy::acoustics;
 pub use energy::thermodynamics;
 pub use forces::boundary;
 pub use forces::fields;
+pub use information::control;
+#[cfg(feature = "experimental")]
+pub use information::measures;
 pub use matter::materials;
 pub use matter::particle;
-
-// ── Compute backends ─────────────────────────────────────────────────────────
+pub use systems::diagnostics;
 #[cfg(feature = "gpu")]
-pub mod gpu;
+pub use systems::gpu;
 #[cfg(feature = "render")]
-pub mod render;
-
-// ── Extended physics ─────────────────────────────────────────────────────────
-#[cfg(feature = "experimental")]
-pub mod measures;
+pub use systems::render;
 
 // ── Prelude — common imports for LP/game consumers ───────────────────────────
 pub mod prelude;
