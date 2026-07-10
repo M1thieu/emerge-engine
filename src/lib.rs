@@ -12,7 +12,8 @@
 //   │                    fields (Field trait + impls: gravity, Coulomb, EM, confinement)
 //   ├── transfer         P2G / G2P transfer kernels
 //   ├── control/         Lnn (Liquid Time-constant Network locomotion controller)
-//   ├── thermodynamics/  ThermalDiffusion · ScalarDiffusionField
+//   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
+//   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
 //   ├── diagnostics/     health monitoring · plugin-based stats collection
 //   └── runtime/         FixedStepController
 //
@@ -21,7 +22,6 @@
 //   └── render/          Instanced particle debug draw    [feature = "render"]
 //
 //   Extended physics (experimental, not part of LP-stable API)
-//   ├── acoustics/       WaveEquation2D                  [feature = "experimental"]
 //   ├── electromagnetics/ EM field math                  [feature = "experimental"]
 //   └── measures/        O(N) entropy (spatial · kinetic · phase) · local MI · KL divergence
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,17 +29,20 @@
 // ── Core ─────────────────────────────────────────────────────────────────────
 pub mod control;
 pub mod diagnostics;
+pub mod energy;
 pub mod forces;
 pub mod grid;
 pub mod matter;
 pub mod runtime;
 pub mod solver;
-pub mod thermodynamics;
 pub mod transfer;
 
 // Domain folders re-export their contents at the old crate-root paths --
 // every existing internal `crate::x::` path and every LP `emerge::x::` path
 // keeps resolving unchanged. See each domain's `mod.rs` doc for why.
+#[cfg(feature = "experimental")]
+pub use energy::acoustics;
+pub use energy::thermodynamics;
 pub use forces::boundary;
 pub use forces::fields;
 pub use matter::materials;
@@ -52,8 +55,6 @@ pub mod gpu;
 pub mod render;
 
 // ── Extended physics ─────────────────────────────────────────────────────────
-#[cfg(feature = "experimental")]
-pub mod acoustics;
 #[cfg(feature = "experimental")]
 pub mod electromagnetics;
 #[cfg(feature = "experimental")]
