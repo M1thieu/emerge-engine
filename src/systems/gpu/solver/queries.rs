@@ -10,6 +10,9 @@ use crate::particle::Particle;
 use super::GpuSimulation;
 
 impl GpuSimulation {
+    /// Physics snapshot from the CPU particle mirror (one frame behind GPU when strided).
+    /// Grid-side fields (mass error, momentum error, active cells) are zero — GPU grid is
+    /// not readable on CPU. All particle-side fields are exact.
     pub fn diagnostics_snapshot(&self) -> crate::diagnostics::SimSnapshot {
         crate::diagnostics::collect_snapshot_particles_only(
             self.frame_index,

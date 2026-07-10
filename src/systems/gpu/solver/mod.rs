@@ -7,14 +7,14 @@ use crate::solver::density::estimate_particle_volumes;
 use crate::solver::initialize_particles;
 use crate::{grid::Grid, particle::Particle};
 
+mod particles;
 mod queries;
 mod step;
 
 use super::buffers::GpuBuffers;
 use super::pipeline::SimPipelines;
 use super::step_params::{
-    GpuFieldEntry, GpuImpulseEntry, MAX_GPU_IMPULSES, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS,
-    NUM_BLOCKS,
+    GpuFieldEntry, GpuImpulseEntry, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS,
 };
 
 /// Workgroup sizes — must match `@workgroup_size(...)` in the WGSL shaders.
@@ -741,68 +741,6 @@ impl GpuSimulation {
     /// Total frames stepped since creation.
     pub fn frame_index(&self) -> u64 {
         self.frame_index
-    }
-
-    /// Physics snapshot from the CPU particle mirror (one frame behind GPU when strided).
-    /// Grid-side fields (mass error, momentum error, active cells) are zero — GPU grid is
-    /// not readable on CPU. All particle-side fields are exact.
-    /// Reassign material for all particles matching `predicate`. Marks dirty so GPU
-    /// sees the change on the next `step_frame` call.
-    pub fn phase_transition<F>(&mut self, predicate: F, new_material_id: u32)
-    where
-        F: Fn(&Particle) -> bool,
-    {
-        assert!(
-            self.registry.is_registered(new_material_id),
-            "phase_transition: material_id {new_material_id} is not registered — \
-             call solver.set_material({new_material_id}, ...) first"
-        );
-        for p in self.particles.iter_mut() {
-            if predicate(p) {
-                p.material_id = new_material_id;
-            }
-        }
-        self.layout_dirty = true; // material_id changed — sort order may differ
-    }
-
-    /// Add `force` to every particle within `radius` cells of `center`, scaled by proximity.
-    /// Applied on the GPU at the start of the next step_frame — reads LIVE GPU positions,
-    /// avoiding any stale-CPU-mirror artifacts. No CPU particle scan.
-    pub fn apply_impulse(&mut self, center: glam::Vec2, radius: f32, force: glam::Vec2) {
-        if self.pending_impulses.len() < MAX_GPU_IMPULSES {
-            self.pending_impulses.push(GpuImpulseEntry {
-                center: center.to_array(),
-                radius,
-                strength: 0.0,
-                force: force.to_array(),
-                mode: 1,
-                _pad: 0,
-            });
-        } else {
-            eprintln!(
-                "emerge: GPU impulse queue full ({MAX_GPU_IMPULSES}/frame max) — impulse dropped"
-            );
-        }
-    }
-
-    /// Push every particle within `radius` cells outward from `center`.
-    /// Applied on the GPU at the start of the next step_frame — reads LIVE GPU positions.
-    /// `strength` may be negative to pull. No CPU particle scan.
-    pub fn apply_radial_impulse(&mut self, center: glam::Vec2, radius: f32, strength: f32) {
-        if self.pending_impulses.len() < MAX_GPU_IMPULSES {
-            self.pending_impulses.push(GpuImpulseEntry {
-                center: center.to_array(),
-                radius,
-                strength,
-                force: [0.0; 2],
-                mode: 0,
-                _pad: 0,
-            });
-        } else {
-            eprintln!(
-                "emerge: GPU impulse queue full ({MAX_GPU_IMPULSES}/frame max) — impulse dropped"
-            );
-        }
     }
 }
 
