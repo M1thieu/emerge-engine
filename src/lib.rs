@@ -8,9 +8,9 @@
 //   ├── matter/          Matter domain: particle (Particle struct), materials/
 //   │                    (MaterialModel trait, constitutive models, MaterialRegistry)
 //   ├── grid/            Grid, Cell, kernel (quadratic weights)
-//   ├── boundary         BoundaryCondition + impls
+//   ├── forces/          Forces domain: boundary (BoundaryCondition + impls),
+//   │                    fields (Field trait + impls: gravity, Coulomb, EM, confinement)
 //   ├── transfer         P2G / G2P transfer kernels
-//   ├── fields/          Field trait + impls (gravity, Coulomb, EM, confinement)
 //   ├── control/         Lnn (Liquid Time-constant Network locomotion controller)
 //   ├── thermodynamics/  ThermalDiffusion · ScalarDiffusionField
 //   ├── diagnostics/     health monitoring · plugin-based stats collection
@@ -27,10 +27,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Core ─────────────────────────────────────────────────────────────────────
-pub mod boundary;
 pub mod control;
 pub mod diagnostics;
-pub mod fields;
+pub mod forces;
 pub mod grid;
 pub mod matter;
 pub mod runtime;
@@ -38,10 +37,11 @@ pub mod solver;
 pub mod thermodynamics;
 pub mod transfer;
 
-// `matter::materials`/`matter::particle` re-exported at their old crate-root
-// paths -- every existing `crate::materials::`/`crate::particle::` path
-// (internal) and `emerge::materials::`/`emerge::particle::` path (LP) keeps
-// resolving unchanged. First domain-folder move; see `matter/mod.rs` doc.
+// Domain folders re-export their contents at the old crate-root paths --
+// every existing internal `crate::x::` path and every LP `emerge::x::` path
+// keeps resolving unchanged. See each domain's `mod.rs` doc for why.
+pub use forces::boundary;
+pub use forces::fields;
 pub use matter::materials;
 pub use matter::particle;
 
