@@ -1,6 +1,13 @@
-//! Electric and magnetic field math.
+//! Electric and magnetic field-query math — the Forces half of `electromagnetics::`.
 //!
 //! Pure-Rust, no ECS. Ported from `crates/energy/src/electromagnetism/fields.rs`.
+//! Split from the old unified `electromagnetics/` module 2026-07-11: this is
+//! point-charge/current FORCE-application math (Forces domain); wave
+//! propagation and optical material properties are `energy::electromagnetics`.
+//!
+//! Dormant/experimental: not yet wired into the solver's `Field` trait (see
+//! `forces::fields::em`'s doc for the real, wired-in `UniformElectricField`,
+//! which reimplements F=qE standalone rather than calling into this module).
 //!
 //! # Reference
 //! - Coulomb's law: E = k·q / r²

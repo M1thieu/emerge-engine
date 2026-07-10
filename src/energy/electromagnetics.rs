@@ -1,8 +1,13 @@
-//! Electromagnetic wave and material property math.
+//! Electromagnetic wave and material property math — the Energy half of
+//! `electromagnetics::`.
 //!
 //! Pure-Rust, no ECS. Ported from `crates/energy/src/electromagnetism/interactions.rs`.
+//! Split from the old unified `electromagnetics/` module 2026-07-11: wave
+//! propagation and optical `MaterialProperties` are radiative energy
+//! transfer (Energy domain); point-charge/current force-application math is
+//! `forces::electromagnetics`.
 
-use super::fields::{ElectricField, MagneticField};
+use crate::forces::electromagnetics::{ElectricField, MagneticField};
 use glam::Vec2;
 
 /// Speed of light in vacuum (m/s).

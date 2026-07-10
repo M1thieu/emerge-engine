@@ -2,9 +2,10 @@
 //!
 //! `fields` — the `Field` trait + force-field impls (gravity, Coulomb, EM,
 //! confinement, buoyancy, chemotaxis). `boundary` — the `BoundaryCondition`
-//! trait + wall/friction/terrain impls. Both apply forces/constraints to
-//! particles; Forces' core-gravity and EM-force-application pieces live here
-//! too (EM's radiative/energy-transfer half is Energy's, not Forces').
+//! trait + wall/friction/terrain impls. `electromagnetics` [experimental] —
+//! point-charge/current field-query math (E/B at a point); the wave/optical
+//! half lives in `energy::electromagnetics` instead. Core gravity and EM
+//! force-application all belong here, in Forces.
 //!
 //! Part of the emerge/LP domain taxonomy (matter/forces/energy/information/
 //! spacetime/organism/systems) -- see `project_domain_taxonomy` design notes.
@@ -14,4 +15,6 @@
 //! this move only changes where the files physically live, not any public API.
 
 pub mod boundary;
+#[cfg(feature = "experimental")]
+pub mod electromagnetics;
 pub mod fields;

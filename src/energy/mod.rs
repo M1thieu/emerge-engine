@@ -3,11 +3,10 @@
 //! `thermodynamics` — `ThermalDiffusion` (Fourier heat), `ScalarDiffusionField`
 //! (generic reaction-diffusion: pheromone, nutrients, morphogen). `acoustics`
 //! [feature = "experimental"] — `WaveEquation2D`, pressure-wave propagation.
-//!
-//! Electromagnetism's radiative/energy-transfer half (`ElectromagneticWave`,
-//! optical `MaterialProperties` in `electromagnetics::interactions`) belongs
-//! here too once that module's Forces/Energy split lands -- its point-charge
-//! force-application half (`electromagnetics::fields`) stays in Forces.
+//! `electromagnetics` [feature = "experimental"] — `ElectromagneticWave`,
+//! optical `MaterialProperties` (refractive index, permittivity/permeability);
+//! the point-charge force-application half lives in `forces::electromagnetics`
+//! instead.
 //!
 //! Part of the emerge/LP domain taxonomy (matter/forces/energy/information/
 //! spacetime/organism/systems) -- see `project_domain_taxonomy` design notes.
@@ -19,4 +18,6 @@
 
 #[cfg(feature = "experimental")]
 pub mod acoustics;
+#[cfg(feature = "experimental")]
+pub mod electromagnetics;
 pub mod thermodynamics;

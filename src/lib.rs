@@ -22,7 +22,8 @@
 //   └── render/          Instanced particle debug draw    [feature = "render"]
 //
 //   Extended physics (experimental, not part of LP-stable API)
-//   ├── electromagnetics/ EM field math                  [feature = "experimental"]
+//   ├── forces::electromagnetics  E/B field-query math       [feature = "experimental"]
+//   ├── energy::electromagnetics  EM waves + optical MaterialProperties [feature = "experimental"]
 //   └── measures/        O(N) entropy (spatial · kinetic · phase) · local MI · KL divergence
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -55,8 +56,6 @@ pub mod gpu;
 pub mod render;
 
 // ── Extended physics ─────────────────────────────────────────────────────────
-#[cfg(feature = "experimental")]
-pub mod electromagnetics;
 #[cfg(feature = "experimental")]
 pub mod measures;
 
