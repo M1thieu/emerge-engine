@@ -14,6 +14,11 @@ pub struct MaterialStats {
     pub material_id: u32,
     pub count: usize,
     pub centroid: Vec2,
+    /// Bounding-box min/max position — the same "is it scattering or
+    /// growing" signal ad hoc example telemetry (e.g. basic_creature.rs) used
+    /// to hand-compute per frame; now available to any caller for free.
+    pub extent_min: Vec2,
+    pub extent_max: Vec2,
     /// Mean speed |v|.
     pub mean_speed: f32,
     /// Speed of fastest particle.
@@ -52,12 +57,15 @@ impl MaterialStats {
             Some(l) => format!("[mat {} {:<6}]", self.material_id, l),
             None => format!("[mat {:<8}]", self.material_id),
         };
+        let extent = self.extent_max - self.extent_min;
         let mut s = format!(
-            "{} n={:<5} cx=({:6.1},{:6.1})  v={:.3}/{:.3}  J=[{:.3},{:.3}]",
+            "{} n={:<5} cx=({:6.1},{:6.1})  ext=({:.1}x{:.1})  v={:.3}/{:.3}  J=[{:.3},{:.3}]",
             tag,
             self.count,
             self.centroid.x,
             self.centroid.y,
+            extent.x,
+            extent.y,
             self.mean_speed,
             self.max_speed,
             self.j_range[0],
@@ -108,6 +116,8 @@ fn per_material_stats_iter(iter: impl Iterator<Item = Particle>) -> Vec<Material
     struct Accum {
         count: usize,
         centroid_sum: Vec2,
+        extent_min: Vec2,
+        extent_max: Vec2,
         speed_sum: f32,
         max_speed: f32,
         j_min: f32,
@@ -126,6 +136,8 @@ fn per_material_stats_iter(iter: impl Iterator<Item = Particle>) -> Vec<Material
         let entry = map.entry(p.material_id).or_insert(Accum {
             count: 0,
             centroid_sum: Vec2::ZERO,
+            extent_min: Vec2::splat(f32::INFINITY),
+            extent_max: Vec2::splat(f32::NEG_INFINITY),
             speed_sum: 0.0,
             max_speed: 0.0,
             j_min: f32::INFINITY,
@@ -140,6 +152,8 @@ fn per_material_stats_iter(iter: impl Iterator<Item = Particle>) -> Vec<Material
 
         entry.count += 1;
         entry.centroid_sum += p.x;
+        entry.extent_min = entry.extent_min.min(p.x);
+        entry.extent_max = entry.extent_max.max(p.x);
 
         let speed = p.v.length();
         entry.speed_sum += speed;
@@ -172,6 +186,16 @@ fn per_material_stats_iter(iter: impl Iterator<Item = Particle>) -> Vec<Material
                 count: a.count,
                 centroid: if a.count > 0 {
                     a.centroid_sum / n
+                } else {
+                    Vec2::ZERO
+                },
+                extent_min: if a.extent_min.is_finite() {
+                    a.extent_min
+                } else {
+                    Vec2::ZERO
+                },
+                extent_max: if a.extent_max.is_finite() {
+                    a.extent_max
                 } else {
                     Vec2::ZERO
                 },

@@ -199,7 +199,7 @@ fn main() {
         let snap = solver.diagnostics_snapshot();
         let stats = per_material_stats(solver.particles());
         log_frame_full(step, config.dt, solver.particles(), LABELS, &snap, 60);
-        logger.log(step, config.dt, &stats, &snap, LABELS);
+        logger.log(step, config.dt, &stats, &snap, LABELS, &[]);
 
         // Print per-phase timing every 20 steps so you can see where ms are going.
         if step % 20 == 0 {

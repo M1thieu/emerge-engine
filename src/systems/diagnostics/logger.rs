@@ -14,7 +14,7 @@ use crate::diagnostics::snapshot::SimSnapshot;
 /// ```ignore
 /// let mut logger = FrameLogger::open("run.ndjson").unwrap();
 /// // inside loop:
-/// logger.log(frame, dt, &stats, &snap, labels);
+/// logger.log(frame, dt, &stats, &snap, labels, &[]);
 /// ```
 ///
 /// # Output format
@@ -39,6 +39,11 @@ impl FrameLogger {
     }
 
     /// Append one frame line. Labels map material_id → name (same as `log_frame_full`).
+    ///
+    /// `extra` is an optional list of app-defined scalar fields (e.g. a demo's
+    /// live steer input or wave speed) merged into the top-level JSON object —
+    /// context the engine has no name for, but that matters when replaying a
+    /// run's telemetry (why did the body do that at frame N?).
     pub fn log(
         &mut self,
         frame: u64,
@@ -46,6 +51,7 @@ impl FrameLogger {
         stats: &[MaterialStats],
         snap: &SimSnapshot,
         labels: &[(u32, &str)],
+        extra: &[(&str, f32)],
     ) {
         let health =
             if snap.non_finite_particle_values > 0 || snap.invalid_physical_particle_values > 0 {
@@ -81,6 +87,11 @@ impl FrameLogger {
             ));
         }
 
+        // App-defined scalar context (e.g. live steer input, wave speed).
+        for (name, value) in extra {
+            line.push_str(&format!(",\"{}\":{:.4}", name, value));
+        }
+
         // Per-material array.
         line.push_str(",\"materials\":[");
         for (i, s) in stats.iter().enumerate() {
@@ -94,12 +105,14 @@ impl FrameLogger {
                 .unwrap_or("unknown");
 
             line.push_str(&format!(
-                "{{\"id\":{},\"name\":\"{}\",\"n\":{},\"cx\":[{:.2},{:.2}],\"v_mean\":{:.4},\"v_max\":{:.4},\"j\":[{:.4},{:.4}]",
+                "{{\"id\":{},\"name\":\"{}\",\"n\":{},\"cx\":[{:.2},{:.2}],\"extent\":[{:.2},{:.2}],\"v_mean\":{:.4},\"v_max\":{:.4},\"j\":[{:.4},{:.4}]",
                 s.material_id,
                 name,
                 s.count,
                 s.centroid.x,
                 s.centroid.y,
+                s.extent_max.x - s.extent_min.x,
+                s.extent_max.y - s.extent_min.y,
                 s.mean_speed,
                 s.max_speed,
                 s.j_range[0],
