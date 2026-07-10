@@ -184,6 +184,56 @@ pub fn g2p_velocity_vjp(x: Vec2, d_loss_d_new_v: Vec2) -> [[Vec2; 3]; 3] {
     out
 }
 
+/// Analytic adjoint of G2P's APIC affine matrix (`velocity_gradient`)
+/// computation w.r.t. the 9 grid velocities -- the piece `g2p_velocity_vjp`
+/// deliberately left open, now closed. Real, externally cross-checked: this
+/// exact term appears in ChainQueen's own hand-written CUDA backward pass
+/// (`backward.cu`, `P2G_backward`'s "(C)" comment) as
+/// `invD * N * grad_C_next[alpha][beta] * dpos[beta]` -- confirms both that
+/// this term is genuinely needed (not paranoia) and, since it algebraically
+/// matches the independently-derived formula below once ChainQueen's `invD`
+/// is read as this codebase's `KERNEL_D_INVERSE`, that the derivation is
+/// right. `apic_blend` is an emerge-specific extra factor ChainQueen's own
+/// formula doesn't have (see `gather_grid_to_particles`'s `vg = b *
+/// KERNEL_D_INVERSE * apic_blend`), included here since it's part of
+/// emerge's own forward formula.
+///
+/// Forward (see `gather_grid_to_particles`'s Phase 1): `new_c = scale *
+/// sum_c weight_c * outer(v_grid_c, dist_c)`, where `scale =
+/// KERNEL_D_INVERSE * apic_blend` and `outer(v,d)` has column 0 = `d.x*v`,
+/// column 1 = `d.y*v` (same convention as `p2g_stress_vjp`'s own outer
+/// product). Linear in each `v_grid_c`; given the gradient flowing back from
+/// the affine matrix, `d_loss_d_new_c` (a Mat2), the VJP of `outer(v,d)`
+/// w.r.t. `v` is `M*d` (matrix-vector product, standard result for an outer
+/// product's adjoint):
+///
+///   d_loss_d_v_grid[c] = weight_c * scale * (d_loss_d_new_c * dist_c)
+///
+/// Callers combine this additively with `g2p_velocity_vjp`'s output (both
+/// scatter to the SAME 9 grid cells, since `new_v` and `new_c` are computed
+/// from the same stencil in the same G2P pass) to get the true total
+/// per-cell gradient. Verified against central-difference numerical
+/// gradients in this module's own tests, independently and composed with
+/// `g2p_velocity_vjp`.
+pub fn g2p_affine_vjp(
+    x: Vec2,
+    kernel_d_inverse: f32,
+    apic_blend: f32,
+    d_loss_d_new_c: Mat2,
+) -> [[Vec2; 3]; 3] {
+    let weights = quadratic_weights(x);
+    let scale = kernel_d_inverse * apic_blend;
+    let mut out = [[Vec2::ZERO; 3]; 3];
+    for (gx, (row, wx)) in out.iter_mut().zip(weights.wx.iter()).enumerate() {
+        for (gy, (cell, wy)) in row.iter_mut().zip(weights.wy.iter()).enumerate() {
+            let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+            let dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+            *cell = (wx * wy * scale) * (d_loss_d_new_c * dist);
+        }
+    }
+    out
+}
+
 /// Analytic adjoint of the deformation-gradient update `F_new = (I + dt*C) *
 /// F_old` w.r.t. both `C` (the APIC affine matrix / velocity_gradient G2P
 /// produces) and `F_old` -- sixth real piece of differentiable stepping, and
@@ -877,6 +927,192 @@ mod f_update_vjp_tests {
             Mat2::from_cols(Vec2::new(1.4, 0.2), Vec2::new(-0.15, 0.8)),
             0.05,
             Mat2::from_cols(Vec2::new(-0.7, 1.1), Vec2::new(0.9, -0.4)),
+        );
+    }
+}
+
+#[cfg(test)]
+mod g2p_affine_vjp_tests {
+    use super::*;
+
+    /// Forward formula exactly matching G2P's own `new_c`/`velocity_gradient`
+    /// computation (the weighted outer-product sum), taking the 9 grid
+    /// velocities directly as an array instead of reading a real `Grid`.
+    fn gather_affine(x: Vec2, v_grid: &[[Vec2; 3]; 3], scale: f32) -> Mat2 {
+        let weights = quadratic_weights(x);
+        let mut b = Mat2::ZERO;
+        for (gx, (row, wx)) in v_grid.iter().zip(weights.wx.iter()).enumerate() {
+            for (gy, (v_cell, wy)) in row.iter().zip(weights.wy.iter()).enumerate() {
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                let weighted = *v_cell * (wx * wy);
+                b += Mat2::from_cols(weighted * dist.x, weighted * dist.y);
+            }
+        }
+        b * scale
+    }
+
+    fn loss(x: Vec2, v_grid: &[[Vec2; 3]; 3], scale: f32, g: Mat2) -> f32 {
+        let c = gather_affine(x, v_grid, scale);
+        g.x_axis.x * c.x_axis.x
+            + g.x_axis.y * c.x_axis.y
+            + g.y_axis.x * c.y_axis.x
+            + g.y_axis.y * c.y_axis.y
+    }
+
+    #[test]
+    fn matches_finite_difference_at_cell_center() {
+        check(
+            Vec2::new(30.0, 30.0),
+            4.0,
+            0.9,
+            Mat2::from_cols(Vec2::new(0.5, -0.3), Vec2::new(0.2, 0.7)),
+        );
+    }
+
+    #[test]
+    fn matches_finite_difference_off_center() {
+        check(
+            Vec2::new(12.6, 5.9),
+            4.0,
+            0.75,
+            Mat2::from_cols(Vec2::new(-0.4, 0.6), Vec2::new(1.0, -0.2)),
+        );
+    }
+
+    /// Checks every one of the 9 stencil cells' 2 velocity components (18
+    /// scalars total) against central differences.
+    fn check(x: Vec2, kernel_d_inverse: f32, apic_blend: f32, g: Mat2) {
+        let v_grid = [
+            [
+                Vec2::new(0.2, -0.4),
+                Vec2::new(0.6, 0.1),
+                Vec2::new(-0.3, 0.5),
+            ],
+            [
+                Vec2::new(0.4, 0.3),
+                Vec2::new(-0.1, -0.6),
+                Vec2::new(0.2, 0.4),
+            ],
+            [
+                Vec2::new(-0.5, 0.2),
+                Vec2::new(0.3, -0.4),
+                Vec2::new(0.1, 0.6),
+            ],
+        ];
+        let scale = kernel_d_inverse * apic_blend;
+        let analytic = g2p_affine_vjp(x, kernel_d_inverse, apic_blend, g);
+        let h = 1.0e-3_f32;
+
+        for gx in 0..3 {
+            for gy in 0..3 {
+                for (axis, label) in [(0, "x"), (1, "y")] {
+                    let mut v_plus = v_grid;
+                    let mut v_minus = v_grid;
+                    if axis == 0 {
+                        v_plus[gx][gy].x += h;
+                        v_minus[gx][gy].x -= h;
+                    } else {
+                        v_plus[gx][gy].y += h;
+                        v_minus[gx][gy].y -= h;
+                    }
+                    let numeric =
+                        (loss(x, &v_plus, scale, g) - loss(x, &v_minus, scale, g)) / (2.0 * h);
+                    let analytic_val = if axis == 0 {
+                        analytic[gx][gy].x
+                    } else {
+                        analytic[gx][gy].y
+                    };
+                    let diff = (numeric - analytic_val).abs();
+                    let scale_denom = numeric.abs().max(analytic_val.abs()).max(1.0);
+                    assert!(
+                        diff / scale_denom < 1.0e-2,
+                        "g2p_affine_vjp mismatch at cell[{gx}][{gy}].{label}: \
+                         analytic={analytic_val:.6} numeric={numeric:.6} \
+                         relative_diff={:.2e} (x={x:?})",
+                        diff / scale_denom
+                    );
+                }
+            }
+        }
+    }
+
+    /// Real end-to-end check: combines g2p_velocity_vjp and g2p_affine_vjp
+    /// (the two halves of G2P's actual joint computation, gathered from the
+    /// SAME 9 grid velocities in the same pass) and verifies the SUMMED
+    /// gradient matches a finite difference taken through the true combined
+    /// loss L = g_v . new_v + g_c : new_c -- proves the two adjoints compose
+    /// correctly when G2P's real output (both v and C) feeds a real loss,
+    /// not just that each is independently correct in isolation.
+    #[test]
+    fn composes_correctly_with_g2p_velocity_vjp() {
+        let x = Vec2::new(18.3, 9.7);
+        let kernel_d_inverse = 4.0;
+        let apic_blend = 1.0;
+        let scale = kernel_d_inverse * apic_blend;
+        let g_v = Vec2::new(0.4, -0.6);
+        let g_c = Mat2::from_cols(Vec2::new(0.3, 0.5), Vec2::new(-0.7, 0.2));
+
+        let v_grid = [
+            [
+                Vec2::new(0.1, 0.2),
+                Vec2::new(-0.3, 0.4),
+                Vec2::new(0.5, -0.1),
+            ],
+            [
+                Vec2::new(0.2, -0.2),
+                Vec2::new(0.4, 0.3),
+                Vec2::new(-0.4, 0.1),
+            ],
+            [
+                Vec2::new(-0.1, 0.5),
+                Vec2::new(0.2, -0.3),
+                Vec2::new(0.3, 0.2),
+            ],
+        ];
+
+        let combined_loss = |v_grid: &[[Vec2; 3]; 3]| -> f32 {
+            let weights = quadratic_weights(x);
+            let mut new_v = Vec2::ZERO;
+            let mut b = Mat2::ZERO;
+            for (gxi, (row, wx)) in v_grid.iter().zip(weights.wx.iter()).enumerate() {
+                for (gyi, (v_cell, wy)) in row.iter().zip(weights.wy.iter()).enumerate() {
+                    let weight = wx * wy;
+                    let cell_pos = weights.base_cell + IVec2::new(gxi as i32 - 1, gyi as i32 - 1);
+                    let dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                    let weighted = *v_cell * weight;
+                    new_v += weighted;
+                    b += Mat2::from_cols(weighted * dist.x, weighted * dist.y);
+                }
+            }
+            let new_c = b * scale;
+            g_v.dot(new_v)
+                + g_c.x_axis.x * new_c.x_axis.x
+                + g_c.x_axis.y * new_c.x_axis.y
+                + g_c.y_axis.x * new_c.y_axis.x
+                + g_c.y_axis.y * new_c.y_axis.y
+        };
+
+        let from_v = g2p_velocity_vjp(x, g_v);
+        let from_c = g2p_affine_vjp(x, kernel_d_inverse, apic_blend, g_c);
+
+        let h = 1.0e-3_f32;
+        // Check cell [1][1] (center of stencil) as a representative sample.
+        let mut v_plus = v_grid;
+        v_plus[1][1].x += h;
+        let mut v_minus = v_grid;
+        v_minus[1][1].x -= h;
+        let numeric = (combined_loss(&v_plus) - combined_loss(&v_minus)) / (2.0 * h);
+
+        let combined_analytic = from_v[1][1].x + from_c[1][1].x;
+        let diff = (numeric - combined_analytic).abs();
+        let scale_denom = numeric.abs().max(combined_analytic.abs()).max(1.0);
+        assert!(
+            diff / scale_denom < 1.0e-2,
+            "composed g2p_velocity_vjp + g2p_affine_vjp must match end-to-end finite \
+             difference: analytic={combined_analytic:.6} numeric={numeric:.6} \
+             relative_diff={:.2e}",
+            diff / scale_denom
         );
     }
 }
