@@ -56,15 +56,6 @@ pub(crate) fn combined_kirchhoff_stress(
 /// shifted results enough to break `fluid_spreads_more_than_elastic_under_gravity` (a 600-step
 /// chaotic simulation) — confirmed by isolated A/B, not assumed. Reverted rather than accepted
 /// the correctness risk for an unmeasured gain.
-///
-/// Parallelized via rayon `fold`/`reduce`: multiple particles write to the same grid cell
-/// (3×3 B-spline stencils overlap), so a single shared `HashMap` cannot be mutated
-/// concurrently — even with disjoint keys, `HashMap::entry()` can trigger an internal bucket
-/// resize, which is unsound across threads without unsafe code or a concurrent map crate.
-/// Instead, each rayon task accumulates into its own thread-local `CellMap` (no cross-thread
-/// aliasing), and `reduce` merges those local maps pairwise — each merge step owns both maps
-/// exclusively, so it's plain safe Rust. The final merge into the real `Grid` is sequential
-/// and O(touched cells), not O(particles).
 pub fn scatter_particles_to_grid(
     particles: &Particles,
     grid: &mut Grid,
@@ -95,6 +86,54 @@ pub fn scatter_particles_to_grid(
             }
         }
     }
+}
+
+/// Analytic adjoint of P2G's stress→force scatter contribution w.r.t. the
+/// particle's own Kirchhoff stress tensor -- the second real piece of
+/// differentiable stepping, after `NeoHookeanMaterial::kirchhoff_stress_vjp`.
+///
+/// SCOPED, not a full P2G adjoint: differentiates only the elastic-force term
+/// `weight * stress_coeff * (stress * cell_dist)` inside `scatter_particles_to_grid`,
+/// treating the particle's position `x` (and therefore the kernel weights and
+/// `cell_dist`) as FIXED. The mass/velocity/affine-C term is untouched here --
+/// a separate, much simpler linear adjoint, not yet implemented. Differentiating
+/// through the kernel weights' own dependence on `x` (how MOVING the particle
+/// changes which cells it deposits to, and by how much) is the real remaining
+/// gap in a fully general P2G adjoint -- deliberately deferred, not silently
+/// dropped: this covers the actual control-relevant path (muscle activation →
+/// stress → grid force) needed to train a controller, without yet handling
+/// the harder position-dependence.
+///
+/// Real derivation: for one particle, cell `c`'s momentum contribution from
+/// stress is `y_c = (weight_c * stress_coeff) * (stress * cell_dist_c)` --
+/// linear in `stress`, a matrix-vector product `y = M*v` scaled by a fixed
+/// scalar. Given the gradient flowing back from each cell's grid momentum,
+/// `d_loss_d_momentum[c]` (a Vec2), the standard VJP for `y=Mv` is
+/// `dL/dM = outer(dL/dy, v)`, i.e. `dL/dM_kl = dL/dy_k * v_l`. Summed over
+/// all 9 stencil cells:
+///
+///   d_loss_d_stress = sum_c (weight_c * stress_coeff) * outer(d_loss_d_momentum[c], cell_dist_c)
+///
+/// Returns d_loss_d_stress, ready to feed into e.g.
+/// `NeoHookeanMaterial::kirchhoff_stress_vjp` to continue the chain back to F.
+/// Verified against central-difference numerical gradients in this module's
+/// own tests, same non-negotiable discipline as the stress adjoint itself.
+pub fn p2g_stress_vjp(x: Vec2, stress_coeff: f32, d_loss_d_momentum: &[[Vec2; 3]; 3]) -> Mat2 {
+    let weights = quadratic_weights(x);
+    let mut d_loss_d_stress = Mat2::ZERO;
+    for (gx, (wx, momentum_row)) in weights.wx.iter().zip(d_loss_d_momentum.iter()).enumerate() {
+        for (gy, (wy, &g)) in weights.wy.iter().zip(momentum_row.iter()).enumerate() {
+            let weight = wx * wy;
+            let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+            let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+            let scalar = weight * stress_coeff;
+            // outer(g, cell_dist): column 0 = cell_dist.x * g, column 1 = cell_dist.y * g
+            // (matches glam's column-major Mat2, verified against the matrix-vector
+            // VJP already proven correct in kirchhoff_stress_vjp).
+            d_loss_d_stress += scalar * Mat2::from_cols(cell_dist.x * g, cell_dist.y * g);
+        }
+    }
+    d_loss_d_stress
 }
 
 pub struct G2PParams {
@@ -305,6 +344,245 @@ mod activation_tests {
         assert!(
             tau.x_axis.x.abs() < 1e-6 && tau.y_axis.y.abs() < 1e-6,
             "activation=0.0 must produce zero stress on an undeformed particle: {tau:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod p2g_stress_vjp_tests {
+    use super::*;
+
+    /// Recomputes just the stress-scatter contribution `scatter_particles_to_grid`
+    /// itself computes for each of the 9 stencil cells, at a given `stress` --
+    /// the exact forward formula `p2g_stress_vjp` is the adjoint of, isolated
+    /// from mass/velocity/C so the finite-difference check exercises only the
+    /// piece being verified.
+    fn stress_contributions(x: Vec2, stress_coeff: f32, stress: Mat2) -> [[Vec2; 3]; 3] {
+        let weights = quadratic_weights(x);
+        let mut out = [[Vec2::ZERO; 3]; 3];
+        for (gx, row) in out.iter_mut().enumerate() {
+            for (gy, cell) in row.iter_mut().enumerate() {
+                let weight = weights.wx[gx] * weights.wy[gy];
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                *cell = weight * stress_coeff * (stress * cell_dist);
+            }
+        }
+        out
+    }
+
+    /// Scalar loss L(stress) = sum_c g_c . contribution_c(stress) -- the
+    /// standard way to check a matrix-to-many-vectors function one scalar
+    /// component at a time via central differences.
+    fn loss(x: Vec2, stress_coeff: f32, stress: Mat2, g: &[[Vec2; 3]; 3]) -> f32 {
+        let contributions = stress_contributions(x, stress_coeff, stress);
+        let mut total = 0.0;
+        for (row, contrib_row) in g.iter().zip(contributions.iter()) {
+            for (gv, cv) in row.iter().zip(contrib_row.iter()) {
+                total += gv.dot(*cv);
+            }
+        }
+        total
+    }
+
+    /// Bundles the fixed context (position, stress_coeff, base stress, incoming
+    /// gradients, step size) shared by every one of F's 4 components' checks.
+    struct FiniteDiffContext {
+        x: Vec2,
+        stress_coeff: f32,
+        stress: Mat2,
+        g: [[Vec2; 3]; 3],
+        h: f32,
+    }
+
+    fn check_component(
+        ctx: &FiniteDiffContext,
+        label: &str,
+        analytic_val: f32,
+        base: f32,
+        set: impl Fn(&mut Mat2, f32),
+    ) {
+        let mut s_plus = ctx.stress;
+        set(&mut s_plus, base + ctx.h);
+        let mut s_minus = ctx.stress;
+        set(&mut s_minus, base - ctx.h);
+
+        let numeric = (loss(ctx.x, ctx.stress_coeff, s_plus, &ctx.g)
+            - loss(ctx.x, ctx.stress_coeff, s_minus, &ctx.g))
+            / (2.0 * ctx.h);
+
+        let diff = (numeric - analytic_val).abs();
+        let scale = numeric.abs().max(analytic_val.abs()).max(1.0);
+        assert!(
+            diff / scale < 1.0e-2,
+            "p2g_stress_vjp mismatch at {label}: analytic={analytic_val:.6} \
+             numeric(central-diff)={numeric:.6} relative_diff={:.2e} (x={:?})",
+            diff / scale,
+            ctx.x
+        );
+    }
+
+    fn check_matches_finite_difference(
+        x: Vec2,
+        stress_coeff: f32,
+        stress: Mat2,
+        g: [[Vec2; 3]; 3],
+    ) {
+        let analytic = p2g_stress_vjp(x, stress_coeff, &g);
+        let ctx = FiniteDiffContext {
+            x,
+            stress_coeff,
+            stress,
+            g,
+            h: 1.0e-3_f32,
+        };
+
+        check_component(
+            &ctx,
+            "F[0][0]",
+            analytic.x_axis.x,
+            stress.x_axis.x,
+            |m, v| m.x_axis.x = v,
+        );
+        check_component(
+            &ctx,
+            "F[1][0]",
+            analytic.x_axis.y,
+            stress.x_axis.y,
+            |m, v| m.x_axis.y = v,
+        );
+        check_component(
+            &ctx,
+            "F[0][1]",
+            analytic.y_axis.x,
+            stress.y_axis.x,
+            |m, v| m.y_axis.x = v,
+        );
+        check_component(
+            &ctx,
+            "F[1][1]",
+            analytic.y_axis.y,
+            stress.y_axis.y,
+            |m, v| m.y_axis.y = v,
+        );
+    }
+
+    #[test]
+    fn matches_finite_difference_at_cell_center() {
+        check_matches_finite_difference(
+            Vec2::new(10.0, 10.0),
+            -0.5,
+            Mat2::from_cols(Vec2::new(3.0, 0.5), Vec2::new(0.5, -2.0)),
+            [[Vec2::new(1.0, 0.5); 3]; 3],
+        );
+    }
+
+    #[test]
+    fn matches_finite_difference_off_center_with_varied_gradients() {
+        // Off-center position (nonzero fractional offset within its cell) and a
+        // different, non-uniform incoming gradient per stencil cell -- exercises
+        // real per-cell weight/cell_dist variation, not just a symmetric case.
+        let g = [
+            [
+                Vec2::new(0.3, -0.7),
+                Vec2::new(1.1, 0.2),
+                Vec2::new(-0.4, 0.9),
+            ],
+            [
+                Vec2::new(0.8, 0.1),
+                Vec2::new(-0.2, -0.5),
+                Vec2::new(0.6, 1.3),
+            ],
+            [
+                Vec2::new(-1.0, 0.4),
+                Vec2::new(0.2, -0.9),
+                Vec2::new(0.5, 0.5),
+            ],
+        ];
+        check_matches_finite_difference(
+            Vec2::new(15.35, 22.78),
+            0.8,
+            Mat2::from_cols(Vec2::new(-1.5, 2.0), Vec2::new(0.9, 1.2)),
+            g,
+        );
+    }
+
+    #[test]
+    fn chains_correctly_into_neohookean_kirchhoff_stress_vjp() {
+        // Real end-to-end check: P2G's stress gradient feeds NeoHookean's own
+        // F-adjoint, and the composed result still matches a finite-difference
+        // taken all the way from F, through stress, through the P2G scatter --
+        // proves the two pieces compose correctly, not just individually.
+        use crate::materials::NeoHookeanMaterial;
+        use crate::particle::{Particle, Particles};
+
+        let mat = NeoHookeanMaterial::new(900.0, 700.0);
+        let f = Mat2::from_cols(Vec2::new(1.2, 0.1), Vec2::new(-0.05, 0.9));
+        let x = Vec2::new(8.4, 12.6);
+        let stress_coeff = -0.3;
+        let g = [[Vec2::new(0.4, -0.6); 3]; 3];
+
+        let particle_with_f = |f: Mat2| -> Particles {
+            let mut particles = Particles::default();
+            particles.push(Particle {
+                x,
+                v: Vec2::ZERO,
+                velocity_gradient: Mat2::ZERO,
+                deformation_gradient: f,
+                mass: 1.0,
+                initial_volume: 1.0,
+                volume: 1.0,
+                density: 1.0,
+                material_id: 0,
+                plastic_volume_ratio: 1.0,
+                hardening_scale: 1.0,
+                friction_hardening: 0.0,
+                log_volume_strain: 0.0,
+                temperature: 0.0,
+                user_tag: 0,
+                activation: 0.0,
+                activation_dir: Vec2::ZERO,
+                muscle_group_id: 0,
+                sleeping: 0,
+            });
+            particles
+        };
+
+        let end_to_end_loss = |f: Mat2| -> f32 {
+            let particles = particle_with_f(f);
+            let stress = mat.kirchhoff_stress(&particles, 0);
+            let contributions = stress_contributions(x, stress_coeff, stress);
+            let mut total = 0.0;
+            for (row, contrib_row) in g.iter().zip(contributions.iter()) {
+                for (gv, cv) in row.iter().zip(contrib_row.iter()) {
+                    total += gv.dot(*cv);
+                }
+            }
+            total
+        };
+
+        // Composed analytic gradient: P2G adjoint -> NeoHookean adjoint.
+        let particles = particle_with_f(f);
+        let stress = mat.kirchhoff_stress(&particles, 0);
+        let d_loss_d_stress = p2g_stress_vjp(x, stress_coeff, &g);
+        let composed = mat.kirchhoff_stress_vjp(&particles, 0, d_loss_d_stress);
+        let _ = stress; // used only to construct d_loss_d_stress's context above
+
+        let h = 1.0e-3_f32;
+        let mut f_plus = f;
+        f_plus.x_axis.x += h;
+        let mut f_minus = f;
+        f_minus.x_axis.x -= h;
+        let numeric = (end_to_end_loss(f_plus) - end_to_end_loss(f_minus)) / (2.0 * h);
+
+        let diff = (numeric - composed.x_axis.x).abs();
+        let scale = numeric.abs().max(composed.x_axis.x.abs()).max(1.0);
+        assert!(
+            diff / scale < 1.0e-2,
+            "composed P2G+NeoHookean adjoint must match end-to-end finite difference: \
+             analytic={:.6} numeric={numeric:.6} relative_diff={:.2e}",
+            composed.x_axis.x,
+            diff / scale
         );
     }
 }
