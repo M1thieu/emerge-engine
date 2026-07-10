@@ -60,6 +60,89 @@ impl NeoHookeanMaterial {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
     }
+
+    /// Analytic adjoint (vector-Jacobian product) of `kirchhoff_stress` w.r.t.
+    /// the deformation gradient F -- the first real building block toward
+    /// differentiable stepping (offline gradient-based controller training,
+    /// same real technique ChainQueen/DiffTaichi/SoftZoo use, applied here as
+    /// a from-scratch hand derivation rather than a compiler-generated one --
+    /// see `project_domain_taxonomy`/locomotion research notes for why no
+    /// Rust autodiff crate fits this problem shape).
+    ///
+    /// Given `d_loss_d_tau` = ∂L/∂τ (the gradient flowing backward from
+    /// wherever this particle's stress feeds into a scalar loss), returns
+    /// ∂L/∂F.
+    ///
+    /// Derivation: τ(F) = (µ/J)·dev(B) + (k/2)(J²−1)·I, where B = F·Fᵀ,
+    /// J = det(F), dev(B) = B − (tr(B)/2)·I (matching `kirchhoff_stress`
+    /// exactly). Reverse-mode chain rule through B → A=dev(B) → τ, and
+    /// separately through J (using the standard cofactor identity
+    /// ∂J/∂F = J·F⁻ᵀ), gives:
+    ///
+    ///   B̄ = (µ/J)·dev(Ḡ)
+    ///   ∂L/∂F = (B̄ + B̄ᵀ)·F + [k·J²·tr(Ḡ) − (µ/J)·(Ḡ:A)] · F⁻ᵀ
+    ///
+    /// where Ḡ = ∂L/∂τ, A = dev(B), and Ḡ:A is the Frobenius inner product
+    /// (sum of elementwise products). The `B̄ + B̄ᵀ` (NOT `2·B̄`) matters: B̄
+    /// is only symmetric when Ḡ itself is, which isn't guaranteed just
+    /// because B and A are -- a real derivation bug first-draft code hit
+    /// here, caught by the finite-difference tests below, not by inspection.
+    /// Verified against central-difference numerical gradients in this
+    /// module's own tests -- hand-derived tensor calculus is exactly where
+    /// sign/transpose/symmetry-assumption errors hide, so this is not
+    /// trusted on derivation alone.
+    ///
+    /// Covers only the core elastic term (thermal/damage scaling folded into
+    /// µ/λ as constants here, matching how `kirchhoff_stress` already treats
+    /// them per-call; the active-stress term is additive and its own
+    /// gradient is trivial, not yet wired in).
+    pub fn kirchhoff_stress_vjp(
+        &self,
+        particles: &Particles,
+        i: usize,
+        d_loss_d_tau: Mat2,
+    ) -> Mat2 {
+        let f = particles.deformation_gradient[i];
+        let j = f.determinant();
+        if j <= MIN_J {
+            return Mat2::ZERO;
+        }
+
+        let t_scale = 1.0 + self.thermal_expansion * particles.temperature[i];
+        let damage_scale = (-self.damage_softening_rate * particles.friction_hardening[i]).exp();
+        let mu = self.mu * t_scale * damage_scale;
+        let lambda = self.lambda * t_scale * damage_scale;
+        let k = lambda + mu;
+
+        let b = f * f.transpose();
+        let tr_b = b.x_axis.x + b.y_axis.y;
+        let dev_b = b - Mat2::from_diagonal(glam::Vec2::splat(tr_b * 0.5));
+
+        let g = d_loss_d_tau;
+        let tr_g = g.x_axis.x + g.y_axis.y;
+        let dev_g = g - Mat2::from_diagonal(glam::Vec2::splat(tr_g * 0.5));
+        // Frobenius inner product G:A = sum of elementwise products.
+        let g_dot_a = g.x_axis.x * dev_b.x_axis.x
+            + g.x_axis.y * dev_b.x_axis.y
+            + g.y_axis.x * dev_b.y_axis.x
+            + g.y_axis.y * dev_b.y_axis.y;
+
+        let f_inv_t = f.inverse().transpose();
+
+        // B = F·Fᵀ's VJP is (B̄ + B̄ᵀ)·F for a general (not necessarily
+        // symmetric) incoming adjoint B̄ = (µ/J)·dev(Ḡ). B itself is always
+        // symmetric, but the GRADIENT flowing into it isn't -- Ḡ = ∂L/∂τ has
+        // no reason to be symmetric in general (e.g. it won't be once this
+        // feeds into an asymmetric downstream operation like a P2G weight).
+        // The simplification (B̄+B̄ᵀ)·F = 2·B̄·F only holds when B̄ itself is
+        // symmetric, which is NOT guaranteed just because B and A=dev(B) are.
+        let b_bar = (mu / j) * dev_g;
+        let term1 = (b_bar + b_bar.transpose()) * f;
+        let scalar2 = k * j * j * tr_g - (mu / j) * g_dot_a;
+        let term2 = scalar2 * f_inv_t;
+
+        term1 + term2
+    }
 }
 
 impl FromSI<Elastic> for NeoHookeanMaterial {
@@ -399,6 +482,204 @@ mod damage_softening_tests {
             tau.x_axis.length() < 1.0e-3,
             "severe damage must drive stiffness (and thus stress) toward zero, got {:?}",
             tau
+        );
+    }
+}
+
+#[cfg(test)]
+mod kirchhoff_stress_vjp_tests {
+    use super::*;
+    use crate::Particle;
+
+    fn particle_with_f(f: Mat2) -> Particles {
+        let mut particles = Particles::default();
+        particles.push(Particle {
+            x: glam::Vec2::ZERO,
+            v: glam::Vec2::ZERO,
+            velocity_gradient: Mat2::ZERO,
+            deformation_gradient: f,
+            mass: 1.0,
+            initial_volume: 1.0,
+            volume: 1.0,
+            density: 1.0,
+            material_id: 0,
+            plastic_volume_ratio: 1.0,
+            hardening_scale: 1.0,
+            friction_hardening: 0.0,
+            log_volume_strain: 0.0,
+            temperature: 0.0,
+            user_tag: 0,
+            activation: 0.0,
+            activation_dir: glam::Vec2::ZERO,
+            muscle_group_id: 0,
+            sleeping: 0,
+        });
+        particles
+    }
+
+    /// Scalar loss L(F) = tau(F) : g (Frobenius inner product with a fixed g) --
+    /// the standard way to reduce a matrix-to-matrix function to something a
+    /// central-difference check can validate one scalar output at a time.
+    fn loss(mat: &NeoHookeanMaterial, f: Mat2, g: Mat2) -> f32 {
+        let particles = particle_with_f(f);
+        let tau = mat.kirchhoff_stress(&particles, 0);
+        tau.x_axis.x * g.x_axis.x
+            + tau.x_axis.y * g.x_axis.y
+            + tau.y_axis.x * g.y_axis.x
+            + tau.y_axis.y * g.y_axis.y
+    }
+
+    /// Central-difference numerical gradient of `loss` w.r.t. each of F's 4
+    /// components, compared against the analytic `kirchhoff_stress_vjp`.
+    ///
+    /// This is the real verification the hand derivation needed -- matching
+    /// this project's standing "verify numerically" discipline for anything
+    /// hand-derived, doubly so for tensor calculus where sign/transpose
+    /// errors are exactly the class of mistake that doesn't show up as a
+    /// compile error or a crash, only as silently wrong gradients.
+    /// Perturbs one scalar component of F by ±h, returns the central-difference
+    /// numerical derivative of `loss` w.r.t. that component.
+    fn numeric_grad_component(
+        mat: &NeoHookeanMaterial,
+        mut f: Mat2,
+        g: Mat2,
+        h: f32,
+        set: impl Fn(&mut Mat2, f32),
+        get: impl Fn(Mat2) -> f32,
+    ) -> f32 {
+        let base = get(f);
+        set(&mut f, base + h);
+        let loss_plus = loss(mat, f, g);
+        set(&mut f, base - h);
+        let loss_minus = loss(mat, f, g);
+        (loss_plus - loss_minus) / (2.0 * h)
+    }
+
+    fn check_vjp_matches_finite_difference(mat: &NeoHookeanMaterial, f: Mat2, g: Mat2) {
+        let analytic = {
+            let particles = particle_with_f(f);
+            mat.kirchhoff_stress_vjp(&particles, 0, g)
+        };
+
+        let h = 1.0e-3_f32;
+        // glam's Mat2 stores columns (x_axis, y_axis); x_axis.y is row 1 of
+        // column 0, i.e. F[1][0] in row-major reading.
+        let checks: [(&str, f32); 4] = [
+            (
+                "F[0][0]",
+                numeric_grad_component(mat, f, g, h, |m, v| m.x_axis.x = v, |m| m.x_axis.x),
+            ),
+            (
+                "F[1][0]",
+                numeric_grad_component(mat, f, g, h, |m, v| m.x_axis.y = v, |m| m.x_axis.y),
+            ),
+            (
+                "F[0][1]",
+                numeric_grad_component(mat, f, g, h, |m, v| m.y_axis.x = v, |m| m.y_axis.x),
+            ),
+            (
+                "F[1][1]",
+                numeric_grad_component(mat, f, g, h, |m, v| m.y_axis.y = v, |m| m.y_axis.y),
+            ),
+        ];
+        let analytic_vals = [
+            analytic.x_axis.x,
+            analytic.x_axis.y,
+            analytic.y_axis.x,
+            analytic.y_axis.y,
+        ];
+
+        for ((label, numeric), analytic_val) in checks.iter().zip(analytic_vals) {
+            let diff = (numeric - analytic_val).abs();
+            let scale = numeric.abs().max(analytic_val.abs()).max(1.0);
+            assert!(
+                diff / scale < 1.0e-2,
+                "kirchhoff_stress_vjp mismatch at {label}: analytic={analytic_val:.6} \
+                 numeric(central-diff)={numeric:.6} relative_diff={:.2e} \
+                 (F={f:?}, g={g:?})",
+                diff / scale
+            );
+        }
+    }
+
+    #[test]
+    fn vjp_matches_finite_difference_at_identity() {
+        let mat = NeoHookeanMaterial::new(1000.0, 800.0);
+        check_vjp_matches_finite_difference(&mat, Mat2::IDENTITY, Mat2::IDENTITY);
+    }
+
+    #[test]
+    fn vjp_matches_finite_difference_under_stretch() {
+        let mat = NeoHookeanMaterial::new(1000.0, 800.0);
+        let f = Mat2::from_cols(glam::Vec2::new(1.3, 0.05), glam::Vec2::new(-0.02, 0.9));
+        let g = Mat2::from_cols(glam::Vec2::new(0.7, -0.3), glam::Vec2::new(0.4, 1.1));
+        check_vjp_matches_finite_difference(&mat, f, g);
+    }
+
+    #[test]
+    fn vjp_matches_finite_difference_under_shear() {
+        let mat = NeoHookeanMaterial::new(500.0, 1200.0);
+        let f = Mat2::from_cols(glam::Vec2::new(1.0, 0.4), glam::Vec2::new(0.15, 1.05));
+        let g = Mat2::from_cols(glam::Vec2::new(-0.5, 0.9), glam::Vec2::new(0.2, -0.6));
+        check_vjp_matches_finite_difference(&mat, f, g);
+    }
+
+    #[test]
+    fn vjp_matches_finite_difference_with_nonsymmetric_g() {
+        // g need not be symmetric in general (only the dev(B)-derived internal
+        // adjoint happens to be) -- confirms the derivation handles the fully
+        // general case, not just the symmetric one it happens to be called
+        // with in a real P2G force-scatter backward pass.
+        let mat = NeoHookeanMaterial::new(800.0, 800.0);
+        let f = Mat2::from_cols(glam::Vec2::new(1.1, -0.1), glam::Vec2::new(0.2, 0.95));
+        let g = Mat2::from_cols(glam::Vec2::new(0.3, 1.2), glam::Vec2::new(-0.8, 0.1));
+        check_vjp_matches_finite_difference(&mat, f, g);
+    }
+
+    #[test]
+    fn vjp_respects_thermal_and_damage_scaling() {
+        let mut mat = NeoHookeanMaterial::new(900.0, 700.0);
+        mat.thermal_expansion = -0.01;
+        mat.damage_softening_rate = 0.3;
+
+        let f = Mat2::from_cols(glam::Vec2::new(1.15, 0.08), glam::Vec2::new(-0.05, 0.92));
+        let temperature = 12.0;
+        let friction_hardening = 2.0;
+
+        let particle_with = |f: Mat2| -> Particles {
+            let mut particles = particle_with_f(f);
+            particles.temperature[0] = temperature;
+            particles.friction_hardening[0] = friction_hardening;
+            particles
+        };
+
+        let g = Mat2::from_cols(glam::Vec2::new(0.6, -0.4), glam::Vec2::new(0.5, 0.7));
+        let analytic = mat.kirchhoff_stress_vjp(&particle_with(f), 0, g);
+
+        let h = 1.0e-3_f32;
+        let mut f_plus = f;
+        f_plus.x_axis.x += h;
+        let mut f_minus = f;
+        f_minus.x_axis.x -= h;
+
+        let tau_plus = mat.kirchhoff_stress(&particle_with(f_plus), 0);
+        let tau_minus = mat.kirchhoff_stress(&particle_with(f_minus), 0);
+        let dot = |t: Mat2| {
+            t.x_axis.x * g.x_axis.x
+                + t.x_axis.y * g.x_axis.y
+                + t.y_axis.x * g.y_axis.x
+                + t.y_axis.y * g.y_axis.y
+        };
+        let numeric = (dot(tau_plus) - dot(tau_minus)) / (2.0 * h);
+
+        let diff = (numeric - analytic.x_axis.x).abs();
+        let scale = numeric.abs().max(analytic.x_axis.x.abs()).max(1.0);
+        assert!(
+            diff / scale < 1.0e-2,
+            "vjp must still match finite-difference with thermal/damage scaling active: \
+             analytic={:.6} numeric={numeric:.6} relative_diff={:.2e}",
+            analytic.x_axis.x,
+            diff / scale
         );
     }
 }
