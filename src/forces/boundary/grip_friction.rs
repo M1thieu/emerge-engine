@@ -73,6 +73,17 @@ impl BoundaryCondition for GripFrictionBoundary {
         if self.grip_gain <= 0.0 {
             return;
         }
+        // Floor only -- this models real ground-contact crawling grip (earthworm/
+        // inchworm setae engaging the SUBSTRATE), same floor-only scoping
+        // `RatchetFrictionBoundary` uses for its directional friction ("the ratchet
+        // only applies to the floor, where a resting/crawling body actually spends
+        // its contact time"). Side/ceiling walls aren't a substrate a crawling body
+        // grips, and the horizontal/vertical decomposition below only means
+        // tangential/normal for the FLOOR specifically (compare
+        // `FrictionBoundary`'s own `apply_coulomb_wall(velocity, Vec2::Y, mu)` call
+        // for y<t, where Y is normal and X is tangential -- that convention doesn't
+        // hold at the side walls).
+        //
         // Boundary layer margin: wider than the wall's own solid region, since a
         // resting body settles with its lowest particles just ABOVE the wall
         // threshold (clamp_particle_position keeps them out of the solid cells),
@@ -80,9 +91,8 @@ impl BoundaryCondition for GripFrictionBoundary {
         // to anchor, so the grip zone must cover that resting layer.
         let t = self.inner.thickness as f32 + 2.0;
         let x = particles.x[i];
-        let hi = _grid_res as f32 - t;
-        let near_wall = x.x < t || x.x > hi || x.y < t || x.y > hi;
-        if !near_wall || particles.activation[i] <= 0.0 {
+        let near_floor = x.y < t;
+        if !near_floor || particles.activation[i] <= 0.0 {
             return;
         }
         // Fiber-aligned strain rate: n0 . (velocity_gradient . n0) is the rate of
@@ -98,6 +108,10 @@ impl BoundaryCondition for GripFrictionBoundary {
         let strain_rate = n0.dot(particles.velocity_gradient[i] * n0);
         let contracting = (-strain_rate).clamp(0.0, 1.0);
         let grip = (self.grip_gain * particles.activation[i] * contracting).clamp(0.0, 1.0);
-        particles.v[i] *= 1.0 - grip;
+        // Only the horizontal (tangential-to-floor) component is damped -- the
+        // vertical (normal) component is the wall's own no-penetration physics
+        // (inner FrictionBoundary), not this mechanism's job. Matches the doc's own
+        // claim above: "horizontal velocity zeroed", not the whole vector.
+        particles.v[i].x *= 1.0 - grip;
     }
 }
