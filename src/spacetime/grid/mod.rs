@@ -203,6 +203,34 @@ impl Grid {
         }
     }
 
+    /// Analytic adjoint of one cell's `update_velocities` step w.r.t. its
+    /// momentum and mass BEFORE the update (which overwrites `momentum` in
+    /// place to become the actual velocity) -- third piece of differentiable
+    /// stepping, chains downstream of `p2g_stress_vjp`'s per-cell momentum
+    /// gradient output.
+    ///
+    /// v = p/m + gravity*dt (see `update_velocities` above). `gravity*dt` is
+    /// an additive constant -- contributes zero gradient. Given the gradient
+    /// flowing back from the resulting velocity, `d_loss_d_v` (a Vec2),
+    /// standard scalar/vector calculus (quotient rule on p/m, treating m as
+    /// scalar) gives:
+    ///
+    ///   d_loss_d_momentum = d_loss_d_v / mass
+    ///   d_loss_d_mass     = -(d_loss_d_v . momentum) / mass^2
+    ///
+    /// SCOPED: does not cover boundary-condition application or velocity
+    /// clamping, both applied AFTER this in the real substep -- those are
+    /// piecewise/conditional (zero out or cap components), differentiable
+    /// almost everywhere but with real kinks at the boundary, deliberately
+    /// deferred as their own future piece, not silently folded in here.
+    /// Verified against central-difference numerical gradients in this
+    /// module's own tests, same discipline as every other adjoint so far.
+    pub fn update_velocities_vjp(momentum: Vec2, mass: f32, d_loss_d_v: Vec2) -> (Vec2, f32) {
+        let d_loss_d_momentum = d_loss_d_v / mass;
+        let d_loss_d_mass = -(d_loss_d_v.dot(momentum)) / (mass * mass);
+        (d_loss_d_momentum, d_loss_d_mass)
+    }
+
     /// Iterate active cells (read-only). For diagnostics.
     pub fn active_cells(&self) -> impl Iterator<Item = &Cell> {
         let cells = &self.cells;
@@ -236,5 +264,69 @@ impl Grid {
     /// Number of cells that received mass this frame.
     pub fn active_cell_count(&self) -> usize {
         self.dirty.len()
+    }
+}
+
+#[cfg(test)]
+mod update_velocities_vjp_tests {
+    use super::*;
+
+    /// Forward formula exactly matching `update_velocities`'s own math (minus
+    /// the constant `gravity*dt` term, which contributes zero gradient and is
+    /// omitted here so the finite-difference check isolates the momentum/mass
+    /// dependence being verified).
+    fn velocity(momentum: Vec2, mass: f32) -> Vec2 {
+        momentum / mass
+    }
+
+    /// Scalar loss L(momentum, mass) = g . v(momentum, mass) -- checked one
+    /// input component at a time via central differences.
+    fn loss(momentum: Vec2, mass: f32, g: Vec2) -> f32 {
+        g.dot(velocity(momentum, mass))
+    }
+
+    fn check_matches_finite_difference(momentum: Vec2, mass: f32, g: Vec2) {
+        let (analytic_d_momentum, analytic_d_mass) = Grid::update_velocities_vjp(momentum, mass, g);
+        let h = 1.0e-3_f32;
+
+        let numeric_d_momentum_x = (loss(momentum + Vec2::new(h, 0.0), mass, g)
+            - loss(momentum - Vec2::new(h, 0.0), mass, g))
+            / (2.0 * h);
+        let numeric_d_momentum_y = (loss(momentum + Vec2::new(0.0, h), mass, g)
+            - loss(momentum - Vec2::new(0.0, h), mass, g))
+            / (2.0 * h);
+        let numeric_d_mass =
+            (loss(momentum, mass + h, g) - loss(momentum, mass - h, g)) / (2.0 * h);
+
+        let check = |label: &str, analytic: f32, numeric: f32| {
+            let diff = (numeric - analytic).abs();
+            let scale = numeric.abs().max(analytic.abs()).max(1.0);
+            assert!(
+                diff / scale < 1.0e-2,
+                "update_velocities_vjp mismatch at {label}: analytic={analytic:.6} \
+                 numeric(central-diff)={numeric:.6} relative_diff={:.2e} \
+                 (momentum={momentum:?}, mass={mass}, g={g:?})",
+                diff / scale
+            );
+        };
+
+        check("d_momentum.x", analytic_d_momentum.x, numeric_d_momentum_x);
+        check("d_momentum.y", analytic_d_momentum.y, numeric_d_momentum_y);
+        check("d_mass", analytic_d_mass, numeric_d_mass);
+    }
+
+    #[test]
+    fn matches_finite_difference_unit_mass() {
+        check_matches_finite_difference(Vec2::new(2.0, -1.5), 1.0, Vec2::new(0.7, 0.3));
+    }
+
+    #[test]
+    fn matches_finite_difference_heavier_cell() {
+        check_matches_finite_difference(Vec2::new(-3.2, 4.1), 5.5, Vec2::new(-0.9, 1.4));
+    }
+
+    #[test]
+    fn matches_finite_difference_light_cell_with_asymmetric_gradient() {
+        check_matches_finite_difference(Vec2::new(0.8, 0.05), 0.2, Vec2::new(2.0, -3.5));
     }
 }
