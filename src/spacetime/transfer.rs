@@ -5,7 +5,11 @@ use crate::boundary::BoundaryCondition;
 use crate::materials::registry::MaterialRegistry;
 use crate::materials::{ConstitutiveModel, MaterialModel};
 use crate::solver::config::KERNEL_D_INVERSE;
-use crate::{grid::Grid, grid::kernel::quadratic_weights, particle::Particles};
+use crate::{
+    grid::Grid,
+    grid::kernel::{axis_weights_derivative, quadratic_weights},
+    particle::Particles,
+};
 
 /// Elastic/plastic Kirchhoff stress plus the active-stress (muscle contraction) term, if any.
 ///
@@ -134,6 +138,80 @@ pub fn p2g_stress_vjp(x: Vec2, stress_coeff: f32, d_loss_d_momentum: &[[Vec2; 3]
         }
     }
     d_loss_d_stress
+}
+
+/// Analytic adjoint of P2G's FULL forward pass (`scatter_particles_to_grid`)
+/// w.r.t. the particle's own position `x` -- the last confirmed-real gap,
+/// now closed for P2G. Combines `axis_weights_derivative` (the kernel's own
+/// position-sensitivity) with the product rule across the complete momentum
+/// AND mass scatter (not just the stress term `p2g_stress_vjp` covers).
+///
+/// Forward, restated from `scatter_particles_to_grid`: per cell `c`,
+///   mass_contrib_c     = weight_c * mass
+///   momentum_contrib_c = weight_c * A_c,  A_c = mass*v + M*cell_dist_c
+///   M = mass*C + stress_coeff*stress   (constant across cells, for fixed particle state)
+///
+/// BOTH `weight_c(x)` and `cell_dist_c(x) = cell_pos_c - x + 0.5` depend on
+/// `x` (`d(cell_dist)/dx = -I`), so differentiating the product `weight * A`
+/// needs the product rule on both factors. Per cell, given the gradients
+/// flowing back from that cell's momentum and mass, `d_loss_d_momentum[c]`
+/// (Vec2) and `d_loss_d_mass[c]` (f32):
+///
+///   d_loss_d_x += d(weight_c)/dx * (d_loss_d_momentum[c].A_c + d_loss_d_mass[c]*mass)
+///               - weight_c * (Mᵀ * d_loss_d_momentum[c])
+///
+/// where `d(weight_c)/dx = (dwx[gx]/dx.x * wy[gy], wx[gx] * dwy[gy]/dx.y)`
+/// via `axis_weights_derivative`, and the `-weight_c * Mᵀ*d_loss_d_momentum`
+/// term comes from `d(A_c)/dx = M * d(cell_dist_c)/dx = -M`.
+///
+/// Verified against central-difference numerical gradients taken through a
+/// forward function reconstructing `scatter_particles_to_grid`'s exact
+/// per-cell formula, in this module's own tests.
+///
+/// Bundles the particle state P2G itself reads (`mass`, `v`, `C`, `stress`,
+/// `stress_coeff`) into one struct rather than five separate parameters --
+/// this function differentiates the FULL forward pass, so it genuinely needs
+/// all of it, but five-plus-position-plus-two-gradient-array parameters
+/// crossed the project's own no-`#[allow]` line for argument count.
+pub struct P2GParticleState {
+    pub mass: f32,
+    pub v: Vec2,
+    pub c: Mat2,
+    pub stress: Mat2,
+    pub stress_coeff: f32,
+}
+
+pub fn p2g_position_vjp(
+    x: Vec2,
+    state: &P2GParticleState,
+    d_loss_d_momentum: &[[Vec2; 3]; 3],
+    d_loss_d_mass: &[[f32; 3]; 3],
+) -> Vec2 {
+    let weights = quadratic_weights(x);
+    let diff = x - weights.base_cell.as_vec2() - Vec2::splat(0.5);
+    let dwx = axis_weights_derivative(diff.x);
+    let dwy = axis_weights_derivative(diff.y);
+    let m = state.mass * state.c + state.stress_coeff * state.stress;
+
+    let mut d_loss_d_x = Vec2::ZERO;
+    for gx in 0..3 {
+        for gy in 0..3 {
+            let wx = weights.wx[gx];
+            let wy = weights.wy[gy];
+            let weight = wx * wy;
+            let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+            let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+            let a = state.mass * state.v + m * cell_dist;
+
+            let d_weight_dx = Vec2::new(dwx[gx] * wy, wx * dwy[gy]);
+            let g_momentum = d_loss_d_momentum[gx][gy];
+            let g_mass = d_loss_d_mass[gx][gy];
+
+            d_loss_d_x += d_weight_dx * (g_momentum.dot(a) + g_mass * state.mass);
+            d_loss_d_x -= weight * (m.transpose() * g_momentum);
+        }
+    }
+    d_loss_d_x
 }
 
 pub struct G2PParams {
@@ -707,6 +785,124 @@ mod p2g_stress_vjp_tests {
              analytic={:.6} numeric={numeric:.6} relative_diff={:.2e}",
             composed.x_axis.x,
             diff / scale
+        );
+    }
+}
+
+#[cfg(test)]
+mod p2g_position_vjp_tests {
+    use super::*;
+
+    /// Forward function reconstructing scatter_particles_to_grid's EXACT
+    /// per-cell formula (mass_contrib, momentum_contrib), taking the
+    /// particle state directly instead of a real Particles/Grid -- isolates
+    /// the position-dependence being verified from everything else.
+    fn contributions(x: Vec2, state: &P2GParticleState) -> ([[Vec2; 3]; 3], [[f32; 3]; 3]) {
+        let weights = quadratic_weights(x);
+        let m = state.mass * state.c + state.stress_coeff * state.stress;
+        let mut momentum = [[Vec2::ZERO; 3]; 3];
+        let mut mass = [[0.0f32; 3]; 3];
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let weight = weights.wx[gx] * weights.wy[gy];
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                let a = state.mass * state.v + m * cell_dist;
+                momentum[gx][gy] = weight * a;
+                mass[gx][gy] = weight * state.mass;
+            }
+        }
+        (momentum, mass)
+    }
+
+    fn loss(
+        x: Vec2,
+        state: &P2GParticleState,
+        g_momentum: &[[Vec2; 3]; 3],
+        g_mass: &[[f32; 3]; 3],
+    ) -> f32 {
+        let (momentum, mass) = contributions(x, state);
+        let mut total = 0.0;
+        for gx in 0..3 {
+            for gy in 0..3 {
+                total += g_momentum[gx][gy].dot(momentum[gx][gy]) + g_mass[gx][gy] * mass[gx][gy];
+            }
+        }
+        total
+    }
+
+    fn check(x: Vec2, state: P2GParticleState, g_momentum: [[Vec2; 3]; 3], g_mass: [[f32; 3]; 3]) {
+        let analytic = p2g_position_vjp(x, &state, &g_momentum, &g_mass);
+        let h = 1.0e-3_f32;
+
+        let numeric_x = (loss(x + Vec2::new(h, 0.0), &state, &g_momentum, &g_mass)
+            - loss(x - Vec2::new(h, 0.0), &state, &g_momentum, &g_mass))
+            / (2.0 * h);
+        let numeric_y = (loss(x + Vec2::new(0.0, h), &state, &g_momentum, &g_mass)
+            - loss(x - Vec2::new(0.0, h), &state, &g_momentum, &g_mass))
+            / (2.0 * h);
+
+        for (label, analytic_val, numeric) in
+            [("x", analytic.x, numeric_x), ("y", analytic.y, numeric_y)]
+        {
+            let diff = (numeric - analytic_val).abs();
+            let scale = numeric.abs().max(analytic_val.abs()).max(1.0);
+            assert!(
+                diff / scale < 1.0e-2,
+                "p2g_position_vjp mismatch at {label}: analytic={analytic_val:.6} \
+                 numeric(central-diff)={numeric:.6} relative_diff={:.2e} (x={x:?})",
+                diff / scale
+            );
+        }
+    }
+
+    #[test]
+    fn matches_finite_difference_at_cell_center() {
+        check(
+            Vec2::new(20.0, 20.0),
+            P2GParticleState {
+                mass: 1.5,
+                v: Vec2::new(0.3, -0.2),
+                c: Mat2::from_cols(Vec2::new(0.1, 0.05), Vec2::new(-0.05, 0.1)),
+                stress: Mat2::from_cols(Vec2::new(3.0, 0.5), Vec2::new(0.5, -2.0)),
+                stress_coeff: -0.4,
+            },
+            [[Vec2::new(0.6, -0.3); 3]; 3],
+            [[0.2; 3]; 3],
+        );
+    }
+
+    #[test]
+    fn matches_finite_difference_off_center_with_varied_gradients() {
+        let g_momentum = [
+            [
+                Vec2::new(0.4, -0.5),
+                Vec2::new(0.9, 0.1),
+                Vec2::new(-0.3, 0.6),
+            ],
+            [
+                Vec2::new(0.6, 0.2),
+                Vec2::new(-0.1, -0.4),
+                Vec2::new(0.5, 0.9),
+            ],
+            [
+                Vec2::new(-0.8, 0.3),
+                Vec2::new(0.2, -0.7),
+                Vec2::new(0.4, 0.4),
+            ],
+        ];
+        let g_mass = [[0.3, -0.2, 0.5], [-0.4, 0.6, 0.1], [0.2, -0.3, 0.4]];
+        check(
+            Vec2::new(9.35, 21.78),
+            P2GParticleState {
+                mass: 0.8,
+                v: Vec2::new(-0.5, 0.4),
+                c: Mat2::from_cols(Vec2::new(-0.2, 0.15), Vec2::new(0.1, -0.25)),
+                stress: Mat2::from_cols(Vec2::new(-1.5, 2.0), Vec2::new(0.9, 1.2)),
+                stress_coeff: 0.6,
+            },
+            g_momentum,
+            g_mass,
         );
     }
 }
