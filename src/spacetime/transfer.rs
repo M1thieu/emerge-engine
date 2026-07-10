@@ -184,6 +184,38 @@ pub fn g2p_velocity_vjp(x: Vec2, d_loss_d_new_v: Vec2) -> [[Vec2; 3]; 3] {
     out
 }
 
+/// Analytic adjoint of the deformation-gradient update `F_new = (I + dt*C) *
+/// F_old` w.r.t. both `C` (the APIC affine matrix / velocity_gradient G2P
+/// produces) and `F_old` -- sixth real piece of differentiable stepping, and
+/// the one that actually CLOSES the loop: `C` comes from G2P, `F_old` is the
+/// previous substep's deformation gradient, and this update's own output
+/// (`F_new`) is exactly what `kirchhoff_stress_vjp` needs as input for the
+/// NEXT substep. Chaining this repeatedly is what backprop-through-multiple-
+/// substeps actually means.
+///
+/// This exact formula is universal MPM kinematics, not any one material's own
+/// logic -- confirmed by grep: every material in `matter::materials`
+/// (NeoHookean, Corotated, Viscoelastic, and every plastic model's F_trial
+/// before its own return-mapping) computes `F_new`/`F_trial` this identical
+/// way. Lives here in `spacetime::transfer`, not any material file, for that
+/// reason.
+///
+/// Derivation: let `A = I + dt*C`, so `F_new = A * F_old` -- a plain matrix
+/// product. Standard VJP for `Y = A*B`: `dL/dA = Ḡ*Bᵀ`, `dL/dB = Aᵀ*Ḡ`. Since
+/// `A` is linear in `C` (`dA/dC = dt` component-wise), `dL/dC = dt * dL/dA`:
+///
+///   d_loss_d_C     = dt * (d_loss_d_F_new * F_oldᵀ)
+///   d_loss_d_F_old = (I + dt*C)ᵀ * d_loss_d_F_new
+///
+/// Verified against central-difference numerical gradients in this module's
+/// own tests, on both outputs independently.
+pub fn f_update_vjp(c: Mat2, f_old: Mat2, dt: f32, d_loss_d_f_new: Mat2) -> (Mat2, Mat2) {
+    let a = Mat2::IDENTITY + dt * c;
+    let d_loss_d_c = dt * (d_loss_d_f_new * f_old.transpose());
+    let d_loss_d_f_old = a.transpose() * d_loss_d_f_new;
+    (d_loss_d_c, d_loss_d_f_old)
+}
+
 /// G2P: read grid velocities back into particles, advance state, apply boundaries.
 /// Returns the number of particles whose velocity was clamped to `vel_limit`.
 pub fn gather_grid_to_particles(
@@ -716,5 +748,135 @@ mod g2p_velocity_vjp_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod f_update_vjp_tests {
+    use super::*;
+
+    fn f_new(c: Mat2, f_old: Mat2, dt: f32) -> Mat2 {
+        (Mat2::IDENTITY + dt * c) * f_old
+    }
+
+    fn loss(c: Mat2, f_old: Mat2, dt: f32, g: Mat2) -> f32 {
+        let fnew = f_new(c, f_old, dt);
+        g.x_axis.x * fnew.x_axis.x
+            + g.x_axis.y * fnew.x_axis.y
+            + g.y_axis.x * fnew.y_axis.x
+            + g.y_axis.y * fnew.y_axis.y
+    }
+
+    /// Bundles the fixed context shared by every component check.
+    struct FUpdateContext {
+        c: Mat2,
+        f_old: Mat2,
+        dt: f32,
+        g: Mat2,
+        h: f32,
+    }
+
+    /// Central-difference check on one scalar component of either C or
+    /// F_old (whichever `set`/`get` target), holding the other input fixed.
+    fn check_one_component(
+        ctx: &FUpdateContext,
+        label: &str,
+        analytic_val: f32,
+        vary_c: bool,
+        set: impl Fn(&mut Mat2, f32),
+        get: impl Fn(Mat2) -> f32,
+    ) {
+        let (mut c_plus, mut f_plus) = (ctx.c, ctx.f_old);
+        let (mut c_minus, mut f_minus) = (ctx.c, ctx.f_old);
+        if vary_c {
+            let base = get(ctx.c);
+            set(&mut c_plus, base + ctx.h);
+            set(&mut c_minus, base - ctx.h);
+        } else {
+            let base = get(ctx.f_old);
+            set(&mut f_plus, base + ctx.h);
+            set(&mut f_minus, base - ctx.h);
+        }
+        let numeric = (loss(c_plus, f_plus, ctx.dt, ctx.g) - loss(c_minus, f_minus, ctx.dt, ctx.g))
+            / (2.0 * ctx.h);
+        let diff = (numeric - analytic_val).abs();
+        let scale = numeric.abs().max(analytic_val.abs()).max(1.0);
+        assert!(
+            diff / scale < 1.0e-2,
+            "f_update_vjp mismatch at {label}: analytic={analytic_val:.6} \
+             numeric(central-diff)={numeric:.6} relative_diff={:.2e}",
+            diff / scale
+        );
+    }
+
+    /// Checks all 4 scalar components of one input matrix (either C or
+    /// F_old), holding the other fixed -- reused for both outputs of
+    /// `f_update_vjp`.
+    fn check_matrix_input(ctx: &FUpdateContext, label_prefix: &str, analytic: Mat2, vary_c: bool) {
+        check_one_component(
+            ctx,
+            &format!("{label_prefix}[0][0]"),
+            analytic.x_axis.x,
+            vary_c,
+            |m, v| m.x_axis.x = v,
+            |m| m.x_axis.x,
+        );
+        check_one_component(
+            ctx,
+            &format!("{label_prefix}[1][0]"),
+            analytic.x_axis.y,
+            vary_c,
+            |m, v| m.x_axis.y = v,
+            |m| m.x_axis.y,
+        );
+        check_one_component(
+            ctx,
+            &format!("{label_prefix}[0][1]"),
+            analytic.y_axis.x,
+            vary_c,
+            |m, v| m.y_axis.x = v,
+            |m| m.y_axis.x,
+        );
+        check_one_component(
+            ctx,
+            &format!("{label_prefix}[1][1]"),
+            analytic.y_axis.y,
+            vary_c,
+            |m, v| m.y_axis.y = v,
+            |m| m.y_axis.y,
+        );
+    }
+
+    fn check(c: Mat2, f_old: Mat2, dt: f32, g: Mat2) {
+        let (d_loss_d_c, d_loss_d_f_old) = f_update_vjp(c, f_old, dt, g);
+        let ctx = FUpdateContext {
+            c,
+            f_old,
+            dt,
+            g,
+            h: 1.0e-3_f32,
+        };
+        check_matrix_input(&ctx, "d_loss_d_c", d_loss_d_c, true);
+        check_matrix_input(&ctx, "d_loss_d_f_old", d_loss_d_f_old, false);
+    }
+
+    #[test]
+    fn matches_finite_difference_small_dt() {
+        check(
+            Mat2::from_cols(Vec2::new(0.2, -0.1), Vec2::new(0.05, 0.15)),
+            Mat2::from_cols(Vec2::new(1.1, 0.05), Vec2::new(-0.02, 0.95)),
+            0.001,
+            Mat2::from_cols(Vec2::new(0.6, -0.3), Vec2::new(0.4, 0.8)),
+        );
+    }
+
+    #[test]
+    fn matches_finite_difference_larger_dt_and_deformation() {
+        check(
+            Mat2::from_cols(Vec2::new(-0.5, 0.3), Vec2::new(0.2, 0.4)),
+            Mat2::from_cols(Vec2::new(1.4, 0.2), Vec2::new(-0.15, 0.8)),
+            0.05,
+            Mat2::from_cols(Vec2::new(-0.7, 1.1), Vec2::new(0.9, -0.4)),
+        );
     }
 }
