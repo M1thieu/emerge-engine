@@ -4,13 +4,13 @@
 // Module layout:
 //
 //   Core physics (always compiled, stable API)
-//   ├── solver/          Simulation, SimConfig, SpawnRegion, query, density, cutoff
+//   ├── spacetime/       Spacetime domain: solver (Simulation, SimConfig,
+//   │                    SpawnRegion, query, density, cutoff), grid (Grid, Cell,
+//   │                    kernel), transfer (P2G/G2P transfer kernels)
 //   ├── matter/          Matter domain: particle (Particle struct), materials/
 //   │                    (MaterialModel trait, constitutive models, MaterialRegistry)
-//   ├── grid/            Grid, Cell, kernel (quadratic weights)
 //   ├── forces/          Forces domain: boundary (BoundaryCondition + impls),
 //   │                    fields (Field trait + impls: gravity, Coulomb, EM, confinement)
-//   ├── transfer         P2G / G2P transfer kernels
 //   ├── information/     Information domain: control (Lnn), measures (entropy/MI) [experimental]
 //   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
 //   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
@@ -29,13 +29,11 @@
 // ── Core ─────────────────────────────────────────────────────────────────────
 pub mod energy;
 pub mod forces;
-pub mod grid;
 pub mod information;
 pub mod matter;
 pub mod runtime;
-pub mod solver;
+pub mod spacetime;
 pub mod systems;
-pub mod transfer;
 
 // Domain folders re-export their contents at the old crate-root paths --
 // every existing internal `crate::x::` path and every LP `emerge::x::` path
@@ -50,6 +48,9 @@ pub use information::control;
 pub use information::measures;
 pub use matter::materials;
 pub use matter::particle;
+pub use spacetime::grid;
+pub use spacetime::solver;
+pub use spacetime::transfer;
 pub use systems::diagnostics;
 #[cfg(feature = "gpu")]
 pub use systems::gpu;
