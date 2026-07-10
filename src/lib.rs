@@ -5,9 +5,9 @@
 //
 //   Core physics (always compiled, stable API)
 //   ├── solver/          Simulation, SimConfig, SpawnRegion, query, density, cutoff
-//   ├── particle         Particle struct
+//   ├── matter/          Matter domain: particle (Particle struct), materials/
+//   │                    (MaterialModel trait, constitutive models, MaterialRegistry)
 //   ├── grid/            Grid, Cell, kernel (quadratic weights)
-//   ├── materials/       MaterialModel trait, constitutive models, MaterialRegistry
 //   ├── boundary         BoundaryCondition + impls
 //   ├── transfer         P2G / G2P transfer kernels
 //   ├── fields/          Field trait + impls (gravity, Coulomb, EM, confinement)
@@ -32,12 +32,18 @@ pub mod control;
 pub mod diagnostics;
 pub mod fields;
 pub mod grid;
-pub mod materials;
-pub mod particle;
+pub mod matter;
 pub mod runtime;
 pub mod solver;
 pub mod thermodynamics;
 pub mod transfer;
+
+// `matter::materials`/`matter::particle` re-exported at their old crate-root
+// paths -- every existing `crate::materials::`/`crate::particle::` path
+// (internal) and `emerge::materials::`/`emerge::particle::` path (LP) keeps
+// resolving unchanged. First domain-folder move; see `matter/mod.rs` doc.
+pub use matter::materials;
+pub use matter::particle;
 
 // ── Compute backends ─────────────────────────────────────────────────────────
 #[cfg(feature = "gpu")]
