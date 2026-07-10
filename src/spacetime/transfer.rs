@@ -142,6 +142,48 @@ pub struct G2PParams {
     pub active_count: usize,
 }
 
+/// Analytic adjoint of G2P's velocity gather (`new_v = sum_c weight_c *
+/// grid.velocity_at(cell_c)`, see `gather_grid_to_particles`'s Phase 1) w.r.t.
+/// the 9 grid velocities in the particle's stencil -- fifth real piece of
+/// differentiable stepping, and the mathematical transpose of
+/// `p2g_stress_vjp`: same quadratic kernel weights, same 3x3 stencil, but
+/// scattering a gradient back out to the grid instead of gathering a value in
+/// from it (the well-known P2G/G2P transpose relationship in MPM literature,
+/// e.g. Jiang et al. 2016 "The Material Point Method for Simulating
+/// Continuum Materials", carries over directly to differentiation).
+///
+/// SCOPED, matching the P2G adjoint's own scoping: treats particle position
+/// `x` (and therefore the kernel weights) as FIXED. Also covers only the new
+/// velocity `new_v`, not the APIC affine matrix `b`/`velocity_gradient` G2P
+/// computes alongside it (`b = sum_c weight_c * outer(v_grid_c, dist_c)`) --
+/// a related, still-open piece: same per-cell structure, needs its own
+/// derivation and verification, not silently folded in here. Also doesn't
+/// cover the velocity clamp or position boundary-clamp applied after this in
+/// the real G2P (piecewise/conditional, same deferred-with-a-name status as
+/// grid update's boundary/clamp gap).
+///
+/// Given the gradient flowing back from the particle's new velocity,
+/// `d_loss_d_new_v` (a Vec2), the adjoint of a weighted sum distributes it
+/// back to each grid cell by the SAME weight it was gathered with:
+///
+///   d_loss_d_v_grid[c] = weight_c * d_loss_d_new_v
+///
+/// Returns the per-cell gradient in the same `[[Vec2; 3]; 3]` shape
+/// `p2g_stress_vjp` consumes, so a real trainer can pass this straight
+/// through to the P2G side once both meet at the same grid cells. Verified
+/// against central-difference numerical gradients in this module's own
+/// tests.
+pub fn g2p_velocity_vjp(x: Vec2, d_loss_d_new_v: Vec2) -> [[Vec2; 3]; 3] {
+    let weights = quadratic_weights(x);
+    let mut out = [[Vec2::ZERO; 3]; 3];
+    for (row, wx) in out.iter_mut().zip(weights.wx.iter()) {
+        for (cell, wy) in row.iter_mut().zip(weights.wy.iter()) {
+            *cell = (wx * wy) * d_loss_d_new_v;
+        }
+    }
+    out
+}
+
 /// G2P: read grid velocities back into particles, advance state, apply boundaries.
 /// Returns the number of particles whose velocity was clamped to `vel_limit`.
 pub fn gather_grid_to_particles(
@@ -584,5 +626,95 @@ mod p2g_stress_vjp_tests {
             composed.x_axis.x,
             diff / scale
         );
+    }
+}
+
+#[cfg(test)]
+mod g2p_velocity_vjp_tests {
+    use super::*;
+
+    /// Forward formula exactly matching G2P's own `new_v` computation (the
+    /// weighted sum over the 3x3 stencil), taking the 9 grid velocities
+    /// directly as an array instead of reading a real `Grid` -- isolates the
+    /// weighted-sum math being verified from grid storage/lookup entirely.
+    fn gather_velocity(x: Vec2, v_grid: &[[Vec2; 3]; 3]) -> Vec2 {
+        let weights = quadratic_weights(x);
+        let mut new_v = Vec2::ZERO;
+        for (row, wx) in v_grid.iter().zip(weights.wx.iter()) {
+            for (v_cell, wy) in row.iter().zip(weights.wy.iter()) {
+                new_v += (wx * wy) * *v_cell;
+            }
+        }
+        new_v
+    }
+
+    fn loss(x: Vec2, v_grid: &[[Vec2; 3]; 3], g: Vec2) -> f32 {
+        g.dot(gather_velocity(x, v_grid))
+    }
+
+    #[test]
+    fn matches_finite_difference_at_cell_center() {
+        check(Vec2::new(20.0, 20.0), Vec2::new(0.6, -0.4));
+    }
+
+    #[test]
+    fn matches_finite_difference_off_center() {
+        check(Vec2::new(7.35, 41.82), Vec2::new(-1.1, 0.9));
+    }
+
+    /// Checks every one of the 9 stencil cells' 2 velocity components (18
+    /// scalars total) against central differences -- the full adjoint output,
+    /// not just a sample of it.
+    fn check(x: Vec2, g: Vec2) {
+        let v_grid = [
+            [
+                Vec2::new(0.3, 0.1),
+                Vec2::new(-0.2, 0.5),
+                Vec2::new(0.7, -0.6),
+            ],
+            [
+                Vec2::new(-0.4, 0.2),
+                Vec2::new(0.1, -0.3),
+                Vec2::new(0.5, 0.4),
+            ],
+            [
+                Vec2::new(0.2, -0.5),
+                Vec2::new(-0.6, 0.3),
+                Vec2::new(0.4, 0.1),
+            ],
+        ];
+        let analytic = g2p_velocity_vjp(x, g);
+        let h = 1.0e-3_f32;
+
+        for gx in 0..3 {
+            for gy in 0..3 {
+                for (axis, label) in [(0, "x"), (1, "y")] {
+                    let mut v_plus = v_grid;
+                    let mut v_minus = v_grid;
+                    if axis == 0 {
+                        v_plus[gx][gy].x += h;
+                        v_minus[gx][gy].x -= h;
+                    } else {
+                        v_plus[gx][gy].y += h;
+                        v_minus[gx][gy].y -= h;
+                    }
+                    let numeric = (loss(x, &v_plus, g) - loss(x, &v_minus, g)) / (2.0 * h);
+                    let analytic_val = if axis == 0 {
+                        analytic[gx][gy].x
+                    } else {
+                        analytic[gx][gy].y
+                    };
+                    let diff = (numeric - analytic_val).abs();
+                    let scale = numeric.abs().max(analytic_val.abs()).max(1.0);
+                    assert!(
+                        diff / scale < 1.0e-2,
+                        "g2p_velocity_vjp mismatch at cell[{gx}][{gy}].{label}: \
+                         analytic={analytic_val:.6} numeric={numeric:.6} \
+                         relative_diff={:.2e} (x={x:?})",
+                        diff / scale
+                    );
+                }
+            }
+        }
     }
 }
