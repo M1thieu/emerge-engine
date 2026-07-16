@@ -45,7 +45,10 @@ fn particle_with_f(f: Mat2) -> Particles {
         activation: 0.0,
         activation_dir: Vec2::ZERO,
         muscle_group_id: 0,
+        contact_group: 0,
         sleeping: 0,
+        pinned: 0,
+        _pad: [0; 2],
     });
     particles
 }

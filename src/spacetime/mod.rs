@@ -3,7 +3,9 @@
 //! `grid` — `Grid`/`Cell`, the Eulerian background grid + quadratic B-spline
 //! kernel. `solver` — `Simulation`, `SimConfig`, `SpawnRegion`: orchestrates
 //! the whole substep loop over that grid. `transfer` — P2G/G2P transfer
-//! kernels, the actual particle-grid-particle bridge each substep.
+//! kernels, the actual particle-grid-particle bridge each substep. `diff` —
+//! differentiable mini-solver for offline gait training, built on the
+//! hand-derived adjoints in `transfer`/`grid`.
 //!
 //! Part of the emerge/LP domain taxonomy (matter/forces/energy/information/
 //! spacetime/organism/systems) -- see `project_domain_taxonomy` design notes.
@@ -12,6 +14,7 @@
 //! and every LP equivalent keeps resolving unchanged -- this move only
 //! changes where the files physically live, not any public API.
 
+pub mod diff;
 pub mod grid;
 pub mod solver;
 pub mod transfer;

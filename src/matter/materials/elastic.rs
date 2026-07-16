@@ -39,6 +39,12 @@ pub struct NeoHookeanMaterial {
     /// continuous function of real accumulated strain — not a hard on/off failure
     /// threshold. 0.0 = no damage coupling (default, unchanged behavior).
     pub damage_softening_rate: f32,
+    /// EXPERIMENTAL, not yet FD-verified for the differentiable trainer (see
+    /// `kirchhoff_stress_vjp` doc): Kelvin-Voigt internal viscosity, same
+    /// `η·dev(D)` term `ViscoelasticMaterial` already implements (D = the
+    /// symmetric part of the APIC velocity gradient). 0.0 = passive elastic
+    /// only (default, unchanged behavior for every existing user).
+    pub viscosity: f32,
 }
 
 impl NeoHookeanMaterial {
@@ -50,6 +56,7 @@ impl NeoHookeanMaterial {
             thermal_expansion: 0.0,
             active_stress_coeff: 0.0,
             damage_softening_rate: 0.0,
+            viscosity: 0.0,
         }
     }
 
@@ -73,14 +80,16 @@ impl NeoHookeanMaterial {
     /// wherever this particle's stress feeds into a scalar loss), returns
     /// ∂L/∂F.
     ///
-    /// Derivation: τ(F) = (µ/J)·dev(B) + (k/2)(J²−1)·I, where B = F·Fᵀ,
+    /// Derivation: τ(F) = (µ/J)·dev(B) + k·ln(J)·I, where B = F·Fᵀ,
     /// J = det(F), dev(B) = B − (tr(B)/2)·I (matching `kirchhoff_stress`
-    /// exactly). Reverse-mode chain rule through B → A=dev(B) → τ, and
-    /// separately through J (using the standard cofactor identity
-    /// ∂J/∂F = J·F⁻ᵀ), gives:
+    /// exactly -- updated 2026-07-11 alongside the forward formula's
+    /// volumetric-term fix, see that function's doc for why). Reverse-mode
+    /// chain rule through B → A=dev(B) → τ, and separately through J (using
+    /// the standard cofactor identity ∂J/∂F = J·F⁻ᵀ, so ∂ln(J)/∂F = F⁻ᵀ),
+    /// gives:
     ///
     ///   B̄ = (µ/J)·dev(Ḡ)
-    ///   ∂L/∂F = (B̄ + B̄ᵀ)·F + [k·J²·tr(Ḡ) − (µ/J)·(Ḡ:A)] · F⁻ᵀ
+    ///   ∂L/∂F = (B̄ + B̄ᵀ)·F + [k·tr(Ḡ) − (µ/J)·(Ḡ:A)] · F⁻ᵀ
     ///
     /// where Ḡ = ∂L/∂τ, A = dev(B), and Ḡ:A is the Frobenius inner product
     /// (sum of elementwise products). The `B̄ + B̄ᵀ` (NOT `2·B̄`) matters: B̄
@@ -95,13 +104,24 @@ impl NeoHookeanMaterial {
     /// Covers only the core elastic term (thermal/damage scaling folded into
     /// µ/λ as constants here, matching how `kirchhoff_stress` already treats
     /// them per-call; the active-stress term is additive and its own
-    /// gradient is trivial, not yet wired in).
+    /// gradient is trivial, not yet wired in). Does NOT cover `viscosity`'s
+    /// contribution: that term depends on `velocity_gradient` (the APIC C
+    /// matrix), not F, so it's simply absent from ∂L/∂F -- correct as long as
+    /// `viscosity` stays 0.0 (its default) for any differentiable use. This
+    /// is checked with a REAL (non-debug) assert: training runs are exactly
+    /// where `--release` gets used, so a `debug_assert` here would silently
+    /// compile away and hand back a wrong gradient with no protection at all.
     pub fn kirchhoff_stress_vjp(
         &self,
         particles: &Particles,
         i: usize,
         d_loss_d_tau: Mat2,
     ) -> Mat2 {
+        assert_eq!(
+            self.viscosity, 0.0,
+            "kirchhoff_stress_vjp does not differentiate through the viscosity term; \
+             only viscosity=0.0 materials are safe to use with the differentiable trainer"
+        );
         let f = particles.deformation_gradient[i];
         let j = f.determinant();
         if j <= MIN_J {
@@ -138,7 +158,7 @@ impl NeoHookeanMaterial {
         // symmetric, which is NOT guaranteed just because B and A=dev(B) are.
         let b_bar = (mu / j) * dev_g;
         let term1 = (b_bar + b_bar.transpose()) * f;
-        let scalar2 = k * j * j * tr_g - (mu / j) * g_dot_a;
+        let scalar2 = k * tr_g - (mu / j) * g_dot_a;
         let term2 = scalar2 * f_inv_t;
 
         term1 + term2
@@ -179,7 +199,9 @@ impl MaterialModel for NeoHookeanMaterial {
         // B = F·Fᵀ (left Cauchy-Green), d = 2 in 2D.
         // Deviatoric Kirchhoff: µ · J^{-2/d} · dev(B)  with d=2 → µ/J · dev(B)
         //   dev(B) = B − (tr(B)/2)·I  (2D traceless part)
-        // Volumetric Kirchhoff: k/2 · (J²−1) · I
+        // Volumetric Kirchhoff: k · ln(J) · I  (from U(J) = k/2·(ln J)², the
+        //   actual Simo & Pister 1984 log-barrier volumetric potential -- NOT
+        //   k/2·(J²−1), a bounded polynomial this code used until 2026-07-11.
         //   k = λ + µ  (2D PLANE-STRAIN bulk modulus -- NOT the 3D relation
         //   k=λ+2µ/3, which an earlier version of this code used to match
         //   `sparkl`, a 3D reference engine. Real derivation: linearizing
@@ -189,6 +211,26 @@ impl MaterialModel for NeoHookeanMaterial {
         //   but ~20% at ν≈0.2 (compressible/granular-like presets). Fixed
         //   2026-07-06 in favor of dimensional correctness over reference-
         //   engine parity.)
+        //
+        // REAL BUG FIXED 2026-07-11: `k/2·(J²−1)` is bounded as J→0 (its
+        // Kirchhoff contribution approaches a finite `-k/2`, never more), so
+        // it supplies only a FINITE ceiling on how hard the material resists
+        // further compression, no matter how large k is scaled. A sustained
+        // driven load (a creature's own muscle activation, cyclically
+        // compressing tissue every gait cycle with nothing to fully release
+        // it) can always eventually overpower a finite ceiling given enough
+        // cycles -- exactly what a real long-horizon `basic_creature`
+        // diagnostic found: net crawl drift collapsed to ~0 while min(J) kept
+        // falling and NEVER recovered, and neither raising material stiffness
+        // nor adding numerical (APIC) damping fixed it -- both only delayed
+        // the same eventual collapse, because neither changes the bounded
+        // ceiling itself. The log form `k·ln(J)` has NO such ceiling: as J→0,
+        // ln(J)→−∞, so the restoring Kirchhoff stress diverges too -- a
+        // genuine physical barrier against total compression, the actual
+        // reason Simo & Pister's own 1984 formulation uses `(ln J)²` rather
+        // than a bounded polynomial in J. This was a citation/implementation
+        // mismatch as much as a stability bug: the doc already cited Simo &
+        // Pister for this term while implementing a different, weaker one.
         // Reference: Simo & Pister 1984; Bonet & Wood §6.4 (2D plane-strain form).
         let b = f * f.transpose();
         let tr_b = b.x_axis.x + b.y_axis.y;
@@ -196,9 +238,20 @@ impl MaterialModel for NeoHookeanMaterial {
         let k = lambda + mu;
 
         let dev_stress = (mu / j) * dev_b;
-        let vol_stress = (k * 0.5 * (j * j - 1.0)) * Mat2::IDENTITY;
+        let vol_stress = (k * j.ln()) * Mat2::IDENTITY;
 
-        dev_stress + vol_stress
+        let viscous_stress = if self.viscosity > 0.0 {
+            let c = particles.velocity_gradient[i];
+            let sym = c + c.transpose();
+            let d = sym * 0.5;
+            let d_trace = d.x_axis.x + d.y_axis.y;
+            let d_dev = d - Mat2::from_diagonal(glam::Vec2::splat(d_trace * 0.5));
+            self.viscosity * d_dev
+        } else {
+            Mat2::ZERO
+        };
+
+        dev_stress + vol_stress + viscous_stress
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -229,6 +282,7 @@ impl MaterialModel for NeoHookeanMaterial {
             // cohesion_coeff is documented as reusable padding (Snow-only otherwise,
             // zero for all other materials) -- repurposed here for damage_softening_rate.
             cohesion_coeff: self.damage_softening_rate,
+            dynamic_viscosity: self.viscosity,
             ..Default::default()
         }
     }
@@ -239,9 +293,9 @@ impl MaterialModel for NeoHookeanMaterial {
         _hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             self.lambda,
             self.mu,
             1.0,
@@ -249,7 +303,27 @@ impl MaterialModel for NeoHookeanMaterial {
             self.min_density,
             cell_width,
             material_cfl,
-        )
+        );
+        // Real bug caught 2026-07-11: `viscosity` was added (stress term) without this
+        // bound, so a high-viscosity NeoHookean body took substeps sized only for elastic
+        // stability -- far too large for the added viscous (parabolic/diffusive) term,
+        // which has its own, much stricter stability requirement. Explicit integration of
+        // a diffusive term needs dt ~ h²/ν, not h/c (elastic wave speed) -- a real, standard
+        // numerical-stability fact, not tuned to this case. Caught by its actual symptom:
+        // deformation gradient inverting (J < 0) within ~500 steps at viscosity=150+,
+        // identical formula and bound `ViscoelasticMaterial::timestep_bound` already uses.
+        let viscous_dt = if self.viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 }
 
@@ -294,7 +368,10 @@ mod small_strain_linear_elasticity_tests {
             activation: 0.0,
             activation_dir: Vec2::ZERO,
             muscle_group_id: 0,
+            contact_group: 0,
             sleeping: 0,
+            pinned: 0,
+            _pad: [0; 2],
         });
         particles
     }
@@ -428,7 +505,10 @@ mod damage_softening_tests {
             activation: 0.0,
             activation_dir: glam::Vec2::ZERO,
             muscle_group_id: 0,
+            contact_group: 0,
             sleeping: 0,
+            pinned: 0,
+            _pad: [0; 2],
         });
         particles
     }
@@ -512,7 +592,10 @@ mod kirchhoff_stress_vjp_tests {
             activation: 0.0,
             activation_dir: glam::Vec2::ZERO,
             muscle_group_id: 0,
+            contact_group: 0,
             sleeping: 0,
+            pinned: 0,
+            _pad: [0; 2],
         });
         particles
     }
