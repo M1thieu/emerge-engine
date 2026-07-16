@@ -44,6 +44,34 @@ pub struct DruckerPragerMaterial {
     /// doesn't capture. Calibrate against that benchmark, not against a literature
     /// "sand cohesion" value (which is ~0 and would be the wrong justification).
     pub cohesion: f32,
+    /// Real, measured gap found 2026-07-13 (deep research against the actual Klar
+    /// 2016 paper + sparkl/wgsparkl reference implementations, not assumed): the
+    /// Drucker-Prager cone yield surface, BY CONSTRUCTION in the published model
+    /// (verified identical in this engine, sparkl, and wgsparkl), only ever trims
+    /// DEVIATORIC (shear) strain -- `project()`'s Case III preserves
+    /// `trace(eps)` exactly. A near-hydrostatic impact (mostly compression, little
+    /// shear -- exactly a body dropping straight down onto sand) is judged
+    /// "elastic" (no yield-surface projection at all) essentially always,
+    /// regardless of how hard the impact is, because `gamma` stays negative.
+    /// Nothing in the published model caps pure volumetric compression -- proven
+    /// via a real isolated headless test (inert block dropped onto inert
+    /// DruckerPrager sand slab, zero muscle/CPG involved): a single particle
+    /// compressed to J=0.0057 (0.57% of its own volume) after just 600 steps,
+    /// vs an all-elastic control's J=0.0431 under the identical impact. Real sand
+    /// cannot physically compact past its own void-ratio limit (~20-40% volume
+    /// change between loose and dense packing, not 99.4%+).
+    ///
+    /// `StomakhinMaterial` (snow.rs) already has the exact real fix for this same
+    /// class of problem via its own `min_plastic_jacobian` (default 0.6, already
+    /// tested via `snow_jp_stays_within_bounds`) -- this ports that same, already-
+    /// proven mechanism to sand: a hard floor on the STORED singular values'
+    /// product (the actual `deformation_gradient` written back, not just a
+    /// downstream volume/density calculation), applied AFTER the existing
+    /// shear-yield projection so the friction/cohesion physics above are
+    /// completely unaffected -- this only engages when volumetric compression
+    /// alone would exceed sand's own real physical packing limit. 0.6 matches
+    /// Snow's own default and the real 20-40% figure above.
+    pub min_volume_jacobian: f32,
 }
 
 impl DruckerPragerMaterial {
@@ -61,6 +89,7 @@ impl DruckerPragerMaterial {
             volume_correction: 1.0,
             dilatancy_angle: 0.0,
             cohesion: 0.0,
+            min_volume_jacobian: 0.6,
         }
     }
 
@@ -247,6 +276,39 @@ impl MaterialModel for DruckerPragerMaterial {
             sigma
         };
 
+        // Real volumetric floor -- see `min_volume_jacobian`'s doc for the full
+        // investigation. Applied AFTER the shear-yield projection above and
+        // regardless of whether that projection fired (the exact gap: a
+        // near-hydrostatic impact is judged "elastic" by the cone above and
+        // never reaches it at all), so friction/cohesion physics are untouched;
+        // this only engages when volumetric compression alone would exceed
+        // sand's own real packing limit. Uniform rescale (not a per-axis clamp
+        // like Snow's) preserves the deviatoric shape the yield projection
+        // already chose -- only the overall volume is corrected.
+        //
+        // Real bug found live, 2026-07-13 (same day as the fix above): this
+        // engine's `svd2` (src/materials/svd.rs) does NOT guarantee non-negative
+        // singular values like textbook SVD -- it keeps U a proper rotation by
+        // encoding a reflection as sigma.y going NEGATIVE instead (see svd2's
+        // `if u.determinant() < 0.0 { ...; sigma.y = -sigma.y }`). The original
+        // `j_new > 0.0` guard here silently EXCLUDED exactly that case: once a
+        // sustained real-time contact interaction (confirmed over a long real
+        // playtest, ~12,500 frames, ZERO muscle activation the whole time --
+        // ruling out muscle-driven compression as the cause) pushed a particle
+        // into that negative-sigma.y state, this fix stopped correcting it
+        // entirely, letting det(F) run away to -1.000 and beyond with no floor
+        // at all -- a real, unbounded regression this fix was supposed to
+        // prevent. Real fix: take magnitudes FIRST (an already-inverted state
+        // is exactly the "exceeded sand's real packing limit" case this floor
+        // exists for, just approached from the other side), THEN apply the
+        // same volumetric floor -- handles "too compressed" and "already
+        // inverted" with one uniform rule instead of two different guards.
+        let mut new_sigma = new_sigma.abs();
+        let j_new = new_sigma.x * new_sigma.y;
+        if j_new < self.min_volume_jacobian {
+            new_sigma *= (self.min_volume_jacobian / j_new.max(1e-6)).sqrt();
+        }
+
         let sigma_mat = Mat2::from_cols(Vec2::new(new_sigma.x, 0.0), Vec2::new(0.0, new_sigma.y));
         particles.deformation_gradient[i] = u * sigma_mat * vt;
 
@@ -271,6 +333,11 @@ impl MaterialModel for DruckerPragerMaterial {
             // stretch_limit repurposed for DP: stores the cohesion floor (Pa-equivalent).
             // Not read by the GPU's model==5u branch for any other purpose.
             stretch_limit: self.cohesion,
+            // Real fix, 2026-07-13 (see `min_volume_jacobian`'s doc): this field
+            // was ALREADY documented as "Snow/DP: lower bound on plastic volume
+            // ratio Jp" but DP's own GPU branch never actually read it -- wiring
+            // it through properly instead of adding a redundant new slot.
+            volume_ratio_min: self.min_volume_jacobian,
             ..Default::default()
         }
     }
