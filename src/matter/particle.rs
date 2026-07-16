@@ -65,6 +65,22 @@ pub struct Particle {
     /// p.activation = controller_output[p.muscle_group_id].
     /// 0 = unassigned / passive.
     pub muscle_group_id: u32,
+    /// Multi-field frictional contact group (Bardenhagen, Guilkey, Roessig, Brackbill
+    /// 2001, "An Improved Contact Algorithm for the Material Point Method"). 0 (default)
+    /// = ordinary single-field particle, identical to every material before this field
+    /// existed — the solver only allocates a second velocity field, and only resolves
+    /// contact, at grid nodes touched by at least one particle with `contact_group != 0`,
+    /// so a scene that never sets this is byte-for-byte unaffected.
+    ///
+    /// Any nonzero value means "carries its own grip" — real Coulomb friction (finite,
+    /// slip-capable) is resolved between this particle's field and everything with
+    /// `contact_group == 0` at shared grid nodes, instead of the default MPM behavior
+    /// (all particles share one velocity field, i.e. infinite friction, no slip ever
+    /// possible). Distinct nonzero values are NOT currently distinguished from each
+    /// other — this is a 2-field (grip vs. rest) implementation, not full N-body
+    /// multi-field contact; a real, disclosed scope limit, not a hidden one. See
+    /// `SimConfig::contact_friction` for the friction coefficient.
+    pub contact_group: u32,
     /// GPU sleep flag: 0 = active, 1 = sleeping (skipped by P2G/G2P/plasticity/force
     /// fields on the GPU path). Mirrors `Particles.sleeping` for the CPU `Simulation`'s
     /// own (separate) partition-based sleep bookkeeping — this field is what travels
@@ -72,7 +88,35 @@ pub struct Particle {
     /// directly. Only meaningful when `SimConfig::sleep_threshold > 0.0`; otherwise
     /// always 0 and has no effect.
     pub sleeping: u32,
+    /// Dirichlet/kinematic anchor flag: 0 (default) = ordinary free particle, identical to
+    /// every material before this field existed. Nonzero = fixed-velocity boundary
+    /// condition -- G2P forces `v = 0` and `velocity_gradient = 0` for this particle every
+    /// substep instead of gathering from the grid, so it never moves and never
+    /// accumulates local strain from being dragged, while still scattering its own
+    /// mass/stress into P2G so other bodies feel it as a real, immovable anchor (the
+    /// standard technique for static/bedrock geometry in deformable-body sims -- a real
+    /// Dirichlet BC in continuum-mechanics terms, not a hack). Real motivating case: a
+    /// terrain slab with no pinned particles is an ordinary free body that slowly drifts
+    /// under the accumulated reaction force of everything standing/walking on it (real,
+    /// measured live -- terrain centroid crept y=3.8->7.1 over one `walking_creature`
+    /// run); a thin pinned "bedrock" layer under the free top layer anchors the whole
+    /// body while the top layer still deforms naturally underfoot.
+    pub pinned: u32,
+    /// Explicit padding — required after adding `contact_group` (2026-07-11). Real field
+    /// data through `pinned` totals 120 bytes; `Mat2`'s actual alignment is 16 (verified:
+    /// `size_of::<Mat2>()==16, align_of::<Mat2>()==16`, NOT 8 as a first guess assumed),
+    /// so the struct must round up to 128. `derive(Pod)` refuses implicit compiler-inserted
+    /// padding (uninitialized bytes would violate Pod's "every bit pattern is valid"
+    /// guarantee for GPU buffer upload), so all remaining bytes must be real, explicit,
+    /// always-zeroed fields, not silently left out. Unused; always zero.
+    pub _pad: [u32; 2],
 }
+
+// The CPU struct and the WGSL `Particle` mirror must agree byte-for-byte, or GPU upload
+// silently reads garbage. This is the actual enforcement of the "128 bytes" contract
+// documented on every field above -- catches any future field addition/removal that
+// forgets to update the WGSL side or the padding.
+const _: () = assert!(std::mem::size_of::<Particle>() == 128);
 
 impl Particle {
     /// All-zero particle with identity deformation gradient. Useful in tests and tooling.
@@ -96,7 +140,10 @@ impl Particle {
             activation: 0.0,
             activation_dir: glam::Vec2::ZERO,
             muscle_group_id: 0,
+            contact_group: 0,
             sleeping: 0,
+            pinned: 0,
+            _pad: [0; 2],
         }
     }
 
@@ -156,6 +203,10 @@ pub struct Particles {
     pub activation: Vec<f32>,
     pub activation_dir: Vec<Vec2>,
     pub muscle_group_id: Vec<u32>,
+    /// Multi-field frictional contact group. See `Particle::contact_group` doc.
+    pub contact_group: Vec<u32>,
+    /// Dirichlet/kinematic anchor flag. See `Particle::pinned` doc.
+    pub pinned: Vec<u32>,
 
     // ── Sleep state — not in the hot path ────────────────────────────────────
     /// True when the particle is in the sleeping partition and skipped by P2G/G2P.
@@ -185,6 +236,8 @@ impl Particles {
             activation: Vec::new(),
             activation_dir: Vec::new(),
             muscle_group_id: Vec::new(),
+            contact_group: Vec::new(),
+            pinned: Vec::new(),
             sleeping: Vec::new(),
         }
     }
@@ -210,6 +263,8 @@ impl Particles {
             activation: Vec::with_capacity(cap),
             activation_dir: Vec::with_capacity(cap),
             muscle_group_id: Vec::with_capacity(cap),
+            contact_group: Vec::with_capacity(cap),
+            pinned: Vec::with_capacity(cap),
             sleeping: Vec::with_capacity(cap),
         }
     }
@@ -248,7 +303,10 @@ impl Particles {
             activation: self.activation[i],
             activation_dir: self.activation_dir[i],
             muscle_group_id: self.muscle_group_id[i],
+            contact_group: self.contact_group[i],
             sleeping: self.sleeping[i] as u32,
+            pinned: self.pinned[i],
+            _pad: [0; 2],
         }
     }
 
@@ -273,6 +331,8 @@ impl Particles {
         self.activation[i] = p.activation;
         self.activation_dir[i] = p.activation_dir;
         self.muscle_group_id[i] = p.muscle_group_id;
+        self.contact_group[i] = p.contact_group;
+        self.pinned[i] = p.pinned;
     }
 
     /// Append a new particle.
@@ -296,6 +356,8 @@ impl Particles {
         self.activation.push(p.activation);
         self.activation_dir.push(p.activation_dir);
         self.muscle_group_id.push(p.muscle_group_id);
+        self.contact_group.push(p.contact_group);
+        self.pinned.push(p.pinned);
         // Honor the incoming particle's real sleeping state — needed by GpuSimulation's
         // CPU-plasticity readback path (Particles::from(Vec<Particle>)), which converts
         // live GPU particles (sleeping state included) into this SoA. Freshly-spawned
@@ -327,6 +389,8 @@ impl Particles {
         self.activation.swap(a, b);
         self.activation_dir.swap(a, b);
         self.muscle_group_id.swap(a, b);
+        self.contact_group.swap(a, b);
+        self.pinned.swap(a, b);
         self.sleeping.swap(a, b);
     }
 
@@ -396,6 +460,8 @@ impl Particles {
         self.activation.truncate(write);
         self.activation_dir.truncate(write);
         self.muscle_group_id.truncate(write);
+        self.contact_group.truncate(write);
+        self.pinned.truncate(write);
         self.sleeping.truncate(write);
     }
 

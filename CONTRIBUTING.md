@@ -25,21 +25,28 @@ No `cargo clean`; incremental builds work fine. Debug mode only, never `--releas
 
 ## Architecture
 
+Domain-taxonomy layout — each top-level directory mirrors one universe-scale domain,
+not an implementation layer:
+
 ```
 src/
-  solver/        Simulation · SimConfig · SpawnRegion · spatial hash · query
-  particle.rs    Particle (repr(C), 112 B, GPU-uploadable) · Particles (SoA)
-  grid/          Grid · Cell · quadratic B-spline kernel
-  transfer.rs    P2G scatter + G2P gather (MLS-APIC)
-  boundary.rs    BoundaryCondition + Slip / Predictive / Friction / Heightmap
-  materials/     MaterialModel trait · 12 constitutive models · SVD · registry
-  fields/        Field trait · NBody / GravityWell / Coulomb / EM / Confinement
-  control/       Lnn (neural locomotion controller)
-  thermodynamics/ ThermalDiffusion · ScalarDiffusionField
-  diagnostics/   plugin system · health · per-material stats
-  runtime/       FixedStepController
-  gpu/           [feature=gpu] GpuSimulation + WGSL shaders
-  render/        [feature=render] instanced particle renderer
+  matter/            particle.rs (repr(C), 112 B, GPU-uploadable) · Particles (SoA)
+    materials/        MaterialModel trait · 12 constitutive models · SVD · registry
+  spacetime/          the actual solver
+    solver/            Simulation · SimConfig · SpawnRegion · spatial hash · query
+    grid/               Grid · Cell · quadratic B-spline kernel
+    transfer.rs         P2G scatter + G2P gather (MLS-APIC)
+    diff.rs             differentiable/gradient-trainable stepping
+  forces/             boundary/ (Slip / Predictive / Friction / Heightmap) ·
+                      fields/ (NBody / GravityWell / Coulomb / Confinement) ·
+                      electromagnetics.rs
+  energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
+                      acoustics/, electromagnetics.rs [feature=experimental]
+  information/        control/ (Lnn neural locomotion controller) · measures/
+  runtime/            FixedStepController
+  systems/            gpu/ [feature=gpu] GpuSimulation + WGSL shaders ·
+                      render/ [feature=render] instanced particle renderer ·
+                      diagnostics/ plugin system · health · per-material stats
 ```
 
 Feature flags: `gpu` | `render` (requires `gpu`) | `experimental`
@@ -50,7 +57,7 @@ Feature flags: `gpu` | `render` (requires `gpu`) | `experimental`
 
 A new material requires changes in four places:
 
-### 1. `src/materials/<name>.rs`
+### 1. `src/matter/materials/<name>.rs`
 
 Implement the `MaterialModel` trait:
 
@@ -80,7 +87,7 @@ impl MaterialModel for MyMaterial {
 }
 ```
 
-### 2. `src/materials/mod.rs`
+### 2. `src/matter/materials/mod.rs`
 
 Add a variant to `ConstitutiveModel`. The discriminant must be the next consecutive `u32`, and a matching compile-time ABI assertion is required:
 
@@ -97,11 +104,11 @@ assert!(ConstitutiveModel::MyMaterial as u32 == 12);
 
 Re-export from `mod.rs` and add to `src/prelude.rs`.
 
-### 3. `src/gpu/shaders/p2g.wgsl`
+### 3. `src/systems/gpu/shaders/p2g.wgsl`
 
 Add `case 12u` to the Kirchhoff stress `switch`. If the material is CPU-only, return zero stress and set `needs_cpu_update = true` in Rust.
 
-### 4. `src/gpu/shaders/particles_update.wgsl`
+### 4. `src/systems/gpu/shaders/particles_update.wgsl`
 
 Add `case 12u` to the plasticity update `switch`. CPU-only materials can leave this as a no-op.
 
@@ -147,6 +154,19 @@ cargo test --features gpu              # GPU path (requires wgpu-compatible GPU)
 ```
 
 `tests/accuracy.rs` documents known numerical gaps. Read the test comments before treating a failure as a bug.
+
+**`--all-features --tests` (or `cargo test --all-features`) can crash the linker**
+(`STATUS_STACK_BUFFER_OVERRUN` from `rustc.exe`/the linker, not an emerge bug) on
+machines with limited memory — building every integration test binary with
+`gpu`+`render`+`experimental` all at once, fully parallel, exhausts a real resource.
+Confirmed fix: cap build parallelism —
+
+```sh
+cargo test --all-features -j 2
+```
+
+`cargo test --features gpu` alone (no `render`/`experimental`) is unaffected; only
+the full `--all-features` combination needs the `-j 2` cap.
 
 ---
 

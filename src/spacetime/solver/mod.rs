@@ -48,6 +48,11 @@ pub struct Simulation {
     grid: Grid,
     materials: MaterialRegistry,
     boundaries: Vec<Box<dyn BoundaryCondition>>,
+    /// Optional directional (setae-style) friction for the multi-field contact
+    /// "grip" field — see `DirectionalContactGrip`'s doc. `None` (default) keeps
+    /// the existing plain symmetric `contact_friction` behavior; every scene that
+    /// never opts in is completely unaffected.
+    contact_grip: Option<std::sync::Arc<crate::grid::DirectionalContactGrip>>,
     force_fields: Vec<(String, Box<dyn Field>)>,
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) — run automatically each substep.
@@ -130,7 +135,10 @@ pub(crate) fn initialize_particles(
                     activation: 0.0,
                     activation_dir: Vec2::ZERO,
                     muscle_group_id: 0,
+                    contact_group: 0,
                     sleeping: 0,
+                    pinned: 0,
+                    _pad: [0; 2],
                 });
             }
 

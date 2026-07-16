@@ -87,6 +87,28 @@ pub fn second_law_holds(total_entropy_change: f32) -> bool {
     total_entropy_change >= 0.0
 }
 
+/// Saturating uptake/consumption rate — one rectangular-hyperbola equation shared
+/// across three disciplines under three names: the Holling Type II functional response
+/// (predation, Holling 1959), Michaelis-Menten kinetics (enzyme reaction rate, 1913),
+/// and the Monod equation (microbial growth rate, 1949) — all `rate = max_rate ·
+/// density / (half_saturation + density)`, confirmed identical in form, not three
+/// separate laws.
+///
+/// Replaces any "consume everything within radius X" rule: rate is continuous in local
+/// density, saturating toward `max_rate` as `density → ∞` (a real consumer has a finite
+/// maximum processing rate no matter how much is available) and linear (∝ density) for
+/// `density ≪ half_saturation` (scarce regime) — the two asymptotic checks any real
+/// closed-form test should verify, not just "doesn't explode."
+///
+/// `half_saturation` is the density at which `rate` reaches exactly half of `max_rate`.
+#[inline]
+pub fn saturating_uptake(local_density: f32, max_rate: f32, half_saturation: f32) -> f32 {
+    if local_density <= 0.0 {
+        return 0.0;
+    }
+    max_rate * local_density / (half_saturation + local_density)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +161,42 @@ mod tests {
     #[test]
     fn reversible_entropy_is_q_over_t() {
         assert!((entropy_change_heat_transfer(1000.0, 250.0) - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn saturating_uptake_is_zero_at_zero_density() {
+        assert_eq!(saturating_uptake(0.0, 10.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn saturating_uptake_equals_half_max_at_half_saturation_density() {
+        // rate(half_saturation) = max_rate * hs / (hs + hs) = max_rate / 2, exactly.
+        let rate = saturating_uptake(2.0, 10.0, 2.0);
+        assert!((rate - 5.0).abs() < 1e-6, "got {rate}");
+    }
+
+    #[test]
+    fn saturating_uptake_approaches_max_rate_at_high_density() {
+        // density >> half_saturation -> rate should approach max_rate, not exceed it.
+        let rate = saturating_uptake(10_000.0, 10.0, 2.0);
+        assert!((rate - 10.0).abs() < 1e-2, "got {rate}");
+        assert!(
+            rate < 10.0,
+            "saturating uptake must never reach/exceed max_rate: {rate}"
+        );
+    }
+
+    #[test]
+    fn saturating_uptake_is_linear_at_low_density() {
+        // density << half_saturation -> rate ≈ (max_rate/half_saturation) * density.
+        let max_rate = 10.0;
+        let half_saturation = 100.0;
+        let density = 0.01;
+        let rate = saturating_uptake(density, max_rate, half_saturation);
+        let linear_approx = (max_rate / half_saturation) * density;
+        assert!(
+            (rate - linear_approx).abs() < 1e-5,
+            "got {rate}, linear approx {linear_approx}"
+        );
     }
 }

@@ -204,8 +204,20 @@ impl Simulation {
             }
             radius *= 2.0;
         }
+        // Partial selection, not a full sort: we only need the k nearest, not a total
+        // ordering of every candidate. `select_nth_unstable_by` is quickselect -- O(n)
+        // average to partition so the k smallest distances occupy [0, k), then we sort
+        // only those k to honor the "ascending" contract. For the topological-neighbor
+        // use case (k ~= 6-7, Ballerini 2008) against the dozens-to-hundreds of
+        // candidates a dense region's radius pulls in, this is O(n + k log k) instead of
+        // the old O(n log n) full sort of everything we were about to discard. Guarded on
+        // `len > k` because select_nth panics on an out-of-range pivot; when len <= k we
+        // keep everything and the final sort is already over just those elements.
+        if candidates.len() > k {
+            candidates.select_nth_unstable_by(k - 1, |a, b| a.1.total_cmp(&b.1));
+            candidates.truncate(k);
+        }
         candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.truncate(k);
         candidates.into_iter().map(|(i, _)| i).collect()
     }
 }

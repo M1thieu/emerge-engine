@@ -49,8 +49,12 @@ jobs:
       - name: install software Vulkan driver (lavapipe)
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers
+      # -j 2: cargo test --all-features builds every integration test binary against
+      # gpu+render+experimental at once; full parallelism can exhaust available memory
+      # and crash the linker (STATUS_STACK_BUFFER_OVERRUN, confirmed reproducible and
+      # confirmed fixed by capping parallelism -- not a code bug, see CONTRIBUTING.md).
       - name: test (all features)
-        run: cargo test --all-features
+        run: cargo test --all-features -j 2
 
   publish-dry-run:
     name: publish dry-run

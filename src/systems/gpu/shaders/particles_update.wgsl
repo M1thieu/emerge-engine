@@ -38,7 +38,10 @@ struct Particle {
     activation:           f32,
     activation_dir:       vec2<f32>,
     muscle_group_id:      u32,
-    sleeping:             u32,       // total 112 bytes
+    contact_group:        u32,
+    sleeping:             u32,
+    pinned:               u32,
+    _pad:                 array<u32, 2>,  // total 128 bytes
 }
 
 struct MaterialParams {
@@ -406,7 +409,34 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Drucker-Prager (sand): log-strain return mapping + friction-angle hardening.
         let svd    = svd2(new_F);
         let dp_res = dp_plasticity(svd.s, p.log_volume_strain, p.friction_hardening, mat);
-        let diag   = mat2x2<f32>(vec2<f32>(dp_res.sigma.x, 0.0), vec2<f32>(0.0, dp_res.sigma.y));
+        // Real volumetric floor, 2026-07-13 -- mirrors sand.rs's CPU-side fix
+        // exactly (see that file's `min_volume_jacobian` doc for the full
+        // investigation against the real Klar 2016 reference/sparkl/wgsparkl:
+        // the DP cone only ever trims shear, never caps pure hydrostatic
+        // compression, so a near-vertical impact can crush a particle far past
+        // sand's real physical packing limit). `mat.volume_ratio_min` was
+        // already documented as "Snow/DP: lower bound on plastic volume ratio
+        // Jp" but this branch never actually read it before now. Uniform
+        // rescale preserves the shear-yield projection's chosen deviatoric
+        // shape, only corrects overall volume.
+        // Real bug found live, 2026-07-13: this engine's svd2 (above in this
+        // file) does NOT guarantee non-negative singular values -- it keeps u
+        // a proper rotation by encoding a reflection as a NEGATIVE s.y instead
+        // (see this file's own svd2: `if det_f < 0.0 { s.y = -s.y; ... }`). The
+        // original `dp_j > 0.0` guard silently excluded exactly that case, so
+        // an already-inverted particle (sigma.y < 0) passed through completely
+        // unclamped -- confirmed via a real ~12,500-frame live playtest with
+        // ZERO muscle activation the whole time (ruling out muscle-driven
+        // compression) reaching J=-1.000 and an extent nearly filling the
+        // whole domain. Take magnitudes FIRST -- an inverted state is exactly
+        // the "exceeded sand's real packing limit" case this floor exists for,
+        // just approached from the other side -- then apply the same floor.
+        var dp_sigma = abs(dp_res.sigma);
+        let dp_j = dp_sigma.x * dp_sigma.y;
+        if dp_j < mat.volume_ratio_min {
+            dp_sigma *= sqrt(mat.volume_ratio_min / max(dp_j, NUM_FLOOR_TIGHT));
+        }
+        let diag   = mat2x2<f32>(vec2<f32>(dp_sigma.x, 0.0), vec2<f32>(0.0, dp_sigma.y));
         new_F                = svd.u * diag * transpose(svd.v);
         // q cap: mirrors sand.rs `q_max = 5.0 / hardening_decay`. Prevents unbounded accumulation.
         let q_max = 5.0 / max(mat.dp_h2, NUM_FLOOR_TIGHT);

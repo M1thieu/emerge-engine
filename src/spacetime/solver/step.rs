@@ -13,7 +13,9 @@ use crate::boundary::BoundaryCondition;
 use crate::grid::Grid;
 use crate::particle::Particles;
 use crate::solver::density::estimate_particle_volumes;
-use crate::transfer::{G2PParams, gather_grid_to_particles, scatter_particles_to_grid};
+use crate::transfer::{
+    G2PParams, gather_contact_point_cloud, gather_grid_to_particles, scatter_particles_to_grid,
+};
 
 impl Simulation {
     /// One MLS-MPM timestep: particle→grid→particle cycle.
@@ -95,6 +97,11 @@ impl Simulation {
             sub_dt,
             self.active_count,
         );
+        // Second particle pass for the contact-normal point cloud (see
+        // `gather_contact_point_cloud` doc) -- must run after the above, since
+        // contact-active nodes aren't fully known until every grip particle's mass
+        // has been scattered. No-op when `contact_group` is unused anywhere.
+        gather_contact_point_cloud(&self.particles, &mut self.grid, self.active_count);
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
         // Wake any sleeping particle whose kernel overlaps an active grid cell.
@@ -125,15 +132,28 @@ impl Simulation {
 
         // ── Grid update ───────────────────────────────────────────────────────
         let t1 = std::time::Instant::now();
-        self.grid.update_velocities(sub_dt, self.config.gravity);
+        // ASFLIP (SimConfig::asflip_blend, Fei et al. 2021) needs the grid's velocity
+        // right after P2G's own momentum normalization -- before THIS substep's gravity,
+        // boundary conditions, or contact resolution modify it -- to compute G2P's FLIP
+        // residual. Snapshotting only when the feature is enabled keeps every other scene
+        // on the exact original single-call path (zero cost, zero behavior change).
+        let asflip_snapshot = if self.config.asflip_blend > 0.0 {
+            self.grid.normalize_velocities();
+            let snapshot = self.grid.snapshot_velocities();
+            self.grid.apply_gravity(sub_dt, self.config.gravity);
+            Some(snapshot)
+        } else {
+            self.grid.update_velocities(sub_dt, self.config.gravity);
+            None
+        };
         let grid_res = self.grid.resolution();
         for boundary in &self.boundaries {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
         }
         // Clamp grid velocity before G2P — bounds both v_p and C_p at the source.
         // Post-G2P clamping misses C_p: large C_p → F = (I + dt·C)·F blows up → J→0.
+        let vel_limit = self.config.grid_cell_size / sub_dt;
         {
-            let vel_limit = self.config.grid_cell_size / sub_dt;
             for cell in self.grid.active_cells_mut() {
                 if cell.mass > 0.0 {
                     let spd = cell.momentum.length();
@@ -143,6 +163,21 @@ impl Simulation {
                 }
             }
         }
+        // Multi-field frictional contact (Bardenhagen 2001) — AFTER the clamp above, so
+        // the grip/rest split is resolved against an already-safe total, and passed
+        // `vel_limit` to apply the SAME clamp to the grip field's own raw velocity and
+        // to both resolved outputs (a tiny-mass grip node could otherwise carry a huge
+        // raw velocity even when the total is fine). No-op (no dirty contact cells) for
+        // every scene that never sets `Particle::contact_group` — see
+        // `Grid::resolve_contact` doc.
+        self.grid.resolve_contact(
+            sub_dt,
+            self.config.gravity,
+            self.config.contact_friction,
+            vel_limit,
+            self.config.grid_cell_size,
+            self.contact_grip.as_deref(),
+        );
         self.last_timing.grid_update_us += t1.elapsed().as_micros() as u64;
 
         // ── G2P ──────────────────────────────────────────────────────────────
@@ -157,6 +192,8 @@ impl Simulation {
                 vel_limit: self.config.grid_cell_size / sub_dt,
                 apic_blend: self.config.apic_blend,
                 active_count: self.active_count,
+                asflip_blend: self.config.asflip_blend,
+                pre_force_snapshot: asflip_snapshot.as_ref(),
             },
         );
         self.last_timing.g2p_us += t2.elapsed().as_micros() as u64;

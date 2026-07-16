@@ -74,15 +74,22 @@ impl GpuSimulation {
         start..n
     }
 
-    /// Rebuilds `spatial_hash` from the current `self.particles` -- call any time
-    /// `self.particles` changes (readback completion, explicit sync, spawn). O(N),
-    /// same real cost class as the linear scans it replaces for QUERIES, but paid
-    /// once per mutation instead of once per query -- a real win whenever more than
-    /// one query happens against the same particle state (e.g. LP's ecology calling
-    /// `sense_local`/`centroid`/`phenotype` per creature per frame).
+    /// Rebuilds `spatial_hash` from the current `self.particles` immediately -- for
+    /// callers (spawn, explicit sync) that need a query to be safe to call right after
+    /// this returns, without depending on the lazy dirty-flag path (`ensure_spatial_hash_fresh`
+    /// in queries.rs) firing first. O(N), same real cost class as the linear scans it
+    /// replaces for QUERIES, but paid once per mutation instead of once per query -- a
+    /// real win whenever more than one query happens against the same particle state
+    /// (e.g. LP's ecology calling `sense_local`/`centroid`/`phenotype` per creature per
+    /// frame). Readback completion in `step.rs` does NOT call this directly anymore --
+    /// it just marks `spatial_hash_dirty`, deferring the rebuild to the first query that
+    /// actually needs it (see `spatial_hash`'s own doc in `mod.rs` for why).
     pub(super) fn rebuild_spatial_hash(&mut self) {
         let positions: Vec<glam::Vec2> = self.particles.iter().map(|p| p.x).collect();
-        self.spatial_hash.rebuild(&positions, self.particles.len());
+        self.spatial_hash
+            .borrow_mut()
+            .rebuild(&positions, self.particles.len());
+        self.spatial_hash_dirty.set(false);
     }
 
     /// Blocking GPU → CPU particle sync. Updates `self.particles` immediately.

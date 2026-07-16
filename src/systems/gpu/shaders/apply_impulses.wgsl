@@ -31,7 +31,10 @@ struct Particle {
     activation:           f32,
     activation_dir:       vec2<f32>,
     muscle_group_id:      u32,
+    contact_group:        u32,
     sleeping:             u32,
+    pinned:               u32,
+    _pad:                 array<u32, 2>,
 }
 
 struct ImpulseEntry {

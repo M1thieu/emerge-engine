@@ -28,7 +28,24 @@ pub use crate::materials::registry::MAX_MATERIAL_SLOTS as MAX_MATERIALS;
 ///   offset 24: boundary_thickness u32
 ///   offset 28: vel_limit      f32
 ///   offset 32: sleep_threshold f32  (0.0 = sleep/wake disabled, SimConfig default)
-///   offset 36: _pad           [u32; 3]
+///   offset 36: contact_friction f32 (SimConfig::contact_friction, GPU port — repurposes
+///                             the first of 3 original pad slots, see field doc)
+///   offset 40: grid_cell_size f32 (SimConfig::grid_cell_size, repurposes the second
+///                             original pad slot — read by `resolve_contact.wgsl`'s
+///                             normal fit + Baumgarte cap, previously hardcoded to 1.0
+///                             there, a real latent bug for any config with a non-default
+///                             grid_cell_size, fixed 2026-07-15)
+///   offset 44: contact_active u32 (0/1 — repurposes the third pad slot. True iff any
+///                             particle anywhere has `contact_group != 0` this frame.
+///                             Mirrors CPU's `Grid::has_contact_activity()` gate in
+///                             `transfer.rs` — lets `g2p.wgsl` skip straight to the plain
+///                             grid velocity, and lets `resolve_contact`/`gather_contact_
+///                             points` be skipped entirely, for every scene that never
+///                             uses multi-field contact. Fixed 2026-07-15: this gate did
+///                             not exist on GPU before, so EVERY scene paid full contact-
+///                             resolution cost regardless of use (measured: resolve_contact
+///                             alone was 37.5%/5.66ms of a substep on a pure fluid scene
+///                             with zero contact particles).
 ///                             = 48 bytes, 16-byte aligned ✓
 ///
 /// `gravity: Vec2` replaces the old `gravity: f32` + `_pad1: u32` pair —
@@ -44,11 +61,29 @@ pub struct GpuStepParams {
     pub boundary_thickness: u32,
     pub vel_limit: f32,       // grid_cell_size / sub_dt
     pub sleep_threshold: f32, // SimConfig::sleep_threshold — 0.0 disables sleep/wake entirely
-    pub _pad: [u32; 3],
+    /// Multi-field contact (GPU port) — `SimConfig::contact_friction`, read by
+    /// `resolve_contact.wgsl`. Repurposes the first of the original 3 `_pad` u32
+    /// slots — total struct size/offsets of every other field are UNCHANGED, so
+    /// shaders that don't care about contact (their own `StepParams` copy still
+    /// declares `_pad0: u32`) read harmless bits and never touch this value.
+    pub contact_friction: f32,
+    /// `SimConfig::grid_cell_size` — read by `resolve_contact.wgsl`'s normal fit
+    /// (penalty scaling) and Baumgarte correction cap. Was hardcoded to 1.0 in that
+    /// shader before this field existed; harmless while every real config used the
+    /// default 1.0, but a real correctness gap the moment one didn't.
+    pub grid_cell_size: f32,
+    /// True (nonzero) iff any particle anywhere has `contact_group != 0` this frame —
+    /// see this field's doc in the layout comment above.
+    pub contact_active: u32,
 }
 
 impl GpuStepParams {
-    pub fn new(config: &SimConfig, sub_dt: f32, particle_count: usize) -> Self {
+    pub fn new(
+        config: &SimConfig,
+        sub_dt: f32,
+        particle_count: usize,
+        contact_active: bool,
+    ) -> Self {
         Self {
             grid_res: config.grid_res as u32,
             particle_count: particle_count as u32,
@@ -58,7 +93,9 @@ impl GpuStepParams {
             boundary_thickness: config.boundary_thickness as u32,
             vel_limit: config.grid_cell_size / sub_dt,
             sleep_threshold: config.sleep_threshold,
-            _pad: [0; 3],
+            contact_friction: config.contact_friction,
+            grid_cell_size: config.grid_cell_size,
+            contact_active: contact_active as u32,
         }
     }
 }
@@ -78,6 +115,7 @@ pub mod field_type {
     pub const RADIAL_CONFINEMENT: u32 = 4;
     pub const UNIFORM_ELECTRIC: u32 = 5;
     pub const BUOYANCY: u32 = 6;
+    pub const LINEAR_DRAG: u32 = 7;
 }
 
 /// One GPU force-field entry — 48 bytes, 16-byte aligned.
@@ -246,6 +284,35 @@ impl GpuFieldEntry {
             params: p,
         }
     }
+
+    /// Linear drag toward a target/ambient flow velocity: a = k·(v_target − v_particle) —
+    /// see `LinearDragField`'s (CPU) doc comment for the real physics (Stokes drag /
+    /// Rayleigh friction) this mirrors exactly. River current, wind-blown sand, any scene
+    /// needing sustained directional flow instead of gravity settling into a static
+    /// pool/pile.
+    ///
+    /// - `target_velocity`: the ambient flow velocity particles relax toward
+    /// - `drag_coefficient`: relaxation rate k (1/time); decay timescale is 1/k
+    /// - `material_mask`: general bitmask (`1 << material_id`, OR together for several,
+    ///   or `Self::ALL_MATERIALS`) — NOT a single `material_id` like most other
+    ///   constructors here, matching `LinearDragField`'s own CPU-side parameter exactly
+    ///   for real CPU/GPU parity.
+    pub fn linear_drag(
+        target_velocity: glam::Vec2,
+        drag_coefficient: f32,
+        material_mask: u32,
+    ) -> Self {
+        let mut p = [0f32; 8];
+        p[0] = target_velocity.x;
+        p[1] = target_velocity.y;
+        p[2] = drag_coefficient;
+        Self {
+            field_type: field_type::LINEAR_DRAG,
+            material_mask,
+            _pad: [0; 2],
+            params: p,
+        }
+    }
 }
 
 /// Uniform buffer containing all active GPU force-field entries — 784 bytes.
@@ -335,3 +402,78 @@ const _: () = assert!(core::mem::size_of::<GpuSleepWakeParams>() == 80);
 /// class as `MAX_FORCE_FIELDS`.
 pub const NUM_BLOCKS_PER_DIM: usize = 16;
 pub const NUM_BLOCKS: usize = NUM_BLOCKS_PER_DIM * NUM_BLOCKS_PER_DIM; // 256
+
+/// Multi-field contact (GPU port, first slice — see project memory
+/// `locomotion_core_frictional_contact_2026-07-11`'s 2026-07-14 GPU-port entry): fixed
+/// capacity for the labeled contact point cloud (`+1.0` grip / `-1.0` rest) that the
+/// Newton-Raphson LR normal fit will read.
+///
+/// REAL BUG FOUND AND FIXED while building this: the first version of this bucketed
+/// points per exact GRID NODE (`grid_res² × capacity`) — this OOM'd the existing
+/// `gpu_grid_resolution_cost` regression test at grid_res=2048 (a ~4 GiB allocation),
+/// confirmed via the real failure, not predicted in advance. Fixed by bucketing per
+/// coarse BLOCK instead (`NUM_BLOCKS` = 256, fixed regardless of grid_res — the same
+/// spatial partition `particle_sort.wgsl` already uses), so total memory
+/// (`NUM_BLOCKS × MAX_CONTACT_POINTS_PER_BLOCK × 16 bytes` ≈ 16 MiB) is now CONSTANT
+/// at any grid resolution, matching how `active_block_ids`/`block_counts` are already
+/// sized. Trade-off, disclosed: a future `resolve_contact` pass processing a specific
+/// node must scan its own block's (and, for stencil spillover at a block boundary,
+/// neighboring blocks') point bucket and filter by real distance, rather than reading
+/// an exact per-node list directly — more per-node filtering work, but bounded,
+/// constant memory instead of a real OOM.
+///
+/// 4096 per block is a real, disclosed cap (like the CPU's own bounded caps, e.g.
+/// `fit_contact_normal_lr`'s 15-iteration Newton cap) — chosen generously since a
+/// block covers many cells' worth of interface, not just one node; the atomic
+/// slot-claim is bounds-checked (points beyond the cap are dropped, not undefined
+/// behavior), and `contact_point_counts` keeps counting past the cap so overflow is a
+/// real, observable signal, not silently absorbed.
+pub const MAX_CONTACT_POINTS_PER_BLOCK: usize = 4096;
+
+/// Debug/test-only uniform for `resolve_contact.wgsl`'s `debug_fit_normal_main` — picks
+/// which block's point cloud to run the Newton-Raphson LR normal fit against and what
+/// `node_pos` to center it on. Not part of the real per-substep pipeline; exists solely
+/// to verify `fit_contact_normal_lr`'s WGSL port in isolation, the same way CPU's own
+/// `fit_contact_normal_lr_tests` module unit-tests the fit separately from the full
+/// `resolve_contact` integration.
+/// Field order matters: `node_pos` (`vec2<f32>`) must start at an 8-byte-aligned
+/// offset per WGSL uniform-address-space rules (same reasoning as `GpuStepParams`'s
+/// own `gravity` field) — putting it FIRST (offset 0) satisfies that without needing
+/// explicit padding, unlike the u32 fields which only need 4-byte alignment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ContactDebugParams {
+    pub node_pos: glam::Vec2,
+    pub target_block: u32,
+    pub point_count: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<ContactDebugParams>() == 16);
+
+/// Directional (setae-style) grip friction — GPU mirror of `DirectionalContactGrip`
+/// (`src/spacetime/grid/mod.rs`). Always uploaded, every substep contact is active:
+/// `mu_easy == mu_resist` (both set to `SimConfig::contact_friction` when no directional
+/// bias is in play) makes `resolve_direction_aware` (`resolve_contact.wgsl`) reduce
+/// exactly to plain symmetric Coulomb friction — see that function's own doc for why
+/// this is ONE code path, not two. Field order: `easy_direction` first (8-byte
+/// alignment), matching `ContactDebugParams`' own convention.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuDirectionalGripParams {
+    pub easy_direction: glam::Vec2,
+    pub mu_easy: f32,
+    pub mu_resist: f32,
+}
+
+impl GpuDirectionalGripParams {
+    /// Plain symmetric Coulomb friction at `friction` — no directional bias.
+    pub fn symmetric(friction: f32) -> Self {
+        Self {
+            easy_direction: glam::Vec2::X,
+            mu_easy: friction,
+            mu_resist: friction,
+        }
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<GpuDirectionalGripParams>() == 16);

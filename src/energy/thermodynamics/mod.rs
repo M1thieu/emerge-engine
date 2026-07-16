@@ -14,5 +14,5 @@ pub use diffusion::{ThermalConfig, ThermalDiffusion};
 pub use scalar_field::{ScalarDiffusionConfig, ScalarDiffusionField};
 pub use transfer::{
     STEFAN_BOLTZMANN, entropy_change_heat_transfer, entropy_change_irreversible, heat_conduction,
-    heat_radiation, second_law_holds, thermal_diffusivity,
+    heat_radiation, saturating_uptake, second_law_holds, thermal_diffusivity,
 };

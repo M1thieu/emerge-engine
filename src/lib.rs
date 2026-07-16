@@ -48,6 +48,7 @@ pub use information::control;
 pub use information::measures;
 pub use matter::materials;
 pub use matter::particle;
+pub use spacetime::diff;
 pub use spacetime::grid;
 pub use spacetime::solver;
 pub use spacetime::transfer;
@@ -64,7 +65,7 @@ pub mod prelude;
 // `use emerge::Simulation` instead of `use emerge::solver::Simulation`.
 
 // Solver core
-pub use grid::{Cell, Grid};
+pub use grid::{Cell, DirectionalContactGrip, Grid};
 pub use particle::{Particle, Particles};
 pub use solver::Simulation;
 pub use solver::config::{SimConfig, SpawnRegion, SpawnShape};
@@ -91,7 +92,8 @@ pub use boundary::{
 pub use fields::Field;
 pub use fields::{
     AabbConfinementField, BuoyancyField, ChemotaxisField, CoulombField, GravityWellField,
-    NBodyGravityField, RadialConfinementField, UniformElectricField,
+    LinearDragField, NBodyGravityField, RadialConfinementField, SpatialDragField,
+    UniformElectricField,
 };
 
 // State queries + density export for rendering
@@ -144,7 +146,7 @@ pub fn estimate_particle_volumes(particles: &mut Vec<Particle>, grid_res: usize)
 
 // Thermodynamics
 pub use thermodynamics::{
-    ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion,
+    ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
 };
 
 // Diagnostics + plugin system

@@ -1,13 +1,17 @@
-﻿extern crate emerge_engine as emerge;
+extern crate emerge_engine as emerge;
 
 use std::collections::HashMap;
 
 use emerge::fields::{
-    AabbConfinementField, CoulombField, GravityWellField, RadialConfinementField,
+    AabbConfinementField, CoulombField, GravityWellField, LinearDragField, RadialConfinementField,
+    SpatialDragField,
 };
-use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
+use emerge::particle::{Particle, Particles};
+use emerge::thermodynamics::{
+    ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
+};
 use emerge::{
-    DruckerPragerMaterial, Elastic, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial,
+    DruckerPragerMaterial, Elastic, Field, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial,
     NewtonianFluidMaterial, RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
     StomakhinMaterial, VonMisesMaterial,
 };
@@ -363,6 +367,290 @@ fn phase_transition_switches_material_ids() {
     assert_eq!(fluid_count + jelly_count, solver.particles().len());
 }
 
+/// Real trophic/predation composition: a "prey" material converts to an "eaten"
+/// material within a predator's sensing range, at a rate driven by `saturating_uptake`
+/// (Holling Type II / Michaelis-Menten / Monod -- see its doc) applied to LOCAL PREY
+/// DENSITY, using ONLY existing primitives -- `particles_near` (real O(candidates)
+/// proximity query) to gather both predator positions and nearby prey, then direct
+/// `particles_mut()` material reassignment (same composition pattern as
+/// `resource_field_depletes_near_consumer_then_regrows` above).
+///
+/// This replaced an earlier version of this test that used a hard "everyone within
+/// radius X dies, every frame" rule -- that rule had NO ecological law behind it (see
+/// `saturating_uptake`'s doc for why a hard cutoff is the wrong shape: real consumption
+/// saturates with density, it doesn't switch on/off at a distance). The sensing RADIUS
+/// itself is legitimate (real predators have a finite detection/reach range) -- what
+/// was wrong was making the EATING DECISION binary instead of a continuous, density-
+/// driven rate. `eat_budget` converts that continuous rate into discrete particle
+/// conversions across frames -- see the new stronger assertion below (`eaten_count <
+/// prey_in_range_initially`) proving consumption is genuinely rate-limited now, not
+/// instantaneous.
+///
+/// IMPORTANT correction to a prior (stale) assumption, still true here: `add_phase_rule`
+/// (the automatic, every-substep hook) CANNOT do this alone -- its closure signature is
+/// `Fn(&Particle) -> bool`, a single particle with no access to other particles or the
+/// spatial hash, so proximity-to-a-predator is NOT expressible inside it. The real,
+/// already-supported mechanism is the EXTERNAL caller gathering proximity data first
+/// (via `particles_near`), then acting on it directly.
+#[test]
+fn trophic_predation_depletes_prey_near_predator() {
+    const PREY_ID: u32 = 0;
+    const PREDATOR_ID: u32 = 1;
+    const EATEN_ID: u32 = 2;
+    const SENSE_RADIUS: f32 = 3.0; // predator's real, finite sensing/reach range
+    // Consumption is a Holling Type II / Michaelis-Menten / Monod rate (see
+    // `saturating_uptake`'s doc) driven by local PREY DENSITY within sensing range --
+    // NOT "everyone within radius dies instantly, every frame" (the old rule here had
+    // no ecological law behind it at all). `eat_budget` converts the continuous
+    // prey/second rate into discrete particle conversions over time, the same
+    // rate-times-dt-then-discretize idea used for the continuous resource field above,
+    // applied here to a countable population instead.
+    const MAX_CONSUMPTION_RATE: f32 = 40.0; // prey/s at saturating (high) local density
+    const HALF_SATURATION_DENSITY: f32 = 0.2; // prey per unit area; test parameter
+
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    // Prey spread across a wide strip; predator clustered at the LEFT end only --
+    // real proof needs both a "near" case (should deplete) and a "far" case (should not).
+    let prey_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(24, 2),
+        box_center: Vec2::new(16.0, 16.0),
+        material_id: PREY_ID,
+        ..SpawnRegion::default()
+    };
+    let predator_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(2, 2),
+        box_center: Vec2::new(6.0, 16.0),
+        material_id: PREDATOR_ID,
+        ..SpawnRegion::default()
+    };
+
+    let mut solver = Simulation::new(config, prey_spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(50.0, 100.0)))
+        .with_material(PREDATOR_ID, Box::new(NeoHookeanMaterial::new(50.0, 100.0)))
+        .with_material(EATEN_ID, Box::new(NeoHookeanMaterial::new(50.0, 100.0)));
+    let _ = solver.add_body(predator_spawn);
+
+    let predator_count_before = solver
+        .particles()
+        .iter()
+        .filter(|p| p.material_id == PREDATOR_ID)
+        .count();
+    assert!(predator_count_before > 0, "test setup: no predator spawned");
+
+    // Real predation loop, exactly as a scene/LP would drive it every frame: gather
+    // predator positions FIRST (immutable borrow, dropped before the mutable call),
+    // then convert prey directly via `particles_mut()` -- same composition pattern as
+    // `resource_field_depletes_near_consumer_then_regrows` above, needed here because
+    // the RATE (not a predicate) decides how many get eaten this frame, not which ones
+    // match a fixed condition.
+    let sense_area = std::f32::consts::PI * SENSE_RADIUS * SENSE_RADIUS;
+    let dt = solver.config().dt;
+    let mut eat_budget = 0.0f32;
+    let mut prey_in_range_initially = 0usize;
+    for step_i in 0..5 {
+        let predator_positions: Vec<Vec2> = solver
+            .particles()
+            .iter()
+            .filter(|p| p.material_id == PREDATOR_ID)
+            .map(|p| p.x)
+            .collect();
+        let mut nearby_prey: Vec<usize> = predator_positions
+            .iter()
+            .flat_map(|&pp| solver.particles_near(pp, SENSE_RADIUS))
+            .filter(|&i| solver.particles().get(i).material_id == PREY_ID)
+            .collect();
+        nearby_prey.sort_unstable();
+        nearby_prey.dedup();
+        if step_i == 0 {
+            prey_in_range_initially = nearby_prey.len();
+        }
+
+        let local_density = nearby_prey.len() as f32 / sense_area;
+        let rate = saturating_uptake(local_density, MAX_CONSUMPTION_RATE, HALF_SATURATION_DENSITY);
+        eat_budget += rate * dt;
+        let to_eat = (eat_budget.floor() as usize).min(nearby_prey.len());
+        eat_budget -= to_eat as f32;
+
+        let particles = solver.particles_mut();
+        for &i in nearby_prey.iter().take(to_eat) {
+            particles.material_id[i] = EATEN_ID;
+        }
+        solver.step();
+    }
+
+    let eaten_count = solver
+        .particles()
+        .iter()
+        .filter(|p| p.material_id == EATEN_ID)
+        .count();
+    let surviving_prey_count = solver
+        .particles()
+        .iter()
+        .filter(|p| p.material_id == PREY_ID)
+        .count();
+    let predator_count_after = solver
+        .particles()
+        .iter()
+        .filter(|p| p.material_id == PREDATOR_ID)
+        .count();
+
+    println!(
+        "trophic_predation_depletes_prey_near_predator: eaten={eaten_count} \
+         surviving_prey={surviving_prey_count} predators={predator_count_after} \
+         prey_in_range_initially={prey_in_range_initially}"
+    );
+
+    assert!(
+        eaten_count > 0,
+        "no prey near the predator was depleted -- density-driven saturating \
+         consumption isn't working"
+    );
+    assert!(
+        surviving_prey_count > 0,
+        "ALL prey were depleted -- expected only NEAR prey to convert, far prey \
+         (spread across a 24-wide strip vs a radius-3 sensing range) should survive"
+    );
+    assert!(
+        eaten_count < prey_in_range_initially,
+        "consumption should be rate-limited by saturating_uptake, not instantaneous -- \
+         eaten {eaten_count} should be LESS than the {prey_in_range_initially} prey that \
+         were actually in sensing range, proving the predator doesn't just eat \
+         everything in range in one shot"
+    );
+    assert_eq!(
+        predator_count_after, predator_count_before,
+        "predator material itself must be untouched by its own predation rule"
+    );
+}
+
+/// Real logistic growth (Verhulst 1838, `dφ/dt = r·φ·(1−φ/K)`) reused here as a resource
+/// field's regrowth source -- see `resource_regrowth_matches_logistic_curve`
+/// (tests/accuracy.rs) for the isolated proof this matches the real closed-form solution
+/// to <0.3% error. `R`/`K` here are test parameters, not a claimed real biological
+/// constant -- same honesty distinction as that test.
+const RESOURCE_R: f32 = 1.0;
+const RESOURCE_K: f32 = 1.0;
+fn resource_regrowth_source(_p: &Particle, phi: f32) -> f32 {
+    RESOURCE_R * phi * (1.0 - phi / RESOURCE_K)
+}
+
+/// Real "grass gets eaten, then grows back" composition: a resource field
+/// (`ScalarDiffusionField`, `particle.temperature` as the carrier, real logistic-growth
+/// source) that a "consumer" depletes locally each frame via existing primitives
+/// (`particles_near` to find nearby resource particles, direct `particles_mut()`
+/// mutation to remove some -- the same composition pattern
+/// `trophic_predation_depletes_prey_near_predator` above already proved), THEN recovers
+/// via the field's own already-verified regrowth term once consumption stops. Proves
+/// both halves of a real depletable-and-renewable resource, not just one.
+#[test]
+fn resource_field_depletes_near_consumer_then_regrows() {
+    const EAT_RADIUS: f32 = 3.0; // consumer's real, finite sensing/reach range
+    // Consumption rate is `saturating_uptake(φ, EAT_MAX_RATE, EAT_HALF_SATURATION)` --
+    // Holling Type II / Michaelis-Menten / Monod (see `saturating_uptake`'s doc), NOT a
+    // flat per-step rate. A flat rate keeps consuming at full speed right up until the
+    // resource hits zero (unrealistic -- real consumption slows as the resource thins),
+    // and needed a `.max(0.0)` clamp to avoid going negative. Saturating uptake fixes
+    // both: rate naturally -> 0 as φ -> 0, so depletion genuinely decelerates near
+    // zero instead of being clamped there.
+    const EAT_MAX_RATE: f32 = 1.0; // real max consumption rate (Δφ/s) at high resource density
+    const EAT_HALF_SATURATION: f32 = 0.5; // test parameter, not a claimed biological constant
+
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    // Resource spread across a wide strip; consumer fixed at the LEFT end only --
+    // same near/far proof shape as the trophic test above.
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(24, 2),
+        box_center: Vec2::new(16.0, 16.0),
+        ..SpawnRegion::default()
+    };
+    let consumer_pos = Vec2::new(6.0, 16.0);
+
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(50.0, 100.0)));
+    {
+        // Full resource everywhere at the start (K=1.0 carrying capacity).
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.temperature[i] = RESOURCE_K;
+        }
+    }
+    let mut field = ScalarDiffusionField::for_temperature(
+        ScalarDiffusionConfig {
+            diffusivity: 0.0, // isolate per-particle depletion/regrowth from spatial spread
+            decay_rate: 0.0,
+            ambient: RESOURCE_K,
+        },
+        solver.config().grid_res,
+    );
+    field.source = Some(resource_regrowth_source);
+    solver.attach_scalar_field(field);
+
+    // Phase 1: consumer present, depletes nearby resource every step.
+    for _ in 0..30 {
+        let nearby: Vec<usize> = solver.particles_near(consumer_pos, EAT_RADIUS).collect();
+        let particles = solver.particles_mut();
+        for i in nearby {
+            let phi = particles.temperature[i];
+            let rate = saturating_uptake(phi, EAT_MAX_RATE, EAT_HALF_SATURATION);
+            particles.temperature[i] = (phi - rate * 0.1).max(0.0);
+        }
+        solver.step();
+    }
+
+    let near_after_eating: f32 = solver
+        .particles_near(consumer_pos, EAT_RADIUS)
+        .map(|i| solver.particles().get(i).temperature)
+        .sum::<f32>()
+        / solver.particles_near(consumer_pos, EAT_RADIUS).count() as f32;
+    let far_pos = Vec2::new(26.0, 16.0);
+    let far_after_eating: f32 = solver
+        .particles_near(far_pos, EAT_RADIUS)
+        .map(|i| solver.particles().get(i).temperature)
+        .sum::<f32>()
+        / solver.particles_near(far_pos, EAT_RADIUS).count() as f32;
+
+    println!(
+        "resource_field_depletes_near_consumer_then_regrows: after eating -- \
+         near={near_after_eating:.3} far={far_after_eating:.3}"
+    );
+    assert!(
+        near_after_eating < RESOURCE_K * 0.5,
+        "resource near the consumer should be well depleted, got {near_after_eating:.3}"
+    );
+    assert!(
+        far_after_eating > RESOURCE_K * 0.8,
+        "resource far from the consumer should be untouched, got {far_after_eating:.3}"
+    );
+
+    // Phase 2: consumer leaves -- pure regrowth, no more depletion.
+    for _ in 0..80 {
+        solver.step();
+    }
+    let near_after_regrowth: f32 = solver
+        .particles_near(consumer_pos, EAT_RADIUS)
+        .map(|i| solver.particles().get(i).temperature)
+        .sum::<f32>()
+        / solver.particles_near(consumer_pos, EAT_RADIUS).count() as f32;
+
+    println!(
+        "resource_field_depletes_near_consumer_then_regrows: after regrowth -- near={near_after_regrowth:.3}"
+    );
+    assert!(
+        near_after_regrowth > near_after_eating + 0.2,
+        "depleted resource should have genuinely regrown once the consumer left: \
+         was {near_after_eating:.3}, now {near_after_regrowth:.3}"
+    );
+}
+
 #[test]
 fn small_grid_validation_is_consistent_with_grid_constructor() {
     let config = SimConfig {
@@ -461,6 +749,147 @@ fn radial_confinement_keeps_particles_inside() {
         assert!(
             dist <= radius + 2.0,
             "confinement: particle {i} escaped (dist={dist:.2}, radius={radius:.2})"
+        );
+    }
+}
+
+/// `LinearDragField` (Stokes drag / Rayleigh friction toward a target flow velocity, see its
+/// doc comment for the real physics) has a real, analytically checkable prediction: with no
+/// other forces acting, velocity should relax as `v(t) = target + (v0 - target)*exp(-k*t)`.
+/// Uses a whole block of particles starting at rest (not just one) — since every particle
+/// feels the identical field from identical initial velocity, the block translates rigidly
+/// (zero relative internal motion => zero confounding elastic stress), so the AVERAGE
+/// velocity across the block should still track the single-particle ODE solution closely.
+#[test]
+fn linear_drag_field_matches_analytical_relaxation() {
+    let target_velocity = Vec2::new(3.0, 0.0);
+    let k = 2.0_f32;
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let spawn = SpawnRegion {
+        box_center: Vec2::splat(16.0),
+        initial_velocity_scale: 0.0,
+        ..small_spawn_config(16.0)
+    };
+    let field = LinearDragField::new(target_velocity, k, LinearDragField::ALL_MATERIALS);
+
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_force_field(Box::new(field));
+
+    const STEPS: usize = 10;
+    const DT: f32 = 0.1;
+    solver.step_n(STEPS);
+    let elapsed = STEPS as f32 * DT;
+
+    let avg_v: Vec2 =
+        solver.particles().iter().map(|p| p.v).sum::<Vec2>() / solver.particles().len() as f32;
+    // Analytical solution starting from v0=0: v(t) = target * (1 - exp(-k*t))
+    let expected = target_velocity * (1.0 - (-k * elapsed).exp());
+
+    println!(
+        "linear_drag_field_matches_analytical_relaxation: avg_v={avg_v:?} expected={expected:?}"
+    );
+    assert!(avg_v.is_finite(), "non-finite velocity: {avg_v:?}");
+    let rel_err = (avg_v - expected).length() / expected.length().max(1e-3);
+    assert!(
+        rel_err < 0.1,
+        "LinearDragField velocity should match the analytical exponential relaxation: \
+         avg_v={avg_v:?} expected={expected:?} rel_err={rel_err:.3}"
+    );
+}
+
+/// Real, exact potential-flow solution: uniform stream `CYLINDER_U` (in +x) superposed
+/// with a doublet = flow around a circular cylinder of radius `CYLINDER_A` centered at
+/// the origin -- the classical, textbook-exact solution to 2D incompressible potential
+/// flow (Laplace's equation), confirmed against MIT 16.unified fluid mechanics lecture
+/// notes and Caltech's "An Internet Book on Fluid Dynamics" (both real sources, checked
+/// before writing this, not recalled from memory). Polar form:
+/// `v_r = U·cos(θ)·(1−a²/r²)`, `v_θ = −U·sin(θ)·(1+a²/r²)`. Independently re-derived
+/// into Cartesian form here (own algebra, not copied):
+///   u(x,y) = U·(1 − a²·(x²−y²)/(x²+y²)²)
+///   v(x,y) = −2·U·a²·x·y/(x²+y²)²
+/// `SpatialDragField::target_velocity_fn` requires a plain `fn` pointer (no captured
+/// state), so `CYLINDER_U`/`CYLINDER_A` are module-level constants, not closure captures.
+const CYLINDER_U: f32 = 2.0; // free-stream speed
+const CYLINDER_A: f32 = 3.0; // cylinder radius
+fn potential_flow_around_cylinder(pos: Vec2) -> Vec2 {
+    let r2 = pos.x * pos.x + pos.y * pos.y;
+    if r2 < 1.0e-6 {
+        return Vec2::ZERO; // singular at the origin -- inside the cylinder, never sampled
+    }
+    let a2 = CYLINDER_A * CYLINDER_A;
+    let u = CYLINDER_U * (1.0 - a2 * (pos.x * pos.x - pos.y * pos.y) / (r2 * r2));
+    let v = -2.0 * CYLINDER_U * a2 * pos.x * pos.y / (r2 * r2);
+    Vec2::new(u, v)
+}
+
+/// The real, defining boundary condition of this solution: flow cannot pass through the
+/// solid cylinder, so the RADIAL velocity component must be exactly zero everywhere on
+/// its surface (r=a) -- a genuine, checkable structural fact about this exact formula,
+/// not assumed. Checked at 10 angles around the full circle.
+#[test]
+fn potential_flow_satisfies_no_penetration_at_cylinder_surface() {
+    for angle_deg in [0, 30, 60, 90, 120, 150, 180, 225, 270, 315] {
+        let theta = (angle_deg as f32).to_radians();
+        let pos = Vec2::new(CYLINDER_A * theta.cos(), CYLINDER_A * theta.sin());
+        let vel = potential_flow_around_cylinder(pos);
+        let radial_dir = pos.normalize();
+        let v_radial = vel.dot(radial_dir);
+        assert!(
+            v_radial.abs() < 1.0e-3,
+            "no-penetration violated at angle {angle_deg}°: v_radial={v_radial:.5} \
+             (should be ~0 -- flow must not cross the cylinder surface)"
+        );
+    }
+}
+
+/// The real asymptotic property of this solution: far from the cylinder (r >> a), the
+/// doublet's influence vanishes as 1/r² and the flow must approach the undisturbed
+/// uniform stream (U, 0).
+#[test]
+fn potential_flow_approaches_free_stream_far_from_cylinder() {
+    let far_pos = Vec2::new(CYLINDER_A * 50.0, CYLINDER_A * 50.0);
+    let vel = potential_flow_around_cylinder(far_pos);
+    let expected = Vec2::new(CYLINDER_U, 0.0);
+    assert!(
+        (vel - expected).length() < 0.01,
+        "far-field velocity {vel:?} should approach the free stream {expected:?}"
+    );
+}
+
+/// `SpatialDragField`'s acceleration at any particle must match `k·(target_velocity_fn(x)
+/// − v)` EXACTLY (not just "particles moved somewhere plausible") -- checked at several
+/// real positions around the cylinder, each with its own known velocity.
+#[test]
+fn spatial_drag_field_acceleration_matches_potential_flow_formula() {
+    let k = 2.0_f32;
+    let field = SpatialDragField::new(
+        potential_flow_around_cylinder,
+        k,
+        LinearDragField::ALL_MATERIALS,
+    );
+    let cases = [
+        (Vec2::new(10.0, 5.0), Vec2::new(0.3, -0.2)),
+        (Vec2::new(-8.0, 3.0), Vec2::new(-0.1, 0.4)),
+        (Vec2::new(4.0, -6.0), Vec2::new(0.0, 0.0)),
+    ];
+    for (pos, v0) in cases {
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.x = pos;
+        p.v = v0;
+        let particles = Particles::from(vec![p]);
+
+        let acc = field.acceleration(&particles, 0);
+        let expected_target = potential_flow_around_cylinder(pos);
+        let expected_acc = k * (expected_target - v0);
+        assert!(
+            (acc - expected_acc).length() < 1.0e-4,
+            "at pos={pos:?}: acceleration {acc:?} should match k*(target-v)={expected_acc:?} \
+             exactly (target={expected_target:?})"
         );
     }
 }
@@ -650,6 +1079,78 @@ fn thermal_uniform_temperature_stays_stable() {
             p.temperature
         );
     }
+}
+
+/// Real day-night/seasonal cycle composition: `Simulation::thermal_config_mut` (the one
+/// small new accessor added for this) lets a scene externally drive `ThermalConfig::
+/// ambient` over time, and the ALREADY-EXISTING Newton-cooling term (`dT/dt =
+/// -k_c*(T-ambient)`) does the rest — no new physics, just the missing hook to reach it
+/// from outside the solver. Proves both directions: temperature genuinely tracks a "day"
+/// (hot) ambient, then genuinely tracks a "night" (cold) ambient after the SAME accessor
+/// changes it mid-run — a real external oscillation, not a one-shot config value.
+#[test]
+fn thermal_config_mut_drives_day_night_ambient_cycle() {
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let initial_temp = 20.0_f32;
+    let day_ambient = 100.0_f32;
+    let night_ambient = -20.0_f32;
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            conductivity: 0.0, // isolate the ambient-relaxation term from spatial diffusion
+            heat_capacity: 1000.0,
+            ambient: initial_temp,
+            cooling_rate: 0.5,
+            grid_cell_size: 0.1,
+        },
+        config.grid_res,
+    );
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_thermal(thermal);
+    {
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.temperature[i] = initial_temp;
+        }
+    }
+
+    // "Day": set a hot ambient via the new accessor, step, expect warming toward it.
+    solver.thermal_config_mut().unwrap().ambient = day_ambient;
+    solver.step_n(80);
+    let mean_temp_day: f32 = solver
+        .particles()
+        .iter()
+        .map(|p| p.temperature)
+        .sum::<f32>()
+        / solver.particles().len() as f32;
+    assert!(
+        mean_temp_day > initial_temp + 10.0,
+        "day phase: mean temp {mean_temp_day:.2} should have risen well above initial \
+         {initial_temp} toward day_ambient={day_ambient}"
+    );
+
+    // "Night": the SAME accessor now points ambient at a cold value -- proves this is a
+    // real, live, externally-driven oscillation, not a config value baked in at construction.
+    solver.thermal_config_mut().unwrap().ambient = night_ambient;
+    solver.step_n(200);
+    let mean_temp_night: f32 = solver
+        .particles()
+        .iter()
+        .map(|p| p.temperature)
+        .sum::<f32>()
+        / solver.particles().len() as f32;
+    assert!(
+        mean_temp_night < mean_temp_day - 10.0,
+        "night phase: mean temp {mean_temp_night:.2} should have cooled well below the day \
+         value {mean_temp_day:.2} toward night_ambient={night_ambient}"
+    );
+    println!(
+        "thermal_config_mut_drives_day_night_ambient_cycle: initial={initial_temp} \
+         day_mean={mean_temp_day:.2} night_mean={mean_temp_night:.2}"
+    );
 }
 
 // --- LP integration API tests ---

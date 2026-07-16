@@ -4,19 +4,22 @@ use crate::materials::registry::MaterialRegistry;
 use crate::particle::Particle;
 use crate::solver::config::SimConfig;
 
+mod device_lost;
 mod particles;
+mod profiling;
 mod queries;
+mod readback;
 mod spawn;
 mod step;
 
 use super::buffers::GpuBuffers;
 use super::pipeline::SimPipelines;
-use super::step_params::{
-    GpuFieldEntry, GpuImpulseEntry, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS,
-};
+use super::step_params::{GpuFieldEntry, GpuImpulseEntry, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS};
 
 /// Workgroup sizes — must match `@workgroup_size(...)` in the WGSL shaders.
-const WG_GRID: u32 = 8; // grid_clear and grid_update: 8×8 2D workgroups
+/// grid_clear and grid_update are dispatched by active-block slot (`2 * NUM_BLOCKS`
+/// workgroups, see grid_clear.wgsl/grid_update.wgsl), not grid resolution — no WG_GRID
+/// constant needed for either any more.
 const WG_PARTICLES: u32 = 64; // p2g and g2p: 64-wide 1D workgroups
 
 /// Shared between the wgpu map_async callback (any thread) and step_frame's poll.
@@ -103,15 +106,37 @@ pub struct GpuSimulation {
     /// itself can be built once and only needs rebuilding when `spawn_region`
     /// reallocates `buffers.particles` (see `rebuild_bind_group_pool`).
     bind_group_pool: Vec<wgpu::BindGroup>,
+    /// Group 1 (contact subsystem) bind group — built exactly once, see
+    /// `SimPipelines::make_contact_bind_group`'s doc for why it never needs rebuilding
+    /// the way `bind_group_pool` does.
+    contact_bind_group: wgpu::BindGroup,
     /// Real spatial acceleration for `particles_near`/`count_near`/`group_centroid` --
     /// ported from `solver::Simulation`'s already-proven `SpatialHash` (was previously
     /// wired into the CPU-only `Simulation` but not `GpuSimulation`, meaning every
     /// caller of these three query methods on the GPU path -- the one LP actually uses --
     /// paid a full O(N) linear scan per call regardless of how local the query was.
-    /// Rebuilt once per `step_frame()` (and after any explicit particle sync), same
-    /// ~1-frame staleness tolerance already accepted everywhere else these queries read
-    /// the CPU mirror.
-    spatial_hash: crate::solver::spatial_hash::SpatialHash,
+    ///
+    /// Lazily rebuilt (2026-07-12): measured 6.76ms at 50k particles in isolation --
+    /// real, not negligible, and `step_frame()`'s default `readback_stride=1` means a
+    /// readback (and formerly, an eager rebuild) completes EVERY frame regardless of
+    /// whether any query runs that frame. `RefCell` + `spatial_hash_dirty` defer the
+    /// actual rebuild to the first query call after new data lands, instead of paying
+    /// it unconditionally on every readback -- see `ensure_spatial_hash_fresh` in
+    /// `queries.rs`. This brings the GPU path in line with a discipline the CPU
+    /// `Simulation` already follows for the same queries (`ARCHITECTURE.md` §4: hash
+    /// rebuilt once per external `step()`, "because LP queries happen between frames,
+    /// never mid-substep") -- the GPU path was rebuilding MORE eagerly than that, for
+    /// the same consumer. Same real-world precedent as Box2D's incremental broad-phase
+    /// (only re-touch what actually needs it) and SPH's Verlet-list neighbor caching
+    /// (retain a neighbor structure across steps rather than rebuilding every one) --
+    /// not an invented shortcut. Zero staleness change: a query after a dirty readback
+    /// still sees the exact same freshly-landed positions, just computed on demand.
+    spatial_hash: std::cell::RefCell<crate::solver::spatial_hash::SpatialHash>,
+    /// Set whenever `self.particles` changes and the spatial hash hasn't been rebuilt
+    /// to match yet. Cleared by `ensure_spatial_hash_fresh` (queries.rs) on the first
+    /// query after that, or by `rebuild_spatial_hash` (spawn.rs) for callers that need
+    /// it fresh immediately (e.g. right after `spawn_region` returns a usable range).
+    spatial_hash_dirty: std::cell::Cell<bool>,
     /// CPU-side wall-clock breakdown of the last `step_frame()` call (cfl_scan_ns,
     /// encode_ns, submit_ns, readback_ns, total_ns) — `Instant::now()` calls are
     /// themselves nanosecond-cost, so these are always recorded, not gated behind
@@ -128,7 +153,9 @@ const PROFILE_PASS_LABELS: &[&str] = &[
     "active_block_refresh (sort)",
     "grid_clear",
     "p2g",
+    "gather_contact_points",
     "grid_update",
+    "resolve_contact",
     "g2p",
     "particles_update",
     "force_fields",
@@ -252,6 +279,9 @@ impl GpuSimulation {
         } else {
             Vec::new()
         };
+        // Contact group's buffers are all fixed grid_res²-sized, never reallocated by
+        // spawn_region -- safe to build unconditionally, unlike bind_group_pool above.
+        let contact_bind_group = pipelines.make_contact_bind_group(&device, &buffers);
 
         let mut spatial_hash = crate::solver::spatial_hash::SpatialHash::new(config.grid_cell_size);
         spatial_hash.rebuild(
@@ -284,7 +314,9 @@ impl GpuSimulation {
             profiling: None,
             last_cpu_timings: (0.0, 0.0, 0.0, 0.0, 0.0),
             bind_group_pool,
-            spatial_hash,
+            contact_bind_group,
+            spatial_hash: std::cell::RefCell::new(spatial_hash),
+            spatial_hash_dirty: std::cell::Cell::new(false),
         }
     }
 
@@ -362,153 +394,6 @@ impl GpuSimulation {
     /// Stays in VRAM between frames; read-only from the render side.
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.buffers.particles
-    }
-
-    /// Verification-only accessor: read back `sorted_particle_ids` as a `Vec<u32>`.
-    /// Used by tests to confirm the particle_sort pipeline produces a valid permutation —
-    /// not part of the render/game-loop API.
-    pub fn sorted_particle_ids_blocking(&self) -> Vec<u32> {
-        self.buffers.readback_u32_blocking(
-            &self.device,
-            &self.queue,
-            &self.buffers.sorted_particle_ids,
-            self.particle_count,
-        )
-    }
-
-    /// Test/diagnostic readback for the GPU sparse grid Phase 1 active-block list — the
-    /// first `active_block_count_blocking()` entries are valid; the rest are stale/unused.
-    pub fn active_block_ids_blocking(&self) -> Vec<u32> {
-        self.buffers.readback_u32_blocking(
-            &self.device,
-            &self.queue,
-            &self.buffers.active_block_ids,
-            NUM_BLOCKS,
-        )
-    }
-
-    /// Test/diagnostic readback for how many entries in `active_block_ids_blocking()` are
-    /// valid this frame.
-    pub fn active_block_count_blocking(&self) -> u32 {
-        self.buffers.readback_u32_blocking(
-            &self.device,
-            &self.queue,
-            &self.buffers.active_block_count,
-            1,
-        )[0]
-    }
-
-    /// Test/diagnostic readback of the dense grid buffer — 4 f32 per cell (momentum.x,
-    /// momentum.y, mass, _pad), same field order as the WGSL `Cell` struct, flat-indexed
-    /// `(y * grid_res + x) * 4`. Lets tests verify grid_clear actually zeroed cells far from
-    /// any particle (the failure mode a block-boundary mapping bug would produce: stale,
-    /// never-cleared mass/momentum left behind in an unrelated block).
-    pub fn grid_cells_blocking(&self) -> Vec<f32> {
-        let cell_floats = self.config.grid_res * self.config.grid_res * 4;
-        self.buffers.readback_f32_blocking(
-            &self.device,
-            &self.queue,
-            &self.buffers.grid,
-            cell_floats,
-        )
-    }
-
-    /// Real, honest report of why this instance's device was lost, if it ever
-    /// was — `None` in ordinary operation. Automatically wired for `new()`
-    /// instances; `with_device()` instances need one explicit call to
-    /// `enable_device_lost_detection()` first (see that method's doc for why
-    /// it isn't automatic there). Once set, `step_frame` and the blocking sync
-    /// methods become safe no-ops instead of panicking on a dead device —
-    /// callers that care should poll this rather than assume silence means
-    /// healthy.
-    pub fn device_lost_reason(&self) -> Option<String> {
-        self.device_lost.lock().ok().and_then(|g| g.clone())
-    }
-
-    /// Opt in to real device-lost detection (the confirmed real cause of
-    /// emerge issue #10 — a genuine `Out of Memory` device loss under
-    /// sustained load on slow/software GPU backends; see project memory
-    /// `gpu_readback_error_path_bug_issue10`). Called automatically by `new()`
-    /// (which owns its device exclusively, so it's always safe there). NOT
-    /// automatic for `with_device()` (shared-device use, e.g. a renderer on the
-    /// same device as this sim) because a wgpu device can only have ONE
-    /// lost-callback (and, as of 2026-07-08, only one uncaptured-error handler
-    /// too — same `Option<Arc<dyn Handler>>` single-slot storage internally,
-    /// confirmed by reading wgpu-27.0.1's `ErrorSinkRaw`) — auto-registering
-    /// here could silently overwrite a caller's own handler. Call this
-    /// explicitly after `with_device()` if you (like LP) don't have your own
-    /// device-lost handling and want emerge's; don't call it if you've already
-    /// registered your own callback/handler on this device — the second
-    /// registration wins and the first is silently lost (this is wgpu's own
-    /// behavior, not something this method can prevent).
-    ///
-    /// ALSO installs an uncaptured-error handler (2026-07-08). wgpu's default
-    /// behavior for ANY uncaptured error is an unconditional panic
-    /// (`panic!("wgpu error: {err}")`, confirmed by reading wgpu-27.0.1's
-    /// `default_error_handler`) — this handler replaces that default and
-    /// **never panics**, regardless of what the error says. That "never" is
-    /// load-bearing, not a simplification: an earlier version of this handler
-    /// tried to be more precise — classify errors naming a destroyed/lost
-    /// resource as an inferred device loss (no panic), but still panic for
-    /// anything else so a genuine, unrelated validation bug wouldn't be
-    /// silently swallowed. That version was reproduced crashing LOCALLY
-    /// (forcing the D3D12 WARP adapter — the same backend windows-latest CI
-    /// uses — instead of waiting on another CI round-trip) with the full
-    /// backtrace showing the panic originated from THIS handler's own `panic!`
-    /// call, invoked synchronously from inside `wgpu_core::Queue::submit`'s
-    /// internal error path — and unwinding a panic from there is what produced
-    /// `STATUS_STACK_BUFFER_OVERRUN`, not the error itself. In other words:
-    /// panicking from ANY code reachable from this callback is unsafe on this
-    /// backend, independent of whether the message looks like a device-loss
-    /// artifact or a real bug — so the "still panic for real bugs" branch was
-    /// itself the crash, not a safety net. The fix: never panic here, full
-    /// stop. Every uncaptured error sets `device_lost` (so `is_device_lost()`'s
-    /// existing no-op guards take over) and is `eprintln!`'d in full so it's
-    /// still visible for debugging — just never re-thrown as a Rust panic from
-    /// inside this specific callback context.
-    pub fn enable_device_lost_detection(&self) {
-        let flag = self.device_lost.clone();
-        self.device
-            .set_device_lost_callback(move |reason, message| {
-                *flag.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(format!("{reason:?}: {message}"));
-            });
-
-        let flag = self.device_lost.clone();
-        self.device
-            .on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
-                let message = error.to_string();
-                let mut guard = flag.lock().unwrap_or_else(|e| e.into_inner());
-                if guard.is_none() {
-                    *guard = Some(format!("(uncaptured wgpu error) {message}"));
-                }
-                drop(guard);
-                eprintln!(
-                    "emerge: uncaptured wgpu error, treating device as unusable from \
-                     here (see GpuSimulation::enable_device_lost_detection's doc for \
-                     why this never panics): {message}"
-                );
-            }));
-    }
-
-    fn is_device_lost(&self) -> bool {
-        self.device_lost
-            .lock()
-            .map(|g| g.is_some())
-            .unwrap_or(false)
-    }
-
-    /// Download particles from GPU to CPU synchronously (diagnostics / one-shot use).
-    /// Prefer the async readback path in step_frame for per-frame use.
-    pub fn download_particles_blocking(&mut self) {
-        let flag = self
-            .buffers
-            .begin_readback(&self.device, &self.queue, self.particle_count);
-        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        if let Ok(mut g) = flag.lock() {
-            g.take();
-        }
-        self.particles = self.buffers.finish_readback(self.particle_count);
     }
 
     /// Read-only access to the CPU particle mirror (one frame behind GPU when strided).
@@ -606,243 +491,8 @@ impl GpuSimulation {
     }
 }
 
+// White-box device-lost tests -- split into their own file (was ~240 lines inline
+// here), see device_lost_tests.rs's own doc comment for why it must stay a
+// submodule (super::* private-field access) rather than a standalone integration test.
 #[cfg(test)]
-mod device_lost_tests {
-    use super::*;
-    use crate::materials::registry::MaterialRegistry;
-    use crate::materials::{FromSI, NeoHookeanMaterial};
-    use crate::solver::config::{SimConfig, SpawnRegion};
-    use glam::{IVec2, Vec2};
-
-    fn gpu_available() -> bool {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::None,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .is_ok()
-    }
-
-    /// Real, white-box verification of the device-lost guard added for emerge
-    /// issue #10 (see project memory gpu_readback_error_path_bug_issue10 — the
-    /// root cause, a genuine `Out of Memory` device loss under sustained
-    /// slow-backend load, was confirmed with hard evidence via a real
-    /// `device_lost_callback` firing; forcing that same OOM condition again just
-    /// to test the GUARD would repeat the same heavy, machine-stressing
-    /// reproduction unnecessarily). This directly injects a lost reason into the
-    /// private `device_lost` flag exactly as the real callback would, then
-    /// proves three things: (1) `device_lost_reason()` reports it, (2)
-    /// `step_frame()` becomes a real no-op (frame_index does not advance,
-    /// proving it didn't just avoid panicking by luck), (3) the blocking sync
-    /// methods are also safe no-ops (don't panic touching a "dead" device).
-    #[test]
-    fn step_frame_becomes_safe_noop_once_device_lost() {
-        if !gpu_available() {
-            return;
-        }
-        let config = SimConfig {
-            max_substeps_per_step: 8,
-            ..SimConfig::standard(32, 0.1, Vec2::new(0.0, -0.3))
-        };
-        let spawn = SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(4, 4),
-            box_center: Vec2::new(16.0, 16.0),
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        };
-        let particles = crate::build_particles(&config, spawn);
-        let mat = NeoHookeanMaterial::from_physical(
-            &crate::materials::physical_props::Elastic {
-                e_pa: 30.0e3,
-                nu: 0.45,
-                rho_kg_m3: 1000.0,
-            },
-            &config,
-        );
-        let registry = MaterialRegistry::with_default(Box::new(mat));
-        let mut sim = pollster::block_on(GpuSimulation::new(config, particles, registry));
-
-        assert!(
-            sim.device_lost_reason().is_none(),
-            "a healthy, freshly-constructed sim must not report device loss"
-        );
-
-        sim.step_frame();
-        let frame_after_healthy_step = sim.frame_index;
-        assert!(
-            frame_after_healthy_step > 0,
-            "sanity check: a healthy device must actually advance frame_index"
-        );
-
-        // Directly inject a lost reason, exactly as the real callback does.
-        *sim.device_lost.lock().unwrap() = Some("Unknown: Out of memory".to_string());
-        assert_eq!(
-            sim.device_lost_reason(),
-            Some("Unknown: Out of memory".to_string()),
-            "device_lost_reason() must report an injected loss"
-        );
-
-        sim.step_frame();
-        assert_eq!(
-            sim.frame_index, frame_after_healthy_step,
-            "step_frame must become a real no-op once device_lost is set -- \
-             frame_index must NOT advance"
-        );
-
-        // Must not panic -- these touch the same "dead" device.
-        sim.sync_particles_blocking();
-        let ranges = vec![0..1usize, 1..2usize];
-        sim.sync_particle_ranges_blocking(&ranges);
-    }
-
-    /// Real repro of issue #10's ACTUAL failure mode, found via real windows-latest
-    /// CI evidence (not speculation): re-enabling the crash-repro test showed that,
-    /// under sustained load, wgpu invalidates/destroys buffers tied to the device
-    /// BEFORE this instance's `device_lost_callback` fires -- the readback path's
-    /// `.unmap()` call then hits an uncaptured Validation error naming the destroyed
-    /// resource, and wgpu's default handler panics unconditionally
-    /// (`default_error_handler`: `panic!("wgpu error: {err}")`, confirmed by reading
-    /// wgpu-27.0.1's source directly).
-    ///
-    /// Forcing a real 9-minute sustained-load OOM again just to hit this exact race
-    /// would repeat the same heavy, machine-stressing reproduction unnecessarily --
-    /// this reproduces the SAME call path directly: destroy the readback staging
-    /// buffer ourselves (exactly what the device-loss cascade does to it), then call
-    /// `abandon_readback()`, the exact function whose `.unmap()` call panicked on
-    /// real CI. Before the `on_uncaptured_error` fix this would panic and abort the
-    /// test process; with it installed, it must set `device_lost` instead -- no
-    /// panic, `device_lost_reason()` reports it.
-    #[test]
-    fn uncaptured_destroyed_buffer_error_sets_device_lost_not_a_panic() {
-        if !gpu_available() {
-            return;
-        }
-        let config = SimConfig {
-            max_substeps_per_step: 8,
-            ..SimConfig::standard(32, 0.1, Vec2::new(0.0, -0.3))
-        };
-        let spawn = SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(4, 4),
-            box_center: Vec2::new(16.0, 16.0),
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        };
-        let particles = crate::build_particles(&config, spawn);
-        let mat = NeoHookeanMaterial::from_physical(
-            &crate::materials::physical_props::Elastic {
-                e_pa: 30.0e3,
-                nu: 0.45,
-                rho_kg_m3: 1000.0,
-            },
-            &config,
-        );
-        let registry = MaterialRegistry::with_default(Box::new(mat));
-        let sim = pollster::block_on(GpuSimulation::new(config, particles, registry));
-
-        assert!(
-            sim.device_lost_reason().is_none(),
-            "a healthy, freshly-constructed sim must not report device loss"
-        );
-
-        // Exactly what a device-loss cascade does to resources tied to the
-        // device, without needing 9 minutes of real sustained WARP load.
-        sim.buffers.readback_staging.destroy();
-
-        // The exact real call path that panicked on CI: finish_readback and
-        // abandon_readback both end in `.unmap()` on this buffer.
-        sim.buffers.abandon_readback();
-        sim.device.poll(wgpu::PollType::Poll).ok();
-
-        let reason = sim.device_lost_reason();
-        assert!(
-            reason.is_some(),
-            "an uncaptured error naming a destroyed buffer must set device_lost, \
-             not silently do nothing"
-        );
-        let reason = reason.unwrap();
-        assert!(
-            reason.contains("uncaptured wgpu error"),
-            "reason should be tagged as coming from the uncaptured-error handler \
-             (distinguishable from the official device_lost_callback's report), \
-             got: {reason}"
-        );
-        assert!(
-            reason.contains("destroyed"),
-            "reason should retain the real wgpu error text naming the destroyed \
-             resource, got: {reason}"
-        );
-    }
-
-    /// Real proof that the OPT-IN path works -- this is the path LP's actual
-    /// production code needs (`World::with_device`, since LP shares its device
-    /// with a renderer and has no device-lost handling of its own, confirmed by
-    /// inspection of LP's `src/main.rs`). Proves `enable_device_lost_detection()`
-    /// makes a `with_device()` instance behave identically to a `new()`-
-    /// constructed one for reporting purposes. NOTE: this does NOT independently
-    /// prove `with_device()` never silently registers its own callback -- that
-    /// would need a real device-loss trigger to distinguish "no callback
-    /// registered" from "callback registered but nothing happened yet," which
-    /// this test doesn't force (see the heavy stress-test caution elsewhere in
-    /// this file). Static code inspection is what actually backs that claim:
-    /// `with_device()`'s body contains no `set_device_lost_callback` call.
-    #[test]
-    fn with_device_instances_need_explicit_opt_in_for_device_lost_detection() {
-        if !gpu_available() {
-            return;
-        }
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .expect("no adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("test_shared_device"),
-            required_limits: adapter.limits(),
-            ..Default::default()
-        }))
-        .expect("no device");
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
-
-        let config = SimConfig {
-            max_substeps_per_step: 8,
-            ..SimConfig::standard(32, 0.1, Vec2::new(0.0, -0.3))
-        };
-        let mat = NeoHookeanMaterial::from_physical(
-            &crate::materials::physical_props::Elastic {
-                e_pa: 30.0e3,
-                nu: 0.45,
-                rho_kg_m3: 1000.0,
-            },
-            &config,
-        );
-        let sim = GpuSimulation::with_device(
-            device,
-            queue,
-            config,
-            Vec::new(),
-            MaterialRegistry::with_default(Box::new(mat)),
-        );
-
-        // Fresh with_device() instance: field starts unset (expected regardless
-        // of whether a callback is wired -- see doc comment above for what this
-        // does and doesn't prove).
-        assert!(sim.device_lost_reason().is_none());
-
-        sim.enable_device_lost_detection();
-        // Directly invoke the same injection used in the other test -- proves the
-        // callback registration path (not just the field) is wired correctly.
-        *sim.device_lost.lock().unwrap() = Some("Unknown: Out of memory".to_string());
-        assert_eq!(
-            sim.device_lost_reason(),
-            Some("Unknown: Out of memory".to_string()),
-            "after enable_device_lost_detection(), device_lost_reason() must work \
-             identically to a new()-constructed instance"
-        );
-    }
-}
+mod device_lost_tests;

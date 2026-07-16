@@ -19,7 +19,7 @@ use crate::materials::registry::MaterialRegistry;
 use crate::materials::{FallbackMaterial, MaterialModel};
 use crate::particle::{Particle, Particles};
 use crate::solver::density::estimate_particle_volumes;
-use crate::thermodynamics::ThermalDiffusion;
+use crate::thermodynamics::{ThermalConfig, ThermalDiffusion};
 
 impl Simulation {
     /// Create an empty solver with no particles. Use `spawn_region` to add particles.
@@ -37,6 +37,7 @@ impl Simulation {
             grid: Grid::new(config.grid_res),
             materials,
             boundaries: vec![default_boundary],
+            contact_grip: None,
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -82,6 +83,7 @@ impl Simulation {
             grid,
             materials,
             boundaries: vec![default_boundary],
+            contact_grip: None,
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
@@ -114,6 +116,20 @@ impl Simulation {
         self
     }
 
+    /// Set directional (setae-style) friction for the multi-field contact "grip"
+    /// field — see `DirectionalContactGrip`'s doc. Takes an `Arc` so the same
+    /// instance can be shared with external code (player/AI input) for live
+    /// steering, matching `RatchetFrictionBoundary`'s own established pattern.
+    /// Only affects particles with `contact_group != 0`; a scene that never sets
+    /// that field is completely unaffected whether or not this is set.
+    pub fn with_contact_grip(
+        mut self,
+        grip: std::sync::Arc<crate::grid::DirectionalContactGrip>,
+    ) -> Self {
+        self.contact_grip = Some(grip);
+        self
+    }
+
     /// Append an anonymous force field (auto-named "force_field_N").
     pub fn with_force_field(mut self, field: Box<dyn Field>) -> Self {
         self.add_force_field(field);
@@ -137,6 +153,17 @@ impl Simulation {
 
     pub fn set_thermal(&mut self, thermal: ThermalDiffusion) {
         self.thermal = Some(thermal);
+    }
+
+    /// Mutable access to the attached thermal model's config, if any (`None` when no
+    /// `with_thermal`/`set_thermal` was ever called). The real, minimal hook for a
+    /// scene/LP-driven day-night or seasonal cycle: mutate `.ambient` each frame from a
+    /// time-varying function (e.g. a sinusoid) BEFORE calling `step()` — `ThermalDiffusion
+    /// ::apply` already runs automatically every substep and reads `config.ambient` fresh
+    /// each time via the existing Newton-cooling term (`dT/dt = -k_c*(T-ambient)`), so no
+    /// new physics is needed, just this accessor to reach the config from outside.
+    pub fn thermal_config_mut(&mut self) -> Option<&mut ThermalConfig> {
+        self.thermal.as_mut().map(|t| &mut t.config)
     }
 
     /// Register a material and return its typed `MaterialHandle`.

@@ -49,8 +49,7 @@ mod gpu_tests {
     }
 
     /// `count_near`/`particles_near` now use an internal spatial hash instead of a
-    /// full linear scan (real perf fix, see Claude memory
-    /// `emerge_reference_audit` -- these were the only two of emerge's real
+    /// full linear scan (real perf fix -- these were the only two of emerge's real
     /// neighbor-query methods missing the spatial acceleration already proven in
     /// `solver::Simulation`). This must return EXACTLY what a brute-force linear
     /// scan over the real particle buffer would -- correctness first, speed
@@ -168,6 +167,151 @@ mod gpu_tests {
                 "gpu neo particle {i}: J collapsed"
             );
         }
+    }
+
+    /// GPU mirror of `pinned_particles_stay_fixed_under_gravity_and_impact`
+    /// (tests/physics_correctness.rs) -- `Particle::pinned` must hold particles fixed
+    /// through the real GPU G2P path (g2p.wgsl), not just CPU's `gather_grid_to_particles`.
+    /// Real gravity + a real impulse, not an idle scene; unpinned particles in the same
+    /// body must still respond normally.
+    #[test]
+    fn gpu_pinned_particles_stay_fixed_under_gravity_and_impact() {
+        if !gpu_available() {
+            return;
+        }
+        let config = SimConfig {
+            max_substeps_per_step: 16,
+            ..SimConfig::standard(32, 0.02, Vec2::new(0.0, -0.5))
+        };
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: glam::IVec2::new(8, 8),
+                box_center: Vec2::splat(16.0),
+                material_id: 0,
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let min_y = particles
+            .iter()
+            .map(|p| p.x.y)
+            .fold(f32::INFINITY, f32::min);
+        let pinned_indices: Vec<usize> = particles
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.x.y < min_y + 0.1)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !pinned_indices.is_empty(),
+            "test setup bug: no particles found in the bottom row to pin"
+        );
+        let pinned_start_positions: Vec<Vec2> =
+            pinned_indices.iter().map(|&i| particles[i].x).collect();
+        for &i in &pinned_indices {
+            particles[i].pinned = 1;
+        }
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 200.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        solver.apply_impulse(Vec2::splat(16.0), 8.0, Vec2::new(50.0, 20.0));
+
+        for _ in 0..300 {
+            solver.step_frame();
+        }
+        solver.sync_particles_blocking();
+
+        for (&i, &start) in pinned_indices.iter().zip(pinned_start_positions.iter()) {
+            let p = solver.particles()[i];
+            assert!(
+                (p.x - start).length() < 1.0e-4,
+                "pinned particle {i} moved: start={start:?} now={:?} (delta={})",
+                p.x,
+                (p.x - start).length()
+            );
+            assert_eq!(
+                p.v,
+                Vec2::ZERO,
+                "pinned particle {i} has nonzero velocity: {:?}",
+                p.v
+            );
+        }
+
+        let unpinned_moved = solver
+            .particles()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !pinned_indices.contains(i))
+            .any(|(_, p)| p.v.length() > 0.1 || p.x.y < min_y - 0.5);
+        assert!(
+            unpinned_moved,
+            "no unpinned particle moved/fell at all -- pinning may have frozen the whole \
+             body via the GPU path, not just the tagged particles"
+        );
+    }
+
+    /// GPU port of `linear_drag_field_matches_analytical_relaxation` (tests/solver.rs) --
+    /// same real, checkable prediction (Stokes drag / Rayleigh friction toward a target
+    /// flow velocity, see `LinearDragField`'s CPU doc for the physics): with no gravity and
+    /// a block starting at rest, average velocity after N frames should match the
+    /// analytical `v(t) = target*(1-exp(-k*t))`. Proves the FIRST GPU force field to read
+    /// particle velocity (not just position) actually works, not just compiles.
+    #[test]
+    fn gpu_linear_drag_field_matches_analytical_relaxation() {
+        if !gpu_available() {
+            return;
+        }
+        let target_velocity = Vec2::new(3.0, 0.0);
+        let k = 2.0_f32;
+        const DT: f32 = 0.1;
+        let config = SimConfig {
+            max_substeps_per_step: 16,
+            ..SimConfig::standard(32, DT, Vec2::ZERO)
+        };
+        let particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: glam::IVec2::new(8, 8),
+                box_center: Vec2::splat(16.0),
+                material_id: 0,
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(10.0, 20.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        solver.add_force_field_gpu(emerge::gpu::GpuFieldEntry::linear_drag(
+            target_velocity,
+            k,
+            emerge::gpu::GpuFieldEntry::ALL_MATERIALS,
+        ));
+
+        const STEPS: usize = 10;
+        for _ in 0..STEPS {
+            solver.step_frame();
+        }
+        solver.sync_particles_blocking();
+        let elapsed = STEPS as f32 * DT;
+
+        let particles = solver.particles();
+        let avg_v: Vec2 = particles.iter().map(|p| p.v).sum::<Vec2>() / particles.len() as f32;
+        let expected = target_velocity * (1.0 - (-k * elapsed).exp());
+
+        println!(
+            "gpu_linear_drag_field_matches_analytical_relaxation: avg_v={avg_v:?} expected={expected:?}"
+        );
+        assert!(avg_v.is_finite(), "non-finite velocity: {avg_v:?}");
+        let rel_err = (avg_v - expected).length() / expected.length().max(1e-3);
+        assert!(
+            rel_err < 0.15,
+            "GPU LinearDragField velocity should match the analytical exponential relaxation: \
+             avg_v={avg_v:?} expected={expected:?} rel_err={rel_err:.3}"
+        );
     }
 
     /// `sync_particle_ranges_blocking` must return exactly what a full
@@ -1848,6 +1992,171 @@ mod gpu_tests {
         );
     }
 
+    /// Real fix, 2026-07-15: `resolve_contact`/`gather_contact_points` used to run
+    /// UNCONDITIONALLY every substep regardless of whether any particle used multi-field
+    /// contact -- `g2p.wgsl` unconditionally read their output via `select()`, so they
+    /// couldn't simply be skipped without a matching read-side fallback. Fixed by adding
+    /// a `contact_active` flag (mirrors `force_fields_needed`'s own skip-dispatch gate)
+    /// that (a) skips both passes' dispatch entirely and (b) gates `g2p.wgsl`'s read back
+    /// to the plain grid velocity in that case -- exactly mirroring CPU's
+    /// `Grid::has_contact_activity()` gate in `transfer.rs`. Verifies BOTH halves at once:
+    /// the passes are genuinely skipped (measured via the same per-pass GPU profiler used
+    /// throughout this project's perf history, not inferred) AND the resulting physics is
+    /// still correct (free-fall velocity matches the analytical gravity accumulation) for
+    /// a scene that never sets `contact_group` -- proving the new fallback path is a real
+    /// substitute, not just "nothing crashed."
+    #[test]
+    fn gpu_contact_passes_skip_when_unused_and_physics_stays_correct() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID_RES: usize = 64;
+        const DT: f32 = 0.01;
+        let gravity = Vec2::new(0.0, -5.0);
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, DT, gravity)
+        };
+        let particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: glam::IVec2::new(4, 4),
+                box_center: Vec2::splat(GRID_RES as f32 * 0.5),
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        // Every particle's contact_group defaults to 0 -- this scene never uses
+        // multi-field contact at all.
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(50.0, 100.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+
+        if !solver.enable_profiling() {
+            eprintln!(
+                "gpu_contact_passes_skip_when_unused_and_physics_stays_correct: TIMESTAMP_QUERY not supported, skipping"
+            );
+            return;
+        }
+
+        const STEPS: usize = 20;
+        for _ in 0..STEPS {
+            solver.step_frame();
+        }
+        let timings = solver
+            .last_pass_timings_ns()
+            .expect("profiling was enabled, readback should succeed");
+        for (label, ns) in &timings {
+            if label.contains("contact") {
+                assert_eq!(
+                    *ns, 0.0,
+                    "{label} should be fully skipped (0ns) for a scene with zero contact_group \
+                     particles -- got {ns}ns, the skip-dispatch gate isn't engaging"
+                );
+            }
+        }
+
+        solver.sync_particles_blocking();
+        let particles = solver.particles();
+        let expected_vy = gravity.y * DT * STEPS as f32;
+        let avg_vy: f32 = particles.iter().map(|p| p.v.y).sum::<f32>() / particles.len() as f32;
+        println!(
+            "gpu_contact_passes_skip_when_unused_and_physics_stays_correct: avg_vy={avg_vy:.4} expected~={expected_vy:.4}"
+        );
+        let rel_err = (avg_vy - expected_vy).abs() / expected_vy.abs().max(1.0);
+        assert!(
+            rel_err < 0.1,
+            "free-fall velocity should still match accumulated gravity via the new plain-grid \
+             fallback path: avg_vy={avg_vy:.4} expected~={expected_vy:.4} rel_err={rel_err:.3}"
+        );
+    }
+
+    /// Real per-pass GPU timing for a PURE FLUID scene at the actual ~50k target -- fluids
+    /// are LP core content (not a niche material), and `gpu_profile_passes_at_50k` above only
+    /// ever profiled NeoHookean. `NewtonianFluidMaterial::needs_density_recompute()` is real
+    /// per-substep extra work (Tait EOS needs current density every substep, unlike a plain
+    /// elastic solid) that the NeoHookean baseline profile never exercises -- this answers
+    /// whether that recompute (or anything else fluid-specific) is a real, previously-unmeasured
+    /// cost, using the exact same tool/methodology that resolved every other perf question in
+    /// this codebase's history, not a new guess.
+    #[test]
+    #[ignore = "perf diagnostic (not correctness) -- 50k-particle fluid profiling pass, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
+    fn gpu_profile_fluid_passes_at_50k() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID_RES: usize = 320;
+        const REAL_TIME_DT: f32 = 1.0 / 60.0;
+        const TARGET: usize = 50_000;
+
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, REAL_TIME_DT, Vec2::new(0.0, -0.3))
+        };
+        let side = ((TARGET as f32) / 4.0).sqrt().ceil() as i32;
+        let particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: glam::IVec2::splat(side),
+                box_center: Vec2::splat(GRID_RES as f32 * 0.5),
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let n = particles.len();
+        let registry = MaterialRegistry::with_default(Box::new(
+            emerge::NewtonianFluidMaterial::low_viscosity(1.0, 50.0),
+        ));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+
+        if !solver.enable_profiling() {
+            eprintln!(
+                "gpu_profile_fluid_passes_at_50k: TIMESTAMP_QUERY not supported on this device/backend, skipping"
+            );
+            return;
+        }
+
+        // Let the fluid actually fall/spread for a bit before profiling -- a static block
+        // at spawn hasn't engaged the EOS pressure response yet, understating real cost.
+        for _ in 0..60 {
+            solver.step_frame();
+        }
+        for _ in 0..5 {
+            solver.step_frame();
+        }
+        let timings = solver
+            .last_pass_timings_ns()
+            .expect("profiling was enabled, readback should succeed");
+
+        let total: f32 = timings.iter().map(|(_, ns)| ns).sum();
+        eprintln!(
+            "gpu_profile_fluid_passes_at_50k: n={n} (NewtonianFluidMaterial, settled 60 steps), one substep's breakdown:"
+        );
+        for (label, ns) in &timings {
+            let pct = if total > 0.0 { ns / total * 100.0 } else { 0.0 };
+            eprintln!("  {label:<28} {ns:>9.1} ns  ({pct:>5.1}%)");
+        }
+        eprintln!("  {:<28} {:>9.1} ns", "TOTAL (one substep)", total);
+
+        for _ in 0..10 {
+            solver.step_frame();
+        }
+        let (cfl_scan_ns, encode_ns, submit_ns, readback_ns, total_ns) =
+            solver.last_cpu_timings_ns();
+        let accounted = cfl_scan_ns + encode_ns + submit_ns + readback_ns;
+        eprintln!(
+            "gpu_profile_fluid_passes_at_50k: CPU side — cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
+            cfl_scan_ns / 1.0e6,
+            encode_ns / 1.0e6,
+            submit_ns / 1.0e6,
+            readback_ns / 1.0e6,
+            total_ns / 1.0e6,
+            (total_ns - accounted) / 1.0e6
+        );
+    }
+
     /// Direct test of the "is the GPU itself genuinely heavier after long settling" hypothesis
     /// for the DP-sand long-settled regression (see project_mvp_definition memory): real GPU
     /// timestamp profiling (not CPU wall-clock) for DP-sand at both short and long-settled
@@ -2403,5 +2712,788 @@ mod gpu_tests {
         }
         solver.sync_particles_blocking();
         eprintln!("completed all 7500 steps without a crash or panic");
+    }
+
+    /// Multi-field contact (GPU port, first slice, 2026-07-14) — verifies the new
+    /// grip-mass P2G scatter and contact point-cloud gather (`p2g.wgsl`'s extended
+    /// `p2g_main` + new `gather_contact_points_main`) against known-correct properties,
+    /// the same standard `gpu_grid_clear_zeroes_cells_far_from_particles` already uses
+    /// for the ordinary grid (not a literal CPU-buffer diff, since CPU's own
+    /// `ContactCell` map has no public per-node reader to diff against — this checks
+    /// real physical/structural correctness instead: mass conservation, spatial
+    /// locality, and correct point labeling).
+    #[test]
+    fn gpu_contact_grip_scatter_and_point_cloud_are_correct() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::gpu::MAX_CONTACT_POINTS_PER_BLOCK;
+
+        const GRID_RES: usize = 64;
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
+        };
+
+        // Two overlapping disks near the grid center, well inside the domain (avoids
+        // any P2G boundary-clipping confound) -- one tagged as "grip" (contact_group=1),
+        // one left as "rest" (contact_group=0, the default).
+        let center = Vec2::splat(32.0);
+        let mut grip_particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(center)
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        let grip_mass_total: f32 = grip_particles.iter().map(|p| p.mass).sum();
+        let grip_count = grip_particles.len();
+        assert!(grip_count > 0, "test needs at least one grip particle");
+        for p in &mut grip_particles {
+            p.contact_group = 1;
+        }
+
+        let rest_particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(center + Vec2::new(2.0, 0.0)) // overlapping, not identical, offset
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        assert!(
+            !rest_particles.is_empty(),
+            "test needs at least one rest particle"
+        );
+
+        let mut particles = grip_particles;
+        particles.extend(rest_particles);
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        solver.step_frame();
+
+        // 1. Mass conservation: total grip mass scattered to the grid must equal the
+        // total mass of grip-tagged particles (every particle fully inside the domain,
+        // so no boundary-clipping loss) -- within fixed-point rounding (each atomic add
+        // rounds to the nearest 1e-6 unit, see p2g.wgsl's MASS_ATOMIC_SCALE).
+        let grip_cells = solver.grip_grid_cells_blocking();
+        let mut grip_mass_sum = 0.0f32;
+        for i in 0..GRID_RES * GRID_RES {
+            grip_mass_sum += grip_cells[i * 4 + 2];
+        }
+        assert!(
+            (grip_mass_sum - grip_mass_total).abs() < grip_mass_total * 0.01,
+            "grip mass not conserved: scattered {grip_mass_sum}, expected ~{grip_mass_total} \
+             (sum of {grip_count} grip-tagged particles' own mass)"
+        );
+
+        // 2. Spatial locality: a cell far from both disks must show exactly zero grip
+        // mass -- same reasoning as gpu_grid_clear_zeroes_cells_far_from_particles.
+        let (fx, fy) = (4usize, 4usize);
+        let far_idx = (fy * GRID_RES + fx) * 4;
+        assert_eq!(
+            grip_cells[far_idx + 2],
+            0.0,
+            "far corner ({fx},{fy}) should have exactly zero grip mass"
+        );
+
+        // 3. Point cloud: at least one block must have recorded points, and among
+        // recorded points, both a grip-labeled (+1.0) and a rest-labeled (-1.0) point
+        // must appear somewhere -- proving BOTH bodies were captured, not just one.
+        let counts = solver.contact_point_counts_blocking();
+        let points = solver.contact_points_blocking();
+        let mut saw_grip_label = false;
+        let mut saw_rest_label = false;
+        let mut any_block_populated = false;
+        for (block, &raw_count) in counts.iter().enumerate() {
+            let count = (raw_count as usize).min(MAX_CONTACT_POINTS_PER_BLOCK);
+            if count > 0 {
+                any_block_populated = true;
+            }
+            for slot in 0..count {
+                let base = (block * MAX_CONTACT_POINTS_PER_BLOCK + slot) * 4;
+                let label = points[base + 2];
+                if label > 0.0 {
+                    saw_grip_label = true;
+                } else if label < 0.0 {
+                    saw_rest_label = true;
+                }
+            }
+        }
+        assert!(
+            any_block_populated,
+            "no contact point-cloud block was ever populated"
+        );
+        assert!(
+            saw_grip_label,
+            "no grip-labeled (+1.0) point found in the point cloud"
+        );
+        assert!(
+            saw_rest_label,
+            "no rest-labeled (-1.0) point found in the point cloud"
+        );
+    }
+
+    /// Multi-field contact (GPU port, second slice, 2026-07-15) — verifies the Newton-
+    /// Raphson LR normal fit's WGSL port (`resolve_contact.wgsl`'s `fit_contact_normal_lr`)
+    /// against the EXACT scenario CPU's own `fit_contact_normal_lr_tests::
+    /// clean_horizontal_interface_36v36` (src/spacetime/grid/mod.rs) already validates: a
+    /// clean, flat, well-separated 6x6-vs-6x6 grip/rest interface, expecting a
+    /// near-vertical fitted normal (`|n.x| < 0.1`). Real particles (not hand-written
+    /// point-cloud bytes) at the SAME coordinates, run through the already-verified
+    /// P2G scatter + gather_contact_points pipeline, then the isolated debug fit pass —
+    /// a genuine, known-answer cross-check of the WGSL port against its CPU reference.
+    #[test]
+    fn gpu_debug_fit_normal_matches_cpu_clean_horizontal_interface() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::Particle;
+        use emerge::gpu::NUM_BLOCKS_PER_DIM;
+
+        const GRID_RES: usize = 64;
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
+        };
+
+        // Exact coordinates from clean_horizontal_interface_36v36 (grid/mod.rs).
+        let mut particles = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                let x = 30.0 + i as f32 * 0.5;
+                let y_grip = 10.25 + j as f32 * 0.3;
+                let y_rest = 8.25 + j as f32 * 0.3;
+                let mut grip = Particle::zeroed();
+                grip.x = Vec2::new(x, y_grip);
+                grip.mass = 1.0;
+                grip.initial_volume = 0.25;
+                grip.volume = 0.25;
+                grip.density = 4.0;
+                grip.contact_group = 1;
+                particles.push(grip);
+
+                let mut rest = Particle::zeroed();
+                rest.x = Vec2::new(x, y_rest);
+                rest.mass = 1.0;
+                rest.initial_volume = 0.25;
+                rest.volume = 0.25;
+                rest.density = 4.0;
+                particles.push(rest);
+            }
+        }
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        solver.step_frame();
+
+        // Same node_pos as the CPU test — compute which coarse block it falls in via
+        // the identical arithmetic gather_contact_points_main uses (block_index in
+        // p2g.wgsl), so the debug pass reads the block real points actually landed in.
+        let node_pos = Vec2::new(32.0, 10.0);
+        let block_size = (GRID_RES as u32).div_ceil(NUM_BLOCKS_PER_DIM as u32);
+        let block_x = (node_pos.x as u32 / block_size).min(NUM_BLOCKS_PER_DIM as u32 - 1);
+        let block_y = (node_pos.y as u32 / block_size).min(NUM_BLOCKS_PER_DIM as u32 - 1);
+        let block = block_y * NUM_BLOCKS_PER_DIM as u32 + block_x;
+
+        let counts = solver.contact_point_counts_blocking();
+        let count = counts[block as usize];
+        assert!(
+            count > 0,
+            "expected block {block} to have recorded contact points, got count={count}"
+        );
+
+        let (n, valid) = solver.debug_fit_contact_normal_blocking(block, node_pos, count);
+        assert!(valid, "fit found no confident normal (n={n:?})");
+        assert!(
+            n.x.abs() < 0.1,
+            "expected near-vertical normal for a clean flat interface (matching CPU's \
+             own clean_horizontal_interface_36v36), got {n:?}"
+        );
+    }
+
+    /// Multi-field contact (GPU port, third slice, 2026-07-15) — sanity check for
+    /// `resolve_contact_main` (the real Coulomb + velocity-floor Baumgarte correction
+    /// pass), run before G2P is wired to actually consume its output. Since particles
+    /// don't yet feel this correction (that's the next piece), the meaningful claim
+    /// here is narrower but real: over a genuine multi-step resting scenario, every
+    /// resolved velocity the pass produces stays finite and bounded -- no NaN/Inf, no
+    /// runaway magnitude -- proving the WGSL port doesn't blow up on real contact-active
+    /// data before it's trusted to drive G2P.
+    #[test]
+    fn gpu_resolve_contact_produces_finite_bounded_velocities() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID_RES: usize = 64;
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
+        };
+        let center = Vec2::splat(32.0);
+        let mut grip_particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(center)
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        for p in &mut grip_particles {
+            p.contact_group = 1;
+        }
+        let rest_particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(center + Vec2::new(2.0, 0.0))
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        let mut particles = grip_particles;
+        particles.extend(rest_particles);
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+
+        for _ in 0..200 {
+            solver.step_frame();
+        }
+
+        let grip_v = solver.resolved_grip_v_blocking();
+        let rest_v = solver.resolved_rest_v_blocking();
+        let mut max_speed = 0.0f32;
+        for chunk in grip_v.chunks(2).chain(rest_v.chunks(2)) {
+            let (vx, vy) = (chunk[0], chunk[1]);
+            assert!(
+                vx.is_finite() && vy.is_finite(),
+                "resolved velocity went non-finite: ({vx}, {vy})"
+            );
+            max_speed = max_speed.max((vx * vx + vy * vy).sqrt());
+        }
+        assert!(
+            max_speed < 100.0,
+            "resolved velocity exploded: max_speed={max_speed} after 200 steps of a \
+             resting two-disk scene"
+        );
+    }
+
+    /// Multi-field contact (GPU port) — THE real end-to-end acceptance test: does a
+    /// particle actually FEEL the resolved contact correction now that G2P routes to
+    /// it? Exact same rig as CPU's own `multi_field_contact_produces_real_coulomb_slip_and_stick`
+    /// (`tests/physics_correctness.rs`) — a small block (contact_group=1) resting on a
+    /// wide floor slab (contact_group=0), settled first, then given a real horizontal
+    /// velocity and measured after a short window. At friction=0 it must keep real
+    /// speed (free slip); at friction=3 it must decelerate to near the floor's rest
+    /// speed (real Coulomb stick). This is the test that actually proves the whole GPU
+    /// port chain (P2G scatter -> point gather -> Newton fit -> Coulomb + Baumgarte ->
+    /// G2P routing) works end to end, not just that each piece looks right in
+    /// isolation.
+    #[test]
+    fn gpu_multi_field_contact_produces_real_coulomb_slip_and_stick() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::CorotatedMaterial;
+        use glam::IVec2;
+
+        fn run(friction: f32) -> f32 {
+            const GRID: usize = 64;
+            const DT: f32 = 0.02;
+            let config = SimConfig {
+                contact_friction: friction,
+                min_dt: 0.001,
+                max_substeps_per_step: 128,
+                project_invalid_state: true,
+                ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
+            };
+
+            let block_mat = CorotatedMaterial::new(200.0, 400.0);
+            let mut block_particles = build_particles(
+                &config,
+                SpawnRegion {
+                    spacing: 0.5,
+                    box_size: IVec2::new(6, 6),
+                    box_center: Vec2::new(32.0, 11.6),
+                    material_id: 0,
+                    precompute_initial_volumes: true,
+                    ..SpawnRegion::for_sim(&config)
+                },
+            );
+            let block_count = block_particles.len();
+            for p in &mut block_particles {
+                p.contact_group = 1;
+            }
+
+            let registry = MaterialRegistry::with_default(Box::new(block_mat));
+            let mut solver = block_on(GpuSimulation::new(config, block_particles, registry));
+
+            let floor_mat_id =
+                solver.register_material(Box::new(CorotatedMaterial::new(200.0, 400.0)));
+            let floor_spawn = SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(48, 8),
+                box_center: Vec2::new(32.0, 8.0),
+                material_id: floor_mat_id.id(),
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(solver.config())
+            };
+            solver.spawn_region(floor_spawn);
+
+            for _ in 0..300 {
+                solver.step_frame();
+            }
+            solver.sync_particles_blocking();
+            {
+                let particles = solver.particles_mut();
+                for p in particles.iter_mut().take(block_count) {
+                    p.v.x = 3.0;
+                }
+            }
+            solver.mark_particles_dirty();
+            for _ in 0..150 {
+                solver.step_frame();
+            }
+            solver.sync_particles_blocking();
+
+            let particles = solver.particles();
+            particles[0..block_count].iter().map(|p| p.v.x).sum::<f32>() / block_count as f32
+        }
+
+        let slip_speed = run(0.0);
+        let stick_speed = run(3.0);
+
+        assert!(
+            slip_speed > 1.0,
+            "BUG: at zero friction the block should keep real horizontal velocity (free \
+             separation / slip must be possible) -- got mean v_x={slip_speed:.4} (started \
+             at 3.0). If this is ~0, contact is still unconditionally sticking regardless \
+             of friction on GPU."
+        );
+        assert!(
+            stick_speed < 0.5,
+            "BUG: at high friction the block should decelerate to near the floor's \
+             velocity (real Coulomb stick) -- got mean v_x={stick_speed:.4} (started at \
+             3.0). If this is still ~3.0, friction has no effect at all on GPU."
+        );
+    }
+
+    /// Multi-field contact (GPU port) — long-horizon stability check, the GPU
+    /// counterpart to CPU's own
+    /// `drucker_prager_volumetric_floor_holds_over_long_passive_settle`
+    /// (`tests/physics_correctness.rs`). That CPU test caught a real bug (the
+    /// Baumgarte energy-injection leak, fixed 2026-07-14) that a short run never
+    /// revealed -- only appeared after thousands of real steps. GPU's contact port is
+    /// only verified so far over 200-450 steps; this checks whether the SAME class of
+    /// hidden long-horizon issue exists on the GPU path before trusting it further.
+    /// Exact same scene as the CPU test (terrain 100x12 @ DruckerPragerMaterial::
+    /// cohesionless(133.3,0.333), snake 36x4 @ NeoHookeanMaterial(13,26),
+    /// contact_group tagging, GRID=128, DT=0.1, 16,000 purely passive steps, zero
+    /// muscle activation, zero steering) -- symmetric friction (GPU has no
+    /// DirectionalContactGrip equivalent yet, immaterial for a passive settle).
+    #[test]
+    fn gpu_drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::DruckerPragerMaterial;
+        use glam::IVec2;
+
+        const GRID_RES: usize = 128;
+        const DT: f32 = 0.1;
+        const SNAKE_CONTACT_GROUP: u32 = 1;
+
+        let config = SimConfig {
+            contact_friction: 0.5,
+            min_dt: 0.01,
+            max_substeps_per_step: 64,
+            project_invalid_state: true,
+            ..SimConfig::standard(GRID_RES, DT, Vec2::new(0.0, -0.3))
+        };
+
+        let terrain_particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(100, 12),
+                box_center: Vec2::new(64.0, 10.0),
+                material_id: 0,
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let terrain_count = terrain_particles.len();
+
+        let terrain_mat = DruckerPragerMaterial::cohesionless(133.3, 0.333);
+        let registry = MaterialRegistry::with_default(Box::new(terrain_mat));
+        let mut solver = block_on(GpuSimulation::new(config, terrain_particles, registry));
+
+        let snake_mat_id = solver.register_material(Box::new(NeoHookeanMaterial::new(13.0, 26.0)));
+        let snake_spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(36, 4),
+            box_center: Vec2::new(64.0, 20.0),
+            material_id: snake_mat_id.id(),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(solver.config())
+        };
+        let snake_range = solver.spawn_region(snake_spawn);
+        {
+            let particles = solver.particles_mut();
+            for i in snake_range.clone() {
+                particles[i].contact_group = SNAKE_CONTACT_GROUP;
+            }
+        }
+        solver.mark_particles_dirty();
+
+        let mut min_j_terrain = f32::MAX;
+        let mut min_j_snake = f32::MAX;
+        for step in 0..16000 {
+            solver.step_frame();
+            if step % 500 == 0 {
+                solver.sync_particles_blocking();
+                let particles = solver.particles();
+                for p in &particles[0..terrain_count] {
+                    min_j_terrain = min_j_terrain.min(p.deformation_gradient.determinant());
+                }
+                for p in &particles[snake_range.clone()] {
+                    min_j_snake = min_j_snake.min(p.deformation_gradient.determinant());
+                }
+                println!(
+                    "step={step} min_j_terrain={min_j_terrain:.4} min_j_snake={min_j_snake:.4}"
+                );
+            }
+        }
+        solver.sync_particles_blocking();
+        let particles = solver.particles();
+        for p in &particles[0..terrain_count] {
+            min_j_terrain = min_j_terrain.min(p.deformation_gradient.determinant());
+        }
+        for p in &particles[snake_range.clone()] {
+            min_j_snake = min_j_snake.min(p.deformation_gradient.determinant());
+        }
+        println!("FINAL min_j_terrain={min_j_terrain:.4} min_j_snake={min_j_snake:.4}");
+
+        assert!(
+            min_j_terrain > 0.55,
+            "BUG: sand terrain compressed/inverted past its real physical floor over a \
+             long passive settle on GPU -- got min_j_terrain={min_j_terrain:.4}. Matches \
+             CPU's own long-horizon test bar (>0.55) -- if this fails, GPU has its own \
+             version of the Baumgarte long-horizon energy-injection bug that CPU already \
+             found and fixed."
+        );
+    }
+
+    /// Real headless GPU test of the actual `examples/snake_on_terrain.rs` recipe --
+    /// real CPG-driven muscle activation (`Lnn::coupled_traveling_wave`, the same
+    /// controller the interactive example uses), real sand terrain, real multi-field
+    /// contact. GPU has no `DirectionalContactGrip` equivalent yet (symmetric friction
+    /// only, `contact_friction`), so this deliberately doesn't assert on NET forward
+    /// locomotion distance (that needs the asymmetric grip, still CPU-only) -- the real
+    /// question this asks is narrower and more fundamental: does a real muscle-driven
+    /// body pushing against real sand terrain, on GPU, actually displace terrain
+    /// particles (the physical basis for "digging") without exploding, over a
+    /// meaningful real duration. Prints real measured numbers rather than asserting an
+    /// arbitrary displacement threshold (no prior data to calibrate one against on
+    /// GPU) -- only safety/boundedness is a hard assertion.
+    #[test]
+    fn gpu_snake_on_terrain_muscle_activity_displaces_real_sand() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::{DruckerPragerMaterial, Lnn};
+        use glam::IVec2;
+
+        const GRID_RES: usize = 128;
+        // REAL BUG FOUND AND FIXED 2026-07-15 (found live, on the interactive GPU
+        // scene this test mirrors): an earlier attempt split this into a separate
+        // physics DT (1/60, real-time-correct) and a CPG DT left at the OLD 0.1 "to
+        // preserve tuning." That reasoning was backwards -- the CPG steps once per
+        // physics frame by whatever DT it's given, with no awareness of what a frame
+        // represents in real time, so leaving CPG_DT at the old 0.1 while shrinking
+        // the physics frame's real-time meaning made the muscle cycle 6x FASTER in
+        // real wall-clock time than ever tuned/validated -- confirmed live: violent
+        // "up/down" spasming and a genuine escalating instability (vmax climbing
+        // from ~2 to >20 over a long run). There is only ONE real DT (whatever a
+        // frame represents in real time); both physics AND the CPG must use it.
+        const DT: f32 = 1.0 / 60.0;
+        const MUSCLE_GROUPS: u32 = 8;
+        const N_RINGS: usize = 2;
+        const N_PER_RING: usize = MUSCLE_GROUPS as usize / N_RINGS;
+        const RING_CROSS_COUPLING: f32 = 0.5;
+        const MUSCLE_AMPLITUDE: f32 = 0.9;
+        const FIBER_DIAG: f32 = 3.0;
+        const BODY_LEN: f32 = 18.0;
+        const BODY_CENTER: Vec2 = Vec2::new(64.0, 20.0);
+        const SNAKE_CONTACT_GROUP: u32 = 1;
+
+        // REAL BUG FOUND AND FIXED 2026-07-15: matches the exact fix applied to
+        // examples/snake_on_terrain.rs and snake_on_terrain_gpu.rs after a live run
+        // exploded -- `min_dt: 0.01` was harmless for the old ~750x-softer terrain
+        // but became actively unsafe once recalibrated to real-sand stiffness
+        // (`cfl_bound` floors the substep at `min_dt` regardless of what the
+        // material's own CFL bound requires). No override here now (inherits the
+        // safe `1.0e-3` default), `max_substeps_per_step` raised to compensate.
+        let config = SimConfig {
+            contact_friction: 0.5,
+            max_substeps_per_step: 128,
+            project_invalid_state: true,
+            ..SimConfig::standard(GRID_RES, DT, Vec2::new(0.0, -0.3))
+        };
+
+        let terrain_particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(100, 12),
+                box_center: Vec2::new(64.0, 10.0),
+                material_id: 0,
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let terrain_count = terrain_particles.len();
+        let initial_terrain_x: Vec<Vec2> = terrain_particles.iter().map(|p| p.x).collect();
+
+        // Real-sand stiffness (see the config comment above) -- matches
+        // `sand_angle_of_repose_is_physical` (tests/accuracy.rs) exactly.
+        let terrain_mat = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        let registry = MaterialRegistry::with_default(Box::new(terrain_mat));
+        let mut solver = block_on(GpuSimulation::new(config, terrain_particles, registry));
+
+        let mut snake_mat = NeoHookeanMaterial::new(13.0, 26.0);
+        snake_mat.active_stress_coeff = 80.0;
+        snake_mat.viscosity = 150.0;
+        let snake_mat_id = solver.register_material(Box::new(snake_mat));
+        let snake_spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(36, 4),
+            box_center: BODY_CENTER,
+            material_id: snake_mat_id.id(),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(solver.config())
+        };
+        let snake_range = solver.spawn_region(snake_spawn);
+
+        let body_left = BODY_CENTER.x - BODY_LEN / 2.0;
+        let mut muscle_group_of: Vec<u32> = Vec::with_capacity(snake_range.len());
+        {
+            let particles = solver.particles_mut();
+            for i in snake_range.clone() {
+                particles[i].contact_group = SNAKE_CONTACT_GROUP;
+                let t = ((particles[i].x.x - body_left) / BODY_LEN).clamp(0.0, 1.0);
+                let group = ((t * MUSCLE_GROUPS as f32) as u32).min(MUSCLE_GROUPS - 1);
+                particles[i].muscle_group_id = group;
+                muscle_group_of.push(group);
+                let local_y = particles[i].x.y - BODY_CENTER.y;
+                let flip = if group % 2 == 1 { -1.0 } else { 1.0 };
+                particles[i].activation_dir = if local_y >= 0.0 {
+                    Vec2::new(-FIBER_DIAG * flip, 1.0).normalize()
+                } else {
+                    Vec2::new(FIBER_DIAG * flip, 1.0).normalize()
+                };
+            }
+        }
+        solver.mark_particles_dirty();
+
+        let mut lnn = Lnn::coupled_traveling_wave(N_RINGS, N_PER_RING, 1.0, RING_CROSS_COUPLING);
+        // Burn-in: let the CPG reach its real oscillating regime before it ever
+        // touches a particle -- matches the interactive example's own CPG_BURN_IN.
+        for _ in 0..600 {
+            lnn.step(DT);
+        }
+
+        // Real duration, chosen to match/exceed where the live run (with the
+        // now-reverted DT-split bug) first showed severe escalation (~frame 4300+
+        // before a full explosion by ~5800) -- if the fix is real, this must stay
+        // flat/bounded well past that point, not just avoid crashing.
+        const STEPS: usize = 8000;
+        for step in 0..STEPS {
+            lnn.step(DT);
+            let activations: Vec<f32> = lnn.activations().collect();
+            {
+                let particles = solver.particles_mut();
+                for (offset, i) in snake_range.clone().enumerate() {
+                    let group = muscle_group_of[offset] as usize;
+                    particles[i].activation =
+                        (MUSCLE_AMPLITUDE * activations[group]).clamp(0.0, 1.0);
+                }
+            }
+            solver.mark_particles_dirty();
+            solver.step_frame();
+            if step % 250 == 0 {
+                solver.sync_particles_blocking();
+                let particles = solver.particles();
+                let min_j_terrain = particles[0..terrain_count]
+                    .iter()
+                    .map(|p| p.deformation_gradient.determinant())
+                    .fold(f32::MAX, f32::min);
+                let snap = solver.diagnostics_snapshot();
+                println!(
+                    "step={step} min_j_terrain={min_j_terrain:.4} vmax={:.3}",
+                    snap.max_particle_speed
+                );
+            }
+        }
+        solver.sync_particles_blocking();
+
+        let particles = solver.particles();
+        let mut min_j_terrain = f32::MAX;
+        let mut max_terrain_displacement = 0.0f32;
+        for i in 0..terrain_count {
+            min_j_terrain = min_j_terrain.min(particles[i].deformation_gradient.determinant());
+            let disp = (particles[i].x - initial_terrain_x[i]).length();
+            max_terrain_displacement = max_terrain_displacement.max(disp);
+        }
+        let mut min_j_snake = f32::MAX;
+        let mut max_snake_speed = 0.0f32;
+        for i in snake_range.clone() {
+            min_j_snake = min_j_snake.min(particles[i].deformation_gradient.determinant());
+            max_snake_speed = max_snake_speed.max(particles[i].v.length());
+        }
+        println!(
+            "FINAL after {STEPS} steps: min_j_terrain={min_j_terrain:.4} \
+             max_terrain_displacement={max_terrain_displacement:.4} \
+             min_j_snake={min_j_snake:.4} max_snake_speed={max_snake_speed:.4}"
+        );
+
+        assert!(
+            min_j_terrain.is_finite() && min_j_terrain > 0.3,
+            "terrain compressed/inverted past a sane bound under real muscle-driven \
+             activity on GPU -- min_j_terrain={min_j_terrain:.4}"
+        );
+        assert!(
+            min_j_snake.is_finite() && max_snake_speed.is_finite() && max_snake_speed < 50.0,
+            "snake body went non-finite or exploded under real muscle-driven activity \
+             on GPU -- min_j_snake={min_j_snake:.4} max_snake_speed={max_snake_speed:.4}"
+        );
+    }
+
+    /// Real per-pass GPU timestamp profiling of the multi-field contact system, at LP's
+    /// actual confirmed particle ceiling (~50k -- LP will not go past this, per explicit
+    /// user direction 2026-07-15). `gpu_profile_passes_at_50k` above profiles the base
+    /// solver at 50k with NO contact (single NeoHookean material, no `contact_group`) --
+    /// that test is what proved the base solver hits 60-66fps live at this exact scale
+    /// (`project_mvp_definition` memory, 2026-06-27). `resolve_contact` didn't exist yet
+    /// then. This test asks the one real remaining question: at the SAME ~50k scale, with
+    /// a real contact-active body genuinely resting on real DP sand terrain (not a
+    /// synthetic no-contact scene), what does `resolve_contact` actually cost relative to
+    /// the other 7 passes -- not guessed, not inferred from a live scene's aggregate fps,
+    /// measured directly via `GpuSimulation::enable_profiling()`/`last_pass_timings_ns()`,
+    /// the same tool that resolved every prior perf question in this codebase's history.
+    #[test]
+    #[ignore = "perf diagnostic (not correctness) -- 50k-particle contact profiling pass, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
+    fn gpu_profile_contact_passes_at_50k_target() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::DruckerPragerMaterial;
+        use glam::IVec2;
+
+        const GRID_RES: usize = 320;
+        const REAL_TIME_DT: f32 = 1.0 / 60.0;
+        const SNAKE_CONTACT_GROUP: u32 = 1;
+        // Same terrain/body aspect ratios as `gpu_snake_on_terrain_muscle_activity_
+        // displaces_real_sand` above, scaled ~3x linearly (~9x particles: 5,376 -> ~48k)
+        // to sit at LP's real ~50k ceiling instead of that test's smaller diagnostic scale.
+        let config = SimConfig {
+            contact_friction: 0.5,
+            max_substeps_per_step: 128,
+            project_invalid_state: true,
+            ..SimConfig::standard(GRID_RES, REAL_TIME_DT, Vec2::new(0.0, -0.3))
+        };
+
+        let terrain_particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(300, 36),
+                box_center: Vec2::new(160.0, 30.0),
+                material_id: 0,
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let terrain_count = terrain_particles.len();
+        let terrain_mat = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        let registry = MaterialRegistry::with_default(Box::new(terrain_mat));
+        let mut solver = block_on(GpuSimulation::new(config, terrain_particles, registry));
+
+        let snake_mat = NeoHookeanMaterial::new(13.0, 26.0);
+        let snake_mat_id = solver.register_material(Box::new(snake_mat));
+        let snake_spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(108, 12),
+            box_center: Vec2::new(160.0, 60.0),
+            material_id: snake_mat_id.id(),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(solver.config())
+        };
+        let snake_range = solver.spawn_region(snake_spawn);
+        {
+            let particles = solver.particles_mut();
+            for i in snake_range.clone() {
+                particles[i].contact_group = SNAKE_CONTACT_GROUP;
+            }
+        }
+        solver.mark_particles_dirty();
+        let n = terrain_count + snake_range.len();
+
+        // Let the body fall under gravity and settle into REAL, non-trivial contact with
+        // the terrain before profiling -- resolve_contact's real cost only shows up once
+        // grid nodes genuinely carry both fields, not on a scene where the two bodies
+        // haven't touched yet.
+        for _ in 0..300 {
+            solver.step_frame();
+        }
+
+        if !solver.enable_profiling() {
+            eprintln!(
+                "gpu_profile_contact_passes_at_50k_target: TIMESTAMP_QUERY not supported on this device/backend, skipping"
+            );
+            return;
+        }
+
+        for _ in 0..5 {
+            solver.step_frame();
+        }
+        let timings = solver
+            .last_pass_timings_ns()
+            .expect("profiling was enabled, readback should succeed");
+        let total: f32 = timings.iter().map(|(_, ns)| ns).sum();
+        eprintln!(
+            "gpu_profile_contact_passes_at_50k_target: n={n} (real DP-sand terrain + real \
+             contact_group body, settled), one substep's breakdown:"
+        );
+        for (label, ns) in &timings {
+            let pct = if total > 0.0 { ns / total * 100.0 } else { 0.0 };
+            eprintln!("  {label:<28} {ns:>9.1} ns  ({pct:>5.1}%)");
+        }
+        eprintln!("  {:<28} {:>9.1} ns", "TOTAL (one substep)", total);
+
+        for _ in 0..10 {
+            solver.step_frame();
+        }
+        let (cfl_scan_ns, encode_ns, submit_ns, readback_ns, total_ns) =
+            solver.last_cpu_timings_ns();
+        let accounted = cfl_scan_ns + encode_ns + submit_ns + readback_ns;
+        eprintln!(
+            "gpu_profile_contact_passes_at_50k_target: CPU side — cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
+            cfl_scan_ns / 1.0e6,
+            encode_ns / 1.0e6,
+            submit_ns / 1.0e6,
+            readback_ns / 1.0e6,
+            total_ns / 1.0e6,
+            (total_ns - accounted) / 1.0e6
+        );
     }
 }

@@ -20,7 +20,10 @@ struct Particle {
     activation:           f32,
     activation_dir:       vec2<f32>,
     muscle_group_id:      u32,
+    contact_group:        u32,
     sleeping:             u32,
+    pinned:               u32,
+    _pad:                 array<u32, 2>,
 }
 
 struct MaterialParams {
@@ -76,12 +79,45 @@ const NUM_FLOOR:            f32 = 1e-6;
 // MOM_ATOMIC_SCALE=1e5 gives 1e-5 precision — 100× better than 1e3, avoids overflow at min_dt=0.001.
 const MASS_ATOMIC_SCALE:    f32 = 1000000.0;
 const MOM_ATOMIC_SCALE:     f32 = 100000.0;
+// Multi-field contact (GPU port, first slice) — must match
+// `step_params::MAX_CONTACT_POINTS_PER_BLOCK` (Rust-side source of truth, sizes the
+// `contact_points` buffer at construction) exactly, same duplicated-constant
+// convention already used for MASS_ATOMIC_SCALE/MOM_ATOMIC_SCALE above. Bucketed per
+// coarse BLOCK, not per exact node — see that constant's own doc in step_params.rs
+// for why (a first per-node version OOM'd at high grid_res).
+const MAX_POINTS_PER_BLOCK: u32 = 4096u;
+// override, not a hardcoded literal — must match particle_sort.wgsl's NUM_BLOCKS_PER_DIM
+// exactly, single Rust-side source of truth (src/gpu/step_params.rs). Needed here so
+// gather_contact_points_main can compute the SAME block index particle_sort uses.
+override NUM_BLOCKS_PER_DIM: u32;
 
 @group(0) @binding(0) var<storage, read_write> particles:           array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid_atomic:         array<atomic<i32>>;
 @group(0) @binding(2) var<uniform>             materials:           array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params:         StepParams;
 @group(0) @binding(5) var<storage, read_write> sorted_particle_ids: array<u32>;
+// Multi-field contact (GPU port, first slice) — see buffers.rs doc. binding 12 is the
+// SAME underlying buffer as grid_clear.wgsl's `grip_grid: array<Cell>` binding, viewed
+// here as raw atomics for scatter (same dual-view convention already used for `grid`
+// itself, bound as `array<Cell>` in grid_clear.wgsl and `array<atomic<i32>>` here).
+@group(1) @binding(12) var<storage, read_write> grip_grid_atomic:     array<atomic<i32>>;
+@group(1) @binding(13) var<storage, read_write> contact_points:       array<vec4<f32>>;
+@group(1) @binding(14) var<storage, read_write> contact_point_counts: array<atomic<u32>>;
+
+// Exact copy of particle_sort.wgsl's block_index — WGSL has no cross-file includes, so
+// this is duplicated the same way MASS_ATOMIC_SCALE etc. already are across shader
+// files. Must stay byte-for-byte identical: gather_contact_points_main needs the SAME
+// block a given cell belongs to as particle_sort computes for particles, since a
+// future resolve_contact pass will scan a block's bucket by this same index.
+fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
+    let max_cell = grid_res - 1u;
+    let cell_x = u32(clamp(pos.x, 0.0, f32(max_cell)));
+    let cell_y = u32(clamp(pos.y, 0.0, f32(max_cell)));
+    let block_size = (grid_res + NUM_BLOCKS_PER_DIM - 1u) / NUM_BLOCKS_PER_DIM;
+    let block_x = min(cell_x / block_size, NUM_BLOCKS_PER_DIM - 1u);
+    let block_y = min(cell_y / block_size, NUM_BLOCKS_PER_DIM - 1u);
+    return block_y * NUM_BLOCKS_PER_DIM + block_x;
+}
 
 fn bspline_w(d: f32) -> f32 {
     let a = abs(d);
@@ -182,8 +218,21 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // 2D plane-strain bulk modulus (k = lam_e + mu_e, not the 3D
             // relation this used to mirror -- see elastic.rs's Rust-side fix
             // for the full derivation; CPU and GPU must match exactly here).
+            // Volumetric term: k*ln(J), NOT k/2*(J^2-1) (changed 2026-07-11,
+            // mirroring elastic.rs's real fix -- the bounded (J^2-1) form has
+            // only a finite compression ceiling and let a sustained driven
+            // load ratchet a creature body into unrecoverable compaction; see
+            // elastic.rs's kirchhoff_stress doc for the full derivation).
             let k     = lam_e + mu_e;
-            tau = (mu_e / J) * dev_B + (k * 0.5 * (J * J - 1.0)) * I;
+            // Kelvin-Voigt viscous term, same as case 9u's -- opt-in via
+            // dynamic_viscosity (0.0 default, matches elastic.rs's `viscosity`
+            // field added 2026-07-11; see that file's timestep_bound for the
+            // matching CFL bound this term needs).
+            let sym   = p.velocity_gradient + transpose(p.velocity_gradient);
+            let d     = sym * 0.5;
+            let tr_d  = d[0][0] + d[1][1];
+            let d_dev = d - (tr_d * 0.5) * I;
+            tau = (mu_e / J) * dev_B + (k * log(J)) * I + mat.dynamic_viscosity * d_dev;
         }
         case 3u, 4u, 5u, 6u, 7u, 8u: { // Corotated / Snow / DP / VonMises / Rankine / SandMuI
             let t_scale = 1.0 + mat.thermal_expansion * p.temperature;
@@ -276,6 +325,12 @@ fn atomic_addf_mass(idx: u32, val: f32) {
 fn atomic_addf_mom(idx: u32, val: f32) {
     atomicAdd(&grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
 }
+fn grip_atomic_addf_mass(idx: u32, val: f32) {
+    atomicAdd(&grip_grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
+}
+fn grip_atomic_addf_mom(idx: u32, val: f32) {
+    atomicAdd(&grip_grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
+}
 
 @compute @workgroup_size(64, 1, 1)
 fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -307,14 +362,34 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
-    for (var di: i32 = -1; di <= 1; di++) {
-        for (var dj: i32 = -1; dj <= 1; dj++) {
-            let cx = base.x + di;
-            let cy = base.y + dj;
-            if cx < 0 || cy < 0 || cx >= i32(res) || cy >= i32(res) { continue; }
+    // Separable quadratic B-spline: only 3 distinct x-offsets and 3 distinct y-offsets
+    // occur across the 9-cell neighborhood (di, dj each range over {-1,0,1}), so the
+    // 1D weight only needs computing 3+3=6 times, not fresh for all 9 combinations
+    // (18 calls) as a naive nested loop does. Matches the reference algorithm's own
+    // technique -- Hu et al.'s mls-mpm88 (SIGGRAPH 2018) precomputes separable per-axis
+    // weights the same way, cross-multiplying them per cell instead of recomputing the
+    // 2D weight from scratch every iteration.
+    var wx: array<f32, 3>;
+    var wy: array<f32, 3>;
+    var dx: array<f32, 3>;
+    var dy: array<f32, 3>;
+    for (var k: i32 = 0; k <= 2; k++) {
+        let di = k - 1;
+        dx[k] = f32(base.x + di) + CELL_CENTER_OFFSET - p.x.x;
+        dy[k] = f32(base.y + di) + CELL_CENTER_OFFSET - p.x.y;
+        wx[k] = bspline_w(dx[k]);
+        wy[k] = bspline_w(dy[k]);
+    }
 
-            let cell_dist = vec2<f32>(f32(cx), f32(cy)) + vec2<f32>(CELL_CENTER_OFFSET) - p.x;
-            let w = bspline_w(cell_dist.x) * bspline_w(cell_dist.y);
+    for (var ki: i32 = 0; ki <= 2; ki++) {
+        let cx = base.x + ki - 1;
+        if cx < 0 || cx >= i32(res) { continue; }
+        for (var kj: i32 = 0; kj <= 2; kj++) {
+            let cy = base.y + kj - 1;
+            if cy < 0 || cy >= i32(res) { continue; }
+
+            let cell_dist = vec2<f32>(dx[ki], dy[kj]);
+            let w = wx[ki] * wy[kj];
 
             let apic_v    = p.v + p.velocity_gradient * cell_dist;
             let mass_w    = w * p.mass;
@@ -325,6 +400,70 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             atomic_addf_mom(base4 + 0u, apic_mom.x + stress_mom.x);
             atomic_addf_mom(base4 + 1u, apic_mom.y + stress_mom.y);
             atomic_addf_mass(base4 + 2u, mass_w);
+
+            // Multi-field contact (GPU port, first slice): additive second scatter for
+            // the "grip" field (contact_group != 0), exactly mirroring the total-field
+            // scatter above — same weights, same stress/APIC contributions — into the
+            // separate grip_grid accumulator. No-op (branch not taken) for every
+            // particle with contact_group == 0, matching CPU's zero-cost-when-unused
+            // property (`scatter_particles_to_grid`'s own doc: "a no-op call for every
+            // particle with contact_group == 0").
+            if p.contact_group != 0u {
+                grip_atomic_addf_mom(base4 + 0u, apic_mom.x + stress_mom.x);
+                grip_atomic_addf_mom(base4 + 1u, apic_mom.y + stress_mom.y);
+                grip_atomic_addf_mass(base4 + 2u, mass_w);
+            }
         }
     }
+}
+
+// Multi-field contact (GPU port, first slice) — mirrors CPU's `gather_contact_point_cloud`
+// (transfer.rs): a SECOND per-particle pass, run AFTER p2g_main has fully scattered grip
+// mass (wgpu inserts the necessary barrier between separate compute dispatches
+// automatically, same guarantee particle_sort's own multi-pass sequence already relies
+// on). For each of a particle's 9 stencil nodes, if that node's grip mass (just written
+// by p2g_main) is nonzero, atomically claims a slot in that node's point-cloud bucket and
+// records this particle's (position, label). Labeling and the "only where grip already
+// registered" gating exactly match CPU's `add_contact_point`/`gather_contact_point_cloud`
+// semantics — see those functions' doc comments in `transfer.rs`/`grid/mod.rs` for the
+// full rationale (this is what lets the LR normal fit ignore particles far from any real
+// contact interface, not just cheaply skip the whole pass).
+@compute @workgroup_size(64, 1, 1)
+fn gather_contact_points_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x >= step_params.particle_count { return; }
+    let p_idx = sorted_particle_ids[gid.x];
+    let p = particles[p_idx];
+    if !(dot(p.x, p.x) >= 0.0) { return; }
+
+    let res = step_params.grid_res;
+    let label = select(-1.0, 1.0, p.contact_group != 0u);
+
+    // Real gate, not an optimization shortcut: only a particle whose OWN home cell
+    // already has nonzero grip mass this substep is near a genuine contact interface
+    // (matches CPU's `add_contact_point`, which only ever appends to an ALREADY-
+    // existing `contact_cells` entry — the CPU equivalent of "grip mass already
+    // registered here"). Checking one representative cell (not all 9 stencil cells)
+    // is deliberate: bucketing is per-BLOCK now (see MAX_POINTS_PER_BLOCK's doc), and a
+    // future resolve_contact pass scans a node's own block PLUS its neighbors, so a
+    // particle recorded once in its own block is already visible to every node that
+    // could plausibly need it — recording once per particle avoids redundantly
+    // writing the same particle into the same block bucket up to 9 times (nearly
+    // every particle's 3×3 stencil maps to the SAME block, since block_size is
+    // normally much larger than 3 cells).
+    let home_x = clamp(u32(p.x.x), 0u, res - 1u);
+    let home_y = clamp(u32(p.x.y), 0u, res - 1u);
+    let home_idx = home_y * res + home_x;
+    let grip_mass_bits = atomicLoad(&grip_grid_atomic[home_idx * 4u + 2u]);
+    if grip_mass_bits <= 0 { return; }
+
+    let block = block_index(p.x, res);
+    // NOTE for any future reader of `contact_point_counts`: this counter keeps
+    // incrementing past MAX_POINTS_PER_BLOCK even though writes beyond it are dropped
+    // below (a real, honest overflow signal, not silently capped) — any consumer must
+    // clamp its own iteration to `min(count, MAX_POINTS_PER_BLOCK)`, never trust the
+    // raw count as the number of VALID slots in `contact_points`.
+    let slot_in_block = atomicAdd(&contact_point_counts[block], 1u);
+    if slot_in_block >= MAX_POINTS_PER_BLOCK { return; }
+    let slot = block * MAX_POINTS_PER_BLOCK + slot_in_block;
+    contact_points[slot] = vec4<f32>(p.x.x, p.x.y, label, 0.0);
 }

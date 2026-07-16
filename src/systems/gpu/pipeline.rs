@@ -9,14 +9,28 @@
 ///     0d. particle_sort_scan     — one workgroup, exclusive prefix sum -> scatter cursor
 ///     0e. particle_sort_scatter  — one thread per particle, write sorted_particle_ids
 ///   Per substep:
-///     1. grid_clear       — zero only cells in active blocks (see grid_clear.wgsl)
+///     1. grid_clear       — zero only cells in active blocks (see grid_clear.wgsl, Phase 1)
 ///     2. p2g              — scatter particles → grid (sorted access, 64-wide workgroups)
-///     3. grid_update      — normalize momentum→velocity, apply gravity, enforce boundary
+///     3. grid_update      — normalize momentum→velocity, apply gravity, enforce boundary —
+///                            active-block dispatch too (see grid_update.wgsl, Phase 2)
 ///     4. g2p              — gather grid → particles, write v + velocity_gradient only
 ///     5. particles_update — F update, plasticity, volume/density, position, boundary (sorted)
 ///     6. force_fields     — apply non-uniform body forces after particles_update
 ///
-/// Single bind group layout shared by all passes:
+/// TWO bind group layouts shared by all passes (split 2026-07-16 — a single 20-binding
+/// layout hit a real, present limit: `create_bind_group_layout` failed on any adapter
+/// exposing only the WebGPU-guaranteed baseline of 8 storage buffers per compute stage,
+/// once contact's GPU port pushed the count to 14. `maxStorageBuffersPerShaderStage` is
+/// validated per bind-group-layout, not aggregated across a pipeline's layouts, so
+/// splitting genuinely fixes it rather than moving the count around. Every real pass sets
+/// BOTH groups regardless of which bindings its own entry point references, same
+/// philosophy as "passes that don't use a binding still share the same layout" below —
+/// keeps `encode_substep`/`readback.rs` from needing per-shader reasoning about which
+/// group is actually touched.
+///
+/// Group 0 — core MPM state, needed by nearly every pass (8 storage, at the baseline
+/// limit with zero headroom; any future core addition needs its own new group, not a
+/// squeeze into this one):
 ///   binding 0: particles            — storage read_write
 ///   binding 1: grid                 — storage read_write
 ///   binding 2: materials            — uniform (array<MaterialParams, MAX_MATERIALS>)
@@ -26,8 +40,29 @@
 ///   binding 6: block_counts         — storage read_write (256 atomic<u32>, particle_sort only)
 ///   binding 7: sleep_wake_params    — uniform (GpuSleepWakeParams, 80 bytes)
 ///   binding 8: active_block_ids     — storage read_write (256 u32 — particle_sort writes,
-///                                     grid_clear reads; GPU sparse grid Phase 1)
+///                                     grid_clear/grid_update read; GPU sparse grid)
 ///   binding 9: active_block_count   — storage read_write (1 atomic<u32> — same pair as above)
+///   binding 10: active_block_ids_prev   — storage read_write (256 u32 — one-substep grace
+///                                         period, same consumers as binding 8)
+///   binding 11: active_block_count_prev — storage read_write (1 u32 — same pair as above)
+///
+/// Group 1 — multi-field contact subsystem, only touched by contact-related passes (6
+/// storage, 2 headroom below the baseline limit). None of these buffers are
+/// particle-count-scaled (all fixed grid_res²-sized), so unlike group 0's bind group
+/// (rebuilt whenever `spawn_region` reallocates `buffers.particles`), this bind group is
+/// built once at construction and never needs rebuilding:
+///   binding 12: grip_grid               — storage read_write (multi-field contact "grip"
+///                                         field mass/momentum, grid_res² cells — GPU port,
+///                                         first slice, see buffers.rs doc)
+///   binding 13: contact_points           — storage read_write (labeled contact point cloud,
+///                                         grid_res² × MAX_CONTACT_POINTS_PER_NODE)
+///   binding 14: contact_point_counts     — storage read_write (grid_res² atomic<u32>)
+///   binding 15: contact_debug_params     — uniform (ContactDebugParams, 16 bytes,
+///                                         debug/test-only, resolve_contact.wgsl)
+///   binding 16: contact_debug_output     — storage read_write (debug/test-only)
+///   binding 17: resolved_grip_v          — storage read_write (grid_res² vec2<f32>)
+///   binding 18: resolved_rest_v          — storage read_write (grid_res² vec2<f32>)
+///   binding 19: grip_params              — uniform (GpuDirectionalGripParams, 16 bytes)
 ///
 /// Passes that don't use a binding still share the same layout — avoids rebinding.
 use super::buffers::GpuBuffers;
@@ -52,6 +87,11 @@ pub struct SimPipelines {
     pub active_block_swap: wgpu::ComputePipeline,
     pub grid_clear: wgpu::ComputePipeline,
     pub p2g: wgpu::ComputePipeline,
+    /// Multi-field contact (GPU port, first slice) — populates `contact_points` from
+    /// each particle's 9-node stencil, gated on grip mass already being nonzero at that
+    /// node (written by `p2g` immediately before this runs). See `p2g.wgsl`'s
+    /// `gather_contact_points_main` doc for the full rationale.
+    pub gather_contact_points: wgpu::ComputePipeline,
     pub grid_update: wgpu::ComputePipeline,
     /// Gather-only: writes v + velocity_gradient. No F update or plasticity.
     pub g2p: wgpu::ComputePipeline,
@@ -61,9 +101,51 @@ pub struct SimPipelines {
     pub force_fields: wgpu::ComputePipeline,
     /// Apply velocity impulses directly on GPU particle buffer — no CPU upload needed.
     pub apply_impulses: wgpu::ComputePipeline,
+    /// Debug/test-only — runs the Newton-Raphson LR normal fit against one chosen
+    /// block's point cloud in isolation. Not part of the real per-substep pipeline.
+    /// See `resolve_contact.wgsl`'s `debug_fit_normal_main` doc.
+    pub debug_fit_normal: wgpu::ComputePipeline,
+    /// Multi-field contact resolution — the real per-substep pass (GPU port). Runs
+    /// after grid_update, before g2p. See `resolve_contact.wgsl`'s `resolve_contact_main`
+    /// doc.
+    pub resolve_contact: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
+    /// Group 1 — contact subsystem, see the module doc comment above for why this is a
+    /// second layout rather than more entries in `bind_group_layout`.
+    pub contact_bind_group_layout: wgpu::BindGroupLayout,
     /// Separate layout for apply_impulses — only needs particles + impulse_params.
     pub impulse_bind_group_layout: wgpu::BindGroupLayout,
+}
+
+/// A `read_write` storage-buffer binding, COMPUTE-visible — the shape shared by every
+/// storage entry in the pipeline's bind group layout. Collapses what used to be a ~10-line
+/// struct literal repeated 8 times into one call each, cutting real line count (not just
+/// moving it) while every binding still gets its own doc comment at the call site.
+const fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// A `uniform` buffer binding, COMPUTE-visible — same rationale as `storage_entry`.
+const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
 }
 
 impl SimPipelines {
@@ -71,152 +153,70 @@ impl SimPipelines {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mpm_bind_group_layout"),
             entries: &[
-                // binding 0: particles — storage read_write
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 1: grid — storage read_write
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 2: materials — uniform
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 3: step_params — uniform
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 4: force_fields_params — uniform (GpuFieldsParams, 784 bytes)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 5: sorted_particle_ids — storage read_write (u32 per particle)
-                // Written by particle_sort; read by p2g and particles_update for sorted access.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 6: block_counts — storage read_write (256 atomic<u32>, particle_sort only)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 7: sleep_wake_params — uniform (GpuSleepWakeParams, 80 bytes)
-                // Only force_fields.wgsl reads this; harmless for shaders that don't.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 8: active_block_ids — storage read_write (256 u32). GPU sparse grid
-                // Phase 1: particle_sort writes, grid_clear reads.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 9: active_block_count — storage read_write (1 atomic<u32>). Same
-                // pair as binding 8.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 10: active_block_ids_prev — storage read_write (256 u32). Snapshot
-                // of last substep's active_block_ids — the one-substep grace period, see
-                // active_block_swap_main.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 10,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // binding 11: active_block_count_prev — storage read_write (1 plain u32, not
-                // atomic — only ever written by active_block_swap_main's single lid.x==0u
-                // thread). Companion to binding 10.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 11,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_entry(0), // particles
+                storage_entry(1), // grid
+                uniform_entry(2), // materials (array<MaterialParams, MAX_MATERIALS>)
+                uniform_entry(3), // step_params (GpuStepParams, 32 bytes)
+                uniform_entry(4), // force_fields_params (GpuFieldsParams, 784 bytes)
+                // 5: sorted_particle_ids — written by particle_sort; read by p2g and
+                // particles_update for sorted access.
+                storage_entry(5),
+                // 6: block_counts — 256 atomic<u32>, particle_sort only.
+                storage_entry(6),
+                // 7: sleep_wake_params — GpuSleepWakeParams, 80 bytes. Only force_fields.wgsl
+                // reads this; harmless for shaders that don't.
+                uniform_entry(7),
+                // 8: active_block_ids — 256 u32. GPU sparse grid: particle_sort writes,
+                // grid_clear/grid_update read.
+                storage_entry(8),
+                // 9: active_block_count — 1 atomic<u32>. Same pair as binding 8.
+                storage_entry(9),
+                // 10: active_block_ids_prev — 256 u32. Snapshot of last substep's
+                // active_block_ids — the one-substep grace period, see active_block_swap_main.
+                storage_entry(10),
+                // 11: active_block_count_prev — 1 plain u32, not atomic (only ever written by
+                // active_block_swap_main's single lid.x==0u thread). Companion to binding 10.
+                storage_entry(11),
             ],
         });
 
+        // Group 1 — contact subsystem, split out 2026-07-16 (see module doc comment above)
+        // to keep each layout within the WebGPU-guaranteed 8-storage-buffers-per-stage
+        // baseline. Binding NUMBERS are kept exactly as they were under the old single
+        // layout (12-19) — only which GROUP they belong to changed, so every WGSL shader
+        // only needed its `@group(0)` -> `@group(1)` annotation updated on these specific
+        // bindings, no renumbering.
+        let contact_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("mpm_contact_bind_group_layout"),
+                entries: &[
+                    // 12: grip_grid — multi-field contact "grip" field mass/momentum
+                    // accumulator, same dense grid_res² layout and fixed-point atomic
+                    // convention as `grid` (group 0 binding 1). GPU port first slice —
+                    // see buffers.rs doc.
+                    storage_entry(12),
+                    // 13: contact_points — labeled contact point cloud (grid_res² ×
+                    // MAX_CONTACT_POINTS_PER_NODE), read/written by gather_contact_points_main.
+                    storage_entry(13),
+                    // 14: contact_point_counts — grid_res² atomic<u32>, per-node point-cloud
+                    // size.
+                    storage_entry(14),
+                    // 15: contact_debug_params — debug/test-only, resolve_contact.wgsl.
+                    uniform_entry(15),
+                    // 16: contact_debug_output — debug/test-only, resolve_contact.wgsl.
+                    storage_entry(16),
+                    // 17/18: resolved_grip_v / resolved_rest_v — resolve_contact_main writes,
+                    // a future G2P routing change reads.
+                    storage_entry(17),
+                    storage_entry(18),
+                    // 19: grip_params — directional grip friction, resolve_contact.wgsl.
+                    uniform_entry(19),
+                ],
+            });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mpm_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout, &contact_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -232,9 +232,17 @@ impl SimPipelines {
             ("MAX_SLEEP_WAKE_TAGS", MAX_SLEEP_WAKE_TAGS as f64),
         ];
 
-        // NUM_BLOCKS_PER_DIM: GPU sparse grid Phase 1 — single Rust-side source of truth,
-        // shared by particle_sort's compaction pass and grid_clear's block-guarded dispatch.
+        // NUM_BLOCKS_PER_DIM: GPU sparse grid Phase 1/2 — single Rust-side source of truth,
+        // shared by particle_sort's compaction pass and grid_clear/grid_update's block-guarded
+        // dispatch.
         let block_consts: &[(&str, f64)] = &[("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64)];
+        // grid_update needs BOTH the force-field loop bound AND the block-dispatch constant
+        // (Phase 2 — see grid_update.wgsl doc comment).
+        let grid_update_consts: &[(&str, f64)] = &[
+            ("MAX_FORCE_FIELDS", MAX_FORCE_FIELDS as f64),
+            ("MAX_SLEEP_WAKE_TAGS", MAX_SLEEP_WAKE_TAGS as f64),
+            ("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64),
+        ];
 
         // NUM_BLOCKS_PER_DIM is an `override` at the particle_sort.wgsl MODULE level (promoted
         // from a hardcoded const — see GPU sparse grid Phase 1), so every pipeline built from
@@ -311,13 +319,26 @@ impl SimPipelines {
             block_consts,
             false,
         );
+        // p2g.wgsl declares `override NUM_BLOCKS_PER_DIM` (needed by
+        // gather_contact_points_main's block_index call) -- both entry points compiled
+        // from this same module need it supplied, even though p2g_main itself doesn't
+        // reference it.
         let p2g = make_pipeline(
             device,
             &pipeline_layout,
             &p2g_src,
             "p2g_main",
             "p2g",
-            &[],
+            block_consts,
+            false,
+        );
+        let gather_contact_points = make_pipeline(
+            device,
+            &pipeline_layout,
+            &p2g_src,
+            "gather_contact_points_main",
+            "gather_contact_points",
+            block_consts,
             false,
         );
         let grid_update = make_pipeline(
@@ -326,7 +347,7 @@ impl SimPipelines {
             shaders::GRID_UPDATE,
             "grid_update_main",
             "grid_update",
-            ff_consts,
+            grid_update_consts,
             false,
         );
         let g2p = make_pipeline(
@@ -362,26 +383,8 @@ impl SimPipelines {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("mpm_impulse_bind_group_layout"),
                 entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
+                    storage_entry(0), // particles
+                    uniform_entry(1), // impulse_params
                 ],
             });
         let impulse_pipeline_layout =
@@ -400,6 +403,30 @@ impl SimPipelines {
             false,
         );
 
+        // resolve_contact.wgsl declares `override NUM_BLOCKS_PER_DIM` (needed by
+        // resolve_contact_main's block-neighbor gather) -- both entry points compiled
+        // from this module need it supplied, even though debug_fit_normal_main itself
+        // doesn't reference it (same requirement already established for p2g/
+        // gather_contact_points sharing p2g.wgsl's own override).
+        let debug_fit_normal = make_pipeline(
+            device,
+            &pipeline_layout,
+            shaders::RESOLVE_CONTACT,
+            "debug_fit_normal_main",
+            "debug_fit_normal",
+            block_consts,
+            false,
+        );
+        let resolve_contact = make_pipeline(
+            device,
+            &pipeline_layout,
+            shaders::RESOLVE_CONTACT,
+            "resolve_contact_main",
+            "resolve_contact",
+            block_consts,
+            false,
+        );
+
         Self {
             particle_sort_clear,
             particle_sort_count,
@@ -409,12 +436,16 @@ impl SimPipelines {
             active_block_swap,
             grid_clear,
             p2g,
+            gather_contact_points,
             grid_update,
             g2p,
             particles_update,
             force_fields,
             apply_impulses,
+            debug_fit_normal,
+            resolve_contact,
             bind_group_layout,
+            contact_bind_group_layout,
             impulse_bind_group_layout,
         }
     }
@@ -501,6 +532,56 @@ impl SimPipelines {
                 wgpu::BindGroupEntry {
                     binding: 11,
                     resource: buffers.active_block_count_prev.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    /// Build the group-1 (contact subsystem) bind group. Unlike `make_bind_group`, this
+    /// takes no `step_params` slot and is built exactly ONCE for a `GpuSimulation`'s
+    /// whole lifetime — none of its buffers are particle-count-scaled, so `spawn_region`
+    /// reallocating `buffers.particles` never invalidates it. See the module doc comment
+    /// on the bind-group-layout split for why this is a separate group at all.
+    pub fn make_contact_bind_group(
+        &self,
+        device: &wgpu::Device,
+        buffers: &GpuBuffers,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mpm_contact_bind_group"),
+            layout: &self.contact_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: buffers.grip_grid.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: buffers.contact_points.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: buffers.contact_point_counts.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: buffers.contact_debug_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: buffers.contact_debug_output.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: buffers.resolved_grip_v.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: buffers.resolved_rest_v.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 19,
+                    resource: buffers.grip_params.as_entire_binding(),
                 },
             ],
         })

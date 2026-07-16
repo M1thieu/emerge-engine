@@ -63,6 +63,22 @@ pub struct SimConfig {
     /// 0.0 = sleep disabled. Typical: 0.01–0.05 grid-cells/s.
     /// Sleeping particles skip P2G and G2P entirely; woken by neighbouring active cells.
     pub sleep_threshold: f32,
+    /// Coulomb friction coefficient for multi-field contact between a `contact_group != 0`
+    /// particle and everything else (Bardenhagen 2001 — see `Particle::contact_group` doc).
+    /// Only has any effect at all when at least one particle actually sets a nonzero
+    /// `contact_group`; otherwise `Grid::resolve_contact` never has anything to resolve,
+    /// regardless of this value. 0.0 = frictionless (normal no-penetration only, free
+    /// tangential slip). Real dry-material Coulomb coefficients are typically 0.3-0.9.
+    pub contact_friction: f32,
+    /// ASFLIP blend factor [0, 1] (Fei, Guo, Wu, Huang, Gao 2021, "Revisiting Integration in
+    /// the Material Point Method: A Scheme for Easier Separation and Less Dissipation", ACM
+    /// TOG 40(4)). Reintroduces a FLIP-style velocity/position correction on top of ordinary
+    /// APIC, letting granular/debris material separate crisply instead of smearing together.
+    /// 0.0 = disabled — byte-identical to plain APIC, the default for every existing scene/
+    /// test. ~0.97 matches the paper's own reference implementation (`nepluno/pyasflip`).
+    /// Costs nothing when 0.0: no grid-velocity snapshot is taken, G2P takes the exact
+    /// original code path.
+    pub asflip_blend: f32,
 
     // ── Physical unit scaling ──────────────────────────────────────────────────
     // Default 1.0 = simulation units (no scaling). Set these to enable SI-calibrated materials.
@@ -106,6 +122,8 @@ impl Default for SimConfig {
             apic_blend: 1.0,
             j_max: 50.0,
             sleep_threshold: 0.0,
+            contact_friction: 0.5,
+            asflip_blend: 0.0,
             dx_meters: 1.0,
             dt_seconds: 1.0,
         }
@@ -229,6 +247,10 @@ impl SimConfig {
             "projection_min_deformation_j must be positive"
         );
         assert!(self.particle_mass > 0.0, "particle_mass must be positive");
+        assert!(
+            self.contact_friction >= 0.0,
+            "contact_friction must be non-negative"
+        );
         assert!(
             self.max_substeps_per_step > 0,
             "max_substeps_per_step must be > 0"

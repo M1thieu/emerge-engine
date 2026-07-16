@@ -7,7 +7,7 @@
 //
 // MAX_FORCE_FIELDS is a pipeline-overridable constant set from src/gpu/mod.rs at pipeline creation.
 
-// ── Particle struct — 112 bytes, matches repr(C) in src/mechanics/particle.rs ────────────────
+// ── Particle struct — 128 bytes, matches repr(C) in src/matter/particle.rs ────────────────
 struct Particle {
     x:                    vec2<f32>,
     v:                    vec2<f32>,
@@ -27,7 +27,10 @@ struct Particle {
     activation:           f32,
     activation_dir:       vec2<f32>,
     muscle_group_id:      u32,
-    sleeping:             u32,       // total 112 bytes
+    contact_group:        u32,
+    sleeping:             u32,
+    pinned:               u32,
+    _pad:                 array<u32, 2>,  // total 128 bytes
 }
 
 struct StepParams {
@@ -92,6 +95,7 @@ const FIELD_AABB_CONFINEMENT:    u32 = 3u;
 const FIELD_RADIAL_CONFINEMENT:  u32 = 4u;
 const FIELD_UNIFORM_ELECTRIC:    u32 = 5u;
 const FIELD_BUOYANCY:            u32 = 6u;
+const FIELD_LINEAR_DRAG:         u32 = 7u;
 // Prevent divide-by-near-zero in softened potentials.
 const FF_NUM_FLOOR:              f32 = 1e-10;
 // Prevent a = F/m overflow when mass is negligible.
@@ -275,6 +279,17 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let fluid_rho    = entry.params01.z;
                 let rest_rho     = p.mass / max(p.initial_volume, 1e-10);
                 p.v += -gravity_vec * (fluid_rho / max(rest_rho, 1e-10)) * dt;
+            }
+            case FIELD_LINEAR_DRAG: {
+                // Linear drag toward a target/ambient flow velocity: a = k*(v_target - v_p)
+                // (Stokes drag / Rayleigh friction -- see LinearDragField's CPU doc for the
+                // real physics). The FIRST field type to read particle velocity, not just
+                // position -- architecturally already supported (full Particle struct is
+                // available here), just unused by any field before this one.
+                // params01 = (target_vx, target_vy, drag_coefficient, _unused)
+                let target_v = vec2<f32>(entry.params01.x, entry.params01.y);
+                let k         = entry.params01.z;
+                p.v += k * (target_v - p.v) * dt;
             }
             default: {}
         }

@@ -34,6 +34,7 @@ pub mod shaders {
     pub const PARTICLES_UPDATE: &str = include_str!("shaders/particles_update.wgsl");
     pub const FORCE_FIELDS: &str = include_str!("shaders/force_fields.wgsl");
     pub const APPLY_IMPULSES: &str = include_str!("shaders/apply_impulses.wgsl");
+    pub const RESOLVE_CONTACT: &str = include_str!("shaders/resolve_contact.wgsl");
 }
 
 #[cfg(feature = "gpu")]
@@ -42,8 +43,8 @@ pub use solver::GpuSimulation;
 #[cfg(feature = "gpu")]
 pub use step_params::{
     GpuFieldEntry, GpuFieldsParams, GpuImpulseEntry, GpuImpulseParams, GpuSleepWakeParams,
-    GpuStepParams, MAX_FORCE_FIELDS, MAX_GPU_IMPULSES, MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS,
-    NUM_BLOCKS_PER_DIM, field_type,
+    GpuStepParams, MAX_CONTACT_POINTS_PER_BLOCK, MAX_FORCE_FIELDS, MAX_GPU_IMPULSES,
+    MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS, NUM_BLOCKS_PER_DIM, field_type,
 };
 
 #[cfg(feature = "gpu")]

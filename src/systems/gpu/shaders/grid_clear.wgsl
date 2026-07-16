@@ -47,6 +47,12 @@ const BLOCK_THREADS_PER_DIM: u32 = 16u;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
 @group(0) @binding(11) var<storage, read_write> active_block_count_prev: u32;
+// Multi-field contact (GPU port, first slice) — same dense grid_res² cell range as
+// `grid` above, zeroed alongside it every substep. See buffers.rs doc for the full
+// rationale. `contact_point_counts` (bucketed per coarse BLOCK, not per cell) is
+// cleared separately by particle_sort_clear_main (particle_sort.wgsl) instead — its
+// 256-entry size doesn't match this pass's per-CELL iteration.
+@group(1) @binding(12) var<storage, read_write> grip_grid:               array<Cell>;
 
 // Dispatch: (2 * NUM_BLOCKS, 1, 1) workgroups, every frame, fixed — worst case (every block
 // active, in both lists) never overflows. workgroup_id.x is a SLOT, not a block ID. Slots
@@ -95,6 +101,9 @@ fn grid_clear_main(
             grid[idx].momentum = vec2<f32>(0.0, 0.0);
             grid[idx].mass     = 0.0;
             grid[idx]._pad     = 0.0;
+            grip_grid[idx].momentum = vec2<f32>(0.0, 0.0);
+            grip_grid[idx].mass     = 0.0;
+            grip_grid[idx]._pad     = 0.0;
             x += BLOCK_THREADS_PER_DIM;
         }
         y += BLOCK_THREADS_PER_DIM;

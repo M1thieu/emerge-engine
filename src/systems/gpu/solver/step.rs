@@ -10,10 +10,10 @@
 //! code this precise.
 
 use super::super::step_params::{
-    GpuFieldEntry, GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams,
-    MAX_FORCE_FIELDS,
+    GpuDirectionalGripParams, GpuFieldEntry, GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams,
+    GpuStepParams, MAX_FORCE_FIELDS, NUM_BLOCKS,
 };
-use super::{GpuProfiling, GpuSimulation, NUM_BLOCKS, PROFILE_PASS_LABELS, WG_GRID, WG_PARTICLES};
+use super::{GpuSimulation, PROFILE_PASS_LABELS, WG_PARTICLES};
 use crate::particle::Particles;
 use crate::solver::config::SimConfig;
 use crate::solver::{affine_cfl_speed_contribution, cfl_bound};
@@ -183,6 +183,17 @@ impl GpuSimulation {
         self.buffers
             .upload_force_fields_params(&self.queue, &ff_params);
 
+        // Multi-field contact (GPU port) — directional grip friction, uploaded once per
+        // frame like ff_params above. Defaults to plain symmetric Coulomb at
+        // `config.contact_friction` (no directional bias) — a real GPU-side
+        // `DirectionalContactGrip` equivalent (live-adjustable easy_direction/mu_easy/
+        // mu_resist) is future work; this is the correct, honest default for every
+        // scene until that lands, matching CPU's own `directional_grip: None` fallback.
+        self.buffers.upload_grip_params(
+            &self.queue,
+            &GpuDirectionalGripParams::symmetric(self.config.contact_friction),
+        );
+
         // Force-sleep/force-wake-by-tag — minimal hook for LP's future chunk system.
         // Uploaded every frame (zeroed when nothing's pending, same as ff_params above)
         // and read once per substep in force_fields.wgsl; cleared after upload since
@@ -203,6 +214,33 @@ impl GpuSimulation {
         self.pending_sleep_tags.clear();
         self.pending_wake_tags.clear();
 
+        // force_fields_main is a provable no-op for every particle this frame when none
+        // of these are true -- no fields configured, no tag-based sleep/wake pending,
+        // and sleep-scoring disabled (the pass's only other job). Real cost found via
+        // profiling (2026-07-12): the pass still reads+writes every particle's full
+        // 128-byte struct even with an empty loop body, ~1ms/17.5% of a substep at 50k
+        // particles for pure memory traffic with nothing to show for it. Skipping the
+        // whole dispatch (not just the loop) when genuinely unneeded is the same
+        // "don't pay for provably unnecessary work" principle already applied to the
+        // lazy spatial hash and the sparse-grid active-block dispatch.
+        let force_fields_needed = ff_params.count > 0
+            || sw_params.sleep_count > 0
+            || sw_params.wake_count > 0
+            || step_config.sleep_threshold > 0.0;
+
+        // Real GPU gap fixed 2026-07-15, mirroring CPU's `Grid::has_contact_activity()`
+        // gate (`transfer.rs`): `resolve_contact`/`gather_contact_points` are structurally
+        // required whenever ANY particle uses multi-field contact (g2p.wgsl unconditionally
+        // reads their output for every scene), but for the common case where NO particle
+        // ever sets `contact_group`, this is entirely provable dead work -- measured at
+        // 37.5%/5.66ms of a substep on a pure fluid scene with zero contact particles,
+        // paid by every existing example except the two snake_on_terrain ones. A plain O(N)
+        // scan of the CPU particle mirror (same "compute once per frame" pattern as
+        // `force_fields_needed` above) is far cheaper than the GPU passes it gates.
+        let contact_active = self.particles[..self.particle_count]
+            .iter()
+            .any(|p| p.contact_group != 0);
+
         // Upload step_params for each substep into its pool slot -- contents change every
         // frame (adaptive dt), so this write can't be cached. The bind group pointing at
         // that slot, however, only depends on buffer IDENTITY, not contents, so it's built
@@ -210,7 +248,8 @@ impl GpuSimulation {
         // here every substep every frame -- doing so at LP's ~5-6k-substep-per-frame scale
         // exhausted the GPU's descriptor allocator within seconds.
         for (i, &sub_dt) in sub_dts.iter().enumerate() {
-            let params = GpuStepParams::new(&step_config, sub_dt, self.particle_count);
+            let params =
+                GpuStepParams::new(&step_config, sub_dt, self.particle_count, contact_active);
             self.buffers.upload_step_params_at(&self.queue, i, &params);
         }
         let bind_groups = &self.bind_group_pool;
@@ -221,7 +260,6 @@ impl GpuSimulation {
         // apply_impulses runs first so physics sees the freshly-applied velocities.
         // particle_sort re-seeds sorted_particle_ids after a CPU upload (layout_dirty).
         // Both use dedicated buffer slots so they never alias substep params.
-        let grid_wg = (self.config.grid_res as u32).div_ceil(WG_GRID);
         let particle_wg = (self.particle_count as u32).div_ceil(WG_PARTICLES);
         let mut encoder = self
             .device
@@ -265,7 +303,12 @@ impl GpuSimulation {
         // last CPU upload, going stale as GPU-resident particles move. See particle_sort.wgsl.
         {
             let sort_slot = self.buffers.step_params_pool.len() - 1;
-            let sort_params = GpuStepParams::new(&self.config, self.config.dt, self.particle_count);
+            let sort_params = GpuStepParams::new(
+                &self.config,
+                self.config.dt,
+                self.particle_count,
+                contact_active,
+            );
             self.buffers
                 .upload_step_params_at(&self.queue, sort_slot, &sort_params);
             let sort_bg = self.pipelines.make_bind_group(
@@ -278,6 +321,7 @@ impl GpuSimulation {
                 timestamp_writes: None,
             });
             pass.set_bind_group(0, &sort_bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.set_pipeline(&self.pipelines.particle_sort_clear);
             pass.dispatch_workgroups(1, 1, 1); // 1 workgroup of 256 == NUM_BLOCKS
             pass.set_pipeline(&self.pipelines.particle_sort_count);
@@ -327,7 +371,13 @@ impl GpuSimulation {
                         label: Some("mpm_substep_batch"),
                     });
             for bg in chunk {
-                self.encode_substep(&mut sub_encoder, bg, grid_wg, particle_wg);
+                self.encode_substep(
+                    &mut sub_encoder,
+                    bg,
+                    particle_wg,
+                    force_fields_needed,
+                    contact_active,
+                );
             }
             self.queue.submit(std::iter::once(sub_encoder.finish()));
             pure_encode_ns += chunk_encode_start.elapsed().as_secs_f32() * 1.0e9;
@@ -372,7 +422,30 @@ impl GpuSimulation {
             .and_then(|flag| flag.lock().ok().and_then(|mut g| g.take()));
         if let Some(result) = readback_done {
             self.pending_readback = None;
-            if result.is_err() {
+            // REAL BUG FOUND AND FIXED 2026-07-15 (see project memory
+            // gpu_readback_error_path_bug_issue10 for the original 2026-07-05
+            // investigation this extends): the device-lost check at the TOP of
+            // step_frame only guards against a device that was ALREADY lost before
+            // this call started. It says nothing about a device that dies DURING
+            // this same call -- e.g. an earlier queue.submit() in this frame's own
+            // chunked substep loop above triggers an uncaptured OOM error, which
+            // sets `device_lost` via the registered callback, and THEN this exact
+            // block runs and blindly trusts whatever the async flag says (Ok or
+            // Err) without re-checking. Confirmed via a real 16,000-step GPU
+            // long-horizon contact test: crashed with "Buffer 'mpm_particle_staging'
+            // has been destroyed" inside `finish_readback`'s `get_mapped_range` --
+            // the exact same failure class the original issue #10 fix already
+            // covers for `sync_particles_blocking`'s ENTRY guard, just reachable
+            // here through a path that guard never touches (mid-call loss, not
+            // pre-call loss). Once the device is lost, the staging buffer may
+            // already be destroyed regardless of what the async result claims --
+            // Ok can't be trusted post-loss either, so this skips BOTH the Ok and
+            // Err branches (not just adding a check to one), avoiding the unmap()
+            // panic risk in `abandon_readback` too.
+            if self.is_device_lost() {
+                // Do nothing -- neither finish_readback nor abandon_readback is
+                // safe to call once the device is confirmed lost.
+            } else if result.is_err() {
                 self.readback_error_count += 1;
                 self.buffers.abandon_readback();
             } else {
@@ -424,12 +497,19 @@ impl GpuSimulation {
                 if any_cpu {
                     self.layout_dirty = true; // CPU plasticity touched positions/F
                 }
-                self.rebuild_spatial_hash();
+                // Defer the actual O(N) rebuild to the first query that needs it
+                // (ensure_spatial_hash_fresh, queries.rs) instead of paying it on every
+                // readback completion regardless of whether a query runs this frame --
+                // see spatial_hash's doc in mod.rs.
+                self.spatial_hash_dirty.set(true);
             }
         }
 
-        // Start a new readback if wanted and none is already in flight.
-        if want_readback && self.pending_readback.is_none() {
+        // Start a new readback if wanted and none is already in flight -- guarded by
+        // is_device_lost() for the same reason as the completion-check block above:
+        // a mid-call device loss shouldn't kick off a fresh async copy/map against a
+        // buffer that may already be gone.
+        if want_readback && self.pending_readback.is_none() && !self.is_device_lost() {
             self.pending_readback = Some(self.buffers.begin_readback(
                 &self.device,
                 &self.queue,
@@ -457,86 +537,14 @@ impl GpuSimulation {
         self.force_field_entries.clear();
     }
 
-    /// Turns on per-pass GPU timing for `encode_substep`'s 7 labeled passes. Returns false
-    /// (no-op) if this device wasn't created with `TIMESTAMP_QUERY` support — `new()`
-    /// requests it opportunistically when the adapter supports it; `with_device()` depends
-    /// on whatever device the caller already built. Call once after construction; read
-    /// results back with `last_pass_timings_ns()` after stepping a few frames.
-    pub fn enable_profiling(&mut self) -> bool {
-        if !self
-            .device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY)
-        {
-            return false;
-        }
-        let n = PROFILE_PASS_LABELS.len() as u32;
-        let query_set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: Some("emerge_profile_queries"),
-            ty: wgpu::QueryType::Timestamp,
-            count: n * 2, // begin+end per pass
-        });
-        let resolve_size = (n * 2) as u64 * 8; // 8 bytes per u64 timestamp
-        let resolve_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("emerge_profile_resolve"),
-            size: resolve_size,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("emerge_profile_readback"),
-            size: resolve_size,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        self.profiling = Some(GpuProfiling {
-            query_set,
-            resolve_buf,
-            readback_buf,
-            timestamp_period_ns: self.queue.get_timestamp_period(),
-        });
-        true
-    }
-
-    /// Reads back the last substep's per-pass GPU timings (label, nanoseconds), in
-    /// `encode_substep`'s pass order. Blocks until the GPU work + readback completes — a
-    /// diagnostic call, not for the hot path. Returns None if `enable_profiling()` wasn't
-    /// called or wasn't supported on this device.
-    pub fn last_pass_timings_ns(&mut self) -> Option<Vec<(&'static str, f32)>> {
-        let profiling = self.profiling.as_ref()?;
-        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        let slice = profiling.readback_buf.slice(..);
-        let flag = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let flag2 = flag.clone();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            *flag2.lock().unwrap() = Some(r);
-        });
-        self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        flag.lock().unwrap().take()?.ok()?;
-        let data = slice.get_mapped_range();
-        let timestamps: &[u64] = bytemuck::cast_slice(&data);
-        let period = profiling.timestamp_period_ns;
-        let result = PROFILE_PASS_LABELS
-            .iter()
-            .enumerate()
-            .map(|(i, &label)| {
-                let begin = timestamps[i * 2];
-                let end = timestamps[i * 2 + 1];
-                (label, (end.saturating_sub(begin)) as f32 * period)
-            })
-            .collect();
-        drop(data);
-        profiling.readback_buf.unmap();
-        Some(result)
-    }
-
     /// Encode one substep's passes into an existing encoder. No submission — caller batches.
     fn encode_substep(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         bg: &wgpu::BindGroup,
-        grid_wg: u32,
         particle_wg: u32,
+        force_fields_needed: bool,
+        contact_active: bool,
     ) {
         {
             // GPU sparse grid Phase 1 — re-detect active blocks from CURRENT particle
@@ -570,6 +578,7 @@ impl GpuSimulation {
                 timestamp_writes: self.profile_writes(0),
             });
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.set_pipeline(&self.pipelines.active_block_swap);
             pass.dispatch_workgroups(1, 1, 1); // 1 workgroup of 256 == NUM_BLOCKS
             pass.set_pipeline(&self.pipelines.particle_sort_clear);
@@ -586,6 +595,7 @@ impl GpuSimulation {
             });
             pass.set_pipeline(&self.pipelines.grid_clear);
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             // GPU sparse grid Phase 1: one workgroup per potential active-block slot, for
             // EACH of the two lists (this substep's + last substep's grace period) — fixed
             // worst-case size (2 * NUM_BLOCKS), not grid_res-dependent anymore. Most slots
@@ -600,42 +610,99 @@ impl GpuSimulation {
             });
             pass.set_pipeline(&self.pipelines.p2g);
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            pass.dispatch_workgroups(particle_wg, 1, 1);
+        }
+        // Skipped entirely (not just an empty loop body) when NO particle anywhere has
+        // `contact_group != 0` this frame -- mirrors CPU's `Grid::has_contact_activity()`
+        // gate exactly (`gather_contact_point_cloud` in `transfer.rs` is a documented no-op
+        // in that case). See `contact_active`'s doc (computed in `step_frame`) for the real
+        // measured cost this avoids (37.5%/5.66ms of a substep on a pure fluid scene).
+        if contact_active {
+            // Multi-field contact (GPU port, first slice) -- must run strictly after p2g
+            // (reads grip mass p2g just scattered) and strictly before grid_update, same
+            // ordering CPU's own step.rs enforces between scatter_particles_to_grid,
+            // gather_contact_point_cloud, and update_velocities. A real, separate compute
+            // pass (not folded into p2g_main itself) specifically so this barrier is
+            // enforced -- see p2g.wgsl's gather_contact_points_main doc.
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gather_contact_points"),
+                timestamp_writes: self.profile_writes(3),
+            });
+            pass.set_pipeline(&self.pipelines.gather_contact_points);
+            pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("grid_update"),
-                timestamp_writes: self.profile_writes(3),
+                timestamp_writes: self.profile_writes(4),
             });
             pass.set_pipeline(&self.pipelines.grid_update);
             pass.set_bind_group(0, bg, &[]);
-            pass.dispatch_workgroups(grid_wg, grid_wg, 1);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            // GPU sparse grid Phase 2: same active-block dispatch pattern as grid_clear (see
+            // grid_update.wgsl's doc comment) -- was the last remaining O(grid_res²)-dispatch
+            // pass; now bounded to occupied blocks (+ one substep's grace period) instead.
+            pass.dispatch_workgroups(2 * NUM_BLOCKS as u32, 1, 1);
+        }
+        // Skipped entirely under the same `contact_active` gate as `gather_contact_points`
+        // above -- safe ONLY because `g2p.wgsl` itself is gated on the identical flag (see
+        // `contact_active`'s doc): when false, G2P reads the plain `grid` velocity directly
+        // instead of `resolved_rest_v`/`resolved_grip_v`, so this pass never needing to have
+        // populated them is correct, not just "probably fine" -- both gates were added
+        // together, mirroring CPU's single `contact_active` check in `transfer.rs` exactly.
+        if contact_active {
+            // Multi-field contact (GPU port) -- must run after grid_update (needs the
+            // DECODED, gravity-applied total velocity grid_update just produced) and
+            // before g2p (which will read the resolved velocities this pass writes),
+            // same ordering CPU's own step.rs enforces between update_velocities and
+            // resolve_contact. See resolve_contact.wgsl's resolve_contact_main doc.
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("resolve_contact"),
+                timestamp_writes: self.profile_writes(5),
+            });
+            pass.set_pipeline(&self.pipelines.resolve_contact);
+            pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            pass.dispatch_workgroups(2 * NUM_BLOCKS as u32, 1, 1);
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("g2p"),
-                timestamp_writes: self.profile_writes(4),
+                timestamp_writes: self.profile_writes(6),
             });
             pass.set_pipeline(&self.pipelines.g2p);
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("particles_update"),
-                timestamp_writes: self.profile_writes(5),
+                timestamp_writes: self.profile_writes(7),
             });
             pass.set_pipeline(&self.pipelines.particles_update);
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
-        {
+        // Skipped entirely (not just an empty loop body) when force_fields_main is
+        // provably a no-op for every particle this frame -- see force_fields_needed's
+        // doc comment above (step_frame) for the full reasoning and the real measured
+        // cost this avoids. When skipped, the velocity this pass would have re-clamped
+        // is exactly what g2p already clamped to (particles_update's only effect on v
+        // is multiplicative damping, never amplifying), so this is a correctness-
+        // preserving skip, not an approximation.
+        if force_fields_needed {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("force_fields"),
-                timestamp_writes: self.profile_writes(6),
+                timestamp_writes: self.profile_writes(8),
             });
             pass.set_pipeline(&self.pipelines.force_fields);
             pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
         if let Some(profiling) = &self.profiling {
@@ -649,18 +716,5 @@ impl GpuSimulation {
                 (n * 2) as u64 * 8,
             );
         }
-    }
-
-    /// Builds `ComputePassTimestampWrites` for pass index `i` (in `PROFILE_PASS_LABELS`
-    /// order) if profiling is enabled, else `None` — keeps each pass's descriptor a
-    /// one-liner regardless of whether profiling is active.
-    fn profile_writes(&self, i: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
-        self.profiling
-            .as_ref()
-            .map(|p| wgpu::ComputePassTimestampWrites {
-                query_set: &p.query_set,
-                beginning_of_pass_write_index: Some(i * 2),
-                end_of_pass_write_index: Some(i * 2 + 1),
-            })
     }
 }

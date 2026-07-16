@@ -453,6 +453,159 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     );
 }
 
+// ─── ASFLIP (Fei, Guo, Wu, Huang, Gao 2021) ──────────────────────────────────
+
+/// ASFLIP (`SimConfig::asflip_blend`) reintroduces a FLIP-style velocity/position
+/// correction on top of plain APIC specifically to restore the raw velocity
+/// DIFFERENCE between nearby particles that PIC/APIC's grid round-trip otherwise
+/// blends toward a shared local average — the paper's own central mechanism
+/// ("Easier Separation and Less Dissipation"). Isolates that mechanism directly,
+/// independent of any one material's own physical damping (fluid viscosity/EOS,
+/// elastic restoring stress): a single compact block, split into two halves given
+/// an explicitly DIVERGING initial velocity (left half moving left, right half
+/// moving right — sharing grid-node kernel support at the seam), no gravity, no
+/// boundary, softest-possible material. Measures how much RELATIVE velocity
+/// between the two halves survives one grid round-trip: plain APIC damps this
+/// toward the shared average (less separation), ASFLIP should retain more of it.
+#[test]
+fn asflip_preserves_more_relative_velocity_between_separating_halves() {
+    let side = 6i32;
+    let center = Vec2::new(GRID as f32 * 0.5, GRID as f32 * 0.5);
+    let speed = 2.0_f32;
+
+    let make_config = |asflip_blend: f32| SimConfig {
+        max_substeps_per_step: 4,
+        asflip_blend,
+        ..SimConfig::standard(GRID, DT, Vec2::ZERO)
+    };
+    let build = |asflip_blend: f32| -> Simulation {
+        let config = make_config(asflip_blend);
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(side, side),
+            box_center: center,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        // Very soft NeoHookean -- present only so the material system has something
+        // to call, not to contribute meaningful restoring stress over 1 substep.
+        let mut sim = Simulation::new(config, spawn)
+            .with_default_material(Box::new(NeoHookeanMaterial::new(1.0, 1.0)));
+        let particles = sim.particles_mut();
+        for i in 0..particles.len() {
+            let dx = particles.x[i].x - center.x;
+            particles.v[i] = Vec2::new(if dx < 0.0 { -speed } else { speed }, 0.0);
+        }
+        sim
+    };
+
+    // Relative velocity retained: mean |v| of the two halves, weighted toward how much
+    // of their ORIGINAL diverging speed survived the grid round-trip (0 = fully blended
+    // to the shared average of 0, `speed` = perfectly preserved).
+    let mean_abs_vx = |sim: &Simulation| -> f32 {
+        let particles = sim.particles();
+        let n = particles.len() as f32;
+        (0..particles.len())
+            .map(|i| particles.v[i].x.abs())
+            .sum::<f32>()
+            / n
+    };
+
+    const STEPS: usize = 1;
+
+    let mut apic_solver = build(0.0);
+    apic_solver.step_n(STEPS);
+    let retained_apic = mean_abs_vx(&apic_solver);
+
+    let mut asflip_solver = build(0.97);
+    asflip_solver.step_n(STEPS);
+    let retained_asflip = mean_abs_vx(&asflip_solver);
+
+    println!("── ASFLIP vs APIC: relative velocity retained across a separating seam ──");
+    println!("  original speed={speed:.3}");
+    println!(
+        "  APIC   retained mean|vx|={retained_apic:.4}  ratio={:.3}",
+        retained_apic / speed
+    );
+    println!(
+        "  ASFLIP retained mean|vx|={retained_asflip:.4}  ratio={:.3}",
+        retained_asflip / speed
+    );
+
+    assert!(
+        retained_apic.is_finite() && retained_asflip.is_finite(),
+        "non-finite velocity: apic={retained_apic}, asflip={retained_asflip}"
+    );
+    assert!(
+        retained_asflip > retained_apic,
+        "ASFLIP should preserve more of the two halves' original diverging velocity \
+         than plain APIC (less dissipation across the separating seam): \
+         apic_retained={retained_apic:.4} asflip_retained={retained_asflip:.4}"
+    );
+}
+
+/// ASFLIP's per-particle velocity correction must not secretly inject or remove NET
+/// system momentum — a real risk if `old_v`/`diff_vel` were computed inconsistently.
+/// Checked via pure free-fall (no boundary to absorb/reflect momentum): total system
+/// momentum after N steps must match the analytically expected accumulated gravity
+/// impulse (mass · gravity · elapsed_time), with ASFLIP enabled.
+#[test]
+fn asflip_preserves_momentum_conservation_under_free_fall() {
+    let gravity = Vec2::new(0.0, -0.3);
+    let config = SimConfig {
+        max_substeps_per_step: 32,
+        asflip_blend: 0.9,
+        ..SimConfig::standard(GRID, DT, gravity)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(6, 6),
+        box_center: Vec2::new(GRID as f32 * 0.5, GRID as f32 * 0.75),
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::from_young_modulus(1.0e3, 0.3)));
+    // No boundary registered at all -- nothing but gravity should change total momentum;
+    // fall distance over the test's duration stays small and well inside the grid (no
+    // out-of-bounds P2G scatter to silently drop momentum and confound the check).
+
+    let total_mass: f32 = solver.particles().mass.iter().sum();
+    const STEPS: usize = 40;
+    solver.step_n(STEPS);
+    let elapsed = STEPS as f32 * DT;
+
+    let total_momentum: Vec2 = (0..solver.particles().len())
+        .map(|i| solver.particles().mass[i] * solver.particles().v[i])
+        .fold(Vec2::ZERO, |a, b| a + b);
+
+    let expected_momentum_y = total_mass * gravity.y * elapsed;
+    println!("── ASFLIP momentum conservation (free fall) ──");
+    println!("  total_momentum={total_momentum:?}  expected_y={expected_momentum_y:.4}");
+
+    assert!(
+        total_momentum.x.is_finite() && total_momentum.y.is_finite(),
+        "non-finite momentum: {total_momentum:?}"
+    );
+    // Internal elastic forces redistribute momentum among particles but never change
+    // the SYSTEM total -- only external gravity does, so total momentum.y must match
+    // the analytical accumulated impulse to within a generous numerical tolerance
+    // (adaptive substeps/CFL clamping introduce small real deviation).
+    let rel_err =
+        (total_momentum.y - expected_momentum_y).abs() / expected_momentum_y.abs().max(1.0);
+    assert!(
+        rel_err < 0.05,
+        "ASFLIP must not distort net system momentum: got total_momentum.y={:.4}, \
+         expected={expected_momentum_y:.4} (accumulated gravity impulse), relative error={rel_err:.3}",
+        total_momentum.y
+    );
+    assert!(
+        total_momentum.x.abs() < 1.0,
+        "no lateral force present -- x-momentum should stay near zero, got {:.4}",
+        total_momentum.x
+    );
+}
+
 // ─── THERMAL ─────────────────────────────────────────────────────────────────
 
 /// **Exponential decay** — a single warm particle in a `decay_rate = λ` field
@@ -505,6 +658,80 @@ fn scalar_diffusion_decay_matches_analytical() {
     assert!(
         (t_final - t_expected).abs() < tolerance,
         "decay mismatch: expected {t_expected:.4}, got {t_final:.4}"
+    );
+}
+
+/// Free `fn` (not a closure — `ScalarDiffusionField::source` is a plain function pointer
+/// so the field stays `Send + Sync` with no lifetime, see that field's own doc) for real
+/// logistic growth, `dS/dt = r·φ·(1 − φ/K)` — the standard Verhulst 1838 population-growth
+/// equation, the same one real ecology models use for "resource regrows toward a carrying
+/// capacity" (this is the real PDE source term `resource_regrowth_matches_logistic_curve`
+/// below checks against its own closed-form analytical solution).
+const LOGISTIC_R: f32 = 0.5; // growth rate, 1/s
+const LOGISTIC_K: f32 = 1.0; // carrying capacity
+fn logistic_regrowth_source(_p: &Particle, phi: f32) -> f32 {
+    LOGISTIC_R * phi * (1.0 - phi / LOGISTIC_K)
+}
+
+/// **Resource regrowth matches the real logistic growth curve** — proves
+/// `ScalarDiffusionField::source` genuinely implements real reaction-diffusion dynamics
+/// (Verhulst 1838 logistic growth: `dφ/dt = r·φ·(1−φ/K)`, closed-form solution
+/// `φ(t) = K / (1 + ((K−φ₀)/φ₀)·e^(−r·t))`), not just "the number goes up." Isolated from
+/// spatial diffusion/decay (both zero) so only the source term's own math is under test —
+/// this is the real "food depletes, then regrows toward a carrying capacity" mechanism a
+/// living-world resource field needs, verified against its actual textbook solution, not
+/// just checked for stability.
+#[test]
+fn resource_regrowth_matches_logistic_curve() {
+    let phi0 = 0.05_f32; // heavily grazed-down start
+    let sub_dt = 0.01_f32;
+    let n_steps = 500u32;
+    let t_total = sub_dt * n_steps as f32;
+
+    let config = ScalarDiffusionConfig {
+        diffusivity: 0.0, // isolate the source term from spatial spread
+        decay_rate: 0.0,  // isolate from the separate first-order decay term
+        ambient: 0.0,
+    };
+    let mut field = ScalarDiffusionField::for_temperature(config, 16);
+    field.source = Some(logistic_regrowth_source);
+
+    let mut particles = Particles::from(vec![Particle {
+        x: Vec2::new(8.0, 8.0),
+        mass: 1.0,
+        initial_volume: 1.0,
+        volume: 1.0,
+        density: 1.0,
+        temperature: phi0,
+        ..Particle::zeroed()
+    }]);
+
+    for _ in 0..n_steps {
+        field.apply(&mut particles, sub_dt);
+    }
+
+    let phi_final = particles.temperature[0];
+    // Closed-form logistic solution (Verhulst 1838): φ(t) = K / (1 + ((K-φ0)/φ0)*e^(-r*t))
+    let phi_expected =
+        LOGISTIC_K / (1.0 + ((LOGISTIC_K - phi0) / phi0) * (-LOGISTIC_R * t_total).exp());
+    let tolerance = phi_expected * 0.05;
+
+    println!("── LOGISTIC RESOURCE REGROWTH ──");
+    println!("  φ₀={phi0:.3}  r={LOGISTIC_R}  K={LOGISTIC_K}  t={t_total:.2}");
+    println!("  φ_expected = {phi_expected:.4}");
+    println!("  φ_measured = {phi_final:.4}");
+    println!(
+        "  error = {:.2}%",
+        100.0 * (phi_final - phi_expected).abs() / phi_expected
+    );
+
+    assert!(
+        (phi_final - phi_expected).abs() < tolerance,
+        "logistic regrowth mismatch: expected {phi_expected:.4}, got {phi_final:.4}"
+    );
+    assert!(
+        phi_final < LOGISTIC_K,
+        "logistic growth must never exceed carrying capacity K={LOGISTIC_K}, got {phi_final:.4}"
     );
 }
 

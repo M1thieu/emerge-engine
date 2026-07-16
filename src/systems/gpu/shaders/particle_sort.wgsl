@@ -40,7 +40,10 @@ struct Particle {
     activation:           f32,
     activation_dir:       vec2<f32>,
     muscle_group_id:      u32,
+    contact_group:        u32,
     sleeping:             u32,
+    pinned:               u32,
+    _pad:                 array<u32, 2>,
 }
 
 struct StepParams {
@@ -72,6 +75,11 @@ const NUM_BLOCKS: u32 = 256u; // NUM_BLOCKS_PER_DIM² — array sizes can't be o
 @group(0) @binding(9)  var<storage, read_write> active_block_count:     atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
 @group(0) @binding(11) var<storage, read_write> active_block_count_prev: u32;
+// Multi-field contact (GPU port, first slice) — per-BLOCK point-cloud size, cleared
+// here (not grid_clear.wgsl, which iterates per-CELL) since this is already a
+// 256-wide, one-thread-per-block dispatch, the same granularity this data needs. See
+// buffers.rs's `contact_point_counts` doc for the full rationale.
+@group(1) @binding(14) var<storage, read_write> contact_point_counts:    array<atomic<u32>, NUM_BLOCKS>;
 
 // Maps a particle's grid-cell position to one of NUM_BLOCKS coarse spatial buckets.
 // Block size scales with grid_res so the same 256-bucket scan works at any resolution.
@@ -119,6 +127,8 @@ fn active_block_swap_main(@builtin(local_invocation_id) lid: vec3<u32>) {
 @compute @workgroup_size(256, 1, 1)
 fn particle_sort_clear_main(@builtin(local_invocation_id) lid: vec3<u32>) {
     atomicStore(&block_counts[lid.x], 0u);
+    // Multi-field contact (GPU port, first slice) — see contact_point_counts binding doc.
+    atomicStore(&contact_point_counts[lid.x], 0u);
 }
 
 // ── Pass 2: count ─────────────────────────────────────────────────────────────

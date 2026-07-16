@@ -10,6 +10,21 @@ use crate::particle::Particle;
 use super::GpuSimulation;
 
 impl GpuSimulation {
+    /// Rebuilds `spatial_hash` if a readback has landed new particle data since the last
+    /// rebuild -- the lazy half of the dirty-flag scheme documented on `spatial_hash`'s
+    /// own field doc in `mod.rs`. Called at the top of every query that reads the hash,
+    /// so callers never observe stale data; the O(N) cost is just deferred to the first
+    /// query after new data lands, instead of paid unconditionally every readback.
+    fn ensure_spatial_hash_fresh(&self) {
+        if self.spatial_hash_dirty.get() {
+            let positions: Vec<glam::Vec2> = self.particles.iter().map(|p| p.x).collect();
+            self.spatial_hash
+                .borrow_mut()
+                .rebuild(&positions, self.particles.len());
+            self.spatial_hash_dirty.set(false);
+        }
+    }
+
     /// Physics snapshot from the CPU particle mirror (one frame behind GPU when strided).
     /// Grid-side fields (mass error, momentum error, active cells) are zero — GPU grid is
     /// not readable on CPU. All particle-side fields are exact.
@@ -33,20 +48,26 @@ impl GpuSimulation {
         center: glam::Vec2,
         radius: f32,
     ) -> impl Iterator<Item = (usize, &Particle)> {
+        self.ensure_spatial_hash_fresh();
+        // Collected eagerly (candidates only, not all N) -- the RefCell borrow can't
+        // outlive this call, so the lazy per-candidate borrow used before this field
+        // became a RefCell isn't available; same complexity class either way since
+        // `query` is already O(candidates), not O(N).
+        let candidates: Vec<usize> = self.spatial_hash.borrow().query(center, radius).collect();
         let r2 = radius * radius;
-        self.spatial_hash
-            .query(center, radius)
-            .filter_map(move |i| {
-                let p = &self.particles[i];
-                ((p.x - center).length_squared() <= r2).then_some((i, p))
-            })
+        candidates.into_iter().filter_map(move |i| {
+            let p = &self.particles[i];
+            ((p.x - center).length_squared() <= r2).then_some((i, p))
+        })
     }
 
     /// Count particles of `material_id` within `radius` grid-cells of `center`.
     /// O(candidates) via the internal spatial hash, not O(N).
     pub fn count_near(&self, center: glam::Vec2, radius: f32, material_id: u32) -> usize {
+        self.ensure_spatial_hash_fresh();
         let r2 = radius * radius;
         self.spatial_hash
+            .borrow()
             .query(center, radius)
             .filter(|&i| {
                 let p = &self.particles[i];
@@ -65,6 +86,7 @@ impl GpuSimulation {
         if k == 0 || self.particles.is_empty() {
             return Vec::new();
         }
+        self.ensure_spatial_hash_fresh();
         let domain_diag =
             self.config.grid_res as f32 * self.config.grid_cell_size * std::f32::consts::SQRT_2;
         let mut radius = self.config.grid_cell_size * (k as f32).sqrt().max(1.0);
@@ -73,6 +95,7 @@ impl GpuSimulation {
             let r2 = radius * radius;
             candidates = self
                 .spatial_hash
+                .borrow()
                 .query(center, radius)
                 .map(|i| (i, (self.particles[i].x - center).length_squared()))
                 .filter(|&(_, d2)| d2 <= r2)
@@ -82,8 +105,16 @@ impl GpuSimulation {
             }
             radius *= 2.0;
         }
+        // Partial selection, not a full sort -- see the CPU `Simulation::particles_knn`
+        // for the full rationale: `select_nth_unstable_by` (quickselect, O(n) average)
+        // partitions the k nearest into [0, k), then we sort only those k. O(n + k log k)
+        // instead of O(n log n) over candidates we were about to discard. Guarded on
+        // `len > k` because select_nth panics on an out-of-range pivot.
+        if candidates.len() > k {
+            candidates.select_nth_unstable_by(k - 1, |a, b| a.1.total_cmp(&b.1));
+            candidates.truncate(k);
+        }
         candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        candidates.truncate(k);
         candidates.into_iter().map(|(i, _)| i).collect()
     }
 

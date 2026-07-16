@@ -13,8 +13,19 @@
 //!   update_particle       -- plasticity update per material
 //!   grid_update           -- grid.update_velocities in isolation
 //!
+//! GPU groups (feature = "gpu" only):
+//!   gpu_sleep_wake_scaling -- step_frame() sleep on/off at varying particle counts
+//!   gpu_step_scaling       -- full GpuSimulation::step_frame() at varying particle counts,
+//!                             the direct GPU counterpart to step_scaling above (was a real
+//!                             coverage gap -- no GPU-path benchmark existed before)
+//!   gpu_sparse_grid_scaling -- fixed SMALL particle cluster, varying grid resolution -- the
+//!                             regression guard for GPU sparse grid Phase 2 (grid_update.wgsl's
+//!                             active-block dispatch): cost should stay roughly flat across
+//!                             grid_res once compaction is working, not scale with grid_res²
+//!
 //!   cargo bench --bench scaling
 //!   cargo bench --bench scaling -- mixed_materials   (single group)
+//!   cargo bench --bench scaling --features gpu -- gpu_sparse_grid_scaling
 //!
 //! Reports: target/criterion/<group>/report/index.html
 
@@ -579,6 +590,90 @@ mod gpu_benches {
         }
         group.finish();
     }
+
+    // ── gpu_step_scaling ─────────────────────────────────────────────────────
+    //
+    // GPU counterpart to the CPU `step_scaling` group -- was a real coverage gap (this
+    // benchmark file had zero GPU-path benchmarks before), meaning no GPU perf work had a
+    // regression guard or before/after evidence. Mirrors step_scaling's own particle-count
+    // sweep exactly, just on GpuSimulation.
+
+    fn build_gpu_settled_sim(target: usize) -> GpuSimulation {
+        let side = ((target as f32).sqrt() * 0.5).ceil() as i32;
+        let grid_res = (side as usize + 32).max(64);
+        let config = SimConfig::standard(grid_res, 0.1, Vec2::new(0.0, -0.3));
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::splat(side),
+            box_center: Vec2::splat(grid_res as f32 * 0.5),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = build_particles(&config, spawn);
+        let (l, u) = lame_from_young(5.0e4, 0.3);
+        let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(l, u)));
+        let mut sim = block_on(GpuSimulation::new(config, particles, registry));
+        for _ in 0..20 {
+            sim.step_frame();
+        }
+        sim
+    }
+
+    pub fn bench_gpu_step_scaling(c: &mut Criterion) {
+        let mut group = c.benchmark_group("gpu_step_scaling");
+        for &target in &[100usize, 500, 1000, 2500, 5000] {
+            let mut sim = build_gpu_settled_sim(target);
+            group.bench_with_input(BenchmarkId::from_parameter(target), &target, |b, _| {
+                b.iter(|| sim.step_frame());
+            });
+        }
+        group.finish();
+    }
+
+    // ── gpu_sparse_grid_scaling ──────────────────────────────────────────────
+    //
+    // The direct regression guard for GPU sparse grid Phase 2 (grid_update.wgsl's
+    // active-block dispatch, src/systems/gpu/shaders/grid_update.wgsl): fixed, SMALL
+    // particle cluster (side=16, same as the CPU grid_resolution_scaling's
+    // build_grid_res_sim), varying ONLY grid resolution. Before Phase 2, grid_update
+    // dispatched over the full dense grid_res × grid_res domain regardless of how much of
+    // it was actually occupied -- cost should have scaled with grid_res² even though the
+    // real workload (particle count) never changed. After Phase 2, cost should stay
+    // roughly FLAT across grid_res once the active-block dispatch is doing its job, since
+    // the occupied footprint (and therefore the number of active blocks visited) doesn't
+    // grow with the surrounding empty grid. A group that still scales with grid_res² here
+    // would mean Phase 2 regressed or never took effect -- the real, falsifiable claim
+    // this benchmark exists to check, not just "it still passes tests."
+    fn build_gpu_grid_res_sim(grid_res: usize) -> GpuSimulation {
+        let config = SimConfig::standard(grid_res, 0.1, Vec2::new(0.0, -0.3));
+        let side = 16i32; // fixed particle cluster size regardless of grid_res
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::splat(side),
+            box_center: Vec2::splat(grid_res as f32 * 0.5),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = build_particles(&config, spawn);
+        let (l, u) = lame_from_young(5.0e4, 0.3);
+        let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(l, u)));
+        let mut sim = block_on(GpuSimulation::new(config, particles, registry));
+        for _ in 0..5 {
+            sim.step_frame();
+        }
+        sim
+    }
+
+    pub fn bench_gpu_sparse_grid_scaling(c: &mut Criterion) {
+        let mut group = c.benchmark_group("gpu_sparse_grid_scaling");
+        for &grid_res in &[32usize, 64, 128, 256] {
+            let mut sim = build_gpu_grid_res_sim(grid_res);
+            group.bench_with_input(BenchmarkId::from_parameter(grid_res), &grid_res, |b, _| {
+                b.iter(|| sim.step_frame());
+            });
+        }
+        group.finish();
+    }
 }
 
 // â”€â”€ registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -599,7 +694,12 @@ criterion_group!(
 );
 
 #[cfg(feature = "gpu")]
-criterion_group!(gpu_benches_group, gpu_benches::bench_gpu_sleep_wake_scaling);
+criterion_group!(
+    gpu_benches_group,
+    gpu_benches::bench_gpu_sleep_wake_scaling,
+    gpu_benches::bench_gpu_step_scaling,
+    gpu_benches::bench_gpu_sparse_grid_scaling,
+);
 
 #[cfg(feature = "gpu")]
 criterion_main!(benches, gpu_benches_group);
