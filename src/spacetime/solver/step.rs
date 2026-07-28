@@ -190,12 +190,7 @@ impl Simulation {
         // Manual override via config.recompute_density_each_step for edge cases.
         let t_density = std::time::Instant::now();
         if self.config.recompute_density_each_step || self.materials.any_needs_density_recompute() {
-            estimate_particle_volumes(
-                &mut self.particles,
-                &mut self.grid,
-                self.active_count,
-                false,
-            );
+            estimate_particle_volumes(&mut self.particles, &mut self.grid, self.active_count, false);
         }
         self.last_timing.density_us += t_density.elapsed().as_micros() as u64;
 
