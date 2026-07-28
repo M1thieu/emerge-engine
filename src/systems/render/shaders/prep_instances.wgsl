@@ -8,16 +8,8 @@
 //   1 = ByVelocity — |v| * vel_scale → blue→red heat map
 //   2 = ByVolume   — det(F) → blue (compressed) / white (rest) / red (expanded)
 //
-// Particle struct layout (128 bytes) must match src/matter/particle.rs exactly.
-//
-// REAL BUG FOUND+FIXED 2026-07-13: this mirror was stale since contact_group was added
-// to the real struct (2026-07-11) -- missing that field (and the trailing padding) made
-// this struct 112 bytes here vs the real 128, so WGSL's array indexing read every
-// particle past index 0 from the WRONG byte offset, a misalignment that compounds with
-// every index. Manifested as rainbow-garbage-colored particles at effectively random
-// positions once a scene had enough particles for the drift to matter -- silently broken
-// in every GPU-rendered scene since 2026-07-11, never caught because physics tests are
-// headless and this was the first time anyone actually watched a live render since then.
+// Particle struct layout (128 bytes) must match src/matter/particle.rs exactly —
+// any field/padding drift here silently misaligns every WGSL array index past 0.
 
 struct Particle {
     x:                    vec2<f32>,
@@ -42,7 +34,7 @@ struct Particle {
     sleeping:             u32,
     pinned:               u32,
     scalar_field:         f32,
-    _pad:                 u32,
+    internal_pressure:    f32,
 }
 
 // InstanceData layout (48 bytes) — must match MpmRenderer's VertexBufferLayout:

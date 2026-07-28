@@ -4,6 +4,7 @@ use crate::materials::registry::MaterialRegistry;
 use crate::particle::Particle;
 use crate::solver::config::SimConfig;
 
+mod accessors;
 mod device_lost;
 mod encode_substep;
 mod live_params;
@@ -18,7 +19,7 @@ use super::buffers::GpuBuffers;
 use super::pipeline::SimPipelines;
 use super::step_params::{
     GpuAsflipParams, GpuDirectionalGripParams, GpuFieldEntry, GpuImpulseEntry,
-    GpuMaterialMassParams, GpuResourceParams, GpuThermalParams, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS,
+    GpuMaterialMassParams, GpuResourceParams, GpuThermalParams, MAX_MATERIALS,
 };
 
 /// Workgroup sizes — must match `@workgroup_size(...)` in the WGSL shaders.
@@ -53,17 +54,11 @@ pub struct GpuSimulation {
     last_substeps: usize,
     frame_index: u64,
     /// `frame_index` at the most recent `spawn_region` call (0 = only the initial
-    /// construction batch exists). REAL BUG FOUND 2026-07-18: `step_frame`'s sleep-
-    /// warmup window (`SLEEP_WARMUP_FRAMES`) used to check `frame_index` alone,
-    /// under the explicit (but, for a live-spawning scene, false) assumption that
-    /// "GPU has no incremental add API... this covers every particle that will
-    /// ever exist." A particle spawned live (e.g. `material_sandbox_gpu`'s paint
-    /// tool) long after frame 10 got the real `sleep_threshold` applied on its
-    /// very first substep at v=0, trivially satisfying it and marking it asleep
-    /// before gravity ever touched it -- frozen in place forever, confirmed live
-    /// (Force impulses still moved it, since that's a separate wake path).
-    /// Tracked here so the warmup window can re-arm on every spawn, not just once
-    /// at construction.
+    /// construction batch exists). Tracked so `step_frame`'s sleep-warmup window
+    /// (`SLEEP_WARMUP_FRAMES`) can re-arm on every spawn, not just once at
+    /// construction — otherwise a particle spawned live long after frame 10 gets
+    /// `sleep_threshold` applied on its very first substep at v=0, freezing it
+    /// asleep before gravity ever touches it.
     last_spawn_frame: u64,
     /// GPU force-field entries — uploaded to the force_fields_params uniform each substep.
     force_field_entries: Vec<GpuFieldEntry>,
@@ -89,18 +84,14 @@ pub struct GpuSimulation {
     /// Checked each step_frame; on completion, CPU particles are updated without blocking.
     /// Arc<Mutex<...>> so the wgpu callback (any thread) can signal the main thread.
     pending_readback: Option<ReadbackResult>,
-    /// Real, honest count of async readback failures (`map_async` completing with
-    /// `Err`) ever recovered from — should be 0 in ordinary operation on real
-    /// hardware; nonzero is a real signal something is stressing the GPU backend
-    /// (rare on fast hardware, more likely on slow/software backends). Added
-    /// 2026-07-05 alongside the fix for the failure path leaking the staging
-    /// buffer's mapped state — see `GpuBuffers::abandon_readback`'s doc.
+    /// Count of async readback failures (`map_async` completing with `Err`) ever
+    /// recovered from — should be 0 in ordinary operation; nonzero signals something
+    /// is stressing the GPU backend (rare on fast hardware, more likely on
+    /// slow/software backends). See `GpuBuffers::abandon_readback`'s doc.
     pub readback_error_count: u64,
-    /// Set once, permanently, if this instance's device is ever lost (confirmed
-    /// real cause of emerge issue #10 — see project memory
-    /// `gpu_readback_error_path_bug_issue10`: a genuine `Out of Memory` device
-    /// loss under sustained load on slow/software GPU backends). A lost device
-    /// cannot be un-lost; every further GPU call on it would panic, so
+    /// Set once, permanently, if this instance's device is ever lost (e.g. an Out of
+    /// Memory device loss under sustained load on slow/software GPU backends). A lost
+    /// device cannot be un-lost; every further GPU call on it would panic, so
     /// `step_frame`/the blocking sync methods check this and become safe no-ops
     /// once set, rather than crashing. Always populated for `new()` instances;
     /// `with_device()` instances need one call to `enable_device_lost_detection()`
@@ -115,10 +106,8 @@ pub struct GpuSimulation {
     profiling: Option<GpuProfiling>,
     /// One bind group per `step_params_pool` slot, built once and reused by every
     /// `step_frame()` call instead of being recreated per-substep-per-frame. At high
-    /// substep counts (LP's stiff-terrain scenes routinely need ~5-6k substeps/frame)
-    /// recreating thousands of bind groups every frame exhausted the GPU's descriptor
-    /// allocator within seconds (`wgpu error: Out of Memory` from `queue.submit`,
-    /// reported against LP's own scene 2026-07-01). The buffers a bind group points at
+    /// substep counts, recreating thousands of bind groups every frame exhausts the
+    /// GPU's descriptor allocator. The buffers a bind group points at
     /// (`step_params_pool[i]`) never change identity after construction, only their
     /// contents (rewritten every frame via `upload_step_params_at`) — so the bind group
     /// itself can be built once and only needs rebuilding when `spawn_region`
@@ -159,27 +148,19 @@ pub struct GpuSimulation {
     /// `contact_bind_group` (group 1) — see `SimPipelines::make_contact_bind_group`'s
     /// doc for why. Set via `attach_grid_material_render_gpu`.
     material_mass_params: GpuMaterialMassParams,
-    /// Real spatial acceleration for `particles_near`/`count_near`/`group_centroid` --
-    /// ported from `solver::Simulation`'s already-proven `SpatialHash` (was previously
-    /// wired into the CPU-only `Simulation` but not `GpuSimulation`, meaning every
-    /// caller of these three query methods on the GPU path -- the one LP actually uses --
-    /// paid a full O(N) linear scan per call regardless of how local the query was.
+    /// Spatial acceleration for `particles_near`/`count_near`/`group_centroid` --
+    /// ported from `solver::Simulation`'s `SpatialHash`.
     ///
-    /// Lazily rebuilt (2026-07-12): measured 6.76ms at 50k particles in isolation --
-    /// real, not negligible, and `step_frame()`'s default `readback_stride=1` means a
-    /// readback (and formerly, an eager rebuild) completes EVERY frame regardless of
-    /// whether any query runs that frame. `RefCell` + `spatial_hash_dirty` defer the
-    /// actual rebuild to the first query call after new data lands, instead of paying
-    /// it unconditionally on every readback -- see `ensure_spatial_hash_fresh` in
-    /// `queries.rs`. This brings the GPU path in line with a discipline the CPU
-    /// `Simulation` already follows for the same queries (`ARCHITECTURE.md` §4: hash
-    /// rebuilt once per external `step()`, "because LP queries happen between frames,
-    /// never mid-substep") -- the GPU path was rebuilding MORE eagerly than that, for
-    /// the same consumer. Same real-world precedent as Box2D's incremental broad-phase
-    /// (only re-touch what actually needs it) and SPH's Verlet-list neighbor caching
-    /// (retain a neighbor structure across steps rather than rebuilding every one) --
-    /// not an invented shortcut. Zero staleness change: a query after a dirty readback
-    /// still sees the exact same freshly-landed positions, just computed on demand.
+    /// Lazily rebuilt: `step_frame()`'s default `readback_stride=1` means a readback
+    /// completes every frame regardless of whether any query runs that frame.
+    /// `RefCell` + `spatial_hash_dirty` defer the actual rebuild to the first query
+    /// call after new data lands, instead of paying it unconditionally on every
+    /// readback -- see `ensure_spatial_hash_fresh` in `queries.rs`. Matches the
+    /// discipline the CPU `Simulation` follows for the same queries (`ARCHITECTURE.md`
+    /// §4: hash rebuilt once per external `step()`, since LP queries happen between
+    /// frames, never mid-substep). Zero staleness change: a query after a dirty
+    /// readback still sees the exact same freshly-landed positions, just computed on
+    /// demand.
     spatial_hash: std::cell::RefCell<crate::solver::spatial_hash::SpatialHash>,
     /// Set whenever `self.particles` changes and the spatial hash hasn't been rebuilt
     /// to match yet. Cleared by `ensure_spatial_hash_fresh` (queries.rs) on the first
@@ -283,10 +264,9 @@ impl GpuSimulation {
         let queue = Arc::new(queue);
         let sim = Self::with_device(device, queue, config, particles, registry);
 
-        // Real device-lost detection (confirmed cause of emerge issue #10, see
-        // project memory) -- this device is EXCLUSIVELY ours (just created above,
-        // no other caller could have registered a competing handler on it yet),
-        // so it's always safe to enable it automatically here.
+        // This device is EXCLUSIVELY ours (just created above, no other caller could
+        // have registered a competing handler on it yet), so it's always safe to
+        // enable device-lost detection automatically here.
         sim.enable_device_lost_detection();
         sim
     }
@@ -392,187 +372,12 @@ impl GpuSimulation {
             grip_params,
         }
     }
-
-    /// Returns (cfl_scan_ns, encode_ns, wait_ns, readback_ns, total_ns) from the last
-    /// `step_frame()` call. `encode_ns` is pure CPU-side command-building time (bind
-    /// group already cached, just recording dispatches); `wait_ns` (renamed from the
-    /// old always-zero `submit_ns` -- multi-chunk frames now really do block between
-    /// chunks) is time spent in `device.poll(wait_indefinitely())` between substep
-    /// batches, i.e. real GPU execution time for scenes needing >64 substeps/frame.
-    pub fn last_cpu_timings_ns(&self) -> (f32, f32, f32, f32, f32) {
-        self.last_cpu_timings
-    }
-
-    /// Force every particle with `user_tag == tag` asleep, regardless of velocity,
-    /// applied at the start of the next `step_frame()`. P2G still scatters for them
-    /// (see `gpu_sleep_wake_phase1` memory note — sleeping particles must keep
-    /// providing structural support); only their own gather/integration/force-field
-    /// work is skipped.
-    ///
-    /// Minimal hook, not a chunk system: this just lets a caller (e.g. LP's future
-    /// chunk loader, once it exists) force-sleep a tagged group by distance instead
-    /// of waiting for velocity to drop. Mirrors the CPU `Simulation::sleep_tag` API.
-    pub fn sleep_tag(&mut self, tag: u32) {
-        if self.pending_sleep_tags.len() < MAX_SLEEP_WAKE_TAGS {
-            self.pending_sleep_tags.push(tag);
-        } else {
-            eprintln!(
-                "emerge: GPU sleep-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) — tag dropped"
-            );
-        }
-    }
-
-    /// Force every particle with `user_tag == tag` awake, regardless of grid activity.
-    /// Mirrors the CPU `Simulation::wake_tag` API. See `sleep_tag` doc comment.
-    pub fn wake_tag(&mut self, tag: u32) {
-        if self.pending_wake_tags.len() < MAX_SLEEP_WAKE_TAGS {
-            self.pending_wake_tags.push(tag);
-        } else {
-            eprintln!(
-                "emerge: GPU wake-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) — tag dropped"
-            );
-        }
-    }
-
-    /// Mark CPU particles as layout-changed (positions/materials) — triggers sort + upload.
-    pub fn mark_particles_dirty(&mut self) {
-        self.layout_dirty = true;
-    }
-
-    /// Upload revised material params (e.g., if interactive sliders change them).
-    pub fn upload_materials(&self) {
-        self.buffers
-            .upload_materials(&self.queue, &self.registry.all_params());
-    }
-
-    pub fn registry(&self) -> &MaterialRegistry {
-        &self.registry
-    }
-    pub fn registry_mut(&mut self) -> &mut MaterialRegistry {
-        &mut self.registry
-    }
-
-    /// The wgpu Device — share with the LP render system to read the particle buffer directly.
-    pub fn device(&self) -> &Arc<wgpu::Device> {
-        &self.device
-    }
-
-    /// The wgpu Queue — share with the LP render system for command submission.
-    pub fn queue(&self) -> &Arc<wgpu::Queue> {
-        &self.queue
-    }
-
-    /// The GPU particle storage buffer — bind this in LP's custom render shader.
-    /// Layout: `array<Particle>`, each Particle is 112 bytes, repr(C).
-    /// Stays in VRAM between frames; read-only from the render side.
-    pub fn particle_buffer(&self) -> &wgpu::Buffer {
-        &self.buffers.particles
-    }
-
-    /// Read-only access to the CPU particle mirror (one frame behind GPU when strided).
-    pub fn particles(&self) -> &[Particle] {
-        &self.particles
-    }
-
-    /// Mutable access to the CPU particle mirror.
-    ///
-    /// **CFL WARNING:** velocity changes bypass the solver's CFL clamp.
-    /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
-    /// After modifying, call `mark_particles_dirty()` so the GPU sees the changes.
-    pub fn particles_mut(&mut self) -> &mut Vec<Particle> {
-        &mut self.particles
-    }
-
-    /// Append a new particle region to the simulation.
-    ///
-    /// Generates particles CPU-side, appends to the internal mirror, recomputes
-    /// initial volumes for all particles, then reallocates the GPU particle buffer
-    /// to fit the new total and uploads all particles.
-    ///
-    /// Returns the index range the new particles occupy in the internal mirror.
-    /// LP uses this as `creature_id → particle_range` for ownership tracking.
-    ///
-    /// Call before `step_frame` — mid-frame spawning is not supported.
-    pub fn config(&self) -> &SimConfig {
-        &self.config
-    }
-    pub fn particle_count(&self) -> usize {
-        self.particle_count
-    }
-
-    pub fn set_gravity(&mut self, gravity: glam::Vec2) {
-        self.config.gravity = gravity;
-    }
-
-    /// Replace the default material and re-upload the materials buffer.
-    pub fn set_default_material(&mut self, material: Box<dyn crate::materials::MaterialModel>) {
-        self.registry.set_default(material);
-        self.upload_materials();
-    }
-
-    pub fn gravity(&self) -> glam::Vec2 {
-        self.config.gravity
-    }
-
-    /// The live GPU grid buffer (STORAGE | COPY_SRC).
-    /// Layout: `array<Cell>` where Cell = { momentum: vec2, mass: f32, _pad: f32 } (16 bytes).
-    /// Consumers (e.g. LP's metaball renderer) can bind this read-only in their own compute pass.
-    pub fn grid_buffer(&self) -> &wgpu::Buffer {
-        &self.buffers.grid
-    }
-
-    /// The live GPU per-material mass buffer for `ColorMode::GridVolume`'s
-    /// material-aware coloring. Layout: `array<f32>`, `grid_res² x
-    /// MAX_RENDER_MATERIAL_SLOTS` entries, cell-major then slot-minor (`[cell_idx *
-    /// MAX_RENDER_MATERIAL_SLOTS + material_id % MAX_RENDER_MATERIAL_SLOTS]`). Only
-    /// meaningful after `attach_grid_material_render_gpu` -- before that, this reads
-    /// the (tiny, placeholder-sized) never-written buffer.
-    pub fn material_mass_buffer(&self) -> &wgpu::Buffer {
-        &self.buffers.material_mass
-    }
-
-    /// Register a material, auto-assigning the next available ID.
-    ///
-    /// Mirrors `Simulation::register_material` — use this instead of `set_material`
-    /// when you don't want to track IDs manually. Returns a typed handle.
-    ///
-    /// LP pattern: call at world-init time to build a material palette, then
-    /// use `handle.id()` in `SpawnRegion::for_sim(...).material(handle.id())`.
-    pub fn register_material(
-        &mut self,
-        material: Box<dyn crate::materials::MaterialModel>,
-    ) -> crate::solver::handle::MaterialHandle {
-        let id = self.registry.next_id();
-        self.registry.insert(id, material);
-        self.upload_materials();
-        crate::solver::handle::MaterialHandle(id)
-    }
-
-    /// Register or replace a material by explicit ID and re-upload the materials buffer.
-    pub fn set_material(
-        &mut self,
-        material_id: u32,
-        material: Box<dyn crate::materials::MaterialModel>,
-    ) {
-        self.registry.insert(material_id, material);
-        self.upload_materials();
-    }
-
-    /// The sub-dt used in the last substep of the most recent `step_frame` call.
-    pub fn effective_dt(&self) -> f32 {
-        self.last_sub_dt
-    }
-
-    /// Number of substeps run during the most recent `step_frame` call.
-    pub fn last_substeps(&self) -> usize {
-        self.last_substeps
-    }
-
-    /// Total frames stepped since creation.
-    pub fn frame_index(&self) -> u64 {
-        self.frame_index
-    }
 }
+
+// Trivial public accessors/setters (GPU handle sharing, CPU-mirror access, material
+// registry management, frame/timing state) -- split into their own file (`mod
+// accessors` declared up top alongside the other 9 submodules), see accessors.rs's
+// own doc comment.
 
 // White-box device-lost tests -- split into their own file (was ~240 lines inline
 // here), see device_lost_tests.rs's own doc comment for why it must stay a

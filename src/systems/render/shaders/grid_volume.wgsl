@@ -1,24 +1,14 @@
 // MPM-native grid-volume rendering — samples the solver's own P2G mass field
-// directly instead of drawing one instanced splat per particle. Fixes the
-// "bouncy blob, not true geometry" look: adjacent cells with mass blend into
-// one continuous shape instead of reading as a cloud of discrete dots.
-//
-// Real, sourced technique (not invented): production MPM renderers rasterize
-// particles to the grid (which the solver already does every substep for its
-// own P2G step -- zero extra simulation cost) and render that field directly
-// with a volume renderer, rather than re-splatting each particle.
+// directly instead of drawing one instanced splat per particle, so adjacent
+// cells blend into one continuous shape instead of a cloud of discrete dots.
 //
 // Per-cell material coloring: uses `GpuSimulation::attach_grid_material_render_gpu`'s
-// opt-in per-material mass accumulator (`material_mass`, see buffers.rs's own doc) to
-// find each cell's DOMINANT material (majority mass wins) and shade with that
-// material's own optics slot. Real, disclosed choice, not full generality: the color
-// decision uses the NEAREST cell's dominant material (not blended across the 4
-// bilinear-sampled neighbors), while the density/alpha falloff IS bilinear-smoothed
-// (see `sample_mass` below) -- a mixed-material cell boundary (e.g. fire_spread's
-// wood/ash interface) therefore gets a smooth edge shape with a hard material-color
-// transition at the cell boundary, not a blended color. If `material_mass_enabled`
-// is 0 (material tracking never attached), falls back to slot 0 for every cell,
-// matching this shader's original single-material-only behavior exactly.
+// opt-in per-material mass accumulator (`material_mass`) to find each cell's
+// dominant material (majority mass wins). Color uses the NEAREST cell's dominant
+// material (not blended across the 4 bilinear neighbors), while density/alpha
+// falloff IS bilinear-smoothed (see `sample_mass`) — a mixed-material boundary
+// gets a smooth edge shape but a hard material-color transition. Falls back to
+// slot 0 for every cell when `material_mass_enabled` is 0.
 
 const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
 
@@ -123,19 +113,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let m11 = sample_mass(bx + 1, by + 1);
     let mass = mix(mix(m00, m10, frac.x), mix(m01, m11, frac.x), frac.y);
 
-    // REAL BUG FOUND AND FIXED 2026-07-18: the shape-boundary test used to gate on
-    // the BILINEAR-BLENDED mass -- which is nonzero up to a full cell width beyond
-    // the nearest actually-occupied cell (any nonzero neighbor drags the blend
-    // above zero out into its empty neighbors). That's what made the rendered
-    // shape visibly overshoot true particle extent ("overlaps," puffier than real
-    // sizing, reported live) even after raising mass_floor -- a higher floor only
-    // shrinks the overshoot, it can't eliminate it, since the blend itself extends
-    // past the real boundary by construction. Real fix: gate visibility on the
-    // NEAREST cell's own mass (an exact "is there real matter here" test, zero
-    // smoothing) while still using the bilinear-blended value for interior SHADING
-    // only. This decouples where the edge sits (now matches real occupied cells
-    // exactly, 1:1) from how the interior looks (still a smooth density gradient,
-    // not a blocky per-cell fill) -- the puffiness is gone, the smooth look isn't.
+    // Gate visibility on the NEAREST cell's mass, not the bilinear-blended value —
+    // the blend is nonzero up to a full cell beyond the nearest occupied cell, which
+    // would overshoot true particle extent no matter how high mass_floor is raised.
+    // Bilinear mass is still used for interior shading below.
     let nx = i32(round(grid_pos.x - 0.5));
     let ny = i32(round(grid_pos.y - 0.5));
     let nx_c = clamp(nx, 0, i32(params.grid_res) - 1);
@@ -157,22 +138,43 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // own (now bilinear-smoothed) mass instead of a single particle's J.
     // Higher mass -> denser -> more absorption, giving a soft density-based
     // falloff at the shape's own edge instead of a hard per-particle silhouette.
+    //
+    // Color depth is floored at EDGE_COLOR_REFERENCE_DEPTH, separately from the
+    // alpha ramp below which still uses the true raw mass — without this split,
+    // the thin edge-transition band (where mass -> mass_floor) renders as a
+    // near-white halo before reaching full alpha.
+    const EDGE_COLOR_REFERENCE_DEPTH: f32 = 0.5;
     let sigma_a = optics.slots[slot].rgb;
-    let optical_depth = clamp(mass, 0.0, 4.0);
+    let optical_depth = max(clamp(mass, 0.0, 4.0), EDGE_COLOR_REFERENCE_DEPTH);
     let transmitted = exp(-sigma_a * optical_depth);
 
-    // Thin anti-aliased edge (real, deliberately narrow -- NOT a return to the old
-    // full-cell bilinear overshoot). The nearest-cell discard above already fixes
-    // WHERE the shape ends (exact, 1:1); this only softens a couple of pixels
-    // right at that true boundary so it doesn't read as a hard stair-step, using
-    // the pipeline's existing alpha blending (`wgpu::BlendState::ALPHA_BLENDING`,
-    // already enabled). `edge_margin` is deliberately small relative to
-    // `mass_floor` -- a real coverage-style falloff, not a re-introduced blur.
-    // Genuinely blocky/coarse regions (sparse stray droplets at low grid_res) are
-    // a real resolution limit, not something anti-aliasing alone can smooth into
-    // curved geometry -- that needs real geometry extraction (marching squares /
-    // dual contouring), a separate, larger, future engine feature, not this pass.
+    // Thin anti-aliased edge: the nearest-cell discard above fixes WHERE the shape
+    // ends exactly, this just softens the last couple pixels via alpha blending
+    // so it doesn't read as a hard stair-step. `edge_margin` is deliberately small
+    // relative to `mass_floor`.
+    //
+    // Surface normal from the finite-difference gradient of the bilinear density
+    // corners (standard volume-rendering technique). Gradient points toward
+    // increasing mass; outward normal is its negative. Lambertian shading from a
+    // fixed light direction (not yet tied to the day-night system).
+    let grad = vec2<f32>(
+        ((m10 - m00) + (m11 - m01)) * 0.5,
+        ((m01 - m00) + (m11 - m10)) * 0.5,
+    );
+    let grad_len = length(grad);
+    var lit = transmitted;
+    if grad_len > 1.0e-5 {
+        let normal_dir = -grad / grad_len;
+        let light_dir = normalize(vec2<f32>(-0.5, 0.7));
+        let diffuse = clamp(dot(normal_dir, light_dir), 0.0, 1.0);
+        // Real, disclosed blend: an ambient floor (0.6) plus the real
+        // Lambertian term (0.4 * diffuse) -- keeps the shape always visible
+        // (no fully-black unlit side) while adding a genuine, gradient-
+        // derived shading cue instead of flat, unlit color everywhere.
+        lit = transmitted * (0.6 + 0.4 * diffuse);
+    }
+
     let edge_margin = max(params.mass_floor * 0.5, 1.0e-4);
     let alpha = smoothstep(params.mass_floor, params.mass_floor + edge_margin, mass);
-    return vec4<f32>(transmitted, alpha);
+    return vec4<f32>(lit, alpha);
 }

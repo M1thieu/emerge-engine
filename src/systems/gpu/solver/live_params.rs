@@ -66,7 +66,10 @@ impl GpuSimulation {
     /// all 4 thermal passes starting next `step_frame`; call `set_thermal_ambient`
     /// afterward for live day-night oscillation.
     ///
-    /// - `conductivity_w_m_k` / `heat_capacity_j_kg_k`: real SI material constants
+    /// - `conductivity_w_m_k` / `heat_capacity_j_kg_k` / `density_kg_m3`: real SI
+    ///   material constants (α = k/(ρ·c_p) -- see `ThermalConfig::density`'s own doc
+    ///   for the 2026-07-24 fix: this GPU port had the identical missing-density bug
+    ///   as the CPU path, found+fixed the same day, alpha was 1000x too fast for water)
     /// - `grid_cell_size_m`: physical cell size (pass `SimConfig::dx_meters`, NOT
     ///   `grid_cell_size` which is always 1.0 -- same trap `ThermalConfig`'s own doc
     ///   warns about)
@@ -76,12 +79,18 @@ impl GpuSimulation {
         &mut self,
         conductivity_w_m_k: f32,
         heat_capacity_j_kg_k: f32,
+        density_kg_m3: f32,
         grid_cell_size_m: f32,
         ambient: f32,
         cooling_rate: f32,
     ) {
-        let alpha =
-            conductivity_w_m_k / (heat_capacity_j_kg_k * grid_cell_size_m * grid_cell_size_m);
+        assert!(
+            density_kg_m3 > 0.0,
+            "attach_thermal_gpu: density_kg_m3 must be a real value (kg/m^3) -- \
+             there is no physically sane default (see ThermalConfig::density's own doc)"
+        );
+        let alpha = conductivity_w_m_k
+            / (density_kg_m3 * heat_capacity_j_kg_k * grid_cell_size_m * grid_cell_size_m);
         self.thermal_params = GpuThermalParams {
             alpha,
             ambient,

@@ -1,16 +1,12 @@
 // Grid update — momentum normalization, gravity, force fields, boundary enforcement.
 // Runs between P2G and G2P.
 //
-// GPU sparse grid Phase 2 (see mpm_technique_survey memory note): dispatch one workgroup per
-// active-block SLOT, exactly like grid_clear.wgsl's already-shipped Phase 1 pattern (same
-// active_block_ids/active_block_ids_prev grace-period lists, same halo-expanded compaction
-// from particle_sort.wgsl, so this reuses infrastructure already proven correctness-safe for
-// kernel-stencil spillover across block boundaries — no new halo logic needed here). Was the
-// last remaining pass with unconditional O(grid_res²) dispatch cost: P2G/G2P/particles_update
-// are already particle-parallel (cost scales with particle count, not grid size), and
-// grid_clear already got this treatment in Phase 1 — this was the one gap. Per-cell logic is
-// completely unchanged; only which cells get visited changes (active blocks' real cell range,
-// not the whole dense grid), via the same block-relative grid-stride loop grid_clear uses.
+// GPU sparse grid Phase 2: dispatch one workgroup per active-block SLOT, same pattern as
+// grid_clear.wgsl's Phase 1 (same active_block_ids/active_block_ids_prev grace-period lists,
+// same halo-expanded compaction from particle_sort.wgsl, so kernel-stencil spillover across
+// block boundaries is already handled). Per-cell logic is unchanged; only which cells get
+// visited changes (active blocks' cell range, not the whole dense grid), via the same
+// block-relative grid-stride loop grid_clear uses.
 
 struct StepParams {
     grid_res:           u32,
@@ -74,14 +70,10 @@ const BLOCK_THREADS_PER_DIM: u32 = 16u;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
 @group(0) @binding(11) var<storage, read_write> active_block_count_prev: u32;
-// Multi-field contact (GPU port, first slice) — raw-int view of grip_grid, same
-// fixed-point atomic convention as `grid_int` above. Decoded (fixed-point → real f32,
-// bitcast back) alongside the main grid's own decode below — REAL BUG FOUND AND FIXED
-// 2026-07-14: without this, `grip_grid` never had ANY decode step at all (unlike
-// `grid`, which grid_update.wgsl already handles), so a raw reader (e.g. a test doing
-// a readback) would reinterpret the still-fixed-point integer bit pattern as a
-// nonsensical near-zero float. Caught by `gpu_contact_grip_scatter_and_point_cloud_are_correct`
-// measuring ~0 total grip mass instead of the real scattered total.
+// Multi-field contact (GPU port) — raw-int view of grip_grid, same fixed-point atomic
+// convention as `grid_int` above. Must be decoded (fixed-point → f32, bitcast back)
+// alongside the main grid's own decode below, or a raw reader (e.g. a readback) sees
+// the still-fixed-point integer bit pattern reinterpreted as a nonsensical near-zero float.
 @group(1) @binding(12) var<storage, read_write> grip_grid_int:          array<i32>;
 // ASFLIP (GPU port) — shares group 3 with resource regrowth, see pipeline.rs's module
 // doc comment for why (WebGPU's 4-bind-group baseline is already fully used).
@@ -237,20 +229,14 @@ fn grid_update_main(
         let slot = wg_id.x - NUM_BLOCKS;
         if slot >= active_block_count_prev { return; }
         block = active_block_ids_prev[slot];
-        // REAL BUG FOUND AND FIXED 2026-07-12: unlike grid_clear (whose write is always the
-        // SAME constant zero, so two workgroups racing on it are harmless in practice), a
-        // block that's active BOTH this substep and last substep appears in BOTH lists --
-        // grid_clear tolerates the resulting double-dispatch, but grid_update computes each
-        // cell's velocity via several read-modify-write steps, and two workgroups doing that
-        // concurrently on the same non-atomic `grid_int` cells is a genuine data race, not a
-        // harmless duplicate. Confirmed via real GPU test regressions introduced by this
-        // Phase 2 change (gpu_rankine_stable, gpu_lp_realistic_combined_stress -- "J
-        // collapsed" -- and gpu_sleep_wakes_on_nearby_activity), at BOTH a small (32) and
-        // large (256) grid_res, ruling out a block-size-margin explanation and pointing
-        // straight at concurrent double-processing. Fix: a block already present in the
-        // CURRENT list is skipped here -- its own current-list workgroup already handles it
-        // correctly, so only a block that's PURELY in the grace-period list (deactivated
-        // this substep) needs this branch at all.
+        // Unlike grid_clear (whose write is always the same constant zero, so two
+        // workgroups racing on it are harmless), grid_update computes each cell's velocity
+        // via several read-modify-write steps — two workgroups doing that concurrently on
+        // the same non-atomic `grid_int` cells is a genuine data race. A block active BOTH
+        // this substep and last substep appears in BOTH lists, so skip it here if it's
+        // already in the CURRENT list — its own current-list workgroup already handles it;
+        // only a block PURELY in the grace-period list (deactivated this substep) needs
+        // this branch.
         let current_count = atomicLoad(&active_block_count);
         for (var i: u32 = 0u; i < current_count; i++) {
             if active_block_ids[i] == block { return; }

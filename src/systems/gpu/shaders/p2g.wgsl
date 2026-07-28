@@ -24,7 +24,7 @@ struct Particle {
     sleeping:             u32,
     pinned:               u32,
     scalar_field:         f32,
-    _pad:                 u32,
+    internal_pressure:    f32,
 }
 
 struct MaterialParams {
@@ -320,6 +320,15 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
                 tau = tau + (p.activation * mat.active_stress_coeff) * I;
             }
         }
+    }
+
+    // Internal pre-stress (turgor-pressure-style, generic — see Particle::internal_pressure
+    // doc). Isotropic -P*I, gated on the same 3 models that override pressure_scale() on the
+    // CPU side (NeoHookean=2, Corotated=3, Viscoelastic=9) -- pressure_scale() is a fixed
+    // per-model constant (1.0 or 0.0), not a per-instance tunable, so no new MaterialParams
+    // field is needed, same style as the mat.model==4u snow-cohesion check above.
+    if p.internal_pressure != 0.0 && (mat.model == 2u || mat.model == 3u || mat.model == 9u) {
+        tau = tau - p.internal_pressure * I;
     }
     return tau;
 }

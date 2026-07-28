@@ -190,7 +190,13 @@ impl Simulation {
         // Manual override via config.recompute_density_each_step for edge cases.
         let t_density = std::time::Instant::now();
         if self.config.recompute_density_each_step || self.materials.any_needs_density_recompute() {
-            estimate_particle_volumes(&mut self.particles, &mut self.grid, self.active_count, false);
+            estimate_particle_volumes(
+                &mut self.particles,
+                &mut self.grid,
+                Some(&self.materials),
+                self.active_count,
+                false,
+            );
         }
         self.last_timing.density_us += t_density.elapsed().as_micros() as u64;
 
@@ -372,6 +378,15 @@ impl Simulation {
             self.config.grid_cell_size,
             self.config.mixture_pressure_iterations,
         );
+        // Cundall damping (see the snapshot comment above) -- applied LAST, after
+        // gravity/boundary/contact/mixture have all had their say, so it damps the
+        // real NET result of everything this substep, not just one contributor.
+        if self.config.cundall_damping > 0.0
+            && let Some(snapshot) = &pre_force_snapshot
+        {
+            self.grid
+                .apply_cundall_damping(snapshot, self.config.cundall_damping);
+        }
         self.last_timing.grid_update_us += t1.elapsed().as_micros() as u64;
 
         // ── G2P ──────────────────────────────────────────────────────────────

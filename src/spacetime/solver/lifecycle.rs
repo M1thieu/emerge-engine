@@ -67,7 +67,7 @@ impl Simulation {
             // No MaterialRegistry exists yet at this point in construction (built
             // just below) -- harmless: write_initial=true never reaches the
             // material-aware clamp, see density.rs's own doc comment.
-            estimate_particle_volumes(&mut particles, &mut grid, n, true);
+            estimate_particle_volumes(&mut particles, &mut grid, None, n, true);
         }
         let materials = MaterialRegistry::with_default(Box::new(FallbackMaterial));
         let default_boundary: Box<dyn BoundaryCondition> =

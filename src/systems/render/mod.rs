@@ -11,7 +11,6 @@
 ///   Pass `sim.particle_buffer()` + `sim.particle_count()`. No `sync_particles_blocking()`.
 use std::mem;
 
-use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::particle::{Particle, Particles};
@@ -39,86 +38,16 @@ pub enum ColorMode {
     ByScalarField = 6,
 }
 
-/// Mirrors `grid_volume.wgsl`'s `GridVolumeParams` -- see that shader's own doc for
-/// the real technique (samples the solver's own P2G mass field directly instead of
-/// per-particle splats).
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct GridVolumeParams {
-    sx: f32,
-    tx: f32,
-    sy: f32,
-    ty: f32,
-    grid_res: u32,
-    mass_floor: f32,
-    material_mass_enabled: u32,
-    _pad1: f32,
-}
-const _: () = assert!(mem::size_of::<GridVolumeParams>() == 32);
+// GPU-side wire structs (InstanceData/CameraParams/RenderConfig/OpticalTable,
+// GridVolumeParams/GridVolumeSource) live in gpu_types.rs -- see that file's doc.
+mod gpu_types;
+pub use gpu_types::GridVolumeSource;
+use gpu_types::{CameraParams, GridVolumeParams, InstanceData, OpticalTable, RenderConfig};
 
-/// Bundles `render_grid_volume`'s buffer args -- same real precedent as
-/// `spacetime::transfer::P2GParticleState` (a struct instead of a suppressed
-/// argument-count lint).
-pub struct GridVolumeSource<'a> {
-    /// `GpuSimulation::grid_buffer()`.
-    pub grid: &'a wgpu::Buffer,
-    /// `GpuSimulation::material_mass_buffer()` -- pass it regardless of whether
-    /// `attach_grid_material_render_gpu` was called; `material_mass_enabled` gates
-    /// whether the shader actually reads it.
-    pub material_mass: &'a wgpu::Buffer,
-    pub material_mass_enabled: bool,
-}
-
-// ── GPU-side structs (must match WGSL) ────────────────────────────────────────
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct InstanceData {
-    deform_col0: [f32; 2],
-    deform_col1: [f32; 2],
-    position: [f32; 2],
-    _pad: [f32; 2],
-    color: [f32; 4],
-}
-const _: () = assert!(mem::size_of::<InstanceData>() == 48);
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct CameraParams {
-    view_proj: [f32; 16],
-    particle_scale: f32,
-    round_particles: u32,
-    _pad: [f32; 2],
-}
-const _: () = assert!(mem::size_of::<CameraParams>() == 80);
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct RenderConfig {
-    mode: u32,
-    particle_count: u32,
-    vel_scale: f32,
-    _pad: u32,
-}
-const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct OpticalTable {
-    /// rgb = sigma_a, absorption coefficient (Beer-Lambert). .w = sigma_s, reduced
-    /// scattering coefficient (single scalar, not per-channel -- real tissue
-    /// scattering is much less wavelength-dependent than absorption in the visible
-    /// range, Jacques 2013, a legitimate simplification for that reason).
-    slots: [[f32; 4]; 16],
-    /// .x = specular Fresnel base reflectance R0 (Schlick 1994 approximation),
-    /// rest padding. Real, cited, but bounded: this renderer has no surface-normal
-    /// estimation (it tints particle instances, doesn't raytrace a reconstructed
-    /// surface), so this is a constant near-normal-incidence reflectance, NOT a
-    /// full view-angle-dependent Fresnel term -- honestly a simplification, not a
-    /// claim of full BRDF accuracy.
-    specular: [[f32; 4]; 16],
-}
-const _: () = assert!(mem::size_of::<OpticalTable>() == 512);
+// wgpu pipeline construction (the three build_*_pipeline functions + their
+// bind-group-layout helpers) lives in pipelines.rs -- see that file's doc.
+mod pipelines;
+use pipelines::{build_grid_volume_pipeline, build_particle_pipeline, build_prep_pipeline};
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
@@ -223,98 +152,14 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        // Render pipeline ---------------------------------------------------------
-        let render_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("render_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+        let grid_volume_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grid_volume_params"),
+            size: mem::size_of::<GridVolumeParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        let render_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("render_particles"),
-            source: wgpu::ShaderSource::Wgsl(RENDER_SHADER.into()),
-        });
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("render_particles_pipeline"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&render_bgl],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            vertex: wgpu::VertexState {
-                module: &render_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: 8,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        }],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: mem::size_of::<InstanceData>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 0,
-                                shader_location: 1,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 8,
-                                shader_location: 2,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x2,
-                                offset: 16,
-                                shader_location: 3,
-                            },
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x4,
-                                offset: 32,
-                                shader_location: 4,
-                            },
-                        ],
-                    },
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &render_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: output_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
+        let (render_pipeline, render_bgl) = build_particle_pipeline(device, output_format);
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("render_bg"),
             layout: &render_bgl,
@@ -323,96 +168,9 @@ impl Renderer {
                 resource: camera_buffer.as_entire_binding(),
             }],
         });
-
-        // Compute pipeline (prep_instances) ---------------------------------------
-        let prep_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("prep_bgl"),
-            entries: &[
-                bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
-                bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
-                bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
-                bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
-            ],
-        });
-
-        let prep_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("prep_instances"),
-            source: wgpu::ShaderSource::Wgsl(PREP_SHADER.into()),
-        });
-
-        let prep_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("prep_instances_pipeline"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&prep_bgl],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            module: &prep_shader,
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        // Grid-volume pipeline (samples the solver's own grid mass field) -----------
-        let grid_volume_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid_volume_params"),
-            size: mem::size_of::<GridVolumeParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let grid_volume_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("grid_volume_bgl"),
-            entries: &[
-                bgl_storage_ro(0, wgpu::ShaderStages::FRAGMENT),
-                bgl_uniform(1, wgpu::ShaderStages::FRAGMENT),
-                bgl_uniform(2, wgpu::ShaderStages::FRAGMENT),
-                bgl_storage_ro(3, wgpu::ShaderStages::FRAGMENT),
-            ],
-        });
-
-        let grid_volume_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("grid_volume"),
-            source: wgpu::ShaderSource::Wgsl(GRID_VOLUME_SHADER.into()),
-        });
-
-        let grid_volume_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("grid_volume_pipeline"),
-            layout: Some(
-                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&grid_volume_bgl],
-                    push_constant_ranges: &[],
-                }),
-            ),
-            vertex: wgpu::VertexState {
-                module: &grid_volume_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &grid_volume_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: output_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let (prep_pipeline, prep_bgl) = build_prep_pipeline(device);
+        let (grid_volume_pipeline, grid_volume_bgl) =
+            build_grid_volume_pipeline(device, output_format);
 
         Self {
             render_pipeline,
@@ -483,25 +241,37 @@ impl Renderer {
         self.vel_scale = s;
     }
 
-    pub fn set_optical_params(&mut self, slot: usize, sigma_a: [f32; 3]) {
+    /// Sets the Beer-Lambert absorption coefficient for `slot` AND uploads it to
+    /// the GPU immediately, not just CPU-side state -- `render()`'s per-particle
+    /// `particle_color()` path reads CPU state directly, but `render_grid_volume`'s
+    /// GPU shader reads a GPU-resident buffer that would otherwise silently keep
+    /// whatever was uploaded last, ignoring every material's real color in
+    /// grid-volume mode. The redundant-write cost when setting several slots in a
+    /// row is negligible (scene-setup-time only, never a per-frame path).
+    pub fn set_optical_params(&mut self, queue: &wgpu::Queue, slot: usize, sigma_a: [f32; 3]) {
         self.sigma_a[slot % 16] = sigma_a;
+        self.upload_optical_params(queue);
     }
 
     /// Reduced scattering coefficient for `slot` -- see `OpticalTable`'s doc for
     /// what this represents physically (real subsurface scattering, single-
-    /// scattering approximation) and its real citation (Jacques 2013).
-    pub fn set_optical_scattering(&mut self, slot: usize, sigma_s: f32) {
+    /// scattering approximation) and its real citation (Jacques 2013). Auto-
+    /// uploads immediately -- see `set_optical_params`'s own doc for why.
+    pub fn set_optical_scattering(&mut self, queue: &wgpu::Queue, slot: usize, sigma_s: f32) {
         self.sigma_s[slot % 16] = sigma_s;
+        self.upload_optical_params(queue);
     }
 
     /// Specular Fresnel base reflectance R0 for `slot` -- see `OpticalTable`'s doc
     /// for the real-but-bounded caveat (constant near-normal reflectance, no
-    /// surface-normal-dependent angle term).
-    pub fn set_specular_r0(&mut self, slot: usize, r0: f32) {
+    /// surface-normal-dependent angle term). Auto-uploads immediately -- see
+    /// `set_optical_params`'s own doc for why.
+    pub fn set_specular_r0(&mut self, queue: &wgpu::Queue, slot: usize, r0: f32) {
         self.specular_r0[slot % 16] = r0;
+        self.upload_optical_params(queue);
     }
 
-    pub fn upload_optical_params(&self, queue: &wgpu::Queue) {
+    fn upload_optical_params(&self, queue: &wgpu::Queue) {
         write_optical_table(
             queue,
             &self.optical_table_buf,
@@ -615,19 +385,10 @@ impl Renderer {
                 sy,
                 ty,
                 grid_res: self.cached_grid_res,
-                // REAL BUG FOUND AND FIXED 2026-07-18: 1e-4 is "any trace of mass at
-                // all" -- combined with bilinear smoothing (which spreads a full
-                // cell's worth of falloff outward from even ONE occupied neighbor),
-                // this made the rendered shape visibly overshoot the real particle-
-                // occupied extent (reported live: "overlaps," puffy edges bigger than
-                // true sizing) and let single sparse/low-mass cells (e.g. a lone
-                // stray water particle) render as isolated blocky rectangles. Real
-                // per-particle cell-mass scale at this project's typical demo density
-                // (~4.0) and spacing (~0.5) is order 0.5-4 per occupied cell (B-spline
-                // center weight up to 0.75 * particle mass, several particles/cell in
-                // steady state) -- 0.15 requires genuine, non-trivial local density
-                // before showing anything, tightening the visible edge to real
-                // occupied cells instead of any measurable trace.
+                // Typical per-particle cell-mass scale here is order 0.5-4 per occupied
+                // cell; 0.15 requires non-trivial local density before showing anything,
+                // instead of any measurable trace (which combined with bilinear smoothing
+                // would overshoot true particle extent).
                 mass_floor: 0.15,
                 material_mass_enabled: source.material_mass_enabled as u32,
                 _pad1: 0.0,
@@ -844,47 +605,6 @@ impl Renderer {
 // that file's own doc comment.
 mod color;
 use color::write_optical_table;
-
-// ── BGL helpers ───────────────────────────────────────────────────────────────
-
-fn bgl_storage_ro(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        count: None,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-    }
-}
-
-fn bgl_storage_rw(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        count: None,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: false },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-    }
-}
-
-fn bgl_uniform(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        count: None,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-    }
-}
 
 // Test suite split into its own file -- was ~150 of this file's ~930 lines,
 // same pattern as `gpu/solver/device_lost_tests.rs`.

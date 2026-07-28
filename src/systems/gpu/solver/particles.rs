@@ -31,17 +31,13 @@ impl GpuSimulation {
     /// same reason (see its own doc).
     ///
     /// Uploads its own change to GPU immediately, not just `layout_dirty = true`
-    /// deferred to the next `step_frame` -- real bug found live (2026-07-17): a
-    /// caller chaining multiple mutating calls back-to-back without an intervening
-    /// `step_frame` (e.g. melt-check, then freeze-check, then `remove_particles` for
-    /// evaporation, all in one scan) would have the SECOND call's own
-    /// `sync_particles_blocking` re-download the GPU's still-stale pre-transition
-    /// state, silently erasing the FIRST call's material_id change before it ever
-    /// reached the GPU -- a transition that visibly "never happened" despite the
-    /// predicate genuinely matching. `remove_particles` already uploads immediately
-    /// (it has to, since it reallocates); this makes `phase_transition` consistent
-    /// with that same real-time-upload contract instead of being the one exception
-    /// that silently breaks under exactly this common chaining pattern.
+    /// deferred to the next `step_frame` — a caller chaining multiple mutating calls
+    /// back-to-back without an intervening `step_frame` (e.g. melt-check, then
+    /// freeze-check, then `remove_particles` for evaporation) would otherwise have the
+    /// SECOND call's own `sync_particles_blocking` re-download the GPU's still-stale
+    /// pre-transition state, silently erasing the FIRST call's material_id change.
+    /// `remove_particles` already uploads immediately (it has to, since it
+    /// reallocates); this keeps `phase_transition` consistent with that contract.
     pub fn phase_transition<F>(&mut self, predicate: F, new_material_id: u32)
     where
         F: Fn(&Particle) -> bool,

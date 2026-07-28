@@ -15,6 +15,16 @@ use super::GpuSimulation;
 use super::build_bind_group_pool;
 
 impl GpuSimulation {
+    /// Append a new particle region to the simulation.
+    ///
+    /// Generates particles CPU-side, appends to the internal mirror, recomputes
+    /// initial volumes for all particles, then reallocates the GPU particle buffer
+    /// to fit the new total and uploads all particles.
+    ///
+    /// Returns the index range the new particles occupy in the internal mirror.
+    /// LP uses this as `creature_id → particle_range` for ownership tracking.
+    ///
+    /// Call before `step_frame` — mid-frame spawning is not supported.
     pub fn spawn_region(
         &mut self,
         spawn: crate::solver::config::SpawnRegion,
@@ -36,7 +46,7 @@ impl GpuSimulation {
         {
             let mut tmp_soa = crate::particle::Particles::from(std::mem::take(&mut self.particles));
             let n = tmp_soa.len();
-            estimate_particle_volumes(&mut tmp_soa, &mut tmp_grid, n, true);
+            estimate_particle_volumes(&mut tmp_soa, &mut tmp_grid, None, n, true);
             self.particles = tmp_soa.to_vec();
         }
 

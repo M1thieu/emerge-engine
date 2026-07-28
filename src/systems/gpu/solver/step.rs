@@ -1,13 +1,10 @@
 //! The actual per-frame GPU dispatch: `step_frame` (CFL scan, uploads, encode,
 //! submit, async readback) and `encode_substep` (the 7 labeled compute passes).
 //!
-//! Split out of `gpu/solver/mod.rs` -- the highest-risk slice, deliberately
-//! done last and alone: everything here touches live wgpu device/buffer
-//! state, timing-sensitive submit/poll ordering, and has real, previously-
-//! debugged failure modes documented inline (see the OOM/substep-batching and
-//! active-block-grace-period comments below). Pure mechanical move via exact
-//! line-range extraction, not retyped, to eliminate transcription risk in
-//! code this precise.
+//! Split out of `gpu/solver/mod.rs` -- the highest-risk slice: everything here
+//! touches live wgpu device/buffer state and timing-sensitive submit/poll
+//! ordering (see the OOM/substep-batching and active-block-grace-period
+//! comments below).
 
 use super::super::step_params::{
     GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams,
@@ -26,11 +23,8 @@ impl GpuSimulation {
     /// call regardless of adaptive substep count. Step params are pre-computed from the CPU
     /// particle mirror (same one-frame CFL lag as before, no physics change).
     pub fn step_frame(&mut self) {
-        // Real fix for emerge issue #10 (confirmed root cause: genuine device
-        // loss, Out of Memory, under sustained slow-backend load — see project
-        // memory gpu_readback_error_path_bug_issue10). A lost device cannot be
-        // un-lost; every further GPU call on it would panic through wgpu's
-        // default error handler. Once lost, become a safe no-op instead.
+        // A lost device cannot be un-lost; every further GPU call on it would panic
+        // through wgpu's default error handler. Once lost, become a safe no-op instead.
         if self.is_device_lost() {
             return;
         }
@@ -42,24 +36,11 @@ impl GpuSimulation {
         // Impulses are now applied by a dedicated GPU compute pass (apply_impulses) that
         // reads LIVE GPU positions — no CPU mirror upload needed for impulse-only frames.
         //
-        // Real bug fix (2026-07-06, LP issue erematorg/LP#161): this block used to
-        // spatially resort `self.particles` by grid cell before every upload. That
-        // predates the real GPU particle_sort pipeline (`f2c1e62`, "real particle-sort
-        // pipeline") which added its own spatial-locality mechanism entirely on the GPU
-        // side (`sorted_particle_ids`, a SEPARATE index buffer that never touches actual
-        // particle storage order — see particle_sort.wgsl, runs unconditionally every
-        // frame). When that GPU pass was added, the old CPU-side resort should have been
-        // removed but wasn't — it kept running on every upload, which happens on
-        // essentially every frame in real use (any per-particle CPU write, e.g. LP's
-        // `drive_muscles`/`update_damage`, calls `mark_particles_dirty`). Reordering the
-        // backing array on every such frame silently invalidated any previously-returned
-        // `Range<usize>` particle identity (`spawn_region`'s own doc promises this range
-        // is stable — "LP uses this as creature_id -> particle_range"). Confirmed via a
-        // real repro: a spawned creature's fixed index range, read back every frame,
-        // showed near-total corruption of a spawn-time-only tag field (`muscle_group_id`)
-        // — not a readback race, the particles at those indices were simply different
-        // particles after the resort. No remaining purpose for this CPU-side sort once
-        // the GPU has its own; removing it restores range stability.
+        // Do not resort `self.particles` by grid cell here — GPU `particle_sort` already
+        // provides spatial locality via a separate index buffer (`sorted_particle_ids`)
+        // that never touches actual particle storage order. Resorting the backing array
+        // would invalidate `spawn_region`'s promised stable `Range<usize>` particle
+        // identity (LP uses this as creature_id -> particle_range).
         let needs_upload = self.layout_dirty || any_cpu;
         if needs_upload {
             self.buffers.upload_particles(&self.queue, &self.particles);
@@ -69,33 +50,19 @@ impl GpuSimulation {
         // Pre-compute all sub_dts from CPU mirror (same one-frame lag as before).
         // CFL scan is O(N) — run it ONCE and reuse the result to fill the sub_dts array.
         // The CPU mirror is static within a frame so every repeated call would return the
-        // same value anyway. Previously this called choose_substep_dt up to 16×/frame
-        // (once per substep), which in debug mode caused measurable cursor slowdown.
+        // same value anyway.
         //
         // Exclude sleeping particles from the scan. CPU's Simulation::step() does this
         // implicitly via its active/sleeping partition (active_count only covers awake
         // particles); GPU has no such partition, so without this filter a frozen-near-zero
         // sleeping majority dilutes the velocity statistics this estimate is based on,
         // potentially under-resolving the timestep right when an awake particle needs it
-        // most. (sparkl's adaptive_timestep_length, tmp/sparkl/src/dynamics/solver/
-        // timestep_estimator.rs, computes this the same way: scan only the live/active
-        // particle set, never a population diluted by inactive ones.)
-        // REAL FIX (2026-06-27, see project_mvp_definition memory for the full
-        // investigation): the previous version built a fresh `Particles` SoA every frame
-        // (filter+collect into an intermediate AoS Vec, then transpose into SoA) purely
-        // because `MaterialModel::timestep_bound` used to require `&Particles, i: usize`.
-        // Every material's implementation only ever read `density`/`hardening_scale` —
-        // both plain scalar fields that already exist directly on `Particle` (AoS). Changed
-        // the trait to take those two scalars directly (12 materials updated, 1 call site
-        // in `choose_substep_dt`), which means this scan never needs to build ANY SoA
-        // wrapper at all — it just reads each particle's own fields in one direct pass over
-        // the array that already exists: zero allocation, not just less allocation.
-        // Correctness fully verified (full CPU+GPU regression suite green). Wall-clock
-        // comparisons on this machine were unreliable that night (integrated GPU, shared
-        // CPU/GPU thermal budget, hours of sustained heavy load) — don't trust a GPU timing
-        // number gathered after a long run of GPU work on this hardware; re-measure
-        // `gpu_cfl_scan_baseline_across_grid` cold, first thing in a session, for a real
-        // comparison.
+        // most. (sparkl's adaptive_timestep_length computes this the same way: scan only
+        // the live/active particle set, never a population diluted by inactive ones.)
+        //
+        // `MaterialModel::timestep_bound` takes `density`/`hardening_scale` directly
+        // (plain scalar fields on `Particle`), so this scan reads the AoS array in one
+        // direct pass without building any SoA wrapper.
         let mut max_speed = 0.0f32;
         let mut min_mat_dt = self.config.dt;
         let mut awake_count = 0usize;
@@ -131,8 +98,7 @@ impl GpuSimulation {
         // wake spontaneously with no awake particles and no incoming disturbance. Only
         // pay for the fine fallback when a pending impulse could actually wake someone —
         // otherwise a fully-settled scene would pay maximum substep cost forever, which
-        // defeats sleep/wake's entire purpose (measured: 64 substeps/frame indefinitely
-        // on a calm, fully-asleep pile before this check was added).
+        // defeats sleep/wake's entire purpose.
         let might_wake_this_frame = !self.pending_impulses.is_empty();
         let sub_dt_cfl =
             if awake_count == 0 && self.config.sleep_threshold > 0.0 && might_wake_this_frame {
@@ -163,15 +129,10 @@ impl GpuSimulation {
         // anything sleep-score for the first few frames after the most recent spawn,
         // giving real dynamics a chance to start.
         //
-        // REAL BUG FOUND AND FIXED 2026-07-18: this used to check `frame_index` alone,
-        // under the assumption "GPU has no incremental add API... this covers every
-        // particle that will ever exist" -- false for any scene that calls
-        // `spawn_region` live, mid-session (e.g. `material_sandbox_gpu`'s paint tool).
-        // A particle painted long after frame 10 got the real `sleep_threshold` applied
-        // on its very first substep at v=0, trivially satisfying it and freezing it
-        // asleep before gravity ever touched it -- confirmed live (Force impulses still
-        // moved it, a separate wake path). Fixed by re-arming this window from
-        // `last_spawn_frame` (updated by `spawn_region`) instead of frame 0 alone.
+        // Window re-arms from `last_spawn_frame` (updated by `spawn_region`), not just
+        // frame 0 — otherwise a particle spawned live mid-scene (e.g. a paint tool) would
+        // get `sleep_threshold` applied at v=0 on its very first substep and freeze
+        // asleep before gravity ever touched it.
         const SLEEP_WARMUP_FRAMES: u64 = 10;
         let step_config = if self.frame_index <= self.last_spawn_frame + SLEEP_WARMUP_FRAMES {
             SimConfig {
@@ -251,27 +212,22 @@ impl GpuSimulation {
 
         // force_fields_main is a provable no-op for every particle this frame when none
         // of these are true -- no fields configured, no tag-based sleep/wake pending,
-        // and sleep-scoring disabled (the pass's only other job). Real cost found via
-        // profiling (2026-07-12): the pass still reads+writes every particle's full
-        // 128-byte struct even with an empty loop body, ~1ms/17.5% of a substep at 50k
-        // particles for pure memory traffic with nothing to show for it. Skipping the
-        // whole dispatch (not just the loop) when genuinely unneeded is the same
-        // "don't pay for provably unnecessary work" principle already applied to the
-        // lazy spatial hash and the sparse-grid active-block dispatch.
+        // and sleep-scoring disabled (the pass's only other job). Even with an empty loop
+        // body it still reads+writes every particle's full 128-byte struct, so skipping
+        // the whole dispatch (not just the loop) when unneeded avoids that memory traffic
+        // — same principle as the lazy spatial hash and sparse-grid active-block dispatch.
         let force_fields_needed = ff_params.count > 0
             || sw_params.sleep_count > 0
             || sw_params.wake_count > 0
             || step_config.sleep_threshold > 0.0;
 
-        // Real GPU gap fixed 2026-07-15, mirroring CPU's `Grid::has_contact_activity()`
-        // gate (`transfer.rs`): `resolve_contact`/`gather_contact_points` are structurally
-        // required whenever ANY particle uses multi-field contact (g2p.wgsl unconditionally
-        // reads their output for every scene), but for the common case where NO particle
-        // ever sets `contact_group`, this is entirely provable dead work -- measured at
-        // 37.5%/5.66ms of a substep on a pure fluid scene with zero contact particles,
-        // paid by every existing example except the two snake_on_terrain ones. A plain O(N)
-        // scan of the CPU particle mirror (same "compute once per frame" pattern as
-        // `force_fields_needed` above) is far cheaper than the GPU passes it gates.
+        // Mirrors CPU's `Grid::has_contact_activity()` gate (`transfer.rs`):
+        // `resolve_contact`/`gather_contact_points` are structurally required whenever ANY
+        // particle uses multi-field contact (g2p.wgsl unconditionally reads their output),
+        // but for the common case where NO particle ever sets `contact_group`, this is
+        // provable dead work. A plain O(N) scan of the CPU particle mirror (same
+        // "compute once per frame" pattern as `force_fields_needed` above) is far cheaper
+        // than the GPU passes it gates.
         let contact_active = self.particles[..self.particle_count]
             .iter()
             .any(|p| p.contact_group != 0);
@@ -346,20 +302,14 @@ impl GpuSimulation {
             );
             self.buffers
                 .upload_step_params_at(&self.queue, sort_slot, &sort_params);
-            // REAL BUG FOUND AND FIXED 2026-07-17: this used to call
-            // `pipelines.make_bind_group(...)` fresh every single `step_frame` call --
-            // structurally the EXACT same "thousands of bind groups every frame exhausts
-            // the GPU's descriptor allocator" issue `bind_group_pool` was introduced to
-            // fix (see that field's own doc comment), just at frame granularity instead
-            // of substep granularity. `bind_group_pool` ALREADY contains one bind group
-            // per `step_params_pool` slot -- including this exact sort slot (see
-            // `build_bind_group_pool`) -- built once and rebuilt only when `buffers`
-            // reallocates. The bind group only depends on buffer IDENTITY (not contents,
-            // which `upload_step_params_at` above already rewrites in place), so reusing
-            // the cached entry is correct, not just faster. Confirmed via a real 16,000-
-            // frame long-horizon test: memory grew unboundedly (multi-GB, eventually a
-            // genuine `wgpu` "Out of Memory") with the fresh-every-frame version, and
-            // stayed flat with this fix.
+            // Reuse the cached bind group from `bind_group_pool` rather than calling
+            // `pipelines.make_bind_group(...)` fresh here -- creating one every
+            // `step_frame` call exhausts the GPU's descriptor allocator over a long run.
+            // `bind_group_pool` already contains one bind group per `step_params_pool`
+            // slot, including this sort slot (see `build_bind_group_pool`), rebuilt only
+            // when `buffers` reallocates. The bind group only depends on buffer IDENTITY,
+            // not contents (which `upload_step_params_at` above rewrites in place), so
+            // reusing the cached entry is correct, not just faster.
             let sort_bg = &self.bind_group_pool[sort_slot];
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("particle_sort"),
@@ -386,21 +336,16 @@ impl GpuSimulation {
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // Substeps are batched into multiple command buffers/submits instead of one --
-        // LP's stiff-terrain scenes (50 MPa sandy soil) routinely need several hundred
-        // substeps in a single frame, and encoding them all into one command buffer
-        // exhausted this GPU backend within seconds (`wgpu error: Out of Memory` from
-        // this same `queue.submit`, reported against LP's own scene 2026-07-01).
-        // Bisected empirically: 200 substeps in one submit reliably OOMs, 64 is stable
-        // (matches this engine's own tested default, see `max_substeps_per_step`'s doc
-        // comment) -- this is a real per-submit resource ceiling on the backend/driver
-        // actually exercised, not a value derived from any GPU spec, so a different
-        // backend may need a different number. Blocking between chunks is required too
-        // -- unblocked back-to-back submits queue up faster than the GPU drains them and
-        // hit the same OOM even with batching. Only blocks BETWEEN chunks, never after
-        // the last one -- typical scenes (well under 64 substeps/frame) produce exactly
-        // one chunk and pay zero extra sync cost, same as before this fix existed. Only
-        // LP's stiff-terrain scale (hundreds of substeps/frame) pays the blocking cost,
-        // and only for the chunks beyond the first.
+        // stiff-terrain scenes routinely need several hundred substeps in a single frame,
+        // and encoding them all into one command buffer exhausts this GPU backend's
+        // descriptor allocator. 200 substeps in one submit reliably OOMs, 64 is stable
+        // (matches `max_substeps_per_step`'s doc) -- a per-submit resource ceiling on the
+        // backend/driver actually exercised, not derived from any GPU spec, so a
+        // different backend may need a different number. Blocking between chunks is
+        // required too -- unblocked back-to-back submits queue up faster than the GPU
+        // drains them and hit the same OOM even with batching. Only blocks BETWEEN
+        // chunks, never after the last one -- typical scenes (well under 64
+        // substeps/frame) produce exactly one chunk and pay zero extra sync cost.
         const SUBSTEP_BATCH_SIZE: usize = 64;
         let mut chunks = bind_groups[..sub_dts.len()]
             .chunks(SUBSTEP_BATCH_SIZE)
@@ -460,40 +405,23 @@ impl GpuSimulation {
         self.device.poll(wgpu::PollType::Poll).ok();
 
         // Check if a previous async readback completed -- Ok, Err, or still pending.
-        // Real fix (2026-07-05, see project memory
-        // emerge_locomotion_root_cause_and_fix / issue #10): the OLD code only
-        // handled Ok here, silently dropping Err. That left the staging buffer
-        // mapped forever (finish_readback, the only unmapper, was never called)
-        // and pending_readback stuck Some forever (blocking every future
-        // readback) -- until something else tried to map the same buffer again
-        // and hit a real "Buffer is already mapped" panic. Every completion path
-        // now explicitly unmaps, regardless of Ok/Err.
+        // Every completion path must explicitly unmap regardless of Ok/Err — an
+        // unhandled Err leaves the staging buffer mapped forever (finish_readback, the
+        // only unmapper, never called) and pending_readback stuck Some forever, until
+        // something else tries to map the same buffer and panics.
         let readback_done = self
             .pending_readback
             .as_ref()
             .and_then(|flag| flag.lock().ok().and_then(|mut g| g.take()));
         if let Some(result) = readback_done {
             self.pending_readback = None;
-            // REAL BUG FOUND AND FIXED 2026-07-15 (see project memory
-            // gpu_readback_error_path_bug_issue10 for the original 2026-07-05
-            // investigation this extends): the device-lost check at the TOP of
-            // step_frame only guards against a device that was ALREADY lost before
-            // this call started. It says nothing about a device that dies DURING
-            // this same call -- e.g. an earlier queue.submit() in this frame's own
-            // chunked substep loop above triggers an uncaptured OOM error, which
-            // sets `device_lost` via the registered callback, and THEN this exact
-            // block runs and blindly trusts whatever the async flag says (Ok or
-            // Err) without re-checking. Confirmed via a real 16,000-step GPU
-            // long-horizon contact test: crashed with "Buffer 'mpm_particle_staging'
-            // has been destroyed" inside `finish_readback`'s `get_mapped_range` --
-            // the exact same failure class the original issue #10 fix already
-            // covers for `sync_particles_blocking`'s ENTRY guard, just reachable
-            // here through a path that guard never touches (mid-call loss, not
-            // pre-call loss). Once the device is lost, the staging buffer may
-            // already be destroyed regardless of what the async result claims --
-            // Ok can't be trusted post-loss either, so this skips BOTH the Ok and
-            // Err branches (not just adding a check to one), avoiding the unmap()
-            // panic risk in `abandon_readback` too.
+            // The device-lost check at the TOP of step_frame only guards against a
+            // device that was ALREADY lost before this call started — it says nothing
+            // about a device that dies DURING this same call (e.g. an earlier
+            // queue.submit() in this frame's chunked substep loop triggers an
+            // uncaptured OOM). Re-check here: once lost, the staging buffer may already
+            // be destroyed regardless of what the async result claims, so both the Ok
+            // and Err branches are skipped, not just one.
             if self.is_device_lost() {
                 // Do nothing -- neither finish_readback nor abandon_readback is
                 // safe to call once the device is confirmed lost.
@@ -522,9 +450,7 @@ impl GpuSimulation {
                     // Build SoA wrapper, run CPU plasticity, scatter plastic state back.
                     // Skip sleeping particles — same reasoning as every GPU-side pass: their
                     // F/plastic state is frozen, re-running plasticity on unchanged input
-                    // wastes exactly the compute sleep/wake exists to avoid. Before the
-                    // Particles::push() fix above, this loop silently ran on every particle
-                    // regardless of sleep state, because the AoS->SoA conversion dropped it.
+                    // wastes exactly the compute sleep/wake exists to avoid.
                     let mut soa = Particles::from(std::mem::take(&mut self.particles));
                     for i in 0..soa.len() {
                         if soa.sleeping[i] {
