@@ -51,7 +51,7 @@ mod small_strain_linear_elasticity_tests {
             contact_group: 0,
             sleeping: 0,
             pinned: 0,
-            _pad: 0,
+            internal_pressure: 0.0,
         });
         particles
     }
@@ -189,7 +189,7 @@ mod damage_softening_tests {
             contact_group: 0,
             sleeping: 0,
             pinned: 0,
-            _pad: 0,
+            internal_pressure: 0.0,
         });
         particles
     }
@@ -277,7 +277,7 @@ mod kirchhoff_stress_vjp_tests {
             contact_group: 0,
             sleeping: 0,
             pinned: 0,
-            _pad: 0,
+            internal_pressure: 0.0,
         });
         particles
     }

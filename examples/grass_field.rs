@@ -50,18 +50,9 @@ const CPG_BURN_IN_STEPS: usize = 600;
 
 // Grass blade x-positions, all clear of the body's spawn footprint (it spans
 // roughly x=36..60 at spawn and free-falls onto it from y=20 -- a blade placed
-// under that would get crushed by the landing impact, not bent by a crawl).
-// Real found bug (2026-07-11): an earlier layout placed blades directly under
-// the spawn box and every one of them collapsed to J=0.000 (fully degenerate)
-// on the very first drop, before the creature ever crawled anywhere. Starting
-// clear of the landing zone means blades only ever get pushed by an actual
-// crawl, not an initial fall.
-//
-// Moved closer (64 -> 62 start) the same day, after the viscosity fix: the
-// creature's crawl is now correctly damped (real, sustained, ~0.2 units/step
-// window, not the old undamped/eventually-collapsing rate), which is slower
-// than an artificially undamped crawl -- a demo layout adjustment, not a
-// physics change, so contact happens within a reasonable watch time.
+// under that gets crushed by the landing impact, not bent by a crawl, and
+// collapses to J=0.000 on the very first drop). Starting clear of the landing
+// zone means blades only ever get pushed by an actual crawl.
 const GRASS_X_POSITIONS: [f32; 8] = [62.0, 65.0, 68.0, 71.0, 74.0, 77.0, 80.0, 83.0];
 const GRASS_BLADE_HEIGHT_CELLS: i32 = 12; // world height = cells * spacing = 6 units
 const GRASS_SPACING: f32 = 0.5;
@@ -129,16 +120,10 @@ fn make_sim() -> (
     // under large rotation). No activation, no muscle groups -- purely passive,
     // deformed only by gravity settling and creature contact.
     //
-    // Stiffness (120, 240) -- NOT the initially-tried (1.5, 3.0). Real bug found
-    // 2026-07-11 (user: "the grass falls flat"): a solo blade with NO creature
-    // anywhere near it still buckled flat under its own weight alone at (1.5,3.0)
-    // AND at (15,30) -- genuine Euler-style self-weight buckling of a thin, tall
-    // column, unrelated to any creature contact. Verified via a real headless
-    // sweep (solo blade, 6000-step horizon): (100,200) still buckles (delayed to
-    // step ~1400), (120,240) stays upright the whole run, (150,300) also stable.
-    // Picked 120/240 for the most bend under real contact while still passing the
-    // no-creature stability check with margin. This ends up numerically STIFFER
-    // than the creature's own tissue (13,26) -- not a contradiction: a thin/tall
+    // Stiffness (120, 240) is bounded by real Euler-style self-weight buckling of
+    // a thin, tall column, independent of any creature contact -- softer values
+    // buckle flat under their own weight alone. Numerically stiffer than the
+    // creature's own tissue (13,26), which isn't a contradiction: a thin/tall
     // column needs far more bending stiffness to resist self-buckling than a
     // squat/wide body does, regardless of which material "feels" softer.
     let grass_mat_id = solver.register_material(Box::new(CorotatedMaterial::new(120.0, 240.0)));

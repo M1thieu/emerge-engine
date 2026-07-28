@@ -4,14 +4,23 @@
 //! Split out of `solver/mod.rs` (was 1536 lines, doing 5-6 jobs in one file) --
 //! this is the one piece that's purely "advance the simulation by one step,"
 //! distinct from construction, queries, and particle-lifecycle management that
-//! live alongside `Simulation` in the parent module.
+//! live alongside `Simulation` in the parent module. `do_substep`'s own body
+//! stays a single ordering-sensitive sequence on purpose (see its inline
+//! comments for why each phase must run where it does) -- only the two
+//! genuinely self-contained pieces split further, into sibling files:
+//! adaptive-timestep selection (`cfl.rs`) and per-substep NaN/invalid-state
+//! guards (`projection.rs`).
 
-use glam::{Mat2, Vec2};
+use glam::Vec2;
 
-use super::{MaterialRegistry, SimConfig, Simulation};
-use crate::boundary::BoundaryCondition;
-use crate::grid::Grid;
-use crate::particle::Particles;
+use super::Simulation;
+use super::cfl::choose_substep_dt;
+use super::projection::{apply_boundary_conditions_to_grid, project_particle_state_to_admissible};
+use crate::rod::{
+    RodForceParams, RodImplicitStepParams, apply_gravitropism, apply_growth, apply_phototropism,
+    apply_rod_internal_and_wind_forces, apply_secondary_growth, gather_grid_to_rod,
+    scatter_rod_to_grid, step_rod_implicit,
+};
 use crate::solver::density::estimate_particle_volumes;
 use crate::transfer::{
     G2PParams, gather_contact_point_cloud, gather_grid_to_particles, scatter_particles_to_grid,
@@ -31,6 +40,108 @@ impl Simulation {
         self.last_vel_clamp_count = 0;
         self.last_j_projection_count = 0;
         self.last_timing = crate::diagnostics::StepTiming::default();
+
+        // Implicit-integration rods (Baraff & Witkin 1998, see
+        // `rod::implicit` doc): advanced ONCE per `step()` at the full
+        // frame dt, outside the substep loop. Gravity/wind/push stay inside
+        // this solve, not on the shared grid -- `Grid::apply_gravity` is a
+        // plain explicit `v += g*dt`, only safe elsewhere because every other
+        // body has its own CFL ceiling keeping dt small; an implicit rod has
+        // none, so that path is unconditionally unstable at the full frame dt.
+        // Not grid-coupled yet -- see the struct field's own doc.
+        for rod in &mut self.rods {
+            if !rod.use_implicit_integration {
+                continue;
+            }
+            if rod.sleeping {
+                // Real, measured bug fix (2026-07-28, user-reported "second
+                // push barely moves it"): the grid-touch-based wake check
+                // further down only runs AFTER this implicit-rod loop, so a
+                // sleeping rod given an active push THIS SAME frame used to
+                // get skipped entirely -- a real, measured one-frame dead
+                // zone (confirmed: `per_frame_delta=0.00000` exactly on the
+                // very first push frame after a rod had settled) before it
+                // started responding the following frame. Waking on push
+                // HERE, before the skip, means the same frame that sets
+                // `push_strength > 0.0` is the same frame that actually
+                // integrates it.
+                let has_push = rod.push_strength > 0.0 && rod.push_center.is_some();
+                if has_push {
+                    rod.sleeping = false;
+                    rod.below_threshold_time = 0.0;
+                } else {
+                    continue;
+                }
+            }
+            // Real, measured (2026-07-27): splitting the frame `dt` into
+            // several smaller implicit steps reduces backward Euler's own
+            // numerical damping, letting the rod's real, physically-tuned
+            // damping ratio show through as visible sway instead of being
+            // swamped into a smooth glide -- see `Rod::implicit_substeps`'
+            // own doc. Default 1 = today's exact prior behavior.
+            let substeps = rod.implicit_substeps.max(1);
+            let sub_dt = self.config.dt / substeps as f32;
+            for _ in 0..substeps {
+                step_rod_implicit(
+                    &mut rod.points,
+                    &rod.material,
+                    RodImplicitStepParams {
+                        gravity: self.config.gravity,
+                        wind_velocity: rod.wind_velocity,
+                        wind_drag_coeff: rod.wind_drag_coeff,
+                        push_center: rod.push_center,
+                        push_strength: rod.push_strength,
+                        push_radius: rod.push_radius,
+                        dx_meters: self.config.dx_meters,
+                        dt: sub_dt,
+                    },
+                );
+            }
+            if let Some(gravitropism) = &rod.gravitropism {
+                apply_gravitropism(
+                    &mut rod.points,
+                    gravitropism,
+                    self.config.gravity,
+                    &self.grid,
+                    self.config.dt,
+                );
+            }
+            if let Some(phototropism) = &rod.phototropism {
+                apply_phototropism(
+                    &mut rod.points,
+                    phototropism,
+                    self.config.light_dir,
+                    &self.grid,
+                    self.config.dt,
+                );
+            }
+            if let Some(growth) = &rod.growth {
+                apply_growth(&mut rod.points, growth, &self.grid, self.config.dt);
+            }
+            // Real bug fix (2026-07-28, user-caught "second interaction
+            // barely moves it"): confirmed directly (headless, 5 real
+            // push/settle cycles) that unconditional secondary growth kept
+            // stiffening the rod FAR past the point its own
+            // `buckling_warning` cleared (weakest EI climbed 6.70e-5 ->
+            // 6.82e-5 over 4 more cycles with no mechanical need left),
+            // making it progressively less responsive to every subsequent
+            // push -- real physics, but past the point the mechanism's own
+            // real purpose (escaping genuine structural risk) was served.
+            // Gated on the rod STILL being over-critical, matching
+            // gravitropism/phototropism's own real Greenhill gate above
+            // (just the OPPOSITE direction) -- once safe, stop growing.
+            if let Some(secondary_growth) = &rod.secondary_growth {
+                let gravity_si = self.config.gravity.length() * self.config.dx_meters;
+                if rod.buckling_warning(gravity_si).is_some() {
+                    apply_secondary_growth(
+                        &mut rod.points,
+                        secondary_growth,
+                        self.config.dx_meters,
+                        self.config.dt,
+                    );
+                }
+            }
+        }
         while remaining > f32::EPSILON && substeps_taken < self.config.max_substeps_per_step {
             // Cap sub-step at remaining time so we don't overshoot the configured frame dt.
             let t_cfl = std::time::Instant::now();
@@ -39,6 +150,7 @@ impl Simulation {
                 &self.particles,
                 self.active_count,
                 &self.materials,
+                &self.rods,
                 remaining,
             );
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
@@ -102,11 +214,38 @@ impl Simulation {
         // contact-active nodes aren't fully known until every grip particle's mass
         // has been scattered. No-op when `contact_group` is unused anywhere.
         gather_contact_point_cloud(&self.particles, &mut self.grid, self.active_count);
+        // Rod -> grid scatter, same P2G pass, same shared `Grid` -- BEFORE the
+        // wake pass below so a rod touching settled sand/fluid wakes it with
+        // zero new code (the wake scan just sees active cells the rod itself
+        // created). No-op for every scene that never calls add_rod/with_rod.
+        // Sleeping rods skip this entirely (see `Rod::sleeping` doc) -- they
+        // neither scatter mass/momentum nor self-trigger their own wake check
+        // below; they're woken only by genuinely external activity.
+        //
+        for rod in &self.rods {
+            if !rod.sleeping && !rod.use_implicit_integration {
+                scatter_rod_to_grid(&rod.points, &mut self.grid);
+            }
+        }
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
-        // Wake any sleeping particle whose kernel overlaps an active grid cell.
-        // This propagates activity from moving regions into neighbouring sleeping ones
-        // without a separate O(N) scan — we only visit the sleeping partition.
+        // Wake any sleeping particle whose kernel overlaps a MEANINGFULLY active
+        // grid cell. This propagates activity from moving regions into
+        // neighbouring sleeping ones without a separate O(N) scan — we only
+        // visit the sleeping partition.
+        //
+        // Must gate on the neighbour's actual velocity, not just `cell_is_active`
+        // (has ANY mass, regardless of speed): a body that scatters into the grid
+        // every substep but never itself goes to sleep (e.g. a rod gated awake by
+        // ongoing `Growth`, see `Rod::is_growing`) would otherwise count as
+        // permanent "activity" for every neighbour touching its cells, even once
+        // its own residual speed is tiny — causing spurious sleep/wake cycling.
+        // Requiring the neighbour's actual velocity (momentum/mass — `cell.momentum`
+        // is still RAW scattered momentum at this point in the substep, before
+        // `update_velocities` normalizes it) to exceed THIS body's own sleep
+        // threshold gives the same hysteresis a "settled" body already assumes:
+        // something merely present but equally quiescent shouldn't wake it up.
+        let wake_speed_sq = self.config.sleep_threshold * self.config.sleep_threshold;
         if self.active_count < self.particles.len() {
             let total = self.particles.len();
             self.scratch_indices.clear();
@@ -116,7 +255,12 @@ impl Simulation {
                 'outer: for gx in 0i32..3 {
                     for gy in 0i32..3 {
                         let cell = base + glam::IVec2::new(gx - 1, gy - 1);
-                        if self.grid.cell_is_active(cell) {
+                        let mass = self.grid.mass_at(cell);
+                        if mass <= 0.0 {
+                            continue;
+                        }
+                        let speed_sq = (self.grid.velocity_at(cell) / mass).length_squared();
+                        if speed_sq > wake_speed_sq {
                             self.scratch_indices.push(i);
                             break 'outer;
                         }
@@ -130,22 +274,66 @@ impl Simulation {
             }
         }
 
+        // Same wake test, rod granularity: a sleeping rod's own (frozen)
+        // points didn't scatter above, so any overlap found here comes from
+        // genuinely external activity (another body's P2G, or another awake
+        // rod) -- exactly the particle wake pass's own no-self-trigger
+        // property. Also wakes unconditionally on an active push, since a
+        // caller setting `push_strength > 0` is a direct request to move it
+        // that no grid-activity test could otherwise see (nothing has
+        // touched the grid near it yet).
+        // Same real hysteresis fix as the particle wake pass above: require
+        // actual velocity over this body's own rod_sleep_threshold, not
+        // merely "some mass present" — otherwise a permanently-active
+        // neighbour (e.g. a growing root that never itself sleeps) keeps
+        // waking every sleeping rod that ever touches its cells, forever.
+        let rod_wake_speed_sq = self.config.rod_sleep_threshold * self.config.rod_sleep_threshold;
+        for rod in &mut self.rods {
+            if !rod.sleeping {
+                continue;
+            }
+            let has_push = rod.push_strength > 0.0 && rod.push_center.is_some();
+            let touched = has_push
+                || rod.points.x.iter().any(|&x| {
+                    let base = crate::grid::kernel::quadratic_weights(x).base_cell;
+                    (0i32..3).any(|gx| {
+                        (0i32..3).any(|gy| {
+                            let cell = base + glam::IVec2::new(gx - 1, gy - 1);
+                            let mass = self.grid.mass_at(cell);
+                            if mass <= 0.0 {
+                                return false;
+                            }
+                            let speed_sq = (self.grid.velocity_at(cell) / mass).length_squared();
+                            speed_sq > rod_wake_speed_sq
+                        })
+                    })
+                });
+            if touched {
+                rod.sleeping = false;
+                rod.below_threshold_time = 0.0;
+            }
+        }
+
         // ── Grid update ───────────────────────────────────────────────────────
         let t1 = std::time::Instant::now();
         // ASFLIP (SimConfig::asflip_blend, Fei et al. 2021) needs the grid's velocity
         // right after P2G's own momentum normalization -- before THIS substep's gravity,
         // boundary conditions, or contact resolution modify it -- to compute G2P's FLIP
-        // residual. Snapshotting only when the feature is enabled keeps every other scene
-        // on the exact original single-call path (zero cost, zero behavior change).
-        let asflip_snapshot = if self.config.asflip_blend > 0.0 {
-            self.grid.normalize_velocities();
-            let snapshot = self.grid.snapshot_velocities();
-            self.grid.apply_gravity(sub_dt, self.config.gravity);
-            Some(snapshot)
-        } else {
-            self.grid.update_velocities(sub_dt, self.config.gravity);
-            None
-        };
+        // residual. Cundall damping (SimConfig::cundall_damping) needs the exact same
+        // pre-force reference point -- see `Grid::apply_cundall_damping`'s own doc --
+        // so both features share one snapshot. Taking it only when either feature is
+        // enabled keeps every other scene on the exact original single-call path (zero
+        // cost, zero behavior change).
+        let pre_force_snapshot =
+            if self.config.asflip_blend > 0.0 || self.config.cundall_damping > 0.0 {
+                self.grid.normalize_velocities();
+                let snapshot = self.grid.snapshot_velocities();
+                self.grid.apply_gravity(sub_dt, self.config.gravity);
+                Some(snapshot)
+            } else {
+                self.grid.update_velocities(sub_dt, self.config.gravity);
+                None
+            };
         let grid_res = self.grid.resolution();
         for boundary in &self.boundaries {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
@@ -204,9 +392,25 @@ impl Simulation {
                 apic_blend: self.config.apic_blend,
                 active_count: self.active_count,
                 asflip_blend: self.config.asflip_blend,
-                pre_force_snapshot: asflip_snapshot.as_ref(),
+                // Real, honest, minor shared cost: if only `cundall_damping` is enabled
+                // (asflip_blend still 0.0), G2P still takes the `Some` branch and computes
+                // the extra pre-force stencil gather -- harmless (asflip_blend=0.0 zeroes
+                // its own contribution exactly) but not free. Reusing one snapshot for both
+                // features beats duplicating the mechanism; this is the real tradeoff.
+                pre_force_snapshot: pre_force_snapshot.as_ref(),
             },
         );
+        // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
+        // already baked in via the shared grid-update step above) AND
+        // advances `rod.points.x`, mirroring `gather_grid_to_particles`'s own
+        // position-advection contract exactly (see `coupling::gather_grid_to_rod`'s
+        // doc) so rod force integration below only ever touches velocity,
+        // matching how particle force fields never touch `particles.x` either.
+        for rod in &mut self.rods {
+            if !rod.sleeping && !rod.use_implicit_integration {
+                gather_grid_to_rod(&mut rod.points, &self.grid, sub_dt);
+            }
+        }
         self.last_timing.g2p_us += t2.elapsed().as_micros() as u64;
 
         // ── Force fields ──────────────────────────────────────────────────────
@@ -257,6 +461,83 @@ impl Simulation {
                 }
             }
             self.last_timing.fields_us += t3.elapsed().as_micros() as u64;
+        }
+
+        // ── Rod internal + wind forces ──────────────────────────────────────────
+        // Runs where particle force fields just ran, on the SAME real convention:
+        // velocity-only (position already advanced in the gather above), so a
+        // rod's own stretch/bend/damping + wind drag land exactly like an
+        // ordinary force field would. Gravity is NOT reapplied here — the rod
+        // already received it via the shared grid-update step, same mechanism
+        // ordinary particles use. No-op for every scene with no rods.
+        //
+        for rod in &mut self.rods {
+            if rod.sleeping || rod.use_implicit_integration {
+                continue;
+            }
+            apply_rod_internal_and_wind_forces(
+                &mut rod.points,
+                &rod.material,
+                RodForceParams {
+                    wind_velocity: rod.wind_velocity,
+                    wind_drag_coeff: rod.wind_drag_coeff,
+                    push_center: rod.push_center,
+                    push_strength: rod.push_strength,
+                    push_radius: rod.push_radius,
+                    dx_meters: self.config.dx_meters,
+                    dt: sub_dt,
+                },
+            );
+            // Real root gravitropism (Porat, Rivière, Meroz 2024 -- see
+            // `rod::gravitropism` module doc): evolves the tip's own
+            // rest_curvature toward gravity-alignment. No-op for every rod
+            // that doesn't opt in (plain stems/blades don't grow toward
+            // gravity).
+            if let Some(gravitropism) = &rod.gravitropism {
+                apply_gravitropism(
+                    &mut rod.points,
+                    gravitropism,
+                    self.config.gravity,
+                    &self.grid,
+                    sub_dt,
+                );
+            }
+            // Real phototropism (Cholodny & Went auxin-asymmetry theory --
+            // see `rod::gravitropism` module doc's own "Phototropism reuses
+            // the SAME core" section). No-op for every rod that doesn't
+            // opt in.
+            if let Some(phototropism) = &rod.phototropism {
+                apply_phototropism(
+                    &mut rod.points,
+                    phototropism,
+                    self.config.light_dir,
+                    &self.grid,
+                    sub_dt,
+                );
+            }
+            // Real elongation growth (Verhulst 1838 logistic law -- see
+            // `rod::growth` module doc). No-op for every rod that doesn't
+            // opt in.
+            if let Some(growth) = &rod.growth {
+                apply_growth(&mut rod.points, growth, &self.grid, sub_dt);
+            }
+            // Real stress-driven secondary growth (Jaffe 1973, Mattheck &
+            // Kübler 1995 -- see `rod::secondary_growth` module doc). No-op
+            // for every rod that doesn't opt in. Gated on the rod STILL
+            // being over-critical -- see the other call site's own doc for
+            // the real, measured bug this fixes (unbounded stiffening long
+            // past the point it was actually needed).
+            if let Some(secondary_growth) = &rod.secondary_growth {
+                let gravity_si = self.config.gravity.length() * self.config.dx_meters;
+                if rod.buckling_warning(gravity_si).is_some() {
+                    apply_secondary_growth(
+                        &mut rod.points,
+                        secondary_growth,
+                        self.config.dx_meters,
+                        sub_dt,
+                    );
+                }
+            }
         }
 
         // ── Thermal / scalar diffusion ────────────────────────────────────────
@@ -313,6 +594,80 @@ impl Simulation {
                 self.sleep_particle(self.scratch_indices[j]);
             }
         }
+        // Rod sleep scoring: same threshold-crossing test as particles above,
+        // but scored over the WHOLE rod (max point speed) since points are
+        // elastically coupled -- one point can't sleep while its neighbor
+        // keeps swinging. Never sleeps mid-push (`push_strength > 0`), since
+        // that's a live interaction the caller is actively driving.
+        //
+        // Must sleep on a sustained duration below threshold, not the instant
+        // `max_speed_sq < threshold_sq`: a freshly-constructed rod trivially
+        // satisfies that (`v = Vec2::ZERO` at birth) before gravity/grid coupling
+        // gets a chance to act within one tiny substep, so it could fall asleep on
+        // its very first substep, then skip its own gravity entirely while
+        // "asleep" until external activity woke it -- receiving the entire
+        // deferred gravitational transient at once as an unphysical velocity
+        // spike. Every major real-time physics engine (Box2D's documented
+        // `b2_timeToSleep = 0.5s`, Bullet, PhysX) requires staying below threshold
+        // for a minimum duration, not one instant, for exactly this reason.
+        //
+        // Real root-cause fix (2026-07-26, user-reported "never settles
+        // straight", headlessly confirmed): a FIXED settle-duration (this
+        // used to be a single constant, 0.5s) is wrong for ANY rod whose own
+        // natural period is comparable to or longer than that fixed window.
+        // A rod's velocity genuinely dips near zero at every swing peak, not
+        // just at true rest -- if the fixed window is short enough relative
+        // to the period, the sustained-below-threshold requirement can
+        // complete DURING a single slow peak of a still-large-amplitude
+        // swing, freezing the rod there at a real, wrong, off-rest position.
+        // Confirmed directly tonight: a soft demo blade (period ~0.53s) froze
+        // several cells from true vertical rest at a fixed 0.5s window, and
+        // even bumping that fixed constant up only shifts the same failure
+        // to an even slower rod -- the real fix is SCALING the window to
+        // each rod's OWN period, not picking a bigger universal constant.
+        // `ROD_SLEEP_SETTLE_PERIODS=3.0`: three full natural periods of
+        // sustained quiet is real headroom past any single swing peak's own
+        // dwell time, for any rod's own stiffness/mass. Clamped to
+        // `[ROD_SLEEP_SETTLE_MIN_SECONDS, ROD_SLEEP_SETTLE_MAX_SECONDS]`:
+        // the floor preserves the original anti-instant-sleep protection
+        // above for a very stiff/fast rod (three periods of a very fast rod
+        // could be under a millisecond); the ceiling keeps an extremely
+        // soft/slow rod from waiting an impractically long real time.
+        const ROD_SLEEP_SETTLE_PERIODS: f32 = 3.0;
+        const ROD_SLEEP_SETTLE_MIN_SECONDS: f32 = 0.3;
+        const ROD_SLEEP_SETTLE_MAX_SECONDS: f32 = 8.0;
+        let rod_threshold = self.config.rod_sleep_threshold;
+        if rod_threshold > 0.0 {
+            let threshold_sq = rod_threshold * rod_threshold;
+            for rod in &mut self.rods {
+                if rod.sleeping
+                    || rod.push_strength > 0.0
+                    || rod.is_growing()
+                    || rod.is_correcting_gravitropically(self.config.gravity, &self.grid)
+                    || rod.is_correcting_phototropically(self.config.light_dir, &self.grid)
+                {
+                    rod.below_threshold_time = 0.0;
+                    continue;
+                }
+                let max_speed_sq = rod
+                    .points
+                    .v
+                    .iter()
+                    .fold(0.0f32, |m, v| m.max(v.length_squared()));
+                if max_speed_sq < threshold_sq {
+                    rod.below_threshold_time += sub_dt;
+                    let period =
+                        crate::rod::RodMaterial::fundamental_period_s(&rod.points, rod.material.ei);
+                    let settle_seconds = (period * ROD_SLEEP_SETTLE_PERIODS)
+                        .clamp(ROD_SLEEP_SETTLE_MIN_SECONDS, ROD_SLEEP_SETTLE_MAX_SECONDS);
+                    if rod.below_threshold_time >= settle_seconds {
+                        rod.sleeping = true;
+                    }
+                } else {
+                    rod.below_threshold_time = 0.0;
+                }
+            }
+        }
         self.last_timing.phase_sleep_us += t5.elapsed().as_micros() as u64;
     }
 
@@ -331,158 +686,5 @@ impl Simulation {
     }
 }
 
-fn apply_boundary_conditions_to_grid(
-    grid: &mut Grid,
-    grid_res: usize,
-    boundary: &dyn BoundaryCondition,
-) {
-    for (i, cell) in grid.active_cells_with_index_mut() {
-        if cell.mass > 0.0 {
-            boundary.apply_to_grid_velocity(i, grid_res, &mut cell.momentum);
-        }
-    }
-}
-
-/// Returns `true` if any field was corrected (state was invalid/non-finite).
-fn project_particle_state_to_admissible(
-    particles: &mut Particles,
-    i: usize,
-    config: &SimConfig,
-) -> bool {
-    let mut projected = false;
-    let min = config.boundary_thickness.saturating_sub(1) as f32;
-    let max = config.grid_res.saturating_sub(config.boundary_thickness) as f32;
-    let domain_center = Vec2::splat((min + max) * 0.5);
-
-    if !particles.x[i].is_finite() {
-        particles.x[i] = domain_center;
-        projected = true;
-    } else {
-        particles.x[i] = particles.x[i].clamp(Vec2::splat(min), Vec2::splat(max));
-    }
-
-    if !particles.v[i].is_finite() {
-        particles.v[i] = Vec2::ZERO;
-        projected = true;
-    }
-    if !particles.velocity_gradient[i].x_axis.is_finite()
-        || !particles.velocity_gradient[i].y_axis.is_finite()
-    {
-        particles.velocity_gradient[i] = Mat2::ZERO;
-        projected = true;
-    }
-
-    let f = particles.deformation_gradient[i];
-    if !f.x_axis.is_finite()
-        || !f.y_axis.is_finite()
-        || f.determinant() <= config.projection_min_deformation_j
-    {
-        particles.deformation_gradient[i] = Mat2::IDENTITY;
-        projected = true;
-    } else {
-        let j = f.determinant();
-        if j > config.j_max {
-            particles.deformation_gradient[i] *= (config.j_max / j).sqrt();
-            projected = true;
-        }
-    }
-
-    if !particles.plastic_volume_ratio[i].is_finite() || particles.plastic_volume_ratio[i] <= 0.0 {
-        particles.plastic_volume_ratio[i] = 1.0;
-        projected = true;
-    }
-    if !particles.hardening_scale[i].is_finite() || particles.hardening_scale[i] <= 0.0 {
-        particles.hardening_scale[i] = 1.0;
-        projected = true;
-    }
-    if !particles.friction_hardening[i].is_finite() {
-        particles.friction_hardening[i] = 0.0;
-        projected = true;
-    }
-    if !particles.log_volume_strain[i].is_finite() {
-        particles.log_volume_strain[i] = 0.0;
-        projected = true;
-    }
-
-    if !particles.mass[i].is_finite() || particles.mass[i] <= 0.0 {
-        particles.mass[i] = config.particle_mass;
-        projected = true;
-    }
-    if !particles.initial_volume[i].is_finite() || particles.initial_volume[i] <= 0.0 {
-        particles.initial_volume[i] = config
-            .default_initial_volume
-            .max(config.projection_min_volume);
-        projected = true;
-    }
-    if !particles.volume[i].is_finite() || particles.volume[i] <= 0.0 {
-        particles.volume[i] = particles.initial_volume[i].max(config.projection_min_volume);
-        projected = true;
-    }
-    if !particles.density[i].is_finite() || particles.density[i] <= 0.0 {
-        particles.density[i] =
-            (particles.mass[i] / particles.volume[i]).max(config.projection_min_density);
-        projected = true;
-    } else {
-        particles.density[i] = particles.density[i].max(config.projection_min_density);
-    }
-    projected
-}
-
-// choose_substep_dt: picks the largest CFL-safe dt ≤ max_dt.
-// Called inside step()'s substep loop — max_dt is the remaining frame time.
-// pub(crate) so the GPU solver can reuse this without duplicating CFL logic.
-pub(crate) fn choose_substep_dt(
-    config: &SimConfig,
-    particles: &Particles,
-    active_count: usize,
-    materials: &MaterialRegistry,
-    max_dt: f32,
-) -> f32 {
-    if !config.adaptive_timestep {
-        return max_dt.min(config.dt);
-    }
-    // Single pass for both velocity CFL and material timestep bound.
-    let mut max_speed = 0.0f32;
-    let mut min_mat_dt = max_dt;
-    for i in 0..active_count {
-        let mut s = particles.v[i].length();
-        if config.cfl_include_affine_speed {
-            s += affine_cfl_speed_contribution(
-                &particles.velocity_gradient[i],
-                config.grid_cell_size,
-            );
-        }
-        max_speed = max_speed.max(s);
-        let mdt = materials.get(particles.material_id[i]).timestep_bound(
-            particles.density[i],
-            particles.hardening_scale[i],
-            config.grid_cell_size,
-            config.material_cfl_coefficient,
-            config.viscous_timestep_coefficient,
-        );
-        if mdt.is_finite() && mdt > 0.0 {
-            min_mat_dt = min_mat_dt.min(mdt);
-        }
-    }
-    cfl_bound(config, max_speed, min_mat_dt, max_dt)
-}
-
-/// Shared CFL formula: clamps dt to advection + material bounds.
-/// Called by both SoA and AoS scan paths after computing their respective max values.
-pub(crate) fn cfl_bound(config: &SimConfig, max_speed: f32, min_mat_dt: f32, max_dt: f32) -> f32 {
-    let mut dt = max_dt;
-    if max_speed > f32::EPSILON {
-        dt = dt.min(config.cfl_coefficient * config.grid_cell_size / max_speed);
-    }
-    dt = dt.min(min_mat_dt);
-    dt.clamp(config.min_dt.min(max_dt), max_dt)
-}
-
-pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
-    // The APIC affine matrix C encodes the local velocity gradient.
-    // The farthest point in the quadratic B-spline 3×3 stencil is at 1.5 cells per axis,
-    // so its corner distance is 1.5*√2 cells — the effective maximum affine speed contribution.
-    const STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::consts::SQRT_2;
-    let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
-    grad_norm * STENCIL_CORNER_DISTANCE * cell_width
-}
+// apply_boundary_conditions_to_grid, project_particle_state_to_admissible: projection.rs
+// choose_substep_dt, cfl_bound, affine_cfl_speed_contribution: cfl.rs

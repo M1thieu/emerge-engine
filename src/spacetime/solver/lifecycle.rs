@@ -51,6 +51,7 @@ impl Simulation {
             phase_rules: Vec::new(),
             spatial_hash: SpatialHash::new(config.grid_cell_size),
             scratch_indices: Vec::new(),
+            rods: Vec::new(),
         }
     }
 
@@ -63,6 +64,9 @@ impl Simulation {
         let mut grid = Grid::new(config.grid_res);
         if spawn.precompute_initial_volumes {
             let n = particles.len();
+            // No MaterialRegistry exists yet at this point in construction (built
+            // just below) -- harmless: write_initial=true never reaches the
+            // material-aware clamp, see density.rs's own doc comment.
             estimate_particle_volumes(&mut particles, &mut grid, n, true);
         }
         let materials = MaterialRegistry::with_default(Box::new(FallbackMaterial));
@@ -97,6 +101,7 @@ impl Simulation {
             phase_rules: Vec::new(),
             spatial_hash: SpatialHash::new(config.grid_cell_size),
             scratch_indices: Vec::new(),
+            rods: Vec::new(),
         };
         solver
             .spatial_hash
@@ -255,14 +260,14 @@ impl Simulation {
     /// Splits active particles matching `should_split` into two half-mass/half-volume
     /// children, jittered apart by `jitter` (grid units) so they don't start exactly
     /// overlapping — an un-jittered split would put both children at the literal same
-    /// position, the same lattice-symmetry failure mode found and fixed for spawn lattices
-    /// earlier this session ("combed" sand). Every other field (velocity, deformation
-    /// gradient, material_id, temperature, etc.) is inherited unchanged from the parent;
-    /// only mass/volume/position differ, and children always wake up (a freshly-fractured
+    /// position, the same lattice-symmetry failure mode ("combed" sand) that spawn
+    /// lattices need jitter to avoid. Every other field (velocity, deformation gradient,
+    /// material_id, temperature, etc.) is inherited unchanged from the parent; only
+    /// mass/volume/position differ, and children always wake up (a freshly-fractured
     /// piece has no reason to start asleep). Sleeping particles are left untouched, never
     /// split. CPU-only (`Simulation`, not `GpuSimulation`) — splitting requires growing the
-    /// particle buffer, which the GPU path's fixed-size buffers don't support; not attempted
-    /// here, real future work if needed.
+    /// particle buffer, which the GPU path's fixed-size buffers don't support; not
+    /// attempted here, future work if needed.
     ///
     /// LP use case: pass a predicate checking `p.material_id == BONE && p.friction_hardening`
     /// against a damage threshold (Rankine's `friction_hardening` field IS its damage
@@ -402,5 +407,89 @@ impl Simulation {
 
     pub fn set_gravity(&mut self, gravity: Vec2) {
         self.config.gravity = gravity;
+    }
+
+    /// Append a rod, returning its index into `rods()`/`rods_mut()`. A rod's
+    /// `points.x` must already be in this simulation's grid-cell coordinate
+    /// space (same convention as `Particle::x`) — build it with
+    /// `rod::build_straight_rod(start, end, n, linear_density, config.dx_meters)`
+    /// so `start`/`end` (grid-cell units) and the resulting rest lengths
+    /// (real meters) both land in the right space for `scatter_rod_to_grid`/
+    /// `gather_grid_to_rod` to interoperate with ordinary particles.
+    ///
+    /// Real Euler/Greenhill self-weight buckling check happens HERE, not as
+    /// something each example has to remember to call (2026-07-27: a live
+    /// GUI session found blade B swinging wide and slow under a push and it
+    /// read as "broken" until traced back to real, disclosed buckling
+    /// physics -- the check existed but only one example was actually
+    /// calling it). `self.config.gravity` is already real, whatever this
+    /// simulation was configured with (grid units, `g_si = g_grid *
+    /// dx_meters` per `gravity_to_grid`'s own convention) -- not hardcoded to
+    /// Earth's 9.81, so this holds for any configured gravity.
+    pub fn add_rod(&mut self, rod: crate::rod::Rod) -> usize {
+        let gravity_m_s2 = self.config.gravity.length() * self.config.dx_meters;
+        if let Some(warning) = rod.buckling_warning(gravity_m_s2) {
+            eprintln!("[emerge::rod] {warning}");
+        }
+        self.rods.push(rod);
+        self.rods.len() - 1
+    }
+
+    /// Builder variant of `add_rod`.
+    pub fn with_rod(mut self, rod: crate::rod::Rod) -> Self {
+        self.add_rod(rod);
+        self
+    }
+
+    pub fn rods(&self) -> &[crate::rod::Rod] {
+        &self.rods
+    }
+
+    pub fn rods_mut(&mut self) -> &mut [crate::rod::Rod] {
+        &mut self.rods
+    }
+}
+
+#[cfg(test)]
+mod add_rod_buckling_check_tests {
+    use super::*;
+    use crate::rod::{Rod, RodMaterial, build_straight_rod};
+
+    /// Real regression guard for the 2026-07-27 fix: the buckling check used
+    /// to be an opt-in print each example had to remember to call (only one
+    /// of three rod-using examples actually did) -- now `add_rod` itself
+    /// checks every rod against its own real Greenhill critical height using
+    /// THIS simulation's own configured gravity, so no example can silently
+    /// add an unstable rod without at least a real, printed warning. This
+    /// test only confirms `add_rod` keeps working correctly (returns the
+    /// right index, `rods()` reflects it) whether or not the rod happens to
+    /// be over its own critical height -- the warning CONTENT itself is
+    /// already covered by `rod::root_cause_fixes_tests::
+    /// buckling_warning_matches_tonights_real_finding`.
+    fn make_rod(young_modulus: f32, height_m: f32, dx_meters: f32) -> Rod {
+        let start = Vec2::new(9.0, 4.0);
+        let end = Vec2::new(start.x, start.y + height_m / dx_meters);
+        let points = build_straight_rod(start, end, 20, 0.01, dx_meters);
+        let ea = young_modulus * 0.003 * 0.001;
+        let ei = young_modulus * 0.003_f32.powi(3) * 0.001 / 12.0;
+        Rod::new(points, RodMaterial::new(ea, ei, 0.0, 0.0))
+    }
+
+    #[test]
+    fn add_rod_still_registers_correctly_when_over_its_own_critical_height() {
+        let mut sim = Simulation::empty(SimConfig::earth(32, 0.01, 0.02));
+        // E=5e6, height=0.10m -- the real, confirmed-over-critical blade B case.
+        let idx = sim.add_rod(make_rod(5.0e6, 0.10, 0.01));
+        assert_eq!(idx, 0);
+        assert_eq!(sim.rods().len(), 1);
+    }
+
+    #[test]
+    fn add_rod_still_registers_correctly_when_safely_under_its_own_critical_height() {
+        let mut sim = Simulation::empty(SimConfig::earth(32, 0.01, 0.02));
+        // E=1e7, height=0.10m -- the real, confirmed-safe blade A case.
+        let idx = sim.add_rod(make_rod(1.0e7, 0.10, 0.01));
+        assert_eq!(idx, 0);
+        assert_eq!(sim.rods().len(), 1);
     }
 }

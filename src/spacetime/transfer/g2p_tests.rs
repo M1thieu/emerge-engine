@@ -638,7 +638,7 @@ mod multistep_backprop_tests {
             contact_group: 0,
             sleeping: 0,
             pinned: 0,
-            _pad: 0,
+            internal_pressure: 0.0,
         });
         particles
     }
