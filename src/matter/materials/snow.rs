@@ -124,13 +124,12 @@ impl MaterialModel for StomakhinMaterial {
         let f_t = f.transpose();
         let mut tau = 2.0 * mu_eff * (f - r) * f_t + lambda_eff * (j - 1.0) * j * Mat2::IDENTITY;
 
-        // Cohesion: compacted snow (Jp < 1) resists elastic re-expansion (J > 1).
-        if self.cohesion_coeff > 0.0 && particles.plastic_volume_ratio[i] < 1.0 && j > 1.0 {
-            tau += self.cohesion_coeff
-                * particles.plastic_volume_ratio[i]
-                * (j - 1.0)
-                * j
-                * Mat2::IDENTITY;
+        // Cohesion pressure: τ += -c * max(1-Jp, 0) * I -- matches this struct's
+        // own doc on `cohesion_coeff`. An addition beyond Stomakhin 2013's base
+        // model (disclosed on `cohesion_coeff`'s own doc: "0.0 = no cohesion,
+        // Stomakhin 2013 default").
+        if self.cohesion_coeff > 0.0 && particles.plastic_volume_ratio[i] < 1.0 {
+            tau -= self.cohesion_coeff * (1.0 - particles.plastic_volume_ratio[i]) * Mat2::IDENTITY;
         }
         tau
     }
@@ -312,6 +311,54 @@ mod analytical_validation_tests {
             "Jp should update EXACTLY per its own documented formula: expected \
              {expected_jp}, got {}",
             particles.plastic_volume_ratio[0]
+        );
+    }
+
+    /// **Cohesion must match its own documented formula exactly** -- pins the
+    /// formula down numerically so it can't silently drift from `cohesion_coeff`'s
+    /// own struct doc.
+    #[test]
+    fn cohesion_matches_documented_formula_and_is_gated_on_compaction_only() {
+        let with_cohesion = StomakhinMaterial::new(1000.0, 800.0, 10.0, 0.025, 0.0075, 0.6, 20.0)
+            .with_cohesion(500.0);
+        let no_cohesion = StomakhinMaterial::new(1000.0, 800.0, 10.0, 0.025, 0.0075, 0.6, 20.0);
+        let expected = -with_cohesion.cohesion_coeff * (1.0 - 0.9);
+
+        // Isolate the cohesion CONTRIBUTION by diffing against the same F/Jp
+        // with cohesion off -- the background elastic stress (real, nonzero
+        // whenever F != I) must not be mistaken for the cohesion term itself.
+        let cohesion_delta = |f: Mat2, jp: f32| -> Mat2 {
+            let p_on = particle_with(f, 1.0, jp);
+            let p_off = particle_with(f, 1.0, jp);
+            with_cohesion.kirchhoff_stress(&p_on, 0) - no_cohesion.kirchhoff_stress(&p_off, 0)
+        };
+
+        // Compacted (Jp=0.9) AND currently stretched (j>1).
+        let f_stretched = Mat2::from_diagonal(Vec2::new(1.1, 1.0));
+        let delta_stretched = cohesion_delta(f_stretched, 0.9);
+        assert!(
+            (delta_stretched.x_axis.x - expected).abs() < 1.0e-3
+                && (delta_stretched.y_axis.y - expected).abs() < 1.0e-3,
+            "cohesion contribution should be an isotropic -c*(1-Jp) addition: expected \
+             diag={expected}, got {delta_stretched:?}"
+        );
+
+        // Compacted (Jp=0.9) but currently AT rest (F=I) -- real cohesion (a
+        // bonding pressure) must still apply; it is gated on Jp alone, not
+        // on the current elastic state.
+        let delta_rest = cohesion_delta(Mat2::IDENTITY, 0.9);
+        assert!(
+            (delta_rest.x_axis.x - expected).abs() < 1.0e-3,
+            "cohesion must apply regardless of current stretch state (only Jp<1 gates it): \
+             expected diag={expected}, got {delta_rest:?}"
+        );
+
+        // Never compacted (Jp=1.0) -- zero cohesion contribution, any state.
+        let delta_uncompacted = cohesion_delta(f_stretched, 1.0);
+        assert!(
+            delta_uncompacted.x_axis.x.abs() < 1.0e-5 && delta_uncompacted.y_axis.y.abs() < 1.0e-5,
+            "Jp=1.0 (never compacted) must produce zero cohesion contribution, got \
+             {delta_uncompacted:?}"
         );
     }
 }
