@@ -146,6 +146,10 @@ impl MaterialModel for ViscoelasticMaterial {
         self.active_stress_coeff
     }
 
+    fn pressure_scale(&self) -> f32 {
+        1.0
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Viscoelastic as u32,
@@ -206,14 +210,13 @@ mod analytical_validation_tests {
 
     /// **Small-strain elastic limit must recover exact linear elasticity.**
     /// This material's elastic term is `mu*(F*F^T-I) + lambda*ln(J)*I` -- the
-    /// SAME "simple" NeoHookean form as `NeoHookeanMaterial`'s own module-level
-    /// doc comment describes (that material's actual CODE was later changed to
-    /// a plane-strain vol-dev split, `k=lambda+mu`, but its top-of-file doc
-    /// comment was never updated to match -- a separate, minor stale-doc
-    /// finding, not touched here). For F=I+delta*E (E symmetric), this
-    /// linearizes to the STANDARD textbook form `2*mu*eps + lambda*tr(eps)*I`
-    /// (same as `CorotatedMaterial`'s own verified small-strain limit, NOT the
-    /// `k=lambda+mu` substitution NeoHookeanMaterial's split form needs).
+    /// same "simple" NeoHookean form `NeoHookeanMaterial`'s doc describes as
+    /// historical context (that material's actual CODE now uses a
+    /// plane-strain vol-dev split, `k=lambda+mu` -- see its own doc). For
+    /// F=I+delta*E (E symmetric), this linearizes to the STANDARD textbook
+    /// form `2*mu*eps + lambda*tr(eps)*I` (same as `CorotatedMaterial`'s own
+    /// verified small-strain limit, NOT the `k=lambda+mu` substitution
+    /// NeoHookeanMaterial's split form needs).
     /// `ViscoelasticMaterial` had zero test comparing it to any analytical
     /// result before this.
     #[test]

@@ -74,33 +74,46 @@ mod p2g_tests;
 /// shader's post-switch active-stress block in `p2g.wgsl` exactly: Viscoelastic uses an
 /// isotropic contractile term (matches its own Kelvin-Voigt formulation), every other elastic
 /// model uses the directional F·(n₀⊗n₀)·Fᵀ fiber form (follows material deformation).
+///
+/// Also adds an isotropic internal pre-stress term (`-internal_pressure × pressure_scale ×
+/// I`) when a material opts in via `MaterialModel::pressure_scale()` — the standard
+/// "prestressed structure" treatment (real motivating case: turgor pressure, see
+/// `Particle::internal_pressure` doc). Independent of, and composes freely with, the
+/// activation term above since both are plain additions to the same `tau`.
 pub(crate) fn combined_kirchhoff_stress(
     material: &dyn MaterialModel,
     particles: &Particles,
     i: usize,
 ) -> Mat2 {
-    let tau = material.kirchhoff_stress(particles, i);
+    let mut tau = material.kirchhoff_stress(particles, i);
+
     let coeff = material.activation_scale();
-    if particles.activation[i] <= 0.0 || coeff <= 0.0 {
-        return tau;
-    }
-    let isotropic = material.constitutive_model() == ConstitutiveModel::Viscoelastic;
-    let tau_active = if isotropic {
-        Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
-    } else {
-        let n = particles.activation_dir[i];
-        let len_sq = n.dot(n);
-        if len_sq > f32::EPSILON {
-            let n0 = n / len_sq.sqrt();
-            let n_outer = Mat2::from_cols(n0 * n0.x, n0 * n0.y);
-            let a_mat = n_outer * (particles.activation[i] * coeff);
-            let f = particles.deformation_gradient[i];
-            f * a_mat * f.transpose()
-        } else {
+    if particles.activation[i] > 0.0 && coeff > 0.0 {
+        let isotropic = material.constitutive_model() == ConstitutiveModel::Viscoelastic;
+        let tau_active = if isotropic {
             Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
-        }
-    };
-    tau + tau_active
+        } else {
+            let n = particles.activation_dir[i];
+            let len_sq = n.dot(n);
+            if len_sq > f32::EPSILON {
+                let n0 = n / len_sq.sqrt();
+                let n_outer = Mat2::from_cols(n0 * n0.x, n0 * n0.y);
+                let a_mat = n_outer * (particles.activation[i] * coeff);
+                let f = particles.deformation_gradient[i];
+                f * a_mat * f.transpose()
+            } else {
+                Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
+            }
+        };
+        tau += tau_active;
+    }
+
+    let pressure_coeff = material.pressure_scale();
+    if particles.internal_pressure[i] != 0.0 && pressure_coeff > 0.0 {
+        tau -= Mat2::from_diagonal(Vec2::splat(particles.internal_pressure[i] * pressure_coeff));
+    }
+
+    tau
 }
 
 /// Analytic adjoint of the DIRECTIONAL active-stress term

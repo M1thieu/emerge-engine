@@ -94,6 +94,10 @@ impl MaterialModel for CorotatedMaterial {
         self.active_stress_coeff
     }
 
+    fn pressure_scale(&self) -> f32 {
+        1.0
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Corotated as u32,

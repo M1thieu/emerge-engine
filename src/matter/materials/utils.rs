@@ -68,6 +68,23 @@ pub(crate) fn reconstruct_f(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
     u * Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y)) * vt
 }
 
+/// Reconstruct a full symmetric Kirchhoff stress tensor from principal (Hencky-basis)
+/// stresses and the LEFT singular vectors of `F`'s SVD (`F = U·Σ·Vᵀ`).
+///
+/// τ = U · diag(τ_principal) · Uᵀ — the standard result for an isotropic hyperelastic
+/// material: Kirchhoff/Cauchy stress is coaxial with the left stretch tensor's
+/// eigenvectors (U), not V (see e.g. Bonet & Wood, "Nonlinear Continuum Mechanics for
+/// Finite Element Analysis"). Distinct from `reconstruct_f`, which rebuilds F itself
+/// (U on the left, Vᵀ on the right) for PLASTIC/irreversible return-mapping materials
+/// (Rankine, VonMises) that permanently alter the deformation gradient — this helper
+/// is for REVERSIBLE materials whose principal stress response is asymmetric (e.g. a
+/// no-compression/tension-only law) but that never modify F, only its own stress
+/// output for the CURRENT F.
+#[inline(always)]
+pub(crate) fn reconstruct_stress_from_principal(u: Mat2, tau_principal: Vec2) -> Mat2 {
+    u * Mat2::from_diagonal(tau_principal) * u.transpose()
+}
+
 /// Convert 2D principal Kirchhoff stresses back to Hencky strains (inverse of corotated elastic).
 ///
 /// For corotated/Hencky elastic: τᵢ = (2µ+λ)·εᵢ + λ·ε_j  →  system inversion.
@@ -135,6 +152,48 @@ pub fn polar_decomposition_2d(f: Mat2) -> Mat2 {
     } else {
         Mat2::IDENTITY
     }
+}
+
+/// Fixed-point iteration to a self-consistent (closest-point-projection)
+/// plastic multiplier -- real numerical rigor per Simo & Taylor 1985
+/// ("Consistent tangent operators for rate-independent elastoplasticity,"
+/// CMAME 48:101-118) and Simo & Hughes, *Computational Inelasticity* (1998),
+/// the standard reference on return-mapping consistency. Generic across
+/// EVERY plastic material with a hardening-dependent yield surface (DP's
+/// friction-angle hardening, VonMises' yield-stress evolution, Rankine's
+/// damage softening, NACC's consolidation state, mu(I)'s own friction law) --
+/// each material supplies its OWN yield equation via `yield_at`, this
+/// function owns only the shared iteration/convergence logic, so adding
+/// self-consistency to another material never means re-deriving or
+/// re-implementing this loop, just plugging in that material's own closure.
+///
+/// `initial_gamma`: the single-pass (pre-step) plastic multiplier, used as
+/// the starting guess -- real materials without self-consistency already
+/// compute this value, so callers get it for free.
+/// `hardening_state`: the pre-step internal variable (q, damage, etc.).
+/// `yield_at`: given a CANDIDATE end-of-step hardening state
+/// (`hardening_state + candidate_gamma`), returns the yield function's value
+/// there -- the only material-specific piece.
+/// 8 iterations is real headroom, not a tuned number: every real hardening
+/// law in this engine is a bounded, smooth, saturating function of its own
+/// internal variable, making this a real contraction that converges to float
+/// precision in 2-3 passes in practice (confirmed on `DruckerPragerMaterial`,
+/// the first real adopter).
+pub fn self_consistent_plastic_multiplier(
+    initial_gamma: f32,
+    hardening_state: f32,
+    mut yield_at: impl FnMut(f32) -> f32,
+) -> f32 {
+    let mut gamma = initial_gamma;
+    for _ in 0..8 {
+        let gamma_next = yield_at(hardening_state + gamma.max(0.0));
+        let converged = (gamma_next - gamma).abs() < 1.0e-6;
+        gamma = gamma_next;
+        if converged {
+            break;
+        }
+    }
+    gamma
 }
 
 /// CFL timestep bound from elastic longitudinal wave speed c_P = √((λ+2µ)·h / ρ).

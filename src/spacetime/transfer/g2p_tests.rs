@@ -110,6 +110,116 @@ mod activation_tests {
     }
 }
 
+/// Real, checkable validation of the internal pre-stress mechanism added for
+/// turgor-pressure-style support (see `Particle::internal_pressure` and
+/// `MaterialModel::pressure_scale` docs) — not a "looks nicer" check, a direct
+/// verification of the `-P*I` formula `combined_kirchhoff_stress` adds.
+#[cfg(test)]
+mod pre_stress_tests {
+    use super::combined_kirchhoff_stress;
+    use crate::materials::{DruckerPragerMaterial, MaterialModel, NeoHookeanMaterial};
+    use crate::particle::{Particle, Particles};
+    use glam::Mat2;
+
+    fn particle_at_rest() -> Particle {
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.volume = 1.0;
+        p.density = 1.0;
+        p.deformation_gradient = Mat2::IDENTITY; // undeformed: passive elastic stress is exactly zero
+        p
+    }
+
+    /// `NeoHookeanMaterial` opts into pre-stress (`pressure_scale() == 1.0`) — an
+    /// undeformed particle's stress should be exactly `-P*I`, matching the real
+    /// "prestressed structure" formula (isotropic hydrostatic pressure term).
+    #[test]
+    fn internal_pressure_adds_isotropic_negative_stress() {
+        let mat = NeoHookeanMaterial::new(100.0, 200.0);
+        let mut p = particle_at_rest();
+        p.internal_pressure = 12.5;
+
+        let soa = Particles::from(vec![p]);
+        let tau = combined_kirchhoff_stress(&mat, &soa, 0);
+
+        assert!(
+            (tau.x_axis.x - (-12.5)).abs() < 1e-5,
+            "tau_xx should be -internal_pressure = -12.5: {tau:?}"
+        );
+        assert!(
+            (tau.y_axis.y - (-12.5)).abs() < 1e-5,
+            "tau_yy should equal tau_xx (isotropic pressure, not directional): {tau:?}"
+        );
+        assert!(
+            tau.x_axis.y.abs() < 1e-6 && tau.y_axis.x.abs() < 1e-6,
+            "pre-stress must be purely diagonal (isotropic): {tau:?}"
+        );
+    }
+
+    #[test]
+    fn zero_internal_pressure_leaves_stress_unchanged() {
+        let mat = NeoHookeanMaterial::new(100.0, 200.0);
+        let mut p = particle_at_rest();
+        p.internal_pressure = 0.0; // off — must be a true no-op
+
+        let soa = Particles::from(vec![p]);
+        let tau = combined_kirchhoff_stress(&mat, &soa, 0);
+        assert!(
+            tau.x_axis.x.abs() < 1e-6 && tau.y_axis.y.abs() < 1e-6,
+            "internal_pressure=0.0 must produce zero stress on an undeformed particle: {tau:?}"
+        );
+    }
+
+    /// A material that does NOT override `pressure_scale()` (default 0.0) must ignore
+    /// `internal_pressure` entirely — real opt-in behavior, not a silent global effect.
+    /// `DruckerPragerMaterial` (sand) is a real material that never opts in.
+    #[test]
+    fn material_without_pressure_scale_ignores_internal_pressure() {
+        let mat = DruckerPragerMaterial::cohesionless(1.0e5, 0.3);
+        assert_eq!(
+            mat.pressure_scale(),
+            0.0,
+            "test assumption: DruckerPragerMaterial does not opt into pre-stress"
+        );
+        let mut p = particle_at_rest();
+        p.internal_pressure = 999.0; // deliberately large — should have zero effect
+
+        let soa = Particles::from(vec![p]);
+        let tau = combined_kirchhoff_stress(&mat, &soa, 0);
+        assert!(
+            tau.x_axis.x.abs() < 1e-6 && tau.y_axis.y.abs() < 1e-6,
+            "materials that don't opt in must ignore internal_pressure entirely: {tau:?}"
+        );
+    }
+
+    /// Pre-stress and activation are independent additive terms — both should apply
+    /// simultaneously without either one suppressing the other (real composability,
+    /// not an accidental either/or).
+    #[test]
+    fn composes_with_activation_stress() {
+        let mut mat = NeoHookeanMaterial::new(100.0, 200.0);
+        mat.active_stress_coeff = 10.0;
+        let mut p = particle_at_rest();
+        p.internal_pressure = 12.5;
+        p.activation = 1.0;
+        p.activation_dir = glam::Vec2::X;
+
+        let soa = Particles::from(vec![p]);
+        let tau = combined_kirchhoff_stress(&mat, &soa, 0);
+
+        // activation(1.0)*coeff(10.0) along X, minus internal_pressure(12.5) isotropic.
+        assert!(
+            (tau.x_axis.x - (10.0 - 12.5)).abs() < 1e-5,
+            "tau_xx should combine both terms: activation(10) - pressure(12.5) = -2.5: {tau:?}"
+        );
+        assert!(
+            (tau.y_axis.y - (-12.5)).abs() < 1e-5,
+            "tau_yy should only see the pre-stress term (activation is X-only): {tau:?}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod g2p_velocity_vjp_tests {
     use super::*;
