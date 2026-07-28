@@ -37,6 +37,8 @@ src/
     grid/               Grid · Cell · quadratic B-spline kernel
     transfer.rs         P2G scatter + G2P gather (MLS-APIC)
     diff.rs             differentiable/gradient-trainable stepping
+    rod/                Rod · RodPoints · RodMaterial · build_straight_rod ·
+                        coupling.rs (scatter/gather to the shared Grid)
   forces/             boundary/ (Slip / Predictive / Friction / Heightmap) ·
                       fields/ (NBody / GravityWell / Coulomb / Confinement) ·
                       electromagnetics.rs
@@ -141,6 +143,7 @@ Before changing numerical constants or plasticity return-mapping, check the sour
 | Surface tension | Stomakhin et al. 2014, *Augmented MPM for cloth and soft bodies* (ψ=γ·J) |
 | N-body gravity | Barnes & Hut 1986, *A hierarchical O(N log N) force-calculation algorithm* |
 | Viscoelastic | Fung 1993, *Biomechanics: Mechanical Properties of Living Tissues* (Kelvin-Voigt) |
+| Rod (`spacetime::rod`) | Bergou, Wardetzky, Robinson, Audoly, Grinspun 2008, *Discrete Elastic Rods* (SIGGRAPH); modern discrete form of Cosserat rod theory (Cosserat brothers, 1909) |
 
 ---
 

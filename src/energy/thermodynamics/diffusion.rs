@@ -21,6 +21,11 @@ use glam::IVec2;
 use crate::{grid::kernel::quadratic_weights, particle::Particles};
 
 /// Configuration for grid-based thermal diffusion.
+///
+/// `Default::density()` is `0.0` (same as every other field) but `alpha_grid()`
+/// panics if `density <= 0.0` rather than silently dividing by it -- every real
+/// caller must set it explicitly to a real reference value below; there is no
+/// physically sane default to fall back to.
 #[derive(Clone, Debug, Default)]
 pub struct ThermalConfig {
     /// Thermal conductivity k in W/(m·K).
@@ -40,6 +45,19 @@ pub struct ThermalConfig {
     /// - Rock:  840  J/(kg·K)
     /// - Steel: 490  J/(kg·K)
     pub heat_capacity: f32,
+
+    /// Density ρ in kg/m³. Real, required -- the module's own diffusivity
+    /// formula (α = k/(ρ·c_p)) needs it; omitting it (found+fixed 2026-07-24,
+    /// this struct previously had no density field at all, so every scene
+    /// silently computed α = k/c_p instead -- 1000x too fast for water,
+    /// confirmed by direct comparison against water's real α≈1.4e-7 m²/s).
+    ///
+    /// Reference values (approximate):
+    /// - Air:   1.225 kg/m³
+    /// - Water: 1000  kg/m³
+    /// - Rock:  2500  kg/m³
+    /// - Steel: 7850  kg/m³
+    pub density: f32,
 
     /// Ambient/boundary temperature in K (or simulation-unit temperature).
     ///
@@ -65,13 +83,25 @@ pub struct ThermalConfig {
 }
 
 impl ThermalConfig {
-    /// Thermal diffusivity α = k / (c_p · dx²) in grid-units²/s.
+    /// Thermal diffusivity α = k / (ρ·c_p·dx²) in grid-units²/s.
     ///
     /// Folding dx² in keeps the Laplacian formula dimensionless over grid indices.
+    /// Panics if `density <= 0.0` -- there's no physically sane fallback, and
+    /// silently dividing by zero previously produced infinite/NaN diffusivity
+    /// with no error at the point of the actual mistake (found 2026-07-24: this
+    /// field didn't exist at all until then, so every existing scene silently
+    /// ran with an implicit ρ=1, real water diffusing 1000x too fast).
     #[inline]
     pub fn alpha_grid(&self) -> f32 {
-        // α = k / (c_p · dx²): units = m²/s / m² = 1/s (frequency in grid coords)
-        self.conductivity / (self.heat_capacity * self.grid_cell_size * self.grid_cell_size)
+        assert!(
+            self.density > 0.0,
+            "ThermalConfig::density must be set to a real value (kg/m^3) -- \
+             the default 0.0 has no physical meaning and would silently make \
+             alpha_grid() infinite/NaN"
+        );
+        // α = k / (ρ·c_p·dx²): units = (m²/s) / m² = 1/s (frequency in grid coords)
+        self.conductivity
+            / (self.density * self.heat_capacity * self.grid_cell_size * self.grid_cell_size)
     }
 }
 
