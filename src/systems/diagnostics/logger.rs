@@ -100,6 +100,23 @@ impl FrameLogger {
             ));
         }
 
+        // Rod-solver diagnostics -- only emitted when the scene actually has
+        // rods (`snap.rods.count > 0`), so a particle-only scene's log stays
+        // exactly as it was before this field existed.
+        if snap.rods.count > 0 {
+            line.push_str(&format!(
+                ",\"rods\":{{\"n\":{},\"sleeping\":{},\"v_max\":{:.4},\"tips\":[",
+                snap.rods.count, snap.rods.sleeping_count, snap.rods.max_speed,
+            ));
+            for (i, tip) in snap.rods.tip_positions.iter().enumerate() {
+                if i > 0 {
+                    line.push(',');
+                }
+                line.push_str(&format!("[{:.4},{:.4}]", tip.x, tip.y));
+            }
+            line.push_str("]}");
+        }
+
         // App-defined scalar context (e.g. live steer input, wave speed).
         for (name, value) in extra {
             line.push_str(&format!(",\"{}\":{:.4}", name, value));
