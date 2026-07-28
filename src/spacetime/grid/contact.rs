@@ -118,13 +118,11 @@ impl Grid {
 
     /// Fallback contact normal: Sobel-3x3 gradient of the grip field's own grid mass —
     /// the ORIGINAL Bardenhagen 2001 method, kept as a fallback for
-    /// `fit_contact_normal_lr`'s "no confident plane" case (see `resolve_contact`'s
-    /// call site doc for why zero correction there was a real bug). Not the primary
-    /// method any more precisely because it has known weaknesses near a translating
-    /// body or a material corner -- but exactly the shallow, one-sided point clouds
-    /// where LR fails tend to be close to a flat interface, the case this handles
-    /// best. Returns `None` when there's no real local gradient (deep inside a
-    /// well-mixed interior, matching the old code's own "no gradient" case).
+    /// `fit_contact_normal_lr`'s "no confident plane" case. Not the primary method
+    /// (has known weaknesses near a translating body or a material corner), but
+    /// exactly the shallow, one-sided point clouds where LR fails tend to be close
+    /// to a flat interface, the case this handles best. Returns `None` when there's
+    /// no local gradient (deep inside a well-mixed interior).
     fn grip_mass_gradient_normal(&self, idx: u32) -> Option<Vec2> {
         let x = (idx as usize / self.resolution) as i32;
         let y = (idx as usize % self.resolution) as i32;
@@ -137,120 +135,41 @@ impl Grid {
 
     /// Multi-field frictional contact resolution (Bardenhagen, Guilkey, Roessig,
     /// Brackbill 2001, "An Improved Contact Algorithm for the Material Point Method").
-    /// Real equations from the primary source (verified against the actual paper text,
-    /// not a secondary description — see project memory
-    /// `locomotion_core_frictional_contact_2026-07-11` for the full derivation):
     ///
     /// - Per-field velocity `v_grip = p_grip/m_grip` (eq. 4); center-of-mass velocity
     ///   `v_cm` is just this grid's own existing total field (eq. 5-6) — already computed
     ///   by `update_velocities`, called right before this.
     /// - Surface normal `n`: fitted via logistic regression through a labeled particle
     ///   point cloud (`fit_contact_normal_lr`), not a grid mass gradient — see that
-    ///   function's doc for why (a real, found-and-fixed bug in the original approach).
+    ///   function's doc.
     /// - Approach test (eq. 8): contact applies only when `(v_grip - v_cm)·n < 0`
-    ///   (bodies approaching); otherwise free separation — the two fields simply keep
-    ///   their own independently-integrated velocities, untouched. This is the exact
-    ///   behavior that's completely absent today (only one field ever exists, so
-    ///   nothing can ever separate).
+    ///   (bodies approaching); otherwise free separation — the two fields keep their
+    ///   own independently-integrated velocities, untouched.
     /// - Correction (eq. 10-13): remove the approaching normal component entirely, and
     ///   reduce the tangential component by up to `friction·|v_n|` (stick if that would
-    ///   overshoot, matching Coulomb's cone). This is EXACTLY `apply_coulomb_wall`'s
-    ///   existing, already-tested formula (`src/forces/boundary/mod.rs`), reused as-is
-    ///   with `v_rel = v_grip - v_cm` standing in for "velocity relative to the wall"
-    ///   and `n` standing in for the wall's outward normal — same math, different
-    ///   partner.
+    ///   overshoot, matching Coulomb's cone). This is exactly `apply_coulomb_wall`'s
+    ///   existing formula (`src/forces/boundary/mod.rs`), reused with
+    ///   `v_rel = v_grip - v_cm` standing in for "velocity relative to the wall" and
+    ///   `n` for the wall's outward normal.
     /// - Momentum conservation (eq. 14, `Σ m_α(v_α - v_cm) = 0`): correcting the grip
     ///   field and handing the rest field the exact opposite momentum delta conserves
-    ///   total momentum by construction, with no separate reaction computation needed.
+    ///   total momentum by construction.
     ///
     /// Scope, disclosed: this is a 2-field (grip vs. rest) implementation, not full
     /// N-body multi-field contact — see `Particle::contact_group` doc. Also skips the
-    /// paper's own further refinement (releasing contact based on normal TRACTION, not
-    /// just kinematic approach/departure, for correct energy extraction on rebound) —
-    /// the paper itself states the simpler kinematic-only criterion used here is exact
-    /// "in the special case where contacting bodies are stress free," a real, legitimate
-    /// baseline, not a hidden shortcut.
+    /// paper's own refinement of releasing contact based on normal TRACTION rather than
+    /// kinematic approach/departure — the paper itself states the simpler kinematic-only
+    /// criterion used here is exact "in the special case where contacting bodies are
+    /// stress free."
     ///
     /// `vel_limit`: the SAME CFL speed cap the caller already applies to the total
-    /// field right before this call (`step.rs`'s grid-velocity clamp) — passed in and
-    /// applied here too, to every velocity this function produces or reads raw. Without
-    /// this, a tiny-mass grip node could carry a huge raw velocity (`grip_momentum` from
-    /// a near-zero `grip_mass`) even when the total field is perfectly safe, silently
-    /// reopening the exact instability the caller's clamp exists to prevent — a real
-    /// gap, not a hypothetical one, closed here rather than left as a disclosed limit.
+    /// field right before this call, applied here too to every velocity this function
+    /// produces or reads raw — without it, a tiny-mass grip node could carry a huge raw
+    /// velocity even when the total field is safe.
     ///
-    /// HISTORY (found + fixed 2026-07-12): friction used to have ~zero measurable effect
-    /// on a sliding body's bulk velocity. Root cause was isolated via direct instrumentation
-    /// plus a hand-derived algebraic check (both matching): the CORRECTION formula itself
-    /// was always exactly right — forcing `n = Vec2::Y` in an axis-aligned test made
-    /// friction=0 hold a resting body's velocity at EXACTLY 0.0 forever (correct frictionless
-    /// slip) and friction=3 produce genuine stick (bodies converge to the momentum-
-    /// conserving common velocity) — the intended Bardenhagen behavior. The bug was entirely
-    /// in the NORMAL ESTIMATE: a grid mass-GRADIENT normal (Bardenhagen's own original
-    /// method) carries a small but PERSISTENT (not random-noise) off-axis bias for a body
-    /// that is actively translating across the fixed Eulerian grid, or near a material
-    /// edge/corner. Removing the "normal" component with a mistilted `n` bled real
-    /// tangential momentum into the other field every substep regardless of `friction`, and
-    /// since a body resting on a frictionless boundary (e.g. `SlipBoundary`) has nothing
-    /// else opposing horizontal drift, this leak accumulated, unopposed, into full
-    /// momentum-sharing over enough substeps. FALSIFIED as noise/transient-driven, each
-    /// independently: wider-baseline central difference, a proper Sobel 3x3 gradient,
-    /// raising the mass-fraction epsilon 4 orders of magnitude, a 100x stiffer/heavier
-    /// floor, and a 300-step gradual velocity ramp instead of an instant jump — ALL still
-    /// converged to the fully-stuck common velocity regardless of `friction`. Real fix,
-    /// verified against Nairn 2020 ("New Material Point Method Contact Algorithms for
-    /// Improved Accuracy," the direct, primary-source follow-up to Bardenhagen 2001 that
-    /// diagnoses and fixes this exact class of bug — see `fit_contact_normal_lr`'s doc):
-    /// replace the grid-gradient normal with a normal fitted through actual particle
-    /// positions. See project memory `locomotion_core_frictional_contact_2026-07-11` for
-    /// the full investigation log.
-    ///
-    /// TWO MORE REAL BUGS found and fixed the same day, both in this function, neither
-    /// about the normal's direction:
-    /// 1. The epsilon-skip branch (`grip_mass <= MIN_MASS_FRACTION`) used to trigger at
-    ///    0.05, not a true divide-by-zero guard, and on trigger set BOTH fields to the
-    ///    raw blended `total.momentum` — contaminating `rest`'s velocity with a real,
-    ///    if small, grip contribution whenever grip_mass fell in `(0, 0.05]`. A taller
-    ///    body creates far more such nodes (deeper kernel reach), so this leak scaled
-    ///    with body thickness. Fixed: threshold dropped to `1e-6` (true zero-guard);
-    ///    everything else fully separates via the "no confident normal" branch instead.
-    /// 2. `fit_contact_normal_lr`'s Newton iteration could push `z = x·β` far enough
-    ///    negative for an ill-constrained point cloud that `exp(-z)` overflowed to
-    ///    `f32::INFINITY`, producing `inf/inf = NaN` in the sigma term — confirmed via
-    ///    direct instrumentation (a specific recurring imbalanced point cloud produced
-    ///    `Vec2(NaN, NaN)` every time). Fixed by clamping `z` before the exponential
-    ///    (the logistic function saturates to ±1 well before this range, so the
-    ///    clamp changes nothing about the converged answer) plus a defensive
-    ///    `is_finite()` filter at every consumption point.
-    ///
-    /// A FOURTH issue, also found and fixed: when neither the LR fit nor anything else
-    /// found a usable normal (typically a shallow, just-touching, heavily one-sided
-    /// point cloud — exactly the moment a falling body first reaches another), the old
-    /// code applied ZERO correction at that node. Confirmed via instrumentation: a block
-    /// dropped onto a floor free-fell for its ENTIRE approach (matching pure free-fall
-    /// kinematics almost exactly — contact wasn't resisting AT ALL) before tunneling deep
-    /// and only then decelerating. Fixed by falling back to `grip_mass_gradient_normal`
-    /// (the original Bardenhagen gradient method) whenever LR has no answer, rather than
-    /// skipping correction outright — see that function's doc.
-    ///
-    /// A FIFTH issue, found AFTER the four fixes above and now also RESOLVED (same day,
-    /// 2026-07-12): a body resting under sustained gravity would still settle several
-    /// grid cells deep into the body beneath it, confirmed independent of normal quality,
-    /// material-stiffness pairing, and impact severity. Root cause matched Bardenhagen
-    /// 2001's own disclosed caveat that the kinematic-only approach/departure test (eq. 8
-    /// alone) is exact only "in the special case where contacting bodies are stress
-    /// free" — a resting body under constant gravity never is, so the test can prevent
-    /// further approach but has no mechanism to correct overlap that already exists.
-    /// Fixed via Baumgarte stabilization (see the inline doc further down, at the actual
-    /// correction code, for the full two-attempt-then-fix numerical journey — the
-    /// working version uses a dt-independent absolute correction rate/cap, not the
-    /// textbook `beta*gap/dt` form, which explodes at this engine's adaptive substep dt).
     /// `multi_field_contact_produces_real_coulomb_slip_and_stick`
-    /// (`tests/physics_correctness.rs`) now passes genuinely — both the frictionless
-    /// slip case and the high-friction stick case verified on the harder
-    /// `examples/diag_contact_debug.rs` diagnostic (settled gap ~0, `min_deformation_j`
-    /// staying ~0.995-0.9997, no explosion). See project memory
-    /// `locomotion_core_frictional_contact_2026-07-11` for the full investigation log.
+    /// (`tests/physics_correctness.rs`) verifies both the frictionless-slip and
+    /// high-friction-stick cases.
     pub fn resolve_contact(
         &mut self,
         dt: f32,
@@ -261,21 +180,14 @@ impl Grid {
         directional_grip: Option<&DirectionalContactGrip>,
     ) {
         // Only a guard against literal division-by-zero, NOT a "low confidence" cutoff —
-        // REAL BUG FOUND AND FIXED 2026-07-12: a larger threshold here (0.05, tried during
-        // the normal-estimation investigation) sent every node with grip_mass in (0, 0.05]
-        // through the branch below, which set BOTH fields to the raw blended `total.momentum`
-        // -- but a small, nonzero grip_mass at that node means `total.momentum` (mass-
-        // weighted across BOTH bodies) already carries a real, if small, contribution from
-        // grip, contaminating what `rest` reads back. A taller/thicker body creates far more
-        // such small-but-nonzero-grip-mass nodes (its kernel reaches deeper across more grid
-        // rows) than a thin one, so this leak scaled with body thickness -- confirmed by
-        // forcing a known-perfect vertical normal on both a thin (24x2) and thick (12x8)
-        // block: the thin block showed zero leak (this branch rarely fired), the thick block
-        // still leaked to the fully-momentum-shared value despite the perfect normal (this
-        // branch fired constantly). Genuinely near-zero mass (no real second field at all)
-        // still takes the fast, correct path here; everything else falls through to the
-        // "no confident normal" branch below, which ALREADY does the correct, uncontaminated
-        // per-field separation without applying a Coulomb correction.
+        // a larger threshold here would route every node with small-but-nonzero grip_mass
+        // through the branch below, which sets both fields to the raw blended
+        // `total.momentum`. But any nonzero grip_mass means `total.momentum` (mass-weighted
+        // across BOTH bodies) already carries a real contribution from grip, contaminating
+        // what `rest` reads back — worse for thicker bodies (their kernel reaches more
+        // small-but-nonzero-grip-mass nodes). Everything above this floor falls through to
+        // the "no confident normal" branch below instead, which does correct,
+        // uncontaminated per-field separation without a Coulomb correction.
         const MIN_MASS_FRACTION: f32 = 1.0e-6;
         let clamp_speed = |v: Vec2| -> Vec2 {
             let spd = v.length();
@@ -314,127 +226,24 @@ impl Grid {
             let v_grip = clamp_speed(grip_momentum / grip_mass + gravity * dt);
 
             // Contact normal fitted through the actual particle point cloud (Nairn's LR
-            // method) rather than a grid mass gradient — see `fit_contact_normal_lr`'s
-            // doc for why the gradient approach was a real, found bug. `-` because the
-            // raw fit points toward increasing grip-label density (grip=+1); negating
-            // matches this function's existing "outward: away from grip" convention.
-            // `.filter(is_finite)`: defense in depth. `fit_contact_normal_lr` guards its
-            // own iteration against non-finite results internally, but treating any
-            // NaN/inf that slips through as "no confident normal" here (same as the
-            // ordinary not-enough-points case) rather than propagating it into the
-            // Coulomb correction is a real, cheap safety net for a value that used to
-            // reach the correction unchecked and contaminate particle velocities.
+            // method) rather than a grid mass gradient. `-` because the raw fit points
+            // toward increasing grip-label density (grip=+1); negating matches this
+            // function's "outward: away from grip" convention. `.filter(is_finite)`:
+            // defense in depth — `fit_contact_normal_lr` guards its own iteration against
+            // non-finite results internally, but any NaN/inf that slips through is treated
+            // as "no confident normal" here rather than propagating into the Coulomb
+            // correction and contaminating particle velocities.
             //
-            // REAL BUG FOUND AND FIXED 2026-07-12: when the LR fit has no confident
-            // answer (typically a shallow, just-touching, heavily one-sided point cloud
-            // -- exactly the moment a fast-falling body FIRST reaches the floor), the old
-            // code applied ZERO correction at that node: no interpenetration prevention
-            // at all, not even an approximate one. Confirmed via direct instrumentation:
-            // a block dropped onto a floor free-fell for the ENTIRE approach (matching
-            // pure free-fall kinematics almost exactly, meaning contact wasn't resisting
-            // AT ALL) and only started decelerating after tunneling several grid cells
-            // deep -- well past the point contact should have engaged. A grid mass-
-            // gradient fallback (the original, pre-LR method) is exactly the fallback
-            // this needs: not as accurate as LR in general (that's WHY it was replaced
-            // as the primary method), but always available and vastly better than no
-            // normal at all for the specific case LR can't handle -- a lopsided,
-            // barely-overlapping point cloud is close to the flattest, least ambiguous
-            // geometry for a density gradient to read correctly anyway.
-            // INVESTIGATED 2026-07-13, NOT FIXED -- see `examples/diag_contact_debug.rs`'s
-            // own doc comment for the still-open follow-up. Instrumented every fitted
-            // normal on the thick-block diagnostic and confirmed the LR fit is near-
-            // perfectly vertical (|n.x| < 1e-4) through the bulk of the interface, but
-            // degrades sharply -- |n.x| up to ~0.58, roughly 35 degrees off vertical -- at
-            // a small, specific set of nodes: the column directly under the sliding
-            // block's LEADING EDGE (>95% of all skewed fits landed on just 3 node rows at
-            // that exact x, a genuine corner where grip's front face meets open space, not
-            // a clean grip-over-rest half-plane). That skewed normal contributes to a real,
-            // measured leak (frictionless slide, `diag_contact_debug --friction 0`: floor
-            // picks up windowed_floor_vx~0.4 when it should stay ~0). Tried two real fixes,
-            // BOTH made it worse, confirmed by measurement not assumption: (1) falling back
-            // to `grip_mass_gradient_normal` on low confidence raised the leak to ~0.85 --
-            // this function's own doc already discloses why, it has the same "known
-            // weaknesses near a... corner"; (2) skipping resolution entirely at low-
-            // confidence nodes (matching the existing "no confident normal" branch) also
-            // gave ~0.82 -- doing nothing at the corner is worse than an imperfect normal,
-            // because the corner then behaves like uncoupled single-field MPM exactly
-            // where the leading edge is pressing into the floor, letting elastic stress
-            // transfer real momentum with zero contact separation at all. The imperfect-
-            // but-present LR normal outperforms both alternatives.
+            // When the LR fit has no confident answer (typically a shallow, just-touching,
+            // heavily one-sided point cloud -- exactly the moment a fast-falling body first
+            // reaches the floor), fall back to the grid mass-gradient normal rather than
+            // applying zero correction -- otherwise the body free-falls straight through
+            // before tunneling deep and only then decelerating.
             //
-            // STATUS UPDATE 2026-07-14 -- re-investigated with direct instrumentation on
-            // a real 3400-step long-horizon run (not guessed): the "leading edge corner"
-            // framing above was INCOMPLETE. Skewed fits (|n.x| > 0.3 on an otherwise
-            // near-vertical interface) are NOT a rare corner-only event -- they occur
-            // constantly, from step 0 onward, at ANY node whose point cloud has a small
-            // or lopsided MINORITY-label sample count (as few as 1-2 points of one label
-            // among dozens of the other), independent of whether the node sits at a real
-            // geometric corner. Root cause, verified: a synthetic replica of Nairn 2020's
-            // OWN worked corner example (Fig 3C) recovers a clean, near-horizontal normal
-            // from this exact implementation (`nairn_fig3c_corner_case_recovers_horizontal_normal`)
-            // -- ruling out corner TOPOLOGY as the failure mode, matching the paper's own
-            // claim that LR handles this case correctly. The real failure is statistical:
-            // this NLLS objective is a near-separable logistic fit, whose likelihood
-            // surface goes nearly FLAT in orientation once the two labels are already
-            // separated (saturated points stop contributing gradient) -- so with only a
-            // handful of minority-label points still actually constraining the fit, a
-            // small, physically meaningless perturbation in exactly those few points can
-            // swing the converged plane by tens of degrees, and the paper's own FIXED
-            // Tikhonov penalty (tuned for its own, better-sampled examples) doesn't
-            // compensate for this at real MPM's often-thin per-node sample sizes.
-            //
-            // A THIRD real fix attempt, tried and ALSO falsified by direct measurement
-            // (not assumed): a per-node temporal prior (`normal_history` -- this exact
-            // node's own last confidently-fitted normal, reused only when the current
-            // sample was statistically thin) made the real 16,000-step repro WORSE, not
-            // better -- min_j_snake crashed to -1.0 by step 2000 (vs. taking the full
-            // 16,000 steps to reach -4.83 without this change), and final min_j_terrain
-            // hit -512.0 (vs. 0.0 without it). Reverted. Likely explanation: a stale
-            // history value gets "frozen in" and repeatedly reapplied at every future
-            // low-sample dip even after the real local geometry has moved on, actively
-            // propagating an old wrong direction instead of letting each substep's
-            // (occasionally noisy but always CURRENT) LR fit average out over time.
-            // Three real, qualitatively different substitute-normal strategies now
-            // falsified (spatial-gradient fallback, skip-entirely, temporal-history
-            // fallback) -- this whole CLASS of fix ("swap in a different single normal
-            // when uncertain") is looking structurally wrong, not just under-tuned.
-            //
-            // CONFIRMED 2026-07-14 -- the normal was never the real root cause. Direct
-            // experiment (not guessed): running the exact 16,000-step long-horizon repro
-            // with the Baumgarte position correction below (search "Baumgarte
-            // stabilization") disabled entirely settles PERFECTLY cleanly -- min_j_terrain
-            // holds exactly at its 0.6 floor, min_j_snake holds at 0.9224, vmax decays to
-            // 0.000, for the full 16,000 steps. This isolates Baumgarte itself, independent
-            // of the normal, as the actual source of the long-horizon runaway. Root cause:
-            // the LR-fitted `n` is genuinely noisy substep to substep (confirmed separately
-            // above), and Baumgarte's `gap` is measured by projecting onto this SAME noisy
-            // `n` -- so even a truly at-rest body can show a small spurious `gap<0` from
-            // fit jitter alone, and unlike the Coulomb term (which only ever REMOVES a
-            // velocity component, bounded by what's already there), Baumgarte ADDS velocity
-            // outright every substep it fires. A sequence of small, not-fully-cancelling
-            // noise-driven additions compounds into real, unbounded kinetic energy over
-            // thousands of substeps.
-            //
-            // First fix tried along this new lever, PARTIALLY helped but did NOT close
-            // the bug (disclosed honestly, not force-passed): a deadband requiring `gap`
-            // to exceed 5% of one grid cell before correcting. Measured result: onset
-            // delayed but the 16,000-step test still ultimately failed -- real progress,
-            // not a fix, reverted rather than ship a partial mitigation.
-            //
-            // FIXED 2026-07-14 (real fix, verified on the full 16,000-step repro, see the
-            // Baumgarte correction site further down in this same function for the exact
-            // change and its own doc comment): converted the unconditional ADDITIVE
-            // velocity kick into a velocity FLOOR -- only pushes `v_rel`'s normal
-            // component down to the target separating speed if it isn't there already,
-            // the standard way real constraint solvers apply a position bias. This is
-            // self-limiting: a wobbling normal's repeated firings can no longer stack
-            // unbounded energy once real overlap is genuinely resolved, unlike the old
-            // unconditional subtraction. Verified genuinely: this test's own assertion
-            // (terrain holds its 0.6 floor) now passes for the full run with real margin.
-            // Disclosed smaller residual, not blocking: the snake's own purely-elastic
-            // body still settles to a mildly self-inverted but STABLE `min_j_snake≈-1.07`
-            // (not the ≈0.92 the Baumgarte-fully-disabled experiment reached), unchanged
-            // for 6000+ steps -- bounded, not runaway, and not what this test asserts on.
+            // Known disclosed limitation: the LR fit can be noisy at nodes with a small or
+            // lopsided minority-label sample count (e.g. near a body's leading edge), which
+            // is why the Baumgarte correction below must be a velocity floor rather than an
+            // unconditional additive term (see that comment).
             let normal_fit = fit_contact_normal_lr(&contact.points, node_pos, grid_cell_size)
                 .filter(|n| n.is_finite())
                 .or_else(|| self.grip_mass_gradient_normal(idx));
@@ -457,46 +266,29 @@ impl Grid {
             }
 
             // Baumgarte stabilization (Baumgarte 1972, "Stabilization of Constraints and
-            // Integration of PDEs of Dynamical Systems" -- a real, standard, decades-old
-            // technique, not invented here; the same ~0.1-0.3 factor is the well-known
-            // default in e.g. Box2D/Bullet's own velocity-constraint solvers). REAL BUG
-            // FOUND AND FIXED 2026-07-12: the kinematic-only approach test above only
-            // prevents FURTHER approach once it fires -- it has no mechanism to correct
-            // overlap that already exists, which matches Bardenhagen 2001's own disclosed
-            // caveat that this simpler test is exact only "in the special case where
-            // contacting bodies are stress free" (a resting body under constant gravity
-            // never is). Confirmed via direct instrumentation: a resting body settled
-            // several grid cells deep into whatever it rested on and never recovered,
-            // independent of normal quality (persisted even with a hand-forced, exactly-
-            // correct `n = Vec2::Y`), material stiffness pairing, and impact severity --
-            // proving the missing piece was positional correction, not the normal or the
-            // velocity-matching formula (both independently verified correct already).
-            // Reuses the SAME particle point cloud already gathered for the LR fit (no
-            // new data needed): project every particle onto `n`; if grip's furthest-along-
-            // n particle has crossed past rest's closest-along-n particle, that's real,
-            // measured overlap, not a guess. The correction is damped (proportional, not
-            // instantaneous) specifically to avoid injecting energy or overshooting into a
-            // new oscillation -- the well-documented failure mode of a naive "snap back
-            // instantly" position fix, which is why Baumgarte-style damping is the
-            // standard approach instead.
+            // Integration of PDEs of Dynamical Systems"; the same ~0.1-0.3 factor is the
+            // well-known default in e.g. Box2D/Bullet's own velocity-constraint solvers).
+            // The kinematic-only approach test above only prevents FURTHER approach once
+            // it fires — it has no mechanism to correct overlap that already exists, which
+            // matches Bardenhagen 2001's own disclosed caveat that this simpler test is
+            // exact only "in the special case where contacting bodies are stress free" (a
+            // resting body under constant gravity never is). Reuses the SAME particle point
+            // cloud already gathered for the LR fit: project every particle onto `n`; if
+            // grip's furthest-along-n particle has crossed past rest's closest-along-n
+            // particle, that's measured overlap. The correction is damped (proportional,
+            // not instantaneous) to avoid injecting energy or overshooting into a new
+            // oscillation.
             //
-            // REAL BUG FOUND AND FIXED 2026-07-12 (same day, found via direct instrumented
-            // re-test, twice): the textbook `beta * gap / dt` formula assumes a roughly
-            // FIXED timestep (its usual home, e.g. Box2D, always steps at a fixed 1/60s) --
-            // this engine's ADAPTIVE substep dt can legitimately shrink to ~1e-6 for a
-            // stiff material's CFL bound, and the raw formula blows up as dt->0 (confirmed:
-            // an uncapped version caused a genuine explosion, velocities into the tens,
-            // min_deformation_j collapsing toward 0.5). Clamping to `vel_limit` was the
-            // FIRST attempt and did NOT fix it, because `vel_limit` is ITSELF a CFL bound
-            // that scales as 1/dt by design (`grid_cell_size / sub_dt`) -- it grows in
-            // lockstep with the very blowup it was meant to cap, so the clamp did nothing
-            // real (confirmed: still exploded, just slightly less). The genuine fix removes
-            // `dt` from the correction entirely: a small, ABSOLUTE correction rate and speed
-            // cap, so the position fix stays bounded and gentle at ANY substep size,
-            // correcting large overlaps over several substeps instead of injecting one huge
-            // velocity kick that then feeds into stress/deformation as if it were real
-            // physical momentum (which is what actually caused the explosion -- a huge
-            // "correction" velocity distorts F just as much as a real one would).
+            // Correction rate/speed must be a dt-INDEPENDENT absolute value, not the
+            // textbook `beta * gap / dt` (which assumes a roughly fixed timestep) — this
+            // engine's adaptive substep dt can shrink to ~1e-6 for a stiff material's CFL
+            // bound, and the raw formula blows up as dt->0. Clamping to `vel_limit` does
+            // NOT fix this: `vel_limit` is itself a CFL bound that scales as 1/dt by design
+            // (`grid_cell_size / sub_dt`), so it grows in lockstep with the blowup it would
+            // need to cap. A small ABSOLUTE correction rate and speed cap keeps the position
+            // fix bounded and gentle at any substep size, correcting large overlaps over
+            // several substeps instead of injecting one huge velocity kick that distorts F
+            // as if it were real physical momentum.
             let mut max_grip_proj = f32::NEG_INFINITY;
             let mut min_rest_proj = f32::INFINITY;
             for &(pos, label) in &contact.points {
@@ -518,33 +310,14 @@ impl Grid {
                     const CORRECTION_RATE: f32 = 2.0;
                     let max_correction_speed = 0.5 * grid_cell_size;
                     let correction_speed = (CORRECTION_RATE * (-gap)).min(max_correction_speed);
-                    // REAL BUG FOUND AND FIXED 2026-07-14 (root cause confirmed via a
-                    // direct isolation experiment -- disabling this whole block entirely
-                    // let a real 16,000-step passive settle hold perfectly, proving THIS
-                    // term, not the contact normal, was Bug 2's actual source; see project
-                    // memory `locomotion_core_frictional_contact_2026-07-11`'s 2026-07-14
-                    // update for the full investigation). The old code unconditionally
-                    // SUBTRACTED `n * correction_speed` from `v_rel` every single substep
-                    // this branch fired, regardless of `v_rel`'s own current normal
-                    // component -- i.e. it always added a fixed-magnitude impulse, even
-                    // when the body was ALREADY separating faster than `correction_speed`
-                    // required (e.g. from the previous substep's own correction, along a
-                    // slightly different noisy `n`). Because the LR-fitted `n` genuinely
-                    // wobbles substep to substep (confirmed separately), each firing's
-                    // impulse points in a slightly different direction even for the same
-                    // physical overlap -- an unconditional additive term keeps stacking
-                    // these on top of each other with no cap on the TOTAL applied so far,
-                    // which is a real, unbounded numerical-heating mechanism over
-                    // thousands of substeps (a directional random walk in velocity space).
-                    // Fixed by converting the unconditional ADD into a velocity FLOOR:
-                    // only push `v_rel`'s normal component down to the target if it isn't
-                    // there already. This is the standard way position-bias corrections
-                    // are applied in real constraint solvers (Box2D/Bullet-style sequential
-                    // impulse: the bias only tops up a relative velocity that's below the
-                    // target, it never re-applies once the target is already met) --
-                    // self-limiting by construction, so repeated firings from a wobbling
-                    // normal can no longer stack unbounded energy once the real overlap is
-                    // genuinely being resolved, unlike the old unconditional subtraction.
+                    // Must be a velocity FLOOR, not an unconditional additive term: only push
+                    // `v_rel`'s normal component down to the target if it isn't there already.
+                    // The LR-fitted `n` wobbles substep to substep, so an unconditional add
+                    // would stack a slightly-different-direction impulse every firing with no
+                    // cap on the total applied — an unbounded numerical-heating mechanism (a
+                    // directional random walk in velocity space). A floor is self-limiting:
+                    // it never re-applies once the target is already met (same principle as
+                    // Box2D/Bullet-style sequential-impulse position bias).
                     let v_n = v_rel.dot(n);
                     let target_vn = -correction_speed;
                     if v_n > target_vn {

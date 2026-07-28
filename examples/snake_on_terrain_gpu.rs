@@ -34,31 +34,11 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 128;
-// REAL BUG FOUND AND FIXED 2026-07-15, TWO ROUNDS:
-//
-// Round 1: the original single `DT=0.1` fed the physics solver 0.1 simulated
-// seconds per rendered frame -- at a real ~60fps display frame (~0.0167s real
-// time), that's the world running at 6x real-time speed (already a known,
-// documented issue elsewhere in this codebase -- `gpu_grid_resolution_cost`'s own
-// `REAL_TIME_DT` comment, tests/gpu.rs). Once the terrain was recalibrated to real
-// sand stiffness, that 6x inflation became a real, measured performance problem
-// (54/128 substeps/frame).
-//
-// Round 2 (a REAL BUG INTRODUCED BY ROUND 1's OWN FIX, found live): the first fix
-// attempt split this into `PHYSICS_DT=1/60` (correct) and a separate `CPG_DT` left
-// at the OLD `0.1`, reasoned as "preserving basic_creature.rs's tuning." That
-// reasoning was backwards. The CPG steps ONCE PER PHYSICS FRAME by whatever DT it's
-// given, with no awareness of what a "frame" represents in real time. Before, one
-// frame = 0.1 real seconds and the CPG advanced 0.1 per frame -- matched, 1:1 real
-// time. After the split, one frame = 1/60 real seconds (6x shorter) but the CPG
-// STILL advanced by the old 0.1 every frame -- meaning the muscle now cycled 6x
-// FASTER in real wall-clock time than it was ever tuned for. Confirmed live: violent
-// "up/down perma movement" and a genuine, escalating instability (vmax climbing
-// from ~2 to >20 over a long run) -- real muscle energy being pumped in far faster
-// than the body/contact system was ever validated to absorb. There is only ONE real
-// DT: whatever a physics frame actually represents in real time. Both the physics
-// solver AND the CPG must step by that SAME value to preserve the ORIGINAL
-// real-time gait rate -- splitting them was the actual bug, not fixing anything.
+// Physics solver AND CPG must both step by the SAME DT -- DT is whatever a
+// physics frame represents in real time, and the CPG has no independent
+// awareness of that. Splitting them (solver at 1/60, CPG still stepping by an
+// old larger DT) cycles the muscle faster than it was ever tuned for and
+// causes real, escalating instability.
 const DT: f32 = 1.0 / 60.0;
 const MUSCLE_GROUPS: u32 = 8;
 const N_RINGS: usize = 2;
@@ -97,20 +77,10 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
-    // REAL BUG FOUND AND FIXED 2026-07-15: the previous version called
-    // `sim.step_frame()` exactly once per rendered frame, silently ASSUMING each
-    // render call corresponds to exactly `DT` (1/60s) of real elapsed time.
-    // Real frames don't take exactly that long (measured: 41-57fps, i.e. real frame
-    // times of 0.0175-0.024s, not the assumed 0.0167s) -- the mismatch between
-    // assumed and actual elapsed time is exactly what produced the reported jitter
-    // and inconsistent/slow-feeling motion (physics pace silently tracked whatever
-    // the render frame rate happened to be, not real wall-clock time). `emerge`
-    // already ships the correct tool for this exact problem
-    // (`runtime::FixedStepController`, an accumulator-based fixed-timestep stepper)
-    // -- this was simply never wired up in this example. `last_instant` measures
-    // REAL elapsed time each frame; `stepper` converts that into the correct
-    // (possibly 0, 1, or more) number of physics steps to run this frame,
-    // decoupling physics pacing from render frame-rate jitter entirely.
+    // Converts real measured elapsed time into the correct number of physics
+    // steps per frame -- calling `sim.step_frame()` once per render frame
+    // assumes each frame takes exactly `DT` of real time, which it doesn't
+    // (render frame rate varies), and produces jitter/inconsistent pacing.
     stepper: FixedStepController,
     last_instant: std::time::Instant,
 }
@@ -121,19 +91,12 @@ fn make_sim_data(
 ) -> (GpuSimulation, std::ops::Range<usize>, Vec<u32>) {
     let config = SimConfig {
         contact_friction: 0.5,
-        // REAL BUG FOUND AND FIXED 2026-07-15: the previous `min_dt: 0.01` override
-        // was harmless for the OLD, ~750x-softer terrain (E=133.3), whose own real
-        // CFL-safe timestep was comfortably above 0.01 so this floor never actually
-        // engaged. `cfl_bound` (src/spacetime/solver/step.rs) clamps the chosen
-        // substep to be AT LEAST `min_dt` regardless of what the material's own
-        // stability bound requires -- once the terrain was correctly recalibrated to
-        // E=1e5 (see the real-sand fix below), its true safe timestep dropped well
-        // below 0.01, and this override then forced an UNSAFE, too-large step every
-        // substep, causing a real explosion (confirmed live: user watched the scene
-        // blow up after the stiffness fix alone). Removed -- inherits
-        // `SimConfig::default()`'s own safe `1.0e-3`. `max_substeps_per_step` raised
-        // to give the adaptive scheme enough real headroom to actually reach a
-        // smaller substep within one frame's DT budget.
+        // `min_dt` is a hard floor on the substep, not a target -- `cfl_bound`
+        // clamps the chosen substep to be AT LEAST `min_dt` regardless of what
+        // the material's own stability bound requires. A `min_dt` override safe
+        // for a soft material can silently become unsafe (forces an oversized
+        // step) once stiffness increases. No override here -- inherits the safe
+        // `1.0e-3` default.
         max_substeps_per_step: 128,
         project_invalid_state: true,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
@@ -151,16 +114,11 @@ fn make_sim_data(
         },
     );
 
-    // REAL FIX 2026-07-15: the original (133.3, 0.333) was ~750x softer than this
-    // codebase's OWN validated real-sand reference
-    // (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, uses
-    // `from_young_modulus(1.0e5, 0.2)` -- E=1e5 is also sparkl/wgsparkl's own
-    // canonical demo value). A DP material this soft deforms continuously under any
-    // load instead of holding a rigid granular structure before yielding -- the
-    // direct, measured cause of "looks like fluid, not sand" (user observation,
-    // real GPU visual scene). `cohesionless` is a thin wrapper over
-    // `from_young_modulus` (same Lamé conversion), so this is a pure recalibration,
-    // not a different construction path.
+    // Terrain stiffness matches this engine's own validated real-sand reference
+    // (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, `from_young_modulus
+    // (1.0e5, 0.2)`, also sparkl/wgsparkl's own canonical demo value) -- a much
+    // softer value deforms continuously under load and behaves like fluid, not
+    // sand.
     let terrain_mat = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
     let registry = MaterialRegistry::with_default(Box::new(terrain_mat));
     let mut sim = GpuSimulation::with_device(device, queue, config, terrain_particles, registry);

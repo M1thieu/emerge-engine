@@ -37,13 +37,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-// REAL BUG FOUND AND FIXED (live feedback): sand box_size (56) was nearly as
-// wide as the domain itself (64), leaving almost no side margin. As water
-// spread on impact, both materials got squeezed against the boundary walls --
-// with nowhere else to go, material piles up and climbs the wall instead of
-// spreading normally (a real, well-known confined-domain MPM artifact, not a
-// coupling bug). Widened the domain relative to the material footprint so
-// there's real room to spread without ever reaching a wall.
+// Sand box_size must leave real side margin relative to the domain (GRID) --
+// too little margin and both materials get squeezed against the boundary
+// walls on impact, a known confined-domain MPM artifact, not a coupling bug.
 const GRID: usize = 96;
 const DT: f32 = 0.1;
 const MAT_SAND: u32 = 0;
@@ -54,17 +50,11 @@ const MAT_WATER: u32 = 1;
 // large enough that `tests/solver.rs`'s own A/B shows a real, substantial
 // relative-velocity relaxation within a handful of substeps.
 const MIXTURE_DRAG_COEFFICIENT: f32 = 30.0;
-// REAL, TESTED, NEGATIVE RESULT (2026-07-18, see `mixture_coupling_
-// long_settle_instability` memory): `project_mixture_incompressibility`'s
-// pressure projection was built to fix the long-settle instability below,
-// verified correct in isolation (unit test), but made THIS real scene worse,
-// not better -- destabilized almost immediately (frame ~18) instead of after
-// ~430 frames, even after fixing a real derivation bug found along the way.
-// Root cause not yet found (leading hypothesis: MPM's naturally noisy/sparse
-// grid mass field feeds a noisy central-difference divergence estimate back
-// into velocity every substep, amplifying quantization noise rather than
-// damping real drift). Kept disabled here until that's actually solved --
-// don't re-enable by raising this off 0 without new evidence it's fixed.
+// `project_mixture_incompressibility`'s pressure projection destabilizes this
+// scene faster than without it (root cause not found -- leading hypothesis:
+// MPM's noisy/sparse grid mass field feeds a noisy divergence estimate back
+// into velocity, amplifying rather than damping noise). Kept disabled --
+// don't re-enable without new evidence it's fixed.
 const MIXTURE_PRESSURE_ITERATIONS: u32 = 0;
 
 struct App {
@@ -93,6 +83,11 @@ fn make_sim(mixture_enabled: bool) -> Simulation {
         min_dt: 1.0e-3,
         max_substeps_per_step: 32,
         recompute_density_each_step: true,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
         mixture_drag_coefficient: if mixture_enabled {
             MIXTURE_DRAG_COEFFICIENT
@@ -109,18 +104,12 @@ fn make_sim(mixture_enabled: bool) -> Simulation {
 
     // Sand terrain -- the porous solid phase.
     //
-    // REAL PERF LEVER (measured, not guessed): raising `max_substeps_per_step`
-    // to 500 and re-running showed the solver genuinely converges on 32
-    // substeps/frame on its own -- it's the material's own elastic wave speed
-    // (c = sqrt((lambda+2mu)/density)) driving the CFL bound, not an
-    // artificial cap. Sand and water previously had IDENTICAL density (both
-    // default particle_mass=1.0) -- physically wrong: real saturated sand is
-    // ~1.8x denser than water (geotechnical bulk density ~1800-2000 kg/m3 vs
-    // water's 1000 kg/m3). Giving sand its real relative density lowers its
-    // wave speed by sqrt(1.8) at the SAME stiffness (fewer substeps needed)
-    // AND gives it more inertia to resist the drag-coupling flinging that
-    // forced the stiffness up in the first place -- a real, physically
-    // motivated fix, not just a stiffness knob turned down blind.
+    // Substep count is driven by the material's own elastic wave speed
+    // (c = sqrt((lambda+2mu)/density)) via the CFL bound, not an artificial
+    // cap. Real saturated sand is ~1.8x denser than water (geotechnical bulk
+    // density ~1800-2000 kg/m3 vs water's 1000 kg/m3) -- giving sand its real
+    // relative density lowers wave speed (fewer substeps) and gives it more
+    // inertia to resist drag-coupling flinging.
     let spawn_sand = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(56, 10),
@@ -140,34 +129,16 @@ fn make_sim(mixture_enabled: bool) -> Simulation {
         ..SpawnRegion::for_sim(&config)
     };
 
-    // REAL PERF FIX, two rounds: `cohesionless(1.0e5, 0.2)` (real SI-scale
-    // stiffness) forced far more substeps than `max_substeps_per_step` could
-    // satisfy -- confirmed live (fps stuck ~10-16 even in --release,
-    // `SimSnapshot::sim_time_dropped` nonzero every frame: the solver was
-    // silently running slower than its own configured dt, the same explicit-
-    // MPM stiffness/CFL limitation `fire_spread.rs`'s own doc documents).
-    // First fix (`basic_sand.rs`'s own raw Lame values, 2000/3000) was TOO
-    // soft -- confirmed live: sand flung apart into a symmetric explosion
-    // under the water impact + drag coupling instead of just being locally
-    // displaced. Settled on a real middle ground (10_000/15_000): stable,
-    // contained impact deformation (verified live), substeps=32 with zero
-    // `sim_time_dropped`, not literal-Pa accuracy either way.
-    //
-    // PERF ROUND 3 (measured, not guessed): raised max_substeps_per_step to
-    // 500 and re-ran -- solver genuinely converged on 32 substeps/frame on its
-    // own, confirming it's the real material-CFL bound (elastic wave speed),
-    // not an artificial cap. Real root cause found: sand and water had
-    // IDENTICAL density (both default particle_mass -- see spawn_sand's own
-    // `mass_override: Some(1.8)`, real saturated-sand/water bulk-density
-    // ratio). Adding that density alone dropped substeps 32->24, fps ~12->~15,
-    // zero dropped time -- a genuine, physically-motivated win kept below.
-    // Tried halving stiffness further (5_000/7_500) ON TOP of the density fix
-    // to push for more: looked great at first (substeps=17, fps~20) but
-    // destabilized after ~300 frames of settling (cfl jumped 10x, substeps
-    // climbed back to 32, `sim_time_dropped` went nonzero) -- a real, if
-    // delayed, instability, not a clean permanent fix. Reverted stiffness to
-    // 10_000/15_000; the density fix alone is the real, stable, permanent gain
-    // (verified over a longer run below).
+    // Real SI-scale stiffness (`cohesionless(1.0e5, 0.2)`) forces far more
+    // substeps than practical -- the same explicit-MPM stiffness/CFL
+    // limitation `fire_spread.rs`'s own doc documents. Too-soft stiffness
+    // (e.g. 2000/3000) instead flings sand apart into a symmetric explosion
+    // under water impact + drag coupling rather than being locally displaced.
+    // 10_000/15_000 is a stable middle ground -- not literal-Pa accuracy
+    // either way. Lower stiffness combined with sand's real density
+    // (mass_override above) can look stable at first but destabilize after a
+    // few hundred frames of settling; the density fix alone (not further
+    // softening) is the real, stable, permanent gain.
     let sand = WithMixturePhase::new(
         DruckerPragerMaterial::new(10_000.0, 15_000.0),
         MixturePhase::Solid,
