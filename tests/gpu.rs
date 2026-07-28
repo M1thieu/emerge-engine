@@ -253,12 +253,10 @@ mod gpu_tests {
         );
     }
 
-    /// GPU port of `linear_drag_field_matches_analytical_relaxation` (tests/solver.rs) --
-    /// same real, checkable prediction (Stokes drag / Rayleigh friction toward a target
-    /// flow velocity, see `LinearDragField`'s CPU doc for the physics): with no gravity and
-    /// a block starting at rest, average velocity after N frames should match the
-    /// analytical `v(t) = target*(1-exp(-k*t))`. Proves the FIRST GPU force field to read
-    /// particle velocity (not just position) actually works, not just compiles.
+    /// GPU port of `linear_drag_field_matches_analytical_relaxation` (tests/solver.rs):
+    /// with no gravity and a block starting at rest, average velocity after N frames
+    /// should match the analytical `v(t) = target*(1-exp(-k*t))` (Stokes drag / Rayleigh
+    /// friction, see `LinearDragField`'s CPU doc).
     #[test]
     fn gpu_linear_drag_field_matches_analytical_relaxation() {
         if !gpu_available() {
@@ -431,7 +429,9 @@ mod gpu_tests {
         solver.mark_particles_dirty();
         // alpha=0 isolates cooling (uniform field -> zero Laplacian regardless of alpha
         // anyway, but 0 makes the isolation explicit/intentional, not incidental).
-        solver.attach_thermal_gpu(0.0, 1.0, 1.0, ambient, cooling_rate);
+        // density=1.0 is genuinely irrelevant here (conductivity=0 zeroes alpha
+        // regardless), kept only to satisfy the real `density > 0.0` requirement.
+        solver.attach_thermal_gpu(0.0, 1.0, 1.0, 1.0, ambient, cooling_rate);
 
         const STEPS: usize = 10;
         for _ in 0..STEPS {
@@ -500,7 +500,9 @@ mod gpu_tests {
         }
         solver.mark_particles_dirty();
         // High diffusivity, zero cooling -- isolates diffusion specifically.
-        solver.attach_thermal_gpu(0.6, 4182.0, 0.1, 0.0, 0.0);
+        // density=1000.0 (real water) matches CPU's own thermal_diffusion_spreads_heat
+        // (tests/solver.rs) exactly, for a real apples-to-apples comparison.
+        solver.attach_thermal_gpu(0.6, 4182.0, 1000.0, 0.1, 0.0, 0.0);
 
         let mean_hot_before = 100.0; // by construction, before any step
         let mean_cold_before = 0.0;
@@ -685,22 +687,16 @@ mod gpu_tests {
         }
     }
 
-    /// Regression for LP issue erematorg/LP#161: `step_frame`'s upload path used to
-    /// spatially resort `self.particles` by grid cell before every dirty upload,
-    /// silently invalidating any previously-returned `Range<usize>` particle
-    /// identity -- `spawn_region`'s own doc promises this range is stable ("LP
-    /// uses this as creature_id -> particle_range"). That predates and duplicates
-    /// the GPU's own `particle_sort` pipeline (a separate index buffer that never
-    /// touches particle storage order), so the CPU-side resort was removed.
+    /// Regression for LP issue erematorg/LP#161: `spawn_region`'s doc promises its
+    /// returned `Range<usize>` is stable ("LP uses this as creature_id -> particle_range"),
+    /// so `step_frame`'s upload path must never spatially resort `self.particles` by grid
+    /// cell (that's the GPU's own `particle_sort` pipeline's job, via a separate index
+    /// buffer that never touches particle storage order).
     ///
-    /// Proves the fix directly rather than trusting the removal was safe: tags a
-    /// "creature" particle range with a distinct spawn-time-only marker per
-    /// particle (`muscle_group_id = local index`), then repeatedly calls
-    /// `mark_particles_dirty()` before `step_frame()` every frame -- the exact
-    /// real-world trigger (LP calls this every frame via `drive_muscles`/
-    /// `update_damage`). After many such frames, the range must still map
-    /// index-for-index to the same tags; any silent reorder shows up as a
-    /// duplicate or out-of-place tag rather than a vague "something looked wrong."
+    /// Tags a "creature" range with a distinct spawn-time-only marker per particle
+    /// (`muscle_group_id = local index`), then repeatedly calls `mark_particles_dirty()`
+    /// before `step_frame()` every frame (LP's real trigger via `drive_muscles`/
+    /// `update_damage`). The range must still map index-for-index to the same tags.
     #[test]
     fn gpu_particle_identity_stable_across_repeated_dirty_uploads() {
         if !gpu_available() {
@@ -820,31 +816,23 @@ mod gpu_tests {
     /// under sustained load; this only checks it stays bounded by `q_max` and finite, not
     /// that it stops moving.
     ///
-    /// RE-`#[ignore]`d 2026-07-08 after a full investigation cycle, with the honest
-    /// final picture (see issue #10 for the complete evidence trail):
+    /// `#[ignore]`d: see issue #10 for the full evidence trail.
     ///
-    /// - The DETERMINISTIC emerge-side crash path IS fixed: under sustained WARP
-    ///   load, wgpu genuinely loses the device (~step 2500-3000, reproduced locally
-    ///   via the forced-WARP repro at the end of this module), and the old code
-    ///   panicked from inside wgpu's own `Queue::submit` error path — unwinding
-    ///   there is what produced `STATUS_STACK_BUFFER_OVERRUN`. Fixed by the
-    ///   never-panic uncaptured-error handler (see
-    ///   `GpuSimulation::enable_device_lost_detection`'s doc); covered by unit
-    ///   tests plus the `#[ignore]`d 10-minute local WARP repro, which survived all
-    ///   7500 steps through a real mid-run device loss.
+    /// - The deterministic emerge-side crash path IS fixed: under sustained WARP load,
+    ///   wgpu genuinely loses the device (~step 2500-3000, reproduced locally via the
+    ///   forced-WARP repro at the end of this module), and the old code panicked from
+    ///   inside wgpu's own `Queue::submit` error path. Fixed by the never-panic
+    ///   uncaptured-error handler (see `GpuSimulation::enable_device_lost_detection`'s
+    ///   doc); covered by unit tests plus the `#[ignore]`d 10-minute local WARP repro,
+    ///   which survives all 7500 steps through a real mid-run device loss.
     ///
-    /// - What REMAINS is wgpu/WARP-internal and nondeterministic: on identical
-    ///   code, this test passed one windows-latest run (28942784771, 14m48s) and
-    ///   then died on the next (28947240097, abnormal exit code 2173 — not a Rust
-    ///   panic, not the old stack-overrun) after the only change was moving an
-    ///   ignored test within this file. Post-device-loss teardown inside the
-    ///   driver stack can still terminate the process through paths application
-    ///   code cannot intercept. One green run was NOT proof; treating it as such
-    ///   was the earlier mistake this doc corrects.
+    /// - What remains is wgpu/WARP-internal and nondeterministic: post-device-loss
+    ///   teardown inside the driver stack can still terminate the process through paths
+    ///   application code cannot intercept, even on identical code across CI runs.
     ///
-    /// Run manually on real hardware (passes in ~25s on a real GPU) or via the
-    /// forced-WARP repro when investigating; not CI-gating until the residual
-    /// WARP-internal instability is resolved (likely upstream).
+    /// Run manually on real hardware (~25s) or via the forced-WARP repro when
+    /// investigating; not CI-gating until the residual WARP-internal instability is
+    /// resolved (likely upstream).
     #[test]
     #[ignore = "windows-latest WARP: post-device-loss teardown inside wgpu/WARP can still \
                 kill the process nondeterministically (passed one CI run, died exit 2173 \
@@ -902,42 +890,22 @@ mod gpu_tests {
 
     /// GPU-side mirror of `tests/accuracy.rs::sand_column_collapse_runout_matches_lajeunesse_scaling`.
     ///
-    /// LP runs exclusively on `GpuSimulation`, never the CPU `Simulation`. Found
-    /// (2026-07-07) that the CPU-calibrated `cohesion=5.0` fix does NOT transfer
-    /// to GPU: traced both paths step-by-step from an identical initial state
-    /// (same particle count/positions, same substep count at every checkpoint)
-    /// and found GPU's collapse is measurably LESS energetic than CPU's from
-    /// around step 25 onward (peak speed ~0.21 vs CPU's ~0.60) -- consistent
-    /// with GPU's atomic-scatter P2G being a genuinely different (not just
-    /// differently-ordered) floating-point accumulation than CPU's sequential
-    /// P2G, compounding over ~1500 steps in this specific system (already known,
-    /// from the CPU-only cohesion calibration history, to be highly sensitive/
-    /// threshold-like). Net effect: GPU never had the CPU's ~4.7x-overspread
-    /// problem in the first place, so it needs NO cohesion compensation --
-    /// swept 0-10 directly on GPU, cohesion=0.0 (true Klar 2016 cohesionless
-    /// default) already gives ratio=0.94x, and any added cohesion only makes it
-    /// worse (monotonically further from the 1.0x ideal). This is not a claim
-    /// that `gpu_cpu_parity`'s looser aggregate tolerance is wrong -- it's the
-    /// same known atomic-scatter-ordering effect that test already documents,
-    /// just shown here to matter for a highly sensitive granular scenario.
+    /// The CPU-calibrated `cohesion=5.0` fix does NOT transfer to GPU: GPU's
+    /// atomic-scatter P2G is a genuinely different floating-point accumulation than
+    /// CPU's sequential P2G, and GPU's collapse is measurably less energetic here -- it
+    /// never had CPU's overspread problem, so cohesion=0.0 (true Klar 2016 cohesionless
+    /// default) already gives ratio=0.94x; adding cohesion only pushes it further from
+    /// 1.0x. Same known atomic-scatter-ordering effect `gpu_cpu_parity`'s looser
+    /// tolerance already documents, just shown here to matter for a sensitive scenario.
     ///
-    /// One structural difference from the CPU test, unavoidable: the GPU solver
-    /// has no pluggable `BoundaryCondition` (unlike CPU's `FrictionBoundary`) --
-    /// it only has a fixed slip boundary via `config.boundary_thickness`. Ruled
-    /// out as the explanation here (re-ran the CPU test with a frictionless
-    /// `SlipBoundary` instead of `FrictionBoundary`: identical 1.50x ratio --
-    /// the column never reaches the domain wall in this test either way).
-    /// `#[ignore]`d for CI, permanently, with two rounds of real evidence:
-    /// 1. While #14/#16 were separate PRs, this test's sustained WARP run hit the
-    ///    readback-Err leak (fixed in #16, "Buffer is already mapped", run
-    ///    28945815883) -- a merge-order dependency, resolved by merging both.
-    /// 2. Re-enabled after both merged to let CI give the real verdict (run
-    ///    28954055245): windows-latest DIED after 56 minutes -- not a test
-    ///    failure, the hosted runner itself lost contact ("starves it for
-    ///    CPU/Memory" per GitHub's own annotation). A BIG_GRID=192 sand collapse
-    ///    on the software WARP rasterizer starves the whole VM. Final verdict:
-    ///    this benchmark is real-hardware-only (passes in normal time on a real
-    ///    GPU and on ubuntu's lavapipe); do NOT re-enable on windows CI.
+    /// GPU has no pluggable `BoundaryCondition` (unlike CPU's `FrictionBoundary`), only
+    /// a fixed slip boundary via `config.boundary_thickness` -- ruled out as the
+    /// explanation (CPU with a frictionless `SlipBoundary` gives the identical 1.50x
+    /// ratio; the column never reaches the domain wall either way).
+    ///
+    /// `#[ignore]`d for CI: real-hardware-only. The software WARP rasterizer at this
+    /// grid size starves the windows-latest hosted runner to death rather than failing
+    /// cleanly. Passes in normal time on a real GPU and on ubuntu's lavapipe.
     #[test]
     #[ignore = "real-hardware-only benchmark: starves windows-latest's WARP runner to \
                 death (56min then runner lost, run 28954055245) -- run manually on a \
@@ -964,16 +932,8 @@ mod gpu_tests {
             ..SpawnRegion::for_sim(&config)
         };
         let particles = build_particles(&config, spawn);
-        // cohesion left at 0.0 (default, true Klar 2016 cohesionless sand) --
-        // NOT ported from CPU's calibrated cohesion=5.0. Swept 0-10 on GPU
-        // directly: cohesion=0.0 already gives ratio=0.94x (near-perfect match
-        // to the real Lajeunesse prediction); adding cohesion only pushes it
-        // further from 1.0 (0.77x at 1.0, 0.58x at 5.0, 0.62x at 4.0 -- monotonically
-        // worse). The CPU fix compensated for a CPU-specific numerical artifact
-        // (its collapse is measurably more energetic than GPU's at every
-        // checkpoint, traced step-by-step) that GPU's atomic-scatter dynamics
-        // simply doesn't produce -- porting the CPU constant would make GPU's
-        // already-good behavior worse, not better.
+        // cohesion left at 0.0 (default, true Klar 2016 cohesionless sand), NOT ported
+        // from CPU's calibrated cohesion=5.0 -- see doc comment above for why.
         let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
         let registry = MaterialRegistry::with_default(Box::new(sand));
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
@@ -1009,19 +969,12 @@ mod gpu_tests {
     }
 
     /// GPU-side mirror of `tests/accuracy.rs::sand_angle_of_repose_is_physical`
-    /// (which is `#[ignore]`d on CPU: observed ~12° vs expected 30-35°).
+    /// (which is `#[ignore]`d on CPU: observed ~12 deg vs expected 30-35 deg). Checks
+    /// whether GPU's calmer collapse dynamics (see
+    /// `gpu_sand_column_collapse_runout_matches_lajeunesse_scaling`) also close this gap.
     ///
-    /// Given `gpu_sand_column_collapse_runout_matches_lajeunesse_scaling` found
-    /// GPU's collapse dynamics are measurably calmer than CPU's for this exact
-    /// material/scenario (traced 2026-07-07), checking whether the SAME
-    /// CPU-only repose-angle gap also happens to not apply on GPU -- not
-    /// assuming it, measuring it, same discipline as every other benchmark in
-    /// this file.
-    /// (`#[ignore]`d for CI alongside
-    /// `gpu_sand_column_collapse_runout_matches_lajeunesse_scaling` above -- same
-    /// final verdict, see that test's doc for the full two-round evidence trail:
-    /// sustained WARP runs starve the windows-latest runner to death. Real-
-    /// hardware-only benchmark; run manually.)
+    /// `#[ignore]`d for CI alongside that test -- same real-hardware-only verdict, see
+    /// its doc for the evidence trail.
     #[test]
     #[ignore = "real-hardware-only benchmark: starves windows-latest's WARP runner to \
                 death alongside its sibling above (run 28954055245) -- run manually on \
@@ -1839,13 +1792,12 @@ mod gpu_tests {
         }
     }
 
-    /// Same measurement as `gpu_particle_count_lp_budget`, but sized to LP 0.1.0's ACTUAL
-    /// target scene (see project_mvp_definition + project_lp_world_design memory, decided
-    /// 2026-06-25): human-scale, single concurrent camera — a 320×180-cell viewport, not the
-    /// 512-grid/500k-particle figure that was inherited from a later multi-elephant-camera
-    /// planning assumption. grid_res=320 here (not 512) because grid_clear/grid_update cost
-    /// scales with grid_res² independent of particle count — using an oversized grid would
-    /// overstate the real per-step cost for this scene.
+    /// Same measurement as `gpu_particle_count_lp_budget`, but sized to LP 0.1.0's actual
+    /// target scene (see project_mvp_definition + project_lp_world_design memory):
+    /// human-scale, single concurrent camera, a 320x180-cell viewport, not a larger
+    /// multi-camera figure. grid_res=320 here (not larger) because grid_clear/grid_update
+    /// cost scales with grid_res^2 independent of particle count -- an oversized grid
+    /// would overstate the real per-step cost for this scene.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle GPU budget benchmark, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_particle_count_lp_budget_0_1_0_scene() {
@@ -2128,15 +2080,10 @@ mod gpu_tests {
         }
     }
 
-    /// Direct test of the batching-artifact hypothesis: `gpu_cfl_scan_baseline_across_grid`
-    /// (and every other per_step benchmark this session) submits 20 `step_frame()` calls
-    /// WITHOUT syncing, then calls `sync_particles_blocking()` ONCE and divides by 20 — meaning
-    /// it measures "however much GPU backlog accumulated over 20 unsynced submissions / 20",
-    /// not real per-frame cost. `step_frame()` itself is already proven fully accounted for
-    /// (cfl_scan+encode+submit+readback = step_frame_TOTAL, zero unaccounted — see
-    /// gpu_profile_dpsand_short_vs_long_settled). This measures the SAME scenarios but syncs
-    /// after EVERY frame instead of batching, to see the true per-frame cost without batching
-    /// noise.
+    /// Tests the batching-artifact hypothesis: `gpu_cfl_scan_baseline_across_grid` (and the
+    /// other per_step benchmarks) submit 20 `step_frame()` calls without syncing, then sync
+    /// once and divide by 20 -- measuring accumulated GPU backlog / 20, not real per-frame
+    /// cost. This measures the same scenarios but syncs after every frame instead.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- measured ~30min under windows-latest's software D3D12 WARP backend (2026-07-01 CI run); run manually when investigating perf, not routine CI"]
     fn gpu_cfl_scan_true_per_frame_cost() {
@@ -2223,10 +2170,9 @@ mod gpu_tests {
         }
     }
 
-    /// Real GPU per-pass timing at the actual 0.1.0 target (~50k particles), answering "where
-    /// does the time actually go" with measurement instead of more wall-clock guessing — the
-    /// open question from earlier this session (aggregate substep-count math didn't fully
-    /// explain the wall-clock delta between 1-substep and 3-substep runs).
+    /// GPU per-pass timing at the actual 0.1.0 target (~50k particles): aggregate
+    /// substep-count math didn't fully explain the wall-clock delta between 1-substep
+    /// and 3-substep runs, so this measures where the time actually goes per pass.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle profiling pass, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_profile_passes_at_50k() {
@@ -2301,19 +2247,14 @@ mod gpu_tests {
         );
     }
 
-    /// Real fix, 2026-07-15: `resolve_contact`/`gather_contact_points` used to run
-    /// UNCONDITIONALLY every substep regardless of whether any particle used multi-field
-    /// contact -- `g2p.wgsl` unconditionally read their output via `select()`, so they
-    /// couldn't simply be skipped without a matching read-side fallback. Fixed by adding
-    /// a `contact_active` flag (mirrors `force_fields_needed`'s own skip-dispatch gate)
-    /// that (a) skips both passes' dispatch entirely and (b) gates `g2p.wgsl`'s read back
-    /// to the plain grid velocity in that case -- exactly mirroring CPU's
-    /// `Grid::has_contact_activity()` gate in `transfer.rs`. Verifies BOTH halves at once:
-    /// the passes are genuinely skipped (measured via the same per-pass GPU profiler used
-    /// throughout this project's perf history, not inferred) AND the resulting physics is
-    /// still correct (free-fall velocity matches the analytical gravity accumulation) for
-    /// a scene that never sets `contact_group` -- proving the new fallback path is a real
-    /// substitute, not just "nothing crashed."
+    /// `resolve_contact`/`gather_contact_points` must be gated by a `contact_active` flag
+    /// (mirrors `force_fields_needed`'s skip-dispatch gate and CPU's
+    /// `Grid::has_contact_activity()` in `transfer.rs`), since `g2p.wgsl` unconditionally
+    /// reads their output via `select()` and needs a matching read-side fallback to the
+    /// plain grid velocity when skipped. Verifies both halves: the passes are genuinely
+    /// skipped (measured via the per-pass GPU profiler) AND physics stays correct
+    /// (free-fall velocity matches analytical gravity) for a scene that never sets
+    /// `contact_group`.
     #[test]
     fn gpu_contact_passes_skip_when_unused_and_physics_stays_correct() {
         if !gpu_available() {
@@ -2415,8 +2356,13 @@ mod gpu_tests {
             },
         );
         let n = particles.len();
+        // rest_density=4.0, not 1.0 (real bug fixed 2026-07-26): this spawn's spacing=0.5
+        // with the default particle_mass=1.0 produces a real density of 4.0 in the bulk --
+        // the mismatched 1.0 made the EOS react as if massively over-compressed from the
+        // first substep, profiling an explosive worst case instead of the realistic
+        // "settled fluid" load this test's own comment below intends.
         let registry = MaterialRegistry::with_default(Box::new(
-            emerge::NewtonianFluidMaterial::low_viscosity(1.0, 50.0),
+            emerge::NewtonianFluidMaterial::low_viscosity(4.0, 50.0),
         ));
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
 
@@ -2466,13 +2412,12 @@ mod gpu_tests {
         );
     }
 
-    /// Direct test of the "is the GPU itself genuinely heavier after long settling" hypothesis
-    /// for the DP-sand long-settled regression (see project_mvp_definition memory): real GPU
-    /// timestamp profiling (not CPU wall-clock) for DP-sand at both short and long-settled
-    /// durations. If GPU pass totals differ substantially, the regression isn't a CPU
-    /// allocation-pattern bug at all — it's a real, pre-existing GPU workload difference
-    /// (e.g. more active blocks from a spread-out settled pile vs a compact falling one) that
-    /// was previously hidden under the larger CPU-side cost, not introduced by removing it.
+    /// Tests whether the DP-sand long-settled regression (see project_mvp_definition
+    /// memory) is a GPU-workload difference rather than a CPU allocation-pattern bug: GPU
+    /// timestamp profiling (not wall-clock) for DP-sand at short vs. long-settled
+    /// durations. If GPU pass totals differ substantially, it's a pre-existing workload
+    /// difference (e.g. more active blocks from a spread-out settled pile) that was
+    /// hidden under CPU-side cost, not introduced by removing it.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- measured ~16min under windows-latest's software D3D12 WARP backend (2026-07-01 CI run); run manually when investigating perf, not routine CI"]
     fn gpu_profile_dpsand_short_vs_long_settled() {
@@ -2595,19 +2540,17 @@ mod gpu_tests {
             );
             let n = particles.len();
             // NeoHookean (pure elastic, no dissipation) never reliably reaches the sleep
-            // threshold — it can jiggle indefinitely with nothing to bleed energy off. DP sand
-            // has real plastic dissipation and settles for real (proven extensively earlier
-            // this session), so it's the honest choice for a "does sleep/wake actually engage"
-            // test.
+            // threshold -- it can jiggle indefinitely with nothing to bleed energy off. DP sand
+            // has real plastic dissipation and settles for real, so it's the honest choice for a
+            // "does sleep/wake actually engage" test.
             let registry = MaterialRegistry::with_default(Box::new(DruckerPragerMaterial::new(
                 2000.0, 3000.0,
             )));
             let mut solver = block_on(GpuSimulation::new(config, particles, registry));
 
-            // Settle for real simulated time, not a blind frame count: at dt=1/60 (6x smaller
-            // than the dt=0.1 used in this session's earlier sand settling tests), reaching the
-            // same ~70s of simulated settle time those tests needed could take up to ~4200
-            // frames — but stop early once actually settled instead of always paying that cost.
+            // Settle for real simulated time, not a blind frame count: at dt=1/60 reaching
+            // ~70s of simulated settle time could take up to ~4200 frames, but stop early
+            // once actually settled instead of always paying that cost.
             for frame in 0..4200u32 {
                 solver.step_frame();
                 if frame % 100 == 0 && frame > 0 {
@@ -2922,12 +2865,9 @@ mod gpu_tests {
         assert_eq!(config.dt_seconds, 0.05);
     }
 
-    /// Forces the D3D12 WARP (software) adapter -- the same backend windows-latest
-    /// CI uses (real hardware GPUs don't hit this, confirmed: the equivalent scene
-    /// ran clean on a real AMD GPU) -- instead of whatever real GPU this machine
-    /// has. Lets any contributor on any Windows dev machine reproduce issue #10's
-    /// class of sustained-load device-loss bug locally, without needing a CI
-    /// round-trip (~10-15min each) to iterate.
+    /// Forces the D3D12 WARP (software) adapter -- the same backend windows-latest CI
+    /// uses (real hardware GPUs don't hit this). Lets any contributor reproduce issue
+    /// #10's sustained-load device-loss bug locally without a CI round-trip.
     fn warp_available() -> bool {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::DX12,
@@ -2941,19 +2881,13 @@ mod gpu_tests {
         .is_ok()
     }
 
-    /// The real, complete local reproduction of issue #10's actual failure mode
-    /// (found 2026-07-08 by forcing WARP locally rather than guessing from CI logs
-    /// alone): running this exact scene for 7500 steps against forced WARP
-    /// triggers a genuine sustained-load device loss around step ~2500-3000 (a
-    /// real `Buffer ... has been destroyed` uncaptured error, then shortly after
-    /// the official "Device is lost" callback) -- not a hypothetical, an actually
-    /// observed real event on this exact backend. This directly proves
-    /// `enable_device_lost_detection`'s uncaptured-error handler (see its doc for
-    /// why it must never panic, found via this exact test crashing with
-    /// `STATUS_STACK_BUFFER_OVERRUN` when an earlier version of that handler still
-    /// panicked for "unrecognized" errors) carries the simulation through the loss
-    /// gracefully: all 7500 steps complete, no crash, no panic, `step_frame`
-    /// becomes a real no-op once the loss is detected.
+    /// Local reproduction of issue #10: running this scene for 7500 steps against
+    /// forced WARP triggers a genuine sustained-load device loss around step
+    /// ~2500-3000 (a `Buffer ... has been destroyed` uncaptured error, then the "Device
+    /// is lost" callback). Proves `enable_device_lost_detection`'s uncaptured-error
+    /// handler (must never panic, see its doc) carries the simulation through the loss
+    /// gracefully: all 7500 steps complete, no crash, no panic, `step_frame` becomes a
+    /// no-op once the loss is detected.
     ///
     /// `#[ignore]`d: takes ~10 minutes even locally (genuine sustained load is the
     /// point) and needs a Windows machine with D3D12 available -- run manually
@@ -3023,14 +2957,13 @@ mod gpu_tests {
         eprintln!("completed all 7500 steps without a crash or panic");
     }
 
-    /// Multi-field contact (GPU port, first slice, 2026-07-14) — verifies the new
-    /// grip-mass P2G scatter and contact point-cloud gather (`p2g.wgsl`'s extended
-    /// `p2g_main` + new `gather_contact_points_main`) against known-correct properties,
-    /// the same standard `gpu_grid_clear_zeroes_cells_far_from_particles` already uses
-    /// for the ordinary grid (not a literal CPU-buffer diff, since CPU's own
-    /// `ContactCell` map has no public per-node reader to diff against — this checks
-    /// real physical/structural correctness instead: mass conservation, spatial
-    /// locality, and correct point labeling).
+    /// Multi-field contact (GPU port): the grip-mass P2G scatter and contact
+    /// point-cloud gather (`p2g.wgsl`'s extended `p2g_main` + new
+    /// `gather_contact_points_main`), checked against known-correct properties, the same
+    /// standard `gpu_grid_clear_zeroes_cells_far_from_particles` uses for the ordinary
+    /// grid (not a literal CPU-buffer diff -- CPU's own `ContactCell` map has no public
+    /// per-node reader -- checking physical/structural correctness instead: mass
+    /// conservation, spatial locality, correct point labeling).
     #[test]
     fn gpu_contact_grip_scatter_and_point_cloud_are_correct() {
         if !gpu_available() {
@@ -3148,15 +3081,14 @@ mod gpu_tests {
         );
     }
 
-    /// Multi-field contact (GPU port, second slice, 2026-07-15) — verifies the Newton-
-    /// Raphson LR normal fit's WGSL port (`resolve_contact.wgsl`'s `fit_contact_normal_lr`)
-    /// against the EXACT scenario CPU's own `fit_contact_normal_lr_tests::
-    /// clean_horizontal_interface_36v36` (src/spacetime/grid/mod.rs) already validates: a
-    /// clean, flat, well-separated 6x6-vs-6x6 grip/rest interface, expecting a
-    /// near-vertical fitted normal (`|n.x| < 0.1`). Real particles (not hand-written
-    /// point-cloud bytes) at the SAME coordinates, run through the already-verified
-    /// P2G scatter + gather_contact_points pipeline, then the isolated debug fit pass —
-    /// a genuine, known-answer cross-check of the WGSL port against its CPU reference.
+    /// Multi-field contact (GPU port): the Newton-Raphson LR normal fit's WGSL port
+    /// (`resolve_contact.wgsl`'s `fit_contact_normal_lr`), checked against the exact
+    /// scenario CPU's `fit_contact_normal_lr_tests::clean_horizontal_interface_36v36`
+    /// (src/spacetime/grid/mod.rs) validates: a clean, flat, well-separated 6x6-vs-6x6
+    /// grip/rest interface, expecting a near-vertical fitted normal (`|n.x| < 0.1`).
+    /// Real particles at the same coordinates run through the P2G scatter +
+    /// gather_contact_points pipeline, then the isolated debug fit pass -- a
+    /// known-answer cross-check of the WGSL port against its CPU reference.
     #[test]
     fn gpu_debug_fit_normal_matches_cpu_clean_horizontal_interface() {
         if !gpu_available() {
@@ -3221,14 +3153,10 @@ mod gpu_tests {
         );
     }
 
-    /// Multi-field contact (GPU port, third slice, 2026-07-15) — sanity check for
-    /// `resolve_contact_main` (the real Coulomb + velocity-floor Baumgarte correction
-    /// pass), run before G2P is wired to actually consume its output. Since particles
-    /// don't yet feel this correction (that's the next piece), the meaningful claim
-    /// here is narrower but real: over a genuine multi-step resting scenario, every
-    /// resolved velocity the pass produces stays finite and bounded -- no NaN/Inf, no
-    /// runaway magnitude -- proving the WGSL port doesn't blow up on real contact-active
-    /// data before it's trusted to drive G2P.
+    /// Multi-field contact (GPU port): sanity check for `resolve_contact_main` (the
+    /// Coulomb + velocity-floor Baumgarte correction pass). Over a multi-step resting
+    /// scenario, every resolved velocity the pass produces must stay finite and bounded
+    /// -- no NaN/Inf, no runaway magnitude -- before it's trusted to drive G2P.
     #[test]
     fn gpu_resolve_contact_produces_finite_bounded_velocities() {
         if !gpu_available() {
@@ -3390,34 +3318,20 @@ mod gpu_tests {
         );
     }
 
-    /// GPU counterpart to CPU's own `directional_contact_grip_is_real_and_direction_aware`
-    /// (`tests/physics_correctness.rs`) — proves `GpuSimulation::set_grip_direction`/
-    /// `set_grip_friction` (added 2026-07-16) reach `resolve_contact.wgsl`'s `grip_params`
-    /// uniform at all (they do -- the API is real, correctly wired, verified via direct
-    /// inspection of the generated code path). What this test can NOT yet assert as a hard
-    /// pass/fail: CPU's equivalent test shows clean, strong separation (measured:
-    /// easy=2.45, resist=0.50, ratio 0.20) every run. GPU shows the SAME correct SIGN
-    /// (easy consistently keeps more speed than resist) but the ratio is genuinely
-    /// UNSTABLE run to run -- measured across 3 consecutive runs: 0.73, 0.51, 0.83. This
-    /// is not "weaker but consistent," it is real run-to-run variance, so a fixed
-    /// numeric threshold would either be too loose to test anything or occasionally fail
-    /// for reasons unrelated to a real regression -- tuning one to pass would hide the
-    /// real problem, not fix it.
+    /// GPU counterpart to CPU's `directional_contact_grip_is_real_and_direction_aware`
+    /// (`tests/physics_correctness.rs`): `GpuSimulation::set_grip_direction`/
+    /// `set_grip_friction` reach `resolve_contact.wgsl`'s `grip_params` uniform
+    /// correctly (verified by direct inspection). What this can't yet assert as
+    /// pass/fail: CPU shows clean, strong separation (easy=2.45, resist=0.50, ratio
+    /// 0.20) every run; GPU shows the same correct sign but a run-to-run unstable ratio
+    /// (0.73, 0.51, 0.83 across 3 runs) -- a fixed threshold would either test nothing
+    /// or fail for unrelated reasons.
     ///
-    /// Likely root cause (plausible, NOT confirmed -- a first diagnostic attempt using
-    /// `debug_fit_contact_normal_blocking` turned out to test the wrong code path,
-    /// `debug_fit_normal_main` skips the distance-filtering `gather_local_points` does
-    /// for the real per-substep pass, so it doesn't reliably represent what
-    /// `resolve_cell` actually sees): the SAME statistically-fragile LR normal fit
-    /// already documented at length in `Grid::resolve_contact`'s own doc comment
-    /// (`src/spacetime/grid/mod.rs`, "the real failure is statistical... a physically
-    /// meaningless perturbation... can swing the converged plane by tens of degrees") --
-    /// three real fix attempts already tried there and falsified by direct measurement.
-    /// A skewed/unstable normal changes the tangent, which changes the easy/resist
-    /// alignment classification per node -- exactly the kind of thing this fragility
-    /// would produce. Properly confirming this needs real per-node instrumentation
-    /// reading the actual `resolved_grip_v`/`resolved_rest_v` buffers during a real
-    /// `resolve_cell` pass, not the debug entry point -- a real, separate investigation,
+    /// Likely (not confirmed) root cause: the same statistically-fragile LR normal fit
+    /// documented in `Grid::resolve_contact`'s doc (`src/spacetime/grid/mod.rs`) -- a
+    /// physically meaningless perturbation can swing the converged plane by tens of
+    /// degrees, which changes the tangent and the easy/resist classification per node.
+    /// Confirming this needs per-node instrumentation on the real `resolve_cell` pass,
     /// not attempted here.
     ///
     /// `#[ignore]`d honestly: the sign is real and correct, the magnitude is not yet
@@ -3517,19 +3431,16 @@ mod gpu_tests {
         );
     }
 
-    /// Multi-field contact (GPU port) — long-horizon stability check, the GPU
-    /// counterpart to CPU's own
-    /// `drucker_prager_volumetric_floor_holds_over_long_passive_settle`
-    /// (`tests/physics_correctness.rs`). That CPU test caught a real bug (the
-    /// Baumgarte energy-injection leak, fixed 2026-07-14) that a short run never
-    /// revealed -- only appeared after thousands of real steps. GPU's contact port is
-    /// only verified so far over 200-450 steps; this checks whether the SAME class of
-    /// hidden long-horizon issue exists on the GPU path before trusting it further.
-    /// Exact same scene as the CPU test (terrain 100x12 @ DruckerPragerMaterial::
-    /// cohesionless(133.3,0.333), snake 36x4 @ NeoHookeanMaterial(13,26),
-    /// contact_group tagging, GRID=128, DT=0.1, 16,000 purely passive steps, zero
-    /// muscle activation, zero steering) -- symmetric friction (GPU has no
-    /// DirectionalContactGrip equivalent yet, immaterial for a passive settle).
+    /// Multi-field contact (GPU port): long-horizon stability check, the GPU counterpart
+    /// to CPU's `drucker_prager_volumetric_floor_holds_over_long_passive_settle`
+    /// (`tests/physics_correctness.rs`). That CPU test caught the Baumgarte
+    /// energy-injection leak, which only appeared after thousands of steps; GPU's
+    /// contact port was only verified over 200-450 steps, so this checks for the same
+    /// class of hidden long-horizon issue. Exact same scene as the CPU test (terrain
+    /// 100x12 @ DruckerPragerMaterial::cohesionless(133.3,0.333), snake 36x4 @
+    /// NeoHookeanMaterial(13,26), GRID=128, DT=0.1, 16,000 purely passive steps) --
+    /// symmetric friction (GPU has no DirectionalContactGrip equivalent yet, immaterial
+    /// for a passive settle).
     #[test]
     fn gpu_drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
         if !gpu_available() {
@@ -3623,41 +3534,26 @@ mod gpu_tests {
         );
     }
 
-    /// Real headless GPU test of the actual `examples/snake_on_terrain.rs` recipe --
-    /// real CPG-driven muscle activation (`Lnn::coupled_traveling_wave`, the same
-    /// controller the interactive example uses), real sand terrain, real multi-field
-    /// contact. `GpuSimulation::set_grip_direction`/`set_grip_friction` exist now
-    /// (2026-07-16) but this test doesn't use them -- not wired in here, and the
-    /// underlying directional effect is itself disclosed as unreliable (see
-    /// `gpu_directional_grip_is_direction_aware`'s own `#[ignore]` reason) -- so this
-    /// deliberately still doesn't assert on NET forward locomotion distance. The real
-    /// question this asks is narrower and more fundamental: does a real muscle-driven
-    /// body pushing against real sand terrain, on GPU, actually displace terrain
-    /// particles (the physical basis for "digging") without exploding, over a
-    /// meaningful real duration. Prints real measured numbers rather than asserting an
-    /// arbitrary displacement threshold (no prior data to calibrate one against on
-    /// GPU) -- only safety/boundedness is a hard assertion.
+    /// Real headless GPU test of `examples/snake_on_terrain.rs`'s recipe: CPG-driven
+    /// muscle activation (`Lnn::coupled_traveling_wave`), real sand terrain, real
+    /// multi-field contact. Doesn't assert net forward locomotion distance (directional
+    /// grip is disclosed as unreliable, see `gpu_directional_grip_is_direction_aware`'s
+    /// `#[ignore]` reason) -- the real question is narrower: does a muscle-driven body
+    /// pushing against sand terrain actually displace terrain particles (the physical
+    /// basis for "digging") without exploding. Prints measured numbers rather than
+    /// asserting an arbitrary displacement threshold; only safety/boundedness is a hard
+    /// assertion.
     ///
-    /// `#[ignore]`d 2026-07-16: this specific 8000-step duration was deliberately
-    /// chosen to run well past a historical bug's escalation point (~step 5800, see
-    /// this test's own `STEPS` doc comment) -- but this machine's GPU backend hits a
-    /// real, confirmed-pre-existing Out-of-Memory condition around step ~5500-6000
-    /// (reproduced on the commit BEFORE any of today's thermal work too, via a real
-    /// stash-based A/B test, not guessed). Before today it degraded gracefully
-    /// (device-lost detection catches the OOM, test still passes); after adding the
-    /// day-night thermal GPU port, the SAME OOM condition instead crashes inside
-    /// wgpu-hal itself, most likely because every dispatch now unconditionally binds a
-    /// 3rd bind group (a real, confirmed wgpu requirement -- every pipeline sharing one
-    /// PipelineLayout must have EVERY declared bind group set at dispatch time,
-    /// regardless of whether that specific shader references it; verified empirically
-    /// this session after a first attempt to skip unused bindings caused SILENT total
-    /// breakage, `vmax=0.000` for all 8000 steps, worse than a crash). Shortening this
-    /// test's step count was considered and rejected -- it would cut below the exact
-    /// historical danger zone this test exists to verify past. A genuine fix would mean
-    /// restructuring pipeline-layout sharing (splitting mechanics-only passes onto
-    /// their own layout without the thermal group) -- a real, separate, larger task,
-    /// not attempted here. Do not tune to pass; run manually on real (non-software-
-    /// fallback) hardware to verify.
+    /// `#[ignore]`d: this machine's GPU backend hits a pre-existing OOM around step
+    /// ~5500-6000, within this test's 8000-step duration (chosen to run past a
+    /// historical bug's escalation point at ~step 5800). Before the day-night thermal
+    /// GPU port it degraded gracefully (device-lost detection caught it); now the same
+    /// OOM crashes inside wgpu-hal, because every pipeline sharing one PipelineLayout
+    /// must have every declared bind group set at dispatch time regardless of whether
+    /// that shader references it, so every dispatch now unconditionally binds a 3rd bind
+    /// group. A real fix means restructuring pipeline-layout sharing (splitting
+    /// mechanics-only passes onto their own layout without the thermal group); not
+    /// attempted here. Run manually on real (non-software-fallback) hardware.
     #[test]
     #[ignore = "real, pre-existing hardware memory ceiling on this machine's GPU \
                 backend (confirmed via A/B test against the pre-thermal commit) -- \
@@ -3672,17 +3568,10 @@ mod gpu_tests {
         use glam::IVec2;
 
         const GRID_RES: usize = 128;
-        // REAL BUG FOUND AND FIXED 2026-07-15 (found live, on the interactive GPU
-        // scene this test mirrors): an earlier attempt split this into a separate
-        // physics DT (1/60, real-time-correct) and a CPG DT left at the OLD 0.1 "to
-        // preserve tuning." That reasoning was backwards -- the CPG steps once per
-        // physics frame by whatever DT it's given, with no awareness of what a frame
-        // represents in real time, so leaving CPG_DT at the old 0.1 while shrinking
-        // the physics frame's real-time meaning made the muscle cycle 6x FASTER in
-        // real wall-clock time than ever tuned/validated -- confirmed live: violent
-        // "up/down" spasming and a genuine escalating instability (vmax climbing
-        // from ~2 to >20 over a long run). There is only ONE real DT (whatever a
-        // frame represents in real time); both physics AND the CPG must use it.
+        // Physics and CPG must share ONE real DT -- the CPG steps once per physics frame
+        // with no awareness of what a frame represents in real time, so a mismatched CPG
+        // DT runs the muscle cycle faster/slower than tuned (caused violent spasming and
+        // escalating instability here).
         const DT: f32 = 1.0 / 60.0;
         const MUSCLE_GROUPS: u32 = 8;
         const N_RINGS: usize = 2;
@@ -3694,13 +3583,10 @@ mod gpu_tests {
         const BODY_CENTER: Vec2 = Vec2::new(64.0, 20.0);
         const SNAKE_CONTACT_GROUP: u32 = 1;
 
-        // REAL BUG FOUND AND FIXED 2026-07-15: matches the exact fix applied to
-        // examples/snake_on_terrain.rs and snake_on_terrain_gpu.rs after a live run
-        // exploded -- `min_dt: 0.01` was harmless for the old ~750x-softer terrain
-        // but became actively unsafe once recalibrated to real-sand stiffness
-        // (`cfl_bound` floors the substep at `min_dt` regardless of what the
-        // material's own CFL bound requires). No override here now (inherits the
-        // safe `1.0e-3` default), `max_substeps_per_step` raised to compensate.
+        // min_dt: 0.01 was harmless at the old, softer terrain stiffness but becomes
+        // unsafe once recalibrated to real-sand stiffness (cfl_bound floors the substep
+        // at min_dt regardless of the material's own CFL bound). No override here
+        // (inherits the safe 1.0e-3 default); max_substeps_per_step raised to compensate.
         let config = SimConfig {
             contact_friction: 0.5,
             max_substeps_per_step: 128,
@@ -3836,18 +3722,15 @@ mod gpu_tests {
         );
     }
 
-    /// Real per-pass GPU timestamp profiling of the multi-field contact system, at LP's
-    /// actual confirmed particle ceiling (~50k -- LP will not go past this, per explicit
-    /// user direction 2026-07-15). `gpu_profile_passes_at_50k` above profiles the base
-    /// solver at 50k with NO contact (single NeoHookean material, no `contact_group`) --
-    /// that test is what proved the base solver hits 60-66fps live at this exact scale
-    /// (`project_mvp_definition` memory, 2026-06-27). `resolve_contact` didn't exist yet
-    /// then. This test asks the one real remaining question: at the SAME ~50k scale, with
-    /// a real contact-active body genuinely resting on real DP sand terrain (not a
-    /// synthetic no-contact scene), what does `resolve_contact` actually cost relative to
-    /// the other 7 passes -- not guessed, not inferred from a live scene's aggregate fps,
-    /// measured directly via `GpuSimulation::enable_profiling()`/`last_pass_timings_ns()`,
-    /// the same tool that resolved every prior perf question in this codebase's history.
+    /// Per-pass GPU timestamp profiling of the multi-field contact system, at LP's
+    /// confirmed particle ceiling (~50k). `gpu_profile_passes_at_50k` above profiles the
+    /// base solver at 50k with no contact (single NeoHookean material, no
+    /// `contact_group`), proving the base solver hits 60-66fps at this scale
+    /// (`project_mvp_definition` memory) -- but `resolve_contact` didn't exist yet then.
+    /// This asks the remaining question: at the same ~50k scale, with a contact-active
+    /// body resting on real DP sand terrain, what does `resolve_contact` cost relative
+    /// to the other 7 passes, measured directly via
+    /// `GpuSimulation::enable_profiling()`/`last_pass_timings_ns()`.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle contact profiling pass, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_profile_contact_passes_at_50k_target() {
@@ -4060,7 +3943,7 @@ mod gpu_tests {
         let mut registry = MaterialRegistry::with_default(Box::new(LatentHeatMaterial(0.0)));
         registry.insert(MELTED_ID, Box::new(LatentHeatMaterial(LATENT_HEAT)));
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
-        solver.attach_thermal_gpu(0.6, HEAT_CAPACITY, 1.0, 0.0, 0.0);
+        solver.attach_thermal_gpu(0.6, HEAT_CAPACITY, 1000.0, 1.0, 0.0, 0.0);
 
         solver.phase_transition(|_| true, MELTED_ID);
 
@@ -4114,6 +3997,9 @@ mod gpu_tests {
     const COOLING_RATE: f32 = 0.05;
     const CONDUCTIVITY: f32 = 0.6;
     const CELL_SIZE_M: f32 = 0.02;
+    // kg/m^3, real water -- matches the rest of this water/ice constant block.
+    // Required by attach_thermal_gpu's density param.
+    const DENSITY: f32 = 1000.0;
 
     fn snow_water_registry() -> MaterialRegistry {
         const WATER_ID: u32 = 1;
@@ -4159,6 +4045,7 @@ mod gpu_tests {
         solver.attach_thermal_gpu(
             CONDUCTIVITY,
             HEAT_CAPACITY,
+            DENSITY,
             CELL_SIZE_M,
             AMBIENT_K,
             COOLING_RATE,
@@ -4257,6 +4144,7 @@ mod gpu_tests {
         solver.attach_thermal_gpu(
             CONDUCTIVITY,
             HEAT_CAPACITY,
+            DENSITY,
             CELL_SIZE_M,
             AMBIENT_K,
             0.0, // no cooling -- this test wants heat to only go up
@@ -4413,24 +4301,19 @@ mod gpu_tests {
         }
     }
 
-    /// GPU sparse-contact-adjacent grid-volume check (2026-07-18): proves
-    /// `attach_grid_material_render_gpu`'s per-cell `material_mass` accumulator
-    /// records each material into ITS OWN slot correctly (P2G scatter -> render
-    /// shader's `dominant_material` reads the SAME buffer this test reads). Real
-    /// regression, not scratch -- found via this exact test that `material_mass`
-    /// lacked `COPY_SRC` (fixed in `buffers.rs`, both placeholder and grown
-    /// allocations) and would otherwise be unreadable/untestable entirely.
+    /// Proves `attach_grid_material_render_gpu`'s per-cell `material_mass` accumulator
+    /// records each material into its own slot correctly (P2G scatter -> render shader's
+    /// `dominant_material` reads the same buffer this test reads). Regression:
+    /// `material_mass` lacked `COPY_SRC` (fixed in `buffers.rs`, both placeholder and
+    /// grown allocations), which made it unreadable/untestable entirely.
     ///
-    /// NOTE, disclosed not hidden: the raw values read back are NOT true decoded
-    /// float masses -- `p2g.wgsl` scatters via the same fixed-point atomic-integer
-    /// trick `grid`'s own mass channel uses, but unlike `grid` (decoded back to a
-    /// real float by `grid_update.wgsl`), nothing ever decodes `material_mass` back
-    /// out of its scaled-integer bit pattern. This test only checks WHICH slot has
-    /// the most nonzero content (majority-wins-by-presence, matching the shader's
-    /// own `dominant_material` logic exactly), not real mass magnitudes -- that
-    /// comparison is unaffected by the missing decode (any nonzero-vs-exact-zero
-    /// atomic bit pattern still compares correctly as "greater"), but a future
-    /// feature wanting real weighted blending would need the decode step added.
+    /// NOTE: the raw values read back are NOT true decoded float masses -- `p2g.wgsl`
+    /// scatters via the same fixed-point atomic-integer trick `grid`'s mass channel
+    /// uses, but nothing decodes `material_mass` back out of its scaled-integer bit
+    /// pattern (unlike `grid`, decoded by `grid_update.wgsl`). This only checks which
+    /// slot has the most nonzero content (matching the shader's `dominant_material`
+    /// logic), not real mass magnitudes; a future feature wanting real weighted
+    /// blending needs the decode step added.
     #[test]
     fn gpu_grid_material_mass_dominant_slot_matches_spawned_material() {
         if !gpu_available() {

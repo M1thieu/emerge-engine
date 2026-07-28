@@ -9,7 +9,7 @@ use glam::Vec2;
 
 use super::Simulation;
 use super::query::{self, BodyState, body_state_of};
-use crate::diagnostics::{SimSnapshot, collect_snapshot};
+use crate::diagnostics::{SimSnapshot, collect_rod_snapshot, collect_snapshot};
 
 impl Simulation {
     pub fn diagnostics_snapshot(&self) -> SimSnapshot {
@@ -27,6 +27,7 @@ impl Simulation {
         snap.active_count = self.active_count;
         snap.sleeping_count = self.particles.len().saturating_sub(self.active_count);
         snap.timing = self.last_timing;
+        snap.rods = collect_rod_snapshot(self.rods());
         snap
     }
 
@@ -111,6 +112,47 @@ impl Simulation {
                 Some(c) => (1.0 - (self.particles.x[i] - c).length() * FALLOFF_PER_CELL).max(0.0),
             };
             self.particles.v[i] += impulse * scale;
+        }
+    }
+
+    /// Directly overwrite `v` (not add, unlike `apply_group_impulse`) on every
+    /// particle with `tag` — the real primitive for a KINEMATICALLY-driven body
+    /// (position/velocity set by an external controller, e.g. player input,
+    /// rather than by internal elastic/plastic forces). Combined with a real,
+    /// large `mass` on that group and a nonzero `contact_group` (Bardenhagen
+    /// 2001 multi-field contact), this lets an externally-driven tool genuinely
+    /// PUSH/displace other real matter through real momentum exchange — no
+    /// mass is created or destroyed, unlike deleting particles outright.
+    /// O(group_size).
+    pub fn set_group_velocity(&mut self, tag: u32, velocity: glam::Vec2) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.v[i] = velocity;
+            }
+        }
+    }
+
+    /// Set `contact_group` uniformly on all particles with `tag` — opts a
+    /// body into its own real multi-field Coulomb contact (Bardenhagen 2001)
+    /// against everything else, instead of MPM's default infinite-friction
+    /// stick. O(group_size).
+    pub fn set_group_contact_group(&mut self, tag: u32, contact_group: u32) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.contact_group[i] = contact_group;
+            }
+        }
+    }
+
+    /// Scale `mass` uniformly on all particles with `tag` — a real, disclosed
+    /// way to make a kinematically-driven body act like a much heavier real
+    /// object (e.g. a tool vs. the loose material it displaces) without
+    /// changing its own internal material response. O(group_size).
+    pub fn scale_group_mass(&mut self, tag: u32, multiplier: f32) {
+        if let Some(indices) = self.tag_index.get(&tag) {
+            for &i in indices {
+                self.particles.mass[i] *= multiplier;
+            }
         }
     }
 

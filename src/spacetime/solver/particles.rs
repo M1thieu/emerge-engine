@@ -164,7 +164,13 @@ impl Simulation {
     }
 
     pub fn recompute_initial_volumes(&mut self) {
-        estimate_particle_volumes(&mut self.particles, &mut self.grid, self.active_count, true);
+        estimate_particle_volumes(
+            &mut self.particles,
+            &mut self.grid,
+            Some(&self.materials),
+            self.active_count,
+            true,
+        );
     }
 
     /// Remove all particles where `predicate` returns true. Returns count removed.
@@ -414,6 +420,7 @@ impl Simulation {
         density::estimate_particle_volumes_local(
             &mut self.particles,
             &mut self.grid,
+            Some(&self.materials),
             self.active_count,
             group_start,
             true,

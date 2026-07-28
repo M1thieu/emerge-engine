@@ -56,6 +56,11 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         max_substeps_per_step: 8,
         recompute_density_each_step: true,
         cfl_include_affine_speed: false,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
@@ -135,8 +140,8 @@ impl State {
         // material_sandbox_gpu.rs's own comment on this exact distinction). Water
         // reuses the same aesthetic SIGMA_WATER other demos use; mud gets a real
         // brownish estimate (not cited -- no real mud reflectance spectrum searched).
-        renderer.set_optical_params(MAT_WATER as usize, [0.85, 0.25, 0.07]);
-        renderer.set_optical_params(MAT_MUD as usize, [0.30, 0.20, 0.12]);
+        renderer.set_optical_params(sim.queue(), MAT_WATER as usize, [0.85, 0.25, 0.07]);
+        renderer.set_optical_params(sim.queue(), MAT_MUD as usize, [0.30, 0.20, 0.12]);
         println!(
             "fluids GPU: {} particles  |  LMB push  RMB pull  G grid-volume  R reset  Q quit",
             sim.particle_count()

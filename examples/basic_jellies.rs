@@ -41,7 +41,10 @@ struct Params {
     vis_lambda: f32,
     vis_mu: f32,
     vis_viscosity: f32,
-    gravity: f32,
+    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand_gui.rs/
+    // basic_snow_gui.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
+    // not grounded in anything real.
+    gravity_fraction: f32,
 }
 
 impl Default for Params {
@@ -54,7 +57,7 @@ impl Default for Params {
             vis_lambda: 10.0,
             vis_mu: 15.0,
             vis_viscosity: 0.15,
-            gravity: -0.3,
+            gravity_fraction: 0.01,
         }
     }
 }
@@ -70,6 +73,7 @@ struct State {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     p: Params,
+    real_gravity: Vec2,
     cursor_pos: [f32; 2],
     lmb: bool,
     rmb: bool,
@@ -81,12 +85,12 @@ struct State {
 }
 
 fn make_sim(p: &Params) -> Simulation {
-    let config = SimConfig {
+    let mut config = SimConfig {
         min_dt: 0.01,
         max_substeps_per_step: 8,
-        gravity: Vec2::new(0.0, p.gravity),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    config.gravity *= p.gravity_fraction;
     let spawn = |c: Vec2, mat| SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(14, 14),
@@ -157,13 +161,14 @@ impl State {
 
         let p = Params::default();
         let sim = make_sim(&p);
+        let real_gravity = SimConfig::earth(GRID, 0.01, DT).gravity;
 
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(MAT_NEO as usize, SIGMA_NEO);
-        renderer.set_optical_params(MAT_COR as usize, SIGMA_COR);
-        renderer.set_optical_params(MAT_VIS as usize, SIGMA_VIS);
+        renderer.set_optical_params(&queue, MAT_NEO as usize, SIGMA_NEO);
+        renderer.set_optical_params(&queue, MAT_COR as usize, SIGMA_COR);
+        renderer.set_optical_params(&queue, MAT_VIS as usize, SIGMA_VIS);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -198,6 +203,7 @@ impl State {
             egui_state,
             egui_renderer,
             p,
+            real_gravity,
             cursor_pos: [0.0; 2],
             lmb: false,
             rmb: false,
@@ -234,7 +240,8 @@ impl State {
 
     fn update_and_render(&mut self, window: &Window) {
         // Push live params to solver
-        self.sim.set_gravity(Vec2::new(0.0, self.p.gravity));
+        self.sim
+            .set_gravity(self.real_gravity * self.p.gravity_fraction);
         self.sim
             .set_default_material(Box::new(NeoHookeanMaterial::new(
                 self.p.neo_lambda,
@@ -292,7 +299,10 @@ impl State {
                 .show(ctx, |ui| {
                     ui.label(format!("fps={:.0}  n={}  [G] toggle colors", fps, n));
                     ui.separator();
-                    ui.add(egui::Slider::new(&mut p.gravity, -3.0..=0.0).text("gravity"));
+                    ui.add(
+                        egui::Slider::new(&mut p.gravity_fraction, 0.0..=2.0)
+                            .text("gravity (1.0 = real IRL)"),
+                    );
                     ui.separator();
                     ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
                     ui.add(egui::Slider::new(&mut p.neo_lambda, 1.0..=200.0).text("lambda"));

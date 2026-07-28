@@ -28,10 +28,10 @@ extern crate emerge_engine as emerge;
 /// Both engine calls now apply a REAL latent-heat energy debit
 /// (`MaterialModel::latent_heat`, `ΔT = latent_heat/heat_capacity`) -- melting
 /// genuinely cools the surrounding material, freezing genuinely warms it, real
-/// energy conservation, not a free material swap. This required two real,
-/// disclosed engine fixes made this session: `GpuSimulation::phase_transition` had
-/// no latent-heat accounting at all (CPU-only before), and neither `phase_transition`
-/// nor a GPU `remove_particles` existed in a form safe to call from live/interactive
+/// energy conservation, not a free material swap. This required two engine
+/// fixes: `GpuSimulation::phase_transition` had no latent-heat accounting at
+/// all (CPU-only before), and neither `phase_transition` nor a GPU
+/// `remove_particles` existed in a form safe to call from live/interactive
 /// code. Ambient is set below freezing (260K) so anything not actively heated
 /// genuinely drifts back toward frozen via the same real Newton-cooling term
 /// `day_night_thermal_gpu` already proved -- the "cold reverses it" half of the ask
@@ -154,28 +154,15 @@ const LATENT_HEAT_FUSION: f32 = 334.0; // water, kJ/kg-equivalent in this engine
 // HEAT_CAPACITY, COOLING_RATE, CONDUCTIVITY, CELL_SIZE_M commented out below alongside
 // attach_thermal_gpu -- real, temporary, disclosed disable, see that call site's doc.
 // const HEAT_CAPACITY: f32 = 4182.0; // water, J/(kg*K)
-const AMBIENT_K: f32 = 260.0; // below freezing -- world starts cold, matches the ask
-// REAL BUG FOUND AND FIXED 2026-07-18: painting Water at the world's cold AMBIENT_K
-// (260K, below FREEZE_POINT_K=272.15) meant every freshly-painted water particle
-// converted to snow within one phase-transition scan (~15 frames) -- confirmed via
-// live diagnostic tracking (material_id flipped 2->3 within 30 frames of painting).
-// Water never got a chance to visibly flow as a liquid; what looked like "frozen,
-// won't spread" physics was actually correct snow behavior on a material that had
-// already stopped being water. Real room temperature (matches fire_spread's own
-// AMBIENT_K=293.15 convention), comfortably above freezing -- painted water now
-// stays liquid until deliberately cooled (Heat tool in reverse isn't wired, but
-// ambient Newton cooling would otherwise still slowly pull it back toward 260K
-// over real time and refreeze it a bit later regardless of starting temp
-// (confirmed live: refroze ~12s after painting, same mechanism just delayed) --
-// see COOLING_RATE's own note for the temporary fix for that.
+const AMBIENT_K: f32 = 260.0; // below freezing -- world starts cold
+// Painted water must start above freezing (room temp) -- at world AMBIENT_K
+// (260K, below FREEZE_POINT_K) it would convert to snow within one
+// phase-transition scan before ever flowing as a liquid.
 const WATER_PAINT_TEMP_K: f32 = 293.15;
-// TEMPORARY REAL FIX 2026-07-18: was 0.05 (Newton cooling k_c, matching
-// day_night_thermal_gpu's own value) -- disabled for now because it kept pulling
-// freshly-painted (warm) water back down through FREEZE_POINT_K after ~12 real
-// seconds regardless of starting temperature, undermining the whole point of a
-// "paint water, watch it flow" brush. Real, disclosed, deliberately temporary --
-// re-enable once there's a real per-material or slower cooling design that lets
-// water actually stay liquid long enough to be useful as a brush.
+// Disabled: ambient Newton cooling pulled freshly-painted warm water back down
+// through FREEZE_POINT_K within seconds regardless of starting temperature,
+// defeating the "paint water, watch it flow" brush. Needs a per-material or
+// slower cooling design before re-enabling.
 // const COOLING_RATE: f32 = 0.0;
 // const CONDUCTIVITY: f32 = 0.6; // water/ice, W/(m*K)
 // const CELL_SIZE_M: f32 = 0.02; // 2cm/cell -- hand-sized snowball scale, see module doc
@@ -183,29 +170,15 @@ const WATER_PAINT_TEMP_K: f32 = 293.15;
 fn make_registry() -> MaterialRegistry {
     // Reused verbatim from already-shipped demos -- not new invented numbers.
     let jelly = NeoHookeanMaterial::new(40.0, 80.0); // basic_showcase_gpu
-    // Real bug found live (2026-07-17): basic_showcase_gpu's plain `new(400.0, 200.0)`
-    // (cohesion defaults to 0.0, true cohesionless Mohr-Coulomb) measures a real ~12°
-    // angle of repose on GPU (see gpu_sand_angle_of_repose_is_physical) against real dry
-    // sand's 30-35° -- a genuine, already-documented continuum-MPM-resolution artifact
-    // (DruckerPragerMaterial::cohesion's own doc: pressure-proportional friction vanishes
-    // in thin/fast-flowing layers regardless of friction angle, confirmed across THREE
-    // different friction coefficients giving identical ~4.7x excess runout). The real fix
-    // isn't a new number for THIS scale -- it's reusing the exact (E, ν, cohesion) triple
-    // already calibrated and passing against the real Lajeunesse et al. 2004 runout
-    // scaling law (`sand_column_collapse_runout_matches_lajeunesse_scaling`), not
-    // extrapolating an unverified proportional guess for a different raw-Lamé pair.
+    // Cohesionless sand at this MPM resolution under-measures angle of repose (a
+    // documented continuum-resolution artifact -- pressure-proportional friction
+    // vanishes in thin/fast-flowing layers). This (E, nu, cohesion) triple is
+    // calibrated against the real Lajeunesse et al. 2004 runout scaling law, not
+    // a fresh guess.
     let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     sand.cohesion = 5.0; // calibrated against the real Lajeunesse benchmark, see above
-    // REAL BUG FOUND AND FIXED 2026-07-18: copied verbatim from basic_showcase_gpu's
-    // `NewtonianFluidMaterial::new(4.0, 0.1, 10.0, 4.0)`, presented as "water" with no
-    // disclosure -- but viscosity=0.1 is 100x this project's OWN `low_viscosity()` real-
-    // water preset (1.0e-3, Becker & Teschner 2007 -- see fluid.rs), and eos_power=4.0
-    // isn't the real Tait EOS exponent either (Cole 1948's real value is 7.0, which
-    // `low_viscosity()` already uses correctly). This wasn't a disclosed aesthetic
-    // choice, it was an uncited mismatch silently making "water" behave like a thick,
-    // syrupy fluid -- directly why painted water didn't slide/spread as expected.
-    // Fixed to the project's own real preset, same rest_density/eos_stiffness kept
-    // (legitimate grid-scale tuning, not physically meaningful SI values either way).
+    // `low_viscosity()`, not a raw constructor -- real water viscosity (1.0e-3,
+    // Becker & Teschner 2007) and Tait EOS exponent (7.0, Cole 1948).
     let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
     let snow = StomakhinMaterial::new(1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
     let tissue = ViscoelasticMaterial::new(10.0, 15.0, 0.15); // basic_jellies_gpu
@@ -231,25 +204,20 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         min_dt: 0.005,
         max_substeps_per_step: 16,
         recompute_density_each_step: true,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
 
     // Ground strip to paint onto -- real sand, not decoration.
     //
-    // REAL BUG FOUND AND FIXED 2026-07-18: terrain spacing was 0.7 (coarser than
-    // water's own 0.5), leaving real physical gaps in the terrain's top surface
-    // wide enough for water to fall/channel into unevenly instead of forming a
-    // flat layer. Confirmed via a direct headless shape probe: at spacing=0.7,
-    // painted water settled with wildly uneven per-region height (y=2.6-7.1 across
-    // 10 x-bins, sinking into the terrain in the middle where it pooled deepest,
-    // perched above it at the thin edges) -- exactly the "fountain/arc" shape
-    // reported live, and NOT a settling-speed or freeze bug (velocity was
-    // confirmed smoothly decaying to near-zero the whole time, zero non-finite/
-    // invalid/OOB at any point -- the shape itself was the real settled state).
-    // Fixed by matching terrain spacing to water's own (0.5); box_size scaled up
-    // proportionally (50->70, 3->4) to keep the same real physical footprint.
-    // Reprobed: all 10 bins now settle uniformly (y=6.8-7.7), no channeling.
+    // Terrain spacing must match water's own (0.5) -- a coarser terrain lattice
+    // leaves physical gaps in the surface wide enough for water to channel into
+    // unevenly instead of forming a flat layer.
     let mut particles = build_particles(
         &config,
         SpawnRegion {
@@ -267,16 +235,12 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     }
 
     let registry = make_registry();
-    // TEMPORARY REAL FIX 2026-07-18: `attach_thermal_gpu` disabled entirely, not just
-    // COOLING_RATE zeroed. Disabling ambient cooling alone wasn't enough -- confirmed
-    // live that real heat CONDUCTION (Fourier diffusion, independent of the ambient
-    // cooling term) still pulled heat out of freshly-painted warm water into the cold
-    // sand it lands on, refreezing it into snow regardless. With the whole thermal
-    // model off, particle.temperature never changes from its spawn value at all, so
-    // water genuinely stays liquid indefinitely. Real, disclosed cost: the Heat tool's
-    // melting/spreading mechanic and the melt/freeze/evaporate phase transitions all
-    // stop doing anything meaningful until this is revisited with a proper per-material
-    // or slower-conduction thermal design.
+    // `attach_thermal_gpu` disabled entirely, not just COOLING_RATE zeroed --
+    // heat CONDUCTION alone (independent of ambient cooling) still pulled heat
+    // out of warm water into the cold sand it lands on, refreezing it
+    // regardless. Disclosed cost: the Heat tool and melt/freeze/evaporate
+    // transitions do nothing meaningful until this gets a proper per-material
+    // thermal design.
     // sim.attach_thermal_gpu(
     //     CONDUCTIVITY,
     //     HEAT_CAPACITY,
@@ -402,53 +366,27 @@ impl State {
         };
         surface.configure(&device, &sc);
         let sim = make_sim_data(device.clone(), queue.clone());
-        // Grid-volume rendering (G to toggle) -- same real, verified mechanism as
-        // basic_jellies_gpu: samples the solver's own P2G mass field for a continuous
-        // solid look instead of per-particle splats, per-cell dominant-material colored
-        // via the real Beer-Lambert optics already wired below (see
-        // gpu_grid_material_mass_dominant_slot_matches_spawned_material for the direct
-        // correctness proof this relies on).
+        // Grid-volume rendering (G to toggle) samples the solver's own P2G mass
+        // field for a continuous solid look instead of per-particle splats.
         //
-        // REAL PERF BUG FOUND AND FIXED 2026-07-18: this used to call
-        // `attach_grid_material_render_gpu()` unconditionally here at startup -- but
-        // that call's own doc says plainly it's a real, OPT-IN per-substep cost (an
-        // extra P2G atomic scatter + grid_clear zeroing EVERY substep), off by default.
-        // Attaching it eagerly meant the whole demo paid that cost on every single
-        // substep regardless of whether grid-volume mode was ever toggled on -- a real,
-        // measured slowdown (confirmed live: FPS drop reported), not imagined. Fixed by
-        // deferring the attach call to the FIRST actual G keypress (see the KeyG handler
-        // below) -- splat mode (the default) now stays exactly as cheap as before this
-        // feature existed.
-        // REAL ISSUE INVESTIGATED 2026-07-18, REVERTED SAME DAY: painted water splashed
-        // on impact with the sand terrain and took a genuinely long real-time while
-        // (~500-550 physics steps, ~8-9 real seconds at this demo's ~6x-real-time rate)
-        // to fully stop spreading -- confirmed via systematic headless testing across
-        // FOUR real physical levers (dynamic_viscosity swept 1e-3..0.5; bulk_viscosity
-        // 0..2; eos_stiffness 10..80; sleep_threshold 0..0.1) that this is genuine
-        // gravity-driven thin-film spreading, physically correct for a real low-
-        // viscosity fluid, not an instability.
+        // `attach_grid_material_render_gpu()` is a real opt-in per-substep cost
+        // (extra P2G scatter + grid_clear zeroing every substep) -- deferred to
+        // the first G keypress (see the KeyG handler below) so splat mode (the
+        // default) stays cheap.
         //
-        // A `LinearDragField` (drag_k=1.0, masked to water) was added here to contain
-        // splash extent for interactive snappiness -- REAL BUG THIS CAUSED, found via a
-        // fresh headless investigation: settled water was NOT actually physics-locked
-        // (a direct GPU readback + `apply_radial_impulse` disturbance test confirmed
-        // zero sleeping particles, sane J, and a genuine, immediate, correct velocity/
-        // displacement response to the impulse) -- but the drag continuously pulled its
-        // small residual settling velocity (~0.04) toward exactly zero every substep,
-        // which at 60fps *reads* as "frozen solid" even though the underlying fluid
-        // state is completely healthy. Removed: it did more perceptual harm (looked
-        // broken) than the splash-extent problem it solved was worth. Real water here
-        // now settles exactly like `basic_fluids_gpu`/`channel_flow`'s own water --
-        // slower to fully stop than one might want for a snappy demo, but genuinely,
-        // visibly liquid the whole time, which is the more important property.
+        // Water settling slowly here is genuine gravity-driven thin-film
+        // spreading for a real low-viscosity fluid, not an instability --
+        // artificially damping the residual settling velocity (tried via
+        // LinearDragField, reverted) makes perfectly healthy fluid *read* as
+        // frozen at 60fps.
         let mut renderer = Renderer::new(&device, sim.particle_count(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(JELLY_ID as usize, SIGMA_JELLY);
-        renderer.set_optical_params(SAND_ID as usize, SIGMA_SAND);
-        renderer.set_optical_params(WATER_ID as usize, SIGMA_WATER);
-        renderer.set_optical_params(SNOW_ID as usize, SIGMA_SNOW);
-        renderer.set_optical_params(TISSUE_ID as usize, SIGMA_TISSUE);
+        renderer.set_optical_params(&queue, JELLY_ID as usize, SIGMA_JELLY);
+        renderer.set_optical_params(&queue, SAND_ID as usize, SIGMA_SAND);
+        renderer.set_optical_params(&queue, WATER_ID as usize, SIGMA_WATER);
+        renderer.set_optical_params(&queue, SNOW_ID as usize, SIGMA_SNOW);
+        renderer.set_optical_params(&queue, TISSUE_ID as usize, SIGMA_TISSUE);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -540,11 +478,10 @@ impl State {
                     && self.paint_cooldown == 0
                     && self.sim.particle_count() < MAX_PARTICLES =>
             {
-                // Bigger than a token dab on purpose: sand needs enough grains to show
-                // a real angle of repose, water enough mass to actually flow/spread,
-                // snow enough bulk to compact under its own weight -- a 2x2 clump never
-                // gave any of that room to happen, so every material just looked like
-                // an undifferentiated soft blob (real user feedback).
+                // Bigger than a token dab on purpose: sand needs enough grains to show a
+                // real angle of repose, water enough mass to flow/spread, snow enough
+                // bulk to compact under its own weight -- a 2x2 clump gives none of
+                // that room.
                 let material_id = PALETTE[self.selected].0;
                 let region = SpawnRegion {
                     spacing: 0.5,
@@ -554,13 +491,10 @@ impl State {
                     precompute_initial_volumes: true,
                     ..SpawnRegion::for_sim(self.sim.config())
                 };
-                // Real engine check (SpawnRegion::fits_in_sim), not hand-derived margin
-                // math -- a hand-rolled `pos.x > 4.0 && ...` version of this exact check
-                // previously got the margin wrong and crashed on a real click near the
-                // domain edge (spawn_region panics on an out-of-bounds region; that panic
-                // is the correct behavior for a scripted/startup spawn, but not for one
-                // driven by live mouse input where going out of bounds is normal and
-                // should just be skipped).
+                // SpawnRegion::fits_in_sim, not hand-derived margin math --
+                // spawn_region panics on an out-of-bounds region (correct for a
+                // scripted spawn, not for live mouse input where going out of
+                // bounds is normal and should be skipped).
                 if region.fits_in_sim(self.sim.config()) {
                     let range = self.sim.spawn_region(region);
                     // build_particles defaults temperature to 0.0 -- freshly painted
@@ -859,12 +793,10 @@ impl ApplicationHandler for App {
                     }
                     KeyCode::KeyG => {
                         s.grid_volume_mode = !s.grid_volume_mode;
-                        // Lazily attach on first real use, not eagerly at startup (see
-                        // this call's own doc + the sim construction site's comment for
-                        // the real perf bug this fixes) -- idempotent after the first
-                        // call (attach_grid_material_render_gpu no-ops once grown), so
-                        // safe to call every toggle rather than tracking attached-ness
-                        // separately.
+                        // Lazily attach on first real use, not eagerly at startup --
+                        // see the sim construction site's comment. Idempotent after
+                        // the first call, so safe to call every toggle rather than
+                        // tracking attached-ness separately.
                         if s.grid_volume_mode {
                             s.sim.attach_grid_material_render_gpu();
                         }
@@ -885,7 +817,8 @@ impl ApplicationHandler for App {
                         } else {
                             SIGMA_WATER
                         };
-                        s.renderer.set_optical_params(WATER_ID as usize, sigma);
+                        s.renderer
+                            .set_optical_params(s.sim.queue(), WATER_ID as usize, sigma);
                         println!(
                             "water optics: {} (M to toggle)",
                             if s.real_water_optics {
