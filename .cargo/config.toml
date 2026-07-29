@@ -1,0 +1,7 @@
+[alias]
+# Every windowed example needs --features render (wgpu/winit); this repo has
+# no default features on purpose (emerge is a library -- LP opts into gpu/
+# render itself, so the base crate stays dependency-light for anyone who
+# just wants the CPU solver). `cargo rr <example>` is the shortcut instead
+# of retyping the flag every time.
+rr = "run --features render --example"

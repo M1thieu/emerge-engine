@@ -172,3 +172,27 @@ required-features = ["render"]
 [[example]]
 name = "wind_around_obstacle_gpu"
 required-features = ["render"]
+
+[[example]]
+name = "basic_fluids_gui"
+required-features = ["render"]
+
+[[example]]
+name = "basic_sand_grid_gpu"
+required-features = ["render"]
+
+[[example]]
+name = "basic_sand_gui"
+required-features = ["render"]
+
+[[example]]
+name = "basic_snow_gui"
+required-features = ["render"]
+
+[[example]]
+name = "sand_compaction_gui"
+required-features = ["render"]
+
+[[example]]
+name = "fire_spread_gui"
+required-features = ["render"]
