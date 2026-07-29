@@ -31,21 +31,15 @@ pub struct RatchetFrictionBoundary {
     pub thickness: usize,
     easy_dir_x_bits: std::sync::atomic::AtomicU32,
     easy_dir_y_bits: std::sync::atomic::AtomicU32,
-    // Real bug found live, 2026-07-13: `mu_easy`/`mu_resist` used to be plain,
-    // construction-only f32 fields -- meaning the ratchet's directional
-    // asymmetry was ALWAYS active, even while a player provided zero steering
-    // input. Combined with ordinary passive settling jitter (a body dropped
-    // under gravity always wobbles a little while it settles), the ratchet
-    // converted that jitter into a real, substantial (~18-unit) crawl BEFORE
-    // any muscle activation ever ran -- confirmed via a real headless log
-    // showing `act mean=0.00 max=0.00` (activation genuinely zero, an earlier
-    // fix already gated it correctly) while drift still reached +18 units.
-    // Real fix: make friction live-adjustable via atomics, same pattern as
-    // `easy_direction` below, so the caller can set mu_easy==mu_resist
-    // (symmetric, no ratchet effect at all) whenever there's no real steering
-    // intent, and restore the real asymmetric values only while actively
-    // steered -- matching the same "no bias without input" principle
-    // `set_easy_direction`'s own doc already establishes for direction.
+    // Must be live-adjustable via atomics, same pattern as `easy_direction`
+    // below, not plain construction-only fields -- otherwise the ratchet's
+    // directional asymmetry stays ALWAYS active, even with zero steering
+    // input, and ordinary passive settling jitter (a body dropped under
+    // gravity always wobbles a little while it settles) gets converted into
+    // spurious crawl drift. The caller sets mu_easy==mu_resist (symmetric, no
+    // ratchet effect) whenever there's no steering intent, and restores the
+    // asymmetric values only while actively steered -- same "no bias without
+    // input" principle `set_easy_direction`'s own doc establishes for direction.
     mu_easy_bits: std::sync::atomic::AtomicU32,
     mu_resist_bits: std::sync::atomic::AtomicU32,
 }

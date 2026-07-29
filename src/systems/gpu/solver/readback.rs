@@ -82,8 +82,8 @@ impl GpuSimulation {
 
     /// Test/diagnostic readback of the per-block contact point-cloud counts (GPU port) —
     /// `NUM_CONTACT_BLOCKS` (4096) `u32` entries, one per dedicated contact-point spatial
-    /// block (see `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in `step_params.rs`). A count can
-    /// exceed `MAX_CONTACT_POINTS_PER_BLOCK` on overflow (a real, observable signal, not
+    /// block (see `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in `step_params/spatial_blocks.rs`).
+    /// A count can exceed `MAX_CONTACT_POINTS_PER_BLOCK` on overflow (a real, observable signal, not
     /// silently capped) — callers must clamp before indexing `contact_points_blocking`.
     pub fn contact_point_counts_blocking(&self) -> Vec<u32> {
         self.buffers.readback_u32_blocking(

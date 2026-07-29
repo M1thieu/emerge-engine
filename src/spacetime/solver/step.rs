@@ -193,6 +193,7 @@ impl Simulation {
             estimate_particle_volumes(
                 &mut self.particles,
                 &mut self.grid,
+                Some(&self.materials),
                 self.active_count,
                 false,
             );
@@ -377,6 +378,15 @@ impl Simulation {
             self.config.grid_cell_size,
             self.config.mixture_pressure_iterations,
         );
+        // Cundall damping (see the snapshot comment above) -- applied LAST, after
+        // gravity/boundary/contact/mixture have all had their say, so it damps the
+        // real NET result of everything this substep, not just one contributor.
+        if self.config.cundall_damping > 0.0
+            && let Some(snapshot) = &pre_force_snapshot
+        {
+            self.grid
+                .apply_cundall_damping(snapshot, self.config.cundall_damping);
+        }
         self.last_timing.grid_update_us += t1.elapsed().as_micros() as u64;
 
         // ── G2P ──────────────────────────────────────────────────────────────

@@ -63,6 +63,30 @@ Twelve constitutive models, grouped by what they're for:
 
 Each cites its source paper in the doc comment — see [Physics references](#physics-references).
 
+## Rod solver
+
+A second, narrower solver alongside the MPM materials above — for slender (length ≫ width) bodies like a blade of grass or a fishing line, where `EI` (bending stiffness) is a direct input instead of an emergent property of carved cross-section width. Shares the same grid every MPM material uses, so a rod and ordinary particles genuinely exchange momentum, not two solvers running side by side.
+
+| Type | Best for | Key entry point |
+|---|---|---|
+| `rod::Rod` / `rod::RodPoints` | 1D discrete elastic rod (Cosserat-rod family), self-weight + wind + cursor push, real self-buckling | `rod::build_straight_rod(start, end, n_points, linear_density, dx_meters)` |
+
+Real Euler/Greenhill self-buckling comes out of the same `EA`/`EI` for free — no separate stability model needed. See [Physics references](#physics-references) for the citation.
+
+Same sleep/wake pattern as MPM particles, at rod granularity (a rod's points are elastically coupled, so it sleeps as one body): `SimConfig::rod_sleep_threshold` (0.0 = disabled). A settled rod skips scatter/gather/force integration *and* its own `rod_cfl_dt` term in the substep bound — the real fix for many-simultaneous-rods cost (a grass field), since that per-point CFL sum is otherwise paid every substep regardless of how still the rod looks. Wakes on push or on any new grid activity nearby (e.g. something landing on it).
+
+## Force fields & boundaries
+
+Ten force fields, six boundary conditions — mix and match, all optional, zero cost when unused.
+
+| Group | Types |
+|---|---|
+| **External fields** | `GravityWellField` / `NBodyGravityField` (Barnes-Hut N-body), `CoulombField` / `UniformElectricField`, `BuoyancyField` |
+| **Flow / drag** | `LinearDragField` (fixed target velocity — wind, current), `SpatialDragField` (spatially-varying flow) |
+| **Confinement** | `RadialConfinementField`, `AabbConfinementField` |
+| **Chemotaxis** | `ChemotaxisField` (gradient-following, Keller-Segel) |
+| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `PredictiveBoundary` (tighter keep-out), `GripFrictionBoundary` (strain-rate-gated grip), `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile) |
+
 ## Features
 
 - `gpu` — the whole pipeline (P2G, grid update, G2P, every plasticity model) as WGSL compute
@@ -80,6 +104,8 @@ cargo run --example basic_jellies   --features render
 cargo run --example basic_creature  --features render  # LNN-driven muscle locomotion
 cargo run --example basic_showcase  --features render  # three materials at once
 cargo run --example basic_sand_gpu  --features render
+cargo run --example rod_blade_of_grass                       # rod solver, no window
+cargo run --example rod_blade_of_grass_gui --features render # rod solver, live + pushable
 ```
 
 Windowed examples (everything except `headless` and `validate_materials`) need `--features render` — they draw via wgpu/winit directly, no Bevy.
@@ -95,6 +121,7 @@ Windowed examples (everything except `headless` and `validate_materials`) need `
 | µ(I)-rheology | Dunatunga & Kamrin 2015, *Continuum modelling and simulation of granular flow* |
 | Surface tension | Stomakhin et al. 2014, *Augmented MPM for cloth and soft bodies* |
 | N-body gravity | Barnes & Hut 1986, *A hierarchical O(N log N) force-calculation algorithm* |
+| Rod (Cosserat) | Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, *Discrete Elastic Rods* |
 
 ## Contributing
 

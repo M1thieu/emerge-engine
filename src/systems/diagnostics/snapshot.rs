@@ -1,10 +1,25 @@
 use glam::Vec2;
-use std::collections::HashMap;
 
-use crate::solver::config::SimConfig;
-use crate::{grid::Grid, particle::Particles};
+/// Rod-solver diagnostics -- `spacetime::rod` is a separate solver from the
+/// MPM particle grid (see `rod` module doc), so its state doesn't fall out
+/// of `collect_snapshot`'s particle/grid scan and needs its own small
+/// aggregation. Not `Copy` (holds a `Vec`), unlike `SimSnapshot` itself.
+#[derive(Debug, Clone, Default)]
+pub struct RodSnapshot {
+    pub count: usize,
+    /// Rods with `Rod::sleeping == true` -- skipped entirely by
+    /// scatter/gather/internal-force integration this step.
+    pub sleeping_count: usize,
+    /// Max point speed across all rods (sleeping rods contribute 0.0, same
+    /// convention as `SimSnapshot::max_particle_speed` excluding sleeping
+    /// particles from the scan would -- sleeping rods are physically at rest).
+    pub max_speed: f32,
+    /// Tip position (last point) of each rod, in the same order as
+    /// `Simulation::rods()`.
+    pub tip_positions: Vec<Vec2>,
+}
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SimSnapshot {
     pub frame_index: u64,
     /// Frame duration as configured: the total simulation time advanced by one `step()` call.
@@ -73,6 +88,47 @@ pub struct SimSnapshot {
     /// added specifically so this class of bug is directly observable instead of
     /// inferred indirectly from a body slowly drifting.
     pub max_pinned_particle_speed: f32,
+    /// Rod-solver diagnostics -- empty/default for any scene with no rods
+    /// (`Simulation::rods()` empty), zero cost in that case.
+    pub rods: RodSnapshot,
+}
+
+/// Real-world (SI) unit conversion of a `SimSnapshot`'s key physical
+/// quantities -- lets any demo/test print actual m/s, kg*m/s, and Joules
+/// instead of raw grid units, so "is this realistic" is a direct read, not
+/// a mental `* dx_meters` every time. Mass is already real kilograms
+/// throughout this engine (`Particle::mass`'s own convention) -- only
+/// length/velocity-derived quantities need `dx_meters` scaling.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SiSnapshot {
+    pub sim_time_elapsed_s: f32,
+    pub max_particle_speed_m_s: f32,
+    pub max_grid_speed_m_s: f32,
+    pub total_particle_mass_kg: f32,
+    pub total_particle_momentum_kg_m_s: Vec2,
+    pub total_kinetic_energy_joules: f32,
+    pub recommended_max_dt_s: f32,
+}
+
+impl SimSnapshot {
+    /// Convert to real SI units given the scene's `dx_meters` (meters per
+    /// grid cell). Velocity: v_real = v_grid * dx_meters. Momentum
+    /// (mass*v): scales by the same one factor of dx_meters. Kinetic
+    /// energy (mass*v^2): scales by dx_meters^2. `configured_dt` is
+    /// already real seconds throughout this engine (the same convention
+    /// `SimConfig::dt` itself uses), so `sim_time_elapsed_s` and
+    /// `recommended_max_dt_s` need no further conversion.
+    pub fn to_si(&self, dx_meters: f32) -> SiSnapshot {
+        SiSnapshot {
+            sim_time_elapsed_s: self.frame_index as f32 * self.configured_dt,
+            max_particle_speed_m_s: self.max_particle_speed * dx_meters,
+            max_grid_speed_m_s: self.max_grid_speed * dx_meters,
+            total_particle_mass_kg: self.total_particle_mass,
+            total_particle_momentum_kg_m_s: self.total_particle_momentum * dx_meters,
+            total_kinetic_energy_joules: self.total_kinetic_energy * dx_meters * dx_meters,
+            recommended_max_dt_s: self.recommended_max_dt_from_velocity_cfl,
+        }
+    }
 }
 
 /// Wall-clock timing breakdown for one `step()` call (sum of all substeps).
@@ -104,338 +160,122 @@ pub struct StepTiming {
     pub total_us: u64,
 }
 
-/// Particle-only snapshot — no grid required. Used by `GpuSimulation::diagnostics_snapshot`.
-/// Grid-side fields (mass error, momentum error, grid speed, active cells) are left at zero.
-pub fn collect_snapshot_particles_only(
-    frame_index: u64,
-    particles: &[crate::particle::Particle],
-    config: &SimConfig,
-    step_dt: f32,
-    substeps_last_step: usize,
-) -> SimSnapshot {
-    let mut snap = SimSnapshot {
-        frame_index,
-        configured_dt: config.dt,
-        effective_dt: step_dt,
-        substeps_last_step,
-        particle_count: particles.len(),
-        recommended_max_dt_from_velocity_cfl: f32::INFINITY,
-        min_deformation_j: f32::INFINITY,
-        max_deformation_j: f32::NEG_INFINITY,
-        min_plastic_jacobian: f32::INFINITY,
-        avg_plastic_jacobian: 1.0,
-        avg_elastic_hardening: 1.0,
+// Snapshot aggregation from Particles/Grid state (collect_snapshot,
+// collect_snapshot_particles_only, and their private per-particle/per-cell
+// helpers) split into collect.rs -- was ~330 of this file's ~524 lines of
+// pure computation, as opposed to the data definitions above. See that
+// file's own doc comment.
+mod collect;
+pub use collect::{collect_snapshot, collect_snapshot_particles_only};
+
+/// Aggregate `RodSnapshot` from a `Simulation`'s live rods -- called from
+/// `Simulation::diagnostics_snapshot`, kept here (not in `collect.rs`) since
+/// it scans `rod::Rod` not `Particles`/`Grid`.
+pub fn collect_rod_snapshot(rods: &[crate::rod::Rod]) -> RodSnapshot {
+    let mut snap = RodSnapshot {
+        count: rods.len(),
         ..Default::default()
     };
-    let min_bound = config.boundary_thickness.saturating_sub(1) as f32;
-    let max_bound = config.grid_res.saturating_sub(config.boundary_thickness) as f32;
-    let mut jp_sum = 0.0f32;
-    let mut h_sum = 0.0f32;
-
-    for p in particles {
-        let deformation_j = p.deformation_gradient.determinant();
-        snap.total_particle_mass += p.mass;
-        snap.total_particle_momentum += p.mass * p.v;
-        snap.max_particle_speed = snap.max_particle_speed.max(p.v.length());
-        snap.total_kinetic_energy += 0.5 * p.mass * p.v.length_squared();
-        if p.pinned != 0 {
-            snap.max_pinned_particle_speed = snap.max_pinned_particle_speed.max(p.v.length());
+    for rod in rods {
+        if rod.sleeping {
+            snap.sleeping_count += 1;
+        } else {
+            for v in &rod.points.v {
+                snap.max_speed = snap.max_speed.max(v.length());
+            }
         }
-        if deformation_j.is_finite() {
-            snap.min_deformation_j = snap.min_deformation_j.min(deformation_j);
-            snap.max_deformation_j = snap.max_deformation_j.max(deformation_j);
+        if let Some(&tip) = rod.points.x.last() {
+            snap.tip_positions.push(tip);
         }
-        if p.x.x < min_bound || p.x.x > max_bound || p.x.y < min_bound || p.x.y > max_bound {
-            snap.out_of_bounds_particles += 1;
-        }
-        let jp = p.plastic_volume_ratio;
-        let h = p.hardening_scale;
-        if jp.is_finite() {
-            jp_sum += jp;
-            snap.min_plastic_jacobian = snap.min_plastic_jacobian.min(jp);
-        }
-        if h.is_finite() {
-            h_sum += h;
-        }
-        let non_finite = [
-            p.x.x,
-            p.x.y,
-            p.v.x,
-            p.v.y,
-            p.velocity_gradient.x_axis.x,
-            p.velocity_gradient.x_axis.y,
-            p.velocity_gradient.y_axis.x,
-            p.velocity_gradient.y_axis.y,
-            p.deformation_gradient.x_axis.x,
-            p.deformation_gradient.x_axis.y,
-            p.deformation_gradient.y_axis.x,
-            p.deformation_gradient.y_axis.y,
-            p.mass,
-            p.initial_volume,
-            p.volume,
-            p.density,
-            p.plastic_volume_ratio,
-        ]
-        .iter()
-        .filter(|v| !v.is_finite())
-        .count();
-        snap.non_finite_particle_values += non_finite;
-        if non_finite == 0 {
-            snap.valid_particle_count += 1;
-        }
-        if p.mass <= 0.0
-            || p.volume <= 0.0
-            || p.initial_volume <= 0.0
-            || p.density <= 0.0
-            || deformation_j <= 0.0
-            || jp <= 0.0
-        {
-            snap.invalid_physical_particle_values += 1;
-        }
-    }
-
-    if !particles.is_empty() {
-        let n = particles.len() as f32;
-        snap.avg_plastic_jacobian = jp_sum / n;
-        snap.avg_elastic_hardening = h_sum / n;
-        if snap.min_plastic_jacobian.is_infinite() {
-            snap.min_plastic_jacobian = 1.0;
-        }
-    }
-
-    let cell_size = config.grid_cell_size.max(f32::EPSILON);
-    snap.cfl_number = snap.max_particle_speed * step_dt / cell_size;
-    if snap.max_particle_speed > f32::EPSILON {
-        snap.recommended_max_dt_from_velocity_cfl = cell_size / snap.max_particle_speed;
     }
     snap
 }
 
-pub fn collect_snapshot(
-    frame_index: u64,
-    particles: &Particles,
-    grid: &Grid,
-    config: &SimConfig,
-    step_dt: f32,
-    substeps_last_step: usize,
-) -> SimSnapshot {
-    #[derive(Clone, Copy, Debug)]
-    struct MaterialCellState {
-        first_material_id: u32,
-        has_multiple_materials: bool,
-        particle_count: usize,
+#[cfg(test)]
+mod rod_snapshot_tests {
+    use super::*;
+    use crate::rod::{Rod, RodMaterial, build_straight_rod};
+
+    fn straight_rod(start: Vec2, end: Vec2) -> Rod {
+        let points = build_straight_rod(start, end, 4, 0.01, 0.01);
+        let material = RodMaterial::new(1.0e-3, 1.0e-6, 1.0e-4, 1.0e-6);
+        Rod::new(points, material)
     }
 
-    let mut snapshot = SimSnapshot {
-        frame_index,
-        configured_dt: config.dt,
-        effective_dt: step_dt,
-        substeps_last_step,
-        particle_count: particles.len(),
-        recommended_max_dt_from_velocity_cfl: f32::INFINITY,
-        min_deformation_j: f32::INFINITY,
-        max_deformation_j: f32::NEG_INFINITY,
-        min_plastic_jacobian: f32::INFINITY,
-        avg_plastic_jacobian: 1.0,
-        avg_elastic_hardening: 1.0,
-        ..Default::default()
-    };
-    let mut jp_sum = 0.0f32;
-    let mut h_sum = 0.0f32;
-    let mut material_cells = HashMap::<usize, MaterialCellState>::new();
-
-    let min_bound = config.boundary_thickness.saturating_sub(1) as f32;
-    let max_bound = config.grid_res.saturating_sub(config.boundary_thickness) as f32;
-
-    for i in particles.indices() {
-        let mass = particles.mass[i];
-        let v = particles.v[i];
-        let x = particles.x[i];
-        let deformation_j = particles.deformation_gradient[i].determinant();
-        let jp = particles.plastic_volume_ratio[i];
-        let h = particles.hardening_scale[i];
-        let mat_id = particles.material_id[i];
-
-        snapshot.total_particle_mass += mass;
-        snapshot.total_particle_momentum += mass * v;
-        snapshot.max_particle_speed = snapshot.max_particle_speed.max(v.length());
-        snapshot.total_kinetic_energy += 0.5 * mass * v.length_squared();
-        if particles.pinned[i] != 0 {
-            snapshot.max_pinned_particle_speed = snapshot.max_pinned_particle_speed.max(v.length());
-        }
-
-        if deformation_j.is_finite() {
-            snapshot.min_deformation_j = snapshot.min_deformation_j.min(deformation_j);
-            snapshot.max_deformation_j = snapshot.max_deformation_j.max(deformation_j);
-        }
-
-        if x.x < min_bound || x.x > max_bound || x.y < min_bound || x.y > max_bound {
-            snapshot.out_of_bounds_particles += 1;
-        }
-
-        if let Some(cell_index) = particle_cell_index(x, config.grid_res) {
-            let entry = material_cells
-                .entry(cell_index)
-                .or_insert_with(|| MaterialCellState {
-                    first_material_id: mat_id,
-                    has_multiple_materials: false,
-                    particle_count: 0,
-                });
-            entry.particle_count += 1;
-            if !entry.has_multiple_materials && mat_id != entry.first_material_id {
-                entry.has_multiple_materials = true;
-            }
-        }
-
-        if jp.is_finite() {
-            jp_sum += jp;
-            snapshot.min_plastic_jacobian = snapshot.min_plastic_jacobian.min(jp);
-        }
-        if h.is_finite() {
-            h_sum += h;
-        }
-
-        let non_finite_values = count_non_finite_particle_values(particles, i);
-        snapshot.non_finite_particle_values += non_finite_values;
-        if non_finite_values == 0 {
-            snapshot.valid_particle_count += 1;
-        }
-        snapshot.invalid_physical_particle_values +=
-            count_invalid_particle_values(particles, i, deformation_j);
+    #[test]
+    fn empty_rod_list_gives_empty_snapshot() {
+        let snap = collect_rod_snapshot(&[]);
+        assert_eq!(snap.count, 0);
+        assert_eq!(snap.sleeping_count, 0);
+        assert_eq!(snap.max_speed, 0.0);
+        assert!(snap.tip_positions.is_empty());
     }
 
-    if !particles.is_empty() {
-        let n = particles.len() as f32;
-        snapshot.avg_plastic_jacobian = jp_sum / n;
-        snapshot.avg_elastic_hardening = h_sum / n;
-        if snapshot.min_plastic_jacobian.is_infinite() {
-            snapshot.min_plastic_jacobian = 1.0;
-        }
+    #[test]
+    fn counts_and_tip_positions_match_real_rod_state() {
+        let mut awake = straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 3.0));
+        awake.points.v[2] = Vec2::new(5.0, 0.0); // a real, nonzero interior speed
+        let mut asleep = straight_rod(Vec2::new(10.0, 0.0), Vec2::new(10.0, 3.0));
+        asleep.sleeping = true;
+        asleep.points.v[1] = Vec2::new(99.0, 0.0); // must NOT count -- sleeping rods don't move
+
+        let rods = [awake, asleep];
+        let snap = collect_rod_snapshot(&rods);
+
+        assert_eq!(snap.count, 2);
+        assert_eq!(snap.sleeping_count, 1);
+        assert!(
+            (snap.max_speed - 5.0).abs() < 1.0e-6,
+            "max_speed must come from the awake rod's real 5.0 m/s point, \
+             not the sleeping rod's stale 99.0 leftover velocity"
+        );
+        assert_eq!(snap.tip_positions.len(), 2);
+        assert_eq!(snap.tip_positions[0], rods[0].points.x[3]);
+        assert_eq!(snap.tip_positions[1], rods[1].points.x[3]);
     }
-
-    for cell in grid.active_cells() {
-        if cell.mass > 0.0 {
-            snapshot.active_grid_cells += 1;
-        }
-        snapshot.total_grid_mass += cell.mass;
-        snapshot.total_grid_momentum += cell.mass * cell.momentum;
-        snapshot.max_grid_speed = snapshot.max_grid_speed.max(cell.momentum.length());
-        snapshot.non_finite_grid_values +=
-            count_non_finite_grid_values(cell.mass, cell.momentum.x, cell.momentum.y);
-    }
-
-    if snapshot.active_grid_cells > 0 {
-        snapshot.particles_per_active_cell =
-            snapshot.particle_count as f32 / snapshot.active_grid_cells as f32;
-    }
-
-    if !material_cells.is_empty() {
-        let mut mixed_cell_count = 0usize;
-        let mut particles_in_mixed_cells = 0usize;
-        for cell in material_cells.values() {
-            if cell.has_multiple_materials {
-                mixed_cell_count += 1;
-                particles_in_mixed_cells += cell.particle_count;
-            }
-        }
-        snapshot.mixed_material_cell_ratio = mixed_cell_count as f32 / material_cells.len() as f32;
-        if snapshot.particle_count > 0 {
-            snapshot.mixed_material_particle_ratio =
-                particles_in_mixed_cells as f32 / snapshot.particle_count as f32;
-        }
-    }
-
-    if snapshot.total_particle_mass > f32::EPSILON {
-        snapshot.relative_mass_error = (snapshot.total_grid_mass - snapshot.total_particle_mass)
-            .abs()
-            / snapshot.total_particle_mass;
-    }
-
-    let momentum_scale = snapshot
-        .total_particle_momentum
-        .length()
-        .max(snapshot.total_grid_momentum.length())
-        .max(snapshot.total_particle_mass * 1.0e-3);
-    snapshot.relative_momentum_error =
-        (snapshot.total_grid_momentum - snapshot.total_particle_momentum).length() / momentum_scale;
-
-    let cell_size = config.grid_cell_size.max(f32::EPSILON);
-    snapshot.cfl_number = snapshot.max_particle_speed * step_dt / cell_size;
-    if snapshot.max_particle_speed > f32::EPSILON {
-        snapshot.recommended_max_dt_from_velocity_cfl = cell_size / snapshot.max_particle_speed;
-    }
-
-    snapshot
 }
 
-fn particle_cell_index(position: Vec2, grid_res: usize) -> Option<usize> {
-    if !position.is_finite() {
-        return None;
-    }
-    let ix = position.x.floor() as i32;
-    let iy = position.y.floor() as i32;
-    if ix < 0 || iy < 0 {
-        return None;
-    }
-    let ux = ix as usize;
-    let uy = iy as usize;
-    if ux >= grid_res || uy >= grid_res {
-        return None;
-    }
-    Some(ux * grid_res + uy)
-}
+#[cfg(test)]
+mod si_conversion_tests {
+    use super::*;
 
-fn count_non_finite_particle_values(particles: &Particles, i: usize) -> usize {
-    let c = particles.velocity_gradient[i];
-    let f = particles.deformation_gradient[i];
-    let values = [
-        particles.x[i].x,
-        particles.x[i].y,
-        particles.v[i].x,
-        particles.v[i].y,
-        c.x_axis.x,
-        c.x_axis.y,
-        c.y_axis.x,
-        c.y_axis.y,
-        f.x_axis.x,
-        f.x_axis.y,
-        f.y_axis.x,
-        f.y_axis.y,
-        particles.mass[i],
-        particles.initial_volume[i],
-        particles.volume[i],
-        particles.density[i],
-        particles.plastic_volume_ratio[i],
-    ];
-    values.iter().filter(|v| !v.is_finite()).count()
-}
+    /// Real, hand-checkable conversion: a particle moving at exactly 1
+    /// grid-cell/second in a scene where 1 cell = 0.01m must read as
+    /// exactly 0.01 m/s once converted -- not an approximation.
+    #[test]
+    fn to_si_converts_known_values_exactly() {
+        let snap = SimSnapshot {
+            frame_index: 100,
+            configured_dt: 0.1,
+            max_particle_speed: 1.0,
+            max_grid_speed: 2.0,
+            total_particle_mass: 5.0,
+            total_particle_momentum: Vec2::new(3.0, 0.0),
+            total_kinetic_energy: 10.0,
+            recommended_max_dt_from_velocity_cfl: 0.005,
+            ..Default::default()
+        };
+        let dx_meters = 0.01;
+        let si = snap.to_si(dx_meters);
 
-fn count_non_finite_grid_values(mass: f32, vx: f32, vy: f32) -> usize {
-    [mass, vx, vy]
-        .iter()
-        .filter(|value| !value.is_finite())
-        .count()
-}
-
-fn count_invalid_particle_values(particles: &Particles, i: usize, deformation_j: f32) -> usize {
-    let mut invalid = 0usize;
-    if particles.mass[i] <= 0.0 {
-        invalid += 1;
+        assert!(
+            (si.sim_time_elapsed_s - 10.0).abs() < 1.0e-6,
+            "100 steps * 0.1s = 10s real time"
+        );
+        assert!((si.max_particle_speed_m_s - 0.01).abs() < 1.0e-6);
+        assert!((si.max_grid_speed_m_s - 0.02).abs() < 1.0e-6);
+        assert!(
+            (si.total_particle_mass_kg - 5.0).abs() < 1.0e-6,
+            "mass is already real kg, unscaled"
+        );
+        assert!((si.total_particle_momentum_kg_m_s.x - 0.03).abs() < 1.0e-6);
+        assert!(
+            (si.total_kinetic_energy_joules - 10.0 * 0.01 * 0.01).abs() < 1.0e-9,
+            "KE scales by dx_meters^2 (velocity is squared)"
+        );
+        assert!(
+            (si.recommended_max_dt_s - 0.005).abs() < 1.0e-6,
+            "dt is already real seconds"
+        );
     }
-    if particles.volume[i] <= 0.0 {
-        invalid += 1;
-    }
-    if particles.initial_volume[i] <= 0.0 {
-        invalid += 1;
-    }
-    if particles.density[i] <= 0.0 {
-        invalid += 1;
-    }
-    if deformation_j <= 0.0 {
-        invalid += 1;
-    }
-    if particles.plastic_volume_ratio[i] <= 0.0 {
-        invalid += 1;
-    }
-    invalid
 }

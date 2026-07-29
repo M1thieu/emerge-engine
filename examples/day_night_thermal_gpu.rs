@@ -29,6 +29,12 @@ const DT: f32 = 0.1;
 // heat_capacity ~1000 J/(kg*K), grid_cell_size=1.0m (each cell is a real meter).
 const CONDUCTIVITY: f32 = 0.5;
 const HEAT_CAPACITY: f32 = 1000.0;
+// kg/m^3, real moist/damp soil (typical range 1200-1900) -- matches the same
+// "damp-earth-like slab" this file's own conductivity/heat_capacity already
+// assume. Added 2026-07-24: `attach_thermal_gpu` previously had no density
+// parameter at all (same engine-wide bug as CPU's `ThermalConfig`), so this
+// demo's diffusion silently ran with an implicit rho=1 -- 1600x too fast.
+const DENSITY: f32 = 1600.0;
 const GRID_CELL_SIZE_M: f32 = 1.0;
 const COOLING_RATE: f32 = 0.05; // Newton cooling, 1/s
 const DAY_AMBIENT: f32 = 35.0;
@@ -76,6 +82,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     sim.attach_thermal_gpu(
         CONDUCTIVITY,
         HEAT_CAPACITY,
+        DENSITY,
         GRID_CELL_SIZE_M,
         NIGHT_AMBIENT,
         COOLING_RATE,

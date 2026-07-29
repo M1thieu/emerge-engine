@@ -12,7 +12,7 @@ use crate::particle::Particles;
 /// Stress decomposition: σ = −p·I + τ_deviatoric
 /// Pressure: Tait EOS — p = k·((ρ/ρ₀)^γ − 1), same as NewtonianFluid.
 /// Deviatoric:
-///   γ̇ = √(2·D:D)   (scalar shear rate, D = symmetric velocity gradient)
+///   γ̇ = √(2·D_dev:D_dev)   (scalar shear rate, D_dev = deviatoric part of D)
 ///   τ = (τ₀/γ̇ + η)·D_dev   if γ̇ > critical_shear_rate, else 0
 ///
 /// Reference: Bingham 1916. MPM formulation: GeoTaichi BinghamModel (Taichi lang).

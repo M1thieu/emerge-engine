@@ -1,18 +1,15 @@
 //! Sparse Eulerian background grid for MLS-MPM P2G/G2P.
 //!
-//! Split 2026-07-19 (was 1592 lines in one file) by subsystem — the struct
-//! already partitioned into 3 nearly-independent field groups (`cells`,
-//! `contact_cells`, `mixture_cells`, each with its own dirty list), so this
-//! finishes the same sibling-split job `contact_normal.rs`/
-//! `directional_grip.rs` already started. `contact.rs` and `mixture.rs` each
-//! add their own `impl Grid { ... }` block (ordinary Rust: multiple impl
-//! blocks for one type across files) rather than living inside this one —
-//! every method these files define was already private to the `grid` module
-//! before the split (visible to `grid` and its descendants by Rust's normal
-//! privacy rule), so no visibility widening was needed for `Grid`'s own
-//! fields; only the two new per-subsystem cell types (`ContactCell`/
-//! `ContactCellMap`, `MixtureCell`/`MixtureCellMap`) needed `pub(super)` so
-//! this file's own `Grid` struct definition can still name their map types.
+//! Split by subsystem — the struct partitions into 3 nearly-independent field
+//! groups (`cells`, `contact_cells`, `mixture_cells`, each with its own dirty
+//! list). `contact.rs` and `mixture.rs` each add their own `impl Grid { ... }`
+//! block (ordinary Rust: multiple impl blocks for one type across files) rather
+//! than living inside this one — every method these files define is private to
+//! the `grid` module (visible to `grid` and its descendants by Rust's normal
+//! privacy rule), so no visibility widening was needed for `Grid`'s own fields;
+//! only the two per-subsystem cell types (`ContactCell`/`ContactCellMap`,
+//! `MixtureCell`/`MixtureCellMap`) need `pub(super)` so this file's own `Grid`
+//! struct definition can name their map types.
 
 pub mod kernel;
 
@@ -164,6 +161,17 @@ impl Grid {
     }
 
     /// Remove only touched cells. O(touched), not O(resolution²).
+    ///
+    /// Do not replace this with zeroing dirty cells in place instead of removing them
+    /// (tried once, reverted): `accumulate`'s `Entry::Occupied` branch never pushes to
+    /// `dirty` (only `Entry::Vacant` does, since removal was the only way a cell
+    /// reappeared there). Without removal, a cell touched again next substep hits
+    /// `Occupied` and is silently never re-added to `dirty`, so gravity/normalization/G2P
+    /// stop running on it after its first substep while mass/momentum keep accumulating
+    /// invisibly. A correct version needs a generation/epoch marker to distinguish
+    /// "already in dirty this substep" from "occupied but stale," which can't safely
+    /// live on `Cell` itself (`#[repr(C)]`, stable GPU buffer layout) without checking
+    /// every GPU-side assumption first.
     pub fn clear(&mut self) {
         for &idx in &self.dirty {
             self.cells.remove(&idx);
@@ -224,20 +232,6 @@ impl Grid {
         self.cells
             .get(&((x * self.resolution + y) as u32))
             .map_or(Vec2::ZERO, |c| c.momentum)
-    }
-
-    /// True if `cell_pos` was touched by P2G this frame.
-    #[inline]
-    pub fn cell_is_active(&self, cell_pos: IVec2) -> bool {
-        if cell_pos.x < 0 || cell_pos.y < 0 {
-            return false;
-        }
-        let x = cell_pos.x as usize;
-        let y = cell_pos.y as usize;
-        if x >= self.resolution || y >= self.resolution {
-            return false;
-        }
-        self.cells.contains_key(&((x * self.resolution + y) as u32))
     }
 
     pub fn mass_at(&self, cell_pos: IVec2) -> f32 {
@@ -314,6 +308,41 @@ impl Grid {
             return Vec2::ZERO;
         };
         snapshot.get(&idx).copied().unwrap_or(Vec2::ZERO)
+    }
+
+    /// Cundall (1982/1987) local non-viscous damping -- see `SimConfig::cundall_damping`'s
+    /// own doc for the real citation/rationale. Compares each active cell's CURRENT
+    /// velocity against `pre_force` (the same pre-gravity/boundary/contact snapshot
+    /// ASFLIP already takes -- see `snapshot_velocities`), treating the delta as a real
+    /// proxy for the force applied this substep (Δv = F·dt/m at fixed dt/mass), and
+    /// damps the component of velocity that delta is driving -- proportional to the
+    /// FORCE magnitude, not velocity magnitude (that distinction is the whole point:
+    /// ordinary viscous damping scales with speed, this scales with how hard something
+    /// was just pushed). Component-wise, matching the real Cundall formulation exactly
+    /// (each DOF independently, not the vector as a whole). Zero contribution wherever
+    /// a component is exactly zero (nothing to oppose) -- real, honest guard, since
+    /// `f32::signum(0.0)` returns `1.0`, not `0.0`, and would otherwise inject a spurious
+    /// damping force at rest.
+    pub fn apply_cundall_damping(&mut self, pre_force: &VelocitySnapshot, coefficient: f32) {
+        let (dirty, cells) = (&self.dirty, &mut self.cells);
+        for &idx in dirty {
+            if let Some(cell) = cells.get_mut(&idx)
+                && cell.mass > 0.0
+            {
+                let before = pre_force.get(&idx).copied().unwrap_or(Vec2::ZERO);
+                let after = cell.momentum;
+                let dv = after - before;
+                let damp_component = |v: f32, d: f32| -> f32 {
+                    if v == 0.0 {
+                        0.0
+                    } else {
+                        coefficient * d.abs() * v.signum()
+                    }
+                };
+                let damp = Vec2::new(damp_component(after.x, dv.x), damp_component(after.y, dv.y));
+                cell.momentum = after - damp;
+            }
+        }
     }
 
     /// Analytic adjoint of one cell's `update_velocities` step w.r.t. its

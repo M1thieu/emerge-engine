@@ -44,7 +44,7 @@ struct Particle {
     sleeping:             u32,
     pinned:               u32,
     scalar_field:         f32,
-    _pad:                 u32,
+    internal_pressure:    f32,
 }
 
 struct StepParams {
@@ -107,19 +107,13 @@ fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
 // snapshot grid_clear will also clear, in addition to whatever's freshly compacted below),
 // then resets active_block_count to 0 so compact starts from a clean slate.
 //
-// Real bug found via a long-running headless diagnostic (basic_sand_gpu blew up after ~1500
-// frames, ~1-in-5 runs): a block that stops being active (a particle moves away) was never
-// cleared again, since grid_clear only ever clears CURRENTLY active blocks — its last P2G
-// contribution sat there permanently until some particle wandered back near it much later,
-// at which point P2G's atomic ADD compounded onto the stale residual. Dense grid_clear never
-// had this problem (it unconditionally zeroed every cell every substep regardless of
-// activity). A first attempt at fixing this (accumulate-without-resetting, deduplicated via a
-// presence bitmask, reset right after grid_clear in the SAME substep) was wrong: resetting in
-// the same substep it was used in means the "previous" state is already gone by the time the
-// NEXT substep's compact runs — zero actual grace period, just extra work. This is why: a
-// genuine 1-substep grace period needs the LAST substep's active set to still exist when the
-// NEXT substep's grid_clear runs, which requires two independent buffers (this substep's,
-// and last substep's), not one buffer with a same-substep reset.
+// A block that stops being active (a particle moves away) must still be cleared once more —
+// grid_clear only ever clears CURRENTLY active blocks, so without this its last P2G
+// contribution would sit there permanently until a particle wandered back near it, at which
+// point P2G's atomic ADD would compound onto the stale residual. This needs two independent
+// buffers (this substep's list and last substep's), not one buffer reset in the same substep
+// it's used in — a same-substep reset gives zero actual grace period, since the "previous"
+// state would already be gone by the time the NEXT substep's compact runs.
 @compute @workgroup_size(256, 1, 1)
 fn active_block_swap_main(@builtin(local_invocation_id) lid: vec3<u32>) {
     active_block_ids_prev[lid.x] = active_block_ids[lid.x];
@@ -164,14 +158,12 @@ fn particle_sort_count_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // reordered relative to count/scan without breaking the only correct window to read it.
 //
 // A block is marked active if it OR ANY of its 8 neighbors has particles — not just itself.
-// Real bug found via direct testing (gpu_sleep_freezes_settled_particles never settling):
-// the quadratic B-spline P2G kernel scatters into a 3-cell-wide neighborhood around each
+// The quadratic B-spline P2G kernel scatters into a 3-cell-wide neighborhood around each
 // particle, which routinely spills across a block boundary into an adjacent block whenever
 // block_size (cells per block) is smaller than the kernel's reach — e.g. grid_res=32 with
 // NUM_BLOCKS_PER_DIM=16 gives block_size=2, smaller than the 3-cell stencil, so nearly every
-// particle's scatter crosses into a neighbor. If that neighbor isn't marked active,
-// grid_clear never clears it while P2G keeps atomically scattering into it anyway —
-// uncleared values accumulate substep over substep instead of resetting. Mirrors the kernel's
+// particle's scatter crosses into a neighbor. If that neighbor isn't marked active, grid_clear
+// never clears it while P2G keeps atomically scattering into it anyway. Mirrors the kernel's
 // own 3×3 reach at block granularity instead of cell granularity — correct at any
 // grid_res/NUM_BLOCKS_PER_DIM ratio, not just ones where block_size happens to exceed 3.
 //

@@ -79,9 +79,10 @@ pub use materials::{
     DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
     GranularFluidMaterial, MAX_MATERIAL_SLOTS, MaterialModel, MaterialParams, MaterialRegistry,
     MixturePhase, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
-    ParticleMass, PlasticityModel, RankineMaterial, StomakhinMaterial, Viscoelastic,
-    ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithMixturePhase, gravity_to_grid,
-    lame_from_si, lame_from_young, rankine_damage_estimate,
+    NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
+    RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
+    WithLatentHeat, WithMixturePhase, WithPreStress, gravity_to_grid, lame_from_si,
+    lame_from_young, rankine_damage_estimate,
 };
 
 // Boundary conditions
@@ -142,7 +143,7 @@ pub fn estimate_particle_volumes(particles: &mut Vec<Particle>, grid_res: usize)
     let mut soa = Particles::from(std::mem::take(particles));
     let mut grid = Grid::new(grid_res);
     let n = soa.len();
-    density_estimate(&mut soa, &mut grid, n, true);
+    density_estimate(&mut soa, &mut grid, None, n, true);
     *particles = soa.to_vec();
 }
 
@@ -164,6 +165,7 @@ pub use diagnostics::{
     // Per-material stats + logging
     MaterialStats,
     RollingPlugin,
+    SiSnapshot,
     SimSnapshot,
     StabilityStatus,
     StabilityThresholds,

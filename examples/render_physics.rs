@@ -166,8 +166,8 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particle_count(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(BLOB_ID as usize, SIGMA_TISSUE);
-        renderer.set_optical_params(WATER_ID as usize, SIGMA_WATER);
+        renderer.set_optical_params(&queue, BLOB_ID as usize, SIGMA_TISSUE);
+        renderer.set_optical_params(&queue, WATER_ID as usize, SIGMA_WATER);
 
         println!("render_physics [GPU]: {} particles", sim.particle_count());
         println!(

@@ -286,6 +286,7 @@ fn phase_transition_applies_latent_heat_energy_debit() {
     let thermal = ThermalDiffusion::new(
         ThermalConfig {
             heat_capacity: HEAT_CAPACITY,
+            density: 1000.0, // kg/m^3, real water -- required, see ThermalConfig::density
             grid_cell_size: 0.1,
             ..Default::default()
         },
@@ -381,18 +382,14 @@ impl emerge::MaterialModel for SentinelMaterial {
 
 #[test]
 fn phase_transition_reinitializes_material_specific_state() {
-    // Real bug fixed 2026-07-19: `phase_transition` used to only swap
-    // `material_id` (+ optional latent-heat temperature debit), leaving every
-    // other material-specific scalar (`friction_hardening` here) as whatever
-    // the OLD material had left behind -- silently reinterpreted under the
-    // NEW material's own semantics for that same field. This asserts the new
-    // material's `init_particle` actually runs after the swap.
+    // phase_transition must re-run the new material's init_particle, not leave stale
+    // per-material scalars from the old one.
     const NEW_ID: u32 = 1;
     let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
         .with_default_material(Box::new(SentinelMaterial(0.0)))
         .with_material(NEW_ID, Box::new(SentinelMaterial(42.0)));
 
-    // Simulate real accumulated plastic state under the OLD material.
+    // Accumulated plastic state under the OLD material.
     for f in solver.particles_mut().friction_hardening.iter_mut() {
         *f = 999.0;
     }
@@ -411,9 +408,8 @@ fn phase_transition_reinitializes_material_specific_state() {
 
 #[test]
 fn add_phase_rule_reinitializes_material_specific_state() {
-    // Same real bug as `phase_transition_reinitializes_material_specific_state`,
-    // but the OTHER code path that used to skip `init_particle` after a
-    // material_id swap: the automatic every-substep rule loop in `step()`.
+    // Same invariant as `phase_transition_reinitializes_material_specific_state`, via the
+    // automatic every-substep rule loop in `step()` instead.
     const NEW_ID: u32 = 1;
     let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
         .with_default_material(Box::new(SentinelMaterial(0.0)))
@@ -442,44 +438,23 @@ fn add_phase_rule_reinitializes_material_specific_state() {
     }
 }
 
-/// Real trophic/predation composition: a "prey" material converts to an "eaten"
-/// material within a predator's sensing range, at a rate driven by `saturating_uptake`
-/// (Holling Type II / Michaelis-Menten / Monod -- see its doc) applied to LOCAL PREY
-/// DENSITY, using ONLY existing primitives -- `particles_near` (real O(candidates)
-/// proximity query) to gather both predator positions and nearby prey, then direct
-/// `particles_mut()` material reassignment (same composition pattern as
-/// `resource_field_depletes_near_consumer_then_regrows` above).
+/// Prey converts to "eaten" near a predator at a rate driven by `saturating_uptake`
+/// (Holling Type II / Michaelis-Menten / Monod) over local prey density -- not a hard
+/// radius cutoff, since real consumption saturates with density rather than switching
+/// on/off at a distance. `eat_budget` discretizes that continuous rate into particle
+/// conversions across frames.
 ///
-/// This replaced an earlier version of this test that used a hard "everyone within
-/// radius X dies, every frame" rule -- that rule had NO ecological law behind it (see
-/// `saturating_uptake`'s doc for why a hard cutoff is the wrong shape: real consumption
-/// saturates with density, it doesn't switch on/off at a distance). The sensing RADIUS
-/// itself is legitimate (real predators have a finite detection/reach range) -- what
-/// was wrong was making the EATING DECISION binary instead of a continuous, density-
-/// driven rate. `eat_budget` converts that continuous rate into discrete particle
-/// conversions across frames -- see the new stronger assertion below (`eaten_count <
-/// prey_in_range_initially`) proving consumption is genuinely rate-limited now, not
-/// instantaneous.
-///
-/// IMPORTANT correction to a prior (stale) assumption, still true here: `add_phase_rule`
-/// (the automatic, every-substep hook) CANNOT do this alone -- its closure signature is
-/// `Fn(&Particle) -> bool`, a single particle with no access to other particles or the
-/// spatial hash, so proximity-to-a-predator is NOT expressible inside it. The real,
-/// already-supported mechanism is the EXTERNAL caller gathering proximity data first
-/// (via `particles_near`), then acting on it directly.
+/// `add_phase_rule` can't express this alone: its closure is `Fn(&Particle) -> bool`,
+/// no access to other particles, so proximity-to-predator needs the external
+/// `particles_near` + `particles_mut()` composition used below instead.
 #[test]
 fn trophic_predation_depletes_prey_near_predator() {
     const PREY_ID: u32 = 0;
     const PREDATOR_ID: u32 = 1;
     const EATEN_ID: u32 = 2;
-    const SENSE_RADIUS: f32 = 3.0; // predator's real, finite sensing/reach range
-    // Consumption is a Holling Type II / Michaelis-Menten / Monod rate (see
-    // `saturating_uptake`'s doc) driven by local PREY DENSITY within sensing range --
-    // NOT "everyone within radius dies instantly, every frame" (the old rule here had
-    // no ecological law behind it at all). `eat_budget` converts the continuous
-    // prey/second rate into discrete particle conversions over time, the same
-    // rate-times-dt-then-discretize idea used for the continuous resource field above,
-    // applied here to a countable population instead.
+    const SENSE_RADIUS: f32 = 3.0; // predator's finite sensing/reach range
+    // Holling Type II / Michaelis-Menten rate over local prey density; eat_budget
+    // discretizes prey/second into particle conversions over time.
     const MAX_CONSUMPTION_RATE: f32 = 40.0; // prey/s at saturating (high) local density
     const HALF_SATURATION_DENSITY: f32 = 0.2; // prey per unit area; test parameter
 
@@ -487,8 +462,8 @@ fn trophic_predation_depletes_prey_near_predator() {
         gravity: Vec2::ZERO,
         ..small_solver_config()
     };
-    // Prey spread across a wide strip; predator clustered at the LEFT end only --
-    // real proof needs both a "near" case (should deplete) and a "far" case (should not).
+    // Predator clustered at one end of a wide prey strip: needs both a near case (should
+    // deplete) and a far case (should not).
     let prey_spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(24, 2),
@@ -517,12 +492,8 @@ fn trophic_predation_depletes_prey_near_predator() {
         .count();
     assert!(predator_count_before > 0, "test setup: no predator spawned");
 
-    // Real predation loop, exactly as a scene/LP would drive it every frame: gather
-    // predator positions FIRST (immutable borrow, dropped before the mutable call),
-    // then convert prey directly via `particles_mut()` -- same composition pattern as
-    // `resource_field_depletes_near_consumer_then_regrows` above, needed here because
-    // the RATE (not a predicate) decides how many get eaten this frame, not which ones
-    // match a fixed condition.
+    // Gather predator positions first (immutable borrow dropped before the mutable
+    // particles_mut() call below).
     let sense_area = std::f32::consts::PI * SENSE_RADIUS * SENSE_RADIUS;
     let dt = solver.config().dt;
     let mut eat_budget = 0.0f32;
@@ -876,19 +847,8 @@ fn linear_drag_field_matches_analytical_relaxation() {
     );
 }
 
-/// REAL BUG, FOUND AND FIXED (2026-07-19): force fields were applied to every particle
-/// in `0..active_count` with no `pinned` check, in both `step.rs`'s CPU loop and
-/// `force_fields.wgsl`'s GPU kernel — silently un-zeroing a pinned (Dirichlet-anchor)
-/// particle's velocity right after G2P had just forced it to exactly zero, one substep
-/// earlier in the very same pipeline. `scatter_particles_to_grid`/`p2g.wgsl` don't (and
-/// shouldn't) special-case pinned particles' velocity contribution — a pinned particle's
-/// mass/stress must still be felt by neighbors — so that spurious nonzero velocity got
-/// scattered as real momentum into the grid the next substep: a supposedly-fixed anchor
-/// was quietly injecting external-force-driven momentum every substep, a real,
-/// general-purpose engine bug for ANY `Particle::pinned` + force field composition, not
-/// specific to any one scene. This is the load-bearing regression test for that fix: a
-/// pinned particle under an active force field must have EXACTLY v=0 after a full step,
-/// while an otherwise-identical unpinned particle in the same field genuinely responds.
+/// Force fields must respect `pinned` (skip it, same as G2P), or a pinned particle's
+/// velocity gets un-zeroed and scattered back into the grid as spurious momentum.
 #[test]
 fn pinned_particles_stay_at_zero_velocity_under_force_fields() {
     let config = SimConfig {
@@ -1105,6 +1065,7 @@ fn thermal_diffusion_spreads_heat() {
         ThermalConfig {
             conductivity: 0.6,
             heat_capacity: 4182.0,
+            density: 1000.0, // kg/m^3, real water -- required, see ThermalConfig::density
             ambient: 0.0,
             grid_cell_size: 0.1,
             ..Default::default()
@@ -1193,6 +1154,7 @@ fn thermal_uniform_temperature_stays_stable() {
         ThermalConfig {
             conductivity: 1.0,
             heat_capacity: 1000.0,
+            density: 1000.0, // kg/m^3, real water -- required, see ThermalConfig::density
             ambient: initial_temp, // same as particles â†’ no boundary sink/source
             grid_cell_size: 0.1,
             ..Default::default()
@@ -1222,6 +1184,95 @@ fn thermal_uniform_temperature_stays_stable() {
     }
 }
 
+/// Real thermodynamic system-boundary taxonomy check (Wikipedia's own "Interactions
+/// of thermodynamic systems" classification: open/closed/thermally-isolated/
+/// mechanically-isolated/isolated, by which of mass flow/work/heat cross the
+/// boundary). Audited 2026-07-24: open (mass+work+heat, e.g. `basic_fluids_gui.rs`
+/// pouring+push/pull+freezing), closed (work+heat, no mass, e.g. `fire_spread.rs`),
+/// and thermally-isolated (work, no heat -- any demo without `with_thermal`) were
+/// all already real and demonstrated elsewhere. This is the one that was missing:
+/// a MECHANICALLY isolated system (heat crosses the boundary, work does NOT) --
+/// `Particle::pinned` forces v=0 at G2P regardless of any force acting on the
+/// particle (a real Dirichlet/kinematic anchor, not a coincidental "nothing pushed
+/// it"), while `ThermalDiffusion` has its own independent P2G/G2P pathway for
+/// temperature, unaffected by the mechanical pin. Real gravity is included
+/// specifically to prove work is being STRUCTURALLY blocked, not just absent.
+#[test]
+fn mechanically_isolated_system_conducts_heat_with_zero_mechanical_work() {
+    let config = SimConfig {
+        gravity: Vec2::new(0.0, -0.3), // real, nonzero -- proves the pin, not luck
+        ..small_solver_config()
+    };
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            conductivity: 1.0,
+            heat_capacity: 1000.0,
+            density: 1000.0,
+            ambient: 100.0, // hot ambient -- the slab should genuinely warm toward it
+            grid_cell_size: 0.1,
+            ..Default::default()
+        },
+        config.grid_res,
+    );
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_thermal(thermal);
+
+    let initial_positions: Vec<Vec2> = solver.particles().x.clone();
+    {
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.temperature[i] = 20.0;
+            particles.pinned[i] = 1;
+        }
+    }
+
+    solver.step_n(50);
+
+    // No mechanical work: every particle's position is EXACTLY unchanged despite
+    // real gravity trying to act on it the whole time.
+    for (i, (p, &x0)) in solver
+        .particles()
+        .iter()
+        .zip(initial_positions.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            p.x, x0,
+            "particle {i} moved from {x0:?} to {:?} -- pinned particles must do \
+             ZERO mechanical work regardless of gravity",
+            p.x
+        );
+        assert_eq!(
+            p.v,
+            Vec2::ZERO,
+            "particle {i} must have exactly zero velocity"
+        );
+    }
+
+    // Real heat still crosses the boundary: temperature genuinely rose toward
+    // the hot ambient, unaffected by the mechanical pin. Real diffusion at
+    // this material/scale is genuinely slow (same lesson as this file's own
+    // sibling thermal tests -- matching real calibration, not inflating
+    // conductivity just to clear a bigger threshold): a real headless trace
+    // (2026-07-24) measured +0.0004K over the first 10 steps, identical
+    // whether pinned or not -- confirming pinning does NOT also block
+    // thermal diffusion, it's just genuinely this slow. A small, real,
+    // clearly-directional threshold is the honest bar here, not a dramatic
+    // temperature swing.
+    let avg_temp: f32 = solver
+        .particles()
+        .iter()
+        .map(|p| p.temperature)
+        .sum::<f32>()
+        / solver.particles().len() as f32;
+    assert!(
+        avg_temp > 20.001,
+        "mechanically isolated system must still conduct real heat: avg_temp={avg_temp:.4} \
+         (started at 20.0, hot ambient=100.0) -- pinning must not also block thermal diffusion"
+    );
+}
+
 /// Real day-night/seasonal cycle composition: `Simulation::thermal_config_mut` (the one
 /// small new accessor added for this) lets a scene externally drive `ThermalConfig::
 /// ambient` over time, and the ALREADY-EXISTING Newton-cooling term (`dT/dt =
@@ -1242,6 +1293,7 @@ fn thermal_config_mut_drives_day_night_ambient_cycle() {
         ThermalConfig {
             conductivity: 0.0, // isolate the ambient-relaxation term from spatial diffusion
             heat_capacity: 1000.0,
+            density: 1000.0, // kg/m^3, real water -- required, see ThermalConfig::density
             ambient: initial_temp,
             cooling_rate: 0.5,
             grid_cell_size: 0.1,
@@ -1765,9 +1817,7 @@ fn split_particles_conserves_mass_and_jitters_apart() {
         "total mass must be conserved by splitting: before={total_mass_before} after={total_mass_after}"
     );
 
-    // Every damaged particle's mass should have halved, and its two children should not be
-    // exactly co-located (the comb-artifact lesson from this session: an un-jittered split
-    // would place both children at literally the same position).
+    // Children must be jittered apart, not co-located (comb artifact otherwise).
     let children: Vec<_> = solver
         .particles()
         .iter()

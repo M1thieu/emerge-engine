@@ -23,12 +23,12 @@ fn headless_device() -> (wgpu::Device, wgpu::Queue) {
 /// branch for the real single-scattering-albedo derivation this mirrors).
 #[test]
 fn scattering_changes_by_physics_color() {
-    let (device, _queue) = headless_device();
+    let (device, queue) = headless_device();
     let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
     r.set_color_mode(ColorMode::ByPhysics);
-    r.set_optical_params(0, [0.3, 0.3, 0.3]);
-    r.set_optical_params(1, [0.3, 0.3, 0.3]);
-    r.set_optical_scattering(1, 5.0); // real tissue-scale reduced scattering coeff
+    r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+    r.set_optical_params(&queue, 1, [0.3, 0.3, 0.3]);
+    r.set_optical_scattering(&queue, 1, 5.0); // real tissue-scale reduced scattering coeff
 
     let mut p0 = Particle::zeroed();
     p0.material_id = 0;
@@ -48,12 +48,12 @@ fn scattering_changes_by_physics_color() {
 /// same check as scattering, for the R0 term.
 #[test]
 fn specular_r0_changes_by_physics_color() {
-    let (device, _queue) = headless_device();
+    let (device, queue) = headless_device();
     let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
     r.set_color_mode(ColorMode::ByPhysics);
-    r.set_optical_params(0, [0.3, 0.3, 0.3]);
-    r.set_optical_params(1, [0.3, 0.3, 0.3]);
-    r.set_specular_r0(1, 0.02); // real water-scale Fresnel base reflectance
+    r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+    r.set_optical_params(&queue, 1, [0.3, 0.3, 0.3]);
+    r.set_specular_r0(&queue, 1, 0.02); // real water-scale Fresnel base reflectance
 
     let mut p0 = Particle::zeroed();
     p0.material_id = 0;
@@ -69,18 +69,18 @@ fn specular_r0_changes_by_physics_color() {
     );
 }
 
-/// `Renderer::new` must succeed and `upload_optical_params` must not panic with
-/// the extended (scattering + specular) `OpticalTable` layout -- a real,
-/// end-to-end check that the WGSL struct and Rust struct stayed in sync (a
-/// mismatch here would show up as a wgpu validation panic, not a silent bug).
+/// `Renderer::new` must succeed and the (now auto-uploading) optical setters
+/// must not panic with the extended (scattering + specular) `OpticalTable`
+/// layout -- a real, end-to-end check that the WGSL struct and Rust struct
+/// stayed in sync (a mismatch here would show up as a wgpu validation panic,
+/// not a silent bug).
 #[test]
 fn renderer_construction_and_optical_upload_survive_extended_table() {
     let (device, queue) = headless_device();
     let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
-    r.set_optical_params(0, [0.18, 0.22, 0.55]);
-    r.set_optical_scattering(0, 8.0);
-    r.set_specular_r0(0, 0.02);
-    r.upload_optical_params(&queue);
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]);
+    r.set_optical_scattering(&queue, 0, 8.0);
+    r.set_specular_r0(&queue, 0, 0.02);
 }
 
 /// End-to-end GPU path (the one LP actually uses, `render_gpu`): real
@@ -115,9 +115,9 @@ fn render_gpu_survives_scattering_and_specular_end_to_end() {
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_color_mode(ColorMode::ByPhysics);
-    r.set_optical_params(0, [0.18, 0.22, 0.55]);
-    r.set_optical_scattering(0, 8.0);
-    r.set_specular_r0(0, 0.02);
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]);
+    r.set_optical_scattering(&queue, 0, 8.0);
+    r.set_specular_r0(&queue, 0, 0.02);
     r.set_camera(&queue, 32, 64, 64, 0.6, true);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {

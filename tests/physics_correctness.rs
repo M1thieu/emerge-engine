@@ -7,6 +7,7 @@
 //! (sparkl, matter, taichi128).
 
 extern crate emerge_engine as emerge;
+use emerge::fields::LinearDragField;
 use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
@@ -17,7 +18,7 @@ use emerge::{
 use emerge::{
     BinghamFluidMaterial, CorotatedMaterial, DruckerPragerMaterial, GranularFluidMaterial,
     MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
-    SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial,
+    SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
 };
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
@@ -138,10 +139,8 @@ fn mass_is_conserved_snow() {
     );
 }
 
-/// `GranularFluidMaterial` had ZERO test coverage of any kind before this
-/// (confirmed via a full test-file audit, 2026-07-07) -- not even a stability
-/// check, unlike every other material in this module. Baseline coverage
-/// matching every other material's pattern in this file.
+/// Baseline mass-conservation coverage for `GranularFluidMaterial`, matching every
+/// other material's pattern in this file.
 #[test]
 fn mass_is_conserved_granular_fluid() {
     let mud = GranularFluidMaterial::saturated_loam(1.0e5, 0.2);
@@ -550,9 +549,7 @@ fn adaptive_substep_keeps_velocities_bounded() {
 
     solver.step_n(100);
 
-    // With CFL=0.4, max speed per step â‰¤ 0.4 * h / sub_dt.
-    // Since sub_dt â‰¤ dt=0.1 and h=1, max speed per substep â‰¤ 0.4/sub_dt.
-    // But we just check that all particles have finite velocity.
+    // CFL=0.4 bounds max substep speed; here we only assert finiteness, not the exact bound.
     for (i, p) in solver.particles().iter().enumerate() {
         assert!(
             p.v.is_finite(),
@@ -1246,11 +1243,9 @@ fn particles_knn_clamps_to_available_particle_count() {
 
 // ─── thermo-mechanical coupling (E(T)) ──────────────────────────────────────────
 //
-// `thermal_expansion` already existed on NeoHookean/Corotated/Viscoelastic and was already
-// wired into both the CPU kirchhoff_stress AND the GPU p2g.wgsl shader (identical formula,
-// `t_scale = 1.0 + thermal_expansion * temperature`) — but had zero tests or examples
-// exercising it anywhere in the repo. This verifies the feature actually does what its own
-// doc comment claims (negative = softening) rather than assuming it from reading the code.
+// `thermal_expansion` on NeoHookean/Corotated/Viscoelastic: CPU kirchhoff_stress and GPU
+// p2g.wgsl share the same formula (`t_scale = 1.0 + thermal_expansion * temperature`).
+// Verifies negative = softening, per its doc comment.
 
 fn stress_frobenius_norm(tau: Mat2) -> f32 {
     (tau.col(0).length_squared() + tau.col(1).length_squared()).sqrt()
@@ -1401,24 +1396,13 @@ fn muscle_creature_stays_bounded_at_full_activation() {
     }
 }
 
-/// Three locomotion mechanisms compared honestly, in the order they were tried:
-///
-/// 1. Plain `FrictionBoundary` (symmetric cycle, no grip asymmetry) — measured
-///    near-zero net drift (the scallop-theorem problem: a symmetric muscle
-///    cycle against constant friction cancels its own displacement).
-/// 2. `GripFrictionBoundary` (phase-gated: extra grip only while the fiber is
-///    actively SHORTENING) — fixed an earlier magnitude-only design's lockup
-///    regression, but still only measured near-zero net drift (a few percent
-///    of body length) — a real, working mechanism biologically, but not
-///    sufficient on its own at this magnitude/tuning.
-/// 3. `RatchetFrictionBoundary` (directional/setae-style: asymmetric friction
-///    by tangential velocity SIGN, independent of muscle phase entirely) —
-///    this is what actually works. Confirmed against SoftZoo (the published
-///    MPM soft-robot locomotion benchmark) and real-crawler literature: neither
-///    uses phase-gated friction; real anchoring is structural asymmetry
-///    (setae/hooks), which this mirrors. Produces real, substantial locomotion
-///    (~body-length-scale drift) regardless of fiber direction, because the
-///    ratchet converts ANY horizontal jitter into net directional motion.
+/// Three locomotion mechanisms compared:
+/// 1. Plain `FrictionBoundary` -- near-zero net drift (scallop theorem: symmetric
+///    muscle cycle against constant friction cancels its own displacement).
+/// 2. `GripFrictionBoundary` (phase-gated grip) -- still only near-zero drift.
+/// 3. `RatchetFrictionBoundary` (directional/setae-style, asymmetric by tangential
+///    velocity sign, phase-independent) -- what actually works, matching SoftZoo and
+///    real-crawler literature (structural asymmetry, not phase-gating).
 #[test]
 fn grip_friction_locomotion_sweep() {
     const GRID: usize = 64;
@@ -1506,9 +1490,8 @@ fn grip_friction_locomotion_sweep() {
             println!(
                 "fiber={fiber_dir:?} mu_easy={mu_easy:.2} mu_resist={mu_resist:.2} drift.x={drift_x:.2}"
             );
-            // Sanity bound, not a "stay near zero" bound: real crawling should
-            // produce SUBSTANTIAL drift (up to several body-lengths; body is 24
-            // units long) -- only reject non-finite or truly runaway values.
+            // Sanity bound, not a "stay near zero" bound: real crawling produces
+            // substantial drift (body is 24 units long); only reject runaway values.
             assert!(
                 drift_x.is_finite() && drift_x.abs() < 200.0,
                 "fiber={fiber_dir:?} mu_easy={mu_easy} mu_resist={mu_resist}: \
@@ -1518,11 +1501,10 @@ fn grip_friction_locomotion_sweep() {
     }
 }
 
-/// Permanent regression: `RatchetFrictionBoundary` must produce REAL, substantial,
-/// correctly-directed net locomotion for a muscle-driven soft body. This is the
-/// mechanism found to actually work (see `grip_friction_locomotion_sweep`'s doc
-/// for the two mechanisms that didn't). Body is 24 units long; a working crawl
-/// should cover a meaningful fraction of that, in the commanded `easy_direction`.
+/// `RatchetFrictionBoundary` must produce substantial, correctly-directed net
+/// locomotion for a muscle-driven soft body (see `grip_friction_locomotion_sweep` for
+/// the mechanisms that don't). Body is 24 units long; a working crawl should cover a
+/// meaningful fraction of that, in the commanded `easy_direction`.
 #[test]
 fn ratchet_friction_produces_real_directed_locomotion() {
     const GRID: usize = 64;
@@ -1602,26 +1584,14 @@ fn ratchet_friction_produces_real_directed_locomotion() {
     );
 }
 
-/// `RatchetFrictionBoundary::set_easy_direction` must be a REAL, live control —
-/// not cosmetic. Regression for a real gap found interactively: the demo's
-/// left/right steer changed CPG ring bias but never reached the ratchet's
-/// direction (baked in at construction), so steering could not actually change
-/// which way the body crawled. This proves the fix: an `Arc`-shared boundary
-/// instance, flipped mid-run via `set_easy_direction`, must make the body
-/// reverse -- the crawl in the second half must go the OPPOSITE way from the
-/// first half, not just slow down or stay flat.
+/// `RatchetFrictionBoundary::set_easy_direction` must be a live control, not baked in
+/// at construction: flipping mid-run via an `Arc`-shared boundary instance must make
+/// the body's second-half crawl go the opposite way from the first half.
 ///
-/// Total steps and the post-flip window both grew 2026-07-11 (800 total/300
-/// post-flip -> 1200 total/700 post-flip), alongside `NeoHookeanMaterial`'s
-/// real volumetric-term fix (bounded `(J²-1)` -> the actual Simo-Pister
-/// log-barrier `ln(J)`, see `elastic.rs`). Real, measured consequence of that
-/// fix, not a workaround for it: the body's own forward momentum now takes
-/// genuinely longer to unwind after a live direction flip (a real headless
-/// check found net drift still +5/window at step 600, 100 steps after the
-/// flip, only turning solidly negative by ~step 800) -- because the material
-/// no longer artificially compacts/loses momentum the way the old bounded
-/// term let it. The reversal itself is unaffected (still real, still full
-/// magnitude once it happens); it just needs more room to show up now.
+/// Step counts (1200 total / 700 post-flip) are sized for `NeoHookeanMaterial`'s real
+/// volumetric term (Simo-Pister log-barrier `ln(J)`, see `elastic.rs`): momentum takes
+/// longer to unwind after a flip than with the old bounded `(J^2-1)` term, so the
+/// reversal needs more room to show up.
 #[test]
 fn ratchet_easy_direction_is_live_and_reversible() {
     const GRID: usize = 64;
@@ -1672,9 +1642,7 @@ fn ratchet_easy_direction_is_live_and_reversible() {
     let mut centroid_mid = Vec2::ZERO;
     for step in 0..1200 {
         if step == 500 {
-            // Live flip mid-run, before the body settles into its resting
-            // stall (observed interactively to happen ~step 600) -- same
-            // instance the solver is already using.
+            // Flip before the body settles into its resting stall (~step 600).
             ratchet.set_easy_direction(Vec2::NEG_X);
             centroid_mid = centroid_at(&sim);
         }
@@ -1708,39 +1676,17 @@ fn ratchet_easy_direction_is_live_and_reversible() {
     );
 }
 
-/// Real bug found 2026-07-13 building a snake-crawling-on-real-sand-terrain demo:
-/// a small elastic body resting on `DruckerPragerMaterial` sand via real multi-field
-/// contact (`Particle::contact_group`, Bardenhagen 2001) compressed a single
-/// particle to J=0.0057 (0.57% of its own volume) after only 600 fully passive
-/// settle steps -- no muscle/CPG/activation involved at all. Real dry sand cannot
-/// physically compact past its own void-ratio limit (~20-40% volume change between
-/// loose and dense packing, not 99.4%+).
+/// Drucker-Prager's cone yield surface, by construction, only trims deviatoric (shear)
+/// strain -- a near-hydrostatic impact (mostly compression, little shear) is judged
+/// "elastic" regardless of magnitude, so real dry sand under a hard contact impulse can
+/// compact far past its physical void-ratio limit (~20-40%). Inherent gap in the
+/// published model itself (Klar et al. 2016), not an emerge-specific bug.
 ///
-/// Root-caused via deep research against the actual Klar et al. 2016 paper and the
-/// sparkl/wgsparkl reference implementations this engine's own doc comments already
-/// cite (not assumed): confirmed this engine's `DruckerPragerMaterial::project()`
-/// matches all three exactly. The Drucker-Prager cone yield surface, BY
-/// CONSTRUCTION in the published model, only ever trims DEVIATORIC (shear) strain
-/// -- a near-hydrostatic impact (mostly compression, little shear, exactly a body
-/// dropping straight down) is judged "elastic" (no yield-surface projection at all)
-/// regardless of how hard the impact is. This is a real, inherent gap in the
-/// published model itself when driven by a hard contact impulse, not an
-/// emerge-specific implementation bug.
-///
-/// Fixed by porting `StomakhinMaterial` (snow)'s own already-proven, already-tested
-/// volumetric floor (`min_plastic_jacobian`, default 0.6, verified via
-/// `snow_jp_stays_within_bounds`) to sand as `DruckerPragerMaterial::
-/// min_volume_jacobian` (same 0.6 default) -- a uniform rescale of the stored
-/// singular values' product, applied AFTER the existing shear-yield projection so
-/// friction/cohesion physics are completely unaffected, only engaging when
-/// volumetric compression alone would exceed sand's own real physical packing
-/// limit. Wired through the ALREADY-EXISTING `MaterialParams::volume_ratio_min`
-/// field (already documented "Snow/DP: lower bound on plastic volume ratio Jp" but
-/// never actually read by DP's own GPU branch before this fix) for CPU/GPU parity.
-///
-/// This test proves the fix works in BOTH multi-field contact orientations (sand
-/// as the "grip" field and as the "rest" field) -- not just the one arrangement
-/// that happened to trigger the bug.
+/// Fixed the same way snow's `min_plastic_jacobian` floor works: `DruckerPragerMaterial::
+/// min_volume_jacobian` (0.6 default) uniformly rescales the stored singular values
+/// after the existing shear-yield projection, only engaging past sand's packing limit.
+/// Proven in both multi-field contact orientations (sand as the "grip" field and as the
+/// "rest" field).
 #[test]
 fn drucker_prager_volumetric_floor_prevents_unphysical_contact_collapse() {
     const GRID: usize = 64;
@@ -1840,20 +1786,12 @@ fn drucker_prager_volumetric_floor_prevents_unphysical_contact_collapse() {
     );
 }
 
-/// HISTORICAL BUG, FIXED 2026-07-05: both `Lnn::traveling_wave` and
-/// `Lnn::coupled_traveling_wave` used to converge to a fully-synchronized
-/// fixed point (oscillation dies) within ~20 steps at dt=0.1, regardless of
-/// external ring bias. Root cause and fix live in `src/information/control/lnn.rs`
-/// (see the 2026-07-05 rewrite comment on `coupled_traveling_wave`: removed
-/// self-inhibition, symmetrized excite/inhibit weights). That module's own
-/// `coupled_traveling_wave_sustains_a_real_long_horizon_traveling_wave` test
-/// is the permanent 10,000-step/phase-coherence regression for this fix.
-///
-/// This test was left `#[ignore]`d with a stale "still broken" doc comment
-/// after the fix landed -- re-ran it 2026-07-11 and confirmed it now passes
-/// (`died_by_step_50` is `false`), so it's un-ignored and the assertion
-/// direction below (already `!died_by_step_50`) is correct as-is; only the
-/// doc comment and ignore annotation were out of date.
+/// `Lnn::traveling_wave`/`coupled_traveling_wave` must not converge to a
+/// fully-synchronized fixed point (oscillation dying) within ~20 steps at dt=0.1,
+/// regardless of external ring bias. See `src/information/control/lnn.rs` for the
+/// mechanism (no self-inhibition, symmetrized excite/inhibit weights); that module's
+/// `coupled_traveling_wave_sustains_a_real_long_horizon_traveling_wave` is the
+/// permanent 10,000-step/phase-coherence regression for the same fix.
 #[test]
 fn cpg_oscillator_does_not_die_within_50_steps() {
     let dt = 0.1;
@@ -1884,38 +1822,24 @@ fn cpg_oscillator_does_not_die_within_50_steps() {
     );
 }
 
-/// Real regression for the 2026-07-11 internal-viscosity fix (see
-/// `combined_kirchhoff_stress`'s doc in `src/spacetime/transfer.rs` for the full
-/// investigation history: five other fixes were tried and falsified before this one).
-/// A driven muscle body with a purely elastic (`viscosity = 0.0`) material has no
-/// internal dissipation, so cyclic muscle activation pumps real energy in every gait
-/// cycle with nowhere to go -- it ratchets into an unbounded compaction collapse, net
-/// drift falling to near-zero by ~step 6500-7000 in every real headless sweep run this
-/// session, regardless of material stiffness, numerical (APIC) damping, activation sign
-/// convention, or the volumetric Kirchhoff term's shape (all tried, all insufficient).
+/// Regression for the internal-viscosity fix (see `combined_kirchhoff_stress`'s doc in
+/// `src/spacetime/transfer.rs`): a purely elastic (`viscosity = 0.0`) muscle body has no
+/// internal dissipation, so cyclic activation pumps energy in every gait cycle with
+/// nowhere to go, ratcheting into unbounded compaction collapse (drift -> ~0 by step
+/// 6500-7000).
 ///
-/// Real internal (Kelvin-Voigt) viscosity -- the same term `ViscoelasticMaterial`
-/// already implements, generalized onto `NeoHookeanMaterial` as an opt-in field -- fixes
-/// this because it's damping proportional to LOCAL strain rate: near-zero for a body in
-/// rigid-body translation (the crawl itself), substantial only for the internal
-/// deformation that was accumulating without bound. This is a real, IRL-grounded
-/// correction (living tissue is measurably viscoelastic, not purely elastic -- Fung
-/// 1993), not a tuned stability hack; the fact that it also fixes the ratchet is the
-/// expected physical consequence of giving the material a real dissipation channel, not
-/// a coincidence.
+/// Kelvin-Voigt viscosity (`ViscoelasticMaterial`'s term, generalized onto
+/// `NeoHookeanMaterial`) fixes it: damping proportional to LOCAL strain rate is
+/// near-zero for rigid-body translation (the crawl itself) but substantial for the
+/// unbounded internal deformation -- physically grounded (living tissue is
+/// viscoelastic, Fung 1993), not a stability hack.
 ///
-/// This test checks the ACTUAL regression signature: by step 8000 (well past where the
-/// old, viscosity=0 material always collapsed), drift over the final 1000-step window
-/// must still be real, not near-zero-or-negative. Uses viscosity=150 with the original
-/// (coarser) timestep config -- cheap enough to run as a regular test -- which real
-/// sweeps showed sustains real drift (~0.10-0.13/window here) far longer than viscosity=0
-/// ever did, though a much flatter, fully non-decaying result needs higher viscosity
-/// (250-400) with a finer adaptive timestep (min_dt=0.001, max_substeps=512, as
-/// `basic_creature.rs` actually uses) -- too expensive for a fast test, verified instead
-/// via a real one-off 20,000-step headless sweep during development. `viscosity`'s own
-/// CFL bound (`NeoHookeanMaterial::timestep_bound`) was a real, separate bug caught the
-/// same way: without it, higher viscosity values invert the deformation gradient within
-/// ~500 steps instead of stabilizing anything.
+/// Checks the regression signature at step 8000: drift over the final 1000-step window
+/// must stay real. viscosity=150 with the coarser config is cheap enough for a regular
+/// test; a flatter, non-decaying result needs viscosity=250-400 with a finer adaptive
+/// timestep, too expensive here. `NeoHookeanMaterial::timestep_bound`'s viscosity CFL
+/// term is required too -- without it, higher viscosity inverts the deformation
+/// gradient within ~500 steps.
 #[test]
 fn neohookean_viscosity_prevents_compaction_ratchet() {
     const GRID: usize = 96;
@@ -2000,38 +1924,17 @@ fn neohookean_viscosity_prevents_compaction_ratchet() {
     );
 }
 
-/// THE defining test for the 2026-07-11 multi-field frictional contact fix
-/// (Bardenhagen, Guilkey, Roessig, Brackbill 2001, "An Improved Contact Algorithm for
-/// the Material Point Method") -- see project memory
-/// `locomotion_core_frictional_contact_2026-07-11` for the full derivation, verified
-/// against the actual primary-source PDF, not a secondary description.
+/// THE defining test for multi-field frictional contact (Bardenhagen, Guilkey, Roessig,
+/// Brackbill 2001, "An Improved Contact Algorithm for the Material Point Method").
 ///
-/// The core, general bug this fixes: MPM's default contact is unconditional
-/// infinite-friction stick -- any two touching bodies share ONE velocity field, so a
-/// friction coefficient has NO effect whatsoever. A block resting on a floor always
-/// moves exactly with the floor regardless of `mu`; nothing can ever slip. This was the
-/// real, general reason a creature could crawl on the engine's one special directional
-/// floor boundary (`RatchetFrictionBoundary`, which manipulates a fixed WORLD boundary,
-/// not per-body contact) but could NOT locomote on any real MPM terrain material --
-/// confirmed by a real headless sweep (drift ~4.0 on the bare floor vs. ~0.0 on firm
-/// elastic / snow / loose sand terrain, every case, before this fix).
-///
-/// This test is the classic textbook Coulomb-contact validation: a block given a real
-/// initial horizontal velocity, resting under gravity on a much heavier floor slab
-/// (contact_group 1 vs. 0), must SLIDE (keep real velocity, i.e. free separation is
-/// possible) at low friction, and STICK (decelerate to match the floor) at high
-/// friction. Before this fix, both cases are identical (always stick) -- the test
-/// distinguishing them at all IS the proof the fix is real, not just non-crashing.
-///
-/// STATUS 2026-07-12: passing genuinely, not forced green. Five real, distinct bugs in
-/// the contact normal/correction pipeline were found and fixed this session (see
-/// `Grid::resolve_contact`'s doc in `src/spacetime/grid/mod.rs` for the full list): the
-/// LR normal fit replacing a biased mass-gradient normal, an epsilon-contamination bug,
-/// an NLLS NaN-overflow bug, a zero-correction fallback bug, and finally a resting-load
-/// interpenetration bug fixed via dt-independent Baumgarte stabilization. Measured slip
-/// velocity at friction=0 is now 2.21 out of an injected 3.0 (was 0.0 before any fix,
-/// 0.47 after the first four); the stick case at friction=3 converges both bodies to a
-/// shared ~1.0 velocity, real momentum conservation, not a clamp.
+/// MPM's default contact is unconditional infinite-friction stick: two touching bodies
+/// share one velocity field, so a friction coefficient has no effect and nothing can
+/// ever slip. Classic textbook Coulomb-contact validation: a block with initial
+/// horizontal velocity, resting under gravity on a heavier floor slab (contact_group 1
+/// vs. 0), must slide at low friction and stick (decelerate to match the floor) at high
+/// friction -- before the fix both cases were identical (always stick). See
+/// `Grid::resolve_contact`'s doc in `src/spacetime/grid/mod.rs` for the normal-fit +
+/// Baumgarte-stabilization mechanism.
 #[test]
 fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
     fn run(friction: f32) -> f32 {
@@ -2121,17 +2024,13 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
     );
 }
 
-/// Real regression for `DirectionalContactGrip` (2026-07-13) -- the multi-field-contact
-/// generalization of `RatchetFrictionBoundary`'s directional/setae-style friction. Proves
-/// this is genuinely direction-aware on REAL per-body contact (not the fixed-world-floor
-/// boundary case `ratchet_friction_produces_real_directed_locomotion` already covers),
-/// which is what lets a creature crawl on actual terrain particles via `contact_group`
-/// instead of only on the engine's one special abstract floor. Same block-on-floor rig as
-/// `multi_field_contact_produces_real_coulomb_slip_and_stick`, but the SAME friction
-/// asymmetry is tested against velocity injected in the easy direction vs. the resisted
-/// direction -- if this is real, "easy" should keep far more speed than "resist" despite
-/// both runs using the identical `DirectionalContactGrip` instance and gap-fill Coulomb
-/// math, only the injected velocity's sign differing.
+/// `DirectionalContactGrip`: the multi-field-contact generalization of
+/// `RatchetFrictionBoundary`'s directional/setae-style friction, letting a creature
+/// crawl on actual terrain particles via `contact_group` instead of only the engine's
+/// fixed-world-floor boundary. Same block-on-floor rig as
+/// `multi_field_contact_produces_real_coulomb_slip_and_stick`, but velocity is injected
+/// in the easy direction vs. the resisted direction with the identical grip instance --
+/// "easy" should keep far more speed than "resist".
 #[test]
 fn directional_contact_grip_is_real_and_direction_aware() {
     fn run(injected_vx: f32) -> f32 {
@@ -2270,10 +2169,8 @@ fn project_invalid_state_recovers_every_guarded_field() {
         particles.log_volume_strain[9] = nan; // share particle 9 -- two scalar-NaN guards, one particle
         particles.mass[10] = -1.0;
         particles.volume[11] = 0.0;
-        // Real gap found 2026-07-13: the test asserted initial_volume/density stayed
-        // valid but never actually corrupted either one, so their own recovery
-        // branches (step.rs's project_particle_state_to_admissible) were never
-        // exercised -- only checked in the trivially-true uncorrupted case.
+        // initial_volume/density must be corrupted here too, or their recovery branches
+        // in step.rs's project_particle_state_to_admissible go untested.
         particles.initial_volume[12] = nan;
         particles.density[13] = -1.0;
     }
@@ -2364,11 +2261,10 @@ fn project_invalid_state_recovers_every_guarded_field() {
     }
 }
 
-/// `Particle::pinned` (Dirichlet/kinematic anchor, added 2026-07-13) must hold a tagged
-/// particle at its exact spawn position under sustained gravity and a real external
-/// impact (not just an idle no-force scene), while UNPINNED particles in the same body
-/// keep falling/reacting normally -- proving the flag is a real per-particle boundary
-/// condition, not a global config toggle that happens to freeze everything.
+/// `Particle::pinned` (Dirichlet/kinematic anchor) must hold a tagged particle at its
+/// exact spawn position under sustained gravity and impact, while unpinned particles in
+/// the same body keep falling/reacting normally -- a per-particle boundary condition,
+/// not a global freeze toggle.
 #[test]
 fn pinned_particles_stay_fixed_under_gravity_and_impact() {
     let config = SimConfig {
@@ -2453,72 +2349,24 @@ fn pinned_particles_stay_fixed_under_gravity_and_impact() {
     );
 }
 
-/// Real bug found live, 2026-07-13, AFTER the volumetric-floor fix above already
-/// shipped and was believed complete: a real playtest of `snake_on_terrain` left
-/// running passively (steer never touched, `act mean=0.00` confirmed the entire
-/// time) for ~12,500 frames reached `J=-1.000` and an extent nearly filling the
-/// whole 128-cell domain -- a full, real explosion the shorter (600- and 4000-
-/// step) regression tests above never caught because they didn't run long enough
-/// for the failure to develop. Root-caused: this engine's `svd2` does not
-/// guarantee non-negative singular values (see that file's own doc) -- the
-/// original floor fix's `j_new > 0.0` guard silently let an already-inverted
-/// state (negative `sigma.y`) pass through completely unclamped. Fixed by taking
-/// magnitudes before applying the floor (see `min_volume_jacobian`'s updated doc).
-/// This test runs a genuinely long, PURELY PASSIVE settle (no muscle activation,
-/// no steering -- matching the exact live failure condition) far past the
-/// original failure's onset.
+/// Long, purely passive settle (no muscle activation, no steering) exposes failures the
+/// shorter regression tests above don't run long enough to catch.
 ///
-/// REAL, HONEST RESULT (2026-07-13): the abs()-based SVD-sign fix genuinely
-/// helps -- terrain now holds the 0.6 floor solidly through ~step 10,000-12,000
-/// instead of collapsing almost immediately -- but did NOT (as of that date)
-/// fully solve long-horizon stability. By step 16,000, this test's PURELY
-/// ELASTIC snake body (NeoHookeanMaterial, zero muscle activation, zero
-/// steering the entire run) independently reached J=-4.83 with particle
-/// speeds up to 36 -- real, unphysical energy appearing from nowhere in a
-/// body with no active driving force at all. Root-caused as a separate,
-/// deeper instability in `Grid::resolve_contact`'s Baumgarte position
-/// correction, NOT Drucker-Prager or the contact normal (three separate
-/// substitute-normal fix attempts were tried and falsified first -- see
-/// project memory `locomotion_core_frictional_contact_2026-07-11` for the
-/// full investigation).
+/// `svd2` does not guarantee non-negative singular values, so `min_volume_jacobian`'s
+/// floor must clamp on the MAGNITUDE of sigma, not raw sigma -- a `j_new > 0.0` guard
+/// alone lets an already-inverted (negative) singular value pass through unclamped.
 ///
-/// FIXED 2026-07-14: isolated by direct experiment that disabling the
-/// Baumgarte block entirely let the full 16,000-step run settle perfectly
-/// cleanly, proving it (an unconditional, ADDITIVE velocity correction fired
-/// every substep the -- genuinely noisy -- LR-fitted normal reported even a
-/// spurious sub-cell "gap") was the real energy source: a directional random
-/// walk from repeatedly adding impulses along a wobbling normal, unbounded
-/// over thousands of substeps. Real fix: converted the unconditional
-/// additive kick into a velocity FLOOR (only pushes `v_rel`'s normal
-/// component down to the target separating speed if it isn't there
-/// already) -- the standard way real constraint solvers (Box2D/Bullet-style
-/// sequential impulse) apply a position bias, self-limiting by construction
-/// so a wobbling normal's repeated firings can no longer stack unbounded
-/// energy once the real overlap is genuinely resolved. See
-/// `Grid::resolve_contact`'s own doc comment (`src/spacetime/grid/mod.rs`)
-/// for the exact change.
+/// `Grid::resolve_contact`'s Baumgarte position correction must be a velocity FLOOR
+/// (only pushes `v_rel`'s normal component down to the target separating speed if it
+/// isn't there already), not an unconditional additive kick -- the latter, fired every
+/// substep along a noisy LR-fitted normal, becomes an unbounded random-walk energy
+/// source over thousands of substeps (standard Box2D/Bullet-style sequential-impulse
+/// position bias avoids this by construction).
 ///
-/// Verified genuinely, not forced: this test's own assertion (terrain holds
-/// its 0.6 floor) now passes for the full 16,000 steps with real margin
-/// (`min_j_terrain=0.6000` throughout, never dips). Disclosed, smaller
-/// residual: the snake's own purely-elastic body still settles to a mildly
-/// self-inverted but STABLE `min_j_snake≈-1.07` (not the ≈0.92 the
-/// Baumgarte-disabled experiment reached) and stays there unchanged for
-/// 6000+ steps -- a bounded imperfection, not a runaway.
-///
-/// EXPLAINED 2026-07-14 (`diagnose_snake_residual_inversion_location`, real
-/// instrumentation, deleted after use): only 11/576 snake particles (1.9%)
-/// ever go negative-J at all, and they cluster tightly at the body's own
-/// geometric CORNERS (local_x near the horizontal extremes, local_y in the
-/// upper-middle band) -- never at the bottom face actually touching the
-/// terrain. This is consistent with ordinary elastic stress concentration at
-/// a rectangular body's own sharp corners under settling load (a real,
-/// well-known FEM/MPM phenomenon, not specific to this engine or this
-/// contact fix) rather than a remaining contact-resolution leak -- contact
-/// only ever engages where the snake meets the terrain (the bottom face);
-/// nodes along the snake's own top/side edges see no `rest`-labeled points
-/// at all, so `fit_contact_normal_lr` can't even fire there. Not blocking,
-/// not chased further.
+/// Residual: the snake's own elastic body still settles to a mild, stable
+/// self-inversion (min_j≈-1.07) concentrated at its geometric corners -- ordinary
+/// FEM/MPM corner stress concentration, not a remaining contact leak (contact only
+/// engages at the snake's bottom face).
 #[test]
 fn drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
     const GRID: usize = 128;
@@ -2629,21 +2477,13 @@ fn drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
     let _ = start;
 }
 
-/// Stress test for the 2026-07-14 Baumgarte velocity-floor fix above -- checks the
-/// fix genuinely GENERALIZES rather than being narrowly tuned to the one scenario
-/// (gentle rest, 36x4 body) that found and verified it. Two axes deliberately
-/// pushed harder, both independently implicated in earlier real bugs on this same
-/// thread: (1) body THICKNESS doubled (48x8 vs. 36x4) -- the original epsilon-skip
-/// contamination bug (2026-07-12) was confirmed to scale with body thickness (a
-/// taller body creates far more small-grip-mass nodes), so a thicker body is a
-/// real, motivated harder case, not an arbitrary bigger number; (2) a genuine
-/// DYNAMIC IMPACT (dropped from ~24 units above the terrain) instead of starting
-/// already resting in contact -- Baumgarte's correction fires hardest right at
-/// first impact (a real, large `gap`), which is exactly when the old unconditional
-/// additive kick would have injected the most spurious energy from a single badly
-/// -- and differently -- fit normal. Same long real duration (16,000 steps) and
-/// assertion bar as the passive-settle test above, so a real regression on this
-/// harder case is held to the same standard, not a looser one.
+/// Stress test for the Baumgarte velocity-floor fix above -- checks it generalizes
+/// past the gentle-rest 36x4 scenario that verified it. Two axes pushed harder: (1)
+/// body thickness doubled (48x8) -- more grip-mass nodes, the axis the original
+/// epsilon-skip contamination bug scaled with; (2) a genuine dynamic impact (dropped
+/// from ~24 units above the terrain) instead of starting already resting, since
+/// Baumgarte's correction fires hardest at first impact (largest `gap`). Same 16,000
+/// -step duration and assertion bar as the passive-settle test above.
 #[test]
 fn drucker_prager_volumetric_floor_holds_under_heavy_impact_and_long_settle() {
     const GRID: usize = 128;
@@ -2731,26 +2571,19 @@ fn drucker_prager_volumetric_floor_holds_under_heavy_impact_and_long_settle() {
     );
 }
 
-/// Second stress test for the 2026-07-14 Baumgarte velocity-floor fix -- proves the
-/// ONE axis the two tests above don't touch: real, sustained ACTIVE muscle-driven
-/// locomotion (not passive rest or a one-off impact) at a meaningfully LARGER scale
-/// (bigger grid, ~2x the linear terrain/body dimensions, so several times the
-/// particle count), for the same long real duration. This is the actual motivating
-/// scenario for the whole contact-fix investigation -- a creature genuinely moving
-/// against real terrain, continuously, not just sitting still -- so it's the closest
-/// thing to a real acceptance test for the fix, not an artificial stress case.
+/// Third axis for the Baumgarte velocity-floor fix: sustained active muscle-driven
+/// locomotion (not passive rest or a one-off impact) at a larger scale (~2x linear
+/// terrain/body dimensions), for the same long duration -- the actual motivating
+/// scenario for the contact-fix investigation.
 ///
-/// A synthetic CPG-style traveling wave drives `activation` every step (bilayer
-/// fiber directions + alternating muscle groups, same real mechanism as
-/// `examples/snake_on_terrain.rs`, reproduced here directly rather than imported so
-/// this test has no dependency on example code). Deliberately does NOT assert on
-/// net locomotion distance/gait quality -- muscle/body tuning is a separate concern
-/// from contact-resolution correctness (an earlier session found body-proportion
-/// changes alone can shift crawl distance 3x, so asserting a specific distance here
-/// would make this test flaky for reasons unrelated to what it's actually checking).
-/// The real claim under test is narrower and directly on-topic: the terrain's
-/// volumetric floor and overall solver stability must hold under real, continuous,
-/// large-scale internal driving stress, not just at rest.
+/// A synthetic CPG-style traveling wave drives `activation` every step (same mechanism
+/// as `examples/snake_on_terrain.rs`, reproduced directly so this test has no
+/// dependency on example code). Deliberately does not assert on net locomotion
+/// distance/gait quality -- muscle/body tuning is separate from contact-resolution
+/// correctness and body-proportion changes alone can shift crawl distance several-fold,
+/// which would make a distance assertion flaky for unrelated reasons. The claim under
+/// test is narrower: the terrain's volumetric floor and solver stability must hold
+/// under continuous, large-scale internal driving stress, not just at rest.
 #[test]
 fn drucker_prager_volumetric_floor_holds_under_active_locomotion_at_larger_scale() {
     const GRID: usize = 192;
@@ -2867,4 +2700,170 @@ fn drucker_prager_volumetric_floor_holds_under_active_locomotion_at_larger_scale
          min_j_terrain={min_j_terrain:.4}. The velocity-floor Baumgarte fix must hold \
          under real, continuous driving stress at scale, not just at rest."
     );
+}
+
+/// Validates the internal pre-stress mechanism (turgor-pressure-style support, see
+/// `Particle::internal_pressure`/`MaterialModel::pressure_scale` docs): a pressurized
+/// column should droop less than an identical unpressurized one under the same
+/// sustained self-weight load, per Niklas 1992's "hydro-skeleton" theory (internal
+/// pressure resists compression/buckling, distinct from bulk elastic stiffness).
+#[test]
+fn pressurized_column_droops_less_than_unpressurized_under_self_weight() {
+    fn run_column(material: Box<dyn MaterialModel>) -> f32 {
+        let config = SimConfig::standard(32, 0.02, Vec2::new(0.0, -2.0));
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(4, 16),
+            box_center: Vec2::new(16.0, 12.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sim = Simulation::new(config, spawn).with_default_material(material);
+
+        // Pin the bottom 2 rows -- a real root/anchor, matching basic_plant.rs's own setup.
+        let min_y = sim
+            .particles()
+            .iter()
+            .map(|p| p.x.y)
+            .fold(f32::INFINITY, f32::min);
+        {
+            let particles = sim.particles_mut();
+            for i in 0..particles.len() {
+                if particles.x[i].y < min_y + 1.0 {
+                    particles.pinned[i] = 1;
+                }
+            }
+        }
+
+        let initial_top = sim
+            .particles()
+            .iter()
+            .map(|p| p.x.y)
+            .fold(f32::MIN, f32::max);
+
+        for _ in 0..2000 {
+            sim.step();
+        }
+
+        let final_top = sim
+            .particles()
+            .iter()
+            .map(|p| p.x.y)
+            .fold(f32::MIN, f32::max);
+        initial_top - final_top // droop = how much height was lost
+    }
+
+    let lambda = 200.0;
+    let mu = 300.0;
+    let pressure = 100.0; // real, nonzero, comparable magnitude to mu -- not a token value
+
+    let droop_plain = run_column(Box::new(NeoHookeanMaterial::new(lambda, mu)));
+    let droop_pressurized = run_column(Box::new(WithPreStress::new(
+        NeoHookeanMaterial::new(lambda, mu),
+        pressure,
+    )));
+
+    println!("droop_plain={droop_plain:.4} droop_pressurized={droop_pressurized:.4}");
+    assert!(
+        droop_pressurized < droop_plain,
+        "a pressurized column must droop LESS than an identical unpressurized one under \
+         the same self-weight load (real, literature-grounded claim -- turgor/hydrostatic \
+         pressure genuinely resists compression/buckling): droop_plain={droop_plain:.4} \
+         droop_pressurized={droop_pressurized:.4}"
+    );
+}
+
+/// TEMP DIAGNOSTIC (not a permanent regression, to be removed after use): real
+/// pressure sweep against basic_plant.rs's EXACT geometry (height=12, root
+/// pinned at y<=11, width=3, gravity=-0.3, GRID=64, dx=0.01, DT=0.1),
+/// self-weight only (no wind), to find a pressure value that genuinely fixes
+/// the real self-weight droop at the ORIGINAL 400/600 stiffness -- rather
+/// than guess-and-check inside the full windowed demo again.
+#[test]
+#[ignore]
+fn diag_basic_plant_pressure_sweep_self_weight_only() {
+    // Real basic_plant.rs wind constants, replayed exactly (not re-derived).
+    const WIND_DRAG_COEFFICIENT: f32 = 1.5;
+    const WIND_SPEED: f32 = 0.00075;
+    const WIND_GUST_PERIOD_SECONDS: f32 = 4.0;
+    const DT: f32 = 0.1;
+
+    fn run_with_checkpoints(
+        lambda: f32,
+        mu: f32,
+        total_steps: u32,
+        checkpoint_every: u32,
+        with_wind: bool,
+    ) {
+        let config = SimConfig {
+            min_dt: 0.0005,
+            max_substeps_per_step: 400,
+            gravity: Vec2::new(0.0, -0.3),
+            ..SimConfig::earth(64, 0.01, 0.1)
+        };
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(3, 12),
+            box_center: Vec2::new(32.0, 15.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let material: Box<dyn MaterialModel> =
+            Box::new(ViscoelasticMaterial::new(lambda, mu, 0.1 * mu));
+        let mut sim = Simulation::new(config, spawn).with_default_material(material);
+        {
+            let particles = sim.particles_mut();
+            for i in 0..particles.len() {
+                if particles.x[i].y <= 11.0 {
+                    particles.pinned[i] = 1;
+                }
+            }
+        }
+        let mut step = 0;
+        let mut wind_time = 0.0f32;
+        while step < total_steps {
+            let n = checkpoint_every.min(total_steps - step);
+            for _ in 0..n {
+                if with_wind {
+                    wind_time += DT;
+                    let omega = std::f32::consts::TAU / WIND_GUST_PERIOD_SECONDS;
+                    let gust_speed = WIND_SPEED * (wind_time * omega).sin();
+                    sim.remove_force_field("wind");
+                    sim.add_named_force_field(
+                        "wind",
+                        Box::new(LinearDragField::new(
+                            Vec2::new(gust_speed, 0.0),
+                            WIND_DRAG_COEFFICIENT,
+                            1,
+                        )),
+                    );
+                }
+                sim.step();
+            }
+            step += n;
+            let particles = sim.particles();
+            let (mut min_x, mut max_x, mut min_y, mut max_y) =
+                (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for p in particles.iter() {
+                min_x = min_x.min(p.x.x);
+                max_x = max_x.max(p.x.x);
+                min_y = min_y.min(p.x.y);
+                max_y = max_y.max(p.x.y);
+            }
+            let snap = sim.diagnostics_snapshot();
+            println!(
+                "lambda={lambda} mu={mu} wind={with_wind} step={step} (t={:.0}s): height={:.3} width={:.3} jmin={:.4} jmax={:.4} ke={:.6}",
+                step as f32 * 0.1,
+                max_y - min_y,
+                max_x - min_x,
+                snap.min_deformation_j,
+                snap.max_deformation_j,
+                snap.total_kinetic_energy,
+            );
+        }
+    }
+
+    run_with_checkpoints(8000.0, 12000.0, 50000, 2500, false);
 }

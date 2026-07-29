@@ -14,4 +14,7 @@ pub use plugin::{
     MaterialCountPlugin, RollingPlugin, ThermalStatsPlugin,
 };
 pub use rules::{StabilityStatus, StabilityThresholds, evaluate_stability};
-pub use snapshot::{SimSnapshot, StepTiming, collect_snapshot, collect_snapshot_particles_only};
+pub use snapshot::{
+    RodSnapshot, SiSnapshot, SimSnapshot, StepTiming, collect_rod_snapshot, collect_snapshot,
+    collect_snapshot_particles_only,
+};

@@ -1,86 +1,41 @@
 extern crate emerge_engine as emerge;
 
-/// Real fire spread through wood -- 100% composition of already-shipped mechanisms,
-/// zero new engine infrastructure: `add_phase_rule`/`phase_transition` (wood -> ash once
-/// past ignition), `WithLatentHeat` (exothermic combustion releases real heat), and
-/// `ThermalDiffusion` (real Fourier's law spreads that heat to neighbors, which can then
-/// cross ignition themselves -- a real, emergent chain reaction, not scripted).
+/// Real fire spread through wood -- composition of already-shipped mechanisms, zero
+/// new engine infrastructure: `add_phase_rule`/`phase_transition` (wood -> ash past
+/// ignition), `WithLatentHeat` (exothermic combustion releases real heat), and
+/// `ThermalDiffusion` (Fourier diffusion spreads heat to neighbors, which can then
+/// cross ignition themselves -- emergent chain reaction, not scripted).
 ///
-/// Honest scope: this models heat-DRIVEN ignition PROPAGATION through a solid, not full
-/// combustion chemistry (no O2 consumption, no smoke/soot particles, no gas-phase flame
-/// front). That's the real next tier (Gillespie/SSA reaction kinetics on top of
-/// `ScalarDiffusionField`, see `tmp/ref_gillespy2.md`) -- not attempted here.
+/// Honest scope: heat-DRIVEN ignition PROPAGATION through a solid, not full
+/// combustion chemistry (no O2 consumption, no smoke/soot, no gas-phase flame
+/// front). Next tier would be Gillespie/SSA reaction kinetics on top of
+/// `ScalarDiffusionField` -- not attempted here.
 ///
-/// Real cited constants, not invented:
-///   - Piloted ignition 300-365 C -> using the midpoint 330 C = 603.15 K
-///     (cfitrainer.net / engineering sources on wood ignition, piloted-ignition range).
-///   - Oven-dry wood heat of combustion ~18.5 MJ/kg
-///     (engineeringtoolbox.com/wood-combustion-heat, scientific.net wood calorific study).
-///   - Wood thermal conductivity ~0.15 W/(m*K) across the grain (standard softwood value,
-///     same reference tier as this engine's own ThermalConfig doc comment's Rock/Steel/
-///     Water table).
-///   - Wood specific heat: no single precise citation found this session -- using
-///     ~1700 J/(kg*K), a standard engineering estimate for dry wood at room temperature.
-///     Disclosed as an estimate, not dressed up as more precise than it is.
-///   - Wood stiffness/density: REAL FIX 2026-07-18, two rounds. First round used raw
-///     guessed Lame-ish numbers (`from_young_modulus(2.0e4, 0.3)`), not real wood values,
-///     through the wrong constructor -- caught live (plank bounced like a soft body).
-///     Attempted fix: the engine's own SI property system (`Elastic{e_pa,nu,rho_kg_m3}`,
-///     real pine E=9.5 GPa/rho=500 kg/m3). That EXPLODED instantly. Isolated via a
-///     controlled substitution test (raw material swapped in, everything else identical):
-///     confirmed the SI-conversion path itself (`scale_lame`/`lame_from_si`) is
-///     incompatible with this scene's grid scale (`dx_meters=0.01`) -- even a 190x-reduced
-///     stiffness (5e7 Pa) still converts to a grid-Lame value ~40,000-75,000x larger than
-///     what's proven stable here. This is a genuine explicit-MPM CFL limitation at this
-///     resolution, not a tunable bug (real GPa-scale stiffness needs either a far coarser
-///     grid or an implicit integrator, neither of which this demo has). Honest final
-///     choice: plain raw grid-native Lame values (`NeoHookeanMaterial::new(100.0, 50.0)`),
-///     the same numeric tier `basic_jellies`/`basic_showcase` already prove stable --
-///     chosen for numerical stability, NOT literal real-Pa accuracy. Real wood-vs-ash
-///     relative stiffness is still respected (wood >> ash), just not in real Pascals.
-///   - Ash: same SI-incompatibility applies, so ash also moved off `Elastoplastic`/`Elastic`
-///     onto `DruckerPragerMaterial::low_friction(266.7, 0.333)` -- not a fresh guess, this
-///     is `basic_snow.rs`'s own already-proven-stable granular material at the EXACT same
-///     `SimConfig::earth(GRID, 0.01, DT)` grid/dt/dx this file's boilerplate is copied from.
-///     Real 30 deg-scale friction angle preserved via `low_friction`'s own preset (matches
-///     ash's real comparability to sand's angle of repose, disclosed in the original find).
-///     `ThermalConfig`'s real SI conductivity/heat-capacity values are UNCHANGED -- that
-///     pathway is separate from mechanical stiffness and was never implicated.
-///   - Combustion exotherm direction: REAL BUG FOUND 2026-07-18 -- `WithLatentHeat` was
-///     attached to WOOD (the material being left) instead of ash (the material being
-///     transitioned INTO). `phase_transition`/`add_phase_rule`
-///     (`src/spacetime/solver/step.rs`) apply the NEW material's `latent_heat()`, not the
-///     old one's -- the same convention the engine's own melting-ice doc example uses
-///     (water, the transition target, carries the debit). Combustion's exotherm never
-///     fired; the fire was pure Fourier diffusion of the initial match-heat pulse with no
-///     sustaining source, which is exactly why it climbed to 923/1408 burned then died
-///     back toward AMBIENT_K (confirmed live). Fixed by moving `WithLatentHeat` onto ash.
-///     After this fix, live runs reach ~1228/1408 (87%) before the fire dies out again --
-///     investigated via a headless repro (found the real exotherm-direction bug fixed
-///     above genuinely works: max_speed stays bounded 0.02-1.8 the whole burn, zero
-///     instability). The remaining stall is sensitive to how long the match is held: a
-///     short synthetic hold (120 frames) permanently plateaus around 168/1408, while the
-///     live session's longer hold reached 1228/1408 -- total injected heat determines how
-///     large a self-sustaining burning front forms before it runs out of margin against
-///     `COOLING_RATE`'s constant heat loss. This is real, physically sensible combustion
-///     behavior (a bigger initial fire burns further before extinguishing, same as real
-///     fire-starting needing enough energy to become self-sustaining), not a logic bug --
-///     no runaway, no crash, no incorrect state. Not chased further: exact match-hold
-///     duration in the live session that produced 1228/1408 was never pinned down, so an
-///     exact reproduction wasn't attempted -- honest scope limit, not a hidden gap.
+/// Real cited constants:
+///   - Piloted ignition 300-365 C -> midpoint 330 C = 603.15 K.
+///   - Oven-dry wood heat of combustion ~18.5 MJ/kg.
+///   - Wood thermal conductivity ~0.147 W/(m*K) across the grain (yellow pine).
+///   - Wood specific heat ~1700 J/(kg*K) -- standard engineering estimate, disclosed
+///     as an estimate rather than a precise citation.
+///   - Wood/ash mechanical stiffness is grid-native (`NeoHookeanMaterial`-tier Lame
+///     values), not literal real-Pa: real GPa-scale wood stiffness is incompatible
+///     with this scene's fine grid (`dx_meters=0.01`) under explicit-MPM CFL --
+///     needs a coarser grid or an implicit integrator. Relative stiffness
+///     (wood >> ash) is still respected. `ThermalConfig`'s real SI conductivity/
+///     heat-capacity values are separate and unaffected.
+///   - `WithLatentHeat` must wrap the material being transitioned INTO (ash), not
+///     the one left behind (wood) -- `phase_transition`/`add_phase_rule` apply the
+///     NEW material's `latent_heat()`.
 ///
-/// Why the spread is visually slow (not an instant flash), for real physical reasons,
-/// not a fudge: wood's thermal diffusivity (k / c_p) is genuinely low -- wood is a real
-/// insulator. The combustion enthalpy is huge relative to sensible heat, but heat still
-/// has to physically DIFFUSE through wood's own low conductivity before a neighbor
-/// crosses ignition -- the crawl you'll see is the same real reason a log takes real time
-/// to catch fully alight, not an artificial pacing trick.
+/// Spread is visually gradual, not an instant flash, for real physical reasons:
+/// wood's thermal diffusivity (alpha = k / (rho*c_p)) is genuinely low -- wood is a
+/// real insulator, same reason a log takes real time to catch fully alight.
 ///
 ///   cargo run --example fire_spread --features "render"
 use emerge::render::{ColorMode, GridVolumeSource, Renderer};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
-    DruckerPragerMaterial, NeoHookeanMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, ViscoelasticMaterial,
     WithLatentHeat,
 };
 use glam::{IVec2, Vec2};
@@ -100,31 +55,29 @@ const ASH_ID: u32 = 1;
 const AMBIENT_K: f32 = 293.15; // 20 C room temperature
 const IGNITION_K: f32 = 603.15; // 330 C -- midpoint of the real 300-365 C piloted-ignition range
 const COMBUSTION_ENTHALPY: f32 = -18_500_000.0; // J/kg, oven-dry wood ~18.5 MJ/kg, exothermic
-// W/(m*K), real -- yellow pine across grain measures 0.147 W/(m*K) (bioresources.cnr.ncsu.edu),
-// same species this demo's E=9.5 GPa/rho=500 kg/m3 pine values already assume.
+// W/(m*K), real -- yellow pine across grain measures 0.147 W/(m*K), same species
+// this demo's E=9.5 GPa/rho=500 kg/m3 pine values already assume.
 const WOOD_CONDUCTIVITY: f32 = 0.147;
 const WOOD_HEAT_CAPACITY: f32 = 1700.0; // J/(kg*K), standard engineering estimate for dry wood
-const GRID_CELL_SIZE_M: f32 = 0.05; // 5cm/cell -- plank/log scale
-// REAL FIX 2026-07-18: was an uncited 0.02 -- reusing the SAME value already established
-// and validated by `day_night_thermal_gpu`'s own precedent, not a fresh unverified guess.
-const COOLING_RATE: f32 = 0.05;
+// kg/m^3, real pine density -- feeds ThermalConfig::density, which directly scales
+// diffusion rate (alpha = k / (rho*c_p)).
+const WOOD_DENSITY: f32 = 500.0;
+// 1/s, Newton cooling (natural convective heat loss to still air). 0.001
+// (tau=1000s) is within the real natural-convection range for a wood-sized solid
+// in still air, and chosen empirically so a several-minute play session shows
+// meaningful spread -- real physics alone reads as too slow for that timescale.
+const COOLING_RATE: f32 = 0.001;
 
 const PLANK_HALF_LEN: i32 = 22;
 const PLANK_HALF_HEIGHT: i32 = 4;
 const IGNITE_RADIUS: f32 = 2.5;
-// 700 C (973.15K) -- real match-flame temperature is 600-800 C (reference.com/fdotstokes.com),
-// using the midpoint. REAL FIX 2026-07-18: was 900 (a bare number with a mismatched-unit
-// comment claiming "800-1000C" -- that range in Celsius is 1073-1273K, not 900).
+// 700 C (973.15K) -- real match-flame temperature is 600-800 C, using the midpoint.
 const MATCH_TEMP: f32 = 973.15;
 // Dimensionless per-render-frame contact-heating fraction (Newton relaxation toward
-// MATCH_TEMP -- same functional form as `ThermalConfig::cooling_rate`'s already-real
-// Newton-cooling law above, just heating instead of cooling: T += rate*(target-T)).
-// Held per RENDER frame, not per physics substep -- `ignite_at_cursor` is a UI-level
-// input handler outside `sim.step()`'s own dt. No literature source exists for a
-// match-to-wood CONTACT heat-transfer coefficient (unlike the cited conductivity/
-// combustion-enthalpy values above) -- disclosed as a tuned estimate, chosen so a
-// briefly-tapped click barely warms the wood while a sustained hold visibly ramps it
-// toward ignition, instead of the previous instant snap-to-MATCH_TEMP on first touch.
+// MATCH_TEMP: T += rate*(target-T)). Applied per RENDER frame, not per physics
+// substep -- `ignite_at_cursor` runs outside `sim.step()`'s dt. No literature source
+// for a match-to-wood contact heat-transfer coefficient; tuned so a brief click
+// barely warms the wood while a sustained hold ramps it toward ignition.
 const IGNITION_HEAT_TRANSFER: f32 = 0.06;
 
 struct App {
@@ -147,31 +100,27 @@ struct State {
     burned_count: usize,
     /// CPU-simulation grid-volume render bridge (G to toggle): this scene runs on the
     /// CPU `Simulation`, which has no GPU-resident grid buffer the way `GpuSimulation`
-    /// does, so `render_grid_volume` (already real, verified on `basic_jellies_gpu`/
-    /// `material_sandbox_gpu`) has nothing to read directly. These two buffers are
-    /// rebuilt from the CPU solver's own `Grid`/`Particles` each frame and uploaded --
-    /// real, disclosed extra per-frame cost (`grid_res²` + a particle scan), but reuses
-    /// the exact same GPU render path/shader rather than a second bespoke renderer.
+    /// does, so `render_grid_volume` has nothing to read directly. Rebuilt from the
+    /// CPU solver's `Grid`/`Particles` each frame and uploaded -- extra per-frame
+    /// cost, but reuses the same GPU render path/shader.
     grid_bridge_buf: wgpu::Buffer,
-    /// Per-cell per-material mass, built via a SIMPLIFIED nearest-cell scatter (not
-    /// P2G's full quadratic B-spline kernel) -- a real, disclosed approximation:
-    /// good enough for dominant-material color selection (this demo has only 2
-    /// materials with a sharp wood/ash boundary), not a physics-accuracy claim.
-    /// Physics itself is entirely unaffected -- this buffer is read-only by rendering.
+    /// Per-cell per-material mass, built via a simplified nearest-cell scatter (not
+    /// P2G's full quadratic B-spline kernel) -- good enough for dominant-material
+    /// color selection, not a physics-accuracy claim. Read-only by rendering.
     material_mass_bridge_buf: wgpu::Buffer,
     grid_volume_mode: bool,
 }
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
-        // REAL BUG FOUND 2026-07-18: raising this to 256 alone did NOT fix the explosion
-        // (confirmed live via a real max_speed diagnostic, ~450-500 for a plank that
-        // should sit near-static) -- the actual cause was literal real wood stiffness
-        // (9.5 GPa), not an undersized substep cap. See the wood material's own doc
-        // comment below for the real fix (reduced stiffness, honestly disclosed).
-        // Reverted to a normal value matching this project's own comparable "solid
-        // elastic" demos (basic_jellies_gpu/basic_showcase use 12-16).
+        // Matches comparable "solid elastic" demos (basic_jellies_gpu/basic_showcase
+        // use 12-16) -- substep count alone can't compensate for wrong stiffness scale.
         max_substeps_per_step: 16,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.08),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
@@ -180,19 +129,19 @@ fn make_sim() -> Simulation {
         ThermalConfig {
             conductivity: WOOD_CONDUCTIVITY,
             heat_capacity: WOOD_HEAT_CAPACITY,
+            density: WOOD_DENSITY,
             ambient: AMBIENT_K,
-            grid_cell_size: GRID_CELL_SIZE_M,
+            // Must match the sim's real dx_meters -- ThermalConfig::grid_cell_size
+            // requires this, else diffusion rate is silently wrong.
+            grid_cell_size: config.dx_meters,
             cooling_rate: COOLING_RATE,
         },
         config.grid_res,
     );
 
-    // REAL ROOT CAUSE FOUND 2026-07-18: the SI property system (`Elastic{e_pa,nu,rho_kg_m3}`)
-    // exploded regardless of stiffness magnitude or particle mass -- isolated via a
-    // controlled substitution test to the SI-conversion path itself (`scale_lame`/
-    // `lame_from_si`) being incompatible with this scene's fine grid scale
-    // (`dx_meters=0.01`). No `mass_override` needed either: both materials below are plain
-    // raw grid-native constructors, matching `basic_snow.rs`'s own convention exactly.
+    // The SI property system (`Elastic{e_pa,nu,rho_kg_m3}`) is incompatible with this
+    // scene's fine grid scale -- both materials below use plain grid-native
+    // constructors instead, matching `basic_snow.rs`'s convention.
     let spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(2 * PLANK_HALF_LEN, 2 * PLANK_HALF_HEIGHT),
@@ -202,25 +151,15 @@ fn make_sim() -> Simulation {
         ..SpawnRegion::for_sim(&config)
     };
 
-    // Plain raw grid-native NeoHookean, same numeric tier `basic_jellies`/`basic_showcase`
-    // already prove stable -- chosen for stability, not literal real-Pa accuracy (see the
-    // top doc comment's SI-incompatibility finding).
-    let wood = NeoHookeanMaterial::new(100.0, 50.0);
-    // Ash: crumbly granular -- burned wood structurally weakens and collapses into loose
-    // material, not just changes color. `low_friction(266.7, 0.333)` is `basic_snow.rs`'s
-    // own already-proven-stable preset at this exact grid/dt/dx, not a fresh guess; its
-    // ~30 deg-scale friction is real and comparable to fine ash/sand's own angle of repose.
+    // ViscoelasticMaterial (Kelvin-Voigt), not pure NeoHookean -- undamped elastic
+    // wood bounces indefinitely off a frictionless boundary, which real wood doesn't.
+    // Viscosity=100 settles on first landing.
+    let wood = ViscoelasticMaterial::new(100.0, 50.0, 100.0);
+    // Ash: crumbly granular -- burned wood collapses into loose material, not just
+    // changes color. `low_friction` is `basic_snow.rs`'s preset at this grid/dt/dx.
     //
-    // REAL BUG FOUND 2026-07-18: `WithLatentHeat` was on WOOD (the material being LEFT),
-    // but `phase_transition`/`add_phase_rule` (`src/spacetime/solver/step.rs`) apply
-    // `latent_heat()` from the material being TRANSITIONED INTO, not the one left behind
-    // (same convention the melting-ice doc example in `matter/materials/mod.rs` uses:
-    // water, the target, carries the endothermic debit). Combustion's exotherm never
-    // fired -- the fire was pure heat DIFFUSION with no sustaining source, which is
-    // exactly why it climbed then died back to ambient once the initial match-heat
-    // pulse dispersed (confirmed live: burned count rose to 923/1408 then stalled while
-    // avg_T fell back toward AMBIENT_K). Fixed by moving the wrapper to ash (the real
-    // transition target).
+    // `WithLatentHeat` must wrap the transition TARGET (ash), not the source (wood) --
+    // `phase_transition`/`add_phase_rule` apply the NEW material's `latent_heat()`.
     let ash = WithLatentHeat::new(
         DruckerPragerMaterial::low_friction(266.7, 0.333),
         COMBUSTION_ENTHALPY,
@@ -286,20 +225,14 @@ impl State {
         let sim = make_sim();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        // REAL BUG FOUND AND FIXED 2026-07-18: ByThermal is a pure blackbody-GLOW mode --
-        // at rest (293K, far below its 1500K normalization ceiling) it renders almost
-        // black, so the wood plank was genuinely invisible before ignition (not just
-        // "hard to see" -- the reported "I see nothing" was real, not user error).
-        // ByPhysics instead gives a real base material color (Beer-Lambert absorption)
-        // PLUS the same thermal emission glow layered on top once hot -- same fix
-        // material_sandbox_gpu.rs already uses for the identical reason (see that file's
-        // own doc comment on why ByThermal-only is the wrong mode for a "cold at rest"
-        // scene). Sigma values below are an aesthetic estimate (brown wood / grey ash),
-        // not a literature citation -- no real wood/ash reflectance spectrum was searched
-        // this session, disclosed honestly rather than dressed up as more precise.
+        // ByThermal is a pure blackbody-glow mode -- near-black at rest (normalizes
+        // against a 1500K ceiling). ByPhysics gives a real base material color
+        // (Beer-Lambert absorption) plus the same thermal glow layered on top once hot.
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(WOOD_ID as usize, [0.35, 0.55, 0.75]);
-        renderer.set_optical_params(ASH_ID as usize, [0.4, 0.4, 0.4]);
+        // Optical params are Beer-Lambert absorption coefficients, not direct RGB:
+        // color = exp(-sigma_a), so sigma_a = -ln(target) for a target color.
+        renderer.set_optical_params(&queue, WOOD_ID as usize, [0.598, 1.050, 1.609]);
+        renderer.set_optical_params(&queue, ASH_ID as usize, [0.4, 0.4, 0.4]);
         println!(
             "fire_spread: {} wood particles  |  click to ignite (real match, {MATCH_TEMP}K)  |  \
              G grid-volume  R reset  Q quit",
@@ -426,15 +359,8 @@ impl State {
     }
 
     fn update_and_render(&mut self) {
-        // REAL BUG FOUND AND FIXED 2026-07-18: was one-shot on the MouseInput Pressed
-        // event alone, which depends on a prior CursorMoved event having already updated
-        // cursor_pos -- if the click landed before any CursorMoved was delivered,
-        // cursor_grid() silently used its stale [0.0, 0.0] default (far outside the
-        // plank), so the click missed entirely with no visible feedback. Held-button
-        // pattern (matches basic_snow.rs's own LMB handling exactly) re-applies every
-        // frame using whatever cursor_pos is CURRENT at render time, not frozen at
-        // click-moment -- robust regardless of event ordering, and lets you drag to
-        // ignite a whole line instead of one static point.
+        // Held-button pattern (matches basic_snow.rs) re-applies every frame using the
+        // current cursor_pos, not frozen at click-moment -- lets you drag to ignite.
         if self.lmb {
             self.ignite_at_cursor();
         }

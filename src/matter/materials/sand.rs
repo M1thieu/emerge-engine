@@ -2,7 +2,9 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
 use crate::materials::svd::svd2;
-use crate::materials::utils::{LOG_CLAMP, MIN_J, elastic_wave_dt, lame_from_young};
+use crate::materials::utils::{
+    LOG_CLAMP, MIN_J, elastic_wave_dt, lame_from_young, self_consistent_plastic_multiplier,
+};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
 use crate::particle::{Particle, Particles};
 
@@ -44,34 +46,36 @@ pub struct DruckerPragerMaterial {
     /// doesn't capture. Calibrate against that benchmark, not against a literature
     /// "sand cohesion" value (which is ~0 and would be the wrong justification).
     pub cohesion: f32,
-    /// Real, measured gap found 2026-07-13 (deep research against the actual Klar
-    /// 2016 paper + sparkl/wgsparkl reference implementations, not assumed): the
-    /// Drucker-Prager cone yield surface, BY CONSTRUCTION in the published model
-    /// (verified identical in this engine, sparkl, and wgsparkl), only ever trims
-    /// DEVIATORIC (shear) strain -- `project()`'s Case III preserves
-    /// `trace(eps)` exactly. A near-hydrostatic impact (mostly compression, little
-    /// shear -- exactly a body dropping straight down onto sand) is judged
-    /// "elastic" (no yield-surface projection at all) essentially always,
-    /// regardless of how hard the impact is, because `gamma` stays negative.
-    /// Nothing in the published model caps pure volumetric compression -- proven
-    /// via a real isolated headless test (inert block dropped onto inert
-    /// DruckerPrager sand slab, zero muscle/CPG involved): a single particle
-    /// compressed to J=0.0057 (0.57% of its own volume) after just 600 steps,
-    /// vs an all-elastic control's J=0.0431 under the identical impact. Real sand
-    /// cannot physically compact past its own void-ratio limit (~20-40% volume
-    /// change between loose and dense packing, not 99.4%+).
+    /// The Drucker-Prager cone yield surface, BY CONSTRUCTION in the published model
+    /// (Klar 2016, verified identical in sparkl/wgsparkl), only ever trims DEVIATORIC
+    /// (shear) strain — `project()`'s Case III preserves `trace(eps)` exactly. A
+    /// near-hydrostatic impact (mostly compression, little shear) is judged "elastic"
+    /// essentially always, regardless of how hard the impact is, because `gamma` stays
+    /// negative — nothing in the published model caps pure volumetric compression, and
+    /// real sand cannot physically compact past its own void-ratio limit (~20-40%
+    /// volume change between loose and dense packing).
     ///
-    /// `StomakhinMaterial` (snow.rs) already has the exact real fix for this same
-    /// class of problem via its own `min_plastic_jacobian` (default 0.6, already
-    /// tested via `snow_jp_stays_within_bounds`) -- this ports that same, already-
-    /// proven mechanism to sand: a hard floor on the STORED singular values'
-    /// product (the actual `deformation_gradient` written back, not just a
-    /// downstream volume/density calculation), applied AFTER the existing
-    /// shear-yield projection so the friction/cohesion physics above are
-    /// completely unaffected -- this only engages when volumetric compression
-    /// alone would exceed sand's own real physical packing limit. 0.6 matches
-    /// Snow's own default and the real 20-40% figure above.
+    /// Same mechanism as `StomakhinMaterial`'s `min_plastic_jacobian`: a hard floor on
+    /// the STORED singular values' product (the actual `deformation_gradient` written
+    /// back), applied AFTER the shear-yield projection so friction/cohesion physics
+    /// stay unaffected — only engages when volumetric compression alone would exceed
+    /// sand's own packing limit. 0.6 matches Snow's default.
     pub min_volume_jacobian: f32,
+    /// Compaction hardening: extra friction angle (radians) per unit of net
+    /// volumetric COMPACTION at the moment of yielding (`project`'s own `trace`,
+    /// ln of the current effective volume ratio vs the particle's initial state --
+    /// negative trace = real net volume loss, i.e. densified). 0.0 (default) = zero
+    /// coupling between density and friction,
+    /// byte-identical to Klar 2016's own DP model. Real, correctly-directed physics
+    /// (denser packing -> higher friction resistance/interlocking is Bolton 1986's
+    /// established relative-density-to-friction-angle relation -- the same paper
+    /// already cited for the repose-angle target tonight) -- but this coefficient is
+    /// a disclosed, simplified linear proportionality, NOT a claim of Bolton's own
+    /// precise empirical dilatancy-index formula. Single-phase (dry) compaction only
+    /// -- real wet/saturated consolidation (Terzaghi effective stress, pore-pressure-
+    /// gated densification) is a distinct phenomenon needing the mixture-coupling
+    /// system, not this field.
+    pub compaction_sensitivity: f32,
 }
 
 impl DruckerPragerMaterial {
@@ -90,6 +94,7 @@ impl DruckerPragerMaterial {
             dilatancy_angle: 0.0,
             cohesion: 0.0,
             min_volume_jacobian: 0.6,
+            compaction_sensitivity: 0.0,
         }
     }
 
@@ -130,10 +135,20 @@ impl DruckerPragerMaterial {
     }
 
     /// Friction coefficient α(q) derived from friction angle φ(q).
-    /// φ(q) = friction_angle + (hardening_peak·q − friction_residual)·exp(−hardening_decay·q)
+    /// φ(q) = friction_angle + compaction_boost + (hardening_peak·q − friction_residual)·exp(−hardening_decay·q)
     /// α(q) = √(2/3) · 2·sin(φ) / (3 − sin(φ))
-    fn alpha(&self, q: f32) -> f32 {
+    ///
+    /// `compaction_boost = compaction_sensitivity * max(0, -trace_ln_volume_ratio)` —
+    /// `trace_ln_volume_ratio` is `project`'s own `trace` (ln of the current net
+    /// volume ratio vs the particle's initial state, instantaneous + accumulated
+    /// history combined) at the exact moment of yielding — see
+    /// `compaction_sensitivity`'s own doc. Zero when the field is at its 0.0
+    /// default, so this is byte-identical to the original q-only formula unless
+    /// opted in.
+    fn alpha(&self, q: f32, trace_ln_volume_ratio: f32) -> f32 {
+        let compaction_boost = self.compaction_sensitivity * (-trace_ln_volume_ratio).max(0.0);
         let phi = self.friction_angle
+            + compaction_boost
             + (self.hardening_peak * q - self.friction_residual)
                 * (-self.hardening_decay * q).exp();
         let s = phi.sin();
@@ -145,14 +160,22 @@ impl DruckerPragerMaterial {
     /// Returns `Some((projected_sigma, delta_q))` if projection occurred (plastic step),
     /// `None` if the trial state is inside the yield surface (elastic step).
     ///
-    /// Single-pass: `alpha` is evaluated once from the pre-step `q`, matching
-    /// `sparkl::DruckerPragerPlasticity::project_deformation_gradient` and
-    /// `wgsparkl::models::drucker_prager::project_deformation_gradient` exactly (both
-    /// reference implementations of Klar et al. 2016 — neither does a self-consistency
-    /// corrector). `q` is the accumulated plastic shear-strain norm; it is expected to
-    /// keep growing slowly under sustained load even once a pile looks "settled" —
-    /// that mirrors real critical-state soil mechanics (friction angle relaxing from
-    /// peak toward residual as cumulative shear strain grows), not a bug to eliminate.
+    /// SELF-CONSISTENT (closest-point-projection) return mapping: `alpha` is evaluated
+    /// at the END-of-step hardening state `q + gamma`, not the pre-step `q` -- real
+    /// numerical rigor per Simo & Taylor 1985 ("Consistent tangent operators for
+    /// rate-independent elastoplasticity," CMAME 48:101-118) and Simo & Hughes,
+    /// *Computational Inelasticity* (1998), the standard reference on return-mapping
+    /// consistency. `sparkl::DruckerPragerPlasticity::project_deformation_gradient`
+    /// and `wgsparkl::models::drucker_prager::project_deformation_gradient` both use
+    /// the cheaper single-pass (pre-step `q`) version instead -- real, disclosed
+    /// deviation from those reference implementations, not an oversight: because
+    /// `alpha` depends on `q + gamma` and `gamma` itself depends on `alpha`, this is a
+    /// genuinely coupled nonlinear system, solved here via fixed-point iteration
+    /// (`phi(q)` is bounded/smooth, converges in a handful of iterations). `q` is the
+    /// accumulated plastic shear-strain norm; it is expected to keep growing slowly
+    /// under sustained load even once a pile looks "settled" -- that mirrors real
+    /// critical-state soil mechanics (friction angle relaxing from peak toward
+    /// residual as cumulative shear strain grows), not a bug to eliminate.
     fn project(&self, sigma: Vec2, log_volume_strain: f32, q: f32) -> Option<(Vec2, f32)> {
         let sigma = sigma.abs().max(Vec2::splat(LOG_CLAMP));
         // Hencky (logarithmic) strain, shifted by the accumulated volumetric offset.
@@ -167,7 +190,7 @@ impl DruckerPragerMaterial {
         // Tension cutoff or purely volumetric deformation: project to identity (σ = 1).
         // dq = dev_norm only — friction hardening is driven by shear, not volumetric expansion.
         // Using eps.length() here would include the log_volume_strain offset and cause
-        // unbounded q growth in static/settled sand (confirmed by simulation audit 2026-04-18).
+        // unbounded q growth in static/settled sand.
         if dev_norm == 0.0 || trace > 0.0 {
             return Some((Vec2::ONE, dev_norm));
         }
@@ -180,9 +203,24 @@ impl DruckerPragerMaterial {
         // into this strain-space equation via dev(sigma) = 2*mu*dev(eps) gives the c/(2*mu)
         // divisor below. See `cohesion`'s doc comment for why this exists.
         let ratio = (self.lambda + self.mu) / self.mu;
-        let alpha = self.alpha(q);
+        // `trace` (already ln(current effective volume ratio) relative to the initial
+        // state, folding in BOTH the instantaneous trial state and accumulated
+        // `log_volume_strain` history) is only reached here once already confirmed
+        // <= 0 above -- i.e. real net compaction, at the exact moment of yielding.
+        // A far more universally-responsive compaction signal than
+        // `log_volume_strain` alone, which Case III's shear-only projection keeps
+        // nearly invariant by construction for non-dilatant sand (dilatancy_angle=0).
         let cohesion_term = self.cohesion / (2.0 * self.mu);
-        let gamma = dev_norm + ratio * trace * alpha - cohesion_term;
+        // Self-consistency: `alpha(q + gamma)` depends on gamma, and gamma depends
+        // on alpha -- shared iteration logic lives in `self_consistent_plastic_
+        // multiplier` (see its own doc for the real citation and why it's a
+        // generic, cross-material solver, not DP-specific), this closure supplies
+        // only DP's own yield equation. Single-pass (pre-step-q) value seeds the
+        // initial guess.
+        let initial_gamma = dev_norm + ratio * trace * self.alpha(q, trace) - cohesion_term;
+        let gamma = self_consistent_plastic_multiplier(initial_gamma, q, |q_trial| {
+            dev_norm + ratio * trace * self.alpha(q_trial, trace) - cohesion_term
+        });
 
         if gamma <= 0.0 {
             return None; // Inside yield surface — elastic step.
@@ -276,33 +314,20 @@ impl MaterialModel for DruckerPragerMaterial {
             sigma
         };
 
-        // Real volumetric floor -- see `min_volume_jacobian`'s doc for the full
-        // investigation. Applied AFTER the shear-yield projection above and
-        // regardless of whether that projection fired (the exact gap: a
-        // near-hydrostatic impact is judged "elastic" by the cone above and
-        // never reaches it at all), so friction/cohesion physics are untouched;
-        // this only engages when volumetric compression alone would exceed
-        // sand's own real packing limit. Uniform rescale (not a per-axis clamp
-        // like Snow's) preserves the deviatoric shape the yield projection
-        // already chose -- only the overall volume is corrected.
+        // Volumetric floor -- see `min_volume_jacobian`'s doc. Applied AFTER the
+        // shear-yield projection above and regardless of whether that projection
+        // fired (a near-hydrostatic impact is judged "elastic" by the cone above and
+        // never reaches it), so friction/cohesion physics are untouched. Uniform
+        // rescale (not a per-axis clamp like Snow's) preserves the deviatoric shape
+        // the yield projection already chose -- only overall volume is corrected.
         //
-        // Real bug found live, 2026-07-13 (same day as the fix above): this
-        // engine's `svd2` (src/materials/svd.rs) does NOT guarantee non-negative
-        // singular values like textbook SVD -- it keeps U a proper rotation by
-        // encoding a reflection as sigma.y going NEGATIVE instead (see svd2's
-        // `if u.determinant() < 0.0 { ...; sigma.y = -sigma.y }`). The original
-        // `j_new > 0.0` guard here silently EXCLUDED exactly that case: once a
-        // sustained real-time contact interaction (confirmed over a long real
-        // playtest, ~12,500 frames, ZERO muscle activation the whole time --
-        // ruling out muscle-driven compression as the cause) pushed a particle
-        // into that negative-sigma.y state, this fix stopped correcting it
-        // entirely, letting det(F) run away to -1.000 and beyond with no floor
-        // at all -- a real, unbounded regression this fix was supposed to
-        // prevent. Real fix: take magnitudes FIRST (an already-inverted state
-        // is exactly the "exceeded sand's real packing limit" case this floor
-        // exists for, just approached from the other side), THEN apply the
-        // same volumetric floor -- handles "too compressed" and "already
-        // inverted" with one uniform rule instead of two different guards.
+        // Take magnitudes FIRST: this engine's `svd2` does NOT guarantee non-negative
+        // singular values like textbook SVD — it keeps U a proper rotation by encoding
+        // a reflection as sigma.y going NEGATIVE instead (see svd2's
+        // `if u.determinant() < 0.0 { ...; sigma.y = -sigma.y }`). An already-inverted
+        // state is exactly the "exceeded sand's packing limit" case this floor exists
+        // for, just approached from the other side — handles "too compressed" and
+        // "already inverted" with one uniform rule instead of two different guards.
         let mut new_sigma = new_sigma.abs();
         let j_new = new_sigma.x * new_sigma.y;
         if j_new < self.min_volume_jacobian {
@@ -333,10 +358,6 @@ impl MaterialModel for DruckerPragerMaterial {
             // stretch_limit repurposed for DP: stores the cohesion floor (Pa-equivalent).
             // Not read by the GPU's model==5u branch for any other purpose.
             stretch_limit: self.cohesion,
-            // Real fix, 2026-07-13 (see `min_volume_jacobian`'s doc): this field
-            // was ALREADY documented as "Snow/DP: lower bound on plastic volume
-            // ratio Jp" but DP's own GPU branch never actually read it -- wiring
-            // it through properly instead of adding a redundant new slot.
             volume_ratio_min: self.min_volume_jacobian,
             ..Default::default()
         }
@@ -372,8 +393,7 @@ mod marginal_yield_tests {
     /// entirely (no P2G, no gravity, no free surface — a single particle, a single
     /// hand-built deformation gradient, called directly).
     ///
-    /// Derivation (see project_mvp_definition / emerge_reference_audit memory,
-    /// 2026-06-27/28 repose-angle investigation): converting this 2D log-strain DP
+    /// Derivation: converting this 2D log-strain DP
     /// return mapping into principal Cauchy stress shows elastic moduli cancel exactly,
     /// giving a universal relation sin(phi_eff) = sqrt(2) * alpha(q), independent of
     /// lambda/mu. For the default Klar 2016 params at phi_in=35 deg, alpha(q_init) =

@@ -5,9 +5,9 @@ use emerge::render::{ColorMode, Renderer};
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 /// Minimal real-forces proof: a real fluid material, no gravity-settling puddle, driven
-/// downstream by `LinearDragField` -- the drag/current force field this session added
-/// (see its own doc comment for the real physics: Stokes drag / Rayleigh friction, the
-/// SAME technique that drives river currents and wind-blown sand in this engine).
+/// downstream by `LinearDragField` -- the drag/current force field (see its own doc
+/// comment for the real physics: Stokes drag / Rayleigh friction, the SAME technique
+/// that drives river currents and wind-blown sand in this engine).
 ///
 /// A pool of water spawns on the left; the drag field pushes it rightward the whole run,
 /// instead of the fluid just falling and puddling under gravity alone. Same field, same
@@ -52,6 +52,11 @@ fn make_sim() -> Simulation {
         max_substeps_per_step: 8,
         recompute_density_each_step: true,
         cfl_include_affine_speed: false,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_fluids_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.15),
         ..SimConfig::earth(GRID, 0.01, DT)
     };

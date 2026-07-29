@@ -7,27 +7,22 @@ use emerge::{
 };
 use glam::{IVec2, Vec2};
 /// Snake crawling on REAL granular sand terrain -- not the abstract floor
-/// boundary `basic_creature.rs` uses. Proves the full chain works together for
-/// the first time: real terrain material (`DruckerPragerMaterial`), real
-/// multi-field contact (`Particle::contact_group`, Bardenhagen 2001), and the
-/// new `DirectionalContactGrip` (2026-07-13) -- the setae-style asymmetric
-/// friction mechanism that makes crawling possible at all, generalized from
-/// `RatchetFrictionBoundary`'s fixed-floor-only version to an ARBITRARY real
-/// contact interface (so it still works if the terrain isn't flat).
+/// boundary `basic_creature.rs` uses. Proves the full chain works together:
+/// real terrain material (`DruckerPragerMaterial`), real multi-field contact
+/// (`Particle::contact_group`, Bardenhagen 2001), and `DirectionalContactGrip`
+/// -- the setae-style asymmetric friction mechanism that makes crawling
+/// possible at all, generalized from `RatchetFrictionBoundary`'s
+/// fixed-floor-only version to an ARBITRARY real contact interface (so it
+/// still works if the terrain isn't flat).
 ///
-/// Everything else (body proportions, bilayer fiber arch, alternating
-/// segments, CPG traveling wave) is the exact locomotion recipe verified in
-/// `basic_creature.rs` this same session -- this file only changes WHAT the
-/// snake grips (real sand particles instead of a world-edge rule).
+/// Body proportions, bilayer fiber arch, alternating segments, and CPG
+/// traveling wave are the same locomotion recipe as `basic_creature.rs` --
+/// this file only changes WHAT the snake grips (real sand particles instead
+/// of a world-edge rule).
 ///
-/// Headless-verified before this file existed (`diagnose_snake_crawls_on_real_
-/// sand_terrain`, deleted after use): real, substantial, growing crawl
-/// (drift.x -21.0 by step 3000, still climbing) with NO terrain explosion --
-/// terrain stays in a sane 13.8-20.7 range and settles back near baseline.
-/// One real, disclosed caveat: min-J dipped to ~0.0000-0.018 during the
-/// initial settle (the snake's first impact onto the sand), close to but not
-/// past collapse -- worth a gentler spawn drop if this becomes more than a
-/// proof-of-concept.
+/// One disclosed caveat: min-J can dip close to (but not past) collapse
+/// during the snake's initial impact onto the sand -- worth a gentler spawn
+/// drop if this becomes more than a proof-of-concept.
 ///
 ///   cargo run --example snake_on_terrain --features render
 use std::sync::Arc;
@@ -38,31 +33,11 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 128;
-// REAL BUG FOUND AND FIXED 2026-07-15, TWO ROUNDS (found live on the GPU
-// counterpart of this exact scene, applies equally here):
-//
-// Round 1: the original single `DT=0.1` fed the physics solver 0.1 simulated
-// seconds per rendered frame -- at a real ~60fps display frame (~0.0167s real
-// time), that's the world running at 6x real-time speed (already a known,
-// documented issue elsewhere in this codebase -- `gpu_grid_resolution_cost`'s own
-// `REAL_TIME_DT` comment, tests/gpu.rs). Once the terrain was recalibrated to real
-// sand stiffness, that 6x inflation became a real, measured performance problem.
-//
-// Round 2 (a REAL BUG INTRODUCED BY ROUND 1's OWN FIX): the first attempt split
-// this into `DT=1/60` (correct) and a separate `DT` left at the OLD
-// `0.1`, reasoned as "preserving this file's own locomotion tuning." That
-// reasoning was backwards. The CPG steps once per physics frame by whatever DT
-// it's given, with no awareness of what a frame represents in real time. Before,
-// one frame = 0.1 real seconds and the CPG advanced 0.1 per frame -- matched,
-// 1:1 real time. After the split, one frame = 1/60 real seconds (6x shorter) but
-// the CPG still advanced by the old 0.1 every frame -- meaning the muscle cycled
-// 6x FASTER in real wall-clock time than it was ever tuned for. Confirmed live:
-// violent "up/down" spasming and a genuine escalating instability (vmax climbing
-// from ~2 to >20 over a long run). There is only ONE real DT: whatever a physics
-// frame actually represents in real time. Both the physics solver AND the CPG
-// must step by that SAME value to preserve the ORIGINAL real-time gait rate --
-// splitting them was the actual bug, not fixing anything. Re-verified headlessly
-// after this fix: 8000-step real run, vmax stays flat (1.8-2.3), no escalation.
+// Physics solver AND CPG must both step by the SAME DT -- DT is whatever a
+// physics frame represents in real time, and the CPG has no independent
+// awareness of that. Splitting them (solver at 1/60, CPG still stepping by an
+// old larger DT) cycles the muscle faster than it was ever tuned for and
+// causes real, escalating instability.
 const DT: f32 = 1.0 / 60.0;
 const SNAKE_MUSCLE_GROUPS: u32 = 8;
 const N_RINGS: usize = 2;
@@ -119,14 +94,10 @@ struct State {
     anomaly_latched: bool,
     spawn_centroid: Vec2,
     telemetry_log: FrameLogger,
-    // REAL BUG FOUND AND FIXED 2026-07-15 (found live on the GPU counterpart of this
-    // exact scene -- see that file's own comment for the full explanation): the
-    // previous version called `sim.step()` exactly once per rendered frame, silently
-    // assuming each render call corresponds to exactly `DT` of real elapsed
-    // time. Real frames don't take exactly that long, and the mismatch is exactly
-    // what produces jitter/inconsistent motion pacing. `FixedStepController` (an
-    // accumulator this engine already ships) converts REAL measured elapsed time
-    // into the correct number of physics steps to run each frame.
+    // Converts real measured elapsed time into the correct number of physics
+    // steps per frame -- calling `sim.step()` once per render frame assumes
+    // each frame takes exactly `DT` of real time, which it doesn't, and
+    // produces jitter.
     stepper: FixedStepController,
     last_instant: std::time::Instant,
 }
@@ -136,17 +107,10 @@ fn make_sim() -> (
     std::ops::Range<usize>,
     Arc<DirectionalContactGrip>,
 ) {
-    // Real granular terrain. History, corrected 2026-07-15: this used to be a
-    // much softer (133.3, 0.333) -- an early attempt at (5e4, ...) had exploded
-    // and this softer value was picked as a workaround at the time, without
-    // registering it was ~750x weaker than this engine's own validated real-sand
-    // reference (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, uses
-    // `from_young_modulus(1.0e5, 0.2)`) -- a real, if long-undetected, physics bug
-    // (the terrain visibly behaved like fluid, not sand). Now uses that same
-    // validated (1.0e5, 0.2) pair. The earlier explosion at (5e4, ...) was real
-    // but had a SEPARATE cause (a stale `min_dt` override too large for that
-    // stiffness, see the `DT`/`min_dt` fixes below) -- not a fundamental
-    // ceiling on how stiff this terrain can be.
+    // Terrain stiffness matches this engine's own validated real-sand reference
+    // (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, `from_young_modulus
+    // (1.0e5, 0.2)`) -- a much softer value deforms continuously under load and
+    // behaves like fluid, not sand.
     let terrain_spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(100, 12),
@@ -154,47 +118,31 @@ fn make_sim() -> (
         material_id: 0,
         precompute_initial_volumes: true,
         ..SpawnRegion::for_sim(&SimConfig {
-            // REAL BUG FOUND AND FIXED 2026-07-15 -- see the matching config below
-            // (and its own longer comment) for the full explanation: no `min_dt`
-            // override here now, inherits the safe `1.0e-3` default.
+            // No `min_dt` override -- inherits the safe `1.0e-3` default; see
+            // config below for why.
             max_substeps_per_step: 128,
             project_invalid_state: true,
             ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
         })
     };
-    // REAL BUG FOUND AND FIXED 2026-07-15: the previous `min_dt: 0.01` override was
-    // harmless for the OLD, ~750x-softer terrain (E=133.3), whose own real CFL-safe
-    // timestep was comfortably above 0.01 so this floor never actually engaged.
-    // `cfl_bound` (src/spacetime/solver/step.rs) clamps the chosen substep to be AT
-    // LEAST `min_dt` regardless of what the material's own stability bound requires
-    // -- once the terrain was correctly recalibrated to E=1e5 (see below), its true
-    // safe timestep dropped well below 0.01, and this override then forced an
-    // UNSAFE, too-large step every substep, causing a real explosion (confirmed
-    // live on the GPU counterpart of this exact scene: the stiffness fix alone,
-    // without this one, blew the scene up). Removed -- inherits
-    // `SimConfig::default()`'s own safe `1.0e-3`. `max_substeps_per_step` raised to
-    // give the adaptive scheme enough real headroom to actually reach a smaller
-    // substep within one frame's DT budget.
+    // `min_dt` is a hard floor on the substep, not a target -- `cfl_bound` clamps
+    // the chosen substep to be AT LEAST `min_dt` regardless of what the
+    // material's own stability bound requires. A `min_dt` override safe for a
+    // soft material can silently become unsafe (forces an oversized step) once
+    // stiffness increases. No override here -- inherits the safe `1.0e-3` default.
     let config = SimConfig {
         max_substeps_per_step: 128,
         project_invalid_state: true,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
-    // REAL FIX 2026-07-15: the original (133.3, 0.333) was ~750x softer than this
-    // codebase's OWN validated real-sand reference
-    // (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, uses
-    // `from_young_modulus(1.0e5, 0.2)` -- E=1e5 is also sparkl/wgsparkl's own
-    // canonical demo value). A DP material this soft deforms continuously under any
-    // load instead of holding a rigid granular structure before yielding -- the
-    // direct, measured cause of a real user observation on the GPU counterpart of
-    // this exact scene ("looks like fluid, not sand"). `cohesionless` is a thin
-    // wrapper over `from_young_modulus` (same Lamé conversion), so this is a pure
-    // recalibration, not a different construction path.
+    // `cohesionless` is a thin wrapper over `from_young_modulus` -- same real-sand
+    // stiffness as terrain_spawn above (E=1e5 is also sparkl/wgsparkl's own
+    // canonical demo value).
     let mut sim = Simulation::new(config, terrain_spawn)
         .with_default_material(Box::new(DruckerPragerMaterial::cohesionless(1.0e5, 0.2)));
     let terrain_count = sim.particles().len();
 
-    // Snake: exact recipe verified in basic_creature.rs this session.
+    // Snake: same locomotion recipe as basic_creature.rs.
     let mut snake_mat = NeoHookeanMaterial::new(13.0, 26.0);
     snake_mat.active_stress_coeff = 80.0;
     snake_mat.viscosity = 150.0;

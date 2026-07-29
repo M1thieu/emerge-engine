@@ -31,7 +31,7 @@ struct Particle {
     sleeping:             u32,
     pinned:               u32,
     scalar_field:         f32,
-    _pad:                 u32,  // total 128 bytes
+    internal_pressure:    f32,  // total 128 bytes
 }
 
 struct StepParams {

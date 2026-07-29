@@ -1,26 +1,20 @@
-// Multi-field contact resolution (GPU port — 2026-07-15). Ports
-// `Grid::resolve_contact`/`fit_contact_normal_lr` (src/spacetime/grid/mod.rs, CPU) to
-// WGSL. See project memory `locomotion_core_frictional_contact_2026-07-11` for the
-// full CPU investigation this mirrors (Bardenhagen 2001 + Nairn 2020 LR normal fit +
-// the 2026-07-14 velocity-floor Baumgarte fix — THIS file already uses the FIXED,
-// velocity-floor version of Baumgarte, not the earlier unconditional-additive one that
-// caused the long-horizon energy-injection bug on CPU).
+// Multi-field contact resolution (GPU port). Ports `Grid::resolve_contact`/
+// `fit_contact_normal_lr` (src/spacetime/grid/mod.rs, CPU) to WGSL — Bardenhagen 2001 +
+// Nairn 2020 LR normal fit + velocity-floor Baumgarte stabilization (not the earlier
+// unconditional-additive form, which causes long-horizon energy injection).
 //
-// Point-cloud storage is bucketed per coarse BLOCK, not per exact grid node (see
-// `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in step_params.rs for why a first per-node
-// design was reverted). The real fit here (`fit_contact_normal_lr`) therefore first
-// gathers a node's candidate points from its own block PLUS its 8 neighbors
-// (`gather_local_points`, mirroring the same halo-expansion `particle_sort_compact_main`
-// already uses for occupancy) into a small fixed-size LOCAL array, filtered to actual
-// kernel range (`|rel| < 1.5` cells, the same 3x3 B-spline stencil reach P2G uses) —
-// only then does the Newton-Raphson iteration run, exactly like CPU's per-node exact
-// list, just gathered differently underneath.
+// Point-cloud storage is bucketed per coarse BLOCK, not per exact grid node (per-node
+// sizing scales as `grid_res² × capacity` and OOMs — see `MAX_CONTACT_POINTS_PER_BLOCK`'s
+// doc in step_params.rs). The fit here (`fit_contact_normal_lr`) gathers a node's
+// candidate points from its own block PLUS its 8 neighbors (`gather_local_points`,
+// mirroring the halo-expansion `particle_sort_compact_main` uses for occupancy) into a
+// small fixed-size LOCAL array, filtered to actual kernel range (`|rel| < 1.5` cells, the
+// 3x3 B-spline stencil reach P2G uses) — only then does the Newton-Raphson iteration run,
+// same as CPU's per-node exact list, just gathered differently underneath.
 //
-// The isolated `debug_fit_normal_main` entry point (built and verified FIRST, see
-// project memory) is UNCHANGED in behavior: it still runs the fit against one whole
-// block's raw points with no distance filtering, matching what
-// `gpu_debug_fit_normal_matches_cpu_clean_horizontal_interface` already verified
-// against CPU's own reference case.
+// `debug_fit_normal_main` runs the same fit against one whole block's raw points with no
+// distance filtering, verified against CPU's own reference case
+// (`gpu_debug_fit_normal_matches_cpu_clean_horizontal_interface`).
 
 struct Cell {
     momentum: vec2<f32>,
@@ -63,10 +57,10 @@ struct DirectionalGripParams {
 
 const MAX_POINTS_PER_BLOCK: u32 = 256u;
 const MAX_LOCAL_POINTS:     u32 = 128u;
-// Dedicated finer contact-point partition (2026-07-18 re-partition, see
-// MAX_CONTACT_POINTS_PER_BLOCK's doc in step_params.rs) — deliberately NOT the same
-// override as this file's OWN NUM_BLOCKS_PER_DIM below (that one sizes
-// active_block_ids/active_block_count, the unrelated sparse-MPM-dispatch partition).
+// Dedicated finer contact-point partition (see MAX_CONTACT_POINTS_PER_BLOCK's doc in
+// step_params.rs) — deliberately NOT the same override as this file's OWN
+// NUM_BLOCKS_PER_DIM below (that one sizes active_block_ids/active_block_count, the
+// unrelated sparse-MPM-dispatch partition).
 override NUM_CONTACT_BLOCKS_PER_DIM: u32;
 override NUM_BLOCKS_PER_DIM: u32;
 const NUM_BLOCKS: u32 = 256u;
@@ -234,15 +228,12 @@ fn grip_mass_at(cx: i32, cy: i32, res: u32) -> f32 {
 }
 
 // Fallback contact normal: Sobel-3x3 gradient of the grip field's own grid mass -- exact
-// port of `grip_mass_gradient_normal` (CPU, src/spacetime/grid/mod.rs). REAL BUG FIXED
-// 2026-07-15: this fallback did not exist on GPU at all until now -- `resolve_cell` used
-// to skip correction outright whenever the LR fit had no confident normal, reproducing
-// the exact "free-fall tunneling on first contact" bug CPU already found and fixed
-// 2026-07-12 (see `Grid::resolve_contact`'s own doc, bug #4): a falling body's first
-// touch has a shallow, one-sided point cloud where LR often has no answer yet, and
-// skipping correction there let it free-fall straight through before tunneling deep and
-// only then decelerating. Returns z<=0.0 (matching `fit_normal_from_local_points`'s own
-// "no confident normal" convention) when there's no real local gradient.
+// port of `grip_mass_gradient_normal` (CPU, src/spacetime/grid/mod.rs). Needed because a
+// falling body's first touch has a shallow, one-sided point cloud where the LR fit often
+// has no answer yet — without this fallback, `resolve_cell` would skip correction
+// outright and let the body free-fall straight through before tunneling deep and only
+// then decelerating. Returns z<=0.0 (matching `fit_normal_from_local_points`'s own "no
+// confident normal" convention) when there's no local gradient either.
 fn grip_mass_gradient_normal(cx: u32, cy: u32, res: u32) -> vec3<f32> {
     let x = i32(cx);
     let y = i32(cy);
@@ -308,18 +299,11 @@ fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, 
     return n;
 }
 
-// Debug-only entry point (1 thread) — runs the fit against `gather_local_points`'s real
+// Debug-only entry point (1 thread) — runs the fit against `gather_local_points`'s
 // neighbor-expanded, distance-filtered point cloud around `contact_debug_params.
 // node_pos`, i.e. the EXACT same input `resolve_cell` itself uses. `target_block`/
-// `point_count` are no longer read: CHANGED 2026-07-18 (GPU sparse-contact perf pass)
-// from reading one un-expanded block's raw points -- that assumption (a whole known
-// interface fits inside a single un-expanded block) only held by coincidence at the
-// OLD coarse partition's block_size=4; the new dedicated, finer contact partition
-// (see MAX_CONTACT_POINTS_PER_BLOCK's doc, step_params.rs) makes it false in general.
-// This is also a real correctness improvement on its own, independent of the
-// re-partition: this debug path is now representative of what `resolve_cell` actually
-// sees (see the `gpu_directional_grip_is_direction_aware` test's own doc, which
-// already flagged the OLD single-block debug path as testing "the wrong code path").
+// `point_count` are unused (kept for struct layout compatibility only) — a single
+// un-expanded block's raw points would not represent what `resolve_cell` actually sees.
 @compute @workgroup_size(1, 1, 1)
 fn debug_fit_normal_main() {
     let node_pos = contact_debug_params.node_pos;
@@ -367,11 +351,10 @@ fn resolve_direction_aware(v_rel: vec2<f32>, n: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(0.0, 0.0);
 }
 
-// Real resolve_contact pass -- exact port of Grid::resolve_contact (CPU), including
-// the 2026-07-14 velocity-floor Baumgarte fix (NOT the earlier unconditional-additive
-// version that caused the long-horizon energy-injection bug -- see this file's top
-// doc). Dispatched the same active-block-bounded way as grid_update_main (one
-// workgroup per block slot, grid-stride loop over the block's real cell range).
+// Exact port of Grid::resolve_contact (CPU), including the velocity-floor Baumgarte
+// form (see this file's top doc for why, not the unconditional-additive version).
+// Dispatched the same active-block-bounded way as grid_update_main (one workgroup per
+// block slot, grid-stride loop over the block's real cell range).
 fn resolve_cell(cx: u32, cy: u32, res: u32) {
     let idx = cy * res + cx;
     let total = grid[idx];
@@ -397,9 +380,8 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     var fit = fit_normal_from_local_points(&local_points, n_local, node_pos, step_params.grid_cell_size);
 
     if fit.z <= 0.0 {
-        // LR fit found no confident normal -- fall back to the original Bardenhagen
-        // grid mass-gradient normal rather than skipping correction outright. See
-        // `grip_mass_gradient_normal`'s own doc for the real bug this fixes.
+        // LR fit found no confident normal -- fall back to the Bardenhagen grid
+        // mass-gradient normal rather than skipping correction outright.
         fit = grip_mass_gradient_normal(cx, cy, res);
     }
 
@@ -418,7 +400,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     var v_rel = v_grip - v_cm;
     v_rel = resolve_direction_aware(v_rel, n);
 
-    // Baumgarte position correction (velocity-floor form, the 2026-07-14 fix) --
+    // Baumgarte position correction (velocity-floor form) --
     // reuses the SAME local point cloud already gathered for the fit.
     var max_grip_proj = -3.4e38;
     var min_rest_proj = 3.4e38;

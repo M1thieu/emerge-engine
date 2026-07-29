@@ -51,6 +51,11 @@ struct State {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         max_substeps_per_step: 20,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_snow_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.08),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
@@ -177,9 +182,10 @@ impl State {
             self.sim.apply_radial_impulse(self.cursor_grid(), 6.0, 10.0);
         }
         self.sim.step();
-        // Fracture: packed snow hit hard > transitions to loose granular.
+        // Fracture trigger: real plastic compression (Jp), not raw speed --
+        // the old `v.length() > 5.0` fired at launch, before any collision.
         self.sim.phase_transition(
-            |p| p.material_id == MAT_PACKED && p.v.length() > 5.0,
+            |p| p.material_id == MAT_PACKED && p.plastic_volume_ratio < 0.9,
             MAT_SHATTER,
         );
         self.frame += 1;

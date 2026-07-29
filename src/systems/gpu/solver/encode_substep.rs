@@ -44,30 +44,20 @@ impl GpuSimulation {
         {
             // GPU sparse grid Phase 1 — re-detect active blocks from CURRENT particle
             // positions, every substep, immediately before grid_clear uses the result.
+            // particle_sort's once-per-frame detection (computed from frame-START
+            // positions) would go stale by substep 2+ since particles move every
+            // substep, so clear+count+compact reruns every substep (NOT scan/scatter —
+            // those only matter for the once-per-frame sort permutation).
             //
-            // Real bug found via direct testing (gpu_sleep_freezes_settled_particles
-            // regressed, plus a native crash — see mpm_technique_survey memory note):
-            // particle_sort's once-per-frame active-block detection (computed from
-            // frame-START positions) went stale by substep 2+ of the same frame, since
-            // particles move every substep. Fixed by re-running clear+count+compact (NOT
-            // scan/scatter — those only matter for the once-per-frame sort permutation,
-            // unrelated to grid_clear correctness) every substep.
-            //
-            // Second real bug, found via a long-running headless diagnostic AFTER the
-            // above fix (basic_sand_gpu blew up after ~1500 frames, ~1-in-5 runs): a block
-            // that stops being active (a particle moves away) was never cleared again —
-            // grid_clear only ever clears CURRENTLY active blocks, so a block's last P2G
-            // contribution sat there permanently until some particle wandered back near it
-            // much later, at which point P2G's atomic ADD compounded onto the stale
-            // residual. Dense grid_clear never had this problem (it unconditionally zeroed
-            // every cell every substep regardless of activity). Fix: active_block_swap
-            // (dispatched FIRST, before clear/count/compact) snapshots this substep's
-            // about-to-be-overwritten active list into active_block_ids_prev/count_prev,
-            // and grid_clear processes the union of both lists — a genuine one-substep
-            // grace period. See active_block_swap_main's doc comment in particle_sort.wgsl
-            // for the full reasoning, including a first attempt at this fix that was wrong
-            // (reset happened in the same substep it was used in, giving zero actual grace
-            // period).
+            // A block that stops being active (a particle moves away) must still get
+            // cleared once more — grid_clear only clears CURRENTLY active blocks, so
+            // without this a block's last P2G contribution would sit there permanently
+            // until a particle wandered back near it, and P2G's atomic ADD would
+            // compound onto the stale residual. active_block_swap (dispatched FIRST,
+            // before clear/count/compact) snapshots this substep's about-to-be-
+            // overwritten active list into active_block_ids_prev/count_prev, and
+            // grid_clear processes the union of both lists — a one-substep grace
+            // period. See active_block_swap_main's doc comment in particle_sort.wgsl.
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("active_block_refresh"),
                 timestamp_writes: self.profile_writes(0),

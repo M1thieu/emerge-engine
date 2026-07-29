@@ -62,6 +62,8 @@ pub use crate::{
     NaccMaterial,
     NeoHookeanMaterial,
     NewtonianFluidMaterial,
+    NoCompression,
+    NoCompressionMaterial,
     Particle,
     ParticleGroup,
     ParticleMass,
@@ -69,6 +71,7 @@ pub use crate::{
 
     PlasticityModel,
     PredictiveBoundary,
+    Pressurized,
     RadialConfinementField,
     RankineMaterial,
     RatchetFrictionBoundary,
@@ -98,6 +101,7 @@ pub use crate::{
     ViscoelasticMaterial,
     VonMisesMaterial,
     WithLatentHeat,
+    WithPreStress,
     // Particle construction helpers
     build_particles,
     collect_snapshot,

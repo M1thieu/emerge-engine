@@ -80,8 +80,27 @@
 use super::buffers::GpuBuffers;
 use super::shaders;
 use super::step_params::{
-    MAX_FORCE_FIELDS, MAX_MATERIALS, MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS_PER_DIM,
-    NUM_CONTACT_BLOCKS_PER_DIM,
+    MAX_FORCE_FIELDS, MAX_SLEEP_WAKE_TAGS, NUM_BLOCKS_PER_DIM, NUM_CONTACT_BLOCKS_PER_DIM,
+};
+
+// Bind-group-LAYOUT construction (the four `wgpu::BindGroupLayout`s shared by every
+// pass, plus the impulse pass's own minimal layout) -- split into its own file, was
+// ~160 of this file's ~730 lines. See layouts.rs's own doc.
+mod layouts;
+use layouts::{
+    build_contact_bind_group_layout, build_core_bind_group_layout, build_impulse_bind_group_layout,
+    build_resource_bind_group_layout, build_thermal_bind_group_layout,
+};
+
+// Compute-PIPELINE construction (the `wgpu::ComputePipeline`s built from those
+// layouts, grouped the same way the module doc comment above already groups the
+// eleven passes) -- split into its own file, was ~280 of this file's ~730 lines.
+// See passes.rs's own doc.
+mod passes;
+use passes::{
+    build_asflip_pipeline, build_contact_resolve_pipelines, build_g2p_and_update_pipelines,
+    build_impulse_pipeline, build_p2g_and_grid_pipelines, build_resource_pipelines,
+    build_sort_pipelines, build_thermal_pipelines,
 };
 
 /// All compiled compute pipelines for one GpuSimulation instance.
@@ -159,164 +178,12 @@ pub struct SimPipelines {
     pub impulse_bind_group_layout: wgpu::BindGroupLayout,
 }
 
-/// A `read_write` storage-buffer binding, COMPUTE-visible — the shape shared by every
-/// storage entry in the pipeline's bind group layout. Collapses what used to be a ~10-line
-/// struct literal repeated 8 times into one call each, cutting real line count (not just
-/// moving it) while every binding still gets its own doc comment at the call site.
-const fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: false },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
-/// A `uniform` buffer binding, COMPUTE-visible — same rationale as `storage_entry`.
-const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 impl SimPipelines {
     pub fn new(device: &wgpu::Device) -> Self {
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("mpm_bind_group_layout"),
-            entries: &[
-                storage_entry(0), // particles
-                storage_entry(1), // grid
-                uniform_entry(2), // materials (array<MaterialParams, MAX_MATERIALS>)
-                uniform_entry(3), // step_params (GpuStepParams, 32 bytes)
-                uniform_entry(4), // force_fields_params (GpuFieldsParams, 784 bytes)
-                // 5: sorted_particle_ids — written by particle_sort; read by p2g and
-                // particles_update for sorted access.
-                storage_entry(5),
-                // 6: block_counts — 256 atomic<u32>, particle_sort only.
-                storage_entry(6),
-                // 7: sleep_wake_params — GpuSleepWakeParams, 80 bytes. Only force_fields.wgsl
-                // reads this; harmless for shaders that don't.
-                uniform_entry(7),
-                // 8: active_block_ids — 256 u32. GPU sparse grid: particle_sort writes,
-                // grid_clear/grid_update read.
-                storage_entry(8),
-                // 9: active_block_count — 1 atomic<u32>. Same pair as binding 8.
-                storage_entry(9),
-                // 10: active_block_ids_prev — 256 u32. Snapshot of last substep's
-                // active_block_ids — the one-substep grace period, see active_block_swap_main.
-                storage_entry(10),
-                // 11: active_block_count_prev — 1 plain u32, not atomic (only ever written by
-                // active_block_swap_main's single lid.x==0u thread). Companion to binding 10.
-                storage_entry(11),
-            ],
-        });
-
-        // Group 1 — contact subsystem, split out 2026-07-16 (see module doc comment above)
-        // to keep each layout within the WebGPU-guaranteed 8-storage-buffers-per-stage
-        // baseline. Binding NUMBERS are kept exactly as they were under the old single
-        // layout (12-19) — only which GROUP they belong to changed, so every WGSL shader
-        // only needed its `@group(0)` -> `@group(1)` annotation updated on these specific
-        // bindings, no renumbering.
-        let contact_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("mpm_contact_bind_group_layout"),
-                entries: &[
-                    // 12: grip_grid — multi-field contact "grip" field mass/momentum
-                    // accumulator, same dense grid_res² layout and fixed-point atomic
-                    // convention as `grid` (group 0 binding 1). GPU port first slice —
-                    // see buffers.rs doc.
-                    storage_entry(12),
-                    // 13: contact_points — labeled contact point cloud (grid_res² ×
-                    // MAX_CONTACT_POINTS_PER_NODE), read/written by gather_contact_points_main.
-                    storage_entry(13),
-                    // 14: contact_point_counts — grid_res² atomic<u32>, per-node point-cloud
-                    // size.
-                    storage_entry(14),
-                    // 15: contact_debug_params — debug/test-only, resolve_contact.wgsl.
-                    uniform_entry(15),
-                    // 16: contact_debug_output — debug/test-only, resolve_contact.wgsl.
-                    storage_entry(16),
-                    // 17/18: resolved_grip_v / resolved_rest_v — resolve_contact_main writes,
-                    // a future G2P routing change reads.
-                    storage_entry(17),
-                    storage_entry(18),
-                    // 19: grip_params — directional grip friction, resolve_contact.wgsl.
-                    uniform_entry(19),
-                    // 30/31: material_mass / material_mass_params — `ColorMode::
-                    // GridVolume`'s opt-in per-cell per-material mass accumulator
-                    // (P2G writes it). Shares this group purely for bind-group-count
-                    // economy (WebGPU's 4-group baseline is already fully used, same
-                    // reason ASFLIP shares group 3 with resource regrowth) — nothing
-                    // to do with contact thematically.
-                    storage_entry(30),
-                    uniform_entry(31),
-                ],
-            });
-
-        // Group 2 — day-night/ambient thermal diffusion (GPU port, 2026-07-16). A real,
-        // separate group rather than squeezing into group 0 (already at 8/8 storage,
-        // zero headroom, per that group's own doc) or group 1 (wrong category — thermal
-        // has nothing to do with contact). 3 storage + 1 uniform, well under the
-        // baseline limit. Bindings 20-23, continuing the flat numbering the split
-        // already established.
-        let thermal_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("mpm_thermal_bind_group_layout"),
-                entries: &[
-                    // 20: thermal_params — GpuThermalParams (alpha, ambient, cooling_rate,
-                    // enabled).
-                    uniform_entry(20),
-                    // 21: thermal_mass — Σ(w·mass) per cell, dense grid_res² f32.
-                    storage_entry(21),
-                    // 22: thermal_temp_old — normalized T_old per cell, needed for the G2P
-                    // delta gather.
-                    storage_entry(22),
-                    // 23: thermal_work — dual-use: P2G scatter accumulator, then post-
-                    // Laplacian T_new.
-                    storage_entry(23),
-                ],
-            });
-
-        // Group 3 — resource regrowth (GPU port, 2026-07-16). Own separate group from
-        // thermal despite the near-identical shape (see `GpuResourceParams`' doc for
-        // why: both would otherwise fight over the same particle.temperature carrier).
-        // 4 storage + 2 uniform once ASFLIP's 2 bindings are added below, still well
-        // under the baseline 8-storage-per-stage limit. Bindings 24-29.
-        let resource_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("mpm_resource_bind_group_layout"),
-                entries: &[
-                    // 24: resource_params — GpuResourceParams (diffusivity, ambient,
-                    // resource_r, resource_k, enabled).
-                    uniform_entry(24),
-                    // 25: resource_mass — Σ(w·mass) per cell, dense grid_res² f32.
-                    storage_entry(25),
-                    // 26: resource_phi_old — normalized φ_old per cell.
-                    storage_entry(26),
-                    // 27: resource_work — dual-use: P2G scatter accumulator, then post-
-                    // Laplacian+logistic-growth φ_new.
-                    storage_entry(27),
-                    // 28: asflip_params — GpuAsflipParams (blend, enabled). Shares this
-                    // group with resource regrowth purely for bind-group-count economy
-                    // (WebGPU's 4-group baseline is already fully used) — see the module
-                    // doc comment's Group 3 entry.
-                    uniform_entry(28),
-                    // 29: asflip_snapshot — grid_res² vec2<f32> pre-force velocity
-                    // snapshot, written by grid_update.wgsl, read by g2p_asflip_fused.wgsl.
-                    storage_entry(29),
-                ],
-            });
+        let bind_group_layout = build_core_bind_group_layout(device);
+        let contact_bind_group_layout = build_contact_bind_group_layout(device);
+        let thermal_bind_group_layout = build_thermal_bind_group_layout(device);
+        let resource_bind_group_layout = build_resource_bind_group_layout(device);
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mpm_pipeline_layout"),
@@ -328,12 +195,6 @@ impl SimPipelines {
             ],
             push_constant_ranges: &[],
         });
-
-        // MAX_MATERIALS: array-size constant — must be injected via string template
-        // (naga requires CREATION_RESOLVED; WGSL `override` doesn't apply to array sizes).
-        let p2g_src = patch_shader(shaders::P2G);
-        let particles_update_src = patch_shader(shaders::PARTICLES_UPDATE);
-        let g2p_asflip_fused_src = patch_shader(shaders::G2P_ASFLIP_FUSED);
 
         // MAX_FORCE_FIELDS / MAX_SLEEP_WAKE_TAGS: loop-bound constants — uses WGSL
         // `override` (proper pipeline specialization), not a hardcoded literal in the shader.
@@ -374,279 +235,44 @@ impl SimPipelines {
             ("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64),
         ];
 
-        // NUM_BLOCKS_PER_DIM is an `override` at the particle_sort.wgsl MODULE level (promoted
-        // from a hardcoded const — see GPU sparse grid Phase 1), so every pipeline built from
-        // this file needs it supplied at creation time, not just particle_sort_compact, which
-        // is the only entry point that actually reads it.
-        let particle_sort_clear = make_pipeline(
+        let (
+            particle_sort_clear,
+            particle_sort_count,
+            particle_sort_compact,
+            active_block_swap,
+            particle_sort_scan,
+            particle_sort_scatter,
+        ) = build_sort_pipelines(device, &pipeline_layout, block_consts);
+
+        let (grid_clear, p2g, gather_contact_points, grid_update) = build_p2g_and_grid_pipelines(
             device,
             &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "particle_sort_clear_main",
-            "particle_sort_clear",
             block_consts,
-            false,
-        );
-        let particle_sort_count = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "particle_sort_count_main",
-            "particle_sort_count",
-            block_consts,
-            false,
-        );
-        // particle_sort_scan is the ONLY pipeline with var<workgroup> memory (scan_temp) —
-        // see the skip_workgroup_zero_init doc on make_pipeline for the safety argument.
-        // Every other pipeline keeps the WebGPU-mandated zero-init (false here = default ON).
-        // GPU sparse grid Phase 1 — reads the raw histogram before scan overwrites it into a
-        // scatter cursor, so must run between count and scan, never reordered.
-        let particle_sort_compact = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "particle_sort_compact_main",
-            "particle_sort_compact",
-            block_consts,
-            false,
-        );
-        // Dispatched FIRST each substep, before clear/count/compact in the per-substep
-        // sequence (not the once-per-frame sort sequence) — see active_block_swap_main's doc
-        // comment in particle_sort.wgsl for why.
-        let active_block_swap = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "active_block_swap_main",
-            "active_block_swap",
-            block_consts,
-            false,
-        );
-        let particle_sort_scan = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "particle_sort_scan_main",
-            "particle_sort_scan",
-            block_consts,
-            true,
-        );
-        let particle_sort_scatter = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::PARTICLE_SORT,
-            "particle_sort_scatter_main",
-            "particle_sort_scatter",
-            block_consts,
-            false,
-        );
-        let grid_clear = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::GRID_CLEAR,
-            "grid_clear_main",
-            "grid_clear",
-            block_consts,
-            false,
-        );
-        // p2g.wgsl declares `override NUM_CONTACT_BLOCKS_PER_DIM` (needed by
-        // gather_contact_points_main's contact_block_index call) -- both entry points
-        // compiled from this same module need it supplied, even though p2g_main itself
-        // doesn't reference it.
-        let p2g = make_pipeline(
-            device,
-            &pipeline_layout,
-            &p2g_src,
-            "p2g_main",
-            "p2g",
             contact_block_consts,
-            false,
-        );
-        let gather_contact_points = make_pipeline(
-            device,
-            &pipeline_layout,
-            &p2g_src,
-            "gather_contact_points_main",
-            "gather_contact_points",
-            contact_block_consts,
-            false,
-        );
-        let grid_update = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::GRID_UPDATE,
-            "grid_update_main",
-            "grid_update",
             grid_update_consts,
-            false,
         );
-        let g2p = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::G2P,
-            "g2p_main",
-            "g2p",
-            &[],
-            false,
-        );
-        let particles_update = make_pipeline(
-            device,
-            &pipeline_layout,
-            &particles_update_src,
-            "particles_update_main",
-            "particles_update",
-            &[],
-            false,
-        );
-        let force_fields = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::FORCE_FIELDS,
-            "force_fields_main",
-            "force_fields",
-            ff_consts,
-            false,
-        );
+
+        let (g2p, particles_update, force_fields) =
+            build_g2p_and_update_pipelines(device, &pipeline_layout, ff_consts);
 
         // ASFLIP (GPU port) -- replaces g2p+particles_update for a substep, only when
         // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's own doc for why this
         // is one fused kernel rather than two, and SimPipelines::g2p_asflip_fused's doc.
-        let g2p_asflip_fused = make_pipeline(
-            device,
-            &pipeline_layout,
-            &g2p_asflip_fused_src,
-            "g2p_asflip_fused_main",
-            "g2p_asflip_fused",
-            &[],
-            false,
-        );
+        let g2p_asflip_fused = build_asflip_pipeline(device, &pipeline_layout);
 
-        // Impulse pass has a minimal 2-binding layout: particles + impulse_params.
-        let impulse_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("mpm_impulse_bind_group_layout"),
-                entries: &[
-                    storage_entry(0), // particles
-                    uniform_entry(1), // impulse_params
-                ],
-            });
-        let impulse_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("mpm_impulse_pipeline_layout"),
-                bind_group_layouts: &[&impulse_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        let apply_impulses = make_pipeline(
-            device,
-            &impulse_pipeline_layout,
-            shaders::APPLY_IMPULSES,
-            "apply_impulses_main",
-            "apply_impulses",
-            &[],
-            false,
-        );
+        let impulse_bind_group_layout = build_impulse_bind_group_layout(device);
+        let apply_impulses = build_impulse_pipeline(device, &impulse_bind_group_layout);
 
-        // resolve_contact.wgsl declares BOTH `override NUM_BLOCKS_PER_DIM` (needed by
-        // resolve_contact_main's active-block-neighbor gather) and
-        // `override NUM_CONTACT_BLOCKS_PER_DIM` (needed by gather_local_points' contact-
-        // block scan) -- every entry point compiled from this module needs both
-        // supplied, even though debug_fit_normal_main itself doesn't reference either
-        // (same requirement already established for p2g/gather_contact_points sharing
-        // p2g.wgsl's own override).
-        let debug_fit_normal = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOLVE_CONTACT,
-            "debug_fit_normal_main",
-            "debug_fit_normal",
-            resolve_contact_consts,
-            false,
-        );
-        let resolve_contact = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOLVE_CONTACT,
-            "resolve_contact_main",
-            "resolve_contact",
-            resolve_contact_consts,
-            false,
-        );
+        let (debug_fit_normal, resolve_contact) =
+            build_contact_resolve_pipelines(device, &pipeline_layout, resolve_contact_consts);
 
         // Day-night/ambient thermal diffusion (GPU port) -- 4 passes, see field docs.
-        let thermal_clear = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::THERMAL,
-            "thermal_clear_main",
-            "thermal_clear",
-            &[],
-            false,
-        );
-        let thermal_p2g = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::THERMAL,
-            "thermal_p2g_main",
-            "thermal_p2g",
-            &[],
-            false,
-        );
-        let thermal_normalize_laplacian = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::THERMAL,
-            "thermal_normalize_laplacian_main",
-            "thermal_normalize_laplacian",
-            &[],
-            false,
-        );
-        let thermal_g2p = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::THERMAL,
-            "thermal_g2p_main",
-            "thermal_g2p",
-            &[],
-            false,
-        );
+        let (thermal_clear, thermal_p2g, thermal_normalize_laplacian, thermal_g2p) =
+            build_thermal_pipelines(device, &pipeline_layout);
 
         // Resource regrowth (GPU port) -- same 4-pass shape, see field docs.
-        let resource_clear = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOURCE_FIELD,
-            "resource_clear_main",
-            "resource_clear",
-            &[],
-            false,
-        );
-        let resource_p2g = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOURCE_FIELD,
-            "resource_p2g_main",
-            "resource_p2g",
-            &[],
-            false,
-        );
-        let resource_normalize_laplacian = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOURCE_FIELD,
-            "resource_normalize_laplacian_main",
-            "resource_normalize_laplacian",
-            &[],
-            false,
-        );
-        let resource_g2p = make_pipeline(
-            device,
-            &pipeline_layout,
-            shaders::RESOURCE_FIELD,
-            "resource_g2p_main",
-            "resource_g2p",
-            &[],
-            false,
-        );
+        let (resource_clear, resource_p2g, resource_normalize_laplacian, resource_g2p) =
+            build_resource_pipelines(device, &pipeline_layout);
 
         Self {
             particle_sort_clear,
@@ -688,46 +314,3 @@ impl SimPipelines {
 // -- split into their own file, was ~200 of this file's ~850 lines. Pipeline/
 // layout CONSTRUCTION stays above; per-substep bind-group building lives there.
 mod bind_groups;
-
-/// Replaces `{{MAX_MATERIALS}}` with the Rust-side value.
-/// Needed because naga requires array-size constants to be CREATION_RESOLVED (known at
-/// shader-module creation time), so WGSL `override` constants cannot be used there.
-/// MAX_FORCE_FIELDS is a loop bound only — it uses `override` and is handled via constants.
-fn patch_shader(source: &str) -> String {
-    source.replace("{{MAX_MATERIALS}}", &MAX_MATERIALS.to_string())
-}
-
-/// `skip_workgroup_zero_init`: opt-IN per pipeline, NOT a global default. WebGPU mandates
-/// zeroing `var<workgroup>` memory before use, as a safety net against reading stale data from
-/// a prior dispatch. Pass `true` ONLY if every `var<workgroup>` declared in this specific
-/// shader is provably written by every thread before any read (barrier-guarded) — skipping the
-/// zero-init then costs nothing in correctness and saves real time (measured: ~10-18% on the
-/// one pipeline that currently qualifies, particle_sort_scan). This is NOT compiler-checked —
-/// if a future edit to that shader (or a copy-pasted call site for a new shader) adds a
-/// `var<workgroup>` without re-verifying the write-before-read invariant, this flag must be
-/// re-audited or set back to `false`. Default to `false` for any new pipeline.
-fn make_pipeline(
-    device: &wgpu::Device,
-    layout: &wgpu::PipelineLayout,
-    source: &str,
-    entry_point: &str,
-    label: &str,
-    constants: &[(&str, f64)],
-    skip_workgroup_zero_init: bool,
-) -> wgpu::ComputePipeline {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
-    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some(label),
-        layout: Some(layout),
-        module: &module,
-        entry_point: Some(entry_point),
-        compilation_options: wgpu::PipelineCompilationOptions {
-            constants,
-            zero_initialize_workgroup_memory: !skip_workgroup_zero_init,
-        },
-        cache: None,
-    })
-}

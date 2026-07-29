@@ -40,6 +40,24 @@ struct GpuCell {
 
 const _: () = assert!(mem::size_of::<GpuCell>() == 16);
 
+/// Every buffer in this file shares this exact shape (`mapped_at_creation` is always
+/// `false` -- every upload here goes through `write_buffer`, never a mapped pointer at
+/// creation time); only label/size/usage actually vary per call site. Collapses what
+/// used to be a 5-line `BufferDescriptor` literal repeated ~35 times into one call each.
+fn make_buffer(
+    device: &wgpu::Device,
+    label: &str,
+    size: u64,
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    })
+}
+
 /// All persistent GPU buffers for one GpuSimulation instance.
 pub struct GpuBuffers {
     /// Particle data — STORAGE | COPY_DST | COPY_SRC.
@@ -78,22 +96,20 @@ pub struct GpuBuffers {
     /// dense grid_res² domain; grid_update additionally guards against double-processing a
     /// block present in both this list and `active_block_ids_prev`, since unlike grid_clear's
     /// idempotent zero-write, grid_update computes each cell via several read-modify-write
-    /// steps and two workgroups racing on the same non-atomic cells is a real correctness bug
-    /// — found and fixed 2026-07-12, see `grid_update.wgsl`). The `grid` buffer itself stays
-    /// dense (real memory compaction, not just bounded dispatch, would need a fundamentally
-    /// different sparse-allocation scheme — a separate, larger undertaking, not done here).
+    /// steps and two workgroups racing on the same non-atomic cells corrupts it (see
+    /// `grid_update.wgsl`). The `grid` buffer itself stays dense — real memory compaction
+    /// would need a different sparse-allocation scheme, not done here.
     pub active_block_ids: wgpu::Buffer,
     /// Atomic count of valid entries in `active_block_ids` this frame — 1 × u32, STORAGE |
     /// COPY_SRC.
     pub active_block_count: wgpu::Buffer,
     /// Snapshot of `active_block_ids`/`active_block_count` from the IMMEDIATELY PRECEDING
-    /// substep — NUM_BLOCKS × u32, STORAGE. Real bug fix: without this, a block that stops
-    /// being active never gets cleared again, since grid_clear only ever clears CURRENTLY
-    /// active blocks — its last P2G contribution would sit there permanently until some
-    /// particle wandered back near it much later (see `active_block_swap_main`'s doc comment
-    /// in `particle_sort.wgsl` for the full story, including a first attempt at this fix that
-    /// was wrong). grid_clear processes the union of `active_block_ids` and this buffer,
-    /// giving every block a genuine one-substep grace period before being left alone.
+    /// substep — NUM_BLOCKS × u32, STORAGE. Without this, a block that stops being active
+    /// never gets cleared again, since grid_clear only ever clears CURRENTLY active blocks —
+    /// its last P2G contribution would sit there permanently until a particle wandered back
+    /// near it (see `active_block_swap_main`'s doc comment in `particle_sort.wgsl`).
+    /// grid_clear processes the union of `active_block_ids` and this buffer, giving every
+    /// block a one-substep grace period before being left alone.
     pub active_block_ids_prev: wgpu::Buffer,
     /// Companion to `active_block_ids_prev` — 1 × u32, STORAGE. NOT atomic (only ever written
     /// by the single-threaded `lid.x == 0u` branch of `active_block_swap_main`, read by
@@ -103,8 +119,7 @@ pub struct GpuBuffers {
     /// Persistent readback staging buffer — pre-allocated to avoid per-frame alloc/dealloc.
     /// COPY_DST | MAP_READ. Same size as `particles`.
     pub readback_staging: wgpu::Buffer,
-    /// Multi-field contact (GPU port, first slice — 2026-07-14, see project memory
-    /// `locomotion_core_frictional_contact_2026-07-11`) — the "grip" field's own
+    /// Multi-field contact (GPU port) — the "grip" field's own
     /// mass/momentum accumulator, same dense per-cell layout and fixed-point atomic
     /// scatter convention as `grid` itself (`momentum.xy, mass, pad` × 4 bytes per
     /// float, `grid_res²` cells). Additively scattered by `p2g.wgsl` alongside the
@@ -116,11 +131,10 @@ pub struct GpuBuffers {
     /// label, unused) for the Newton-Raphson LR contact-normal fit — CPU's mirror is
     /// `ContactCell::points` (an unbounded per-node `Vec`, see that type's doc). Bucketed
     /// per `NUM_CONTACT_BLOCKS` (64×64=4096), a DEDICATED finer partition, NOT per exact
-    /// grid node (a first version bucketed per node and OOM'd the real
-    /// `gpu_grid_resolution_cost` regression test at grid_res=2048) and NOT sharing
-    /// `particle_sort.wgsl`'s coarser `NUM_BLOCKS` partition either anymore (see
-    /// `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in `step_params.rs` for the full sizing story,
-    /// including the 2026-07-18 re-partition that fixed a real scan-to-keep mismatch).
+    /// grid node (bucketing per node scales as `grid_res² × capacity` and OOMs at high
+    /// res) and NOT sharing `particle_sort.wgsl`'s coarser `NUM_BLOCKS` partition either
+    /// (see `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in `step_params/spatial_blocks.rs` for
+    /// sizing rationale).
     /// Fixed total size (`NUM_CONTACT_BLOCKS × MAX_CONTACT_POINTS_PER_BLOCK × 16 bytes` ≈
     /// 16 MiB), independent of grid_res. Populated by a dedicated pass
     /// (`gather_contact_points_main` in `p2g.wgsl`) that runs AFTER the main P2G scatter,
@@ -192,15 +206,11 @@ pub struct GpuBuffers {
     /// after momentum normalization, before gravity is added -- the same pre-force
     /// instant CPU snapshots at. Read by `g2p_asflip_fused.wgsl`'s second gather.
     ///
-    /// LAZILY allocated, unlike `grip_params`/`thermal_params` -- REAL bug found and
-    /// fixed 2026-07-17: at 8 bytes/cell this is the same order of magnitude as the main
-    /// `grid` buffer itself (16 bytes/cell), not a cheap tiny uniform. Allocating it
-    /// unconditionally at full `grid_res²` size for every `GpuSimulation` (the vast
-    /// majority of which never call `attach_asflip_gpu`) measurably tipped already
-    /// memory-marginal tests (a 16,000-step terrain settle, a grid_res-up-to-2048 sweep)
-    /// into real `wgpu` "Out of Memory" territory on this machine -- confirmed via a
-    /// direct A/B: the full test suite genuinely OOM'd with this buffer at real size,
-    /// and passed clean (42/42, normal ~200s runtime) with it shrunk to a placeholder.
+    /// LAZILY allocated, unlike `grip_params`/`thermal_params` -- at 8 bytes/cell this is
+    /// the same order of magnitude as the main `grid` buffer itself (16 bytes/cell), not
+    /// a cheap tiny uniform. Allocating it unconditionally at full `grid_res²` size for
+    /// every `GpuSimulation` (most of which never call `attach_asflip_gpu`) pushes
+    /// memory-marginal tests into `wgpu` OOM territory.
     /// Starts at `PLACEHOLDER_BYTES` (never read/written while `asflip_params.enabled ==
     /// 0`, so a too-small buffer is safe); `GpuSimulation::attach_asflip_gpu` grows it to
     /// the real size on first use, mirroring `spawn_region`'s existing reallocate-and-
@@ -216,11 +226,10 @@ pub struct GpuBuffers {
     pub material_mass_params: wgpu::Buffer,
     /// Dense `grid_res² × MAX_RENDER_MATERIAL_SLOTS × f32` per-material mass
     /// accumulator, same fixed-point atomic scatter convention as `grid` itself.
-    /// LAZILY allocated, same real reason `asflip_snapshot` is (this is
+    /// LAZILY allocated, same reason `asflip_snapshot` is (this is
     /// `MAX_RENDER_MATERIAL_SLOTS`x the size of the main grid's own mass field --
-    /// unconditionally allocating it for every `GpuSimulation`, the vast majority of
-    /// which never call `attach_grid_material_render_gpu`, would repeat the exact
-    /// OOM risk already found and fixed for ASFLIP). Starts at
+    /// unconditionally allocating it for every `GpuSimulation`, most of which never call
+    /// `attach_grid_material_render_gpu`, repeats the same OOM risk). Starts at
     /// `MATERIAL_MASS_PLACEHOLDER_BYTES` (never read/written while
     /// `material_mass_params.enabled == 0`).
     pub material_mass: wgpu::Buffer,
@@ -253,253 +262,253 @@ impl GpuBuffers {
         let material_bytes = (max_materials * mem::size_of::<MaterialParams>()) as u64;
         let step_bytes = mem::size_of::<GpuStepParams>() as u64;
 
-        let particles = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_particles"),
-            size: particle_bytes,
-            usage: wgpu::BufferUsages::STORAGE
+        let particles = make_buffer(
+            device,
+            "mpm_particles",
+            particle_bytes,
+            wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        );
 
-        let grid = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_grid"),
-            size: grid_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let grid = make_buffer(
+            device,
+            "mpm_grid",
+            grid_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
-        let materials = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_materials"),
-            size: material_bytes,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let materials = make_buffer(
+            device,
+            "mpm_materials",
+            material_bytes,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Allocate max_substeps + 1 slots: 0..max_substeps for physics substeps,
         // slot max_substeps is a dedicated particle_sort slot so it never aliases substep 0.
         let step_params_pool: Vec<wgpu::Buffer> = (0..max_substeps + 1)
             .map(|i| {
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(&format!("mpm_step_params_{i}")),
-                    size: step_bytes,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
+                make_buffer(
+                    device,
+                    &format!("mpm_step_params_{i}"),
+                    step_bytes,
+                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                )
             })
             .collect();
 
-        let force_fields_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_force_fields_params"),
-            size: mem::size_of::<GpuFieldsParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let force_fields_params = make_buffer(
+            device,
+            "mpm_force_fields_params",
+            mem::size_of::<GpuFieldsParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
-        let impulse_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_impulse_params"),
-            size: mem::size_of::<GpuImpulseParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let impulse_params = make_buffer(
+            device,
+            "mpm_impulse_params",
+            mem::size_of::<GpuImpulseParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
-        let sleep_wake_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_sleep_wake_params"),
-            size: mem::size_of::<GpuSleepWakeParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let sleep_wake_params = make_buffer(
+            device,
+            "mpm_sleep_wake_params",
+            mem::size_of::<GpuSleepWakeParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
-        let sorted_particle_ids = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_sorted_particle_ids"),
-            size: (particle_count * mem::size_of::<u32>()) as u64,
-            // COPY_SRC: needed for test-only readback (gpu_particle_sort_is_valid_permutation).
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        // COPY_SRC: needed for test-only readback (gpu_particle_sort_is_valid_permutation).
+        let sorted_particle_ids = make_buffer(
+            device,
+            "mpm_sorted_particle_ids",
+            (particle_count * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         // NUM_BLOCKS (256) must match particle_sort.wgsl's NUM_BLOCKS_PER_DIM² exactly.
-        let block_counts = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_block_counts"),
-            size: (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let block_counts = make_buffer(
+            device,
+            "mpm_block_counts",
+            (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE,
+        );
 
         // GPU sparse grid Phase 1 — see active_block_ids/active_block_count field docs.
-        let active_block_ids = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_active_block_ids"),
-            size: (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let active_block_count = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_active_block_count"),
-            size: mem::size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let active_block_ids_prev = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_active_block_ids_prev"),
-            size: (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let active_block_count_prev = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_active_block_count_prev"),
-            size: mem::size_of::<u32>() as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let active_block_ids = make_buffer(
+            device,
+            "mpm_active_block_ids",
+            (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let active_block_count = make_buffer(
+            device,
+            "mpm_active_block_count",
+            mem::size_of::<u32>() as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let active_block_ids_prev = make_buffer(
+            device,
+            "mpm_active_block_ids_prev",
+            (NUM_BLOCKS * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let active_block_count_prev = make_buffer(
+            device,
+            "mpm_active_block_count_prev",
+            mem::size_of::<u32>() as u64,
+            wgpu::BufferUsages::STORAGE,
+        );
 
-        let readback_staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_particle_staging"),
-            size: particle_bytes,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback_staging = make_buffer(
+            device,
+            "mpm_particle_staging",
+            particle_bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
 
         // Multi-field contact (GPU port, first slice) — see field docs above.
-        let grip_grid = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_grip_grid"),
-            size: grid_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let grip_grid = make_buffer(
+            device,
+            "mpm_grip_grid",
+            grid_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         // Fixed size, independent of grid_res — see MAX_CONTACT_POINTS_PER_BLOCK's doc
         // for why this is bucketed per its own dedicated NUM_CONTACT_BLOCKS partition
         // (finer than NUM_BLOCKS, the unrelated P2G-sort partition), not per exact node.
         let contact_points_bytes = (NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK * 16) as u64;
-        let contact_points = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_contact_points"),
-            size: contact_points_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let contact_points = make_buffer(
+            device,
+            "mpm_contact_points",
+            contact_points_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         let contact_point_counts_bytes = (NUM_CONTACT_BLOCKS * mem::size_of::<u32>()) as u64;
-        let contact_point_counts = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_contact_point_counts"),
-            size: contact_point_counts_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let contact_point_counts = make_buffer(
+            device,
+            "mpm_contact_point_counts",
+            contact_point_counts_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         // Multi-field contact (GPU port, second slice) — debug/test-only scaffolding
         // for verifying the Newton-Raphson LR normal fit in isolation.
-        let contact_debug_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_contact_debug_params"),
-            size: mem::size_of::<ContactDebugParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let contact_debug_output = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_contact_debug_output"),
-            size: 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let contact_debug_params = make_buffer(
+            device,
+            "mpm_contact_debug_params",
+            mem::size_of::<ContactDebugParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let contact_debug_output = make_buffer(
+            device,
+            "mpm_contact_debug_output",
+            16,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         // Multi-field contact (GPU port, third slice) — resolved velocities + directional
         // grip params, see field docs above.
         let resolved_vel_bytes = (grid_res * grid_res * mem::size_of::<[f32; 2]>()) as u64;
-        let resolved_grip_v = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resolved_grip_v"),
-            size: resolved_vel_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let resolved_rest_v = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resolved_rest_v"),
-            size: resolved_vel_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let grip_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_grip_params"),
-            size: mem::size_of::<GpuDirectionalGripParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let resolved_grip_v = make_buffer(
+            device,
+            "mpm_resolved_grip_v",
+            resolved_vel_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let resolved_rest_v = make_buffer(
+            device,
+            "mpm_resolved_rest_v",
+            resolved_vel_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
+        let grip_params = make_buffer(
+            device,
+            "mpm_grip_params",
+            mem::size_of::<GpuDirectionalGripParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
 
         // Day-night/ambient thermal diffusion (GPU port) — see field docs above.
-        let thermal_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_thermal_params"),
-            size: mem::size_of::<GpuThermalParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let thermal_params = make_buffer(
+            device,
+            "mpm_thermal_params",
+            mem::size_of::<GpuThermalParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
         let thermal_scalar_bytes = (grid_res * grid_res * mem::size_of::<f32>()) as u64;
-        let thermal_mass = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_thermal_mass"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let thermal_temp_old = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_thermal_temp_old"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let thermal_work = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_thermal_work"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let thermal_mass = make_buffer(
+            device,
+            "mpm_thermal_mass",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let thermal_temp_old = make_buffer(
+            device,
+            "mpm_thermal_temp_old",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let thermal_work = make_buffer(
+            device,
+            "mpm_thermal_work",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         // Resource regrowth (GPU port) -- own separate group/buffers, see field docs above.
-        let resource_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resource_params"),
-            size: mem::size_of::<GpuResourceParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let resource_mass = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resource_mass"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let resource_phi_old = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resource_phi_old"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let resource_work = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_resource_work"),
-            size: thermal_scalar_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let resource_params = make_buffer(
+            device,
+            "mpm_resource_params",
+            mem::size_of::<GpuResourceParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let resource_mass = make_buffer(
+            device,
+            "mpm_resource_mass",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let resource_phi_old = make_buffer(
+            device,
+            "mpm_resource_phi_old",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let resource_work = make_buffer(
+            device,
+            "mpm_resource_work",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         // ASFLIP (GPU port) -- own separate group/buffer, see field docs above.
-        let asflip_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_asflip_params"),
-            size: mem::size_of::<GpuAsflipParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let asflip_snapshot = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_asflip_snapshot"),
-            size: ASFLIP_SNAPSHOT_PLACEHOLDER_BYTES,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let asflip_params = make_buffer(
+            device,
+            "mpm_asflip_params",
+            mem::size_of::<GpuAsflipParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let asflip_snapshot = make_buffer(
+            device,
+            "mpm_asflip_snapshot",
+            ASFLIP_SNAPSHOT_PLACEHOLDER_BYTES,
+            wgpu::BufferUsages::STORAGE,
+        );
 
-        let material_mass_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_material_mass_params"),
-            size: mem::size_of::<GpuMaterialMassParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let material_mass = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_material_mass"),
-            size: MATERIAL_MASS_PLACEHOLDER_BYTES,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let material_mass_params = make_buffer(
+            device,
+            "mpm_material_mass_params",
+            mem::size_of::<GpuMaterialMassParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let material_mass = make_buffer(
+            device,
+            "mpm_material_mass",
+            MATERIAL_MASS_PLACEHOLDER_BYTES,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
 
         Self {
             particles,
@@ -550,12 +559,12 @@ impl GpuBuffers {
         if self.asflip_snapshot_grown {
             return;
         }
-        self.asflip_snapshot = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_asflip_snapshot"),
-            size: (grid_res * grid_res * mem::size_of::<[f32; 2]>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        self.asflip_snapshot = make_buffer(
+            device,
+            "mpm_asflip_snapshot",
+            (grid_res * grid_res * mem::size_of::<[f32; 2]>()) as u64,
+            wgpu::BufferUsages::STORAGE,
+        );
         self.asflip_snapshot_grown = true;
     }
 
@@ -568,13 +577,13 @@ impl GpuBuffers {
         if self.material_mass_grown {
             return;
         }
-        self.material_mass = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_material_mass"),
-            size: (grid_res * grid_res * MAX_RENDER_MATERIAL_SLOTS as usize * mem::size_of::<f32>())
+        self.material_mass = make_buffer(
+            device,
+            "mpm_material_mass",
+            (grid_res * grid_res * MAX_RENDER_MATERIAL_SLOTS as usize * mem::size_of::<f32>())
                 as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         self.material_mass_grown = true;
     }
 

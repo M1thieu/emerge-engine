@@ -4,8 +4,10 @@ pub mod elastic;
 pub mod fluid;
 pub mod granular_fluid;
 pub mod nacc;
+pub mod no_compression;
 pub mod params;
 pub mod physical_props;
+mod property_dispatch;
 pub mod rankine;
 pub mod registry;
 pub mod sand;
@@ -17,8 +19,8 @@ pub mod viscoelastic;
 pub mod von_mises;
 
 pub use physical_props::{
-    BrittleProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI, ParticleMass,
-    PlasticityModel, Viscoelastic,
+    BrittleProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI, NoCompression,
+    ParticleMass, PlasticityModel, Pressurized, Viscoelastic,
 };
 
 pub use bingham::BinghamFluidMaterial;
@@ -27,6 +29,7 @@ pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
 pub use granular_fluid::GranularFluidMaterial;
 pub use nacc::NaccMaterial;
+pub use no_compression::NoCompressionMaterial;
 pub use params::MaterialParams;
 pub use rankine::RankineMaterial;
 pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
@@ -63,6 +66,7 @@ pub enum ConstitutiveModel {
     Viscoelastic = 9,     // Kelvin-Voigt: NeoHookean elastic + viscous dashpot in parallel
     Nacc = 10,            // Non-Associated Cam-Clay — wet soil, clay, bio tissue under compression
     GranularFluid = 11, // Granular-fluid mixture — Tait EOS + corotated deviatoric + SVD plasticity
+    NoCompression = 12, // Tension-only (no-compression) reversible elastic — silk, tendons, membranes
 }
 
 // WGSL shaders (p2g.wgsl, particles_update.wgsl) index material branches by the
@@ -82,6 +86,7 @@ const _: () = {
     assert!(C::Viscoelastic as u32 == 9);
     assert!(C::Nacc as u32 == 10);
     assert!(C::GranularFluid as u32 == 11);
+    assert!(C::NoCompression as u32 == 12);
 };
 
 /// Which role a material plays in two-phase mixture coupling (Tampubolon et al.
@@ -183,6 +188,24 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug {
         0.0
     }
 
+    /// Scaling coefficient for internal pre-stress pressure.
+    ///
+    /// When non-zero, the per-particle `internal_pressure` field (already SI-
+    /// converted to grid stress units) contributes an isotropic `-P·I` term to
+    /// the Kirchhoff stress — the standard "prestressed structure" treatment
+    /// (a balloon: envelope tension balanced against internal gas pressure).
+    /// Generic engine-level hook, not plant-specific: real motivating case is
+    /// turgor pressure (plants aren't held up by cell-wall elasticity alone —
+    /// see Niklas 1992's "hydro-skeleton" theory), but applies to any
+    /// internally-pressurized body a material wants to model this way.
+    ///
+    /// Physics: τ_total = τ_elastic + τ_active − internal_pressure × coeff × I
+    /// Default: 0.0 — pre-stress has no effect on materials that don't opt in
+    /// (fluids already carry their own EOS pressure and should not double up).
+    fn pressure_scale(&self) -> f32 {
+        0.0
+    }
+
     /// Returns this material's parameters as a flat, GPU-uploadable struct.
     /// Default returns zeroed params (Fallback model).
     fn params(&self) -> MaterialParams {
@@ -205,6 +228,63 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug {
     fn latent_heat(&self) -> f32 {
         0.0
     }
+}
+
+/// The `MaterialModel` methods every delegating wrapper below (`WithLatentHeat`,
+/// `WithMixturePhase`, `WithPreStress`) forwards to `self.inner` byte-for-byte.
+/// Factored into one macro so these three impls can't drift out of sync — a new
+/// `MaterialModel` method that should default-forward gets added here ONCE, not
+/// copy-pasted three times.
+///
+/// The 3 methods each wrapper actually overrides (`init_particle`, `mixture_phase`,
+/// `latent_heat`) are NOT in this list -- each wrapper still writes those by hand,
+/// forwarding the two it doesn't override itself.
+macro_rules! forward_material_model_common {
+    () => {
+        fn constitutive_model(&self) -> ConstitutiveModel {
+            self.inner.constitutive_model()
+        }
+        fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
+            self.inner.kirchhoff_stress(particles, i)
+        }
+        fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
+            self.inner.stress_volume(particles, i)
+        }
+        fn timestep_bound(
+            &self,
+            density: f32,
+            hardening_scale: f32,
+            cell_width: f32,
+            material_cfl: f32,
+            viscous_cfl: f32,
+        ) -> f32 {
+            self.inner.timestep_bound(
+                density,
+                hardening_scale,
+                cell_width,
+                material_cfl,
+                viscous_cfl,
+            )
+        }
+        fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
+            self.inner.update_particle(particles, i, dt)
+        }
+        fn needs_cpu_update(&self) -> bool {
+            self.inner.needs_cpu_update()
+        }
+        fn needs_density_recompute(&self) -> bool {
+            self.inner.needs_density_recompute()
+        }
+        fn activation_scale(&self) -> f32 {
+            self.inner.activation_scale()
+        }
+        fn pressure_scale(&self) -> f32 {
+            self.inner.pressure_scale()
+        }
+        fn params(&self) -> MaterialParams {
+            self.inner.params()
+        }
+    };
 }
 
 /// Wraps any `MaterialModel` to give it a non-zero `latent_heat()` without writing a full
@@ -230,48 +310,12 @@ impl<M> WithLatentHeat<M> {
 }
 
 impl<M: MaterialModel> MaterialModel for WithLatentHeat<M> {
-    fn constitutive_model(&self) -> ConstitutiveModel {
-        self.inner.constitutive_model()
-    }
-    fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        self.inner.kirchhoff_stress(particles, i)
-    }
-    fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
-        self.inner.stress_volume(particles, i)
-    }
-    fn timestep_bound(
-        &self,
-        density: f32,
-        hardening_scale: f32,
-        cell_width: f32,
-        material_cfl: f32,
-        viscous_cfl: f32,
-    ) -> f32 {
-        self.inner.timestep_bound(
-            density,
-            hardening_scale,
-            cell_width,
-            material_cfl,
-            viscous_cfl,
-        )
-    }
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        self.inner.update_particle(particles, i, dt)
-    }
+    forward_material_model_common!();
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
     }
-    fn needs_cpu_update(&self) -> bool {
-        self.inner.needs_cpu_update()
-    }
-    fn needs_density_recompute(&self) -> bool {
-        self.inner.needs_density_recompute()
-    }
-    fn activation_scale(&self) -> f32 {
-        self.inner.activation_scale()
-    }
-    fn params(&self) -> MaterialParams {
-        self.inner.params()
+    fn mixture_phase(&self) -> Option<MixturePhase> {
+        self.inner.mixture_phase()
     }
     fn latent_heat(&self) -> f32 {
         self.latent_heat
@@ -305,48 +349,9 @@ impl<M> WithMixturePhase<M> {
 }
 
 impl<M: MaterialModel> MaterialModel for WithMixturePhase<M> {
-    fn constitutive_model(&self) -> ConstitutiveModel {
-        self.inner.constitutive_model()
-    }
-    fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        self.inner.kirchhoff_stress(particles, i)
-    }
-    fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
-        self.inner.stress_volume(particles, i)
-    }
-    fn timestep_bound(
-        &self,
-        density: f32,
-        hardening_scale: f32,
-        cell_width: f32,
-        material_cfl: f32,
-        viscous_cfl: f32,
-    ) -> f32 {
-        self.inner.timestep_bound(
-            density,
-            hardening_scale,
-            cell_width,
-            material_cfl,
-            viscous_cfl,
-        )
-    }
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        self.inner.update_particle(particles, i, dt)
-    }
+    forward_material_model_common!();
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
-    }
-    fn needs_cpu_update(&self) -> bool {
-        self.inner.needs_cpu_update()
-    }
-    fn needs_density_recompute(&self) -> bool {
-        self.inner.needs_density_recompute()
-    }
-    fn activation_scale(&self) -> f32 {
-        self.inner.activation_scale()
-    }
-    fn params(&self) -> MaterialParams {
-        self.inner.params()
     }
     fn latent_heat(&self) -> f32 {
         self.inner.latent_heat()
@@ -356,291 +361,51 @@ impl<M: MaterialModel> MaterialModel for WithMixturePhase<M> {
     }
 }
 
+/// Wraps any `MaterialModel` to give particles a nonzero `internal_pressure` at spawn
+/// time, without writing a full delegating impl by hand — same pattern as
+/// `WithLatentHeat`/`WithMixturePhase`. The wrapped material's own `pressure_scale()`
+/// still gates whether the pressure actually contributes stress (see
+/// `combined_kirchhoff_stress`); this wrapper only supplies the per-particle value.
+///
+/// Real motivating case: turgor pressure in plants (see `Particle::internal_pressure`
+/// doc) — but generic, not plant-specific: any internally-pressurized body.
+///
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// # use emerge::{NeoHookeanMaterial, WithPreStress};
+/// // A turgid plant-tissue stalk: 0.5 MPa turgor pressure already SI-converted to
+/// // grid stress units (see `Pressurized::material` for the real conversion).
+/// let stalk = WithPreStress::new(NeoHookeanMaterial::new(4000.0, 6000.0), 12.5);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct WithPreStress<M> {
+    pub inner: M,
+    pub pressure: f32,
+}
+
+impl<M> WithPreStress<M> {
+    pub fn new(inner: M, pressure: f32) -> Self {
+        Self { inner, pressure }
+    }
+}
+
+impl<M: MaterialModel> MaterialModel for WithPreStress<M> {
+    forward_material_model_common!();
+    fn init_particle(&self, particle: &mut Particle) {
+        self.inner.init_particle(particle);
+        particle.internal_pressure = self.pressure;
+    }
+    fn mixture_phase(&self) -> Option<MixturePhase> {
+        self.inner.mixture_phase()
+    }
+    fn latent_heat(&self) -> f32 {
+        self.inner.latent_heat()
+    }
+}
+
 /// Internal fallback used when no material is registered for a particle ID.
 /// Zero stress, no timestep constraint, no state updates.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct FallbackMaterial;
 
 impl MaterialModel for FallbackMaterial {}
-
-// ── props.material(&config) — property-first material construction ─────────────
-
-use physical_props::{BinghamProps, DuctileProps, GranularProps, NewtonianFluid, SnowProps};
-
-impl Elastic {
-    /// Canonical model: `NeoHookeanMaterial` (Simo-Pister vol-dev split).
-    /// For corotated linear elasticity: `CorotatedMaterial::from_physical(self, config)`.
-    pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        Box::new(NeoHookeanMaterial::from_physical(self, config))
-    }
-
-    /// Particle mass (real SI kilograms -- `rho_kg_m3 * (spacing*dx_meters)^2`, an areal
-    /// mass for this 2D solver) for a `SpawnRegion` spawning this material at `spacing`.
-    /// Pass to `SpawnRegion { mass_override: Some(props.particle_mass(spacing, &config)),
-    /// .. }` — without this, every material in a multi-material scene gets the same
-    /// inertia regardless of `rho_kg_m3` (only `SimConfig::particle_mass`, one global
-    /// value, is used).
-    ///
-    /// INVESTIGATED 2026-07-07: briefly "fixed" by adding a `1/dt_seconds^2` factor here,
-    /// then REVERTED -- that was the wrong side of the bug. Confirmed by reading
-    /// `transfer.rs::scatter_particles_to_grid`: gravity's momentum contribution
-    /// (`mass_i * v_i`) and the grid mass accumulator both scale with `mass_i`, but the
-    /// STRESS-based momentum contribution does not depend on particle mass at all (pure
-    /// `stress * geometry`). Both terms get divided by the SAME grid-node mass during
-    /// grid update, so inflating `mass_i` by `1/dt_seconds^2` (often a huge factor, e.g.
-    /// 10000x at dt=0.01) dilutes the EOS's restoring force relative to gravity by that
-    /// same factor -- confirmed empirically: a water column settled into a stable
-    /// equilibrium requiring ~1000x more compression than real hydrostatic physics
-    /// needs, not a numerics/CFL issue (resolution-independent, reproduced identically
-    /// via both a dropped column and a gentle layer-by-layer pour). The REAL bug was in
-    /// `FromSI<NewtonianFluid>`'s (and Bingham/GranularFluid's) `rest_density` conversion
-    /// -- see their fix docs. This formula was correct all along for every material
-    /// (elastic/plastic solids never referenced `rest_density`, so force-balance was
-    /// never in question for them; fluids needed the OTHER side of the ratio fixed).
-    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
-    }
-}
-
-impl ParticleMass for Elastic {
-    fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.particle_mass(spacing, config)
-    }
-}
-
-impl Elastoplastic {
-    /// Dispatches to the correct constitutive model based on `self.model`:
-    /// - `Snow`                  → `StomakhinMaterial`
-    /// - `Granular`              → `DruckerPragerMaterial`
-    /// - `GranularRateDependent` → `MuIRheologyMaterial`
-    /// - `Ductile`               → `VonMisesMaterial`
-    /// - `Brittle`               → `RankineMaterial`
-    pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        use PlasticityModel::*;
-        match self.model {
-            Snow => Box::new(StomakhinMaterial::from_physical(
-                &SnowProps {
-                    elastic: self.elastic,
-                },
-                config,
-            )),
-            Granular {
-                friction_angle_deg,
-                dilatancy_angle_deg,
-            } => Box::new(DruckerPragerMaterial::from_physical(
-                &GranularProps {
-                    elastic: self.elastic,
-                    friction_angle_deg,
-                    dilatancy_angle_deg,
-                },
-                config,
-            )),
-            GranularRateDependent {
-                friction_angle_deg,
-                dilatancy_angle_deg,
-            } => Box::new(MuIRheologyMaterial::from_physical(
-                &GranularProps {
-                    elastic: self.elastic,
-                    friction_angle_deg,
-                    dilatancy_angle_deg,
-                },
-                config,
-            )),
-            Ductile { yield_stress_pa } => Box::new(VonMisesMaterial::from_physical(
-                &DuctileProps {
-                    elastic: self.elastic,
-                    yield_stress_pa,
-                },
-                config,
-            )),
-            Brittle {
-                tensile_strength_pa,
-                softening_rate,
-            } => Box::new(RankineMaterial::from_physical(
-                &BrittleProps {
-                    elastic: self.elastic,
-                    tensile_strength_pa,
-                    softening_rate,
-                },
-                config,
-            )),
-        }
-    }
-
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
-    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.elastic.particle_mass(spacing, config)
-    }
-}
-
-impl ParticleMass for Elastoplastic {
-    fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.particle_mass(spacing, config)
-    }
-}
-
-impl Viscoelastic {
-    pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        Box::new(ViscoelasticMaterial::from_physical(self, config))
-    }
-
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
-    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.elastic.particle_mass(spacing, config)
-    }
-}
-
-impl ParticleMass for Viscoelastic {
-    fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.particle_mass(spacing, config)
-    }
-}
-
-impl FluidGranular {
-    /// Dispatches to `GranularFluidMaterial` — Tait EOS pressure + corotated deviatoric + SVD plasticity.
-    pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        use physical_props::{scale_lame, scale_stress};
-        // Tait EOS polytropic exponent -- Cole 1948, "Underwater Explosions"; standard
-        // in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
-        const GAMMA: f32 = 7.0;
-        let (lambda, mu) = scale_lame(self.e_pa, self.nu, self.rho_kg_m3, config);
-        let eos = scale_stress(self.bulk_modulus_pa / GAMMA, self.rho_kg_m3, config);
-        // See `NewtonianFluidMaterial::from_physical`'s fix doc (2026-07-07) -- rest_density
-        // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
-        let rho_grid = self.rho_kg_m3 * config.dx_meters * config.dx_meters;
-        Box::new(GranularFluidMaterial {
-            mu,
-            lambda,
-            rest_density: rho_grid,
-            eos_stiffness: eos,
-            eos_power: GAMMA,
-            hardening_exponent: self.hardening_exponent,
-            compression_limit: self.compression_limit,
-            stretch_limit: self.stretch_limit,
-            min_plastic_jacobian: 0.2,
-            max_plastic_jacobian: 3.0,
-            pressure_floor: 0.0,
-        })
-    }
-
-    /// See `Elastic::particle_mass`.
-    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
-    }
-}
-
-impl ParticleMass for FluidGranular {
-    fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.particle_mass(spacing, config)
-    }
-}
-
-impl Fluid {
-    /// `yield_stress_pa = None`  → `NewtonianFluidMaterial`
-    /// `yield_stress_pa = Some(τ₀)` → `BinghamFluidMaterial`
-    pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        match self.yield_stress_pa {
-            None => Box::new(NewtonianFluidMaterial::from_physical(
-                &NewtonianFluid {
-                    rho_kg_m3: self.rho_kg_m3,
-                    eta_pa_s: self.eta_pa_s,
-                    bulk_modulus_pa: self.bulk_modulus_pa,
-                },
-                config,
-            )),
-            Some(tau0) => Box::new(BinghamFluidMaterial::from_physical(
-                &BinghamProps {
-                    rho_kg_m3: self.rho_kg_m3,
-                    eta_pa_s: self.eta_pa_s,
-                    bulk_modulus_pa: self.bulk_modulus_pa,
-                    yield_stress_pa: tau0,
-                },
-                config,
-            )),
-        }
-    }
-
-    /// See `Elastic::particle_mass`.
-    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
-    }
-}
-
-impl ParticleMass for Fluid {
-    fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
-        self.particle_mass(spacing, config)
-    }
-}
-
-#[cfg(test)]
-mod particle_mass_tests {
-    use super::*;
-    use crate::{SimConfig, SpawnRegion};
-
-    fn earth_config() -> SimConfig {
-        SimConfig::earth(64, 0.01, 0.05)
-    }
-
-    /// mass_from(&props) == props.particle_mass(spacing) called directly — no duplication risk.
-    #[test]
-    fn mass_from_matches_direct_call() {
-        let config = earth_config();
-        let props = Elastic {
-            e_pa: 500.0,
-            nu: 0.45,
-            rho_kg_m3: 1000.0,
-        };
-        let spacing = 0.5_f32;
-        let region = SpawnRegion::for_sim(&config)
-            .spacing(spacing)
-            .mass_from(&props, &config);
-        let expected = props.particle_mass(spacing, &config);
-        assert!(
-            (region.mass_override.unwrap() - expected).abs() < 1e-9,
-            "mass_from result {:.6e} != direct call {:.6e}",
-            region.mass_override.unwrap(),
-            expected
-        );
-    }
-
-    /// All 5 property families implement ParticleMass identically.
-    #[test]
-    fn all_families_implement_particle_mass() {
-        let config = earth_config();
-        let spacing = 0.6_f32;
-        let expected_elastic = Elastic {
-            e_pa: 500.0,
-            nu: 0.45,
-            rho_kg_m3: 1000.0,
-        }
-        .particle_mass(spacing, &config);
-        let from_ep = Elastoplastic {
-            elastic: Elastic {
-                e_pa: 500.0,
-                nu: 0.45,
-                rho_kg_m3: 1000.0,
-            },
-            model: PlasticityModel::Snow,
-        }
-        .particle_mass(spacing, &config);
-        let from_ve = Viscoelastic {
-            elastic: Elastic {
-                e_pa: 500.0,
-                nu: 0.45,
-                rho_kg_m3: 1000.0,
-            },
-            eta_pa_s: 1.0,
-        }
-        .particle_mass(spacing, &config);
-        let from_fluid = Fluid {
-            rho_kg_m3: 1000.0,
-            eta_pa_s: 0.001,
-            bulk_modulus_pa: 2.2e9,
-            yield_stress_pa: None,
-        }
-        .particle_mass(spacing, &config);
-        assert!((from_ep - expected_elastic).abs() < 1e-9);
-        assert!((from_ve - expected_elastic).abs() < 1e-9);
-        assert!((from_fluid - expected_elastic).abs() < 1e-9);
-    }
-}

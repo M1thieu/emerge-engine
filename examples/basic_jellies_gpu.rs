@@ -58,6 +58,11 @@ struct State {
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         max_substeps_per_step: 12,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
@@ -123,15 +128,9 @@ impl State {
         };
         surface.configure(&device, &sc);
         let mut sim = make_sim_data(Arc::new(device), Arc::new(queue));
-        // RE-ENABLED 2026-07-18: the 2026-07-18 "corruption" could not be reproduced
-        // via multiple direct repro attempts this session (single-material,
-        // multi-material, single spawn_region, 20 repeated paint-like spawn_region
-        // calls -- the exact stress pattern material_sandbox_gpu's paint tool
-        // exercises) -- all stayed physically stable (bounded J, bounded speed, no
-        // NaN/explosion). The original observation was very likely confounded with
-        // material_sandbox_gpu's OTHER two real bugs found+fixed the same session
-        // (frozen-water instant phase transition, sleep-warmup timing), not this
-        // P2G/grid_clear material-mass path itself.
+        // Grid-volume material rendering: stable across single-material,
+        // multi-material, and repeated spawn_region stress patterns (bounded J,
+        // bounded speed, no NaN/explosion).
         sim.attach_grid_material_render_gpu();
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
@@ -149,9 +148,9 @@ impl State {
         const SIGMA_NEO: [f32; 3] = [0.05, 0.55, 0.60];
         const SIGMA_COR: [f32; 3] = [0.55, 0.15, 0.50];
         const SIGMA_VIS: [f32; 3] = [0.45, 0.35, 0.10];
-        renderer.set_optical_params(MAT_NEO as usize, SIGMA_NEO);
-        renderer.set_optical_params(MAT_COR as usize, SIGMA_COR);
-        renderer.set_optical_params(MAT_VIS as usize, SIGMA_VIS);
+        renderer.set_optical_params(sim.queue(), MAT_NEO as usize, SIGMA_NEO);
+        renderer.set_optical_params(sim.queue(), MAT_COR as usize, SIGMA_COR);
+        renderer.set_optical_params(sim.queue(), MAT_VIS as usize, SIGMA_VIS);
         println!(
             "jellies GPU: {} particles  |  LMB push  RMB pull  R reset  Q quit",
             sim.particle_count()

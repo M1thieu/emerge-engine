@@ -7,14 +7,9 @@ use crate::particle::Particles;
 
 /// Compressible Neo-Hookean hyperelastic solid (jelly, soft tissue).
 ///
-/// STALE DOC FIXED 2026-07-07: this comment described an older, simpler form
-/// (`τ = µ(FFᵀ − I) + λ·ln(J)·I`, still what `ViscoelasticMaterial` actually
-/// implements for its own elastic term) that this material's CODE no longer
-/// matches -- the actual `kirchhoff_stress` below uses a Simo-Pister
-/// volumetric-deviatoric split (`k=λ+µ`, the 2D plane-strain bulk modulus,
-/// fixed 2026-07-06 for dimensional correctness) instead. See the real,
-/// current formula documented directly in `kirchhoff_stress`'s own body below.
-/// Free energy: Ψ = µ/2·(tr(FᵀF)−d) − µ·ln(J) + λ/2·ln(J)²
+/// `kirchhoff_stress` below uses a Simo-Pister volumetric-deviatoric split
+/// (`k=λ+µ`, the 2D plane-strain bulk modulus) — see that function's own body for
+/// the current formula. Free energy: Ψ = µ/2·(tr(FᵀF)−d) − µ·ln(J) + λ/2·ln(J)²
 /// Reference: standard hyperelasticity; used in Stomakhin et al. 2013 (snow paper) §2.
 #[derive(Debug, Clone, Copy)]
 pub struct NeoHookeanMaterial {
@@ -81,22 +76,18 @@ impl NeoHookeanMaterial {
     /// ∂L/∂F.
     ///
     /// Derivation: τ(F) = (µ/J)·dev(B) + k·ln(J)·I, where B = F·Fᵀ,
-    /// J = det(F), dev(B) = B − (tr(B)/2)·I (matching `kirchhoff_stress`
-    /// exactly -- updated 2026-07-11 alongside the forward formula's
-    /// volumetric-term fix, see that function's doc for why). Reverse-mode
-    /// chain rule through B → A=dev(B) → τ, and separately through J (using
-    /// the standard cofactor identity ∂J/∂F = J·F⁻ᵀ, so ∂ln(J)/∂F = F⁻ᵀ),
+    /// J = det(F), dev(B) = B − (tr(B)/2)·I (matching `kirchhoff_stress` exactly).
+    /// Reverse-mode chain rule through B → A=dev(B) → τ, and separately through J
+    /// (using the standard cofactor identity ∂J/∂F = J·F⁻ᵀ, so ∂ln(J)/∂F = F⁻ᵀ),
     /// gives:
     ///
     ///   B̄ = (µ/J)·dev(Ḡ)
     ///   ∂L/∂F = (B̄ + B̄ᵀ)·F + [k·tr(Ḡ) − (µ/J)·(Ḡ:A)] · F⁻ᵀ
     ///
     /// where Ḡ = ∂L/∂τ, A = dev(B), and Ḡ:A is the Frobenius inner product
-    /// (sum of elementwise products). The `B̄ + B̄ᵀ` (NOT `2·B̄`) matters: B̄
-    /// is only symmetric when Ḡ itself is, which isn't guaranteed just
-    /// because B and A are -- a real derivation bug first-draft code hit
-    /// here, caught by the finite-difference tests below, not by inspection.
-    /// Verified against central-difference numerical gradients in this
+    /// (sum of elementwise products). The `B̄ + B̄ᵀ` (NOT `2·B̄`) matters: B̄ is
+    /// only symmetric when Ḡ itself is, which isn't guaranteed just because B and
+    /// A are. Verified against central-difference numerical gradients in this
     /// module's own tests -- hand-derived tensor calculus is exactly where
     /// sign/transpose/symmetry-assumption errors hide, so this is not
     /// trusted on derivation alone.
@@ -200,37 +191,22 @@ impl MaterialModel for NeoHookeanMaterial {
         // Deviatoric Kirchhoff: µ · J^{-2/d} · dev(B)  with d=2 → µ/J · dev(B)
         //   dev(B) = B − (tr(B)/2)·I  (2D traceless part)
         // Volumetric Kirchhoff: k · ln(J) · I  (from U(J) = k/2·(ln J)², the
-        //   actual Simo & Pister 1984 log-barrier volumetric potential -- NOT
-        //   k/2·(J²−1), a bounded polynomial this code used until 2026-07-11.
+        //   Simo & Pister 1984 log-barrier volumetric potential).
         //   k = λ + µ  (2D PLANE-STRAIN bulk modulus -- NOT the 3D relation
-        //   k=λ+2µ/3, which an earlier version of this code used to match
-        //   `sparkl`, a 3D reference engine. Real derivation: linearizing
-        //   k·(J−1) against small-strain plane-strain pressure gives k=λ+µ;
-        //   the 3D relation is off by µ/3, a real (1−2ν)/3 fractional error
-        //   in bulk stiffness -- negligible near ν=0.5 (soft-tissue presets)
-        //   but ~20% at ν≈0.2 (compressible/granular-like presets). Fixed
-        //   2026-07-06 in favor of dimensional correctness over reference-
-        //   engine parity.)
+        //   k=λ+2µ/3 that a 3D reference engine like `sparkl` uses: linearizing
+        //   k·(J−1) against small-strain plane-strain pressure gives k=λ+µ; the
+        //   3D relation is off by µ/3, a (1−2ν)/3 fractional error in bulk
+        //   stiffness -- negligible near ν=0.5 (soft-tissue presets) but ~20%
+        //   at ν≈0.2 (compressible/granular-like presets).
         //
-        // REAL BUG FIXED 2026-07-11: `k/2·(J²−1)` is bounded as J→0 (its
-        // Kirchhoff contribution approaches a finite `-k/2`, never more), so
-        // it supplies only a FINITE ceiling on how hard the material resists
-        // further compression, no matter how large k is scaled. A sustained
-        // driven load (a creature's own muscle activation, cyclically
-        // compressing tissue every gait cycle with nothing to fully release
-        // it) can always eventually overpower a finite ceiling given enough
-        // cycles -- exactly what a real long-horizon `basic_creature`
-        // diagnostic found: net crawl drift collapsed to ~0 while min(J) kept
-        // falling and NEVER recovered, and neither raising material stiffness
-        // nor adding numerical (APIC) damping fixed it -- both only delayed
-        // the same eventual collapse, because neither changes the bounded
-        // ceiling itself. The log form `k·ln(J)` has NO such ceiling: as J→0,
-        // ln(J)→−∞, so the restoring Kirchhoff stress diverges too -- a
-        // genuine physical barrier against total compression, the actual
-        // reason Simo & Pister's own 1984 formulation uses `(ln J)²` rather
-        // than a bounded polynomial in J. This was a citation/implementation
-        // mismatch as much as a stability bug: the doc already cited Simo &
-        // Pister for this term while implementing a different, weaker one.
+        // Must stay the log form `k·ln(J)`, not a bounded polynomial like
+        // `k/2·(J²−1)`: the polynomial form is bounded as J→0 (its Kirchhoff
+        // contribution approaches a finite `-k/2` regardless of k), so it only
+        // supplies a FINITE ceiling against compression — a sustained cyclic load
+        // (e.g. muscle activation compressing tissue every gait cycle) can
+        // eventually overpower any finite ceiling. `k·ln(J)` has no such ceiling:
+        // as J→0, ln(J)→−∞, so the restoring stress diverges too — a genuine
+        // physical barrier against total compression.
         // Reference: Simo & Pister 1984; Bonet & Wood §6.4 (2D plane-strain form).
         let b = f * f.transpose();
         let tr_b = b.x_axis.x + b.y_axis.y;
@@ -272,6 +248,10 @@ impl MaterialModel for NeoHookeanMaterial {
         self.active_stress_coeff
     }
 
+    fn pressure_scale(&self) -> f32 {
+        1.0
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::NeoHookean as u32,
@@ -304,14 +284,10 @@ impl MaterialModel for NeoHookeanMaterial {
             cell_width,
             material_cfl,
         );
-        // Real bug caught 2026-07-11: `viscosity` was added (stress term) without this
-        // bound, so a high-viscosity NeoHookean body took substeps sized only for elastic
-        // stability -- far too large for the added viscous (parabolic/diffusive) term,
-        // which has its own, much stricter stability requirement. Explicit integration of
-        // a diffusive term needs dt ~ h²/ν, not h/c (elastic wave speed) -- a real, standard
-        // numerical-stability fact, not tuned to this case. Caught by its actual symptom:
-        // deformation gradient inverting (J < 0) within ~500 steps at viscosity=150+,
-        // identical formula and bound `ViscoelasticMaterial::timestep_bound` already uses.
+        // A high-viscosity body needs its own substep bound: elastic stability alone
+        // (dt ~ h/c, wave speed) is far too loose for the viscous (parabolic/diffusive)
+        // term, which needs dt ~ h²/ν instead — same formula and bound
+        // `ViscoelasticMaterial::timestep_bound` already uses.
         let viscous_dt = if self.viscosity > 0.0 {
             let density = density.max(1.0e-6);
             let kinematic = self.viscosity / density;

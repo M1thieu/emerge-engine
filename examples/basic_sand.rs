@@ -54,7 +54,22 @@ fn make_sim() -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
         max_substeps_per_step: 12,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
+        // Drucker-Prager sand's own plastic "q-creep" (friction_hardening never
+        // fully settles to zero even at apparent rest -- see MEMORY.md's known
+        // open issue) means this material pins the substep count at the cap
+        // indefinitely rather than dropping once settled -- confirmed live
+        // 2026-07-22 (substeps=12 continuously, never lower). 0.7 is the same
+        // real, already-validated coefficient (`gpu_relaxed_cfl_coefficient_
+        // stays_correct_50k_dpsand`) used for this exact material class at the
+        // GPU 50k target -- still within the literature's normal 0.3-1.0 range,
+        // not a new gamble.
+        material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     let spawn = |c: Vec2, mat, seed| SpawnRegion {
@@ -124,8 +139,8 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(MAT_LOOSE as usize, SIGMA_SAND);
-        renderer.set_optical_params(MAT_DENSE as usize, SIGMA_SAND);
+        renderer.set_optical_params(&queue, MAT_LOOSE as usize, SIGMA_SAND);
+        renderer.set_optical_params(&queue, MAT_DENSE as usize, SIGMA_SAND);
         println!(
             "sand: {} particles  |  LMB push  RMB pull  R reset  Q quit",
             sim.particles().len()

@@ -124,6 +124,35 @@ pub struct Viscoelastic {
     pub eta_pa_s: f32,
 }
 
+/// Elastic solid under real internal pre-stress pressure — a "prestressed structure"
+/// (Kirchhoff stress gets an added isotropic `-P·I` term; see `Particle::internal_pressure`
+/// doc for the full mechanism). Real motivating case: turgor pressure, the internal
+/// hydrostatic pressure that does real structural work in plant cells, genuinely
+/// distinct from cell-wall elastic stiffness (Niklas 1992's "hydro-skeleton" theory) —
+/// but generic, not plant-specific: any internally-pressurized body.
+///
+/// → `NeoHookeanMaterial` wrapped in `WithPreStress`
+#[derive(Debug, Clone, Copy)]
+pub struct Pressurized {
+    pub elastic: Elastic,
+    /// Internal pre-stress pressure `[Pa]`. Real, measured range for healthy plant
+    /// cells: 0.2–2.0 MPa (root cells ~0.6 MPa, leaf epidermal cells 1.5–2.0 MPa —
+    /// Niklas 1992; Wikipedia "Turgor pressure", sourced from real measurements).
+    pub internal_pressure_pa: f32,
+}
+
+/// Tension-only (no-compression) elastic solid — real, established continuum theory
+/// for cables, membranes, tendons, spider silk (see `NoCompressionMaterial`'s own doc
+/// for the full citation). Fully reversible, distinct from `Elastoplastic` — this is
+/// an asymmetric nonlinear ELASTIC law (goes slack under compression, regains full
+/// stiffness under tension with no memory), not an irreversible yield criterion.
+///
+/// → `NoCompressionMaterial`
+#[derive(Debug, Clone, Copy)]
+pub struct NoCompression {
+    pub elastic: Elastic,
+}
+
 /// Fluid-granular blend: EOS pressure + corotated elastic deviatoric + SVD plasticity.
 ///
 /// → `GranularFluidMaterial`
