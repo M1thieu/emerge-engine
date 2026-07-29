@@ -1,9 +1,11 @@
+mod cfl;
 pub mod config;
 pub mod cutoff;
 pub mod density;
 pub mod handle;
 mod lifecycle;
 mod particles;
+mod projection;
 mod queries;
 pub mod query;
 pub mod spatial_hash;
@@ -17,7 +19,7 @@ pub use query::{BodyState, body_state_of, region_body_state_of};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
-pub(crate) use step::{affine_cfl_speed_contribution, cfl_bound};
+pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound};
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +27,7 @@ use spatial_hash::SpatialHash;
 
 use glam::{Mat2, Vec2};
 
+use crate::rod::Rod;
 use crate::thermodynamics::{ScalarDiffusionField, ThermalDiffusion};
 use crate::{boundary::BoundaryCondition, fields::Field, materials::registry::MaterialRegistry};
 use crate::{
@@ -69,6 +72,11 @@ pub struct Simulation {
     /// Spatial hash over active particles — rebuilt each substep after G2P.
     /// Turns O(N) radius queries into O(candidates_in_neighborhood).
     spatial_hash: SpatialHash,
+    /// Discrete elastic rods (Cosserat-rod family, `spacetime::rod`) sharing
+    /// this simulation's own MPM grid — see `step.rs`'s `do_substep` for the
+    /// real scatter/gather insertion points. Empty for every scene that
+    /// never calls `add_rod`/`with_rod` (zero-cost: 0-iteration loops).
+    rods: Vec<Rod>,
     /// Scratch buffer for wake/sleep candidates — pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.
     scratch_indices: Vec<usize>,
@@ -139,7 +147,7 @@ pub(crate) fn initialize_particles(
                     sleeping: 0,
                     pinned: 0,
                     scalar_field: 0.0,
-                    _pad: 0,
+                    internal_pressure: 0.0,
                 });
             }
 

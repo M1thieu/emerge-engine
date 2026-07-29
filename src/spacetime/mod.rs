@@ -5,7 +5,11 @@
 //! the whole substep loop over that grid. `transfer` — P2G/G2P transfer
 //! kernels, the actual particle-grid-particle bridge each substep. `diff` —
 //! differentiable mini-solver for offline gait training, built on the
-//! hand-derived adjoints in `transfer`/`grid`.
+//! hand-derived adjoints in `transfer`/`grid`. `rod` — a genuine 1D discrete
+//! elastic rod sub-solver for slender bodies, a second real dimensional
+//! reduction of continuum elasticity (sibling to `diff`: narrower, self-
+//! contained, real physics), coupled to the same shared `Grid` ordinary MPM
+//! particles use.
 //!
 //! Part of the emerge/LP domain taxonomy (matter/forces/energy/information/
 //! spacetime/organism/systems) -- see `project_domain_taxonomy` design notes.
@@ -16,5 +20,6 @@
 
 pub mod diff;
 pub mod grid;
+pub mod rod;
 pub mod solver;
 pub mod transfer;

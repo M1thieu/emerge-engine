@@ -49,7 +49,7 @@ fn particle_with_f(f: Mat2) -> Particles {
         contact_group: 0,
         sleeping: 0,
         pinned: 0,
-        _pad: 0,
+        internal_pressure: 0.0,
     });
     particles
 }

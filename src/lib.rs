@@ -6,7 +6,8 @@
 //   Core physics (always compiled, stable API)
 //   ├── spacetime/       Spacetime domain: solver (Simulation, SimConfig,
 //   │                    SpawnRegion, query, density, cutoff), grid (Grid, Cell,
-//   │                    kernel), transfer (P2G/G2P transfer kernels)
+//   │                    kernel), transfer (P2G/G2P transfer kernels), rod
+//   │                    (1D discrete elastic rod sub-solver, grid-coupled)
 //   ├── matter/          Matter domain: particle (Particle struct), materials/
 //   │                    (MaterialModel trait, constitutive models, MaterialRegistry)
 //   ├── forces/          Forces domain: boundary (BoundaryCondition + impls),
@@ -50,6 +51,7 @@ pub use matter::materials;
 pub use matter::particle;
 pub use spacetime::diff;
 pub use spacetime::grid;
+pub use spacetime::rod;
 pub use spacetime::solver;
 pub use spacetime::transfer;
 pub use systems::diagnostics;
