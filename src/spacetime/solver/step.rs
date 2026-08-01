@@ -17,9 +17,9 @@ use super::Simulation;
 use super::cfl::choose_substep_dt;
 use super::projection::{apply_boundary_conditions_to_grid, project_particle_state_to_admissible};
 use crate::rod::{
-    RodForceParams, RodImplicitStepParams, apply_gravitropism, apply_growth, apply_phototropism,
-    apply_rod_internal_and_wind_forces, apply_secondary_growth, gather_grid_to_rod,
-    scatter_rod_to_grid, step_rod_implicit,
+    RodForceParams, RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism,
+    apply_growth, apply_phototropism, apply_rod_internal_and_wind_forces, apply_secondary_growth,
+    gather_grid_to_rod, scatter_rod_to_grid, step_rod_implicit,
 };
 use crate::solver::density::estimate_particle_volumes;
 use crate::transfer::{
@@ -65,8 +65,18 @@ impl Simulation {
                 // HERE, before the skip, means the same frame that sets
                 // `push_strength > 0.0` is the same frame that actually
                 // integrates it.
-                let has_push = rod.push_strength > 0.0 && rod.push_center.is_some();
-                if has_push {
+                //
+                // Real bug fix (2026-07-29, user-reported "wind doesn't
+                // affect it anymore, nothing moves"): this check only ever
+                // looked at `push_strength`, so a rod given nonzero
+                // `wind_velocity` alone stayed asleep forever -- confirmed
+                // directly in a live NDJSON log (`wind_on:1` sustained for
+                // 5800+ frames, tip position and `blade_sleeping` never
+                // changing once). Same real fix, same reasoning, just the
+                // other external force this loop can receive.
+                let has_external_force = (rod.push_strength > 0.0 && rod.push_center.is_some())
+                    || rod.wind_velocity.length_squared() > 0.0;
+                if has_external_force {
                     rod.sleeping = false;
                     rod.below_threshold_time = 0.0;
                 } else {
@@ -115,8 +125,15 @@ impl Simulation {
                     self.config.dt,
                 );
             }
-            if let Some(growth) = &rod.growth {
-                apply_growth(&mut rod.points, growth, &self.grid, self.config.dt);
+            if let Some(growth) = &mut rod.growth {
+                apply_growth(
+                    &mut rod.points,
+                    growth,
+                    &self.grid,
+                    self.config.light_dir,
+                    self.config.dx_meters,
+                    self.config.dt,
+                );
             }
             // Real bug fix (2026-07-28, user-caught "second interaction
             // barely moves it"): confirmed directly (headless, 5 real
@@ -140,6 +157,13 @@ impl Simulation {
                         self.config.dt,
                     );
                 }
+            }
+            // Real elastic-perfectly-plastic bending (see `plasticity`
+            // module doc) -- applied AFTER any biological reshaping above,
+            // so mechanical yield acts on top of whatever active tropism/
+            // growth already did this step, not instead of it.
+            if let Some(plasticity) = &rod.plasticity {
+                apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
             }
         }
         while remaining > f32::EPSILON && substeps_taken < self.config.max_substeps_per_step {
@@ -288,13 +312,23 @@ impl Simulation {
         // merely "some mass present" — otherwise a permanently-active
         // neighbour (e.g. a growing root that never itself sleeps) keeps
         // waking every sleeping rod that ever touches its cells, forever.
+        //
+        // Real bug fix (2026-07-29, user-reported "wind doesn't affect it
+        // anymore, nothing moves"): this check, like the implicit-rod one
+        // above, only ever looked at `push_strength` -- `wind_velocity`
+        // alone (rod-internal, never touches the grid) could never wake a
+        // sleeping rod through either this scan OR the grid-touch fallback
+        // below it, so wind silently did nothing to an already-sleeping rod
+        // forever. Same fix, same reasoning as the implicit-rod path.
         let rod_wake_speed_sq = self.config.rod_sleep_threshold * self.config.rod_sleep_threshold;
         for rod in &mut self.rods {
             if !rod.sleeping {
                 continue;
             }
             let has_push = rod.push_strength > 0.0 && rod.push_center.is_some();
+            let has_wind = rod.wind_velocity.length_squared() > 0.0;
             let touched = has_push
+                || has_wind
                 || rod.points.x.iter().any(|&x| {
                     let base = crate::grid::kernel::quadratic_weights(x).base_cell;
                     (0i32..3).any(|gx| {
@@ -528,8 +562,15 @@ impl Simulation {
             // Real elongation growth (Verhulst 1838 logistic law -- see
             // `rod::growth` module doc). No-op for every rod that doesn't
             // opt in.
-            if let Some(growth) = &rod.growth {
-                apply_growth(&mut rod.points, growth, &self.grid, sub_dt);
+            if let Some(growth) = &mut rod.growth {
+                apply_growth(
+                    &mut rod.points,
+                    growth,
+                    &self.grid,
+                    self.config.light_dir,
+                    self.config.dx_meters,
+                    sub_dt,
+                );
             }
             // Real stress-driven secondary growth (Jaffe 1973, Mattheck &
             // Kübler 1995 -- see `rod::secondary_growth` module doc). No-op
@@ -547,6 +588,13 @@ impl Simulation {
                         sub_dt,
                     );
                 }
+            }
+            // Real elastic-perfectly-plastic bending (see `rod::plasticity`
+            // module doc) -- same ordering rationale as the implicit branch's
+            // own call site: mechanical yield applies on top of whatever
+            // biological reshaping already happened this substep.
+            if let Some(plasticity) = &rod.plasticity {
+                apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
             }
         }
 

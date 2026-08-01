@@ -59,6 +59,7 @@ pub mod growth;
 pub mod implicit;
 pub mod integrator;
 pub mod network;
+pub mod plasticity;
 pub mod secondary_growth;
 
 use glam::Vec2;
@@ -79,6 +80,7 @@ pub use network::{
     NetworkBendingVertex, NetworkEdge, RodNetwork, YBranchSpec, build_y_branch,
     compute_network_internal_forces, network_cfl_dt, step_network,
 };
+pub use plasticity::{RodPlasticity, apply_bending_plasticity};
 pub use secondary_growth::{SecondaryGrowth, apply_secondary_growth};
 
 /// A single rod's centerline state — own SoA, independent of `Particles`.
@@ -144,6 +146,34 @@ pub struct RodPoints {
     /// set `contact_friction` to a value in that real range for a root
     /// scene, rather than relying on default MPM stick contact.
     pub contact_group: Vec<u32>,
+    /// Real accumulated PLASTIC curvature magnitude at interior vertex i
+    /// (see `plasticity` module doc) -- length N-2, same shape as
+    /// `rest_curvature`. Monotonically non-decreasing: every time
+    /// `plasticity::apply_bending_plasticity` absorbs an elastic excess into
+    /// `rest_curvature`, that excess's magnitude adds here too. Deliberately
+    /// SEPARATE from `rest_curvature` itself -- `rest_curvature` is also
+    /// driven by gravitropism/growth for entirely non-mechanical (biological)
+    /// reasons, so it alone can't distinguish "reshaped by active growth"
+    /// from "permanently deformed by overload"; this field tracks only the
+    /// latter. Real prior art: exactly the role `Particle::friction_
+    /// hardening` plays for `VonMisesMaterial`'s own isotropic hardening
+    /// (`sigma_y(kappa) = yield_stress + H*kappa`) -- hardening state lives
+    /// on the thing being deformed, not on the material/law describing how.
+    /// Always 0.0 and inert when no `Rod::plasticity` is attached.
+    pub accumulated_plastic_curvature: Vec<f32>,
+    /// Real per-edge linear mass density, kg/m. Length N-1. Authoritative
+    /// source of truth for "how much has this edge's cross-section actually
+    /// thickened" -- `secondary_growth::apply_secondary_growth` grows this
+    /// in lockstep with `ea`'s own real fractional growth (`EA=E*A`, `E`
+    /// held constant, so `d(area)/area = d(ea)/ea` exactly; mass ∝ area at
+    /// fixed length/material density, same real derivation, no separate
+    /// invented mechanism). `insert_tip_point` (`growth.rs`) reads this
+    /// directly instead of re-deriving density from a possibly-already-
+    /// non-uniform lumped point mass. Uniform-fill convention matches `ea`/
+    /// `ei` -- `build_straight_rod` fills every edge with the same value;
+    /// only secondary growth (or a caller building non-uniform density on
+    /// purpose) makes it diverge per edge.
+    pub linear_density_kg_per_m: Vec<f32>,
 }
 
 impl RodPoints {
@@ -487,6 +517,11 @@ pub struct Rod {
     /// per-vertex `RodPoints::ea`/`ei` to already be filled (`Rod::new`
     /// does this).
     pub secondary_growth: Option<SecondaryGrowth>,
+    /// Real elastic-perfectly-plastic bending (see `plasticity` module doc).
+    /// `None` (default) = purely elastic, zero cost — most bodies don't
+    /// permanently deform under load; a wire/branch/cable that should stay
+    /// bent after enough force opts in.
+    pub plasticity: Option<RodPlasticity>,
     /// Implicit (backward Euler) integration, opt-in (Baraff & Witkin 1998;
     /// see `implicit` module doc). `false` (default) = the explicit path,
     /// unchanged. When `true`, solved ONCE per `Simulation::step()` at the
@@ -548,6 +583,7 @@ impl Rod {
             phototropism: None,
             growth: None,
             secondary_growth: None,
+            plasticity: None,
             use_implicit_integration: false,
             implicit_substeps: 1,
         }
@@ -623,6 +659,11 @@ impl Rod {
 
     pub fn with_growth(mut self, growth: Growth) -> Self {
         self.growth = Some(growth);
+        self
+    }
+
+    pub fn with_plasticity(mut self, plasticity: RodPlasticity) -> Self {
+        self.plasticity = Some(plasticity);
         self
     }
 
@@ -722,6 +763,8 @@ pub fn build_straight_rod(
         ei: Vec::new(),
         position_compensation: vec![Vec2::ZERO; n_points],
         contact_group: vec![0; n_points],
+        accumulated_plastic_curvature: vec![0.0; n_points.saturating_sub(2)],
+        linear_density_kg_per_m: vec![linear_density_kg_per_m; n_points - 1],
     }
 }
 
@@ -1055,10 +1098,9 @@ mod per_vertex_stiffness_tests {
 mod secondary_growth_integration_tests {
     use super::*;
 
-    /// The real, concrete proof this whole chain was blocked on
-    /// (`SONNET_PLAN.md`'s own "BLOCKED" section): a rod built ABOVE its
-    /// own Greenhill critical height (`buckling_warning` reports genuine
-    /// risk) that experiences real, sustained bending moment under its own
+    /// The real, concrete proof this whole chain was previously blocked on:
+    /// a rod built ABOVE its own Greenhill critical height (`buckling_warning`
+    /// reports genuine risk) that experiences real, sustained bending moment under its own
     /// self-weight (a tiny initial tilt breaks the perfectly-straight
     /// symmetric case, which has zero moment by construction -- same real
     /// lesson as this session's earlier buckling investigation) should,
