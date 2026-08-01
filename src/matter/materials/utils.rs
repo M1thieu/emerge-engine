@@ -196,6 +196,35 @@ pub fn self_consistent_plastic_multiplier(
     gamma
 }
 
+/// Real, generic 1D elastic-perfectly-plastic return mapping -- the shared
+/// ALGORITHMIC core of "clamp a trial value to an interval around a
+/// permanent/plastic offset, permanently absorbing any excess," for any
+/// quantity whose yield surface is a plain interval rather than a
+/// norm-ball. This is the scalar-state sibling of the tensor-space radial
+/// return every material above uses (e.g. `VonMisesMaterial::update_particle`'s
+/// own `dev * (effective_yield/elastic_dev)` projection) -- genuinely
+/// different math from that (an interval clamp, not a norm rescale) because
+/// the underlying state is 1D, not a tensor; the SHARED concept (elastic
+/// trial -> yield check -> permanent return-map) is the same, only the
+/// shape of the projection differs with dimensionality. Real first adopter:
+/// `rod::plasticity`'s bending curvature; any other future scalar-state
+/// plasticity (a scalar damage variable, an axial-force yield) can reuse
+/// this directly instead of re-deriving the same three-line clamp.
+///
+/// `trial`: the fully-elastic candidate value (e.g. current curvature).
+/// `permanent`: the current permanent/plastic offset (e.g. rest curvature).
+/// `limit`: the real, positive elastic-limit half-width of the interval.
+pub fn scalar_return_map(trial: f32, permanent: f32, limit: f32) -> f32 {
+    let elastic = trial - permanent;
+    if elastic > limit {
+        permanent + (elastic - limit)
+    } else if elastic < -limit {
+        permanent + (elastic + limit)
+    } else {
+        permanent
+    }
+}
+
 /// CFL timestep bound from elastic longitudinal wave speed c_P = √((λ+2µ)·h / ρ).
 ///
 /// `hardening` = 1.0 for materials without hardening (elastic, sand, von Mises).

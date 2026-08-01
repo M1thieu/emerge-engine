@@ -40,6 +40,26 @@ pub struct NeoHookeanMaterial {
     /// symmetric part of the APIC velocity gradient). 0.0 = passive elastic
     /// only (default, unchanged behavior for every existing user).
     pub viscosity: f32,
+    /// Clamp J ≥ j_min before evaluating the log-barrier volumetric term --
+    /// same real, already-proven convention `ViscoelasticMaterial::j_min`
+    /// uses (default 0.01, same value). Real, root-caused fix (2026-07-30):
+    /// this used to be `if j <= MIN_J (1e-6) { return Mat2::ZERO }`, which
+    /// defeated the log-barrier's own documented purpose ("as J→0, ln(J)→−∞,
+    /// so the restoring stress diverges too -- a genuine physical barrier
+    /// against total compression") at EXACTLY the moment it's needed most --
+    /// once a body's J crossed that razor-thin floor under real (not the
+    /// demos' own disclosed-weak) gravity, stress went permanently to zero,
+    /// so nothing ever pushed it back out. Confirmed via a real headless
+    /// reproduction: a NeoHookean body under SimConfig::earth's real
+    /// 981-unit gravity collapsed to J=0.000000 by 4 simulated seconds and
+    /// kept COMPRESSING FURTHER for the next 190 simulated seconds, never
+    /// recovering -- this is the long-standing, previously-unresolved
+    /// "gravité trop forte -> s'éclate, ne retrouve jamais sa forme" bug.
+    /// 0.01 (not the razor-thin 1e-6) keeps the barrier LARGE-BUT-FINITE at
+    /// the floor, not exploding (a naive un-clamped `mu/J` at J=1e-6 would
+    /// blow up to `mu*1e6` -- confirmed via the GPU shader's own doc for
+    /// why it originally chose zero over that explosion) and not zero.
+    pub j_min: f32,
 }
 
 impl NeoHookeanMaterial {
@@ -52,6 +72,7 @@ impl NeoHookeanMaterial {
             active_stress_coeff: 0.0,
             damage_softening_rate: 0.0,
             viscosity: 0.0,
+            j_min: 0.01,
         }
     }
 
@@ -170,10 +191,8 @@ impl MaterialModel for NeoHookeanMaterial {
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
-        let j = f.determinant();
-        if j <= MIN_J {
-            return Mat2::ZERO;
-        }
+        // Clamp, don't zero -- see `j_min`'s own doc for the real bug this fixes.
+        let j = f.determinant().max(self.j_min);
 
         // Thermal modulus scaling: λ_eff = λ·(1 + α·T), same for µ.
         let t_scale = 1.0 + self.thermal_expansion * particles.temperature[i];
@@ -263,6 +282,9 @@ impl MaterialModel for NeoHookeanMaterial {
             // zero for all other materials) -- repurposed here for damage_softening_rate.
             cohesion_coeff: self.damage_softening_rate,
             dynamic_viscosity: self.viscosity,
+            // Same real GPU param slot `ViscoelasticMaterial` already uses for its
+            // own `j_min` -- see this field's own doc for the real bug this fixes.
+            volume_ratio_min: self.j_min,
             ..Default::default()
         }
     }

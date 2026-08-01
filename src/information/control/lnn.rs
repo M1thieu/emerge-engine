@@ -187,8 +187,7 @@ impl Lnn {
         // reasonable and passed its own test at the time, but that test only
         // ran 50 steps at dt=0.01 (0.5 simulated seconds) and only checked
         // that SOMETHING moved -- it never checked SUSTAINED oscillation.
-        // Real finding (2026-07-04/05, see project memory
-        // [[emerge_locomotion_root_cause_and_fix]]): the old topology
+        // Real finding (2026-07-04/05): the old topology
         // converges to a fully-synchronized fixed point (oscillation DIES,
         // every neuron settles to an identical constant) within ~20 steps at
         // dt=0.1, regardless of external bias -- driving zero real locomotion
@@ -284,8 +283,7 @@ fn sigmoid(x: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// Real, permanent regression for the 2026-07-05 CPG rewrite (see
-    /// [[emerge_locomotion_root_cause_and_fix]] in project memory). The OLD
+    /// Real, permanent regression for the 2026-07-05 CPG rewrite. The OLD
     /// topology looked alive under a 50-step/dt=0.01 check but converged to a
     /// fully-synchronized fixed point (oscillation DIES) within ~20 steps at
     /// the dt=0.1 real gameplay actually runs at -- this exact kind of gap is

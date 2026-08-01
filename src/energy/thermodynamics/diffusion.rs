@@ -18,6 +18,7 @@
 
 use glam::IVec2;
 
+use super::transfer::heat_radiation;
 use crate::{grid::kernel::quadratic_weights, particle::Particles};
 
 /// Configuration for grid-based thermal diffusion.
@@ -77,9 +78,23 @@ pub struct ThermalConfig {
 
     /// Newton cooling rate k_c in 1/s: dT/dt = −k_c·(T − ambient).
     ///
-    /// Models convective or radiative heat loss to the environment.
-    /// 0.0 = no cooling (default, adiabatic walls).
+    /// Models convective heat loss to the environment. Linear in ΔT — understates
+    /// loss at high temperature, where real radiative loss (below) dominates
+    /// (T⁴ vs T). 0.0 = no cooling (default, adiabatic walls).
     pub cooling_rate: f32,
+
+    /// Surface emissivity ε ∈ [0,1] for Stefan-Boltzmann radiative loss
+    /// (`transfer::heat_radiation`, σ·ε·A·(T⁴−T_ambient⁴)). 0.0 = disabled (default).
+    ///
+    /// Same blanket per-particle approximation `cooling_rate` already makes (every
+    /// particle treated as if radiating to ambient, not gated on real free-surface
+    /// exposure) — this is a second, more accurate term for the SAME simplification,
+    /// not a new architecture. `A` is the particle's own current `volume` (this
+    /// engine's 2D areal-density convention already treats it as a real m² footprint
+    /// with implicit unit depth, same convention `Elastic::particle_mass` uses) — the
+    /// face the render emission pass would show, per `heat_radiation`'s own doc
+    /// ("physical basis for blackbody glow in the render emission pass").
+    pub emissivity: f32,
 }
 
 impl ThermalConfig {
@@ -220,6 +235,29 @@ impl ThermalDiffusion {
             let ambient = self.config.ambient;
             for pi in 0..particles.len() {
                 particles.temperature[pi] += decay * (ambient - particles.temperature[pi]);
+            }
+        }
+
+        // Stefan-Boltzmann radiative loss: dT/dt = -q/(m·c_p), q = heat_radiation(...).
+        // See `ThermalConfig::emissivity`'s own doc for why area = particle volume and
+        // why this is the same blanket-exposure approximation as Newton cooling above.
+        if self.config.emissivity > 0.0 {
+            let ambient = self.config.ambient;
+            let c_p = self.config.heat_capacity;
+            for pi in 0..particles.len() {
+                let heat_capacity_j_per_k = particles.mass[pi] * c_p;
+                if heat_capacity_j_per_k <= 0.0 {
+                    continue;
+                }
+                let area = particles.volume[pi];
+                let q_watts = heat_radiation(
+                    particles.temperature[pi],
+                    ambient,
+                    area,
+                    self.config.emissivity,
+                    1.0,
+                );
+                particles.temperature[pi] -= q_watts / heat_capacity_j_per_k * sub_dt;
             }
         }
     }

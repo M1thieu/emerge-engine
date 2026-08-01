@@ -13,7 +13,8 @@ use emerge::thermodynamics::{
 use emerge::{
     DruckerPragerMaterial, Elastic, Field, MixturePhase, MuIRheologyMaterial, NaccMaterial,
     NeoHookeanMaterial, NewtonianFluidMaterial, RankineMaterial, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion, StomakhinMaterial, VonMisesMaterial, WithMixturePhase,
+    SlipBoundary, SpawnRegion, StomakhinMaterial, VonMisesMaterial, WithLatentHeat,
+    WithMixturePhase,
 };
 use glam::{IVec2, Vec2};
 
@@ -366,6 +367,137 @@ fn phase_transition_switches_material_ids() {
         "all particles transitioned â€” expected partial"
     );
     assert_eq!(fluid_count + jelly_count, solver.particles().len());
+}
+
+/// Real permafrost thaw -- reuses the SAME machinery already proven for
+/// combustion tonight (`add_phase_rule` + real `WithLatentHeat`), not new
+/// physics, just composing already-tested pieces for a new real phenomenon.
+/// Real freezing point 273.15K (same convention as CLAUDE.md's own water/ice
+/// example). Real water/ice latent heat of fusion, 334 (same value already used
+/// elsewhere in this file for water) -- honestly NOT scaled down by real
+/// permafrost's actual ice-content fraction (soil is an ice-BONDED mixture, not
+/// pure ice); a disclosed simplification, same spirit as `MixturePhase`'s own
+/// single-scalar-not-full-porosity-field disclosure.
+#[test]
+fn permafrost_thaws_at_freezing_point_with_real_latent_heat_debit() {
+    const FROZEN_ID: u32 = 0;
+    const THAWED_ID: u32 = 1;
+    const FREEZING_POINT_K: f32 = 273.15;
+    const LATENT_HEAT_FUSION: f32 = 334.0;
+    const HEAT_CAPACITY: f32 = 2000.0; // real order-of-magnitude soil specific heat, J/(kg*K)
+
+    let config = small_solver_config();
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            heat_capacity: HEAT_CAPACITY,
+            density: 1800.0, // kg/m^3, real order-of-magnitude soil density
+            grid_cell_size: 0.1,
+            ..Default::default()
+        },
+        config.grid_res,
+    );
+
+    let frozen = NaccMaterial::wet_soil(900.0 * 8.0, 0.3);
+    let thawed = WithLatentHeat::new(NaccMaterial::wet_soil(900.0, 0.3), LATENT_HEAT_FUSION);
+
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(frozen))
+        .with_material(THAWED_ID, Box::new(thawed))
+        .with_thermal(thermal)
+        .with_phase_rule(move |p| {
+            if p.material_id == FROZEN_ID && p.temperature > FREEZING_POINT_K {
+                Some(THAWED_ID)
+            } else {
+                None
+            }
+        });
+
+    // Start well below freezing (real permafrost winter temperature), then warm
+    // past the real freezing point -- like `ThermalConfig::ambient` driving a
+    // real seasonal thaw, simplified to a direct temperature set for a
+    // deterministic test (same style as the existing latent-heat test above).
+    for t in solver.particles_mut().temperature.iter_mut() {
+        *t = 260.0;
+    }
+    assert!(
+        solver
+            .particles()
+            .iter()
+            .all(|p| p.material_id == FROZEN_ID),
+        "must start fully frozen"
+    );
+
+    for t in solver.particles_mut().temperature.iter_mut() {
+        *t = 280.0; // above freezing
+    }
+    solver.step();
+
+    let expected_temp = 280.0 - LATENT_HEAT_FUSION / HEAT_CAPACITY;
+    for p in solver.particles().iter() {
+        assert_eq!(
+            p.material_id, THAWED_ID,
+            "particle above freezing point must thaw"
+        );
+        assert!(
+            (p.temperature - expected_temp).abs() < 1.0,
+            "expected real latent-heat debit toward {expected_temp:.3}, got {:.3}",
+            p.temperature
+        );
+    }
+}
+
+/// Real mechanical difference, not just a renamed material: a frozen (ice-
+/// bonded, stiffer) block must resist the SAME downward strike more than the
+/// SAME soil once thawed -- verifies the freeze/thaw pair actually changes
+/// physical behavior, matching the real qualitative literature consensus
+/// (Andersland & Ladanyi, "Frozen Ground Engineering": frozen ground
+/// substantially stiffer than thawed, exact ratio soil/ice-content-dependent --
+/// composing two independently real citations, ~100 MPa unfrozen soil vs
+/// ~23-30 GPa frozen fine sand, gives an order-of-magnitude-plus real ratio; an
+/// 8x stiffness increase is used here instead, real direction preserved,
+/// magnitude reduced for explicit-MPM CFL practicality at this grid scale --
+/// same disclosed tradeoff as tonight's rock presets).
+#[test]
+fn frozen_ground_resists_a_strike_more_than_thawed_ground() {
+    let config = small_solver_config(); // real default gravity -- see below for why
+    let frozen_mat = NaccMaterial::wet_soil(900.0 * 8.0, 0.3);
+    let thawed_mat = NaccMaterial::wet_soil(900.0, 0.3);
+
+    // NACC's elastic predictor bug fix (2026-07-31, `nacc.rs::update_particle`)
+    // exposed that this test's ORIGINAL zero-gravity setup was measuring a
+    // physically degenerate regime: real critical-state soil mechanics says a
+    // cohesionless/low-cohesion Cam-Clay material has ~zero shear capacity at
+    // zero confining pressure REGARDLESS of stiffness (same real fact already
+    // documented on `small_elastic_strain_is_not_projected` above) -- so
+    // "frozen vs thawed" barely differed once the material's stress genuinely
+    // engaged. Real fix: let the block settle under gravity first (builds real
+    // confining pressure / p0 pre-consolidation, the actual real-world
+    // precondition for "frozen ground" to mean anything mechanically), THEN
+    // measure displacement from that settled state -- matching how
+    // `permafrost.rs`'s live demo actually works (gravity always on).
+    let displacement_after_strike = |mat: NaccMaterial| -> f32 {
+        let mut solver =
+            Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(mat));
+        solver.step_n(200); // settle under self-weight, build real confining pressure
+        let before: Vec<Vec2> = solver.particles().x.clone();
+        solver.apply_impulse(Vec2::splat(16.0), 6.0, Vec2::new(0.0, -20.0));
+        solver.step_n(30);
+        let after = &solver.particles().x;
+        before
+            .iter()
+            .zip(after.iter())
+            .map(|(&b, &a)| (a - b).length())
+            .fold(0.0f32, f32::max)
+    };
+
+    let frozen_displacement = displacement_after_strike(frozen_mat);
+    let thawed_displacement = displacement_after_strike(thawed_mat);
+
+    assert!(
+        frozen_displacement < thawed_displacement,
+        "frozen ground should displace LESS than thawed ground under the same \
+         strike: frozen={frozen_displacement:.4} thawed={thawed_displacement:.4}"
+    );
 }
 
 /// Sets a distinctive, material-specific value in `init_particle` so a real test
@@ -1297,6 +1429,7 @@ fn thermal_config_mut_drives_day_night_ambient_cycle() {
             ambient: initial_temp,
             cooling_rate: 0.5,
             grid_cell_size: 0.1,
+            emissivity: 0.0,
         },
         config.grid_res,
     );
@@ -1343,6 +1476,70 @@ fn thermal_config_mut_drives_day_night_ambient_cycle() {
     println!(
         "thermal_config_mut_drives_day_night_ambient_cycle: initial={initial_temp} \
          day_mean={mean_temp_day:.2} night_mean={mean_temp_night:.2}"
+    );
+}
+
+/// Real Stefan-Boltzmann radiative loss (`ThermalConfig::emissivity`), isolated from
+/// spatial diffusion (`conductivity: 0.0`) and Newton cooling (`cooling_rate: 0.0`) so
+/// only the T^4 term acts. `heat_radiation`'s own T^4 scaling law is already unit-tested
+/// in `transfer.rs`; this proves the SOLVER WIRING: disabled by default (emissivity=0.0,
+/// matching `cooling_rate`'s existing 0.0-disables convention), and a hotter slab cools
+/// strictly faster with higher emissivity when enabled -- the real ordering a T^4 law
+/// must produce, not just "temperature goes down eventually".
+#[test]
+fn radiative_cooling_scales_with_emissivity() {
+    let hot_temp = 1000.0_f32; // K, real fire-range temperature -- where T^4 actually matters
+    let ambient = 293.15_f32; // K, real room temperature
+
+    let run = |emissivity: f32| -> f32 {
+        let config = SimConfig {
+            gravity: Vec2::ZERO,
+            ..small_solver_config()
+        };
+        let thermal = ThermalDiffusion::new(
+            ThermalConfig {
+                conductivity: 0.0, // isolate radiation from spatial diffusion
+                heat_capacity: 1000.0,
+                density: 1000.0,
+                ambient,
+                grid_cell_size: 0.1,
+                cooling_rate: 0.0, // isolate radiation from Newton cooling
+                emissivity,
+            },
+            config.grid_res,
+        );
+        let mut solver = Simulation::new(config, small_spawn_config(16.0))
+            .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+            .with_thermal(thermal);
+        for t in solver.particles_mut().temperature.iter_mut() {
+            *t = hot_temp;
+        }
+        solver.step_n(20);
+        solver
+            .particles()
+            .iter()
+            .map(|p| p.temperature)
+            .sum::<f32>()
+            / solver.particles().len() as f32
+    };
+
+    let mean_disabled = run(0.0);
+    let mean_low_emissivity = run(0.3);
+    let mean_high_emissivity = run(0.9);
+
+    assert!(
+        (mean_disabled - hot_temp).abs() < 1e-3,
+        "emissivity=0.0 must be a true no-op (default, backward-compatible): mean={mean_disabled:.4}"
+    );
+    assert!(
+        mean_low_emissivity < hot_temp,
+        "radiative loss must actually cool the slab: mean={mean_low_emissivity:.2}"
+    );
+    assert!(
+        mean_high_emissivity < mean_low_emissivity,
+        "higher emissivity must radiate away MORE heat per step (T^4 law is monotone in \
+         emissivity, not just present): low_eps_mean={mean_low_emissivity:.2} \
+         high_eps_mean={mean_high_emissivity:.2}"
     );
 }
 

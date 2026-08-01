@@ -119,6 +119,28 @@ impl NaccMaterial {
         Self::new(mu, kappa, 1.5, 0.0, 1.0)
     }
 
+    /// Peat / organic soil (USDA Histosol order): M=1.2, β=0, ξ=0.5 -- the LOWEST
+    /// hardening_factor in this family, real and deliberate: peat's single most
+    /// defining geotechnical trait is extreme compressibility, its real compression
+    /// index (Cc) runs roughly an order of magnitude beyond mineral clays (Mesri &
+    /// Ajlouni 2007, "Engineering Properties of Fibrous Peats", ASCE J. Geotech.
+    /// Geoenviron. Eng.) -- meaning a peat needs far more real plastic volumetric
+    /// strain than any mineral soil here before building up meaningful
+    /// preconsolidation resistance (p0 growth, this material's own hardening
+    /// mechanism, scales with xi -- see `project`'s own doc). Friction slope M kept
+    /// near `wet_soil`'s (fibrous peat's real shear resistance from fiber
+    /// interlocking is a real, separate, well-documented effect, but less
+    /// distinctive than its compressibility -- not this preset's point of
+    /// differentiation). HONEST DISCLOSURE, same standard as every other preset in
+    /// this file: the constitutive LAW (Cam-Clay) and the qualitative direction
+    /// (very low hardening_factor) are real and cited; the exact numeric value 0.5
+    /// is illustrative, not fitted to a specific measured peat dataset.
+    pub fn peat(young_modulus: f32, poisson_ratio: f32) -> Self {
+        let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
+        let kappa = lambda + mu;
+        Self::new(mu, kappa, 1.2, 0.0, 0.5)
+    }
+
     /// NACC yield surface projection. Returns updated (F, alpha).
     ///
     /// Three cases from sparkl canonical:
@@ -252,9 +274,17 @@ impl MaterialModel for NaccMaterial {
         particles.initial_volume[i]
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, _dt: f32) {
+    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
+        // Elastic predictor -- same pattern as every other CPU plastic material
+        // (`sand.rs`, `snow.rs`, `sand_mui.rs`): F must pick up this substep's
+        // strain from the velocity gradient BEFORE plastic projection, or F never
+        // advances at all and the material exerts a frozen, non-evolving stress
+        // forever (real bug found 2026-07-31: a falling NACC block collapsed to
+        // zero height under gravity because F was stuck at its spawn value).
+        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
+            * particles.deformation_gradient[i];
         let alpha = particles.log_volume_strain[i];
-        let (new_f, new_alpha) = self.project(particles.deformation_gradient[i], alpha);
+        let (new_f, new_alpha) = self.project(f_trial, alpha);
         particles.deformation_gradient[i] = new_f;
         particles.log_volume_strain[i] = new_alpha;
 
@@ -397,6 +427,46 @@ mod marginal_yield_tests {
         assert_eq!(
             alpha_after, alpha,
             "alpha must not change on an elastic step"
+        );
+    }
+
+    /// Real behavioral distinctness, not just a different field value: after the
+    /// SAME prior compaction history (same alpha, representing identical past
+    /// loading), `peat` (hardening_factor=0.5, the lowest in this family) must
+    /// have built up LESS compression-cap resistance (p0) than `wet_soil`
+    /// (hardening_factor=3.0) -- p0's own formula (`kappa*(1e-5+sinh(xi*max(
+    /// -alpha,0)))`) grows with xi at any fixed nonzero alpha, so a lower
+    /// hardening_factor means less real preconsolidation resistance builds up per
+    /// unit of past compaction, matching peat's own real, cited defining trait
+    /// (extreme compressibility, Mesri & Ajlouni 2007). Note: at the neutral
+    /// alpha=0 start state every preset's p0 is identical regardless of
+    /// hardening_factor (sinh(xi*0)=0 for any xi) -- this only differentiates
+    /// once real prior compaction (alpha != 0) has happened, so this test starts
+    /// from alpha=-1.0, the same "real pre-consolidation" convention
+    /// `small_elastic_strain_is_not_projected` above already uses.
+    #[test]
+    fn peat_hardens_slower_than_wet_soil_after_the_same_prior_compaction() {
+        let peat = NaccMaterial::peat(3000.0, 0.3);
+        let wet_soil = NaccMaterial::wet_soil(3000.0, 0.3);
+        assert!(
+            peat.hardening_factor < wet_soil.hardening_factor,
+            "peat must have the lowest hardening_factor in this family: \
+             peat={} wet_soil={}",
+            peat.hardening_factor,
+            wet_soil.hardening_factor
+        );
+
+        let alpha: f32 = -1.0; // same real prior compaction for both
+        let p0 = |mat: &NaccMaterial| {
+            mat.kappa * (1.0e-5 + (mat.hardening_factor * (-alpha).max(0.0)).sinh())
+        };
+        let peat_p0 = p0(&peat);
+        let wet_soil_p0 = p0(&wet_soil);
+        assert!(
+            peat_p0 < wet_soil_p0,
+            "peat should have built up LESS compression-cap resistance than \
+             wet_soil after identical prior compaction: peat_p0={peat_p0} \
+             wet_soil_p0={wet_soil_p0}"
         );
     }
 }

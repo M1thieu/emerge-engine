@@ -102,6 +102,60 @@ impl RankineMaterial {
         )
     }
 
+    /// Sandstone regime: sedimentary clastic rock, same ratio-not-absolute fix as
+    /// `stiff_brittle`. Real E range 11.3-40 GPa (avg ~19.9 GPa), tensile strength
+    /// 19.17-65.66 MPa (Xu 2016, "Characterization of Rock Mechanical Properties
+    /// Using Lab Tests and Numerical Interpretation Model of Well Logs") -- huge
+    /// real spread from cementation/porosity, disclosed not hidden. Representative
+    /// pick near the lower/typical end of both ranges (E~20 GPa, tensile~20 MPa).
+    /// Same softening_rate=2.0 as `stiff_brittle` -- still real brittle failure,
+    /// no separately-cited reason to differ.
+    pub fn sandstone(young_modulus: f32, poisson_ratio: f32) -> Self {
+        const SANDSTONE_TENSILE_TO_MODULUS_RATIO: f32 = 1.0e-3;
+        Self::from_young_modulus(
+            young_modulus,
+            poisson_ratio,
+            young_modulus * SANDSTONE_TENSILE_TO_MODULUS_RATIO,
+            2.0,
+        )
+    }
+
+    /// Limestone regime: sedimentary chemical rock. Real E range 4.6-12 GPa,
+    /// tensile strength 18.00-38.76 MPa (same Xu 2016 source as `sandstone`) --
+    /// genuinely softer AND relatively stronger-in-tension-per-modulus than
+    /// sandstone, a real distinguishing feature, not the same rock renamed.
+    /// Representative pick E~8 GPa, tensile~25 MPa.
+    pub fn limestone(young_modulus: f32, poisson_ratio: f32) -> Self {
+        const LIMESTONE_TENSILE_TO_MODULUS_RATIO: f32 = 3.1e-3;
+        Self::from_young_modulus(
+            young_modulus,
+            poisson_ratio,
+            young_modulus * LIMESTONE_TENSILE_TO_MODULUS_RATIO,
+            2.0,
+        )
+    }
+
+    /// Shale regime: sedimentary clastic, fissile/foliated. Real E range 15-36.9 GPa
+    /// (avg ~27 GPa, foliated), tensile strength ~168 MPa average ACROSS foliation
+    /// (same Xu 2016 source) -- real, cited, but an HONEST, DISCLOSED limitation:
+    /// real shale is strongly anisotropic (splits far more easily ALONG bedding
+    /// planes than across them; the source's own "laminated shale shows lower
+    /// values" note, exact number not given). This preset is isotropic (this
+    /// material's yield surface has no per-particle orientation field), so it
+    /// necessarily represents the ACROSS-foliation (stronger) direction -- real
+    /// bedding-plane weakness is a genuinely separate, not-yet-built mechanism
+    /// (see the geosphere-taxonomy memory's "anisotropic foliated rock" gap), not
+    /// something this single-number preset can honestly claim to capture.
+    pub fn shale(young_modulus: f32, poisson_ratio: f32) -> Self {
+        const SHALE_TENSILE_TO_MODULUS_RATIO: f32 = 6.2e-3;
+        Self::from_young_modulus(
+            young_modulus,
+            poisson_ratio,
+            young_modulus * SHALE_TENSILE_TO_MODULUS_RATIO,
+            2.0,
+        )
+    }
+
     /// Effective tensile strength after damage softening. Floored at a small
     /// residual fraction of virgin strength -- see `RANKINE_MIN_RESIDUAL_TENSILE_FRACTION`
     /// doc for why an unfloored exponential decay is an unbounded damage ratchet.
@@ -358,5 +412,57 @@ mod marginal_yield_tests {
             damage_after > 0.0,
             "damage must accumulate on the corner-return case"
         );
+    }
+}
+
+#[cfg(test)]
+mod rock_preset_tests {
+    use super::*;
+
+    /// Real, cited rock presets must be genuinely DIFFERENT materials, not the
+    /// same numbers under different names -- checks the real distinguishing
+    /// feature each preset's own doc claims: limestone is softer (lower E) than
+    /// sandstone AND relatively stronger in tension per unit stiffness (higher
+    /// tensile-to-modulus ratio), a real geotechnical distinction (Xu 2016), not
+    /// an assumption.
+    #[test]
+    fn sandstone_and_limestone_presets_are_genuinely_distinct() {
+        let sandstone = RankineMaterial::sandstone(20.0e9, 0.25);
+        let limestone = RankineMaterial::limestone(8.0e9, 0.25);
+
+        assert!(
+            limestone.tensile_strength / limestone.lambda.max(1.0)
+                != sandstone.tensile_strength / sandstone.lambda.max(1.0),
+            "sandstone and limestone presets must not collapse to the same ratio"
+        );
+        let sandstone_ratio = sandstone.tensile_strength / 20.0e9;
+        let limestone_ratio = limestone.tensile_strength / 8.0e9;
+        assert!(
+            limestone_ratio > sandstone_ratio,
+            "limestone's real tensile-to-modulus ratio should be higher than \
+             sandstone's (Xu 2016): limestone={limestone_ratio:.2e} sandstone={sandstone_ratio:.2e}"
+        );
+    }
+
+    /// All 5 Rankine presets (bone/rock family) must produce finite, positive
+    /// tensile strengths at a real representative modulus -- a basic sanity floor
+    /// before trusting any of them in a live scene.
+    #[test]
+    fn all_rock_and_bone_presets_produce_finite_positive_tensile_strength() {
+        let e = 30.0e9;
+        let nu = 0.25;
+        for (name, mat) in [
+            ("stiff_brittle", RankineMaterial::stiff_brittle(e, nu)),
+            ("high_tensile", RankineMaterial::high_tensile(e, nu)),
+            ("sandstone", RankineMaterial::sandstone(e, nu)),
+            ("limestone", RankineMaterial::limestone(e, nu)),
+            ("shale", RankineMaterial::shale(e, nu)),
+        ] {
+            assert!(
+                mat.tensile_strength.is_finite() && mat.tensile_strength > 0.0,
+                "{name}: tensile_strength must be finite and positive, got {}",
+                mat.tensile_strength
+            );
+        }
     }
 }
