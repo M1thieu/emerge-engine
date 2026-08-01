@@ -69,8 +69,9 @@ pub struct Simulation {
     last_timing: crate::diagnostics::StepTiming,
     /// Automatic phase transition rules, evaluated every substep.
     phase_rules: Vec<PhaseRule>,
-    /// Spatial hash over active particles — rebuilt each substep after G2P.
-    /// Turns O(N) radius queries into O(candidates_in_neighborhood).
+    /// Spatial hash over active particles — rebuilt once per `step()` call
+    /// (see `step.rs`), not per substep; LP's own queries never happen
+    /// mid-substep. Turns O(N) radius queries into O(candidates_in_neighborhood).
     spatial_hash: SpatialHash,
     /// Discrete elastic rods (Cosserat-rod family, `spacetime::rod`) sharing
     /// this simulation's own MPM grid — see `step.rs`'s `do_substep` for the

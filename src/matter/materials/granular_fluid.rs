@@ -101,21 +101,10 @@ impl GranularFluidMaterial {
     /// presented as if it were. Needs a real geotechnical/soil-mechanics source before
     /// any claim of "this is real loam" would be honest.
     ///
-    /// REAL BUG FIXED (2026-07-31, found live via `soil_horizons.rs`): this preset used
-    /// `eos_power=7.0`, the near-incompressible WATER value -- directly contradicting
-    /// `eos_power`'s own field doc ("7 for near-incompressible; 1-3 for compressible
-    /// granular flow") for a preset whose `compression_limit=0.4` explicitly allows 40%
-    /// compression. A power-7 EOS evaluated at real gravity-settling compression levels
-    /// produces enormous pressure (measured: ~750 against `eos_stiffness=200` at just
-    /// 20% compression), driving violent particle separation. That separation is real
-    /// dilation, which (see `update_particle`'s own hardening-scale clamp, fixed
-    /// alongside this) drove `hardening_scale` to its floor, weakening the material's
-    /// OWN restoring stiffness further -- a genuine, unbounded positive-feedback
-    /// (dilate -> weaken -> dilate more), never previously caught because the only
-    /// existing test asserted `J>0`, not settling. Fixed to `eos_power=2.0` (within the
-    /// field's own documented granular-flow range) -- verified via a real, isolated
-    /// gravity-settling repro: `max_speed` now decays 39->0.9 over 400 steps instead of
-    /// oscillating at 80-140 indefinitely.
+    /// `eos_power` must stay in the granular-flow range (1-3, per the field's
+    /// own doc) -- the near-incompressible value 7.0 causes runaway pressure
+    /// under gravity-settling compression, driving dilation that weakens
+    /// `hardening_scale` toward its floor in an unbounded feedback loop.
     pub fn saturated_loam(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self {
@@ -139,8 +128,7 @@ impl GranularFluidMaterial {
     /// (not measured) shape parameters -- not yet verified against real consolidated-
     /// clay geotechnical data.
     ///
-    /// Same real fix as `saturated_loam` (2026-07-31): `eos_power` 7.0->2.0, same
-    /// near-incompressible/granular-flow mismatch, same measured instability.
+    /// Same `eos_power` constraint as `saturated_loam` above.
     pub fn consolidated_clay(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self {
@@ -165,11 +153,9 @@ impl GranularFluidMaterial {
     /// (not measured) shape parameters -- not yet verified against real cytoplasm
     /// rheology literature.
     ///
-    /// Same real fix as `saturated_loam` (2026-07-31): `eos_power` 7.0->2.0. This
-    /// preset's low `eos_stiffness=50` made it the least severely affected of the
-    /// three (the hardening-floor fix alone already gave it a real, if slow, settling
-    /// trend), but the same near-incompressible/granular-flow mismatch applied here
-    /// too, so fixed for consistency and real margin.
+    /// Same `eos_power` constraint as `saturated_loam` above; low
+    /// `eos_stiffness=50` makes this preset least sensitive to it, but the
+    /// constraint still applies.
     pub fn cytoplasmic(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self {
@@ -241,19 +227,13 @@ impl MaterialModel for GranularFluidMaterial {
                 / (sigma_c.x * sigma_c.y).max(1.0e-10);
             particles.plastic_volume_ratio[i] =
                 jp_new.clamp(self.min_plastic_jacobian, self.max_plastic_jacobian);
-            // REAL BUG FIXED (2026-07-31): floor was 0.1, not 1.0. `h` scales BOTH the
-            // deviatoric (`mu_eff`) and volumetric (`lam_vol`) elastic terms in
-            // `kirchhoff_stress` -- under real net dilation (Jp>1, e.g. gravity-driven
-            // shear at a free surface), this formula SOFTENS the material (h<1), which
-            // is a genuine, unbounded positive feedback: soften -> weaker restoring
-            // force -> more dilation -> soften further, with nothing to stop it short
-            // of the clamp floor. Unlike the compression side (Jp<1, h>1, hardening --
-            // a real, self-STABILIZING effect: resists further compression), there is
-            // no physical mechanism here that should let dilation make the material
-            // weaker than its own baseline (h=1) stiffness. Clamping the floor to 1.0
-            // preserves the real, intended compression-hardening behavior (h up to
-            // 7.0) while removing the runaway: dilation now floors out at baseline
-            // stiffness instead of collapsing toward zero resistance.
+            // `hardening_scale` floor must stay at 1.0, not lower: `h` scales both
+            // the deviatoric and volumetric elastic terms in `kirchhoff_stress`, so
+            // h<1 under dilation (Jp>1) softens the material -- an unbounded
+            // soften->dilate->soften feedback with nothing to stop it. Compression-
+            // side hardening (h>1) is self-stabilizing; there's no equivalent
+            // mechanism on the dilation side, so the floor clamps at baseline
+            // stiffness (h=1) instead.
             particles.hardening_scale[i] = (self.hardening_exponent
                 * (1.0 - particles.plastic_volume_ratio[i]))
                 .exp()

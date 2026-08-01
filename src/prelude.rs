@@ -45,8 +45,7 @@ pub use crate::{
     GranularFluidMaterial,
     GravityWellField,
     // Directional/phase-gated grip boundaries (shipped with the ratchet
-    // locomotion work) -- were missing from the prelude despite its own doc
-    // claiming full boundary-condition coverage; fixed 2026-07-08.
+    // locomotion work).
     GripFrictionBoundary,
     HeightmapBoundary,
 

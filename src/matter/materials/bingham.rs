@@ -134,7 +134,7 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
         let tau0 = scale_stress(props.yield_stress_pa, props.rho_kg_m3, config);
         let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // See `NewtonianFluidMaterial::from_physical`'s fix doc (2026-07-07) -- rest_density
+        // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
         // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
         let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
         Self::new(rho_grid, visc, eos, GAMMA, tau0)
@@ -151,12 +151,9 @@ impl MaterialModel for BinghamFluidMaterial {
         // ways, matching `NewtonianFluidMaterial::kirchhoff_stress` exactly:
         // min prevents div-by-zero at low PPC, max (2x rho0) limits how far
         // the EOS pressure response saturates under impact overcompression.
-        // FIXED 2026-07-07 (real, found via audit): this material was missing
-        // the upper clamp entirely despite sharing the identical Tait EOS
-        // formula with NewtonianFluidMaterial (which has it) -- an unbounded
-        // EOS pressure spike under violent compression is the same real risk
-        // here. Matches NewtonianFluid's 2x (see that file's doc for the real
-        // A/B-tested reason 2x, not a looser value, is correct).
+        // Matches `NewtonianFluidMaterial::kirchhoff_stress`'s clamp exactly --
+        // same Tait EOS, same unbounded-pressure-spike risk under violent
+        // compression; see that file's doc for why 2x specifically.
         let density = particles.density[i]
             .max(self.min_density)
             .min(self.rest_density * 2.0);

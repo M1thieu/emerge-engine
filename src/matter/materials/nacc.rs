@@ -34,18 +34,17 @@ use crate::particle::{Particle, Particles};
 pub struct NaccMaterial {
     /// Shear modulus µ.
     pub mu: f32,
-    /// Bulk modulus κ. Note: λ (Lamé) = κ − µ (2D plane-strain relation --
-    /// fixed 2026-07-06, was the 3D κ=λ+2µ/3 relation; see `timestep_bound`
-    /// and `params()` below, which already correctly invert as λ=κ−µ).
+    /// Bulk modulus κ. Note: λ (Lamé) = κ − µ (2D plane-strain relation, not
+    /// the 3D κ=λ+2µ/3 relation; see `timestep_bound` and `params()` below,
+    /// which invert as λ=κ−µ).
     pub kappa: f32,
     /// Friction slope M — controls yield surface width in q direction.
     /// Related to friction angle φ (sparkl's `NaccPlasticity::new`, general-d form:
     /// M = √(2/3)·2·sin φ/(3−sin φ)·d/√(2/(6−d))): in 2D (d=2) this reduces to
     /// M = (8/√3)·sin φ/(3−sin φ) ≈ 4.619·sin φ/(3−sin φ). Not called by any
-    /// constructor here (presets pass M directly) -- informational only. A
-    /// previous version of this comment used the 3D-style `6 sin φ/(3−sin φ)·
-    /// √((6−d)/2)` form, which is ~1.84x too large at d=2; fixed 2026-07-07
-    /// after cross-checking sparkl's actual source (not just its doc).
+    /// constructor here (presets pass M directly) -- informational only. Do
+    /// not use the 3D-style `6 sin φ/(3−sin φ)·√((6−d)/2)` form -- it is
+    /// ~1.84x too large at d=2.
     /// Typical: 1.0–2.0.
     pub friction: f32,
     /// Cohesion (beta β) — shifts yield surface min tip.
@@ -278,9 +277,8 @@ impl MaterialModel for NaccMaterial {
         // Elastic predictor -- same pattern as every other CPU plastic material
         // (`sand.rs`, `snow.rs`, `sand_mui.rs`): F must pick up this substep's
         // strain from the velocity gradient BEFORE plastic projection, or F never
-        // advances at all and the material exerts a frozen, non-evolving stress
-        // forever (real bug found 2026-07-31: a falling NACC block collapsed to
-        // zero height under gravity because F was stuck at its spawn value).
+        // advances and the material exerts a frozen, non-evolving stress -- e.g.
+        // a falling body collapsing to zero height under gravity.
         let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
             * particles.deformation_gradient[i];
         let alpha = particles.log_volume_strain[i];

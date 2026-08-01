@@ -247,20 +247,15 @@ impl RodMaterial {
     /// for a rod discretized with uniform segment length `l0_m` and
     /// per-point mass `point_mass_kg`.
     ///
-    /// **Honest scope correction (2026-07-26, real bug found via user-
-    /// reported "never settles straight")**: this is a LOCAL, single-
-    /// segment reference (one point's mass against one segment's own
-    /// stiffness) -- it is NOT the true GLOBAL modal critical damping for a
-    /// whole rod's actual fundamental bending shape (many points moving
-    /// together). Confirmed by direct measurement: for a 20-point cantilever
-    /// blade, this function's own "critical" value understates the real
-    /// modal critical damping by roughly two to three orders of magnitude --
-    /// a rod damped at even 30x THIS function's output still had not
-    /// settled after 30 real seconds. Use `modal_critical_damping` below for
-    /// "make this rod settle naturally, like a real damped cantilever, in a
-    /// physically sensible time" -- the real, common use case (grass
-    /// blades, pushable branches, anything a player interacts with). This
-    /// function's real, narrower, still-valid purpose is a per-segment
+    /// This is a LOCAL, single-segment reference (one point's mass against
+    /// one segment's own stiffness) -- it is NOT the true GLOBAL modal
+    /// critical damping for a whole rod's actual fundamental bending shape
+    /// (many points moving together): for a 20-point cantilever blade it
+    /// understates the real modal critical damping by roughly two to three
+    /// orders of magnitude. Use `modal_critical_damping` below for natural
+    /// whole-rod settling in a physically sensible time -- the common use
+    /// case (grass blades, pushable branches, anything a player interacts
+    /// with). This function's narrower, still-valid purpose is a per-segment
     /// numerical reference (e.g. bounding a single segment's own worst-case
     /// local stiffness/mass ratio), not a substitute for the true modal
     /// value.
@@ -422,18 +417,11 @@ impl RodMaterial {
         std::f32::consts::TAU / omega
     }
 
-    /// Real Euler/Greenhill self-weight buckling critical height
-    /// (`h_crit = (7.8373*EI/(mu*g))^(1/3)`) -- this formula was already
-    /// documented in this module's own doc comment (see above, "direct
-    /// continuity with the Greenhill self-buckling analysis"), motivating
-    /// the ENTIRE rod solver's existence, but was never actually callable
-    /// until now. Root-cause fix (2026-07-26): a demo scene silently built
-    /// a rod taller than its own real critical height (a genuinely, freely
-    /// buckling column, matching this exact real physics), and there was no
-    /// way to catch that except hours of live debugging. Real, cited
-    /// formula (see `mod.rs`'s own top-level doc, "Wikipedia 'Self-
-    /// buckling'"-equivalent relation) -- `mu` here is the SAME linear mass
-    /// density (kg/m) used everywhere else in this module.
+    /// Euler/Greenhill self-weight buckling critical height
+    /// (`h_crit = (7.8373*EI/(mu*g))^(1/3)`, see `mod.rs`'s own top-level
+    /// doc for the "direct continuity with the Greenhill self-buckling
+    /// analysis" motivating this solver) -- `mu` here is the SAME linear
+    /// mass density (kg/m) used everywhere else in this module.
     ///
     /// Closed-form result for a UNIFORM column (one `ei` for the whole
     /// height) -- a rod with per-vertex `RodPoints::ei` has no single exact
@@ -534,20 +522,16 @@ pub struct Rod {
     /// full frame dt is unconditionally unstable (tried once, reverted).
     /// Scope: not grid-coupled — no contact with sand/particles yet.
     pub use_implicit_integration: bool,
-    /// Real, measured, disclosed finding (2026-07-27): backward Euler is
-    /// unconditionally STABLE at any `dt`, but at a large `dt` relative to
-    /// the rod's own natural bending period, it also introduces real
-    /// artificial numerical damping that can swamp the physically-tuned
-    /// damping (`RodMaterial::axial_damping`/`bending_damping`), making a
-    /// real, underdamped sway look like a smooth, "instant" glide to rest
-    /// instead. Verified directly: one 0.02s implicit step/frame gave only
-    /// 3 real tip-direction reversals over 3s of a pushed 20-point blade;
-    /// splitting that SAME frame `dt` into 16 smaller implicit steps (this
-    /// field) gave 9 -- visibly more oscillatory, same physical damping
-    /// ratio, same total real time. Default `1` = today's exact prior
-    /// behavior (one step at the full frame `dt`), zero change for any rod
-    /// that doesn't opt in. Only meaningful when `use_implicit_integration`
-    /// is `true`.
+    /// Backward Euler is unconditionally STABLE at any `dt`, but at a large
+    /// `dt` relative to the rod's own natural bending period it also
+    /// introduces artificial numerical damping that can swamp the
+    /// physically-tuned damping (`RodMaterial::axial_damping`/
+    /// `bending_damping`), making an underdamped sway look like a smooth,
+    /// "instant" glide to rest instead. Splitting the frame `dt` into more
+    /// implicit substeps (this field) recovers the correct oscillatory
+    /// behavior at the same physical damping ratio. Default `1` = one step
+    /// at the full frame `dt`, zero change for any rod that doesn't opt in.
+    /// Only meaningful when `use_implicit_integration` is `true`.
     pub implicit_substeps: u32,
 }
 
@@ -589,26 +573,24 @@ impl Rod {
         }
     }
 
-    /// Real, immediate self-weight buckling check -- root-cause fix
-    /// (2026-07-26) for a real bug that cost hours of live debugging before
-    /// being traced to genuine Euler/Greenhill self-weight buckling (see
+    /// Immediate self-weight buckling check (Euler/Greenhill, see
     /// `RodMaterial::greenhill_critical_height_m`'s own doc). Returns
-    /// `Some(real, human-readable message)` if this rod's actual real
-    /// length exceeds its own critical height (it will NEVER stand
-    /// straight under gravity alone, regardless of damping -- that was the
-    /// actual, correct physics all along, not a numerical bug), `None` if
-    /// it's safely below. Call this once right after construction and
-    /// `eprintln!` the result -- catches this class of mistake in seconds
-    /// instead of a multi-hour debugging session.
-    /// Real, disclosed simplification for a NON-uniform rod (per-vertex
-    /// `points.ei`, see `RodPoints::ei`'s own doc): `greenhill_critical_height_m`
-    /// is a closed-form result for a UNIFORM column, so there is no single
-    /// exact non-uniform generalization here. Uses the WEAKEST (minimum)
-    /// `ei` entry as the real, conservative bound instead — a non-uniform
-    /// rod genuinely buckles first at its most slender point, so checking
-    /// the whole rod's real length against that point's own critical height
-    /// cannot UNDER-warn (it may warn slightly early for a rod that's
-    /// stiffer everywhere else, never miss a real risk).
+    /// `Some(human-readable message)` if this rod's length exceeds its own
+    /// critical height (it will NEVER stand straight under gravity alone,
+    /// regardless of damping -- that's the correct physics, not a numerical
+    /// bug), `None` if it's safely below. Call this once right after
+    /// construction and `eprintln!` the result to catch this class of
+    /// mistake immediately.
+    ///
+    /// For a NON-uniform rod (per-vertex `points.ei`, see `RodPoints::ei`'s
+    /// own doc): `greenhill_critical_height_m` is a closed-form result for a
+    /// UNIFORM column, so there is no single exact non-uniform
+    /// generalization here. Uses the WEAKEST (minimum) `ei` entry as the
+    /// conservative bound instead -- a non-uniform rod buckles first at its
+    /// most slender point, so checking the whole rod's length against that
+    /// point's own critical height cannot UNDER-warn (it may warn slightly
+    /// early for a rod that's stiffer everywhere else, never miss a real
+    /// risk).
     pub fn buckling_warning(&self, gravity_m_s2: f32) -> Option<String> {
         let length_m: f32 = self.points.rest_edge_length.iter().sum();
         let total_mass_kg: f32 = self.points.mass.iter().sum();
@@ -690,9 +672,9 @@ impl Rod {
     }
 
     /// True while `gravitropism` still has a real, meaningful angular
-    /// deviation left to correct -- the exact same class of bug
-    /// `is_growing`'s own doc describes, found 2026-07-27: sleep scoring
-    /// only sees `rod.points.v`, but gravitropism reshapes `rest_curvature`
+    /// deviation left to correct -- the same class of sleep/growth
+    /// interaction `is_growing`'s own doc describes: sleep scoring only
+    /// sees `rod.points.v`, but gravitropism reshapes `rest_curvature`
     /// (not velocity directly), so a rod can settle to near-zero velocity
     /// from its LAST push, go to sleep, and then never wake again -- freezing
     /// gravitropism forever with no external event left to rouse it (a

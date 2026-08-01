@@ -54,26 +54,12 @@ impl Simulation {
                 continue;
             }
             if rod.sleeping {
-                // Real, measured bug fix (2026-07-28, user-reported "second
-                // push barely moves it"): the grid-touch-based wake check
-                // further down only runs AFTER this implicit-rod loop, so a
-                // sleeping rod given an active push THIS SAME frame used to
-                // get skipped entirely -- a real, measured one-frame dead
-                // zone (confirmed: `per_frame_delta=0.00000` exactly on the
-                // very first push frame after a rod had settled) before it
-                // started responding the following frame. Waking on push
-                // HERE, before the skip, means the same frame that sets
-                // `push_strength > 0.0` is the same frame that actually
-                // integrates it.
-                //
-                // Real bug fix (2026-07-29, user-reported "wind doesn't
-                // affect it anymore, nothing moves"): this check only ever
-                // looked at `push_strength`, so a rod given nonzero
-                // `wind_velocity` alone stayed asleep forever -- confirmed
-                // directly in a live NDJSON log (`wind_on:1` sustained for
-                // 5800+ frames, tip position and `blade_sleeping` never
-                // changing once). Same real fix, same reasoning, just the
-                // other external force this loop can receive.
+                // Wake on push/wind HERE, before the skip below: the grid-touch
+                // wake check runs only after this loop, so waking there alone
+                // would miss the same frame a push or wind is first applied.
+                // Must check wind_velocity too, not just push_strength -- wind
+                // never touches the grid, so it's the only way a sleeping rod
+                // can wake from wind alone.
                 let has_external_force = (rod.push_strength > 0.0 && rod.push_center.is_some())
                     || rod.wind_velocity.length_squared() > 0.0;
                 if has_external_force {
@@ -83,12 +69,9 @@ impl Simulation {
                     continue;
                 }
             }
-            // Real, measured (2026-07-27): splitting the frame `dt` into
-            // several smaller implicit steps reduces backward Euler's own
-            // numerical damping, letting the rod's real, physically-tuned
-            // damping ratio show through as visible sway instead of being
-            // swamped into a smooth glide -- see `Rod::implicit_substeps`'
-            // own doc. Default 1 = today's exact prior behavior.
+            // Splitting frame `dt` into smaller implicit substeps reduces backward
+            // Euler's numerical damping, letting the rod's tuned damping ratio show
+            // as visible sway instead of a smooth glide. Default 1 = prior behavior.
             let substeps = rod.implicit_substeps.max(1);
             let sub_dt = self.config.dt / substeps as f32;
             for _ in 0..substeps {
@@ -135,18 +118,11 @@ impl Simulation {
                     self.config.dt,
                 );
             }
-            // Real bug fix (2026-07-28, user-caught "second interaction
-            // barely moves it"): confirmed directly (headless, 5 real
-            // push/settle cycles) that unconditional secondary growth kept
-            // stiffening the rod FAR past the point its own
-            // `buckling_warning` cleared (weakest EI climbed 6.70e-5 ->
-            // 6.82e-5 over 4 more cycles with no mechanical need left),
-            // making it progressively less responsive to every subsequent
-            // push -- real physics, but past the point the mechanism's own
-            // real purpose (escaping genuine structural risk) was served.
-            // Gated on the rod STILL being over-critical, matching
-            // gravitropism/phototropism's own real Greenhill gate above
-            // (just the OPPOSITE direction) -- once safe, stop growing.
+            // Gated on the rod still being over-critical (same Greenhill buckling
+            // gate as gravitropism/phototropism above, opposite direction):
+            // unconditional secondary growth keeps stiffening the rod past the
+            // point it's mechanically needed, making it progressively less
+            // responsive to later pushes.
             if let Some(secondary_growth) = &rod.secondary_growth {
                 let gravity_si = self.config.gravity.length() * self.config.dx_meters;
                 if rod.buckling_warning(gravity_si).is_some() {
@@ -299,27 +275,18 @@ impl Simulation {
             }
         }
 
-        // Same wake test, rod granularity: a sleeping rod's own (frozen)
-        // points didn't scatter above, so any overlap found here comes from
-        // genuinely external activity (another body's P2G, or another awake
-        // rod) -- exactly the particle wake pass's own no-self-trigger
-        // property. Also wakes unconditionally on an active push, since a
-        // caller setting `push_strength > 0` is a direct request to move it
-        // that no grid-activity test could otherwise see (nothing has
-        // touched the grid near it yet).
-        // Same real hysteresis fix as the particle wake pass above: require
-        // actual velocity over this body's own rod_sleep_threshold, not
-        // merely "some mass present" — otherwise a permanently-active
-        // neighbour (e.g. a growing root that never itself sleeps) keeps
-        // waking every sleeping rod that ever touches its cells, forever.
-        //
-        // Real bug fix (2026-07-29, user-reported "wind doesn't affect it
-        // anymore, nothing moves"): this check, like the implicit-rod one
-        // above, only ever looked at `push_strength` -- `wind_velocity`
-        // alone (rod-internal, never touches the grid) could never wake a
-        // sleeping rod through either this scan OR the grid-touch fallback
-        // below it, so wind silently did nothing to an already-sleeping rod
-        // forever. Same fix, same reasoning as the implicit-rod path.
+        // Same wake test, rod granularity: a sleeping rod's own (frozen) points
+        // didn't scatter above, so any overlap found here comes from genuinely
+        // external activity (another body's P2G, or another awake rod) -- the
+        // particle wake pass's no-self-trigger property. Also wakes unconditionally
+        // on an active push, since `push_strength > 0` is a direct move request the
+        // grid-activity test can't see yet (nothing has touched the grid near it).
+        // Requires actual velocity over rod_sleep_threshold, not merely "some mass
+        // present" -- otherwise a permanently-active neighbour (e.g. a growing root
+        // that never sleeps) keeps waking every sleeping rod touching its cells.
+        // Must also check wind_velocity, not just push_strength: wind is
+        // rod-internal and never touches the grid, so it's the only way a sleeping
+        // rod can wake from wind alone (same as the implicit-rod path above).
         let rod_wake_speed_sq = self.config.rod_sleep_threshold * self.config.rod_sleep_threshold;
         for rod in &mut self.rods {
             if !rod.sleeping {

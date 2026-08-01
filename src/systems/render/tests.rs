@@ -759,14 +759,14 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
         [frame[off], frame[off + 1], frame[off + 2], frame[off + 3]]
     };
     // Search the WHOLE frame for the pixel that most strongly shows each
-    // material's real color (rather than hand-deriving the exact camera
-    // projection to a specific pixel, which real measurement this session
-    // showed is fragile at cell-level precision against a per-slot mass
-    // field that -- unlike total density -- is never curvature-smoothed,
-    // so it stays exactly as narrow as the raw B-spline splat, not spread
-    // by the later smoothing pass). "Strongest" = that channel exceeds the
-    // other two by the widest margin (real Beer-Lambert transmission: low
-    // sigma_a in `channel` means it dominates the rendered color).
+    // material's color (rather than hand-deriving the exact camera
+    // projection to a specific pixel, which is fragile at cell-level
+    // precision against a per-slot mass field that -- unlike total density
+    // -- is never curvature-smoothed, so it stays exactly as narrow as the
+    // raw B-spline splat, not spread by the later smoothing pass).
+    // "Strongest" = that channel exceeds the other two by the widest
+    // margin (Beer-Lambert transmission: low sigma_a in `channel` means it
+    // dominates the rendered color).
     let strongest_for_channel = |channel: usize| -> ([u8; 4], i32, i32) {
         let mut best = [0u8; 4];
         let mut best_score = i32::MIN;
@@ -1353,11 +1353,11 @@ fn grid_volume_dominant_material_colors_regions_distinctly() {
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    // Real fixed-point-scale magnitude (same order as the actual P2G
-    // scatter's own `MASS_ATOMIC_SCALE`-driven values) -- deliberately NOT
-    // a large/normal-range float, so this test exercises the exact
-    // denormal-adjacent regime the real bug lived in. Left half (x<4)
-    // dominant in slot 0, right half (x>=4) dominant in slot 1.
+    // Fixed-point-scale magnitude (same order as P2G's own
+    // `MASS_ATOMIC_SCALE`-driven values) -- deliberately denormal-adjacent,
+    // not a large/normal-range float, since FTZ/rounding bugs live in that
+    // regime. Left half (x<4) dominant in slot 0, right half (x>=4)
+    // dominant in slot 1.
     let mut mm = vec![0i32; cell_count * SLOTS];
     for cy in 0..grid_res {
         for cx in 0..grid_res {
@@ -1511,12 +1511,11 @@ fn curvature_flow_scattering_and_specular_change_rendered_color() {
 
 /// Diagnostic, not a regression test -- run manually via `cargo test
 /// diagnose_curvature_flow_edge_hair_pixels -- --ignored --nocapture` when
-/// investigating the real, user-reported "hair" fuzz around Surface mode's
-/// silhouette edges. Prints a real RGBA scanline crossing a cold (ambient-
-/// temperature-only, no blackbody emission at all) cluster's own boundary,
-/// so the actual pixel numbers can be read directly instead of guessing
-/// from a screenshot -- isolates whether the artifact depends on
-/// temperature/emission at all.
+/// investigating "hair" fuzz around Surface mode's silhouette edges. Prints
+/// an RGBA scanline crossing a cold (ambient-temperature-only, no
+/// blackbody emission at all) cluster's own boundary, so the actual pixel
+/// numbers can be read directly instead of guessing from a screenshot --
+/// isolates whether the artifact depends on temperature/emission at all.
 #[test]
 #[ignore]
 fn diagnose_curvature_flow_edge_hair_pixels() {
@@ -2092,21 +2091,19 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
     );
 }
 
-/// Real regression check for the 2026-07-31 wave-excitation bug fix: a real
-/// user report ("some are moving on some render modes but on physics side
-/// they don't move at all") traced to `wave_step_main`'s OLD forcing term
-/// using the density field's SPATIAL gradient -- nonzero at any object's
-/// edge PERMANENTLY, whether anything moves or not, so the wave field never
-/// genuinely settled even for a fully static body. Fixed by exciting from
-/// the TEMPORAL difference (this frame's density minus last frame's)
-/// instead. This test drives a COMPLETELY STATIC particle cluster (same
-/// buffer, never touched between calls -- the strongest real analogue of
-/// "physics reports max_speed~0") for many real frames and confirms the
-/// wave field's peak magnitude genuinely DECAYS over time once the one-time
-/// "body just appeared" burst passes, rather than staying pinned at a
-/// roughly constant nonzero level forever (which is what the old spatial-
-/// gradient version would do, since the excitation source -- the object's
-/// own unchanging edge -- never went away).
+/// Regression check for the wave-excitation forcing term: it must be the
+/// TEMPORAL density difference (this frame's density minus last frame's),
+/// not the SPATIAL density gradient -- a spatial gradient is nonzero at
+/// any object's edge PERMANENTLY, whether anything moves or not, so the
+/// wave field would never settle even for a fully static body. This test
+/// drives a COMPLETELY STATIC particle cluster (same buffer, never touched
+/// between calls -- the strongest analogue of "physics reports
+/// max_speed~0") for many frames and confirms the wave field's peak
+/// magnitude DECAYS over time once the one-time "body just appeared" burst
+/// passes, rather than staying pinned at a roughly constant nonzero level
+/// forever (what a spatial-gradient forcing term would do, since the
+/// excitation source -- the object's own unchanging edge -- never goes
+/// away).
 #[test]
 fn curvature_flow_wave_field_decays_once_density_stops_changing() {
     use crate::gpu::GpuSimulation;
@@ -2422,26 +2419,26 @@ fn grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds() {
     );
 }
 
-/// Real, DETERMINISTIC flicker measurement -- unlike live-demo screenshots
-/// (confounded: a different random splash every relaunch, confirmed this
-/// session to swing measured "flicker pixel" counts by 10x+ run to run with
-/// no shader change at all), this steps a FIXED-SEED real particle scenario
-/// forward through many real physics + render frames and reads back actual
-/// rendered pixels each time. The whole pipeline (particle physics, the
-/// wave PDE, hysteresis) has no wall-clock dependency, and the atomic
-/// splat scatter is integer (exactly order-independent) -- so the same
-/// seed reproduces bit-identical results run to run, making this a real,
-/// re-runnable A/B harness for any future shading change, unlike a live
-/// demo screenshot ever could be.
+/// DETERMINISTIC flicker measurement -- unlike live-demo screenshots
+/// (confounded: a different random splash every relaunch, which can swing
+/// measured "flicker pixel" counts by 10x+ run to run with no shader
+/// change at all), this steps a FIXED-SEED particle scenario forward
+/// through many physics + render frames and reads back actual rendered
+/// pixels each time. The whole pipeline (particle physics, the wave PDE,
+/// hysteresis) has no wall-clock dependency, and the atomic splat scatter
+/// is integer (exactly order-independent) -- so the same seed reproduces
+/// bit-identical results run to run, making this a re-runnable A/B harness
+/// for any future shading change, unlike a live demo screenshot ever could
+/// be.
 ///
 /// NOT a strict pass/fail gate yet: the exact acceptable flicker fraction
 /// hasn't been established (this is the first time it's been measured
-/// this way). Asserts a generous, disclosed placeholder ceiling so this
-/// stays a real regression guard against a CATASTROPHIC regression (like
-/// the reverted density-persistence attempt this session, which measured
-/// roughly half of all sampled points flickering) without yet claiming
-/// the CURRENT baseline itself is "acceptable" -- that judgment is still
-/// open, tracked in memory, not asserted here as settled.
+/// this way). Asserts a generous placeholder ceiling so this stays a
+/// regression guard against a CATASTROPHIC regression (like the reverted
+/// density-persistence attempt, which measured roughly half of all
+/// sampled points flickering) without yet claiming the CURRENT baseline
+/// itself is "acceptable" -- that judgment is still open, tracked
+/// separately, not asserted here as settled.
 #[test]
 fn surface_reconstruction_does_not_flicker_over_many_deterministic_frames() {
     use crate::gpu::GpuSimulation;
@@ -2547,7 +2544,7 @@ fn surface_reconstruction_does_not_flicker_over_many_deterministic_frames() {
         flicker_fraction < 0.5,
         "catastrophic flicker regression: {flicker_count}/{num_points} \
          ({:.1}%) sampled points oscillating -- this generous ceiling only \
-         guards against a severe regression (like this session's reverted \
+         guards against a severe regression (like the reverted \
          density-persistence attempt, which hit ~50%); it does NOT yet\
          assert the current baseline is fully acceptable",
         flicker_fraction * 100.0

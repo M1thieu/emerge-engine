@@ -47,11 +47,9 @@ pub struct ThermalConfig {
     /// - Steel: 490  J/(kg·K)
     pub heat_capacity: f32,
 
-    /// Density ρ in kg/m³. Real, required -- the module's own diffusivity
-    /// formula (α = k/(ρ·c_p)) needs it; omitting it (found+fixed 2026-07-24,
-    /// this struct previously had no density field at all, so every scene
-    /// silently computed α = k/c_p instead -- 1000x too fast for water,
-    /// confirmed by direct comparison against water's real α≈1.4e-7 m²/s).
+    /// Density ρ in kg/m³. Required -- the module's own diffusivity formula
+    /// (α = k/(ρ·c_p)) needs it; omitting it silently computes α = k/c_p
+    /// instead, ~1000x too fast for water.
     ///
     /// Reference values (approximate):
     /// - Air:   1.225 kg/m³
@@ -101,11 +99,9 @@ impl ThermalConfig {
     /// Thermal diffusivity α = k / (ρ·c_p·dx²) in grid-units²/s.
     ///
     /// Folding dx² in keeps the Laplacian formula dimensionless over grid indices.
-    /// Panics if `density <= 0.0` -- there's no physically sane fallback, and
-    /// silently dividing by zero previously produced infinite/NaN diffusivity
-    /// with no error at the point of the actual mistake (found 2026-07-24: this
-    /// field didn't exist at all until then, so every existing scene silently
-    /// ran with an implicit ρ=1, real water diffusing 1000x too fast).
+    /// Panics if `density <= 0.0` -- there's no physically sane fallback;
+    /// silently dividing by zero would produce infinite/NaN diffusivity with
+    /// no error at the point of the actual mistake.
     #[inline]
     pub fn alpha_grid(&self) -> f32 {
         assert!(

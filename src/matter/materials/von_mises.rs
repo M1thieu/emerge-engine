@@ -178,12 +178,9 @@ mod marginal_yield_tests {
 
     /// Isolates whether `update_particle`'s return mapping matches the material's
     /// OWN documented yield criterion (`2*mu*|dev(eps)| <= yield_stress`) exactly,
-    /// bypassing MPM's grid/transfer pipeline entirely -- same discipline as
-    /// `sand.rs::marginal_yield_tests`, which this engine's own citation audit
-    /// (2026-07-07) confirmed is the right pattern for verifying a plasticity
-    /// return-mapping against its own analytical yield surface. `VonMisesMaterial`
-    /// had ZERO test comparing it to any analytical result before this (only a
-    /// loose stress-stays-bounded overshoot check existed).
+    /// bypassing MPM's grid/transfer pipeline entirely -- same pattern as
+    /// `sand.rs::marginal_yield_tests` for verifying a plasticity return-mapping
+    /// against its own analytical yield surface.
     fn run_one_step(mat: &VonMisesMaterial, sigma: Vec2, kappa: f32) -> (Vec2, f32) {
         let mut p = Particle::zeroed();
         p.deformation_gradient = Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y));

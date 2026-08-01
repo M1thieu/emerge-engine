@@ -33,9 +33,10 @@ type ReadbackResult = std::sync::Arc<std::sync::Mutex<Option<Result<(), wgpu::Bu
 
 /// GPU-backed MLS-MPM solver.
 ///
-/// Pass sequence:
-///   Once per frame: particle_sort (identity permutation → sorted_particle_ids)
-///   Per substep:    grid_clear → p2g → grid_update → g2p → particles_update → force_fields
+/// Pass sequence (see `encode_substep.rs` for the authoritative dispatch list --
+/// several passes below are conditional, e.g. contact/mixture/thermal/resource):
+///   Once per frame: particle_sort_clear → count → scan → scatter
+///   Per substep:    active_block_refresh → grid_clear → p2g → grid_update → g2p → particles_update
 ///
 /// Particles live in VRAM between frames; the CPU only touches them at spawn and for
 /// plasticity readback (currently: none — all plasticity runs in particles_update.wgsl).

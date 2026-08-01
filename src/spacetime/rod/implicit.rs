@@ -411,63 +411,28 @@ mod tests {
     use super::*;
     use crate::rod::build_straight_rod;
 
-    /// Real, disclosed perf diagnostic (not correctness) -- measures
-    /// `step_rod_implicit`'s real total cost at several point counts,
-    /// end-to-end (assembly + solve together; see the real, permanent
-    /// finding below for the phase split). Run manually:
+    /// Perf diagnostic (not correctness) -- measures `step_rod_implicit`'s
+    /// total cost at several point counts, end-to-end (assembly + solve
+    /// together). Run manually:
     /// `cargo test --lib implicit_solver_cost_profile --all-features --
     /// --ignored --nocapture`.
     ///
-    /// # Real measured finding (2026-07-27)
-    /// Original split-timing version (hand-duplicated assembly loop, since
-    /// removed after it was caught silently measuring stale OLD logic post-
-    /// refactor -- see the in-body comment) found `solve_dense`'s O(ndof^3)
-    /// elimination was NOT the bottleneck: assembly (finite-difference
-    /// Jacobian construction) dominated by 14-18x at every n from 20-200.
-    /// That ruled out a banded solver as the real fix.
-    ///
-    /// Phase 1 (2026-07-27): analytic (Baraff & Witkin 1998 damped-spring)
-    /// Jacobian for the AXIAL term, hybridized with FD for bending. A real,
-    /// partial win (-23%..-56%) -- axial was a genuine minority share of
-    /// assembly cost, bending's FD sweep still dominated the remaining total.
-    ///
-    /// Phase 2 (2026-07-29): bending now has its own analytic Jacobian too
-    /// (`forces::bending_jacobian_gauss_newton`) -- exact for the velocity
-    /// term, a disclosed Gauss-Newton (material-stiffness-only)
-    /// approximation for the position term (the true Hessian of
-    /// `discrete_curvature` still has no derived closed form for this
-    /// engine's own 2D reduction -- see that function's own doc for what's
-    /// dropped and why). The FD sweep is gone entirely.
-    ///
-    /// Real total-step-time measurement across both phases (this exact
-    /// test, same machine):
-    /// ```text
-    /// n=20   orig=435us   phase1=193us   phase2=23us    (-95% vs orig)
-    /// n=50   orig=1913us  phase1=1480us  phase2=231us   (-88% vs orig)
-    /// n=100  orig=7903us  phase1=5710us  phase2=892us   (-89% vs orig)
-    /// n=200  orig=32381us phase1=23055us phase2=3176us  (-90% vs orig)
-    /// ```
-    /// Verified this didn't trade accuracy for speed:
-    /// `tests/accuracy.rs`'s `cantilever_tip_deflection_matches_euler_
-    /// bernoulli` and `cantilever_deflection_error_shrinks_with_resolution`
-    /// both still pass unchanged. Real remaining future work: the true
-    /// Hessian (recovering the geometric-stiffness term this phase drops),
-    /// only worth it if a scene is ever found where the Gauss-Newton
-    /// approximation's disclosed gap (large bending deviation from rest)
-    /// actually matters in practice -- not chased speculatively.
+    /// Both axial (Baraff & Witkin 1998 damped-spring) and bending
+    /// (`forces::bending_jacobian_gauss_newton`) terms use analytic
+    /// Jacobians -- bending's is exact for the velocity term but a
+    /// Gauss-Newton (material-stiffness-only) approximation for the
+    /// position term, since the true Hessian of `discrete_curvature` has no
+    /// derived closed form here (see that function's own doc for what's
+    /// dropped and why). Accuracy is still covered by `tests/accuracy.rs`'s
+    /// `cantilever_tip_deflection_matches_euler_bernoulli` and
+    /// `cantilever_deflection_error_shrinks_with_resolution`.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- measures total implicit-step cost at several point counts; run manually when investigating implicit-rod scaling, not routine CI"]
     fn implicit_solver_cost_profile() {
-        // Real, disclosed correction (2026-07-27): an earlier version of
-        // this test hand-duplicated the assembly loop to split its timing
-        // from `solve_dense`'s -- after the hybrid analytic-axial/FD-
-        // bending change below landed, that duplicate was STILL the OLD
-        // full-FD logic, silently measuring nothing about the real change.
-        // Real lesson: call the ACTUAL function under test, don't
-        // re-implement it a second time just to get a number. This now
-        // times the REAL `step_rod_implicit` end-to-end (assembly + solve
-        // together) -- a less granular but honest number, not a duplicated
-        // and silently-stale one.
+        // Time the actual `step_rod_implicit` end-to-end (assembly + solve
+        // together) -- don't re-implement the assembly loop separately just
+        // to get a number, or the timing can silently drift from the real
+        // code under test.
         for &n_points in &[20usize, 50, 100, 200] {
             let dx_meters = 0.01;
             let height_m = 0.10;

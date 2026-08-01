@@ -1,10 +1,7 @@
-// RESOLVED (was a TODO to move this into LP's mpm crate): the decision went the
-// other way. LP's crates/mpm was retired back into a single crate (2026-07-01),
-// and ARCHITECTURE.md §7 documents `control::Lnn` as a deliberate exception that
-// lives in emerge: it does not participate in the substep loop at all — a
-// standalone ODE the caller integrates, writing its output into
-// `Particle::activation`/`activation_dir` between steps. emerge supplies the
-// controller math; it has no opinion on when or whether it runs.
+// Lives in emerge, not LP (see ARCHITECTURE.md §10): a deliberate exception
+// that doesn't participate in the substep loop at all -- a standalone ODE
+// the caller integrates, writing its output into
+// `Particle::activation`/`activation_dir` between steps.
 
 /// Liquid Time-constant Network (LNN) — Hasani, Lechner, Amini, Rus, Grosu,
 /// "Liquid Time-constant Networks" (arXiv preprint 2020; published AAAI 2021,

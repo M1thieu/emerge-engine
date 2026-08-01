@@ -54,16 +54,13 @@ struct OpticalTable {
 @group(0) @binding(3) var<storage, read> material_mass: array<i32>;
 @group(0) @binding(4) var<storage, read> grid_visibility_field: array<f32>;
 
-// ── Real hysteresis visibility state (2026-07-30) ───────────────────────────
+// ── Hysteresis visibility state ──────────────────────────────────────────────
 //
-// SAME real Schmitt-trigger technique `curvature_flow.wgsl`'s own Pass 2c
-// already ships and tests -- ported here, not reinvented, because this
-// mode's own `mass_floor` discard (below) had the identical theoretical
-// flicker risk (a single threshold a noisy value can straddle) and had
-// simply never received the fix. Real, disclosed reason this needs its
-// OWN persistent buffer at `grid_res` (not reusing curvature-flow's own,
-// which is sized at the finer `surface_res`): this mode samples the
-// physics grid directly, a genuinely different resolution/buffer.
+// Same Schmitt-trigger technique as `curvature_flow.wgsl`'s Pass 2c, ported
+// here since this mode's `mass_floor` discard (below) has the identical
+// single-threshold flicker risk. Own persistent buffer at `grid_res`, not
+// curvature-flow's `surface_res` one, since this mode samples the physics
+// grid directly.
 struct GridVisibilityParams {
     grid_res: u32,
     mass_floor: f32,
@@ -141,30 +138,20 @@ fn sample_weighted_temp(cx: i32, cy: i32) -> f32 {
     return bitcast<f32>(grid_int[idx * 4u + 0u]);
 }
 
-// Real, disclosed 2026-07-31 history: this was a majority-mass-WINS pick
-// (`dominant_material`) -- exposed a real, previously-untested FTZ/
-// denormal bug (fixed: compare raw i32, not bit-reinterpreted f32 --
-// `material_mass` bit-reinterpreted directly as `f32` relied on IEEE 754's
-// real monotonic bit-pattern-to-value property, but typical accumulated
-// fixed-point values land in the raw range that reinterprets as an IEEE
-// 754 DENORMAL float, and this GPU's fragment-shader ALU flushes denormals
-// to zero -- confirmed directly: the same raw bytes read correctly via a
-// CPU-side staging-buffer copy, but decoded as exactly 0.0 inside the
-// shader's own comparison) and a real, disclosed limitation asked about
-// directly by the user ("no mixed?"): a hard per-cell winner flips 100%-A
-// to 100%-B at a boundary instead of fading, producing visible speckle
-// right where two materials meet. Replaced with a real, cited mixing rule
-// instead: mixture absorbance ≈ the components' own absorbance weighted by
-// their relative amount ("Beyond Beer's Law: Spectral Mixing Rules,"
-// Applied Spectroscopy 2020, PubMed 32588637) -- the SAME real linear-
-// mixing approximation used for composite/mixed optical media generally.
-// Real, disclosed deviation from that paper: it's derived for VOLUME
-// fraction under a "micro-homogeneous" (well-mixed at sub-pixel scale)
-// assumption; this uses MASS fraction (the data this engine already
-// tracks per cell, no per-slot volume field exists) as a real, honest
-// approximation to it -- the same micro-homogeneous assumption holds
-// reasonably well here too, since one grid cell already represents many
-// real particles, not a single sharp interface.
+// Compare raw i32 `material_mass`, not bit-reinterpreted f32: accumulated
+// fixed-point values commonly land in the IEEE 754 denormal range, and this
+// GPU's fragment-shader ALU flushes denormals to zero on comparison, which
+// silently breaks a bit-reinterpreted read.
+//
+// Blends per-slot mass fractions instead of picking a single dominant
+// material (a hard per-cell winner flips 100%-A to 100%-B at a boundary
+// instead of fading, producing visible speckle). Mixing rule: mixture
+// absorbance ~= components' own absorbance weighted by relative amount
+// ("Beyond Beer's Law: Spectral Mixing Rules," Applied Spectroscopy 2020,
+// PubMed 32588637). Uses MASS fraction rather than the paper's VOLUME
+// fraction (no per-slot volume field exists) -- an approximation that still
+// holds under the paper's micro-homogeneous assumption, since one grid cell
+// represents many particles, not a single sharp interface.
 fn blended_optical_slot(cx: i32, cy: i32) -> vec4<f32> {
     let idx = u32(cy) * params.grid_res + u32(cx);
     let base = idx * MAX_RENDER_MATERIAL_SLOTS;
@@ -274,17 +261,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // blocky/pixel-stair-stepped (the "Minecraft" look explicitly rejected
     // as too limited), not the flat-color-with-smooth-edge look aimed for.
     //
-    // Real, disclosed 2026-07-31 fix: raised from 0.5, diagnosed via direct
-    // pixel readback on `curvature_flow.wgsl`'s identical formula (shared
-    // reasoning, both files use the same optics/absorption math) -- at
-    // optical_depth=0.5, `exp(-sigma_a*0.5)` barely absorbs anything for
-    // typical (small) sigma_a magnitudes, reading as a washed-out near-
-    // neutral-gray ring/halo instead of real material color, undermining
-    // the whole point of the flat-shading pivot above (interior color
-    // should extend to the alpha cutoff, not fade through an intermediate
-    // pale tone). Raised to 1.0, matching one real interior depth-band step
-    // (`1.0/DEPTH_BANDS`), so the edge reads as solid material color right
-    // up to where alpha fades it.
+    // Floor on optical depth used for edge color (shares this formula with
+    // `curvature_flow.wgsl`). Too low and `exp(-sigma_a*depth)` barely
+    // absorbs anything for typical (small) sigma_a, reading as a washed-out
+    // near-neutral-gray ring instead of material color. Must be at least
+    // one interior depth-band step (`1.0/DEPTH_BANDS`) so the edge reads as
+    // solid material color right up to where alpha fades it.
     const EDGE_COLOR_REFERENCE_DEPTH: f32 = 3.0;
     const DEPTH_BANDS: f32 = 4.0;
     let sigma_a = optical_slot.rgb;
@@ -340,52 +322,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let normal_dir = -grad / grad_len;
         let light_dir = normalize(params.light_dir);
         let diffuse_raw = clamp(dot(normal_dir, light_dir), 0.0, 1.0);
-        // Cel-shading / toon-shading (real, well-established NPR technique):
-        // quantize N.L into a handful of discrete bands instead of a smooth
-        // continuous gradient. Real, disclosed reason this replaced a plain
-        // continuous `diffuse`: smooth, continuous Lambertian shading reads
-        // as photoreal 3D lighting (a "rendered blob," per the user's own
-        // direct feedback), which is tonally mismatched with this engine's
-        // explicitly non-photoreal 2D "style" target. Quantizing is the
-        // standard fix for exactly that mismatch -- flat regions with sharp
-        // transitions instead of a smooth gradient, while still driven by
-        // the SAME real gradient/normal data, not a fake flat color.
+        // Cel-shading (toon-shading NPR technique): quantize N.L into a
+        // handful of discrete bands instead of a smooth continuous gradient,
+        // to match this engine's non-photoreal 2D style target instead of
+        // reading as photoreal 3D lighting -- still driven by the real
+        // gradient/normal data, not a fake flat color.
         //
-        // REVISED (2026-07-30): shipped at 4.0 originally, which was too
-        // coarse -- a real fluid surface has plenty of genuine small-scale
-        // curvature detail (real physical bumps/ripples), and snapping that
-        // detail into only 4 harsh brightness levels amplifies it into a
-        // visibly speckled, static-like texture (confirmed directly:
-        // user described it as "la neige à la télé" -- TV static -- and a
-        // real screenshot showed exactly that). This is quantization noise
-        // amplification, a well-known real failure mode of coarse
-        // posterization on detailed geometry, NOT the temporal flicker
-        // this session spent most of its effort on (a different, genuinely
-        // separate problem -- this one is visible in a single static
-        // frame, no motion needed). Fixed by testing real candidate band
-        // counts directly (16 confirmed clean, 8 ALSO confirmed clean via
-        // real screenshot comparison while keeping more visible
-        // stylization) -- 8 chosen as the real, verified value, not a
-        // guess.
+        // LIGHT_BANDS=8: fewer bands (4) amplify a fluid surface's genuine
+        // small-scale curvature detail into visible posterization noise;
+        // 8 stays clean while keeping the stylization.
         const LIGHT_BANDS: f32 = 8.0;
         let diffuse = floor(diffuse_raw * LIGHT_BANDS) / LIGHT_BANDS;
-        // Real, disclosed blend: an ambient floor (0.6) plus the real
-        // Lambertian term (0.4 * diffuse) -- keeps the shape always visible
-        // (no fully-black unlit side) while adding a genuine, gradient-
-        // derived shading cue instead of flat, unlit color everywhere.
+        // Ambient floor (0.6) plus a Lambertian term (0.4*diffuse) keeps the
+        // shape visible on the unlit side while still shading from the real
+        // gradient.
         //
-        // REMOVED (2026-07-30): a Blinn-Phong specular LOBE used to sit
-        // here. Real, disclosed reason it's gone, not just tuned down: a
-        // continuous BRDF-driven highlight is itself a strong "this is a
-        // lit 3D surface" cue -- exactly the "blobby/3D" look reported
-        // directly, on top of (not separate from) the smooth-gradient
-        // issue the cel-shading above already targets. Flat cel-shaded 2D
-        // games (the user's own named reference points, Celeste/Rain
-        // World) generally don't render a continuous specular lobe on
-        // ordinary terrain/water at all. `OpticalTable::specular` (R0) is
-        // left wired and still drives `prep_instances.wgsl`'s ByPhysics
-        // particle mode, which has no gradient/normal to build a lobe from
-        // in the first place and was never part of this specific problem.
+        // No specular lobe here, deliberately: a continuous BRDF highlight
+        // reads as "lit 3D surface," the opposite of the cel-shaded flat-2D
+        // look above -- flat cel-shaded 2D games don't render one on
+        // ordinary terrain/water. `OpticalTable::specular` (R0) stays wired
+        // for `prep_instances.wgsl`'s ByPhysics particle mode, which has no
+        // gradient/normal to build a lobe from and is unrelated to this path.
         lit = clamp(with_scattering * (0.6 + 0.4 * diffuse), vec3(0.0), vec3(1.0));
     }
 

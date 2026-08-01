@@ -143,7 +143,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // still comes from the ordinary total mass field (unaffected by which velocity
     // field a particle reads — mirrors CPU exactly, mass is never per-field).
     let is_grip = p.contact_group != 0u;
-    // Global gate (fixed 2026-07-15, mirrors CPU's Grid::has_contact_activity() check at
+    // Global gate (mirrors CPU's Grid::has_contact_activity() check at
     // transfer.rs's gather_grid_to_particles call site exactly): when NO particle anywhere
     // uses contact_group this frame, resolve_contact/gather_contact_points were skipped
     // entirely (see contact_active's doc, step.rs), so resolved_grip_v/resolved_rest_v were

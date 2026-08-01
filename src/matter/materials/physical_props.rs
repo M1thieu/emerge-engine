@@ -179,16 +179,13 @@ pub struct FluidGranular {
 }
 
 impl FluidGranular {
-    // REAL API FIX (2026-07-19): these three presets used to share their exact
-    // names (`saturated_loam`/`consolidated_clay`/`cytoplasmic`) with
-    // `GranularFluidMaterial`'s own, DIFFERENT presets in `granular_fluid.rs`
-    // (zero-arg fixed-SI-literature-value here vs. parameterized
-    // `(young_modulus, poisson_ratio)` there) -- a real ambiguity risk, not
-    // just a style nit. Suffixed `_preset` to mark these as the fixed-value
-    // convenience layer; `GranularFluidMaterial`'s parameterized versions
-    // (same names, no suffix) are the unambiguous, SI-consistent primary entry
-    // point -- use those directly unless you specifically want this property
-    // family's fixed literature-style defaults.
+    // Suffixed `_preset` to disambiguate from `GranularFluidMaterial`'s own,
+    // differently-parameterized presets of the same name
+    // (`saturated_loam`/`consolidated_clay`/`cytoplasmic`) in
+    // `granular_fluid.rs` (zero-arg fixed-SI-literature-value here vs.
+    // parameterized `(young_modulus, poisson_ratio)` there). Prefer the
+    // unsuffixed, parameterized versions unless you specifically want this
+    // property family's fixed literature-style defaults.
 
     /// Saturated loam — yields easily, flows slowly under sustained load.
     ///

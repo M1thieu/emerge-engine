@@ -32,7 +32,7 @@
 //! disclosed as illustrative (same disclosed-calibration status as
 //! `Gravitropism`'s own rate constants) — not fitted to a specific species.
 //!
-//! **Real mass update (2026-07-29)**: real wood deposition also adds mass at
+//! **Mass update**: real wood deposition also adds mass at
 //! that cross-section (thicker = heavier), not just stiffness. Derived from
 //! the SAME real relationship already used for `ea`/`ei` themselves:
 //! `EA = E*A` with `E` constant means `d(area)/area == d(ea)/ea` exactly, so

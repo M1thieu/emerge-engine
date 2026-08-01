@@ -36,38 +36,35 @@ mod p2g_tests;
 
 /// Elastic/plastic Kirchhoff stress plus the active-stress (muscle contraction) term, if any.
 ///
-/// KNOWN OPEN BUG (found 2026-07-11, still not fixed despite real, repeated effort): a driven
-/// creature body settles into a real, unbounded compaction ratchet over long horizons — net
-/// drift collapses to ~0 while min(J) keeps falling and never recovers. FIVE distinct real
-/// fixes were tried and empirically falsified (each via a real 16,000-20,000-step headless
-/// sweep on `basic_creature`'s exact Simulation/RatchetFrictionBoundary/NeoHookeanMaterial
-/// setup, not guessed):
-///   1. Higher material stiffness — only delays onset (6500 -> 13000 steps), same collapse.
-///   2. Lower `apic_blend` (numerical PIC damping) — same, only delays onset.
-///   3. Signed [-1,1] activation, naive `2*sigmoid-1` remap — WORSE: real instability
-///      (min(J) toward the numerical floor, max(J) past 3.0), because it also doubled the
-///      drive amplitude, not a clean test of signedness alone.
-///   4. `NeoHookeanMaterial`'s volumetric Kirchhoff term was ALSO a real, separate,
-///      independently-worth-fixing bug: it used a bounded `k/2*(J²-1)` (finite ceiling on
-///      compression resistance) where Simo & Pister's actual 1984 formulation (which the
-///      old doc already cited but didn't implement) uses the log-barrier `k*(ln J)²`
-///      potential (τ_vol = k·ln(J), diverges as J→0, genuinely unbounded resistance). Fixed
-///      in `kirchhoff_stress`/`kirchhoff_stress_vjp` below. Real, legitimate, kept -- but
-///      verified NOT sufficient alone: the same 20,000-step creature sweep still stalls,
-///      just with a somewhat different J-trajectory. `MIN_J` (1e-6) was checked and ruled
-///      out as an interfering clamp -- min(J) in these runs never gets within three orders
-///      of magnitude of it.
-///   5. Signed activation retried with amplitude MATCHED to the unsigned case (span 0.9
-///      either way, not doubled) -- still stalls (drift ~0 by step ~2500), though without
-///      the earlier catastrophic collapse; max(J) still drifts upward over time (up to 3+).
+/// KNOWN OPEN BUG: a driven creature body settles into an unbounded compaction
+/// ratchet over long horizons — net drift collapses to ~0 while min(J) keeps
+/// falling and never recovers. Confirmed specific to the muscle-driven
+/// cyclic-loading + directional-friction interaction, not a general
+/// integration artifact: a passive (zero-activation) body's min(J) settles to
+/// a fixed value with velocity decaying cleanly to 0, so the core P2G/G2P/
+/// F-update solver is not drifting on its own.
 ///
-/// Separately confirmed via a passive (zero-activation) body: min(J) settles to a FIXED
-/// value and velocity decays cleanly to exactly 0 -- the core P2G/G2P/F-update solver is NOT
-/// numerically drifting on its own. This is specific to the muscle-driven cyclic-loading +
-/// directional-friction interaction, not a general integration artifact. Root cause remains
-/// genuinely unsolved; a real fix likely needs rethinking the friction/actuation mechanism
-/// itself (e.g. a redesigned contact model, or a controller that never enters the failure
-/// regime) rather than another parameter or activation-scheme tweak.
+/// Five fix attempts were tried and empirically falsified via headless
+/// sweeps on `basic_creature`'s exact
+/// Simulation/RatchetFrictionBoundary/NeoHookeanMaterial setup:
+///   1. Higher material stiffness — only delays onset.
+///   2. Lower `apic_blend` (numerical PIC damping) — only delays onset.
+///   3. Signed [-1,1] activation via naive `2*sigmoid-1` remap — worse
+///      (also doubled drive amplitude, not a clean signedness test).
+///   4. `NeoHookeanMaterial`'s volumetric Kirchhoff term was a separate, real
+///      bug: it used a bounded `k/2*(J²-1)` where Simo & Pister's actual 1984
+///      formulation uses the log-barrier `k*(ln J)²` potential (τ_vol =
+///      k·ln(J), diverges as J→0). Fixed in `kirchhoff_stress`/
+///      `kirchhoff_stress_vjp` below — legitimate and kept, but not
+///      sufficient alone; the creature sweep still stalls. `MIN_J` (1e-6)
+///      ruled out as an interfering clamp.
+///   5. Signed activation with amplitude matched to the unsigned case (not
+///      doubled) — still stalls, without the earlier catastrophic collapse.
+///
+/// Root cause remains unsolved; a real fix likely needs rethinking the
+/// friction/actuation mechanism itself (e.g. a redesigned contact model, or
+/// a controller that never enters the failure regime) rather than another
+/// parameter or activation-scheme tweak.
 ///
 /// Single source of truth for "what stress does this particle contribute to P2G" — shared by
 /// `scatter_particles_to_grid` and tests, so the two can never drift apart. Mirrors the GPU

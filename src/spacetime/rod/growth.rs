@@ -13,7 +13,7 @@
 //! Only the tip's own edge grows — real apical-meristem elongation happens
 //! at the growing tip; mature tissue further back doesn't keep stretching.
 //!
-//! **Point insertion (cell division), shipped 2026-07-29**: once the tip
+//! **Point insertion (cell division)**: once the tip
 //! edge matures (reaches `0.99*max_segment_length_m`, the same threshold
 //! `Rod::is_growing`'s own doc already uses for "still actively growing"),
 //! a new point is inserted beyond it — real apical-meristem cell division,
@@ -45,7 +45,7 @@
 //! re-verified primary citation) — same disclosed-calibration status as
 //! `Gravitropism`'s own rate constants.
 //!
-//! **Real finite resource budget (shipped 2026-07-29)**: `GrowthResistance`
+//! **Finite resource budget**: `GrowthResistance`
 //! only ever modeled the SOIL half of Lockhart's own "cell-wall + soil
 //! resistance" — with no soil (a scene with no MPM particles at all),
 //! `resistance` gates nothing and `rate*L*(1-L/K)` growth, combined with
@@ -64,7 +64,7 @@
 //! transition-point terminology Deleens et al. use), not an arbitrary demo
 //! cap. `None` (default) = unlimited, exactly the prior behavior.
 //!
-//! **Real light-driven growth rate (shipped 2026-07-29)**: `LightResponse`
+//! **Light-driven growth rate**: `LightResponse`
 //! couples `Growth::rate` to real photosynthetic light exposure (a
 //! rectangular-hyperbola photosynthesis-irradiance curve — see
 //! `LightResponse`'s own doc) instead of growing at a fixed rate regardless

@@ -23,24 +23,10 @@ const CURVATURE_FLOW_SHADER: &str = include_str!("shaders/curvature_flow.wgsl");
 const PREP_WG: u32 = 64;
 const SURFACE_CLEAR_WG: u32 = 64;
 const SURFACE_SPLAT_WG: u32 = 64;
-/// Real, finer-than-physics-grid resolution multiplier (see
-/// `curvature_flow.wgsl`'s own top doc). Bumped 3->4 (2026-07-29) after a
-/// real screenshot comparison: isolated, sparse droplets (1-2 real
-/// particles, genuinely small in world units -- confirmed via a direct
-/// mass/peak-density check, NOT a mass_floor threshold bug) look
-/// noticeably smoother-edged with more samples across that same small
-/// world-space extent, even though the object itself stays physically
-/// small -- a real, modest, still-cheap quality win
-/// (`(4*grid_res)^2` f32 cells, e.g. 4x at grid_res=64 is a 256x256 buffer,
-/// ~256KB per ping-pong buffer).
-// Real, disclosed 2026-07-31 bump (4->6, was 3->4 previously for the same
-// real reason -- see that earlier change's own memory): user asked to push
-// resolution closer to 1 surface cell per particle for cleaner distinct-
-// body/particle separation. Real cost tradeoff, not free: cell_count scales
-// with the SQUARE of this constant (6/4)^2 = 2.25x more cells through every
-// pass (splat, convert, 12x curvature-iterate, thermal diffusion, wave,
-// visibility, band-hysteresis) -- confirmed still real-time via this
-// engine's own fps counter on the jellies/fluids demos before keeping it.
+/// Finer-than-physics-grid resolution multiplier (see `curvature_flow.wgsl`'s
+/// own top doc). Cost scales with the SQUARE of this constant --
+/// `(N*grid_res)^2` f32 cells through every pass (splat, convert,
+/// curvature-iterate, thermal diffusion, wave, visibility, band-hysteresis).
 const SURFACE_RES_MULTIPLIER: u32 = 6;
 /// Real, fixed EVEN iteration count -- keeping this even means the settled
 /// result always lands in the SAME buffer (`surface_a`) regardless of N,
@@ -233,11 +219,10 @@ pub struct Renderer {
     wave_bufs: [wgpu::Buffer; 3],
     wave_params_buf: wgpu::Buffer,
     wave_frame_index: u32,
-    /// Real, disclosed 2026-07-31 addition: last frame's own settled density
-    /// (a copy of `surface_a_buf` taken right after each frame's wave step
-    /// reads it), so `wave_step_main` can excite from a genuine TEMPORAL
-    /// disturbance instead of the permanent spatial-edge artifact this
-    /// fixed -- see that entry point's own doc.
+    /// Last frame's settled density (a copy of `surface_a_buf` taken right
+    /// after each frame's wave step reads it), so `wave_step_main` can
+    /// excite from a genuine TEMPORAL disturbance rather than a permanent
+    /// spatial-edge artifact.
     wave_density_prev_buf: wgpu::Buffer,
 
     /// Real, persistent (across frames) hysteresis visible/invisible state
@@ -1771,12 +1756,10 @@ impl Renderer {
             cp.set_bind_group(0, &wave_step_bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real, disclosed 2026-07-31 addition: snapshot THIS frame's settled
-        // density as "previous" for NEXT frame's temporal-disturbance wave
-        // excitation (see `wave_step_main`'s own doc). Must happen AFTER the
-        // wave step above (which needed this frame's density as "now"), a
-        // plain buffer copy, not a compute dispatch -- cheap, no shader
-        // needed for a straight copy.
+        // Snapshot this frame's settled density as "previous" for next
+        // frame's temporal-disturbance wave excitation. Must happen AFTER
+        // the wave step above (which needed this frame's density as "now").
+        // Plain buffer copy, no shader needed.
         enc.copy_buffer_to_buffer(
             &self.surface_a_buf,
             0,
@@ -2454,8 +2437,8 @@ impl Renderer {
             cp.set_bind_group(0, bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real, disclosed 2026-07-31 addition, per-phase -- see the single-
-        // phase path's own identical copy for the full doc.
+        // Per-phase snapshot -- see the single-phase path's identical copy
+        // above for the full doc.
         let wave_history_bytes = (surface_res * surface_res) as u64 * mem::size_of::<f32>() as u64;
         enc.copy_buffer_to_buffer(
             &self.surface_a_buf,

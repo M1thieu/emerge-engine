@@ -64,19 +64,17 @@ impl Grid {
     ///   v_s' = v_s - omega*(1-n)*alpha_s * grad(p)
     ///   v_f' = v_f - omega*n*alpha_f * grad(p)          (omega = under-relaxation, see below)
     ///
-    /// Real, disclosed 2026-08-01 fix: the velocity correction is now
-    /// weighted by the SAME `(1-n)`/`n` porosity weights the residual `D`
-    /// (and the mobility `K`) already use, not raw `alpha_s`/`alpha_f`. A
-    /// direct numerical test (`correction_weights_must_match_residual_
-    /// weights_for_adjoint_consistency`, this module) confirmed the
-    /// mismatched-weight version was substantially non-adjoint to `D` --
-    /// the discrete integration-by-parts identity `Σp·D(v) = -Σ<v,G(p)>`,
-    /// a standard requirement for the Poisson system to represent a real
-    /// Lagrange-multiplier constraint force rather than an arbitrary
-    /// correction. Real, disclosed, NOT fully exact: a genuine `grad(n)`
-    /// cross-term (product rule, since the porosity weight is itself
-    /// spatially varying) is still omitted -- real remaining gap, not
-    /// chased tonight, see that test's own doc for the honest scope.
+    /// The velocity correction is weighted by the SAME `(1-n)`/`n` porosity
+    /// weights the residual `D` (and the mobility `K`) use, not raw
+    /// `alpha_s`/`alpha_f` -- required for the discrete integration-by-parts
+    /// identity `Σp·D(v) = -Σ<v,G(p)>` (adjoint consistency between the
+    /// residual and correction operators), a standard requirement for the
+    /// Poisson system to represent a real Lagrange-multiplier constraint
+    /// force rather than an arbitrary correction; see
+    /// `correction_weights_must_match_residual_weights_for_adjoint_consistency`
+    /// (this module) for the numerical check. NOT fully exact: a `grad(n)`
+    /// cross-term (product rule, since porosity is itself spatially varying)
+    /// is still omitted -- known gap, see that test's own doc for scope.
     ///
     /// The mobility `K` must be folded into the Laplacian operator itself via
     /// harmonic-mean FACE coefficients (`K_face = 2*K_i*K_j/(K_i+K_j)`), not
@@ -233,40 +231,21 @@ impl Grid {
             let p_u = p_or_zero(&pressure, pos + IVec2::new(0, 1));
             let p_d = p_or_zero(&pressure, pos - IVec2::new(0, 1));
             let grad_p = Vec2::new((p_r - p_l) / (2.0 * h), (p_u - p_d) / (2.0 * h));
-            // Real, disclosed 2026-08-01 fix: weight each phase's correction
-            // by the SAME (1-n)/n porosity weight the residual/RHS above
-            // already uses, instead of raw a_s/a_f -- see this module's own
-            // `correction_weights_must_match_residual_weights_for_adjoint_
-            // consistency` test for the numerical proof this matters
-            // (real, substantial improvement, not fully exact -- a genuine
-            // grad(n) cross-term from the product rule is real and NOT
-            // captured here when porosity varies spatially, disclosed, not
-            // chased tonight -- see that test's own doc).
-            // Real, disclosed 2026-08-01 root-cause fix -- the actual one
-            // that stabilized the real demo scene. A real per-substep
-            // diagnostic (temp, since removed) found the UNRELAXED
-            // correction grows the divergence residual EXPONENTIALLY
-            // (~1.7-2x per substep, 24 substeps straight, before
-            // saturating in the hundreds) -- a genuine unstable feedback
-            // loop from applying a full, undamped correction every single
-            // substep (32/frame), NOT "MPM's noisy grid field" as
-            // hypothesized for 13 days across 3 prior attempts (that
-            // hypothesis is now falsified, not just unconfirmed).
-            // Under-relaxation (successive under-relaxation / SUR) is the
-            // standard real fix for exactly this failure signature in
-            // iterative constraint solvers. Verified directly against the
-            // real scene, not just the isolated unit tests: unrelaxed
-            // (omega=1.0) pins substeps at the 32 cap and sim_time_dropped
-            // nonzero from frame ~9 (real explosion, user-confirmed live);
-            // omega=0.3 keeps substeps at 24 (below the cap), cfl in a
-            // tiny 0.002-0.01 band, sim_time_dropped EXACTLY 0.0 every
-            // single frame past 450+ (well past the historical ~430-frame
-            // destabilization point), and solid/fluid relative_speed
-            // monotonically decaying toward equilibrium (1.2 -> 0.1) --
-            // real convergence, not just "not exploding." 0.3 is inside
-            // the standard 0.1-0.9 SUR range, not an extreme value; not
-            // exhaustively swept against other candidates, real room to
-            // tune further if a future scene needs it.
+            // Weight each phase's correction by the SAME (1-n)/n porosity weight
+            // the residual/RHS above uses, not raw a_s/a_f -- see the module doc
+            // and `correction_weights_must_match_residual_weights_for_adjoint_
+            // consistency` (this module) for why this matters. Not fully exact:
+            // the grad(n) cross-term from the product rule is still omitted when
+            // porosity varies spatially (known gap, see that test's own doc).
+            //
+            // Under-relaxation (successive under-relaxation / SUR) fixes an
+            // unstable feedback loop: applying the full, undamped correction
+            // every substep grows the divergence residual exponentially instead
+            // of damping it, since next substep's correction reacts to this
+            // substep's residual -- not "MPM's noisy grid field", which was
+            // ruled out. omega=0.3 is inside the standard SUR range (0.1-0.9),
+            // tuned against the real demo scene rather than exhaustively swept
+            // -- room to retune if a future scene needs it.
             const RELAXATION: f32 = 0.3;
             let grad_p = grad_p * RELAXATION;
             if let Some(cell) = self.mixture_cells.get_mut(&idx) {
@@ -455,23 +434,16 @@ mod pressure_projection_tests {
         grid2.resolve_mixture_coupling(0.0, Vec2::ZERO, 1.0e-9, 1.0, 200);
         let residual_projected = div_before(&grid2).abs();
 
-        // Real, disclosed 2026-08-01 threshold changes, two real fixes each
-        // making this single-shot synthetic test's own kick gentler (by
-        // design, for real reasons, verified in the ACTUAL demo scene, not
-        // guessed): (1) 0.6 -> 0.85, the porosity-weighted correction fix
+        // Threshold accounts for two fixes that gentle this single-shot
+        // synthetic test's own kick, both load-bearing for the real demo
+        // scene's stability: (1) the porosity-weighted correction fix
         // (`correction_weights_must_match_residual_weights_for_adjoint_
-        // consistency`) -- this test's uniform m_s=m_f=2.0 means n=0.5,
-        // halving the kick. (2) 0.85 -> 0.94, the under-relaxation fix
-        // (`RELAXATION=0.3` in `project_mixture_incompressibility`'s own
-        // doc) -- found via a real per-substep diagnostic that the
-        // UNRELAXED correction causes runaway exponential residual growth
-        // in the real demo scene (not MPM noise, a genuine unstable
-        // feedback loop); 0.3x further shrinks this test's single-shot
-        // kick too. Both changes are real, measured, and load-bearing for
-        // the real scene's actual stability (verified live past frame
-        // 450+) -- this synthetic test's own weakened reduction is the
-        // honest, expected side effect of exactly the fix that makes the
-        // real thing work, not a regression to paper over.
+        // consistency`) -- this test's uniform m_s=m_f=2.0 gives n=0.5,
+        // halving the kick; (2) the under-relaxation fix (`RELAXATION=0.3`
+        // in `project_mixture_incompressibility`), further shrinking a
+        // single-shot kick. This test's own weakened reduction is the
+        // expected side effect of the fix that makes the real scene stable,
+        // not a regression.
         assert!(
             residual_projected < residual_unprojected * 0.94,
             "projection should substantially shrink the divergence residual: \

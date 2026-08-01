@@ -10,18 +10,17 @@ use crate::{grid::Grid, grid::kernel::quadratic_weights, particle::Particles};
 /// `> 1.0` fallback test as the shader's `select(2.0, mat.volume_ratio_max,
 /// mat.volume_ratio_max > 1.0)`).
 ///
-/// Real bug this fixes (found 2026-07-26 investigating Martin & Moyce 1952
-/// dam-break validation): this kernel-mass-based density estimate has no
-/// upper bound on the resulting `volume = mass/density`. As a particle's
-/// local mass support genuinely thins (bulk fluid surges away, e.g. near a
-/// dam-break's back wall), `density` correctly shrinks toward zero and
-/// `volume` explodes without limit (measured: 18x in one substep sequence,
-/// 0.20 -> 3.69) — this inflated volume is the P2G quadrature weight, so even
-/// bounded stress dumps disproportionate momentum into the grid (measured:
-/// particle speed reaching 130+ cells/s vs a real target of ~4). The GPU path
-/// already guards this exact failure via `volume_ratio_max` on `det(F)`; this
-/// CPU path (the one every fluid substep actually uses, since fluid density
-/// is estimated from grid mass, not tracked via F — see
+/// This kernel-mass-based density estimate has no upper bound on the
+/// resulting `volume = mass/density`. Surfaced investigating a Martin &
+/// Moyce (1952) dam-break validation scenario: as a particle's local mass
+/// support thins (bulk fluid surges away, e.g. near the dam-break's back
+/// wall),
+/// `density` correctly shrinks toward zero and `volume` explodes without
+/// limit — this inflated volume is the P2G quadrature weight, so even
+/// bounded stress dumps disproportionate momentum into the grid. The GPU
+/// path already guards this exact failure via `volume_ratio_max` on
+/// `det(F)`; this CPU path (the one every fluid substep actually uses, since
+/// fluid density is estimated from grid mass, not tracked via F — see
 /// `NewtonianFluidMaterial::update_particle`'s F-reset, which does NOT write
 /// `particles.volume`/`density`) never had the equivalent bound. Only
 /// engages on the per-substep recompute (`write_initial=false`) — spawn-time
@@ -32,19 +31,16 @@ use crate::{grid::Grid, grid::kernel::quadratic_weights, particle::Particles};
 /// `write_initial=true` spawn-time calls, which never reach this function —
 /// see call sites) falls back to the GPU shader's own hardcoded default (2.0).
 ///
-/// HONEST STATUS (2026-07-26): this closes the specific volume/quadrature-
-/// weight blowup it documents above (verified: volume plateaus at ~1.8-1.9x
-/// initial instead of ballooning to 18x). It does NOT by itself stabilize the
-/// dam-break scenario that surfaced it — with this fix alone, particle speed
-/// still runs away (measured up to 173 cells/s) via a SEPARATE mechanism:
-/// `velocity_gradient` (the APIC C matrix) grows unbounded at the same
-/// free-surface corner / wall region (measured C-norm climbing 1 -> 706 over
-/// 14 samples), most likely an explicit-viscosity feedback loop (deviatoric
-/// stress depends on C, feeds P2G force, updates grid velocity, updates next
-/// substep's C) not fully covered by the existing global viscous CFL bound
-/// at this local, severely-thinned density. Real, separate, NOT yet root-
-/// caused or fixed — kept here as a real, verified, standalone improvement
-/// regardless of that second open issue.
+/// KNOWN OPEN ISSUE: this bounds the volume/quadrature-weight blowup
+/// described above, but does not by itself stabilize the free-surface
+/// dam-break scenario that surfaced it — particle speed can still run away
+/// via a SEPARATE mechanism: `velocity_gradient` (the APIC C matrix) growing
+/// unbounded at the same severely-thinned-density free-surface region, most
+/// likely an explicit-viscosity feedback loop (deviatoric stress depends on
+/// C, feeds P2G force, updates grid velocity, updates next substep's C) not
+/// fully covered by the existing global viscous CFL bound. Not yet
+/// root-caused or fixed; kept here as a standalone improvement independent
+/// of that second open issue.
 fn clamp_rarefied_volume(
     materials: Option<&MaterialRegistry>,
     material_id: u32,

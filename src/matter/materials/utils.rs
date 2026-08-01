@@ -14,11 +14,7 @@ pub(crate) const MIN_J: f32 = 1e-6;
 /// fraction of the virgin `tensile_strength`. Without this floor, `t_eff` decays
 /// toward zero as damage grows, so ANY sustained cyclic stress eventually exceeds
 /// it every step by a growing margin -- an unbounded damage ratchet with no
-/// resting state (found 2026-07-06: LP's real 2D bulk-modulus fix raised
-/// settling strain just enough to cross this for the first time; traced to
-/// unbounded growth over 1200 steps, no plateau, no numerical blowup in
-/// velocity -- the damage accumulator itself was the runaway, not the physics).
-/// Real quasi-brittle/ductile damage models retain nonzero residual capacity
+/// resting state. Real quasi-brittle/ductile damage models retain nonzero residual capacity
 /// after yield rather than decaying to zero (Lemaitre & Chaboche, "Mechanics of
 /// Solid Materials," 1990 -- continuum damage mechanics caps effective
 /// stiffness/strength at a small nonzero residual specifically to keep the

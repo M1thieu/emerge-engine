@@ -552,10 +552,8 @@ pub(super) fn build_wave_step_pipeline(
             bgl_storage_ro(2, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(3, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
-            // Real, disclosed 2026-07-31 addition: last frame's own settled
-            // density, for the temporal (not spatial) disturbance forcing
-            // term -- see `wave_step_main`'s own doc for the real bug this
-            // fixes.
+            // Prev-frame settled density, for the temporal (not spatial)
+            // disturbance forcing term.
             bgl_storage_ro(5, wgpu::ShaderStages::COMPUTE),
         ],
     });

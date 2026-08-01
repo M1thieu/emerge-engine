@@ -113,16 +113,13 @@ pub struct Particle {
     /// keeps `temperature` -- the two now compose freely in the same scene.
     ///
     /// Deliberately placed as the LAST real field, immediately before `_pad`, not
-    /// inserted after `temperature` where it semantically "belongs" -- a real, confirmed
-    /// bug (2026-07-17): inserting a field in the MIDDLE of the struct (shifting
-    /// `user_tag` through `pinned` by 4 bytes each) corrupted particle data on GPU
-    /// readback even though both the Rust (`offset_of!`-verified) and all 9 WGSL mirror
-    /// declarations agreed byte-for-byte on the resulting layout -- confirmed via a full
-    /// bisection (isolated worktree at the last commit passed; reverting just this field
-    /// while keeping every other uncommitted change fixed it). Root mechanism not fully
-    /// identified; appending at the end (this field replacing one `_pad` slot, nothing
-    /// else moving) verified clean instead. 0.0 = untouched (existing behavior for every
-    /// scene that doesn't use a GPU scalar field).
+    /// inserted after `temperature` where it semantically "belongs": inserting a
+    /// field in the MIDDLE of the struct silently shifts every subsequent field's
+    /// byte offset, corrupting GPU buffer layout with no compile error -- even when
+    /// Rust and every WGSL mirror declaration agree byte-for-byte on the resulting
+    /// layout. New fields go at the end (replacing a `_pad` slot), never the middle.
+    /// 0.0 = untouched (existing behavior for every scene that doesn't use a GPU
+    /// scalar field).
     pub scalar_field: f32,
     /// Generic internal pre-stress pressure, already SI-converted to grid stress
     /// units at construction (same treatment as other converted stress-scale

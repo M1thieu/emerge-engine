@@ -23,23 +23,18 @@ pub struct CorotatedMaterial {
     /// τ_total = τ_elastic + activation × coeff × F·(n₀⊗n₀)·Fᵀ  (fiber-directional contraction).
     /// 0.0 = passive (default). Tune to be on the order of µ for visible locomotion.
     pub active_stress_coeff: f32,
-    /// Clamp J ≥ j_min before evaluating the volumetric term -- same real,
-    /// already-proven convention `ViscoelasticMaterial`/`NeoHookeanMaterial`
-    /// use (default 0.01). Real fix, same root cause as `NeoHookeanMaterial::
-    /// j_min` (see that field's own doc): this used to hard-zero stress
-    /// below `MIN_J` (1e-6) instead of clamping and continuing, defeating
-    /// whatever restoring force the volumetric term COULD provide at exactly
-    /// the moment it's needed most. Honest, disclosed difference from
-    /// NeoHookean: this model's own volumetric term (`λ·(J−1)·J`, a bounded
-    /// polynomial, not a diverging log-barrier -- see this file's own
-    /// citation) is inherently WEAKER against extreme compression by design
+    /// Clamp J ≥ j_min before evaluating the volumetric term, same convention
+    /// `ViscoelasticMaterial`/`NeoHookeanMaterial` use (default 0.01) -- see
+    /// `NeoHookeanMaterial::j_min`'s own doc. Clamp, don't hard-zero below
+    /// `MIN_J`, or the volumetric restoring force can't act exactly when it's
+    /// needed most. Honest, disclosed limitation: this model's volumetric
+    /// term (`λ·(J−1)·J`, a bounded polynomial, not a diverging log-barrier)
+    /// is inherently weaker against extreme compression than NeoHookean's
     /// (Stomakhin et al. 2013's simplified elastic base for snow/DP
-    /// plasticity, which supply their OWN separate compression_limit clamps
-    /// -- this material alone, e.g. used standalone as in
-    /// `basic_jellies_gpu`, doesn't have that safety net). This fix removes
-    /// the "instant permanent zero stress" trap; it does NOT give Corotated
-    /// NeoHookean's own stronger barrier -- that's this model's real,
-    /// pre-existing, cited limitation, not something a clamp value changes.
+    /// plasticity supplies its OWN separate compression_limit clamps; this
+    /// material alone, e.g. `basic_jellies_gpu`, doesn't have that net) --
+    /// the clamp removes the permanent-zero-stress trap, it doesn't give
+    /// this model NeoHookean's stronger barrier.
     pub j_min: f32,
 }
 
@@ -80,7 +75,7 @@ impl MaterialModel for CorotatedMaterial {
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
-        // Clamp, don't zero -- see `j_min`'s own doc for the real bug this fixes.
+        // Clamp, don't zero -- see `j_min`'s own doc.
         let j = f.determinant().max(self.j_min);
 
         let r = polar_decomposition_2d(f);

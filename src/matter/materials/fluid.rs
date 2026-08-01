@@ -110,18 +110,11 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // rest_density must be in the SAME units `particles.density[i]` actually comes
         // out in -- i.e. whatever `estimate_particle_volumes`'s kernel-based density
         // estimate produces for a particle spawned via `ParticleMass::particle_mass`
-        // (real SI kilograms) at rest. FIXED 2026-07-07 (real, confirmed bug): this
-        // used to include an extra `/dt_seconds^2` factor (`rho_SI*dx^2/dt^2`), which
-        // does NOT match that -- confirmed via a static (no-dynamics) probe:
-        // `estimate_particle_volumes` gives `density_grid = mass_grid / spacing^2` in
-        // the bulk (measured exactly: mass=1.0 -> density=4.0=1/0.25 at spacing=0.5),
-        // and with `particle_mass`'s real formula (`rho_SI*(spacing*dx)^2`), that
-        // reduces to exactly `rho_SI*dx^2` -- confirmed the extra `/dt^2` here made
-        // `rest_density` ~10000x too large (at dt=0.01), pinning any real fluid's EOS
-        // pressure at its floor (ratio always ~0, regardless of real depth/compression).
-        // The OTHER direction (inflating particle mass by `1/dt^2` instead) was tried
-        // and reverted -- see `Elastic::particle_mass`'s doc for why that broke the
-        // force-balance between gravity and the EOS's own restoring stress instead.
+        // (real SI kilograms) at rest: `rho_grid = rho_SI * dx_meters^2`. Do not add
+        // an extra `/dt_seconds^2` factor here -- it pins any real fluid's EOS
+        // pressure at its floor regardless of real depth/compression. Inflating
+        // particle mass by `1/dt^2` instead breaks the gravity/EOS force balance --
+        // see `Elastic::particle_mass`'s doc.
         let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
         Self::new(rho_grid, visc, eos, GAMMA)
     }
@@ -134,26 +127,13 @@ impl MaterialModel for NewtonianFluidMaterial {
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         // Clamp density both ways: min prevents div-by-zero at low PPC,
-        // max (2x rho0) limits how far the EOS pressure response saturates under
-        // impact overcompression.
-        //
-        // CORRECTED 2026-07-08: an earlier version of this comment claimed 2x was
-        // "too tight now that rest_density's conversion is fixed" and bumped this
-        // to 10x. That was wrong -- caught by running the full test suite through
-        // GitHub CI rather than trusting a prior local pass: `10x` makes
-        // `fluid_spreads_more_than_elastic_under_gravity` (tests/accuracy.rs) FAIL
-        // outright (measured: ar stays at 1.000, no spreading at all), while `2x`
-        // reproduces `origin/main`'s own known-good result exactly (ar 1.000 ->
-        // 1.001). The earlier reasoning's premise doesn't even apply to that test:
-        // it constructs `NewtonianFluidMaterial::new(...)` directly, never going
-        // through `from_physical`'s SI-to-grid `rest_density` conversion at all --
-        // so "once rest_density is correct" was describing a code path this test
-        // doesn't exercise. (Separately: the `hydrostatic_pressure_matches_rho_g_h`
-        // test's own real, still-open ~1.3x-density/~500x-pressure overshoot gap is
-        // unaffected by this clamp either way -- 1.3x never reaches a 2x ceiling in
-        // the first place, confirmed by re-running it at 2x: same failure signature,
-        // same magnitude, not the lever for that test's real problem -- see that
-        // test's own doc for the actual fix needed there, geostatic pre-stress init.)
+        // max (2x rho0) limits how far the EOS pressure response saturates
+        // under impact overcompression. Keep this at 2x, not looser --
+        // `fluid_spreads_more_than_elastic_under_gravity` (tests/accuracy.rs)
+        // needs it (a looser clamp stops the fluid spreading at all). The
+        // separate, still-open `hydrostatic_pressure_matches_rho_g_h`
+        // overshoot gap is unrelated to this clamp -- see that test's own
+        // doc (needs geostatic pre-stress init, not a density-clamp change).
         let density = particles.density[i]
             .max(self.min_density)
             .min(self.rest_density * 2.0);

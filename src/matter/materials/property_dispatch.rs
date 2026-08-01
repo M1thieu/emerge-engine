@@ -3,7 +3,7 @@
 //! families (`Elastic`, `Elastoplastic`, `Viscoelastic`, `Pressurized`,
 //! `NoCompression`, `FluidGranular`, `Fluid`, defined in `physical_props.rs`)
 //! — dispatching each preset to its concrete `MaterialModel` constructor.
-//! Split out of `mod.rs` (2026-07-22) purely for LOC — no behavior change.
+//! Split out of `mod.rs` purely for LOC — no behavior change.
 
 use super::physical_props::{BinghamProps, DuctileProps, GranularProps, NewtonianFluid, SnowProps};
 use super::{
@@ -28,22 +28,10 @@ impl Elastic {
     /// inertia regardless of `rho_kg_m3` (only `SimConfig::particle_mass`, one global
     /// value, is used).
     ///
-    /// INVESTIGATED 2026-07-07: briefly "fixed" by adding a `1/dt_seconds^2` factor here,
-    /// then REVERTED -- that was the wrong side of the bug. Confirmed by reading
-    /// `transfer.rs::scatter_particles_to_grid`: gravity's momentum contribution
-    /// (`mass_i * v_i`) and the grid mass accumulator both scale with `mass_i`, but the
-    /// STRESS-based momentum contribution does not depend on particle mass at all (pure
-    /// `stress * geometry`). Both terms get divided by the SAME grid-node mass during
-    /// grid update, so inflating `mass_i` by `1/dt_seconds^2` (often a huge factor, e.g.
-    /// 10000x at dt=0.01) dilutes the EOS's restoring force relative to gravity by that
-    /// same factor -- confirmed empirically: a water column settled into a stable
-    /// equilibrium requiring ~1000x more compression than real hydrostatic physics
-    /// needs, not a numerics/CFL issue (resolution-independent, reproduced identically
-    /// via both a dropped column and a gentle layer-by-layer pour). The REAL bug was in
-    /// `FromSI<NewtonianFluid>`'s (and Bingham/GranularFluid's) `rest_density` conversion
-    /// -- see their fix docs. This formula was correct all along for every material
-    /// (elastic/plastic solids never referenced `rest_density`, so force-balance was
-    /// never in question for them; fluids needed the OTHER side of the ratio fixed).
+    /// Do not add a `1/dt_seconds^2` factor here to fix fluid force balance --
+    /// this formula is correct as-is for every material. The scaling that
+    /// matters for fluids lives in `FromSI<NewtonianFluid>` (and
+    /// Bingham/GranularFluid)'s `rest_density` conversion; see their docs.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
     }
@@ -163,7 +151,7 @@ impl FluidGranular {
         const GAMMA: f32 = 7.0;
         let (lambda, mu) = scale_lame(self.e_pa, self.nu, self.rho_kg_m3, config);
         let eos = scale_stress(self.bulk_modulus_pa / GAMMA, self.rho_kg_m3, config);
-        // See `NewtonianFluidMaterial::from_physical`'s fix doc (2026-07-07) -- rest_density
+        // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
         // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
         let rho_grid = self.rho_kg_m3 * config.dx_meters * config.dx_meters;
         Box::new(GranularFluidMaterial {

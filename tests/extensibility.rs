@@ -12,7 +12,7 @@
 //! compiling against a trait proves the interface exists; the counters prove
 //! the substep loop actually calls it.
 //!
-//! Seams covered (the extension table in ARCHITECTURE.md §7):
+//! Seams covered (the extension table in ARCHITECTURE.md §10):
 //! - `MaterialModel`      (custom constitutive response)
 //! - `Field`              (custom external body force)
 //! - `BoundaryCondition`  (custom grid boundary)

@@ -147,9 +147,8 @@ impl SpawnRegion {
 
     /// Like `.mass()`, but computes the value from a physical-property struct and
     /// THIS region's own `spacing` (already set via `.spacing()` or the `spacing`
-    /// field) — avoids passing spacing twice (a real duplication risk; see
-    /// `mass_override`'s field doc; LP hit a related sync bug from this exact
-    /// pattern, fixed 2026-06-22).
+    /// field) — avoids passing spacing twice, a real duplication risk (see
+    /// `mass_override`'s field doc; LP hit a sync bug from this exact pattern).
     pub fn mass_from(mut self, props: &impl crate::ParticleMass, config: &SimConfig) -> Self {
         self.mass_override = Some(props.particle_mass(self.spacing, config));
         self
@@ -191,11 +190,9 @@ impl SpawnRegion {
     /// a creature's current location) where going out of bounds is a normal,
     /// expected outcome to skip gracefully -- not a programmer error to crash
     /// on. `validate_for_sim` stays a hard assert for the scripted/startup
-    /// spawn path, where an out-of-bounds region really is a real bug worth
+    /// spawn path, where an out-of-bounds region is a programmer error worth
     /// catching loudly; this is the same check, exposed so interactive
-    /// callers aren't forced to hand-derive the margin math themselves (that
-    /// duplication is exactly how a real off-by-one crash slipped into
-    /// `material_sandbox_gpu`'s paint tool).
+    /// callers aren't forced to hand-derive the margin math themselves.
     pub fn fits_in_sim(&self, solver: &SimConfig) -> bool {
         if self.spacing <= 0.0 || self.box_size.x <= 0 || self.box_size.y <= 0 {
             return false;
