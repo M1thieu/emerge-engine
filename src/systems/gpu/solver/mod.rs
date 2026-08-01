@@ -229,7 +229,7 @@ impl GpuSimulation {
         particles: Vec<Particle>,
         registry: MaterialRegistry,
     ) -> Self {
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = super::create_wgpu_instance();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {

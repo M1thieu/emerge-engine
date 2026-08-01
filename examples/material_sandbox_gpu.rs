@@ -60,8 +60,9 @@ use egui_wgpu::ScreenDescriptor;
 use emerge::gpu::GpuSimulation;
 use emerge::render::{ColorMode, GridVolumeSource, Renderer};
 use emerge::{
-    DruckerPragerMaterial, MaterialRegistry, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
-    SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, WithLatentHeat, build_particles,
+    DruckerPragerMaterial, FixedStepController, MaterialRegistry, NeoHookeanMaterial,
+    NewtonianFluidMaterial, SimConfig, SpawnRegion, StomakhinMaterial, ViscoelasticMaterial,
+    WithLatentHeat, build_particles,
 };
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -304,6 +305,10 @@ struct State {
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
+    /// Real-time-decoupled stepping -- see `basic_fluids_gpu.rs`'s own field
+    /// doc for the full real bug/fix writeup.
+    stepper: FixedStepController,
+    last_instant: std::time::Instant,
     /// Real max temperature within Heat-tool range of the cursor, refreshed at the same
     /// cadence as the phase-transition scan (not every frame -- a blocking readback every
     /// frame is a real, avoidable cost). Direct numeric feedback for the real thing
@@ -433,6 +438,8 @@ impl State {
             near_cursor_max_temp: AMBIENT_K,
             real_water_optics: false,
             grid_volume_mode: false,
+            stepper: FixedStepController::standard(DT, 60.0),
+            last_instant: std::time::Instant::now(),
         }
     }
 
@@ -451,6 +458,8 @@ impl State {
         self.sim = make_sim_data(self.device.clone(), self.queue.clone());
         self.frame = 0;
         self.near_cursor_max_temp = AMBIENT_K;
+        self.stepper.reset();
+        self.last_instant = std::time::Instant::now();
         println!("reset");
     }
 
@@ -542,41 +551,50 @@ impl State {
             _ => {}
         }
 
-        // Real phase-transition scan, not evaluated every frame (cheap enough at demo
-        // scale, but no reason to pay 3 sync+scan passes 60x/sec for a slow thermal
-        // process). Order matters: melt/freeze before evaporate, so a particle crossing
-        // both snow->water and water->vanish in the same interval still gets a coherent
-        // one-step-at-a-time transition instead of skipping straight past water.
-        if self.frame > 0 && self.frame.is_multiple_of(15) {
-            self.sim.sync_particles_blocking();
-            let particles = self.sim.particles();
-            self.near_cursor_max_temp = self
-                .sim
-                .particles_near(self.cursor_grid(), 4.0)
-                .map(|(i, _)| particles[i].temperature)
-                .fold(AMBIENT_K, f32::max);
-            self.sim.phase_transition(
-                |p| p.material_id == SNOW_ID && p.temperature > MELT_POINT_K,
-                WATER_ID,
-            );
-            self.sim.phase_transition(
-                |p| p.material_id == WATER_ID && p.temperature < FREEZE_POINT_K,
-                SNOW_ID,
-            );
-            let evaporated = self
-                .sim
-                .remove_particles(|p| p.material_id == WATER_ID && p.temperature > BOIL_POINT_K);
-            if evaporated > 0 {
-                println!("evaporated: {evaporated} particles vanished above {BOIL_POINT_K}K");
-            }
-        }
-
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
         };
-        self.sim.step_frame();
-        self.frame += 1;
+        let now = std::time::Instant::now();
+        let frame_delta = (now - self.last_instant).as_secs_f32();
+        self.last_instant = now;
+        let steps = self.stepper.steps_for_frame(frame_delta);
+        for _ in 0..steps {
+            self.sim.step_frame();
+            self.frame += 1;
+
+            // Real phase-transition scan, not evaluated every step (cheap enough at
+            // demo scale, but no reason to pay 3 sync+scan passes 60x/sec for a slow
+            // thermal process). Order matters: melt/freeze before evaporate, so a
+            // particle crossing both snow->water and water->vanish in the same
+            // interval still gets a coherent one-step-at-a-time transition instead
+            // of skipping straight past water. Gated on `self.frame` (real
+            // simulation steps), not render calls, so this cadence stays correct
+            // under real-time-decoupled stepping.
+            if self.frame.is_multiple_of(15) {
+                self.sim.sync_particles_blocking();
+                let particles = self.sim.particles();
+                self.near_cursor_max_temp = self
+                    .sim
+                    .particles_near(self.cursor_grid(), 4.0)
+                    .map(|(i, _)| particles[i].temperature)
+                    .fold(AMBIENT_K, f32::max);
+                self.sim.phase_transition(
+                    |p| p.material_id == SNOW_ID && p.temperature > MELT_POINT_K,
+                    WATER_ID,
+                );
+                self.sim.phase_transition(
+                    |p| p.material_id == WATER_ID && p.temperature < FREEZE_POINT_K,
+                    SNOW_ID,
+                );
+                let evaporated = self.sim.remove_particles(|p| {
+                    p.material_id == WATER_ID && p.temperature > BOIL_POINT_K
+                });
+                if evaporated > 0 {
+                    println!("evaporated: {evaporated} particles vanished above {BOIL_POINT_K}K");
+                }
+            }
+        }
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
             self.last_fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();

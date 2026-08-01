@@ -163,7 +163,6 @@ solver.diagnostics_snapshot() -> SimSnapshot   // min/max_deformation_j, total_k
 - `CONTRIBUTING.md` — external-contributor module tree.
 - `LP_MPM_SPEC.md` — design spec / LP integration contract.
 - `PHYSICS_PROOFS.md` — what "visually correct" means per system, real gaps.
-- `.claude/CLAUDE.md` — project instructions, development rules, current state.
 
 ## Known gaps in this glossary (real, not filled in yet)
 

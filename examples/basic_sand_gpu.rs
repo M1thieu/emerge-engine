@@ -11,7 +11,8 @@ use std::sync::Arc;
 use emerge::diagnostics::log_frame_gpu;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DruckerPragerMaterial, GpuSimulation, MaterialRegistry, SimConfig, SpawnRegion, build_particles,
+    DruckerPragerMaterial, FixedStepController, GpuSimulation, MaterialRegistry, SimConfig,
+    SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -45,6 +46,17 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
+    /// Real-time-decoupled stepping -- see `basic_fluids_gpu.rs`'s own field
+    /// doc for the full real bug/fix writeup. `standard(DT, 60.0)`
+    /// deliberately preserves this demo's already-tuned DT/call-rate,
+    /// decoupling it from measured fps instead of assuming every render
+    /// frame takes exactly `DT`.
+    stepper: FixedStepController,
+    last_instant: std::time::Instant,
+    /// Diagnostic: highest `steps_for_frame` result seen since the last fps
+    /// print -- a catch-up burst would NOT show up in the averaged fps
+    /// number alone.
+    max_steps_seen: usize,
 }
 
 fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
@@ -155,6 +167,9 @@ impl State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
+            stepper: FixedStepController::standard(DT, 60.0),
+            last_instant: std::time::Instant::now(),
+            max_steps_seen: 0,
         }
     }
 
@@ -181,6 +196,8 @@ impl State {
         let (device, queue) = (self.sim.device().clone(), self.sim.queue().clone());
         self.sim = make_sim_data(device, queue);
         self.frame = 0;
+        self.stepper.reset();
+        self.last_instant = std::time::Instant::now();
         println!("reset");
     }
 
@@ -193,26 +210,37 @@ impl State {
             Ok(t) => t,
             Err(_) => return,
         };
-        self.sim.step_frame();
-        self.frame += 1;
+        let now = std::time::Instant::now();
+        let frame_delta = (now - self.last_instant).as_secs_f32();
+        self.last_instant = now;
+        let steps = self.stepper.steps_for_frame(frame_delta);
+        self.max_steps_seen = self.max_steps_seen.max(steps);
+        for _ in 0..steps {
+            self.sim.step_frame();
+            self.frame += 1;
+            if self.frame.is_multiple_of(60) {
+                log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
+                let snap = self.sim.diagnostics_snapshot();
+                println!(
+                    "  non_finite={}  out_of_bounds={}  max_speed={:.3}  sub={}  cfl={:.4}",
+                    snap.non_finite_particle_values,
+                    snap.out_of_bounds_particles,
+                    snap.max_particle_speed,
+                    snap.substeps_last_step,
+                    snap.cfl_number,
+                );
+            }
+        }
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
-            println!("frame={} fps={:.0}", self.frame, fps);
+            println!(
+                "frame={} fps={:.0} max_steps_per_render={}",
+                self.frame, fps, self.max_steps_seen
+            );
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
-        }
-        if self.frame.is_multiple_of(60) {
-            log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
-            let snap = self.sim.diagnostics_snapshot();
-            println!(
-                "  non_finite={}  out_of_bounds={}  max_speed={:.3}  sub={}  cfl={:.4}",
-                snap.non_finite_particle_values,
-                snap.out_of_bounds_particles,
-                snap.max_particle_speed,
-                snap.substeps_last_step,
-                snap.cfl_number,
-            );
+            self.max_steps_seen = 0;
         }
         let view = output
             .texture

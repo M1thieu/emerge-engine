@@ -17,12 +17,17 @@ pub(super) struct GridVolumeParams {
     pub(super) tx: f32,
     pub(super) sy: f32,
     pub(super) ty: f32,
+    /// Real light direction, sourced from `Renderer::set_light_dir` -- see
+    /// that method's own doc for why this replaced a value hardcoded
+    /// separately (and inconsistently) in each fragment shader.
+    pub(super) light_dir: [f32; 2],
     pub(super) grid_res: u32,
     pub(super) mass_floor: f32,
     pub(super) material_mass_enabled: u32,
     pub(super) _pad1: f32,
+    pub(super) _pad2: [f32; 2],
 }
-const _: () = assert!(mem::size_of::<GridVolumeParams>() == 32);
+const _: () = assert!(mem::size_of::<GridVolumeParams>() == 48);
 
 /// Bundles `render_grid_volume`'s buffer args -- same real precedent as
 /// `spacetime::transfer::P2GParticleState` (a struct instead of a suppressed
@@ -67,6 +72,147 @@ pub(super) struct RenderConfig {
     pub(super) _pad: u32,
 }
 const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
+
+/// Mirrors `curvature_flow.wgsl`'s `SurfaceParams` -- shared by the clear,
+/// splat, convert, and iterate compute passes (all four only ever need
+/// `grid_res`/`surface_res`/`particle_count`, one buffer covers all of them).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct SurfaceParams {
+    pub(super) grid_res: u32,
+    pub(super) surface_res: u32,
+    pub(super) particle_count: u32,
+    /// -1 = no filter (every particle contributes, v1 behavior). >= 0 =
+    /// only particles with this exact `material_id` are splatted -- the
+    /// two-phase extension's own filter (see `curvature_flow.wgsl`'s doc).
+    pub(super) phase_filter_material_id: i32,
+    /// N-material extension (single-phase path only, see `curvature_
+    /// flow.wgsl`'s doc): 0 = disabled, splat/clear skip the extra 16-slot
+    /// per-cell atomic work entirely (zero cost, same convention as
+    /// `p2g.wgsl`'s own `material_mass_params.enabled` gate). 1 = enabled.
+    /// Always 0 on the dual-phase path -- its own 2-phase filter above is
+    /// a different, unrelated mechanism.
+    pub(super) material_mass_enabled: u32,
+}
+const _: () = assert!(mem::size_of::<SurfaceParams>() == 20);
+
+/// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the real, persistent
+/// (across frames) 2D wave-equation pass's own uniform. See that shader's
+/// own "Pass 2b" doc for the real technique (same cited numerical scheme as
+/// `energy::acoustics::WaveEquation2D`, reimplemented for this GPU-resident
+/// buffer).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct WaveStepParams {
+    pub(super) surface_res: u32,
+    pub(super) _pad: [u32; 3],
+}
+const _: () = assert!(mem::size_of::<WaveStepParams>() == 16);
+
+/// Mirrors `curvature_flow.wgsl`'s `VisibilityParams` -- the real
+/// hysteresis (Schmitt-trigger) visible/invisible state pass's own
+/// uniform. See that shader's own "Pass 2c" doc.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct VisibilityParams {
+    pub(super) surface_res: u32,
+    pub(super) mass_floor: f32,
+    pub(super) _pad0: u32,
+    pub(super) _pad1: u32,
+}
+const _: () = assert!(mem::size_of::<VisibilityParams>() == 16);
+
+/// Mirrors `grid_volume.wgsl`'s `GridVisibilityParams` -- the SAME real
+/// hysteresis technique as `VisibilityParams` above, ported to the
+/// grid-native render path's own `mass_floor` discard (a separate buffer
+/// since this operates at `grid_res`, not `surface_res`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct GridVisibilityParams {
+    pub(super) grid_res: u32,
+    pub(super) mass_floor: f32,
+    pub(super) _pad0: u32,
+    pub(super) _pad1: u32,
+}
+const _: () = assert!(mem::size_of::<GridVisibilityParams>() == 16);
+
+/// Mirrors `curvature_flow.wgsl`'s `BandHysteresisParams` -- the real
+/// hysteresis color-band state pass's own uniform. See that shader's own
+/// "Pass 2d" doc.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct BandHysteresisParams {
+    pub(super) surface_res: u32,
+    pub(super) _pad0: u32,
+    pub(super) _pad1: u32,
+    pub(super) _pad2: u32,
+}
+const _: () = assert!(mem::size_of::<BandHysteresisParams>() == 16);
+
+/// Mirrors `curvature_flow.wgsl`'s `SurfaceRenderParams` -- the final
+/// extraction/composite fragment pass's own params. `sx/tx/sy/ty` are the
+/// SAME orthographic-projection math `CameraParams` uses, but computed
+/// against `surface_res`, not the physics `grid_res` -- see
+/// `Renderer::render_surface_reconstruction`'s own doc.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct SurfaceRenderParams {
+    pub(super) sx: f32,
+    pub(super) tx: f32,
+    pub(super) sy: f32,
+    pub(super) ty: f32,
+    /// Same real light direction as `GridVolumeParams::light_dir` -- see
+    /// `Renderer::set_light_dir`'s own doc.
+    pub(super) light_dir: [f32; 2],
+    pub(super) surface_res: u32,
+    pub(super) mass_floor: f32,
+    /// Fallback slot used when `material_mass_enabled` is 0 -- unchanged
+    /// v1 behavior for every existing caller.
+    pub(super) material_slot: u32,
+    /// N-material extension, single-phase path only (see `SurfaceParams`'s
+    /// own doc for the mechanism). Was `_pad1: f32`, an unused pad field --
+    /// same offset, same size, `SurfaceRenderParams` stays 48 bytes.
+    pub(super) material_mass_enabled: u32,
+    pub(super) _pad2: [f32; 2],
+}
+const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 48);
+
+/// Bundles `render_surface_reconstruction`'s buffer/scene args -- same real
+/// precedent as `GridVolumeSource` above (a struct instead of a suppressed
+/// argument-count lint).
+pub struct SurfaceReconstructionSource<'a> {
+    pub particle_buf: &'a wgpu::Buffer,
+    pub particle_count: usize,
+    /// The solver's own physics grid resolution -- the real auxiliary
+    /// surface buffer is allocated at `grid_res * SURFACE_RES_MULTIPLIER`,
+    /// finer than this, not equal to it (see `curvature_flow.wgsl`'s own
+    /// doc for why that's the whole point of this render path).
+    pub grid_res: u32,
+    /// Which `OpticalTable` slot colors the whole reconstructed surface
+    /// when `material_mass_enabled` is false -- real v1 fallback, see this
+    /// method's own doc.
+    pub material_slot: u32,
+    /// N-material extension: when true, `fs_main` ignores `material_slot`
+    /// and colors each pixel from its cell's own majority-mass material
+    /// instead (same real technique as `grid_volume.wgsl`'s own
+    /// `dominant_material`, see `curvature_flow.wgsl`'s doc). Opt-in --
+    /// false costs nothing beyond a 4-byte placeholder buffer.
+    pub material_mass_enabled: bool,
+}
+
+/// Bundles `render_surface_reconstruction_dual_phase`'s args (see that
+/// method's own doc, and `curvature_flow.wgsl`'s "two-phase extension" doc
+/// for the real technique) -- two independently-smoothed surfaces sharing
+/// one particle buffer, filtered by `material_id`. `material_id` doubles as
+/// the `OpticalTable` color slot for its own phase, same real convention
+/// `SurfaceReconstructionSource::material_slot` already uses.
+pub struct DualPhaseSurfaceSource<'a> {
+    pub particle_buf: &'a wgpu::Buffer,
+    pub particle_count: usize,
+    pub grid_res: u32,
+    pub material_id_a: u32,
+    pub material_id_b: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

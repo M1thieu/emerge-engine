@@ -219,14 +219,27 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             return t;
         }
         case 2u: { // NeoHookean — Simo-Pister vol-dev split
-            // CPU (elastic.rs) hard-zeroes stress for near-singular deformation
-            // (raw det(F) <= MIN_J) instead of dividing by the clamped floor --
-            // without this, GPU's shared `J = max(det2(F), NUM_FLOOR)` clamp let
-            // `mu_e / J` blow up to mu_e * 1e6 at the floor instead of returning
-            // zero like CPU does for the identical edge case.
-            if (det2(F) <= NUM_FLOOR) {
-                return mat2x2<f32>(vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
-            }
+            // REAL FIX (2026-07-30, root-caused via a headless reproduction --
+            // see elastic.rs's `j_min` doc for the full writeup): this used to
+            // hard-zero stress below `NUM_FLOOR` (1e-6), matching CPU's OLD
+            // behavior -- but that defeated the log-barrier's own documented
+            // purpose (diverging restoring stress as J->0) at exactly the
+            // moment it's needed most, letting a body under real (not the
+            // demos' disclosed-weak) gravity compress past that floor and
+            // then NEVER get pushed back out (stress stays permanently zero).
+            // Confirmed: a real NeoHookean body under SimConfig::earth's true
+            // 981-unit gravity collapsed to J=0.000000 and kept compressing
+            // for 190+ more simulated seconds, never recovering -- the long-
+            // standing "gravité trop forte" bug. Fix: clamp to `mat.
+            // volume_ratio_min` (real, per-material, same GPU param slot
+            // `ViscoelasticMaterial` already uses for its own `j_min`, default
+            // 0.01 -- NOT the razor-thin NUM_FLOOR) and ALWAYS compute real
+            // stress, never zero -- large-but-finite at the floor, not
+            // exploding (a naive clamp-to-NUM_FLOOR would blow `mu_e/J` up to
+            // `mu_e*1e6`, which is why zero was chosen originally; 0.01 avoids
+            // both failure modes).
+            let j_floor = max(mat.volume_ratio_min, NUM_FLOOR);
+            let J2 = max(det2(F), j_floor);
             let t_scale = 1.0 + mat.thermal_expansion * p.temperature;
             // Damage softening: mu_eff = mu*exp(-rate*damage), same exponential form
             // RankineMaterial uses for tensile strength (continuum damage mechanics).
@@ -255,9 +268,30 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let d     = sym * 0.5;
             let tr_d  = d[0][0] + d[1][1];
             let d_dev = d - (tr_d * 0.5) * I;
-            tau = (mu_e / J) * dev_B + (k * log(J)) * I + mat.dynamic_viscosity * d_dev;
+            tau = (mu_e / J2) * dev_B + (k * log(J2)) * I + mat.dynamic_viscosity * d_dev;
         }
-        case 3u, 4u, 5u, 6u, 7u, 8u: { // Corotated / Snow / DP / VonMises / Rankine / SandMuI
+        case 3u: { // Corotated, used standalone (no upstream plastic clamp)
+            // Split out from the shared 3u-8u group (2026-07-30, same real
+            // bug/fix as case 2u's NeoHookean -- see CorotatedMaterial::
+            // j_min's own doc). Snow/DP/VonMises/Rankine/SandMuI (still
+            // sharing the block below) all have their OWN upstream plastic
+            // clamp on F's singular values (in particles_update.wgsl) before
+            // this stress function ever sees it -- Corotated used standalone
+            // (e.g. `basic_jellies_gpu`) has no such clamp, so its OWN
+            // volumetric term's floor is the only thing standing between it
+            // and unbounded compression. Uses ITS OWN `volume_ratio_min` (not
+            // shared with Snow/Sand's real, different reuse of that same
+            // slot for their plastic clamp range -- Corotated doesn't
+            // populate it for anything else, so this is safe).
+            let t_scale = 1.0 + mat.thermal_expansion * p.temperature;
+            let R     = polar_r(F);
+            let mu_e  = mat.mu * h * t_scale;
+            let lam_e = mat.lambda * h * t_scale;
+            let j_floor3 = max(mat.volume_ratio_min, NUM_FLOOR);
+            let J3 = max(det2(F), j_floor3);
+            tau = 2.0 * mu_e * (F - R) * transpose(F) + lam_e * (J3 - 1.0) * J3 * I;
+        }
+        case 4u, 5u, 6u, 7u, 8u: { // Snow / DP / VonMises / Rankine / SandMuI
             let t_scale = 1.0 + mat.thermal_expansion * p.temperature;
             let R     = polar_r(F);
             let mu_e  = mat.mu * h * t_scale;
