@@ -286,13 +286,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let scatter_glow = vec3(1.0, 0.95, 0.9) * (1.0 - exp(-sigma_s * optical_depth));
     let with_scattering = mix(transmitted, scatter_glow, clamp(albedo, vec3(0.0), vec3(1.0)));
 
-    // Blackbody thermal emission (2026-07-31 fix): real, exact SAME formula
+    // Blackbody thermal emission: real, exact SAME formula
     // `prep_instances.wgsl`'s ByPhysics mode already uses per-particle
     // (normalized to 5000K, solar surface). Was previously NOT ported here --
     // this buffer only ever scattered mass, never temperature, a real,
-    // disclosed gap (confirmed live via a user side-by-side screenshot
-    // comparing this mode against ByPhysics on the same fire scene) -- fixed
-    // by adding `sample_weighted_temp` above, not a new mechanism.
+    // disclosed gap found via a side-by-side comparison against ByPhysics on
+    // the same fire scene -- fixed by adding `sample_weighted_temp` above,
+    // not a new mechanism.
     let t_norm = clamp(avg_temp / 5000.0, 0.0, 1.0);
     let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
 

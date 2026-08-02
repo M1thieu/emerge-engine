@@ -1213,11 +1213,11 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
     );
 }
 
-/// Real regression check for the 2026-07-31 fix: `grid_volume.wgsl` previously
-/// had NO per-pixel temperature (only mass was ever scattered to this buffer),
-/// so `fs_main` could never render blackbody thermal emission -- a real,
-/// disclosed gap (confirmed live via a user side-by-side screenshot against
-/// `ByPhysics`, which already had this). Fixed by scattering a mass-WEIGHTED
+/// Real regression check: `grid_volume.wgsl` previously had NO per-pixel
+/// temperature (only mass was ever scattered to this buffer), so `fs_main`
+/// could never render blackbody thermal emission -- a real, disclosed gap
+/// found via a side-by-side comparison against `ByPhysics`, which already
+/// had this. Fixed by scattering a mass-WEIGHTED
 /// temperature into the buffer's previously-unused channel 0. This test
 /// manually constructs the `grid_int` buffer directly (same real layout
 /// `grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds`

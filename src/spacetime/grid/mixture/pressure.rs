@@ -25,16 +25,19 @@ impl Grid {
         )
     }
 
+    // This module stays hardcoded to phase slots 0 (solid) and 1 (fluid) --
+    // `MixturePhase::SOLID`/`FLUID` -- pressure projection is not part of the
+    // N-phase generalization (`mixture::mod`'s own doc).
     fn mixture_solid_v_or_zero(&self, pos: IVec2) -> Vec2 {
         flat_index(pos, self.resolution)
             .and_then(|idx| self.mixture_cells.get(&idx))
-            .map_or(Vec2::ZERO, |c| c.resolved_solid_v)
+            .map_or(Vec2::ZERO, |c| c.resolved_v[0])
     }
 
     fn mixture_fluid_v_or_zero(&self, pos: IVec2) -> Vec2 {
         flat_index(pos, self.resolution)
             .and_then(|idx| self.mixture_cells.get(&idx))
-            .map_or(Vec2::ZERO, |c| c.resolved_fluid_v)
+            .map_or(Vec2::ZERO, |c| c.resolved_v[1])
     }
 
     /// Enforces the mixture's incompressibility constraint (Zhao & Choo 2020,
@@ -125,8 +128,8 @@ impl Grid {
                 continue;
             };
             let pos = self.idx_to_pos(idx);
-            let m_s = cell.solid_mass.max(0.0);
-            let m_f = cell.fluid_mass.max(0.0);
+            let m_s = cell.mass[0].max(0.0);
+            let m_f = cell.mass[1].max(0.0);
             let n = if m_s + m_f > MIN_MASS {
                 m_f / (m_s + m_f)
             } else {
@@ -250,10 +253,10 @@ impl Grid {
             let grad_p = grad_p * RELAXATION;
             if let Some(cell) = self.mixture_cells.get_mut(&idx) {
                 if solid_significant {
-                    cell.resolved_solid_v -= (1.0 - n) * a_s * grad_p;
+                    cell.resolved_v[0] -= (1.0 - n) * a_s * grad_p;
                 }
                 if fluid_significant {
-                    cell.resolved_fluid_v -= n * a_f * grad_p;
+                    cell.resolved_v[1] -= n * a_f * grad_p;
                 }
             }
         }
@@ -349,7 +352,7 @@ mod pressure_projection_tests {
         let err_fixed = (lhs - rhs_fixed).abs();
         assert!(
             err_current > 1.0,
-            "expected today's real, unweighted 1/mass correction to be \
+            "expected the real, unweighted 1/mass correction to be \
              substantially non-adjoint to the (1-n)/n-weighted residual \
              (this is the real, previously-undiagnosed mismatch): lhs={lhs}, \
              rhs_current={rhs_current}, err={err_current}"
@@ -358,9 +361,9 @@ mod pressure_projection_tests {
             err_fixed < err_current * 0.5,
             "porosity-weighted correction ((1-n)/n matching the residual's \
              own weights) should be substantially MORE adjoint-consistent \
-             than today's code, even though not exactly zero (a genuine \
+             than the current code, even though not exactly zero (a genuine \
              remaining term from grad(n) when porosity varies spatially --\
-             see this test's own module doc, disclosed not chased tonight): \
+             see this test's own module doc, disclosed not chased here): \
              lhs={lhs}, rhs_fixed={rhs_fixed}, err_fixed={err_fixed} vs \
              err_current={err_current}"
         );
@@ -397,8 +400,8 @@ mod pressure_projection_tests {
                 let pos = center + IVec2::new(dx, dy);
                 let v_s = v_s_at(pos);
                 grid.add_mass_momentum(pos, m_s + m_f, m_s * v_s + m_f * Vec2::ZERO);
-                grid.add_mixture_mass_momentum(pos, MixturePhase::Solid, m_s, m_s * v_s);
-                grid.add_mixture_mass_momentum(pos, MixturePhase::Fluid, m_f, m_f * Vec2::ZERO);
+                grid.add_mixture_mass_momentum(pos, MixturePhase::SOLID, m_s, m_s * v_s);
+                grid.add_mixture_mass_momentum(pos, MixturePhase::FLUID, m_f, m_f * Vec2::ZERO);
             }
         }
         grid.update_velocities(0.0, Vec2::ZERO);
@@ -407,10 +410,16 @@ mod pressure_projection_tests {
         // no projection yet -- just resolve the mixture bookkeeping.
         grid.resolve_mixture_coupling(0.0, Vec2::ZERO, 1.0e-9, 1.0, 0);
         let div_before = |g: &Grid| -> f32 {
-            let r = g.resolved_solid_velocity_at(center + IVec2::new(1, 0)).x
-                - g.resolved_solid_velocity_at(center - IVec2::new(1, 0)).x;
-            let u = g.resolved_solid_velocity_at(center + IVec2::new(0, 1)).y
-                - g.resolved_solid_velocity_at(center - IVec2::new(0, 1)).y;
+            let r = g
+                .resolved_velocity_at(center + IVec2::new(1, 0), MixturePhase::SOLID)
+                .x
+                - g.resolved_velocity_at(center - IVec2::new(1, 0), MixturePhase::SOLID)
+                    .x;
+            let u = g
+                .resolved_velocity_at(center + IVec2::new(0, 1), MixturePhase::SOLID)
+                .y
+                - g.resolved_velocity_at(center - IVec2::new(0, 1), MixturePhase::SOLID)
+                    .y;
             (r + u) / 2.0
         };
         let residual_unprojected = div_before(&grid).abs();
@@ -426,8 +435,8 @@ mod pressure_projection_tests {
                 let pos = center + IVec2::new(dx, dy);
                 let v_s = v_s_at(pos);
                 grid2.add_mass_momentum(pos, m_s + m_f, m_s * v_s + m_f * Vec2::ZERO);
-                grid2.add_mixture_mass_momentum(pos, MixturePhase::Solid, m_s, m_s * v_s);
-                grid2.add_mixture_mass_momentum(pos, MixturePhase::Fluid, m_f, m_f * Vec2::ZERO);
+                grid2.add_mixture_mass_momentum(pos, MixturePhase::SOLID, m_s, m_s * v_s);
+                grid2.add_mixture_mass_momentum(pos, MixturePhase::FLUID, m_f, m_f * Vec2::ZERO);
             }
         }
         grid2.update_velocities(0.0, Vec2::ZERO);
@@ -477,8 +486,8 @@ mod pressure_projection_tests {
         for &pos in &cells {
             let v_s = v_s_at(pos);
             grid.add_mass_momentum(pos, m_s + m_f, m_s * v_s + m_f * Vec2::ZERO);
-            grid.add_mixture_mass_momentum(pos, MixturePhase::Solid, m_s, m_s * v_s);
-            grid.add_mixture_mass_momentum(pos, MixturePhase::Fluid, m_f, m_f * Vec2::ZERO);
+            grid.add_mixture_mass_momentum(pos, MixturePhase::SOLID, m_s, m_s * v_s);
+            grid.add_mixture_mass_momentum(pos, MixturePhase::FLUID, m_f, m_f * Vec2::ZERO);
         }
         grid.update_velocities(0.0, Vec2::ZERO);
         grid.resolve_mixture_coupling(0.0, Vec2::ZERO, 1.0e-9, 1.0, 0);
@@ -487,8 +496,8 @@ mod pressure_projection_tests {
             cells
                 .iter()
                 .map(|&pos| {
-                    m_s * g.resolved_solid_velocity_at(pos)
-                        + m_f * g.resolved_fluid_velocity_at(pos)
+                    m_s * g.resolved_velocity_at(pos, MixturePhase::SOLID)
+                        + m_f * g.resolved_velocity_at(pos, MixturePhase::FLUID)
                 })
                 .sum()
         };

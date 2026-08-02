@@ -137,10 +137,10 @@ pub struct SimConfig {
     /// 0.0 = disabled (default) — no velocity snapshot taken, byte-identical
     /// to every existing scene, same zero-cost convention as `asflip_blend`.
     pub cundall_damping: f32,
-    /// Two-phase mixture coupling drag coefficient (Tampubolon et al. 2017,
-    /// "Multi-species simulation of porous sand and water mixtures" — Darcy-style
-    /// momentum exchange between a `MixturePhase::Solid` and `MixturePhase::Fluid`
-    /// material, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
+    /// N-phase mixture coupling drag coefficient (generalizes Tampubolon et al.
+    /// 2017, "Multi-species simulation of porous sand and water mixtures" —
+    /// Darcy-style momentum exchange between materials wrapped in different
+    /// `MixturePhase` slots, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
     /// NOT the paper's own permeability-derived `c_E` directly — this is a first,
     /// simplified scalar-coefficient version; mapping to real soil permeability/
     /// porosity is real, disclosed future work, not attempted yet).

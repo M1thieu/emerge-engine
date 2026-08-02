@@ -165,11 +165,11 @@ fn make_sim(mixture_enabled: bool) -> Simulation {
     // softening) is the real, stable, permanent gain.
     let sand = WithMixturePhase::new(
         DruckerPragerMaterial::new(10_000.0, 15_000.0),
-        MixturePhase::Solid,
+        MixturePhase::SOLID,
     );
     let water = WithMixturePhase::new(
         NewtonianFluidMaterial::low_viscosity(4.0, 10.0),
-        MixturePhase::Fluid,
+        MixturePhase::FLUID,
     );
 
     let mut solver = Simulation::new(config, spawn_sand)
@@ -227,7 +227,10 @@ impl State {
             "mixture_sand_water: {} particles  |  LMB push  RMB pull  M toggle coupling  R reset  Q quit",
             sim.particles().len()
         );
-        println!("mixture coupling: on (drag={MIXTURE_DRAG_COEFFICIENT})");
+        println!(
+            "mixture coupling: {} (drag={MIXTURE_DRAG_COEFFICIENT})",
+            if mixture_enabled { "on" } else { "off" }
+        );
         Self {
             surface,
             surface_config: sc,
