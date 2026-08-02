@@ -1,4 +1,4 @@
-// Lives in emerge, not LP (see ARCHITECTURE.md §10): a deliberate exception
+// Lives in emerge, not LP: a deliberate exception
 // that doesn't participate in the substep loop at all -- a standalone ODE
 // the caller integrates, writing its output into
 // `Particle::activation`/`activation_dir` between steps.
@@ -184,7 +184,7 @@ impl Lnn {
         // reasonable and passed its own test at the time, but that test only
         // ran 50 steps at dt=0.01 (0.5 simulated seconds) and only checked
         // that SOMETHING moved -- it never checked SUSTAINED oscillation.
-        // Real finding (2026-07-04/05): the old topology
+        // Real finding: the old topology
         // converges to a fully-synchronized fixed point (oscillation DIES,
         // every neuron settles to an identical constant) within ~20 steps at
         // dt=0.1, regardless of external bias -- driving zero real locomotion

@@ -44,8 +44,8 @@
 //! already is relative to `Grid`.
 //!
 //! # Scope (explicit, disclosed)
-//! CPU-first (matches `ARCHITECTURE.md` §5's own stated rule — GPU port is
-//! real future work, not attempted here: WGPU bind-group layouts are already
+//! CPU-first (matches this engine's own "CPU correctness first, GPU port
+//! second" rule — GPU port is real future work, not attempted here: WGPU bind-group layouts are already
 //! at the 4-group WebGPU baseline limit). 2D only. True branching topology
 //! exists via `network::RodNetwork` (a real graph, not a single chain); a
 //! plain `Rod` itself stays a single unbranched chain. No twist DOF (none
@@ -383,7 +383,7 @@ impl RodMaterial {
     /// this always agrees with them (single source of truth for this
     /// constant, not a second, possibly-drifting copy).
     ///
-    /// Real use (2026-07-26 root-cause fix): the rod sleep-scoring test
+    /// Real use (root-cause fix): the rod sleep-scoring test
     /// (`step.rs`) used to require a FIXED 0.5s of sustained low velocity
     /// before sleeping, regardless of the rod's own natural period — for a
     /// soft, slow rod whose own period is comparable to or longer than that
@@ -391,7 +391,7 @@ impl RodMaterial {
     /// below the speed threshold near a swing peak for that whole window,
     /// freezing the rod mid-swing at a real, wrong, off-rest position (this
     /// is not hypothetical -- it was the direct, measured cause of a real
-    /// user-reported bug tonight). Scaling the settle-duration to a real
+    /// user-reported bug). Scaling the settle-duration to a real
     /// multiple of THIS rod's own period fixes that at the root instead of
     /// picking a bigger fixed constant that would just move the same
     /// failure mode to an even slower rod.
@@ -445,7 +445,7 @@ impl RodMaterial {
 /// No separate gravity field: gravity comes from the single
 /// `SimConfig::gravity` value the whole simulation already shares (a second
 /// gravity knob would be exactly the kind of drift-prone duplication
-/// `ARCHITECTURE.md` §2's "derive, don't store" spirit warns against). Wind
+/// a "derive, don't store" discipline warns against). Wind
 /// and push are per-rod, mutable state instead — set fresh by the caller
 /// before each `step()` call, held constant for that call (which may cover
 /// several substeps). Both default to zero/off, so embedding a rod with no
@@ -754,11 +754,12 @@ pub fn build_straight_rod(
 mod root_cause_fixes_tests {
     use super::*;
 
-    /// Real, permanent regression guard for the 2026-07-26 root-cause fix:
-    /// `modal_critical_damping` must give a substantially LARGER bending
-    /// value than the old, disclosed-as-too-small `critical_damping` for a
-    /// real multi-point cantilever -- confirmed empirically tonight to be a
-    /// two-to-three-orders-of-magnitude gap for a 20-point blade.
+    /// Real, permanent regression guard for the modal-damping root-cause
+    /// fix: `modal_critical_damping` must give a substantially LARGER
+    /// bending value than the old, disclosed-as-too-small
+    /// `critical_damping` for a real multi-point cantilever -- confirmed
+    /// empirically to be a two-to-three-orders-of-magnitude gap for a
+    /// 20-point blade.
     #[test]
     fn modal_critical_damping_exceeds_local_reference_substantially() {
         let start = Vec2::new(9.0, 4.0);
@@ -783,7 +784,7 @@ mod root_cause_fixes_tests {
             "modal_critical_damping ({new_bending:.6e}) should exceed the local reference \
              ({old_bending:.6e}) by at least 100x for a 20-point cantilever -- if this ever \
              shrinks close to 1x, the two formulas may have been (wrongly) unified without \
-             re-verifying against tonight's real measurement"
+             re-verifying against this real measurement"
         );
     }
 
@@ -818,11 +819,11 @@ mod root_cause_fixes_tests {
         );
     }
 
-    /// Real, permanent regression guard reproducing tonight's own found
-    /// bug exactly: blade B's real parameters (E=5e6, height=0.10m) must
-    /// trigger a buckling warning; blade A's (E=1e7, same height) must not.
+    /// Real, permanent regression guard: blade B's real parameters
+    /// (E=5e6, height=0.10m) must trigger a buckling warning; blade A's
+    /// (E=1e7, same height) must not.
     #[test]
-    fn buckling_warning_matches_tonights_real_finding() {
+    fn buckling_warning_matches_expected_critical_height() {
         let start = Vec2::new(9.0, 4.0);
         let height_m = 0.10;
         let dx_meters = 0.01;
@@ -849,7 +850,7 @@ mod root_cause_fixes_tests {
         );
         assert!(
             blade_b.buckling_warning(9.81).is_some(),
-            "blade B (E=5e6) is the real, confirmed buckling case found tonight -- should warn"
+            "blade B (E=5e6) is the real, confirmed buckling case -- should warn"
         );
     }
 
@@ -1085,7 +1086,7 @@ mod secondary_growth_integration_tests {
     /// reports genuine risk) that experiences real, sustained bending moment under its own
     /// self-weight (a tiny initial tilt breaks the perfectly-straight
     /// symmetric case, which has zero moment by construction -- same real
-    /// lesson as this session's earlier buckling investigation) should,
+    /// lesson as the buckling investigation above) should,
     /// given `SecondaryGrowth`, genuinely stiffen enough over real time to
     /// raise its own critical height back above its actual height.
     #[test]
