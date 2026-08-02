@@ -250,7 +250,7 @@ fn rankine_softening_reduces_tensile_strength() {
     p.velocity_gradient = glam::Mat2::ZERO;
 
     let mut soa = Particles::from(vec![p]);
-    mat.update_particle(&mut soa, 0, 0.01);
+    mat.update_particle(&mut soa.update_ctx(0), 0.01);
     p = soa.get(0);
 
     // Damage should be positive (tensile yield occurred) or zero (elastic)
@@ -372,8 +372,7 @@ fn phase_transition_switches_material_ids() {
 /// Real permafrost thaw -- reuses the SAME machinery already proven for
 /// combustion tonight (`add_phase_rule` + real `WithLatentHeat`), not new
 /// physics, just composing already-tested pieces for a new real phenomenon.
-/// Real freezing point 273.15K (same convention as CLAUDE.md's own water/ice
-/// example). Real water/ice latent heat of fusion, 334 (same value already used
+/// Real freezing point 273.15K. Real water/ice latent heat of fusion, 334 (same value already used
 /// elsewhere in this file for water) -- honestly NOT scaled down by real
 /// permafrost's actual ice-content fraction (soil is an ice-BONDED mixture, not
 /// pure ice); a disclosed simplification, same spirit as `MixturePhase`'s own
@@ -2158,11 +2157,11 @@ fn build_mixture_scene(drag_coefficient: f32) -> Simulation {
     };
     let solid = WithMixturePhase::new(
         DruckerPragerMaterial::from_young_modulus(1.0e6, 0.2),
-        MixturePhase::Solid,
+        MixturePhase::SOLID,
     );
     let fluid = WithMixturePhase::new(
         NewtonianFluidMaterial::low_viscosity(4.0, 10.0),
-        MixturePhase::Fluid,
+        MixturePhase::FLUID,
     );
     let mut solver = Simulation::new(config, solid_spawn)
         .with_default_material(Box::new(solid))

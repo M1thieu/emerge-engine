@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{Particle, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Non-Associated Cam-Clay (NACC) elastoplastic solid.
 ///
@@ -273,26 +273,25 @@ impl MaterialModel for NaccMaterial {
         particles.initial_volume[i]
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         // Elastic predictor -- same pattern as every other CPU plastic material
         // (`sand.rs`, `snow.rs`, `sand_mui.rs`): F must pick up this substep's
         // strain from the velocity gradient BEFORE plastic projection, or F never
         // advances and the material exerts a frozen, non-evolving stress -- e.g.
         // a falling body collapsing to zero height under gravity.
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
-        let alpha = particles.log_volume_strain[i];
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        let alpha = *ctx.log_volume_strain;
         let (new_f, new_alpha) = self.project(f_trial, alpha);
-        particles.deformation_gradient[i] = new_f;
-        particles.log_volume_strain[i] = new_alpha;
+        *ctx.deformation_gradient = new_f;
+        *ctx.log_volume_strain = new_alpha;
 
         let j = new_f.determinant().max(MIN_J);
-        let vol = particles.initial_volume[i] * j;
-        particles.volume[i] = vol;
-        particles.density[i] = if vol > MIN_J {
-            particles.mass[i] / vol
+        let vol = ctx.initial_volume * j;
+        *ctx.volume = vol;
+        *ctx.density = if vol > MIN_J {
+            ctx.mass / vol
         } else {
-            particles.density[i]
+            *ctx.density
         };
     }
 

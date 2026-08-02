@@ -57,7 +57,70 @@ pub struct Particles {
     pub(crate) sleeping: Vec<bool>,
 }
 
+/// Per-particle mutable view into one particle's warm state, used by
+/// `MaterialModel::update_particle` and `BoundaryCondition::post_g2p_particle`.
+/// Exists so G2P's per-particle plasticity/boundary pass can run in parallel
+/// across particles (rayon) instead of needing `&mut Particles` (the whole
+/// SoA struct) one particle at a time -- every field here is disjoint-borrowed
+/// straight out of `Particles`' own separate `Vec<T>` fields (real struct-of-
+/// arrays, not just in name), so the borrow checker can prove two different
+/// particles' contexts never alias, even built concurrently on different
+/// threads. Covers exactly the fields every material's `update_particle` (and
+/// `GripFrictionBoundary`'s `post_g2p_particle`) actually touches -- verified
+/// by grepping every real implementation, not guessed.
+pub struct ParticleUpdateCtx<'a> {
+    pub x: &'a mut Vec2,
+    pub v: &'a mut Vec2,
+    pub velocity_gradient: &'a mut Mat2,
+    pub deformation_gradient: &'a mut Mat2,
+    pub volume: &'a mut f32,
+    pub density: &'a mut f32,
+    pub hardening_scale: &'a mut f32,
+    pub plastic_volume_ratio: &'a mut f32,
+    pub log_volume_strain: &'a mut f32,
+    pub friction_hardening: &'a mut f32,
+    pub mass: f32,
+    pub temperature: f32,
+    pub initial_volume: f32,
+    pub activation: f32,
+    pub activation_dir: Vec2,
+    /// Gathered granular fluidity `g` from a coupled
+    /// `GranularFluidityField` (see `energy::thermodynamics::granular_fluidity`),
+    /// for this substep only -- transient, never stored on `Particle` itself
+    /// (there is no spare byte for it). 0.0 (the field's own real rest
+    /// state) when no such field is wired up for this scene, or when the
+    /// reading material doesn't opt in -- provably inert in that case, not
+    /// a tuning default.
+    pub nonlocal_fluidity: f32,
+}
+
 impl Particles {
+    /// Builds a `ParticleUpdateCtx` for one particle by index. For single-
+    /// particle/test call sites (needs exclusive `&mut Particles`, so NOT
+    /// usable from inside a parallel loop over sliced fields -- the real G2P
+    /// hot path builds these directly from its own already-disjoint parallel
+    /// slices instead of calling this).
+    pub fn update_ctx(&mut self, i: usize) -> ParticleUpdateCtx<'_> {
+        ParticleUpdateCtx {
+            x: &mut self.x[i],
+            v: &mut self.v[i],
+            velocity_gradient: &mut self.velocity_gradient[i],
+            deformation_gradient: &mut self.deformation_gradient[i],
+            volume: &mut self.volume[i],
+            density: &mut self.density[i],
+            hardening_scale: &mut self.hardening_scale[i],
+            plastic_volume_ratio: &mut self.plastic_volume_ratio[i],
+            log_volume_strain: &mut self.log_volume_strain[i],
+            friction_hardening: &mut self.friction_hardening[i],
+            mass: self.mass[i],
+            temperature: self.temperature[i],
+            initial_volume: self.initial_volume[i],
+            activation: self.activation[i],
+            activation_dir: self.activation_dir[i],
+            nonlocal_fluidity: 0.0,
+        }
+    }
+
     /// Create an empty `Particles` store.
     pub fn new() -> Self {
         Self {

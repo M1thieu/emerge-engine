@@ -7,7 +7,7 @@
 
 use glam::Vec2;
 
-use crate::particle::Particles;
+use crate::particle::ParticleUpdateCtx;
 
 mod friction;
 mod grip_friction;
@@ -29,8 +29,11 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     /// Not a physical force — last-resort domain enforcement so particles never escape the grid.
     /// Proper no-penetration physics lives in `apply_to_grid_velocity`.
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2;
-    fn post_g2p_particle(&self, _particles: &mut Particles, _i: usize, _grid_res: usize, _dt: f32) {
-    }
+    /// Optional post-G2P per-particle hook (e.g. `GripFrictionBoundary`'s muscle
+    /// grip). Takes a `ParticleUpdateCtx`, not `&mut Particles, i` -- same reason
+    /// as `MaterialModel::update_particle`: only ever touches its own particle's
+    /// fields, so G2P can run every particle's boundary hook in parallel too.
+    fn post_g2p_particle(&self, _ctx: &mut ParticleUpdateCtx, _grid_res: usize, _dt: f32) {}
 }
 
 /// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly —
@@ -47,8 +50,8 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
         (**self).clamp_particle_position(position, grid_res)
     }
 
-    fn post_g2p_particle(&self, particles: &mut Particles, i: usize, grid_res: usize, dt: f32) {
-        (**self).post_g2p_particle(particles, i, grid_res, dt);
+    fn post_g2p_particle(&self, ctx: &mut ParticleUpdateCtx, grid_res: usize, dt: f32) {
+        (**self).post_g2p_particle(ctx, grid_res, dt);
     }
 }
 

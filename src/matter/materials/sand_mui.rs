@@ -6,7 +6,7 @@ use crate::materials::utils::{
     MIN_J, elastic_wave_dt, hencky_strains, lame_from_young, reconstruct_f,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{Particle, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// µ(I)-rheology sand — rate-dependent Drucker-Prager (Cicoira et al. / matter "DPMui").
 ///
@@ -148,9 +148,8 @@ impl MaterialModel for MuIRheologyMaterial {
         particle.friction_hardening = self.mu_static;
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let (u, sigma, vt) = svd2(f_trial);
 
         let eps = hencky_strains(sigma);
@@ -160,12 +159,12 @@ impl MaterialModel for MuIRheologyMaterial {
         let p_trial = -k_2d * tr;
 
         if p_trial <= 0.0 {
-            particles.deformation_gradient[i] = reconstruct_f(u, Vec2::ONE, vt);
-            particles.friction_hardening[i] = self.mu_static;
-            let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-            let v = (particles.initial_volume[i] * j).max(1.0e-6);
-            particles.volume[i] = v;
-            particles.density[i] = particles.mass[i] / v;
+            *ctx.deformation_gradient = reconstruct_f(u, Vec2::ONE, vt);
+            *ctx.friction_hardening = self.mu_static;
+            let j = ctx.deformation_gradient.determinant().max(MIN_J);
+            let v = (ctx.initial_volume * j).max(1.0e-6);
+            *ctx.volume = v;
+            *ctx.density = ctx.mass / v;
             return;
         }
 
@@ -175,12 +174,12 @@ impl MaterialModel for MuIRheologyMaterial {
         let q_yield = self.mu_static * p_trial;
 
         if q_trial <= q_yield || dev_norm < f32::EPSILON {
-            particles.deformation_gradient[i] = reconstruct_f(u, sigma, vt);
-            particles.friction_hardening[i] = self.mu_static;
-            let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-            let v = (particles.initial_volume[i] * j).max(1.0e-6);
-            particles.volume[i] = v;
-            particles.density[i] = particles.mass[i] / v;
+            *ctx.deformation_gradient = reconstruct_f(u, sigma, vt);
+            *ctx.friction_hardening = self.mu_static;
+            let j = ctx.deformation_gradient.determinant().max(MIN_J);
+            let v = (ctx.initial_volume * j).max(1.0e-6);
+            *ctx.volume = v;
+            *ctx.density = ctx.mass / v;
             return;
         }
 
@@ -207,13 +206,13 @@ impl MaterialModel for MuIRheologyMaterial {
         let eps_new = eps - n_hat * (delta_gamma / std::f32::consts::SQRT_2);
 
         let sigma_new = Vec2::new(eps_new.x.exp(), eps_new.y.exp());
-        particles.deformation_gradient[i] = reconstruct_f(u, sigma_new, vt);
-        particles.friction_hardening[i] = mu_i;
+        *ctx.deformation_gradient = reconstruct_f(u, sigma_new, vt);
+        *ctx.friction_hardening = mu_i;
 
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn params(&self) -> MaterialParams {
@@ -264,7 +263,7 @@ mod marginal_yield_tests {
         p.initial_volume = 1.0;
         mat.init_particle(&mut p);
         let mut particles = Particles::from(vec![p]);
-        mat.update_particle(&mut particles, 0, dt);
+        mat.update_particle(&mut particles.update_ctx(0), dt);
         let f = particles.deformation_gradient[0];
         (
             Vec2::new(f.x_axis.x, f.y_axis.y),
@@ -357,7 +356,7 @@ mod marginal_yield_tests {
         p.initial_volume = 1.0;
         mat.init_particle(&mut p);
         let mut particles = Particles::from(vec![p]);
-        mat.update_particle(&mut particles, 0, dt);
+        mat.update_particle(&mut particles.update_ctx(0), dt);
 
         // Recompute a, b, c the SAME way `update_particle` does, to verify the
         // ACTUAL solved gamma_dot (recovered from the friction_hardening

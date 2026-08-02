@@ -37,7 +37,7 @@ fn kirchhoff_stress_of(mat: &dyn emerge::materials::MaterialModel, p: &Particle)
 /// Wrap a single `Particle` in a one-element `Particles` SoA, call `update_particle`, write back.
 fn update_particle_of(mat: &dyn emerge::materials::MaterialModel, p: &mut Particle, dt: f32) {
     let mut soa = Particles::from(vec![*p]);
-    mat.update_particle(&mut soa, 0, dt);
+    mat.update_particle(&mut soa.update_ctx(0), dt);
     *p = soa.get(0);
 }
 

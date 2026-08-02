@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame, scale_visc};
 use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::Particles;
+use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Kelvin-Voigt viscoelastic solid.
 ///
@@ -129,13 +129,13 @@ impl MaterialModel for ViscoelasticMaterial {
         elastic + viscous
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let fp_new = Mat2::IDENTITY + dt * particles.velocity_gradient[i];
-        particles.deformation_gradient[i] = fp_new * particles.deformation_gradient[i];
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let fp_new = Mat2::IDENTITY + dt * *ctx.velocity_gradient;
+        *ctx.deformation_gradient = fp_new * *ctx.deformation_gradient;
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {

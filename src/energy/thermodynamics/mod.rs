@@ -6,11 +6,13 @@
 //! - `transfer.rs`     — scalar IRL primitives: conduction, Stefan-Boltzmann radiation, entropy/2nd law
 
 pub mod diffusion;
+pub mod granular_fluidity;
 pub mod scalar_field;
 mod stencil;
 pub mod transfer;
 
 pub use diffusion::{ThermalConfig, ThermalDiffusion};
+pub use granular_fluidity::{GranularFluidityConfig, GranularFluidityField};
 pub use scalar_field::{ScalarDiffusionConfig, ScalarDiffusionField};
 pub use transfer::{
     STEFAN_BOLTZMANN, entropy_change_heat_transfer, entropy_change_irreversible, heat_conduction,

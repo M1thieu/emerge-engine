@@ -41,6 +41,8 @@ impl Simulation {
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
+            granular_fluidity: None,
+            granular_fluidity_g: Vec::new(),
             frame_index: 0,
             last_step_dt: config.dt,
             last_substeps: 0,
@@ -91,6 +93,8 @@ impl Simulation {
             force_fields: Vec::new(),
             thermal: None,
             scalar_fields: Vec::new(),
+            granular_fluidity: None,
+            granular_fluidity_g: Vec::new(),
             frame_index: 0,
             last_step_dt: config.dt,
             last_substeps: 0,
@@ -160,6 +164,18 @@ impl Simulation {
         self.thermal = Some(thermal);
     }
 
+    /// Attach a Nonlocal Granular Fluidity field (see `energy::
+    /// thermodynamics::granular_fluidity` module doc). `None` (never
+    /// calling this) is the default, zero-cost, byte-identical to every
+    /// existing scene -- same convention `with_thermal` already has.
+    pub fn with_granular_fluidity(
+        mut self,
+        field: crate::thermodynamics::GranularFluidityField,
+    ) -> Self {
+        self.granular_fluidity = Some(field);
+        self
+    }
+
     /// Mutable access to the attached thermal model's config, if any (`None` when no
     /// `with_thermal`/`set_thermal` was ever called). The real, minimal hook for a
     /// scene/LP-driven day-night or seasonal cycle: mutate `.ambient` each frame from a
@@ -169,6 +185,12 @@ impl Simulation {
     /// new physics is needed, just this accessor to reach the config from outside.
     pub fn thermal_config_mut(&mut self) -> Option<&mut ThermalConfig> {
         self.thermal.as_mut().map(|t| &mut t.config)
+    }
+
+    /// Read-only access to the attached `GranularFluidityField`, if any --
+    /// same "`None` unless opted in" convention as `thermal_config_mut`.
+    pub fn granular_fluidity(&self) -> Option<&crate::thermodynamics::GranularFluidityField> {
+        self.granular_fluidity.as_ref()
     }
 
     /// Register a material and return its typed `MaterialHandle`.
@@ -409,6 +431,25 @@ impl Simulation {
         self.config.gravity = gravity;
     }
 
+    /// Live-tunable Cundall (1982) non-viscous damping coefficient, same
+    /// precedent as `set_gravity` -- lets a caller phase-gate it (e.g. off
+    /// while material is actively falling/impacting, on once it should
+    /// relax toward equilibrium) instead of one constant value for a
+    /// scene's entire run.
+    pub fn set_cundall_damping(&mut self, damping: f32) {
+        self.config.cundall_damping = damping;
+    }
+
+    /// Live-tunable APIC/FLIP blend, same phase-gating precedent as
+    /// `set_cundall_damping` -- lets a caller run the violent/dynamic part
+    /// of a collapse at the scene's own default blend (real toppling
+    /// energy preserved), then switch to the proven quasi-static holding
+    /// value (0.05) once the material has actually settled, instead of one
+    /// constant blend fighting both phases at once.
+    pub fn set_apic_blend(&mut self, blend: f32) {
+        self.config.apic_blend = blend;
+    }
+
     /// Append a rod, returning its index into `rods()`/`rods_mut()`. A rod's
     /// `points.x` must already be in this simulation's grid-cell coordinate
     /// space (same convention as `Particle::x`) — build it with
@@ -465,7 +506,7 @@ mod add_rod_buckling_check_tests {
     /// right index, `rods()` reflects it) whether or not the rod happens to
     /// be over its own critical height -- the warning CONTENT itself is
     /// already covered by `rod::root_cause_fixes_tests::
-    /// buckling_warning_matches_tonights_real_finding`.
+    /// buckling_warning_matches_expected_critical_height`.
     fn make_rod(young_modulus: f32, height_m: f32, dx_meters: f32) -> Rod {
         let start = Vec2::new(9.0, 4.0);
         let end = Vec2::new(start.x, start.y + height_m / dx_meters);

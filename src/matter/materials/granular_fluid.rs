@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young, polar_decomposition_2d};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{Particle, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Granular-fluid mixture: Tait EOS bulk pressure + corotated elastic deviatoric + SVD plasticity.
 ///
@@ -209,9 +209,8 @@ impl MaterialModel for GranularFluidMaterial {
         particles.volume[i].max(1.0e-6)
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         if self.compression_limit > 0.0 || self.stretch_limit > 0.0 {
             let (u, sigma, vt) = svd2(f_trial);
@@ -223,9 +222,9 @@ impl MaterialModel for GranularFluidMaterial {
                     .y
                     .clamp(1.0 - self.compression_limit, 1.0 + self.stretch_limit),
             );
-            let jp_new = particles.plastic_volume_ratio[i] * (sigma.x * sigma.y)
+            let jp_new = *ctx.plastic_volume_ratio * (sigma.x * sigma.y)
                 / (sigma_c.x * sigma_c.y).max(1.0e-10);
-            particles.plastic_volume_ratio[i] =
+            *ctx.plastic_volume_ratio =
                 jp_new.clamp(self.min_plastic_jacobian, self.max_plastic_jacobian);
             // `hardening_scale` floor must stay at 1.0, not lower: `h` scales both
             // the deviatoric and volumetric elastic terms in `kirchhoff_stress`, so
@@ -234,19 +233,18 @@ impl MaterialModel for GranularFluidMaterial {
             // side hardening (h>1) is self-stabilizing; there's no equivalent
             // mechanism on the dilation side, so the floor clamps at baseline
             // stiffness (h=1) instead.
-            particles.hardening_scale[i] = (self.hardening_exponent
-                * (1.0 - particles.plastic_volume_ratio[i]))
+            *ctx.hardening_scale = (self.hardening_exponent * (1.0 - *ctx.plastic_volume_ratio))
                 .exp()
                 .clamp(1.0, 7.0);
-            particles.deformation_gradient[i] = u * Mat2::from_diagonal(sigma_c) * vt;
+            *ctx.deformation_gradient = u * Mat2::from_diagonal(sigma_c) * vt;
         } else {
-            particles.deformation_gradient[i] = f_trial;
+            *ctx.deformation_gradient = f_trial;
         }
 
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn params(&self) -> MaterialParams {

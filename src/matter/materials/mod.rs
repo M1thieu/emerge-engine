@@ -12,6 +12,7 @@ pub mod rankine;
 pub mod registry;
 pub mod sand;
 pub mod sand_mui;
+pub mod scale_contract;
 pub mod snow;
 pub(crate) mod svd;
 pub mod utils;
@@ -89,22 +90,40 @@ const _: () = {
     assert!(C::NoCompression as u32 == 12);
 };
 
-/// Which role a material plays in two-phase mixture coupling (Tampubolon et al.
-/// 2017, "Multi-species simulation of porous sand and water mixtures" --
-/// interpenetrating granular-fluid Darcy drag, e.g. water soaking into sand).
-/// This is a MATERIAL-level classification (via `MaterialModel::mixture_phase`),
+/// Cap on simultaneous mixture phases -- see `MixturePhase`'s own doc.
+/// Deliberately small (YAGNI): covers solid + fluid + a real 3rd/4th phase
+/// (air, a second fluid) without pre-building for a need that doesn't
+/// exist yet. Raising it later is a one-line change (`MixtureCell`'s
+/// arrays and `resolve_mixture_coupling`'s solve both size off this
+/// constant, nothing else needs touching).
+pub const MAX_MIXTURE_PHASES: usize = 4;
+
+/// Which of up to `MAX_MIXTURE_PHASES` roles a material plays in N-phase
+/// mixture coupling (generalizes Tampubolon et al. 2017, "Multi-species
+/// simulation of porous sand and water mixtures" -- interpenetrating
+/// granular-fluid Darcy drag, e.g. water soaking into sand, to N
+/// simultaneously-tracked phases exchanging real pairwise momentum). This
+/// is a MATERIAL-level classification (via `MaterialModel::mixture_phase`),
 /// not a per-particle field -- every particle of a given material shares the
 /// same phase, matching how `constitutive_model` already works. `None` (the
 /// default for every existing material) opts a scene entirely out of mixture
 /// coupling at zero cost -- see `Grid::has_mixture_activity`.
+///
+/// A plain slot index (0..MAX_MIXTURE_PHASES), not a fixed enum -- unlike
+/// the render side's `material_id % 16` convention, this does NOT wrap: an
+/// out-of-range index is a real configuration error (asserted where used),
+/// since silently colliding two unrelated phases into the same slot would
+/// corrupt real physics, not just misdraw a pixel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MixturePhase {
+pub struct MixturePhase(pub u8);
+
+impl MixturePhase {
     /// The porous solid (e.g. sand/soil) -- keeps its own full elastic/plastic
     /// deformation, unaffected by mixture coupling beyond the drag force itself.
-    Solid,
+    pub const SOLID: MixturePhase = MixturePhase(0);
     /// The interpenetrating fluid (e.g. water) -- exchanges momentum with the
     /// solid phase via Darcy-style drag at every node both phases touch.
-    Fluid,
+    pub const FLUID: MixturePhase = MixturePhase(1);
 }
 
 pub trait MaterialModel: Send + Sync + core::fmt::Debug {
@@ -140,7 +159,12 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug {
         f32::INFINITY
     }
 
-    fn update_particle(&self, _particles: &mut Particles, _i: usize, _dt: f32) {}
+    /// Advances plastic/deformation state for one particle after G2P's velocity
+    /// gather. Takes a `ParticleUpdateCtx` (disjoint per-field borrows), not
+    /// `&mut Particles, i` -- every real implementation only ever touches its
+    /// own particle's fields, so this shape lets G2P run every particle's
+    /// update in parallel (see `ParticleUpdateCtx`'s own doc).
+    fn update_particle(&self, _ctx: &mut crate::particle::ParticleUpdateCtx, _dt: f32) {}
 
     /// Seed per-particle plastic state at spawn time.
     ///
@@ -266,8 +290,8 @@ macro_rules! forward_material_model_common {
                 viscous_cfl,
             )
         }
-        fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-            self.inner.update_particle(particles, i, dt)
+        fn update_particle(&self, ctx: &mut crate::particle::ParticleUpdateCtx, dt: f32) {
+            self.inner.update_particle(ctx, dt)
         }
         fn needs_cpu_update(&self) -> bool {
             self.inner.needs_cpu_update()
@@ -334,7 +358,7 @@ impl<M: MaterialModel> MaterialModel for WithLatentHeat<M> {
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// # use emerge::{DruckerPragerMaterial, MixturePhase, WithMixturePhase};
-/// let sand = WithMixturePhase::new(DruckerPragerMaterial::cohesionless(1.0e5, 0.2), MixturePhase::Solid);
+/// let sand = WithMixturePhase::new(DruckerPragerMaterial::cohesionless(1.0e5, 0.2), MixturePhase::SOLID);
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct WithMixturePhase<M> {

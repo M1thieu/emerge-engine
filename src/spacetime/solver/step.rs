@@ -152,6 +152,9 @@ impl Simulation {
                 &self.materials,
                 &self.rods,
                 remaining,
+                self.granular_fluidity
+                    .as_ref()
+                    .map(|f| f.config.stability_dt(self.config.dx_meters)),
             );
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
             self.do_substep(sub_dt);
@@ -392,6 +395,7 @@ impl Simulation {
 
         // ── G2P ──────────────────────────────────────────────────────────────
         let t2 = std::time::Instant::now();
+        let g_len = self.active_count.min(self.granular_fluidity_g.len());
         self.last_vel_clamp_count += gather_grid_to_particles(
             &mut self.particles,
             &self.grid,
@@ -409,6 +413,14 @@ impl Simulation {
                 // its own contribution exactly) but not free. Reusing one snapshot for both
                 // features beats duplicating the mechanism; this is the real tradeoff.
                 pre_force_snapshot: pre_force_snapshot.as_ref(),
+                // Computed at the END of the PREVIOUS substep, by the
+                // granular-fluidity pass alongside thermal/scalar diffusion
+                // below -- same one-substep-lag convention those already
+                // use. Empty when no `GranularFluidityField` is configured
+                // for this scene (every existing scene) -- every read falls
+                // back to 0.0, `ParticleUpdateCtx::nonlocal_fluidity`'s own
+                // real-rest-state default.
+                nonlocal_fluidity: &self.granular_fluidity_g[..g_len],
             },
         );
         // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
@@ -573,6 +585,21 @@ impl Simulation {
         for field in &mut self.scalar_fields {
             field.apply(&mut self.particles, sub_dt);
         }
+        // Nonlocal Granular Fluidity (see `energy::thermodynamics::
+        // granular_fluidity` module doc) -- same one-substep-lag placement
+        // as thermal/scalar diffusion above: computed here from THIS
+        // substep's just-updated particle stress state, read by next
+        // substep's G2P via `G2PParams::nonlocal_fluidity`.
+        if let Some(field) = &mut self.granular_fluidity {
+            if self.granular_fluidity_g.len() < self.active_count {
+                self.granular_fluidity_g.resize(self.active_count, 0.0);
+            }
+            field.apply(
+                &self.particles,
+                sub_dt,
+                &mut self.granular_fluidity_g[..self.active_count],
+            );
+        }
         self.last_timing.thermal_us += t4.elapsed().as_micros() as u64;
 
         // ── Phase rules + sleep scoring ───────────────────────────────────────
@@ -636,16 +663,16 @@ impl Simulation {
         // `b2_timeToSleep = 0.5s`, Bullet, PhysX) requires staying below threshold
         // for a minimum duration, not one instant, for exactly this reason.
         //
-        // Real root-cause fix (2026-07-26, user-reported "never settles
-        // straight", headlessly confirmed): a FIXED settle-duration (this
-        // used to be a single constant, 0.5s) is wrong for ANY rod whose own
-        // natural period is comparable to or longer than that fixed window.
-        // A rod's velocity genuinely dips near zero at every swing peak, not
+        // Real root-cause fix (user-reported "never settles straight",
+        // headlessly confirmed): a FIXED settle-duration (this used to be a
+        // single constant, 0.5s) is wrong for ANY rod whose own natural
+        // period is comparable to or longer than that fixed window. A
+        // rod's velocity genuinely dips near zero at every swing peak, not
         // just at true rest -- if the fixed window is short enough relative
         // to the period, the sustained-below-threshold requirement can
         // complete DURING a single slow peak of a still-large-amplitude
         // swing, freezing the rod there at a real, wrong, off-rest position.
-        // Confirmed directly tonight: a soft demo blade (period ~0.53s) froze
+        // A soft demo blade (period ~0.53s) froze
         // several cells from true vertical rest at a fixed 0.5s window, and
         // even bumping that fixed constant up only shifts the same failure
         // to an even slower rod -- the real fix is SCALING the window to

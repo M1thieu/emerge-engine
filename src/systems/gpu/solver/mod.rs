@@ -157,9 +157,9 @@ pub struct GpuSimulation {
     /// `RefCell` + `spatial_hash_dirty` defer the actual rebuild to the first query
     /// call after new data lands, instead of paying it unconditionally on every
     /// readback -- see `ensure_spatial_hash_fresh` in `queries.rs`. Matches the
-    /// discipline the CPU `Simulation` follows for the same queries (`ARCHITECTURE.md`
-    /// §4: hash rebuilt once per external `step()`, since LP queries happen between
-    /// frames, never mid-substep). Zero staleness change: a query after a dirty
+    /// discipline the CPU `Simulation` follows for the same queries: hash rebuilt
+    /// once per external `step()`, since LP queries happen between frames, never
+    /// mid-substep. Zero staleness change: a query after a dirty
     /// readback still sees the exact same freshly-landed positions, just computed on
     /// demand.
     spatial_hash: std::cell::RefCell<crate::solver::spatial_hash::SpatialHash>,

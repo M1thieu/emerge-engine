@@ -4,7 +4,7 @@ use crate::materials::physical_props::{FromSI, SnowProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
-use crate::particle::{Particle, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Snow constitutive model: corotated elasticity + SVD-based plasticity.
 ///
@@ -138,9 +138,8 @@ impl MaterialModel for StomakhinMaterial {
         particles.initial_volume[i]
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         let (u, sigma, vt) = svd2(f_trial);
 
@@ -153,25 +152,23 @@ impl MaterialModel for StomakhinMaterial {
                 .clamp(1.0 - self.compression_limit, 1.0 + self.stretch_limit),
         );
 
-        let jp_new =
-            particles.plastic_volume_ratio[i] * (sigma.x * sigma.y) / (sigma_c.x * sigma_c.y);
+        let jp_new = *ctx.plastic_volume_ratio * (sigma.x * sigma.y) / (sigma_c.x * sigma_c.y);
         // Known: Jp drifts slowly over thousands of substeps due to cumulative SVD rounding.
         // Clamp prevents blow-up but doesn't eliminate drift. Acceptable for LP timescales.
-        particles.plastic_volume_ratio[i] =
+        *ctx.plastic_volume_ratio =
             jp_new.clamp(self.min_plastic_jacobian, self.max_plastic_jacobian);
 
         // h clamped [0.1, 7.0]: upper bound is CFL-driven (h=7 → E_eff=35k → ~20 substeps).
-        particles.hardening_scale[i] = (self.hardening_exponent
-            * (1.0 - particles.plastic_volume_ratio[i]))
+        *ctx.hardening_scale = (self.hardening_exponent * (1.0 - *ctx.plastic_volume_ratio))
             .exp()
             .clamp(0.1, 7.0);
 
-        particles.deformation_gradient[i] = u * Mat2::from_diagonal(sigma_c) * vt;
+        *ctx.deformation_gradient = u * Mat2::from_diagonal(sigma_c) * vt;
 
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn params(&self) -> MaterialParams {
@@ -271,7 +268,7 @@ mod analytical_validation_tests {
         let sigma_x = 1.0 - 0.99 * mat.compression_limit; // just inside the floor
         let f = Mat2::from_diagonal(Vec2::new(sigma_x, 1.0));
         let mut particles = particle_with(f, 1.0, 1.0);
-        mat.update_particle(&mut particles, 0, 1.0);
+        mat.update_particle(&mut particles.update_ctx(0), 1.0);
         let f_after = particles.deformation_gradient[0];
         assert!(
             (f_after.x_axis.x - sigma_x).abs() < 1.0e-5,
@@ -291,7 +288,7 @@ mod analytical_validation_tests {
         let sigma_x = 1.0 - 1.5 * mat.compression_limit; // comfortably beyond the floor
         let f = Mat2::from_diagonal(Vec2::new(sigma_x, 1.0));
         let mut particles = particle_with(f, 1.0, 1.0);
-        mat.update_particle(&mut particles, 0, 1.0);
+        mat.update_particle(&mut particles.update_ctx(0), 1.0);
         let f_after = particles.deformation_gradient[0];
 
         let expected_clamped = 1.0 - mat.compression_limit;

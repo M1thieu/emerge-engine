@@ -172,7 +172,7 @@ mod tension_compression_tests {
         let f_before = Mat2::from_diagonal(Vec2::new(0.7, 1.3)); // deliberately in the compressive regime on x
         let p = particle_with_f(f_before);
         let mut particles = Particles::from(vec![p]);
-        mat.update_particle(&mut particles, 0, 1.0);
+        mat.update_particle(&mut particles.update_ctx(0), 1.0);
         assert_eq!(
             particles.deformation_gradient[0], f_before,
             "update_particle must leave deformation_gradient completely untouched (trait default no-op)"

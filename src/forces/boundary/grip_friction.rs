@@ -2,7 +2,7 @@ use glam::Vec2;
 
 use super::BoundaryCondition;
 use super::friction::FrictionBoundary;
-use crate::particle::Particles;
+use crate::particle::ParticleUpdateCtx;
 
 /// Coulomb wall friction whose EFFECTIVE grip is modulated by each particle's own
 /// muscle contraction PHASE — real anchoring behavior in soft-bodied peristaltic
@@ -69,7 +69,7 @@ impl BoundaryCondition for GripFrictionBoundary {
         self.inner.clamp_particle_position(position, grid_res)
     }
 
-    fn post_g2p_particle(&self, particles: &mut Particles, i: usize, _grid_res: usize, _dt: f32) {
+    fn post_g2p_particle(&self, ctx: &mut ParticleUpdateCtx, _grid_res: usize, _dt: f32) {
         if self.grip_gain <= 0.0 {
             return;
         }
@@ -90,28 +90,27 @@ impl BoundaryCondition for GripFrictionBoundary {
         // not literally inside it. A contracting segment needs to reach the ground
         // to anchor, so the grip zone must cover that resting layer.
         let t = self.inner.thickness as f32 + 2.0;
-        let x = particles.x[i];
-        let near_floor = x.y < t;
-        if !near_floor || particles.activation[i] <= 0.0 {
+        let near_floor = ctx.x.y < t;
+        if !near_floor || ctx.activation <= 0.0 {
             return;
         }
         // Fiber-aligned strain rate: n0 . (velocity_gradient . n0) is the rate of
         // change of length per unit length along the fiber direction. Negative =
         // shortening (contracting → anchor phase); positive = lengthening
         // (extending → release phase, must NOT grip or the segment can never slide).
-        let n = particles.activation_dir[i];
+        let n = ctx.activation_dir;
         let len_sq = n.dot(n);
         if len_sq <= f32::EPSILON {
             return;
         }
         let n0 = n / len_sq.sqrt();
-        let strain_rate = n0.dot(particles.velocity_gradient[i] * n0);
+        let strain_rate = n0.dot(*ctx.velocity_gradient * n0);
         let contracting = (-strain_rate).clamp(0.0, 1.0);
-        let grip = (self.grip_gain * particles.activation[i] * contracting).clamp(0.0, 1.0);
+        let grip = (self.grip_gain * ctx.activation * contracting).clamp(0.0, 1.0);
         // Only the horizontal (tangential-to-floor) component is damped -- the
         // vertical (normal) component is the wall's own no-penetration physics
         // (inner FrictionBoundary), not this mechanism's job. Matches the doc's own
         // claim above: "horizontal velocity zeroed", not the whole vector.
-        particles.v[i].x *= 1.0 - grip;
+        ctx.v.x *= 1.0 - grip;
     }
 }

@@ -2,7 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::Particles;
+use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Weakly-compressible Newtonian fluid (Tait EOS + deviatoric viscosity).
 /// Refs: Becker & Teschner 2007 (WCSPH), Hu et al. 2018 (MLS-MPM).
@@ -174,15 +174,13 @@ impl MaterialModel for NewtonianFluidMaterial {
         particles.volume[i].max(self.min_volume)
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let j = particles.deformation_gradient[i]
-            .determinant()
-            .clamp(0.5, 2.0);
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let j = ctx.deformation_gradient.determinant().clamp(0.5, 2.0);
         let s = j.sqrt();
-        particles.deformation_gradient[i] =
+        *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
         if self.settling_damping > 0.0 {
-            particles.v[i] *= 1.0 - (self.settling_damping * dt).min(0.5);
+            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
         }
     }
 

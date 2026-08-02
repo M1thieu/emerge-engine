@@ -7,7 +7,7 @@ use crate::materials::utils::{
     rankine_damage_saturation_point, reconstruct_f, stress_to_hencky,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
-use crate::particle::Particles;
+use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Rankine (maximum principal stress) elastoplastic material — brittle tensile failure.
 ///
@@ -70,12 +70,12 @@ impl RankineMaterial {
 
     /// Brittle rock regime: tensile strength as a real FRACTION of the caller's own
     /// `young_modulus`, not a hardcoded absolute number -- a fixed absolute value only
-    /// "means" rock at one specific implicit E, silently wrong at any other (found via
-    /// 2026-07-02 audit: this preset's old hardcoded tensile=500 gave an 18-50% tensile/E
-    /// ratio at the values this engine's own tests pass it, vs. real brittle rock's
-    /// tensile-to-modulus ratio of ~2-3e-4 -- granite/basalt: E~50 GPa, tensile
-    /// strength~10-15 MPa (Goodman 1989, "Introduction to Rock Mechanics"). Real, fast
-    /// softening_rate=2.0 (brittle failure propagates quickly) unchanged.
+    /// "means" rock at one specific implicit E, silently wrong at any other (a hardcoded
+    /// tensile=500 gives an 18-50% tensile/E ratio at the values this engine's own tests
+    /// pass it, vs. real brittle rock's tensile-to-modulus ratio of ~2-3e-4 --
+    /// granite/basalt: E~50 GPa, tensile strength~10-15 MPa (Goodman 1989, "Introduction
+    /// to Rock Mechanics"). Real, fast softening_rate=2.0 (brittle failure propagates
+    /// quickly) unchanged.
     pub fn stiff_brittle(young_modulus: f32, poisson_ratio: f32) -> Self {
         const ROCK_TENSILE_TO_MODULUS_RATIO: f32 = 2.5e-4;
         Self::from_young_modulus(
@@ -215,9 +215,8 @@ impl MaterialModel for RankineMaterial {
         particles.initial_volume[i]
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let (u, sigma, vt) = svd2(f_trial);
 
         let eps = hencky_strains(sigma);
@@ -228,7 +227,7 @@ impl MaterialModel for RankineMaterial {
             self.lambda * eps.x + a * eps.y,
         );
 
-        let damage = particles.friction_hardening[i];
+        let damage = *ctx.friction_hardening;
         let t_eff = self.tensile_strength_eff(damage);
 
         let (tau_proj, yielded) = self.project_stress(tau, t_eff);
@@ -236,18 +235,18 @@ impl MaterialModel for RankineMaterial {
         let sigma_new = if yielded {
             let eps_proj = stress_to_hencky(tau_proj, self.lambda, self.mu);
             let eps_trial = stress_to_hencky(tau, self.lambda, self.mu);
-            particles.friction_hardening[i] = (damage + (eps_trial - eps_proj).length())
+            *ctx.friction_hardening = (damage + (eps_trial - eps_proj).length())
                 .min(rankine_damage_saturation_point(self.softening_rate));
             Vec2::new(eps_proj.x.exp(), eps_proj.y.exp())
         } else {
             sigma
         };
 
-        particles.deformation_gradient[i] = reconstruct_f(u, sigma_new, vt);
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+        *ctx.deformation_gradient = reconstruct_f(u, sigma_new, vt);
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn params(&self) -> MaterialParams {
@@ -306,7 +305,7 @@ mod marginal_yield_tests {
         p.initial_volume = 1.0;
         p.friction_hardening = damage;
         let mut particles = Particles::from(vec![p]);
-        mat.update_particle(&mut particles, 0, 1.0);
+        mat.update_particle(&mut particles.update_ctx(0), 1.0);
         let f = particles.deformation_gradient[0];
         (
             Vec2::new(f.x_axis.x, f.y_axis.y),

@@ -14,6 +14,7 @@ use crate::rod::{Rod, rod_cfl_dt};
 // choose_substep_dt: picks the largest CFL-safe dt ≤ max_dt.
 // Called inside step()'s substep loop — max_dt is the remaining frame time.
 // pub(crate) so the GPU solver can reuse this without duplicating CFL logic.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn choose_substep_dt(
     config: &SimConfig,
     particles: &Particles,
@@ -21,6 +22,7 @@ pub(crate) fn choose_substep_dt(
     materials: &MaterialRegistry,
     rods: &[Rod],
     max_dt: f32,
+    granular_fluidity_dt_bound: Option<f32>,
 ) -> f32 {
     if !config.adaptive_timestep {
         return max_dt.min(config.dt);
@@ -73,6 +75,19 @@ pub(crate) fn choose_substep_dt(
         if rod_dt.is_finite() && rod_dt > 0.0 {
             min_mat_dt = min_mat_dt.min(rod_dt);
         }
+    }
+    // Nonlocal Granular Fluidity's own real, quoted Von Neumann stability
+    // bound (`GranularFluidityConfig::stability_dt`, Haeri & Skonieczny
+    // 2022) -- unlike `ScalarDiffusionField`/`ThermalDiffusion`'s bound
+    // (documented only, never enforced, since thermal diffusivity is tiny
+    // relative to MPM's own CFL), this one is folded in for real: `None`
+    // (every scene without a configured `GranularFluidityField`) leaves
+    // this exactly as it always was.
+    if let Some(bound) = granular_fluidity_dt_bound
+        && bound.is_finite()
+        && bound > 0.0
+    {
+        min_mat_dt = min_mat_dt.min(bound);
     }
     cfl_bound(config, max_speed, min_mat_dt, max_dt)
 }

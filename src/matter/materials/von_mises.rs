@@ -6,7 +6,7 @@ use crate::materials::utils::{
     LOG_CLAMP, MIN_J, elastic_wave_dt, hencky_strains, lame_from_young, reconstruct_f,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
-use crate::particle::Particles;
+use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Von Mises elastoplastic material: J2 plasticity with optional linear isotropic hardening.
 ///
@@ -105,9 +105,8 @@ impl MaterialModel for VonMisesMaterial {
         particles.initial_volume[i]
     }
 
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * particles.velocity_gradient[i])
-            * particles.deformation_gradient[i];
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let (u, sigma, vt) = svd2(f_trial);
 
         let eps = hencky_strains(sigma);
@@ -115,7 +114,7 @@ impl MaterialModel for VonMisesMaterial {
         let dev = eps - Vec2::splat(tr * 0.5);
         let dev_norm = dev.length();
 
-        let kappa = particles.friction_hardening[i];
+        let kappa = *ctx.friction_hardening;
         let effective_yield = self.yield_stress + self.hardening_modulus * kappa;
         let elastic_dev = 2.0 * self.mu * dev_norm;
 
@@ -126,18 +125,18 @@ impl MaterialModel for VonMisesMaterial {
             } else {
                 0.0
             };
-            particles.friction_hardening[i] = kappa + gamma;
+            *ctx.friction_hardening = kappa + gamma;
             let eps_proj = dev * (effective_yield / elastic_dev) + Vec2::splat(tr * 0.5);
             Vec2::new(eps_proj.x.exp(), eps_proj.y.exp())
         } else {
             sigma
         };
 
-        particles.deformation_gradient[i] = reconstruct_f(u, sigma_new, vt);
-        let j = particles.deformation_gradient[i].determinant().max(MIN_J);
-        let v = (particles.initial_volume[i] * j).max(1.0e-6);
-        particles.volume[i] = v;
-        particles.density[i] = particles.mass[i] / v;
+        *ctx.deformation_gradient = reconstruct_f(u, sigma_new, vt);
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let v = (ctx.initial_volume * j).max(1.0e-6);
+        *ctx.volume = v;
+        *ctx.density = ctx.mass / v;
     }
 
     fn params(&self) -> MaterialParams {
@@ -188,7 +187,7 @@ mod marginal_yield_tests {
         p.initial_volume = 1.0;
         p.friction_hardening = kappa;
         let mut particles = Particles::from(vec![p]);
-        mat.update_particle(&mut particles, 0, 1.0);
+        mat.update_particle(&mut particles.update_ctx(0), 1.0);
         let f = particles.deformation_gradient[0];
         (
             Vec2::new(f.x_axis.x, f.y_axis.y),

@@ -149,7 +149,8 @@ pub fn estimate_particle_volumes(particles: &mut Vec<Particle>, grid_res: usize)
 
 // Thermodynamics
 pub use thermodynamics::{
-    ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
+    GranularFluidityConfig, GranularFluidityField, ScalarDiffusionConfig, ScalarDiffusionField,
+    ThermalConfig, ThermalDiffusion, saturating_uptake,
 };
 
 // Diagnostics + plugin system

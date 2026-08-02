@@ -332,11 +332,20 @@ impl Grid {
                 let before = pre_force.get(&idx).copied().unwrap_or(Vec2::ZERO);
                 let after = cell.momentum;
                 let dv = after - before;
+                // Clamp the damping magnitude to at most `|after|` so the corrected
+                // component can reach zero but never cross it. Uncapped, `damp` can
+                // exceed `after`'s own magnitude whenever this substep's force
+                // transient (`dv`) is large relative to the resulting velocity --
+                // common for several substeps after a violent event even once the
+                // visible motion looks settled. Past that point the correction
+                // overshoots zero and flips sign, injecting energy instead of
+                // removing it. Standard fix for this class of non-viscous
+                // (Cundall 1982/1987) damping formulation.
                 let damp_component = |v: f32, d: f32| -> f32 {
                     if v == 0.0 {
                         0.0
                     } else {
-                        coefficient * d.abs() * v.signum()
+                        (coefficient * d.abs()).min(v.abs()) * v.signum()
                     }
                 };
                 let damp = Vec2::new(damp_component(after.x, dv.x), damp_component(after.y, dv.y));

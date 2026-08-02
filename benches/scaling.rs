@@ -174,6 +174,7 @@ fn bench_g2p(c: &mut Criterion) {
                         active_count: fx.n,
                         pre_force_snapshot: None,
                         asflip_blend: 0.0,
+                        nonlocal_fluidity: &[],
                     },
                 );
             });
@@ -250,7 +251,7 @@ fn bench_update_particle(c: &mut Criterion) {
             group.bench_function($name, |b| {
                 b.iter(|| {
                     for i in 0..n {
-                        $mat.update_particle(&mut ps, i, dt);
+                        $mat.update_particle(&mut ps.update_ctx(i), dt);
                     }
                 })
             });

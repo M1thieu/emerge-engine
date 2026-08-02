@@ -204,4 +204,4 @@ impl Particle {
 // `crate::particle::Particles` / `emerge::particle::Particles` path (and
 // `ParticlesIter`) keeps resolving unchanged.
 mod soa;
-pub use soa::{Particles, ParticlesIter};
+pub use soa::{ParticleUpdateCtx, Particles, ParticlesIter};

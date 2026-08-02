@@ -28,7 +28,7 @@ use spatial_hash::SpatialHash;
 use glam::{Mat2, Vec2};
 
 use crate::rod::Rod;
-use crate::thermodynamics::{ScalarDiffusionField, ThermalDiffusion};
+use crate::thermodynamics::{GranularFluidityField, ScalarDiffusionField, ThermalDiffusion};
 use crate::{boundary::BoundaryCondition, fields::Field, materials::registry::MaterialRegistry};
 use crate::{
     grid::Grid,
@@ -60,6 +60,17 @@ pub struct Simulation {
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) — run automatically each substep.
     scalar_fields: Vec<ScalarDiffusionField>,
+    /// Nonlocal Granular Fluidity field (see `energy::thermodynamics::
+    /// granular_fluidity` module doc) -- `None` (default) for every scene
+    /// that doesn't opt in, same zero-cost-when-unused property `thermal`
+    /// already has.
+    granular_fluidity: Option<GranularFluidityField>,
+    /// Persistent per-particle gathered `g`, indexed by particle -- read by
+    /// G2P (`G2PParams::nonlocal_fluidity`), written by the granular-
+    /// fluidity pass at the end of the SAME substep (one-substep lag, same
+    /// convention thermal/scalar diffusion already use). Empty when
+    /// `granular_fluidity` is `None`.
+    granular_fluidity_g: Vec<f32>,
     frame_index: u64,
     last_step_dt: f32,
     last_substeps: usize,
