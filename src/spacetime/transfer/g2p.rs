@@ -50,6 +50,7 @@ impl MutFieldPtrs {
         activation: f32,
         activation_dir: Vec2,
         nonlocal_fluidity: f32,
+        cosserat_curvature: Vec2,
     ) -> ParticleUpdateCtx<'_> {
         unsafe {
             ParticleUpdateCtx {
@@ -69,6 +70,7 @@ impl MutFieldPtrs {
                 activation,
                 activation_dir,
                 nonlocal_fluidity,
+                cosserat_curvature,
             }
         }
     }
@@ -95,6 +97,13 @@ pub struct G2PParams<'a> {
     /// falls back to `0.0` in that case, matching `ParticleUpdateCtx::
     /// nonlocal_fluidity`'s own real-rest-state default.
     pub nonlocal_fluidity: &'a [f32],
+    /// Gathered Cosserat micro-curvature, one entry per active particle,
+    /// from a coupled `CosseratField` computed at the END of the PREVIOUS
+    /// substep -- same one-substep-lag convention as `nonlocal_fluidity`
+    /// above. Empty (`&[]`) when no such field is configured for this scene
+    /// -- every read below falls back to `Vec2::ZERO`, matching
+    /// `ParticleUpdateCtx::cosserat_curvature`'s own real-rest-state default.
+    pub cosserat_curvature: &'a [Vec2],
 }
 
 /// Analytic adjoint of G2P's velocity gather (`new_v = sum_c weight_c *
@@ -238,6 +247,7 @@ pub fn gather_grid_to_particles(
         asflip_blend,
         pre_force_snapshot,
         nonlocal_fluidity,
+        cosserat_curvature,
     } = params;
     let grid_res = grid.resolution();
 
@@ -309,6 +319,7 @@ pub fn gather_grid_to_particles(
                     activations[i],
                     activation_dirs[i],
                     nonlocal_fluidity.get(i).copied().unwrap_or(0.0),
+                    cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
                 )
             };
             let mixture_phase = if mixture_active {

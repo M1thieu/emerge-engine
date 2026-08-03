@@ -1,5 +1,6 @@
 pub mod bingham;
 pub mod corotated;
+pub mod cosserat;
 pub mod elastic;
 pub mod fluid;
 pub mod granular_fluid;

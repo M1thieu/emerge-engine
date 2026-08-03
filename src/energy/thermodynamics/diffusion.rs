@@ -11,10 +11,14 @@
 //! Uses the same quadratic B-spline kernel as MPM transfer for consistency.
 //!
 //! # CFL note
-//! Thermal CFL limit: dt_thermal ≤ dx² / (4α).
-//! For typical materials (water α≈1.4e-7 m²/s, dx=0.1m) this is ~18000s —
-//! orders of magnitude larger than MPM's wave-speed CFL (~0.002s).
-//! Thermal CFL is never the bottleneck; no separate substep needed.
+//! Thermal CFL limit: dt_thermal ≤ dx² / (4α), exposed as
+//! [`ThermalConfig::stability_dt`] and folded into `choose_substep_dt`
+//! whenever a `ThermalDiffusion` is attached. For typical materials (water
+//! α≈1.4e-7 m²/s, dx=0.1m) this is ~18000s — orders of magnitude larger
+//! than MPM's wave-speed CFL (~0.002s), so it's normally a no-op. It only
+//! bites on a real misconfiguration (e.g. passing `grid_cell_size` instead
+//! of `dx_meters`, see that field's own doc) — enforcing it turns that from
+//! a silent runaway into an automatically clamped, still-correct substep.
 
 use glam::IVec2;
 
@@ -113,6 +117,15 @@ impl ThermalConfig {
         // α = k / (ρ·c_p·dx²): units = (m²/s) / m² = 1/s (frequency in grid coords)
         self.conductivity
             / (self.density * self.heat_capacity * self.grid_cell_size * self.grid_cell_size)
+    }
+
+    /// Explicit-diffusion stability bound `dt ≤ dx²/(4α)`, in terms of the
+    /// already-dx²-folded `alpha_grid()` (so `dt ≤ 1/(4·alpha_grid())`, no
+    /// separate `dx` argument needed). See this module's own `# CFL note`
+    /// for why this is normally a no-op and when it actually bites.
+    #[inline]
+    pub fn stability_dt(&self) -> f32 {
+        1.0 / (4.0 * self.alpha_grid())
     }
 }
 

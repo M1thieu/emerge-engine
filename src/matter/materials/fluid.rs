@@ -77,8 +77,6 @@ impl NewtonianFluidMaterial {
     /// Weakly-compressible variant: caps sound speed at `c_ref_m_s`.
     ///
     /// Use `c_ref_m_s = 10 * v_max_m_s` (WCSPH rule) to limit compressibility to ~1%.
-    /// Weakly-compressible variant: caps sound speed at `c_ref_m_s`.
-    /// Use `c_ref_m_s = 10 * v_max_m_s` (WCSPH rule) to limit compressibility to ~1%.
     /// `rho_kg_m3` and `eta_pa_s` are the fluid's SI density and viscosity.
     pub fn weakly_compressible(
         rho_kg_m3: f32,
@@ -126,15 +124,34 @@ impl MaterialModel for NewtonianFluidMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        // Clamp density both ways: min prevents div-by-zero at low PPC,
-        // max (2x rho0) limits how far the EOS pressure response saturates
-        // under impact overcompression. Keep this at 2x, not looser --
+        // Density from F's own determinant (rho = rest_density / J), NOT the
+        // grid-mass-gathered `particles.density[i]` this used before -- a
+        // real CPU/GPU parity fix: the GPU fluid path (`p2g.wgsl`'s case 1u)
+        // already uses this exact formula ("sparkl canonical, no grid-lag"
+        // per its own comment), and `GranularFluidMaterial`'s CPU code
+        // (the engine's other EOS-pressure material) already does too --
+        // plain `NewtonianFluidMaterial` was the one inconsistent holdout.
+        // Grid-mass density carries a real one-substep lag (P2G scatter ->
+        // grid -> G2P gather, vs J which is already current this same
+        // substep) and is blind to how it's actually used elsewhere in this
+        // engine (GranularFluid, GPU) -- switching removes a real, disclosed
+        // inconsistency, not just a style choice.
+        //
+        // Real, honest disclosure: the OLD grid-mass approach is exactly
+        // what `hydrostatic_pressure_matches_rho_g_h`'s own doc measured
+        // settling at ~1.3x rest_density (not the correct ~1.003x) --
+        // whether J-based density changes that specific overshoot is NOT
+        // yet re-measured (that test stays `#[ignore]`d); this fix is
+        // motivated by real consistency across the engine, not a confirmed
+        // fix for that specific still-open gap.
+        //
+        // Clamp density both ways: min prevents div-by-zero, max (2x rho0)
+        // limits how far the EOS pressure response saturates under impact
+        // overcompression. Keep this at 2x, not looser --
         // `fluid_spreads_more_than_elastic_under_gravity` (tests/accuracy.rs)
-        // needs it (a looser clamp stops the fluid spreading at all). The
-        // separate, still-open `hydrostatic_pressure_matches_rho_g_h`
-        // overshoot gap is unrelated to this clamp -- see that test's own
-        // doc (needs geostatic pre-stress init, not a density-clamp change).
-        let density = particles.density[i]
+        // needs it (a looser clamp stops the fluid spreading at all).
+        let j = particles.deformation_gradient[i].determinant().max(1.0e-6);
+        let density = (self.rest_density / j)
             .max(self.min_density)
             .min(self.rest_density * 2.0);
         let pressure = (self.eos_stiffness

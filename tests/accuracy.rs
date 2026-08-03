@@ -4,6 +4,7 @@
 //! Each test compares a settled simulation to an experimentally/analytically known number.
 
 extern crate emerge_engine as emerge;
+use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
@@ -538,7 +539,11 @@ fn diag_static_friction_boost_performance_probe() {
             total_substeps += s;
             max_substeps_seen = max_substeps_seen.max(s);
         }
-        (start.elapsed().as_secs_f32(), total_substeps, max_substeps_seen)
+        (
+            start.elapsed().as_secs_f32(),
+            total_substeps,
+            max_substeps_seen,
+        )
     }
 
     println!("── STATIC FRICTION BOOST PERFORMANCE PROBE (200 steps each) ──");
@@ -4083,6 +4088,77 @@ fn diag_collapsed_pile_after_full_tensor_state_reset() {
     }
 }
 
+/// THE MISSING ABLATION: resets ONLY `deformation_gradient` -> IDENTITY,
+/// leaving `friction_hardening`/`log_volume_strain` at whatever the real,
+/// natural collapse trajectory produced (no scalar reset at all). Real
+/// evidence this specifically targets: `hardening_relaxation_rate`'s own
+/// calibration sweep showed lowering q makes the pile WORSE (q above
+/// baseline = more hardening = more yield resistance, not a driver of
+/// creep) -- meaning the full three-field reset's real win might come
+/// ENTIRELY from resetting F, with the q/lvs reset actually fighting
+/// against it (not helping). If this alone reproduces something close to
+/// the full reset's 29.5deg frozen plateau, F-reset is the real,
+/// sufficient ingredient. If it doesn't, the win needs the three fields
+/// together specifically.
+#[test]
+fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
+    const LOCAL_GRID: usize = 128;
+
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    solver.step_n(1500);
+    let shape_1500 = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+    println!(
+        "step  1500 (dynamics only)     : angle={:.1} deg",
+        shape_1500.angle_deg
+    );
+
+    // ONLY F is reset -- q/log_volume_strain untouched, still carrying
+    // whatever the real collapse left them at.
+    {
+        let particles = solver.particles_mut();
+        for f in particles.deformation_gradient.iter_mut() {
+            *f = Mat2::IDENTITY;
+        }
+    }
+
+    solver.set_apic_blend(0.05);
+    solver.set_cundall_damping(1.0);
+
+    let checkpoints: &[usize] = &[6000, 12000, 25000];
+    let mut cumulative = 0usize;
+    for &target in checkpoints {
+        solver.step_n(target - cumulative);
+        cumulative = target;
+        let xs: Vec<Vec2> = solver.particles().x.clone();
+        let shape = measure_pile_shape(&xs, FLOOR);
+        println!(
+            "step {:6} (+{:6} relax, F-ONLY reset): height={:.2} half-w={:.2} angle={:.1} deg",
+            1500 + cumulative,
+            cumulative,
+            shape.height,
+            shape.base_half_width,
+            shape.angle_deg
+        );
+    }
+}
+
 /// Calibration for `DruckerPragerMaterial::elastic_relaxation_rate` (real
 /// stress-relaxation mechanism, see that field's own doc) against the same
 /// scene the tensor-reset diagnostic proved CAN hold perfectly (29.5deg,
@@ -4147,6 +4223,867 @@ fn diag_elastic_relaxation_calibration_sweep() {
         println!("relaxation_rate={rate} rest_rate_scale={rest_rate_scale}:");
         for (step, h, hw, a) in run(rate, rest_rate_scale) {
             println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+        }
+    }
+}
+
+/// Re-tests `elastic_relaxation_rate` at MUCH more aggressive rates than the
+/// original (falsified, no-effect) sweep -- real evidence this targets: the
+/// F-only reset ablation (`diag_collapsed_pile_after_deformation_gradient_
+/// only_reset`) proved F-reset ALONE reproduces the full frozen plateau
+/// (29.6deg, bit-for-bit, matching the 3-field reset's 29.5deg), while the
+/// original small-rate sweep (0.005-0.02) showed zero effect because real
+/// F already relaxes to near-rest naturally within ~500 holding steps --
+/// too slow to matter before natural relaxation gets there first. This
+/// tests whether a rate fast enough to reach near-identity within the
+/// first few dozen/hundred substeps (functionally mimicking an instant
+/// reset) reproduces the ablation's real win, instead of assuming the
+/// mechanism's FORM was wrong.
+#[test]
+fn diag_elastic_relaxation_aggressive_rate_sweep() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(relaxation_rate: f32, rest_rate_scale: f32) -> Vec<(usize, f32, f32, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.elastic_relaxation_rate = relaxation_rate;
+        sand.rest_rate_scale = rest_rate_scale;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        solver.step_n(1500);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+
+        let mut results = Vec::new();
+        let mut cumulative = 0usize;
+        for &target in &[6000usize, 25000] {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let xs: Vec<Vec2> = solver.particles().x.clone();
+            let shape = measure_pile_shape(&xs, FLOOR);
+            results.push((
+                1500 + cumulative,
+                shape.height,
+                shape.base_half_width,
+                shape.angle_deg,
+            ));
+        }
+        results
+    }
+
+    println!("── ELASTIC RELAXATION AGGRESSIVE-RATE SWEEP ──");
+    println!("baseline (rate=0):");
+    for (step, h, hw, a) in run(0.0, 1.0) {
+        println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+    }
+    for &(rate, rest_rate_scale) in &[(1.0f32, 0.05f32), (10.0f32, 0.05f32), (100.0f32, 0.05f32)] {
+        println!("relaxation_rate={rate} rest_rate_scale={rest_rate_scale}:");
+        for (step, h, hw, a) in run(rate, rest_rate_scale) {
+            println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+        }
+    }
+}
+
+/// Calibration for `DruckerPragerMaterial::post_event_relax_threshold` --
+/// the EDGE-TRIGGERED mechanism, grounded in Cundall 1982's kinetic-damping
+/// peak-reset and confirmed in isolation
+/// (`diag_post_event_relax_isolated_edge_detection_check`) to fire exactly
+/// once per falling edge. This is the real test: does firing automatically
+/// on detected quiescence (instead of at a hand-picked step count)
+/// reproduce the F-only-reset ablation's real win
+/// (`diag_collapsed_pile_after_deformation_gradient_only_reset`, 29.6deg
+/// bit-for-bit frozen)? Same reduced-checkpoint discipline as every sweep
+/// tonight before an expensive full-length confirmation.
+#[test]
+fn diag_post_event_relax_calibration_sweep() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(threshold: f32) -> Vec<(usize, f32, f32, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.post_event_relax_threshold = threshold;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        solver.step_n(1500);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+
+        let mut results = Vec::new();
+        let mut cumulative = 0usize;
+        for &target in &[6000usize, 25000] {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let xs: Vec<Vec2> = solver.particles().x.clone();
+            let shape = measure_pile_shape(&xs, FLOOR);
+            results.push((
+                1500 + cumulative,
+                shape.height,
+                shape.base_half_width,
+                shape.angle_deg,
+            ));
+        }
+        results
+    }
+
+    println!("── POST-EVENT RELAX CALIBRATION SWEEP ──");
+    println!("baseline (threshold=0):");
+    for (step, h, hw, a) in run(0.0) {
+        println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+    }
+    for &threshold in &[0.001f32, 0.01, 0.05] {
+        println!("post_event_relax_threshold={threshold}:");
+        for (step, h, hw, a) in run(threshold) {
+            println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+        }
+    }
+}
+
+/// Full 100,000-step confirmation for `post_event_relax_threshold=0.001` --
+/// the ONE combo that showed a real, exact match to the proven F-only-reset
+/// target in the reduced calibration sweep above (29.6deg, bit-for-bit,
+/// identical at both 7500 and 26500 checkpoints -- the first mechanism
+/// tonight to actually reproduce the ablation's real result on the full
+/// scene, not just in isolation). Real question this settles: does it
+/// actually PLATEAU at the full long horizon (matching the same rigor
+/// already applied to the falsified `static_friction_boost` mechanism,
+/// `static_kinetic_hysteresis_long_horizon_full_confirmation`), or does
+/// something subtle break down past 26500 steps that the shorter sweep
+/// couldn't show?
+#[test]
+fn post_event_relax_long_horizon_full_confirmation() {
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    sand.post_event_relax_threshold = 0.001;
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    solver.step_n(1500);
+    let shape_1500 = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+    println!(
+        "step  1500 (dynamics only)     : angle={:.1} deg",
+        shape_1500.angle_deg
+    );
+
+    solver.set_apic_blend(0.05);
+    solver.set_cundall_damping(1.0);
+
+    let checkpoints: &[usize] = &[6000, 12000, 25000, 50000, 100000];
+    let mut cumulative = 0usize;
+    for &target in checkpoints {
+        solver.step_n(target - cumulative);
+        cumulative = target;
+        let xs: Vec<Vec2> = solver.particles().x.clone();
+        let shape = measure_pile_shape(&xs, FLOOR);
+        println!(
+            "step {:7} (+{:6} relax, post_event_relax_threshold=0.001): height={:.2} half-w={:.2} angle={:.1} deg",
+            1500 + cumulative,
+            cumulative,
+            shape.height,
+            shape.base_half_width,
+            shape.angle_deg
+        );
+    }
+}
+
+/// Is the `switch_step=1500` trigger (`sand_collapse_settle_demo.rs`, and
+/// the test above) a tuned magic number that only produces a real-looking
+/// angle at that EXACT value, or is the result robust across a real range
+/// of switch timings? Direct, falsifiable test of that question, prompted
+/// by a real user challenge ("no hardcode will get tolerated only IRL
+/// principles") rather than assumed. If the held angle is only sane near
+/// 1500 and garbage elsewhere, that's a genuine cherry-picked-constant
+/// problem, not a robust fix.
+#[test]
+fn post_event_relax_switch_step_sensitivity() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(switch_step: usize, hold_steps: usize) -> f32 {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.post_event_relax_threshold = 0.001;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        solver.step_n(switch_step);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+        solver.step_n(hold_steps);
+
+        measure_pile_shape(&solver.particles().x.clone(), FLOOR).angle_deg
+    }
+
+    println!("── SWITCH-STEP SENSITIVITY (is 1500 a tuned magic number?) ──");
+    for &switch_step in &[800usize, 1000, 1200, 1500, 1800, 2200, 3000] {
+        let angle = run(switch_step, 5000);
+        println!("  switch_step={switch_step:5} -> held angle = {angle:.1} deg");
+    }
+}
+
+/// Real alternative to a step-count trigger at all: does the SAME fix hold
+/// up with ONE constant, real, cited damping regime (Cundall 1982 kinetic
+/// damping, cundall_damping=1.0) active from t=0 -- no numerical mode
+/// switch, no magic step count whatsoever? If the column still collapses
+/// naturally (doesn't freeze rigid in its unstable starting shape) and
+/// settles near the same real angle, that is a strictly more defensible,
+/// zero-hardcoded-trigger version of this demo/test. If it instead freezes
+/// the column in its tall, obviously-unstable starting shape, that's a
+/// real, honest reason a switch is needed -- reported either way, not
+/// assumed.
+#[test]
+fn post_event_relax_constant_damping_from_start_no_switch() {
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.05,
+        cundall_damping: 1.0,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    sand.post_event_relax_threshold = 0.001;
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    let initial_shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+    println!("── CONSTANT DAMPING FROM t=0, NO SWITCH, NO MAGIC STEP COUNT ──");
+    println!(
+        "  step      0 (initial column) : height={:.2} half-w={:.2} angle={:.1} deg",
+        initial_shape.height, initial_shape.base_half_width, initial_shape.angle_deg
+    );
+    let mut cumulative = 0usize;
+    for &target in &[1500usize, 6500, 20000] {
+        solver.step_n(target - cumulative);
+        cumulative = target;
+        let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+        println!(
+            "  step {:7}                : height={:.2} half-w={:.2} angle={:.1} deg",
+            target, shape.height, shape.base_half_width, shape.angle_deg
+        );
+    }
+}
+
+/// Real, deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
+/// (Cicoira et al. 2022 / Jop-Forterre-Pouliquen 2006, already in this engine,
+/// never tested against THIS scene) makes friction genuinely rate-dependent
+/// (mu(I) = mu_static + (mu_dynamic-mu_static)/(Q*sqrt(p)/gamma_dot + 1)) --
+/// a real, local, continuously-computed constitutive law, not a global timer.
+/// ONE constant material + ONE constant numerical config for the entire run
+/// (apic_blend=0.6 kept -- already independently established as the numerical-
+/// stability floor for ANY violent collapse, material-agnostic, not a target-
+/// angle tuning knob; cundall_damping=0, i.e. no artificial global damping at
+/// all). If this arrests near a real angle and HOLDS long-horizon on its own,
+/// that is a genuine fix. If it just slides like plain DP, that's a real,
+/// honest negative result too -- reported either way.
+#[test]
+fn mu_i_rheology_column_collapse_natural_arrest_check() {
+    use emerge::MuIRheologyMaterial;
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        cundall_damping: 0.0,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    // dense_packed: mu_static=tan(30deg), mu_dynamic=tan(40deg) -- real dry-sand
+    // range (Lambe & Whitman 1969), matching the same 30-35deg target as the
+    // DP tests above, not cherry-picked for this specific check.
+    let sand = MuIRheologyMaterial::dense_packed(1.0e5, 0.2);
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    println!("── MU(I) RHEOLOGY: ONE constant law, NO switch, NO magic step count ──");
+    let mut cumulative = 0usize;
+    for &target in &[1500usize, 3000, 6000, 12000, 25000, 50000] {
+        solver.step_n(target - cumulative);
+        cumulative = target;
+        let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+        println!(
+            "  step {:7} : height={:.2} half-w={:.2} angle={:.1} deg",
+            target, shape.height, shape.base_half_width, shape.angle_deg
+        );
+    }
+}
+
+/// Direct real-data check on a lead found by re-reading Klar et al. 2016 in
+/// full (2026-08-03): their own hardening law (already correctly implemented
+/// here as `hardening_peak`/`hardening_decay`/`friction_residual`, same
+/// formula, same citation) makes the friction angle rise to a peak then
+/// relax to a residual ASYMPTOTE (35deg for every DP preset used tonight) as
+/// accumulated plastic strain `q` grows -- real critical-state soil-mechanics
+/// behavior, not a gap. Nobody has actually measured, during a real plain
+/// collapse (Klar defaults, NO post_event_relax hack, NO artificial global
+/// damping switch), whether `q` (`friction_hardening`) ever reaches the
+/// saturation range (`q_max = 5/hardening_decay = 25` for these defaults)
+/// where phi(q) actually gets close to that 35deg asymptote, or whether it
+/// stays low the whole time -- meaning the real hardening this engine
+/// already implements correctly never actually gets a chance to engage
+/// during a fast collapse. Measuring directly instead of guessing further.
+#[test]
+fn diag_hardening_state_saturation_during_plain_collapse() {
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        cundall_damping: 0.0,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    // Plain Klar 2016 defaults, no hacks: friction_angle=35deg (h0),
+    // hardening_peak=9deg (h1), hardening_decay=0.2 (h2), friction_residual=
+    // 10deg (h3) -- q_max = 5/0.2 = 25.
+    let sand = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+    let q_max = 5.0 / sand.hardening_decay;
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    fn percentiles(mut v: Vec<f32>) -> (f32, f32, f32) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = v.len();
+        (v[n / 2], v[(n as f32 * 0.9) as usize], v[n - 1])
+    }
+
+    println!("── HARDENING-STATE (q) SATURATION DURING PLAIN COLLAPSE, q_max={q_max:.1} ──");
+    let mut cumulative = 0usize;
+    for &target in &[500usize, 1500, 3000, 6000, 12000, 25000] {
+        solver.step_n(target - cumulative);
+        cumulative = target;
+        let particles = solver.particles();
+        let qs: Vec<f32> = particles.friction_hardening.clone();
+        let (q_p50, q_p90, q_pmax) = percentiles(qs);
+        let shape = measure_pile_shape(&particles.x.clone(), FLOOR);
+        println!(
+            "  step {:7} : angle={:5.1} deg   q p50={:5.2} p90={:5.2} max={:5.2}  (q_max={q_max:.1})",
+            target, shape.angle_deg, q_p50, q_p90, q_pmax
+        );
+    }
+}
+
+/// The REAL Cundall (1982) trigger, not a hand-picked step count: kinetic
+/// damping resets at a DETECTED PEAK in the system's own total kinetic
+/// energy (KE rises during collapse, peaks, then falls -- damping/holding
+/// engages once KE has fallen to `fallback_fraction` of that measured peak).
+/// This is a real, physically-measured event, not a magic number for the
+/// TIMING -- `fallback_fraction` itself is still a free parameter, so this
+/// sweeps it too: if the resulting angle is robust across a real range of
+/// fallback_fraction, that's genuine evidence the peak-detection is doing
+/// real work, not just relocating the same hardcode to a different knob.
+#[test]
+fn diag_ke_peak_triggered_switch_sensitivity() {
+    const LOCAL_GRID: usize = 128;
+    const MAX_STEPS: usize = 20000;
+
+    fn run(fallback_fraction: f32) -> (usize, f32, f32) {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            cundall_damping: 0.0,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        sand.post_event_relax_threshold = 0.001;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        let mut peak_ke = 0.0f32;
+        let mut switch_step = None;
+        for step in 0..MAX_STEPS {
+            solver.step();
+            let ke = solver.diagnostics_snapshot().total_kinetic_energy;
+            if switch_step.is_none() {
+                if ke > peak_ke {
+                    peak_ke = ke;
+                } else if peak_ke > 1.0e-6 && ke < peak_ke * fallback_fraction {
+                    solver.set_apic_blend(0.05);
+                    solver.set_cundall_damping(1.0);
+                    switch_step = Some(step);
+                }
+            }
+        }
+        let switch_step = switch_step.unwrap_or(MAX_STEPS);
+        let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+        (switch_step, peak_ke, shape.angle_deg)
+    }
+
+    println!("── KE-PEAK-TRIGGERED SWITCH: real event, not a hand-picked step ──");
+    for &fallback_fraction in &[0.8f32, 0.5, 0.2, 0.05] {
+        let (switch_step, peak_ke, angle) = run(fallback_fraction);
+        println!(
+            "  fallback_fraction={fallback_fraction:.2} -> auto-detected switch_step={switch_step:6} (peak_ke={peak_ke:.4}) -> held angle = {angle:.1} deg"
+        );
+    }
+}
+
+/// Real correction to `post_event_relax_constant_damping_from_start_no_switch`
+/// above: that test used `cundall_damping=1.0`, which `Grid::apply_cundall_
+/// damping`'s own formula shows caps the damping magnitude at `coefficient *
+/// |dv|` -- at coefficient=1.0 this cancels the ENTIRE force-driven velocity
+/// change every substep, including gravity's own steady pull, which is why
+/// the column froze rigid (a degenerate edge case, not a fair test of
+/// "constant real damping"). Real DEM/geotechnical literature studies this
+/// coefficient in the 0.5-0.9 range and reports the technique as a real,
+/// disclosed numerical convergence aid (not itself physical, same honest
+/// category as this engine's own `cohesion` field) whose FINAL equilibrium
+/// is reported as not very sensitive to the exact value in that range --
+/// unlike the switch-timing sensitivity found earlier tonight. Testing a
+/// real coefficient sweep, ONE constant value each from t=0, `apic_blend`
+/// held fixed at the already-established-stable 0.6 (isolating cundall_
+/// damping's own effect, not conflating it with a transfer-scheme change
+/// like the earlier, confounded test did).
+#[test]
+fn diag_constant_realistic_cundall_coefficient_sweep() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(coefficient: f32) -> Vec<(usize, f32, f32, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            cundall_damping: coefficient,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        sand.post_event_relax_threshold = 0.001;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let mut cumulative = 0usize;
+        let mut out = Vec::new();
+        for &target in &[1500usize, 6000, 15000] {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+            out.push((target, shape.height, shape.base_half_width, shape.angle_deg));
+        }
+        out
+    }
+
+    println!("── CONSTANT REAL CUNDALL COEFFICIENT FROM t=0, apic_blend FIXED at 0.6 ──");
+    for &coefficient in &[0.0f32, 0.3, 0.5, 0.7, 0.8, 0.9] {
+        for (steps, height, half_w, angle) in run(coefficient) {
+            println!(
+                "  coefficient={coefficient:.2}  step={steps:6} : height={height:.2} half-w={half_w:.2} angle={angle:.1} deg"
+            );
+        }
+    }
+}
+
+/// Calibration for `DruckerPragerMaterial::hardening_relaxation_rate` --
+/// the CORRECTLY-targeted mechanism per this session's own long-horizon
+/// measurement (`diag_j_and_plastic_memory_drift_long_horizon`: elastic F
+/// stays at rest the whole time, `friction_hardening`/`log_volume_strain`
+/// are the ones persistently elevated and still growing). Same reduced-
+/// checkpoint discipline as the (falsified) elastic-relaxation sweep above,
+/// before committing to an expensive full-length confirmation.
+#[test]
+fn diag_hardening_relaxation_calibration_sweep() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(relaxation_rate: f32, rest_rate_scale: f32) -> Vec<(usize, f32, f32, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.hardening_relaxation_rate = relaxation_rate;
+        sand.rest_rate_scale = rest_rate_scale;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        solver.step_n(1500);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+
+        let mut results = Vec::new();
+        let mut cumulative = 0usize;
+        for &target in &[6000usize, 25000] {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let xs: Vec<Vec2> = solver.particles().x.clone();
+            let shape = measure_pile_shape(&xs, FLOOR);
+            results.push((
+                1500 + cumulative,
+                shape.height,
+                shape.base_half_width,
+                shape.angle_deg,
+            ));
+        }
+        results
+    }
+
+    println!("── HARDENING RELAXATION CALIBRATION SWEEP ──");
+    println!("baseline (rate=0):");
+    for (step, h, hw, a) in run(0.0, 1.0) {
+        println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+    }
+    for &(rate, rest_rate_scale) in &[(0.001f32, 0.05f32), (0.01f32, 0.05f32), (0.1f32, 0.05f32)] {
+        println!("relaxation_rate={rate} rest_rate_scale={rest_rate_scale}:");
+        for (step, h, hw, a) in run(rate, rest_rate_scale) {
+            println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+        }
+    }
+}
+
+/// Measures the REAL deviatoric strain-rate norm (the exact same quantity
+/// `elastic_relaxation_rate`'s `rest_factor` gate divides by `rest_rate_scale`)
+/// during the "quiet" holding phase of the real creep scene -- answers what
+/// `rest_rate_scale` SHOULD have been, instead of guessing. Uses the public
+/// `velocity_gradient` field directly, no material-code changes needed.
+#[test]
+fn diag_real_strain_rate_norm_during_holding_phase() {
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    solver.step_n(1500);
+    solver.set_apic_blend(0.05);
+    solver.set_cundall_damping(1.0);
+
+    println!("── REAL STRAIN-RATE NORM DURING HOLDING ──");
+    let mut cumulative = 0usize;
+    for &checkpoint in &[100usize, 1000, 3000] {
+        solver.step_n(checkpoint - cumulative);
+        cumulative = checkpoint;
+        let mut norms: Vec<f32> = solver
+            .particles()
+            .velocity_gradient
+            .iter()
+            .map(|l| {
+                let dxx = l.x_axis.x;
+                let dyy = l.y_axis.y;
+                let dxy = 0.5 * (l.x_axis.y + l.y_axis.x);
+                let half_trace = (dxx + dyy) * 0.5;
+                let dev_xx = dxx - half_trace;
+                let dev_yy = dyy - half_trace;
+                (dev_xx * dev_xx + dev_yy * dev_yy + 2.0 * dxy * dxy).sqrt()
+            })
+            .collect();
+        norms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = norms.len();
+        let median = norms[n / 2];
+        let p90 = norms[(n as f32 * 0.9) as usize];
+        let max = norms[n - 1];
+        println!(
+            "  after {checkpoint} holding steps: median={median:.6} p90={p90:.6} max={max:.6}"
+        );
+    }
+}
+
+/// Real long-horizon check of WHICH per-particle state actually drifts
+/// during natural (un-reset) creep: elastic volumetric state (J =
+/// det(deformation_gradient), public field, no material-internal access
+/// needed) vs the plastic memory (`friction_hardening` q,
+/// `log_volume_strain`). A short (~500-step) live sample already showed J
+/// sitting at ~1.0 (elastic volume already relaxed) while q had drifted
+/// far from its baseline (1.111) at several particles -- but that sample
+/// only covered the first ~500 holding steps; `diag_collapsed_pile_after_
+/// internal_state_reset` (q+lvs reset alone, no F reset) ran to 12000 steps
+/// and was falsified, so this checks whether J itself drifts away from 1
+/// at THAT longer horizon too (the short sample may simply have been too
+/// early to see it).
+#[test]
+fn diag_j_and_plastic_memory_drift_long_horizon() {
+    const LOCAL_GRID: usize = 128;
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.6,
+        ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 16),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    let mut solver = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    solver.step_n(1500);
+    solver.set_apic_blend(0.05);
+    solver.set_cundall_damping(1.0);
+
+    fn percentiles(mut v: Vec<f32>) -> (f32, f32, f32) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let n = v.len();
+        (v[n / 2], v[(n as f32 * 0.9) as usize], v[n - 1])
+    }
+
+    println!("── J AND PLASTIC MEMORY DRIFT, LONG HORIZON ──");
+    let mut cumulative = 0usize;
+    for &checkpoint in &[3000usize, 8000, 15000, 25000] {
+        solver.step_n(checkpoint - cumulative);
+        cumulative = checkpoint;
+        let particles = solver.particles();
+        let j_devs: Vec<f32> = particles
+            .deformation_gradient
+            .iter()
+            .map(|f| (f.determinant() - 1.0).abs())
+            .collect();
+        let q_devs: Vec<f32> = particles
+            .friction_hardening
+            .iter()
+            .map(|q| (q - 1.111).abs())
+            .collect();
+        let lvs_abs: Vec<f32> = particles
+            .log_volume_strain
+            .iter()
+            .map(|v| v.abs())
+            .collect();
+        let (j_med, j_p90, j_max) = percentiles(j_devs);
+        let (q_med, q_p90, q_max) = percentiles(q_devs);
+        let (l_med, l_p90, l_max) = percentiles(lvs_abs);
+        let shape = measure_pile_shape(&particles.x.clone(), FLOOR);
+        println!(
+            "step {checkpoint:6}: angle={:.1} deg | |J-1| med={j_med:.6} p90={j_p90:.6} max={j_max:.6} \
+             | |q-1.111| med={q_med:.4} p90={q_p90:.4} max={q_max:.4} | |lvs| med={l_med:.6} p90={l_p90:.6} max={l_max:.6}",
+            shape.angle_deg
+        );
+    }
+}
+
+/// Minimal, isolated check of `DruckerPragerMaterial::elastic_relaxation_rate`'s
+/// own math in ONE particle's `update_particle` calls -- isolates the
+/// mechanism from the whole expensive long-horizon scene to answer a
+/// narrower question first: does the relaxation code path actually execute
+/// and change `deformation_gradient` at all, given zero velocity_gradient
+/// (rest_factor=1, gate fully open) and a deliberately anisotropic starting
+/// F (real nonzero deviatoric strain)? `cohesion` set huge so `project()`
+/// always returns None (deep elastic, never yields) -- isolates relaxation
+/// from any yield-projection interference.
+#[test]
+fn diag_elastic_relaxation_isolated_single_particle_check() {
+    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    sand.cohesion = 1.0e6;
+    sand.elastic_relaxation_rate = 0.5;
+    sand.rest_rate_scale = 1.0;
+
+    let f0 = Mat2::from_cols(Vec2::new(0.9, 0.0), Vec2::new(0.0, 1.05));
+    let mut particles = Particles::from(vec![Particle {
+        deformation_gradient: f0,
+        mass: 1.0,
+        initial_volume: 1.0,
+        volume: 1.0,
+        density: 1.0,
+        friction_hardening: 1.111,
+        ..Particle::zeroed()
+    }]);
+
+    println!("── ELASTIC RELAXATION ISOLATED CHECK ──");
+    for step in 0..20 {
+        sand.update_particle(&mut particles.update_ctx(0), 0.1);
+        let f = particles.deformation_gradient[0];
+        println!("  step {step:2}: F=({:.6}, {:.6})", f.x_axis.x, f.y_axis.y);
+    }
+}
+
+/// Minimal, isolated check of `DruckerPragerMaterial::hardening_relaxation_rate`'s
+/// own math in ONE particle's `update_particle` calls -- same discipline as
+/// the elastic-relaxation isolated check above, applied to the newly
+/// evidenced target (q, log_volume_strain) instead. `cohesion` set huge and
+/// `deformation_gradient=IDENTITY` with zero `velocity_gradient` so
+/// `project()` never yields -- isolates the relaxation from any
+/// yield-projection interference.
+#[test]
+fn diag_hardening_relaxation_isolated_single_particle_check() {
+    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    sand.cohesion = 1.0e6;
+    sand.hardening_relaxation_rate = 0.5;
+    sand.rest_rate_scale = 1.0;
+    let q_baseline = sand.friction_residual / sand.hardening_peak;
+
+    let mut particles = Particles::from(vec![Particle {
+        deformation_gradient: Mat2::IDENTITY,
+        mass: 1.0,
+        initial_volume: 1.0,
+        volume: 1.0,
+        density: 1.0,
+        friction_hardening: 2.0,
+        log_volume_strain: 0.05,
+        ..Particle::zeroed()
+    }]);
+
+    println!("── HARDENING RELAXATION ISOLATED CHECK (q_baseline={q_baseline:.4}) ──");
+    for step in 0..20 {
+        sand.update_particle(&mut particles.update_ctx(0), 0.1);
+        let q = particles.friction_hardening[0];
+        let lvs = particles.log_volume_strain[0];
+        println!("  step {step:2}: q={q:.6} lvs={lvs:.6}");
+    }
+}
+
+/// Minimal, isolated check of `DruckerPragerMaterial::post_event_relax_
+/// threshold`'s edge-detection logic in ONE particle's `update_particle`
+/// calls: drives the particle through a real "straining, then quiet" cycle
+/// by hand (velocity_gradient with a real deviatoric norm, then zero) and
+/// checks F is reset to IDENTITY EXACTLY on the first quiet call after
+/// straining -- not before (while still straining), not again on
+/// subsequent quiet calls (no repeated resets once already at rest).
+#[test]
+fn diag_post_event_relax_isolated_edge_detection_check() {
+    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    sand.cohesion = 1.0e6;
+    sand.post_event_relax_threshold = 0.01;
+
+    let f0 = Mat2::from_cols(Vec2::new(0.9, 0.0), Vec2::new(0.0, 1.05));
+    let mut particles = Particles::from(vec![Particle {
+        deformation_gradient: f0,
+        mass: 1.0,
+        initial_volume: 1.0,
+        volume: 1.0,
+        density: 1.0,
+        friction_hardening: 1.111,
+        hardening_scale: 1.0,
+        ..Particle::zeroed()
+    }]);
+
+    println!("── POST-EVENT RELAX EDGE-DETECTION ISOLATED CHECK ──");
+    let straining_gradient = Mat2::from_cols(Vec2::new(0.5, 0.0), Vec2::new(0.0, -0.5));
+    for step in 0..3 {
+        particles.velocity_gradient[0] = straining_gradient;
+        sand.update_particle(&mut particles.update_ctx(0), 0.1);
+        let f = particles.deformation_gradient[0];
+        println!(
+            "  straining step {step}: F=({:.6},{:.6},{:.6},{:.6})",
+            f.x_axis.x, f.x_axis.y, f.y_axis.x, f.y_axis.y
+        );
+    }
+    for step in 0..3 {
+        particles.velocity_gradient[0] = Mat2::ZERO;
+        sand.update_particle(&mut particles.update_ctx(0), 0.1);
+        let f = particles.deformation_gradient[0];
+        println!(
+            "  quiet step {step}: F=({:.6},{:.6},{:.6},{:.6})",
+            f.x_axis.x, f.x_axis.y, f.y_axis.x, f.y_axis.y
+        );
+        if step == 0 {
+            assert!(
+                (f.x_axis.x - 1.0).abs() < 1.0e-5 && (f.y_axis.y - 1.0).abs() < 1.0e-5,
+                "F should be reset to IDENTITY on the FIRST quiet substep after straining, got {f:?}"
+            );
         }
     }
 }

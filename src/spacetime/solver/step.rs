@@ -155,6 +155,7 @@ impl Simulation {
                 self.granular_fluidity
                     .as_ref()
                     .map(|f| f.config.stability_dt(self.config.dx_meters)),
+                self.thermal.as_ref().map(|t| t.config.stability_dt()),
             );
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
             self.do_substep(sub_dt);
@@ -164,11 +165,15 @@ impl Simulation {
         }
         self.last_substeps = substeps_taken;
         self.last_sim_time_dropped = remaining.max(0.0);
-        // Rebuild once per step, not per substep — LP queries happen between step() calls,
-        // never mid-substep, so one rebuild after the loop is sufficient and correct.
+        // Lazy: just mark stale here, don't do the rebuild work every frame
+        // regardless of whether a query will ever consume it before the next
+        // step -- see `spatial_hash`'s own doc on `Simulation` for the real,
+        // measured cost this was (16.4% of a step, 2026-08-03). The first
+        // query method called after this (`particles_near`/`count_near`/
+        // `particles_knn`/`region_state`) does the real rebuild, lazily, via
+        // `ensure_spatial_hash_fresh`.
         let t_hash = std::time::Instant::now();
-        self.spatial_hash
-            .rebuild(&self.particles.x, self.active_count);
+        self.spatial_hash_dirty.set(true);
         self.last_timing.spatial_hash_us = t_hash.elapsed().as_micros() as u64;
         self.last_timing.total_us = step_start.elapsed().as_micros() as u64;
         self.frame_index = self.frame_index.saturating_add(1);
@@ -396,6 +401,7 @@ impl Simulation {
         // ── G2P ──────────────────────────────────────────────────────────────
         let t2 = std::time::Instant::now();
         let g_len = self.active_count.min(self.granular_fluidity_g.len());
+        let cosserat_len = self.active_count.min(self.cosserat_curvature.len());
         self.last_vel_clamp_count += gather_grid_to_particles(
             &mut self.particles,
             &self.grid,
@@ -421,6 +427,12 @@ impl Simulation {
                 // back to 0.0, `ParticleUpdateCtx::nonlocal_fluidity`'s own
                 // real-rest-state default.
                 nonlocal_fluidity: &self.granular_fluidity_g[..g_len],
+                // Same one-substep-lag convention, computed by the Cosserat
+                // pass alongside granular fluidity below. Empty when no
+                // `CosseratField` is configured -- every read falls back to
+                // `Vec2::ZERO`, `ParticleUpdateCtx::cosserat_curvature`'s own
+                // real-rest-state default.
+                cosserat_curvature: &self.cosserat_curvature[..cosserat_len],
             },
         );
         // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
@@ -600,6 +612,28 @@ impl Simulation {
                 &mut self.granular_fluidity_g[..self.active_count],
             );
         }
+        // Cosserat micro-rotation field (see `energy::thermodynamics::
+        // cosserat_field` module doc) -- same one-substep-lag placement as
+        // granular fluidity above: computed here from THIS substep's just-
+        // updated particle velocity gradient, read by next substep's G2P via
+        // `G2PParams::cosserat_curvature`.
+        if let Some(field) = &mut self.cosserat {
+            if self.cosserat_curvature.len() < self.active_count {
+                self.cosserat_curvature
+                    .resize(self.active_count, Vec2::ZERO);
+            }
+            if self.cosserat_omega.len() < self.active_count {
+                self.cosserat_omega.resize(self.active_count, 0.0);
+            }
+            field.apply(
+                &self.particles,
+                sub_dt,
+                self.config.dx_meters,
+                macro_spin_from_velocity_gradient,
+                &mut self.cosserat_omega[..self.active_count],
+                &mut self.cosserat_curvature[..self.active_count],
+            );
+        }
         self.last_timing.thermal_us += t4.elapsed().as_micros() as u64;
 
         // ── Phase rules + sleep scoring ───────────────────────────────────────
@@ -736,6 +770,18 @@ impl Simulation {
             self.step();
         }
     }
+}
+
+/// Real macro-spin (antisymmetric velocity-gradient component, the ordinary
+/// vorticity) for a particle: `0.5*(dvy/dx - dvx/dy)`. Same field-access
+/// convention `sand.rs`'s own `strain_rate_norm` computation already uses
+/// for the symmetric part -- `l.x_axis.y` = dvy/dx, `l.y_axis.x` = dvx/dy.
+/// Plain `fn` (not a closure) so it coerces to `CosseratField::apply`'s
+/// fn-pointer parameter, matching `GranularFluidityField::pressure_and_ratio`'s
+/// own caller-supplied convention.
+fn macro_spin_from_velocity_gradient(p: &crate::particle::Particle) -> f32 {
+    let l = p.velocity_gradient;
+    0.5 * (l.x_axis.y - l.y_axis.x)
 }
 
 // apply_boundary_conditions_to_grid, project_particle_state_to_admissible: projection.rs

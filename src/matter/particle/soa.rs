@@ -92,6 +92,14 @@ pub struct ParticleUpdateCtx<'a> {
     /// reading material doesn't opt in -- provably inert in that case, not
     /// a tuning default.
     pub nonlocal_fluidity: f32,
+    /// Gathered micro-curvature (kappa = grad(omega_c)) from a coupled
+    /// `CosseratField` (see `energy::thermodynamics::cosserat_field`), for
+    /// this substep only -- transient, never stored on `Particle` itself,
+    /// same convention `nonlocal_fluidity` already uses. `Vec2::ZERO` (the
+    /// field's own real rest state) when no such field is wired up for this
+    /// scene, or when the reading material doesn't opt in -- provably inert
+    /// in that case, not a tuning default.
+    pub cosserat_curvature: Vec2,
 }
 
 impl Particles {
@@ -118,6 +126,7 @@ impl Particles {
             activation: self.activation[i],
             activation_dir: self.activation_dir[i],
             nonlocal_fluidity: 0.0,
+            cosserat_curvature: Vec2::ZERO,
         }
     }
 

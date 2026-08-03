@@ -21,6 +21,7 @@ pub use query::{BodyState, body_state_of, region_body_state_of};
 #[cfg(feature = "gpu")]
 pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound};
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use spatial_hash::SpatialHash;
@@ -28,7 +29,9 @@ use spatial_hash::SpatialHash;
 use glam::{Mat2, Vec2};
 
 use crate::rod::Rod;
-use crate::thermodynamics::{GranularFluidityField, ScalarDiffusionField, ThermalDiffusion};
+use crate::thermodynamics::{
+    CosseratField, GranularFluidityField, ScalarDiffusionField, ThermalDiffusion,
+};
 use crate::{boundary::BoundaryCondition, fields::Field, materials::registry::MaterialRegistry};
 use crate::{
     grid::Grid,
@@ -71,6 +74,20 @@ pub struct Simulation {
     /// convention thermal/scalar diffusion already use). Empty when
     /// `granular_fluidity` is `None`.
     granular_fluidity_g: Vec<f32>,
+    /// Cosserat micro-rotation field (see `energy::thermodynamics::
+    /// cosserat_field` module doc) -- `None` (default) for every scene that
+    /// doesn't opt in, same zero-cost-when-unused property `granular_fluidity`
+    /// already has. Real grid-level angular-momentum channel, added to close
+    /// the loop `matter::materials::cosserat`'s kinematics module leaves open.
+    cosserat: Option<CosseratField>,
+    /// Persistent per-particle gathered micro-rotation, one-substep-lag
+    /// convention matching `granular_fluidity_g` exactly.
+    cosserat_omega: Vec<f32>,
+    /// Persistent per-particle gathered micro-curvature (kappa = grad(omega_c)),
+    /// same one-substep-lag convention, read by G2P (`G2PParams::
+    /// cosserat_curvature`), written by the Cosserat pass at the end of the
+    /// SAME substep.
+    cosserat_curvature: Vec<glam::Vec2>,
     frame_index: u64,
     last_step_dt: f32,
     last_substeps: usize,
@@ -80,10 +97,35 @@ pub struct Simulation {
     last_timing: crate::diagnostics::StepTiming,
     /// Automatic phase transition rules, evaluated every substep.
     phase_rules: Vec<PhaseRule>,
-    /// Spatial hash over active particles — rebuilt once per `step()` call
-    /// (see `step.rs`), not per substep; LP's own queries never happen
-    /// mid-substep. Turns O(N) radius queries into O(candidates_in_neighborhood).
-    spatial_hash: SpatialHash,
+    /// Spatial hash over active particles. Turns O(N) radius queries into
+    /// O(candidates_in_neighborhood) for `particles_near`/`count_near`/
+    /// `particles_knn`/`region_state`.
+    ///
+    /// Lazily rebuilt: `step()` only marks it dirty (`spatial_hash_dirty`),
+    /// it does NOT rebuild eagerly every frame — real, measured cost found
+    /// 2026-08-03 (see `perf_opportunities_survey` memory): rebuilding
+    /// unconditionally every step cost 16.4% of a step's total time even in
+    /// scenes that never call any of the four query methods above. Mirrors
+    /// the identical fix already shipped on the GPU path (`GpuSimulation`'s
+    /// own lazy spatial-hash rebuild, 2026-07-12, 25% win at 100k particles)
+    /// — this ports the same real technique to CPU. `RefCell` because the
+    /// four query methods take `&self` (a real, established public API
+    /// contract LP depends on) but need to trigger a rebuild internally —
+    /// the classic "conceptually read-only, lazily-computed cache" case
+    /// interior mutability exists for. Structural mutations that change
+    /// particle count/positions outside `step()` (`add_body`, `remove_where`,
+    /// `split_particles`, construction) still rebuild EAGERLY right after
+    /// mutating and clear the dirty flag, so a query issued between two
+    /// `step()` calls (LP's actual usage pattern) always sees fresh data —
+    /// only the once-per-frame "rebuild whether or not anyone will query it"
+    /// cost is what became lazy.
+    spatial_hash: RefCell<SpatialHash>,
+    /// See `spatial_hash`'s own doc. `true` right after `step()` runs a
+    /// substep loop (positions moved, hash is stale); cleared by
+    /// `ensure_spatial_hash_fresh` the first time any query method is
+    /// actually called. Never true after an eager rebuild (spawn/remove/
+    /// split), since those clear it immediately after rebuilding.
+    spatial_hash_dirty: Cell<bool>,
     /// Discrete elastic rods (Cosserat-rod family, `spacetime::rod`) sharing
     /// this simulation's own MPM grid — see `step.rs`'s `do_substep` for the
     /// real scatter/gather insertion points. Empty for every scene that

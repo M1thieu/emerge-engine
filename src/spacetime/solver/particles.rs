@@ -425,7 +425,9 @@ impl Simulation {
             true,
         );
         self.spatial_hash
+            .borrow_mut()
             .rebuild(&self.particles.x, self.active_count);
+        self.spatial_hash_dirty.set(false);
         tag
     }
 

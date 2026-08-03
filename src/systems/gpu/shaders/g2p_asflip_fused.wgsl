@@ -511,6 +511,14 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let svd    = svd2(new_F);
         let dp_res = dp_plasticity(svd.s, p.log_volume_strain, p.friction_hardening, mat);
         var dp_sigma = abs(dp_res.sigma);
+        // Floor each axis individually before the product-based rescale below --
+        // same real bug (and same fix) as CPU `DruckerPragerMaterial`'s own
+        // `MIN_AXIS` guard (see that code's own doc): under a hard enough
+        // impact one singular value can collapse to exactly (or within float
+        // noise of) zero on its own axis, and a rescale that multiplies BOTH
+        // axes by the same scalar can never recover an axis already at zero
+        // (0 * any finite scalar is still 0).
+        dp_sigma = max(dp_sigma, vec2<f32>(1e-3));
         let dp_j = dp_sigma.x * dp_sigma.y;
         if dp_j < mat.volume_ratio_min {
             dp_sigma *= sqrt(mat.volume_ratio_min / max(dp_j, NUM_FLOOR_TIGHT));

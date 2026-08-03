@@ -203,6 +203,10 @@ name = "sand_repose_angle_gui"
 required-features = ["render"]
 
 [[example]]
+name = "sand_collapse_settle_demo"
+required-features = ["render"]
+
+[[example]]
 name = "fire_spread_gui"
 required-features = ["render"]
 

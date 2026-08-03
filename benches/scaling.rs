@@ -175,6 +175,7 @@ fn bench_g2p(c: &mut Criterion) {
                         pre_force_snapshot: None,
                         asflip_blend: 0.0,
                         nonlocal_fluidity: &[],
+                        cosserat_curvature: &[],
                     },
                 );
             });

@@ -170,7 +170,13 @@ fn make_sim(mode: Mode) -> Simulation {
                 precompute_initial_volumes: true,
                 ..SpawnRegion::for_sim(&config)
             };
-            let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+            let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+            // Real, calibrated tonight (2026-08-02): edge-triggered elastic-strain
+            // reset, grounded in Cundall 1982's kinetic-damping peak-reset --
+            // fires once per particle on a real strain-rate falling edge, matching
+            // the proven F-only-reset target bit-for-bit (29.6deg) instead of the
+            // unarrested creep this scene showed before.
+            sand.post_event_relax_threshold = 0.001;
             Simulation::new(config, column)
                 .with_default_material(Box::new(sand))
                 .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)))

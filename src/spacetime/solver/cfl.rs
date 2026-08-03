@@ -23,6 +23,7 @@ pub(crate) fn choose_substep_dt(
     rods: &[Rod],
     max_dt: f32,
     granular_fluidity_dt_bound: Option<f32>,
+    thermal_dt_bound: Option<f32>,
 ) -> f32 {
     if !config.adaptive_timestep {
         return max_dt.min(config.dt);
@@ -78,12 +79,23 @@ pub(crate) fn choose_substep_dt(
     }
     // Nonlocal Granular Fluidity's own real, quoted Von Neumann stability
     // bound (`GranularFluidityConfig::stability_dt`, Haeri & Skonieczny
-    // 2022) -- unlike `ScalarDiffusionField`/`ThermalDiffusion`'s bound
-    // (documented only, never enforced, since thermal diffusivity is tiny
-    // relative to MPM's own CFL), this one is folded in for real: `None`
-    // (every scene without a configured `GranularFluidityField`) leaves
-    // this exactly as it always was.
+    // 2022). `None` (every scene without a configured `GranularFluidityField`)
+    // leaves this exactly as it always was.
     if let Some(bound) = granular_fluidity_dt_bound
+        && bound.is_finite()
+        && bound > 0.0
+    {
+        min_mat_dt = min_mat_dt.min(bound);
+    }
+    // `ThermalDiffusion`'s own explicit-diffusion stability bound
+    // (`ThermalConfig::stability_dt`) -- normally many orders of magnitude
+    // larger than MPM's own CFL (real thermal diffusivity is tiny), so this
+    // is a no-op for any correctly-configured scene. It only bites on a
+    // real, already-reproduced misconfiguration (passing `grid_cell_size`
+    // instead of `dx_meters`, see that field's own doc) -- folding it in
+    // turns that from a silent runaway into an automatically clamped,
+    // still-correct substep, same precedent as NGF above.
+    if let Some(bound) = thermal_dt_bound
         && bound.is_finite()
         && bound > 0.0
     {

@@ -6,6 +6,7 @@
 //! the simulation, as opposed to advancing it (`solver::step`) or reading
 //! aggregate state from it (`solver::queries`).
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use glam::Vec2;
@@ -43,6 +44,9 @@ impl Simulation {
             scalar_fields: Vec::new(),
             granular_fluidity: None,
             granular_fluidity_g: Vec::new(),
+            cosserat: None,
+            cosserat_omega: Vec::new(),
+            cosserat_curvature: Vec::new(),
             frame_index: 0,
             last_step_dt: config.dt,
             last_substeps: 0,
@@ -51,7 +55,8 @@ impl Simulation {
             last_sim_time_dropped: 0.0,
             last_timing: crate::diagnostics::StepTiming::default(),
             phase_rules: Vec::new(),
-            spatial_hash: SpatialHash::new(config.grid_cell_size),
+            spatial_hash: RefCell::new(SpatialHash::new(config.grid_cell_size)),
+            spatial_hash_dirty: Cell::new(false),
             scratch_indices: Vec::new(),
             rods: Vec::new(),
         }
@@ -80,7 +85,7 @@ impl Simulation {
             // Initial particles carry user_tag=0; register them so group ops work.
             tag_index.insert(0, (0..active_count).collect());
         }
-        let mut solver = Self {
+        let solver = Self {
             config,
             particles,
             active_count,
@@ -95,6 +100,9 @@ impl Simulation {
             scalar_fields: Vec::new(),
             granular_fluidity: None,
             granular_fluidity_g: Vec::new(),
+            cosserat: None,
+            cosserat_omega: Vec::new(),
+            cosserat_curvature: Vec::new(),
             frame_index: 0,
             last_step_dt: config.dt,
             last_substeps: 0,
@@ -103,12 +111,14 @@ impl Simulation {
             last_sim_time_dropped: 0.0,
             last_timing: crate::diagnostics::StepTiming::default(),
             phase_rules: Vec::new(),
-            spatial_hash: SpatialHash::new(config.grid_cell_size),
+            spatial_hash: RefCell::new(SpatialHash::new(config.grid_cell_size)),
+            spatial_hash_dirty: Cell::new(false),
             scratch_indices: Vec::new(),
             rods: Vec::new(),
         };
         solver
             .spatial_hash
+            .borrow_mut()
             .rebuild(&solver.particles.x, solver.active_count);
         solver
     }
@@ -173,6 +183,15 @@ impl Simulation {
         field: crate::thermodynamics::GranularFluidityField,
     ) -> Self {
         self.granular_fluidity = Some(field);
+        self
+    }
+
+    /// Attach a Cosserat micro-rotation field (see `energy::thermodynamics::
+    /// cosserat_field` module doc). `None` (never calling this) is the
+    /// default, zero-cost, byte-identical to every existing scene -- same
+    /// convention `with_granular_fluidity` already has.
+    pub fn with_cosserat_field(mut self, field: crate::thermodynamics::CosseratField) -> Self {
+        self.cosserat = Some(field);
         self
     }
 
@@ -242,6 +261,14 @@ impl Simulation {
         &self.particles
     }
 
+    /// Diagnostic-only read access to the gathered Cosserat micro-curvature
+    /// buffer -- lets tests measure whether the coupling is actually
+    /// producing nonzero curvature, instead of only inferring it indirectly.
+    /// Empty when no `CosseratField` is configured for this scene.
+    pub fn cosserat_curvature(&self) -> &[glam::Vec2] {
+        &self.cosserat_curvature
+    }
+
     /// Direct read-only access to the background grid -- lets a CPU-simulated scene's
     /// renderer sample the solver's own mass field (e.g. for grid-volume rendering,
     /// mirroring what GPU scenes get via `GpuSimulation::grid_buffer()`) without
@@ -276,7 +303,9 @@ impl Simulation {
                 .insert(i);
         }
         self.spatial_hash
+            .borrow_mut()
             .rebuild(&self.particles.x, self.active_count);
+        self.spatial_hash_dirty.set(false);
     }
 
     /// Splits active particles matching `should_split` into two half-mass/half-volume
@@ -333,7 +362,9 @@ impl Simulation {
                 .insert(i);
         }
         self.spatial_hash
+            .borrow_mut()
             .rebuild(&self.particles.x, self.active_count);
+        self.spatial_hash_dirty.set(false);
     }
 
     pub fn assign_particle_materials_by_position<F>(&mut self, mut material_for: F)

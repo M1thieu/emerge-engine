@@ -773,7 +773,7 @@ fn resource_field_depletes_near_consumer_then_regrows() {
 
     // Phase 1: consumer present, depletes nearby resource every step.
     for _ in 0..30 {
-        let nearby: Vec<usize> = solver.particles_near(consumer_pos, EAT_RADIUS).collect();
+        let nearby: Vec<usize> = solver.particles_near(consumer_pos, EAT_RADIUS);
         let particles = solver.particles_mut();
         for i in nearby {
             let phi = particles.temperature[i];
@@ -785,15 +785,17 @@ fn resource_field_depletes_near_consumer_then_regrows() {
 
     let near_after_eating: f32 = solver
         .particles_near(consumer_pos, EAT_RADIUS)
+        .into_iter()
         .map(|i| solver.particles().get(i).temperature)
         .sum::<f32>()
-        / solver.particles_near(consumer_pos, EAT_RADIUS).count() as f32;
+        / solver.particles_near(consumer_pos, EAT_RADIUS).len() as f32;
     let far_pos = Vec2::new(26.0, 16.0);
     let far_after_eating: f32 = solver
         .particles_near(far_pos, EAT_RADIUS)
+        .into_iter()
         .map(|i| solver.particles().get(i).temperature)
         .sum::<f32>()
-        / solver.particles_near(far_pos, EAT_RADIUS).count() as f32;
+        / solver.particles_near(far_pos, EAT_RADIUS).len() as f32;
 
     println!(
         "resource_field_depletes_near_consumer_then_regrows: after eating -- \
@@ -814,9 +816,10 @@ fn resource_field_depletes_near_consumer_then_regrows() {
     }
     let near_after_regrowth: f32 = solver
         .particles_near(consumer_pos, EAT_RADIUS)
+        .into_iter()
         .map(|i| solver.particles().get(i).temperature)
         .sum::<f32>()
-        / solver.particles_near(consumer_pos, EAT_RADIUS).count() as f32;
+        / solver.particles_near(consumer_pos, EAT_RADIUS).len() as f32;
 
     println!(
         "resource_field_depletes_near_consumer_then_regrows: after regrowth -- near={near_after_regrowth:.3}"
@@ -1271,6 +1274,75 @@ fn thermal_diffusion_spreads_heat() {
         mean_cold_after > mean_cold_before,
         "thermal: cold region did not warm (mean before={mean_cold_before:.1}, after={mean_cold_after:.1})"
     );
+}
+
+#[test]
+fn thermal_stability_dt_matches_the_cited_formula() {
+    let cfg = ThermalConfig {
+        conductivity: 0.6,
+        heat_capacity: 4182.0,
+        density: 1000.0,
+        ambient: 0.0,
+        grid_cell_size: 0.1,
+        ..Default::default()
+    };
+    let expected = 1.0 / (4.0 * cfg.alpha_grid());
+    assert!((cfg.stability_dt() - expected).abs() < 1.0e-9);
+    assert!(cfg.stability_dt() > 0.0);
+}
+
+/// Real regression guard: a `ThermalConfig` whose `grid_cell_size` is too
+/// small relative to its own conductivity/density/heat_capacity gives a
+/// stability bound smaller than the scene's own `dt` -- exactly the
+/// disclosed footgun `ThermalConfig::grid_cell_size`'s own doc describes
+/// (passing the wrong cell-size convention inflates `alpha_grid()` and used
+/// to blow explicit Euler into runaway temperatures). Now that
+/// `ThermalConfig::stability_dt()` is folded into the adaptive substep
+/// chooser, the same misconfiguration must stay finite and bounded instead.
+#[test]
+fn thermal_misconfigured_grid_cell_size_stays_finite_under_adaptive_substep() {
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            conductivity: 0.6,
+            heat_capacity: 4182.0,
+            density: 1000.0,
+            ambient: 0.0,
+            grid_cell_size: 0.0001, // deliberately too small -- stability_dt << config.dt
+            ..Default::default()
+        },
+        config.grid_res,
+    );
+    assert!(
+        thermal.config.stability_dt() < config.dt,
+        "test setup must actually exercise the clamp: stability_dt={} should be < dt={}",
+        thermal.config.stability_dt(),
+        config.dt
+    );
+
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_thermal(thermal);
+
+    {
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.temperature[i] = if particles.x[i].x < 16.0 { 100.0 } else { 0.0 };
+        }
+    }
+
+    solver.step_n(300);
+
+    for (i, p) in solver.particles().iter().enumerate() {
+        assert!(
+            p.temperature.is_finite() && p.temperature.abs() < 1.0e6,
+            "thermal: particle {i} temperature runaway under misconfigured grid_cell_size: {}",
+            p.temperature
+        );
+    }
 }
 
 #[test]

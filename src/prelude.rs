@@ -11,7 +11,7 @@
 pub use crate::{
     AabbConfinementField,
     ActivationStatsPlugin,
-    // Materials — all twelve (*Material types only)
+    // Materials — all thirteen (*Material types only)
     BinghamFluidMaterial,
     // Queries + density field export
     BodyState,
