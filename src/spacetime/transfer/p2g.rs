@@ -1,7 +1,8 @@
 use glam::{IVec2, Mat2, Vec2};
+use rayon::prelude::*;
 
-use crate::grid::Grid;
 use crate::grid::kernel::{axis_weights_derivative, quadratic_weights};
+use crate::grid::{CellMap, Grid, flat_index};
 use crate::materials::registry::MaterialRegistry;
 use crate::particle::Particles;
 use crate::solver::config::KERNEL_D_INVERSE;
@@ -13,14 +14,31 @@ use super::combined_kirchhoff_stress;
 /// Stress is pre-integrated as a momentum impulse so the grid needs one accumulation pass.
 /// The APIC affine term conserves angular momentum without a correction step.
 ///
-/// NOT parallelized (unlike G2P below): multiple particles write to the same grid cell (3×3
-/// B-spline stencils overlap), so summing their contributions requires either a shared mutable
-/// map (unsound across threads — `HashMap::entry()` can trigger a resize) or a thread-local
-/// fold/reduce merge. The latter was attempted and reverted 2026-06-20: it's safe and compiles
-/// clean, but changes floating-point summation order across particles sharing a cell, and that
-/// shifted results enough to break `fluid_spreads_more_than_elastic_under_gravity` (a 600-step
-/// chaotic simulation) — confirmed by isolated A/B, not assumed. Reverted rather than accepted
-/// the correctness risk for an unmeasured gain.
+/// PARALLELIZED (2026-08-05) via a thread-local `CellMap` fold/reduce, then merged into the
+/// real grid in one serial pass (`Grid::merge_cells`) -- pure safe Rust, no unsafe pointers,
+/// no shared mutable state during the parallel phase (each rayon task owns its own private
+/// `CellMap`; `HashMap::entry()`'s possible resize is therefore never shared across threads).
+///
+/// A first attempt at this (2026-06-20) used the identical thread-local-map-then-merge shape
+/// and was reverted -- NOT for a soundness reason (that version was safe Rust too), but because
+/// it changed the floating-point SUMMATION ORDER for grid cells touched by multiple particles
+/// (float addition isn't associative), and that shifted `fluid_spreads_more_than_elastic_under_
+/// gravity`'s (a 600-step CHAOTIC simulation) qualitative outcome. Re-verified 2026-08-05: that
+/// test's own assertions are real qualitative inequalities (`ar_fluid_final > ar_elastic_final`),
+/// not exact-value matching -- a legitimate physical claim, not a fragile snapshot -- so the
+/// real risk is chaotic amplification of a thin margin, not a badly-designed test. This
+/// implementation is re-verified against that exact test (and the full regression suite) before
+/// being trusted, same "revert immediately if anything moves" discipline as every other change
+/// tonight.
+///
+/// Contact (`Particle::contact_group`) and mixture (`WithMixturePhase`) scatter are
+/// DELIBERATELY kept in a separate, still-serial second pass rather than folded into the
+/// parallel accumulator: both are opt-in, zero-cost-when-unused features that only a minority
+/// of scenes touch, and giving them their own parallel-safe accumulator design wasn't worth the
+/// added risk for this pass. The real, disclosed cost: particles that use either feature get
+/// `combined_kirchhoff_stress`/`stress_volume` recomputed a second time (same pure functions,
+/// same inputs, so results are identical -- just a small redundant-computation cost for the
+/// particles that opt into these features, not a correctness risk).
 pub fn scatter_particles_to_grid(
     particles: &Particles,
     grid: &mut Grid,
@@ -28,15 +46,61 @@ pub fn scatter_particles_to_grid(
     dt: f32,
     active_count: usize,
 ) {
+    let resolution = grid.resolution();
+
+    let local_map: CellMap = (0..active_count)
+        .into_par_iter()
+        .fold(CellMap::default, |mut acc, i| {
+            let material_id = particles.material_id[i];
+            let material = materials.get(material_id);
+            let x = particles.x[i];
+            let mass_i = particles.mass[i];
+            let v_i = particles.v[i];
+            let c_i = particles.velocity_gradient[i];
+
+            let stress = combined_kirchhoff_stress(material, particles, i);
+            let stress_coeff = -material.stress_volume(particles, i) * KERNEL_D_INVERSE * dt;
+
+            let weights = quadratic_weights(x);
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    let weight = weights.wx[gx] * weights.wy[gy];
+                    let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                    let Some(idx) = flat_index(cell_pos, resolution) else {
+                        continue;
+                    };
+                    let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                    let momentum = weight
+                        * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
+                    let entry = acc.entry(idx).or_default();
+                    entry.mass += weight * mass_i;
+                    entry.momentum += momentum;
+                }
+            }
+            acc
+        })
+        .reduce(CellMap::default, |mut a, b| {
+            for (idx, cell) in b {
+                let entry = a.entry(idx).or_default();
+                entry.mass += cell.mass;
+                entry.momentum += cell.momentum;
+            }
+            a
+        });
+    grid.merge_cells(local_map);
+
     for i in 0..active_count {
-        let material_id = particles.material_id[i];
-        let material = materials.get(material_id);
+        let contact_group = particles.contact_group[i];
+        let material = materials.get(particles.material_id[i]);
+        let mixture_phase = material.mixture_phase();
+        if contact_group == 0 && mixture_phase.is_none() {
+            continue;
+        }
+
         let x = particles.x[i];
         let mass_i = particles.mass[i];
         let v_i = particles.v[i];
         let c_i = particles.velocity_gradient[i];
-        let contact_group = particles.contact_group[i];
-        let mixture_phase = material.mixture_phase();
 
         let stress = combined_kirchhoff_stress(material, particles, i);
         let stress_coeff = -material.stress_volume(particles, i) * KERNEL_D_INVERSE * dt;
@@ -49,20 +113,13 @@ pub fn scatter_particles_to_grid(
                 let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
                 let momentum = weight
                     * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
-                grid.add_mass_momentum(cell_pos, weight * mass_i, momentum);
                 // Additive second scatter for multi-field contact (Bardenhagen 2001) —
-                // see `Particle::contact_group` doc. A no-op call for every particle
-                // with contact_group == 0 (the default, i.e. every scene that doesn't
-                // use this feature): `Grid::add_grip_mass_momentum` just never gets
-                // called, so there's no extra work, not even an empty branch, for the
-                // common case.
+                // see `Particle::contact_group` doc.
                 if contact_group != 0 {
                     grid.add_grip_mass_momentum(cell_pos, weight * mass_i, momentum);
                 }
                 // Additive second scatter for two-phase mixture coupling (Tampubolon
-                // et al. 2017) — see `WithMixturePhase`/`MixturePhase` doc. A no-op
-                // for every particle whose material never opts in (the default),
-                // same zero-cost-when-unused property as the contact scatter above.
+                // et al. 2017) — see `WithMixturePhase`/`MixturePhase` doc.
                 if let Some(phase) = mixture_phase {
                     grid.add_mixture_mass_momentum(cell_pos, phase, weight * mass_i, momentum);
                 }
