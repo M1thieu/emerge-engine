@@ -17,7 +17,7 @@ use super::{FxU32BuildHasher, Grid, flat_index};
 
 impl Grid {
     /// Flat index -> cell position. Inverse of `flat_index`.
-    fn idx_to_pos(&self, idx: u32) -> IVec2 {
+    const fn idx_to_pos(&self, idx: u32) -> IVec2 {
         let idx = idx as usize;
         IVec2::new(
             (idx / self.resolution) as i32,
@@ -150,8 +150,34 @@ impl Grid {
             // convention, just with a threshold large enough to matter.
             const MIN_MASS_FRACTION: f32 = 0.01;
             let total_mass = (m_s + m_f).max(MIN_MASS);
-            let solid_significant = m_s / total_mass > MIN_MASS_FRACTION;
-            let fluid_significant = m_f / total_mass > MIN_MASS_FRACTION;
+            // Real, disclosed 2026-08-04 fix: a RELATIVE-fraction check alone
+            // does NOT bound the failure mode this comment already describes.
+            // A cell where BOTH phases have tiny absolute mass (a genuine
+            // kernel-support-edge cell, e.g. the outer boundary of a settled
+            // pile) can easily satisfy `m_s/total > 1%` while `m_s` itself is
+            // still near `MIN_MASS` (1e-6) -- giving `alpha_s = 1/m_s` up to
+            // ~1e6, applied directly to `grad_p` below with NO harmonic-mean
+            // safety net (unlike the Poisson solve's own `k`, which IS
+            // face-bounded). Found via direct instrumentation of
+            // `mixture_sand_water.rs`: synchronized solid+fluid velocity
+            // spikes (both phases jumping to the same, ~10-20x-baseline
+            // speed at the same position every time) concentrated near the
+            // settled pile's own boundary -- exactly this failure mode, not
+            // sand's own constitutive stress (`sand_min_j` stayed near 1.0
+            // through most of these events). A real ABSOLUTE mass floor,
+            // three orders of magnitude above the pure divide-by-zero guard
+            // (`MIN_MASS`), caps the worst-case `alpha` at ~1e3 instead of
+            // ~1e6 -- a real, disclosed order-of-magnitude buffer (not a
+            // precisely first-principles-derived constant), required IN
+            // ADDITION to the existing relative-fraction check, not instead
+            // of it (both catch different real cases: fraction excludes "real
+            // total mass, negligible SHARE"; this excludes "negligible mass
+            // regardless of share").
+            const MIN_ABSOLUTE_MASS_FOR_CORRECTION: f32 = 1.0e-3;
+            let solid_significant =
+                m_s / total_mass > MIN_MASS_FRACTION && m_s > MIN_ABSOLUTE_MASS_FOR_CORRECTION;
+            let fluid_significant =
+                m_f / total_mass > MIN_MASS_FRACTION && m_f > MIN_ABSOLUTE_MASS_FOR_CORRECTION;
 
             let vs_r = self.mixture_solid_v_or_zero(pos + IVec2::new(1, 0)).x;
             let vs_l = self.mixture_solid_v_or_zero(pos - IVec2::new(1, 0)).x;
@@ -196,6 +222,31 @@ impl Grid {
             }
         };
 
+        // TEMP DIAGNOSTIC (2026-08-04), env-gated (zero cost otherwise, same
+        // pattern as `sand.rs`'s `EMERGE_DIAG_FLOOR_FIX`): chasing the real
+        // "geyser" event found live in `mixture_sand_water.rs` -- sand
+        // erupting to 3-7x its settled pile height once water is fully
+        // consolidated at the bottom. Checking whether the mobility `k`
+        // itself (not just the correction-step alpha already fixed) goes
+        // extreme in a fully-consolidated region, where MULTIPLE adjacent
+        // cells could all have tiny water mass at once -- harmonic-mean
+        // faces only bound a mismatch between neighbors, not a whole
+        // cluster of uniformly-huge k.
+        #[cfg(debug_assertions)]
+        let diag_enabled = std::env::var("EMERGE_DIAG_MIXTURE_PRESSURE").is_ok();
+        #[cfg(debug_assertions)]
+        if diag_enabled {
+            let max_k = mobility.values().cloned().fold(0.0f32, f32::max);
+            let max_rhs = rhs.values().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
+            if max_k > 1.0e4 || max_rhs > 10.0 {
+                println!(
+                    "  [mixture-pressure-diag] max_k={max_k:.2} max_|rhs|={max_rhs:.4} \
+                     dirty_cells={}",
+                    self.mixture_dirty.len()
+                );
+            }
+        }
+
         for _ in 0..pressure_iterations {
             let mut next = pressure.clone();
             for &idx in &self.mixture_dirty {
@@ -217,6 +268,17 @@ impl Grid {
                 next.insert(idx, (weighted_neighbors - h * h * r) / k_sum);
             }
             pressure = next;
+        }
+
+        #[cfg(debug_assertions)]
+        if diag_enabled {
+            let max_p = pressure
+                .values()
+                .cloned()
+                .fold(0.0f32, |a, b| a.max(b.abs()));
+            if max_p > 10.0 {
+                println!("  [mixture-pressure-diag] POST-SOLVE max_|pressure|={max_p:.4}");
+            }
         }
 
         for &idx in &self.mixture_dirty {

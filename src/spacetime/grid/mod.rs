@@ -83,7 +83,7 @@ pub type VelocitySnapshot = HashMap<u32, Vec2, FxU32BuildHasher>;
 /// Converts a cell position to the flat HashMap key, or `None` if out of domain bounds.
 /// Shared by `Grid::add_mass_momentum` and the parallel P2G scatter in `transfer.rs` — both
 /// must agree on bounds-checking and indexing, so this is the single source of truth.
-pub(crate) fn flat_index(cell_pos: IVec2, resolution: usize) -> Option<u32> {
+pub(crate) const fn flat_index(cell_pos: IVec2, resolution: usize) -> Option<u32> {
     if cell_pos.x < 0 || cell_pos.y < 0 {
         return None;
     }
@@ -149,14 +149,14 @@ impl Grid {
         }
     }
 
-    pub fn resolution(&self) -> usize {
+    pub const fn resolution(&self) -> usize {
         self.resolution
     }
 
     /// True if any grip particle touched the grid this substep. Gates the extra
     /// contact-aware work in P2G/G2P/step — when false (every scene that never sets
     /// `Particle::contact_group`), those paths run their original, unmodified logic.
-    pub fn has_contact_activity(&self) -> bool {
+    pub const fn has_contact_activity(&self) -> bool {
         !self.contact_dirty.is_empty()
     }
 
@@ -190,7 +190,7 @@ impl Grid {
     /// True if any mixture-phase particle touched the grid this substep. Gates
     /// the extra mixture-aware work in P2G/G2P/step — same convention as
     /// `has_contact_activity`.
-    pub fn has_mixture_activity(&self) -> bool {
+    pub const fn has_mixture_activity(&self) -> bool {
         !self.mixture_dirty.is_empty()
     }
 
@@ -200,6 +200,19 @@ impl Grid {
             return;
         };
         self.accumulate(idx, mass, momentum);
+    }
+
+    /// Merges a thread-local `CellMap` (built by parallel P2G's rayon
+    /// fold/reduce, see `transfer::p2g::scatter_particles_to_grid`) into this
+    /// grid's own cell storage. Reuses `accumulate` so dirty-tracking stays
+    /// correct, exactly as if every entry had gone through `add_mass_momentum`
+    /// one at a time -- just batched into a single serial merge pass after the
+    /// parallel scatter completes. `pub(crate)` since only `transfer.rs` (same
+    /// crate) needs it.
+    pub(crate) fn merge_cells(&mut self, local: CellMap) {
+        for (idx, cell) in local {
+            self.accumulate(idx, cell.mass, cell.momentum);
+        }
     }
 
     /// Accumulate by pre-computed flat index (already bounds-checked by the caller).
@@ -413,7 +426,7 @@ impl Grid {
     }
 
     /// Number of cells that received mass this frame.
-    pub fn active_cell_count(&self) -> usize {
+    pub const fn active_cell_count(&self) -> usize {
         self.dirty.len()
     }
 }

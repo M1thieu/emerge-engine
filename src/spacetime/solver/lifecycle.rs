@@ -59,6 +59,7 @@ impl Simulation {
             spatial_hash_dirty: Cell::new(false),
             scratch_indices: Vec::new(),
             rods: Vec::new(),
+            grain_populations: Vec::new(),
         }
     }
 
@@ -115,6 +116,7 @@ impl Simulation {
             spatial_hash_dirty: Cell::new(false),
             scratch_indices: Vec::new(),
             rods: Vec::new(),
+            grain_populations: Vec::new(),
         };
         solver
             .spatial_hash
@@ -178,10 +180,29 @@ impl Simulation {
     /// thermodynamics::granular_fluidity` module doc). `None` (never
     /// calling this) is the default, zero-cost, byte-identical to every
     /// existing scene -- same convention `with_thermal` already has.
+    ///
+    /// Real, previously-reproduced bug this clamp fixes: `SimConfig::min_dt`
+    /// (default 1e-3s, a general elastic-CFL-era floor) silently overrides
+    /// `choose_substep_dt`'s own `.min(granular_fluidity_dt_bound)` selection
+    /// via `cfl_bound`'s final `.clamp(config.min_dt.min(max_dt), max_dt)` --
+    /// whenever `field.config.stability_dt(dx_meters)` comes out SMALLER than
+    /// `min_dt` (true for any physically small grain diameter at a typical
+    /// LP grid cell size), the solver was silently running the explicit
+    /// diffusion stencil past its own von Neumann stability limit every
+    /// substep, confirmed directly via a temporary CFL debug print (chosen
+    /// sub_dt pinned at `min_dt` regardless of a computed `stability_dt`
+    /// 3-12x smaller). Lowering `min_dt` here, once, at attach time, lets the
+    /// bound that was already being computed actually bind -- no change to
+    /// the shared `cfl_bound`/`choose_substep_dt` logic every other material/
+    /// field also goes through.
     pub fn with_granular_fluidity(
         mut self,
         field: crate::thermodynamics::GranularFluidityField,
     ) -> Self {
+        let stability_dt = field.config.stability_dt(self.config.dx_meters);
+        if stability_dt.is_finite() && stability_dt > 0.0 {
+            self.config.min_dt = self.config.min_dt.min(stability_dt);
+        }
         self.granular_fluidity = Some(field);
         self
     }
@@ -208,7 +229,7 @@ impl Simulation {
 
     /// Read-only access to the attached `GranularFluidityField`, if any --
     /// same "`None` unless opted in" convention as `thermal_config_mut`.
-    pub fn granular_fluidity(&self) -> Option<&crate::thermodynamics::GranularFluidityField> {
+    pub const fn granular_fluidity(&self) -> Option<&crate::thermodynamics::GranularFluidityField> {
         self.granular_fluidity.as_ref()
     }
 
@@ -253,11 +274,11 @@ impl Simulation {
         self
     }
 
-    pub fn config(&self) -> &SimConfig {
+    pub const fn config(&self) -> &SimConfig {
         &self.config
     }
 
-    pub fn particles(&self) -> &Particles {
+    pub const fn particles(&self) -> &Particles {
         &self.particles
     }
 
@@ -273,7 +294,7 @@ impl Simulation {
     /// renderer sample the solver's own mass field (e.g. for grid-volume rendering,
     /// mirroring what GPU scenes get via `GpuSimulation::grid_buffer()`) without
     /// duplicating the solver's own P2G-computed density.
-    pub fn grid(&self) -> &Grid {
+    pub const fn grid(&self) -> &Grid {
         &self.grid
     }
 
@@ -284,7 +305,7 @@ impl Simulation {
     /// next P2G scatter will inject extreme momentum → J→0 → deformation collapse.
     /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
     /// Safe uses: writing non-velocity fields (temperature, activation, user_tag, material_id).
-    pub fn particles_mut(&mut self) -> &mut Particles {
+    pub const fn particles_mut(&mut self) -> &mut Particles {
         &mut self.particles
     }
 
@@ -454,11 +475,11 @@ impl Simulation {
         self.force_fields.iter().map(|(n, _)| n.as_str()).collect()
     }
 
-    pub fn gravity(&self) -> Vec2 {
+    pub const fn gravity(&self) -> Vec2 {
         self.config.gravity
     }
 
-    pub fn set_gravity(&mut self, gravity: Vec2) {
+    pub const fn set_gravity(&mut self, gravity: Vec2) {
         self.config.gravity = gravity;
     }
 
@@ -467,7 +488,7 @@ impl Simulation {
     /// while material is actively falling/impacting, on once it should
     /// relax toward equilibrium) instead of one constant value for a
     /// scene's entire run.
-    pub fn set_cundall_damping(&mut self, damping: f32) {
+    pub const fn set_cundall_damping(&mut self, damping: f32) {
         self.config.cundall_damping = damping;
     }
 
@@ -477,7 +498,7 @@ impl Simulation {
     /// energy preserved), then switch to the proven quasi-static holding
     /// value (0.05) once the material has actually settled, instead of one
     /// constant blend fighting both phases at once.
-    pub fn set_apic_blend(&mut self, blend: f32) {
+    pub const fn set_apic_blend(&mut self, blend: f32) {
         self.config.apic_blend = blend;
     }
 
@@ -519,6 +540,35 @@ impl Simulation {
 
     pub fn rods_mut(&mut self) -> &mut [crate::rod::Rod] {
         &mut self.rods
+    }
+
+    /// Adds a discrete-element grain population (`spacetime::grains`),
+    /// returning its index. Mirrors `add_rod` exactly. See `grain_populations`'s
+    /// own doc on `Simulation` for real scope (no automatic oracle yet --
+    /// this is an explicit, caller-decided population, same as a rod).
+    pub fn add_grain_population(
+        &mut self,
+        population: crate::grains::population::GrainPopulation,
+    ) -> usize {
+        self.grain_populations.push(population);
+        self.grain_populations.len() - 1
+    }
+
+    /// Builder variant of `add_grain_population`.
+    pub fn with_grain_population(
+        mut self,
+        population: crate::grains::population::GrainPopulation,
+    ) -> Self {
+        self.add_grain_population(population);
+        self
+    }
+
+    pub fn grain_populations(&self) -> &[crate::grains::population::GrainPopulation] {
+        &self.grain_populations
+    }
+
+    pub fn grain_populations_mut(&mut self) -> &mut [crate::grains::population::GrainPopulation] {
+        &mut self.grain_populations
     }
 }
 

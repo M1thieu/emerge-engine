@@ -148,7 +148,22 @@ impl GranularFluidityField {
     /// callers are responsible for folding that bound into their own
     /// adaptive substep choice (this field does not clamp `sub_dt` itself,
     /// matching how `ScalarDiffusionField`'s bound is also caller-enforced).
-    pub fn apply(&mut self, particles: &Particles, sub_dt: f32, out: &mut [f32]) {
+    ///
+    /// `dx_meters`: real physical grid cell size (`SimConfig::dx_meters`).
+    /// [`super::stencil::laplacian_step`]'s 4-neighbor-minus-center sum is a
+    /// bare grid-INDEX-space finite difference (no implicit cell size) — it
+    /// must be scaled by `1/dx_meters²` to become the real `∇²g` the PDE
+    /// actually calls for, exactly the convention `ThermalConfig::alpha_grid`
+    /// already documents ("Folding dx² in keeps the Laplacian formula
+    /// dimensionless over grid indices") and `Cosserat` field's own `apply`
+    /// call site already threads through. A real, previously-missing
+    /// dx-normalization: without it, the diffusion term's magnitude doesn't
+    /// depend on the real cell size at all, so refining the grid (same `A`,
+    /// `d`, `t0`) changes how many REAL METERS the same "diffusivity_dt"
+    /// spreads `g` per step — the direct cause of this module's own
+    /// resolution-dependence bug (see `sand.rs`'s `ngf_lajeunesse_runout_
+    /// resolution_independence` test history).
+    pub fn apply(&mut self, particles: &Particles, sub_dt: f32, dx_meters: f32, out: &mut [f32]) {
         let n = self.grid_res * self.grid_res;
         let res = self.grid_res as i32;
 
@@ -193,9 +208,11 @@ impl GranularFluidityField {
 
         // --- Diffuse: shared explicit-Euler 5-point Laplacian, same
         // stencil ScalarDiffusionField/ThermalDiffusion already use ---
+        // dx_meters^2 division: see this method's own doc.
+        let dx2 = (dx_meters * dx_meters).max(1e-30);
         let diffusivity_dt = (self.config.nonlocal_amplitude * self.config.grain_diameter_m)
             .powi(2)
-            / self.config.t0_s
+            / (self.config.t0_s * dx2)
             * sub_dt;
         super::stencil::laplacian_step(
             &self.grid_g,
@@ -300,8 +317,31 @@ impl GranularFluidityField {
         }
     }
 
-    pub fn grid_res(&self) -> usize {
+    pub const fn grid_res(&self) -> usize {
         self.grid_res
+    }
+
+    /// Real, permanent diagnostic: (min, mean-over-nonzero, max, count-nonzero)
+    /// of the current `g` field. Added 2026-08-04 chasing the real, measured
+    /// 0.47x Lajeunesse undershoot -- lets a caller check DIRECTLY whether
+    /// `g` is staying anomalously small/narrow throughout a real collapse
+    /// (the "cooperation too slow/narrow relative to the moving flow front"
+    /// hypothesis) rather than reasoning about it in the abstract.
+    pub fn g_stats(&self) -> (f32, f32, f32, usize) {
+        let mut min = f32::INFINITY;
+        let mut max = 0.0f32;
+        let mut sum = 0.0f32;
+        let mut count = 0usize;
+        for &g in &self.grid_g {
+            if g > 1e-9 {
+                min = min.min(g);
+                max = max.max(g);
+                sum += g;
+                count += 1;
+            }
+        }
+        let mean = if count > 0 { sum / count as f32 } else { 0.0 };
+        (if count > 0 { min } else { 0.0 }, mean, max, count)
     }
 }
 
@@ -348,7 +388,7 @@ mod tests {
         let mut field = GranularFluidityField::new(cfg, |_p| (0.0, 0.70), 16);
         let particles = Particles::from(vec![]);
         let mut out = vec![0.0; 0];
-        field.apply(&particles, 1.0e-6, &mut out);
+        field.apply(&particles, 1.0e-6, 0.01, &mut out);
         assert!(field.grid_g.iter().all(|&g| g == 0.0));
     }
 
@@ -367,7 +407,7 @@ mod tests {
         ]);
         let mut out = vec![0.0; 4];
         for _ in 0..50 {
-            field.apply(&particles, 1.0e-6, &mut out);
+            field.apply(&particles, 1.0e-6, 0.01, &mut out);
         }
         assert!(
             field.grid_g.iter().all(|&g| g.abs() < 1e-9),
@@ -401,7 +441,7 @@ mod tests {
         // (~0.24s, `stability_dt_matches_the_cited_formula_directly`).
         let mut out = vec![0.0; 4];
         for _ in 0..3000 {
-            field.apply(&particles, 1.0e-5, &mut out);
+            field.apply(&particles, 1.0e-5, 0.01, &mut out);
         }
         let g_eq = (mu - cfg.mu_s)
             / (cfg.b * (pressure / cfg.grain_density_kg_m3).sqrt() * cfg.grain_diameter_m);

@@ -104,8 +104,47 @@ struct State {
 
 fn make_sim(mixture_enabled: bool) -> Simulation {
     let config = SimConfig {
-        min_dt: 1.0e-3,
-        max_substeps_per_step: 32,
+        // Real, measured, HONESTLY PARTIAL mitigation (2026-08-04): the
+        // previous `min_dt=1e-3` / `max_substeps_per_step=32` combination
+        // silently DROPS real simulated time once sustained compaction near
+        // the floor boundary makes CFL genuinely want a finer step than 32
+        // substeps at that floor can cover -- confirmed live: `sim_time_
+        // dropped` reached a real, constant 6.8% of every frame from
+        // ~frame 2074 onward with the old config (`effective_dt` pinned
+        // exactly at the old `min_dt` floor).
+        //
+        // Tripling both the substep budget and the floor's fineness (this
+        // config) DELAYS the onset (dropped stayed at 0.0 through frame
+        // ~1600 instead of ~1350) but does NOT eliminate it -- re-verified
+        // live: `dropped` starts climbing again around frame ~1650 once
+        // CFL wants MORE than the new 96-substep cap. Real, honest
+        // conclusion: the underlying compaction/stiffening near the
+        // boundary is NOT reaching a bounded equilibrium within any tested
+        // horizon -- more substep budget just delays when the wall gets
+        // hit, it doesn't remove the wall. The true root cause (why does
+        // local stiffness keep climbing near `SlipBoundary` under this
+        // mixture's sustained settling, rather than saturating at a real
+        // physical packing limit) is still open -- see
+        // `mixture_sand_water_explosion_investigation_2026-08-04` memory.
+        // This change is kept anyway (strictly more real simulated time
+        // covered than before, zero downside), just not oversold as fixed.
+        //
+        // Follow-up same night: found and fixed a REAL, separate bug that
+        // was a plausible root cause -- `NewtonianFluidMaterial` never
+        // self-corrected `particles.density`/`volume` each substep the way
+        // every solid material does (see its `update_particle`), leaving it
+        // to a grid-mass estimate with no compaction-side ceiling, able to
+        // ratchet up under sustained near-zero-divergence settling. Fixed
+        // (real, physically-motivated, kept regardless). RE-VERIFIED with
+        // the fix applied: does NOT close this issue -- `dropped` still
+        // climbs past frame ~2100, reaching 59.8% by frame 2189 (see
+        // `tests/solver.rs`'s `diag_mixture_sand_water_dropped_time_long_horizon`,
+        // `#[ignore]`d, real open bug). The fluid self-correction was a real
+        // bug worth fixing on its own merits, but not the (sole) mechanism
+        // behind this one -- something else keeps demanding more substeps
+        // than any tested budget covers. Root cause still genuinely open.
+        min_dt: 3.0e-4,
+        max_substeps_per_step: 96,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -291,6 +330,28 @@ impl State {
         self.sim.step();
         self.frame += 1;
         self.fps_frames += 1;
+        // TEMP DIAGNOSTIC (2026-08-04): checking whether the "crown" the user
+        // screenshotted (sand fanning out mid-air, BEFORE any water contact)
+        // is real particle motion or a render artifact -- render_particles
+        // .wgsl scales each particle's quad by its RAW, unclamped
+        // `deformation_gradient`, which can look extreme under pure shear
+        // even while J=det(F) stays near 1 (invisible to J-only checks).
+        // Column-vector length is a cheap proxy for "how stretched" without
+        // needing private SVD access from an example crate.
+        if self.frame <= 30 {
+            let mut max_axis_len = 0.0f32;
+            for p in self.sim.particles().iter() {
+                if p.material_id == MAT_SAND {
+                    let a = p.deformation_gradient.x_axis.length();
+                    let b = p.deformation_gradient.y_axis.length();
+                    max_axis_len = max_axis_len.max(a).max(b);
+                }
+            }
+            println!(
+                "  [F-diag] frame={} sand_max_F_axis_len={max_axis_len:.4}",
+                self.frame
+            );
+        }
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             // Real, direct numeric evidence the two phases ARE (or aren't)
@@ -309,6 +370,42 @@ impl State {
                 group.iter().sum::<Vec2>() / group.len() as f32
             };
             let relative_speed = (avg_v(MAT_SAND) - avg_v(MAT_WATER)).length();
+            // Real, unambiguous per-material spatial extent (added
+            // 2026-08-04 while investigating a real user-reported crown/
+            // explosion, kept permanently -- genuinely useful, real, cheap):
+            // resolves "which material is doing what" without needing to
+            // guess at render colors. mean/min/max Y per material, plus
+            // X-spread (max-min), printed alongside the
+            // existing relative_speed/cfl numbers.
+            let y_stats = |id: u32| -> (f32, f32, f32, f32) {
+                let ys: Vec<f32> = particles
+                    .iter()
+                    .filter(|p| p.material_id == id)
+                    .map(|p| p.x.y)
+                    .collect();
+                let xs: Vec<f32> = particles
+                    .iter()
+                    .filter(|p| p.material_id == id)
+                    .map(|p| p.x.x)
+                    .collect();
+                if ys.is_empty() {
+                    return (0.0, 0.0, 0.0, 0.0);
+                }
+                let mean = ys.iter().sum::<f32>() / ys.len() as f32;
+                let min_y = ys.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max_y = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let x_spread = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
+                    - xs.iter().cloned().fold(f32::INFINITY, f32::min);
+                (mean, min_y, max_y, x_spread)
+            };
+            let (sand_mean_y, sand_min_y, sand_max_y, sand_x_spread) = y_stats(MAT_SAND);
+            let (water_mean_y, water_min_y, water_max_y, water_x_spread) = y_stats(MAT_WATER);
+            println!(
+                "  sand: mean_y={sand_mean_y:.2} range=[{sand_min_y:.2},{sand_max_y:.2}] x_spread={sand_x_spread:.2}"
+            );
+            println!(
+                "  water: mean_y={water_mean_y:.2} range=[{water_min_y:.2},{water_max_y:.2}] x_spread={water_x_spread:.2}"
+            );
             // Real perf diagnostics -- distinguishes "slow because of substep
             // count" (stiff sand forcing many small CFL-bound substeps per
             // frame, real and expected) from "slow for some other reason."

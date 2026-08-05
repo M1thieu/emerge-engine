@@ -16,6 +16,9 @@ use glam::Vec2;
 use super::Simulation;
 use super::cfl::choose_substep_dt;
 use super::projection::{apply_boundary_conditions_to_grid, project_particle_state_to_admissible};
+use crate::grains::coupling::{
+    apply_grain_contact_forces, gather_grid_to_grains, scatter_grains_to_grid,
+};
 use crate::rod::{
     RodForceParams, RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism,
     apply_growth, apply_phototropism, apply_rod_internal_and_wind_forces, apply_secondary_growth,
@@ -236,6 +239,12 @@ impl Simulation {
                 scatter_rod_to_grid(&rod.points, &mut self.grid);
             }
         }
+        // Grain -> grid scatter, same shared `Grid`, same convention as rods
+        // above -- see `grains::coupling`'s own doc. No-op for every scene
+        // that never calls `add_grain_population`.
+        for population in &self.grain_populations {
+            scatter_grains_to_grid(population, &mut self.grid);
+        }
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
         // Wake any sleeping particle whose kernel overlaps a MEANINGFULLY active
@@ -446,6 +455,11 @@ impl Simulation {
                 gather_grid_to_rod(&mut rod.points, &self.grid, sub_dt);
             }
         }
+        // Grid -> grain gather, same convention as rods above -- see
+        // `grains::coupling::gather_grid_to_grains`'s own doc.
+        for population in &mut self.grain_populations {
+            gather_grid_to_grains(population, &self.grid, sub_dt);
+        }
         self.last_timing.g2p_us += t2.elapsed().as_micros() as u64;
 
         // ── Force fields ──────────────────────────────────────────────────────
@@ -496,6 +510,15 @@ impl Simulation {
                 }
             }
             self.last_timing.fields_us += t3.elapsed().as_micros() as u64;
+        }
+
+        // ── Grain contact forces ────────────────────────────────────────────────
+        // Same real convention as rod internal forces below: velocity-only
+        // (position already advanced in the gather above), gravity NOT
+        // reapplied here (already received via the shared grid-update step) --
+        // see `grains::coupling::apply_grain_contact_forces`'s own doc.
+        for population in &mut self.grain_populations {
+            apply_grain_contact_forces(population, sub_dt);
         }
 
         // ── Rod internal + wind forces ──────────────────────────────────────────
@@ -609,6 +632,7 @@ impl Simulation {
             field.apply(
                 &self.particles,
                 sub_dt,
+                self.config.dx_meters,
                 &mut self.granular_fluidity_g[..self.active_count],
             );
         }
@@ -757,11 +781,11 @@ impl Simulation {
         self.last_timing.phase_sleep_us += t5.elapsed().as_micros() as u64;
     }
 
-    pub fn effective_dt(&self) -> f32 {
+    pub const fn effective_dt(&self) -> f32 {
         self.last_step_dt
     }
 
-    pub fn last_substeps(&self) -> usize {
+    pub const fn last_substeps(&self) -> usize {
         self.last_substeps
     }
 
