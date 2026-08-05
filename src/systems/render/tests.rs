@@ -1,6 +1,7 @@
 //! Test suite for `Renderer` -- split out of `mod.rs` (was ~150 of its ~930
 //! lines), same pattern as `gpu/solver/device_lost_tests.rs`.
 
+use super::gpu_types::GridVisibilityParams;
 use super::*;
 use crate::particle::Particle;
 use glam::Mat2;

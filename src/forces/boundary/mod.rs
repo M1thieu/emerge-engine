@@ -1,5 +1,7 @@
-//! Boundary conditions: the `BoundaryCondition` trait plus 6 real models,
-//! one per file (mirrors the `materials/` one-model-per-file pattern).
+//! Boundary conditions: the `BoundaryCondition` trait plus 6 real models.
+//! The 3 Coulomb-friction variants (plain/grip/ratchet) are a real, tightly
+//! related family -- grouped under `friction/` (see that module's own doc);
+//! `heightmap`/`predictive`/`slip` are each standalone, one file apiece.
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
 //! `clamp_position_inside_grid`) and their direct unit tests live here,
@@ -10,17 +12,13 @@ use glam::Vec2;
 use crate::particle::ParticleUpdateCtx;
 
 mod friction;
-mod grip_friction;
 mod heightmap;
 mod predictive;
-mod ratchet_friction;
 mod slip;
 
-pub use friction::FrictionBoundary;
-pub use grip_friction::GripFrictionBoundary;
+pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
 pub use predictive::PredictiveBoundary;
-pub use ratchet_friction::RatchetFrictionBoundary;
 pub use slip::SlipBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
@@ -78,7 +76,7 @@ pub(crate) fn apply_coulomb_wall(velocity: &mut Vec2, outward_normal: Vec2, mu: 
     };
 }
 
-pub(crate) fn apply_slip_wall_velocity(
+pub(crate) const fn apply_slip_wall_velocity(
     thickness: usize,
     cell_index: usize,
     grid_res: usize,

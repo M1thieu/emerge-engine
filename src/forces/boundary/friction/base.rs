@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-use super::{BoundaryCondition, apply_coulomb_wall, clamp_position_inside_grid};
+use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_position_inside_grid};
 
 /// Grid-level Coulomb wall boundary.
 ///

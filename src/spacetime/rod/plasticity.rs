@@ -89,7 +89,7 @@ pub struct RodPlasticity {
 }
 
 impl RodPlasticity {
-    pub fn new(yield_moment_n_m: f32) -> Self {
+    pub const fn new(yield_moment_n_m: f32) -> Self {
         Self {
             yield_moment_n_m: yield_moment_n_m.abs(),
             hardening_modulus_n_m: 0.0,
@@ -99,7 +99,7 @@ impl RodPlasticity {
     /// Opt into real isotropic hardening (see module doc) — without this,
     /// the material stays perfectly plastic and can ratchet indefinitely
     /// under a sustained moment.
-    pub fn with_hardening(mut self, hardening_modulus_n_m: f32) -> Self {
+    pub const fn with_hardening(mut self, hardening_modulus_n_m: f32) -> Self {
         self.hardening_modulus_n_m = hardening_modulus_n_m.abs();
         self
     }

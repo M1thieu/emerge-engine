@@ -152,7 +152,7 @@ const _: () = assert!(std::mem::size_of::<Particle>() == 128);
 
 impl Particle {
     /// All-zero particle with identity deformation gradient. Useful in tests and tooling.
-    pub fn zeroed() -> Self {
+    pub const fn zeroed() -> Self {
         Self {
             x: glam::Vec2::ZERO,
             v: glam::Vec2::ZERO,
@@ -184,7 +184,7 @@ impl Particle {
     ///
     /// Called at the end of every `update_particle` implementation after F is updated.
     /// Clamps volume to 1e-6 to prevent divide-by-zero in subsequent stress evaluations.
-    #[inline(always)]
+    #[inline]
     pub fn sync_volume_and_density(&mut self, j: f32) {
         self.volume = (self.initial_volume * j).max(1.0e-6);
         self.density = self.mass / self.volume;
@@ -203,5 +203,9 @@ impl Particle {
 // see that file's own doc comment. Re-exported here so every existing
 // `crate::particle::Particles` / `emerge::particle::Particles` path (and
 // `ParticlesIter`) keeps resolving unchanged.
+mod grain;
+mod rod_points;
 mod soa;
+pub use grain::Grain;
+pub use rod_points::RodPoints;
 pub use soa::{ParticleUpdateCtx, Particles, ParticlesIter};

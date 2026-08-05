@@ -85,7 +85,7 @@ pub struct StabilityStatus {
 }
 
 impl StabilityStatus {
-    pub fn healthy(self) -> bool {
+    pub const fn healthy(self) -> bool {
         !self.particle_count_violation
             && !self.inactive_grid_violation
             && !self.cell_concentration_violation
@@ -145,7 +145,7 @@ impl StabilityStatus {
         labels
     }
 
-    pub fn issue_mask(self) -> u16 {
+    pub const fn issue_mask(self) -> u16 {
         let mut mask = 0u16;
         if self.particle_count_violation {
             mask |= 1 << 0;

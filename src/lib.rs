@@ -5,13 +5,16 @@
 //
 //   Core physics (always compiled, stable API)
 //   ├── spacetime/       Spacetime domain: solver (Simulation, SimConfig,
-//   │                    SpawnRegion, query, density, cutoff), grid (Grid, Cell,
+//   │                    SpawnRegion, body_state, density), grid (Grid, Cell,
 //   │                    kernel), transfer (P2G/G2P transfer kernels), rod
-//   │                    (1D discrete elastic rod sub-solver, grid-coupled)
-//   ├── matter/          Matter domain: particle (Particle struct), materials/
-//   │                    (MaterialModel trait, constitutive models, MaterialRegistry)
-//   ├── forces/          Forces domain: boundary (BoundaryCondition + impls),
-//   │                    fields (Field trait + impls: gravity, Coulomb, EM, confinement)
+//   │                    (1D discrete elastic rod sub-solver, grid-coupled),
+//   │                    grains (DEM grain dynamics: population/coupling/oracle)
+//   ├── matter/          Matter domain: particle (Particle, Grain, RodPoints),
+//   │                    materials/ (MaterialModel trait, 13 constitutive models,
+//   │                    MaterialRegistry; granular/ groups the sand research thread)
+//   ├── forces/          Forces domain: boundary (BoundaryCondition + impls,
+//   │                    friction/ groups the Coulomb-friction family), fields
+//   │                    (Field trait + impls: gravity, Coulomb, EM, confinement, cutoff)
 //   ├── information/     Information domain: control (Lnn), measures (entropy/MI) [experimental]
 //   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
 //   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
@@ -50,6 +53,7 @@ pub use information::measures;
 pub use matter::materials;
 pub use matter::particle;
 pub use spacetime::diff;
+pub use spacetime::grains;
 pub use spacetime::grid;
 pub use spacetime::rod;
 pub use spacetime::solver;
@@ -101,8 +105,8 @@ pub use fields::{
 
 // State queries + density export for rendering
 pub use control::Lnn;
+pub use solver::body_state::BodyState;
 pub use solver::density::compute_density_grid;
-pub use solver::query::BodyState;
 
 /// Build a `Vec<Particle>` from a `SpawnRegion` — the primary way to construct
 /// initial particle regions for `GpuSimulation::new` or to merge multiple regions.

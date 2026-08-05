@@ -1,8 +1,8 @@
 pub mod bingham;
 pub mod corotated;
-pub mod cosserat;
 pub mod elastic;
 pub mod fluid;
+pub mod granular;
 pub mod granular_fluid;
 pub mod nacc;
 pub mod no_compression;
@@ -11,9 +11,7 @@ pub mod physical_props;
 mod property_dispatch;
 pub mod rankine;
 pub mod registry;
-pub mod sand;
-pub mod sand_mui;
-pub mod scale_contract;
+pub mod rod_material;
 pub mod snow;
 pub(crate) mod svd;
 pub mod utils;
@@ -29,14 +27,15 @@ pub use bingham::BinghamFluidMaterial;
 pub use corotated::CorotatedMaterial;
 pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
+pub use granular::sand::DruckerPragerMaterial;
+pub use granular::sand_mui::MuIRheologyMaterial;
 pub use granular_fluid::GranularFluidMaterial;
 pub use nacc::NaccMaterial;
 pub use no_compression::NoCompressionMaterial;
 pub use params::MaterialParams;
 pub use rankine::RankineMaterial;
 pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
-pub use sand::DruckerPragerMaterial;
-pub use sand_mui::MuIRheologyMaterial;
+pub use rod_material::RodMaterial;
 pub use snow::StomakhinMaterial;
 pub use utils::{
     elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
@@ -329,7 +328,7 @@ pub struct WithLatentHeat<M> {
 }
 
 impl<M> WithLatentHeat<M> {
-    pub fn new(inner: M, latent_heat: f32) -> Self {
+    pub const fn new(inner: M, latent_heat: f32) -> Self {
         Self { inner, latent_heat }
     }
 }
@@ -368,7 +367,7 @@ pub struct WithMixturePhase<M> {
 }
 
 impl<M> WithMixturePhase<M> {
-    pub fn new(inner: M, phase: MixturePhase) -> Self {
+    pub const fn new(inner: M, phase: MixturePhase) -> Self {
         Self { inner, phase }
     }
 }
@@ -409,7 +408,7 @@ pub struct WithPreStress<M> {
 }
 
 impl<M> WithPreStress<M> {
-    pub fn new(inner: M, pressure: f32) -> Self {
+    pub const fn new(inner: M, pressure: f32) -> Self {
         Self { inner, pressure }
     }
 }

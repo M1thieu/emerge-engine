@@ -316,7 +316,7 @@ impl Simulation {
     }
 
     /// Number of currently active (non-sleeping) particles.
-    pub fn active_count(&self) -> usize {
+    pub const fn active_count(&self) -> usize {
         self.active_count
     }
 

@@ -36,7 +36,7 @@ pub struct HeightmapBoundary {
 }
 
 impl HeightmapBoundary {
-    pub fn new(heights: Vec<f32>, friction: f32, wall_thickness: usize) -> Self {
+    pub const fn new(heights: Vec<f32>, friction: f32, wall_thickness: usize) -> Self {
         Self {
             heights,
             friction,

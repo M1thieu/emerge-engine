@@ -55,7 +55,7 @@ impl Lnn {
         }
     }
 
-    pub fn n_neurons(&self) -> usize {
+    pub const fn n_neurons(&self) -> usize {
         self.state.len()
     }
 
@@ -94,7 +94,7 @@ impl Lnn {
     // ── Genome API ──────────────────────────────────────────────────────────────
 
     /// Expected flat genome length for n neurons: n·(n + 3).
-    pub fn genome_size(n: usize) -> usize {
+    pub const fn genome_size(n: usize) -> usize {
         n + n + n * n + n
     }
 

@@ -8,7 +8,7 @@ pub struct SlipBoundary {
 }
 
 impl SlipBoundary {
-    pub fn new(thickness: usize) -> Self {
+    pub const fn new(thickness: usize) -> Self {
         Self { thickness }
     }
 }

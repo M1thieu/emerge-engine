@@ -2,13 +2,13 @@
 //!
 //! Split out of `solver/mod.rs` -- everything here reads state (or, for the
 //! tag-group setters, writes a small uniform slice of it) rather than
-//! advancing the simulation. Distinct from `solver::query`, which holds the
-//! free `BodyState`-aggregation functions these methods call into.
+//! advancing the simulation. Distinct from `solver::body_state`, which holds
+//! the free `BodyState`-aggregation functions these methods call into.
 
 use glam::Vec2;
 
 use super::Simulation;
-use super::query::{self, BodyState, body_state_of};
+use super::body_state::{self, BodyState, body_state_of};
 use crate::diagnostics::{SimSnapshot, collect_rod_snapshot, collect_snapshot};
 
 impl Simulation {
@@ -180,7 +180,7 @@ impl Simulation {
     pub fn region_state(&self, center: Vec2, radius: f32) -> BodyState {
         self.ensure_spatial_hash_fresh();
         let r2 = radius * radius;
-        let mut s = query::BodyState::default();
+        let mut s = body_state::BodyState::default();
         let hash = self.spatial_hash.borrow();
         for i in hash.query(center, radius) {
             if (self.particles.x[i] - center).length_squared() <= r2 {

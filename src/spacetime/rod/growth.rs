@@ -102,7 +102,7 @@ pub struct LightResponse {
 }
 
 impl LightResponse {
-    pub fn new(half_saturation_exposure: f32) -> Self {
+    pub const fn new(half_saturation_exposure: f32) -> Self {
         Self {
             half_saturation_exposure,
         }
@@ -147,7 +147,7 @@ pub struct Growth {
 }
 
 impl Growth {
-    pub fn new(rate: f32, max_segment_length_m: f32) -> Self {
+    pub const fn new(rate: f32, max_segment_length_m: f32) -> Self {
         Self {
             rate,
             max_segment_length_m,
@@ -157,7 +157,7 @@ impl Growth {
         }
     }
 
-    pub fn with_resistance(mut self, resistance: GrowthResistance) -> Self {
+    pub const fn with_resistance(mut self, resistance: GrowthResistance) -> Self {
         self.resistance = Some(resistance);
         self
     }
@@ -165,7 +165,7 @@ impl Growth {
     /// Opt into a real, finite growth budget (see module doc) — without
     /// this, growth (combined with point insertion) has no total-length
     /// limit at all, unrealistic for any real plant given enough real time.
-    pub fn with_resource_budget(mut self, budget_m: f32) -> Self {
+    pub const fn with_resource_budget(mut self, budget_m: f32) -> Self {
         self.resource_budget_m = Some(budget_m.max(0.0));
         self
     }
@@ -173,7 +173,7 @@ impl Growth {
     /// Opt into real photosynthesis-driven growth rate (see `LightResponse`'s
     /// own doc) — without this, growth proceeds at the fixed `rate`
     /// regardless of light, exactly the prior behavior.
-    pub fn with_light_response(mut self, light_response: LightResponse) -> Self {
+    pub const fn with_light_response(mut self, light_response: LightResponse) -> Self {
         self.light_response = Some(light_response);
         self
     }

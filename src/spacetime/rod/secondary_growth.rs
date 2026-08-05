@@ -64,7 +64,7 @@ pub struct SecondaryGrowth {
 }
 
 impl SecondaryGrowth {
-    pub fn new(
+    pub const fn new(
         bending_rate: f32,
         bending_moment_threshold_n_m: f32,
         axial_rate: f32,

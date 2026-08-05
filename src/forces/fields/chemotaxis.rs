@@ -77,7 +77,7 @@ impl ChemotaxisField {
     }
 
     /// Restrict force to a single material.  `None` (default) = all particles.
-    pub fn with_material_filter(mut self, id: u32) -> Self {
+    pub const fn with_material_filter(mut self, id: u32) -> Self {
         self.material_filter = Some(id);
         self
     }

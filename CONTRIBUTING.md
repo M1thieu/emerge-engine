@@ -30,17 +30,24 @@ not an implementation layer:
 
 ```
 src/
-  matter/            particle.rs (repr(C), 128 B, GPU-uploadable) · Particles (SoA)
-    materials/        MaterialModel trait · 13 constitutive models · SVD · registry
+  matter/            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
+                     RodPoints · Particles SoA)
+    materials/        MaterialModel trait · registry · 11 standalone models ·
+                      granular/ (sand, sand_mui, cosserat, grain_contact_law,
+                      scale_contract -- grouped by active research thread)
   spacetime/          the actual solver
-    solver/            Simulation · SimConfig · SpawnRegion · spatial hash · query
+    solver/            Simulation · SimConfig · SpawnRegion · spatial hash ·
+                       body_state (BodyState aggregation)
     grid/               Grid · Cell · ContactCell (multi-field contact) · kernel
     transfer/           P2G scatter + G2P gather (MLS-APIC)
     diff.rs             differentiable/gradient-trainable stepping
-    rod/                Rod · RodPoints · RodMaterial · build_straight_rod ·
+    rod/                Rod · RodMaterial · build_straight_rod ·
                         coupling.rs (scatter/gather to the shared Grid)
-  forces/             boundary/ (Slip / Predictive / Friction / Heightmap) ·
-                      fields/ (NBody / GravityWell / Coulomb / Confinement) ·
+    grains/             DEM grain dynamics: population/coupling/oracle
+                        (state lives in matter::particle::Grain)
+  forces/             boundary/ (Slip / Predictive / Heightmap / friction/
+                      [Friction / GripFriction / RatchetFriction]) ·
+                      fields/ (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
                       electromagnetics.rs
   energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
                       acoustics/, electromagnetics.rs [feature=experimental]

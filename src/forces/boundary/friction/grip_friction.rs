@@ -1,7 +1,7 @@
 use glam::Vec2;
 
-use super::BoundaryCondition;
-use super::friction::FrictionBoundary;
+use super::base::FrictionBoundary;
+use crate::forces::boundary::BoundaryCondition;
 use crate::particle::ParticleUpdateCtx;
 
 /// Coulomb wall friction whose EFFECTIVE grip is modulated by each particle's own

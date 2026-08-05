@@ -131,7 +131,7 @@ impl Particles {
     }
 
     /// Create an empty `Particles` store.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             x: Vec::new(),
             v: Vec::new(),
@@ -190,13 +190,13 @@ impl Particles {
 
     /// Number of particles.
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.x.len()
     }
 
     /// True if there are no particles.
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.x.is_empty()
     }
 
@@ -441,7 +441,7 @@ impl<'a> Iterator for ParticlesIter<'a> {
 impl ExactSizeIterator for ParticlesIter<'_> {}
 
 impl Particles {
-    pub fn iter(&self) -> ParticlesIter<'_> {
+    pub const fn iter(&self) -> ParticlesIter<'_> {
         ParticlesIter {
             particles: self,
             index: 0,

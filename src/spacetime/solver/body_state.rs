@@ -108,7 +108,7 @@ pub fn region_body_state_of_slice(particles: &[Particle], center: Vec2, radius: 
 
 impl BodyState {
     /// Empty state — returned when no particles match the query.
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
             count: 0,
             avg_volume_ratio: 0.0,

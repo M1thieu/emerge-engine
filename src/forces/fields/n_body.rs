@@ -68,7 +68,7 @@ struct Aabb2 {
 }
 
 impl Aabb2 {
-    fn new(center: Vec2, half_size: Vec2) -> Self {
+    const fn new(center: Vec2, half_size: Vec2) -> Self {
         Self { center, half_size }
     }
 

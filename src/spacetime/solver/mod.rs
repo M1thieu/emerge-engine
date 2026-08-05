@@ -1,21 +1,19 @@
+pub mod body_state;
 mod cfl;
 pub mod config;
-pub mod cutoff;
 pub mod density;
 pub mod handle;
 mod lifecycle;
 mod particles;
 mod projection;
 mod queries;
-pub mod query;
 pub mod spatial_hash;
 mod step;
 
+pub use body_state::{BodyState, body_state_of, region_body_state_of};
 pub use config::{SimConfig, SpawnRegion};
-pub use cutoff::smooth_cutoff;
 pub use density::compute_density_grid;
 pub use handle::{MaterialHandle, ParticleGroup};
-pub use query::{BodyState, body_state_of, region_body_state_of};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
@@ -78,7 +76,7 @@ pub struct Simulation {
     /// cosserat_field` module doc) -- `None` (default) for every scene that
     /// doesn't opt in, same zero-cost-when-unused property `granular_fluidity`
     /// already has. Real grid-level angular-momentum channel, added to close
-    /// the loop `matter::materials::cosserat`'s kinematics module leaves open.
+    /// the loop `matter::materials::granular::cosserat`'s kinematics module leaves open.
     cosserat: Option<CosseratField>,
     /// Persistent per-particle gathered micro-rotation, one-substep-lag
     /// convention matching `granular_fluidity_g` exactly.
@@ -131,6 +129,17 @@ pub struct Simulation {
     /// real scatter/gather insertion points. Empty for every scene that
     /// never calls `add_rod`/`with_rod` (zero-cost: 0-iteration loops).
     rods: Vec<Rod>,
+    /// Discrete-element grain populations (`spacetime::grains`) sharing this
+    /// simulation's own MPM grid — real, cited elastic-plastic rolling
+    /// resistance (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011),
+    /// see `grains::coupling` for the real scatter/gather insertion points
+    /// (mirroring `rods` above exactly). Empty for every scene that never
+    /// calls `add_grain_population`/`with_grain_population` (zero-cost:
+    /// 0-iteration loops). Not yet gated by any automatic oracle deciding
+    /// where grains are needed — that's a real, separate, not-yet-built
+    /// piece (see `project_dem_rolling_resistance_scoped` memory); today a
+    /// caller decides explicitly, same as `add_rod`.
+    grain_populations: Vec<crate::grains::population::GrainPopulation>,
     /// Scratch buffer for wake/sleep candidates — pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.
     scratch_indices: Vec<usize>,
@@ -219,11 +228,11 @@ pub(crate) struct LcgRng {
 }
 
 impl LcgRng {
-    pub(crate) fn new(seed: u32) -> Self {
+    pub(crate) const fn new(seed: u32) -> Self {
         Self { state: seed }
     }
 
-    fn next_u32(&mut self) -> u32 {
+    const fn next_u32(&mut self) -> u32 {
         self.state = self
             .state
             .wrapping_mul(1_664_525)

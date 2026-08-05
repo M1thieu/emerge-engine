@@ -11,8 +11,6 @@
 ///   Pass `sim.particle_buffer()` + `sim.particle_count()`. No `sync_particles_blocking()`.
 use std::mem;
 
-use wgpu::util::DeviceExt;
-
 use crate::particle::{Particle, Particles};
 use crate::systems::gpu::MAX_RENDER_MATERIAL_SLOTS;
 
@@ -60,8 +58,17 @@ pub enum ColorMode {
 // GPU-side wire structs (InstanceData/CameraParams/RenderConfig/OpticalTable,
 // GridVolumeParams/GridVolumeSource) live in gpu_types.rs -- see that file's doc.
 mod gpu_types;
-use gpu_types::{CameraParams, GridVolumeParams, InstanceData, OpticalTable, RenderConfig};
+use gpu_types::{CameraParams, InstanceData, OpticalTable, RenderConfig};
 pub use gpu_types::{DualPhaseSurfaceSource, GridVolumeSource, SurfaceReconstructionSource};
+
+// GPU buffer allocation (the RenderBuffers struct + its own constructor)
+// lives in buffers.rs -- see that file's doc.
+mod buffers;
+use buffers::RenderBuffers;
+
+// Grid-native volumetric render path (`render_grid_volume`) lives in
+// grid_volume.rs -- see that file's doc.
+mod grid_volume;
 
 // wgpu pipeline construction (the three build_*_pipeline functions + their
 // bind-group-layout helpers) lives in pipelines.rs -- see that file's doc.
@@ -71,8 +78,7 @@ mod pipelines;
 // + its own capacity helpers) lives in surface_reconstruction.rs -- see that file's doc.
 mod surface_reconstruction;
 use gpu_types::{
-    BandHysteresisParams, GridVisibilityParams, SurfaceParams, SurfaceRenderParams,
-    VisibilityParams, WaveStepParams,
+    BandHysteresisParams, SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
 use pipelines::{
     build_band_hysteresis_step_pipeline, build_grid_visibility_step_pipeline,
@@ -319,398 +325,51 @@ impl Renderer {
     ) -> Self {
         let cap = max_particles.max(1);
 
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_instances"),
-            size: (cap * mem::size_of::<InstanceData>()) as u64,
-            // VERTEX for draw; COPY_DST for both the CPU fill path and the GPU compute copy.
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // GPU compute write target. Kept distinct from the vertex buffer: wgpu treats a
-        // read_write storage buffer as an exclusive usage, so sharing one buffer for both
-        // compute-write and vertex-read trips its usage tracker. Copied into instance_buffer.
-        let storage_instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_instances_storage"),
-            size: (cap * mem::size_of::<InstanceData>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("render_quad_verts"),
-            contents: bytemuck::cast_slice::<[f32; 2], u8>(&[
-                [-0.5f32, -0.5],
-                [0.5, -0.5],
-                [0.5, 0.5],
-                [-0.5, 0.5],
-            ]),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("render_quad_idx"),
-            contents: bytemuck::cast_slice::<u16, u8>(&[0u16, 1, 2, 0, 2, 3]),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_camera"),
-            size: mem::size_of::<CameraParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let render_config_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_config"),
-            size: mem::size_of::<RenderConfig>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let optical_table_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("render_optics"),
-            size: mem::size_of::<OpticalTable>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let grid_volume_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid_volume_params"),
-            size: mem::size_of::<GridVolumeParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Real hysteresis visibility state for the grid-native path --
-        // same real, disclosed all-zero starting bias as `visibility_buf`
-        // above (every cell starts "not visible" until it genuinely earns
-        // visibility on its own first real frame).
-        let grid_visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid_visibility_state"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let grid_visibility_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid_visibility_params"),
-            size: mem::size_of::<GridVisibilityParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Curvature-flow surface buffers -- allocated at a minimal 1-cell
-        // placeholder size; `ensure_surface_capacity` (called from
-        // `render_surface_reconstruction`, the only place `grid_res` is
-        // actually known) grows all three together the first time it's
-        // needed, same lazy-growth pattern `ensure_capacity` already uses
-        // for the particle instance buffers.
-        let surface_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Real mass-weighted temperature pair -- same minimal-placeholder-
-        // then-grow convention as `surface_atomic_buf` above.
-        let surface_temp_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_temp_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let surface_temp_float_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_temp_float"),
-            size: 4,
-            // COPY_SRC: `fs_main`'s own final temperature source, same real
-            // "readback/diagnostic tools need to copy FROM it" reason
-            // `surface_a_buf` is COPY_SRC (see that field's own doc).
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        // Real volume-preserving-correction totals -- see `pre_total_atomic_
-        // buf`'s own doc. Always exactly 4 bytes (one atomic i32), never
-        // grown by `ensure_surface_capacity` -- a global scalar, not a
-        // per-cell field.
-        let pre_total_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pre_total_atomic"),
-            size: 4,
-            // COPY_SRC: diagnostic/test readback, same real reason
-            // `surface_a_buf` has it (see that field's own doc).
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let post_total_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("post_total_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        // Ping-pong partner for the real thermal-diffusion PDE -- see
-        // `temp_avg_pipeline`'s own doc.
-        let surface_temp_b_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_temp_b"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let surface_a_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_a"),
-            size: 4,
-            // COPY_SRC: `surface_a` is where `CURVATURE_ITERATIONS` (even)
-            // always settles the final result -- readback/diagnostic tools
-            // need to copy FROM it, not just the render pass reading it.
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let surface_b_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_b"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let surface_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_params"),
-            size: mem::size_of::<SurfaceParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let surface_render_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_render_params"),
-            size: mem::size_of::<SurfaceRenderParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // N-material extension -- minimal placeholder, same lazy-growth
-        // convention as the surface buffers above, but grown independently
-        // (only on opt-in) by `ensure_surface_material_mass_capacity`, not
-        // by `ensure_surface_capacity`. See the struct field's own doc.
-        let surface_material_mass_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_material_mass"),
-            size: 4,
-            // COPY_SRC: diagnostic/test readback, same real reason
-            // `surface_a_buf` has it (see that field's own doc).
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Two-phase extension's own phase-B buffers -- same minimal-
-        // placeholder-then-grow convention as phase A's own buffers above.
-        let phase_b_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Phase B's own temperature pair -- see `surface_temp_atomic_buf`'s
-        // own doc.
-        let phase_b_temp_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_temp_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let phase_b_temp_float_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_temp_float"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Phase B's own volume-preserving-correction totals -- see
-        // `pre_total_atomic_buf`'s own doc.
-        let phase_b_pre_total_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_pre_total_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_post_total_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_post_total_atomic"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_a_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_a"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_b_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_b"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let phase_b_raw_splat_history_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_raw_splat_history"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_params"),
-            size: mem::size_of::<SurfaceParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let render_params_b_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("surface_render_params_b"),
-            size: mem::size_of::<SurfaceRenderParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Phase B's own wave/visibility/band state -- same real, disclosed
-        // placeholder-then-grow convention as every other buffer above.
-        let phase_b_wave_bufs = std::array::from_fn(|i| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(match i {
-                    0 => "phase_b_wave_0",
-                    1 => "phase_b_wave_1",
-                    _ => "phase_b_wave_2",
-                }),
-                size: 4,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
-        });
-        let phase_b_wave_density_prev_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_wave_density_prev"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_visibility_state"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let phase_b_band_state_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phase_b_band_state"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Real, persistent wave field -- placeholder-then-grow, same
-        // convention as the surface buffers above. WebGPU/wgpu guarantees
-        // newly created buffers start zero-filled (undisturbed water genuinely
-        // starts at zero height -- no explicit clear pass needed). THREE
-        // buffers, not two -- see this struct's own `wave_bufs` field doc.
-        let wave_bufs = std::array::from_fn(|i| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(match i {
-                    0 => "wave_0",
-                    1 => "wave_1",
-                    _ => "wave_2",
-                }),
-                size: 4,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            })
-        });
-        let wave_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wave_params"),
-            size: mem::size_of::<WaveStepParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // Real temporal-disturbance history -- see `wave_density_prev_buf`'s
-        // own doc. Starts all-zero (WebGPU guarantee), same real one-time
-        // "body just appeared" excitation bias as the wave field itself.
-        let wave_density_prev_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wave_density_prev"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        // Real hysteresis visibility state -- single persistent buffer,
-        // starts all-zero (WebGPU guarantee), meaning every cell starts
-        // "not visible" until it genuinely earns visibility on its own
-        // first real frame (a harmless, expected one-time conservative
-        // bias from hysteresis itself, not a bug).
-        let visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("visibility_state"),
-            size: 4,
-            // COPY_SRC: see `surface_a_buf`'s own doc -- readback/diagnostic
-            // tools (incl. this crate's own tests) need to copy FROM it.
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let visibility_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("visibility_params"),
-            size: mem::size_of::<VisibilityParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Real hysteresis color-band state -- single persistent buffer,
-        // same real, disclosed all-zero starting bias as `visibility_buf`
-        // (every cell starts in band 0 until it genuinely earns a
-        // different one on its own first real frame).
-        let band_state_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("band_state"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let band_hysteresis_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("band_hysteresis_params"),
-            size: mem::size_of::<BandHysteresisParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Real, persistent raw-splat history -- starts all-zero (WebGPU
-        // guarantee), a real, harmless one-time bias (first frame's blend
-        // ramps up to the true value over a few frames).
-        let raw_splat_history_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("raw_splat_history"),
-            size: 4,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let RenderBuffers {
+            instance_buffer,
+            storage_instances,
+            vertex_buffer,
+            index_buffer,
+            camera_buffer,
+            render_config_buf,
+            optical_table_buf,
+            grid_volume_params_buf,
+            grid_visibility_buf,
+            grid_visibility_params_buf,
+            surface_atomic_buf,
+            surface_temp_atomic_buf,
+            surface_temp_float_buf,
+            pre_total_atomic_buf,
+            post_total_atomic_buf,
+            surface_temp_b_buf,
+            surface_a_buf,
+            surface_b_buf,
+            surface_params_buf,
+            surface_render_params_buf,
+            surface_material_mass_buf,
+            phase_b_atomic_buf,
+            phase_b_temp_atomic_buf,
+            phase_b_temp_float_buf,
+            phase_b_pre_total_atomic_buf,
+            phase_b_post_total_atomic_buf,
+            phase_b_a_buf,
+            phase_b_b_buf,
+            phase_b_raw_splat_history_buf,
+            phase_b_params_buf,
+            render_params_b_buf,
+            phase_b_wave_bufs,
+            phase_b_wave_density_prev_buf,
+            phase_b_visibility_buf,
+            phase_b_band_state_buf,
+            wave_bufs,
+            wave_params_buf,
+            wave_density_prev_buf,
+            visibility_buf,
+            visibility_params_buf,
+            band_state_buf,
+            band_hysteresis_params_buf,
+            raw_splat_history_buf,
+        } = RenderBuffers::new(device, cap);
 
         let (render_pipeline, render_bgl) = build_particle_pipeline(device, output_format);
         let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1014,158 +673,6 @@ impl Renderer {
     }
 
     // ── Grid-volume render path ────────────────────────────────────────────────
-
-    /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
-    /// own doc for the real technique). Requires `set_camera` to have been called
-    /// first (same as `render_gpu` needs for its own bind group) -- reuses the
-    /// identical cached orthographic projection/grid_res so both modes line up on
-    /// screen without re-deriving them.
-    pub fn render_grid_volume(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        source: GridVolumeSource,
-        output_view: &wgpu::TextureView,
-        clear: bool,
-    ) {
-        let (sx, tx, sy, ty) = self.cached_ortho;
-        let grid_res = self.cached_grid_res;
-        self.ensure_grid_visibility_capacity(device, grid_res);
-        // Real per-particle cell-mass scale here is order 0.5-4 per occupied
-        // cell; 0.15 requires non-trivial local density before showing anything,
-        // instead of any measurable trace (which combined with bilinear smoothing
-        // would overshoot true particle extent). SAME floor the visibility step
-        // below gates on, so the hysteresis band and the raw discard agree.
-        let mass_floor = 0.15;
-        queue.write_buffer(
-            &self.grid_volume_params_buf,
-            0,
-            bytemuck::bytes_of(&GridVolumeParams {
-                sx,
-                tx,
-                sy,
-                ty,
-                light_dir: [self.light_dir.0, self.light_dir.1],
-                grid_res,
-                mass_floor,
-                material_mass_enabled: source.material_mass_enabled as u32,
-                _pad1: 0.0,
-                _pad2: [0.0, 0.0],
-            }),
-        );
-        queue.write_buffer(
-            &self.grid_visibility_params_buf,
-            0,
-            bytemuck::bytes_of(&GridVisibilityParams {
-                grid_res,
-                mass_floor,
-                _pad0: 0,
-                _pad1: 0,
-            }),
-        );
-        write_optical_table(
-            queue,
-            &self.optical_table_buf,
-            &self.sigma_a,
-            &self.sigma_s,
-            &self.specular_r0,
-        );
-
-        // Real hysteresis visibility step -- see `grid_volume.wgsl`'s own
-        // `grid_visibility_step_main` doc. Reads the SAME raw grid buffer
-        // the render pass below samples, must run before it in this
-        // encoder so `fs_main`'s discard sees this frame's decision, not
-        // last frame's.
-        let grid_visibility_step_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("grid_visibility_step_bg"),
-            layout: &self.grid_visibility_step_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: source.grid.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.grid_visibility_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.grid_visibility_params_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("grid_volume_bg"),
-            layout: &self.grid_volume_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: source.grid.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.grid_volume_params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.optical_table_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: source.material_mass.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.grid_visibility_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render_grid_volume"),
-        });
-        {
-            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("grid_visibility_step"),
-                timestamp_writes: None,
-            });
-            cp.set_pipeline(&self.grid_visibility_step_pipeline);
-            cp.set_bind_group(0, &grid_visibility_step_bg, &[]);
-            cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
-        }
-        let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.08,
-                a: 1.0,
-            })
-        } else {
-            wgpu::LoadOp::Load
-        };
-        {
-            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render_grid_volume"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            rp.set_pipeline(&self.grid_volume_pipeline);
-            rp.set_bind_group(0, &bg, &[]);
-            rp.draw(0..3, 0..1);
-        }
-        queue.submit(std::iter::once(enc.finish()));
-    }
 
     // ── CPU render path ────────────────────────────────────────────────────────
 
