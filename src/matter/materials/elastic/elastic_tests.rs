@@ -26,7 +26,7 @@ mod small_strain_linear_elasticity_tests {
     /// EXACTLY sigma = lambda*tr(eps)*I + 2*mu*eps with eps=delta*E (the plane-
     /// strain form, matching this material's own k=lambda+mu bulk modulus
     /// fix). Verified numerically here, not just derived by hand.
-    fn particle_with_f(f: Mat2) -> Particles {
+    pub(super) fn particle_with_f(f: Mat2) -> Particles {
         let mut particles = Particles::default();
         particles.push(Particle {
             x: Vec2::ZERO,
@@ -156,6 +156,108 @@ mod small_strain_linear_elasticity_tests {
              err(1e-2)={err_large:.2e} err(5e-3)={err_small:.2e} ratio={:.2}",
             err_small / err_large
         );
+    }
+}
+
+#[cfg(test)]
+mod poisson_response_tests {
+    use super::small_strain_linear_elasticity_tests::particle_with_f;
+    use super::*;
+    use glam::Vec2;
+
+    /// **Free lateral (Poisson) response, real gap found 2026-08-04**: every
+    /// existing small-strain test above prescribes an ARBITRARY strain E and
+    /// checks the stress FORMULA matches Hooke's law for that E -- none test
+    /// what the material actually DOES when pulled in one direction and left
+    /// free to move in the other (the real, physically meaningful "Poisson
+    /// ratio" behavior). This model is an explicitly documented 2D
+    /// PLANE-STRAIN formulation (`kirchhoff_stress`'s own doc: bulk modulus
+    /// `k=lambda+mu`, NOT the 3D `k=lambda+2mu/3`) -- so the real, self-
+    /// consistent question isn't "does it reproduce an externally-assumed 3D
+    /// nu" but "does solving THIS model's own already-validated linearized
+    /// formula (`tau ~= lambda*tr(eps)*I + 2*mu*eps`, proven exactly by
+    /// `small_uniaxial_strain_matches_hookes_law` above) for a genuinely
+    /// stress-free lateral direction give a self-consistent answer."
+    ///
+    /// For `eps = diag(e_xx, e_yy)`, this model's linearized formula gives
+    /// `tau_yy = lambda*(e_xx+e_yy) + 2*mu*e_yy`. Solving `tau_yy = 0` for
+    /// e_yy gives `e_yy = -lambda/(lambda+2*mu) * e_xx`, the real,
+    /// closed-form, self-consistent 2D free-lateral-strain ratio for this
+    /// material's own documented formula.
+    ///
+    /// A real, independent second check: the resulting axial stress should
+    /// equal the analytically-derived effective 1D stiffness `tau_xx = e_xx *
+    /// 4*mu*(lambda+mu)/(lambda+2*mu)` (substituting e_yy back into `tau_xx =
+    /// lambda*(e_xx+e_yy) + 2*mu*e_xx` and simplifying) -- confirms the solved
+    /// e_yy isn't just zeroing tau_yy by coincidence, but is the genuine
+    /// free-lateral elastic solution.
+    #[test]
+    fn free_lateral_strain_matches_zero_transverse_stress() {
+        let lambda = 1200.0;
+        let mu = 900.0;
+        let mat = NeoHookeanMaterial::new(lambda, mu);
+
+        let delta = 1.0e-4_f32;
+        let e_xx = 1.0f32;
+        let e_yy = -lambda / (lambda + 2.0 * mu) * e_xx;
+        let f = Mat2::IDENTITY + delta * Mat2::from_diagonal(Vec2::new(e_xx, e_yy));
+
+        let particles = particle_with_f(f);
+        let tau = mat.kirchhoff_stress(&particles, 0);
+
+        // Real check 1: transverse (yy) stress must be genuinely ~0 (free lateral
+        // boundary), not just small relative to xx.
+        let scale = (2.0 * mu * delta * e_xx.abs()).max(1e-9);
+        assert!(
+            tau.y_axis.y.abs() / scale < 1.0e-3,
+            "free-lateral strain should give ~zero transverse stress: \
+             tau_yy={:.3e} (scale={scale:.3e})",
+            tau.y_axis.y
+        );
+
+        // Real check 2: the resulting axial stress matches the independently-
+        // derived effective 1D stiffness, confirming e_yy is the genuine
+        // free-lateral solution, not a coincidental zero.
+        let expected_tau_xx = delta * e_xx * 4.0 * mu * (lambda + mu) / (lambda + 2.0 * mu);
+        let rel_err = (tau.x_axis.x - expected_tau_xx).abs() / expected_tau_xx.abs().max(1e-9);
+        assert!(
+            rel_err < 1.0e-3,
+            "axial stress under free-lateral loading should match the derived \
+             effective 1D stiffness: predicted={expected_tau_xx:.4e} actual={:.4e} \
+             rel_err={rel_err:.2e}",
+            tau.x_axis.x
+        );
+    }
+
+    /// Real sanity bound: the free-lateral strain ratio `-e_yy/e_xx` this
+    /// model's own formula predicts must stay inside the mathematically valid
+    /// range [0, 1) for any real, stable (lambda, mu > 0) material -- as
+    /// lambda/mu -> 0 the ratio -> 0 (a nearly-incompressible-shear material
+    /// barely contracts laterally), as lambda/mu -> infinity the ratio -> 1
+    /// (never reaching or exceeding it for finite mu > 0). Real, fixed
+    /// mistake (2026-08-04): the first version of this test wrongly asserted
+    /// [0, 0.5) -- confusing THIS 2D formula's own ratio (`lambda/(lambda+
+    /// 2*mu)`) with the standard 3D Poisson-ratio range, which is a
+    /// DIFFERENT quantity (`lambda/(2*lambda+2*mu)`, that one does approach
+    /// 0.5 as lambda/mu->infinity) -- caught by the very first real run
+    /// (lambda=1000, mu=500 gives ratio=0.5 exactly, a real, valid point this
+    /// model's own formula produces, not a bug), fixed here rather than
+    /// picking a different test point to dodge the boundary.
+    #[test]
+    fn free_lateral_ratio_stays_in_physically_valid_range() {
+        for &(lambda, mu) in &[
+            (100.0f32, 1000.0),
+            (500.0, 500.0),
+            (1000.0, 500.0),
+            (5000.0, 100.0),
+        ] {
+            let ratio = lambda / (lambda + 2.0 * mu);
+            assert!(
+                (0.0..1.0).contains(&ratio),
+                "free-lateral ratio out of physically valid [0, 1) range: \
+                 lambda={lambda} mu={mu} ratio={ratio}"
+            );
+        }
     }
 }
 

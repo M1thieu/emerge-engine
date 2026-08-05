@@ -1768,7 +1768,15 @@ mod gpu_tests {
         const FRAME_BUDGET_60FPS_MS: f64 = 16.67;
         const REAL_TIME_DT: f32 = 1.0 / 60.0; // see gpu_grid_resolution_cost's comment
 
-        for &target in &[10_000usize, 50_000, 100_000, 250_000, 500_000] {
+        for &target in &[
+            10_000usize,
+            25_000,
+            35_000,
+            50_000,
+            100_000,
+            250_000,
+            500_000,
+        ] {
             let config = SimConfig {
                 max_substeps_per_step: 4,
                 ..SimConfig::standard(GRID_RES, REAL_TIME_DT, Vec2::new(0.0, -0.3))
@@ -1812,6 +1820,69 @@ mod gpu_tests {
             for (i, p) in solver.particles().iter().enumerate() {
                 assert!(p.x.is_finite(), "n={n} particle {i}: position NaN");
             }
+        }
+    }
+
+    /// Real per-pass GPU profiling (2026-08-04), direct follow-up to
+    /// `gpu_particle_count_lp_budget`'s own finding that n=50,176 misses the
+    /// 60fps budget (~31-33ms vs the 16.67ms target) -- uses the ALREADY-
+    /// EXISTING `enable_profiling()`/`last_pass_timings_ns()` infrastructure
+    /// (`encode_substep`'s 7 labeled passes) to find WHICH pass actually
+    /// dominates at the real target particle count, instead of guessing
+    /// which optimization to try first. Same exact scene/config as
+    /// `gpu_particle_count_lp_budget`'s own n=50,000 case.
+    #[test]
+    #[ignore = "perf diagnostic (not correctness) -- run manually when investigating GPU perf"]
+    fn diag_gpu_per_pass_profile_at_50k_particles() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID_RES: usize = 512;
+        const REAL_TIME_DT: f32 = 1.0 / 60.0;
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, REAL_TIME_DT, Vec2::new(0.0, -0.3))
+        };
+        let side = ((50_000.0f32) / 4.0).sqrt().ceil() as i32;
+        let particles = build_particles(
+            &config,
+            SpawnRegion {
+                spacing: 0.5,
+                box_size: glam::IVec2::splat(side),
+                box_center: Vec2::splat(GRID_RES as f32 * 0.5),
+                precompute_initial_volumes: true,
+                ..SpawnRegion::for_sim(&config)
+            },
+        );
+        let n = particles.len();
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        let profiling_supported = solver.enable_profiling();
+        println!(
+            "diag_gpu_per_pass_profile_at_50k_particles: n={n} profiling_supported={profiling_supported}"
+        );
+
+        // Warm up (pipeline/buffer creation cost already paid by GpuSimulation::new).
+        for _ in 0..5 {
+            solver.step_frame();
+        }
+        // One more real step to get a fresh, representative set of pass timings.
+        solver.step_frame();
+        if let Some(timings) = solver.last_pass_timings_ns() {
+            let total_ns: f32 = timings.iter().map(|(_, ns)| *ns).sum();
+            println!("  pass                          ns          % of total");
+            for (label, ns) in &timings {
+                println!(
+                    "  {label:<28}  {ns:>10.0}  {:>6.1}%",
+                    100.0 * ns / total_ns.max(1.0)
+                );
+            }
+            println!("  TOTAL (1 substep)             {total_ns:>10.0}");
+        } else {
+            println!(
+                "  TIMESTAMP_QUERY not supported on this device/backend -- no per-pass breakdown available"
+            );
         }
     }
 

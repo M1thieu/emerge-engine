@@ -49,7 +49,7 @@ pub struct BinghamFluidMaterial {
 }
 
 impl BinghamFluidMaterial {
-    pub fn new(
+    pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,
         eos_stiffness: f32,
@@ -181,7 +181,12 @@ impl MaterialModel for BinghamFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let j = ctx.deformation_gradient.determinant().clamp(0.5, 2.0);
+        // Same real bug as `NewtonianFluidMaterial::update_particle`, fixed
+        // 2026-08-06 -- see that fix's own doc for the full root-cause writeup.
+        // This material copies the same isotropize-from-old-F pattern, so it
+        // carries the identical dead-EOS-pressure bug.
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        let j = f_trial.determinant().clamp(0.5, 2.0);
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));

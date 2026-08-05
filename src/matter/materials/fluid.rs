@@ -45,7 +45,7 @@ pub struct NewtonianFluidMaterial {
 }
 
 impl NewtonianFluidMaterial {
-    pub fn new(
+    pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,
         eos_stiffness: f32,
@@ -192,13 +192,50 @@ impl MaterialModel for NewtonianFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let j = ctx.deformation_gradient.determinant().clamp(0.5, 2.0);
+        // Real bug fixed 2026-08-06: this used to re-isotropize FROM THE OLD F's
+        // own determinant, never actually applying the velocity-gradient update
+        // every other material's `update_particle` does -- J was permanently
+        // frozen at its spawn value (1.0) for the material's entire lifetime,
+        // regardless of any real compression/expansion. Silent before 2026-08-04
+        // (density came from the separate grid-mass estimate then), but became a
+        // real, previously-undetected regression once `kirchhoff_stress` switched
+        // to `rest_density/J` -- the EOS pressure term went completely inert
+        // (density permanently == rest_density, pressure permanently ~0). Found
+        // via `fluid_impact_shows_real_free_surface_splash_separation`
+        // (`tests/physics_correctness.rs`): a hard floor impact showed max_j_seen
+        // EXACTLY 1.0000 across 250 steps, not just close to it.
+        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        let j = f_trial.determinant().clamp(0.5, 2.0);
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
         if self.settling_damping > 0.0 {
             *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
         }
+        // Real, disclosed 2026-08-04 fix: `stress_volume`/`timestep_bound` both
+        // read `particles.volume`/`density` -- but until now this material never
+        // wrote either. Both were left entirely to `estimate_particle_volumes`'s
+        // grid-mass-kernel estimate (`spacetime::solver::density`), which is
+        // real but has NO ceiling on compaction (`clamp_rarefied_volume` only
+        // bounds rarefaction, i.e. it's a floor on density, not a ceiling) --
+        // and unlike every plastic solid material (DP/Snow/NACC/etc, see
+        // `sand.rs`'s own `*ctx.density = ctx.mass / v` at the end of every
+        // substep), nothing here ever pulled a drifting estimate back to a
+        // physically-bounded value. In a settling/compacting scene the
+        // per-substep noise can only ratchet UP (nothing corrects it back
+        // down at near-zero divergence), which silently stiffens this
+        // material's own CFL bound over a long horizon -- the real, root
+        // mechanism behind `mixture_sand_water.rs`'s `dropped`/min_dt-clamp
+        // issue (see `mixture_sand_water_explosion_investigation` memory).
+        // Fix: self-correct every substep from the SAME already-bounded
+        // formula `stress()` already uses for pressure (`(rest_density/j)
+        // .max(min_density).min(2*rest_density)`) -- real, symmetric,
+        // nothing new invented, just applied where it was missing.
+        let density = (self.rest_density / j)
+            .max(self.min_density)
+            .min(self.rest_density * 2.0);
+        *ctx.density = density;
+        *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
     fn params(&self) -> MaterialParams {

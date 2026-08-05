@@ -3531,7 +3531,28 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         .with_default_material(water.material(&config))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.3)));
 
-    solver.step_n(3000); // matches the settle horizon confirmed to converge during this fix's investigation
+    // TEMP diagnostic progress printing (2026-08-03) -- the previous run of
+    // this test gave zero output for 3+ hours with no way to tell whether it
+    // was progressing or stuck; chunk the settle horizon so we can see real
+    // wall-clock-per-chunk and current density/speed as it goes. Remove once
+    // the real post-density-fix number is confirmed.
+    for chunk in 0..30 {
+        let t0 = std::time::Instant::now();
+        solver.step_n(100);
+        let particles = solver.particles();
+        let mean_density: f32 =
+            particles.density.iter().sum::<f32>() / particles.density.len() as f32;
+        let max_speed = particles
+            .v
+            .iter()
+            .map(|v| v.length())
+            .fold(0.0f32, f32::max);
+        println!(
+            "chunk {chunk} (step {}): {:.2?} elapsed_this_chunk mean_density={mean_density:.2} max_speed={max_speed:.4}",
+            (chunk + 1) * 100,
+            t0.elapsed()
+        );
+    }
 
     let particles = solver.particles();
     let max_y = particles.x.iter().map(|p| p.y).fold(f32::MIN, f32::max);

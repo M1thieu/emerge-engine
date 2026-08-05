@@ -37,7 +37,7 @@ pub struct StomakhinMaterial {
 }
 
 impl StomakhinMaterial {
-    pub fn new(
+    pub const fn new(
         lambda: f32,
         mu: f32,
         hardening_exponent: f32,
@@ -58,7 +58,7 @@ impl StomakhinMaterial {
         }
     }
 
-    pub fn with_cohesion(mut self, coeff: f32) -> Self {
+    pub const fn with_cohesion(mut self, coeff: f32) -> Self {
         self.cohesion_coeff = coeff;
         self
     }
@@ -356,6 +356,65 @@ mod analytical_validation_tests {
             delta_uncompacted.x_axis.x.abs() < 1.0e-5 && delta_uncompacted.y_axis.y.abs() < 1.0e-5,
             "Jp=1.0 (never compacted) must produce zero cohesion contribution, got \
              {delta_uncompacted:?}"
+        );
+    }
+
+    /// **Real, dynamic compaction-hardening test** -- the category-defining
+    /// snow behavior ("compressed snow is stiffer," this file's own module
+    /// doc, Stomakhin 2013 §4.2) had zero test driving it through real
+    /// `update_particle` substeps before this; every existing test above
+    /// hand-sets `hardening_scale`/`plastic_volume_ratio` directly rather
+    /// than letting them accumulate from real sustained compression. Real,
+    /// dynamic mirror of `VonMises`'s permanent-set test and `Rankine`'s
+    /// softening test (2026-08-04) -- snow's own real contrast is
+    /// HARDENING, the opposite sign of Rankine's softening.
+    #[test]
+    fn repeated_compaction_genuinely_stiffens_snow_real_hardening_dynamics() {
+        // Real Stomakhin 2013 canonical params (xi=10, theta_c=0.025).
+        let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
+
+        // Drive ONE particle through repeated compressive substeps via the
+        // real `update_particle` path (Jp/hardening_scale accumulate
+        // naturally, not hand-set) -- a sustained uniaxial compression rate,
+        // the same real mechanism a footstep/snowball packing would apply.
+        let mut particles = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let dt = 0.01;
+        {
+            let mut ctx = particles.update_ctx(0);
+            *ctx.velocity_gradient = Mat2::from_diagonal(Vec2::new(-0.5, -0.5));
+            for _ in 0..20 {
+                mat.update_particle(&mut ctx, dt);
+            }
+        }
+
+        let jp_after = particles.plastic_volume_ratio[0];
+        let h_after = particles.hardening_scale[0];
+        assert!(
+            jp_after < 1.0,
+            "sustained real compression must genuinely compact the material (Jp<1), got {jp_after}"
+        );
+        assert!(
+            h_after > 1.0,
+            "genuinely compacted snow must be stiffer (hardening_scale>1), got {h_after}"
+        );
+
+        // Real stress-stiffening proof: apply the exact same current
+        // deformation to a compacted particle vs a fresh (h=1, Jp=1)
+        // particle AT THE SAME F -- compacted must produce a LARGER stress
+        // for the identical deformation, the real "packed snow resists
+        // further compression more" signature, not just an unused number.
+        let f_current = particles.deformation_gradient[0];
+        let compacted = particle_with(f_current, h_after, jp_after);
+        let fresh = particle_with(f_current, 1.0, 1.0);
+        let tau_compacted = mat.kirchhoff_stress(&compacted, 0);
+        let tau_fresh = mat.kirchhoff_stress(&fresh, 0);
+        let mag = |t: Mat2| (t.x_axis.length_squared() + t.y_axis.length_squared()).sqrt();
+        assert!(
+            mag(tau_compacted) > mag(tau_fresh),
+            "compacted snow must show a stiffer (larger-magnitude) stress response to the \
+             identical deformation than fresh snow: compacted={:.3}, fresh={:.3}",
+            mag(tau_compacted),
+            mag(tau_fresh)
         );
     }
 }

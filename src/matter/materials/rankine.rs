@@ -49,7 +49,7 @@ pub struct RankineMaterial {
 }
 
 impl RankineMaterial {
-    pub fn new(lambda: f32, mu: f32, tensile_strength: f32, softening_rate: f32) -> Self {
+    pub const fn new(lambda: f32, mu: f32, tensile_strength: f32, softening_rate: f32) -> Self {
         Self {
             lambda,
             mu,
@@ -410,6 +410,53 @@ mod marginal_yield_tests {
         assert!(
             damage_after > 0.0,
             "damage must accumulate on the corner-return case"
+        );
+    }
+
+    /// The defining, category-specific behavior of a BRITTLE material (vs.
+    /// VonMises's non-softening ductile plasticity): damage makes the body
+    /// genuinely WEAKER, not just permanently deformed. A stress level
+    /// comfortably under the VIRGIN tensile strength must still fail once the
+    /// particle already carries real damage -- softening = real loss of
+    /// load-bearing capacity, not bookkeeping. No prior test exercised
+    /// `run_one_step` with `damage > 0` at all (confirmed via a read of every
+    /// call site in this module before writing this one).
+    #[test]
+    fn accumulated_damage_lowers_the_yield_threshold_real_softening() {
+        let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 2.0);
+        let damage = 0.5; // well under this softening_rate's saturation point (~1.5)
+        let t_eff_damaged = mat.tensile_strength * (-mat.softening_rate * damage).exp();
+
+        // 70% of virgin strength: comfortably elastic at damage=0 (this
+        // module's own `marginal_state_at_tensile_strength_does_not_yield`
+        // treats 99% as still-elastic), but above the damaged threshold.
+        let target_tau_x = 0.7 * mat.tensile_strength;
+        assert!(
+            target_tau_x > t_eff_damaged,
+            "test setup sanity: target stress must exceed the damaged threshold"
+        );
+        let eps_x = eps_x_for_target_tau_x(&mat, target_tau_x);
+        let sigma = Vec2::new(eps_x.exp(), 1.0);
+
+        let (sigma_after, damage_after) = run_one_step(&mat, sigma, damage);
+
+        assert!(
+            (sigma_after - sigma).length() > 1.0e-4,
+            "a damaged particle must yield at a stress the VIRGIN material \
+             would have carried elastically: target_tau_x={target_tau_x} \
+             t_eff_damaged={t_eff_damaged}"
+        );
+        let a = 2.0 * mat.mu + mat.lambda;
+        let tau_x_after = a * sigma_after.x.ln() + mat.lambda * sigma_after.y.ln();
+        assert!(
+            (tau_x_after - t_eff_damaged).abs() < 1.0e-3,
+            "projected stress should land exactly at the DAMAGED threshold \
+             ({t_eff_damaged:.4}), not the virgin one ({}): got {tau_x_after:.6}",
+            mat.tensile_strength
+        );
+        assert!(
+            damage_after > damage,
+            "damage must keep accumulating on repeated yielding"
         );
     }
 }
