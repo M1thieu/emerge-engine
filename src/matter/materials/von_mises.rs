@@ -46,7 +46,7 @@ impl VonMisesMaterial {
     }
 
     /// Perfect plasticity (no hardening).
-    pub fn new(lambda: f32, mu: f32, yield_stress: f32) -> Self {
+    pub const fn new(lambda: f32, mu: f32, yield_stress: f32) -> Self {
         Self {
             lambda,
             mu,

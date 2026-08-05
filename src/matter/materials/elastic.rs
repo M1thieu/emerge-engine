@@ -53,7 +53,7 @@ pub struct NeoHookeanMaterial {
 }
 
 impl NeoHookeanMaterial {
-    pub fn new(lambda: f32, mu: f32) -> Self {
+    pub const fn new(lambda: f32, mu: f32) -> Self {
         Self {
             lambda,
             mu,

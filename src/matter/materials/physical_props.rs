@@ -200,7 +200,7 @@ impl FluidGranular {
     /// implicit "this is measured" claim than a dimensionless test parameter would, so
     /// this needs the same honest flag: real conversion math, unverified specific
     /// numbers, not yet a literature-sourced material.
-    pub fn saturated_loam_preset() -> Self {
+    pub const fn saturated_loam_preset() -> Self {
         Self {
             rho_kg_m3: 1800.0,
             bulk_modulus_pa: 2.0e5,
@@ -216,7 +216,7 @@ impl FluidGranular {
     ///
     /// Same honest disclosure as `saturated_loam` above: real conversion mechanism,
     /// unverified specific SI values.
-    pub fn consolidated_clay_preset() -> Self {
+    pub const fn consolidated_clay_preset() -> Self {
         Self {
             rho_kg_m3: 2000.0,
             bulk_modulus_pa: 8.0e5,
@@ -234,7 +234,7 @@ impl FluidGranular {
     /// unverified specific SI values (though `e_pa=500` is at least in the right real
     /// ballpark per AFM cytoplasm-stiffness literature -- not yet tied to a specific
     /// paper).
-    pub fn cytoplasmic_preset() -> Self {
+    pub const fn cytoplasmic_preset() -> Self {
         Self {
             rho_kg_m3: 1050.0,
             bulk_modulus_pa: 2.0e4,

@@ -104,13 +104,13 @@ impl SpawnRegion {
     // ── Fluent builder methods ─────────────────────────────────────────────────
 
     /// Set the center of the spawn region in grid coordinates.
-    pub fn at(mut self, center: Vec2) -> Self {
+    pub const fn at(mut self, center: Vec2) -> Self {
         self.box_center = center;
         self
     }
 
     /// Set the bounding box size in grid cells (used for box shape and disk bounding box).
-    pub fn box_of(mut self, size: IVec2) -> Self {
+    pub const fn box_of(mut self, size: IVec2) -> Self {
         self.box_size = size;
         self
     }
@@ -127,20 +127,20 @@ impl SpawnRegion {
     }
 
     /// Particle lattice spacing in grid cells.
-    pub fn spacing(mut self, s: f32) -> Self {
+    pub const fn spacing(mut self, s: f32) -> Self {
         self.spacing = s;
         self
     }
 
     /// Material ID for all particles in this region.
-    pub fn material(mut self, id: u32) -> Self {
+    pub const fn material(mut self, id: u32) -> Self {
         self.material_id = id;
         self
     }
 
     /// Per-region particle mass override (grid units), for scenes mixing materials with
     /// different real densities. See the field doc on `mass_override` for the SI formula.
-    pub fn mass(mut self, particle_mass: f32) -> Self {
+    pub const fn mass(mut self, particle_mass: f32) -> Self {
         self.mass_override = Some(particle_mass);
         self
     }
@@ -158,13 +158,13 @@ impl SpawnRegion {
     ///
     /// Use for elastic solids and dense granular materials where incorrect initial density
     /// would cause a pressure spike on the first substep. Costs one extra P2G pass at spawn.
-    pub fn precompute_volumes(mut self) -> Self {
+    pub const fn precompute_volumes(mut self) -> Self {
         self.precompute_initial_volumes = true;
         self
     }
 
     /// Initial speed randomization magnitude (0 = all particles at rest).
-    pub fn velocity_scale(mut self, scale: f32) -> Self {
+    pub const fn velocity_scale(mut self, scale: f32) -> Self {
         self.initial_velocity_scale = scale;
         self
     }
@@ -173,13 +173,13 @@ impl SpawnRegion {
     ///
     /// 0.0 = perfect lattice (default). 0.2 is a good default for granular materials
     /// (sand, snow) to break lattice symmetry and prevent artificially regular piles.
-    pub fn jitter(mut self, scale: f32) -> Self {
+    pub const fn jitter(mut self, scale: f32) -> Self {
         self.position_jitter = scale;
         self
     }
 
     /// Seed for jitter and initial velocity RNG.
-    pub fn rng_seed(mut self, seed: u32) -> Self {
+    pub const fn rng_seed(mut self, seed: u32) -> Self {
         self.rng_seed = seed;
         self
     }

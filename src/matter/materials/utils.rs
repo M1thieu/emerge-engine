@@ -50,7 +50,7 @@ pub(crate) fn rankine_damage_saturation_point(softening_rate: f32) -> f32 {
 /// The absolute value preserves Hencky strain magnitudes when `svd2()` encodes
 /// an inversion via a signed second singular value.
 /// Used identically by VonMisesMaterial, DruckerPragerMaterial, RankineMaterial.
-#[inline(always)]
+#[inline]
 pub(crate) fn hencky_strains(sigma: Vec2) -> Vec2 {
     let sigma = sigma.abs().max(Vec2::splat(LOG_CLAMP));
     Vec2::new(sigma.x.ln(), sigma.y.ln())
@@ -59,7 +59,7 @@ pub(crate) fn hencky_strains(sigma: Vec2) -> Vec2 {
 /// Reconstruct a 2×2 deformation gradient from SVD factors and (possibly updated) singular values.
 ///
 /// F = U · diag(sigma) · Vᵀ
-#[inline(always)]
+#[inline]
 pub(crate) fn reconstruct_f(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
     u * Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y)) * vt
 }
@@ -76,7 +76,7 @@ pub(crate) fn reconstruct_f(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
 /// is for REVERSIBLE materials whose principal stress response is asymmetric (e.g. a
 /// no-compression/tension-only law) but that never modify F, only its own stress
 /// output for the CURRENT F.
-#[inline(always)]
+#[inline]
 pub(crate) fn reconstruct_stress_from_principal(u: Mat2, tau_principal: Vec2) -> Mat2 {
     u * Mat2::from_diagonal(tau_principal) * u.transpose()
 }
@@ -85,7 +85,7 @@ pub(crate) fn reconstruct_stress_from_principal(u: Mat2, tau_principal: Vec2) ->
 ///
 /// For corotated/Hencky elastic: τᵢ = (2µ+λ)·εᵢ + λ·ε_j  →  system inversion.
 /// Inverse: ε = A⁻¹·τ where det(A) = 4µ(µ+λ).
-#[inline(always)]
+#[inline]
 pub(crate) fn stress_to_hencky(tau: Vec2, lambda: f32, mu: f32) -> Vec2 {
     let det = 4.0 * mu * (mu + lambda);
     let a = 2.0 * mu + lambda;

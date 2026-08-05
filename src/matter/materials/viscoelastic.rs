@@ -50,7 +50,7 @@ pub struct ViscoelasticMaterial {
 }
 
 impl ViscoelasticMaterial {
-    pub fn new(lambda: f32, mu: f32, viscosity: f32) -> Self {
+    pub const fn new(lambda: f32, mu: f32, viscosity: f32) -> Self {
         Self {
             lambda,
             mu,

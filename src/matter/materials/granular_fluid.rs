@@ -60,7 +60,7 @@ impl GranularFluidMaterial {
     /// 7.0 = standard near-incompressible Tait EOS, pressure_floor 0.0 = no
     /// tensile). For a ready-made preset, prefer `saturated_loam`/
     /// `consolidated_clay`/`cytoplasmic` instead.
-    pub fn new(
+    pub const fn new(
         lambda: f32,
         mu: f32,
         rest_density: f32,
