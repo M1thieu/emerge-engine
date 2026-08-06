@@ -187,6 +187,10 @@ name = "basic_sand_gui"
 required-features = ["render"]
 
 [[example]]
+name = "basic_granular_fluid_gui"
+required-features = ["render"]
+
+[[example]]
 name = "basic_snow_gui"
 required-features = ["render"]
 
