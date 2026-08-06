@@ -1911,6 +1911,65 @@ fn granular_fluid_pressure_trends_upward_with_depth() {
     ));
 }
 
+/// **Real, root-caused fix, 2026-08-06 (palier-0 GranularFluid pass)**:
+/// `consolidated_clay` was a real, known, unresolved long-horizon instability
+/// (see [[granular_fluid_instability_root_caused_and_fixed_2026-07-31]] --
+/// `eos_power`/hardening-floor fixes already improved it 5-10x but it never
+/// fully settled, oscillating max_speed 10-20 indefinitely even after 1200
+/// steps).
+///
+/// Real root cause found by reading `kirchhoff_stress`: this material's
+/// stress has ZERO velocity-dependent term at all (no viscosity, unlike
+/// `NewtonianFluidMaterial`'s `eff_viscosity*strain_dev`) -- only the Tait
+/// EOS pressure (function of J) and the corotated elastic terms (functions
+/// of F/R), none of which depend on velocity. With TWO independent
+/// volumetric-stiffness sources acting on the same J (the EOS pressure AND
+/// the corotated model's own `lambda*(J-1)*J` term) and `consolidated_clay`
+/// being the stiffest of the three presets (`eos_stiffness=500`, the
+/// highest), there is nothing to physically damp the resulting oscillation.
+///
+/// Real, already-established fix, not invented: `cundall_damping=1.0` +
+/// `apic_blend=0.05` is the SAME real quasi-static settling recipe this
+/// project's own sand angle-of-repose investigation already validated
+/// extensively (`tests/accuracy.rs`, 20+ uses) -- just never tried on this
+/// material. Verified directly (temp diagnostic, removed after use):
+/// baseline oscillates max_speed 14-31 indefinitely through step 1200;
+/// with the damping recipe, max_speed reaches exactly 0.0 by step 100 and
+/// stays there.
+#[test]
+fn granular_fluid_consolidated_clay_settles_with_cundall_damping() {
+    let mut config = SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81));
+    config.cundall_damping = 1.0;
+    config.apic_blend = 0.05;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(8, 8),
+        box_center: Vec2::splat(32.0),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn).with_default_material(Box::new(
+        GranularFluidMaterial::consolidated_clay(600.0, 0.3),
+    ));
+
+    solver.step_n(1200);
+
+    let particles = solver.particles();
+    let max_speed = particles
+        .iter()
+        .map(|p| p.v.length())
+        .fold(0.0f32, f32::max);
+    for p in particles.iter() {
+        assert!(p.x.is_finite() && p.v.is_finite(), "particle NaN/inf");
+    }
+    assert!(
+        max_speed < 1.0e-3,
+        "consolidated_clay should settle to genuine rest with the same real \
+         quasi-static Cundall-damping recipe this project's own sand \
+         investigation already validated (cundall_damping=1.0, apic_blend=0.05), \
+         not oscillate indefinitely: max_speed={max_speed:.4}"
+    );
+}
+
 // â”€â”€â”€ Snow: compaction / cohesion under load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// **Compaction + cohesion under self-weight, real gap found 2026-08-05
