@@ -32,6 +32,14 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     /// as `MaterialModel::update_particle`: only ever touches its own particle's
     /// fields, so G2P can run every particle's boundary hook in parallel too.
     fn post_g2p_particle(&self, _ctx: &mut ParticleUpdateCtx, _grid_res: usize, _dt: f32) {}
+
+    /// Whether this boundary has a declared compatible wall discretisation
+    /// for strict WC-MPM liquids. The conservative default is false: a
+    /// post-G2P particle mutation is not automatically a fluid traction or
+    /// no-penetration condition. Implementors must opt in explicitly.
+    fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
+        false
+    }
 }
 
 /// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly —
@@ -50,6 +58,10 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
 
     fn post_g2p_particle(&self, ctx: &mut ParticleUpdateCtx, grid_res: usize, dt: f32) {
         (**self).post_g2p_particle(ctx, grid_res, dt);
+    }
+
+    fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
+        (**self).is_strict_wc_mpm_fluid_compatible()
     }
 }
 

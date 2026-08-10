@@ -1,13 +1,31 @@
 use crate::materials::svd::svd2;
 use glam::{Mat2, Vec2};
 
+/// `x.powf(exp)` using exact integer exponentiation-by-squaring (`powi`)
+/// when `exp` is a representable integer -- identical result, no
+/// transcendental call. Every Tait-EOS exponent this engine ships (7.0,
+/// Cole 1948) is a clean integer; this is a pure implementation-cost win in
+/// a hot per-particle, per-substep path (kirchhoff_stress + timestep_bound
+/// for every fluid material), not a physics change. Falls back to `powf`
+/// exactly for any exponent that isn't a clean integer, so behavior for a
+/// non-standard EOS power is unchanged.
+#[inline]
+pub(crate) fn fast_pow(x: f32, exp: f32) -> f32 {
+    if exp.fract() == 0.0 && exp.abs() < 32.0 {
+        x.powi(exp as i32)
+    } else {
+        x.powf(exp)
+    }
+}
+
 /// Floor applied to singular values before taking log — prevents ln(0).
 /// All material `update_particle` implementations clamp σᵢ above this value.
 pub(crate) const LOG_CLAMP: f32 = 1e-10;
 
-/// Floor applied to det(F) = J before using it for volume/density.
-/// Prevents divide-by-zero in stress and density computations.
-/// All materials clamp J ≥ MIN_J after projection.
+/// Floor applied by legacy solid/plastic constitutive laws before using
+/// `det(F)=J` in a singular expression. Strict WC-MPM liquid state does not
+/// use this floor: it keeps positive `J` through its exponential continuity
+/// update and reports an inadmissible state instead of clamping it.
 pub(crate) const MIN_J: f32 = 1e-6;
 
 /// Floor on Rankine's exponentially-softened effective tensile strength, as a

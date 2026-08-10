@@ -17,7 +17,7 @@ pub use handle::{MaterialHandle, ParticleGroup};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
-pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound};
+pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound, deformation_gradient_cfl_bound};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -87,12 +87,38 @@ pub struct Simulation {
     /// SAME substep.
     cosserat_curvature: Vec<glam::Vec2>,
     frame_index: u64,
+    /// "Sticky" fine-substep hold for `SimConfig::fluid_step_retry_enabled`
+    /// (2026-08-08): `(held_dt, substeps_remaining)`. A one-off retry alone
+    /// (see `do_substep_with_retry`) doesn't work -- measured directly: the
+    /// very next substep re-derives its size from the ordinary CFL scan,
+    /// forgetting the rejection immediately, so a sustained near-wall
+    /// compression event just repeats the same reject-shrink-forget cycle
+    /// substep after substep instead of ever holding fine resolution long
+    /// enough to actually resolve the event (confirmed: a plain per-substep
+    /// retry, swept across several thresholds, never reproduced the clean
+    /// convergence a globally-tightened CFL coefficient did). This field is
+    /// the fix: once a retry fires, `choose_substep_dt`'s result is capped
+    /// to `held_dt` for `substeps_remaining` further substeps (decremented
+    /// each one), holding the fine resolution through the actual event
+    /// instead of relaxing on the very next substep. `None` = no hold
+    /// active (every scene that never enables the feature stays here
+    /// permanently, zero cost).
+    fluid_sticky_fine_dt: Option<(f32, u32)>,
     last_step_dt: f32,
     last_substeps: usize,
     last_vel_clamp_count: usize,
     last_j_projection_count: usize,
     last_sim_time_dropped: f32,
     last_timing: crate::diagnostics::StepTiming,
+    /// `SimConfig::spatial_sort_enabled` cache: computed ONCE per outer
+    /// `step()` call (not per substep -- real, measured: recomputing this
+    /// O(N log N) sort every substep cost MORE than the P2G cache-locality
+    /// win it was meant to provide, see `spatial_sort_order`'s own doc)
+    /// and reused across every substep within that call. Particle positions
+    /// shift only slightly substep-to-substep, so a step-stale order still
+    /// captures most of the real locality benefit. Empty when the feature
+    /// is off -- zero allocation cost in the default case.
+    cached_spatial_sort_order: Vec<usize>,
     /// Automatic phase transition rules, evaluated every substep.
     phase_rules: Vec<PhaseRule>,
     /// Spatial hash over active particles. Turns O(N) radius queries into

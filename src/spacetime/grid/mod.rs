@@ -15,8 +15,10 @@ pub mod kernel;
 
 mod contact;
 mod contact_normal;
+mod dct;
 mod directional_grip;
 mod mixture;
+mod pressure;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -153,6 +155,17 @@ impl Grid {
         self.resolution
     }
 
+    /// Flat index -> cell position. Inverse of `flat_index`. Shared by
+    /// `mixture::pressure` and `pressure` (single-phase fluid projection) --
+    /// both run the identical dirty-cell-iteration Jacobi-Poisson pattern.
+    pub(crate) const fn idx_to_pos(&self, idx: u32) -> IVec2 {
+        let idx = idx as usize;
+        IVec2::new(
+            (idx / self.resolution) as i32,
+            (idx % self.resolution) as i32,
+        )
+    }
+
     /// True if any grip particle touched the grid this substep. Gates the extra
     /// contact-aware work in P2G/G2P/step — when false (every scene that never sets
     /// `Particle::contact_group`), those paths run their original, unmodified logic.
@@ -209,6 +222,16 @@ impl Grid {
     /// one at a time -- just batched into a single serial merge pass after the
     /// parallel scatter completes. `pub(crate)` since only `transfer.rs` (same
     /// crate) needs it.
+    ///
+    /// A dense `Vec<Cell>` replacement was tried here twice (2026-08-07, see
+    /// `transfer::p2g::scatter_particles_to_grid`'s own doc for the full
+    /// writeup) -- measured worse both times (once catastrophically, once
+    /// merely worse after fixing the first attempt's chunking problem).
+    /// `CellMap`'s lazy growth (only ever allocates what a given fold chunk
+    /// actually touches, a small fraction of `resolution^2` per chunk) beats
+    /// a dense buffer's fixed full-grid allocation regardless of chunk
+    /// count. Don't re-try a dense accumulator here without re-measuring the
+    /// INTEGRATED cost on the real scene, not an isolated microbenchmark.
     pub(crate) fn merge_cells(&mut self, local: CellMap) {
         for (idx, cell) in local {
             self.accumulate(idx, cell.mass, cell.momentum);
@@ -245,6 +268,51 @@ impl Grid {
         self.cells
             .get(&((x * self.resolution + y) as u32))
             .map_or(Vec2::ZERO, |c| c.momentum)
+    }
+
+    /// Same as `velocity_at`, but an untouched (never-scattered-to) cell falls back to
+    /// `gravity * dt` (boundary-clamped) instead of a hard zero.
+    ///
+    /// Real, CPU/GPU parity fix (2026-08-08): a G2P kernel stencil can span BOTH touched
+    /// (real particle mass, real momentum, gravity already added by `apply_gravity`) and
+    /// untouched (`velocity_at`'s old hard-zero) cells -- e.g. a sparse free surface.
+    /// Gravity accelerates touched cells every substep but never untouched ones, so the
+    /// gathered field has a discontinuity of exactly `gravity * dt` at that boundary that
+    /// is a pure grid sampling artifact, not physics. The GPU solver already had this
+    /// right (`grid_update.wgsl`'s "empty cells: gravity for stray particles" block); this
+    /// brings CPU in line with it. Investigated as a candidate root cause for a separate,
+    /// still-open momentum-conservation bug (see `MEMORY.md`'s fluid-recovery notes) --
+    /// confirmed via an instrumented counter that this path is NEVER hit in that bug's own
+    /// repro (a dense, packed water column has no cell that's genuinely untouched within
+    /// any particle's stencil before impact), so it is NOT that bug's cause. Kept anyway:
+    /// real, correct, and will matter for any genuinely sparse fluid scene.
+    pub fn velocity_at_or_gravity_fallback(
+        &self,
+        cell_pos: IVec2,
+        gravity: Vec2,
+        dt: f32,
+        boundary_thickness: usize,
+    ) -> Vec2 {
+        if cell_pos.x < 0 || cell_pos.y < 0 {
+            return Vec2::ZERO;
+        }
+        let x = cell_pos.x as usize;
+        let y = cell_pos.y as usize;
+        if x >= self.resolution || y >= self.resolution {
+            return Vec2::ZERO;
+        }
+        let idx = (x * self.resolution + y) as u32;
+        if let Some(cell) = self.cells.get(&idx) {
+            return cell.momentum;
+        }
+        let mut v = gravity * dt;
+        crate::forces::boundary::apply_slip_wall_velocity(
+            boundary_thickness,
+            idx as usize,
+            self.resolution,
+            &mut v,
+        );
+        v
     }
 
     pub fn mass_at(&self, cell_pos: IVec2) -> f32 {
@@ -401,7 +469,7 @@ impl Grid {
         self.dirty.iter().filter_map(move |idx| cells.get(idx))
     }
 
-    /// Iterate active cells (mutable). For CFL clamping.
+    /// Iterate active cells mutably.
     pub fn active_cells_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
         let (dirty, cells) = (&self.dirty, &mut self.cells);
         // SAFETY: dirty contains unique indices (enforced at insertion), each yielding

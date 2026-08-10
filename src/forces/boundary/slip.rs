@@ -21,4 +21,8 @@ impl BoundaryCondition for SlipBoundary {
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {
         clamp_position_inside_grid(self.thickness, position, grid_res)
     }
+
+    fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
+        true
+    }
 }

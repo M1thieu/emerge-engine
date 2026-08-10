@@ -166,6 +166,16 @@ impl FluidGranular {
             min_plastic_jacobian: 0.2,
             max_plastic_jacobian: 3.0,
             pressure_floor: 0.0,
+            // Same real, disclosed damping convention as `GranularFluidMaterial::
+            // saturated_loam` (see that field's own doc on the struct) --
+            // `FluidGranular` itself doesn't yet expose a distinct viscosity
+            // input, so this generic SI-driven dispatch path uses the same
+            // 0.3*mu default rather than silently shipping zero damping here too.
+            dynamic_viscosity: 0.3 * mu,
+            // Real correction -- see `GranularFluidMaterial::saturated_loam`'s
+            // own note: scales with THIS scene's own real (SI-derived)
+            // eos_stiffness, not mu.
+            bulk_viscosity: 0.5 * eos,
         })
     }
 

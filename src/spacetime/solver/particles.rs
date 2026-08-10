@@ -18,8 +18,10 @@ use crate::thermodynamics::ScalarDiffusionField;
 impl Simulation {
     /// Switch material for every particle where `predicate` returns true.
     ///
-    /// After a transition involving fluid materials, call `recompute_initial_volumes()`
-    /// if density has shifted significantly.
+    /// Material initialization establishes any target constitutive state after
+    /// the transition. `recompute_initial_volumes()` measures only materials
+    /// that opt into a kernel-density state; strict WC-MPM liquids retain
+    /// `V0=m/rho0` and must not be remeasured from their free-surface kernel.
     ///
     /// If `new_material_id`'s `MaterialModel::latent_heat()` is non-zero and a thermal
     /// model is configured (`with_thermal`/`set_thermal`), debits `temperature` by
@@ -99,20 +101,11 @@ impl Simulation {
 
     /// Apply a velocity delta to all particles within `radius` of `center`, with linear falloff.
     /// `force` units: grid-cell/s (instantaneous velocity change).
-    /// Result is clamped to the solver's CFL velocity limit so LP impulses can't break stability.
-    ///
-    /// **This is the safe API for external impulses.** Always prefer this over `particles_mut()`
-    /// for any gameplay-driven velocity change — direct mutation bypasses the CFL clamp and can
-    /// collapse deformation gradients (J→0) under large forces.
-    ///
-    /// KNOWN OPEN ISSUE: the CFL clamp here uses `min_dt`, which is a conservative bound.
-    /// Under adaptive substeps the actual sub_dt may be larger, making the clamp overly
-    /// permissive. True safety requires clamping to `current_sub_dt` at the moment of application,
-    /// but `apply_impulse` is called between solver steps where `current_sub_dt` is unknown.
-    /// Options under research: (a) grid-velocity projection post-P2G, (b) semi-implicit
-    /// integration, (c) energy-bounded impulse splitting across substeps. See fields/mod.rs.
+    /// This applies the requested impulse exactly; it is not velocity-clamped.
+    /// The next substep is selected from the resulting actual CFL state. Supply
+    /// a physically meaningful impulse (or a resolved force history) rather
+    /// than using this as a hidden settling/stability control.
     pub fn apply_impulse(&mut self, center: Vec2, radius: f32, force: Vec2) {
-        let vel_limit = self.config.grid_cell_size / self.config.min_dt;
         let r2 = radius * radius;
         let mut to_wake = Vec::new();
         for i in 0..self.particles.len() {
@@ -124,10 +117,6 @@ impl Simulation {
                 }
                 let falloff = 1.0 - (dist2 / r2).sqrt();
                 self.particles.v[i] += force * falloff;
-                let spd = self.particles.v[i].length();
-                if spd > vel_limit {
-                    self.particles.v[i] *= vel_limit / spd;
-                }
             }
         }
         for i in to_wake {
@@ -136,9 +125,9 @@ impl Simulation {
     }
 
     /// Apply an outward radial velocity delta to particles within `radius`, with linear falloff.
-    /// Result is clamped to the solver's CFL velocity limit.
+    /// This applies the requested radial impulse exactly; the next substep
+    /// uses the resulting actual CFL state.
     pub fn apply_radial_impulse(&mut self, center: Vec2, radius: f32, strength: f32) {
-        let vel_limit = self.config.grid_cell_size / self.config.min_dt;
         let r2 = radius * radius;
         let mut to_wake = Vec::new();
         for i in 0..self.particles.len() {
@@ -151,10 +140,6 @@ impl Simulation {
                 let dist = dist2.sqrt();
                 let falloff = 1.0 - dist / radius;
                 self.particles.v[i] += (d / dist) * strength * falloff;
-                let spd = self.particles.v[i].length();
-                if spd > vel_limit {
-                    self.particles.v[i] *= vel_limit / spd;
-                }
             }
         }
         for i in to_wake {

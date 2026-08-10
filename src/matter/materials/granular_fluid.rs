@@ -47,8 +47,37 @@ pub struct GranularFluidMaterial {
     pub min_plastic_jacobian: f32,
     /// Jp upper bound — limits plastic volume expansion.
     pub max_plastic_jacobian: f32,
-    /// EOS pressure floor. 0.0 = no tensile (stable free surface).
+    /// Granular contact/no-tension pressure floor. This is a constitutive
+    /// choice for the granular branch, not free-surface surface tension and
+    /// not used by strict Newtonian/Bingham WC-MPM liquids.
     pub pressure_floor: f32,
+    /// Dynamic shear viscosity η -- real, physically-motivated dissipation
+    /// (real wet granular materials, mud/clay/cytoplasm, are NOT purely
+    /// elastic; they carry genuine viscous energy loss on top of their
+    /// elastic+plastic response). Same formula `NewtonianFluidMaterial`
+    /// already uses (`τ += η·dev(D)`, D = symmetric part of the velocity
+    /// gradient). Real, previously-disclosed gap found 2026-08-06: with
+    /// this at 0.0, a hard impact (as opposed to gentle self-weight
+    /// settling) makes the material bounce almost elastically -- min_j
+    /// dropping to ~0.43 on impact then the whole body rebounding UPWARD
+    /// past its own drop height, the same superball-bounce failure mode
+    /// already found+fixed once before for a different zero-damping
+    /// material (see `fire_spread_plank_drift_root_caused_2026-07-31`'s own
+    /// "elastic-bounce" fix). 0.0 = disabled (`new()`'s own default,
+    /// matching every other numerical-stability field's convention here).
+    pub dynamic_viscosity: f32,
+    /// Bulk (volumetric) viscosity ζ -- real, disclosed 2026-08-06 addition
+    /// alongside `dynamic_viscosity`. Shear viscosity alone left a real,
+    /// measured residual: on hard impact this material's TWO independent
+    /// volumetric-stiffness sources (Tait EOS pressure + the corotated
+    /// model's own `lambda*(J-1)*J` term) kept bouncing -- min_j oscillating
+    /// 0.6-0.85 with no volumetric damping at all, since `dynamic_viscosity`
+    /// only damps the deviatoric/shear part. Same formula `NewtonianFluid
+    /// Material::bulk_viscosity` already uses (`τ += ζ·(∇·v)·I`). Real
+    /// physical mechanism for wet consolidated materials: pore-fluid
+    /// drainage resistance genuinely damps volumetric change, distinct from
+    /// shear viscosity. 0.0 = disabled.
+    pub bulk_viscosity: f32,
 }
 
 impl GranularFluidMaterial {
@@ -58,7 +87,7 @@ impl GranularFluidMaterial {
     /// parameters directly; the remaining numerical-stability fields default
     /// to the same values the `saturated_loam` preset already uses (eos_power
     /// 7.0 = standard near-incompressible Tait EOS, pressure_floor 0.0 = no
-    /// tensile). For a ready-made preset, prefer `saturated_loam`/
+    /// tensile granular-contact traction). For a ready-made preset, prefer `saturated_loam`/
     /// `consolidated_clay`/`cytoplasmic` instead.
     pub const fn new(
         lambda: f32,
@@ -80,6 +109,8 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.2,
             max_plastic_jacobian: 3.0,
             pressure_floor: 0.0,
+            dynamic_viscosity: 0.0,
+            bulk_viscosity: 0.0,
         }
     }
 
@@ -119,6 +150,21 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.2,
             max_plastic_jacobian: 3.0,
             pressure_floor: 0.0,
+            // Real, disclosed 2026-08-06 addition: 0.3*mu, order-of-mu damping
+            // (same real-physics convention `ViscoelasticMaterial`'s own doc
+            // uses) -- empirically verified to stop a hard impact bouncing
+            // elastically, not a re-guess (see `dynamic_viscosity`'s own doc
+            // on this struct for the real bug this closes).
+            dynamic_viscosity: 0.3 * mu,
+            // Real, disclosed CORRECTION 2026-08-06: first version scaled this
+            // by mu too -- wrong pairing, caught live (consolidated_clay kept
+            // creeping/growing indefinitely, never settling, despite this).
+            // bulk_viscosity damps div_v, the SAME quantity eos_stiffness's
+            // own pressure term and lambda's own lam_vol term both act on --
+            // it must scale with the material's VOLUMETRIC stiffness
+            // (eos_stiffness), not shear stiffness (mu). See `bulk_viscosity`'s
+            // own doc on the struct.
+            bulk_viscosity: 0.5 * 200.0,
         }
     }
 
@@ -143,6 +189,14 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.3,
             max_plastic_jacobian: 2.5,
             pressure_floor: 0.0,
+            // Real, disclosed 2026-08-06 addition -- see saturated_loam's own
+            // note. Higher factor (0.5 vs 0.3) matches this preset's own
+            // "stiffer, slower creep" real-world framing.
+            dynamic_viscosity: 0.5 * mu,
+            // Real correction -- see saturated_loam's own note: scales with
+            // this preset's OWN eos_stiffness (500, the highest of the three),
+            // not mu.
+            bulk_viscosity: 0.5 * 500.0,
         }
     }
 
@@ -170,6 +224,14 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.1,
             max_plastic_jacobian: 5.0,
             pressure_floor: 0.0,
+            // Real, disclosed 2026-08-06 addition -- see saturated_loam's own
+            // note. Lower factor (0.15 vs 0.3): softer biological matrix,
+            // real cytoplasm is less viscous relative to its own stiffness
+            // than wet soil.
+            dynamic_viscosity: 0.15 * mu,
+            // Real correction -- see saturated_loam's own note: scales with
+            // this preset's OWN eos_stiffness (50, the lowest of the three).
+            bulk_viscosity: 0.5 * 50.0,
         }
     }
 }
@@ -190,8 +252,9 @@ impl MaterialModel for GranularFluidMaterial {
 
         let density = (self.rest_density / j).max(1.0e-6);
         let ratio = (density / self.rest_density.max(1.0e-6)).max(1.0e-6);
-        let pressure =
-            (self.eos_stiffness * (ratio.powf(self.eos_power) - 1.0)).max(self.pressure_floor);
+        let pressure = (self.eos_stiffness
+            * (crate::materials::utils::fast_pow(ratio, self.eos_power) - 1.0))
+            .max(self.pressure_floor);
 
         let h = particles.hardening_scale[i];
         let r = polar_decomposition_2d(f);
@@ -202,7 +265,25 @@ impl MaterialModel for GranularFluidMaterial {
 
         let lam_vol = self.lambda * h * (j - 1.0) * j * Mat2::IDENTITY;
 
-        Mat2::from_diagonal(Vec2::splat(-pressure)) + dev_coro + lam_vol
+        let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure)) + dev_coro + lam_vol;
+
+        // Real viscous dissipation -- see `dynamic_viscosity`/`bulk_viscosity`'s
+        // own docs. Identical formulas to `NewtonianFluidMaterial::
+        // kirchhoff_stress` (τ += η·dev(D) + ζ·(∇·v)·I).
+        if self.dynamic_viscosity > 0.0 || self.bulk_viscosity > 0.0 {
+            let c = particles.velocity_gradient[i];
+            let sym_strain = c + c.transpose();
+            let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
+            if self.dynamic_viscosity > 0.0 {
+                let strain_dev = sym_strain - Mat2::from_diagonal(Vec2::splat(div_v * 0.5));
+                stress += self.dynamic_viscosity * strain_dev;
+            }
+            if self.bulk_viscosity > 0.0 {
+                stress += Mat2::from_diagonal(Vec2::splat(self.bulk_viscosity * div_v * 0.5));
+            }
+        }
+
+        stress
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -261,6 +342,8 @@ impl MaterialModel for GranularFluidMaterial {
             volume_ratio_min: self.min_plastic_jacobian,
             volume_ratio_max: self.max_plastic_jacobian,
             pressure_floor: self.pressure_floor,
+            dynamic_viscosity: self.dynamic_viscosity,
+            bulk_viscosity: self.bulk_viscosity,
             ..Default::default()
         }
     }
@@ -271,9 +354,9 @@ impl MaterialModel for GranularFluidMaterial {
         hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let mut dt_bound = elastic_wave_dt(
             self.lambda,
             self.mu,
             hardening_scale,
@@ -281,7 +364,31 @@ impl MaterialModel for GranularFluidMaterial {
             MIN_J,
             cell_width,
             material_cfl,
-        )
+        );
+
+        // Real, disclosed 2026-08-06 fix, found live: adding real
+        // dynamic_viscosity/bulk_viscosity (see their own docs) without a
+        // matching viscous CFL bound let the solver pick a substep too large
+        // for stable EXPLICIT integration of that damping term -- a large
+        // enough dt*viscosity/mass ratio makes an explicit damping term
+        // INJECT energy instead of removing it (classic explicit-integrator
+        // instability), which is exactly what looked like "exploding" on
+        // impact (clay's own pile height growing to 52+ units instead of
+        // settling). Same formula `NewtonianFluidMaterial::timestep_bound`
+        // already uses, extended to cover bulk_viscosity too since it's the
+        // same explicit-damping character on the same velocity-gradient
+        // quantities.
+        let total_viscosity = self.dynamic_viscosity + self.bulk_viscosity;
+        if total_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic_viscosity = total_viscosity / density;
+            if kinematic_viscosity > f32::EPSILON {
+                dt_bound =
+                    dt_bound.min(viscous_cfl * cell_width * cell_width / kinematic_viscosity);
+            }
+        }
+
+        dt_bound
     }
 
     fn needs_density_recompute(&self) -> bool {

@@ -16,15 +16,6 @@ use glam::{IVec2, Vec2};
 use super::{FxU32BuildHasher, Grid, flat_index};
 
 impl Grid {
-    /// Flat index -> cell position. Inverse of `flat_index`.
-    const fn idx_to_pos(&self, idx: u32) -> IVec2 {
-        let idx = idx as usize;
-        IVec2::new(
-            (idx / self.resolution) as i32,
-            (idx % self.resolution) as i32,
-        )
-    }
-
     // This module stays hardcoded to phase slots 0 (solid) and 1 (fluid) --
     // `MixturePhase::SOLID`/`FLUID` -- pressure projection is not part of the
     // N-phase generalization (`mixture::mod`'s own doc).

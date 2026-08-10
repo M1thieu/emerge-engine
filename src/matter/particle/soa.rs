@@ -16,6 +16,7 @@ use super::Particle;
 ///
 /// # Invariant
 /// All vecs have the same length at all times. Methods panic on out-of-bounds.
+#[derive(Clone)]
 pub struct Particles {
     // ── Kinematics — hot (read every substep) ────────────────────────────────
     pub x: Vec<Vec2>,

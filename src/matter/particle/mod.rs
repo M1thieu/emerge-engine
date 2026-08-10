@@ -180,10 +180,11 @@ impl Particle {
         }
     }
 
-    /// Recompute volume and density from a known elastic Jacobian J = det(F).
+    /// Recompute volume and density from a known elastic Jacobian `J=det(F)`.
     ///
-    /// Called at the end of every `update_particle` implementation after F is updated.
-    /// Clamps volume to 1e-6 to prevent divide-by-zero in subsequent stress evaluations.
+    /// Used by generic solid/plastic material updates. Strict WC-MPM liquids
+    /// own `V=V0 J` and `rho=rho0/J` through their continuity update and do
+    /// not call this clamping helper.
     #[inline]
     pub fn sync_volume_and_density(&mut self, j: f32) {
         self.volume = (self.initial_volume * j).max(1.0e-6);

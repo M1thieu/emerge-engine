@@ -77,7 +77,6 @@ impl MutFieldPtrs {
 }
 
 pub struct G2PParams<'a> {
-    pub vel_limit: f32,
     pub apic_blend: f32,
     pub active_count: usize,
     /// ASFLIP blend factor (`SimConfig::asflip_blend`, Fei et al. 2021). 0.0 = disabled,
@@ -122,9 +121,9 @@ pub struct G2PParams<'a> {
 /// computes alongside it (`b = sum_c weight_c * outer(v_grid_c, dist_c)`) --
 /// a related, still-open piece: same per-cell structure, needs its own
 /// derivation and verification, not silently folded in here. Also doesn't
-/// cover the velocity clamp or position boundary-clamp applied after this in
-/// the real G2P (piecewise/conditional, same deferred-with-a-name status as
-/// grid update's boundary/clamp gap).
+/// cover the position boundary condition applied after this in the real
+/// G2P (piecewise/conditional, same deferred-with-a-name status as the
+/// grid-update boundary gap).
 ///
 /// Given the gradient flowing back from the particle's new velocity,
 /// `d_loss_d_new_v` (a Vec2), the adjoint of a weighted sum distributes it
@@ -231,17 +230,21 @@ pub fn f_update_vjp(c: Mat2, f_old: Mat2, dt: f32, d_loss_d_f_new: Mat2) -> (Mat
 }
 
 /// G2P: read grid velocities back into particles, advance state, apply boundaries.
-/// Returns the number of particles whose velocity was clamped to `vel_limit`.
+///
+/// The return value is retained for source compatibility with the old
+/// `last_vel_clamp_count` diagnostic. The solver no longer clips velocities,
+/// so it is always zero.
 pub fn gather_grid_to_particles(
     particles: &mut Particles,
     grid: &Grid,
     dt: f32,
+    gravity: Vec2,
+    boundary_thickness: usize,
     boundaries: &[Box<dyn BoundaryCondition>],
     materials: &MaterialRegistry,
     params: G2PParams,
 ) -> usize {
     let G2PParams {
-        vel_limit,
         apic_blend,
         active_count,
         asflip_blend,
@@ -301,8 +304,19 @@ pub fn gather_grid_to_particles(
     // wraps a material this way, same zero-cost property as contact above.
     let mixture_active = grid.has_mixture_activity();
 
+    // Same real, measured lesson as P2G tonight (see
+    // `transfer::p2g::scatter_particles_to_grid`'s own doc): rayon's default
+    // chunking splits far more, far smaller tasks than a naive
+    // one-per-core assumption. This loop has no per-chunk accumulator to
+    // allocate (direct unique-pointer writes, not a fold/reduce), so the
+    // failure mode that broke P2G's dense-buffer attempt doesn't apply --
+    // but fewer/larger chunks still cuts rayon's own task-scheduling
+    // overhead. Measure before trusting, same discipline as every change
+    // tonight.
+    let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
     let clamp_count: usize = (0..active_count)
         .into_par_iter()
+        .with_min_len(min_len)
         .map(|i| {
             let contact_group = contact_groups[i];
             let pinned = pinned_flags[i];
@@ -328,7 +342,7 @@ pub fn gather_grid_to_particles(
                 None
             };
 
-            let clamped = if pinned != 0 {
+            if pinned != 0 {
                 // Dirichlet/kinematic anchor (`Particle::pinned`): force v=0 and
                 // velocity_gradient=0 instead of gathering from the grid, so a
                 // pinned particle never moves and never accumulates local strain
@@ -341,7 +355,6 @@ pub fn gather_grid_to_particles(
                 // stress state (below) still updates normally either way.
                 *ctx.v = Vec2::ZERO;
                 *ctx.velocity_gradient = Mat2::ZERO;
-                0
             } else {
                 let v_old = *ctx.v;
                 let weights = quadratic_weights(*ctx.x);
@@ -373,7 +386,12 @@ pub fn gather_grid_to_particles(
                             // convention as contact.
                             grid.resolved_velocity_at(cell_pos, phase)
                         } else {
-                            grid.velocity_at(cell_pos)
+                            grid.velocity_at_or_gravity_fallback(
+                                cell_pos,
+                                gravity,
+                                dt,
+                                boundary_thickness,
+                            )
                         };
                         let weighted_velocity = node_v * weight;
                         let term =
@@ -418,24 +436,6 @@ pub fn gather_grid_to_particles(
                     v_position = new_v + gamma * asflip_blend * diff_vel;
                 }
 
-                // Hard speed cap — CFL in choose_substep_dt is the physics-grounded bound.
-                // This fires only when CFL is violated despite the timestep limiter (e.g. first
-                // substep of a high-energy spawn). Magnitude clamp preserves direction; no
-                // anisotropic bias unlike per-component clamping. Clamps both `v_store` and
-                // `v_position` by the SAME safety ratio (derived from the stored velocity's own
-                // magnitude) so they stay mutually consistent -- when ASFLIP is disabled the two
-                // are identical (`v_store == v_position == new_v`), so this is byte-identical to
-                // the original single-velocity clamp.
-                let spd = v_store.length();
-                let speed_clamped = if spd > vel_limit {
-                    let scale = vel_limit / spd;
-                    v_store *= scale;
-                    v_position *= scale;
-                    1
-                } else {
-                    0
-                };
-
                 // Apply all boundaries' position clamp (pure function, no particle-struct access).
                 let mut new_pos = *ctx.x + v_position * dt;
                 for boundary in boundaries.iter() {
@@ -445,8 +445,7 @@ pub fn gather_grid_to_particles(
                 *ctx.v = v_store;
                 *ctx.velocity_gradient = b * KERNEL_D_INVERSE * apic_blend;
                 *ctx.x = new_pos;
-                speed_clamped
-            };
+            }
 
             // Plasticity update + boundary post-hooks, now inline in the same
             // parallel task (used to be a forced-sequential second pass -- see
@@ -454,12 +453,12 @@ pub fn gather_grid_to_particles(
             // pinned particle above: its kinematic x/v/velocity_gradient are
             // frozen, but its stress/plastic state must keep evolving normally
             // (matches the pinned branch's own "acts as a real anchor" comment).
-            material.update_particle(&mut ctx, dt);
+            materials.update_particle(material_id, &mut ctx, dt);
             for boundary in boundaries.iter() {
                 boundary.post_g2p_particle(&mut ctx, grid_res, dt);
             }
 
-            clamped
+            0
         })
         .sum();
 

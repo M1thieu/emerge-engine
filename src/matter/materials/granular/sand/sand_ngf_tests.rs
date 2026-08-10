@@ -84,17 +84,10 @@ mod ngf_verification_tests {
         //    REAL METERS the same "diffusivity_dt" spread `g` per step, the
         //    direct cause of the resolution-dependence this module's own
         //    tests measured (a ~7.7x swing between 1x/2x resolution).
-        // 2. `SimConfig::min_dt` (default 1e-3s, a general elastic-CFL-era
-        //    floor) silently overrode `choose_substep_dt`'s own
-        //    `.min(granular_fluidity_dt_bound)` selection via `cfl_bound`'s
-        //    final `.clamp(config.min_dt.min(max_dt), max_dt)` -- confirmed
-        //    directly via a temporary CFL debug print: the solver was
-        //    pinning sub_dt at 1e-3s regardless of a correctly-computed
-        //    `stability_dt` of 3.39e-4s (1x resolution) / 8.48e-5s (2x), i.e.
-        //    running the explicit diffusion stencil 3-12x past its own von
-        //    Neumann stability limit every substep. Fixed generically in
-        //    `Simulation::with_granular_fluidity` (clamps `min_dt` down to
-        //    `stability_dt` at attach time), not here.
+        // 2. An older `min_dt` floor could override the granular-fluidity
+        //    stability bound. `cfl_bound` now treats every material/diffusion
+        //    bound as a true upper bound, so `with_granular_fluidity` needs no
+        //    hidden configuration rewrite.
         //
         // With both fixed, an 8-40mm sweep at both resolutions (200-step
         // Lajeunesse column, `ngf_lajeunesse_runout_resolution_independence`)

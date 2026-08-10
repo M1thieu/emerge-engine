@@ -80,17 +80,18 @@ pub struct MaterialParams {
     /// 0.0 = no temperature dependence (default).
     pub thermal_expansion: f32,
 
-    // --- Fluid extended (GPU-synced) ---
-    /// Fluid: EOS pressure lower bound. 0.0 = no tensile (stable free surface).
-    /// Negative = allow tensile — use only for explicit surface tension simulations.
-    /// Fluid: also used as J upper bound via `volume_ratio_max` for free-surface particles.
+    // --- Granular-fluid / fluid extended (GPU-synced) ---
+    /// GranularFluid-only EOS pressure lower bound.  Strict WC-MPM liquids use
+    /// the unmodified Tait law; a free-surface cavitation model is not encoded
+    /// in this union field.
     pub pressure_floor: f32,
-    /// Fluid: bulk (second) viscosity ζ — adds ζ·(∇·v)·I to Kirchhoff stress.
-    /// Damps compression waves and acoustic ringing. 0.0 = off (Stokes assumption).
+    /// Fluid: bulk (second) viscosity ζ — adds ζ·(∇·v)·I to Cauchy stress.
+    /// 0.0 = off (Stokes assumption).
     pub bulk_viscosity: f32,
-    /// Fluid/Bingham: surface tension γ — adds γ·J·I to Kirchhoff stress.
-    /// Continuum ψ = γ·J (Ziran 2020, SurfaceTension.h). 0.0 = disabled.
-    pub surface_tension_coeff: f32,
+    /// Bingham-only regularisation cutoff for the shear rate. This shares a
+    /// union slot because curvature-based surface tension is deliberately not
+    /// implemented without an interface reconstruction.
+    pub critical_shear_rate: f32,
     /// Snow: cohesion — τ += c·Jp·(J−1)·J·I when Jp<1 and J>1.
     /// Resists elastic expansion in plastically compacted snow. Stable (no feedback loop).
     /// 0.0 = disabled (Stomakhin default). ~200–800 for wet/packed snow.

@@ -2,6 +2,7 @@ pub mod bingham;
 pub mod corotated;
 pub mod elastic;
 pub mod fluid;
+mod fluid_state;
 pub mod granular;
 pub mod granular_fluid;
 pub mod nacc;
@@ -126,7 +127,36 @@ impl MixturePhase {
     pub const FLUID: MixturePhase = MixturePhase(1);
 }
 
-pub trait MaterialModel: Send + Sync + core::fmt::Debug {
+/// Blanket downcast hook for `MaterialRegistry`'s enum-dispatch fast path
+/// (see `registry::MaterialDispatch`). P2G/G2P/CFL call `kirchhoff_stress`/
+/// `stress_volume`/`timestep_bound`/`owns_deformation_volume_state` once per
+/// particle per substep; going through `dyn MaterialModel`'s vtable every
+/// time is real, measured cost at scale. The registry downcasts each
+/// registered material to one of the engine's known concrete types ONCE (at
+/// `insert`/`set_default` time) and caches a match-dispatched copy;
+/// unrecognised types (a wrapper like `WithMixturePhase`, or an LP-side
+/// custom material) simply fail every downcast and keep using the trait
+/// object as before — zero behavior change, only unlocks a fast path for
+/// materials the engine already knows about.
+///
+/// Split into its own blanket-impl'd trait (rather than a default method
+/// directly on `MaterialModel`) because `fn as_any(&self) -> &dyn Any { self }`
+/// as a *default* method on a `Self: ?Sized`-context trait doesn't typecheck
+/// (the unsized coercion needs a concrete, Sized `Self`) — the standard fix
+/// (used by e.g. the `downcast-rs` crate) is a supertrait with a blanket
+/// `impl<T: Any> AsAny for T`, which every `Sized` material — including any
+/// external/LP-defined one — gets automatically, no per-material code needed.
+pub trait AsAny: core::any::Any {
+    fn as_any(&self) -> &dyn core::any::Any;
+}
+
+impl<T: core::any::Any> AsAny for T {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+}
+
+pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// Which constitutive law this material implements.
     /// Used by the GPU shader to select the correct stress branch per particle.
     fn constitutive_model(&self) -> ConstitutiveModel {
@@ -182,13 +212,21 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug {
         false
     }
 
-    /// Whether particles of this material require a per-substep density recompute.
+    /// Whether this material consumes an optional kernel-density measurement.
     ///
-    /// Fluid EOS materials (Newtonian, Bingham) need up-to-date density each substep
-    /// because their pressure is a function of current ρ. Elastic/plastic materials
-    /// do not — density is derived from J at the end of update_particle.
-    /// Default: false. Override in fluid models.
+    /// This is for models whose constitutive law explicitly uses that sampled
+    /// field. Strict WC-MPM liquids do *not*: their EOS state is
+    /// `rho = rho0 / J`, owned together with `V = V0 J`; see
+    /// `owns_deformation_volume_state` below. Default: false.
     fn needs_density_recompute(&self) -> bool {
+        false
+    }
+
+    /// Whether this material owns density and current volume through its
+    /// deformation state.  Such materials must not have those values replaced
+    /// by a kernel-density gather, whose free-surface bias is a measurement
+    /// artifact rather than a constitutive update.
+    fn owns_deformation_volume_state(&self) -> bool {
         false
     }
 
@@ -298,6 +336,9 @@ macro_rules! forward_material_model_common {
         }
         fn needs_density_recompute(&self) -> bool {
             self.inner.needs_density_recompute()
+        }
+        fn owns_deformation_volume_state(&self) -> bool {
+            self.inner.owns_deformation_volume_state()
         }
         fn activation_scale(&self) -> f32 {
             self.inner.activation_scale()

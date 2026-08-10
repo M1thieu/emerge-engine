@@ -19,6 +19,13 @@ exclude = ["LP_MPM_SPEC.md"]
 glam = { version = "0.30", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 rayon = "1"
+# Arbitrary-length real FFT for `grid::dct`'s DCT-II/III -- the fluid
+# pressure-projection solve's Poisson operator diagonalizes exactly in this
+# basis, and the active-region bounding box (its own transform size) is not
+# a power of two, so a general-N FFT is required. A well-established, widely
+# used pure-Rust crate (Bluestein/mixed-radix internally), not a hand-rolled
+# arbitrary-N FFT written under time pressure -- see `grid::dct`'s own doc.
+rustfft = "6"
 wgpu = { version = "27", optional = true, features = ["static-dxc"] }
 
 [features]
@@ -176,6 +183,10 @@ required-features = ["render"]
 
 [[example]]
 name = "basic_fluids_gui"
+required-features = ["render"]
+
+[[example]]
+name = "fluid_pressure_projection_gui"
 required-features = ["render"]
 
 [[example]]

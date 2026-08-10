@@ -157,7 +157,6 @@ fn bench_g2p(c: &mut Criterion) {
         fx.fill_grid();
         let n = fx.n;
         let dt = fx.config.dt;
-        let vel_limit = fx.config.grid_cell_size / dt;
         let boundaries: Vec<Box<dyn BoundaryCondition>> =
             vec![Box::new(SlipBoundary::new(fx.config.boundary_thickness))];
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
@@ -169,7 +168,6 @@ fn bench_g2p(c: &mut Criterion) {
                     &boundaries,
                     &fx.registry,
                     emerge::transfer::G2PParams {
-                        vel_limit,
                         apic_blend: 1.0,
                         active_count: fx.n,
                         pre_force_snapshot: None,

@@ -22,7 +22,8 @@ pub use g2p::{
 };
 pub use p2g::{
     P2GParticleState, gather_contact_point_cloud, p2g_position_vjp, p2g_stress_vjp,
-    scatter_particle_mass, scatter_particles_to_grid,
+    scatter_particle_mass, scatter_particles_to_grid, scatter_particles_to_grid_sorted,
+    spatial_sort_order,
 };
 
 // The two test modules' `use super::*;` see every item re-exported above
@@ -82,32 +83,67 @@ pub(crate) fn combined_kirchhoff_stress(
     particles: &Particles,
     i: usize,
 ) -> Mat2 {
-    let mut tau = material.kirchhoff_stress(particles, i);
+    combined_kirchhoff_stress_from(
+        material.kirchhoff_stress(particles, i),
+        material,
+        particles,
+        i,
+    )
+}
 
-    let coeff = material.activation_scale();
-    if particles.activation[i] > 0.0 && coeff > 0.0 {
-        let isotropic = material.constitutive_model() == ConstitutiveModel::Viscoelastic;
-        let tau_active = if isotropic {
-            Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
-        } else {
-            let n = particles.activation_dir[i];
-            let len_sq = n.dot(n);
-            if len_sq > f32::EPSILON {
-                let n0 = n / len_sq.sqrt();
-                let n_outer = Mat2::from_cols(n0 * n0.x, n0 * n0.y);
-                let a_mat = n_outer * (particles.activation[i] * coeff);
-                let f = particles.deformation_gradient[i];
-                f * a_mat * f.transpose()
-            } else {
+/// Same computation as `combined_kirchhoff_stress`, but takes the passive
+/// term as an already-computed value instead of calling
+/// `material.kirchhoff_stress` itself -- lets a caller that already has a
+/// cheaper way to get the passive stress (`MaterialRegistry::kirchhoff_stress`'s
+/// enum-dispatch fast path, see that method's doc) skip the redundant vtable
+/// call. `combined_kirchhoff_stress` above is just this with the vtable call
+/// inlined, kept for callers that only have a `&dyn MaterialModel` (tests,
+/// the rare contact/mixture P2G pass).
+pub(crate) fn combined_kirchhoff_stress_from(
+    passive_tau: Mat2,
+    material: &dyn MaterialModel,
+    particles: &Particles,
+    i: usize,
+) -> Mat2 {
+    let mut tau = passive_tau;
+
+    // Check the cheap per-particle field FIRST, the virtual dispatch
+    // (`activation_scale`) only if it's actually needed -- semantically
+    // identical (`&&` short-circuits either way, same result), but skips a
+    // vtable call for every particle of every material that never sets
+    // activation (e.g. every fluid particle in a plain fluid scene), a real
+    // per-substep cost multiplied by particle count. Real, measured lever:
+    // this function runs inside P2G's hot per-particle loop.
+    if particles.activation[i] > 0.0 {
+        let coeff = material.activation_scale();
+        if coeff > 0.0 {
+            let isotropic = material.constitutive_model() == ConstitutiveModel::Viscoelastic;
+            let tau_active = if isotropic {
                 Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
-            }
-        };
-        tau += tau_active;
+            } else {
+                let n = particles.activation_dir[i];
+                let len_sq = n.dot(n);
+                if len_sq > f32::EPSILON {
+                    let n0 = n / len_sq.sqrt();
+                    let n_outer = Mat2::from_cols(n0 * n0.x, n0 * n0.y);
+                    let a_mat = n_outer * (particles.activation[i] * coeff);
+                    let f = particles.deformation_gradient[i];
+                    f * a_mat * f.transpose()
+                } else {
+                    Mat2::from_diagonal(Vec2::splat(particles.activation[i] * coeff))
+                }
+            };
+            tau += tau_active;
+        }
     }
 
-    let pressure_coeff = material.pressure_scale();
-    if particles.internal_pressure[i] != 0.0 && pressure_coeff > 0.0 {
-        tau -= Mat2::from_diagonal(Vec2::splat(particles.internal_pressure[i] * pressure_coeff));
+    // Same cheap-field-first reordering as activation above.
+    if particles.internal_pressure[i] != 0.0 {
+        let pressure_coeff = material.pressure_scale();
+        if pressure_coeff > 0.0 {
+            tau -=
+                Mat2::from_diagonal(Vec2::splat(particles.internal_pressure[i] * pressure_coeff));
+        }
     }
 
     tau

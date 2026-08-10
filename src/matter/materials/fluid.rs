@@ -1,47 +1,36 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
+use crate::materials::fluid_state::{
+    init_particle as init_fluid_particle, tait_pressure, update_particle as update_fluid_particle,
+    volume_j,
+};
+use crate::materials::physical_props::{FromSI, NewtonianFluid};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
-/// Weakly-compressible Newtonian fluid (Tait EOS + deviatoric viscosity).
-/// Refs: Becker & Teschner 2007 (WCSPH), Hu et al. 2018 (MLS-MPM).
+/// Weakly-compressible Newtonian fluid discretising the barotropic
+/// Navier--Stokes equations with a Tait equation of state.
+///
+/// The material owns `rho = rho0 / J` and `V = V0 J`.  It deliberately does
+/// not remeasure either quantity from a kernel density gather: that gather is
+/// useful for rendering/occupancy, but is biased at a free surface and is not
+/// a conservative thermodynamic state update.
 #[derive(Debug, Clone, Copy)]
 pub struct NewtonianFluidMaterial {
+    /// Reference areal density in solver units.  For SI construction this is
+    /// `rho_kg_m3 * dx_meters^2`.
     pub rest_density: f32,
+    /// Dynamic shear viscosity `mu` in the stress units used by the solver.
     pub dynamic_viscosity: f32,
+    /// Tait coefficient `B`: `p = B ((rho/rho0)^gamma - 1)`.
     pub eos_stiffness: f32,
+    /// Tait exponent `gamma` (usually 7 for a water-like WC model).
     pub eos_power: f32,
-    pub pressure_floor: f32,
-    pub min_density: f32,
-    pub min_volume: f32,
-    /// Thermal thinning: µ_eff = dynamic_viscosity · exp(−thermal_viscosity_coeff · T).
-    /// 0.0 = isothermal. Positive values make the fluid flow easier when hot.
+    /// Thermal thinning coefficient for `mu_eff = mu exp(-k T)`.
     pub thermal_viscosity_coeff: f32,
-    /// Bulk viscosity ζ (second viscosity, Pa·s in physical units).
-    ///
-    /// Adds τ += ζ·(∇·v)·I to Kirchhoff stress — damps compression waves (acoustic damping).
-    /// Physical: Navier-Stokes second viscosity, distinct from shear viscosity µ.
-    /// Stokes assumption (ζ=0) holds for dilute ideal gases; real liquids have ζ > 0.
-    /// For water: ζ ≈ 3e-3 Pa·s (Dukhin & Goetz 2009). In simulation units set to
-    /// ~0.5–5× dynamic_viscosity. 0.0 = no acoustic damping.
+    /// Physical second (bulk) viscosity `zeta` in
+    /// `tau = 2 mu D_dev + zeta div(v) I - p I`.
     pub bulk_viscosity: f32,
-    /// Surface tension coefficient γ (N/m in physical units).
-    ///
-    /// Adds isotropic Kirchhoff stress τ += γ·J·I — continuum surface energy ψ = γ·J.
-    /// Reference: Ziran 2020, `SurfaceTension.h` (Chenfanfu Jiang group).
-    ///
-    /// **Limitation**: curvature-free. Young-Laplace gives Δp = γ·κ (interface curvature κ),
-    /// but MPM particles carry no interface normal. This term resists volumetric compression
-    /// isotropically — sufficient for cohesion/droplet stability, not for curvature-driven
-    /// flow (e.g. Rayleigh-Plateau instability). 0.0 = disabled.
-    pub surface_tension_coeff: f32,
-    /// Per-step velocity decay: v *= (1 − settling_damping · dt).
-    ///
-    /// Damps residual sloshing and slow plastic creep without affecting fast flow.
-    /// 0.0 = off (default). 0.05–0.2 for water, 0.1–0.5 for mud/viscous fluids.
-    /// Implemented in the GPU shader via the `dp_h0` slot (unused for fluids).
-    pub settling_damping: f32,
 }
 
 impl NewtonianFluidMaterial {
@@ -56,65 +45,59 @@ impl NewtonianFluidMaterial {
             dynamic_viscosity,
             eos_stiffness,
             eos_power,
-            pressure_floor: -0.1,
-            min_density: 1.0e-6,
-            min_volume: 1.0e-6,
             thermal_viscosity_coeff: 0.0,
             bulk_viscosity: 0.0,
-            surface_tension_coeff: 0.0,
-            settling_damping: 0.0,
         }
     }
 
-    /// Low-viscosity preset: γ=7, µ=1e-3 Pa·s. Corresponds to water at 20°C.
-    ///
-    /// `eos_stiffness` controls incompressibility — higher = stiffer; 1e4 works
-    /// well at emerge's default grid scale. Reference: Becker & Teschner 2007 §4.
+    /// Low-viscosity water-like preset in caller-selected solver units.
     pub fn low_viscosity(rest_density: f32, eos_stiffness: f32) -> Self {
         Self::new(rest_density, 1.0e-3, eos_stiffness, 7.0)
     }
 
-    /// Weakly-compressible variant: caps sound speed at `c_ref_m_s`.
+    /// Construct a WC-MPM liquid from SI values and a stated artificial sound
+    /// speed.  Solver time is already seconds and positions are grid cells, so
+    /// pressure and dynamic viscosity remain in SI stress units; only density
+    /// is converted to mass per grid-cell area.
     ///
-    /// Use `c_ref_m_s = 10 * v_max_m_s` (WCSPH rule) to limit compressibility to ~1%.
-    /// `rho_kg_m3` and `eta_pa_s` are the fluid's SI density and viscosity.
+    /// Choose `c_ref_m_s` from an explicit Mach target, commonly at least ten
+    /// times the largest expected physical flow speed.  This is still an
+    /// explicit acoustic model and therefore carries its acoustic CFL cost.
     pub fn weakly_compressible(
         rho_kg_m3: f32,
         eta_pa_s: f32,
         c_ref_m_s: f32,
         config: &crate::SimConfig,
     ) -> Self {
-        // Tait EOS polytropic exponent for water -- Cole 1948, "Underwater Explosions"
-        // (the original real-fluid measurement this exponent is drawn from); used
-        // identically in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994;
-        // Becker & Teschner 2007, already cited elsewhere in this project).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(eta_pa_s, rho_kg_m3, config);
-        let k_si = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
-        let eos = scale_stress(k_si, rho_kg_m3, config);
-        Self::new(rho_kg_m3, visc, eos, GAMMA)
+        assert!(
+            config.dx_meters.is_finite() && config.dx_meters > 0.0,
+            "weakly_compressible requires a positive dx_meters"
+        );
+        let rho_grid = rho_kg_m3 * config.dx_meters * config.dx_meters;
+        let tait_b_pa = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
+        Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA)
     }
 }
 
 impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
-    /// `rest_density` defaults to `props.rho_kg_m3`. Caller should adjust if
-    /// particle mass/volume don't match the SI density.
     fn from_physical(props: &NewtonianFluid, config: &crate::SimConfig) -> Self {
-        // Tait EOS polytropic exponent for water -- Cole 1948, "Underwater Explosions";
-        // standard in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // rest_density must be in the SAME units `particles.density[i]` actually comes
-        // out in -- i.e. whatever `estimate_particle_volumes`'s kernel-based density
-        // estimate produces for a particle spawned via `ParticleMass::particle_mass`
-        // (real SI kilograms) at rest: `rho_grid = rho_SI * dx_meters^2`. Do not add
-        // an extra `/dt_seconds^2` factor here -- it pins any real fluid's EOS
-        // pressure at its floor regardless of real depth/compression. Inflating
-        // particle mass by `1/dt^2` instead breaks the gravity/EOS force balance --
-        // see `Elastic::particle_mass`'s doc.
+        assert!(
+            config.dx_meters.is_finite() && config.dx_meters > 0.0,
+            "NewtonianFluidMaterial::from_physical requires a positive dx_meters"
+        );
         let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
-        Self::new(rho_grid, visc, eos, GAMMA)
+        // The MPM transfer uses grid-cell coordinates but real seconds.  With
+        // V_grid = V_SI/dx^2 and rho_grid = rho_SI dx^2, a stress coefficient
+        // in Pa produces exactly sigma/(rho dx^2) grid acceleration.  Applying
+        // the legacy dt^2/(rho dx^2) conversion here would double-scale it.
+        Self::new(
+            rho_grid,
+            props.eta_pa_s,
+            props.bulk_modulus_pa / GAMMA,
+            GAMMA,
+        )
     }
 }
 
@@ -124,118 +107,78 @@ impl MaterialModel for NewtonianFluidMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        // Density from F's own determinant (rho = rest_density / J), NOT the
-        // grid-mass-gathered `particles.density[i]` this used before -- a
-        // real CPU/GPU parity fix: the GPU fluid path (`p2g.wgsl`'s case 1u)
-        // already uses this exact formula ("sparkl canonical, no grid-lag"
-        // per its own comment), and `GranularFluidMaterial`'s CPU code
-        // (the engine's other EOS-pressure material) already does too --
-        // plain `NewtonianFluidMaterial` was the one inconsistent holdout.
-        // Grid-mass density carries a real one-substep lag (P2G scatter ->
-        // grid -> G2P gather, vs J which is already current this same
-        // substep) and is blind to how it's actually used elsewhere in this
-        // engine (GranularFluid, GPU) -- switching removes a real, disclosed
-        // inconsistency, not just a style choice.
-        //
-        // Real, honest disclosure: the OLD grid-mass approach is exactly
-        // what `hydrostatic_pressure_matches_rho_g_h`'s own doc measured
-        // settling at ~1.3x rest_density (not the correct ~1.003x) --
-        // whether J-based density changes that specific overshoot is NOT
-        // yet re-measured (that test stays `#[ignore]`d); this fix is
-        // motivated by real consistency across the engine, not a confirmed
-        // fix for that specific still-open gap.
-        //
-        // Clamp density both ways: min prevents div-by-zero, max (2x rho0)
-        // limits how far the EOS pressure response saturates under impact
-        // overcompression. Keep this at 2x, not looser --
-        // `fluid_spreads_more_than_elastic_under_gravity` (tests/accuracy.rs)
-        // needs it (a looser clamp stops the fluid spreading at all).
-        let j = particles.deformation_gradient[i].determinant().max(1.0e-6);
-        let density = (self.rest_density / j)
-            .max(self.min_density)
-            .min(self.rest_density * 2.0);
-        let pressure = (self.eos_stiffness
-            * ((density / self.rest_density).powf(self.eos_power) - 1.0))
-            .max(self.pressure_floor);
-
+        let j = volume_j(
+            particles.initial_volume[i],
+            particles.volume[i],
+            "NewtonianFluidMaterial",
+        );
+        let pressure = tait_pressure(
+            self.eos_stiffness,
+            self.eos_power,
+            j,
+            "NewtonianFluidMaterial",
+        );
         let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure));
 
-        let eff_viscosity = if self.thermal_viscosity_coeff > 0.0 {
+        let viscosity = if self.thermal_viscosity_coeff > 0.0 {
             self.dynamic_viscosity
                 * (-self.thermal_viscosity_coeff * particles.temperature[i]).exp()
         } else {
             self.dynamic_viscosity
         };
-        let c = particles.velocity_gradient[i];
-        let sym_strain = c + c.transpose();
-        let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y; // = 2·tr(D) = 2·∇·v
-        let strain_dev = sym_strain - Mat2::from_diagonal(Vec2::splat(div_v * 0.5));
-        stress += eff_viscosity * strain_dev;
+        assert!(
+            viscosity.is_finite()
+                && viscosity >= 0.0
+                && self.bulk_viscosity.is_finite()
+                && self.bulk_viscosity >= 0.0,
+            "NewtonianFluidMaterial: viscosities must be finite and nonnegative"
+        );
 
-        // Bulk viscosity ζ: τ += ζ·(∇·v)·I — damps longitudinal/acoustic waves.
-        // ∇·v ≈ div_v/2 (div_v here is trace of sym_strain = C+Cᵀ = 2D, so ∇·v = div_v/2).
-        if self.bulk_viscosity > 0.0 {
-            stress += Mat2::from_diagonal(Vec2::splat(self.bulk_viscosity * div_v * 0.5));
-        }
+        let gradient = particles.velocity_gradient[i];
+        let twice_d = gradient + gradient.transpose();
+        let twice_div = twice_d.x_axis.x + twice_d.y_axis.y;
+        let twice_d_dev = twice_d - Mat2::from_diagonal(Vec2::splat(0.5 * twice_div));
+        stress += viscosity * twice_d_dev;
+        stress += Mat2::from_diagonal(Vec2::splat(0.5 * self.bulk_viscosity * twice_div));
 
-        if self.surface_tension_coeff != 0.0 {
-            let f = particles.deformation_gradient[i];
-            let j = f.x_axis.x * f.y_axis.y - f.x_axis.y * f.y_axis.x;
-            stress += Mat2::from_diagonal(Vec2::splat(self.surface_tension_coeff * j));
-        }
-
+        // Real, sourced (von Neumann-Richtmyer + Landshoff, see
+        // fluid_state::artificial_bulk_viscosity's own doc) numerical
+        // stabilizer for extreme local compression -- root-caused
+        // 2026-08-08 against basic_fluids_gpu.rs's real crash (a genuine MPM
+        // cell-crossing-style instability, CPU/GPU chaotically diverging
+        // under a violent wall impact). `h=grid_cell_size` hardcoded to 1.0:
+        // `kirchhoff_stress`'s trait signature has no config/grid_cell_size
+        // parameter to thread it through (a real, disclosed scope limit --
+        // every scene in this engine currently uses grid_cell_size=1.0, so
+        // this is exactly correct today, not an approximation of a
+        // different value).
+        let q = crate::materials::fluid_state::artificial_bulk_viscosity(
+            self.eos_stiffness,
+            self.eos_power,
+            self.rest_density,
+            j,
+            0.5 * twice_div,
+            1.0,
+        );
+        stress += Mat2::from_diagonal(Vec2::splat(-q));
         stress
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
-        particles.volume[i].max(self.min_volume)
+        let _ = volume_j(
+            particles.initial_volume[i],
+            particles.volume[i],
+            "NewtonianFluidMaterial",
+        );
+        particles.volume[i]
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Real bug fixed 2026-08-06: this used to re-isotropize FROM THE OLD F's
-        // own determinant, never actually applying the velocity-gradient update
-        // every other material's `update_particle` does -- J was permanently
-        // frozen at its spawn value (1.0) for the material's entire lifetime,
-        // regardless of any real compression/expansion. Silent before 2026-08-04
-        // (density came from the separate grid-mass estimate then), but became a
-        // real, previously-undetected regression once `kirchhoff_stress` switched
-        // to `rest_density/J` -- the EOS pressure term went completely inert
-        // (density permanently == rest_density, pressure permanently ~0). Found
-        // via `fluid_impact_shows_real_free_surface_splash_separation`
-        // (`tests/physics_correctness.rs`): a hard floor impact showed max_j_seen
-        // EXACTLY 1.0000 across 250 steps, not just close to it.
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
-        let j = f_trial.determinant().clamp(0.5, 2.0);
-        let s = j.sqrt();
-        *ctx.deformation_gradient =
-            glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
-        if self.settling_damping > 0.0 {
-            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
-        }
-        // Real, disclosed 2026-08-04 fix: `stress_volume`/`timestep_bound` both
-        // read `particles.volume`/`density` -- but until now this material never
-        // wrote either. Both were left entirely to `estimate_particle_volumes`'s
-        // grid-mass-kernel estimate (`spacetime::solver::density`), which is
-        // real but has NO ceiling on compaction (`clamp_rarefied_volume` only
-        // bounds rarefaction, i.e. it's a floor on density, not a ceiling) --
-        // and unlike every plastic solid material (DP/Snow/NACC/etc, see
-        // `sand.rs`'s own `*ctx.density = ctx.mass / v` at the end of every
-        // substep), nothing here ever pulled a drifting estimate back to a
-        // physically-bounded value. In a settling/compacting scene the
-        // per-substep noise can only ratchet UP (nothing corrects it back
-        // down at near-zero divergence), which silently stiffens this
-        // material's own CFL bound over a long horizon -- the real, root
-        // mechanism behind `mixture_sand_water.rs`'s `dropped`/min_dt-clamp
-        // issue (see `mixture_sand_water_explosion_investigation` memory).
-        // Fix: self-correct every substep from the SAME already-bounded
-        // formula `stress()` already uses for pressure (`(rest_density/j)
-        // .max(min_density).min(2*rest_density)`) -- real, symmetric,
-        // nothing new invented, just applied where it was missing.
-        let density = (self.rest_density / j)
-            .max(self.min_density)
-            .min(self.rest_density * 2.0);
-        *ctx.density = density;
-        *ctx.volume = (ctx.mass / density).max(1.0e-9);
+        update_fluid_particle(ctx, dt, self.rest_density, "NewtonianFluidMaterial");
+    }
+
+    fn init_particle(&self, particle: &mut Particle) {
+        init_fluid_particle(particle, self.rest_density, "NewtonianFluidMaterial");
     }
 
     fn params(&self) -> MaterialParams {
@@ -246,13 +189,7 @@ impl MaterialModel for NewtonianFluidMaterial {
             eos_power: self.eos_power,
             dynamic_viscosity: self.dynamic_viscosity,
             thermal_viscosity_coeff: self.thermal_viscosity_coeff,
-            // Free-surface J cap: GPU clamps det(F) to [J_MIN, volume_ratio_max].
-            // 2.0 = realistic free-surface density (half rest_density with no restoring EOS force).
-            volume_ratio_max: 2.0,
-            pressure_floor: self.pressure_floor,
             bulk_viscosity: self.bulk_viscosity,
-            surface_tension_coeff: self.surface_tension_coeff,
-            dp_h0: self.settling_damping, // fluid repurposes dp_h0 for settling damping (DP unused)
             ..Default::default()
         }
     }
@@ -265,32 +202,101 @@ impl MaterialModel for NewtonianFluidMaterial {
         material_cfl: f32,
         viscous_cfl: f32,
     ) -> f32 {
-        const MIN_DENSITY_RATIO: f32 = 1.0e-6;
-        let density = density.max(self.min_density);
-        let ratio = (density / self.rest_density.max(self.min_density)).max(MIN_DENSITY_RATIO);
-
+        assert!(
+            density.is_finite()
+                && density > 0.0
+                && self.rest_density.is_finite()
+                && self.rest_density > 0.0,
+            "NewtonianFluidMaterial: density state must be finite and positive"
+        );
+        let density_ratio = density / self.rest_density;
         let mut dt_bound = f32::INFINITY;
 
-        // Acoustic timestep bound from EOS derivative dp/drho.
-        let c2 = self.eos_stiffness * self.eos_power * ratio.powf(self.eos_power - 1.0)
-            / self.rest_density.max(self.min_density);
+        let c2 = self.eos_stiffness
+            * self.eos_power
+            * crate::materials::utils::fast_pow(density_ratio, self.eos_power - 1.0)
+            / self.rest_density;
         if c2.is_finite() && c2 > f32::EPSILON {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        // Viscous diffusion bound for explicit integration.
-        if self.dynamic_viscosity > 0.0 {
-            let kinematic_viscosity = self.dynamic_viscosity / density;
-            if kinematic_viscosity > f32::EPSILON {
+        let total_viscosity = self.dynamic_viscosity + self.bulk_viscosity;
+        if total_viscosity > 0.0 {
+            let kinematic_viscosity = total_viscosity / density;
+            if kinematic_viscosity.is_finite() && kinematic_viscosity > f32::EPSILON {
                 dt_bound =
                     dt_bound.min(viscous_cfl * cell_width * cell_width / kinematic_viscosity);
             }
         }
-
         dt_bound
     }
 
-    fn needs_density_recompute(&self) -> bool {
+    fn owns_deformation_volume_state(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn si_constructor_preserves_pressure_and_viscosity_units() {
+        let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
+        let material = NewtonianFluidMaterial::weakly_compressible(1000.0, 1.0e-3, 20.0, &cfg);
+        assert!((material.rest_density - 0.1).abs() < 1.0e-7);
+        assert!((material.dynamic_viscosity - 1.0e-3).abs() < 1.0e-9);
+        assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn initial_volume_and_density_are_mass_conservative() {
+        let material = NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 7.0);
+        let mut particle = Particle {
+            mass: 2.0,
+            ..Particle::zeroed()
+        };
+        material.init_particle(&mut particle);
+        assert!((particle.initial_volume - 0.5).abs() < 1.0e-6);
+        assert!((particle.volume - 0.5).abs() < 1.0e-6);
+        assert!((particle.density - 4.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn exponential_volume_update_is_not_j_clamped() {
+        let material = NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 7.0);
+        let mut particles = Particles::from(vec![Particle {
+            mass: 2.0,
+            ..Particle::zeroed()
+        }]);
+        // Initialise, then prescribe div(v) = -ln(4).
+        let mut p = particles.get(0);
+        material.init_particle(&mut p);
+        particles.set(0, p);
+        particles.velocity_gradient[0] = Mat2::from_diagonal(Vec2::splat(-0.5 * 4.0_f32.ln()));
+        material.update_particle(&mut particles.update_ctx(0), 1.0);
+        let j = particles.deformation_gradient[0].determinant();
+        assert!(
+            (j - 0.25).abs() < 1.0e-6,
+            "J must follow exp(integral div v), got {j}"
+        );
+        assert!((particles.volume[0] - 0.125).abs() < 1.0e-6);
+        assert!((particles.density[0] - 16.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn tait_eos_is_not_pressure_clamped_in_tension() {
+        let pressure = tait_pressure(10.0, 2.0, 2.0, "test");
+        assert!(
+            pressure < 0.0,
+            "an expanded barotropic state must retain its Tait tension instead of being pressure-clamped"
+        );
+        assert!((pressure + 7.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    #[should_panic(expected = "Tait pressure is unrepresentable")]
+    fn tait_eos_rejects_unrepresentable_compression_instead_of_capping_it() {
+        let _ = tait_pressure(1.0, 7.0, 1.0e-10, "test");
     }
 }

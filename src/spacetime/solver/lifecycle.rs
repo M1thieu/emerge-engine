@@ -48,12 +48,14 @@ impl Simulation {
             cosserat_omega: Vec::new(),
             cosserat_curvature: Vec::new(),
             frame_index: 0,
+            fluid_sticky_fine_dt: None,
             last_step_dt: config.dt,
             last_substeps: 0,
             last_vel_clamp_count: 0,
             last_j_projection_count: 0,
             last_sim_time_dropped: 0.0,
             last_timing: crate::diagnostics::StepTiming::default(),
+            cached_spatial_sort_order: Vec::new(),
             phase_rules: Vec::new(),
             spatial_hash: RefCell::new(SpatialHash::new(config.grid_cell_size)),
             spatial_hash_dirty: Cell::new(false),
@@ -105,12 +107,14 @@ impl Simulation {
             cosserat_omega: Vec::new(),
             cosserat_curvature: Vec::new(),
             frame_index: 0,
+            fluid_sticky_fine_dt: None,
             last_step_dt: config.dt,
             last_substeps: 0,
             last_vel_clamp_count: 0,
             last_j_projection_count: 0,
             last_sim_time_dropped: 0.0,
             last_timing: crate::diagnostics::StepTiming::default(),
+            cached_spatial_sort_order: Vec::new(),
             phase_rules: Vec::new(),
             spatial_hash: RefCell::new(SpatialHash::new(config.grid_cell_size)),
             spatial_hash_dirty: Cell::new(false),
@@ -181,28 +185,14 @@ impl Simulation {
     /// calling this) is the default, zero-cost, byte-identical to every
     /// existing scene -- same convention `with_thermal` already has.
     ///
-    /// Real, previously-reproduced bug this clamp fixes: `SimConfig::min_dt`
-    /// (default 1e-3s, a general elastic-CFL-era floor) silently overrides
-    /// `choose_substep_dt`'s own `.min(granular_fluidity_dt_bound)` selection
-    /// via `cfl_bound`'s final `.clamp(config.min_dt.min(max_dt), max_dt)` --
-    /// whenever `field.config.stability_dt(dx_meters)` comes out SMALLER than
-    /// `min_dt` (true for any physically small grain diameter at a typical
-    /// LP grid cell size), the solver was silently running the explicit
-    /// diffusion stencil past its own von Neumann stability limit every
-    /// substep, confirmed directly via a temporary CFL debug print (chosen
-    /// sub_dt pinned at `min_dt` regardless of a computed `stability_dt`
-    /// 3-12x smaller). Lowering `min_dt` here, once, at attach time, lets the
-    /// bound that was already being computed actually bind -- no change to
-    /// the shared `cfl_bound`/`choose_substep_dt` logic every other material/
-    /// field also goes through.
+    /// Its explicit von Neumann stability bound is folded directly into each
+    /// adaptive substep by `choose_substep_dt`. `SimConfig::min_dt` is never
+    /// allowed to raise that upper bound, so attaching this field does not
+    /// retune unrelated solver settings or trade stability for throughput.
     pub fn with_granular_fluidity(
         mut self,
         field: crate::thermodynamics::GranularFluidityField,
     ) -> Self {
-        let stability_dt = field.config.stability_dt(self.config.dx_meters);
-        if stability_dt.is_finite() && stability_dt > 0.0 {
-            self.config.min_dt = self.config.min_dt.min(stability_dt);
-        }
         self.granular_fluidity = Some(field);
         self
     }
@@ -300,10 +290,9 @@ impl Simulation {
 
     /// Direct mutable access to all particles.
     ///
-    /// **CFL WARNING:** velocity changes made here bypass the solver's CFL clamp.
-    /// Any velocity written must satisfy `|v| ≤ grid_cell_size / current_sub_dt` or the
-    /// next P2G scatter will inject extreme momentum → J→0 → deformation collapse.
-    /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
+    /// **State warning:** velocity changes made here are used exactly. The
+    /// next substep recomputes its CFL bound from the altered state; callers
+    /// must keep values finite and use physically meaningful forcing.
     /// Safe uses: writing non-velocity fields (temperature, activation, user_tag, material_id).
     pub const fn particles_mut(&mut self) -> &mut Particles {
         &mut self.particles

@@ -5,7 +5,8 @@
 //! by the GPU solver's own CFL scan (`systems::gpu::solver::step`), which is
 //! why the latter two stay `pub(crate)` and re-exported from `solver/mod.rs`.
 
-use glam::Mat2;
+use glam::{Mat2, Vec2};
+use rayon::prelude::*;
 
 use super::{MaterialRegistry, SimConfig};
 use crate::particle::Particles;
@@ -29,28 +30,103 @@ pub(crate) fn choose_substep_dt(
         return max_dt.min(config.dt);
     }
     // Single pass for both velocity CFL and material timestep bound.
-    let mut max_speed = 0.0f32;
-    let mut min_mat_dt = max_dt;
-    for i in 0..active_count {
-        let mut s = particles.v[i].length();
-        if config.cfl_include_affine_speed {
-            s += affine_cfl_speed_contribution(
-                &particles.velocity_gradient[i],
-                config.grid_cell_size,
-            );
-        }
-        max_speed = max_speed.max(s);
-        let mdt = materials.get(particles.material_id[i]).timestep_bound(
-            particles.density[i],
-            particles.hardening_scale[i],
-            config.grid_cell_size,
-            config.material_cfl_coefficient,
-            config.viscous_timestep_coefficient,
+    // Parallelized (2026-08-07, real measured win: this scan was ~8ms/frame
+    // running on a SINGLE core, the other 7 idle) -- pure `(f32, f32)`
+    // fold/reduce, no allocation per chunk at all, so none of the same-night
+    // dense-buffer failure mode applies (see `transfer::p2g::
+    // scatter_particles_to_grid`'s own doc for that story). `with_min_len`
+    // matches P2G/G2P's own real fix, same reasoning: rayon's default
+    // chunking splits far more/smaller tasks than a naive one-per-core
+    // assumption.
+    let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
+    let (max_speed, min_mat_dt, near_wall_gravity_scale) = (0..active_count)
+        .into_par_iter()
+        .with_min_len(min_len)
+        .fold(
+            || (0.0f32, max_dt, 1.0f32),
+            |(mut max_speed, mut min_mat_dt, mut near_wall_scale), i| {
+                let mut s = particles.v[i].length();
+                if config.cfl_include_affine_speed {
+                    s += affine_cfl_speed_contribution(
+                        &particles.velocity_gradient[i],
+                        config.grid_cell_size,
+                    );
+                }
+                max_speed = max_speed.max(s);
+                // Proactive near-wall tightening for strict fluids (see
+                // `SimConfig::fluid_near_wall_cfl_scale`'s own doc) -- `1.0`
+                // (default) makes this branch's division a no-op, so every
+                // scene that never opts in pays nothing extra beyond the
+                // branch check itself. Gated on ACTUAL compression too (see
+                // `fluid_near_wall_compression_threshold`'s own doc) -- a
+                // calm puddle resting on a floor (also a wall) must not pay
+                // this cost forever, only a particle genuinely being
+                // squeezed right now.
+                let material_cfl = if config.fluid_near_wall_cfl_scale != 1.0
+                    && materials.owns_deformation_volume_state(particles.material_id[i])
+                    && is_near_wall(particles.x[i], config.grid_res, config.boundary_thickness)
+                    && {
+                        let j = particles.volume[i] / particles.initial_volume[i];
+                        (j - 1.0).abs() > config.fluid_near_wall_compression_threshold
+                    } {
+                    config.material_cfl_coefficient / config.fluid_near_wall_cfl_scale
+                } else {
+                    config.material_cfl_coefficient
+                };
+                let mdt = materials.timestep_bound(
+                    particles.material_id[i],
+                    particles.density[i],
+                    particles.hardening_scale[i],
+                    config.grid_cell_size,
+                    material_cfl,
+                    config.viscous_timestep_coefficient,
+                );
+                if mdt.is_finite() && mdt > 0.0 {
+                    min_mat_dt = min_mat_dt.min(mdt);
+                }
+                // The deformation update is a local ODE in its own right.  Bound the
+                // dimensionless velocity-gradient increment even when affine velocity
+                // contribution is disabled for the advection CFL; otherwise an Euler
+                // F update can invert within a nominally velocity-safe substep.
+                let deformation_dt = deformation_gradient_cfl_bound(
+                    &particles.velocity_gradient[i],
+                    config.cfl_coefficient.min(0.5),
+                );
+                if deformation_dt.is_finite() && deformation_dt > 0.0 {
+                    min_mat_dt = min_mat_dt.min(deformation_dt);
+                }
+                // Real, PREDICTIVE (not reactive) near-wall tightening for a
+                // strict fluid with `eos_stiffness=0` -- see MEMORY.md's
+                // fluid-recovery notes, Round 9, for why this is needed:
+                // `fluid_near_wall_cfl_scale`'s ORIGINAL tightening (above,
+                // dividing `material_cfl`) only affects the ACOUSTIC bound
+                // (`c2` in `NewtonianFluidMaterial::timestep_bound`), which
+                // is IDENTICALLY ZERO once `eos_stiffness=0` -- confirmed
+                // live, bit-for-bit identical results at scale=5 vs scale=20
+                // vs disabled entirely, since the lever has nothing left to
+                // act on. The gravity-CFL bound below (module-level, folded
+                // in after this loop) is the one bound that's actually still
+                // ACTIVE and PREDICTIVE for an eos-less fluid at rest -- so
+                // THIS is the real lever to tighten, not the dead acoustic
+                // one. No compression gate here on purpose (unlike the
+                // acoustic version above): a compression-based gate is
+                // reactive by definition (needs `J` to have ALREADY drifted
+                // away from 1 to fire), which is exactly what fails at the
+                // critical first substep, before anything has moved yet.
+                if config.fluid_near_wall_cfl_scale != 1.0
+                    && materials.owns_deformation_volume_state(particles.material_id[i])
+                    && is_near_wall(particles.x[i], config.grid_res, config.boundary_thickness)
+                {
+                    near_wall_scale = near_wall_scale.max(config.fluid_near_wall_cfl_scale);
+                }
+                (max_speed, min_mat_dt, near_wall_scale)
+            },
+        )
+        .reduce(
+            || (0.0f32, max_dt, 1.0f32),
+            |(ms1, md1, nw1), (ms2, md2, nw2)| (ms1.max(ms2), md1.min(md2), nw1.max(nw2)),
         );
-        if mdt.is_finite() && mdt > 0.0 {
-            min_mat_dt = min_mat_dt.min(mdt);
-        }
-    }
+    let mut min_mat_dt = min_mat_dt;
     // Rods aren't scanned by the particle loop above (separate SoA) -- fold
     // in their own CFL bound the same way a stiff material would clamp
     // min_mat_dt, so a rod going unstable can never silently escape the
@@ -101,18 +177,76 @@ pub(crate) fn choose_substep_dt(
     {
         min_mat_dt = min_mat_dt.min(bound);
     }
+    // Real, standard "additional stability condition" for explicit
+    // integration under a body force (Bridson, "Fluid Simulation for
+    // Computer Graphics" ch. 3; Foster & Fedkiw 2001) -- gravity alone can
+    // move a particle more than one cell per substep even at REST (zero
+    // velocity, zero material stress), which none of the bounds above catch
+    // (they all key off existing velocity/stress/velocity-gradient, all
+    // zero at t=0). Derived the same way the velocity CFL above already is
+    // (a substep shouldn't let a particle gain more than
+    // `cfl_coefficient*cell_width` of *implied* motion): a constant
+    // acceleration g reaches speed g*dt after time dt, so bounding
+    // `g*dt <= cfl_coefficient*cell_width/dt` gives `dt <=
+    // sqrt(cfl_coefficient*cell_width/g)`. Normally dominated by a much
+    // tighter material bound (e.g. a stiff EOS's acoustic term) and never
+    // the binding constraint -- confirmed live as a real, previously-latent
+    // gap once a strict fluid's `eos_stiffness` is set to 0.0 for pressure-
+    // projection incompressibility (see `SimConfig::fluid_pressure_
+    // iterations`'s own doc): with no per-material bound left at rest, a
+    // scene's very first substep took the full frame dt in one step, and a
+    // single ~0.1s free-fall substep at real Earth gravity is enormous for
+    // an explicit MPM update (Δv ≈ 98 grid-units/s in one substep on a
+    // 64-cell domain at dx_meters=0.01) -- root cause, not the projection
+    // itself, which was correctly reacting to state a too-large substep had
+    // already made extreme.
+    let g = config.gravity.length();
+    if g > f32::EPSILON {
+        // `near_wall_gravity_scale` (computed in the fold above) is >1.0
+        // only when at least one strict-fluid particle is both near a wall
+        // and `fluid_near_wall_cfl_scale != 1.0` -- 1.0 (no particle
+        // qualifies, or the feature is off) makes this an exact no-op,
+        // identical to the plain gravity bound below it replaces.
+        let gravity_dt =
+            (config.cfl_coefficient * config.grid_cell_size / (g * near_wall_gravity_scale)).sqrt();
+        if gravity_dt.is_finite() && gravity_dt > 0.0 {
+            min_mat_dt = min_mat_dt.min(gravity_dt);
+        }
+    }
     cfl_bound(config, max_speed, min_mat_dt, max_dt)
 }
 
 /// Shared CFL formula: clamps dt to advection + material bounds.
 /// Called by both SoA and AoS scan paths after computing their respective max values.
 pub(crate) fn cfl_bound(config: &SimConfig, max_speed: f32, min_mat_dt: f32, max_dt: f32) -> f32 {
+    assert!(
+        max_dt.is_finite() && max_dt > 0.0,
+        "CFL maximum timestep must be finite and positive"
+    );
     let mut dt = max_dt;
     if max_speed > f32::EPSILON {
         dt = dt.min(config.cfl_coefficient * config.grid_cell_size / max_speed);
     }
-    dt = dt.min(min_mat_dt);
-    dt.clamp(config.min_dt.min(max_dt), max_dt)
+    if min_mat_dt.is_finite() && min_mat_dt > 0.0 {
+        dt = dt.min(min_mat_dt);
+    }
+    assert!(
+        dt.is_finite() && dt > 0.0,
+        "CFL produced a non-positive timestep; inspect material state and parameters"
+    );
+    // `min_dt` is intentionally not a floor.  Raising a material/acoustic CFL
+    // upper bound changes the PDE integration; callers must substep, defer, or
+    // report inability to meet their work budget instead.
+    dt
+}
+
+/// Whether `x` sits within `boundary_thickness` cells of any wall -- the SAME
+/// zone `apply_slip_wall_velocity` already treats specially, not a new margin.
+/// Used by `SimConfig::fluid_near_wall_cfl_scale`'s proactive tightening.
+fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) -> bool {
+    let t = boundary_thickness as f32;
+    let hi = grid_res as f32 - t;
+    x.x < t || x.x > hi || x.y < t || x.y > hi
 }
 
 pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
@@ -122,4 +256,39 @@ pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
     const STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::consts::SQRT_2;
     let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
     grad_norm * STENCIL_CORNER_DISTANCE * cell_width
+}
+
+/// Upper bound for a deformation-gradient update.  If
+/// `dt * ||grad(v)||_F < 1`, `I + dt grad(v)` cannot become singular; using a
+/// 0.5 safety factor also resolves the local strain rate rather than merely
+/// avoiding inversion.  This remains active independently of APIC/advection
+/// CFL policy because it protects the kinematic state, not particle travel.
+pub(crate) fn deformation_gradient_cfl_bound(c: &Mat2, coefficient: f32) -> f32 {
+    let rate = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
+    if rate.is_finite() && rate > f32::EPSILON {
+        coefficient / rate
+    } else {
+        f32::INFINITY
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::Vec2;
+
+    use super::cfl_bound;
+    use crate::solver::SimConfig;
+
+    #[test]
+    fn min_dt_never_raises_a_cfl_upper_bound() {
+        let mut config = SimConfig::standard(16, 1.0, Vec2::ZERO);
+        config.grid_cell_size = 1.0;
+        config.cfl_coefficient = 0.5;
+        config.min_dt = 0.1;
+
+        let dt = cfl_bound(&config, 100.0, 0.01, 1.0);
+
+        assert!((dt - 0.005).abs() < 1.0e-7);
+        assert!(dt < config.min_dt);
+    }
 }
