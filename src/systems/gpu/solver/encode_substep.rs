@@ -23,6 +23,12 @@ pub(super) struct SubstepGates {
     /// skipped, a REPLACEMENT of two passes with one. See `g2p_asflip_fused.wgsl`'s own
     /// doc for why fusion is structurally required.
     pub(super) asflip_active: bool,
+    /// `true` for strict WC-MPM fluid scenes only -- dispatches `cfl_scan` right
+    /// after `particles_update`/`g2p_asflip_fused` (using the JUST-finalized F/
+    /// velocity_gradient state) to compute the NEXT substep's CFL bound GPU-
+    /// natively, replacing the old per-batch CPU-mirror scan. See
+    /// `cfl_scan.wgsl`'s own doc for the real crash this fixes.
+    pub(super) cfl_scan_active: bool,
 }
 
 impl GpuSimulation {
@@ -40,6 +46,7 @@ impl GpuSimulation {
             thermal_active,
             resource_active,
             asflip_active,
+            cfl_scan_active,
         } = gates;
         {
             // GPU sparse grid Phase 1 — re-detect active blocks from CURRENT particle
@@ -207,13 +214,30 @@ impl GpuSimulation {
                 pass.dispatch_workgroups(particle_wg, 1, 1);
             }
         }
+        // Per-substep GPU-native CFL reduction (strict WC-MPM fluids only) -- runs
+        // right after particles_update/g2p_asflip_fused, using the state EITHER
+        // path just finalized (F, velocity_gradient, volume/density), to compute
+        // the bound the NEXT substep's dt is chosen from. See cfl_scan.wgsl's own
+        // doc for the real crash this fixes and SubstepGates::cfl_scan_active's
+        // doc for the gating rationale.
+        if cfl_scan_active {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cfl_scan"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.cfl_scan);
+            pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            pass.set_bind_group(2, &self.thermal_bind_group, &[]);
+            pass.set_bind_group(3, &self.resource_bind_group, &[]);
+            pass.dispatch_workgroups(particle_wg, 1, 1);
+        }
         // Skipped entirely (not just an empty loop body) when force_fields_main is
         // provably a no-op for every particle this frame -- see force_fields_needed's
         // doc comment above (step_frame) for the full reasoning and the real measured
-        // cost this avoids. When skipped, the velocity this pass would have re-clamped
-        // is exactly what g2p already clamped to (particles_update's only effect on v
-        // is multiplicative damping, never amplifying), so this is a correctness-
-        // preserving skip, not an approximation.
+        // cost this avoids. When skipped, no force update is required; there is
+        // no hidden velocity clamp in either path, so this is a
+        // correctness-preserving skip, not an approximation.
         if force_fields_needed {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("force_fields"),

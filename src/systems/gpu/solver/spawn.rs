@@ -8,7 +8,7 @@
 use crate::grid::Grid;
 use crate::particle::Particle;
 use crate::solver::LcgRng;
-use crate::solver::density::estimate_particle_volumes;
+use crate::solver::density::estimate_particle_volumes_local;
 use crate::solver::initialize_particles;
 
 use super::GpuSimulation;
@@ -17,9 +17,11 @@ use super::build_bind_group_pool;
 impl GpuSimulation {
     /// Append a new particle region to the simulation.
     ///
-    /// Generates particles CPU-side, appends to the internal mirror, recomputes
-    /// initial volumes for all particles, then reallocates the GPU particle buffer
-    /// to fit the new total and uploads all particles.
+    /// Generates particles CPU-side, initializes their registered material state,
+    /// measures only new non-constitutive volumes, then reallocates the GPU
+    /// particle buffer to fit the new total and uploads all particles. Strict
+    /// WC-MPM liquid `V0`, `V`, and `rho` are initialized from mass/rest-density
+    /// and are never replaced by a kernel measurement.
     ///
     /// Returns the index range the new particles occupy in the internal mirror.
     /// LP uses this as `creature_id → particle_range` for ownership tracking.
@@ -41,12 +43,29 @@ impl GpuSimulation {
         let new_particles = initialize_particles(&self.config, spawn, &mut rng);
         self.particles.extend(new_particles);
 
-        // Recompute initial volumes for the combined particle set using a temporary grid.
+        // Match CPU `Simulation::add_body`: material-owned state comes first,
+        // then the optional kernel measurement writes only the newly-added
+        // materials which explicitly use it.  Re-measuring the entire combined
+        // population would also overwrite a live strict-fluid V/rho state.
+        for particle in &mut self.particles[start..] {
+            self.registry
+                .get(particle.material_id)
+                .init_particle(particle);
+        }
+
+        // Measure only non-constitutive initial volumes for the new region.
         let mut tmp_grid = Grid::new(self.config.grid_res);
         {
             let mut tmp_soa = crate::particle::Particles::from(std::mem::take(&mut self.particles));
             let n = tmp_soa.len();
-            estimate_particle_volumes(&mut tmp_soa, &mut tmp_grid, None, n, true);
+            estimate_particle_volumes_local(
+                &mut tmp_soa,
+                &mut tmp_grid,
+                Some(&self.registry),
+                n,
+                start,
+                true,
+            );
             self.particles = tmp_soa.to_vec();
         }
 

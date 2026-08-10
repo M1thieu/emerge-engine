@@ -53,7 +53,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    vel_limit:          f32,
+    reserved_velocity_slot: f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,

@@ -152,6 +152,10 @@ impl SimPipelines {
                     binding: 31,
                     resource: buffers.material_mass_params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 32,
+                    resource: buffers.solver_status.as_entire_binding(),
+                },
             ],
         })
     }
@@ -184,6 +188,10 @@ impl SimPipelines {
                 wgpu::BindGroupEntry {
                     binding: 23,
                     resource: buffers.thermal_work.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 33,
+                    resource: buffers.cfl_reduction.as_entire_binding(),
                 },
             ],
         })

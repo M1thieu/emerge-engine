@@ -38,6 +38,7 @@ pub mod shaders {
     pub const THERMAL: &str = include_str!("shaders/thermal.wgsl");
     pub const RESOURCE_FIELD: &str = include_str!("shaders/resource_field.wgsl");
     pub const G2P_ASFLIP_FUSED: &str = include_str!("shaders/g2p_asflip_fused.wgsl");
+    pub const CFL_SCAN: &str = include_str!("shaders/cfl_scan.wgsl");
 }
 
 #[cfg(feature = "gpu")]

@@ -57,7 +57,7 @@ struct MaterialParams {
     eos_power:               f32,
     dynamic_viscosity:       f32,
     volume_ratio_min:        f32, // Snow/DP: Jp lower bound
-    volume_ratio_max:        f32, // Snow/DP: Jp upper bound; Fluid: J_MAX for free surface
+    volume_ratio_max:        f32, // Snow/DP: Jp upper bound
     dp_h0:                   f32,
     dp_h1:                   f32,
     dp_h2:                   f32,
@@ -68,7 +68,7 @@ struct MaterialParams {
     thermal_expansion:       f32,
     pressure_floor:          f32,
     bulk_viscosity:          f32,
-    surface_tension_coeff:   f32,
+    critical_shear_rate:     f32,
     cohesion_coeff:              f32,
 }
 
@@ -79,7 +79,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    vel_limit:          f32,
+    reserved_velocity_slot: f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -94,6 +94,56 @@ const NUM_FLOOR_TIGHT:  f32 = 1e-10;
 @group(0) @binding(2) var<uniform>             materials:            array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params:          StepParams;
 @group(0) @binding(5) var<storage, read_write> sorted_particle_ids:  array<u32>;
+@group(1) @binding(32) var<storage, read_write> solver_status:       array<atomic<u32>>;
+
+fn report_strict_fluid_failure(particle_index: u32) {
+    let previous = atomicCompareExchangeWeak(&solver_status[0], 0u, 1u);
+    if previous.exchanged {
+        atomicStore(&solver_status[1], particle_index);
+    }
+    atomicAdd(&solver_status[2], 1u);
+}
+
+fn finite_scalar(value: f32) -> bool {
+    return abs(value) <= 3.4e38;
+}
+
+fn finite_vec2(value: vec2<f32>) -> bool {
+    return finite_scalar(value.x) && finite_scalar(value.y);
+}
+
+fn finite_mat2(value: mat2x2<f32>) -> bool {
+    return finite_vec2(value[0]) && finite_vec2(value[1]);
+}
+
+fn strict_fluid_state_is_admissible(p: Particle) -> bool {
+    let j_f = det2(p.deformation_gradient);
+    let j_volume = p.volume / p.initial_volume;
+    let volume_error = abs(j_f - j_volume) / j_volume;
+    let rho_volume = p.density * p.volume;
+    let mass_error = abs(rho_volume - p.mass) / p.mass;
+    return finite_vec2(p.x)
+        && finite_vec2(p.v)
+        && finite_mat2(p.velocity_gradient)
+        && finite_mat2(p.deformation_gradient)
+        && finite_scalar(p.mass)
+        && p.mass > 0.0
+        && finite_scalar(p.initial_volume)
+        && p.initial_volume > 0.0
+        && finite_scalar(p.volume)
+        && p.volume > 0.0
+        && finite_scalar(p.density)
+        && p.density > 0.0
+        && finite_scalar(j_f)
+        && j_f > 0.0
+        && finite_scalar(j_volume)
+        && j_volume > 0.0
+        && finite_scalar(volume_error)
+        && volume_error <= 2e-4
+        && finite_scalar(rho_volume)
+        && finite_scalar(mass_error)
+        && mass_error <= 2e-4;
+}
 
 // ── 2D SVD ────────────────────────────────────────────────────────────────────
 // Analytical thin SVD F = U · diag(s) · Vᵀ for a 2×2 matrix, s.x ≥ |s.y|.
@@ -351,6 +401,7 @@ fn det2(m: mat2x2<f32>) -> f32 {
 @compute @workgroup_size(64, 1, 1)
 fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= step_params.particle_count { return; }
+    if atomicLoad(&solver_status[0]) != 0u { return; }
     let p_idx = sorted_particle_ids[gid.x]; // sorted for cache-coherent p2g scatter
 
     var p   = particles[p_idx];
@@ -370,11 +421,17 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Identity matrix — used both in state projection and F update below.
     let I = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
 
+    if mat.model == 1u && !strict_fluid_state_is_admissible(p) {
+        report_strict_fluid_failure(p_idx);
+        return;
+    }
+
     // ── GPU state projection ──────────────────────────────────────────────────
     // Mirrors project_particle_state_to_admissible in solver/mod.rs.
     // The CPU runs this every substep; the GPU was missing it entirely.
     // !(x >= 0 && x < res) catches NaN (NaN >= 0 = false → !false = true) and out-of-bounds.
     // !(dot >= 0) catches NaN/Inf in vector fields (NaN/Inf squared = NaN, NaN >= 0 = false).
+    if mat.model != 1u {
     let fres = f32(res);
     let half = fres * 0.5;
     if !(p.x.x >= 0.0 && p.x.x < fres) { p.x.x = half; }
@@ -386,7 +443,9 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
            + dot(p.velocity_gradient[1], p.velocity_gradient[1]);
     if !(cg >= 0.0) { p.velocity_gradient = mat2x2<f32>(); }
     // deformation_gradient: NaN or det ≤ 0 → identity (J-projection below also covers post-update).
-    if !(det2(p.deformation_gradient) > 0.0) { p.deformation_gradient = I; }
+    if mat.model != 1u && !(det2(p.deformation_gradient) > 0.0) {
+        p.deformation_gradient = I;
+    }
     // Plastic state — NaN can cascade from bad F or extreme stress over long GPU sims.
     // !(x > 0) catches NaN+negative; !(abs(x) < BIG) catches NaN+Inf for signed fields.
     // Mirrors project_particle_state_to_admissible in solver/mod.rs lines 864–875.
@@ -394,10 +453,14 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !(p.hardening_scale > 0.0)                { p.hardening_scale = 1.0; }
     if !(abs(p.friction_hardening) < 3.4e+38)   { p.friction_hardening = 0.0; }
     if !(abs(p.log_volume_strain)  < 3.4e+38)   { p.log_volume_strain  = 0.0; }
+    }
     // ─────────────────────────────────────────────────────────────────────────
 
     // F = (I + dt·C) · F_old  (C = velocity_gradient written by g2p pass)
-    var new_F = (I + dt * p.velocity_gradient) * p.deformation_gradient;
+    var new_F = p.deformation_gradient;
+    if mat.model != 1u {
+        new_F = (I + dt * p.velocity_gradient) * p.deformation_gradient;
+    }
 
     // Plasticity — all three models via 2D analytical SVD.
     if mat.model == 4u && mat.compression_limit > 0.0 {
@@ -464,51 +527,37 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.hardening_scale      = sr.h;
     }
 
-    // Fluid F reset: extract J = det(F), reset to isotropic F = sqrt(J)·I.
-    //
-    // Rotation and shear in F are physically meaningless for fluids — the EOS uses only
-    // J = det(F) (volume ratio). Accumulated shear/rotation can cause individual F elements
-    // to drift toward ±∞ even when det(F) stays bounded → Inf−Inf=NaN. Reset preserves J.
-    //
-    // Fluid F reset: extract J = det(F), reset to isotropic F = sqrt(J)·I.
-    // Rotation and shear in F are physically meaningless for fluids — only J = det(F) matters.
-    //
-    // J bounds come from MaterialParams (set in NewtonianFluidMaterial::params()):
-    //   J_MIN = 0.1: prevents sqrt(negative) and log(0) in stress.
-    //   J_MAX = volume_ratio_max (default 2.0): caps free-surface expansion. Without this,
-    //   divergent flow compounds J multiplicatively since EOS provides no restoring force above J≈1.
-    //   Fallback to 2.0 if volume_ratio_max not set (e.g. Bingham fluid with default params).
-    const FLUID_J_MIN: f32 = 0.5; // below this, EOS pressure overwhelms timestep → clamp to prevent crushing
+    // Fluid volume is a conserved material state: J = V/V0 and
+    // J_next = J exp(dt div(v)).  The isotropic F is diagnostic/transition
+    // state only; pressure and quadrature use V directly.
     if mat.model == 1u {
-        let fluid_j_max = select(2.0, mat.volume_ratio_max, mat.volume_ratio_max > 1.0);
-        var J_fluid = det2(new_F);
-        if !(J_fluid > 0.0) { J_fluid = 1.0; }
-        J_fluid = clamp(J_fluid, FLUID_J_MIN, fluid_j_max);
+        let old_j = p.volume / p.initial_volume;
+        let div_v = p.velocity_gradient[0][0] + p.velocity_gradient[1][1];
+        let J_fluid = old_j * exp(dt * div_v);
+        if !(J_fluid > 0.0)
+            || !finite_scalar(J_fluid)
+            || !finite_scalar(mat.rest_density)
+            || !(mat.rest_density > 0.0)
+        {
+            report_strict_fluid_failure(p_idx);
+            return;
+        }
         let sqrtJ = sqrt(J_fluid);
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
 
-        // Settling damping: v *= (1 − k·dt). Damps gravity-wave sloshing and slow creep.
-        // k = dp_h0 (repurposed — dp_h0..dp_h3 are DP-only, unused for fluid model 1).
-        if mat.dp_h0 > 0.0 {
-            p.v *= 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
-        }
+        p.volume = p.initial_volume * J_fluid;
+        p.density = mat.rest_density / J_fluid;
     }
 
     // J-projection for elastic/plastic models: near-boundary APIC C can flip det(F) negative.
     // Uses !(J > 0) instead of J <= 0 to also catch NaN — mirrors CPU project_invalid_state.
     // (NaN > 0 = false, so !(NaN > 0) = true → reset triggered. NaN <= 0 = false → missed.)
     let J_trial = det2(new_F);
-    if !(J_trial > 0.0) {
-        if mat.model == 1u {
-            // Should not reach here after the fluid reset above, but guard defensively.
-            new_F = I;
-        } else {
-            // Flip sign of smallest singular value to restore det > 0.
-            let svd_r = svd2(new_F);
-            let sc    = vec2<f32>(svd_r.s.x, abs(svd_r.s.y) + NUM_FLOOR);
-            let diag  = mat2x2<f32>(vec2<f32>(sc.x, 0.0), vec2<f32>(0.0, sc.y));
-            new_F     = svd_r.u * diag * transpose(svd_r.v);
-        }
+    if mat.model != 1u && !(J_trial > 0.0) {
+        let svd_r = svd2(new_F);
+        let sc    = vec2<f32>(svd_r.s.x, abs(svd_r.s.y) + NUM_FLOOR);
+        let diag  = mat2x2<f32>(vec2<f32>(sc.x, 0.0), vec2<f32>(0.0, sc.y));
+        new_F     = svd_r.u * diag * transpose(svd_r.v);
     }
 
     // Elastic F/J clamping — only Viscoelastic (9) needs explicit bounds on F.
@@ -532,9 +581,9 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // density and volume are written by g2p (grid-mass gather: Σ w_i·m_i).
-    // This mirrors CPU estimate_density_and_volume_impl (density.rs) exactly.
-    // p.density and p.volume already hold the correct values — nothing to recompute here.
+    // Strict WC-MPM (model 1) wrote its EOS state above:
+    // V = V0 J and rho = rho0 / J. It never takes density or volume from a
+    // grid-mass gather. Non-strict models retain G2P's kernel measurement.
 
     // No velocity damping for elastic/viscoelastic models (0, 2, 3, 9) — APIC is
     // energy-conserving and extra damping causes over-settling that leads to floor-compression
@@ -553,6 +602,18 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Position update: x += v · dt  (v written by g2p pass)
     var new_x = p.x + p.v * dt;
 
+    if mat.model == 1u
+        && (!finite_vec2(new_x)
+            || !finite_mat2(new_F)
+            || !finite_scalar(p.volume)
+            || !(p.volume > 0.0)
+            || !finite_scalar(p.density)
+            || !(p.density > 0.0))
+    {
+        report_strict_fluid_failure(p_idx);
+        return;
+    }
+
     // Boundary clamp (slip boundary — mirrors clamp_position_inside_grid in boundary.rs).
     // CPU: min = thickness.saturating_sub(1) = bt-1, max = grid_res - bt.
     let lo = max(0.0, bt - 1.0);
@@ -563,6 +624,8 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     particles[p_idx].x                    = new_x;
     particles[p_idx].v                    = p.v;  // damped velocity must persist for next g2p gather
     particles[p_idx].deformation_gradient = new_F;
+    particles[p_idx].density              = p.density;
+    particles[p_idx].volume               = p.volume;
     // Plastic fields (only modified for the matching material model above).
     particles[p_idx].plastic_volume_ratio = p.plastic_volume_ratio;
     particles[p_idx].hardening_scale      = p.hardening_scale;

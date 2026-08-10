@@ -116,6 +116,9 @@ pub(super) fn build_contact_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
             // to do with contact thematically.
             storage_entry(30),
             uniform_entry(31),
+            // 32: strict-fluid numerical status. This fills the eighth and
+            // final WebGPU-baseline storage slot in this group.
+            storage_entry(32),
         ],
     })
 }
@@ -141,6 +144,15 @@ pub(super) fn build_thermal_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
             // 23: thermal_work — dual-use: P2G scatter accumulator, then post-
             // Laplacian T_new.
             storage_entry(23),
+            // 33: cfl_reduction — 3x atomic<u32> (bitcast<u32> of positive f32
+            // maxima: max speed, max deformation-gradient rate, max Tait EOS c²
+            // numerator), the per-substep GPU-native CFL reduction (see
+            // cfl_scan.wgsl's own doc for the real crash this fixes). Shares
+            // this group purely for bind-group-count economy (group 1/contact
+            // is already at the WebGPU 8-storage-buffer baseline, zero
+            // headroom) -- nothing to do with thermal diffusion thematically,
+            // same precedent as material_mass/solver_status sharing "contact".
+            storage_entry(33),
         ],
     })
 }

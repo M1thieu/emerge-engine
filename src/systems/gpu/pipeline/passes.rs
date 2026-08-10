@@ -230,9 +230,10 @@ pub(super) fn build_g2p_and_update_pipelines(
     wgpu::ComputePipeline, // force_fields
 ) {
     // MAX_MATERIALS: array-size constant, same rationale as p2g_src above.
+    let g2p_src = patch_shader(shaders::G2P);
     let particles_update_src = patch_shader(shaders::PARTICLES_UPDATE);
 
-    let g2p = make_pipeline(device, layout, shaders::G2P, "g2p_main", "g2p", &[], false);
+    let g2p = make_pipeline(device, layout, &g2p_src, "g2p_main", "g2p", &[], false);
     let particles_update = make_pipeline(
         device,
         layout,
@@ -270,6 +271,28 @@ pub(super) fn build_asflip_pipeline(
         &g2p_asflip_fused_src,
         "g2p_asflip_fused_main",
         "g2p_asflip_fused",
+        &[],
+        false,
+    )
+}
+
+/// Per-substep GPU-native CFL reduction for strict WC-MPM fluids -- see
+/// `cfl_scan.wgsl`'s own doc for the real crash this fixes (basic_fluids_gpu.rs,
+/// 2026-08-08). Uses the shared 4-group layout (reads particles/materials/
+/// step_params from group 0, writes `cfl_reduction` in group 2) like every other
+/// per-substep pass, not a dedicated layout -- unlike `build_impulse_pipeline`,
+/// this needs `MAX_MATERIALS` for its `materials` binding, same as p2g/g2p.
+pub(super) fn build_cfl_scan_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::ComputePipeline {
+    let cfl_scan_src = patch_shader(shaders::CFL_SCAN);
+    make_pipeline(
+        device,
+        layout,
+        &cfl_scan_src,
+        "cfl_scan_main",
+        "cfl_scan",
         &[],
         false,
     )

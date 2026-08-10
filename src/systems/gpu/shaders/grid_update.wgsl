@@ -15,7 +15,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    vel_limit:          f32,
+    reserved_velocity_slot: f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -47,8 +47,22 @@ struct AsflipParams {
     _pad1:   u32,
 }
 
-const MASS_FLOOR:         f32 = 1e-4;
 const MASS_ATOMIC_SCALE:  f32 = 1000000.0;
+// Real, measured 2026-08-08: tried deriving this from the fixed-point
+// quantum (10/MASS_ATOMIC_SCALE=1e-5) on the theory that a fixed 1e-4 was
+// discarding real low-mass edge-cell momentum after the SI mass fix. That
+// change made the exact same crash WORSE (J up to 23772 and an earlier
+// panic, vs 14570/no-panic at 1e-4) -- MASS_FLOOR isn't only a "don't
+// discard real momentum" threshold, it's ALSO a numerical safety floor
+// against dividing by a near-zero mass (`vel = momentum/mass`), which
+// amplifies ordinary floating-point noise into a spuriously large
+// velocity once mass gets small enough -- a risk tied to f32's absolute
+// precision limit, not to the material's own mass scale, so it does NOT
+// shrink just because SI-correct particle mass did. 1e-4 is the real,
+// already-balanced value between these two competing concerns; lowering
+// it further removes a safety margin the crash investigation actually
+// needs. Kept as-is, disclosed rather than re-guessed again.
+const MASS_FLOOR: f32 = 1e-4;
 const MOM_ATOMIC_SCALE:   f32 = 100000.0;
 const CELL_CENTER_OFFSET: f32 = 0.5;
 const FIELD_GRAVITY_WELL: u32 = 1u;
@@ -75,6 +89,7 @@ const BLOCK_THREADS_PER_DIM: u32 = 16u;
 // alongside the main grid's own decode below, or a raw reader (e.g. a readback) sees
 // the still-fixed-point integer bit pattern reinterpreted as a nonsensical near-zero float.
 @group(1) @binding(12) var<storage, read_write> grip_grid_int:          array<i32>;
+@group(1) @binding(32) var<storage, read_write> solver_status:          array<atomic<u32>>;
 // ASFLIP (GPU port) — shares group 3 with resource regrowth, see pipeline.rs's module
 // doc comment for why (WebGPU's 4-bind-group baseline is already fully used).
 @group(3) @binding(28) var<uniform>             asflip_params:           AsflipParams;
@@ -89,7 +104,7 @@ fn force_switch(dist: f32, cutoff: f32, switch_on: f32) -> f32 {
 }
 
 // Unchanged from the pre-Phase-2 version — one cell's worth of momentum normalization,
-// gravity, force fields, boundary enforcement, and CFL clamp. Only the CALLER (which cells
+// gravity, force fields, and boundary enforcement. Only the CALLER (which cells
 // get visited) changed.
 fn update_cell(cx: u32, cy: u32, res: u32) {
     // Decode fixed-point i32 → float mass. Write it back as bitcast so g2p reads it as f32.
@@ -137,7 +152,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     var vel   = vec2<f32>(mom_x, mom_y) / mass;
 
     // ASFLIP: snapshot the pre-force velocity right after momentum normalization,
-    // before gravity/boundary/CFL-clamp below modify it -- the exact same instant CPU's
+    // before gravity/boundary updates below modify it -- the exact same instant CPU's
     // Grid::snapshot_velocities captures (see solver/step.rs's normalize_velocities ->
     // snapshot -> apply_gravity ordering). Real gate: `enabled == 0` (default) means
     // this write never happens, zero cost for every scene that never attaches ASFLIP.
@@ -199,11 +214,8 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     if cy < bt          && vel.y < 0.0 { vel.y = 0.0; }
     if cy >= res - bt   && vel.y > 0.0 { vel.y = 0.0; }
 
-    // CFL clamp before G2P — bounds both particle velocity AND affine matrix C at the source.
-    let spd = length(vel);
-    if spd > step_params.vel_limit { vel *= step_params.vel_limit / spd; }
-
-    // Write velocity as bitcast<i32>(f32) so g2p can read the same buffer as array<Cell>.
+    // Write the physical grid velocity without a speed cap. The next adaptive
+    // substep uses the resulting state to select its CFL-safe duration.
     grid_int[base4 + 0u] = bitcast<i32>(vel.x);
     grid_int[base4 + 1u] = bitcast<i32>(vel.y);
 }
@@ -221,6 +233,7 @@ fn grid_update_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
+    if atomicLoad(&solver_status[0]) != 0u { return; }
     var block: u32;
     if wg_id.x < NUM_BLOCKS {
         if wg_id.x >= atomicLoad(&active_block_count) { return; }

@@ -28,7 +28,9 @@ const _: () = assert!(core::mem::size_of::<GpuImpulseEntry>() == 32);
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuImpulseParams {
     pub count: u32,
-    pub vel_limit: f32,
+    /// Legacy ABI slot retained for the shader uniform layout. Always zero;
+    /// impulses are not velocity-clipped.
+    pub reserved_velocity_slot: f32,
     pub particle_count: u32,
     pub _pad: u32,
     pub entries: [GpuImpulseEntry; MAX_GPU_IMPULSES],

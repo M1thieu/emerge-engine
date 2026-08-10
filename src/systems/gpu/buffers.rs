@@ -236,6 +236,19 @@ pub struct GpuBuffers {
     /// `true` once `material_mass` has been grown to its real size -- mirrors
     /// `asflip_snapshot_grown`.
     pub material_mass_grown: bool,
+    /// Four atomic u32 words shared by the strict fluid path:
+    /// `(failure_code, first_particle, failure_count, reserved)`. P2G uses
+    /// checked fixed-point atomics and sets this instead of overflowing or
+    /// silently dropping an invalid particle. COPY_SRC lets the CPU make a
+    /// strict fluid step synchronously observable.
+    pub solver_status: wgpu::Buffer,
+    /// Three atomic u32 words (`cfl_scan.wgsl`'s own doc has the full
+    /// derivation): bitcast<u32> of the current substep's max speed, max
+    /// deformation-gradient rate, and max Tait EOS c² numerator, reduced via
+    /// atomicMax. Cleared to zero, dispatched, then read back (COPY_SRC) each
+    /// substep for strict WC-MPM fluids -- the GPU-native, per-substep-
+    /// reactive replacement for the old per-batch CPU-mirror CFL scan.
+    pub cfl_reduction: wgpu::Buffer,
 }
 
 /// `asflip_snapshot`'s pre-attach size -- large enough to satisfy wgpu's nonzero-buffer
@@ -509,6 +522,22 @@ impl GpuBuffers {
             MATERIAL_MASS_PLACEHOLDER_BYTES,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
+        let solver_status = make_buffer(
+            device,
+            "mpm_solver_status",
+            (4 * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        );
+        let cfl_reduction = make_buffer(
+            device,
+            "mpm_cfl_reduction",
+            (4 * mem::size_of::<u32>()) as u64,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        );
 
         Self {
             particles,
@@ -547,6 +576,8 @@ impl GpuBuffers {
             material_mass_params,
             material_mass,
             material_mass_grown: false,
+            solver_status,
+            cfl_reduction,
         }
     }
 
@@ -555,6 +586,33 @@ impl GpuBuffers {
     /// (idempotent under repeated `attach_asflip_gpu` calls). Caller must rebuild any
     /// bind group referencing this buffer afterward (its identity changes) -- see
     /// `SimPipelines::make_resource_bind_group`.
+    /// Ensure one uniform slot per physics substep plus one dedicated sort
+    /// slot. This allocation may grow, but must never truncate CFL-required
+    /// simulation time.
+    pub fn ensure_step_param_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        required_physics_steps: usize,
+    ) -> bool {
+        let required = required_physics_steps
+            .checked_add(1)
+            .expect("GPU step parameter slot count overflow");
+        if self.step_params_pool.len() >= required {
+            return false;
+        }
+        let bytes = mem::size_of::<GpuStepParams>() as u64;
+        let start = self.step_params_pool.len();
+        self.step_params_pool.extend((start..required).map(|i| {
+            make_buffer(
+                device,
+                &format!("mpm_step_params_{i}"),
+                bytes,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            )
+        }));
+        true
+    }
+
     pub fn grow_asflip_snapshot(&mut self, device: &wgpu::Device, grid_res: usize) {
         if self.asflip_snapshot_grown {
             return;
@@ -637,6 +695,20 @@ impl GpuBuffers {
 
     pub fn upload_material_mass_params(&self, queue: &wgpu::Queue, params: &GpuMaterialMassParams) {
         queue.write_buffer(&self.material_mass_params, 0, bytemuck::bytes_of(params));
+    }
+
+    /// Reset the sticky per-frame numerical failure status before encoding a
+    /// new candidate step. A status is only cleared at this explicit frame
+    /// boundary; shaders never repair the particle state that caused it.
+    pub fn clear_solver_status(&self, queue: &wgpu::Queue) {
+        queue.write_buffer(&self.solver_status, 0, bytemuck::cast_slice(&[0u32; 4]));
+    }
+
+    /// Reset the per-substep CFL reduction to zero before `cfl_scan_main` runs.
+    /// 0u bitcasts to 0.0, a valid, harmless atomicMax starting point for a
+    /// reduction over positive values (see `cfl_reduction`'s own field doc).
+    pub fn clear_cfl_reduction(&self, queue: &wgpu::Queue) {
+        queue.write_buffer(&self.cfl_reduction, 0, bytemuck::cast_slice(&[0u32; 4]));
     }
 }
 

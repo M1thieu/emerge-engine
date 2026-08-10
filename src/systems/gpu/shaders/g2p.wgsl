@@ -33,6 +33,33 @@ struct Cell {
     _pad:     f32,
 }
 
+struct MaterialParams {
+    model:                   u32,
+    lambda:                  f32,
+    mu:                      f32,
+    hardening_exponent:      f32,
+    compression_limit:       f32,
+    stretch_limit:           f32,
+    rest_density:            f32,
+    eos_stiffness:           f32,
+    eos_power:               f32,
+    dynamic_viscosity:       f32,
+    volume_ratio_min:        f32,
+    volume_ratio_max:        f32,
+    dp_h0:                   f32,
+    dp_h1:                   f32,
+    dp_h2:                   f32,
+    dp_h3:                   f32,
+    active_stress_coeff:     f32,
+    hardening_modulus:       f32,
+    thermal_viscosity_coeff: f32,
+    thermal_expansion:       f32,
+    pressure_floor:          f32,
+    bulk_viscosity:          f32,
+    critical_shear_rate:     f32,
+    cohesion_coeff:          f32,
+}
+
 struct StepParams {
     grid_res:           u32,
     particle_count:     u32,
@@ -40,7 +67,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    vel_limit:          f32,
+    reserved_velocity_slot: f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -59,9 +86,11 @@ const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 const NUM_FLOOR:            f32 = 1e-6;
+const MAX_MATERIALS:         u32 = {{MAX_MATERIALS}}u;
 
 @group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
+@group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
 // Multi-field contact (GPU port) — resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
@@ -70,6 +99,7 @@ const NUM_FLOOR:            f32 = 1e-6;
 // grip_velocity_at/rest_velocity_at fallback exactly.
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v: array<vec2<f32>>;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v: array<vec2<f32>>;
+@group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
 
 fn bspline_w(d: f32) -> f32 {
     let a = abs(d);
@@ -82,8 +112,10 @@ fn bspline_w(d: f32) -> f32 {
 fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p_idx = gid.x;
     if p_idx >= step_params.particle_count { return; }
+    if atomicLoad(&solver_status[0]) != 0u { return; }
 
     let p   = particles[p_idx];
+    let mat = materials[p.material_id];
     let res = step_params.grid_res;
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
@@ -175,25 +207,15 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Velocity clamp: !(spd <= limit) also catches NaN (NaN <= x = false).
-    // Inf guard: if spd=Inf, inv=0, then Inf×0=NaN — zero out via select.
-    let spd = length(new_v);
-    if !(spd <= step_params.vel_limit) {
-        let inv = step_params.vel_limit / spd;
-        new_v = select(new_v * inv, vec2<f32>(0.0), !(inv > 0.0));
-    }
-
     // C = B · D_inverse (APIC affine velocity gradient)
-    // No C-clamp: CPU gather_grid_to_particles has none. Clamping C at 0.5*vel_limit
-    // fires at natural impact velocities (C ~ 6v) and under-deforms F, killing elastic bounce.
-    // The velocity clamp above already bounds the energy; CFL bounds the timestep.
+    // CFL selects the timestep; this gather does not alter velocity or C.
     let C = mat2x2<f32>(B_col0, B_col1) * step_params.kernel_d_inverse;
-
-    let density = max(new_density, NUM_FLOOR);
-    let volume  = p.mass / density;
 
     particles[p_idx].v                 = new_v;
     particles[p_idx].velocity_gradient = C;
-    particles[p_idx].density           = density;
-    particles[p_idx].volume            = volume;
+    if mat.model != 1u {
+        let density = max(new_density, NUM_FLOOR);
+        particles[p_idx].density = density;
+        particles[p_idx].volume = p.mass / density;
+    }
 }

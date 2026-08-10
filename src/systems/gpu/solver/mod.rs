@@ -53,6 +53,10 @@ pub struct GpuSimulation {
     particle_count: usize,
     last_sub_dt: f32,
     last_substeps: usize,
+    /// Simulation time `step_frame` did not advance because the per-frame
+    /// substep budget (`config.max_substeps_per_step`) ran out before
+    /// `config.dt` was fully covered. 0.0 = the frame completed honestly.
+    last_sim_time_dropped: f32,
     frame_index: u64,
     /// `frame_index` at the most recent `spawn_region` call (0 = only the initial
     /// construction batch exists). Tracked so `step_frame`'s sleep-warmup window
@@ -345,6 +349,7 @@ impl GpuSimulation {
             particle_count,
             last_sub_dt: config.dt,
             last_substeps: 0,
+            last_sim_time_dropped: 0.0,
             frame_index: 0,
             last_spawn_frame: 0,
             force_field_entries: Vec::new(),

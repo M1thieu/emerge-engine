@@ -90,9 +90,9 @@ use layouts::{
 // See passes.rs's own doc.
 mod passes;
 use passes::{
-    build_asflip_pipeline, build_contact_resolve_pipelines, build_g2p_and_update_pipelines,
-    build_impulse_pipeline, build_p2g_and_grid_pipelines, build_resource_pipelines,
-    build_sort_pipelines, build_thermal_pipelines,
+    build_asflip_pipeline, build_cfl_scan_pipeline, build_contact_resolve_pipelines,
+    build_g2p_and_update_pipelines, build_impulse_pipeline, build_p2g_and_grid_pipelines,
+    build_resource_pipelines, build_sort_pipelines, build_thermal_pipelines,
 };
 
 /// All compiled compute pipelines for one GpuSimulation instance.
@@ -156,6 +156,12 @@ pub struct SimPipelines {
     /// survive from the gather stage to the position-write stage, and `Particle` has no
     /// spare capacity for a second stored velocity).
     pub g2p_asflip_fused: wgpu::ComputePipeline,
+    /// Per-substep GPU-native CFL reduction for strict WC-MPM fluids -- see
+    /// `cfl_scan.wgsl`'s own doc for the real crash this fixes (basic_fluids_gpu.rs,
+    /// 2026-08-08: J up to 34653 under real gravity, root-caused to the OLD per-
+    /// batch-not-per-substep CPU-mirror CFL scan). Dispatched at the end of every
+    /// substep for strict-fluid scenes only, feeding the NEXT substep's dt.
+    pub cfl_scan: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
     /// Group 1 — contact subsystem, see the module doc comment above for why this is a
     /// second layout rather than more entries in `bind_group_layout`.
@@ -252,6 +258,10 @@ impl SimPipelines {
         // is one fused kernel rather than two, and SimPipelines::g2p_asflip_fused's doc.
         let g2p_asflip_fused = build_asflip_pipeline(device, &pipeline_layout);
 
+        // Per-substep GPU-native CFL reduction for strict WC-MPM fluids -- see
+        // cfl_scan.wgsl's own doc and SimPipelines::cfl_scan's field doc.
+        let cfl_scan = build_cfl_scan_pipeline(device, &pipeline_layout);
+
         let impulse_bind_group_layout = build_impulse_bind_group_layout(device);
         let apply_impulses = build_impulse_pipeline(device, &impulse_bind_group_layout);
 
@@ -292,6 +302,7 @@ impl SimPipelines {
             resource_normalize_laplacian,
             resource_g2p,
             g2p_asflip_fused,
+            cfl_scan,
             bind_group_layout,
             contact_bind_group_layout,
             thermal_bind_group_layout,
