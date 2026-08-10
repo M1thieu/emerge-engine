@@ -3,12 +3,14 @@
 // cells blend into one continuous shape instead of a cloud of discrete dots.
 //
 // Per-cell material coloring: uses `GpuSimulation::attach_grid_material_render_gpu`'s
-// opt-in per-material mass accumulator (`material_mass`) to find each cell's
-// dominant material (majority mass wins). Color uses the NEAREST cell's dominant
-// material (not blended across the 4 bilinear neighbors), while density/alpha
-// falloff IS bilinear-smoothed (see `sample_mass`) — a mixed-material boundary
-// gets a smooth edge shape but a hard material-color transition. Falls back to
-// slot 0 for every cell when `material_mass_enabled` is 0.
+// opt-in per-material mass accumulator (`material_mass`) to build a real
+// mass-fraction-weighted color blend per cell (see `material_accum_at`'s own
+// doc). Real fix (2026-08-10): color is now bilinearly blended across the
+// SAME 4 corner cells the density/alpha falloff already uses (see
+// `sample_mass`) -- previously nearest-cell only, a real, visible hard
+// material-color transition at every mixed-material boundary distinct from
+// (and previously not fixed by) the density field's own smoothing. Falls
+// back to slot 0 for every cell when `material_mass_enabled` is 0.
 
 const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
 
@@ -152,7 +154,26 @@ fn sample_weighted_temp(cx: i32, cy: i32) -> f32 {
 // fraction (no per-slot volume field exists) -- an approximation that still
 // holds under the paper's micro-homogeneous assumption, since one grid cell
 // represents many particles, not a single sharp interface.
-fn blended_optical_slot(cx: i32, cy: i32) -> vec4<f32> {
+//
+// Real fix (2026-08-10): returns the raw (accum, total_mass) pair instead of
+// dividing internally, specifically so `fs_main` can bilinearly blend across
+// 4 neighbor cells BEFORE the one division -- the same real bilinear pattern
+// already used for `mass`/`weighted_temp` just below, extended to material
+// color (previously nearest-cell only, the actual source of this render
+// mode's "blocky material boundary" look, distinct from the density
+// blockiness the physics grid resolution itself is responsible for).
+// Blending 4 already-normalized colors (accum/total_mass per corner first)
+// would incorrectly pull the result toward slot 0 whenever a sparse
+// neighbor corner has zero mass and falls back to a default color -- doing
+// the division ONCE, after blending the raw sums, avoids that: a corner
+// with no data contributes (0,0) and simply carries no weight, the same
+// well-behaved way `mass` already handles a sparse neighbor.
+struct MaterialAccum {
+    accum: vec4<f32>,
+    total_mass: f32,
+}
+
+fn material_accum_at(cx: i32, cy: i32) -> MaterialAccum {
     let idx = u32(cy) * params.grid_res + u32(cx);
     let base = idx * MAX_RENDER_MATERIAL_SLOTS;
     var total_mass: f32 = 0.0;
@@ -162,13 +183,7 @@ fn blended_optical_slot(cx: i32, cy: i32) -> vec4<f32> {
         total_mass += m;
         accum += m * optics.slots[s];
     }
-    if total_mass <= 0.0 {
-        // No real per-slot data reached this cell -- real, disclosed
-        // fallback to slot 0, same as the v1 behavior when material
-        // tracking is off entirely (see fs_main's own gate).
-        return optics.slots[0];
-    }
-    return accum / total_mass;
+    return MaterialAccum(accum, total_mass);
 }
 
 @fragment
@@ -229,14 +244,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Nearest cell's real mass-fraction-weighted material blend -- see
-    // `blended_optical_slot`'s own doc. NEAREST-cell (not bilinear across
-    // the 4 mass-sample neighbors) for the same reason the visibility gate
-    // above is nearest-cell: the per-slot mass array isn't itself smoothed.
-    // Falls back to slot 0 when material tracking isn't attached.
+    // Real mass-fraction-weighted material blend, bilinear across the SAME
+    // 4 corner cells `mass`/`weighted_temp` already use above (`bx`/`by`/
+    // `frac`) -- see `material_accum_at`'s own doc for why this replaced a
+    // nearest-cell lookup (this render mode's actual "blocky material
+    // boundary" source, distinct from the grid-resolution blockiness the
+    // density field's own bilinear smoothing already handles). Falls back
+    // to slot 0 only when ALL 4 corners are genuinely empty (matches the
+    // v1 behavior when material tracking isn't attached at all).
     var optical_slot: vec4<f32> = optics.slots[0];
     if params.material_mass_enabled != 0u {
-        optical_slot = blended_optical_slot(nx_c, ny_c);
+        let ma00 = material_accum_at(bx, by);
+        let ma10 = material_accum_at(bx + 1, by);
+        let ma01 = material_accum_at(bx, by + 1);
+        let ma11 = material_accum_at(bx + 1, by + 1);
+        let accum_blend = mix(
+            mix(ma00.accum, ma10.accum, frac.x),
+            mix(ma01.accum, ma11.accum, frac.x),
+            frac.y,
+        );
+        let mass_blend = mix(
+            mix(ma00.total_mass, ma10.total_mass, frac.x),
+            mix(ma01.total_mass, ma11.total_mass, frac.x),
+            frac.y,
+        );
+        if mass_blend > 0.0 {
+            optical_slot = accum_blend / mass_blend;
+        }
     }
 
     // Beer-Lambert absorption, same formula ByPhysics uses per-particle

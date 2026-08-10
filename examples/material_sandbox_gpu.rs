@@ -180,7 +180,15 @@ fn make_registry() -> MaterialRegistry {
     sand.cohesion = 5.0; // calibrated against the real Lajeunesse benchmark, see above
     // `low_viscosity()`, not a raw constructor -- real water viscosity (1.0e-3,
     // Becker & Teschner 2007) and Tait EOS exponent (7.0, Cole 1948).
-    let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
+    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
+    // basic_fluids.rs's own doc for the full derivation.
+    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
+    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
+    // stiffness for the same compression; confirmed by a real crash in
+    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
+    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
+    // basic_fluids.rs's own doc for the full derivation.
+    let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let snow = StomakhinMaterial::new(1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
     let tissue = ViscoelasticMaterial::new(10.0, 15.0, 0.15); // basic_jellies_gpu
     let mut reg = MaterialRegistry::with_default(Box::new(jelly));

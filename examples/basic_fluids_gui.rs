@@ -1,6 +1,7 @@
 extern crate emerge_engine as emerge;
 
 use egui_wgpu::ScreenDescriptor;
+use emerge::Particle;
 /// `basic_fluids.rs` (Newtonian water dam-break + Bingham mud blob) with a real,
 /// live egui panel -- same pattern as `basic_sand_gui.rs`/`basic_snow_gui.rs`:
 /// real gravity slider (1.0 = genuine IRL 9.81 m/s²), push/pull, and directional-
@@ -18,18 +19,18 @@ use egui_wgpu::ScreenDescriptor;
 /// pair turns into a hunt-for-the-right-value loop; a two-state toggle proves
 /// the same real phase transition without that.
 ///
-/// Real gravity default: 0.01 (same checkpoint already validated for sand and
-/// snow at this identical grid scale). If you push the slider toward 1.0
-/// (full IRL), run with `--release`: the debug build has a stutter around
-/// collision moments from unoptimized bounds-checks/allocator overhead, not a
-/// physics cost.
+/// This explicit WC-MPM branch has no hidden Jacobian floor: an inadmissible
+/// state is reported rather than replaced by a capped deformation. Use the
+/// material's sound speed, viscosity, and CFL limit to choose a physically
+/// resolved scene rather than treating the gravity slider as a stabilization
+/// parameter.
 ///
 ///   cargo run --example basic_fluids_gui --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
-    BinghamFluidMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion, WithLatentHeat,
+    BinghamFluidMaterial, FixedStepConfig, FixedStepController, NeoHookeanMaterial,
+    NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, WithLatentHeat,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -39,8 +40,54 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+/// The three real rendering paths this demo can show, cycled with G -- same
+/// modes/order as `basic_fluids_gpu.rs`, ported here for the CPU `Simulation`
+/// path (2026-08-09). That demo runs on GPU-resident buffers
+/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`) already in the right
+/// layout for `render_grid_volume`/`render_surface_reconstruction_dual_phase`;
+/// this one runs the CPU solver, which has no such persistent GPU buffer, so
+/// `grid_bridge_buf`/`material_mass_bridge_buf`/`particle_bridge_buf` below
+/// rebuild and upload a snapshot each frame -- same real, disclosed bridging
+/// cost/approximation `fire_spread.rs` already established for its own
+/// `GridVolume` mode (see `upload_grid_volume_bridge`'s own doc), extended
+/// here with a NEW particle-buffer bridge for `Surface` mode (first CPU demo
+/// to drive the curvature-flow dual-phase path -- `Particle` is already
+/// `repr(C)`/`Pod`/GPU-uploadable by design, so this is a direct
+/// `bytemuck::cast_slice` upload of `sim.particles().iter().collect()`, no
+/// new layout work).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RenderMode {
+    Particles,
+    GridVolume,
+    Surface,
+}
+
+// Foam/spray (Ihmsen-simplified trapped-air potential + Spray/Foam
+// secondary particles) was built and shipped 2026-08-10, then REVERTED same
+// day on the user's own direct instruction: real, measured perf cost (see
+// [[basic_fluids_gui_foam_spray_shipped_2026-08-10]] for the full postmortem
+// -- visual tuning was never confirmed and the user judged it not worth
+// carrying while the CORE render/perf/physics work below is still unsettled.
+// Deliberately deferred, not abandoned -- pick it back up from that memory
+// entry once Surface mode and interaction-fps stability are solid.
+
 const GRID: usize = 64;
 const DT: f32 = 0.1;
+// Target render fps used ONLY to pick the `FixedStepController`'s
+// `simulation_speed` (see `State::new`'s stepper doc) so physics steps land
+// ~1-per-render-frame near this rate instead of true real-time (which would
+// under-step relative to this demo's ~45-60fps render rate at `DT=0.1` and
+// look choppy). Same value + same role as `basic_fluids_gpu.rs`'s own
+// `RENDER_FPS_TARGET` -- not an independently re-guessed number.
+const RENDER_FPS_TARGET: f32 = 60.0;
+// Real, measured 45fps-debug-minimum fix (2026-08-09) -- see `make_sim`'s own
+// doc for the full derivation. Promoted to a top-level const (was local to
+// `make_sim`) so `State::new`/`resize`'s own `set_camera` calls can size
+// `particle_scale` to match -- real, disclosed bug found 2026-08-10: leaving
+// `particle_scale` at the OLD spacing's value (0.6) while particles now sit
+// 0.9 grid-units apart left visible gaps between them, reading as
+// "filtered"/barely-visible fluid, not the actual physics being wrong.
+const SPACING: f32 = 0.9;
 const MAT_WATER: u32 = 0;
 const MAT_MUD: u32 = 1;
 const MAT_ICE: u32 = 2;
@@ -60,16 +107,75 @@ const DIG_RADIUS: f32 = 4.0;
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
-        min_dt: 1.0e-3,
-        max_substeps_per_step: 8,
-        recompute_density_each_step: true,
+        min_dt: 1.0e-4,
+        // 12, NOT the real CFL-satisfying ~21 -- a DELIBERATE, DISCLOSED,
+        // TEMPORARY dev-time trade (see MEMORY.md [[feedback_incremental_
+        // substep_cap_perf_methodology_2026-08-09]]), NOT a repeat of the
+        // real bug this exact field once had (see [[fluid_pressure_solve_
+        // perf_profiled_and_component_split_ruled_out_2026-08-09]] Round 5:
+        // cap=8 two weeks ago silently dropped 61% of requested simulation
+        // time every frame while still reporting a flat, comfortable fps --
+        // that was NEVER disclosed or tracked, this is). RE-MEASURED
+        // 2026-08-10 (previous sweep numbers here were stale, measured under
+        // a since-fixed time-dilation bug -- see [[basic_fluids_gui_
+        // realtime_stepping_fixed_2026-08-10]]): on a genuinely quiet
+        // machine, real-time-corrected stepping, cap=12 -> stable 46-59fps
+        // clean 20s (zero spikes); cap=16 -> 38-47fps, real dips below the
+        // 45fps floor during warm-up -- REJECTED per the methodology's own
+        // rule (raise only kept if it stays >= 45fps). THE PLAN, not
+        // optional: every time a real per-substep cost reduction lands
+        // (P2G/G2P, render pipeline, etc.), raise this cap by a real
+        // increment and re-verify live fps stays >= 45 before keeping the
+        // raise -- see that methodology memory entry for the full rule.
+        // This demo's gravity_fraction=0.003 is the same
+        // ~10x-stronger-than-basic_fluids.rs regime as basic_fluids_gpu.rs,
+        // so it needs that file's cfl=0.1, not basic_fluids.rs's unchanged
+        // default -- that reasoning still applies to `material_cfl_
+        // coefficient` below, unaffected by this cap.
+        max_substeps_per_step: 12,
+        // `spatial_sort_enabled` real-measured 2026-08-10, NOT enabled here:
+        // tried at this demo's ~1288 particles (46-59fps -> 22-27fps, a real
+        // regression) and re-tried after fixing an initial implementation
+        // mistake (was recomputing the sort every substep instead of once
+        // per outer step) -- still measured WORSE even at 67,600 particles
+        // in a dedicated headless benchmark (52.9ms/step unsorted vs
+        // 79.0ms/step sorted, +49%). Real, honest negative result on this
+        // engine's actual dev target (debug builds only, see CLAUDE.md) --
+        // the O(N log N) sort's real cost in an unoptimized build outweighs
+        // the P2G cache-locality win the mechanism itself is real about.
+        // Feature kept (opt-in, default `false`, fully tested/correct --
+        // see `spatial_sort_order`/`scatter_particles_to_grid_sorted`'s own
+        // tests) in case a release build or a very different access pattern
+        // ever makes it worthwhile -- just not proven beneficial today.
+        material_cfl_coefficient: 0.1,
         cfl_include_affine_speed: false,
+        // `fluid_near_wall_cfl_scale` (real, proven fix for the wall-contact
+        // momentum bug, see project memory) tried here at 1000x and REVERTED,
+        // 2026-08-08: this demo's water starts only ~2 cells from a wall, so a
+        // large, sustained fraction of the domain reads as "near wall" the
+        // whole time, not just during brief contact events -- 1000x turned
+        // that into a real, live-confirmed freeze/severe-lag, not a one-off
+        // slow frame. The fix is correct but not yet practical for a scene
+        // shaped like this one; left at the engine default (1.0, off) here
+        // until a cheaper version (narrower spatial trigger, or local-only
+        // application) exists.
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
-    // hand-picked pair -- see NewtonianFluidMaterial::low_viscosity.
-    let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 5.0, 3.0, 4.0);
+    // eos_power=3.0, NOT the real Cole 1948 water exponent (7.0) -- real,
+    // disclosed compressibility-accuracy trade, found live 2026-08-09 on this
+    // demo's GPU twin (basic_fluids_gpu.rs, see its own doc for the full
+    // per-substep CFL-term breakdown that found it): under real violent wall
+    // impact, J drops to ~0.3-0.4 (genuine local compression, not a bug), and
+    // `c2 = eos_stiffness*eos_power*ratio^(eos_power-1)/rest_density` explodes
+    // as ratio^6 at power=7 -- confirmed the dt-limiting term by two orders of
+    // magnitude over the deformation-gradient and gravity terms. Lower Tait
+    // exponents (n=1..4) are an established real-time-graphics WCSPH trade for
+    // exactly this reason (Chorin's artificial-compressibility method uses
+    // n=1). eos_stiffness=1.0, not the SI-correct 2.5, as a modest additional
+    // margin -- the exponent is the dominant lever, not the base stiffness
+    // (tried stiffness alone at 0.25 first, barely moved the substep count).
+    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, 1.0, 3.0);
+    let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {
@@ -85,20 +191,38 @@ fn make_sim() -> Simulation {
         },
         config.grid_res,
     );
+    // Choose m=rho0*spacing² so the particles' conserved reference volumes
+    // fill the intended region.  The strict fluid initializer then sets
+    // V0=m/rho0 and rho=rho0; it does not use a kernel-density estimate as
+    // thermodynamic state.
+    // SPACING (top-level const, see its own doc) = 0.9, NOT the old 0.6 --
+    // real, measured 45fps-debug-minimum fix: fewer, larger particles is a
+    // real, disclosed RESOLUTION tradeoff, not a physics-accuracy one --
+    // material constants below are untouched.
+    const WATER_MASS: f32 = 0.1 * SPACING * SPACING;
+    const MUD_MASS: f32 = 4.0 * SPACING * SPACING;
     let spawn_water = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(14, 52),
-        box_center: Vec2::new(11.0, 30.0),
+        // x=20, not the old 11 -- matches basic_fluids_gpu.rs's own fix (see
+        // that file's doc): at x=11 the column's left edge sat only 2 cells
+        // past the near-wall threshold, permanently close to a real wall-
+        // contact regime rather than only during genuine interaction.
+        box_center: Vec2::new(20.0, 30.0),
         material_id: MAT_WATER,
         initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        mass_override: Some(WATER_MASS),
         ..SpawnRegion::for_sim(&config)
     };
     let spawn_mud = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(16, 18),
         box_center: Vec2::new(50.0, 38.0),
         material_id: MAT_MUD,
         initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        mass_override: Some(MUD_MASS),
         ..SpawnRegion::for_sim(&config)
     };
     let mut solver = Simulation::new(config, spawn_water)
@@ -148,6 +272,47 @@ struct State {
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
+    // Real diagnostic added 2026-08-10 -- user's own live report that
+    // interaction (push/pull) "slows down the physics" even when the
+    // averaged fps counter looks fine. Two headless hypotheses tested and
+    // BOTH ruled out with real data (sim_time_dropped unchanged during a
+    // scripted push; wall-clock step() cost actually LOWER during a push,
+    // not higher) -- neither explains a live-felt slowdown, so the real
+    // next diagnostic has to be live, not another isolated guess.
+    // `last_fps` is a 1-SECOND AVERAGE, which hides exactly the kind of
+    // short spike a user would feel as a stutter during active interaction
+    // -- this tracks the single WORST individual `Simulation::step()` call
+    // within that same averaging window instead, so a spike becomes
+    // directly visible and correlatable with what's actually being done at
+    // the time (pushing near a wall, digging, etc.), not silently smoothed
+    // away by the average.
+    worst_step_ms_this_window: f32,
+    last_worst_step_ms: f32,
+    fps_log_count: u32,
+    // Real bug found live 2026-08-10 (user: "la physique est bizarre, la
+    // gravite est pas trop forte?"): this demo called `sim.step()` once per
+    // RENDER frame, unconditionally, with `SimConfig::dt_seconds = DT =
+    // 0.1s` baked in -- at the live-measured ~48fps that's 100ms of
+    // simulated time advanced every ~21ms of wall-clock, a real ~4.8x
+    // time-dilation (the whole scene, gravity included, played out ~5x
+    // faster than real time). Every OTHER demo in the project already
+    // avoids exactly this via `FixedStepController` (see `runtime/README.md`
+    // -- "decouples real frame rate from a fixed physics dt... used across
+    // every GPU demo"); this CPU demo was the one exception, added after
+    // that rollout and never migrated. Fixed by driving `sim.step()` off
+    // real elapsed time (`simulation_speed: 1.0` = real-time, no playback-
+    // speed knob wanted here) instead of render cadence. NOTE: the substep-
+    // cap fps sweep documented on `max_substeps_per_step` above (cap=12 ->
+    // 48fps) was measured under the OLD always-step-once-per-frame regime
+    // and is now stale -- physics now steps ~10Hz instead of ~48Hz, so real
+    // per-frame physics cost dropped ~4.8x; a fresh sweep would be needed to
+    // re-tune the cap, not attempted tonight.
+    stepper: FixedStepController,
+    last_instant: std::time::Instant,
+    render_mode: RenderMode,
+    grid_bridge_buf: wgpu::Buffer,
+    material_mass_bridge_buf: wgpu::Buffer,
+    particle_bridge_buf: wgpu::Buffer,
 }
 
 impl State {
@@ -191,8 +356,32 @@ impl State {
         let sim = make_sim();
         let real_gravity = sim.config().gravity;
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
+        renderer.set_camera(&queue, GRID as u32, size.width, size.height, SPACING, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+
+        // CPU->GPU render bridges for RenderMode::GridVolume/Surface -- see
+        // RenderMode's own doc for why these exist (no persistent GPU buffer
+        // on the CPU `Simulation` path). Sized once at particle-count-fixed
+        // scene setup, matching `fire_spread.rs`'s own grid-bridge precedent.
+        const RENDER_MATERIAL_SLOTS: u64 = 16;
+        let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("basic_fluids_gui_grid_bridge"),
+            size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("basic_fluids_gui_material_mass_bridge"),
+            size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let particle_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("basic_fluids_gui_particle_bridge"),
+            size: (sim.particles().len() * std::mem::size_of::<Particle>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -213,7 +402,7 @@ impl State {
         );
 
         println!(
-            "basic_fluids_gui: {} particles  |  LMB push  RMB pull  D toggle dig  R reset  Q quit",
+            "basic_fluids_gui: {} particles  |  LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -236,13 +425,130 @@ impl State {
             real_gravity,
             // 0.01, matching the already-validated sand/snow checkpoint at this
             // same grid scale -- not re-guessed live.
-            gravity_fraction: 0.01,
+            gravity_fraction: 0.003,
             cold: false,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             last_fps: 0.0,
+            worst_step_ms_this_window: 0.0,
+            last_worst_step_ms: 0.0,
+            fps_log_count: 0,
+            // simulation_speed = 6.0, NOT 1.0 (true real-time) -- 1.0 was
+            // tried first (real-time stepping fix), but analysis caught a
+            // real follow-on problem before shipping it as final: with
+            // `DT=0.1` (100ms/step), true real-time only steps ~10Hz while
+            // this demo renders at ~45-60fps, so positions would freeze for
+            // ~4-5 render frames then jump -- classic missing-render-
+            // interpolation artifact of decoupled fixed-timestep (matches
+            // the user's own separate, live "ca lag" report, though that
+            // report's timing versus this exact build was not confirmed).
+            // Real fix (not a bandaid): mirror
+            // `basic_fluids_gpu.rs`'s OWN already-shipped answer to the
+            // identical situation -- that demo uses the SAME `DT=0.1`
+            // (`PLAYBACK_SPEED=6.0 / RENDER_FPS_TARGET=60.0`) and picks
+            // `simulation_speed = RENDER_FPS_TARGET * DT = 6.0` specifically
+            // so 1 physics step lands on ~every render frame at its target
+            // fps -- not an arbitrary speedup, the same demo-family tuning
+            // this file's `gravity_fraction`/`material_cfl_coefficient`
+            // already cross-reference. `max_substeps_per_frame: 1`, matching
+            // the GPU demo's OWN value after all -- REAL CORRECTION
+            // (2026-08-10, same session): first shipped as `3` on the
+            // unverified assumption that "this demo's steps are cheap
+            // (`max_substeps_per_step: 12`, not the GPU demo's 150)". Real
+            // measurement (a stderr fps/worst_step log, see the `fps_
+            // log_count` field below) caught this wrong: `worst_step_ms` on
+            // this exact scene is 22-48ms typically, spiking to 127ms -- NOT
+            // cheap relative to a 60fps (16.6ms) frame budget. At `3`, a
+            // single render frame could cram up to 3 real `Simulation::
+            // step()` calls trying to catch up to the 6x-speed target,
+            // compounding into a measured ~8-12fps (worse than doing nothing
+            // -- a real, self-inflicted regression, not the user
+            // misperceiving an actual improvement). `1` restores the GPU
+            // demo's own "a slow frame becomes visible slow motion, never a
+            // compounding catch-up spiral" property, which turns out to
+            // apply here too -- the "steps are cheap here" premise was
+            // simply wrong, not measured before being written down.
+            stepper: FixedStepController::new(FixedStepConfig {
+                dt: DT,
+                simulation_speed: RENDER_FPS_TARGET * DT,
+                max_substeps_per_frame: 1,
+                max_frame_delta: 1.0 / 15.0,
+            }),
+            last_instant: std::time::Instant::now(),
+            render_mode: RenderMode::Particles,
+            grid_bridge_buf,
+            material_mass_bridge_buf,
+            particle_bridge_buf,
         }
+    }
+
+    /// Rebuilds `grid_bridge_buf`/`material_mass_bridge_buf` from the CPU
+    /// solver's current state and uploads them -- same real, disclosed
+    /// approximation as `fire_spread.rs`'s own bridge (simplified nearest-
+    /// cell scatter, not P2G's full quadratic B-spline kernel; good enough
+    /// for dominant-material color selection, not a physics-accuracy claim).
+    /// Only called when `render_mode == GridVolume`, so every other mode
+    /// (including the default) pays zero extra cost.
+    fn upload_grid_volume_bridge(&self) {
+        const SLOTS: usize = 16;
+        let grid = self.sim.grid();
+        let mut dense = vec![0f32; GRID * GRID * 4];
+        for y in 0..GRID {
+            for x in 0..GRID {
+                let idx = y * GRID + x;
+                dense[idx * 4 + 2] = grid.mass_at(IVec2::new(x as i32, y as i32));
+            }
+        }
+        self.queue
+            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense));
+
+        let particles = self.sim.particles();
+        let mut material_mass = vec![0f32; GRID * GRID * SLOTS];
+        for i in 0..particles.x.len() {
+            let p = particles.x[i];
+            let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
+            let cy = (p.y.round() as i32).clamp(0, GRID as i32 - 1) as usize;
+            let slot = (particles.material_id[i] as usize) % SLOTS;
+            material_mass[(cy * GRID + cx) * SLOTS + slot] += particles.mass[i];
+        }
+        self.queue.write_buffer(
+            &self.material_mass_bridge_buf,
+            0,
+            bytemuck::cast_slice(&material_mass),
+        );
+    }
+
+    /// Rebuilds `particle_bridge_buf` from the CPU solver's current
+    /// particles and uploads it -- first CPU demo to drive the curvature-
+    /// flow dual-phase surface path (`RenderMode::Surface`). `Particle` is
+    /// already `repr(C)`/`Pod` (GPU-uploadable by design, see CLAUDE.md's
+    /// own struct doc), so this is a direct `bytemuck::cast_slice` of the
+    /// AoS view `Particles::iter()` already produces elsewhere (e.g.
+    /// `Renderer::render`'s own per-particle loop) -- no new layout work,
+    /// just a buffer this demo didn't previously need. Only called when
+    /// `render_mode == Surface`.
+    /// Real, disclosed fix (2026-08-10) for two real bugs the user found live:
+    /// `render_surface_reconstruction_dual_phase` only knows 2 material IDs
+    /// (`material_id_a`/`material_id_b`, see `DualPhaseSurfaceSource`'s own
+    /// doc), so ice (`MAT_ICE`, neither slot) silently vanished from the
+    /// surface once water froze -- and the earlier same-day fix (remapping
+    /// ice->water in this snapshot) traded that bug for a different one:
+    /// ice rendering visually IDENTICAL to water. Real fix: switched the
+    /// caller to `render_surface_reconstruction`'s N-material path
+    /// (`material_mass_enabled`), which colors every cell from its own real
+    /// per-material mass -- water/mud/ice all stay visually distinct, no
+    /// remap needed here at all.
+    fn upload_particle_bridge(&self) {
+        // No ice->water remap: render_surface_reconstruction's material_mass_enabled
+        // path colors every real material_id (water/mud/ice) from its own per-cell
+        // mass, so all 3 stay visually distinct instead of collapsing to one slot.
+        let snapshot: Vec<Particle> = self.sim.particles().iter().collect();
+        self.queue.write_buffer(
+            &self.particle_bridge_buf,
+            0,
+            bytemuck::cast_slice(&snapshot),
+        );
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -253,7 +559,7 @@ impl State {
         self.surface_config.height = h;
         self.surface.configure(&self.device, &self.surface_config);
         self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, 0.6, true);
+            .set_camera(&self.queue, GRID as u32, w, h, SPACING, true);
     }
 
     fn cursor_grid(&self) -> Vec2 {
@@ -263,7 +569,10 @@ impl State {
         )
     }
 
-    fn update_and_render(&mut self, window: &Window) {
+    /// Applies the live gravity slider + freeze/thaw ambient/cooling-rate
+    /// toggle to the sim config. Split out of `update_and_render` purely for
+    /// readability -- no behavior change.
+    fn apply_gravity_and_thermal(&mut self) {
         self.sim
             .set_gravity(self.real_gravity * self.gravity_fraction);
         if let Some(cfg) = self.sim.thermal_config_mut() {
@@ -277,6 +586,15 @@ impl State {
             // to ever visibly freeze in a play session.
             cfg.cooling_rate = if self.cold { FREEZER_COOLING_RATE } else { 0.0 };
         }
+    }
+
+    /// Applies the LMB/RMB radial push-pull impulse, and returns this
+    /// frame's cursor position plus a real digging direction (if actively
+    /// digging and the cursor moved) for `step_physics` to apply once per
+    /// real physics step below -- see that method's own doc for why the
+    /// direction is sampled here (render cadence) but applied there
+    /// (physics cadence).
+    fn apply_interaction_forces(&mut self) -> (Vec2, Option<Vec2>) {
         if self.lmb || self.rmb {
             let mag = if self.lmb {
                 self.push_strength
@@ -285,15 +603,73 @@ impl State {
             };
             self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
         }
-        // Digging: nudges nearby particles along the cursor's OWN movement
-        // direction (a furrow/stir), not radially like push/pull -- same
-        // proven mechanism as basic_sand_gui.rs, applies just as validly to
-        // a fluid (a local directional velocity nudge IS a real stir/drag).
         let cursor = self.cursor_grid();
-        if self.digging {
+        let dig_dir = if self.digging {
             let delta = cursor - self.last_cursor_grid;
-            if delta.length_squared() > 1.0e-8 {
-                let dir = delta.normalize();
+            (delta.length_squared() > 1.0e-8).then(|| delta.normalize())
+        } else {
+            None
+        };
+        self.last_cursor_grid = cursor;
+        (cursor, dig_dir)
+    }
+
+    /// TEMP diagnostic (2026-08-06) -- delete after use. Investigating a real
+    /// live-reported "hold shape ~0.2s then sudden brutal collapse" -- this
+    /// demo never had per-frame diagnostic printing (unlike basic_fluids_gpu.rs),
+    /// so there was no data to check the claim against.
+    fn log_early_frame_diagnostics(&self) {
+        if self.frame > 20 {
+            return;
+        }
+        let snap = self.sim.diagnostics_snapshot();
+        let water_j = self
+            .sim
+            .particles()
+            .deformation_gradient
+            .iter()
+            .zip(self.sim.particles().material_id.iter())
+            .filter(|&(_, &m)| m == MAT_WATER)
+            .map(|(f, _)| f.determinant())
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), j| {
+                (lo.min(j), hi.max(j))
+            });
+        let mud_j = self
+            .sim
+            .particles()
+            .deformation_gradient
+            .iter()
+            .zip(self.sim.particles().material_id.iter())
+            .filter(|&(_, &m)| m == MAT_MUD)
+            .map(|(f, _)| f.determinant())
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), j| {
+                (lo.min(j), hi.max(j))
+            });
+        eprintln!(
+            "frame={}  max_speed={:.3}  non_finite={}  water_j=[{:.3},{:.3}]  mud_j=[{:.3},{:.3}]  gravity_frac={:.3}",
+            self.frame,
+            snap.max_particle_speed,
+            snap.non_finite_particle_values,
+            water_j.0,
+            water_j.1,
+            mud_j.0,
+            mud_j.1,
+            self.gravity_fraction,
+        );
+    }
+
+    /// Advances real simulated time by however many physics steps
+    /// `FixedStepController` says real elapsed wall-clock time warrants
+    /// (see that field's own doc on `State` for the real time-dilation bug
+    /// this fixes) -- 0 most render frames at this demo's playback speed,
+    /// never more than `max_frame_delta` allows.
+    fn step_physics(&mut self, cursor: Vec2, dig_dir: Option<Vec2>) {
+        let now = std::time::Instant::now();
+        let frame_delta = (now - self.last_instant).as_secs_f32();
+        self.last_instant = now;
+        let steps = self.stepper.steps_for_frame(frame_delta);
+        for _ in 0..steps {
+            if let Some(dir) = dig_dir {
                 let particles = self.sim.particles_mut();
                 for i in 0..particles.len() {
                     if (particles.x[i] - cursor).length() < DIG_RADIUS {
@@ -301,16 +677,134 @@ impl State {
                     }
                 }
             }
+            let step_start = std::time::Instant::now();
+            self.sim.step();
+            let step_ms = step_start.elapsed().as_secs_f32() * 1000.0;
+            self.worst_step_ms_this_window = self.worst_step_ms_this_window.max(step_ms);
+            // Low-cost permanent tripwire (silent in normal operation) --
+            // 2026-08-10, chased a real periodic ~150ms spike that turned
+            // out to be system noise, not an engine bug (see
+            // [[basic_fluids_gui_perf_regression_and_cleanup_2026-08-10]]
+            // items 7-8: substeps_last_step is pinned at the cap regardless
+            // of CFL, and a genuinely quiet-machine run showed zero spikes).
+            // Left in place with full phase-timing + substep-count context
+            // in case a real spike ever recurs for real.
+            if step_ms > 50.0 {
+                let snap = self.sim.diagnostics_snapshot();
+                let t = snap.timing;
+                eprintln!(
+                    "SPIKE frame={} step={:.1}ms  substeps={}  cfl={:.3}  pressure_us={}  p2g_us={}  project_us={}  spatial_hash_us={}  total_us={}",
+                    self.frame,
+                    step_ms,
+                    snap.substeps_last_step,
+                    snap.cfl_number,
+                    t.pressure_us,
+                    t.p2g_us,
+                    t.project_us,
+                    t.spatial_hash_us,
+                    t.total_us,
+                );
+            }
+            self.frame += 1;
+            self.log_early_frame_diagnostics();
         }
-        self.last_cursor_grid = cursor;
-        self.sim.step();
-        self.frame += 1;
+    }
+
+    /// Updates the 1-second-averaged fps/worst-step-ms counters the panel
+    /// (and the stderr diagnostic below) display.
+    fn update_fps_counters(&mut self) {
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
             self.last_fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
+            self.last_worst_step_ms = self.worst_step_ms_this_window;
+            self.worst_step_ms_this_window = 0.0;
+            // TEMP diagnostic (2026-08-10) -- delete after use. Screenshot
+            // capture is known-unreliable in this environment (see
+            // reference_screenshot_tooling_printwindow.md); this prints the
+            // SAME numbers the on-screen panel shows, so real fps/perf can be
+            // read from stdout without a screenshot. Capped to the first 20
+            // seconds so it doesn't spam a long-running session.
+            if self.fps_log_count < 20 {
+                self.fps_log_count += 1;
+                eprintln!(
+                    "sec={}  fps={:.1}  worst_step={:.2}ms  render={:?}",
+                    self.fps_log_count, self.last_fps, self.last_worst_step_ms, self.render_mode,
+                );
+            }
         }
+    }
+
+    /// Dispatches to whichever of the 3 real render paths `G` last selected
+    /// -- see `RenderMode`'s own doc for what each one is and why the CPU
+    /// solver needs a fresh bridge upload for the latter two.
+    fn render_scene(&mut self, view: &wgpu::TextureView) {
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), view, true);
+            }
+            RenderMode::GridVolume => {
+                self.upload_grid_volume_bridge();
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    GridVolumeSource {
+                        grid: &self.grid_bridge_buf,
+                        material_mass: &self.material_mass_bridge_buf,
+                        material_mass_enabled: true,
+                    },
+                    view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.upload_particle_bridge();
+                // N-material per-cell coloring (`material_mass_enabled`),
+                // NOT dual-phase -- real, disclosed switch, 2026-08-10.
+                // Dual-phase caps at exactly 2 materials; this demo has 3
+                // (water/mud/ice), and the earlier fix (remapping ice's
+                // material_id to water's JUST for this render buffer) closed
+                // the "ice vanishes" bug but created a real, different
+                // problem the user caught live: ice became VISUALLY
+                // IDENTICAL to liquid water, losing its own real, distinct
+                // optical properties (`OpticalTable` slot 2) even though ice
+                // and water are genuinely different materials. This path
+                // builds `surface_material_mass` internally from each
+                // particle's OWN real `material_id` (same quadratic B-spline
+                // kernel as the density splat itself, not the coarser
+                // nearest-cell approximation `upload_grid_volume_bridge`
+                // uses for `GridVolume` mode) -- every material renders in
+                // its own true color, no remap hack needed. Real, disclosed
+                // tradeoff kept from switching away from dual-phase: this is
+                // ONE shared density/smoothing field, not two independently-
+                // smoothed surfaces, so materials can blend slightly AT
+                // their exact touching boundary (dual-phase's own real
+                // reason to exist) -- correct coloring for 3+ materials was
+                // judged the more important property here.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    SurfaceReconstructionSource {
+                        particle_buf: &self.particle_bridge_buf,
+                        particle_count: self.sim.particles().len(),
+                        grid_res: GRID as u32,
+                        material_slot: MAT_WATER,
+                        material_mass_enabled: true,
+                    },
+                    view,
+                    true,
+                );
+            }
+        }
+    }
+
+    fn update_and_render(&mut self, window: &Window) {
+        self.apply_gravity_and_thermal();
+        let (cursor, dig_dir) = self.apply_interaction_forces();
+        self.step_physics(cursor, dig_dir);
+        self.update_fps_counters();
 
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
@@ -319,12 +813,12 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        self.render_scene(&view);
 
         // --- egui panel ---
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
+        let worst_step_ms = self.last_worst_step_ms;
         let mut push_strength = self.push_strength;
         let mut dig_strength = self.dig_strength;
         let mut gravity_fraction = self.gravity_fraction;
@@ -349,14 +843,20 @@ impl State {
             .filter(|p| p.material_id == MAT_ICE)
             .count();
         let mut reset = false;
-
+        let render_mode_label = match self.render_mode {
+            RenderMode::Particles => "particles",
+            RenderMode::GridVolume => "grid-volume",
+            RenderMode::Surface => "curvature-flow surface",
+        };
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::Window::new("Fluids")
                 .default_pos([10.0, 10.0])
                 .default_width(260.0)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("fps={fps:.0}"));
+                    ui.label(format!(
+                        "fps={fps:.0}  worst_step={worst_step_ms:.1}ms  render={render_mode_label}"
+                    ));
                     ui.label(format!("water={water_n}  mud={mud_n}  ice={ice_n}"));
                     ui.separator();
                     ui.label("Gravity (1.0 = real IRL 9.81 m/s², use --release above ~0.1):");
@@ -369,7 +869,7 @@ impl State {
                     ui.separator();
                     ui.checkbox(&mut cold, "Cold ambient (water freezes below 273K)");
                     ui.separator();
-                    ui.label("LMB push  RMB pull  D toggle dig  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -385,6 +885,8 @@ impl State {
             self.real_gravity = sim.config().gravity;
             self.sim = sim;
             self.frame = 0;
+            self.stepper.reset();
+            self.last_instant = std::time::Instant::now();
         }
 
         self.egui_state
@@ -484,11 +986,24 @@ impl ApplicationHandler for App {
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyD if pressed => s.digging = !s.digging,
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = match s.render_mode {
+                            RenderMode::Particles => RenderMode::GridVolume,
+                            RenderMode::GridVolume => RenderMode::Surface,
+                            RenderMode::Surface => RenderMode::Particles,
+                        };
+                    }
                     KeyCode::KeyR if pressed => {
                         let sim = make_sim();
                         s.real_gravity = sim.config().gravity;
                         s.sim = sim;
                         s.frame = 0;
+                        // Real elapsed time since the LAST render frame (e.g. the
+                        // window was idle) must not be replayed as a burst of
+                        // catch-up physics steps -- same fix basic_fluids_gpu.rs
+                        // already applies on its own reset.
+                        s.stepper.reset();
+                        s.last_instant = std::time::Instant::now();
                         println!("reset");
                     }
                     _ => {}

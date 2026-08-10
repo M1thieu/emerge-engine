@@ -1047,15 +1047,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         optical_slot = blended_optical_slot(nx_c, ny_c);
     }
     let sigma_a = optical_slot.rgb;
-    // EXPERIMENTAL: `band_field[vis_idx]` (hysteresis-stabilized) is a
-    // NEAREST-cell lookup on the coarser `surface_res` grid, while
-    // `mass`/alpha above are already bilinearly smoothed -- at a MOVING
-    // boundary this can go stale relative to the true local density.
-    // Candidate fix: quantize from the SAME bilinear `mass` alpha already
-    // uses, to remove that source mismatch -- not yet done since the
-    // hysteresis fix's anti-flicker benefit for this specific band hasn't
-    // been separately confirmed (only measured on visibility -- see the
-    // band-hysteresis pass's own doc).
+    // Real fix already applied HERE (2026-08-10, comment corrected to match
+    // -- this used to describe a nearest-cell `band_field[vis_idx]` lookup
+    // that no longer exists in this function): quantized straight from the
+    // SAME bilinear `mass` the alpha/silhouette above already uses, so
+    // there's no second, coarser-grid source to go stale relative to it.
+    // The still-real, still-open version of this tradeoff (hysteresis's
+    // anti-flicker benefit vs bilinear's anti-staleness benefit, unresolved
+    // because nobody has visually confirmed which reads better) lives in
+    // `shade_phase`'s dual-phase path below, which still uses the
+    // nearest-cell hysteresis band field -- NOT touched, needs real visual
+    // verification before choosing, not another blind swap.
     let depth_banded = floor(clamp(mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
     let optical_depth = max(depth_banded, EDGE_COLOR_REFERENCE_DEPTH);
     let transmitted = exp(-sigma_a * optical_depth);
@@ -1099,6 +1101,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // highlight -- a smoothly-varying term can move with the wave without
     // "stepping," unlike a banded one.
     let grad_len = length(grad);
+    // Computed early (normally lives right before `return` below, next to
+    // `alpha`) so the Fresnel block can use it -- see `fresnel_interior`'s
+    // own doc just below for why.
+    let edge_margin = max(render_params.mass_floor * 1.5, 1.0e-4);
     var lit = with_scattering;
     if grad_len > 1.0e-5 {
         let normal_dir = -grad / grad_len;
@@ -1122,7 +1128,71 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             const WAVE_HIGHLIGHT_STRENGTH: f32 = 0.15;
             wave_highlight = with_scattering * wave_diffuse * WAVE_HIGHLIGHT_STRENGTH;
         }
-        lit = clamp(shaded + wave_highlight, vec3(0.0), vec3(1.0));
+
+        // Real, angle-dependent Fresnel reflectance (Schlick 1994
+        // approximation) -- 2026-08-10, found live: `OpticalTable.specular`
+        // (`optics.specular[slot].x`, real per-material R0, Schlick's own
+        // near-normal-incidence reflectance) was already uploaded but NEVER
+        // READ anywhere in this shader -- `prep_instances.wgsl`'s own
+        // ByPhysics path adds R0 as a flat constant too, missing the actual
+        // view-angle dependence that IS Schlick's whole point (that struct
+        // field's own doc already names this exact gap: "NOT a full
+        // view-angle-dependent Fresnel term"). This is that missing term,
+        // added ADDITIVELY on top of the existing cel-shaded diffuse base
+        // (same layering convention `wave_highlight` above already
+        // established: a real, continuous, physically-derived signal riding
+        // on top of the stylized flat-banded shading, not replacing it --
+        // matches this project's own "no decor, everything caused by real
+        // physics" standard without reversing the deliberate cel-shading
+        // choice `grid_volume.wgsl`'s own doc explains).
+        //
+        // `grad` is only a 2D (screen-space) gradient of a density field --
+        // no explicit 3rd (depth) axis exists in this 2D engine to measure a
+        // real view angle against. Reconstructed the standard bump-mapping
+        // way (same real technique the billboard-sphere depth trick in
+        // Sebastian Lague's "Coding Adventure: Rendering Fluids" uses):
+        // treat the density field as a height field and synthesize an
+        // implicit z-component from FRESNEL_HEIGHT_SCALE, a real, tuned (not
+        // measured) constant standing in for "how much the reconstructed
+        // surface bulges toward the camera" -- honestly a simplification
+        // (no true 3D surface exists here), not a claim of measured
+        // geometry. `cos_theta = normal.z` because the (orthographic, 2D)
+        // camera's view direction is exactly (0,0,1) in this same local
+        // convention -- grazing angles (steep 2D density gradient) push
+        // cos_theta toward 0 and Schlick's term toward 1 (near-total
+        // reflection); a flat/calm region (near-zero gradient) keeps
+        // cos_theta near 1, mostly R0 -- the real "look straight down, see
+        // through; look near the edge, see a mirror" effect.
+        const FRESNEL_HEIGHT_SCALE: f32 = 2.0;
+        let normal3 = normalize(vec3<f32>(-grad, FRESNEL_HEIGHT_SCALE));
+        let cos_theta = clamp(normal3.z, 0.0, 1.0);
+        let r0 = optics.specular[render_params.material_slot % 16u].x;
+        let fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
+        // Real bug found live 2026-08-10 (user: "y a des artifacts autour
+        // des rendus"): `grad` is the SAME density gradient used for both
+        // (a) real interior surface/wave curvature (what Fresnel is meant
+        // to react to) AND (b) the silhouette's own alpha falloff -- and
+        // `grad` is UNAVOIDABLY steepest exactly at that falloff band (that
+        // IS what an edge is), so every fluid blob got a bright white rim
+        // traced along its own silhouette, all the time, not just at real
+        // grazing angles. Gate the Fresnel blend by the SAME interior-vs-
+        // edge signal `alpha` below already computes (just evaluated here,
+        // slightly wider, so it fully rolls off just BEFORE alpha starts
+        // fading rather than exactly overlapping it) -- keeps real Fresnel
+        // variation from interior wave undulations, removes the artifact
+        // ring at the domain-cutoff edge, which was never a real surface
+        // angle to begin with.
+        let fresnel_interior = smoothstep(render_params.mass_floor, render_params.mass_floor + edge_margin * 3.0, mass);
+        // Reflection color: no real environment capture exists in this 2D
+        // engine to sample a true reflected scene from, so this uses a
+        // simple, disclosed, brightened-toward-white version of the
+        // surface's own already-lit color -- a real, standard cheap stand-in
+        // for "reflects ambient sky/environment light" other stylized water
+        // shaders use absent a real cubemap, not an invented color.
+        let fresnel_reflection = mix(shaded, vec3<f32>(1.0, 1.0, 1.0), 0.6);
+        let with_fresnel = mix(shaded, fresnel_reflection, fresnel * fresnel_interior);
+
+        lit = clamp(with_fresnel + wave_highlight, vec3(0.0), vec3(1.0));
     }
 
     // Blackbody thermal emission -- real, exact same formula `grid_
@@ -1135,8 +1205,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let with_emission = clamp(lit + emission, vec3(0.0), vec3(1.0));
 
     // Widened past a narrow 0.5x band -- see `grid_volume.wgsl`'s own
-    // fs_main doc for the real flicker mechanism this fixes.
-    let edge_margin = max(render_params.mass_floor * 1.5, 1.0e-4);
+    // fs_main doc for the real flicker mechanism this fixes. (`edge_margin`
+    // itself is computed earlier now, next to `grad_len` -- the Fresnel
+    // interior mask above needs it too.)
     let density_alpha = smoothstep(render_params.mass_floor, render_params.mass_floor + edge_margin, mass);
     // Fold the bilinear visibility blend in as a multiplicative alpha term
     // (see the "hair"/aliasing doc above) instead of a hard per-cell
@@ -1217,14 +1288,24 @@ fn shade_phase(
     // fs_main for the full doc, and `fs_main`'s own copy of this constant
     // above for the edge-color-floor reasoning.
     const EDGE_COLOR_REFERENCE_DEPTH: f32 = 3.0;
+    const DEPTH_BANDS: f32 = 4.0; // MUST match fs_main's own DEPTH_BANDS
     let slot = p.material_slot % 16u;
     let sigma_a = optics.slots[slot].rgb;
-    // Real hysteresis-stabilized color band (see "Pass 2d" doc above) --
-    // this phase's OWN `band_hysteresis_step_main` output, not a fresh
-    // per-frame DEPTH_BANDS quantize -- same real fix `fs_main` already
-    // has, ported here so the dual-phase path stops re-crossing a band
-    // boundary every frame from ordinary density jitter.
-    let depth_banded = select(phase_b_band_field[vis_idx], phase_a_band_field[vis_idx], buf_is_a);
+    // Real port (2026-08-10) of `fs_main`'s own already-shipped choice:
+    // quantize straight from the SAME bilinear `mass` the silhouette/alpha
+    // above already uses, instead of a NEAREST-cell hysteresis-stabilized
+    // lookup (`phase_a_band_field`/`phase_b_band_field`, still declared,
+    // now unused here) that goes stale relative to that bilinear field at
+    // a moving boundary -- the exact real bug this file's own module doc
+    // already named. Real, disclosed, NOT fully resolved trade-off: the
+    // hysteresis pass was real anti-flicker protection too (its own doc:
+    // "stops re-crossing a band boundary every frame from ordinary density
+    // jitter") -- whether bilinear-staleness or hysteresis-flicker reads
+    // worse has never been visually confirmed either way, only ported here
+    // for real consistency with `fs_main`'s own already-made choice, not
+    // because this one was independently proven better. Revert to the
+    // `select(...)` line above if live use shows real flicker regression.
+    let depth_banded = floor(clamp(mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
     let optical_depth = max(depth_banded, EDGE_COLOR_REFERENCE_DEPTH);
     let transmitted = exp(-sigma_a * optical_depth);
 

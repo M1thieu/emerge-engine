@@ -1,27 +1,15 @@
 extern crate emerge_engine as emerge;
 
-/// CPU two-phase mixture coupling (Tampubolon et al. 2017, "Multi-species
-/// simulation of porous sand and water mixtures") -- water poured onto sand
-/// exchanges momentum with it via Darcy-style drag instead of the two
-/// materials just sharing one ordinary MPM grid field.
+/// Historical porous sand--water prototype.
 ///
-/// Real, disclosed scope: this is the CPU-first MVP (`WithMixturePhase`,
-/// `Grid::resolve_mixture_coupling`) -- a single SCALAR drag coefficient
-/// (`SimConfig::mixture_drag_coefficient`), not the paper's own permeability/
-/// porosity-derived field. GPU port is a separate, deferred follow-up per this
-/// project's own "CPU correctness first" rule. See the real closed-form
-/// verification in `spacetime::grid::mixture_coupling_tests` and the full
-/// end-to-end pipeline test in `tests/solver.rs`
-/// (`higher_drag_relaxes_solid_fluid_relative_velocity_faster`) for how this
-/// was validated before being shown here.
-///
-/// Toggle mixture coupling with M to compare directly, live, against ordinary
-/// single-field MPM (both materials still share momentum at any node they
-/// both touch -- see `build_mixture_scene`'s doc in `tests/solver.rs` for why
-/// that's a REAL, stronger-than-you'd-expect baseline, not "no coupling at
-/// all") -- with coupling on, water visibly drags on sand and sand drags back
-/// on water as it seeps in, instead of the two bodies behaving as if the
-/// other weren't there beyond ordinary momentum sharing.
+/// This scene combines `NewtonianFluidMaterial` with `WithMixturePhase`'s
+/// separate drag/pressure routing. That is not a consistent one-fluid or
+/// multiphase free-surface PDE, so strict WC-MPM intentionally rejects it at
+/// the first step rather than presenting a visually plausible hybrid as water.
+/// It remains as an investigation fixture while a genuine multiphase solver
+/// (phase volume fractions, compatible pressure constraints, and interface
+/// conditions) is designed. Use `basic_fluids` or `basic_fluids_gpu` for the
+/// supported one-fluid WC-MPM path.
 ///
 ///   cargo run --example mixture_sand_water --features render
 use emerge::render::{ColorMode, Renderer};
@@ -104,48 +92,12 @@ struct State {
 
 fn make_sim(mixture_enabled: bool) -> Simulation {
     let config = SimConfig {
-        // Real, measured, HONESTLY PARTIAL mitigation (2026-08-04): the
-        // previous `min_dt=1e-3` / `max_substeps_per_step=32` combination
-        // silently DROPS real simulated time once sustained compaction near
-        // the floor boundary makes CFL genuinely want a finer step than 32
-        // substeps at that floor can cover -- confirmed live: `sim_time_
-        // dropped` reached a real, constant 6.8% of every frame from
-        // ~frame 2074 onward with the old config (`effective_dt` pinned
-        // exactly at the old `min_dt` floor).
-        //
-        // Tripling both the substep budget and the floor's fineness (this
-        // config) DELAYS the onset (dropped stayed at 0.0 through frame
-        // ~1600 instead of ~1350) but does NOT eliminate it -- re-verified
-        // live: `dropped` starts climbing again around frame ~1650 once
-        // CFL wants MORE than the new 96-substep cap. Real, honest
-        // conclusion: the underlying compaction/stiffening near the
-        // boundary is NOT reaching a bounded equilibrium within any tested
-        // horizon -- more substep budget just delays when the wall gets
-        // hit, it doesn't remove the wall. The true root cause (why does
-        // local stiffness keep climbing near `SlipBoundary` under this
-        // mixture's sustained settling, rather than saturating at a real
-        // physical packing limit) is still open -- see
-        // `mixture_sand_water_explosion_investigation_2026-08-04` memory.
-        // This change is kept anyway (strictly more real simulated time
-        // covered than before, zero downside), just not oversold as fixed.
-        //
-        // Follow-up same night: found and fixed a REAL, separate bug that
-        // was a plausible root cause -- `NewtonianFluidMaterial` never
-        // self-corrected `particles.density`/`volume` each substep the way
-        // every solid material does (see its `update_particle`), leaving it
-        // to a grid-mass estimate with no compaction-side ceiling, able to
-        // ratchet up under sustained near-zero-divergence settling. Fixed
-        // (real, physically-motivated, kept regardless). RE-VERIFIED with
-        // the fix applied: does NOT close this issue -- `dropped` still
-        // climbs past frame ~2100, reaching 59.8% by frame 2189 (see
-        // `tests/solver.rs`'s `diag_mixture_sand_water_dropped_time_long_horizon`,
-        // `#[ignore]`d, real open bug). The fluid self-correction was a real
-        // bug worth fixing on its own merits, but not the (sole) mechanism
-        // behind this one -- something else keeps demanding more substeps
-        // than any tested budget covers. Root cause still genuinely open.
+        // The full-time substep loop never raises a CFL limit to `min_dt` or
+        // discards a remainder after a resource budget. These legacy fields
+        // remain for API compatibility only.
         min_dt: 3.0e-4,
         max_substeps_per_step: 96,
-        recompute_density_each_step: true,
+        recompute_density_each_step: false,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
@@ -206,8 +158,17 @@ fn make_sim(mixture_enabled: bool) -> Simulation {
         DruckerPragerMaterial::new(10_000.0, 15_000.0),
         MixturePhase::SOLID,
     );
+    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
+    // basic_fluids.rs's own doc for the full derivation. Independent of the
+    // sand/water mass ratio above (mass_override vs. particle_mass), which
+    // only sets per-particle inertia, not EOS pressure.
+    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
+    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
+    // stiffness for the same compression; confirmed by a real crash in
+    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
+    // (10*0.1/4.0=0.25) restores the original, already-stable c2.
     let water = WithMixturePhase::new(
-        NewtonianFluidMaterial::low_viscosity(4.0, 10.0),
+        NewtonianFluidMaterial::low_viscosity(0.1, 0.25),
         MixturePhase::FLUID,
     );
 

@@ -97,6 +97,12 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
             box_center: Vec2::new(45.0, 9.0),
             material_id: FLUID_ID,
             precompute_initial_volumes: true,
+            // Without this, mass falls back to `config.particle_mass` (1.0),
+            // completely decoupled from the material's own rest_density=0.1
+            // -- a real, separate gap found 2026-08-08 alongside the SI fix
+            // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
+            // derivation used everywhere else.
+            mass_override: Some(0.1 * SPACING * SPACING),
             ..SpawnRegion::for_sim(&config)
         },
     ));
@@ -115,7 +121,15 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
     let sand = DruckerPragerMaterial::new(400.0, 200.0);
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    let fluid = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
+    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
+    // basic_fluids.rs's own doc for the full derivation.
+    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
+    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
+    // stiffness for the same compression; confirmed by a real crash in
+    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
+    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
+    // basic_fluids.rs's own doc for the full derivation.
+    let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let mut reg = MaterialRegistry::with_default(Box::new(elastic));
     reg.insert(SAND_ID, Box::new(sand));
     reg.insert(FLUID_ID, Box::new(fluid));

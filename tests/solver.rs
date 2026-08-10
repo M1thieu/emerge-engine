@@ -11,12 +11,12 @@ use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
 };
 use emerge::{
-    DruckerPragerMaterial, Elastic, Field, MixturePhase, MuIRheologyMaterial, NaccMaterial,
-    NeoHookeanMaterial, NewtonianFluidMaterial, RankineMaterial, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion, StomakhinMaterial, VonMisesMaterial, WithLatentHeat,
+    DruckerPragerMaterial, Elastic, Field, GripFrictionBoundary, MixturePhase, MuIRheologyMaterial,
+    NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, RankineMaterial, SimConfig,
+    Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial, VonMisesMaterial, WithLatentHeat,
     WithMixturePhase,
 };
-use glam::{IVec2, Vec2};
+use glam::{IVec2, Mat2, Vec2};
 
 // --- helpers ---
 
@@ -96,11 +96,7 @@ fn jelly_stable_after_many_steps() {
 
 #[test]
 fn fluid_stable_after_many_steps() {
-    let solver_config = SimConfig {
-        recompute_density_each_step: true,
-        ..small_solver_config()
-    };
-    let mut solver = Simulation::new(solver_config, small_spawn_config(16.0))
+    let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
         .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.1, 10.0, 4.0)));
 
     solver.step_n(200);
@@ -115,10 +111,121 @@ fn fluid_stable_after_many_steps() {
             "particle {i}: velocity non-finite after fluid sim"
         );
         assert!(
-            p.density > 0.0,
-            "particle {i}: density collapsed after fluid sim"
+            p.density.is_finite() && p.density > 0.0 && p.volume.is_finite() && p.volume > 0.0,
+            "particle {i}: fluid volume/density became inadmissible after fluid sim"
+        );
+        let j = p.deformation_gradient.determinant();
+        assert!(
+            j.is_finite() && j > 0.0 && ((p.volume / p.initial_volume - j) / j).abs() < 2.0e-4,
+            "particle {i}: strict fluid J state disagrees with V/V0"
+        );
+        assert!(
+            ((p.density * p.volume - p.mass) / p.mass).abs() < 2.0e-4,
+            "particle {i}: strict fluid state violates rho*V=m"
         );
     }
+}
+
+#[test]
+fn compressed_strict_fluid_generates_barotropic_momentum() {
+    let config = SimConfig {
+        dt: 0.02,
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::splat(16.0),
+        mass_override: Some(4.0 * 0.5 * 0.5),
+        initial_deformation_gradient: Mat2::from_diagonal(Vec2::splat(0.95_f32.sqrt())),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut pressurised = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 4.0)));
+    let mut pressure_free = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 0.0, 4.0)));
+
+    pressurised.step();
+    pressure_free.step();
+    let maximum_velocity_difference = pressurised
+        .particles()
+        .iter()
+        .zip(pressure_free.particles())
+        .map(|(with_pressure, without_pressure)| (with_pressure.v - without_pressure.v).length())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        maximum_velocity_difference > 1.0e-5,
+        "a compressed free-surface WC-MPM state must receive a nonzero Tait pressure impulse"
+    );
+}
+
+/// Real, deliberate contract as of 2026-08-10 (was: silently loop past
+/// `max_substeps_per_step` to always finish, guaranteeing zero dropped
+/// time -- that's what this test used to assert). `max_substeps_per_step`
+/// is now a hard, honest per-frame work budget for EVERY material (a
+/// runaway CFL collapse must not be free to make a single `step()` call
+/// take seconds, see that field's own doc) -- ordinary materials tolerate
+/// an honestly-tracked drop, but a strict WC-MPM fluid's own "no hidden
+/// corner-cuts" philosophy means it must fail LOUD instead of silently
+/// advancing less than the requested dt. Same real tradeoff every other
+/// strict-fluid safety check in this codebase already makes (see
+/// `check_j_range`/`assert_owned_deformation_state`).
+#[test]
+#[should_panic(expected = "could not advance the full requested dt")]
+fn strict_fluid_panics_rather_than_silently_drop_time_past_substep_budget() {
+    let config = SimConfig {
+        max_substeps_per_step: 1,
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::splat(16.0),
+        mass_override: Some(4.0 * 0.5 * 0.5),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 1000.0, 4.0)));
+    for velocity in &mut solver.particles_mut().v {
+        *velocity = Vec2::new(1.0, 0.0);
+    }
+
+    solver.step();
+}
+
+#[test]
+#[should_panic(expected = "cannot use ASFLIP")]
+fn strict_fluid_rejects_asflip_transfer_heuristic() {
+    let config = SimConfig {
+        asflip_blend: 0.5,
+        ..small_solver_config()
+    };
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 4.0)));
+    solver.step();
+}
+
+#[test]
+#[should_panic(expected = "requires apic_blend = 1")]
+fn strict_fluid_rejects_attenuated_velocity_gradient() {
+    let config = SimConfig {
+        apic_blend: 0.5,
+        ..small_solver_config()
+    };
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 4.0)));
+    solver.step();
+}
+
+#[test]
+#[should_panic(expected = "undeclared post-G2P particle mutation")]
+fn strict_fluid_rejects_grip_velocity_hook() {
+    let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 4.0)));
+    solver.add_boundary_condition(Box::new(GripFrictionBoundary::new(3, 0.5, 0.5)));
+    solver.step();
 }
 
 #[test]
@@ -2186,23 +2293,9 @@ fn spawn_region_mass_from_matches_manual_particle_mass() {
 
 // --- two-phase mixture coupling (Tampubolon et al. 2017) ---
 
-/// Real end-to-end check through the FULL pipeline (P2G scatter -> grid-level
-/// closed-form drag solve -> G2P routing), not just the unit-level grid solve
-/// already verified in `spacetime::grid::mixture_coupling_tests`.
-///
-/// REAL FINDING while building this test, worth recording: comparing against
-/// `mixture_drag_coefficient=0.0` ("disabled") is NOT a valid "no coupling"
-/// baseline for an A/B here. Ordinary single-field MPM already fully merges
-/// momentum for ANY two materials sharing a grid node (one shared `Cell`,
-/// unconditionally) -- that's a stronger, effectively-infinite-stiffness
-/// coupling, not "no coupling at all". A genuinely LOWER, physically-correct
-/// finite-drag exchange therefore looks *weaker* than the disabled/merged
-/// baseline for two fully-co-located bodies, which is real and expected, not a
-/// bug (confirmed via direct instrumentation of the resolved per-node
-/// velocities during investigation, not assumed). The valid, confound-free A/B
-/// is HIGH drag vs LOW drag -- both paths engage the exact same resolved-
-/// velocity routing, differing only in how strongly it relaxes the two phases
-/// toward each other, which is exactly what the closed-form solve predicts.
+/// Construct a deliberately unsupported strict-liquid/porous-mixture scene.
+/// It is used only to verify that the solver fails explicitly instead of
+/// blending two unrelated momentum equations into a plausible-looking result.
 fn build_mixture_scene(drag_coefficient: f32) -> Simulation {
     let config = SimConfig {
         mixture_drag_coefficient: drag_coefficient,
@@ -2251,19 +2344,10 @@ fn build_mixture_scene(drag_coefficient: f32) -> Simulation {
     solver
 }
 
-fn relative_solid_fluid_speed(sim: &Simulation) -> f32 {
-    let particles = sim.particles();
-    let avg = |id: u32| -> Vec2 {
-        let group: Vec<Vec2> = particles
-            .iter()
-            .filter(|p| p.material_id == id)
-            .map(|p| p.v)
-            .collect();
-        group.iter().sum::<Vec2>() / group.len() as f32
-    };
-    (avg(0) - avg(1)).length()
-}
-
+/// **Archived diagnostic:** the historical notes below predate strict
+/// WC-MPM state ownership and full-time adaptive stepping. They are retained
+/// for investigation provenance, not as a description of current behavior.
+///
 /// Real, permanent, OBSERVATIONAL diagnostic (not a pass/fail regression --
 /// see result below) for the `mixture_sand_water.rs` example's own
 /// `dropped`/min_dt-clamp finding (2026-08-04, see
@@ -2373,7 +2457,7 @@ fn diag_sand_only_no_mixture_long_horizon_erupts_or_not() {
 }
 
 #[test]
-#[ignore = "real, open bug -- dropped-time still grows past frame ~2100 even after the fluid density self-correction fix; see doc comment"]
+#[ignore = "archived: strict WC-MPM rejects this porous-mixture hybrid and solvers no longer drop time"]
 fn diag_mixture_sand_water_dropped_time_long_horizon() {
     const GRID: usize = 96;
     const DT: f32 = 0.1;
@@ -2496,30 +2580,14 @@ fn diag_mixture_sand_water_dropped_time_long_horizon() {
     );
 }
 
+/// The old drag A/B combined strict WC-MPM liquid with a porous-mixture
+/// routing scheme. That is not a one-fluid PDE: it changes momentum through a
+/// separate phase solve and has no compatible free-surface/volume formulation.
+/// The solver must reject it rather than letting a visually plausible but
+/// undefined hybrid act as a fluid regression.
 #[test]
-fn higher_drag_relaxes_solid_fluid_relative_velocity_faster() {
-    let mut low = build_mixture_scene(1.0);
-    let mut high = build_mixture_scene(50.0);
-    let initial_relative_speed = relative_solid_fluid_speed(&low);
-
-    low.step_n(1);
-    high.step_n(1);
-    let low_relative = relative_solid_fluid_speed(&low);
-    let high_relative = relative_solid_fluid_speed(&high);
-
-    println!(
-        "mixture coupling: initial_relative={initial_relative_speed:.4} \
-         low_drag_relative={low_relative:.4} high_drag_relative={high_relative:.4}"
-    );
-    assert!(low_relative.is_finite() && high_relative.is_finite());
-    assert!(
-        low_relative < initial_relative_speed,
-        "even low drag should reduce relative velocity somewhat: \
-         initial={initial_relative_speed:.4} low={low_relative:.4}"
-    );
-    assert!(
-        high_relative < low_relative,
-        "higher drag should relax the solid/fluid relative velocity MORE than \
-         lower drag over the same real time: low={low_relative:.4} high={high_relative:.4}"
-    );
+#[should_panic(expected = "cannot use porous-mixture coupling")]
+fn strict_fluid_rejects_porous_mixture_coupling() {
+    let mut solver = build_mixture_scene(50.0);
+    solver.step();
 }

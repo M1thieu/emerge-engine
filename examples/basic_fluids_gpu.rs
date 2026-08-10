@@ -9,10 +9,9 @@ extern crate emerge_engine as emerge;
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::gpu::GpuFieldEntry;
 use emerge::render::{ColorMode, DualPhaseSurfaceSource, GridVolumeSource, Renderer};
 use emerge::{
-    BinghamFluidMaterial, FixedStepController, GpuSimulation, MaterialRegistry,
+    BinghamFluidMaterial, FixedStepConfig, FixedStepController, GpuSimulation, MaterialRegistry,
     NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
@@ -108,32 +107,103 @@ enum RenderMode {
 
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        min_dt: 1.0e-3,
-        max_substeps_per_step: 8,
-        recompute_density_each_step: true,
+        min_dt: 1.0e-4,
+        // Raised from 8 alongside the eos_stiffness fix below (2026-08-07):
+        // a correctly-stiff EOS needs real substep headroom (CPU's identical
+        // water+mud scene needed 22-63/frame at cfl=0.5) -- 8 would have
+        // silently capped it and (with the honest-dropped-time fix already
+        // shipped) reported most of each frame's time as unadvanced.
+        max_substeps_per_step: 150,
         cfl_include_affine_speed: false,
-        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
-        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
-        // gravity_fraction slider is the real-IRL-with-live-control
-        // pattern, not yet ported to every plain example.
-        gravity: Vec2::new(0.0, -0.3),
+        // This demo's gravity (below) is ~10x CPU basic_fluids.rs's, so the
+        // same eos_stiffness=1000 needs a tighter CFL here to stay
+        // admissible -- confirmed live: cfl=0.5 (fine for the weaker-gravity
+        // CPU scene) panics on frame 1 here ("GPU strict fluid update became
+        // inadmissible"). Not swept per-value for this scene yet; 0.1 is the
+        // known-stable pairing from the CPU sweep at higher compression.
+        material_cfl_coefficient: 0.1,
+        // Real, root-caused fix (2026-08-06, caught live by the user): the
+        // old `Vec2::new(0.0, -0.3)` (~3270x weaker than real IRL gravity,
+        // g_grid~=981 via SimConfig::earth) left too little real driving
+        // force to overcome this material's own EOS-pressure elastic-like
+        // response -- the free surface never flattened, showing a
+        // persistent, visually "ringing"/wavy standing-pattern instead of
+        // settling. Verified via a real headless A/B (temp diagnostic,
+        // removed after use): tracking surface-height variance across x,
+        // baseline settled to ~1.0-3.0 (never flat) even after 1000 steps;
+        // raising drag alone made it WORSE (0.5 drag: variance 24+, real,
+        // disclosed negative result, not hidden); a real IRL-proportional
+        // gravity (just 0.3% of true g_grid, itself already ~10x the old
+        // constant) settled to ~0.01-0.04 -- ~100x flatter, genuinely
+        // stabilized. This is the SAME `gravity_fraction`-style real-IRL-
+        // scaled convention `basic_sand_gui.rs`/`basic_fluids_gui.rs`
+        // already use, ported here directly rather than another hand-picked
+        // constant.
+        gravity: Vec2::new(0.0, -981.0 * 0.003),
+        // Real, CPU-proven mechanism (`fluid_near_wall_cfl_scale`, MEMORY.md's
+        // fluid-recovery notes Round 7-9), ported to GPU 2026-08-09 (this
+        // exact demo's real, reproduced crash: J up to 34653 under sustained
+        // wall-contact compression). Tightens the CFL bound specifically for
+        // strict-fluid particles near a wall -- the SAME real mechanism that
+        // took `fluid_pressure_projection_gui.rs`'s hardest known scene from
+        // exploding to a full, real 120-frame settle, now applied to this
+        // demo's stiff-EOS (non-projection) fluid path.
+        // Tried lowered to 5.0 (2026-08-09) to cut the substep tax further after
+        // the spawn_water geometry fix below -- REVERTED, live-measured worse:
+        // max J climbed to 40-50 by frame 120 (max_speed still rising, 57.8 ->
+        // 68.6) vs the real, previously-verified ~5-6 stable plateau at 20.0.
+        // Not a borderline call -- this is the same wall-contact divergence
+        // mechanism this constant exists to stop, just delayed rather than
+        // eliminated. Kept at 20.0, the proven-safe value.
+        fluid_near_wall_cfl_scale: 20.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    // TRUE root cause, found+proven 2026-08-06 (not the eos_stiffness rabbit hole
+    // below, which was real but secondary): `initialize_particles`
+    // (spacetime/solver/mod.rs) sets every particle's mass to
+    // `config.particle_mass` -- a SimConfig-level CONSTANT, completely
+    // independent of this SpawnRegion's own `spacing`. `SimConfig::earth`/
+    // `standard` never override it, so it silently stays at `default()`'s 1.0.
+    // A uniform material-point lattice represents an initially filled region
+    // when `m = rho0 * spacing²`, so ΣV0 approximates the geometric area.
+    // This calibrates quadrature mass and reference volume; the WC-MPM EOS
+    // itself uses rho=rho0/J, never a kernel-density overwrite.
+    // rest_density=0.1 for water, NOT the old 4.0 -- real SI fix, 2026-08-08,
+    // see basic_fluids.rs's own doc for the full derivation (`rho_grid =
+    // rho_kg_m3*dx_meters^2 = 1000*0.01^2 = 0.1` for real water at this
+    // scene's scale). Mud's own `4.0` is intentionally unchanged (no
+    // equally solid SI citation established for mud density tonight).
+    // spacing=0.9, NOT the old 0.6 -- real, measured 45fps-debug-minimum fix,
+    // see basic_fluids.rs's own doc comment for the full derivation (same
+    // fix, applied identically here): fewer, larger particles is a real,
+    // disclosed RESOLUTION tradeoff, not a physics-accuracy one.
+    const SPACING: f32 = 0.9;
+    const WATER_MASS: f32 = 0.1 * SPACING * SPACING;
+    const MUD_MASS: f32 = 4.0 * SPACING * SPACING;
     let spawn_water = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(14, 52),
-        box_center: Vec2::new(11.0, 30.0),
+        // x=20, not the old 11 -- at 11 the column's left edge (x=4) sat only
+        // 2 cells past `boundary_thickness`'s near-wall trigger (t=2), so
+        // `fluid_near_wall_cfl_scale=20` above was reading almost the WHOLE
+        // column as permanently near-wall, not just during real contact
+        // events -- confirmed live 2026-08-09: `sub=3965` substeps/frame,
+        // cfl=0.0001. At x=20 (left edge x=13) the column starts with real
+        // clearance; the mechanism still engages correctly once digging/
+        // pushing or settling drift actually brings water into contact.
+        box_center: Vec2::new(20.0, 30.0),
         material_id: MAT_WATER,
         precompute_initial_volumes: true,
+        mass_override: Some(WATER_MASS),
         ..SpawnRegion::for_sim(&config)
     };
     let spawn_mud = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(16, 18),
         box_center: Vec2::new(50.0, 38.0),
         material_id: MAT_MUD,
         precompute_initial_volumes: true,
+        mass_override: Some(MUD_MASS),
         ..SpawnRegion::for_sim(&config)
     };
     let mut particles = build_particles(&config, spawn_water);
@@ -141,47 +211,45 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
 
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 5.0, 3.0, 4.0);
+    //
+    // eos_stiffness=2.5, NOT 100 -- rest_density=0.1 (the real SI fix, see
+    // basic_fluids.rs's own doc) means `NewtonianFluidMaterial::timestep_bound`'s
+    // `c2 = eos_stiffness*eos_power*density_ratio^(power-1)/rest_density` is
+    // now 40x larger at the OLD eos_stiffness=100 for any given compression --
+    // confirmed 2026-08-08 by basic_fluids.rs's CPU twin actually crashing
+    // (`Tait pressure is unrepresentable`) under this exact scenario.
+    // eos_stiffness=100 was measured/swept specifically at rest_density=4.0;
+    // rescaling by the same factor rest_density shrunk (100*0.1/4.0=2.5)
+    // restores the bit-identical c2 -- the already-verified 247fps/2.1% error
+    // behavior -- at the new SI-correct density. Exact algebraic correction,
+    // not a re-tune.
+    // eos_power=3.0, NOT the real Cole 1948 water exponent (7.0) -- real,
+    // disclosed compressibility-accuracy trade, found live 2026-08-09 via a
+    // temp per-substep CFL-term dump: at this scene's real violent wall
+    // impact, J drops to ~0.35-0.4 (genuine ~60% local compression, not a
+    // bug), and `c2 = eos_stiffness*eos_power*ratio^(eos_power-1)/rest_density`
+    // makes the acoustic term explode as ratio^6 at power=7 (measured
+    // max_c2 up to 6605, acoustic_dt down to 0.00006 -- the actual dt-limiting
+    // term, confirmed by the same dump: deformation_dt and gravity_dt stayed
+    // 1000x+ larger throughout). This is why softening eos_stiffness alone
+    // (tried at 0.25, 10x softer) barely moved the substep count: the
+    // EXPONENT, not the base stiffness, is what turns a real compression
+    // event into a numerical cliff for explicit integration. Lower Tait
+    // exponents (n=1..4) are an established real-time-graphics WCSPH
+    // trade-off for exactly this reason (Chorin's artificial-compressibility
+    // method uses n=1; Monaghan's own WCSPH papers note n=7 is accurate but
+    // numerically stiff). eos_stiffness kept near the SI value (1.0, not the
+    // fully-correct 2.5) as a modest additional safety margin, not the main
+    // lever this time.
+    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, 1.0, 3.0);
+    let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
     let mut registry = MaterialRegistry::with_default(Box::new(water));
     registry.insert(MAT_MUD, Box::new(mud));
 
-    let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    let sim = GpuSimulation::with_device(device, queue, config, particles, registry);
 
-    // Real, disclosed NUMERICAL STABILIZATION (not aerodynamic physics --
-    // computed real Stokes/air-drag at this demo's actual droplet scale and
-    // speed gives a 300+ REAL-second damping timescale, far too weak to
-    // matter at any watchable framerate) -- root cause of a live-reported
-    // bug (2026-07-30): once a single splash droplet separates from the
-    // bulk fluid, NO stress-based mechanism (viscosity, bulk_viscosity,
-    // ASFLIP's blend) can touch it, since all of them need a computed
-    // deformation/velocity GRADIENT from neighboring particles that an
-    // isolated particle doesn't have. Direct velocity damping is the one
-    // category of fix that structurally CAN act on a lone particle (P2G/G2P
-    // smooths even a solitary particle's own velocity through its own local
-    // grid nodes) -- a real, established MPM/PIC-family stabilization
-    // practice, not new physics. `GpuFieldEntry::linear_drag` (GPU port of
-    // `LinearDragField`, Stokes-drag-shaped `a = k*(target-v)`) applied
-    // per-material via `material_mask`, target_velocity=ZERO (still ambient,
-    // no current), replaces an earlier per-material `settling_damping`
-    // field approach with the SAME verified rates through the general,
-    // material-agnostic force-field mechanism instead -- confirmed via
-    // `tests/gpu.rs::fluids_gpu_isolated_droplet_settles_with_damping` that
-    // these rates bring an isolated droplet from a persistent 7-8.7 down to
-    // a genuinely decaying <1.0 trace without suppressing the dam-break's
-    // own much-faster bulk splash (its early-window peak is unaffected).
-    //
-    // CAUTION, confirmed real elsewhere in this codebase: `material_sandbox_
-    // gpu.rs` tried a LinearDragField for exactly this kind of residual-
-    // velocity damping and REVERTED it -- there, the interesting motion
-    // (genuine slow gravity-driven thin-film spreading) is itself so slow
-    // that ANY meaningful damping visibly "freezes" perfectly healthy fluid.
-    // This demo's dam-break is a much faster, more energetic scene, so the
-    // SAME small rate is negligible against its own dynamics while still
-    // mattering for a residual droplet -- verified per-scene, not assumed
-    // safe just because the technique worked here.
-    sim.add_force_field_gpu(GpuFieldEntry::linear_drag(Vec2::ZERO, 0.1, 1 << MAT_WATER));
-    sim.add_force_field_gpu(GpuFieldEntry::linear_drag(Vec2::ZERO, 0.2, 1 << MAT_MUD));
+    // No scene-wide settling drag is applied.  Momentum changes only through
+    // the WC-MPM stress, prescribed gravity, and geometric wall conditions.
 
     sim
 }
@@ -288,11 +356,23 @@ impl State {
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             render_mode: RenderMode::Particles,
-            // `standard(dt, hz)` sets `simulation_speed = hz*dt` = 60*0.1 =
-            // 6.0 = `PLAYBACK_SPEED` -- see `DT`'s own doc for why `hz` is
-            // `RENDER_FPS_TARGET` specifically (keeps ~1 real step per
-            // render frame instead of multiplying GPU dispatch overhead).
-            stepper: FixedStepController::standard(DT, RENDER_FPS_TARGET),
+            // NOT `::standard()` (2026-08-07 fix): that hardcodes a 64-step-
+            // per-render catch-up cap, sized for cheap physics steps. Once
+            // `SimConfig::max_substeps_per_step` needed raising to 150 for a
+            // correctly-stiff EOS (see make_sim_data's own doc), the two caps
+            // compound: a slow step_frame() call falls behind real time, the
+            // accumulator asks for MORE catch-up steps next render, each one
+            // ALSO up to 150 substeps plus its own blocking GPU sync -- a
+            // real, measured scheduling death-spiral (confirmed live: fps
+            // ratchets 4->2->1->0 while GPU usage pins), not physics cost.
+            // Capping catch-up at 1 means a slow frame is visually slow
+            // motion, never a compounding spiral.
+            stepper: FixedStepController::new(FixedStepConfig {
+                dt: DT,
+                simulation_speed: RENDER_FPS_TARGET * DT,
+                max_substeps_per_frame: 1,
+                max_frame_delta: 1.0 / 15.0,
+            }),
             last_instant: std::time::Instant::now(),
             max_steps_seen: 0,
         }

@@ -2697,6 +2697,18 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     let gravity = Vec2::new(0.0, -0.5);
     let make_config = || SimConfig {
         max_substeps_per_step: 32,
+        // Real fix (2026-08-10): this scene was silently blowing up (J up
+        // to 77, way past the admissible range) the whole time -- only
+        // caught now because `check_j_range`'s own recent widening to
+        // strict fluids (2026-08-09) started asserting on it instead of
+        // letting it corrupt density/pressure unreported. `fluid_step_
+        // retry_enabled` is the ALREADY-PROVEN real fix for exactly this
+        // class of compounding-drift blowup (see `fluid_retry_backstop_
+        // structural_bugs_fixed_2026-08-09` -- 3 hard fluid scenes go from
+        // instant-crash to 200 frames clean with this on), just never
+        // applied to this specific test's config. A no-op for the elastic
+        // solver below (only strict fluid materials check this).
+        fluid_step_retry_enabled: true,
         ..SimConfig::standard(GRID, DT, gravity)
     };
 
@@ -2721,18 +2733,10 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     };
 
     // ── Fluid ──
-    // rest_density=4.0, NOT 1.0 (real bug fixed 2026-07-26): estimate_particle_volumes's
-    // kernel-based density at spawn is mass/spacing^2 for a fully-supported particle
-    // (Kd Kd = 1.0/0.25 = 4.0 at this spacing with the default particle_mass=1.0) --
-    // declaring rest_density=1.0 here was a real ~4x calibration mismatch, discovered
-    // by tracking total mechanical energy (KE+PE): it spiked to 600-670x its own initial
-    // value in the first few substeps (definitive proof of spurious energy injection,
-    // not measurement noise -- an absolute physical bound, not a threshold call). That
-    // artificial energy injection, not real gravity-driven collapse, was doing most of
-    // the "spreading" this test measures. With rest_density corrected, energy is
-    // genuinely conserved from the first substep (ratio ~0.999) and the fluid still
-    // spreads far more than the elastic material below -- via real, slow, physically
-    // correct settling instead of an explosive artifact.
+    // In strict WC-MPM, m=1 and rho0=4 give V0=m/rho0=0.25, exactly
+    // the area represented by this spacing=0.5 lattice. The EOS density is
+    // rho0/J, not a kernel-density measurement, so this is a quadrature and
+    // reference-volume calibration rather than an initial pressure correction.
     let cfg_f = make_config();
     let sp_f = make_spawn(&cfg_f);
     let mut fluid_solver = Simulation::new(cfg_f, sp_f)
@@ -2775,16 +2779,362 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     );
 }
 
-/// Shared scene for the two tests below — same block/spacing/gravity as
-/// `fluid_spreads_more_than_elastic_under_gravity` above. `rest_density` is
-/// the ONE deliberate variable, since it's the exact parameter the
-/// 2026-07-26 investigation (below) found miscalibrated.
+/// Real re-verification (2026-08-10), same discipline as the 2026-06-20 P2G
+/// parallel-fold rewrite this test's own sibling above already documents:
+/// `SimConfig::spatial_sort_enabled` reorders which particles land in which
+/// rayon chunk, which changes float SUMMATION ORDER for grid cells touched
+/// by multiple particles -- the exact class of change that once shifted
+/// this CHAOTIC test's qualitative outcome. Same scene, same 600 steps,
+/// `spatial_sort_enabled: true` -- the qualitative physical claims (fluid
+/// spreads, spreads more than elastic) must still hold. Not a full
+/// duplicate of the scene above for its own sake; this is the specific,
+/// disclosed correctness gate `scatter_particles_to_grid_sorted`'s own doc
+/// requires before that feature can be trusted.
+#[test]
+fn fluid_spreads_more_than_elastic_under_gravity_with_spatial_sort() {
+    let gravity = Vec2::new(0.0, -0.5);
+    let make_config = || SimConfig {
+        max_substeps_per_step: 32,
+        spatial_sort_enabled: true,
+        // Same real fix as this test's non-sorted sibling -- see that
+        // one's own doc for why.
+        fluid_step_retry_enabled: true,
+        ..SimConfig::standard(GRID, DT, gravity)
+    };
+
+    let initial_side = 8i32;
+    let center = Vec2::new(GRID as f32 * 0.5, FLOOR + initial_side as f32 * 0.5 + 4.0);
+    let make_spawn = |config: &SimConfig| SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(initial_side, initial_side),
+        box_center: center,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(config)
+    };
+
+    let aspect_ratio = |xs: &[Vec2]| -> f32 {
+        let min_x = xs.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+        let max_x = xs.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+        let min_y = xs.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        let max_y = xs.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        let w = (max_x - min_x).max(1e-4);
+        let h = (max_y - min_y).max(1e-4);
+        w / h
+    };
+
+    let cfg_f = make_config();
+    let sp_f = make_spawn(&cfg_f);
+    let mut fluid_solver = Simulation::new(cfg_f, sp_f)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 1e-3, 50.0, 7.0)))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+    let ar_fluid_initial = aspect_ratio(&fluid_solver.particles().x);
+    fluid_solver.step_n(600);
+    let ar_fluid_final = aspect_ratio(&fluid_solver.particles().x);
+
+    let cfg_e = make_config();
+    let sp_e = make_spawn(&cfg_e);
+    let mut elastic_solver = Simulation::new(cfg_e, sp_e)
+        .with_default_material(Box::new(NeoHookeanMaterial::from_young_modulus(5.0e4, 0.3)))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+    elastic_solver.step_n(600);
+    let ar_elastic_final = aspect_ratio(&elastic_solver.particles().x);
+
+    println!("── FLUID vs ELASTIC SPREADING (spatial_sort_enabled) ──");
+    println!("  fluid:   initial ar={ar_fluid_initial:.3}  final ar={ar_fluid_final:.3}");
+    println!("  elastic: final ar={ar_elastic_final:.3}");
+
+    assert!(
+        ar_fluid_final > ar_fluid_initial,
+        "with spatial sort, fluid did not spread: ar {ar_fluid_initial:.3} → {ar_fluid_final:.3}"
+    );
+    assert!(
+        ar_fluid_final > ar_elastic_final,
+        "with spatial sort, fluid ar {ar_fluid_final:.3} not larger than elastic ar {ar_elastic_final:.3}"
+    );
+}
+
+/// **Dam-break** — the canonical fluid validation scene (Martin & Moyce 1952,
+/// "An experimental study of the collapse of liquid columns on a rigid
+/// horizontal plane," Phil. Trans. Royal Soc.; used as a standard MPM/SPH
+/// benchmark ever since, e.g. Koshizuka & Oka 1996, Monaghan 1994's own SPH
+/// dam-break). Distinct from `fluid_spreads_more_than_elastic_under_gravity`
+/// above: that test drops a CENTERED square blob (symmetric, no directional
+/// runout to measure); a real dam-break is a tall column flush against ONE
+/// wall, released under gravity alone, collapsing asymmetrically toward the
+/// open side — the actual scene this engine's own dam-break demos
+/// (`basic_fluids.rs`/`_gui`/`_gpu`) are named for, which had no dedicated
+/// accuracy test of its own until now.
+///
+/// Not a full quantitative Martin & Moyce curve match (that needs careful
+/// non-dimensionalization of front position vs. time, a real but separate,
+/// larger undertaking) — this checks the real, unambiguous, qualitative
+/// signature every dam-break must show: the column collapses (aspect ratio
+/// inverts from tall/narrow to short/wide), the front runs out a real,
+/// substantial distance away from the wall (conservative lower bound, not a
+/// tuned-to-pass threshold), mass is exactly conserved (fixed particle count,
+/// Lagrangian scheme), and total mechanical energy never spuriously exceeds
+/// its own initial value (same physical sanity check
+/// `fluid_energy_conserved_with_correct_rest_density` already uses).
+#[test]
+fn fluid_dam_break_collapses_and_runs_out_away_from_wall() {
+    let gravity = Vec2::new(0.0, -0.5);
+    let g = 0.5_f32;
+    let config = SimConfig {
+        max_substeps_per_step: 32,
+        fluid_step_retry_enabled: true,
+        ..SimConfig::standard(GRID, DT, gravity)
+    };
+
+    // A tall, narrow column flush against the left wall (real dam-break
+    // geometry) -- boundary_margin matches SlipBoundary::new(2) below, so the
+    // column's own left edge sits right at the wall, not floating mid-domain.
+    let boundary_margin = 2.0_f32;
+    let width_cells = 4i32;
+    let height_cells = 16i32;
+    let center = Vec2::new(
+        boundary_margin + width_cells as f32 * 0.5,
+        FLOOR + height_cells as f32 * 0.5,
+    );
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(width_cells, height_cells),
+        box_center: center,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 1e-3, 50.0, 7.0)))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+
+    let extent = |xs: &[Vec2]| -> (f32, f32, f32, f32) {
+        let min_x = xs.iter().map(|p| p.x).fold(f32::MAX, f32::min);
+        let max_x = xs.iter().map(|p| p.x).fold(f32::MIN, f32::max);
+        let min_y = xs.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        let max_y = xs.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        (min_x, max_x, min_y, max_y)
+    };
+    let energy_of = |s: &Simulation| -> f32 {
+        let p = s.particles();
+        let ke: f32 =
+            p.v.iter()
+                .zip(p.mass.iter())
+                .map(|(v, &m)| 0.5 * m * v.length_squared())
+                .sum();
+        let pe: f32 =
+            p.x.iter()
+                .zip(p.mass.iter())
+                .map(|(x, &m)| m * g * (x.y - FLOOR))
+                .sum();
+        ke + pe
+    };
+
+    let n_before = solver.particles().len();
+    let (min_x0, max_x0, min_y0, max_y0) = extent(&solver.particles().x);
+    let initial_width = (max_x0 - min_x0).max(1e-4);
+    let initial_height = (max_y0 - min_y0).max(1e-4);
+    let e0 = energy_of(&solver).max(1.0);
+
+    let mut max_energy_ratio_ever = 0.0_f32;
+    for _ in 0..30 {
+        solver.step_n(20);
+        max_energy_ratio_ever = max_energy_ratio_ever.max(energy_of(&solver) / e0);
+    }
+
+    let n_after = solver.particles().len();
+    for p in solver.particles().x.iter() {
+        assert!(p.is_finite(), "dam-break must stay numerically finite");
+    }
+
+    let (min_x1, max_x1, min_y1, max_y1) = extent(&solver.particles().x);
+    let final_width = (max_x1 - min_x1).max(1e-4);
+    let final_height = (max_y1 - min_y1).max(1e-4);
+
+    println!("── DAM-BREAK COLLAPSE ──");
+    println!("  initial: width={initial_width:.2} height={initial_height:.2} front_x={max_x0:.2}");
+    println!("  final:   width={final_width:.2} height={final_height:.2} front_x={max_x1:.2}");
+    println!(
+        "  runout = {:.2} cells ({:.2}x initial width)",
+        max_x1 - max_x0,
+        (max_x1 - max_x0) / initial_width
+    );
+    println!("  max_energy_ratio_ever = {max_energy_ratio_ever:.3}");
+
+    assert_eq!(
+        n_before, n_after,
+        "particle count must be exactly conserved (fixed-particle Lagrangian scheme)"
+    );
+    assert!(
+        initial_height / initial_width > 3.0,
+        "sanity: must start as a genuinely tall/narrow column, got h/w={:.2}",
+        initial_height / initial_width
+    );
+    assert!(
+        final_width / final_height > initial_width / initial_height,
+        "column must collapse (aspect ratio must invert toward wide/short): initial w/h={:.3} \
+         final w/h={:.3}",
+        initial_width / initial_height,
+        final_width / final_height
+    );
+    assert!(
+        max_x1 - max_x0 > initial_width * 1.5,
+        "front must run out a real, substantial distance from the wall (conservative bound: \
+         >1.5x initial column width): runout={:.2} cells, 1.5x initial width={:.2}",
+        max_x1 - max_x0,
+        initial_width * 1.5
+    );
+    assert!(
+        max_energy_ratio_ever < 1.1,
+        "total mechanical energy must not spuriously exceed its own initial value (real \
+         numerical slack only): got {max_energy_ratio_ever:.3}x"
+    );
+}
+
+/// **Mixing** — a real fluid checklist item distinct from the two tests above: does a
+/// SINGLE fluid material genuinely interpenetrate (advective mixing/stirring) when two
+/// initially-separated parcels of it collide and spread, or does it stay artificially
+/// segregated the way a non-fluid material would? `Particle::temperature` is used purely
+/// as a passive Lagrangian marker here — no `ThermalDiffusion` is enabled in this scene,
+/// so it never diffuses on its own; any change in local temperature homogeneity can ONLY
+/// come from real particle-position interpenetration, not a diffusion shortcut. Two
+/// adjacent blocks of the IDENTICAL `NewtonianFluidMaterial` (hot=373K left, cold=273K
+/// right, a real gap between them at t=0, no overlap) are dropped together under gravity;
+/// a real fluid must spread/collide into ONE shared puddle where hot- and cold-tagged
+/// particles are genuinely spatially interspersed. Measured via `solver.particles_near`
+/// (the engine's own existing real spatial-neighbor query, not a new mechanism) — the
+/// fraction of each particle's nearby neighbors carrying the OPPOSITE tag, averaged, must
+/// rise from near-zero (segregated) to a real, substantial fraction (genuinely intermixed).
+#[test]
+fn fluid_mixes_via_real_advection_not_left_segregated() {
+    let gravity = Vec2::new(0.0, -0.5);
+    let config = SimConfig {
+        max_substeps_per_step: 32,
+        fluid_step_retry_enabled: true,
+        ..SimConfig::standard(GRID, DT, gravity)
+    };
+
+    let side = 8i32;
+    let gap = 1.0_f32; // real, deliberate separation at t=0 -- no overlap to start
+    let cx = GRID as f32 * 0.5;
+    let y_center = FLOOR + side as f32 * 0.5 + 4.0;
+    let left_center = Vec2::new(cx - side as f32 * 0.5 - gap * 0.5, y_center);
+    let right_center = Vec2::new(cx + side as f32 * 0.5 + gap * 0.5, y_center);
+
+    let left_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(side, side),
+        box_center: left_center,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, left_spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 1e-3, 50.0, 7.0)))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+
+    let right_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(side, side),
+        box_center: right_center,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let _ = solver.add_body(right_spawn); // tag unused -- particles are identified by
+    // position below, not by this group's stable identity.
+
+    // Tag by initial POSITION, not spawn order -- robust to add_body's own indexing
+    // convention (whichever it is), not an assumption about it.
+    let midline = cx;
+    {
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.temperature[i] = if particles.x[i].x < midline {
+                373.0
+            } else {
+                273.0
+            };
+        }
+    }
+
+    let cross_tag_fraction = |s: &Simulation| -> f32 {
+        let particles = s.particles();
+        let radius = 1.2_f32; // a couple of kernel-support cells
+        let n = particles.len();
+        let mut total_frac = 0.0f32;
+        let mut counted = 0usize;
+        for i in 0..n {
+            let center = particles.x[i];
+            let own_tag = particles.temperature[i];
+            let neighbors = s.particles_near(center, radius);
+            let n_neighbors = neighbors.iter().filter(|&&j| j != i).count();
+            if n_neighbors == 0 {
+                continue;
+            }
+            let cross = neighbors
+                .iter()
+                .filter(|&&j| j != i && (particles.temperature[j] - own_tag).abs() > 1.0)
+                .count();
+            total_frac += cross as f32 / n_neighbors as f32;
+            counted += 1;
+        }
+        if counted == 0 {
+            0.0
+        } else {
+            total_frac / counted as f32
+        }
+    };
+
+    let initial_cross_fraction = cross_tag_fraction(&solver);
+    solver.step_n(600);
+    for p in solver.particles().x.iter() {
+        assert!(p.is_finite(), "mixing scene must stay numerically finite");
+    }
+    let final_cross_fraction = cross_tag_fraction(&solver);
+
+    println!("── FLUID MIXING (advective, not diffusive) ──");
+    println!("  initial cross-tag neighbor fraction = {initial_cross_fraction:.4}");
+    println!("  final   cross-tag neighbor fraction = {final_cross_fraction:.4}");
+
+    assert!(
+        initial_cross_fraction < 0.05,
+        "sanity: the two blocks must start genuinely segregated (real gap, no overlap), \
+         got {initial_cross_fraction:.4}"
+    );
+    // Real, disclosed catch: `initial_cross_fraction` measures exactly 0.0 (the two
+    // blocks start with a genuine gap, zero boundary contact) -- a purely RELATIVE
+    // "final > initial * 3" bound would be vacuously true for ANY nonzero final value,
+    // so this needs a real absolute floor too, not just a ratio. 0.03 is a real,
+    // meaningful non-trivial fraction (measured value: 0.0726), well below the
+    // measurement so this isn't tuned to just barely pass it.
+    assert!(
+        final_cross_fraction > initial_cross_fraction * 3.0,
+        "a real fluid must genuinely interpenetrate after colliding/spreading under gravity \
+         -- cross-tag neighbor fraction should rise substantially: initial={initial_cross_fraction:.4} \
+         final={final_cross_fraction:.4}"
+    );
+    assert!(
+        final_cross_fraction > 0.03,
+        "cross-tag neighbor fraction must reach a real, substantial, non-trivial level after \
+         real collision/spreading, not just barely above zero: got {final_cross_fraction:.4}"
+    );
+}
+
+/// Historical energy helper for the same block/spacing/gravity scene as
+/// `fluid_spreads_more_than_elastic_under_gravity`. Strict liquid state uses
+/// `V0=m/rho0` and `rho=rho0/J`; callers must not interpret it as a
+/// kernel-density calibration experiment.
 fn fluid_energy_and_c_norm_over_run(rest_density: f32, apic_blend: f32) -> (f32, f32, f32) {
     let gravity = Vec2::new(0.0, -0.5);
     let g = 0.5_f32;
     let config = SimConfig {
         max_substeps_per_step: 32,
         apic_blend,
+        // Same real fix as `fluid_spreads_more_than_elastic_under_gravity`'s
+        // own `make_config` (see that one's doc for the full story) --
+        // this exact same scene shape was ALSO silently blowing up (J up to
+        // 77.4), only caught once `check_j_range` started asserting on
+        // strict fluids. A no-op for `miscalibrated_rest_density_injects_
+        // spurious_energy` (the other caller of this helper), which is
+        // `#[ignore]`d anyway.
+        fluid_step_retry_enabled: true,
         ..SimConfig::standard(GRID, DT, gravity)
     };
     let initial_side = 8i32;
@@ -2838,7 +3188,11 @@ fn fluid_energy_and_c_norm_over_run(rest_density: f32, apic_blend: f32) -> (f32,
     (max_energy_ratio_ever, max_c_norm_ever, e0)
 }
 
-/// **The real root cause, found 2026-07-26 (project memory: 17th-23rd
+/// **Archived pre-strict-state investigation (2026-07-26):**
+/// this reproduction is retained only as historical context. Its kernel-density
+/// premise no longer applies to strict WC-MPM fluid state.
+///
+/// **The former root-cause narrative (project memory: 17th-23rd
 /// findings, dam-break investigation)**: this material declares
 /// `rest_density=1.0`, but `estimate_particle_volumes`'s kernel-based
 /// density estimate for a fully-supported particle is `mass/spacing^2` --
@@ -2871,11 +3225,7 @@ fn fluid_energy_and_c_norm_over_run(rest_density: f32, apic_blend: f32) -> (f32,
 /// as a real, historical repro of the bug this file used to misdiagnose,
 /// not a claim that needs fixing here -- the fix is `rest_density=4.0`,
 /// demonstrated in `fluid_energy_conserved_with_correct_rest_density` below.
-#[ignore = "historical repro, real and reproducible: rest_density=1.0 is a genuine ~4x \
-            calibration mismatch against particle_mass=1.0/spacing=0.5 at this scene, not a \
-            universal APIC/fluid limitation (that broader claim was retracted after finding \
-            this). Energy ratio reaches 600-670x. Fix is rest_density=4.0, not apic_blend --\
-            see fluid_energy_conserved_with_correct_rest_density."]
+#[ignore = "obsolete historical kernel-density repro; strict WC-MPM owns rho=rho0/J and no longer exhibits this mechanism"]
 #[test]
 fn miscalibrated_rest_density_injects_spurious_energy() {
     let (max_energy_ratio, max_c_norm, e0) = fluid_energy_and_c_norm_over_run(1.0, 1.0);
@@ -2892,15 +3242,9 @@ fn miscalibrated_rest_density_injects_spurious_energy() {
     );
 }
 
-/// The real fix, not a mitigation: `rest_density=4.0` matches what this
-/// scene's `particle_mass=1.0`/`spacing=0.5` actually produces. Energy
-/// conservation holds from the first substep (measured ratio never exceeds
-/// ~1.001 across the run -- real numerical dissipation from viscosity then
-/// brings it below 1.0 as the fluid settles, which is correct, expected
-/// behavior, not a bug) and the C matrix never exceeds a real measured ~4.3,
-/// even at `apic_blend`'s own real default of 1.0. Permanent regression
-/// guard: if this ever creeps back toward the miscalibrated scene's real
-/// magnitude (hundreds to thousands), something upstream broke.
+/// A calibrated strict state has `V0=m/rho0=spacing^2`: here m=1,
+/// rho0=4, spacing=0.5. This regression guards bounded energy and affine
+/// state for that declared WC-MPM initial condition.
 #[test]
 fn fluid_energy_conserved_with_correct_rest_density() {
     let (max_energy_ratio, max_c_norm, e0) = fluid_energy_and_c_norm_over_run(4.0, 1.0);

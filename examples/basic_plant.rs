@@ -331,10 +331,9 @@ impl State {
     }
 
     fn update_and_render(&mut self) {
-        // Fires once on the press (rising edge), not every held frame --
-        // repeatedly re-applying a clamped impulse stacks into unbounded
-        // cumulative energy injection (`apply_impulse`'s CFL clamp is
-        // min_dt-based, not the actual sub_dt).
+        // Fires once on the press (rising edge), not every held frame:
+        // repeatedly applying an impulse would deliberately stack unbounded
+        // cumulative energy injection.
         if self.lmb_just_pressed {
             self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, 2.0);
             self.lmb_just_pressed = false;
