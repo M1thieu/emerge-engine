@@ -96,6 +96,17 @@ impl Renderer {
         );
 
         queue.write_buffer(
+            &self.light_diffuse_params_buf,
+            0,
+            bytemuck::bytes_of(&LightDiffuseParams {
+                surface_res,
+                material_slot,
+                _pad0: 0,
+                _pad1: 0,
+            }),
+        );
+
+        queue.write_buffer(
             &self.wave_params_buf,
             0,
             bytemuck::bytes_of(&WaveStepParams {
@@ -310,6 +321,43 @@ impl Renderer {
                 },
             ],
         });
+        // Real light-diffusion pair (`curvature_flow.wgsl`'s "Pass 1e") --
+        // must run AFTER temp_diffuse above (needs the FINAL, already-
+        // diffused temperature as its own real emission source, same real
+        // ordering reasoning `temp_diffuse_bg`'s own doc gives for running
+        // after the density iterate loop). `light_cur_idx`/`light_next_idx`
+        // alternate which of the 2 ping-pong buffers is read vs written
+        // this frame -- simpler 2-way rotation than the wave field's own
+        // 3-way (see `light_frame_index`'s own doc for why one fewer buffer
+        // suffices here).
+        let light_cur_idx = (self.light_frame_index % 2) as usize;
+        let light_next_idx = ((self.light_frame_index + 1) % 2) as usize;
+        let light_diffuse_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("light_diffuse_bg"),
+            layout: &self.light_diffuse_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.light_phi_bufs[light_cur_idx].as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.light_phi_bufs[light_next_idx].as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.surface_temp_float_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.light_diffuse_params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.optical_table_buf.as_entire_binding(),
+                },
+            ],
+        });
         // Real, persistent (across frames) wave field -- see `curvature_
         // flow.wgsl`'s own "Pass 2b" doc. THREE distinct physical buffers
         // rotate through the "current" (read with neighbor offsets),
@@ -438,6 +486,10 @@ impl Renderer {
                     binding: 7,
                     resource: self.surface_material_mass_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: self.light_phi_bufs[light_next_idx].as_entire_binding(),
+                },
             ],
         });
 
@@ -529,6 +581,18 @@ impl Renderer {
             cp.set_bind_group(0, &temp_diffuse_bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
+        // Real light-diffusion step -- see `light_diffuse_bg`'s own doc for
+        // why this must run after temp_diffuse above.
+        {
+            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("light_diffuse"),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(&self.light_diffuse_pipeline);
+            cp.set_bind_group(0, &light_diffuse_bg, &[]);
+            cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
+        }
+        self.light_frame_index = self.light_frame_index.wrapping_add(1);
         // Real volume-preserving correction (see `curvature_flow.wgsl`'s own
         // "Pass 1d" doc) -- must run AFTER temperature recovery above (see
         // that step's own doc for why) and BEFORE the wave/visibility/band
@@ -1496,6 +1560,23 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
+        });
+        // Real, persistent light-fluence diffusion field, grown together --
+        // same real, disclosed reset-to-zero behavior as the wave field
+        // just below (no light has diffused yet right after a resize,
+        // which is simply true, not a bug).
+        self.light_phi_bufs = std::array::from_fn(|i| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(match i {
+                    0 => "light_phi_0",
+                    _ => "light_phi_1",
+                }),
+                size: float_size,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
         });
         // Real wave field, grown together -- a resize resets it to flat
         // (zero), the same real, disclosed behavior `surface_a_buf`/

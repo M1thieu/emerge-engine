@@ -19,8 +19,8 @@ use wgpu::util::DeviceExt;
 
 use super::gpu_types::{
     BandHysteresisParams, CameraParams, GridVisibilityParams, GridVolumeParams, InstanceData,
-    OpticalTable, RenderConfig, SurfaceParams, SurfaceRenderParams, VisibilityParams,
-    WaveStepParams,
+    LightDiffuseParams, OpticalTable, RenderConfig, SurfaceParams, SurfaceRenderParams,
+    VisibilityParams, WaveStepParams,
 };
 
 /// 4-byte lazy-growth storage placeholder -- real, standard convention used
@@ -102,6 +102,13 @@ pub(super) struct RenderBuffers {
     pub band_state_buf: wgpu::Buffer,
     pub band_hysteresis_params_buf: wgpu::Buffer,
     pub raw_splat_history_buf: wgpu::Buffer,
+    /// Real, persistent light-fluence diffusion field (`curvature_flow.wgsl`'s
+    /// "Pass 1e") -- two buffers, not three: unlike the wave field's real
+    /// second-order-in-time leapfrog (needs current+previous to read, next to
+    /// write), diffusion is first-order-in-time -- one "current" to read, one
+    /// "next" to write, swapped each frame (see `light_frame_index`'s own doc).
+    pub light_phi_bufs: [wgpu::Buffer; 2],
+    pub light_diffuse_params_buf: wgpu::Buffer,
 }
 
 impl RenderBuffers {
@@ -276,6 +283,23 @@ impl RenderBuffers {
         // ramps up to the true value over a few frames).
         let raw_splat_history_buf = placeholder_buffer(device, "raw_splat_history", true);
 
+        // Real, persistent light-fluence diffusion field -- placeholder-then-
+        // grow, same convention as the wave field above. Starts all-zero
+        // (WebGPU guarantee) -- a real, harmless one-time bias (no light has
+        // diffused yet on the very first frame, which is simply true).
+        let light_phi_bufs = std::array::from_fn(|i| {
+            placeholder_buffer(
+                device,
+                match i {
+                    0 => "light_phi_0",
+                    _ => "light_phi_1",
+                },
+                true,
+            )
+        });
+        let light_diffuse_params_buf =
+            uniform_buffer::<LightDiffuseParams>(device, "light_diffuse_params");
+
         Self {
             instance_buffer,
             storage_instances,
@@ -320,6 +344,8 @@ impl RenderBuffers {
             band_state_buf,
             band_hysteresis_params_buf,
             raw_splat_history_buf,
+            light_phi_bufs,
+            light_diffuse_params_buf,
         }
     }
 }

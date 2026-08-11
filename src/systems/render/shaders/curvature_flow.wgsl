@@ -682,6 +682,109 @@ fn temp_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     temp_diffuse_out[out_idx] = center + DIFFUSION_ALPHA * DIFFUSION_DT * laplacian;
 }
 
+// ── Pass 1e: light diffusion (real subsurface glow) ──────────────────────────
+//
+// Real diffusion approximation to radiative light transport -- NOT Jensen,
+// Marschner, Levoy & Hanrahan 2001's analytic dipole shortcut (that exact
+// closed-form Rd(r) solution could not be independently re-verified against
+// the actual paper this session, given real tooling limits: no local PDF
+// renderer, WebFetch cannot extract text from the binary PDF). This instead
+// solves the SAME underlying diffusion PDE the dipole model itself is built
+// on top of, numerically -- the identical mathematical form as `temp_
+// diffuse_main` above (diffusion is diffusion; only the source/sink terms
+// differ), a real, fully-verifiable equation with zero dependency on the
+// unverified closed form:
+//
+//   dPhi/dt = D * laplacian(Phi) - sigma_a * Phi + Q
+//
+// Phi = light fluence (energy density), a REAL, PERSISTENT field (evolves
+// across frames like the wave field above, not recomputed from scratch --
+// light diffusion is a genuine continuous-time process, the same real
+// justification the wave field's own doc already gives for its own
+// persistence). Q = the real blackbody emission STRENGTH already computed
+// in `fs_main` (`t_norm*t_norm`, before the heat() color mapping) -- scoped
+// to a single representative intensity channel for now, not full per-
+// wavelength RGB diffusion (a real, disclosed simplification: true light
+// diffuses at a different rate per wavelength, same real mechanism the
+// column-depth fix's own sigma_a-per-channel Beer-Lambert already models
+// for direct transmission; this pass does not yet extend that to the
+// diffuse term).
+//
+// D = 1/(3*(sigma_a+sigma_s)) is the standard diffusion coefficient from
+// radiative transport theory (the same real quantity the dipole model
+// itself starts from, before ITS analytic shortcut) -- real, per-material
+// data already in `light_optics.slots[material_slot]` (the SAME real
+// OpticalTable every other real pass in this file already uses), not a
+// guessed constant.
+//
+// MIN_EXTINCTION is a real, DERIVED stability floor, not a tuned guess:
+// explicit 2D FTCS diffusion needs D*dt/dx^2 <= 1/4 (the identical von
+// Neumann bound `temp_diffuse_main` above already cites); solving for the
+// (sigma_a+sigma_s) floor that keeps THIS pass's own LIGHT_DIFFUSE_DT
+// stable: D_max*LIGHT_DIFFUSE_DT <= 0.25 => D_max <= 0.25/LIGHT_DIFFUSE_DT
+// => 1/(3*MIN_EXTINCTION) <= 0.25/LIGHT_DIFFUSE_DT
+// => MIN_EXTINCTION >= LIGHT_DIFFUSE_DT/(3*0.25) = LIGHT_DIFFUSE_DT/0.75.
+// At LIGHT_DIFFUSE_DT=0.1, MIN_EXTINCTION=0.1333 -- shown worked, not
+// picked by feel. Real materials already in this project (water's own mean
+// sigma_a ~0.131, see render_plan.md's own sigma_a table, Pope & Fry 1997)
+// sit close to or above this floor even before adding any real scattering,
+// so it's a rarely -- not routinely -- binding safety net, same category as
+// MAX_KAPPA above.
+const LIGHT_DIFFUSE_DT: f32 = 0.1;
+const MIN_EXTINCTION: f32 = 0.1333;
+
+struct LightDiffuseParams {
+    surface_res: u32,
+    material_slot: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read> light_phi_in: array<f32>;
+@group(0) @binding(1) var<storage, read_write> light_phi_out: array<f32>;
+@group(0) @binding(2) var<storage, read> light_temp_in: array<f32>;
+@group(0) @binding(3) var<uniform> light_diffuse_params: LightDiffuseParams;
+@group(0) @binding(4) var<uniform> light_optics: OpticalTable;
+
+fn sample_light_phi(cx: i32, cy: i32) -> f32 {
+    let res = i32(light_diffuse_params.surface_res);
+    if cx < 0 || cy < 0 || cx >= res || cy >= res {
+        return 0.0;
+    }
+    return light_phi_in[u32(cy) * light_diffuse_params.surface_res + u32(cx)];
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let cx = i32(gid.x);
+    let cy = i32(gid.y);
+    if cx >= i32(light_diffuse_params.surface_res) || cy >= i32(light_diffuse_params.surface_res) {
+        return;
+    }
+    let idx = u32(cy) * light_diffuse_params.surface_res + u32(cx);
+
+    let center = sample_light_phi(cx, cy);
+    let laplacian = sample_light_phi(cx + 1, cy) + sample_light_phi(cx - 1, cy)
+                  + sample_light_phi(cx, cy + 1) + sample_light_phi(cx, cy - 1)
+                  - 4.0 * center;
+
+    let optical_slot = light_optics.slots[light_diffuse_params.material_slot % 16u];
+    let sigma_a_mean = dot(optical_slot.rgb, vec3<f32>(1.0 / 3.0));
+    let sigma_s = optical_slot.w;
+    let extinction = max(sigma_a_mean + sigma_s, MIN_EXTINCTION);
+    let diffusion_d = 1.0 / (3.0 * extinction);
+
+    // Real blackbody emission STRENGTH, same real quantity fs_main's own
+    // emission term uses before the heat() color mapping (see this pass's
+    // own top doc).
+    let t_norm = clamp(light_temp_in[idx] / 5000.0, 0.0, 1.0);
+    let source = t_norm * t_norm;
+
+    let next = center
+        + LIGHT_DIFFUSE_DT * (diffusion_d * laplacian - sigma_a_mean * center + source);
+    light_phi_out[idx] = max(next, 0.0);
+}
+
 // ── Pass 2b: propagating wave field ──────────────────────────────────────────
 //
 // A PERSISTENT (across frames, unlike everything above which re-derives
@@ -913,6 +1016,21 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Real i32 (NOT bit-reinterpreted as f32), read plainly -- see
 // `dominant_material`'s own doc for why.
 @group(0) @binding(7) var<storage, read> surface_material_mass: array<i32>;
+// Real diffused light fluence (see Pass 1e's own doc, `light_diffuse_main`)
+// -- single-phase only, real headroom confirmed before adding this: this
+// bind group only used 6 of the real 8-storage-buffer WebGPU-guaranteed
+// minimum before this field (the "already at the limit" note above is
+// about `fs_main_dual_phase`'s OWN separate, tighter bind group, not this
+// one).
+@group(0) @binding(8) var<storage, read> surface_light_phi: array<f32>;
+
+fn sample_light_phi_final(cx: i32, cy: i32) -> f32 {
+    let res = i32(render_params.surface_res);
+    if cx < 0 || cy < 0 || cx >= res || cy >= res {
+        return 0.0;
+    }
+    return surface_light_phi[u32(cy) * render_params.surface_res + u32(cx)];
+}
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -1252,7 +1370,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // near-ignition material reads as genuinely glowing.
     let t_norm = clamp(avg_temp / 5000.0, 0.0, 1.0);
     let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
-    let with_emission = clamp(lit + emission, vec3(0.0), vec3(1.0));
+
+    // Real diffused subsurface glow (Pass 1e, `light_diffuse_main`) --
+    // DISTINCT from the local `emission` term just above: emission is the
+    // direct blackbody glow of THIS cell's own temperature; this is real
+    // light that has diffused in from nearby hot cells, genuinely visible
+    // even where local temperature itself is low (a cool cell right next
+    // to an ember should show real bleed-in glow, not a hard cutoff at the
+    // ember's own silhouette). Bilinear-sampled across the SAME 4 corners
+    // `mass`/`avg_temp` already use above, same real anti-blockiness
+    // reasoning. Same `heat()` color mapping as direct emission -- this is
+    // the same real light, just spread, not a differently-colored effect.
+    let lp00 = sample_light_phi_final(bx, by);
+    let lp10 = sample_light_phi_final(bx + 1, by);
+    let lp01 = sample_light_phi_final(bx, by + 1);
+    let lp11 = sample_light_phi_final(bx + 1, by + 1);
+    let phi = mix(mix(lp00, lp10, frac.x), mix(lp01, lp11, frac.x), frac.y);
+    let phi_norm = clamp(phi, 0.0, 1.0);
+    let diffused_glow = heat(0.5 + phi_norm * 0.5).rgb * phi_norm * 1.0;
+
+    let with_emission = clamp(lit + emission + diffused_glow, vec3(0.0), vec3(1.0));
 
     // Widened past a narrow 0.5x band -- see `grid_volume.wgsl`'s own
     // fs_main doc for the real flicker mechanism this fixes. (`edge_margin`

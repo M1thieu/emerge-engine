@@ -1964,6 +1964,121 @@ fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
     );
 }
 
+/// Real proof for the 2026-08-11 light-diffusion extension (`curvature_
+/// flow.wgsl`'s "Pass 1e"): `light_diffuse_main`'s fluence field Phi is
+/// PERSISTENT across frames (see that pass's own doc for why -- the real
+/// diffusion PDE genuinely needs real time to build up spatial spread, same
+/// justification the wave field already established). Real, isolating
+/// signature: render the exact SAME static, unchanging particle scene
+/// (fixed temperature, zero velocity -- nothing else in this pipeline
+/// changes frame-to-frame for an unmoving scene except the wave field,
+/// which itself stays flat here since its own forcing term is the
+/// density's TEMPORAL change, zero for a static scene) repeatedly through
+/// the SAME `Renderer` instance. A HOT scene's rendered brightness at the
+/// SAME pixel must genuinely INCREASE from frame 1 to frame 30 as Phi
+/// accumulates -- real temporal accumulation, not a one-shot local effect.
+/// A COLD (ambient) scene, with no real emission source to diffuse, must
+/// NOT show this drift -- rules out unrelated frame-to-frame noise (float
+/// accumulation, wave-field residue) as the explanation.
+#[test]
+fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
+    let grid_res = 32u32;
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    let render_n_frames = |temp_k: f32, n_frames: u32| -> [u8; 4] {
+        let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(glam::Vec2::splat(16.0))
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        for p in particles.iter_mut() {
+            p.temperature = temp_k;
+        }
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let sim =
+            GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("light_diffusion_test_target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut last = [0u8; 4];
+        for _ in 0..n_frames {
+            r.render_surface_reconstruction(
+                &device,
+                &queue,
+                SurfaceReconstructionSource {
+                    particle_buf: sim.particle_buffer(),
+                    particle_count: sim.particle_count(),
+                    grid_res,
+                    material_slot: 0,
+                    material_mass_enabled: false,
+                    dt: 0.1,
+                },
+                &view,
+                true,
+            );
+            device.poll(wgpu::PollType::wait_indefinitely()).ok();
+            last = readback_pixel(&device, &queue, &texture, 64, 64, 32, 32);
+        }
+        last
+    };
+
+    let hot_frame1 = render_n_frames(3000.0, 1);
+    let hot_frame30 = render_n_frames(3000.0, 30);
+    let hot_b1: u32 = hot_frame1[0] as u32 + hot_frame1[1] as u32 + hot_frame1[2] as u32;
+    let hot_b30: u32 = hot_frame30[0] as u32 + hot_frame30[1] as u32 + hot_frame30[2] as u32;
+    assert!(
+        hot_b30 > hot_b1,
+        "a hot, unchanging scene's own rendered brightness at the SAME pixel must \
+         genuinely increase from frame 1 to frame 30 as the real, persistent light-\
+         diffusion field builds up -- frame1={hot_frame1:?} (sum={hot_b1}) \
+         frame30={hot_frame30:?} (sum={hot_b30})"
+    );
+
+    let cold_frame1 = render_n_frames(293.0, 1);
+    let cold_frame30 = render_n_frames(293.0, 30);
+    let cold_b1: u32 = cold_frame1[0] as u32 + cold_frame1[1] as u32 + cold_frame1[2] as u32;
+    let cold_b30: u32 = cold_frame30[0] as u32 + cold_frame30[1] as u32 + cold_frame30[2] as u32;
+    assert!(
+        cold_b30.abs_diff(cold_b1) <= 1,
+        "an ambient (cold) scene with no real emission source has nothing to diffuse \
+         -- must NOT show the same frame1->frame30 drift the hot scene shows (rules \
+         out unrelated per-frame noise as the explanation): frame1={cold_frame1:?} \
+         (sum={cold_b1}) frame30={cold_frame30:?} (sum={cold_b30})"
+    );
+}
+
 /// Real correctness + stability check for the 2026-07-31 thermal-diffusion
 /// PDE (`curvature_flow.wgsl`'s "Pass 1c", `temp_avg_main`/`temp_diffuse_
 /// main`): two adjacent clusters, one hot (3000K) one ambient (293K),

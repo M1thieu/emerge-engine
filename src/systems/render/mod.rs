@@ -78,16 +78,17 @@ mod pipelines;
 // + its own capacity helpers) lives in surface_reconstruction.rs -- see that file's doc.
 mod surface_reconstruction;
 use gpu_types::{
-    BandHysteresisParams, SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
+    BandHysteresisParams, LightDiffuseParams, SurfaceParams, SurfaceRenderParams, VisibilityParams,
+    WaveStepParams,
 };
 use pipelines::{
     build_band_hysteresis_step_pipeline, build_grid_visibility_step_pipeline,
-    build_grid_volume_pipeline, build_particle_pipeline, build_post_total_reduce_pipeline,
-    build_prep_pipeline, build_surface_clear_pipeline, build_surface_convert_pipeline,
-    build_surface_dual_render_pipeline, build_surface_iterate_pipeline,
-    build_surface_render_pipeline, build_surface_splat_pipeline, build_temp_avg_pipeline,
-    build_temp_diffuse_pipeline, build_visibility_step_pipeline, build_volume_correct_pipeline,
-    build_wave_step_pipeline,
+    build_grid_volume_pipeline, build_light_diffuse_pipeline, build_particle_pipeline,
+    build_post_total_reduce_pipeline, build_prep_pipeline, build_surface_clear_pipeline,
+    build_surface_convert_pipeline, build_surface_dual_render_pipeline,
+    build_surface_iterate_pipeline, build_surface_render_pipeline, build_surface_splat_pipeline,
+    build_temp_avg_pipeline, build_temp_diffuse_pipeline, build_visibility_step_pipeline,
+    build_volume_correct_pipeline, build_wave_step_pipeline,
 };
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
@@ -184,6 +185,18 @@ pub struct Renderer {
     temp_diffuse_pipeline: wgpu::ComputePipeline,
     temp_diffuse_bgl: wgpu::BindGroupLayout,
     surface_temp_b_buf: wgpu::Buffer,
+    /// Real diffusion approximation to light transport (`curvature_flow.
+    /// wgsl`'s "Pass 1e") -- see that entry point's own doc for the full
+    /// real derivation. `light_phi_bufs` are the two ping-pong buffers (see
+    /// their own doc in `buffers.rs`); `light_frame_index` alternates which
+    /// one is "current" (read) vs "next" (write) each frame, the same real
+    /// role `wave_frame_index` plays for the (second-order) wave field,
+    /// just a simpler 2-way rotation for this first-order equation.
+    light_diffuse_pipeline: wgpu::ComputePipeline,
+    light_diffuse_bgl: wgpu::BindGroupLayout,
+    light_phi_bufs: [wgpu::Buffer; 2],
+    light_diffuse_params_buf: wgpu::Buffer,
+    light_frame_index: u32,
     /// Ping-pong plain-f32 buffers. `CURVATURE_ITERATIONS` (even) means the
     /// settled result always lands in `surface_a` -- `render_surface_
     /// reconstruction` only ever reads that one, never `surface_b` directly.
@@ -369,6 +382,8 @@ impl Renderer {
             band_state_buf,
             band_hysteresis_params_buf,
             raw_splat_history_buf,
+            light_phi_bufs,
+            light_diffuse_params_buf,
         } = RenderBuffers::new(device, cap);
 
         let (render_pipeline, render_bgl) = build_particle_pipeline(device, output_format);
@@ -402,6 +417,7 @@ impl Renderer {
             build_band_hysteresis_step_pipeline(device);
         let (temp_avg_pipeline, temp_avg_bgl) = build_temp_avg_pipeline(device);
         let (temp_diffuse_pipeline, temp_diffuse_bgl) = build_temp_diffuse_pipeline(device);
+        let (light_diffuse_pipeline, light_diffuse_bgl) = build_light_diffuse_pipeline(device);
         let (post_total_reduce_pipeline, post_total_reduce_bgl) =
             build_post_total_reduce_pipeline(device);
         let (volume_correct_pipeline, volume_correct_bgl) = build_volume_correct_pipeline(device);
@@ -452,6 +468,11 @@ impl Renderer {
             temp_avg_bgl,
             temp_diffuse_pipeline,
             temp_diffuse_bgl,
+            light_diffuse_pipeline,
+            light_diffuse_bgl,
+            light_phi_bufs,
+            light_diffuse_params_buf,
+            light_frame_index: 0,
             surface_temp_b_buf,
             surface_a_buf,
             surface_b_buf,

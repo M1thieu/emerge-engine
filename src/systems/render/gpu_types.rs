@@ -102,6 +102,19 @@ pub(super) struct SurfaceParams {
 }
 const _: () = assert!(mem::size_of::<SurfaceParams>() == 24);
 
+/// Mirrors `curvature_flow.wgsl`'s `LightDiffuseParams` -- the real,
+/// persistent light-fluence diffusion pass's own uniform (see that shader's
+/// own "Pass 1e" doc for the full real technique).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct LightDiffuseParams {
+    pub(super) surface_res: u32,
+    pub(super) material_slot: u32,
+    pub(super) _pad0: u32,
+    pub(super) _pad1: u32,
+}
+const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 16);
+
 /// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the real, persistent
 /// (across frames) 2D wave-equation pass's own uniform. See that shader's
 /// own "Pass 2b" doc for the real technique (same cited numerical scheme as

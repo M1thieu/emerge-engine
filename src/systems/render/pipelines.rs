@@ -537,6 +537,36 @@ pub(super) fn build_temp_diffuse_pipeline(
     (pipeline, bgl)
 }
 
+/// `curvature_flow.wgsl`'s `light_diffuse_main` pipeline -- the real
+/// diffusion approximation to light transport (see that entry point's own
+/// "Pass 1e" doc for the full real derivation, including the cited von
+/// Neumann stability bound). Reads the current fluence + the diffused
+/// temperature field (source) + the real per-material `OpticalTable`
+/// (sigma_a/sigma_s), writes the next fluence.
+pub(super) fn build_light_diffuse_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("light_diffuse_bgl"),
+        entries: &[
+            bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_ro(2, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
+        ],
+    });
+    let shader = build_curvature_flow_shader(device);
+    let pipeline = build_compute_pipeline(
+        device,
+        "light_diffuse_pipeline",
+        &bgl,
+        &shader,
+        "light_diffuse_main",
+    );
+    (pipeline, bgl)
+}
+
 /// `curvature_flow.wgsl`'s `wave_step_main` pipeline -- the real, persistent
 /// 2D wave-equation step (see that entry point's own "Pass 2b" doc for the
 /// full real-technique citation). 4 storage buffers (density read, wave
@@ -645,6 +675,9 @@ pub(super) fn build_surface_render_pipeline(
             // N-material extension, single-phase only -- see
             // `surface_material_mass`'s own doc in the shader.
             bgl_storage_ro(7, wgpu::ShaderStages::FRAGMENT),
+            // Real diffused light fluence, single-phase only -- see
+            // `surface_light_phi`'s own doc in the shader.
+            bgl_storage_ro(8, wgpu::ShaderStages::FRAGMENT),
         ],
     });
     let shader = build_curvature_flow_shader(device);
