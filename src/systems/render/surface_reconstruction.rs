@@ -36,6 +36,7 @@ impl Renderer {
             grid_res,
             material_slot,
             material_mass_enabled,
+            dt,
         } = source;
         if particle_count == 0 {
             return;
@@ -55,6 +56,7 @@ impl Renderer {
                 particle_count: particle_count as u32,
                 phase_filter_material_id: -1, // v1 behavior: every particle contributes
                 material_mass_enabled: material_mass_enabled as u32,
+                dt,
             }),
         );
 
@@ -972,6 +974,7 @@ impl Renderer {
             grid_res,
             material_id_a,
             material_id_b,
+            dt,
         } = source;
         if particle_count == 0 {
             return;
@@ -990,6 +993,7 @@ impl Renderer {
                 // N-material extension is a single-phase-only mechanism,
                 // unrelated to this 2-phase filter -- always off here.
                 material_mass_enabled: 0,
+                dt,
             }),
         );
         queue.write_buffer(
@@ -1001,6 +1005,7 @@ impl Renderer {
                 particle_count: particle_count as u32,
                 phase_filter_material_id: material_id_b as i32,
                 material_mass_enabled: 0,
+                dt,
             }),
         );
 

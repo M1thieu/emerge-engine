@@ -93,8 +93,14 @@ pub(super) struct SurfaceParams {
     /// Always 0 on the dual-phase path -- its own 2-phase filter above is
     /// a different, unrelated mechanism.
     pub(super) material_mass_enabled: u32,
+    /// Real simulation timestep (`SimConfig::dt`) -- see `curvature_flow.
+    /// wgsl`'s own `SurfaceParams::dt` doc for why this is the real
+    /// physical quantity `splat_density_main`'s velocity-stretch extension
+    /// needs, not a render-frame time. Ignored by every other pass sharing
+    /// this struct.
+    pub(super) dt: f32,
 }
-const _: () = assert!(mem::size_of::<SurfaceParams>() == 20);
+const _: () = assert!(mem::size_of::<SurfaceParams>() == 24);
 
 /// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the real, persistent
 /// (across frames) 2D wave-equation pass's own uniform. See that shader's
@@ -198,6 +204,12 @@ pub struct SurfaceReconstructionSource<'a> {
     /// `dominant_material`, see `curvature_flow.wgsl`'s doc). Opt-in --
     /// false costs nothing beyond a 4-byte placeholder buffer.
     pub material_mass_enabled: bool,
+    /// Real simulation timestep (`SimConfig::dt`) -- feeds `splat_density_
+    /// main`'s real velocity-stretch extension (see `curvature_flow.wgsl`'s
+    /// own `SurfaceParams::dt` doc for the full physical grounding). Pass
+    /// the same `dt` the `Simulation` this scene came from was constructed
+    /// with.
+    pub dt: f32,
 }
 
 /// Bundles `render_surface_reconstruction_dual_phase`'s args (see that
@@ -212,6 +224,11 @@ pub struct DualPhaseSurfaceSource<'a> {
     pub grid_res: u32,
     pub material_id_a: u32,
     pub material_id_b: u32,
+    /// Real simulation timestep (`SimConfig::dt`) -- same real velocity-
+    /// stretch extension as `SurfaceReconstructionSource::dt` (see that
+    /// field's own doc), since this path shares the exact same
+    /// `splat_density_main` compute shader.
+    pub dt: f32,
 }
 
 #[repr(C)]

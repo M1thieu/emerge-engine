@@ -491,6 +491,7 @@ impl State {
                         grid_res: GRID as u32,
                         material_id_a: MAT_WATER,
                         material_id_b: MAT_MUD,
+                        dt: DT,
                     },
                     &view,
                     true,

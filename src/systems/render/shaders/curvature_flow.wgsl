@@ -131,6 +131,17 @@ struct SurfaceParams {
     // disabled: clear/splat skip the extra 16-slot-per-cell atomic work
     // entirely (zero cost). 1 = enabled. Always 0 on the dual-phase path.
     material_mass_enabled: u32,
+    // Real simulation timestep (`SimConfig::dt`, the SAME value the solver
+    // itself steps with -- not a render-frame time, which this pass has no
+    // way to know and which is the wrong physical quantity anyway: what
+    // matters for a real motion-stretch footprint is how far the particle
+    // moved during the physics step that produced its CURRENT `v`, not how
+    // long the screen took to redraw). Used only by `splat_density_main`'s
+    // real velocity-stretch extension (see that function's own doc) --
+    // every other pass sharing this struct ignores the field, same existing
+    // convention `phase_filter_material_id`/`material_mass_enabled` already
+    // use for pass-specific fields.
+    dt: f32,
 }
 
 struct SurfaceRenderParams {
@@ -322,7 +333,46 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // `max_stretch` widens the scatter loop's radius to cover the
     // (potentially larger, in a stretched direction) footprint this
     // implies -- a fixed isotropic radius is only correct when F==identity.
-    let f_reg = regularize_deformation(p.deformation_gradient);
+    //
+    // Real velocity-stretch extension (2026-08-11): a SECOND, complementary
+    // anisotropy source composed with F above -- F captures ACCUMULATED
+    // shape change (already real), this captures INSTANTANEOUS motion (a
+    // fast splash droplet stretching along its own flight path, distinct
+    // from any shape deformation it's separately undergoing). Real, cited
+    // technique (Codrops Feb-2025 WebGPU fluid renderer; "Real-time
+    // deformable droplet rendering," 2025 preprint -- both drive particle
+    // deformation from velocity, not just accumulated shape).
+    //
+    // `stretch_factor` is a real, DERIVED dimensionless ratio, not a tuned
+    // constant: `|v|*dt` is the real physical distance (grid units) this
+    // particle moved during the physics step that produced its current
+    // `v` (`splat_params.dt` is `SimConfig::dt`, threaded through from the
+    // real solver, not a render-frame time); dividing by
+    // BSPLINE_OUTER_LIMIT (the kernel's own real half-width, already
+    // defined above) gives "how many kernel-radii did it travel this
+    // step" -- a particle moving less than one kernel-radius (the common
+    // CFL-limited case) gets a near-1.0 factor, negligible extra stretch;
+    // a genuinely fast splash droplet gets real, visible elongation along
+    // its own velocity.
+    let speed = length(p.v);
+    var stretch_factor = 1.0;
+    var v_dir = vec2<f32>(1.0, 0.0);
+    if speed > 1.0e-5 {
+        v_dir = p.v / speed;
+        stretch_factor = 1.0 + (speed * splat_params.dt) / BSPLINE_OUTER_LIMIT;
+    }
+    let v_perp = vec2<f32>(-v_dir.y, v_dir.x);
+    // Real, area-preserving anisotropic stretch matrix -- eigen-
+    // decomposition form: eigenvector `v_dir` with eigenvalue
+    // `stretch_factor` (elongate along real motion), eigenvector `v_perp`
+    // with eigenvalue `1/stretch_factor` (compress perpendicular, same
+    // real convention any anisotropic Gaussian/kernel construction uses to
+    // avoid inflating the kernel's own total footprint area).
+    let motion_col0 = stretch_factor * v_dir.x * v_dir + (1.0 / stretch_factor) * v_perp.x * v_perp;
+    let motion_col1 = stretch_factor * v_dir.y * v_dir + (1.0 / stretch_factor) * v_perp.y * v_perp;
+    let motion_stretch = mat2x2<f32>(motion_col0, motion_col1);
+
+    let f_reg = regularize_deformation(motion_stretch * p.deformation_gradient);
     let f_inv = inverse2x2(f_reg);
     let max_stretch = max(length(f_reg[0]), length(f_reg[1]));
     let radius = i32(ceil(BSPLINE_OUTER_LIMIT * scale * max_stretch));

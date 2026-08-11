@@ -369,6 +369,7 @@ fn render_surface_reconstruction_survives_end_to_end() {
             grid_res: 32,
             material_slot: 0,
             material_mass_enabled: false,
+            dt: 0.1,
         },
         &view,
         true,
@@ -440,6 +441,7 @@ fn render_surface_reconstruction_produces_real_density_near_particles() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: false,
+            dt: 0.1,
         },
         &view,
         true,
@@ -552,6 +554,7 @@ fn dual_phase_reconstruction_keeps_two_materials_in_their_own_phase_buffer() {
             grid_res,
             material_id_a: 0,
             material_id_b: 1,
+            dt: 0.1,
         },
         &view,
         true,
@@ -700,6 +703,7 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: true,
+            dt: 0.1,
         },
         &view,
         true,
@@ -913,6 +917,7 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: true,
+            dt: 0.1,
         },
         &view,
         true,
@@ -1071,6 +1076,7 @@ fn anisotropic_splat_widens_footprint_along_stretched_axis() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
@@ -1125,6 +1131,139 @@ fn anisotropic_splat_widens_footprint_along_stretched_axis() {
          directional bias from the splat loop itself): x={} y={}",
         iso_x,
         iso_y
+    );
+}
+
+/// Real proof for the 2026-08-11 velocity-stretch extension: a fast-moving
+/// particle (F=identity, no shape deformation at all) must ALSO splat a
+/// wider footprint along its own velocity direction than perpendicular to
+/// it -- the same real signature `anisotropic_splat_widens_footprint_
+/// along_stretched_axis` proves for F, now proven for the independent,
+/// composed velocity source. A stationary (v=0) control at the same
+/// position must show no such bias, and `dt=0.0` must also show no bias
+/// (real, disclosed no-op case every pre-existing test in this file relies
+/// on for `dt: 0.1` not to change their own unrelated assertions when their
+/// particles happen to be at rest).
+#[test]
+fn velocity_stretch_widens_footprint_along_motion_direction() {
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
+    let grid_res = 32u32;
+    let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
+
+    let render_single_cluster = |velocity: glam::Vec2, dt: f32| -> Vec<f32> {
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(glam::Vec2::splat(16.0))
+                .disk(1.5)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        for p in &mut particles {
+            p.v = velocity;
+        }
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let sim =
+            GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("velocity_stretch_test_target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        r.render_surface_reconstruction(
+            &device,
+            &queue,
+            SurfaceReconstructionSource {
+                particle_buf: sim.particle_buffer(),
+                particle_count: sim.particle_count(),
+                grid_res,
+                material_slot: 0,
+                material_mass_enabled: false,
+                dt,
+            },
+            &view,
+            true,
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+
+        let surface_res = r.surface_res;
+        readback_f32_blocking(
+            &device,
+            &queue,
+            &r.surface_a_buf,
+            (surface_res * surface_res) as usize,
+        )
+    };
+
+    let surface_res = grid_res * SURFACE_RES_MULTIPLIER;
+    let scale = surface_res as f32 / grid_res as f32;
+    let center = (16.0 * scale) as i32;
+    let offset = (2.0 * scale) as i32;
+    let idx = |dx: i32, dy: i32| -> usize {
+        ((center + dy) as u32 * surface_res + (center + dx) as u32) as usize
+    };
+
+    // speed*dt/BSPLINE_OUTER_LIMIT = 22.5*0.1/1.5 = 1.5 -> stretch_factor=2.5,
+    // matching the F-based test's own real 2.5x for a direct, consistent
+    // comparison. 22.5 grid-units/s is a real, plausible fast-splash speed
+    // for this engine (live-measured max speeds during violent impacts have
+    // reached 100-450+ grid-units/s elsewhere in this project).
+    let moving = render_single_cluster(glam::Vec2::new(22.5, 0.0), 0.1);
+    let density_x = moving[idx(offset, 0)];
+    let density_y = moving[idx(0, offset)];
+    assert!(
+        density_x > density_y + 0.02,
+        "a particle moving fast along x (F=identity, no shape deformation) must \
+         splat substantially more density along its own motion axis than \
+         perpendicular to it: x={density_x} y={density_y}"
+    );
+
+    let stationary = render_single_cluster(glam::Vec2::ZERO, 0.1);
+    let stat_x = stationary[idx(offset, 0)];
+    let stat_y = stationary[idx(0, offset)];
+    assert!(
+        (stat_x - stat_y).abs() < 0.02,
+        "a stationary (v=0) particle must splat a symmetric footprint -- no \
+         motion, no stretch: x={stat_x} y={stat_y}"
+    );
+
+    // Real no-op check: the SAME fast velocity, but dt=0.0 (no real physics
+    // step behind this v yet) must also show zero bias -- confirms the
+    // extension is truly inert without real dt, not just coincidentally
+    // small for THIS velocity.
+    let fast_but_dt_zero = render_single_cluster(glam::Vec2::new(22.5, 0.0), 0.0);
+    let zero_dt_x = fast_but_dt_zero[idx(offset, 0)];
+    let zero_dt_y = fast_but_dt_zero[idx(0, offset)];
+    assert!(
+        (zero_dt_x - zero_dt_y).abs() < 0.02,
+        "dt=0.0 must be a real no-op regardless of velocity (the physical \
+         quantity is displacement = v*dt, not v alone): x={zero_dt_x} y={zero_dt_y}"
     );
 }
 
@@ -1598,6 +1737,7 @@ fn curvature_flow_scattering_and_specular_change_rendered_color() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
@@ -1684,6 +1824,7 @@ fn diagnose_curvature_flow_edge_hair_pixels() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: false,
+            dt: 0.1,
         },
         &view,
         true,
@@ -1801,6 +1942,7 @@ fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
@@ -1914,6 +2056,7 @@ fn curvature_flow_thermal_diffusion_stays_finite_and_separates_hot_from_cold() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: false,
+            dt: 0.1,
         },
         &view,
         true,
@@ -2051,6 +2194,7 @@ fn curvature_flow_volume_correction_matches_true_particle_mass() {
             grid_res,
             material_slot: 0,
             material_mass_enabled: false,
+            dt: 0.1,
         },
         &view,
         true,
@@ -2171,6 +2315,7 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
@@ -2266,6 +2411,7 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
@@ -2606,6 +2752,7 @@ fn surface_reconstruction_does_not_flicker_over_many_deterministic_frames() {
                 grid_res,
                 material_slot: 0,
                 material_mass_enabled: false,
+                dt: 0.1,
             },
             &view,
             true,
