@@ -1316,6 +1316,112 @@ fn grid_volume_blackbody_emission_brightens_hot_cells() {
     );
 }
 
+/// Real regression/proof for the 2026-08-11 column-depth attenuation fix:
+/// before this, `optical_depth` only ever reflected LOCAL density at one
+/// pixel, so a shallow puddle and a deep lake rendered nearly identically at
+/// the same local mass -- a real, missing effect (real water genuinely gets
+/// darker/bluer with depth, Pope & Fry 1997, the exact citation this
+/// project's own sigma_a table already uses). Two scenes, IDENTICAL local
+/// mass at the query cell (isolating this from the pre-existing local-
+/// density banding) -- only what sits ABOVE that cell differs: a thin band
+/// (shallow) vs a tall column all the way to the domain edge (deep). The
+/// deep scene must render measurably darker at the same query point.
+#[test]
+fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
+    let (device, queue) = headless_device();
+    let grid_res = 24u32;
+    let cell_count = (grid_res * grid_res) as usize;
+    const SLOTS: usize = 16;
+
+    let material_mass_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test_column_depth_material_mass"),
+        size: (cell_count * SLOTS * std::mem::size_of::<f32>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(
+        &material_mass_buf,
+        0,
+        bytemuck::cast_slice(&vec![0f32; cell_count * SLOTS]),
+    );
+
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    // `fill_to_y_exclusive`: real mass fills every column, every row from
+    // y=0 up to (not including) this value. Both scenes fill generously past
+    // the domain's vertical middle (17 of 24 rows) -- deliberately NOT
+    // trying to guess the exact grid row the center readback pixel maps to,
+    // just guaranteeing it lands solidly inside real filled material for
+    // BOTH scenes (same local mass either way), so the only real difference
+    // between them is whether more mass exists further above that point.
+    let render_with_fill_top = |fill_to_y_exclusive: u32| -> [u8; 4] {
+        let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test_column_depth_grid_int"),
+            size: (cell_count * 4 * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut cells = vec![0u32; cell_count * 4];
+        let mass = 1.0f32;
+        for cy in 0..fill_to_y_exclusive.min(grid_res) {
+            for cx in 0..grid_res {
+                let c = (cy * grid_res + cx) as usize;
+                cells[c * 4 + 2] = mass.to_bits();
+            }
+        }
+        queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
+
+        let mut r = Renderer::new(&device, 1, fmt);
+        // Real, non-trivial water-like sigma_a (Pope & Fry 1997 table, same
+        // constants this project's own render_plan.md already cites) --
+        // needs a real absorption coefficient for column depth to visibly
+        // matter; a near-zero sigma_a would barely change with any depth.
+        r.set_optical_params(&queue, 0, [0.35, 0.033, 0.011]);
+        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("column_depth_test_target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        r.render_grid_volume(
+            &device,
+            &queue,
+            GridVolumeSource {
+                grid: &grid_buf,
+                material_mass: &material_mass_buf,
+                material_mass_enabled: false,
+            },
+            &view,
+            true,
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        readback_pixel(&device, &queue, &texture, 64, 64, 32, 32)
+    };
+
+    let shallow = render_with_fill_top(17); // past the domain's vertical middle, well short of the top
+    let deep = render_with_fill_top(grid_res); // filled all the way to the domain edge
+    let shallow_brightness: u32 = shallow[0] as u32 + shallow[1] as u32 + shallow[2] as u32;
+    let deep_brightness: u32 = deep[0] as u32 + deep[1] as u32 + deep[2] as u32;
+
+    assert!(
+        deep_brightness < shallow_brightness,
+        "a deep column must render measurably darker than a shallow one at the SAME \
+         local mass (real solar attenuation with depth, not local density alone) -- \
+         shallow={shallow:?} (sum={shallow_brightness}) deep={deep:?} (sum={deep_brightness})"
+    );
+}
+
 /// Real regression check for the 2026-07-31 fix: `dominant_material` used
 /// to compare `material_mass` bit-reinterpreted directly as `f32` --
 /// confirmed BROKEN on real hardware (this GPU flushes the resulting
