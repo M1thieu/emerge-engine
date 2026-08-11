@@ -4105,23 +4105,39 @@ fn no_compression_settles_more_compactly_than_ordinary_elastic_under_self_weight
 /// which agree only if `rho_SI*dx^2 == dt^2` (here 0.1 vs 0.01 -- a factor of 10).
 /// `mult=1` is what `stress_from_si` currently produces; `mult=10` is what the
 /// density convention implies. The data decides, not the algebra.
-/// Real, partial result (2026-08-10), not a false alarm: `mult=1` now
-/// completes its full 400-step sweep (thanks to `fluid_step_retry_enabled`,
-/// added the same night) and reports real data confirming this test's own
-/// hypothesis -- `compression=86.85%`, nowhere near the <1% "weakly
-/// compressible" criterion this test exists to check, real evidence `mult=1`
-/// (`stress_from_si`'s current output) is the wrong scaling. `mult=10`
-/// (the density-convention-implied alternative) never finishes: it hits the
-/// real, LOUD strict-fluid substep-budget assertion added this same night
-/// (`Simulation::step`'s own doc) -- a genuine, separate CFL/stiffness
-/// instability at that much higher B_grid, previously silently masked by
-/// the old accounting this repo used to have, now surfaced instead of
-/// hidden. `#[ignore]`d because this diagnostic sweep can no longer
-/// complete BOTH comparison points in one run, not because either finding
-/// is wrong -- re-enable once `mult=10`'s own instability gets a real,
-/// dedicated investigation (likely needs its own retry/CFL tuning at that
-/// stiffness, separate from this file's other real fixes tonight).
-#[ignore = "mult=1 gives real, confirmed data (86.85% compression, wrong scaling); mult=10 hits a real, separate, LOUD stiffness instability that needs its own investigation -- not a false alarm either way"]
+/// Real, partial result (2026-08-10): `mult=1` completes its full 400-step
+/// sweep (thanks to `fluid_step_retry_enabled`) with `compression=86.85%`,
+/// nowhere near the <1% "weakly compressible" criterion -- real evidence
+/// `mult=1` (`stress_from_si`'s current output) is the wrong scaling.
+/// `mult=10` originally never finished at `max_substeps_per_step=2000`: it
+/// hit the real, LOUD strict-fluid substep-budget panic -- a genuine,
+/// separate CFL/stiffness instability at that much higher B_grid.
+///
+/// **Real follow-up (2026-08-11): the mult=10 crash IS just a substep-budget
+/// problem, not a deeper blow-up.** Raised `max_substeps_per_step` to 20000
+/// for this diagnostic only (impractical for any real-time demo, fine for a
+/// one-off `#[ignore]`d research sweep) -- mult=10 now converges cleanly,
+/// zero panic, zero non-finite values, `compression=27.89%`. A real,
+/// substantial improvement over mult=1's 86.85% (roughly 3x lower), genuine
+/// evidence mult=10 IS the more correct scaling -- but still nowhere near
+/// the <1% target, so this does NOT close the question. New, real, still-
+/// unexplained puzzle this follow-up surfaced: the analytic hydrostatic
+/// prediction (`predicted_rho_ratio`, inverting Tait at the column base,
+/// p=rho*g*h) says mult=10 should give ~0.49% compression, but the ACTUAL
+/// measured value is 27.89% -- a large gap between theory and measurement,
+/// present at BOTH mult values (mult=1: predicted 4.38% vs measured
+/// 86.85%), suggesting a real dynamic/transient effect the simple static
+/// hydrostatic-balance formula doesn't capture (400 steps may not be enough
+/// for true quasi-static equilibrium, or a real compounding numerical
+/// effect elsewhere in the pressure-projection/retry chain). `#[ignore]`d
+/// for two real, separate reasons now, not one: (1) the underlying
+/// predicted-vs-measured gap is still a genuinely open research question,
+/// not yet root-caused: (2) `max_substeps_per_step=20000` makes this
+/// specific diagnostic take ~37 minutes per run, impractical for routine
+/// suite execution regardless of correctness. Re-enable (or promote to a
+/// real, non-ignored regression test) once the predicted-vs-measured gap
+/// itself is understood, not just observed.
+#[ignore = "mult=10 no longer crashes (raising max_substeps_per_step to 20000 fixes that cleanly, 27.89% compression vs mult=1's 86.85%) but neither hits the real <1% weakly-compressible target, and there's a new unexplained predicted-vs-measured gap at BOTH mult values -- genuinely open research, plus this specific diagnostic takes ~37min/run at the cap needed to avoid the crash"]
 #[test]
 fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
     use emerge::{SimConfig, SpawnRegion, build_particles};
@@ -4161,7 +4177,7 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
         // finish and report.
         let config = SimConfig {
             min_dt: 1.0e-6,
-            max_substeps_per_step: 2000,
+            max_substeps_per_step: 20000,
             recompute_density_each_step: true,
             cfl_include_affine_speed: false,
             fluid_step_retry_enabled: true,
