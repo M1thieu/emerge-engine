@@ -214,6 +214,13 @@ impl MaterialModel for BinghamFluidMaterial {
         }
     }
 
+    // TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same
+    // reasoning as `NewtonianFluidMaterial::owns_deformation_volume_state`,
+    // see that method's own doc for the full live-confirmed root cause.
+    fn owns_deformation_volume_state(&self) -> bool {
+        true
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Fluid as u32,

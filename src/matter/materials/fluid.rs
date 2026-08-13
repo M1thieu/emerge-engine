@@ -238,6 +238,26 @@ impl MaterialModel for NewtonianFluidMaterial {
         *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
+    // TEMPORARY, explicitly disclosed restoration (2026-08-13): this trait
+    // method did not exist before `cac544b` -- this file predates it, so
+    // reverting the file wholesale silently dropped the override, leaving
+    // the default `false`. REAL, LIVE-CONFIRMED bug this caused on GPU:
+    // without this returning `true`, `basic_fluids_gpu.rs`'s water froze
+    // completely from frame 1 (v~0, J=1.000 exactly, forever) -- most
+    // likely because a kernel-density recompute this method exists to
+    // suppress (see this file's own top-of-file doc: "biased at a free
+    // surface... not a conservative thermodynamic state update") started
+    // overwriting volume/density in a way that failed
+    // `strict_fluid_state_is_admissible`'s internal consistency check in
+    // `particles_update.wgsl` every single substep, silently freezing the
+    // fluid branch's own state update via its early return. `true` restores
+    // the correct, current-codebase-wide convention: this material owns its
+    // own volume/density (see `update_particle` above), don't let a kernel
+    // gather overwrite it.
+    fn owns_deformation_volume_state(&self) -> bool {
+        true
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Fluid as u32,

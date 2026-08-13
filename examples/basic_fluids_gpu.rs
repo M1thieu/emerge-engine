@@ -383,15 +383,11 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     // arxiv.org/pdf/1002.3029's acoustic-spectroscopy remeasurement, ratio ~3 across
     // 7-50C) -- applied here to the SAME `1.0e-3` dynamic_viscosity already used above.
     water.bulk_viscosity = 3.0 * 1.0e-3;
-    // TEMPORARY, explicitly disclosed (2026-08-13): `settling_damping`,
-    // restored alongside the J clamp -- see that field's own doc
-    // (`fluid.rs`) for why. `bulk_viscosity` above already targets the same
-    // symptom (acoustic/volumetric oscillation) via proper stress-based
-    // dissipation, but live-measured tonight it's not enough alone: J stays
-    // bounded (the clamp works) but max_speed still bounces 3.2-6.8 with no
-    // decay. 0.1 is the midpoint of the historical known-good water range
-    // (0.05-0.2), not swept for this specific scene yet.
-    water.settling_damping = 0.1;
+    // `settling_damping` was tried at 0.1 (2026-08-13) alongside the
+    // restored J clamp + pressure_floor -- live-measured, that COMBINATION
+    // over-damped the scene entirely (reported: "doesn't even move"). Left
+    // off (0.0, the constructor default) pending a real, isolated re-test of
+    // clamp+pressure_floor alone before adding this back in.
     // Mud gets the SAME real Mach criterion and the SAME gamma as water
     // (2026-08-11): sizing only water correctly would leave mud as the
     // material that drives the CFL minimum (the adaptive dt is a MINIMUM over
