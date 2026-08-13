@@ -104,6 +104,19 @@ pub struct Simulation {
     /// active (every scene that never enables the feature stays here
     /// permanently, zero cost).
     fluid_sticky_fine_dt: Option<(f32, u32)>,
+    /// Real max particle speed measured by the PREVIOUS `choose_substep_dt`
+    /// call -- one-substep-lagged, since a substep's own max speed isn't
+    /// known until its CFL fold completes. Feeds the near-wall gate's
+    /// Mach-relative compression threshold
+    /// (`SimConfig::fluid_near_wall_compression_mach_margin`); `0.0` at
+    /// construction, which makes the very first substep's near-wall gate
+    /// maximally sensitive (threshold collapses to 0.0, matching the OLD
+    /// always-reactive behavior for exactly one substep) -- a safe,
+    /// conservative cold-start default, not a special case: it errs toward
+    /// too-cautious for one substep rather than too-permissive, and
+    /// self-corrects the moment the first real fold measures an actual
+    /// speed.
+    last_max_particle_speed: f32,
     last_step_dt: f32,
     last_substeps: usize,
     last_vel_clamp_count: usize,

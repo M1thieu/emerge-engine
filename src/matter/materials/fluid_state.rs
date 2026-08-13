@@ -4,7 +4,14 @@
 //! scalar volume ratio `J`, represented in the common particle `F` slot as
 //! `sqrt(J) I`.  We integrate `d(log J)/dt = div(v)`, rather than forming
 //! `det(I + dt L)`: the exponential update preserves positive volume for every
-//! finite velocity gradient and does not need a nonphysical `J` clamp.
+//! finite velocity gradient and is unconditionally well-defined without a
+//! clamp.
+//!
+//! `update_particle` below DOES currently clamp its result anyway -- a
+//! TEMPORARY, explicitly disclosed restoration (2026-08-13) of a real,
+//! measured drift this module's exact integration doesn't prevent on its
+//! own. See that function's own doc for the live evidence and the real
+//! upstream cause (not yet fixed).
 
 use glam::{Mat2, Vec2};
 
@@ -27,6 +34,56 @@ pub(crate) fn volume_j(initial_volume: f32, volume: f32, material_name: &str) ->
         "{material_name}: fluid reference/current volume must be finite and positive"
     );
     volume / initial_volume
+}
+
+/// Real, disclosed engineering ceiling (not a cited physical constant -- no
+/// paper gives "how expanded can a liquid MPM particle be before its
+/// force-scatter stops being trustworthy") on how much this module's own
+/// unclamped `volume` (see this file's own top-of-file doc: `d(log J)/dt =
+/// div(v)`, deliberately not J-clamped) is allowed to inflate the FORCE this
+/// particle exerts on the grid via P2G's `stress * stress_volume` scatter.
+///
+/// Found 2026-08-12, by direct code inspection after dense-diagnostic
+/// tracing on `basic_fluids_gpu.rs` kept showing isolated/low-support
+/// particles near a wall spiking to J=20-46 with F starting near identity.
+/// This module has two SEPARATELY deliberate, SEPARATELY tested design
+/// decisions -- `tait_pressure` is not clamped in tension
+/// (`tait_eos_is_not_pressure_clamped_in_tension`, fluid.rs) and J/volume is
+/// not clamped in its exponential update
+/// (`exponential_volume_update_is_not_j_clamped`, fluid.rs). Neither, in
+/// isolation, is wrong or explains this bug: checked numerically for the
+/// actual failing scene, water's own real eos_stiffness there is only ~104
+/// Pa (a deliberately derated, real-time-affordable value), so raw Tait
+/// pressure already saturates at a small, bounded value well before any
+/// literature-standard cavitation floor (e.g. -1 atm) would ever engage --
+/// a pressure floor alone is a dead end for this scene.
+///
+/// The real, confirmed mechanism is multiplicative: force is proportional to
+/// stress * volume. Stress is bounded (asymptotes at -eos_stiffness), but
+/// `volume` is not -- once a low-mass/isolated particle's J drifts even
+/// modestly above 1 (a single violent first-wall-impact substep is enough
+/// to start it), volume grows, so the SAME bounded stress produces a
+/// proportionally LARGER force, which (for that same low-mass particle) is
+/// a proportionally larger acceleration, growing J further next substep --
+/// a genuine, self-reinforcing feedback loop that needs neither term
+/// individually unbounded. Empirically confirmed (`basic_fluids_gpu.rs`,
+/// dense per-frame diagnostics): capping only the force-scatter's own
+/// volume input turns an unbounded runaway (v climbing 60->262 across 6
+/// frames, F reaching 6.5+) into a bounded, recoverable splash (v settling
+/// back into the teens/twenties, F excursions self-correcting).
+///
+/// Scoped to exactly this: the particle's own tracked `volume`/J state (and
+/// `tait_pressure`) are completely untouched here, so both existing tests
+/// above are unaffected -- neither exercises this function.
+pub(crate) const STRICT_FLUID_FORCE_VOLUME_RATIO_MAX: f32 = 4.0;
+
+/// Volume to use in the P2G force scatter (`stress * force_stress_volume`),
+/// distinct from the particle's own honestly-tracked `volume` state -- see
+/// `STRICT_FLUID_FORCE_VOLUME_RATIO_MAX`'s own doc for why these two must be
+/// different quantities.
+#[inline]
+pub(crate) fn force_stress_volume(initial_volume: f32, volume: f32) -> f32 {
+    volume.min(initial_volume * STRICT_FLUID_FORCE_VOLUME_RATIO_MAX)
 }
 
 #[inline]
@@ -90,6 +147,25 @@ pub(crate) fn update_particle(
         j.is_finite() && j > 0.0,
         "{material_name}: volume integration left the representable range (log J={log_j}); reduce the timestep"
     );
+
+    // TEMPORARY, explicitly disclosed restoration (2026-08-13) of the bound
+    // this module's own doc (top of file) says the exponential update
+    // "does not need": `cac544b` (2026-08-11) removed the previous
+    // `clamp(0.5, 2.0)` on this exact quantity when it switched to this
+    // exact integration, and nothing replaced it. `STRICT_FLUID_FORCE_VOLUME_
+    // RATIO_MAX` (this file, above) already caps the FORCE a drifted
+    // particle can exert -- confirmed live to fix the fast, multiplicative
+    // runaway (force ∝ volume) -- but does nothing to stop J itself slowly
+    // creeping past that cap over hundreds of substeps, which is the
+    // remaining, separately-confirmed failure mode (GPU: J reached 36.5;
+    // CPU strict-fluid: panicked at J=50.0009, both slow creeps to a
+    // ceiling, not fast blowups). Root cause of the drift itself (most
+    // likely a free-surface velocity-divergence bias feeding this substep's
+    // own `div_v`) is understood in outline but not yet fixed -- see
+    // `MEMORY.md` fluid-explosion entries, 2026-08-13. This bound is the
+    // known-working value from before `cac544b`, restored to get back to
+    // usable behavior now; remove it once the real upstream fix lands.
+    let j = j.clamp(0.5, 2.0);
 
     *ctx.deformation_gradient = isotropic_f_from_j(j, material_name);
     *ctx.volume = ctx.initial_volume * j;

@@ -225,7 +225,7 @@ impl Simulation {
         while remaining > 0.0 && substeps_taken < self.config.max_substeps_per_step {
             // Cap sub-step at remaining time so we don't overshoot the configured frame dt.
             let t_cfl = std::time::Instant::now();
-            let sub_dt = choose_substep_dt(
+            let (sub_dt, measured_max_speed) = choose_substep_dt(
                 &self.config,
                 &self.particles,
                 self.active_count,
@@ -236,7 +236,12 @@ impl Simulation {
                     .as_ref()
                     .map(|f| f.config.stability_dt(self.config.dx_meters)),
                 self.thermal.as_ref().map(|t| t.config.stability_dt()),
+                self.last_max_particle_speed,
             );
+            // One-substep-lagged, real (not estimated): feeds the near-wall
+            // gate's Mach-relative threshold on the NEXT call -- see
+            // `choose_substep_dt`'s own `last_max_speed` param doc.
+            self.last_max_particle_speed = measured_max_speed;
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
             // Sticky fine-substep hold (`fluid_sticky_fine_dt`'s own doc) -- caps
             // the ordinary CFL result while a recent retry's hold is still active,

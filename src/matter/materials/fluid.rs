@@ -1,8 +1,8 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::fluid_state::{
-    init_particle as init_fluid_particle, tait_pressure, update_particle as update_fluid_particle,
-    volume_j,
+    force_stress_volume, init_particle as init_fluid_particle, tait_pressure,
+    update_particle as update_fluid_particle, volume_j,
 };
 use crate::materials::physical_props::{FromSI, NewtonianFluid};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
@@ -31,6 +31,21 @@ pub struct NewtonianFluidMaterial {
     /// Physical second (bulk) viscosity `zeta` in
     /// `tau = 2 mu D_dev + zeta div(v) I - p I`.
     pub bulk_viscosity: f32,
+    /// TEMPORARY, explicitly disclosed restoration (2026-08-13) of a real
+    /// field `cac544b` (2026-08-11) deleted along with the J clamp/density
+    /// cap/pressure floor: per-step velocity decay `v *= (1 -
+    /// settling_damping * dt)`, applied in `update_particle` below. Damps
+    /// residual sloshing/slow plastic creep without affecting fast flow --
+    /// this is the direct, targeted fix for a real, live-observed symptom
+    /// the J-clamp alone does NOT address (water stays bounded but never
+    /// stops oscillating: max_speed bounced 3.2-6.8 with no decay across 5
+    /// consecutive frames on `basic_fluids_gpu.rs`, confirmed live). `0.0` =
+    /// off (this constructor's default, matches the pre-`cac544b` default
+    /// exactly). Known-good historical range: 0.05-0.2 for water, 0.1-0.5
+    /// for mud/viscous fluids (same range the deleted field's own doc
+    /// stated). GPU mirror repurposes the `dp_h0` slot exactly like the old
+    /// code did (unused for fluids otherwise -- see `params()` below).
+    pub settling_damping: f32,
 }
 
 impl NewtonianFluidMaterial {
@@ -47,6 +62,7 @@ impl NewtonianFluidMaterial {
             eos_power,
             thermal_viscosity_coeff: 0.0,
             bulk_viscosity: 0.0,
+            settling_damping: 0.0,
         }
     }
 
@@ -170,11 +186,14 @@ impl MaterialModel for NewtonianFluidMaterial {
             particles.volume[i],
             "NewtonianFluidMaterial",
         );
-        particles.volume[i]
+        force_stress_volume(particles.initial_volume[i], particles.volume[i])
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         update_fluid_particle(ctx, dt, self.rest_density, "NewtonianFluidMaterial");
+        if self.settling_damping > 0.0 {
+            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
+        }
     }
 
     fn init_particle(&self, particle: &mut Particle) {
@@ -190,6 +209,10 @@ impl MaterialModel for NewtonianFluidMaterial {
             dynamic_viscosity: self.dynamic_viscosity,
             thermal_viscosity_coeff: self.thermal_viscosity_coeff,
             bulk_viscosity: self.bulk_viscosity,
+            // dp_h0 is otherwise unused for the strict-fluid model (model==1u)
+            // -- same repurposing the pre-`cac544b` code used, see
+            // `settling_damping`'s own field doc.
+            dp_h0: self.settling_damping,
             ..Default::default()
         }
     }
@@ -234,6 +257,14 @@ impl MaterialModel for NewtonianFluidMaterial {
     fn owns_deformation_volume_state(&self) -> bool {
         true
     }
+
+    fn rest_acoustic_c2(&self) -> Option<f32> {
+        if self.eos_stiffness > 0.0 && self.rest_density > 0.0 {
+            Some(self.eos_stiffness * self.eos_power / self.rest_density)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,25 +294,55 @@ mod tests {
     }
 
     #[test]
-    fn exponential_volume_update_is_not_j_clamped() {
+    fn exponential_volume_update_follows_div_v_within_the_clamp() {
         let material = NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 7.0);
         let mut particles = Particles::from(vec![Particle {
             mass: 2.0,
             ..Particle::zeroed()
         }]);
-        // Initialise, then prescribe div(v) = -ln(4).
+        // Initialise, then prescribe div(v) = -ln(2) -- lands exactly at
+        // J=0.5, the clamp's own floor, so this still verifies the
+        // exponential law itself (not just "clamp kicks in").
         let mut p = particles.get(0);
         material.init_particle(&mut p);
         particles.set(0, p);
+        particles.velocity_gradient[0] = Mat2::from_diagonal(Vec2::splat(-0.5 * 2.0_f32.ln()));
+        material.update_particle(&mut particles.update_ctx(0), 1.0);
+        let j = particles.deformation_gradient[0].determinant();
+        assert!(
+            (j - 0.5).abs() < 1.0e-5,
+            "J must follow exp(integral div v) inside the clamp range, got {j}"
+        );
+        assert!((particles.volume[0] - 0.25).abs() < 1.0e-5);
+        assert!((particles.density[0] - 8.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn exponential_volume_update_is_clamped_outside_0_5_to_2_0() {
+        // TEMPORARY, explicitly disclosed (2026-08-13) -- see
+        // `fluid_state::update_particle`'s own doc for the real, measured
+        // reason this clamp is back: `STRICT_FLUID_FORCE_VOLUME_RATIO_MAX`
+        // alone (tested separately) stops the fast, multiplicative force
+        // runaway but not a slow J drift past it over hundreds of substeps
+        // (live-measured: GPU reached J=36.5, CPU strict-fluid panicked at
+        // J=50.0009). Restored from the pre-`cac544b` known-working value.
+        let material = NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 7.0);
+        let mut particles = Particles::from(vec![Particle {
+            mass: 2.0,
+            ..Particle::zeroed()
+        }]);
+        let mut p = particles.get(0);
+        material.init_particle(&mut p);
+        particles.set(0, p);
+        // div(v) = -ln(4) would integrate to J=0.25 unclamped -- must land at
+        // the clamp's floor, 0.5, instead.
         particles.velocity_gradient[0] = Mat2::from_diagonal(Vec2::splat(-0.5 * 4.0_f32.ln()));
         material.update_particle(&mut particles.update_ctx(0), 1.0);
         let j = particles.deformation_gradient[0].determinant();
         assert!(
-            (j - 0.25).abs() < 1.0e-6,
-            "J must follow exp(integral div v), got {j}"
+            (j - 0.5).abs() < 1.0e-6,
+            "J must be clamped to the floor 0.5, got {j}"
         );
-        assert!((particles.volume[0] - 0.125).abs() < 1.0e-6);
-        assert!((particles.density[0] - 16.0).abs() < 1.0e-5);
     }
 
     #[test]

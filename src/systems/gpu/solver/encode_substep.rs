@@ -134,6 +134,45 @@ impl GpuSimulation {
             pass.set_bind_group(3, &self.resource_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
+        // Real, dense fixed-point decode (mass+momentum, main+grip grid) --
+        // MUST run strictly after p2g (reads what p2g just scattered) and
+        // strictly before grid_cohesion (which reads NEIGHBOR cells' mass --
+        // see grid_decode_main's own doc for why this is a genuine data race
+        // otherwise, not a style choice).
+        let grid_wg_1d = (self.config.grid_res as u32).div_ceil(8);
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("grid_decode"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.grid_decode);
+            pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            pass.set_bind_group(2, &self.thermal_bind_group, &[]);
+            pass.set_bind_group(3, &self.resource_bind_group, &[]);
+            pass.dispatch_workgroups(grid_wg_1d, grid_wg_1d, 1);
+        }
+        // Real grid-mediated cohesion/surface-tension (CSF) -- see
+        // grid_cohesion_main's own doc. Runs strictly after grid_decode
+        // (needs every neighbor's mass already real f32) and strictly before
+        // grid_update (adds its momentum correction before normalize/
+        // gravity/boundary consume it). No-op (immediate return every
+        // thread) whenever `cohesion_params.gamma_grid <= 0.0` -- the
+        // default, every scene that hasn't explicitly enabled real cohesion
+        // pays only the dispatch overhead of this pass, not the per-cell
+        // gradient work.
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("grid_cohesion"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipelines.grid_cohesion);
+            pass.set_bind_group(0, bg, &[]);
+            pass.set_bind_group(1, &self.contact_bind_group, &[]);
+            pass.set_bind_group(2, &self.thermal_bind_group, &[]);
+            pass.set_bind_group(3, &self.resource_bind_group, &[]);
+            pass.dispatch_workgroups(grid_wg_1d, grid_wg_1d, 1);
+        }
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("grid_update"),
@@ -144,10 +183,13 @@ impl GpuSimulation {
             pass.set_bind_group(1, &self.contact_bind_group, &[]);
             pass.set_bind_group(2, &self.thermal_bind_group, &[]);
             pass.set_bind_group(3, &self.resource_bind_group, &[]);
-            // GPU sparse grid Phase 2: same active-block dispatch pattern as grid_clear (see
-            // grid_update.wgsl's doc comment) -- was the last remaining O(grid_res²)-dispatch
-            // pass; now bounded to occupied blocks (+ one substep's grace period) instead.
-            pass.dispatch_workgroups(2 * NUM_BLOCKS as u32, 1, 1);
+            // REAL FIX (2026-08-12): back to dense, matching grid_decode_main's
+            // own dense coverage -- see grid_update.wgsl's grid_update_main doc
+            // for the full, confirmed (via tests/gpu.rs bisection) root cause.
+            // The GPU sparse grid Phase 2 optimization this pass used to have
+            // (active-block-gated dispatch) is a real, disclosed, known
+            // performance regression from this fix, not a hidden one.
+            pass.dispatch_workgroups(grid_wg_1d, grid_wg_1d, 1);
         }
         // Skipped entirely under the same `contact_active` gate as `gather_contact_points`
         // above -- safe ONLY because `g2p.wgsl` itself is gated on the identical flag (see

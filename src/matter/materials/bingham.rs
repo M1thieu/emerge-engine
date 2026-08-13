@@ -1,8 +1,8 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::fluid_state::{
-    init_particle as init_fluid_particle, tait_pressure, update_particle as update_fluid_particle,
-    volume_j,
+    force_stress_volume, init_particle as init_fluid_particle, tait_pressure,
+    update_particle as update_fluid_particle, volume_j,
 };
 use crate::materials::physical_props::{BinghamProps, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
@@ -54,6 +54,11 @@ pub struct BinghamFluidMaterial {
     pub critical_shear_rate: f32,
     /// Physical second viscosity ζ in `τ = 2μD_dev + ζ div(v)I - pI`.
     pub bulk_viscosity: f32,
+    /// TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same
+    /// field, same reasoning, as `NewtonianFluidMaterial::settling_damping`
+    /// (see that field's own doc). `0.0` = off (default). Known-good
+    /// historical range: 0.1-0.5 for mud/viscous fluids.
+    pub settling_damping: f32,
 }
 
 impl BinghamFluidMaterial {
@@ -72,6 +77,7 @@ impl BinghamFluidMaterial {
             yield_stress,
             critical_shear_rate: 1.0e-2,
             bulk_viscosity: 0.0,
+            settling_damping: 0.0,
         }
     }
 
@@ -255,11 +261,14 @@ impl MaterialModel for BinghamFluidMaterial {
             particles.volume[i],
             "BinghamFluidMaterial",
         );
-        particles.volume[i]
+        force_stress_volume(particles.initial_volume[i], particles.volume[i])
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         update_fluid_particle(ctx, dt, self.rest_density, "BinghamFluidMaterial");
+        if self.settling_damping > 0.0 {
+            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
+        }
     }
 
     fn init_particle(&self, particle: &mut Particle) {
@@ -276,6 +285,10 @@ impl MaterialModel for BinghamFluidMaterial {
             compression_limit: self.yield_stress,
             critical_shear_rate: self.critical_shear_rate,
             bulk_viscosity: self.bulk_viscosity,
+            // dp_h0 is otherwise unused for the strict-fluid model (model==1u)
+            // -- same repurposing as NewtonianFluidMaterial::params(), see
+            // `settling_damping`'s own field doc.
+            dp_h0: self.settling_damping,
             ..Default::default()
         }
     }
@@ -344,6 +357,14 @@ impl MaterialModel for BinghamFluidMaterial {
 
     fn owns_deformation_volume_state(&self) -> bool {
         true
+    }
+
+    fn rest_acoustic_c2(&self) -> Option<f32> {
+        if self.eos_stiffness > 0.0 && self.rest_density > 0.0 {
+            Some(self.eos_stiffness * self.eos_power / self.rest_density)
+        } else {
+            None
+        }
     }
 }
 

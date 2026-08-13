@@ -5330,4 +5330,197 @@ mod gpu_tests {
             "max_j={max_j} -- real regression toward the old unbounded blowup, not the known stable plateau"
         );
     }
+
+    /// Regional-substepping (`purring-swinging-cookie.md` Part A) verification --
+    /// a real two-region scene: a small, already-settled CALM puddle far from a
+    /// tall VIOLENT column that free-falls and slams the floor, well-separated
+    /// spatially (x~12 vs x~50 on a 64-cell grid) so their own 3x3-block halos
+    /// never overlap during this test's window. Run twice, same config, only
+    /// `fluid_regional_substepping_gpu_enabled` differs -- proves the feature
+    /// doesn't perturb a calm region it's supposed to be skipping most updates
+    /// for, and doesn't break the violent region's own real dynamics.
+    ///
+    /// Tolerance asymmetry is deliberate, not sloppy: the CALM region gets a
+    /// tight center-of-mass check (it starts at rest and should barely move
+    /// regardless of which tier path touches it -- any real divergence here
+    /// would mean the coarse-tier accumulated-resync-dt math is wrong). The
+    /// VIOLENT region only gets sanity bounds (fell, impacted, stayed
+    /// finite/bounded) -- this codebase's own prior documented finding
+    /// (`gpu_basic_fluids_hard_wall_scene_stays_bounded_not_exploding`'s own
+    /// comment) is that a real wall-impact scene chaotically diverges between
+    /// GPU's parallel atomic reduction and any second run, so exact trajectory
+    /// agreement isn't a real property to assert there even flag-off vs
+    /// flag-off.
+    #[test]
+    fn gpu_regional_substepping_two_region_scene_matches_flag_off() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID_RES: usize = 64;
+        const DT: f32 = 0.05;
+        const MAT_CALM: u32 = 0;
+        const MAT_VIOLENT: u32 = 1;
+        const N_FRAMES: usize = 60;
+
+        struct RegionSummary {
+            non_finite_ever: bool,
+            calm_particle_count: usize,
+            violent_particle_count: usize,
+            calm_max_speed_ever: f32,
+            violent_max_speed_ever: f32,
+            calm_com_final: Vec2,
+            violent_com_final: Vec2,
+        }
+
+        fn run(regional_enabled: bool) -> RegionSummary {
+            let config = SimConfig {
+                min_dt: 1.0e-4,
+                max_substeps_per_step: 150,
+                cfl_include_affine_speed: false,
+                material_cfl_coefficient: 0.1,
+                gravity: Vec2::new(0.0, -981.0 * 0.003),
+                fluid_near_wall_cfl_scale: 20.0,
+                fluid_regional_substepping_gpu_enabled: regional_enabled,
+                ..SimConfig::earth(GRID_RES, 0.01, DT)
+            };
+            const CALM_MASS: f32 = 0.1 * 0.6 * 0.6;
+            const VIOLENT_MASS: f32 = 0.1 * 0.6 * 0.6;
+            // Already resting on the floor, away from any wall -- should barely
+            // move regardless of which tier touches it.
+            let spawn_calm = SpawnRegion {
+                spacing: 0.6,
+                box_size: IVec2::new(10, 6),
+                box_center: Vec2::new(12.0, 5.0),
+                material_id: MAT_CALM,
+                precompute_initial_volumes: true,
+                mass_override: Some(CALM_MASS),
+                ..SpawnRegion::for_sim(&config)
+            };
+            // Starts elevated, far from the calm region -- free-falls and slams
+            // the floor, real impact dynamics.
+            let spawn_violent = SpawnRegion {
+                spacing: 0.6,
+                box_size: IVec2::new(10, 20),
+                box_center: Vec2::new(50.0, 45.0),
+                material_id: MAT_VIOLENT,
+                precompute_initial_volumes: true,
+                mass_override: Some(VIOLENT_MASS),
+                ..SpawnRegion::for_sim(&config)
+            };
+            let mut particles = build_particles(&config, spawn_calm);
+            particles.extend(build_particles(&config, spawn_violent));
+            let calm_material = NewtonianFluidMaterial::low_viscosity(0.1, 2.5);
+            let violent_material = NewtonianFluidMaterial::low_viscosity(0.1, 2.5);
+            let mut registry = MaterialRegistry::with_default(Box::new(calm_material));
+            registry.insert(MAT_VIOLENT, Box::new(violent_material));
+            let mut sim = block_on(GpuSimulation::new(config, particles, registry));
+
+            let mut non_finite_ever = false;
+            let mut calm_max_speed_ever = 0.0f32;
+            let mut violent_max_speed_ever = 0.0f32;
+            let mut calm_particle_count = 0usize;
+            let mut violent_particle_count = 0usize;
+            let mut calm_com_final = Vec2::ZERO;
+            let mut violent_com_final = Vec2::ZERO;
+            for frame in 0..N_FRAMES {
+                sim.step_frame();
+                sim.sync_particles_blocking();
+                let ps = sim.particles();
+                calm_particle_count = 0;
+                violent_particle_count = 0;
+                calm_com_final = Vec2::ZERO;
+                violent_com_final = Vec2::ZERO;
+                for p in ps.iter() {
+                    if !(p.x.is_finite() && p.v.is_finite()) {
+                        non_finite_ever = true;
+                    }
+                    match p.material_id {
+                        MAT_CALM => {
+                            calm_particle_count += 1;
+                            calm_max_speed_ever = calm_max_speed_ever.max(p.v.length());
+                            calm_com_final += p.x;
+                        }
+                        MAT_VIOLENT => {
+                            violent_particle_count += 1;
+                            violent_max_speed_ever = violent_max_speed_ever.max(p.v.length());
+                            violent_com_final += p.x;
+                        }
+                        _ => unreachable!("only two materials registered"),
+                    }
+                }
+                if non_finite_ever {
+                    panic!("frame {frame} went non-finite (regional_enabled={regional_enabled})");
+                }
+            }
+            calm_com_final /= calm_particle_count as f32;
+            violent_com_final /= violent_particle_count as f32;
+            RegionSummary {
+                non_finite_ever,
+                calm_particle_count,
+                violent_particle_count,
+                calm_max_speed_ever,
+                violent_max_speed_ever,
+                calm_com_final,
+                violent_com_final,
+            }
+        }
+
+        let off = run(false);
+        let on = run(true);
+
+        assert!(!off.non_finite_ever && !on.non_finite_ever);
+
+        // No cross-region leakage under either path -- a bug in the tier-gate
+        // buffer indexing could plausibly corrupt particle state without
+        // literally moving particles between material IDs, but a particle
+        // count mismatch would be a very loud, structural symptom worth
+        // catching cheaply here regardless.
+        assert_eq!(off.calm_particle_count, on.calm_particle_count);
+        assert_eq!(off.violent_particle_count, on.violent_particle_count);
+
+        // Sanity: the scene actually did what it's supposed to, in BOTH runs
+        // -- calm stayed calm, violent genuinely fell and impacted. A test
+        // that passed vacuously (e.g. because the violent column never
+        // actually got going) wouldn't be exercising the coarse tier at all.
+        for (label, s) in [("flag-off", &off), ("flag-on", &on)] {
+            assert!(
+                s.calm_max_speed_ever < 5.0,
+                "{label}: calm region moved too much (max_speed={}) -- it started at rest, far from the impact",
+                s.calm_max_speed_ever
+            );
+            assert!(
+                s.violent_max_speed_ever > 5.0,
+                "{label}: violent column never reached real fall/impact speed (max_speed={}) -- scene isn't exercising real dynamics",
+                s.violent_max_speed_ever
+            );
+        }
+
+        // Tight check: the calm region's resting center of mass must agree
+        // closely between flag-on and flag-off -- it should be almost
+        // entirely unperturbed by which tier touches it (real physics: it's
+        // resting, far from the impact, low compression the whole run).
+        let calm_com_delta = (off.calm_com_final - on.calm_com_final).length();
+        assert!(
+            calm_com_delta < 0.5,
+            "calm region's center of mass diverged too much between flag-off ({:?}) and flag-on ({:?}) -- \
+             delta={calm_com_delta}, suggests the coarse-tier accumulated-resync-dt math is wrong",
+            off.calm_com_final,
+            on.calm_com_final
+        );
+
+        // Loose check only for the violent region -- per this test's own doc,
+        // a real wall-impact scene is known to chaotically diverge run-to-run
+        // even without this feature, so this only guards against the tier
+        // gate sending the violent column somewhere wildly different (e.g.
+        // off toward the calm region, or out of the domain), not exact
+        // trajectory agreement.
+        let violent_com_delta = (off.violent_com_final - on.violent_com_final).length();
+        assert!(
+            violent_com_delta < 15.0,
+            "violent region's center of mass diverged implausibly between flag-off ({:?}) and flag-on ({:?}) -- \
+             delta={violent_com_delta}",
+            off.violent_com_final,
+            on.violent_com_final
+        );
+    }
 }

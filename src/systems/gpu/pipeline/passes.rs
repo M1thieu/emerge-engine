@@ -168,6 +168,8 @@ pub(super) fn build_p2g_and_grid_pipelines(
     wgpu::ComputePipeline, // grid_clear
     wgpu::ComputePipeline, // p2g
     wgpu::ComputePipeline, // gather_contact_points
+    wgpu::ComputePipeline, // grid_decode
+    wgpu::ComputePipeline, // grid_cohesion
     wgpu::ComputePipeline, // grid_update
 ) {
     // MAX_MATERIALS: array-size constant — must be injected via string template
@@ -205,6 +207,30 @@ pub(super) fn build_p2g_and_grid_pipelines(
         contact_block_consts,
         false,
     );
+    // Real, dense fixed-point decode + real grid-mediated cohesion (CSF) --
+    // see `grid_decode_main`/`grid_cohesion_main`'s own doc (`grid_update.wgsl`).
+    // Both compiled from the SAME module as `grid_update_main`, so both need
+    // the SAME `grid_update_consts` overrides supplied even though neither
+    // entry point references them -- identical requirement to
+    // `gather_contact_points_main` needing `p2g.wgsl`'s own override above.
+    let grid_decode = make_pipeline(
+        device,
+        layout,
+        shaders::GRID_UPDATE,
+        "grid_decode_main",
+        "grid_decode",
+        grid_update_consts,
+        false,
+    );
+    let grid_cohesion = make_pipeline(
+        device,
+        layout,
+        shaders::GRID_UPDATE,
+        "grid_cohesion_main",
+        "grid_cohesion",
+        grid_update_consts,
+        false,
+    );
     let grid_update = make_pipeline(
         device,
         layout,
@@ -215,7 +241,14 @@ pub(super) fn build_p2g_and_grid_pipelines(
         false,
     );
 
-    (grid_clear, p2g, gather_contact_points, grid_update)
+    (
+        grid_clear,
+        p2g,
+        gather_contact_points,
+        grid_decode,
+        grid_cohesion,
+        grid_update,
+    )
 }
 
 /// g2p -> particles_update -> force_fields, the second half of the per-substep MPM
@@ -285,6 +318,7 @@ pub(super) fn build_asflip_pipeline(
 pub(super) fn build_cfl_scan_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
+    block_consts: &[(&str, f64)],
 ) -> wgpu::ComputePipeline {
     let cfl_scan_src = patch_shader(shaders::CFL_SCAN);
     make_pipeline(
@@ -293,7 +327,7 @@ pub(super) fn build_cfl_scan_pipeline(
         &cfl_scan_src,
         "cfl_scan_main",
         "cfl_scan",
-        &[],
+        block_consts,
         false,
     )
 }

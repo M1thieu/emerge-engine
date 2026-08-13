@@ -42,6 +42,6 @@ pub use spatial_blocks::{
 };
 pub use substep::GpuStepParams;
 pub use subsystems::{
-    GpuAsflipParams, GpuMaterialMassParams, GpuResourceParams, GpuThermalParams,
+    GpuAsflipParams, GpuCohesionParams, GpuMaterialMassParams, GpuResourceParams, GpuThermalParams,
     MAX_RENDER_MATERIAL_SLOTS,
 };
