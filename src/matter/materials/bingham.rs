@@ -166,6 +166,17 @@ impl MaterialModel for BinghamFluidMaterial {
         particle.density = self.rest_density / j;
     }
 
+    /// Same restoration and reasoning as
+    /// `NewtonianFluidMaterial::rest_acoustic_c2` -- this material shares the
+    /// identical Tait EOS, so it needs the identical rest sound speed.
+    fn rest_acoustic_c2(&self) -> Option<f32> {
+        if self.eos_stiffness > 0.0 && self.rest_density > 0.0 {
+            Some(self.eos_stiffness * self.eos_power / self.rest_density)
+        } else {
+            None
+        }
+    }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         // Pressure from Tait EOS (same as NewtonianFluid). Clamp density both
         // ways, matching `NewtonianFluidMaterial::kirchhoff_stress` exactly:

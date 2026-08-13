@@ -219,6 +219,26 @@ impl MaterialModel for NewtonianFluidMaterial {
         particle.density = self.rest_density / j;
     }
 
+    /// Rest-state acoustic speed squared, `c^2 = B*gamma/rho0` (Tait EOS
+    /// evaluated at `J = 1`).
+    ///
+    /// TEMPORARY, explicitly disclosed restoration (2026-08-13): the THIRD
+    /// trait method the wholesale pre-`cac544b` revert silently dropped
+    /// (after `owns_deformation_volume_state` and `init_particle`) -- it
+    /// postdates this file's restored form. Without it the near-wall CFL
+    /// gate (`cfl.rs`) can't compute a Mach number, falls back to its fixed
+    /// absolute threshold, and therefore fires identically at every flow
+    /// speed -- exactly what
+    /// `near_wall_gate_relaxes_when_measured_speed_predicts_this_much_compression`
+    /// caught (dt_low_speed == dt_high_speed, no relaxation).
+    fn rest_acoustic_c2(&self) -> Option<f32> {
+        if self.eos_stiffness > 0.0 && self.rest_density > 0.0 {
+            Some(self.eos_stiffness * self.eos_power / self.rest_density)
+        } else {
+            None
+        }
+    }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         // Density from F's own determinant (rho = rest_density / J), NOT the
         // grid-mass-gathered `particles.density[i]` this used before -- a
