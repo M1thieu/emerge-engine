@@ -317,9 +317,21 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
                 // crash worse, panicking sooner instead of surviving on a
                 // bounded plateau).
                 let c0_quadratic = (mat.eos_power + 1.0) * 0.25;
-                let quadratic = c0_quadratic * (rho * h * div_v) * (rho * h * div_v);
+                // q = rho * (c0*h^2*(div v)^2 - c1*h*c_sound*div v),  div v < 0.
+                //
+                // REAL BUG FIXED 2026-08-13 (GPU copy of the same fix landed
+                // on CPU in `fluid.rs::artificial_bulk_viscosity`): this was
+                // `c0*(rho*h*div_v)^2 - c1*h*c_sound*div_v` -- rho^2 in the
+                // quadratic term, no rho at all in the linear one, so the two
+                // terms don't even share units. Both cited sources (Wang et
+                // al. arXiv:2404.17057 eq. 4; `tmp/GeoTaichi`'s
+                // `MaterialModel.py::artifical_viscosity`) multiply BOTH by
+                // rho exactly once. Measured on the CPU twin: the old form
+                // inflated q ~8x and swamped the EOS (max_speed 11 -> 130, J
+                // pinned at the clamp); corrected it CUT peak expansion 3.5x.
+                let quadratic = c0_quadratic * h * h * div_v * div_v;
                 let linear    = 1.0 * h * c_sound * div_v;
-                let q = quadratic - linear;
+                let q = rho * (quadratic - linear);
                 if finite_scalar(q) {
                     t = t - q * I;
                 }

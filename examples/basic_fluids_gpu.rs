@@ -121,7 +121,13 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // CPU scene) panics on frame 1 here ("GPU strict fluid update became
         // inadmissible"). Not swept per-value for this scene yet; 0.1 is the
         // known-stable pairing from the CPU sweep at higher compression.
-        material_cfl_coefficient: 0.1,
+        // 0.3, not 0.1 (2026-08-13) -- matches `basic_fluids_gui.rs`'s own
+        // change and the standard explicit CFL number range (0.2-0.4;
+        // Monaghan 0.25-0.3 for SPH, MLS-MPM commonly 0.3-0.5). See that
+        // demo's own comment for the full reasoning: 0.1 was 3x more
+        // conservative than any cited solver, and the failure it was
+        // protecting against traced to a too-soft EOS, not to C.
+        material_cfl_coefficient: 0.3,
         // Real, root-caused fix (2026-08-06, caught live by the user): the
         // old `Vec2::new(0.0, -0.3)` (~3270x weaker than real IRL gravity,
         // g_grid~=981 via SimConfig::earth) left too little real driving
