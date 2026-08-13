@@ -87,7 +87,40 @@ const RENDER_FPS_TARGET: f32 = 60.0;
 // `particle_scale` at the OLD spacing's value (0.6) while particles now sit
 // 0.9 grid-units apart left visible gaps between them, reading as
 // "filtered"/barely-visible fluid, not the actual physics being wrong.
-const SPACING: f32 = 0.9;
+// 0.5, not the old 0.9 (2026-08-13). This is the particle-per-cell (PPC)
+// sampling rate, a real MPM discretisation parameter, not a cosmetic one:
+// with grid_cell_size = 1.0, spacing s gives PPC = (1/s)^2, so 0.9 gave just
+// **1.23 PPC** where standard 2D MPM uses **4** (particles seeded at dx/2 --
+// the convention in Hu et al.'s MLS-MPM and every reference implementation in
+// tmp/). At 1.23 PPC each grid node is supported by barely one particle, which
+// under-resolves the transfer, makes the free surface ragged, and starves both
+// render paths (grid-volume's density field and the curvature-flow surface
+// reconstruction) of the data they need -- reported live as every render mode
+// looking bad, not just the raw-particle one.
+//
+// 0.5 restores exactly 4 PPC. `box_size` is the region's extent in CELLS, so
+// it stays untouched -- the columns keep their exact physical dimensions and
+// only the sampling density inside them changes. Particle mass is already
+// derived as rho0 * SPACING^2, so it follows automatically. Real cost: ~3.2x
+// more particles (water ~928 -> ~2900).
+const SPACING: f32 = 0.5;
+/// Rendered diameter of one particle, for `RenderMode::Particles`.
+///
+/// The quad spans `local_pos` in [-0.5, 0.5], so the drawn disc's DIAMETER is
+/// exactly the `particle_scale` passed to `set_camera`. Passing `SPACING`
+/// (what this demo did until 2026-08-13) makes each disc exactly as wide as
+/// the particle pitch -- and circles of diameter = pitch on a square lattice
+/// cover only pi/4 = 78.5% of the area, leaving 21.5% of the fluid as visible
+/// dark gaps at the diagonals. Live-reported as the particle view looking
+/// speckled/scattered rather than like a liquid.
+///
+/// A material point represents an area of `SPACING^2`, so the disc carrying
+/// exactly that area has `pi*r^2 = SPACING^2`, i.e. diameter
+/// `2/sqrt(pi) * SPACING ~= 1.128 * SPACING`. That is this constant: each
+/// particle draws precisely the fluid area it actually stands for -- no
+/// arbitrary fudge factor, and it stays correct automatically if SPACING
+/// changes.
+const PARTICLE_RENDER_DIAMETER: f32 = SPACING * 1.128_379_2; // 2/sqrt(pi)
 const MAT_WATER: u32 = 0;
 const MAT_MUD: u32 = 1;
 const MAT_ICE: u32 = 2;
@@ -423,8 +456,28 @@ impl State {
         let sim = make_sim();
         let real_gravity = sim.config().gravity;
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, SPACING, true);
+        renderer.set_camera(
+            &queue,
+            GRID as u32,
+            size.width,
+            size.height,
+            PARTICLE_RENDER_DIAMETER,
+            true,
+        );
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // Real, disclosed render fix (2026-08-13): the grid-volume and
+        // curvature-flow-surface paths threshold on ABSOLUTE cell mass
+        // (`mass_floor = 0.15`), a constant written for scenes whose occupied
+        // cells weigh "order 0.5-4". This scene is calibrated to REAL water,
+        // `rho0 = 1000 kg/m^3 * dx^2 = 0.1` grid units, so a completely full
+        // cell weighs 0.1 -- BELOW that floor. Every cell was discarded, so
+        // both of those modes rendered the fluid as near-empty while the
+        // raw-particle mode showed it correctly (live-confirmed: the three
+        // modes visibly disagreed about where the fluid even was). Telling the
+        // renderer this scene's real full-cell mass makes the thresholds mean
+        // "fraction of a full cell", which is what they were always intended
+        // to mean.
+        renderer.set_grid_reference_cell_mass(0.1);
 
         // CPU->GPU render bridges for RenderMode::GridVolume/Surface -- see
         // RenderMode's own doc for why these exist (no persistent GPU buffer
@@ -625,8 +678,14 @@ impl State {
         self.surface_config.width = w;
         self.surface_config.height = h;
         self.surface.configure(&self.device, &self.surface_config);
-        self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, SPACING, true);
+        self.renderer.set_camera(
+            &self.queue,
+            GRID as u32,
+            w,
+            h,
+            PARTICLE_RENDER_DIAMETER,
+            true,
+        );
     }
 
     fn cursor_grid(&self) -> Vec2 {

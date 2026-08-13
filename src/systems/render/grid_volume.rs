@@ -31,7 +31,13 @@ impl Renderer {
         // instead of any measurable trace (which combined with bilinear smoothing
         // would overshoot true particle extent). SAME floor the visibility step
         // below gates on, so the hysteresis band and the raw discard agree.
-        let mass_floor = 0.15;
+        // Scaled by the caller's real full-cell mass (see
+        // `Renderer::grid_reference_cell_mass`'s own doc). 0.15 is now a
+        // FRACTION of a full cell -- "needs non-trivial local density before
+        // showing anything" -- instead of an absolute number that silently
+        // assumed a particular density calibration. Defaults to 1.0, so every
+        // existing caller keeps the exact previous threshold.
+        let mass_floor = 0.15 * self.grid_reference_cell_mass;
         queue.write_buffer(
             &self.grid_volume_params_buf,
             0,

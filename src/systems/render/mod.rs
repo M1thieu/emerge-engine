@@ -138,6 +138,26 @@ pub struct Renderer {
     /// explicitly wires in a real value, e.g. `SimConfig::light_dir`).
     light_dir: (f32, f32),
 
+    /// Mass of ONE fully-occupied grid cell in the caller's own units, used to
+    /// scale the grid-volume/surface density thresholds. Defaults to `1.0`,
+    /// which reproduces the previous hardcoded absolute thresholds exactly.
+    ///
+    /// Real bug this exists to fix (2026-08-13): those thresholds (e.g.
+    /// `grid_volume.rs`'s `mass_floor = 0.15`) were absolute constants written
+    /// against a scene whose "per occupied cell mass is order 0.5-4" (that
+    /// file's own comment). A physically-calibrated scene has no reason to land
+    /// in that range -- `basic_fluids_gui.rs` uses the REAL water density
+    /// `rho0 = 1000 kg/m^3 * dx^2 = 0.1` grid units, so a *completely full*
+    /// cell weighs 0.1, i.e. LESS than the 0.15 floor. Every cell was therefore
+    /// discarded and the fluid rendered as near-empty, while the raw-particle
+    /// mode showed it perfectly -- the three render modes visibly disagreeing
+    /// about where the fluid was.
+    ///
+    /// Callers should pass their fluid's `rest_density * cell_area` (in grid
+    /// units, cell_area = 1). Thresholds then mean "this fraction of a full
+    /// cell", which is scale-free and correct for any density calibration.
+    grid_reference_cell_mass: f32,
+
     // ── Curvature-flow surface reconstruction (see curvature_flow.wgsl) ────
     surface_clear_pipeline: wgpu::ComputePipeline,
     surface_clear_bgl: wgpu::BindGroupLayout,
@@ -445,6 +465,7 @@ impl Renderer {
             cached_ortho: (1.0, 0.0, 1.0, 0.0),
             cached_grid_res: 1,
             light_dir: (-0.5, 0.7),
+            grid_reference_cell_mass: 1.0,
             surface_clear_pipeline,
             surface_clear_bgl,
             surface_splat_pipeline,
@@ -563,6 +584,17 @@ impl Renderer {
     /// already driving `rod::Phototropism`), not invent a separate one.
     /// Replaces a value each fragment shader used to hardcode independently
     /// (and inconsistently with the sim's own real light direction).
+    /// Set the mass of one fully-occupied grid cell, so the grid-volume and
+    /// surface density thresholds mean "fraction of a full cell" rather than
+    /// an absolute number -- see `grid_reference_cell_mass`'s own doc for the
+    /// real bug this fixes. Pass the fluid's `rest_density` (grid units).
+    /// Leaving it unset (1.0) preserves the previous behavior exactly.
+    pub fn set_grid_reference_cell_mass(&mut self, mass: f32) {
+        if mass.is_finite() && mass > 0.0 {
+            self.grid_reference_cell_mass = mass;
+        }
+    }
+
     pub fn set_light_dir(&mut self, x: f32, y: f32) {
         self.light_dir = (x, y);
     }

@@ -88,7 +88,7 @@ impl Renderer {
                 // overshoot true particle extent. The B-spline kernel here
                 // deposits real mass (not a normalized [0,1] density), same
                 // units `render_grid_volume` already uses.
-                mass_floor: 0.15,
+                mass_floor: 0.15 * self.grid_reference_cell_mass,
                 material_slot,
                 material_mass_enabled: material_mass_enabled as u32,
                 _pad2: [0.0, 0.0],
@@ -120,7 +120,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&VisibilityParams {
                 surface_res,
-                mass_floor: 0.15,
+                mass_floor: 0.15 * self.grid_reference_cell_mass,
                 _pad0: 0,
                 _pad1: 0,
             }),
@@ -1090,7 +1090,7 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                mass_floor: 0.15,
+                mass_floor: 0.15 * self.grid_reference_cell_mass,
                 material_slot: material_id_a,
                 material_mass_enabled: 0,
                 _pad2: [0.0, 0.0],
@@ -1106,7 +1106,7 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                mass_floor: 0.15,
+                mass_floor: 0.15 * self.grid_reference_cell_mass,
                 material_slot: material_id_b,
                 material_mass_enabled: 0,
                 _pad2: [0.0, 0.0],
@@ -1130,7 +1130,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&VisibilityParams {
                 surface_res,
-                mass_floor: 0.15,
+                mass_floor: 0.15 * self.grid_reference_cell_mass,
                 _pad0: 0,
                 _pad1: 0,
             }),
