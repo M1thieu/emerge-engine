@@ -366,6 +366,16 @@ impl MaterialRegistry {
             .any(|m| m.owns_deformation_volume_state())
     }
 
+    /// Plain vtable passthrough, not routed through `MaterialDispatch`'s fast
+    /// path -- this is only ever called after `owns_deformation_volume_state`
+    /// AND `is_near_wall` have both already short-circuited a per-particle
+    /// `&&` chain (`cfl.rs`'s near-wall gate), so it only runs for the rare
+    /// subset of particles that are both a strict fluid AND near a wall, not
+    /// the hot per-particle path those two checks themselves are on.
+    pub(crate) fn rest_acoustic_c2(&self, material_id: u32) -> Option<f32> {
+        self.get(material_id).rest_acoustic_c2()
+    }
+
     /// Returns the constitutive model for the given material ID.
     pub fn constitutive_model_of(&self, material_id: u32) -> ConstitutiveModel {
         self.get(material_id).constitutive_model()

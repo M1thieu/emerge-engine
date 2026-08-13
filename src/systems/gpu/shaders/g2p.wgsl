@@ -92,6 +92,15 @@ const MAX_MATERIALS:         u32 = {{MAX_MATERIALS}}u;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
 @group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
+// Regional-substepping (`purring-swinging-cookie.md` Part A) — per-block dt plan for
+// THIS substep. `<= 0.0` means "coarse tier, skip the full gather this substep" (see
+// the tier gate below); feature-off path fills every block with step_params.dt, making
+// the gate provably always-false (see `block_dt_pool`'s own Rust-side doc). NUM_BLOCKS
+// (256, matching particle_sort.wgsl's own partition) is a fixed engine constant, not
+// scene-configurable -- packed array<vec4<f32>,64> because WGSL's uniform address
+// space requires 16-byte-stride elements (see block_dt_at below).
+const NUM_BLOCKS_OVER_4: u32 = 64u;
+@group(0) @binding(12) var<uniform>            block_dt:    array<vec4<f32>, 64>;
 // Multi-field contact (GPU port) — resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
 // contact-active field wasn't found (see resolve_contact.wgsl's resolve_cell doc) —
@@ -100,6 +109,24 @@ const MAX_MATERIALS:         u32 = {{MAX_MATERIALS}}u;
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v: array<vec2<f32>>;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v: array<vec2<f32>>;
 @group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
+
+// Regional-substepping -- duplicated from particle_sort.wgsl's own `block_index`
+// (this codebase's established convention: no cross-file WGSL #include, every
+// shader redeclares what it needs; cfl_scan.wgsl's own copy is the same pattern).
+const NUM_BLOCKS_PER_DIM: u32 = 16u;
+fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
+    let cell_x = clamp(u32(pos.x), 0u, grid_res - 1u);
+    let cell_y = clamp(u32(pos.y), 0u, grid_res - 1u);
+    let block_size = (grid_res + NUM_BLOCKS_PER_DIM - 1u) / NUM_BLOCKS_PER_DIM;
+    let block_x = min(cell_x / block_size, NUM_BLOCKS_PER_DIM - 1u);
+    let block_y = min(cell_y / block_size, NUM_BLOCKS_PER_DIM - 1u);
+    return block_y * NUM_BLOCKS_PER_DIM + block_x;
+}
+
+fn block_dt_at(b: u32) -> f32 {
+    let v = block_dt[b / 4u];
+    return v[b % 4u];
+}
 
 fn bspline_w(d: f32) -> f32 {
     let a = abs(d);
@@ -149,6 +176,17 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if !should_wake { return; }
         particles[p_idx].sleeping = 0u;
     }
+
+    // Regional-substepping tier gate (`purring-swinging-cookie.md` Part A) --
+    // a coarse-tier particle's own state isn't resynced this substep (it's
+    // between fine-dt ticks); P2G still scattered its steady-state
+    // contribution unconditionally (p2g.wgsl needs no changes -- see the
+    // plan's own Section 3), so skipping the gather here is safe, mirroring
+    // the sleeping early-return immediately above. Feature-off path fills
+    // every block with step_params.dt (see block_dt's own binding doc), so
+    // this is provably always-false when the feature is disabled.
+    let b = block_index(p.x, res);
+    if block_dt_at(b) <= 0.0 { return; }
 
     // Dirichlet/kinematic anchor (`Particle::pinned`): force v=0 and
     // velocity_gradient=0 instead of gathering from the grid -- mirrors

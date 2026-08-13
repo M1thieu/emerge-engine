@@ -2,7 +2,6 @@ pub mod bingham;
 pub mod corotated;
 pub mod elastic;
 pub mod fluid;
-mod fluid_state;
 pub mod granular;
 pub mod granular_fluid;
 pub mod nacc;
@@ -187,6 +186,31 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
         _viscous_cfl: f32,
     ) -> f32 {
         f32::INFINITY
+    }
+
+    /// Speed-of-sound-squared (c²) this material's own acoustic CFL term
+    /// evaluates to AT REST (density == rest_density, the Tait-EOS density
+    /// ratio's baseline of 1). `None` (the default) for materials with no
+    /// meaningful acoustic term, or a strict fluid whose `eos_stiffness` is
+    /// deliberately `0.0` (e.g. pressure-projection incompressible fluids --
+    /// see `fluid_pressure_projection_gui.rs`). A real Tait-EOS fluid
+    /// overrides this with `eos_stiffness * eos_power / rest_density` -- the
+    /// SAME formula its own `timestep_bound` already evaluates at
+    /// density_ratio=1, not a new derivation.
+    ///
+    /// Used by `choose_substep_dt`'s near-wall gate to scale its
+    /// compression-anomaly threshold to THIS material's own acoustic
+    /// stiffness instead of a fixed absolute percentage tuned for a
+    /// different EOS: the standard WCSPH relation Ma² ≈ Δρ (density
+    /// variation ≈ squared Mach number; Monaghan 1994, Morris et al. 1997)
+    /// means the compression a real flow induces scales with
+    /// `(v_max / c_s_rest)²`, not a scene-independent constant -- see
+    /// `SimConfig::fluid_near_wall_compression_mach_margin`'s own doc, and
+    /// Zhang et al., "A variable speed of sound formulation for weakly
+    /// compressible SPH" (arXiv:2310.04139), whose own variable-c_s update
+    /// rule is built on the identical Ma²≈Δρ relation.
+    fn rest_acoustic_c2(&self) -> Option<f32> {
+        None
     }
 
     /// Advances plastic/deformation state for one particle after G2P's velocity

@@ -106,6 +106,18 @@ name = "basic_fluids"
 required-features = ["render"]
 
 [[example]]
+name = "basic_orbital"
+required-features = ["render"]
+
+[[example]]
+name = "basic_orbital_gui"
+required-features = ["render"]
+
+[[example]]
+name = "basic_solar_system_gui"
+required-features = ["render"]
+
+[[example]]
 name = "mixture_sand_water"
 required-features = ["render"]
 

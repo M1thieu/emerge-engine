@@ -18,7 +18,7 @@ mod step;
 use super::buffers::GpuBuffers;
 use super::pipeline::SimPipelines;
 use super::step_params::{
-    GpuAsflipParams, GpuDirectionalGripParams, GpuFieldEntry, GpuImpulseEntry,
+    GpuAsflipParams, GpuCohesionParams, GpuDirectionalGripParams, GpuFieldEntry, GpuImpulseEntry,
     GpuMaterialMassParams, GpuResourceParams, GpuThermalParams, MAX_MATERIALS,
 };
 
@@ -53,6 +53,15 @@ pub struct GpuSimulation {
     particle_count: usize,
     last_sub_dt: f32,
     last_substeps: usize,
+    /// Real max particle speed from the PREVIOUS batch's `read_cfl_reduction_blocking()`
+    /// (one-batch-lagged) -- mirrors CPU's `Simulation::last_max_particle_speed` exactly
+    /// (`src/spacetime/solver/mod.rs`). Threaded into `GpuStepParams::reserved_velocity_slot`
+    /// so `cfl_scan.wgsl`'s near-wall gate can use the SAME Mach-relative compression
+    /// threshold as CPU (`fluid_near_wall_compression_mach_margin`, Ma²≈Δρ, Zhang et al.
+    /// arXiv:2310.04139) instead of GPU's own separate fixed absolute threshold. 0.0 at
+    /// construction, matching CPU's own "maximally sensitive until the first real fold
+    /// measures an actual speed" self-correcting behavior.
+    last_max_particle_speed: f32,
     /// Simulation time `step_frame` did not advance because the per-frame
     /// substep budget (`config.max_substeps_per_step`) ran out before
     /// `config.dt` was fully covered. 0.0 = the frame completed honestly.
@@ -129,6 +138,11 @@ pub struct GpuSimulation {
     /// all 4 thermal passes entirely, every existing scene pays nothing. Set via
     /// `attach_thermal_gpu`/`set_thermal_ambient`.
     thermal_params: GpuThermalParams,
+    /// Real grid-mediated cohesion/surface-tension (CSF) -- `gamma_grid: 0.0`
+    /// (default) makes `grid_cohesion_main` return immediately for every
+    /// cell, every existing scene pays only dispatch overhead. Set via
+    /// `set_cohesion_si`.
+    cohesion_params: GpuCohesionParams,
     /// `heat_capacity` as passed to `attach_thermal_gpu`, retained CPU-side only for
     /// `phase_transition`'s real latent-heat debit (`ΔT = latent_heat / heat_capacity`,
     /// mirrors CPU's `Simulation::phase_transition`) -- NOT baked into `thermal_params`,
@@ -220,7 +234,10 @@ fn build_bind_group_pool(
     buffers
         .step_params_pool
         .iter()
-        .map(|step_params| pipelines.make_bind_group(device, buffers, step_params))
+        .zip(buffers.block_dt_pool.iter())
+        .map(|(step_params, block_dt)| {
+            pipelines.make_bind_group(device, buffers, step_params, block_dt)
+        })
         .collect()
 }
 
@@ -326,6 +343,7 @@ impl GpuSimulation {
         // Thermal group's buffers are also all fixed grid_res²-sized -- same reasoning.
         let thermal_bind_group = pipelines.make_thermal_bind_group(&device, &buffers);
         let thermal_params = GpuThermalParams::disabled();
+        let cohesion_params = GpuCohesionParams::disabled();
         let resource_bind_group = pipelines.make_resource_bind_group(&device, &buffers);
         let resource_params = GpuResourceParams::disabled();
         let asflip_params = GpuAsflipParams::disabled();
@@ -349,6 +367,7 @@ impl GpuSimulation {
             particle_count,
             last_sub_dt: config.dt,
             last_substeps: 0,
+            last_max_particle_speed: 0.0,
             last_sim_time_dropped: 0.0,
             frame_index: 0,
             last_spawn_frame: 0,
@@ -368,6 +387,7 @@ impl GpuSimulation {
             contact_bind_group,
             thermal_bind_group,
             thermal_params,
+            cohesion_params,
             thermal_heat_capacity: None,
             resource_bind_group,
             resource_params,

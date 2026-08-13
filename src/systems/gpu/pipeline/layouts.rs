@@ -73,6 +73,13 @@ pub(super) fn build_core_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
             // 11: active_block_count_prev — 1 plain u32, not atomic (only ever written by
             // active_block_swap_main's single lid.x==0u thread). Companion to binding 10.
             storage_entry(11),
+            // 12: block_dt — regional-substepping Step 3 (`purring-swinging-cookie.md`
+            // Part A), array<vec4<f32>, NUM_BLOCKS/4> packed per-block dt plan, pooled
+            // per-substep like step_params (binding 3) -- see `block_dt_pool`'s own doc.
+            // Group 0 has zero spare STORAGE slots (already at the WebGPU 8-buffer
+            // baseline above) but real spare UNIFORM slots (only 2,3,4,7 used before
+            // this), so this is a uniform, not storage, entry.
+            uniform_entry(12),
         ],
     })
 }
@@ -153,6 +160,20 @@ pub(super) fn build_thermal_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
             // headroom) -- nothing to do with thermal diffusion thematically,
             // same precedent as material_mass/solver_status sharing "contact".
             storage_entry(33),
+            // 34: cohesion_params — real grid-mediated surface-tension/cohesion
+            // coefficient (gamma_grid, rest_density_grid), SI-derived via
+            // `SimConfig::stress_from_si` (that method's own doc: "Use for:
+            // yield stress, tensile strength, eos_stiffness, surface
+            // tension."). Consumed by `grid_cohesion_main` (grid_update.wgsl),
+            // a real Continuum Surface Force pass (Brackbill, Kothe & Zemach
+            // 1992; GIMP-CSF, Yang et al., CMES 2012) -- 2026-08-12.
+            uniform_entry(34),
+            // 35: block_cfl_reduction — regional-substepping Step 1
+            // (purring-swinging-cookie.md Part A section 1), the same 4-word
+            // CFL reduction as `cfl_reduction` (binding 33) above, times
+            // NUM_BLOCKS -- populated by cfl_scan.wgsl every substep, no
+            // consumer yet (Step 1 only).
+            storage_entry(35),
         ],
     })
 }

@@ -25,9 +25,18 @@ pub(crate) fn choose_substep_dt(
     max_dt: f32,
     granular_fluidity_dt_bound: Option<f32>,
     thermal_dt_bound: Option<f32>,
-) -> f32 {
+    // Real max particle speed from the PREVIOUS call to this function
+    // (one-substep-lagged -- see `Simulation::last_max_particle_speed`'s own
+    // doc). Used ONLY by the near-wall gate's Mach-relative compression
+    // threshold (`SimConfig::fluid_near_wall_compression_mach_margin`) --
+    // THIS call's own max_speed isn't known yet at the point the gate needs
+    // it (it's still being folded), so the previous substep's value is the
+    // freshest real data available, same "react at the next sync point"
+    // pattern this codebase's GPU batch CFL scan already uses.
+    last_max_speed: f32,
+) -> (f32, f32) {
     if !config.adaptive_timestep {
-        return max_dt.min(config.dt);
+        return (max_dt.min(config.dt), 0.0);
     }
     // Single pass for both velocity CFL and material timestep bound.
     // Parallelized (2026-08-07, real measured win: this scan was ~8ms/frame
@@ -57,17 +66,29 @@ pub(crate) fn choose_substep_dt(
                 // `SimConfig::fluid_near_wall_cfl_scale`'s own doc) -- `1.0`
                 // (default) makes this branch's division a no-op, so every
                 // scene that never opts in pays nothing extra beyond the
-                // branch check itself. Gated on ACTUAL compression too (see
-                // `fluid_near_wall_compression_threshold`'s own doc) -- a
-                // calm puddle resting on a floor (also a wall) must not pay
-                // this cost forever, only a particle genuinely being
-                // squeezed right now.
+                // branch check itself. Gated on ACTUAL compression too, but
+                // (2026-08-11) relative to THIS material's own acoustic
+                // stiffness when it has one, not a fixed absolute percentage
+                // -- see `fluid_near_wall_compression_mach_margin`'s own doc
+                // for the real WCSPH-literature grounding (Ma²≈Δρ) and why an
+                // absolute threshold self-defeats for a deliberately
+                // softened EOS. Falls back to the old absolute
+                // `fluid_near_wall_compression_threshold` for a material with
+                // no acoustic term at all (e.g. `eos_stiffness=0.0`
+                // pressure-projection fluids), unchanged from before.
                 let material_cfl = if config.fluid_near_wall_cfl_scale != 1.0
                     && materials.owns_deformation_volume_state(particles.material_id[i])
                     && is_near_wall(particles.x[i], config.grid_res, config.boundary_thickness)
                     && {
                         let j = particles.volume[i] / particles.initial_volume[i];
-                        (j - 1.0).abs() > config.fluid_near_wall_compression_threshold
+                        let threshold = match materials.rest_acoustic_c2(particles.material_id[i]) {
+                            Some(c2_rest) if c2_rest > f32::EPSILON => {
+                                let mach = last_max_speed / c2_rest.sqrt();
+                                (mach * mach) * config.fluid_near_wall_compression_mach_margin
+                            }
+                            _ => config.fluid_near_wall_compression_threshold,
+                        };
+                        (j - 1.0).abs() > threshold
                     } {
                     config.material_cfl_coefficient / config.fluid_near_wall_cfl_scale
                 } else {
@@ -213,7 +234,7 @@ pub(crate) fn choose_substep_dt(
             min_mat_dt = min_mat_dt.min(gravity_dt);
         }
     }
-    cfl_bound(config, max_speed, min_mat_dt, max_dt)
+    (cfl_bound(config, max_speed, min_mat_dt, max_dt), max_speed)
 }
 
 /// Shared CFL formula: clamps dt to advection + material bounds.
@@ -274,9 +295,11 @@ pub(crate) fn deformation_gradient_cfl_bound(c: &Mat2, coefficient: f32) -> f32 
 
 #[cfg(test)]
 mod tests {
-    use glam::Vec2;
+    use glam::{Mat2, Vec2};
 
-    use super::cfl_bound;
+    use super::{cfl_bound, choose_substep_dt};
+    use crate::materials::{MaterialRegistry, NewtonianFluidMaterial};
+    use crate::particle::Particles;
     use crate::solver::SimConfig;
 
     #[test]
@@ -290,5 +313,141 @@ mod tests {
 
         assert!((dt - 0.005).abs() < 1.0e-7);
         assert!(dt < config.min_dt);
+    }
+
+    // Real, one-particle scene for the near-wall Mach-relative gate
+    // (2026-08-11): a strict-fluid particle sitting near a wall, with a
+    // known, real Tait EOS (eos_stiffness=100, eos_power=7, rest_density=1
+    // -> c2_rest=700, c_s_rest=sqrt(700)~=26.46) and a deliberate 10%
+    // compression (J=0.9), so `|J-1|=0.1` is a fixed, known probe value.
+    fn near_wall_fluid_scene(eos_stiffness: f32) -> (SimConfig, Particles, MaterialRegistry) {
+        let mut config = SimConfig::standard(16, 1.0, Vec2::ZERO);
+        config.grid_cell_size = 1.0;
+        config.cfl_coefficient = 0.9;
+        config.material_cfl_coefficient = 0.1;
+        config.fluid_near_wall_cfl_scale = 20.0;
+        config.fluid_near_wall_compression_mach_margin = 2.0;
+        config.fluid_near_wall_compression_threshold = 0.01;
+
+        let rest_density = 1.0;
+        let material = NewtonianFluidMaterial::new(rest_density, 1.0e-3, eos_stiffness, 7.0);
+        let materials = MaterialRegistry::with_default(Box::new(material));
+
+        let j = 0.9; // 10% compression, well above both the old 1% absolute
+        // threshold AND (at low last_max_speed) the new Mach-relative one.
+        let mut particles = Particles::new();
+        particles.x.push(Vec2::new(0.5, 8.0)); // x=0.5 < boundary_thickness=2 -> near wall
+        particles.v.push(Vec2::ZERO);
+        particles.velocity_gradient.push(Mat2::ZERO);
+        particles.deformation_gradient.push(Mat2::IDENTITY);
+        particles.mass.push(1.0);
+        particles.initial_volume.push(1.0);
+        particles.volume.push(j);
+        particles.density.push(rest_density / j);
+        particles.material_id.push(0);
+        particles.plastic_volume_ratio.push(1.0);
+        particles.hardening_scale.push(1.0);
+        particles.friction_hardening.push(0.0);
+        particles.log_volume_strain.push(0.0);
+        particles.temperature.push(0.0);
+        particles.user_tag.push(0);
+        particles.activation.push(0.0);
+        particles.activation_dir.push(Vec2::ZERO);
+        particles.muscle_group_id.push(0);
+        particles.contact_group.push(0);
+        particles.pinned.push(0);
+        particles.scalar_field.push(0.0);
+        particles.internal_pressure.push(0.0);
+        particles.sleeping.push(false);
+
+        (config, particles, materials)
+    }
+
+    #[test]
+    fn near_wall_gate_relaxes_when_measured_speed_predicts_this_much_compression() {
+        let (config, particles, materials) = near_wall_fluid_scene(100.0);
+
+        // c_s_rest = sqrt(700) ~= 26.46. At last_max_speed=1.0, Mach~=0.038,
+        // Mach^2*margin ~= 0.0029 -- far below the real |J-1|=0.1 probe, so
+        // the gate SHOULD fire (near-wall 20x tightening applies).
+        let (dt_low_speed, _) = choose_substep_dt(
+            &config,
+            &particles,
+            1,
+            &materials,
+            &[],
+            1.0,
+            None,
+            None,
+            1.0,
+        );
+
+        // At last_max_speed=20.0 (Mach~=0.756, close to the material's own
+        // c_s_rest -- a genuinely fast flow), Mach^2*margin ~= 1.14 -- ABOVE
+        // the real |J-1|=0.1 probe, so the SAME compression is now within
+        // what this flow speed already predicts as normal, and the gate
+        // should NOT fire (no 20x tightening).
+        let (dt_high_speed, _) = choose_substep_dt(
+            &config,
+            &particles,
+            1,
+            &materials,
+            &[],
+            1.0,
+            None,
+            None,
+            20.0,
+        );
+
+        assert!(
+            dt_high_speed > dt_low_speed * 5.0,
+            "expected the near-wall gate to relax (larger dt) once the measured \
+             flow speed already predicts this much compression as normal -- \
+             got dt_low_speed={dt_low_speed}, dt_high_speed={dt_high_speed}"
+        );
+    }
+
+    #[test]
+    fn near_wall_gate_falls_back_to_absolute_threshold_with_no_acoustic_term() {
+        // eos_stiffness=0.0 -- the real `fluid_pressure_projection_gui.rs`
+        // case (`rest_acoustic_c2()` must return `None` here). The gate must
+        // then use `fluid_near_wall_compression_threshold` (0.01) regardless
+        // of `last_max_speed`, unchanged from before this session's fix.
+        let (config, particles, materials) = near_wall_fluid_scene(0.0);
+        assert!(materials.get(0).rest_acoustic_c2().is_none());
+
+        let (dt_low_speed, _) = choose_substep_dt(
+            &config,
+            &particles,
+            1,
+            &materials,
+            &[],
+            1.0,
+            None,
+            None,
+            1.0,
+        );
+        let (dt_high_speed, _) = choose_substep_dt(
+            &config,
+            &particles,
+            1,
+            &materials,
+            &[],
+            1.0,
+            None,
+            None,
+            500.0,
+        );
+
+        // With eos_stiffness=0 the acoustic term is dead (`timestep_bound`
+        // filters its non-finite/zero contribution) regardless of the
+        // near-wall scale ever being applied to it -- so both calls should
+        // land on the SAME dt (gravity/velocity bound only), proving
+        // `last_max_speed` has zero effect on this fallback path.
+        assert!(
+            (dt_low_speed - dt_high_speed).abs() < 1.0e-6,
+            "fallback path must be independent of last_max_speed: \
+             dt_low_speed={dt_low_speed}, dt_high_speed={dt_high_speed}"
+        );
     }
 }

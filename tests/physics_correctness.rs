@@ -4087,7 +4087,8 @@ fn no_compression_settles_more_compactly_than_ordinary_elastic_under_self_weight
     );
 }
 
-/// UNIT-CONSISTENCY AUDIT (2026-08-06). Not a tuning test -- a dimensional proof.
+/// UNIT-CONSISTENCY AUDIT (2026-08-06, ROOT-CAUSED 2026-08-11). Not a tuning
+/// test -- a dimensional proof.
 ///
 /// Published criterion (unambiguous, multiple independent sources): weakly-
 /// compressible SPH/MPM requires artificial sound speed `c_s >= 10*v_max`, giving
@@ -4096,48 +4097,48 @@ fn no_compression_settles_more_compactly_than_ordinary_elastic_under_self_weight
 /// sitting at >1% compression at rest is not "weakly compressible" at all -- the
 /// EOS is simply mis-scaled relative to gravity.
 ///
-/// This sweeps the ONE number the whole question reduces to -- how a real SI
-/// bulk modulus maps to grid `eos_stiffness` -- and reports measured steady-state
-/// compression under FULL REAL GRAVITY (no `gravity_fraction` fudge). It exists
-/// because the engine has two mutually inconsistent scalings in its own SI layer:
-///   * `SimConfig::stress_from_si`: `p_grid = p_SI*dt^2/(rho_SI*dx^2)`
-///   * `particle_mass`/`from_physical`: `rho_grid = rho_SI*dx^2`
-/// which agree only if `rho_SI*dx^2 == dt^2` (here 0.1 vs 0.01 -- a factor of 10).
-/// `mult=1` is what `stress_from_si` currently produces; `mult=10` is what the
-/// density convention implies. The data decides, not the algebra.
-/// Real, partial result (2026-08-10): `mult=1` completes its full 400-step
-/// sweep (thanks to `fluid_step_retry_enabled`) with `compression=86.85%`,
-/// nowhere near the <1% "weakly compressible" criterion -- real evidence
-/// `mult=1` (`stress_from_si`'s current output) is the wrong scaling.
-/// `mult=10` originally never finished at `max_substeps_per_step=2000`: it
-/// hit the real, LOUD strict-fluid substep-budget panic -- a genuine,
-/// separate CFL/stiffness instability at that much higher B_grid.
+/// Real root cause found 2026-08-11: the original version of this test (a
+/// `mult` sweep, now removed) hand-rolled `SimConfig::stress_from_si`/
+/// `visc_from_si` (`p_grid = p_SI*dt^2/(rho_SI*dx^2)`) to build its own
+/// `NewtonianFluidMaterial`. Those two helpers are LEGACY: superseded by
+/// `NewtonianFluidMaterial::from_physical`'s own doc comment, which states
+/// outright that applying that dt^2/(rho*dx^2) conversion to pressure or
+/// viscosity "would double-scale it" -- the real, current, already-tested
+/// convention keeps solver time in real seconds and stress/viscosity in raw
+/// SI Pa/Pa*s, converting ONLY density (`rho_grid = rho_SI*dx^2`). This
+/// diagnostic was testing an abandoned code path, not live engine physics.
+/// `mult=10`'s B_grid happened to numerically cancel back to the correct raw
+/// `tait_b_pa` for this test's specific DX=0.01/DT=0.1 (a coincidence of
+/// these two constants, not a real "density convention implies mult=10"
+/// law) -- but `eta_grid` stayed wrong by ~100x in every sweep point. Fixed
+/// by building the material through the real, production
+/// `NewtonianFluidMaterial::weakly_compressible` entry point directly --
+/// the same call any real caller in this engine uses -- eliminating both
+/// the pressure and the viscosity legacy-scaling bugs in one real fix.
 ///
-/// **Real follow-up (2026-08-11): the mult=10 crash IS just a substep-budget
-/// problem, not a deeper blow-up.** Raised `max_substeps_per_step` to 20000
-/// for this diagnostic only (impractical for any real-time demo, fine for a
-/// one-off `#[ignore]`d research sweep) -- mult=10 now converges cleanly,
-/// zero panic, zero non-finite values, `compression=27.89%`. A real,
-/// substantial improvement over mult=1's 86.85% (roughly 3x lower), genuine
-/// evidence mult=10 IS the more correct scaling -- but still nowhere near
-/// the <1% target, so this does NOT close the question. New, real, still-
-/// unexplained puzzle this follow-up surfaced: the analytic hydrostatic
-/// prediction (`predicted_rho_ratio`, inverting Tait at the column base,
-/// p=rho*g*h) says mult=10 should give ~0.49% compression, but the ACTUAL
-/// measured value is 27.89% -- a large gap between theory and measurement,
-/// present at BOTH mult values (mult=1: predicted 4.38% vs measured
-/// 86.85%), suggesting a real dynamic/transient effect the simple static
-/// hydrostatic-balance formula doesn't capture (400 steps may not be enough
-/// for true quasi-static equilibrium, or a real compounding numerical
-/// effect elsewhere in the pressure-projection/retry chain). `#[ignore]`d
-/// for two real, separate reasons now, not one: (1) the underlying
-/// predicted-vs-measured gap is still a genuinely open research question,
-/// not yet root-caused: (2) `max_substeps_per_step=20000` makes this
-/// specific diagnostic take ~37 minutes per run, impractical for routine
-/// suite execution regardless of correctness. Re-enable (or promote to a
-/// real, non-ignored regression test) once the predicted-vs-measured gap
-/// itself is understood, not just observed.
-#[ignore = "mult=10 no longer crashes (raising max_substeps_per_step to 20000 fixes that cleanly, 27.89% compression vs mult=1's 86.85%) but neither hits the real <1% weakly-compressible target, and there's a new unexplained predicted-vs-measured gap at BOTH mult values -- genuinely open research, plus this specific diagnostic takes ~37min/run at the cap needed to avoid the crash"]
+/// **Real, honest follow-up (2026-08-11): the fix did NOT close the gap --
+/// it got WORSE, not better.** Re-run with the corrected, real SI
+/// construction: `predicted_rho_ratio=1.0049` (0.49%, matches the old
+/// prediction almost exactly, as expected -- the hydrostatic formula only
+/// depends on `B_grid`, which was already numerically correct at the old
+/// `mult=10`). `MEASURED_max_rho_ratio=1.7980` -- **79.80% compression**,
+/// worse than the old (buggy-viscosity) `mult=10` run's 27.89%. The
+/// unit-conversion fix is real and structurally correct (verified against
+/// `NewtonianFluidMaterial`'s own already-tested `si_constructor_preserves_
+/// pressure_and_viscosity_units`), but real, honest evidence now says the
+/// predicted-vs-measured gap is NOT caused by the unit-conversion bug at
+/// all -- most likely, the old ~100x-too-large `eta_grid` was accidentally
+/// providing extra numerical damping that masked a separate, deeper dynamic/
+/// transient instability; removing it (correctly) exposed that instability
+/// more, not less. Genuinely open research question, now MORE isolated than
+/// before (the scaling confusion is eliminated, so whatever remains is a
+/// real dynamics/stability question, not a units question) but not solved.
+/// Real next step whenever picked up: investigate the pressure-projection/
+/// retry chain's behavior at this now-confirmed-correct stiffness with
+/// REAL (not accidentally-inflated) viscosity -- likely needs its own
+/// dedicated CFL/stability investigation, same class of multi-session work
+/// as the sand repose-angle gap turned out to be.
+#[ignore = "unit-conversion bug fixed (real, structurally correct) but did NOT close the gap -- 79.80% measured vs 0.49% predicted, WORSE than the old buggy run's 27.89%; genuinely open dynamics/stability research question, not routine-suite material (~32min/run)"]
 #[test]
 fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
     use emerge::{SimConfig, SpawnRegion, build_particles};
@@ -4156,78 +4157,73 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
     let v_max = (2.0 * 9.81 * depth_m).sqrt();
     let c_s = 10.0 * v_max;
     const GAMMA: f32 = 7.0;
-    let bulk_modulus_pa = RHO_SI * c_s * c_s;
-    let tait_b_pa = bulk_modulus_pa / GAMMA;
+
+    // FULL real gravity -- no fraction. If units are right this must be stable.
+    // `fluid_step_retry_enabled` (2026-08-10, real fix, same class as
+    // `fluid_spreads_more_than_elastic_under_gravity` in this file's own
+    // accuracy.rs sibling) lets a transient J blowup retry/refine instead of
+    // panicking partway through the 400-step sweep.
+    // 2000 (this diagnostic's original cap) is not enough at this real, correct
+    // B_grid -- confirmed empirically 2026-08-11: panics with the real strict-
+    // fluid substep-budget contract, same as the old (pre-fix) "mult=10" sweep
+    // point did at this same magnitude. 20000 is the already-validated value
+    // that let mult=10 converge cleanly then; reused here for the same reason.
+    let config = SimConfig {
+        min_dt: 1.0e-6,
+        max_substeps_per_step: 20000,
+        recompute_density_each_step: true,
+        cfl_include_affine_speed: false,
+        fluid_step_retry_enabled: true,
+        ..SimConfig::earth(64, DX, DT)
+    };
+    let water = NewtonianFluidMaterial::weakly_compressible(RHO_SI, 1.0e-3, c_s, &config);
+    let rho_grid = water.rest_density;
+    let b_grid = water.eos_stiffness;
+    let mass = RHO_SI * (SPACING * DX) * (SPACING * DX);
 
     eprintln!(
         "== WCSPH derivation: depth={depth_m:.3} m  v_max={v_max:.2} m/s  \
-         c_s={c_s:.1} m/s  K={bulk_modulus_pa:.3e} Pa  B=K/gamma={tait_b_pa:.3e} Pa"
+         c_s={c_s:.1} m/s  B_grid={b_grid:.4e} Pa (raw SI, real convention)"
     );
 
-    for mult in [1.0f32, 10.0] {
-        // FULL real gravity -- no fraction. If units are right this must be stable.
-        // `fluid_step_retry_enabled` added 2026-08-10 (real fix, same class
-        // as `fluid_spreads_more_than_elastic_under_gravity` in this file's
-        // own accuracy.rs sibling) -- WITHOUT it, `mult=1` panics on a real
-        // J blowup partway through its 400 steps, before `mult=10` ever
-        // gets to run, silently losing half this diagnostic's own real
-        // comparison data. Doesn't change what's being measured (real
-        // per-step retry/refinement, not a fudge on the reported
-        // compression ratio) -- just lets BOTH sweep points actually
-        // finish and report.
-        let config = SimConfig {
-            min_dt: 1.0e-6,
-            max_substeps_per_step: 20000,
-            recompute_density_each_step: true,
-            cfl_include_affine_speed: false,
-            fluid_step_retry_enabled: true,
-            ..SimConfig::earth(64, DX, DT)
-        };
-        let b_grid = config.stress_from_si(tait_b_pa, RHO_SI) * mult;
-        let rho_grid = RHO_SI * DX * DX;
-        let mass = RHO_SI * (SPACING * DX) * (SPACING * DX);
-        let eta_grid = config.visc_from_si(1.0e-3, RHO_SI);
+    let spawn = SpawnRegion {
+        spacing: SPACING,
+        box_size: IVec2::new(14, DEPTH_CELLS as i32),
+        box_center: Vec2::new(32.0, 2.0 + DEPTH_CELLS * 0.5),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        mass_override: Some(mass),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let particles = build_particles(&config, spawn);
+    let mut solver = emerge::solver::Simulation::new(config, spawn)
+        .with_default_material(Box::new(water))
+        .with_boundary(Box::new(emerge::SlipBoundary::new(
+            config.boundary_thickness,
+        )));
+    let _ = particles;
 
-        let spawn = SpawnRegion {
-            spacing: SPACING,
-            box_size: IVec2::new(14, DEPTH_CELLS as i32),
-            box_center: Vec2::new(32.0, 2.0 + DEPTH_CELLS * 0.5),
-            material_id: 0,
-            precompute_initial_volumes: true,
-            mass_override: Some(mass),
-            ..SpawnRegion::for_sim(&config)
-        };
-        let particles = build_particles(&config, spawn);
-        let water = NewtonianFluidMaterial::new(rho_grid, eta_grid, b_grid, GAMMA);
-        let mut solver = emerge::solver::Simulation::new(config, spawn)
-            .with_default_material(Box::new(water))
-            .with_boundary(Box::new(emerge::SlipBoundary::new(
-                config.boundary_thickness,
-            )));
-        let _ = particles;
+    // Analytic prediction from Tait inverted at the column base: p = rho*g*h.
+    let p_hydro = rho_grid * (9.81 / DX) * DEPTH_CELLS;
+    let predicted_ratio = (1.0 + p_hydro / b_grid).powf(1.0 / GAMMA);
 
-        // Analytic prediction from Tait inverted at the column base: p = rho*g*h.
-        let p_hydro = rho_grid * (9.81 / DX) * DEPTH_CELLS;
-        let predicted_ratio = (1.0 + p_hydro / b_grid).powf(1.0 / GAMMA);
-
-        let mut max_ratio = 0.0f32;
-        let mut nonfinite = 0usize;
-        for _ in 0..400 {
-            solver.step();
-            let s = solver.diagnostics_snapshot();
-            nonfinite += s.non_finite_particle_values;
-        }
-        for i in 0..solver.particles().len() {
-            let r = solver.particles().density[i] / rho_grid;
-            if r.is_finite() {
-                max_ratio = max_ratio.max(r);
-            }
-        }
-        eprintln!(
-            "mult={mult:>4}  B_grid={b_grid:.4e}  rho_grid={rho_grid:.4}  mass={mass:.5}  \
-             predicted_rho_ratio={predicted_ratio:.4}  MEASURED_max_rho_ratio={max_ratio:.4}  \
-             compression={:.2}%  nonfinite={nonfinite}",
-            (max_ratio - 1.0) * 100.0
-        );
+    let mut max_ratio = 0.0f32;
+    let mut nonfinite = 0usize;
+    for _ in 0..400 {
+        solver.step();
+        let s = solver.diagnostics_snapshot();
+        nonfinite += s.non_finite_particle_values;
     }
+    for i in 0..solver.particles().len() {
+        let r = solver.particles().density[i] / rho_grid;
+        if r.is_finite() {
+            max_ratio = max_ratio.max(r);
+        }
+    }
+    eprintln!(
+        "B_grid={b_grid:.4e}  rho_grid={rho_grid:.4}  mass={mass:.5}  \
+         predicted_rho_ratio={predicted_ratio:.4}  MEASURED_max_rho_ratio={max_ratio:.4}  \
+         compression={:.2}%  nonfinite={nonfinite}",
+        (max_ratio - 1.0) * 100.0
+    );
 }

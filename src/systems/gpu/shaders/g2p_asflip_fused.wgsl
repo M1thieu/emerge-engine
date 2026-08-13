@@ -113,6 +113,11 @@ struct AsflipParams {
 const MAX_MATERIALS:    u32 = {{MAX_MATERIALS}}u;
 const NUM_FLOOR:        f32 = 1e-6;
 const NUM_FLOOR_TIGHT:  f32 = 1e-10;
+// Real, generous (50x) safety range on J = det(F) -- see particles_update.wgsl's
+// own copy of this constant for the full real citation (matches
+// `SimConfig::j_max`/`j_min` on the CPU path).
+const STRICT_FLUID_J_MAX: f32 = 50.0;
+const STRICT_FLUID_J_MIN: f32 = 1.0 / 50.0;
 
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
 const BSPLINE_OUTER_LIMIT:  f32 = 1.5;
@@ -141,10 +146,16 @@ fn bspline_w(d: f32) -> f32 {
     return 0.0;
 }
 
-fn report_strict_fluid_failure(particle_index: u32) {
+// `reason` (2026-08-11, same real diagnostic need as particles_update.wgsl's
+// own copy of this function -- see that file's doc): 4/5/6 distinguish this
+// FILE's 3 real call sites from particles_update.wgsl's 1/2/3, since this is
+// a genuinely separate WGSL compilation unit (its own copy of this
+// function, not shared).
+fn report_strict_fluid_failure(particle_index: u32, reason: u32) {
     let previous = atomicCompareExchangeWeak(&solver_status[0], 0u, 1u);
     if previous.exchanged {
         atomicStore(&solver_status[1], particle_index);
+        atomicStore(&solver_status[3], reason);
     }
     atomicAdd(&solver_status[2], 1u);
 }
@@ -187,7 +198,9 @@ fn strict_fluid_state_is_admissible(p: Particle) -> bool {
         && volume_error <= 2e-4
         && finite_scalar(rho_volume)
         && finite_scalar(mass_error)
-        && mass_error <= 2e-4;
+        && mass_error <= 2e-4
+        && j_f >= STRICT_FLUID_J_MIN
+        && j_f <= STRICT_FLUID_J_MAX;
 }
 
 // ── 2D SVD (verbatim copy of particles_update.wgsl's own -- see this file's top doc
@@ -529,7 +542,7 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let identity = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
 
     if mat.model == 1u && !strict_fluid_state_is_admissible(p) {
-        report_strict_fluid_failure(p_idx);
+        report_strict_fluid_failure(p_idx, 4u);
         return;
     }
 
@@ -608,10 +621,12 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let J_fluid = old_j * exp(dt * div_v);
         if !(J_fluid > 0.0)
             || !finite_scalar(J_fluid)
+            || J_fluid < STRICT_FLUID_J_MIN
+            || J_fluid > STRICT_FLUID_J_MAX
             || !finite_scalar(mat.rest_density)
             || !(mat.rest_density > 0.0)
         {
-            report_strict_fluid_failure(p_idx);
+            report_strict_fluid_failure(p_idx, 5u);
             return;
         }
         let sqrtJ = sqrt(J_fluid);
@@ -663,7 +678,7 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             || !finite_scalar(p.density)
             || !(p.density > 0.0))
     {
-        report_strict_fluid_failure(p_idx);
+        report_strict_fluid_failure(p_idx, 6u);
         return;
     }
 

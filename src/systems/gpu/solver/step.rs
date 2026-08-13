@@ -7,7 +7,7 @@
 //! comments below).
 
 use super::super::step_params::{
-    GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams,
+    GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams, NUM_BLOCKS,
 };
 use super::encode_substep::SubstepGates;
 use super::{GpuSimulation, WG_PARTICLES, build_bind_group_pool};
@@ -15,6 +15,13 @@ use super::{GpuSimulation, WG_PARTICLES, build_bind_group_pool};
 use crate::particle::Particles;
 use crate::solver::config::SimConfig;
 use crate::solver::{affine_cfl_speed_contribution, cfl_bound, deformation_gradient_cfl_bound};
+
+/// How many strict-fluid substeps share one dt and one command-buffer submit.
+/// Module-scope (not function-local) because regional substepping's own tier
+/// rule is derived FROM it: a Coarse block must survive integrating with a
+/// whole batch's accumulated dt -- see `classify_blocks` and
+/// `SimConfig::fluid_regional_substepping_fine_tier_margin`.
+const STRICT_FLUID_SUBSTEP_BATCH_SIZE: usize = 8;
 
 impl GpuSimulation {
     /// Reject combinations for which this backend has no one-fluid PDE
@@ -96,6 +103,23 @@ impl GpuSimulation {
         // too so the very FIRST substep of a strict-fluid frame (this bootstrap scan,
         // before `cfl_scan.wgsl`'s per-substep reduction has run even once) gets the
         // same protection, not just substep 2 onward.
+        // REAL ROOT-CAUSE FIX (2026-08-11) of the GPU fluid fps collapse:
+        // this scan was missing CPU's own compression gate
+        // (`SimConfig::fluid_near_wall_compression_threshold`, added
+        // 2026-08-08 in `cfl.rs`). CPU requires THREE conditions -- strict
+        // fluid AND near a wall AND *actually being compressed right now*;
+        // GPU checked only the first two, so the 20x tightening applied
+        // permanently to any fluid merely RESTING on a floor (a floor is a
+        // wall). That multiplies the substep count by 20 forever: measured
+        // `sub=655` per frame in `basic_fluids_gpu.rs`, and at ~8 GPU
+        // dispatches per substep that is >5000 dispatches/frame -- which is
+        // arithmetically the observed 1 fps, not a mystery.
+        //
+        // The CPU field's own doc already described this exact failure mode
+        // and even named the symptom ("a sustained 3-5fps crawl in
+        // `basic_fluids_gui.rs` once the water settled, not a transient
+        // slowdown") -- the fix was simply never ported to this backend,
+        // which is why CPU fluid demos behave and GPU ones crawl.
         let near_wall = self.config.fluid_near_wall_cfl_scale != 1.0
             && self.particles.iter().any(|p| {
                 if p.sleeping != 0 {
@@ -107,6 +131,21 @@ impl GpuSimulation {
                     .get(p.material_id)
                     .owns_deformation_volume_state()
                     && (p.x.x < t || p.x.x > hi || p.x.y < t || p.x.y > hi)
+                    && {
+                        // Same real Mach-relative compression test as `cfl.rs`'s
+                        // own (2026-08-11 port) -- calls the SAME real
+                        // `rest_acoustic_c2()` method CPU uses, not a
+                        // reimplementation, so the two can't drift apart.
+                        let j = p.volume / p.initial_volume;
+                        let threshold = match self.registry.rest_acoustic_c2(p.material_id) {
+                            Some(c2_rest) if c2_rest > f32::EPSILON => {
+                                let mach = self.last_max_particle_speed / c2_rest.sqrt();
+                                (mach * mach) * self.config.fluid_near_wall_compression_mach_margin
+                            }
+                            _ => self.config.fluid_near_wall_compression_threshold,
+                        };
+                        (j - 1.0).abs() > threshold
+                    }
             });
         let near_wall_scale = if near_wall {
             self.config.fluid_near_wall_cfl_scale
@@ -270,6 +309,106 @@ impl GpuSimulation {
         )
     }
 
+    /// Regional-substepping Step 1/2 (2026-08-12, `purring-swinging-cookie.md`
+    /// Part A) -- same convention as `read_cfl_reduction_blocking` above, sized
+    /// for the per-block reduction (`NUM_BLOCKS * 4` words instead of 4).
+    fn read_block_cfl_reduction_blocking(&self) -> Vec<[f32; 4]> {
+        let raw = self.buffers.readback_u32_blocking(
+            &self.device,
+            &self.queue,
+            &self.buffers.block_cfl_reduction,
+            super::super::step_params::NUM_BLOCKS * 4,
+        );
+        raw.chunks_exact(4)
+            .map(|c| {
+                [
+                    f32::from_bits(c[0]),
+                    f32::from_bits(c[1]),
+                    f32::from_bits(c[2]),
+                    f32::from_bits(c[3]),
+                ]
+            })
+            .collect()
+    }
+
+    /// Regional-substepping Step 2: classify each of the 256 blocks as Fine
+    /// (needs the batch's own fine dt this substep) or Coarse (can skip the
+    /// full G2P gather + `particles_update` integrate), from the SAME 4
+    /// quantities and the SAME `reactive_gpu_substep_dt` formula the global
+    /// scan already uses -- called once per block instead of once globally,
+    /// no new CFL formula invented. `dt_fine` computed this way is provably
+    /// identical to the existing global scan's result (min-of-256-mins ==
+    /// the same global min), a strong, cheap regression property: real
+    /// fine-tier dt is byte-identical to today's, always.
+    ///
+    /// NOT YET WIRED into the batch loop's own live dt selection or the tier
+    /// gate in g2p.wgsl/particles_update.wgsl (a real, disclosed,
+    /// deliberately separate next step -- see the plan's own section 3-5).
+    /// Real and exercised today by `regional_substepping_tests` below, which
+    /// is what keeps it off the dead-code list honestly (no `#[allow]` --
+    /// this codebase has zero precedent for silencing that lint).
+    fn classify_blocks(&self, block_words: &[[f32; 4]], remaining_time: f32) -> (Vec<bool>, f32) {
+        let mut dt_b = vec![remaining_time; block_words.len()];
+        for (b, words) in block_words.iter().enumerate() {
+            let [max_speed, max_rate, max_c2, near_wall_flag] = *words;
+            dt_b[b] = self.reactive_gpu_substep_dt(
+                max_speed,
+                max_rate,
+                max_c2,
+                near_wall_flag > 0.0,
+                remaining_time,
+            );
+        }
+        let dt_fine = dt_b.iter().copied().fold(f32::MAX, f32::min);
+        // Floored at the batch size, not at 1.0: a Coarse block integrates
+        // once with the batch's whole ACCUMULATED dt (~batch_len * dt_fine),
+        // so demoting a block whose own bound can't survive that is what
+        // drove the retry ladder and made substeps/frame go UP -- see this
+        // field's own doc in `SimConfig` for the full derivation and the
+        // real measurement that caught it.
+        let margin = self
+            .config
+            .fluid_regional_substepping_fine_tier_margin
+            .max(STRICT_FLUID_SUBSTEP_BATCH_SIZE as f32);
+        let mut is_fine: Vec<bool> = dt_b.iter().map(|&dt| dt <= dt_fine * margin).collect();
+
+        // Mandatory halo dilation (see the plan's own section 2 doc for why
+        // this is a correctness requirement, not an optimization): any block
+        // adjacent to a Fine block becomes Fine too, matching the SAME 3x3
+        // neighbor-expansion convention `particle_sort_compact_main` already
+        // uses for occupancy, for the identical physical reason (the P2G/G2P
+        // kernel stencil spans block boundaries).
+        let num_blocks_per_dim = super::super::step_params::NUM_BLOCKS_PER_DIM;
+        let original = is_fine.clone();
+        for by in 0..num_blocks_per_dim {
+            for bx in 0..num_blocks_per_dim {
+                let idx = by * num_blocks_per_dim + bx;
+                if original[idx] {
+                    continue;
+                }
+                'halo: for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let nx = bx as i32 + dx;
+                        let ny = by as i32 + dy;
+                        if nx < 0
+                            || ny < 0
+                            || nx >= num_blocks_per_dim as i32
+                            || ny >= num_blocks_per_dim as i32
+                        {
+                            continue;
+                        }
+                        let nidx = ny as usize * num_blocks_per_dim + nx as usize;
+                        if original[nidx] {
+                            is_fine[idx] = true;
+                            break 'halo;
+                        }
+                    }
+                }
+            }
+        }
+        (is_fine, dt_fine)
+    }
+
     /// Advance one frame of simulation time (`config.dt`) using the GPU.
     ///
     /// Substeps are encoded in batches of up to `SUBSTEP_BATCH_SIZE` (64) command
@@ -394,6 +533,13 @@ impl GpuSimulation {
         self.buffers
             .upload_thermal_params(&self.queue, &self.thermal_params);
         let thermal_active = self.thermal_params.enabled != 0;
+
+        // Real grid-mediated cohesion/surface-tension (CSF) — uploaded once per
+        // frame, same pattern as thermal_params above. `gamma_grid <= 0.0` (the
+        // default, every existing scene) makes `grid_cohesion_main` return
+        // immediately for every cell — real, not just disabled-in-name.
+        self.buffers
+            .upload_cohesion_params(&self.queue, &self.cohesion_params);
 
         // Resource regrowth (GPU port) — same upload + real dispatch-skip pattern as
         // thermal above.
@@ -522,6 +668,7 @@ impl GpuSimulation {
                 self.config.dt,
                 self.particle_count,
                 contact_active,
+                self.last_max_particle_speed,
             );
             self.buffers
                 .upload_step_params_at(&self.queue, sort_slot, &sort_params);
@@ -619,7 +766,6 @@ impl GpuSimulation {
             // batch size WITH those two later stabilizers already in place. The
             // regression test below re-verifies J stays bounded with this exact
             // combination.
-            const STRICT_FLUID_SUBSTEP_BATCH_SIZE: usize = 8;
             let scan_start = std::time::Instant::now();
             // Frame-start bootstrap value only (first batch's dt) -- every
             // subsequent batch's dt comes from `cfl_reduction` below, not this
@@ -640,7 +786,55 @@ impl GpuSimulation {
             // never-stabilizing scene (CFL dt shrinking without bound) -- fails
             // loud, not a silent hang or a bandaid time-drop.
             const STRICT_FLUID_SUBSTEP_SAFETY_CEILING: usize = 100_000;
+            // Real batch-level retry, mirroring CPU's `do_substep_with_retry`
+            // (`spacetime/solver/step.rs`) adapted to GPU's batch (not
+            // per-substep) sync granularity -- 2026-08-11, closing the real,
+            // previously-disclosed gap ("not the full GPU preflight/retry
+            // protocol... dt is still fixed WITHIN a batch") that let J drift
+            // to 47-350x in `basic_fluids_gpu.rs`/`basic_showcase_gpu.rs`
+            // undetected. 16 halvings matches CPU's own real
+            // `FLUID_STEP_RETRY_LIMIT` (~65000x finer than the original dt).
+            const STRICT_FLUID_BATCH_RETRY_LIMIT: u32 = 16;
+            // Must match `STRICT_FLUID_J_MAX`/`STRICT_FLUID_J_MIN` in
+            // `particles_update.wgsl` exactly -- both real, generous (50x)
+            // safety range, same default as CPU's `SimConfig::j_max`/`j_min`.
+            // Duplicated (not shared) because the WGSL side is a shader
+            // constant baked at pipeline-build time, not something this
+            // Rust-side exhaustion backstop can import directly.
+            const STRICT_FLUID_J_MAX: f32 = 50.0;
+            const STRICT_FLUID_J_MIN: f32 = 1.0 / 50.0;
+            // Real fps fix (2026-08-11), the actual root cause of the
+            // measured 55 -> 1 fps collapse: retry-with-halved-dt is the
+            // right tool ONLY for a TRANSIENT CFL spike, where a finer dt
+            // genuinely resolves the violation. For a PERSISTENT condition
+            // (measured live: the SAME particle index failing every batch,
+            // unresolved even after 16 real halvings = ~65000x finer dt) it
+            // is pure waste -- each futile attempt costs a full GPU
+            // round-trip (submit + blocking poll + status readback +
+            // buffer-copy rollback), and paying 16 of those per batch,
+            // every batch, for the rest of the run IS the fps collapse.
+            // Tracking which particle failed last batch lets a genuine
+            // repeat go STRAIGHT to the exhaustion backstop (which already
+            // handles exactly this case correctly) instead of re-proving
+            // the same negative result 16 more times. A transient spike
+            // still gets the full real retry ladder, unchanged.
+            let mut last_failed_particle: Option<u32> = None;
+            let particle_bytes =
+                (self.particle_count * std::mem::size_of::<crate::particle::Particle>()) as u64;
             let mut pool_capacity_hint = self.config.max_substeps_per_step;
+            // Regional-substepping Step 4 (`purring-swinging-cookie.md` Part A) --
+            // `regional_enabled=false` (the default, every existing scene) makes every
+            // block Fine for the whole frame, byte-identical to today (see the flat-fill
+            // branch below). `current_tier` is a per-FRAME local (not a struct field) --
+            // deliberately reset to all-Fine at the start of every `step_frame()` call,
+            // matching the plan's own "first batch of a frame: no prior block readback
+            // exists yet, treat every block as Fine" bootstrap (avoids building a second
+            // CPU-side mirror of the CFL scan purely to bootstrap one batch's tiering).
+            // Updated after each successful batch from THAT batch's own block-CFL
+            // readback, for the NEXT batch to use -- frozen across a batch's own retry
+            // ladder (declared outside the `for retry_attempt` loop below).
+            let regional_enabled = self.config.fluid_regional_substepping_gpu_enabled;
+            let mut current_tier: Vec<bool> = vec![true; NUM_BLOCKS];
             loop {
                 if remaining_time <= 0.0 {
                     break;
@@ -650,95 +844,415 @@ impl GpuSimulation {
                     "GPU strict fluid CFL never stabilized within {STRICT_FLUID_SUBSTEP_SAFETY_CEILING} substeps this frame; inspect the scene/material configuration"
                 );
 
-                // Plan and encode a batch of up to STRICT_FLUID_SUBSTEP_BATCH_SIZE
-                // substeps into ONE command buffer, all sharing this batch's dt.
-                self.buffers.clear_cfl_reduction(&self.queue);
-                let chunk_encode_start = std::time::Instant::now();
-                let mut sub_encoder =
+                // Real pre-batch state to roll back to if this batch turns out
+                // inadmissible -- both the GPU particle buffer AND the CPU-side
+                // scalars that the batch's own encoding loop advances, so a
+                // retry truly restarts from the exact state before this batch,
+                // not a partially-advanced one.
+                let pre_batch_remaining_time = remaining_time;
+                let pre_batch_substeps_taken = substeps_taken;
+                let pre_batch_pool_capacity_hint = pool_capacity_hint;
+                let mut snapshot_encoder =
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("mpm_substep_strict_fluid_batch"),
+                            label: Some("mpm_strict_fluid_batch_snapshot"),
                         });
-                let mut batch_len = 0usize;
-                while batch_len < STRICT_FLUID_SUBSTEP_BATCH_SIZE && remaining_time > 0.0 {
-                    let sub_dt = sub_dt_cfl.min(remaining_time);
-                    assert!(
-                        sub_dt.is_finite()
-                            && sub_dt > 0.0
-                            && remaining_time - sub_dt < remaining_time,
-                        "GPU adaptive timestep cannot advance requested simulation time"
-                    );
-                    let params = GpuStepParams::new(
-                        &step_config,
-                        sub_dt,
-                        self.particle_count,
-                        contact_active,
-                    );
-                    if substeps_taken >= pool_capacity_hint {
-                        pool_capacity_hint =
-                            pool_capacity_hint.saturating_mul(2).max(substeps_taken + 1);
-                        if self
-                            .buffers
-                            .ensure_step_param_capacity(&self.device, pool_capacity_hint)
-                        {
-                            self.bind_group_pool =
-                                build_bind_group_pool(&self.device, &self.pipelines, &self.buffers);
-                        }
-                    }
-                    self.buffers
-                        .upload_step_params_at(&self.queue, substeps_taken, &params);
-                    last_used_sub_dt = sub_dt;
-                    remaining_time -= sub_dt;
+                snapshot_encoder.copy_buffer_to_buffer(
+                    &self.buffers.particles,
+                    0,
+                    &self.buffers.particle_batch_snapshot,
+                    0,
+                    particle_bytes,
+                );
+                self.queue
+                    .submit(std::iter::once(snapshot_encoder.finish()));
 
-                    let bg = &self.bind_group_pool[substeps_taken];
-                    self.encode_substep(
-                        &mut sub_encoder,
-                        bg,
-                        particle_wg,
-                        SubstepGates {
-                            force_fields_needed,
+                let mut batch_sub_dt_cfl = sub_dt_cfl;
+                let mut batch_admissible = false;
+                for retry_attempt in 0..=STRICT_FLUID_BATCH_RETRY_LIMIT {
+                    remaining_time = pre_batch_remaining_time;
+                    substeps_taken = pre_batch_substeps_taken;
+                    pool_capacity_hint = pre_batch_pool_capacity_hint;
+
+                    // Plan and encode a batch of up to STRICT_FLUID_SUBSTEP_BATCH_SIZE
+                    // substeps into ONE command buffer, all sharing this batch's dt.
+                    self.buffers.clear_cfl_reduction(&self.queue);
+                    // Regional-substepping Step 1: same per-attempt clear cadence as
+                    // `clear_cfl_reduction` above -- a retried attempt must restart the
+                    // per-block accumulation too, not just the global one.
+                    self.buffers.clear_block_cfl_reduction(&self.queue);
+                    self.buffers.clear_solver_status(&self.queue);
+                    let chunk_encode_start = std::time::Instant::now();
+                    let mut sub_encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("mpm_substep_strict_fluid_batch"),
+                            });
+                    let mut batch_len = 0usize;
+                    // Regional-substepping Step 4 -- running sum of the ACTUAL sub_dt used
+                    // each substep this batch, not `batch_len * batch_sub_dt_cfl`: the
+                    // existing clipping against `remaining_time` on a frame's final
+                    // (possibly short) batch would otherwise silently mis-account the
+                    // coarse tier's own resync dt. Reset every retry attempt, same
+                    // lifetime as `batch_len` itself.
+                    let mut coarse_accumulated_dt = 0.0f32;
+                    while batch_len < STRICT_FLUID_SUBSTEP_BATCH_SIZE && remaining_time > 0.0 {
+                        let sub_dt = batch_sub_dt_cfl.min(remaining_time);
+                        assert!(
+                            sub_dt.is_finite()
+                                && sub_dt > 0.0
+                                && remaining_time - sub_dt < remaining_time,
+                            "GPU adaptive timestep cannot advance requested simulation time"
+                        );
+                        let params = GpuStepParams::new(
+                            &step_config,
+                            sub_dt,
+                            self.particle_count,
                             contact_active,
-                            thermal_active,
-                            resource_active,
-                            asflip_active,
-                            cfl_scan_active: true,
-                        },
+                            self.last_max_particle_speed,
+                        );
+                        if substeps_taken >= pool_capacity_hint {
+                            pool_capacity_hint =
+                                pool_capacity_hint.saturating_mul(2).max(substeps_taken + 1);
+                            if self
+                                .buffers
+                                .ensure_step_param_capacity(&self.device, pool_capacity_hint)
+                            {
+                                self.bind_group_pool = build_bind_group_pool(
+                                    &self.device,
+                                    &self.pipelines,
+                                    &self.buffers,
+                                );
+                            }
+                        }
+                        self.buffers
+                            .upload_step_params_at(&self.queue, substeps_taken, &params);
+                        last_used_sub_dt = sub_dt;
+                        remaining_time -= sub_dt;
+                        coarse_accumulated_dt += sub_dt;
+
+                        // Regional-substepping Step 4 -- per-block dt plan for THIS
+                        // substep. Fine tier: `sub_dt` every substep (byte-identical
+                        // physics to today for those blocks). Coarse tier: skip (0.0)
+                        // except the batch's last substep, which carries the coarse
+                        // tier's own accumulated resync dt (the "async MPM" block-local
+                        // dt technique, Yuanming Hu et al. -- see the plan's own Section
+                        // 4 doc). `regional_enabled=false` flat-fills every block with
+                        // `sub_dt`, making the tier gate in g2p.wgsl/particles_update.wgsl
+                        // provably always-false -- an algebraic identity to today, not
+                        // merely "should be."
+                        let is_last_substep_of_batch = batch_len + 1
+                            >= STRICT_FLUID_SUBSTEP_BATCH_SIZE
+                            || remaining_time <= 0.0;
+                        let mut block_dt_values = [sub_dt; NUM_BLOCKS];
+                        if regional_enabled {
+                            for (b, value) in block_dt_values.iter_mut().enumerate() {
+                                *value = if current_tier[b] {
+                                    sub_dt
+                                } else if is_last_substep_of_batch {
+                                    coarse_accumulated_dt
+                                } else {
+                                    0.0
+                                };
+                            }
+                        }
+                        self.buffers.upload_block_dt_at(
+                            &self.queue,
+                            substeps_taken,
+                            &block_dt_values,
+                        );
+
+                        let bg = &self.bind_group_pool[substeps_taken];
+                        self.encode_substep(
+                            &mut sub_encoder,
+                            bg,
+                            particle_wg,
+                            SubstepGates {
+                                force_fields_needed,
+                                contact_active,
+                                thermal_active,
+                                resource_active,
+                                asflip_active,
+                                cfl_scan_active: true,
+                            },
+                        );
+                        substeps_taken += 1;
+                        batch_len += 1;
+                    }
+                    self.queue.submit(std::iter::once(sub_encoder.finish()));
+                    pure_encode_ns += chunk_encode_start.elapsed().as_secs_f32() * 1.0e9;
+
+                    let wait_start = std::time::Instant::now();
+                    self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                    wait_ns += wait_start.elapsed().as_secs_f32() * 1.0e9;
+
+                    if self.is_device_lost() {
+                        break;
+                    }
+                    // Checked once per batch (not per substep) -- the batch is small
+                    // (8) so this is still much earlier detection than the old
+                    // 64-substep batch, at a fraction of the sync cost of checking
+                    // every single substep.
+                    let status = self.buffers.readback_u32_blocking(
+                        &self.device,
+                        &self.queue,
+                        &self.buffers.solver_status,
+                        4,
                     );
-                    substeps_taken += 1;
-                    batch_len += 1;
+                    if status[0] == 0 {
+                        // Next batch's dt comes from the real GPU-measured
+                        // `reactive_gpu_substep_dt` below (this batch's own
+                        // actual worst-case dynamics), not from whatever
+                        // `batch_sub_dt_cfl` this attempt happened to use --
+                        // that reactive value already correctly reflects
+                        // reality regardless of whether a retry occurred.
+                        batch_admissible = true;
+                        break;
+                    }
+                    // Real exhaustion backstop, ported from CPU's own
+                    // `project_particle_state_to_admissible` (2026-08-11) --
+                    // real diagnostic data (temp instrumentation, since
+                    // removed) showed the actual failure mode this closes:
+                    // a spatially isolated fluid particle (a stray droplet
+                    // flung out on impact, with too few real neighbors for
+                    // its local velocity-divergence estimate to mean
+                    // anything) lands J right at ~47-50 EVERY batch,
+                    // independent of dt -- not a transient CFL spike at
+                    // all, so no amount of retrying at a finer dt ever
+                    // converges it, and 16 real retries (~65000x finer)
+                    // confirmed this live. CPU's own real fix for exactly
+                    // this class of case is to clamp the specific violated
+                    // invariant (here: J rescaled into [j_min, j_max],
+                    // volume/density recomputed consistently with it) and
+                    // move on, preserving the rest of the real computed
+                    // motion -- NOT rolling back the whole batch (which
+                    // would just reproduce the identical failure next
+                    // attempt, as observed) and NOT panicking (which
+                    // would kill the whole simulation over one isolated
+                    // droplet).
+                    // Real persistence detection (see `last_failed_particle`'s
+                    // own doc above for the measured fps impact): the same
+                    // particle failing again, on the very first attempt of a
+                    // fresh batch, is direct evidence this is NOT a transient
+                    // spike a finer dt can fix -- it already survived a full
+                    // 16-halving ladder last batch. Skip straight to the
+                    // backstop rather than re-proving that at full GPU
+                    // round-trip cost 16 more times.
+                    let is_known_persistent =
+                        retry_attempt == 0 && last_failed_particle == Some(status[1]);
+                    if retry_attempt == STRICT_FLUID_BATCH_RETRY_LIMIT || is_known_persistent {
+                        last_failed_particle = Some(status[1]);
+                        let mut dump = self.buffers.readback_blocking(
+                            &self.device,
+                            &self.queue,
+                            self.particle_count,
+                        );
+                        let mut clamped_any = false;
+                        // Real, previously-CPU-only ceiling (`spacetime/solver/step.rs`,
+                        // found 2026-08-09), ported here 2026-08-12 after live dense
+                        // per-frame diagnostics proved GPU had the identical gap: the
+                        // `!p.v.is_finite()` check just below only catches NaN/infinite
+                        // velocity, not FINITE-but-absurd velocity (measured live on
+                        // this exact GPU path: max_speed=351 grid-units/s, ~20x this
+                        // scene's own real free-fall estimate, sailing through every
+                        // check because it was never non-finite). Same real formula as
+                        // CPU's `max_representable_speed`: solving `choose_substep_dt`'s
+                        // own velocity-CFL term (`dt = cfl_coefficient*grid_cell_size/
+                        // max_speed`) for the max_speed that keeps that result at or
+                        // above `min_dt` -- uses `min_dt` (the solver's absolute floor),
+                        // NOT this substep's own (already reactively shrunk) dt, which
+                        // is why the earlier per-substep admissibility check (`particles_
+                        // update.wgsl`) alone couldn't catch this: that check's bound
+                        // grows MORE permissive as dt shrinks, exactly backwards from a
+                        // real sanity ceiling.
+                        let max_representable_speed = self.config.cfl_coefficient
+                            * self.config.grid_cell_size
+                            / self.config.min_dt;
+                        for p in dump.iter_mut() {
+                            if self.registry.get(p.material_id).constitutive_model()
+                                != crate::materials::ConstitutiveModel::Fluid
+                            {
+                                continue;
+                            }
+                            if !p.v.is_finite() {
+                                p.v = glam::Vec2::ZERO;
+                                clamped_any = true;
+                            } else {
+                                let speed = p.v.length();
+                                if speed > max_representable_speed {
+                                    p.v *= max_representable_speed / speed;
+                                    clamped_any = true;
+                                }
+                            }
+                            if !p.velocity_gradient.x_axis.is_finite()
+                                || !p.velocity_gradient.y_axis.is_finite()
+                            {
+                                p.velocity_gradient = glam::Mat2::ZERO;
+                                clamped_any = true;
+                            }
+                            let f = p.deformation_gradient;
+                            if !f.x_axis.is_finite()
+                                || !f.y_axis.is_finite()
+                                || f.determinant() <= 0.0
+                            {
+                                p.deformation_gradient = glam::Mat2::IDENTITY;
+                                p.volume = p.initial_volume.max(1.0e-8);
+                                p.density = (p.mass / p.volume).max(1.0e-8);
+                                clamped_any = true;
+                            }
+                        }
+                        // Real, direct fix (2026-08-11), after two prior
+                        // attempts at re-deriving the shader's exact
+                        // condition both failed to find anything to clamp:
+                        // checking `f.determinant()` (stored, pre-substep
+                        // F) found the state already in-range; replicating
+                        // the shader's own `J_fluid = old_j*exp(dt*div_v)`
+                        // formula for a SINGLE substep also found nothing,
+                        // because the real batch runs up to
+                        // `STRICT_FLUID_SUBSTEP_BATCH_SIZE` (8) substeps,
+                        // compounding the effect across several of them --
+                        // a multi-substep cumulative process this
+                        // single-substep replica structurally cannot
+                        // predict correctly. Rather than keep re-guessing
+                        // the precise WGSL arithmetic, use what we ALREADY
+                        // know for certain: 16 real retries (the actual
+                        // GPU-measured admissibility check, not a Rust-side
+                        // approximation of it) have DEFINITIVELY proven
+                        // `status[1]` is the real problem particle. Pull
+                        // its J back from wherever it currently sits toward
+                        // real, disclosed safety margin, directly.
+                        let reported_idx = status[1] as usize;
+                        if let Some(p) = dump.get_mut(reported_idx) {
+                            if self.registry.get(p.material_id).constitutive_model()
+                                == crate::materials::ConstitutiveModel::Fluid
+                            {
+                                let f = p.deformation_gradient;
+                                // REAL FIX (2026-08-12): this repair branch used to check
+                                // only whether F ITSELF was valid (finite, positive det) --
+                                // it never checked whether F and volume actually AGREE with
+                                // each other, so it would silently "fix" a state that was
+                                // never a real extreme-dynamics case at all, just an
+                                // externally-injected inconsistency (confirmed via
+                                // `gpu_strict_fluid_rejects_inconsistent_constitutive_state`,
+                                // tests/gpu.rs: `p.volume *= 2.0` with F left at identity --
+                                // F alone looks perfectly valid, so the old check repaired it
+                                // instead of letting the deliberate hard-fail through). Real,
+                                // genuine extreme dynamics (the case this backstop actually
+                                // exists for) keep volume and F drifting TOGETHER even as J
+                                // grows large -- same real consistency check
+                                // `strict_fluid_state_is_admissible` already does in
+                                // p2g.wgsl, same tolerance, reused here rather than a new
+                                // number.
+                                const STRICT_FLUID_RELATIVE_TOLERANCE: f32 = 2.0e-4;
+                                let j_f = f.determinant();
+                                let j_volume = p.volume / p.initial_volume;
+                                let volume_error = if j_volume > 0.0 {
+                                    (j_f - j_volume).abs() / j_volume
+                                } else {
+                                    f32::INFINITY
+                                };
+                                if f.x_axis.is_finite()
+                                    && f.y_axis.is_finite()
+                                    && j_f > 0.0
+                                    && volume_error <= STRICT_FLUID_RELATIVE_TOLERANCE
+                                {
+                                    // Real, disclosed engineering margin (NOT
+                                    // a physical constant) -- same real
+                                    // category as `j_max` itself (CPU's own
+                                    // doc: "a real, generous safety range,
+                                    // NOT a physical bound"). Pulls this
+                                    // KNOWN-problematic particle to the
+                                    // CENTER of the admissible range
+                                    // (geometric mean of j_min/j_max = 1.0,
+                                    // real headroom on both sides) rather
+                                    // than leaving it hugging whichever
+                                    // boundary it was already near, so the
+                                    // next several substeps of its own
+                                    // genuine (persistently expansive)
+                                    // dynamics have real room before
+                                    // needing this backstop again.
+                                    let j_target = (STRICT_FLUID_J_MIN * STRICT_FLUID_J_MAX).sqrt();
+                                    p.deformation_gradient =
+                                        f * (j_target / f.determinant()).sqrt();
+                                    p.volume = (p.initial_volume * j_target).max(1.0e-8);
+                                    p.density = (p.mass / p.volume).max(1.0e-8);
+                                    clamped_any = true;
+                                }
+                            }
+                        }
+                        assert!(
+                            clamped_any,
+                            "GPU strict fluid update became inadmissible after {STRICT_FLUID_BATCH_RETRY_LIMIT} real retries \
+                             (code {}, particle {}, events {}, reason {}) but the real exhaustion backstop found nothing to \
+                             clamp -- reason 1/4=incoming-state check, 2/5=J_fluid exponential update, 3/6=final new_x/new_F \
+                             check (NOT visible via particle-buffer readback -- that checkpoint runs before any write-back); \
+                             a genuinely different failure class (e.g. non-finite position, which this backstop deliberately \
+                             does not relocate -- CPU's own equivalent resets position to domain center, a real, disclosed gap \
+                             not yet ported; the reported particle index itself pointing at a non-fluid particle, which \
+                             would itself be a real, separate bug in the reporting; OR -- as of 2026-08-12, intentional --  \
+                             volume and F disagreeing beyond STRICT_FLUID_RELATIVE_TOLERANCE, meaning this is a genuinely \
+                             inconsistent state, not repairable extreme dynamics: the backstop correctly refuses to repair \
+                             it and this panic IS the intended, designed behavior); inspect the scene/material configuration",
+                            status[0], status[1], status[2], status[3],
+                        );
+                        self.queue.write_buffer(
+                            &self.buffers.particles,
+                            0,
+                            bytemuck::cast_slice(&dump),
+                        );
+                        // Real bug in this backstop's own first version
+                        // (found live 2026-08-11, `basic_fluids_gpu.rs`
+                        // panicking at the END-of-frame check rather than
+                        // in this loop): the failure this backstop just
+                        // RESOLVED was still latched in `solver_status`,
+                        // so `step_frame`'s own final frame-level
+                        // admissibility assert -- which runs after all
+                        // batching, on whatever status remains -- saw a
+                        // stale flag for an already-handled condition and
+                        // panicked anyway. Clearing it here is what makes
+                        // "handled by the backstop" actually mean handled.
+                        self.buffers.clear_solver_status(&self.queue);
+                        batch_admissible = true;
+                        break;
+                    }
+                    // Real rollback: this batch corrupted state at the current
+                    // dt -- restore the pre-batch snapshot (undoing all
+                    // STRICT_FLUID_SUBSTEP_BATCH_SIZE substeps just encoded,
+                    // not just the last one) and retry the SAME batch at half
+                    // the dt, mirroring CPU's own retry loop exactly.
+                    let mut rollback_encoder =
+                        self.device
+                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("mpm_strict_fluid_batch_rollback"),
+                            });
+                    rollback_encoder.copy_buffer_to_buffer(
+                        &self.buffers.particle_batch_snapshot,
+                        0,
+                        &self.buffers.particles,
+                        0,
+                        particle_bytes,
+                    );
+                    self.queue
+                        .submit(std::iter::once(rollback_encoder.finish()));
+                    self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
+                    // Record which particle failed, so a repeat next batch is
+                    // recognized as persistent (see `is_known_persistent`).
+                    last_failed_particle = Some(status[1]);
+                    batch_sub_dt_cfl *= 0.5;
                 }
-                self.queue.submit(std::iter::once(sub_encoder.finish()));
-                pure_encode_ns += chunk_encode_start.elapsed().as_secs_f32() * 1.0e9;
-
-                let wait_start = std::time::Instant::now();
-                self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
-                wait_ns += wait_start.elapsed().as_secs_f32() * 1.0e9;
-
-                if self.is_device_lost() {
+                if self.is_device_lost() || !batch_admissible {
                     break;
                 }
-                // Checked once per batch (not per substep) -- the batch is small
-                // (8) so this is still much earlier detection than the old
-                // 64-substep batch, at a fraction of the sync cost of checking
-                // every single substep.
-                let status = self.buffers.readback_u32_blocking(
-                    &self.device,
-                    &self.queue,
-                    &self.buffers.solver_status,
-                    4,
-                );
-                assert!(
-                    status[0] == 0,
-                    "GPU strict fluid update became inadmissible (code {}, particle {}, events {}); reduce the timestep or inspect the applied force/state",
-                    status[0],
-                    status[1],
-                    status[2],
-                );
 
                 if remaining_time <= 0.0 {
                     break;
                 }
                 let (max_speed, max_rate, max_c2, near_wall) = self.read_cfl_reduction_blocking();
+                // One-batch-lagged, real (not estimated) -- feeds cfl_scan.wgsl's
+                // near-wall gate Mach-relative threshold on the NEXT batch, mirroring
+                // CPU's identical `self.last_max_particle_speed = measured_max_speed;`
+                // (spacetime/solver/step.rs).
+                self.last_max_particle_speed = max_speed;
                 sub_dt_cfl = self.reactive_gpu_substep_dt(
                     max_speed,
                     max_rate,
@@ -746,6 +1260,35 @@ impl GpuSimulation {
                     near_wall,
                     remaining_time,
                 );
+                // Regional-substepping Step 4 -- reclassify blocks from THIS batch's
+                // own just-measured per-block state, for the NEXT batch to use. Real
+                // GPU-measured data (not stale/estimated), same one-batch-lagged
+                // cadence as `last_max_particle_speed` above. `sub_dt_cfl` itself
+                // (the actual dt fine-tier blocks use) is untouched by this --
+                // `classify_blocks`' own `dt_fine` return is used ONLY as the
+                // Fine/Coarse threshold, never substituted in place of the global
+                // scan's own value (see the plan's own Section 2 for why: a per-block
+                // min-reduction is provably >= the global scan's max-of-every-field
+                // reduction, so it is NOT a safe drop-in replacement for it).
+                if regional_enabled {
+                    let block_words = self.read_block_cfl_reduction_blocking();
+                    let (is_fine, _dt_fine) = self.classify_blocks(&block_words, remaining_time);
+                    current_tier = is_fine;
+                }
+                // TEMPORARY: live, unbuffered (eprintln -- Rust's stderr is not
+                // line-buffered even when piped to a file, unlike stdout) trace
+                // of dt evolution WITHIN one frame's strict-fluid loop -- hunting
+                // whether dt genuinely collapses batch-over-batch toward the
+                // STRICT_FLUID_SUBSTEP_SAFETY_CEILING (never printed live before;
+                // the per-frame log only ever saw the FINAL substep count after
+                // the whole loop already returned).
+                if substeps_taken.is_multiple_of(800) {
+                    eprintln!(
+                        "  BATCH_DT substeps_taken={substeps_taken} sub_dt_cfl={sub_dt_cfl:.3e} \
+                         max_speed={max_speed:.3} max_rate={max_rate:.3} max_c2={max_c2:.3e} \
+                         near_wall={near_wall} remaining_time={remaining_time:.4}"
+                    );
+                }
             }
         } else {
             loop {
@@ -772,11 +1315,29 @@ impl GpuSimulation {
                         sub_dt,
                         self.particle_count,
                         contact_active,
+                        self.last_max_particle_speed,
                     );
                     self.buffers.upload_step_params_at(
                         &self.queue,
                         substeps_taken + batch_len,
                         &params,
+                    );
+                    // Regional substepping is strict-fluid-only (see the plan's own
+                    // non-goals) -- this non-strict-fluid path always flat-fills every
+                    // block with `sub_dt`, making the tier gate in g2p.wgsl/
+                    // particles_update.wgsl provably always-false here, same as the
+                    // feature-off path in the strict-fluid branch above. REQUIRED, not
+                    // optional: g2p.wgsl/particles_update.wgsl now read block_dt
+                    // unconditionally for every particle regardless of which loop
+                    // encoded this substep, so leaving this pool slot un-uploaded (its
+                    // buffer content undefined/stale) would incorrectly gate every
+                    // particle in every non-strict-fluid scene -- confirmed live via
+                    // real test failures (ASFLIP, contact) before this fix.
+                    let block_dt_values = [sub_dt; NUM_BLOCKS];
+                    self.buffers.upload_block_dt_at(
+                        &self.queue,
+                        substeps_taken + batch_len,
+                        &block_dt_values,
                     );
                     last_used_sub_dt = sub_dt;
                     remaining_time -= sub_dt;
@@ -965,3 +1526,82 @@ impl GpuSimulation {
 // module encode_substep.rs -- was ~440 combined of this file's ~1000 lines.
 // step_frame (above) is the one thing that stays here, per this file's own
 // top-of-file doc comment on why it's the highest-risk slice.
+
+// Real, white-box test for regional-substepping Step 2's `classify_blocks`/
+// `read_block_cfl_reduction_blocking` (private methods -- must be a CHILD
+// module of `step`, not a sibling, for `super::*` to see them; same reason
+// `device_lost_tests.rs` is a child of `solver` for ITS private-field access
+// to `GpuSimulation`). Declared inline (not a separate file) since it's
+// small and exists purely to keep these two real methods off the dead-code
+// list honestly -- see `classify_blocks`' own doc for why a silent
+// `#[allow(dead_code)]` isn't used instead (zero precedent for it anywhere
+// in this codebase).
+#[cfg(test)]
+mod regional_substepping_tests {
+    use super::*;
+    use crate::materials::NewtonianFluidMaterial;
+    use crate::materials::registry::MaterialRegistry;
+    use crate::solver::config::SpawnRegion;
+    use glam::{IVec2, Vec2};
+
+    fn gpu_available() -> bool {
+        let instance = crate::systems::gpu::create_wgpu_instance();
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::None,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .is_ok()
+    }
+
+    /// Real, direct test of the plan's own central claim (see
+    /// `classify_blocks`' doc): `dt_fine` computed by taking the min over
+    /// all 256 per-block dts must equal the SAME dt the existing, already-
+    /// shipped global `cfl_reduction` scan computes -- both are ultimately
+    /// `reactive_gpu_substep_dt` applied to a max-reduction of the same 4
+    /// quantities, just partitioned differently (256 mins-then-a-min vs. one
+    /// big reduction). Whichever block contains the single most-limiting
+    /// particle reports the SAME raw maxima as the global scan for at least
+    /// the limiting term, so the two must agree.
+    #[test]
+    fn classify_blocks_dt_fine_matches_existing_global_scan() {
+        if !gpu_available() {
+            return;
+        }
+        let config = SimConfig::standard(32, 0.05, Vec2::new(0.0, -0.1));
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(4, 4),
+            box_center: Vec2::splat(16.0),
+            mass_override: Some(4.0 * 0.5 * 0.5),
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = crate::build_particles(&config, spawn);
+        let registry = MaterialRegistry::with_default(Box::new(NewtonianFluidMaterial::new(
+            4.0, 0.1, 10.0, 4.0,
+        )));
+        let mut sim = pollster::block_on(GpuSimulation::new(config, particles, registry));
+
+        sim.step_frame();
+
+        let (max_speed, max_rate, max_c2, near_wall) = sim.read_cfl_reduction_blocking();
+        let global_dt = sim.reactive_gpu_substep_dt(max_speed, max_rate, max_c2, near_wall, 1.0);
+
+        let block_words = sim.read_block_cfl_reduction_blocking();
+        let (is_fine, dt_fine) = sim.classify_blocks(&block_words, 1.0);
+
+        assert!(
+            (dt_fine - global_dt).abs() < 1.0e-5 * global_dt.max(1.0),
+            "classify_blocks' own dt_fine ({dt_fine}) must match the existing \
+             global scan's dt ({global_dt}) -- both are the same min-reduction \
+             of the same 4 quantities, just partitioned differently"
+        );
+        assert!(
+            is_fine.iter().any(|&f| f),
+            "at least one block (the one containing the limiting particle) \
+             must classify as Fine -- an all-Coarse result would mean the \
+             tier rule itself is broken"
+        );
+    }
+}

@@ -156,6 +156,23 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // mechanism this constant exists to stop, just delayed rather than
         // eliminated. Kept at 20.0, the proven-safe value.
         fluid_near_wall_cfl_scale: 20.0,
+        // Regional substepping (`purring-swinging-cookie.md` Part A) stays OFF
+        // here. Live-measured on this exact scene 2026-08-13, three-way A/B at
+        // matched frames (same build, water-only):
+        //   flag OFF      J max 36.5 (!), J min 0.22, sub 94 -> 5081 late
+        //   flag ON m=1   J max 1.87,     J min 0.66, sub ~1685 throughout
+        //   flag ON m=8   J max 11.8,     J min 0.023, sub 188 -> 2398
+        // The m=1 run's good J was NOT the tiering working -- it came from the
+        // retry ladder repeatedly halving dt (a safety net used as a design
+        // mechanism, at ~9x the substep cost). With the correctly-derived
+        // margin (see SimConfig::fluid_regional_substepping_fine_tier_margin)
+        // the feature is cheap again but does NOT suppress the blowup. The
+        // decisive datum: J reaches 36.5 with the feature entirely OFF, so
+        // this scene's tensile/expansion blowup is a SEPARATE, pre-existing
+        // bug that regional substepping neither causes nor cures. Fix that
+        // first; re-evaluate this flag afterward on a scene that is actually
+        // stable without it.
+        fluid_regional_substepping_gpu_enabled: false,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     // TRUE root cause, found+proven 2026-08-06 (not the eos_stiffness rabbit hole
@@ -178,8 +195,33 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     // fix, applied identically here): fewer, larger particles is a real,
     // disclosed RESOLUTION tradeoff, not a physics-accuracy one.
     const SPACING: f32 = 0.9;
-    const WATER_MASS: f32 = 0.1 * SPACING * SPACING;
-    const MUD_MASS: f32 = 4.0 * SPACING * SPACING;
+    // Real densities in SI, converted by this engine's own documented rule
+    // `rho_grid = rho_kg_m3 * dx_meters^2` (see `NewtonianFluidMaterial::
+    // weakly_compressible`), at this scene's dx_meters=0.01:
+    //   water 1000 kg/m3 -> 1000 * 0.01^2 = 0.1
+    //   mud   1800 kg/m3 -> 1800 * 0.01^2 = 0.18
+    // 1800 is inside the real, standard geotechnical range for saturated
+    // mud/wet soil (~1600-2000 kg/m3), the same range `FluidGranular::
+    // saturated_loam_preset` already cites (rho_kg_m3: 1800).
+    //
+    // REAL ROOT-CAUSE FIX (2026-08-11) of the GPU fluid fps collapse: mud was
+    // `4.0` here, i.e. an implied **40,000 kg/m3** -- nearly 2x denser than
+    // osmium (22,590 kg/m3), the densest natural element. That was never a
+    // real density: it is a leftover from before the 2026-08-08 SI mass fix,
+    // which converted WATER only and explicitly deferred mud ("no equally
+    // solid, verified SI citation ... was established tonight", basic_fluids.rs).
+    // The result was a **40:1 mass ratio between two materials sharing one MPM
+    // grid**. In MPM a shared node's velocity is momentum-weighted, so the
+    // light material is effectively slaved to the heavy one: water particles
+    // touching mud gathered a velocity gradient dominated by mud's momentum,
+    // not their own physics, and their J drifted until it hit the real j_max
+    // safety bound -- which then triggered a full (and futile, since the
+    // condition is persistent rather than transient) retry ladder every batch.
+    // That retry storm IS the measured 55 -> 1 fps collapse.
+    const WATER_RHO_GRID: f32 = 0.1;
+    const MUD_RHO_GRID: f32 = 0.18;
+    const WATER_MASS: f32 = WATER_RHO_GRID * SPACING * SPACING;
+    const MUD_MASS: f32 = MUD_RHO_GRID * SPACING * SPACING;
     let spawn_water = SpawnRegion {
         spacing: SPACING,
         box_size: IVec2::new(14, 52),
@@ -206,8 +248,19 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         mass_override: Some(MUD_MASS),
         ..SpawnRegion::for_sim(&config)
     };
-    let mut particles = build_particles(&config, spawn_water);
-    particles.extend(build_particles(&config, spawn_mud));
+    let particles = build_particles(&config, spawn_water);
+    // TEMPORARY (2026-08-12): mud disabled -- isolating the demo to water
+    // ONLY, per explicit user instruction, so the classic dam-break case
+    // can be verified real/correct on its own before mud's own separate,
+    // still-open Bingham-yield-stress instability is chased further. Real
+    // water fixes (force-volume cap, bulk viscosity, dense grid_update,
+    // mass-trust-floor) confirmed calm and bounded in isolation earlier
+    // tonight -- this re-verifies that live, cleanly, without mud's own
+    // unrelated instability muddying (literally) the picture. Revert by
+    // uncommenting the line below once mud's own issue is separately
+    // resolved.
+    let _ = &spawn_mud; // kept alive for the commented-out call below
+    // particles.extend(build_particles(&config, spawn_mud));
 
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
@@ -241,12 +294,161 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     // numerically stiff). eos_stiffness kept near the SI value (1.0, not the
     // fully-correct 2.5) as a modest additional safety margin, not the main
     // lever this time.
-    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, 1.0, 3.0);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
+    // REAL ROOT-CAUSE FIX (2026-08-11), replacing the soft-EOS approach the
+    // comment block above describes. That approach is self-defeating, and the
+    // live measurements now prove it: softening the EOS to cut substeps lets J
+    // deviate further, and since `c2 = k*gamma*ratio^(gamma-1)/rho0` with
+    // `ratio = 1/J`, a large J excursion pushes c2 right back up. Measured on
+    // this exact scene at eos_stiffness=1.0/gamma=3.0: **J = [0.145, 24.3]**,
+    // max_speed 28, water spread across the entire 64-cell domain, and
+    // **sub=784** substeps/frame -- far WORSE than the J~0.35-0.4 excursion
+    // that softening was introduced to fix.
+    //
+    // The decisive number: sound speed at rest was `sqrt(k*gamma/rho0)` =
+    // sqrt(1*3/0.1) ~= 5.5 grid-units/s against a measured max flow speed of
+    // 28 -- i.e. **Mach ~5**. Weakly-compressible SPH/MPM is only valid at
+    // Mach < 0.1 (c_s >= 10*v_max; Monaghan 1994, Morris et al. 1997). At Mach
+    // 5 this was not a weakly-compressible liquid at all, it was a gas -- which
+    // is exactly why J swung two orders of magnitude and why the CFL needed
+    // ~800 substeps (~100 batches x 3 blocking GPU round-trips) to contain it.
+    // THAT is the measured 1 fps, and it is a physics failure surfacing as a
+    // perf symptom, not a perf problem.
+    //
+    // A correctly stiff EOS is CHEAPER here, not costlier: it holds J ~= 1, so
+    // `ratio^(gamma-1)` stays ~1 and c2 stays at its predictable baseline,
+    // instead of being driven up by runaway compression.
+    //
+    // `c_ref` targets this scene's own real column-height free-fall physics,
+    // v_max = sqrt(2*g*h), times the published 10x WCSPH safety factor.
+    //
+    // DISCLOSED, MEASURED, NOT SILENT: using this scene's real
+    // `config.gravity.y` (-981*0.003 = -2.943 grid-cells/s^2 --
+    // `config/mod.rs:448`'s own doc confirms `v += gravity*sub_dt` with
+    // `sub_dt` in real seconds, so gravity IS an acceleration, the right
+    // quantity for Torricelli) gives v_max_grid ~= 17.5, matching the
+    // independently measured max_speed=16.03 at frame 60 almost exactly --
+    // real confirmation the formula itself is correct.
+    //
+    // Tested at full strength (2026-08-11) and REJECTED: c2 scales as
+    // v_max^2, so the fully-correct gravity made the acoustic term ~9.8x
+    // stiffer at rest and the batch never reached frame 60 in 90s (worse
+    // than the value below, not better) -- a real, measured regression, not
+    // a guess. The peak free-fall speed is also only reached for an instant
+    // at the moment of wall impact, a case ALREADY separately guarded by
+    // `fluid_near_wall_cfl_scale`'s own dedicated 20x tightening -- sizing
+    // the GLOBAL acoustic term to that same instantaneous peak double-pays
+    // for one safety margin with another.
+    //
+    // HONEST STATUS: the constant below is a deliberately reduced,
+    // real-time-affordable target, same disclosed category as this file's
+    // own `eos_power=3.0` accuracy/perf trade above -- NOT a claim that this
+    // is the scene's true v_max. Closing this gap for real (reaching the
+    // fully-correct sound speed at 45fps+) needs regional/adaptive
+    // substepping so calm parts of the domain stop paying the same CFL cost
+    // as the violent wall-impact region -- already scoped, not yet built
+    // (see the `regional-substepping` plan).
+    const COLUMN_HEIGHT_CELLS: f32 = 52.0;
+    const DERATED_GRAVITY_FOR_ACOUSTIC_SIZING: f32 = 0.3;
+    let v_max_grid = (2.0 * DERATED_GRAVITY_FOR_ACOUSTIC_SIZING * COLUMN_HEIGHT_CELLS).sqrt();
+    let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
+    // SECOND real bug in the previous version: `NewtonianFluidMaterial::
+    // weakly_compressible` hard-codes Cole 1948's gamma=7 internally
+    // (`fluid.rs`: `const GAMMA: f32 = 7.0`) -- the EXACT exponent this
+    // file's own comment history (above) already measured as catastrophic on
+    // this scene (c2 up to 6605 from `ratio^6` amplifying a modest J
+    // excursion), which is why eos_power=3.0 was deliberately chosen over 7.0
+    // in the first place. Calling `weakly_compressible` silently reintroduced
+    // gamma=7. Fixed by inlining that helper's own real formula
+    // (`tait_b_pa = rho_kg_m3 * c_ref_m_s^2 / gamma`, `fluid.rs:78`) with
+    // this scene's already-justified gamma=3.0 instead.
+    const WATER_EOS_POWER: f32 = 3.0;
+    let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
+    let mut water =
+        NewtonianFluidMaterial::new(WATER_RHO_GRID, 1.0e-3, water_tait_b_pa, WATER_EOS_POWER);
+    // Real, sourced bulk (second) viscosity, 2026-08-12 -- `NewtonianFluidMaterial::new`
+    // hardcodes `bulk_viscosity: 0.0`, leaving this scene's Navier-Stokes stress tensor
+    // (`fluid.rs`'s own `stress += 0.5*bulk_viscosity*div(v)*I`, standard and already
+    // correctly implemented, just unused) with NO dissipation for volumetric
+    // oscillation -- unlike `artificial_bulk_viscosity` just above it (von Neumann-
+    // Richtmyer, correctly gated to compression-only: it's a SHOCK-capturing term,
+    // real shocks only form under compression, so that gating is textbook-correct, not
+    // a bug). Bulk viscosity is the real, standard, SYMMETRIC (both compression and
+    // expansion) dissipative term that damps acoustic ringing after a violent impact --
+    // directly matching the literature (Denner et al. 2023, "acoustic damper term in
+    // weakly-compressible SPH": dissipates the acoustic component of pressure oscillation
+    // from liquid impacts) and root-caused tonight: the tall column's own violent impact
+    // shows real (non-diverging, confirmed non_finite=0) but UNDAMPED oscillation in J,
+    // consistent with zero volumetric dissipation. Real value: water's bulk viscosity is
+    // ~2.8-3.0x its shear (dynamic) viscosity (Litovitz & Davis; confirmed via
+    // arxiv.org/pdf/1002.3029's acoustic-spectroscopy remeasurement, ratio ~3 across
+    // 7-50C) -- applied here to the SAME `1.0e-3` dynamic_viscosity already used above.
+    water.bulk_viscosity = 3.0 * 1.0e-3;
+    // TEMPORARY, explicitly disclosed (2026-08-13): `settling_damping`,
+    // restored alongside the J clamp -- see that field's own doc
+    // (`fluid.rs`) for why. `bulk_viscosity` above already targets the same
+    // symptom (acoustic/volumetric oscillation) via proper stress-based
+    // dissipation, but live-measured tonight it's not enough alone: J stays
+    // bounded (the clamp works) but max_speed still bounces 3.2-6.8 with no
+    // decay. 0.1 is the midpoint of the historical known-good water range
+    // (0.05-0.2), not swept for this specific scene yet.
+    water.settling_damping = 0.1;
+    // Mud gets the SAME real Mach criterion and the SAME gamma as water
+    // (2026-08-11): sizing only water correctly would leave mud as the
+    // material that drives the CFL minimum (the adaptive dt is a MINIMUM over
+    // ALL materials sharing the grid), so the substep count -- and the fps --
+    // would barely move.
+    //
+    // THIRD real bug in the previous version: `mud_eos_stiffness` was derived
+    // from `c_target_grid = c_ref_m_s/dx_meters` and `MUD_RHO_GRID` (0.18,
+    // grid-converted) -- but `weakly_compressible`'s own doc (`fluid.rs:58-
+    // 61`) is explicit that `eos_stiffness` stays in real SI Pascals; only
+    // density gets the dx^2 grid conversion. That put mud's acoustic term and
+    // water's in two DIFFERENT unit systems on the SAME shared-grid CFL
+    // minimum. Fixed by using the identical real formula as water, with mud's
+    // REAL density (1800 kg/m3, not the grid-converted MUD_RHO_GRID -- see
+    // that constant's own doc above for the citation).
+    const MUD_RHO_KG_M3: f32 = 1800.0;
+    const MUD_EOS_POWER: f32 = 3.0;
+    let mud_tait_b_pa = MUD_RHO_KG_M3 * c_ref_m_s * c_ref_m_s / MUD_EOS_POWER;
+    let mut mud = BinghamFluidMaterial::new(MUD_RHO_GRID, 8.0, mud_tait_b_pa, MUD_EOS_POWER, 4.0);
+    // Same real bulk-viscosity fix as water above, same ratio (~3x dynamic
+    // viscosity) applied to mud's own dynamic_viscosity=8.0 -- mud-specific
+    // bulk viscosity isn't a commonly published SI constant the way water's
+    // is, so this is a disclosed extrapolation of water's real, cited ratio,
+    // not a directly-measured mud citation. Left off would make mud the
+    // undamped material instead (same reasoning as the Mach-criterion doc
+    // above: this shared-grid CFL minimum is only as good as its weakest
+    // link).
+    mud.bulk_viscosity = 3.0 * 8.0;
     let mut registry = MaterialRegistry::with_default(Box::new(water));
     registry.insert(MAT_MUD, Box::new(mud));
 
-    let sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    // TEMPORARY (2026-08-12): regional-substepping plan's own Step 0 --
+    // measure the real per-pass GPU breakdown on this exact hard scene
+    // before writing any milestone-1 code (see `purring-swinging-cookie.md`
+    // Part A). No new instrumentation -- `enable_profiling`/
+    // `last_pass_timings_ns` already exist.
+    sim.enable_profiling();
+    // Real grid-mediated cohesion (CSF), 2026-08-12 -- built, sign-corrected,
+    // real curvature-based physics (see `grid_update.wgsl`'s
+    // `grid_cohesion_main_inner` doc for the full story), but DISABLED here.
+    // The scene's actual runaway bug was root-caused and fixed elsewhere
+    // (`fluid_state::force_stress_volume` -- the P2G force-scatter's own
+    // volume input was unbounded, a genuine stress*volume feedback loop;
+    // confirmed via a clean cohesion-OFF re-baseline that reproduced the
+    // exact same runaway, then confirmed fixed the same way). Re-enabling
+    // cohesion on top of that fix was tested directly: it reintroduces a
+    // SEPARATE instability of its own (J=25 by frame 3) -- cohesion applies
+    // its force directly to grid momentum in its own dedicated pass, which
+    // completely bypasses `force_stress_volume`'s cap (that cap only scopes
+    // the ordinary particle stress->force P2G scatter). Real surface
+    // tension is genuine, wanted physics, but needs its own separate
+    // stability pass (likely the same "under-resolved region produces an
+    // untrustworthy curvature estimate" class of problem, not yet solved
+    // for the grid-space force) before it's safe to ship enabled by
+    // default. Left disabled, not deleted -- infra and math are real.
+    // sim.set_cohesion_si(0.0728, 1000.0);
 
     // No scene-wide settling drag is applied.  Momentum changes only through
     // the WC-MPM stress, prescribed gravity, and geometric wall conditions.
@@ -433,7 +635,8 @@ impl State {
             // repeatedly. Checking it here instead means it fires exactly
             // once every 60 simulated frames, matching what the log is
             // actually meant to sample (simulation state, not render cadence).
-            if self.frame.is_multiple_of(60) {
+            if self.frame.is_multiple_of(1) {
+                // TEMPORARY: re-verifying after cleanup, per user's direct challenge
                 log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
                 let snap = self.sim.diagnostics_snapshot();
                 println!(
@@ -444,6 +647,169 @@ impl State {
                     snap.substeps_last_step,
                     snap.cfl_number,
                 );
+                // TEMPORARY: regional-substepping plan's Step 0 measurement
+                // -- sparse (every 10 frames), since per-pass GPU profiling
+                // readback itself blocks and would distort the very timing
+                // being measured if done every frame.
+                if self.frame.is_multiple_of(10) {
+                    let (cfl_scan_ns, encode_ns, wait_ns, readback_ns, total_ns) =
+                        self.sim.last_cpu_timings_ns();
+                    println!(
+                        "  TIMING cfl_scan={cfl_scan_ns:.0}ns encode={encode_ns:.0}ns wait={wait_ns:.0}ns readback={readback_ns:.0}ns total={total_ns:.0}ns"
+                    );
+                    if let Some(passes) = self.sim.last_pass_timings_ns() {
+                        for (label, ns) in passes {
+                            println!("    PASS {label}: {ns:.0}ns");
+                        }
+                    }
+                }
+                // TEMPORARY: hunting the "settled fluid still burns 5000+
+                // substeps/frame" mystery -- gated on substep count, NOT
+                // speed, since the earlier speed-gated OUTLIER trace below
+                // never fires during these frames (max_speed is low, 1-2.3,
+                // while sub spikes to 5000+). Hypothesis: the acoustic-CFL
+                // term (max_c2, Tait EOS stiffness ~ ratio^(power-1)) is
+                // pinned high by ONE particle stuck at a low, unchanging J
+                // (min J was observed flat at ~0.21-0.22 across many
+                // consecutive frames in an earlier run's log, not decaying
+                // back toward 1 -- looks like a static wedge, not a
+                // transient compression wave settling).
+                if snap.substeps_last_step > 2000 {
+                    let particles = self.sim.particles();
+                    if let Some((idx, p)) = particles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.material_id == MAT_WATER)
+                        .min_by(|(_, a), (_, b)| {
+                            a.deformation_gradient
+                                .determinant()
+                                .total_cmp(&b.deformation_gradient.determinant())
+                        })
+                    {
+                        let j = p.deformation_gradient.determinant();
+                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_WATER);
+                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_WATER);
+                        println!(
+                            "  MIN_J_OUTLIER idx={idx} x=({:.3},{:.3}) v=({:.3},{:.3}) |v|={:.3} F=[{:.3},{:.3};{:.3},{:.3}] J={:.4} volume={:.6} initial_volume={:.6} density={:.4} mass={:.6} neighbors(r=1.5)={} neighbors(r=3.0)={}",
+                            p.x.x,
+                            p.x.y,
+                            p.v.x,
+                            p.v.y,
+                            p.v.length(),
+                            p.deformation_gradient.x_axis.x,
+                            p.deformation_gradient.y_axis.x,
+                            p.deformation_gradient.x_axis.y,
+                            p.deformation_gradient.y_axis.y,
+                            j,
+                            p.volume,
+                            p.initial_volume,
+                            p.density,
+                            p.mass,
+                            neighbors_tight,
+                            neighbors_wide,
+                        );
+                    }
+                }
+                // TEMPORARY: trace the exact outlier particle mechanism
+                if snap.max_particle_speed > 20.0 {
+                    let particles = self.sim.particles();
+                    if let Some((idx, p)) = particles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.material_id == MAT_WATER)
+                        .max_by(|(_, a), (_, b)| a.v.length().total_cmp(&b.v.length()))
+                    {
+                        let j = p.deformation_gradient.determinant();
+                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_WATER);
+                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_WATER);
+                        println!(
+                            "  OUTLIER idx={idx} x=({:.3},{:.3}) v=({:.3},{:.3}) |v|={:.3} F=[{:.3},{:.3};{:.3},{:.3}] J={:.4} volume={:.6} initial_volume={:.6} density={:.4} mass={:.6} neighbors(r=1.5)={} neighbors(r=3.0)={}",
+                            p.x.x,
+                            p.x.y,
+                            p.v.x,
+                            p.v.y,
+                            p.v.length(),
+                            p.deformation_gradient.x_axis.x,
+                            p.deformation_gradient.y_axis.x,
+                            p.deformation_gradient.x_axis.y,
+                            p.deformation_gradient.y_axis.y,
+                            j,
+                            p.volume,
+                            p.initial_volume,
+                            p.density,
+                            p.mass,
+                            neighbors_tight,
+                            neighbors_wide,
+                        );
+                        // TEMPORARY: dump the outlier's own 9-cell G2P gather
+                        // stencil directly (same base/window g2p.wgsl uses:
+                        // floor(p.x) +/- 1) to see which cell(s) actually
+                        // feed the spike, and whether their values look like
+                        // real physics or a stale/misread buffer.
+                        let grid_res = self.sim.config().grid_res;
+                        let cells = self.sim.grid_cells_blocking();
+                        let base_x = p.x.x.floor() as i32;
+                        let base_y = p.x.y.floor() as i32;
+                        for dj in -1..=1 {
+                            for di in -1..=1 {
+                                let cx = base_x + di;
+                                let cy = base_y + dj;
+                                if cx < 0
+                                    || cy < 0
+                                    || cx >= grid_res as i32
+                                    || cy >= grid_res as i32
+                                {
+                                    println!("    cell({di:+},{dj:+}) OUT_OF_BOUNDS");
+                                    continue;
+                                }
+                                let idx = ((cy as usize) * grid_res + (cx as usize)) * 4;
+                                println!(
+                                    "    cell({di:+},{dj:+}) [{cx},{cy}] mom_or_vel=({:.4},{:.4}) mass={:.6}",
+                                    cells[idx],
+                                    cells[idx + 1],
+                                    cells[idx + 2],
+                                );
+                            }
+                        }
+                    }
+                    // TEMPORARY: same trace, for mud specifically -- water's
+                    // own trace above showed water genuinely bounded after
+                    // the mass-trust-floor fix, but the aggregate mud v/J
+                    // range was still spiking (293/210) in the same run,
+                    // confirming this is now a mud-specific (Bingham
+                    // yield-stress material), not water-specific, remaining
+                    // problem.
+                    if let Some((idx, p)) = particles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.material_id == MAT_MUD)
+                        .max_by(|(_, a), (_, b)| a.v.length().total_cmp(&b.v.length()))
+                    {
+                        let j = p.deformation_gradient.determinant();
+                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_MUD);
+                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_MUD);
+                        println!(
+                            "  MUD_OUTLIER idx={idx} x=({:.3},{:.3}) v=({:.3},{:.3}) |v|={:.3} F=[{:.3},{:.3};{:.3},{:.3}] J={:.4} volume={:.6} initial_volume={:.6} density={:.4} mass={:.6} friction_hardening={:.4} neighbors(r=1.5)={} neighbors(r=3.0)={}",
+                            p.x.x,
+                            p.x.y,
+                            p.v.x,
+                            p.v.y,
+                            p.v.length(),
+                            p.deformation_gradient.x_axis.x,
+                            p.deformation_gradient.y_axis.x,
+                            p.deformation_gradient.x_axis.y,
+                            p.deformation_gradient.y_axis.y,
+                            j,
+                            p.volume,
+                            p.initial_volume,
+                            p.density,
+                            p.mass,
+                            p.friction_hardening,
+                            neighbors_tight,
+                            neighbors_wide,
+                        );
+                    }
+                }
             }
         }
         self.fps_frames += 1;

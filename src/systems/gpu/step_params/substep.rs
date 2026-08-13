@@ -47,8 +47,13 @@ pub struct GpuStepParams {
     pub kernel_d_inverse: f32,
     pub gravity: glam::Vec2, // SimConfig::gravity — supports angled/planetary gravity
     pub boundary_thickness: u32,
-    /// Legacy ABI slot retained so every WGSL `StepParams` mirror stays
-    /// layout-compatible.  It is always zero and never a velocity limiter.
+    /// Real max particle speed from the PREVIOUS batch (one-batch-lagged) --
+    /// repurposes the former "always zero" legacy ABI slot exactly like
+    /// `contact_friction`/`grid_cell_size`/`contact_active` already repurpose
+    /// the other 3 original pad slots below. Read ONLY by `cfl_scan.wgsl`'s
+    /// near-wall gate (`SimConfig::fluid_near_wall_compression_mach_margin`'s
+    /// GPU port, 2026-08-11) -- every other shader mirrors this field but
+    /// never reads it, same as the other repurposed slots.
     pub reserved_velocity_slot: f32,
     pub sleep_threshold: f32, // SimConfig::sleep_threshold — 0.0 disables sleep/wake entirely
     /// Multi-field contact (GPU port) — `SimConfig::contact_friction`, read by
@@ -72,6 +77,7 @@ impl GpuStepParams {
         sub_dt: f32,
         particle_count: usize,
         contact_active: bool,
+        last_max_particle_speed: f32,
     ) -> Self {
         Self {
             grid_res: config.grid_res as u32,
@@ -80,7 +86,7 @@ impl GpuStepParams {
             kernel_d_inverse: crate::solver::config::KERNEL_D_INVERSE,
             gravity: config.gravity,
             boundary_thickness: config.boundary_thickness as u32,
-            reserved_velocity_slot: 0.0,
+            reserved_velocity_slot: last_max_particle_speed,
             sleep_threshold: config.sleep_threshold,
             contact_friction: config.contact_friction,
             grid_cell_size: config.grid_cell_size,

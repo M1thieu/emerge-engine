@@ -79,7 +79,42 @@ const NUM_FLOOR:            f32 = 1e-6;
 // addition is range-checked below; an unrepresentable contribution reports an
 // explicit solver failure rather than wrapping, saturating, or clipping velocity.
 const MASS_ATOMIC_SCALE:    f32 = 1000000.0;
-const MOM_ATOMIC_SCALE:     f32 = 100000.0;
+// Raised 1e5 -> 1e6 (2026-08-11), matching MASS_ATOMIC_SCALE exactly. REAL
+// ROOT CAUSE of the GPU-only fluid fps collapse (55 -> 1 fps measured live in
+// basic_showcase_gpu.rs/basic_fluids_gpu.rs), found by direct measurement, not
+// guessed:
+//
+// `grid_update.wgsl` computes `vel = momentum / mass` from these two
+// SEPARATELY-quantized fixed-point accumulators (WebGPU has no atomic<f32>).
+// At 1e5 the momentum quantum (1e-5) was 10x COARSER than the mass quantum
+// (1e-6), so the numerator carried 10x the relative noise of the denominator.
+//
+// That asymmetry became critical after the 2026-08-08 SI mass fix dropped
+// fluid particle mass to `rho0*spacing^2` = 0.1*0.49 = 0.049 (~20x lighter
+// than sand's 1.0 in the same scene). A stencil corner node then holds only
+// ~0.0156*0.049 = 7.6e-4 of mass, so the velocity noise floor was
+// 1e-5/7.6e-4 = 1.3% for fluid vs 0.064% for sand. That noise passes straight
+// into the G2P velocity gradient, makes `div_v` largely noise for isolated/
+// edge fluid particles (a stray droplet flung out on impact has almost no
+// real neighbors), and lets `J = J*exp(dt*div_v)` random-walk until it hits
+// the real j_max safety bound -- which then triggers a full (and useless,
+// since the condition is persistent, not transient) 16-deep retry ladder
+// every batch. THAT is the fps collapse.
+//
+// This file's sibling `grid_update.wgsl` already documented half of this
+// mechanism on 2026-08-08 ("dividing by a near-zero mass ... amplifies
+// ordinary floating-point noise into a spuriously large velocity", and
+// explicitly that the risk "does NOT shrink just because SI-correct particle
+// mass did") -- but treated MASS_FLOOR as the only lever and never connected
+// it to the momentum quantum being the actual asymmetric term.
+//
+// Overflow headroom stays large and is still hard-guarded: FIXED_POINT_LIMIT
+// is 2e9, so at 1e6 a single cell can hold |momentum| up to 2000 before
+// tripping the existing loud STATUS_FIXED_POINT_OVERFLOW report -- versus
+// realistic per-cell momentum here of order (cell mass ~1) * (max_speed ~10)
+// = ~10, i.e. ~200x margin. Any future scene that genuinely exceeds it fails
+// loudly rather than silently corrupting, via that same existing guard.
+const MOM_ATOMIC_SCALE:     f32 = 1000000.0;
 // Matches render::step_params::MAX_RENDER_MATERIAL_SLOTS exactly (Rust-side source of
 // truth) -- render::OpticalTable's own real 16-slot cap, not MAX_MATERIALS' larger
 // 64-material solver cap. material_id >= 16 collides into slot material_id % 16, same
@@ -179,12 +214,23 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
     switch mat.model {
         case 1u: { // Strict WC-MPM fluid — Tait EOS + Newtonian or Bingham viscosity
             // `volume` is the authoritative conserved state: J=V/V0, ρ=ρ0/J.
-            // The constitutive Tait law is used directly.  A tensile/cavitation
-            // model would be a separate multiphase PDE, not a pressure clamp.
+            // TEMPORARY, explicitly disclosed restoration (2026-08-13):
+            // `mat.pressure_floor` (real value -0.1, matches
+            // `NewtonianFluidMaterial`'s pre-`cac544b` constructor default,
+            // see that field's own doc) -- a mild tension floor, deleted
+            // 2026-08-11 alongside the J clamp. NOT the same as the
+            // zero-tension experiment tried and ruled out earlier the same
+            // investigation (`press = max(press, 0.0)` made J climb
+            // 6.2->16.1 with no plateau) -- -0.1 still allows real, mostly-
+            // unbounded restoring tension, only capping the extreme tail.
+            // Live-confirmed on CPU (`basic_fluids_gui.rs`, identical
+            // formula, all 4 pieces -- clamp/density-cap/floor/settling-
+            // damping -- together): 930+ frames, non_finite=0, water_j
+            // stayed in [0.52,1.02], mud_j in [1.00,1.01].
             let fluid_j = p.volume / p.initial_volume;
             let rho   = mat.rest_density / fluid_j;
             let ratio = rho / mat.rest_density;
-            let press = mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0);
+            let press = max(mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
             var t     = -press * I;
 
             let sym  = p.velocity_gradient + transpose(p.velocity_gradient);
@@ -207,8 +253,21 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
                 // clamp the resulting spike). γ̇ uses the deviatoric strain
                 // rate only — a yield criterion must not respond to pure
                 // volumetric expansion/compression, which isn't shear.
+                // REAL FIX (2026-08-12): was `0.5 *`, giving a shear_rate
+                // exactly HALF the correct value -- confirmed by direct
+                // comparison against bingham.rs's own tested CPU formula
+                // (`deviatoric_stress`: `shear_rate = (2.0*d_sq).sqrt()`,
+                // matching the standard rheology definition γ̇ =
+                // sqrt(2*D_dev:D_dev)). Since `eta_app = yield_s/shear_rate
+                // + eff_visc` in the flowing (above-critical) regime, a
+                // halved shear_rate DOUBLES the yield-stress contribution
+                // to stress -- found by direct code comparison after live
+                // diagnostics showed mud (the only material using this
+                // branch; water is Newtonian, yield_s=0, never reaches
+                // here) still spiking (v to 90-100+, J unbounded) after the
+                // exact same fixes that genuinely calmed water.
                 let dx = dev[0][0]; let dy = dev[1][1]; let dxy = dev[0][1];
-                let shear_rate = sqrt(max(0.5 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
+                let shear_rate = sqrt(max(2.0 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
                 let m = 1.0 / mat.critical_shear_rate;
                 var ramp: f32;
                 if shear_rate > 1.0e-12 {
@@ -425,6 +484,47 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
     return tau;
 }
 
+// REAL MECHANISM (2026-08-12), found by direct code inspection after
+// dense-diagnostic tracing kept showing isolated/low-support particles near
+// a wall spiking to J=20-46 with F starting near identity: this engine has
+// TWO separately deliberate, separately TESTED design decisions for the
+// strict fluid model -- `tait_pressure` is not clamped in tension
+// (`tait_eos_is_not_pressure_clamped_in_tension`, fluid.rs) and J/volume is
+// not clamped in its exponential update
+// (`exponential_volume_update_is_not_j_clamped`, fluid.rs). Neither, in
+// isolation, is wrong or explains this bug -- checked numerically: this
+// scene's own real water eos_stiffness is only ~104 Pa (a deliberately
+// derated, real-time-affordable value, see basic_fluids_gpu.rs's own doc),
+// so raw Tait pressure already saturates at a small, bounded value
+// (-eos_stiffness) well before any literature-standard cavitation floor
+// (e.g. -1 atm) would ever engage -- a pressure floor alone would have been
+// a dead end here, confirmed before writing any code.
+//
+// The REAL, confirmed mechanism is multiplicative, not either term alone:
+// MLS-MPM's force-scatter is proportional to stress * volume. Stress is
+// bounded (asymptotes at -eos_stiffness), but `p.volume` (used here,
+// unclamped, exactly matching V=V0*J's own honest, tested update) is NOT --
+// once a low-mass/isolated particle's J drifts even modestly above 1 (a
+// single violent first-wall-impact substep is enough to start it), volume
+// grows, so the SAME bounded stress produces a proportionally LARGER force,
+// which (for that same low-mass particle) is a proportionally larger
+// acceleration, growing J further next substep -- a genuine, self-
+// reinforcing feedback loop that needs neither term individually unbounded.
+//
+// Real fix, scoped to exactly this mechanism and nothing else: cap the
+// volume CONSUMED BY THE FORCE COMPUTATION for the fluid branch, leaving
+// the particle's own tracked `p.volume`/J state (and `tait_pressure`)
+// completely untouched -- both existing tests above are unaffected, since
+// neither exercises this function. `STRICT_FLUID_FORCE_VOLUME_RATIO_MAX`:
+// a disclosed engineering ceiling (not a cited physical constant -- no
+// paper gives "how expanded can a liquid MPM particle be before its
+// force-scatter stops being trustworthy," same honest category as this
+// exact GPU pipeline's own pre-existing STRICT_FLUID_J_MAX=50.0 exhaustion-
+// backstop ceiling, step.rs), set well BELOW that existing 50.0 backstop so
+// this catches the runaway while it is still a moderate, recoverable
+// deviation instead of only after the backstop's own last-resort clamp.
+const STRICT_FLUID_FORCE_VOLUME_RATIO_MAX: f32 = 4.0;
+
 // stress_volume: strict fluids use their stored current volume. It is the
 // authoritative V = V0 J state; F is only the common-particle
 // diagnostic/phase-transition representation of the same scalar J.
@@ -432,7 +532,8 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 fn sv(p: Particle, mat: MaterialParams) -> f32 {
     switch mat.model {
         case 1u: {
-            return p.volume;
+            let v_max = p.initial_volume * STRICT_FLUID_FORCE_VOLUME_RATIO_MAX;
+            return min(p.volume, v_max);
         }
         case 11u: {
             // GranularFluid: EOS is density-based — use current volume (tracks J each substep).

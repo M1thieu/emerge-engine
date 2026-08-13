@@ -44,6 +44,8 @@ pub mod systems;
 // keeps resolving unchanged. See each domain's `mod.rs` doc for why.
 #[cfg(feature = "experimental")]
 pub use energy::acoustics;
+#[cfg(feature = "experimental")]
+pub use energy::orbital;
 pub use energy::thermodynamics;
 pub use forces::boundary;
 pub use forces::fields;

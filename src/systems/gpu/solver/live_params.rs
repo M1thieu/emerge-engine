@@ -5,12 +5,71 @@
 //! `step.rs` per that file's own "highest-risk, done last and alone" doc.
 
 use super::super::step_params::{
-    GpuAsflipParams, GpuFieldEntry, GpuMaterialMassParams, GpuResourceParams, GpuThermalParams,
-    MAX_FORCE_FIELDS,
+    GpuAsflipParams, GpuCohesionParams, GpuFieldEntry, GpuMaterialMassParams, GpuResourceParams,
+    GpuThermalParams, MAX_FORCE_FIELDS,
 };
 use super::GpuSimulation;
 
 impl GpuSimulation {
+    /// Attach real grid-mediated cohesion/surface-tension (Continuum Surface
+    /// Force, Brackbill/Kothe/Zemach 1992; grid-mass-as-color-field variant:
+    /// GIMP-CSF, Yang et al., CMES 86(3), 2012) -- see `GpuCohesionParams`'
+    /// own doc for the full derivation. `grid_cohesion_main` computes the
+    /// real formula, force = gamma * kappa * grad(c) (curvature-weighted,
+    /// not a gradient-only proxy -- an earlier gradient-only version was
+    /// live-tested and found unstable: no curvature gating means a FLAT
+    /// interface gets the LARGEST force instead of ~zero, a genuine positive
+    /// feedback loop, see `grid_cohesion_main_inner`'s own doc in
+    /// `grid_update.wgsl` for the full empirical story).
+    ///
+    /// `gamma_si_n_per_m`: real surface tension, N/m (water at ~20C: 0.0728).
+    /// `rho_kg_m3`: the fluid's real rest density (must match the material's
+    /// own SI density for the color field to mean anything physically).
+    ///
+    /// REAL, RE-DERIVED conversion (2026-08-12) -- `SimConfig::stress_from_si`
+    /// was tried first (its own doc names surface tension as an intended
+    /// use) and found WRONG for this specific usage: that helper bakes in
+    /// `dt_seconds²` for a stress meant to be plugged directly into a
+    /// constitutive law (where the REST of the P2G pipeline applies dt
+    /// exactly once, elsewhere); this pass instead computes a real force and
+    /// integrates it as an impulse (`F*dt`) itself, so an extra `dt_seconds²`
+    /// double-counts time at the WRONG scale (the full configured `dt_seconds`
+    /// instead of the substep's own `dt`), silently shrinking the real force
+    /// by ~5 orders of magnitude -- confirmed live: computed `gamma_grid`
+    /// came out 7.28e-3 (vs. the correctly-derived 728 below), and the
+    /// resulting cohesion was empirically indistinguishable from noise.
+    ///
+    /// Real derivation: a cell's real force = gamma_SI * grad(c)_SI *
+    /// dx_meters² (curvature-role term times the cell's real area) =
+    /// gamma_SI * grad(c)_grid * dx_meters (chain rule: grad_SI = grad_grid /
+    /// dx_meters). Converting that real force (N) to this engine's grid-force
+    /// units (mass_grid = mass_SI/dx_meters², length_grid = length_SI/
+    /// dx_meters, time kept in real seconds) divides by dx_meters³ again:
+    /// `gamma_grid = gamma_SI / dx_meters²` -- no `dt_seconds`, no density,
+    /// because THIS formula's own `grad` already carries the density
+    /// normalization (`mass/rest_density_grid`) and dt is applied exactly
+    /// once, correctly, via the shader's own `* step_params.dt`.
+    ///
+    /// `gamma_si_n_per_m <= 0.0` disables (the default) -- `grid_cohesion_main`
+    /// returns immediately for every cell, real zero cost beyond dispatch
+    /// overhead.
+    pub fn set_cohesion_si(&mut self, gamma_si_n_per_m: f32, rho_kg_m3: f32) {
+        let gamma_grid = gamma_si_n_per_m / (self.config.dx_meters * self.config.dx_meters);
+        let rest_density_grid = rho_kg_m3 * self.config.dx_meters * self.config.dx_meters;
+        self.cohesion_params = GpuCohesionParams {
+            gamma_grid,
+            rest_density_grid,
+            _pad0: 0.0,
+            _pad1: 0.0,
+        };
+    }
+
+    /// TEMPORARY diagnostic accessor (2026-08-12), verifying a real hand
+    /// calculation before trusting it -- see chat. Read-only, no cost.
+    pub fn cohesion_gamma_grid(&self) -> f32 {
+        self.cohesion_params.gamma_grid
+    }
+
     /// Add a non-uniform body force field for the GPU path.
     /// Entries are uploaded and dispatched every substep until cleared.
     /// Panics if `MAX_FORCE_FIELDS` is exceeded.

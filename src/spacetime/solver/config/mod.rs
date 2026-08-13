@@ -127,7 +127,61 @@ pub struct SimConfig {
     /// physics, so `0.01` (1%, the default) is a real, disclosed, measured threshold for
     /// the acoustic-bound use case, not an arbitrary cutoff pretending to be derived from
     /// a closed form.
+    ///
+    /// **FALLBACK ONLY (2026-08-11) for materials with no acoustic term**
+    /// (`MaterialModel::rest_acoustic_c2() == None`, e.g. `eos_stiffness=0.0`
+    /// pressure-projection fluids). Any material WITH a real Tait EOS uses
+    /// `fluid_near_wall_compression_mach_margin` instead (see that field's
+    /// own doc) -- a fixed 1% is only correct for the SPECIFIC EOS stiffness
+    /// it happened to be measured against; a deliberately softened EOS (real,
+    /// disclosed accuracy/perf trade, `basic_fluids_gpu.rs`'s own doc) has a
+    /// much larger NORMAL compression range by design, so this absolute
+    /// threshold trips almost permanently for such a material -- root-caused
+    /// live: `near_wall=true` continuously, forcing `fluid_near_wall_cfl_scale`'s
+    /// 20x tightening on essentially every substep regardless of whether a
+    /// genuine impact was happening (1346 substeps/frame measured, ~20x more
+    /// than the acoustic term alone would need).
     pub fluid_near_wall_compression_threshold: f32,
+    /// Real replacement (2026-08-11) for `fluid_near_wall_compression_threshold`'s
+    /// acoustic-bound use, for any material with a genuine Tait EOS
+    /// (`MaterialModel::rest_acoustic_c2() == Some(c2_rest)`). Compares
+    /// `|J-1|` not to a fixed absolute percentage, but to
+    /// `(last_max_particle_speed / sqrt(c2_rest))² *
+    /// fluid_near_wall_compression_mach_margin` -- i.e. the compression THIS
+    /// material's OWN acoustic stiffness would predict as normal at the
+    /// scene's actual current flow speed, times a margin.
+    ///
+    /// Grounded in the standard WCSPH relation `Ma² ≈ Δρ` (density variation
+    /// ≈ squared Mach number; Monaghan 1994, Morris et al. 1997) -- the same
+    /// relation this engine's own `weakly_compressible` constructor already
+    /// uses to size `eos_stiffness` from a target `c_ref_m_s`. Applying it
+    /// HERE too, dynamically, from the scene's actual measured speed rather
+    /// than a single a-priori guess made once at material-construction time,
+    /// is the real fix for the same class of self-defeating trap
+    /// `basic_fluids_gpu.rs`'s own doc history narrates: softening the EOS to
+    /// afford more substeps only works if the near-wall gate's OWN threshold
+    /// scales with that same softening, not a threshold borrowed from a
+    /// stiffer reference EOS. Directly informed by Zhang et al., "A variable
+    /// speed of sound formulation for weakly compressible SPH" (UCSPH,
+    /// arXiv:2310.04139), whose own time-dependent sound-speed update rule
+    /// (`c_s(n+1) = max(10·v_max(n), ...)`, recomputed from the ACTUAL
+    /// measured flow state every step rather than a static a-priori bound) is
+    /// built on the identical Ma²≈Δρ relation -- adapted here to the
+    /// near-wall gate specifically rather than the base EOS stiffness itself,
+    /// since making the EOS's own `eos_stiffness` field dynamic would require
+    /// per-substep material mutation, a materially larger change deferred as
+    /// a real, disclosed follow-up rather than rushed tonight.
+    ///
+    /// No published number exists for THIS margin specifically (this exact
+    /// near-wall-gate application is this engine's own construction, not a
+    /// technique the cited paper itself describes) -- `2.0` (default) is a
+    /// disclosed engineering choice, not a physics constant: it means the
+    /// gate fires once local compression exceeds DOUBLE what the current
+    /// flow speed already predicts as normal for this EOS, a round,
+    /// minimal-but-clearly-distinguishing margin above 1.0 (which would fire
+    /// on literally any compression at all, defeating the gate's purpose the
+    /// same way the old absolute 1% did for a soft EOS).
+    pub fluid_near_wall_compression_mach_margin: f32,
     /// Per-substep admissible `|ln(J_new/J_old)|` for a strict fluid particle before
     /// `fluid_step_retry_enabled` rejects and retries that substep. NOT the general
     /// `deformation_gradient_cfl_bound` safety margin (`cfl_coefficient`, ~0.5) -- tested
@@ -138,6 +192,48 @@ pub struct SimConfig {
     /// `eos_stiffness`'s own tuning -- this is disclosed as measured, not derived from a
     /// closed-form bound, precisely because no such closed form caught the real failure.
     pub fluid_step_retry_threshold: f32,
+    /// GPU strict-fluid regional/adaptive substepping (2026-08-12,
+    /// `purring-swinging-cookie.md` Part A) -- lets a calm region of the
+    /// shared grid skip the expensive full G2P gather + `particles_update`
+    /// integrate on substeps its OWN local CFL bound doesn't need, while
+    /// still depositing its steady-state P2G contribution every substep
+    /// (unconditional, same real precedent as the existing sleeping-particle
+    /// mechanism). Default `false` -- every existing scene takes the exact
+    /// same path it always has; this changes NOTHING until explicitly
+    /// enabled. Milestone 1 only reuses the already-existing 256-block
+    /// partition (`particle_sort`'s own occupancy blocks) for classification
+    /// -- no new spatial structure.
+    pub fluid_regional_substepping_gpu_enabled: bool,
+    /// Tier-admission margin for `fluid_regional_substepping_gpu_enabled`: a
+    /// block is Fine iff `dt_b[block] <= dt_fine * this margin`, else
+    /// Coarse. No literature exists for this exact technique (checked:
+    /// zero GPU/WGSL regional-MPM precedent in any reference repo audited
+    /// for this plan), so this cannot be a cited physical constant --
+    /// disclosed as a real engineering default instead.
+    ///
+    /// Default is `8.0`, matching `STRICT_FLUID_SUBSTEP_BATCH_SIZE`, and it
+    /// is DERIVED, not tuned. A Coarse block does not integrate with
+    /// `dt_fine` -- it skips the batch's substeps and then integrates ONCE
+    /// with the batch's whole accumulated dt (~`batch_len * dt_fine`, see
+    /// `step.rs`'s coarse-resync planning). So a block may only be demoted
+    /// to Coarse if its OWN CFL bound can survive that full accumulated
+    /// step: `dt_b[block] >= batch_len * dt_fine`. Equivalently, it must
+    /// stay Fine while `dt_b[block] < batch_len * dt_fine` -- which is
+    /// exactly this margin at `batch_len`.
+    ///
+    /// This corrects a real, measured bug (2026-08-13): the original `1.0`
+    /// default reasoned only from "`dt_fine` is the domain minimum, so
+    /// `<= 1.0*dt_fine` means provably-the-bottleneck with no added slack."
+    /// That ignored the accumulated resync step above, so a block whose own
+    /// bound was merely 1% laxer than `dt_fine` was demoted to Coarse and
+    /// then integrated ~8x beyond its own stability limit -- which failed
+    /// admissibility, drove the retry ladder, and halved dt repeatedly.
+    /// Live-measured on `basic_fluids_gpu.rs`: substeps/frame went UP
+    /// (~1685 vs the flag-off ~68-258), the exact opposite of this
+    /// feature's purpose. Values above `batch_len` are a legitimate
+    /// scene-specific trade (more preemptive fine headroom, less coarse
+    /// win); values BELOW it are unsafe by the derivation above.
+    pub fluid_regional_substepping_fine_tier_margin: f32,
     /// APIC affine-matrix blend [0, 1].
     /// 1.0 = full APIC (angular-momentum-conserving, taichi default).
     /// 0.0 = pure PIC (maximum numerical dissipation, fastest settling).
@@ -377,8 +473,11 @@ impl Default for SimConfig {
             max_substeps_per_step: 64,
             fluid_step_retry_enabled: false,
             fluid_step_retry_threshold: 0.5,
+            fluid_regional_substepping_gpu_enabled: false,
+            fluid_regional_substepping_fine_tier_margin: 8.0,
             fluid_near_wall_cfl_scale: 1.0,
             fluid_near_wall_compression_threshold: 0.01,
+            fluid_near_wall_compression_mach_margin: 2.0,
             apic_blend: 1.0,
             j_max: 50.0,
             j_min: 1.0 / 50.0,
