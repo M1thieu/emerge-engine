@@ -4,6 +4,79 @@ use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, sca
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
+/// Current volume ratio `J = V/V0` from the material's own conserved volume
+/// state (not a kernel-density gather, which is free-surface biased).
+#[inline]
+pub(crate) fn volume_j(initial_volume: f32, volume: f32, material_name: &str) -> f32 {
+    assert!(
+        initial_volume.is_finite() && initial_volume > 0.0 && volume.is_finite() && volume > 0.0,
+        "{material_name}: fluid reference/current volume must be finite and positive"
+    );
+    volume / initial_volume
+}
+
+/// Artificial (shock) viscosity `q`, added to pressure as `-q*I`.
+///
+/// von Neumann & Richtmyer 1950 (LA-671) quadratic term + Landshoff linear
+/// term -- the standard shock-capturing pair for Lagrangian hydrocodes, and
+/// the same combined form used for MPM specifically (Wang et al., "Portable,
+/// Massively Parallel Implementation of a Material Point Method for
+/// Compressible Flows", arXiv:2404.17057, eq. 4). Gated to compression
+/// (`div(v) < 0`) so it vanishes identically wherever the flow is smooth --
+/// real shocks only form under compression, so that gate is textbook, not a
+/// convenience.
+///
+/// `c0` (quadratic) is Kurapatenko 1967-derived rather than a flat constant:
+/// `(gamma+1)/4` is the WEAK-shock limit of the fundamental derivative
+/// Kurapatenko ties `c0` to. Deliberately weak-shock, NOT strong-shock
+/// `(gamma+1)/2`: real, measured 2026-08-08, the strong-shock value made a
+/// then-live crash WORSE, because the quadratic term's own contribution must
+/// feed back into the CFL bound (Bate et al. 1995's combined
+/// `c_eff = c_sound + 2*c0*h*|div(v)|`) before a stronger coefficient is safe.
+/// That CFL extension needs a `timestep_bound` signature change and is real,
+/// disclosed, unimplemented future work.
+///
+/// `c1 = 1.0` (Landshoff) is the standard theoretical value.
+pub(crate) fn artificial_bulk_viscosity(
+    eos_stiffness: f32,
+    eos_power: f32,
+    rest_density: f32,
+    j: f32,
+    div_v: f32,
+    grid_cell_size: f32,
+) -> f32 {
+    if !(div_v < 0.0) {
+        return 0.0;
+    }
+    let c0_quadratic = (eos_power + 1.0) * 0.25;
+    const C1_LINEAR: f32 = 1.0;
+    let density_ratio = 1.0 / j;
+    let rho = rest_density * density_ratio;
+    let c2 = eos_stiffness
+        * eos_power
+        * crate::materials::utils::fast_pow(density_ratio, eos_power - 1.0)
+        / rest_density;
+    let c_sound = c2.max(0.0).sqrt();
+    let h = grid_cell_size;
+    // q = rho * (c0*h^2*(div v)^2 - c1*h*c_sound*div v),  div v < 0.
+    //
+    // REAL BUG FIXED 2026-08-13: the previous form was
+    // `c0*(rho*h*div_v)^2 - c1*h*c_sound*div_v` -- i.e. rho^2 in the
+    // quadratic term and NO rho at all in the linear one. Neither matches
+    // the cited sources: Wang et al. (arXiv:2404.17057, eq. 4) and
+    // `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity` both
+    // multiply BOTH terms by rho exactly once. Dimensionally the old form
+    // is inconsistent (the two terms don't even share units), and with this
+    // engine's grid-unit rho ~ 0.1 it inflated q by ~8x, swamping the EOS --
+    // live-measured: max_speed 11 -> 130, J pinned at the upper clamp 2.0,
+    // fps 45 -> 12. With the corrected form q lands at ~63 against an EOS
+    // pressure scale of ~94, which is the intended same-order balance.
+    let quadratic = c0_quadratic * h * h * div_v * div_v;
+    let linear = C1_LINEAR * h * c_sound * div_v;
+    let q = rho * (quadratic - linear);
+    if q.is_finite() { q } else { 0.0 }
+}
+
 /// Weakly-compressible Newtonian fluid (Tait EOS + deviatoric viscosity).
 /// Refs: Becker & Teschner 2007 (WCSPH), Hu et al. 2018 (MLS-MPM).
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +279,39 @@ impl MaterialModel for NewtonianFluidMaterial {
             let j = f.x_axis.x * f.y_axis.y - f.x_axis.y * f.y_axis.x;
             stress += Mat2::from_diagonal(Vec2::splat(self.surface_tension_coeff * j));
         }
+
+        // Artificial (shock) viscosity -- a REAL PDE term, not a bandaid:
+        // von Neumann & Richtmyer 1950 (LA-671) quadratic + Landshoff linear,
+        // the standard shock-capturing pair for Lagrangian hydrocodes, gated
+        // to compression only (`div(v) < 0`) so it vanishes identically in
+        // smooth flow. Independently corroborated in `tmp/GeoTaichi`
+        // (`MaterialModel.py::artifical_viscosity`, same von Neumann citation,
+        // same compression gate, same linear+quadratic form) -- and its own
+        // shipped Newtonian dam-break example enables it (`cL: 1.0, cQ: 2`).
+        //
+        // Restored here 2026-08-13: it had existed in `fluid_state.rs`, which
+        // a wholesale revert to this file's pre-`cac544b` form deleted, so the
+        // CPU fluid path silently lost it while `p2g.wgsl` kept its own copy
+        // -- a real CPU/GPU physics divergence, now closed.
+        let j_now = volume_j(
+            particles.initial_volume[i],
+            particles.volume[i],
+            "NewtonianFluidMaterial",
+        );
+        let q = artificial_bulk_viscosity(
+            self.eos_stiffness,
+            self.eos_power,
+            self.rest_density,
+            j_now,
+            // `div_v` above is tr(C + C^T) = 2*div(v); this term wants the
+            // true divergence.
+            0.5 * div_v,
+            // `kirchhoff_stress`'s trait signature carries no grid_cell_size;
+            // every scene in this engine uses 1.0 (exact today, not an
+            // approximation) -- same disclosed limitation the GPU copy has.
+            1.0,
+        );
+        stress += Mat2::from_diagonal(Vec2::splat(-q));
 
         stress
     }

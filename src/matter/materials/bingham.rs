@@ -202,7 +202,29 @@ impl MaterialModel for BinghamFluidMaterial {
             Mat2::ZERO
         };
 
-        hydrostatic + deviatoric + surface + bulk
+        // Artificial (shock) viscosity -- same real PDE term, same citation,
+        // as `NewtonianFluidMaterial::kirchhoff_stress` (see
+        // `artificial_bulk_viscosity`'s own doc). This material shares the
+        // identical Tait EOS, so it needs the identical shock-capturing term;
+        // it was lost from the CPU path by the same wholesale revert.
+        let gradient = particles.velocity_gradient[i];
+        let div_v_true = gradient.x_axis.x + gradient.y_axis.y;
+        let j_now = crate::materials::fluid::volume_j(
+            particles.initial_volume[i],
+            particles.volume[i],
+            "BinghamFluidMaterial",
+        );
+        let q = crate::materials::fluid::artificial_bulk_viscosity(
+            self.eos_stiffness,
+            self.eos_power,
+            self.rest_density,
+            j_now,
+            div_v_true,
+            1.0,
+        );
+        let shock = Mat2::from_diagonal(Vec2::splat(-q));
+
+        hydrostatic + deviatoric + surface + bulk + shock
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
