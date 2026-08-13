@@ -2,7 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{BinghamProps, FromSI, scale_stress, scale_visc};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Bingham viscoplastic fluid.
 ///
@@ -156,6 +156,16 @@ impl MaterialModel for BinghamFluidMaterial {
         ConstitutiveModel::Fluid
     }
 
+    // TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same
+    // reasoning as `NewtonianFluidMaterial::init_particle`, see that
+    // method's own doc for the full live-confirmed root cause.
+    fn init_particle(&self, particle: &mut Particle) {
+        let j = particle.deformation_gradient.determinant();
+        particle.initial_volume = particle.mass / self.rest_density;
+        particle.volume = particle.initial_volume * j;
+        particle.density = self.rest_density / j;
+    }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         // Pressure from Tait EOS (same as NewtonianFluid). Clamp density both
         // ways, matching `NewtonianFluidMaterial::kirchhoff_stress` exactly:
@@ -200,10 +210,17 @@ impl MaterialModel for BinghamFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Same real bug as `NewtonianFluidMaterial::update_particle`, fixed
-        // 2026-08-06 -- see that fix's own doc for the full root-cause writeup.
-        // This material copies the same isotropize-from-old-F pattern, so it
-        // carries the identical dead-EOS-pressure bug.
+        // REAL BUG, found+fixed for real 2026-08-13: this material's comment
+        // already said it "carries the identical dead-EOS-pressure bug" that
+        // `NewtonianFluidMaterial::update_particle` was fixed for 2026-08-06
+        // -- but the fix itself was never actually ported here, only noted
+        // as still-outstanding. Live-confirmed consequence tonight: mud's
+        // `deformation_gradient` updates normally (J drifts, e.g. 0.9989)
+        // but `volume`/`density` never move from their spawn values (stuck
+        // at exactly V/V0=1 forever) -- an internally inconsistent state
+        // that trips `assert_owned_deformation_state`
+        // ("det(F)=0.9989268, V/V0=1"). This is the user's own live
+        // observation exactly: water settles correctly, mud does not.
         let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let j = f_trial.determinant().clamp(0.5, 2.0);
         let s = j.sqrt();
@@ -212,6 +229,11 @@ impl MaterialModel for BinghamFluidMaterial {
         if self.settling_damping > 0.0 {
             *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
         }
+        let density = (self.rest_density / j)
+            .max(self.min_density)
+            .min(self.rest_density * 2.0);
+        *ctx.density = density;
+        *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
     // TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same

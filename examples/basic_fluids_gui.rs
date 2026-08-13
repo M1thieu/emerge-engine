@@ -132,7 +132,17 @@ fn make_sim() -> Simulation {
         // so it needs that file's cfl=0.1, not basic_fluids.rs's unchanged
         // default -- that reasoning still applies to `material_cfl_
         // coefficient` below, unaffected by this cap.
-        max_substeps_per_step: 12,
+        // TEMPORARY, explicitly disclosed (2026-08-13): was 12, tuned
+        // against a scene where mud's EOS pressure was silently dead (a
+        // real bug in `BinghamFluidMaterial::update_particle`, just fixed --
+        // see that method's own doc). With mud's pressure now genuinely
+        // alive, 12 panics ("could not advance... within
+        // max_substeps_per_step=12"). Raised to match `basic_fluids_gpu.rs`'s
+        // own value as a real, precedented starting point -- the entire
+        // 45fps-floor tuning ladder documented below this field needs a
+        // fresh re-pass now that mud's physics genuinely changed; not
+        // re-done here, flagged as real follow-up work.
+        max_substeps_per_step: 150,
         // `spatial_sort_enabled` real-measured 2026-08-10, NOT enabled here:
         // tried at this demo's ~1288 particles (46-59fps -> 22-27fps, a real
         // regression) and re-tried after fixing an initial implementation
@@ -147,7 +157,26 @@ fn make_sim() -> Simulation {
         // see `spatial_sort_order`/`scatter_particles_to_grid_sorted`'s own
         // tests) in case a release build or a very different access pattern
         // ever makes it worthwhile -- just not proven beneficial today.
-        material_cfl_coefficient: 0.1,
+        // 0.3, not the old 0.1 (2026-08-13). This is the CFL *number* C in the
+        // standard explicit acoustic condition `dt <= C * dx / c_sound`, where
+        // C < 1 is the stability limit and real solvers run C = 0.2-0.4 for
+        // margin (Monaghan 1992/1994 uses 0.25-0.3 for SPH; MLS-MPM commonly
+        // 0.3-0.5). 0.1 was 3x more conservative than any of them.
+        //
+        // Why it was 0.1: the note below records `cfl=0.5 panics on frame 1`.
+        // That was measured against the ~100x-too-soft `eos_stiffness = 1.0`
+        // (see the water material's own derivation comment) -- with an EOS
+        // that soft, the column genuinely collapsed into the J-clamp floor
+        // every run, and no CFL number could have saved it. With the stiffness
+        // now derived correctly, that failure mode is gone at the source, so
+        // the conservative override it forced is no longer justified.
+        //
+        // Real, measured effect of the stiffness fix alone: substeps/frame
+        // 11 -> 54 (correct water is genuinely ~5x more work -- higher sound
+        // speed is the whole point of a stiffer EOS), fps ~50 -> ~13. Moving C
+        // 0.1 -> 0.3 recovers ~3x of that from the safety margin rather than
+        // from the physics.
+        material_cfl_coefficient: 0.3,
         cfl_include_affine_speed: false,
         // `fluid_near_wall_cfl_scale` (real, proven fix for the wall-contact
         // momentum bug, see project memory) tried here at 1000x and REVERTED,
@@ -174,7 +203,39 @@ fn make_sim() -> Simulation {
     // n=1). eos_stiffness=1.0, not the SI-correct 2.5, as a modest additional
     // margin -- the exponent is the dominant lever, not the base stiffness
     // (tried stiffness alone at 0.25 first, barely moved the substep count).
-    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, 1.0, 3.0);
+    // REAL, DERIVED EOS stiffness (2026-08-13) -- replaces a hardcoded
+    // `eos_stiffness = 1.0` that was ~100x too soft and was the actual root
+    // cause of the "particles get crushed" symptom, calculated:
+    //
+    //   Hydrostatic load at this column's base:
+    //     p = rho * g * h = 1000 kg/m^3 * (9.81 * 0.003) m/s^2 * 0.468 m
+    //       = 13.77 Pa                     (h = box_size.y=52 * SPACING=0.9 cells * dx=0.01 m)
+    //   Tait EOS solved for the equilibrium compression it implies:
+    //     p = B((rho/rho0)^gamma - 1),  gamma = 3
+    //     B = 1.0  ->  r^3 = 14.77 -> r = 2.45 -> J = 0.408   <-- CRUSHED
+    //     B = 104  ->  r^3 = 1.132 -> r = 1.04 -> J = 0.96    <-- correct
+    //
+    // J=0.408 sits BELOW this material's own [0.5, 2.0] clamp floor, so every
+    // base particle was pinned at exactly J=0.5 permanently -- live-confirmed
+    // in this demo's own log line (`water_j=[0.500, ...]`, min pinned at the
+    // floor, never moving). The old comment above rationalised this as
+    // "genuine local compression, not a bug"; it isn't -- real water at this
+    // load compresses by well under 1%, not 60%.
+    //
+    // `c_ref = 10 * v_max` is the standard weakly-compressible rule limiting
+    // density variation to ~1% (Monaghan 1994; Becker & Teschner 2007 WCSPH,
+    // both already cited elsewhere in this engine), with v_max from Torricelli
+    // for this column. Identical derivation to `basic_fluids_gpu.rs`'s own
+    // (that demo already did this correctly; this CPU demo was the holdout) --
+    // including its same deliberately-derated gravity for acoustic sizing, so
+    // the two demos stay directly comparable.
+    const WATER_EOS_POWER: f32 = 3.0;
+    const COLUMN_HEIGHT_CELLS: f32 = 52.0 * SPACING;
+    const DERATED_GRAVITY_FOR_ACOUSTIC_SIZING: f32 = 0.3;
+    let v_max_grid = (2.0 * DERATED_GRAVITY_FOR_ACOUSTIC_SIZING * COLUMN_HEIGHT_CELLS).sqrt();
+    let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
+    let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
+    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, water_tait_b_pa, WATER_EOS_POWER);
     let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
@@ -238,10 +299,16 @@ fn make_sim() -> Simulation {
                 None
             }
         });
+    // TEMPORARY (2026-08-13): mud spawn disabled -- isolating to water-only
+    // per direct instruction, since the reported "weird" behavior is
+    // specifically the water/mud INTERACTION, not either material alone.
+    // Material stays registered (`with_material` above) so mud can be
+    // re-enabled by uncommenting the line below once water-only is solid.
     // `add_body` appends particles synchronously, so it must run BEFORE this
     // temperature-init loop -- otherwise mud particles are left at
     // `initialize_particles`'s default (effectively 0K), not WARM_AMBIENT.
-    let _ = solver.add_body(spawn_mud);
+    let _ = &spawn_mud;
+    // let _ = solver.add_body(spawn_mud);
     for t in solver.particles_mut().temperature.iter_mut() {
         *t = WARM_AMBIENT;
     }

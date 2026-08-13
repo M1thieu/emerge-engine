@@ -2,7 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
-use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Weakly-compressible Newtonian fluid (Tait EOS + deviatoric viscosity).
 /// Refs: Becker & Teschner 2007 (WCSPH), Hu et al. 2018 (MLS-MPM).
@@ -121,6 +121,29 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
 impl MaterialModel for NewtonianFluidMaterial {
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Fluid
+    }
+
+    // TEMPORARY, explicitly disclosed restoration (2026-08-13): this
+    // material never overrode `init_particle` even in the true pre-
+    // `cac544b` file (confirmed: `git show 6234d06:...` has no override
+    // either) -- but the CURRENT (non-reverted) engine's spawn contract
+    // relies on materials that own their volume/density state to set them
+    // exactly here, overriding `SpawnRegion::precompute_initial_volumes`'s
+    // own kernel-density estimate (a real, legitimate default for materials
+    // that DON'T have an exact analytical initial state, but wrong for a
+    // strict fluid, which does: V0 = mass/rest_density exactly). Without
+    // this override, that kernel estimate was the only thing setting
+    // `volume`/`density` at spawn, while `deformation_gradient` stayed at
+    // Identity (J=1) -- an internally INCONSISTENT state
+    // (`assert_owned_deformation_state` caught it live: "det(F)=1,
+    // V/V0=0.528"). This restores the exact contract this demo's own spawn
+    // comment already describes ("The strict fluid initializer then sets
+    // V0=m/rho0 and rho=rho0").
+    fn init_particle(&self, particle: &mut Particle) {
+        let j = particle.deformation_gradient.determinant();
+        particle.initial_volume = particle.mass / self.rest_density;
+        particle.volume = particle.initial_volume * j;
+        particle.density = self.rest_density / j;
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
