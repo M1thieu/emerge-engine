@@ -286,9 +286,41 @@ impl Grid {
     /// repro (a dense, packed water column has no cell that's genuinely untouched within
     /// any particle's stencil before impact), so it is NOT that bug's cause. Kept anyway:
     /// real, correct, and will matter for any genuinely sparse fluid scene.
-    pub fn velocity_at_or_gravity_fallback(
+    /// `extrapolated_v`: the velocity to use at an EMPTY node -- pass the
+    /// gathering particle's own current velocity. See the free-surface
+    /// extrapolation note below for why this, and not zero, is correct.
+    ///
+    /// Free-surface velocity extrapolation (2026-08-13). The `gravity * dt`
+    /// fallback this replaced supplied only ONE substep of gravity to an empty
+    /// node, ignoring the fluid's accumulated velocity entirely -- measured, it
+    /// was ~99.5% wrong (`gravity*dt = 0.0056` against a fluid genuinely moving
+    /// at 0.3-2.0). A particle at a free surface therefore gathered a huge
+    /// artificial jump across its own stencil, reading as stretching: positive
+    /// `div(v)`, so `J` grew every substep and never self-corrected.
+    ///
+    /// Decisive evidence this is a pure artifact, not physics: during FREE FALL
+    /// gravity accelerates every particle identically, so a falling column
+    /// cannot stretch and `div(v)` must be exactly 0. Live-measured on
+    /// `basic_fluids_gpu.rs`, `J` instead climbed monotonically 1.000 -> 1.005
+    /// -> 1.022 -> 1.052 -> 1.093 -> 1.140 -> 1.185 -> ... -> pinned at the 2.0
+    /// clamp, all BEFORE any impact.
+    ///
+    /// Constant (zeroth-order) extrapolation of the fluid velocity into empty
+    /// nodes is the standard treatment -- Bridson, "Fluid Simulation for
+    /// Computer Graphics", ch. 5 (extrapolate velocity from fluid into air
+    /// before advection/gather), universal in FLIP/PIC solvers. `+ gravity*dt`
+    /// keeps it consistent with touched cells, which `apply_gravity` has
+    /// already accelerated by exactly that. For a particle in free fall the
+    /// stencil is then uniform, `div(v) = 0` exactly, and `J` stays 1 -- which
+    /// is the correct answer.
+    ///
+    /// It also encodes the right free-surface boundary condition: zero traction
+    /// (no stress from the empty side), rather than the implicit "the air is a
+    /// wall at rest" that a zero/near-zero fallback asserts.
+    pub fn velocity_at_or_extrapolated(
         &self,
         cell_pos: IVec2,
+        extrapolated_v: Vec2,
         gravity: Vec2,
         dt: f32,
         boundary_thickness: usize,
@@ -305,7 +337,7 @@ impl Grid {
         if let Some(cell) = self.cells.get(&idx) {
             return cell.momentum;
         }
-        let mut v = gravity * dt;
+        let mut v = extrapolated_v + gravity * dt;
         crate::forces::boundary::apply_slip_wall_velocity(
             boundary_thickness,
             idx as usize,

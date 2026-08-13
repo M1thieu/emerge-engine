@@ -386,8 +386,13 @@ pub fn gather_grid_to_particles(
                             // convention as contact.
                             grid.resolved_velocity_at(cell_pos, phase)
                         } else {
-                            grid.velocity_at_or_gravity_fallback(
+                            // Free-surface velocity extrapolation: empty nodes
+                            // take THIS particle's own velocity, not ~zero --
+                            // see `velocity_at_or_extrapolated`'s own doc for
+                            // the measurement and the citation.
+                            grid.velocity_at_or_extrapolated(
                                 cell_pos,
+                                *ctx.v,
                                 gravity,
                                 dt,
                                 boundary_thickness,
