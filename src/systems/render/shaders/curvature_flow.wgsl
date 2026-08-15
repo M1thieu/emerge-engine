@@ -1597,9 +1597,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // pass, which already normalizes the same way (its own
     // `BAND_HYSTERESIS_DEPTH_BANDS` is documented as having to match this
     // one, and silently did not).
+    // Real physics fix (2026-08-15): Beer-Lambert (`transmitted` below) is the
+    // exact solution of the radiative-transfer equation for pure absorption,
+    // dI/dz = -sigma_a * I (see e.g. Chandrasekhar 1950, "Radiative
+    // Transfer") -- already the real law this engine cites elsewhere
+    // (prep_instances.wgsl's ByPhysics mode). The DEPTH_BANDS quantization
+    // this used to feed into that law (`floor(...) * DEPTH_BANDS) /
+    // DEPTH_BANDS`) was a real, separate, disclosed ARTISTIC choice (flat
+    // cel-shaded look, same reasoning as grid_volume.wgsl's fs_main) that
+    // belongs to color/silhouette styling, not the physics term -- stair-
+    // stepping the input to `exp(-sigma_a*depth)` put jumps into the actual
+    // absorption law with no physical basis. Use the real, continuous,
+    // already-physically-calibrated mass ratio (same ref_mass normalization,
+    // same edge floor as before) for the transmission physics instead --
+    // DEPTH_BANDS/discrete banding stays exactly where it belongs, driving
+    // the cel-shaded color elsewhere in this file, untouched by this fix.
     let ref_mass = max(render_params.reference_cell_mass, 1.0e-6);
-    let depth_banded = floor(clamp(mass / ref_mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
-    let optical_depth = max(depth_banded, render_params.edge_reference_depth);
+    let depth_continuous = clamp(mass / ref_mass, 0.0, 4.0);
+    let optical_depth = max(depth_continuous, render_params.edge_reference_depth);
     let transmitted = exp(-sigma_a * optical_depth);
 
     // Subsurface scattering -- same real formula `prep_instances.wgsl`'s
@@ -1866,10 +1881,14 @@ fn shade_phase(
     // `select(...)` line above if live use shows real flicker regression.
     //
     // Same reference-cell-mass normalization as `fs_main` above, for the
-    // same reason -- see that copy's own doc.
+    // same reason -- see that copy's own doc. Same real-physics fix
+    // (2026-08-15) also ported here: continuous mass ratio feeds the real
+    // Beer-Lambert law directly, DEPTH_BANDS quantization (an artistic
+    // choice) no longer distorts the physics term -- see `fs_main`'s own
+    // longer comment for the full citation/reasoning.
     let ref_mass = max(p.reference_cell_mass, 1.0e-6);
-    let depth_banded = floor(clamp(mass / ref_mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
-    let optical_depth = max(depth_banded, p.edge_reference_depth);
+    let depth_continuous = clamp(mass / ref_mass, 0.0, 4.0);
+    let optical_depth = max(depth_continuous, p.edge_reference_depth);
     let transmitted = exp(-sigma_a * optical_depth);
 
     // Same ByPhysics-parity scattering port as `fs_main` above.
