@@ -741,6 +741,11 @@ impl State {
             })
             .await
             .expect("no GPU adapter");
+        let info = adapter.get_info();
+        println!(
+            "GPU adapter: {} ({:?}, backend={:?})",
+            info.name, info.device_type, info.backend
+        );
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_limits: adapter.limits(), // use full hardware limits, not wgpu defaults
