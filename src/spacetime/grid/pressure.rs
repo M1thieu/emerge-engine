@@ -119,12 +119,27 @@ impl Grid {
         let res = self.resolution as i32;
 
         // Real, disclosed simplification (see module doc): one representative
-        // mass for the whole solve instead of each cell's own, possibly-
-        // unbounded, 1/mass. Real physical grounding, not arbitrary: the
-        // fluid's own bulk cells all sit near `rest_density * cell_area`
-        // (the material's own conserved mass distribution) -- averaging over
-        // active cells recovers that scale directly from the actual scene,
-        // not a guessed constant.
+        // mass for the DCT solve specifically -- that part is unavoidably
+        // constant-coefficient (the DCT eigenbasis only diagonalizes a
+        // uniform-density Laplacian). Real physical grounding, not
+        // arbitrary: the fluid's own bulk cells all sit near
+        // `rest_density * cell_area` (the material's own conserved mass
+        // distribution) -- averaging over active cells recovers that scale
+        // directly from the actual scene, not a guessed constant.
+        //
+        // NARROWED (2026-08-15): this global average is now ONLY the DCT
+        // solve's own coefficient / the GS refinement's fallback for
+        // near-empty placeholder cells -- the GS refinement's real fluid
+        // cells and the final momentum-correction step below both use their
+        // OWN per-cell mass now (see those call sites' own comments), not
+        // this average. Real motivation: a mixed water/mud scene (40x
+        // density apart) measured `mass_avg` itself swinging 1.0->11.5 over
+        // one run -- a single scalar can't represent both materials, so
+        // confining its use to where the algorithm structurally requires a
+        // constant (the spectral solve) is the real fix, not a full
+        // MGPCG-style variable-coefficient rewrite (still real future work,
+        // see fluid_solver_perf_reality_check memory, but no longer
+        // blocking a correctness improvement today).
         let mass_avg: f32 = {
             let (sum, count) = self.dirty.iter().fold((0.0f32, 0u32), |(s, c), &idx| {
                 self.cells
@@ -425,7 +440,42 @@ impl Grid {
                         }
                     }
                     if count > 0.0 {
-                        pressure[local_idx] = (sum - h * h * r / alpha_const) / count;
+                        // Real per-cell density correction (2026-08-15), NOT
+                        // just the global `alpha_const` this refinement pass
+                        // used to share with the DCT solve: the DCT itself
+                        // MUST stay constant-coefficient (its whole basis
+                        // depends on that), but Gauss-Seidel has no such
+                        // requirement -- a GS smoother trivially handles a
+                        // spatially-varying coefficient, one equation at a
+                        // time (the same reason multigrid methods use GS/
+                        // Jacobi as their SMOOTHER for variable-coefficient
+                        // Poisson problems, with a constant-coefficient
+                        // solve only as the cheap preconditioner/initial
+                        // guess -- exactly the role the DCT solve above
+                        // already plays here). Real, measured motivation:
+                        // a mixed water (rest_density=0.1)/mud
+                        // (rest_density=4.0, 40x apart) scene showed
+                        // `mass_avg` itself swinging 1.0->11.5 across one
+                        // run (see fluid_solver_perf_reality_check memory)
+                        // -- a single global alpha_const can't be right for
+                        // both materials at once, so it was wrong for
+                        // whichever one it didn't happen to match that
+                        // frame. `local_mass[local_idx]` is this cell's own
+                        // REAL scattered mass, already computed above for
+                        // surface classification -- reuse it directly.
+                        // Placeholder/near-empty cells inside the padded box
+                        // (not real fluid, `local_mass` near zero) fall back
+                        // to `alpha_const` unchanged -- using their own
+                        // near-zero mass would blow up `1/mass`, a real
+                        // instability the surface classification above
+                        // doesn't already guard against for these cells.
+                        let cell_alpha = if local_mass[local_idx] > MIN_ABSOLUTE_MASS_FOR_CORRECTION
+                        {
+                            1.0 / local_mass[local_idx]
+                        } else {
+                            alpha_const
+                        };
+                        pressure[local_idx] = (sum - h * h * r / cell_alpha) / count;
                     }
                 }
             }
@@ -501,8 +551,21 @@ impl Grid {
             // conditions before trusting them, don't just read and apply.
             const RELAXATION: f32 = 0.2;
             let grad_p = grad_p * RELAXATION;
+            // Real per-cell mass (2026-08-15), not the global `alpha_const`
+            // this line used unconditionally before -- Newton's second law
+            // for a pressure-gradient force is a = -grad_p / mass, LOCAL to
+            // this cell, not the domain's average mass. `mass` is already
+            // fetched above (line ~485) and already checked
+            // `> MIN_ABSOLUTE_MASS_FOR_CORRECTION`, so no fallback branch is
+            // needed here (unlike the GS refinement pass above, which can
+            // reach near-empty placeholder cells this loop already skips via
+            // its own `continue`). Same real motivation as that pass: a
+            // mixed-density scene (water/mud, 40x apart) measurably broke
+            // under the old shared-global-average correction -- see
+            // fluid_solver_perf_reality_check memory.
+            let cell_alpha = 1.0 / mass;
             if let Some(cell) = self.cells.get_mut(&idx) {
-                cell.momentum -= alpha_const * grad_p;
+                cell.momentum -= cell_alpha * grad_p;
             }
         }
     }
@@ -565,6 +628,88 @@ mod fluid_pressure_projection_tests {
             residual_projected < residual_unprojected * 0.95,
             "projection should substantially shrink the divergence residual: \
              before={residual_unprojected:.5} after={residual_projected:.5}"
+        );
+    }
+
+    /// Real, direct check for the 2026-08-15 per-cell-mass fix (see
+    /// `project_fluid_incompressibility`'s own comments at the GS
+    /// refinement loop and the final momentum-correction line). Newton's
+    /// second law for a pressure-gradient force is `a = -grad(p) / mass`,
+    /// LOCAL to each cell -- a heavy cell must receive a smaller VELOCITY
+    /// correction than a light cell under the same local pressure gradient,
+    /// not the same one. The single shared `alpha_const` this fix replaces
+    /// couldn't tell cells apart by mass at all, so it applied the same
+    /// correction strength everywhere regardless -- root-caused this
+    /// session against a real water/mud scene (`mass_avg` measured swinging
+    /// 1.0->11.5 over one run, see `fluid_solver_perf_reality_check`
+    /// memory).
+    ///
+    /// (An earlier version of this test compared divergence-residual
+    /// REDUCTION RATIOS instead of velocity-change magnitude, expecting
+    /// them to be alpha-invariant -- wrong expectation: `pressure` is
+    /// solved proportional to `1/alpha` and then the correction re-applies
+    /// `alpha`, so the residual-reduction ratio cancels `alpha_const`
+    /// algebraically to first order under the OLD single-scalar code by
+    /// construction, regardless of whether that scalar matched any real
+    /// mass -- confirmed empirically (old code: 0.834 alone vs 0.832 mixed,
+    /// suspiciously stable across a 40x mass change). That metric can't
+    /// distinguish correct from incorrect per-cell physics; velocity-change
+    /// magnitude, tested directly below, can.)
+    ///
+    /// Method: two regions, same divergent velocity FIELD shape (`v_at` is
+    /// mass-independent) but 40x different mass (real water/mud ratio),
+    /// scattered together into one grid/projection call. Under the correct
+    /// per-cell-mass physics, the heavy region's velocity correction must
+    /// come out meaningfully smaller than the light region's -- under the
+    /// old single-alpha code, both cells would receive statistically the
+    /// SAME correction strength regardless of their own real mass.
+    #[test]
+    fn heavy_region_gets_smaller_velocity_correction_than_light_region() {
+        let v_at = |center: IVec2, pos: IVec2| -> Vec2 {
+            let d = (pos - center).as_vec2();
+            let r2 = d.length_squared();
+            d * 0.5 * (-r2 / 8.0).exp()
+        };
+        let light_center = IVec2::new(10, 24);
+        let heavy_center = IVec2::new(38, 24);
+        let light_mass = 1.0_f32;
+        let heavy_mass = 40.0_f32; // real water/mud rest_density ratio
+
+        let mut grid = Grid::new(48);
+        for dx in -6..=6 {
+            for dy in -6..=6 {
+                let lp = light_center + IVec2::new(dx, dy);
+                grid.add_mass_momentum(lp, light_mass, light_mass * v_at(light_center, lp));
+                let hp = heavy_center + IVec2::new(dx, dy);
+                grid.add_mass_momentum(hp, heavy_mass, heavy_mass * v_at(heavy_center, hp));
+            }
+        }
+        grid.update_velocities(0.0, Vec2::ZERO);
+        let light_v_before = grid.velocity_at(light_center + IVec2::new(2, 0));
+        let heavy_v_before = grid.velocity_at(heavy_center + IVec2::new(2, 0));
+
+        grid.project_fluid_incompressibility(1.0, 1);
+
+        let light_v_after = grid.velocity_at(light_center + IVec2::new(2, 0));
+        let heavy_v_after = grid.velocity_at(heavy_center + IVec2::new(2, 0));
+        let light_delta = (light_v_after - light_v_before).length();
+        let heavy_delta = (heavy_v_after - heavy_v_before).length();
+
+        assert!(
+            light_delta > 1.0e-5,
+            "test setup should produce a real, measurable light-region velocity change, got {light_delta}"
+        );
+        // Not asserting the exact 40x ratio (RELAXATION, the DCT's own
+        // constant-alpha initial guess, and the padded-box Neumann
+        // treatment all add real, disclosed departures from a pure 1/mass
+        // law) -- just that the heavy region's correction is CLEARLY
+        // smaller, not comparable-or-larger the way a mass-blind global
+        // alpha would produce. A real, generous factor-of-3 bar.
+        assert!(
+            heavy_delta < light_delta / 3.0,
+            "heavy (40x denser) region's velocity correction should be clearly \
+             smaller than the light region's under correct per-cell-mass physics: \
+             light_delta={light_delta:.6} heavy_delta={heavy_delta:.6}"
         );
     }
 

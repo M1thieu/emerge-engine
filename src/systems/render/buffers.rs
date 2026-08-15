@@ -118,7 +118,16 @@ impl RenderBuffers {
             label: Some("render_instances"),
             size: (cap * mem::size_of::<InstanceData>()) as u64,
             // VERTEX for draw; COPY_DST for both the CPU fill path and the GPU compute copy.
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            // COPY_SRC (2026-08-15): kept permanently -- lets tests read back
+            // this buffer directly to check what actually landed here, not
+            // just what was written to it. Used by the `#[ignore]`d
+            // render_gpu/render_cpu pixel tests in tests.rs (see
+            // basic_fluids_gpu_blank_render_unconfirmed memory) to prove
+            // storage_instances -> instance_buffer copies correctly even
+            // when the final drawn pixels don't show it.
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
