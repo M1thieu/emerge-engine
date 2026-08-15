@@ -86,6 +86,15 @@ struct MaterialParams {
     bulk_viscosity:          f32,
     surface_tension_coeff:   f32,
     cohesion_coeff:              f32,
+    // GPU/CPU parity fix (2026-08-15) -- see Rust MaterialParams's own doc.
+    // Not consumed here (ASFLIP is mutually exclusive with strict-fluid
+    // mode, see step.rs's assert_strict_fluid_mode_is_supported), kept only
+    // for byte-layout parity with the other MaterialParams mirrors sharing
+    // the same uniform buffer.
+    owns_deformation_volume_state: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 struct StepParams {

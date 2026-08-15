@@ -3,8 +3,11 @@
 /// Layout is a union — only the fields relevant to the constitutive model are filled;
 /// all others are zero. `model` is the `ConstitutiveModel` discriminant and is always set.
 ///
-/// 96 bytes, 16-byte aligned — directly uploadable to a GPU uniform buffer as
-/// `array<MaterialParams, N>` indexed by `particle.material_id`.
+/// 112 bytes, 16-byte aligned — directly uploadable to a GPU uniform buffer as
+/// `array<MaterialParams, N>` indexed by `particle.material_id`. Grew from 96
+/// (2026-08-15) to add `owns_deformation_volume_state` -- see that field's own
+/// doc. `_pad` is explicit, always-zeroed real reserved space (same Pod-safety
+/// convention `Particle::_pad` already uses), not implicit struct padding.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialParams {
@@ -97,6 +100,33 @@ pub struct MaterialParams {
     /// 0.0 = disabled (Stomakhin default). ~200–800 for wet/packed snow.
     /// Repurposed from padding; zero for all other materials.
     pub cohesion_coeff: f32,
+
+    /// Mirrors `MaterialModel::owns_deformation_volume_state()` (1 = true,
+    /// 0 = false) -- GPU/CPU parity fix, 2026-08-15. CPU's
+    /// `estimate_particle_volumes` (`src/spacetime/solver/density.rs`)
+    /// SKIPS the raw kernel-mass density/volume gather for any material
+    /// returning true from that trait method (today: `NewtonianFluidMaterial`/
+    /// `BinghamFluidMaterial`), instead deriving density/volume ANALYTICALLY
+    /// from the material's own already-clamped deformation gradient. GPU had
+    /// no equivalent gate -- `g2p.wgsl` wrote every particle's density/volume
+    /// unconditionally from the same free-surface-biased kernel gather CPU
+    /// explicitly avoids for these materials. Measured, real consequence
+    /// (`basic_fluids_gpu.rs`, 2026-08-15): water density drifting to
+    /// [0.0116, 0.358] against a rest density of 0.1 -- both bounds outside
+    /// what the analytical, J-clamp-derived formula could ever produce
+    /// (theoretical range ~[0.05, 0.2] under CPU's own `.max(min_density)
+    /// .min(2*rest_density)` clamp) -- feeding a spurious excursion into the
+    /// CFL acoustic term (∝ density^(eos_power-1)) and pinning substep count
+    /// at its cap indefinitely instead of settling. Set via
+    /// `self.owns_deformation_volume_state() as u32` in each material's own
+    /// `params()` -- a GENERIC per-material flag, not a hardcoded material-ID
+    /// check, so any future material overriding that trait method gets
+    /// correct GPU behavior automatically.
+    pub owns_deformation_volume_state: u32,
+    /// Explicit, always-zeroed reserved space -- keeps the struct's real
+    /// size at the next 16-byte-aligned boundary (112, up from 96) with
+    /// genuine headroom for future flags, same convention as `Particle::_pad`.
+    pub _pad: [u32; 3],
 }
 
-const _: () = assert!(core::mem::size_of::<MaterialParams>() == 96);
+const _: () = assert!(core::mem::size_of::<MaterialParams>() == 112);

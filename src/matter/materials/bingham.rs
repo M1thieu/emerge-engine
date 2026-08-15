@@ -37,6 +37,21 @@ pub struct BinghamFluidMaterial {
     /// Minimum shear rate to avoid τ₀/γ̇ singularity.
     /// Particles below this rate are treated as rigid. Default: 1e-4.
     pub critical_shear_rate: f32,
+    /// Lower bound on the Tait EOS pressure; negative values permit limited
+    /// isotropic tension. Default: 0.0 (no tensile pressure).
+    ///
+    /// HONEST DISCLOSURE (audit 2026-08-15): 0.0 is a free numerical parameter,
+    /// chosen empirically for this engine, not a physical consequence of Bingham
+    /// rheology and not a literature-calibrated value for mud or another yield-
+    /// stress material. The classical model separates total stress as
+    /// `sigma_total = -p I + sigma_dev` and applies the Bingham yield condition
+    /// to `sigma_dev` (Roquet & Saramito, J. Non-Newtonian Fluid Mech. 155,
+    /// 2008, Eqs. 1-2, doi:10.1016/j.jnnfm.2007.12.008); it does not prescribe a
+    /// tensile-pressure cutoff. Unlike `NewtonianFluidMaterial`'s `-0.1`, this
+    /// default does not trace to the `tmp/sparkl` or `tmp/incremental_mpm`
+    /// precedents. Keep it labelled as engine calibration unless tensile data
+    /// for a specific viscoplastic material supplies a real value -- the same
+    /// honesty convention used for `FORAGING_RECOVERY_RATE` elsewhere.
     pub pressure_floor: f32,
     pub min_density: f32,
     pub min_volume: f32,
@@ -288,6 +303,7 @@ impl MaterialModel for BinghamFluidMaterial {
             pressure_floor: self.pressure_floor,
             dp_h0: self.settling_damping,
             bulk_viscosity: self.bulk_viscosity,
+            owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
     }

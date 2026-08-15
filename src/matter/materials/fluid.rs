@@ -85,6 +85,19 @@ pub struct NewtonianFluidMaterial {
     pub dynamic_viscosity: f32,
     pub eos_stiffness: f32,
     pub eos_power: f32,
+    /// Floor on the Tait EOS pressure -- prevents unbounded negative
+    /// (tensile) pressure at a free surface, where the raw EOS formula has
+    /// no restoring force in real fluids (cavitation, not sustained
+    /// tension). Real, precedented value: `tmp/sparkl`'s
+    /// `MonaghanSphEos::max_neg_pressure` uses the same `-0.1` clamp on
+    /// `Ktait0*((rho/rho0)^gamma - 1)`, and `tmp/incremental_mpm`'s MLS-MPM
+    /// fluid solver (Unity/C#) uses the identical constant with an honest
+    /// author's-own comment ("i clamped it as a bit of a hack") -- this
+    /// engine's default traces to that same real, working, if pragmatic,
+    /// precedent, not an arbitrary guess. Bounds pressure SIGN/magnitude
+    /// only -- does not bound `density`/`volume`'s own kinematic drift (see
+    /// GPU/CPU parity work in `basic_fluids_gpu_blank_render_unconfirmed`
+    /// memory, 2026-08-15, for the separate mechanism that still needs).
     pub pressure_floor: f32,
     pub min_density: f32,
     pub min_volume: f32,
@@ -433,6 +446,7 @@ impl MaterialModel for NewtonianFluidMaterial {
             pressure_floor: self.pressure_floor,
             bulk_viscosity: self.bulk_viscosity,
             dp_h0: self.settling_damping, // fluid repurposes dp_h0 for settling damping (DP unused)
+            owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
     }

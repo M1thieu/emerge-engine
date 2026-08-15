@@ -49,6 +49,7 @@ fn build_straight_network(n_points: usize, ea: f32, ei_per_vertex: &[f32]) -> Ro
             b: i + 1,
             rest_length_m: seg_len,
             ea,
+            axial_damping: 2.0,
         })
         .collect();
     let bending = (0..n_points - 2)
@@ -58,6 +59,7 @@ fn build_straight_network(n_points: usize, ea: f32, ei_per_vertex: &[f32]) -> Ro
             p2: i + 2,
             rest_curvature: 0.0,
             ei: ei_per_vertex[i],
+            bending_damping: 0.5,
             voronoi_length_m: seg_len,
         })
         .collect();
@@ -172,6 +174,7 @@ fn append_leg(
             b: w[1],
             rest_length_m: seg_len,
             ea,
+            axial_damping: net.axial_damping,
         });
     }
 
@@ -195,6 +198,7 @@ fn append_leg(
             p2: pts[2],
             rest_curvature: 0.0,
             ei: local_ei(local_bv),
+            bending_damping: net.bending_damping,
             voronoi_length_m: seg_len,
         });
         if local_bv == 3 || local_bv == 7 {

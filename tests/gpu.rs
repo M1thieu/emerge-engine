@@ -3418,6 +3418,73 @@ mod gpu_tests {
         );
     }
 
+    /// The dedicated contact-point buckets must have enough headroom for a dense,
+    /// realistic two-body interface. This deliberately uses four times the linear particle
+    /// density of the ordinary contact tests in each dimension (0.125-cell spacing
+    /// versus 0.5), with two fully overlapping bodies contributing to the same spatial
+    /// blocks. The raw counters are checked without clamping: `p2g.wgsl` intentionally
+    /// lets them exceed the storage capacity so an overflow cannot be hidden.
+    #[test]
+    fn gpu_dense_contact_scene_stays_within_point_block_capacity() {
+        if !gpu_available() {
+            return;
+        }
+        use emerge::gpu::MAX_CONTACT_POINTS_PER_BLOCK;
+
+        const GRID_RES: usize = 64;
+        let config = SimConfig {
+            max_substeps_per_step: 4,
+            ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
+        };
+        let center = Vec2::splat(32.0);
+        let dense_body = |contact_group| {
+            let mut particles = build_particles(
+                &config,
+                SpawnRegion::for_sim(&config)
+                    .at(center)
+                    .disk(3.0)
+                    .spacing(0.125)
+                    .material(0)
+                    .precompute_volumes(),
+            );
+            for particle in &mut particles {
+                particle.contact_group = contact_group;
+            }
+            particles
+        };
+
+        let mut particles = dense_body(1);
+        particles.extend(dense_body(0));
+        assert!(
+            particles.len() > MAX_CONTACT_POINTS_PER_BLOCK * 4,
+            "test scene is not globally dense enough: {} particles",
+            particles.len()
+        );
+
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, particles, registry));
+        for _ in 0..3 {
+            solver.step_frame();
+        }
+
+        let counts = solver.contact_point_counts_blocking();
+        let max_raw_count = counts.iter().copied().max().unwrap_or(0);
+        assert!(
+            max_raw_count >= 64,
+            "dense contact scene did not substantially exercise a block: max raw count \
+             was {max_raw_count}, expected at least 64"
+        );
+        for (block, &raw_count) in counts.iter().enumerate() {
+            assert!(
+                raw_count as usize <= MAX_CONTACT_POINTS_PER_BLOCK,
+                "contact point block {block} overflowed in a realistic dense two-body \
+                 scene: raw count {raw_count} exceeds capacity \
+                 {MAX_CONTACT_POINTS_PER_BLOCK}"
+            );
+        }
+    }
+
     /// Multi-field contact (GPU port): the Newton-Raphson LR normal fit's WGSL port
     /// (`resolve_contact.wgsl`'s `fit_contact_normal_lr`), checked against the exact
     /// scenario CPU's `fit_contact_normal_lr_tests::clean_horizontal_interface_36v36`

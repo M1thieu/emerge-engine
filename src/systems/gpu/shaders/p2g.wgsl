@@ -52,6 +52,14 @@ struct MaterialParams {
     bulk_viscosity:          f32,
     surface_tension_coeff:   f32,
     cohesion_coeff:          f32,
+    // GPU/CPU parity fix (2026-08-15) -- see Rust MaterialParams's own doc.
+    // 1u = this material derives density/volume analytically from its own
+    // clamped F (matches CPU's `owns_deformation_volume_state()`), 0u =
+    // unused by this material.
+    owns_deformation_volume_state: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 struct StepParams {

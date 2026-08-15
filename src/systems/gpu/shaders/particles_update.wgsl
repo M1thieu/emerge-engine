@@ -70,6 +70,14 @@ struct MaterialParams {
     bulk_viscosity:          f32,
     surface_tension_coeff:   f32,
     cohesion_coeff:              f32,
+    // GPU/CPU parity fix (2026-08-15) -- see Rust MaterialParams's own doc.
+    // 1u = this material derives density/volume analytically from its own
+    // clamped F (matches CPU's `owns_deformation_volume_state()`), 0u =
+    // unused by this material.
+    owns_deformation_volume_state: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 struct StepParams {
@@ -491,6 +499,20 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // k = dp_h0 (repurposed — dp_h0..dp_h3 are DP-only, unused for fluid model 1).
         if mat.dp_h0 > 0.0 {
             p.v *= 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
+        }
+
+        // GPU/CPU parity fix (2026-08-15): derive density/volume ANALYTICALLY
+        // from this already-clamped J, matching CPU's fluid.rs::update_particle
+        // exactly (`density = (rest_density/j).max(min_density).min(2*rest_density)`,
+        // NUM_FLOOR here is the same 1e-6 CPU's `min_density` default uses).
+        // Only takes effect for materials with owns_deformation_volume_state=1u
+        // -- g2p.wgsl already skipped its own kernel-mass write for exactly
+        // these particles, so this is the ONLY place their density/volume get
+        // set, every substep, same as CPU's own single source of truth.
+        if mat.owns_deformation_volume_state == 1u {
+            let density = clamp(mat.rest_density / J_fluid, NUM_FLOOR, mat.rest_density * 2.0);
+            particles[p_idx].density = density;
+            particles[p_idx].volume  = p.mass / density;
         }
     }
 

@@ -53,6 +53,43 @@ struct StepParams {
     contact_active:     u32,
 }
 
+// GPU/CPU parity fix (2026-08-15) -- see Rust `MaterialParams`'s own doc.
+// Byte-exact mirror of the same struct in p2g.wgsl/particles_update.wgsl
+// (must all agree, they share one uniform buffer). Only
+// `owns_deformation_volume_state` is actually read here -- every other
+// field exists purely for layout parity.
+struct MaterialParams {
+    model:                   u32,
+    lambda:                  f32,
+    mu:                      f32,
+    hardening_exponent:      f32,
+    compression_limit:       f32,
+    stretch_limit:           f32,
+    rest_density:            f32,
+    eos_stiffness:           f32,
+    eos_power:               f32,
+    dynamic_viscosity:       f32,
+    volume_ratio_min:        f32,
+    volume_ratio_max:        f32,
+    dp_h0:                   f32,
+    dp_h1:                   f32,
+    dp_h2:                   f32,
+    dp_h3:                   f32,
+    active_stress_coeff:     f32,
+    hardening_modulus:       f32,
+    thermal_viscosity_coeff: f32,
+    thermal_expansion:       f32,
+    pressure_floor:          f32,
+    bulk_viscosity:          f32,
+    surface_tension_coeff:   f32,
+    cohesion_coeff:          f32,
+    owns_deformation_volume_state: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+const MAX_MATERIALS:        u32 = {{MAX_MATERIALS}}u;
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
 const BSPLINE_OUTER_LIMIT:  f32 = 1.5;
 const BSPLINE_CENTER_COEFF: f32 = 0.75;
@@ -62,6 +99,7 @@ const NUM_FLOOR:            f32 = 1e-6;
 
 @group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
+@group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
 // Multi-field contact (GPU port) — resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
@@ -224,11 +262,22 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The velocity clamp above already bounds the energy; CFL bounds the timestep.
     let C = mat2x2<f32>(B_col0, B_col1) * step_params.kernel_d_inverse;
 
-    let density = max(new_density, NUM_FLOOR);
-    let volume  = p.mass / density;
-
     particles[p_idx].v                 = new_v;
     particles[p_idx].velocity_gradient = C;
-    particles[p_idx].density           = density;
-    particles[p_idx].volume            = volume;
+
+    // GPU/CPU parity fix (2026-08-15): materials that own their own
+    // deformation-derived volume state (today: strict fluids) skip this
+    // raw kernel-mass gather entirely -- it's free-surface-biased and
+    // unbounded (real, measured: water density drifting to [0.0116,0.358]
+    // against a rest density of 0.1, well outside what the analytical,
+    // J-clamp-derived formula in particles_update.wgsl could ever produce).
+    // Mirrors CPU's `estimate_particle_volumes` (density.rs), which
+    // `continue`s past exactly these particles for the identical reason.
+    // Density/volume are left untouched here for them -- particles_update.wgsl
+    // overwrites both, every substep, from the material's own clamped F.
+    if materials[p.material_id].owns_deformation_volume_state == 0u {
+        let density = max(new_density, NUM_FLOOR);
+        particles[p_idx].density = density;
+        particles[p_idx].volume  = p.mass / density;
+    }
 }

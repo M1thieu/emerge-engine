@@ -958,6 +958,29 @@ impl State {
                     snap.substeps_last_step,
                     snap.cfl_number,
                 );
+                // TEMPORARY (2026-08-15 Step 0, GPU density/volume parity plan):
+                // unconditional density/volume range for water -- the existing
+                // MIN_J_OUTLIER/OUTLIER traces below never fired in this scene
+                // (gated on substeps>2000 or max_speed>20, neither of which this
+                // capped-at-60 run reaches), so they never actually captured the
+                // one field this investigation needs direct evidence on. J is
+                // structurally bounded by the GPU clamp [0.5,2.0] already, but
+                // density/volume are a SEPARATE, unguarded field on GPU -- this
+                // is the real, direct measurement the plan's Step 0 asked for.
+                if self.frame.is_multiple_of(30) {
+                    let particles = self.sim.particles();
+                    let (mut dmin, mut dmax, mut vmin, mut vmax) =
+                        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+                    for p in particles.iter().filter(|p| p.material_id == MAT_WATER) {
+                        dmin = dmin.min(p.density);
+                        dmax = dmax.max(p.density);
+                        vmin = vmin.min(p.volume);
+                        vmax = vmax.max(p.volume);
+                    }
+                    println!(
+                        "  DENSITY_VOLUME water: density=[{dmin:.4},{dmax:.4}] (rest={WATER_RHO_GRID:.4}) volume=[{vmin:.6},{vmax:.6}]"
+                    );
+                }
                 // TEMPORARY: regional-substepping plan's Step 0 measurement
                 // -- sparse (every 10 frames), since per-pass GPU profiling
                 // readback itself blocks and would distort the very timing

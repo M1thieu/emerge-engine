@@ -165,15 +165,19 @@ impl Lnn {
         );
 
         let n = n_rings * n_per_ring;
-        // tau=0.5 at period=1.0 -- NOT derived from the period via a formula
-        // (see 2026-07-05 rewrite below for why the old period/(2*pi) mapping
-        // is gone). Scaled proportionally with period as the least-surprising
-        // extrapolation, but ONLY period=1.0 is empirically deep-verified
-        // (every real call site in this codebase -- emerge's own demo and
-        // LP's creature -- uses period=1.0; no call site uses another value
-        // outside a single short unit test). Other periods are a reasonable
-        // guess, not independently proven.
-        let tau_val = (0.5 * period).max(1e-3);
+        // HONEST DISCLOSURE (audit 2026-08-15): `tau=0.5` at `period=1.0` is a
+        // free parameter tuned empirically against this engine's sustained-wave
+        // regression below, not a value derived from CPG literature. Ijspeert's
+        // 2008 review covers different oscillator equations, and the LTC model
+        // of Hasani et al. (AAAI 2021) defines tau as a model parameter; neither
+        // supplies a mapping from a requested period to tau for this equation.
+        // The proportional scaling is likewise an uncalibrated convenience.
+        // Only period=1.0 is deeply verified (and used by real call sites);
+        // other periods require independent calibration before being presented
+        // as physically meaningful -- the same honesty convention used for
+        // `FORAGING_RECOVERY_RATE` elsewhere in this codebase.
+        const EMPIRICAL_TAU_AT_UNIT_PERIOD: f32 = 0.5;
+        let tau_val = (EMPIRICAL_TAU_AT_UNIT_PERIOD * period).max(1e-3);
         let tau = vec![tau_val; n];
         // States oscillate in (-A, +A); sigmoid maps ±4 → (0.018, 0.982) --
         // see the amplitude rewrite note below for why this changed from 2.0.
@@ -220,17 +224,25 @@ impl Lnn {
         // Networks 21:642) is unchanged. What changed: self-inhibition
         // REMOVED (was -0.5, now 0.0 -- the sweep found self-inhibition
         // specifically was part of what collapsed the ring to synchrony), and
-        // inhibit now matches excite in magnitude (was 3.0/-2.0 asymmetric,
-        // now 6.0/-6.0 symmetric) -- an unverified-in-literature but now
-        // directly, numerically verified parameter choice, same honesty
-        // standard as the old comment already applied to the magnitudes.
+        // inhibit now matches excite in magnitude (was 3.0/-2.0 asymmetric).
+        // HONEST DISCLOSURE (audit 2026-08-15): the magnitudes below are free
+        // parameters tuned empirically against this engine's sustained-wave
+        // regression, not literature-calibrated synaptic strengths. Published
+        // CPG models use different state equations and normalizations, so their
+        // numerical weights do not define a transferable range for this LNN.
+        // Keep these values labelled as engine calibration unless this exact
+        // equation is independently calibrated -- the same honesty convention
+        // used for `FORAGING_RECOVERY_RATE` elsewhere in this codebase.
+        const EMPIRICAL_EXCITATORY_WEIGHT: f32 = 6.0;
+        const EMPIRICAL_INHIBITORY_WEIGHT: f32 = -6.0;
         let mut weights = vec![0.0f32; n * n];
         for r in 0..n_rings {
             let base = r * n_per_ring;
             for i in 0..n_per_ring {
                 let row = base + i;
-                weights[row * n + base + (i + 1) % n_per_ring] = 6.0; // excite next → wave propagation
-                weights[row * n + base + (i + n_per_ring / 2) % n_per_ring] = -6.0; // inhibit opposite → phase separation
+                weights[row * n + base + (i + 1) % n_per_ring] = EMPIRICAL_EXCITATORY_WEIGHT; // excite next → wave propagation
+                weights[row * n + base + (i + n_per_ring / 2) % n_per_ring] =
+                    EMPIRICAL_INHIBITORY_WEIGHT; // inhibit opposite → phase separation
                 // No self-inhibition term (was -0.5) -- verified this was
                 // part of what collapsed the ring to a synchronized fixed
                 // point; the outer leak term (-x/tau) already provides decay.
