@@ -1072,6 +1072,12 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "tests the strict-fluid/DCT-pressure/retry contract (`cac544b`/`dcefbaf`, \
+                2026-08-11), deliberately reverted 2026-08-14 -- that architecture never \
+                stabilized for real interactive demos (basic_fluids_gpu.rs locked \
+                permanently at its safety clamp, sustained 1-2fps) despite 3 days of \
+                fixes on top of it. GPU solver internals rolled back to their proven-stable \
+                pre-cac544b state; un-ignore once that work is properly rebuilt, not before."]
     fn gpu_fluid_stable() {
         if !gpu_available() {
             return;
@@ -1108,6 +1114,7 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_runtime_spawn_initializes_strict_fluid_state() {
         if !gpu_available() {
             return;
@@ -1149,6 +1156,7 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_phase_transition_initializes_strict_fluid_state() {
         if !gpu_available() {
             return;
@@ -1184,6 +1192,7 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_strict_fluid_rejects_inconsistent_constitutive_state() {
         if !gpu_available() {
             return;
@@ -1209,6 +1218,7 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_strict_fluid_advances_full_dt_past_initial_substep_budget() {
         if !gpu_available() {
             return;
@@ -1246,6 +1256,7 @@ mod gpu_tests {
     }
 
     #[test]
+    #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_and_cpu_strict_fluid_match_one_substep() {
         if !gpu_available() {
             return;
@@ -5352,6 +5363,9 @@ mod gpu_tests {
     /// agreement isn't a real property to assert there even flag-off vs
     /// flag-off.
     #[test]
+    #[ignore = "regional-substepping infra (block_dt_pool/NUM_BLOCKS) added alongside the \
+                strict-fluid contract (`57b83dc`, 2026-08-13), reverted with it 2026-08-14 \
+                -- see gpu_fluid_stable's own ignore doc for the full account"]
     fn gpu_regional_substepping_two_region_scene_matches_flag_off() {
         if !gpu_available() {
             return;

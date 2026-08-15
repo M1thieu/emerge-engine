@@ -20,10 +20,10 @@
 use std::mem;
 
 use super::step_params::{
-    ContactDebugParams, GpuAsflipParams, GpuCohesionParams, GpuDirectionalGripParams,
-    GpuFieldsParams, GpuImpulseParams, GpuMaterialMassParams, GpuResourceParams,
-    GpuSleepWakeParams, GpuStepParams, GpuThermalParams, MAX_CONTACT_POINTS_PER_BLOCK,
-    MAX_RENDER_MATERIAL_SLOTS, NUM_BLOCKS, NUM_CONTACT_BLOCKS,
+    ContactDebugParams, GpuAsflipParams, GpuDirectionalGripParams, GpuFieldsParams,
+    GpuImpulseParams, GpuMaterialMassParams, GpuResourceParams, GpuSleepWakeParams, GpuStepParams,
+    GpuThermalParams, MAX_CONTACT_POINTS_PER_BLOCK, MAX_RENDER_MATERIAL_SLOTS, NUM_BLOCKS,
+    NUM_CONTACT_BLOCKS,
 };
 use crate::materials::MaterialParams;
 use crate::particle::Particle;
@@ -62,17 +62,6 @@ fn make_buffer(
 pub struct GpuBuffers {
     /// Particle data — STORAGE | COPY_DST | COPY_SRC.
     pub particles: wgpu::Buffer,
-    /// Real GPU-side batch-retry snapshot for strict WC-MPM fluids (2026-08-11) —
-    /// COPY_DST | COPY_SRC (no STORAGE binding; never read/written by a shader
-    /// directly, only buffer-to-buffer copied). Copied FROM `particles` before
-    /// each strict-fluid substep batch begins; copied BACK over `particles` if
-    /// that batch turns out inadmissible, so the batch can be retried at a
-    /// smaller dt instead of either accepting corrupted state or panicking
-    /// immediately — the same real rollback/retry principle CPU's
-    /// `do_substep_with_retry` already uses, adapted to GPU's batch (not
-    /// per-substep) granularity. See `step.rs`'s strict-fluid batch loop for
-    /// the real retry logic this buffer supports.
-    pub particle_batch_snapshot: wgpu::Buffer,
     /// Grid cells, zeroed each substep by grid_clear pass — STORAGE
     pub grid: wgpu::Buffer,
     /// One MaterialParams per registered material slot — UNIFORM | COPY_DST
@@ -80,18 +69,6 @@ pub struct GpuBuffers {
     /// Per-substep constants pool — one buffer per max_substeps slot, each 32 bytes.
     /// Substep i reads `step_params_pool[i]` so all substeps can be encoded in one command buffer.
     pub step_params_pool: Vec<wgpu::Buffer>,
-    /// Regional-substepping Step 3 (`purring-swinging-cookie.md` Part A) — per-substep,
-    /// per-block dt plan: `block_dt_pool[i]` holds this substep's dt for each of the 256
-    /// blocks (fine tier: this batch's `sub_dt`; coarse tier: `<= 0.0` = skip the full
-    /// gather/integrate this substep, except a batch's last substep, which carries the
-    /// coarse tier's accumulated resync dt). Pooled 1:1 with `step_params_pool` for the
-    /// SAME reason (a batch's `write_buffer` calls all happen before the batch's one
-    /// `submit()`, so a shared un-pooled buffer would have every substep see only the
-    /// last write). Packed `array<vec4<f32>, 64>` in WGSL (uniform address space needs
-    /// 16-byte-stride elements) — `[f32; 256]`'s byte layout already matches that exactly
-    /// (4 consecutive f32s = 16 bytes = one vec4, zero padding either representation), so
-    /// no repacking is needed on upload.
-    pub block_dt_pool: Vec<wgpu::Buffer>,
     /// Non-uniform force-field entries for the force_fields pass — UNIFORM | COPY_DST
     pub force_fields_params: wgpu::Buffer,
     /// Impulse descriptors for the apply_impulses pass — UNIFORM | COPY_DST
@@ -198,9 +175,6 @@ pub struct GpuBuffers {
     /// `GpuThermalParams`' own doc. Always uploaded (disabled by default), same
     /// always-present-but-cheap-when-unused pattern as `grip_params`.
     pub thermal_params: wgpu::Buffer,
-    /// Real grid-mediated cohesion/surface-tension (CSF) — see `GpuCohesionParams`'
-    /// own doc. Same always-present-but-disabled-by-default convention.
-    pub cohesion_params: wgpu::Buffer,
     /// Thermal scratch: Σ(w·mass) per cell, cleared+rebuilt every substep by the
     /// thermal P2G pass — dense `grid_res²` f32, mirrors CPU `ThermalDiffusion::
     /// grid_mass`.
@@ -262,27 +236,6 @@ pub struct GpuBuffers {
     /// `true` once `material_mass` has been grown to its real size -- mirrors
     /// `asflip_snapshot_grown`.
     pub material_mass_grown: bool,
-    /// Four atomic u32 words shared by the strict fluid path:
-    /// `(failure_code, first_particle, failure_count, reserved)`. P2G uses
-    /// checked fixed-point atomics and sets this instead of overflowing or
-    /// silently dropping an invalid particle. COPY_SRC lets the CPU make a
-    /// strict fluid step synchronously observable.
-    pub solver_status: wgpu::Buffer,
-    /// Three atomic u32 words (`cfl_scan.wgsl`'s own doc has the full
-    /// derivation): bitcast<u32> of the current substep's max speed, max
-    /// deformation-gradient rate, and max Tait EOS c² numerator, reduced via
-    /// atomicMax. Cleared to zero, dispatched, then read back (COPY_SRC) each
-    /// substep for strict WC-MPM fluids -- the GPU-native, per-substep-
-    /// reactive replacement for the old per-batch CPU-mirror CFL scan.
-    pub cfl_reduction: wgpu::Buffer,
-    /// Regional-substepping Step 1 (2026-08-12, purring-swinging-cookie.md
-    /// Part A section 1): the SAME 4 quantities as `cfl_reduction` above,
-    /// reduced PER-BLOCK instead of globally -- `NUM_BLOCKS * 4` atomic u32
-    /// words, structurally sized from the existing 256-block partition x the
-    /// existing 4-quantity layout, not a chosen size. Populated every
-    /// substep by `cfl_scan.wgsl`; no consumer yet (Step 1 is "populate real
-    /// data," classification is a later step) -- unread today, harmless.
-    pub block_cfl_reduction: wgpu::Buffer,
 }
 
 /// `asflip_snapshot`'s pre-attach size -- large enough to satisfy wgpu's nonzero-buffer
@@ -318,13 +271,6 @@ impl GpuBuffers {
                 | wgpu::BufferUsages::COPY_SRC,
         );
 
-        let particle_batch_snapshot = make_buffer(
-            device,
-            "mpm_particle_batch_snapshot",
-            particle_bytes,
-            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        );
-
         let grid = make_buffer(
             device,
             "mpm_grid",
@@ -347,20 +293,6 @@ impl GpuBuffers {
                     device,
                     &format!("mpm_step_params_{i}"),
                     step_bytes,
-                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                )
-            })
-            .collect();
-
-        // Regional-substepping Step 3 -- pooled 1:1 with step_params_pool, same
-        // reasoning (see `block_dt_pool`'s own field doc).
-        let block_dt_bytes = (NUM_BLOCKS * mem::size_of::<f32>()) as u64;
-        let block_dt_pool: Vec<wgpu::Buffer> = (0..max_substeps + 1)
-            .map(|i| {
-                make_buffer(
-                    device,
-                    &format!("mpm_block_dt_{i}"),
-                    block_dt_bytes,
                     wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 )
             })
@@ -505,13 +437,6 @@ impl GpuBuffers {
             mem::size_of::<GpuThermalParams>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
-        // Real grid-mediated cohesion/surface-tension (CSF) — see GpuCohesionParams' own doc.
-        let cohesion_params = make_buffer(
-            device,
-            "mpm_cohesion_params",
-            mem::size_of::<GpuCohesionParams>() as u64,
-            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        );
         let thermal_scalar_bytes = (grid_res * grid_res * mem::size_of::<f32>()) as u64;
         let thermal_mass = make_buffer(
             device,
@@ -584,40 +509,12 @@ impl GpuBuffers {
             MATERIAL_MASS_PLACEHOLDER_BYTES,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let solver_status = make_buffer(
-            device,
-            "mpm_solver_status",
-            (4 * mem::size_of::<u32>()) as u64,
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        );
-        let cfl_reduction = make_buffer(
-            device,
-            "mpm_cfl_reduction",
-            (4 * mem::size_of::<u32>()) as u64,
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        );
-        // Regional-substepping Step 1 -- same layout as `cfl_reduction` above,
-        // times NUM_BLOCKS (structurally derived, not chosen).
-        let block_cfl_reduction = make_buffer(
-            device,
-            "mpm_block_cfl_reduction",
-            (NUM_BLOCKS * 4 * mem::size_of::<u32>()) as u64,
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-        );
 
         Self {
             particles,
-            particle_batch_snapshot,
             grid,
             materials,
             step_params_pool,
-            block_dt_pool,
             force_fields_params,
             impulse_params,
             sleep_wake_params,
@@ -637,7 +534,6 @@ impl GpuBuffers {
             resolved_rest_v,
             grip_params,
             thermal_params,
-            cohesion_params,
             thermal_mass,
             thermal_temp_old,
             thermal_work,
@@ -651,9 +547,6 @@ impl GpuBuffers {
             material_mass_params,
             material_mass,
             material_mass_grown: false,
-            solver_status,
-            cfl_reduction,
-            block_cfl_reduction,
         }
     }
 
@@ -662,58 +555,6 @@ impl GpuBuffers {
     /// (idempotent under repeated `attach_asflip_gpu` calls). Caller must rebuild any
     /// bind group referencing this buffer afterward (its identity changes) -- see
     /// `SimPipelines::make_resource_bind_group`.
-    /// Ensure one uniform slot per physics substep plus one dedicated sort
-    /// slot. This allocation may grow, but must never truncate CFL-required
-    /// simulation time.
-    pub fn ensure_step_param_capacity(
-        &mut self,
-        device: &wgpu::Device,
-        required_physics_steps: usize,
-    ) -> bool {
-        let required = required_physics_steps
-            .checked_add(1)
-            .expect("GPU step parameter slot count overflow");
-        if self.step_params_pool.len() >= required {
-            return false;
-        }
-        let bytes = mem::size_of::<GpuStepParams>() as u64;
-        let start = self.step_params_pool.len();
-        self.step_params_pool.extend((start..required).map(|i| {
-            make_buffer(
-                device,
-                &format!("mpm_step_params_{i}"),
-                bytes,
-                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            )
-        }));
-        // Grown in the SAME call as step_params_pool, not a second,
-        // independently-callable method -- two parallel pools that can
-        // silently desync in length is exactly the class of bug this whole
-        // subsystem has already produced multiple real instances of (see
-        // `block_dt_pool`'s own field doc).
-        let block_dt_bytes = (NUM_BLOCKS * mem::size_of::<f32>()) as u64;
-        let block_dt_start = self.block_dt_pool.len();
-        self.block_dt_pool
-            .extend((block_dt_start..required).map(|i| {
-                make_buffer(
-                    device,
-                    &format!("mpm_block_dt_{i}"),
-                    block_dt_bytes,
-                    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                )
-            }));
-        true
-    }
-
-    /// Upload this substep's per-block dt plan into pool slot `index` --
-    /// mirrors `upload_step_params_at` exactly. `values` is `[f32; NUM_BLOCKS]`;
-    /// its byte layout already matches WGSL's `array<vec4<f32>, NUM_BLOCKS/4>`
-    /// (see `block_dt_pool`'s own field doc), so no repacking is needed.
-    pub fn upload_block_dt_at(&self, queue: &wgpu::Queue, index: usize, values: &[f32]) {
-        debug_assert_eq!(values.len(), NUM_BLOCKS);
-        queue.write_buffer(&self.block_dt_pool[index], 0, bytemuck::cast_slice(values));
-    }
-
     pub fn grow_asflip_snapshot(&mut self, device: &wgpu::Device, grid_res: usize) {
         if self.asflip_snapshot_grown {
             return;
@@ -786,10 +627,6 @@ impl GpuBuffers {
         queue.write_buffer(&self.thermal_params, 0, bytemuck::bytes_of(params));
     }
 
-    pub fn upload_cohesion_params(&self, queue: &wgpu::Queue, params: &GpuCohesionParams) {
-        queue.write_buffer(&self.cohesion_params, 0, bytemuck::bytes_of(params));
-    }
-
     pub fn upload_resource_params(&self, queue: &wgpu::Queue, params: &GpuResourceParams) {
         queue.write_buffer(&self.resource_params, 0, bytemuck::bytes_of(params));
     }
@@ -800,30 +637,6 @@ impl GpuBuffers {
 
     pub fn upload_material_mass_params(&self, queue: &wgpu::Queue, params: &GpuMaterialMassParams) {
         queue.write_buffer(&self.material_mass_params, 0, bytemuck::bytes_of(params));
-    }
-
-    /// Reset the sticky per-frame numerical failure status before encoding a
-    /// new candidate step. A status is only cleared at this explicit frame
-    /// boundary; shaders never repair the particle state that caused it.
-    pub fn clear_solver_status(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(&self.solver_status, 0, bytemuck::cast_slice(&[0u32; 4]));
-    }
-
-    /// Reset the per-substep CFL reduction to zero before `cfl_scan_main` runs.
-    /// 0u bitcasts to 0.0, a valid, harmless atomicMax starting point for a
-    /// reduction over positive values (see `cfl_reduction`'s own field doc).
-    pub fn clear_cfl_reduction(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(&self.cfl_reduction, 0, bytemuck::cast_slice(&[0u32; 4]));
-    }
-
-    /// Regional-substepping Step 1 -- same convention as `clear_cfl_reduction`
-    /// above, sized for the per-block reduction (`NUM_BLOCKS * 4` words).
-    pub fn clear_block_cfl_reduction(&self, queue: &wgpu::Queue) {
-        queue.write_buffer(
-            &self.block_cfl_reduction,
-            0,
-            bytemuck::cast_slice(&vec![0u32; NUM_BLOCKS * 4]),
-        );
     }
 }
 

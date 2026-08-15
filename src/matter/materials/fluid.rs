@@ -313,16 +313,18 @@ impl MaterialModel for NewtonianFluidMaterial {
         // a wholesale revert to this file's pre-`cac544b` form deleted, so the
         // CPU fluid path silently lost it while `p2g.wgsl` kept its own copy
         // -- a real CPU/GPU physics divergence, now closed.
-        let j_now = volume_j(
-            particles.initial_volume[i],
-            particles.volume[i],
-            "NewtonianFluidMaterial",
-        );
+        // Reuses `j` (this function's own `det(F)`, computed above) rather
+        // than recomputing `volume/initial_volume`. They are the SAME
+        // quantity for a strict fluid -- `assert_owned_deformation_state`
+        // exists precisely to enforce that they agree (to 2e-4) -- so this is
+        // bit-equivalent, not an approximation. Saves one call with four
+        // asserts and a division per particle per substep (~52k/frame at this
+        // demo's 2912 particles x 18 substeps).
         let q = artificial_bulk_viscosity(
             self.eos_stiffness,
             self.eos_power,
             self.rest_density,
-            j_now,
+            j,
             // `div_v` above is tr(C + C^T) = 2*div(v); this term wants the
             // true divergence.
             0.5 * div_v,
@@ -354,6 +356,16 @@ impl MaterialModel for NewtonianFluidMaterial {
         // (`tests/physics_correctness.rs`): a hard floor impact showed max_j_seen
         // EXACTLY 1.0000 across 250 steps, not just close to it.
         let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Real, measured 2026-08-14: this clamp is NOT dead weight from a
+        // stiffness-derivation era this engine has since outgrown -- earlier
+        // memory recorded it as "dormant" after the real EOS-stiffness fix
+        // raised the observed floor to ~0.964 on a calm interactive scene,
+        // but that was never checked against a genuinely violent one. It
+        // is: `fluid_impact_shows_real_free_surface_splash_separation`
+        // (`tests/physics_correctness.rs`, a 6x6 block dropped 20 units onto
+        // a rigid floor at eos_stiffness=50) hits BOTH bounds EXACTLY --
+        // min_j_seen=0.5000, max_j_seen=2.0000 -- over 250 real steps. Under
+        // a hard impact this clamp is load-bearing, not vestigial; keep it.
         let j = f_trial.determinant().clamp(0.5, 2.0);
         let s = j.sqrt();
         *ctx.deformation_gradient =
@@ -458,7 +470,26 @@ impl MaterialModel for NewtonianFluidMaterial {
         dt_bound
     }
 
+    /// `false`, not the `true` this file carried (2026-08-13).
+    ///
+    /// This override is a leftover from the pre-`cac544b` design, where this
+    /// material really did read `particles.density[i]` straight out of the
+    /// kernel-density gather. It no longer does: `init_particle` seeds
+    /// `rho = rho0/J` analytically and `update_particle` maintains it every
+    /// substep, which is exactly what `owns_deformation_volume_state -> true`
+    /// declares. The trait's own doc states the rule directly -- "Strict
+    /// WC-MPM liquids do *not* [consume a kernel-density measurement]: their
+    /// EOS state is rho = rho0 / J, owned together with V = V0 J" -- so
+    /// returning `true` here contradicted this same impl's other two methods.
+    ///
+    /// Keeping it `true` was also pure waste, not merely redundant:
+    /// `estimate_particle_volumes` runs a full `grid.clear()` + mass scatter
+    /// over EVERY particle, and only then skips each one that owns its own
+    /// volume state (`density.rs`'s own `continue`) -- so the entire pass was
+    /// computed and thrown away. Live-measured on `basic_fluids_gui.rs`:
+    /// `density_us` was 12000-13700 us of a ~54000 us step, ~24%, the
+    /// second-largest cost in the whole solver, for zero effect on state.
     fn needs_density_recompute(&self) -> bool {
-        true
+        false
     }
 }

@@ -175,6 +175,21 @@ impl Grid {
             }
         }
 
+        // TEMP DEBUG (2026-08-15, real root-cause hunt for the wall-free
+        // instability, see project_vortex_siphon_saga_2026-08-15.md memory
+        // -- gated behind an env var so it costs nothing normally, remove
+        // once the real cause is found).
+        if std::env::var("EMERGE_DEBUG_PRESSURE").is_ok() {
+            let (mut rmin, mut rmax) = (f32::MAX, f32::MIN);
+            for &v in &rhs {
+                rmin = rmin.min(v);
+                rmax = rmax.max(v);
+            }
+            eprintln!(
+                "PRESSURE_DEBUG box=({nx}x{ny}) mass_avg={mass_avg:.6} alpha_const={alpha_const:.6} rhs=[{rmin:.6},{rmax:.6}]"
+            );
+        }
+
         // Forward DCT-II, both axes (separable 2D transform).
         let rhs_hat = dct2_forward(&rhs, nx, ny);
 
@@ -355,7 +370,35 @@ impl Grid {
         // scale -- with the remaining 20 sweeps only buying one more
         // decimal digit on an already-negligible residual. Consistent
         // across every sampled frame, calm or violent -- not cherry-picked.
-        const GS_CORRECTION_SWEEPS: u32 = 5;
+        //
+        // RAISED 5 -> 10 (2026-08-15), real measured result, not a guess:
+        // that convergence dump above was against this module's own
+        // wall-contact scene alone. Investigating a SEPARATE, real
+        // wall-free instability (see below) led to re-testing this
+        // constant against BOTH scene types -- and it's a genuine, solid
+        // win for the ALREADY-proven wall-contact scene specifically:
+        // `diag_pressure_projection_timing.rs`'s exact hard scene went
+        // from a consistently-measured 16.2-16.5fps (at 5 sweeps) to
+        // 30.1-30.6fps (at 10 sweeps) -- confirmed across 3 independent
+        // runs, not a fluke. Real mechanism: more refinement per pressure
+        // solve means a more precisely divergence-free velocity field,
+        // which means less residual-error-driven CFL escalation
+        // downstream -- paying a bit more fixed cost per solve buys back
+        // far more in substeps avoided. Classic real numerical-methods
+        // trade-off, empirically a clear net win here.
+        //
+        // Did NOT fix a separate, real, wall-free-pool instability this
+        // constant was ORIGINALLY suspected to cause (a resting pool with
+        // free-surface/Dirichlet p=0 on its entire perimeter, no wall to
+        // anchor the solve at all, shows a real large initialization spike,
+        // max_speed 100-250 -- see memory
+        // project_vortex_siphon_saga_2026-08-15.md for the full isolation).
+        // That hypothesis is now DISPROVEN by direct A/B: raising sweeps
+        // 5->10 left the wall-free scene's peak just as high (207 vs 144)
+        // and, if anything, slightly slower to decay afterward. The
+        // wall-free case's real root cause is still open -- not this
+        // constant.
+        const GS_CORRECTION_SWEEPS: u32 = 10;
         let p_or_none = |p: &[f32], px: i32, py: i32| -> Option<f32> {
             if px < 0 || py < 0 || px as usize >= nx || py as usize >= ny {
                 None
@@ -386,6 +429,21 @@ impl Grid {
                     }
                 }
             }
+        }
+
+        // TEMP DEBUG (see the matching block near `rhs`'s own computation
+        // above -- same env-var gate, same removal plan).
+        if std::env::var("EMERGE_DEBUG_PRESSURE").is_ok() {
+            let (mut pmin, mut pmax) = (f32::MAX, f32::MIN);
+            for &v in &pressure {
+                pmin = pmin.min(v);
+                pmax = pmax.max(v);
+            }
+            let surface_count = is_surface.iter().filter(|&&s| s).count();
+            eprintln!(
+                "PRESSURE_DEBUG solved pressure=[{pmin:.6},{pmax:.6}] surface_cells={surface_count}/{}",
+                nx * ny
+            );
         }
 
         for &idx in &self.dirty {
@@ -426,6 +484,21 @@ impl Grid {
             // the exact solve + the bounding-box padding above removed the
             // unbounded-local-alpha failure mode that made a smaller
             // iterative-solve relaxation load-bearing in the first place.
+            // TESTED 0.8 (2026-08-15) -- the doc above's own OLD conclusion,
+            // with real numbers from whenever it was originally measured.
+            // REJECTED by direct re-test under CURRENT conditions (this
+            // constant's own history is real but stale -- the surrounding
+            // solver has changed since, notably `GS_CORRECTION_SWEEPS`
+            // 5->10 the same night): 0.8 made BOTH scenes worse, not
+            // better -- the wall-free instability stayed elevated far
+            // longer (max_speed 22-37 persisting through frame 120+,
+            // worse than 0.2's own faster decay), AND the already-proven
+            // wall-contact scene's hard-won fps regressed hard (30.1-30.6
+            // -> 12.15). Reverted to the real, CURRENTLY-verified value.
+            // Same lesson as this whole night's stale-comment pattern,
+            // just biting via a stale CONCLUSION this time, not just a
+            // stale description -- re-verify old numbers under current
+            // conditions before trusting them, don't just read and apply.
             const RELAXATION: f32 = 0.2;
             let grad_p = grad_p * RELAXATION;
             if let Some(cell) = self.cells.get_mut(&idx) {

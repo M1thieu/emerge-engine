@@ -165,7 +165,6 @@ impl GpuSimulation {
             &self.device,
             &self.buffers,
             &self.buffers.step_params_pool[0],
-            &self.buffers.block_dt_pool[0],
         );
         let mut encoder = self
             .device

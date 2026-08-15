@@ -49,7 +49,7 @@ struct ImpulseEntry {
 
 struct ImpulseParams {
     count:          u32,
-    reserved_velocity_slot: f32, // legacy ABI slot; intentionally unused
+    vel_limit:      f32,   // grid_cell_size / min_dt — hard cap per particle
     particle_count: u32,
     _pad:                 u32,
     entries:        array<ImpulseEntry, 16>,
@@ -80,6 +80,11 @@ fn apply_impulses_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             touched = true;
         }
+    }
+
+    let spd = length(vel);
+    if spd > impulse_params.vel_limit && spd > 0.0 {
+        vel *= impulse_params.vel_limit / spd;
     }
 
     particles[i].v = vel;

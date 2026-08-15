@@ -90,9 +90,9 @@ use layouts::{
 // See passes.rs's own doc.
 mod passes;
 use passes::{
-    build_asflip_pipeline, build_cfl_scan_pipeline, build_contact_resolve_pipelines,
-    build_g2p_and_update_pipelines, build_impulse_pipeline, build_p2g_and_grid_pipelines,
-    build_resource_pipelines, build_sort_pipelines, build_thermal_pipelines,
+    build_asflip_pipeline, build_contact_resolve_pipelines, build_g2p_and_update_pipelines,
+    build_impulse_pipeline, build_p2g_and_grid_pipelines, build_resource_pipelines,
+    build_sort_pipelines, build_thermal_pipelines,
 };
 
 /// All compiled compute pipelines for one GpuSimulation instance.
@@ -116,13 +116,6 @@ pub struct SimPipelines {
     /// node (written by `p2g` immediately before this runs). See `p2g.wgsl`'s
     /// `gather_contact_points_main` doc for the full rationale.
     pub gather_contact_points: wgpu::ComputePipeline,
-    /// Real, dense fixed-point decode (mass+momentum, main+grip grid) -- see
-    /// `grid_decode_main`'s own doc (`grid_update.wgsl`) for why this had to
-    /// become its own pass (a genuine cross-thread data race otherwise).
-    pub grid_decode: wgpu::ComputePipeline,
-    /// Real grid-mediated cohesion/surface-tension (CSF) -- see
-    /// `grid_cohesion_main`'s own doc (`grid_update.wgsl`).
-    pub grid_cohesion: wgpu::ComputePipeline,
     pub grid_update: wgpu::ComputePipeline,
     /// Gather-only: writes v + velocity_gradient. No F update or plasticity.
     pub g2p: wgpu::ComputePipeline,
@@ -163,12 +156,6 @@ pub struct SimPipelines {
     /// survive from the gather stage to the position-write stage, and `Particle` has no
     /// spare capacity for a second stored velocity).
     pub g2p_asflip_fused: wgpu::ComputePipeline,
-    /// Per-substep GPU-native CFL reduction for strict WC-MPM fluids -- see
-    /// `cfl_scan.wgsl`'s own doc for the real crash this fixes (basic_fluids_gpu.rs,
-    /// 2026-08-08: J up to 34653 under real gravity, root-caused to the OLD per-
-    /// batch-not-per-substep CPU-mirror CFL scan). Dispatched at the end of every
-    /// substep for strict-fluid scenes only, feeding the NEXT substep's dt.
-    pub cfl_scan: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
     /// Group 1 — contact subsystem, see the module doc comment above for why this is a
     /// second layout rather than more entries in `bind_group_layout`.
@@ -249,14 +236,13 @@ impl SimPipelines {
             particle_sort_scatter,
         ) = build_sort_pipelines(device, &pipeline_layout, block_consts);
 
-        let (grid_clear, p2g, gather_contact_points, grid_decode, grid_cohesion, grid_update) =
-            build_p2g_and_grid_pipelines(
-                device,
-                &pipeline_layout,
-                block_consts,
-                contact_block_consts,
-                grid_update_consts,
-            );
+        let (grid_clear, p2g, gather_contact_points, grid_update) = build_p2g_and_grid_pipelines(
+            device,
+            &pipeline_layout,
+            block_consts,
+            contact_block_consts,
+            grid_update_consts,
+        );
 
         let (g2p, particles_update, force_fields) =
             build_g2p_and_update_pipelines(device, &pipeline_layout, ff_consts);
@@ -265,14 +251,6 @@ impl SimPipelines {
         // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's own doc for why this
         // is one fused kernel rather than two, and SimPipelines::g2p_asflip_fused's doc.
         let g2p_asflip_fused = build_asflip_pipeline(device, &pipeline_layout);
-
-        // Per-substep GPU-native CFL reduction for strict WC-MPM fluids -- see
-        // cfl_scan.wgsl's own doc and SimPipelines::cfl_scan's field doc.
-        // `block_consts` (2026-08-12): regional-substepping Step 1 -- reuses
-        // the SAME override this module already threads into particle_sort/
-        // p2g/grid_update, needed for cfl_scan's own new per-block reduction
-        // (see purring-swinging-cookie.md Part A section 1).
-        let cfl_scan = build_cfl_scan_pipeline(device, &pipeline_layout, block_consts);
 
         let impulse_bind_group_layout = build_impulse_bind_group_layout(device);
         let apply_impulses = build_impulse_pipeline(device, &impulse_bind_group_layout);
@@ -298,8 +276,6 @@ impl SimPipelines {
             grid_clear,
             p2g,
             gather_contact_points,
-            grid_decode,
-            grid_cohesion,
             grid_update,
             g2p,
             particles_update,
@@ -316,7 +292,6 @@ impl SimPipelines {
             resource_normalize_laplacian,
             resource_g2p,
             g2p_asflip_fused,
-            cfl_scan,
             bind_group_layout,
             contact_bind_group_layout,
             thermal_bind_group_layout,

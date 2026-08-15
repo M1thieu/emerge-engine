@@ -17,7 +17,7 @@ pub use handle::{MaterialHandle, ParticleGroup};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
-pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound, deformation_gradient_cfl_bound};
+pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -61,6 +61,15 @@ pub struct Simulation {
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) — run automatically each substep.
     scalar_fields: Vec<ScalarDiffusionField>,
+    /// Simulation time accumulated across this `step()`'s substeps, waiting to
+    /// be handed to the diffusion operators in ONE application -- see
+    /// `do_substep`'s own note for the stability derivation that makes this
+    /// correct (and why per-substep sub-cycling was ~31,000x redundant).
+    pending_diffusion_dt: f32,
+    /// Index of the substep currently running within this `step()`. Lets
+    /// per-FRAME work (validation scans, phase rules) run once instead of
+    /// once per substep -- see `do_substep`'s own notes.
+    substep_index_in_frame: u32,
     /// Nonlocal Granular Fluidity field (see `energy::thermodynamics::
     /// granular_fluidity` module doc) -- `None` (default) for every scene
     /// that doesn't opt in, same zero-cost-when-unused property `thermal`

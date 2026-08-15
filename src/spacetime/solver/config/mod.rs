@@ -82,6 +82,22 @@ pub struct SimConfig {
     /// their own update by one attempt -- fine for a fluid-only scene (this fix's proven
     /// case), not yet verified for a mixed scene.
     pub fluid_step_retry_enabled: bool,
+    /// Evaluate `add_phase_rule` predicates once per `step()` instead of once
+    /// per substep. `false` (default) keeps the documented per-substep
+    /// contract exactly.
+    ///
+    /// Opt-in because it is only equivalent when a rule's inputs cannot change
+    /// WITHIN a frame. That is true for every rule this engine ships today --
+    /// they are thermodynamic predicates (freeze/boil/melt), and temperature
+    /// advances once per `step()` (the diffusion operators run at their own
+    /// stable rate, see `Simulation::step`), so re-testing them 18x per frame
+    /// re-reads identical inputs 17 times. It is NOT true for a rule keyed on
+    /// something that genuinely varies per substep (velocity, position), which
+    /// is exactly why this is a caller's choice rather than a silent change.
+    ///
+    /// Live-measured on `basic_fluids_gui.rs` (2912 particles, ~18 substeps):
+    /// the phase-rule scan was ~3400-4300 us of a ~29000 us step (~12%).
+    pub phase_rules_once_per_step: bool,
     /// PROACTIVE companion to `fluid_step_retry_enabled` (2026-08-08): a strict fluid
     /// particle within `boundary_thickness` cells of any wall (the SAME zone the slip
     /// clamp already treats specially -- no new distance invented) gets its own CFL
@@ -472,6 +488,7 @@ impl Default for SimConfig {
             particle_mass: 1.0,
             max_substeps_per_step: 64,
             fluid_step_retry_enabled: false,
+            phase_rules_once_per_step: false,
             fluid_step_retry_threshold: 0.5,
             fluid_regional_substepping_gpu_enabled: false,
             fluid_regional_substepping_fine_tier_margin: 8.0,

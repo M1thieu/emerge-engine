@@ -5,7 +5,9 @@
 //! by the GPU solver's own CFL scan (`systems::gpu::solver::step`), which is
 //! why the latter two stay `pub(crate)` and re-exported from `solver/mod.rs`.
 
-use glam::{Mat2, Vec2};
+#[cfg(feature = "gpu")]
+use glam::Mat2;
+use glam::Vec2;
 use rayon::prelude::*;
 
 use super::{MaterialRegistry, SimConfig};
@@ -54,12 +56,24 @@ pub(crate) fn choose_substep_dt(
         .fold(
             || (0.0f32, max_dt, 1.0f32),
             |(mut max_speed, mut min_mat_dt, mut near_wall_scale), i| {
+                // Real, small (2026-08-14) solver-core tightening: this loop
+                // body used to call `affine_cfl_speed_contribution` and
+                // `deformation_gradient_cfl_bound` separately below, each
+                // independently recomputing the SAME Frobenius norm of
+                // `velocity_gradient[i]` -- two sqrt where one suffices.
+                // Computed once here and reused by both; bit-identical
+                // result (same formula, same operands), not an approximation.
+                // Left the two `pub(crate)` functions themselves untouched
+                // (their own doc: also called from the GPU CFL scan's CPU
+                // side) so this stays a local, self-contained change with no
+                // GPU-path blast radius.
+                let grad_norm = (particles.velocity_gradient[i].x_axis.length_squared()
+                    + particles.velocity_gradient[i].y_axis.length_squared())
+                .sqrt();
+
                 let mut s = particles.v[i].length();
                 if config.cfl_include_affine_speed {
-                    s += affine_cfl_speed_contribution(
-                        &particles.velocity_gradient[i],
-                        config.grid_cell_size,
-                    );
+                    s += grad_norm * AFFINE_CFL_STENCIL_CORNER_DISTANCE * config.grid_cell_size;
                 }
                 max_speed = max_speed.max(s);
                 // Proactive near-wall tightening for strict fluids (see
@@ -109,10 +123,16 @@ pub(crate) fn choose_substep_dt(
                 // dimensionless velocity-gradient increment even when affine velocity
                 // contribution is disabled for the advection CFL; otherwise an Euler
                 // F update can invert within a nominally velocity-safe substep.
-                let deformation_dt = deformation_gradient_cfl_bound(
-                    &particles.velocity_gradient[i],
-                    config.cfl_coefficient.min(0.5),
-                );
+                // Reuses `grad_norm` computed above instead of calling
+                // `deformation_gradient_cfl_bound` (which would recompute the
+                // identical norm) -- same formula as that function's own body,
+                // bit-identical result.
+                let deformation_coefficient = config.cfl_coefficient.min(0.5);
+                let deformation_dt = if grad_norm.is_finite() && grad_norm > f32::EPSILON {
+                    deformation_coefficient / grad_norm
+                } else {
+                    f32::INFINITY
+                };
                 if deformation_dt.is_finite() && deformation_dt > 0.0 {
                     min_mat_dt = min_mat_dt.min(deformation_dt);
                 }
@@ -270,27 +290,26 @@ fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) -> bool {
     x.x < t || x.x > hi || x.y < t || x.y > hi
 }
 
-pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
-    // The APIC affine matrix C encodes the local velocity gradient.
-    // The farthest point in the quadratic B-spline 3×3 stencil is at 1.5 cells per axis,
-    // so its corner distance is 1.5*√2 cells — the effective maximum affine speed contribution.
-    const STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::consts::SQRT_2;
-    let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
-    grad_norm * STENCIL_CORNER_DISTANCE * cell_width
-}
+// The APIC affine matrix C encodes the local velocity gradient.
+// The farthest point in the quadratic B-spline 3×3 stencil is at 1.5 cells per axis,
+// so its corner distance is 1.5*√2 cells — the effective maximum affine speed contribution.
+// Hoisted to module scope (2026-08-14, was local to `affine_cfl_speed_contribution`)
+// so `choose_substep_dt`'s own fold can share it too, without duplicating the
+// magic number, when it inlines this same formula against a pre-shared
+// Frobenius norm -- see that call site's own comment.
+pub(crate) const AFFINE_CFL_STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::consts::SQRT_2;
 
-/// Upper bound for a deformation-gradient update.  If
-/// `dt * ||grad(v)||_F < 1`, `I + dt grad(v)` cannot become singular; using a
-/// 0.5 safety factor also resolves the local strain rate rather than merely
-/// avoiding inversion.  This remains active independently of APIC/advection
-/// CFL policy because it protects the kinematic state, not particle travel.
-pub(crate) fn deformation_gradient_cfl_bound(c: &Mat2, coefficient: f32) -> f32 {
-    let rate = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
-    if rate.is_finite() && rate > f32::EPSILON {
-        coefficient / rate
-    } else {
-        f32::INFINITY
-    }
+// Only called from `systems::gpu::solver::step`'s own substep loop since
+// 2026-08-14: the CPU solver's own `choose_substep_dt` used to call this
+// directly too, but now inlines the same math against a norm it computes
+// once and shares (see that fold's own comment) rather than recomputing it
+// separately. Real, disclosed feature-gate (matches the existing convention
+// already on this function's own re-export in `solver::mod`, not a new
+// one) -- without it, a build without `gpu` correctly has no caller.
+#[cfg(feature = "gpu")]
+pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
+    let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
+    grad_norm * AFFINE_CFL_STENCIL_CORNER_DISTANCE * cell_width
 }
 
 #[cfg(test)]

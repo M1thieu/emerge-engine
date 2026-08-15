@@ -44,7 +44,19 @@ const DIG_RADIUS: f32 = 4.0;
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 1.0e-4,
-        max_substeps_per_step: 150,
+        // 150 -> 400 (2026-08-15): live-measured headless via
+        // `diag_pressure_projection_timing`, this exact scene's real first-
+        // contact violent transient (water starting ~2 cells from the wall)
+        // now genuinely needs slightly more than 150 substeps in its worst
+        // single frame (~frame 20) before it settles -- confirmed bounded,
+        // not divergent: a 2000-cap run completes all 120 frames cleanly,
+        // recovering to a cheap ~15ms/frame steady state immediately after
+        // the peak (avg 16.5fps over the full run, dominated by that one
+        // transient). 400 gives real headroom over the observed peak without
+        // masking a genuine runaway the way an unbounded cap would (this
+        // strict-fluid path still fails loud, see step.rs's own panic doc,
+        // if 400 is ever insufficient).
+        max_substeps_per_step: 400,
         material_cfl_coefficient: 0.1,
         cfl_include_affine_speed: false,
         fluid_pressure_iterations: 1,

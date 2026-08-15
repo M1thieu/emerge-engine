@@ -18,7 +18,7 @@ use crate::solver::config::SimConfig;
 ///   offset 12: kernel_d_inverse      f32  (always 4.0 — quadratic B-spline)
 ///   offset 16: gravity        `vec2<f32>`  (8 bytes; 8-byte aligned in WGSL ✓)
 ///   offset 24: boundary_thickness u32
-///   offset 28: reserved_velocity_slot f32 (legacy ABI padding; always zero)
+///   offset 28: vel_limit      f32
 ///   offset 32: sleep_threshold f32  (0.0 = sleep/wake disabled, SimConfig default)
 ///   offset 36: contact_friction f32 (SimConfig::contact_friction, GPU port — repurposes
 ///                             the first of 3 original pad slots, see field doc)
@@ -47,14 +47,7 @@ pub struct GpuStepParams {
     pub kernel_d_inverse: f32,
     pub gravity: glam::Vec2, // SimConfig::gravity — supports angled/planetary gravity
     pub boundary_thickness: u32,
-    /// Real max particle speed from the PREVIOUS batch (one-batch-lagged) --
-    /// repurposes the former "always zero" legacy ABI slot exactly like
-    /// `contact_friction`/`grid_cell_size`/`contact_active` already repurpose
-    /// the other 3 original pad slots below. Read ONLY by `cfl_scan.wgsl`'s
-    /// near-wall gate (`SimConfig::fluid_near_wall_compression_mach_margin`'s
-    /// GPU port, 2026-08-11) -- every other shader mirrors this field but
-    /// never reads it, same as the other repurposed slots.
-    pub reserved_velocity_slot: f32,
+    pub vel_limit: f32,       // grid_cell_size / sub_dt
     pub sleep_threshold: f32, // SimConfig::sleep_threshold — 0.0 disables sleep/wake entirely
     /// Multi-field contact (GPU port) — `SimConfig::contact_friction`, read by
     /// `resolve_contact.wgsl`. Repurposes the first of the original 3 `_pad` u32
@@ -77,7 +70,6 @@ impl GpuStepParams {
         sub_dt: f32,
         particle_count: usize,
         contact_active: bool,
-        last_max_particle_speed: f32,
     ) -> Self {
         Self {
             grid_res: config.grid_res as u32,
@@ -86,7 +78,7 @@ impl GpuStepParams {
             kernel_d_inverse: crate::solver::config::KERNEL_D_INVERSE,
             gravity: config.gravity,
             boundary_thickness: config.boundary_thickness as u32,
-            reserved_velocity_slot: last_max_particle_speed,
+            vel_limit: config.grid_cell_size / sub_dt,
             sleep_threshold: config.sleep_threshold,
             contact_friction: config.contact_friction,
             grid_cell_size: config.grid_cell_size,

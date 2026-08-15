@@ -324,8 +324,13 @@ impl MaterialModel for BinghamFluidMaterial {
         dt_bound
     }
 
+    /// `false` -- same reasoning and same 2026-08-13 fix as
+    /// `NewtonianFluidMaterial::needs_density_recompute`; see that method's
+    /// own doc. This material owns `rho = rho0/J` through `init_particle` /
+    /// `update_particle` and declares it via `owns_deformation_volume_state`,
+    /// so the kernel-density gather was computed for it and then discarded.
     fn needs_density_recompute(&self) -> bool {
-        true
+        false
     }
 }
 

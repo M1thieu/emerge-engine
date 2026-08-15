@@ -33,33 +33,6 @@ struct Cell {
     _pad:     f32,
 }
 
-struct MaterialParams {
-    model:                   u32,
-    lambda:                  f32,
-    mu:                      f32,
-    hardening_exponent:      f32,
-    compression_limit:       f32,
-    stretch_limit:           f32,
-    rest_density:            f32,
-    eos_stiffness:           f32,
-    eos_power:               f32,
-    dynamic_viscosity:       f32,
-    volume_ratio_min:        f32,
-    volume_ratio_max:        f32,
-    dp_h0:                   f32,
-    dp_h1:                   f32,
-    dp_h2:                   f32,
-    dp_h3:                   f32,
-    active_stress_coeff:     f32,
-    hardening_modulus:       f32,
-    thermal_viscosity_coeff: f32,
-    thermal_expansion:       f32,
-    pressure_floor:          f32,
-    bulk_viscosity:          f32,
-    critical_shear_rate:     f32,
-    cohesion_coeff:          f32,
-}
-
 struct StepParams {
     grid_res:           u32,
     particle_count:     u32,
@@ -67,7 +40,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    reserved_velocity_slot: f32,
+    vel_limit:          f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -86,21 +59,10 @@ const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 const NUM_FLOOR:            f32 = 1e-6;
-const MAX_MATERIALS:         u32 = {{MAX_MATERIALS}}u;
 
 @group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
-@group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
-// Regional-substepping (`purring-swinging-cookie.md` Part A) — per-block dt plan for
-// THIS substep. `<= 0.0` means "coarse tier, skip the full gather this substep" (see
-// the tier gate below); feature-off path fills every block with step_params.dt, making
-// the gate provably always-false (see `block_dt_pool`'s own Rust-side doc). NUM_BLOCKS
-// (256, matching particle_sort.wgsl's own partition) is a fixed engine constant, not
-// scene-configurable -- packed array<vec4<f32>,64> because WGSL's uniform address
-// space requires 16-byte-stride elements (see block_dt_at below).
-const NUM_BLOCKS_OVER_4: u32 = 64u;
-@group(0) @binding(12) var<uniform>            block_dt:    array<vec4<f32>, 64>;
 // Multi-field contact (GPU port) — resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
 // contact-active field wasn't found (see resolve_contact.wgsl's resolve_cell doc) —
@@ -108,25 +70,6 @@ const NUM_BLOCKS_OVER_4: u32 = 64u;
 // grip_velocity_at/rest_velocity_at fallback exactly.
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v: array<vec2<f32>>;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v: array<vec2<f32>>;
-@group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
-
-// Regional-substepping -- duplicated from particle_sort.wgsl's own `block_index`
-// (this codebase's established convention: no cross-file WGSL #include, every
-// shader redeclares what it needs; cfl_scan.wgsl's own copy is the same pattern).
-const NUM_BLOCKS_PER_DIM: u32 = 16u;
-fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
-    let cell_x = clamp(u32(pos.x), 0u, grid_res - 1u);
-    let cell_y = clamp(u32(pos.y), 0u, grid_res - 1u);
-    let block_size = (grid_res + NUM_BLOCKS_PER_DIM - 1u) / NUM_BLOCKS_PER_DIM;
-    let block_x = min(cell_x / block_size, NUM_BLOCKS_PER_DIM - 1u);
-    let block_y = min(cell_y / block_size, NUM_BLOCKS_PER_DIM - 1u);
-    return block_y * NUM_BLOCKS_PER_DIM + block_x;
-}
-
-fn block_dt_at(b: u32) -> f32 {
-    let v = block_dt[b / 4u];
-    return v[b % 4u];
-}
 
 fn bspline_w(d: f32) -> f32 {
     let a = abs(d);
@@ -135,14 +78,40 @@ fn bspline_w(d: f32) -> f32 {
     return 0.0;
 }
 
+// Free-surface velocity extrapolation for an UNTOUCHED grid node -- mirrors
+// CPU's `Grid::velocity_at_or_extrapolated` (`a236fef`, 2026-08-13). An
+// untouched node's raw `cell.momentum` is a stale zero, not a real velocity
+// -- gathering it reads as an artificial jump across a free-surface
+// particle's own stencil, which LOOKS like stretching even in true free
+// fall (where div(v) must be exactly 0). Verified live: free fall's own J
+// went to exactly `[1.000,1.000]`, bit-for-bit matching this fix's own
+// CPU-side measured result. Slip wall on the extrapolated value (matching
+// CPU's `apply_slip_wall_velocity`) so a near-boundary cell doesn't feed
+// back a velocity that ignores the wall.
+fn extrapolated_boundary_velocity(
+    particle_v: vec2<f32>,
+    cx: i32,
+    cy: i32,
+    res: i32,
+    gravity: vec2<f32>,
+    dt: f32,
+    boundary_thickness: u32,
+) -> vec2<f32> {
+    var v = particle_v + gravity * dt;
+    let bt = i32(boundary_thickness);
+    if cx < bt          && v.x < 0.0 { v.x = 0.0; }
+    if cx >= res - bt   && v.x > 0.0 { v.x = 0.0; }
+    if cy < bt          && v.y < 0.0 { v.y = 0.0; }
+    if cy >= res - bt   && v.y > 0.0 { v.y = 0.0; }
+    return v;
+}
+
 @compute @workgroup_size(64, 1, 1)
 fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p_idx = gid.x;
     if p_idx >= step_params.particle_count { return; }
-    if atomicLoad(&solver_status[0]) != 0u { return; }
 
     let p   = particles[p_idx];
-    let mat = materials[p.material_id];
     let res = step_params.grid_res;
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
@@ -176,17 +145,6 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if !should_wake { return; }
         particles[p_idx].sleeping = 0u;
     }
-
-    // Regional-substepping tier gate (`purring-swinging-cookie.md` Part A) --
-    // a coarse-tier particle's own state isn't resynced this substep (it's
-    // between fine-dt ticks); P2G still scattered its steady-state
-    // contribution unconditionally (p2g.wgsl needs no changes -- see the
-    // plan's own Section 3), so skipping the gather here is safe, mirroring
-    // the sleeping early-return immediately above. Feature-off path fills
-    // every block with step_params.dt (see block_dt's own binding doc), so
-    // this is provably always-false when the feature is disabled.
-    let b = block_index(p.x, res);
-    if block_dt_at(b) <= 0.0 { return; }
 
     // Dirichlet/kinematic anchor (`Particle::pinned`): force v=0 and
     // velocity_gradient=0 instead of gathering from the grid -- mirrors
@@ -232,11 +190,18 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             let node_idx = u32(cy) * res + u32(cx);
             let cell   = grid[node_idx];
-            let cell_v = select(
+            let touched_v = select(
                 cell.momentum,
                 select(resolved_rest_v[node_idx], resolved_grip_v[node_idx], is_grip),
                 contact_active,
             );
+            // Free-surface velocity extrapolation for untouched nodes -- see
+            // `extrapolated_boundary_velocity`'s own doc for the full account.
+            let extrap_v = extrapolated_boundary_velocity(
+                p.v, cx, cy, i32(res), step_params.gravity, step_params.dt,
+                step_params.boundary_thickness,
+            );
+            let cell_v = select(extrap_v, touched_v, cell.mass > NUM_FLOOR);
 
             new_v       += w * cell_v;
             B_col0      += w * cell_v * cell_dist.x;
@@ -245,15 +210,25 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
+    // Velocity clamp: !(spd <= limit) also catches NaN (NaN <= x = false).
+    // Inf guard: if spd=Inf, inv=0, then Inf×0=NaN — zero out via select.
+    let spd = length(new_v);
+    if !(spd <= step_params.vel_limit) {
+        let inv = step_params.vel_limit / spd;
+        new_v = select(new_v * inv, vec2<f32>(0.0), !(inv > 0.0));
+    }
+
     // C = B · D_inverse (APIC affine velocity gradient)
-    // CFL selects the timestep; this gather does not alter velocity or C.
+    // No C-clamp: CPU gather_grid_to_particles has none. Clamping C at 0.5*vel_limit
+    // fires at natural impact velocities (C ~ 6v) and under-deforms F, killing elastic bounce.
+    // The velocity clamp above already bounds the energy; CFL bounds the timestep.
     let C = mat2x2<f32>(B_col0, B_col1) * step_params.kernel_d_inverse;
+
+    let density = max(new_density, NUM_FLOOR);
+    let volume  = p.mass / density;
 
     particles[p_idx].v                 = new_v;
     particles[p_idx].velocity_gradient = C;
-    if mat.model != 1u {
-        let density = max(new_density, NUM_FLOOR);
-        particles[p_idx].density = density;
-        particles[p_idx].volume = p.mass / density;
-    }
+    particles[p_idx].density           = density;
+    particles[p_idx].volume            = volume;
 }

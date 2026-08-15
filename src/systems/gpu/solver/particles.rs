@@ -38,10 +38,6 @@ impl GpuSimulation {
     /// pre-transition state, silently erasing the FIRST call's material_id change.
     /// `remove_particles` already uploads immediately (it has to, since it
     /// reallocates); this keeps `phase_transition` consistent with that contract.
-    /// The target material's `init_particle` also runs for every transitioned
-    /// particle, exactly as it does on CPU.  In particular, a strict liquid
-    /// establishes its conserved `V0 = m/rho0`, `V = V0 J`, and `rho = rho0/J`
-    /// state instead of inheriting a solid's kernel volume.
     pub fn phase_transition<F>(&mut self, predicate: F, new_material_id: u32)
     where
         F: Fn(&Particle) -> bool,
@@ -60,7 +56,6 @@ impl GpuSimulation {
                 if let (true, Some(cp)) = (latent_heat != 0.0, heat_capacity) {
                     p.temperature -= latent_heat / cp;
                 }
-                self.registry.get(new_material_id).init_particle(p);
             }
         }
         self.buffers.upload_particles(&self.queue, &self.particles);

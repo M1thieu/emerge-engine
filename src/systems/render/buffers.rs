@@ -80,6 +80,7 @@ pub(super) struct RenderBuffers {
     pub surface_params_buf: wgpu::Buffer,
     pub surface_render_params_buf: wgpu::Buffer,
     pub surface_material_mass_buf: wgpu::Buffer,
+    pub surface_moments_buf: wgpu::Buffer,
     pub phase_b_atomic_buf: wgpu::Buffer,
     pub phase_b_temp_atomic_buf: wgpu::Buffer,
     pub phase_b_temp_float_buf: wgpu::Buffer,
@@ -200,6 +201,10 @@ impl RenderBuffers {
         // by `ensure_surface_capacity`. COPY_SRC: diagnostic/test readback,
         // same real reason `surface_a_buf` has it.
         let surface_material_mass_buf = placeholder_buffer(device, "surface_material_mass", true);
+        // Yu & Turk neighbourhood moments -- sized off `grid_res` (not
+        // `surface_res`) and grown by `ensure_surface_capacity` alongside the
+        // surface buffers. Same minimal-placeholder-then-grow convention.
+        let surface_moments_buf = placeholder_buffer(device, "surface_moments", false);
 
         // Two-phase extension's own phase-B buffers -- same minimal-
         // placeholder-then-grow convention as phase A's own buffers above.
@@ -257,8 +262,10 @@ impl RenderBuffers {
         });
         let wave_params_buf = uniform_buffer::<WaveStepParams>(device, "wave_params");
         // Real temporal-disturbance history -- see `wave_density_prev_buf`'s
-        // own doc. Starts all-zero (WebGPU guarantee), same real one-time
-        // "body just appeared" excitation bias as the wave field itself.
+        // own doc. Starts all-zero (WebGPU guarantee), but the render call
+        // seeds it from the real settled density before the first `wave_step`
+        // ever reads it (`wave_prev_seeded`), so this zero is never actually
+        // read as a "previous" density.
         let wave_density_prev_buf = placeholder_buffer(device, "wave_density_prev", true);
 
         // Real hysteresis visibility state -- single persistent buffer,
@@ -322,6 +329,7 @@ impl RenderBuffers {
             surface_params_buf,
             surface_render_params_buf,
             surface_material_mass_buf,
+            surface_moments_buf,
             phase_b_atomic_buf,
             phase_b_temp_atomic_buf,
             phase_b_temp_float_buf,

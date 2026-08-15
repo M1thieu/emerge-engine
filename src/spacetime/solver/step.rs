@@ -108,6 +108,7 @@ impl Simulation {
         // Without this loop, the FixedStepController accounts for config.dt per call but the
         // simulation only advances sub_dt — causing it to run orders of magnitude too slowly.
         let step_start = std::time::Instant::now();
+        self.substep_index_in_frame = 0;
         let mut remaining = self.config.dt;
         let mut substeps_taken = 0;
         self.last_vel_clamp_count = 0;
@@ -312,6 +313,22 @@ impl Simulation {
         // query method called after this (`particles_near`/`count_near`/
         // `particles_knn`/`region_state`) does the real rebuild, lazily, via
         // `ensure_spatial_hash_fresh`.
+        // Diffusion operators, applied ONCE for all the time this step
+        // advanced -- see `do_substep`'s own note for the stability
+        // derivation. Runs after the substep loop so temperature/scalar
+        // fields see this step's final particle state.
+        let t_diff = std::time::Instant::now();
+        let diffusion_dt = std::mem::take(&mut self.pending_diffusion_dt);
+        if diffusion_dt > 0.0 {
+            if let Some(thermal) = &mut self.thermal {
+                thermal.apply(&mut self.particles, diffusion_dt);
+            }
+            for field in &mut self.scalar_fields {
+                field.apply(&mut self.particles, diffusion_dt);
+            }
+        }
+        self.last_timing.thermal_us += t_diff.elapsed().as_micros() as u64;
+
         let t_hash = std::time::Instant::now();
         self.spatial_hash_dirty.set(true);
         self.last_timing.spatial_hash_us = t_hash.elapsed().as_micros() as u64;
@@ -538,10 +555,31 @@ impl Simulation {
         // Running pre-P2G (not post) means a bad particle from a previous substep is
         // fixed before its momentum enters the grid — no NaN cascade possible.
         let t_pre = std::time::Instant::now();
+        // The two branches below are NOT the same kind of work, and only one
+        // of them has to run every substep:
+        //
+        // * `project_particle_state_to_admissible` MUTATES -- it repairs a bad
+        //   particle before its momentum can enter the grid scatter, which is
+        //   exactly the "no NaN cascade possible" guarantee this pre-P2G
+        //   placement exists for. Stays per-substep, unconditionally.
+        // * `assert_owned_deformation_state` only VALIDATES -- it panics on an
+        //   inconsistent strict-fluid state and changes nothing otherwise. The
+        //   real per-substep safety for those materials is enforced inside
+        //   their own `update_particle` (the J admissibility assert), so this
+        //   scan is a redundant second opinion. Running it once per FRAME
+        //   still catches any corruption within that frame, just at the frame
+        //   boundary instead of mid-substep.
+        //
+        // Live-measured: this scan was `project_us` ~2900 us of a ~29000 us
+        // step (10%), and in a fluid-only scene every particle takes the
+        // assert branch.
+        let validate_owned_state = self.substep_index_in_frame == 0;
         for i in 0..self.active_count {
             let material = self.materials.get(self.particles.material_id[i]);
             if material.owns_deformation_volume_state() {
-                assert_owned_deformation_state(&self.particles, i, &self.config);
+                if validate_owned_state {
+                    assert_owned_deformation_state(&self.particles, i, &self.config);
+                }
             } else if self.config.project_invalid_state
                 && project_particle_state_to_admissible(&mut self.particles, i, &self.config)
             {
@@ -1032,12 +1070,27 @@ impl Simulation {
 
         // ── Thermal / scalar diffusion ────────────────────────────────────────
         let t4 = std::time::Instant::now();
-        if let Some(thermal) = &mut self.thermal {
-            thermal.apply(&mut self.particles, sub_dt);
-        }
-        for field in &mut self.scalar_fields {
-            field.apply(&mut self.particles, sub_dt);
-        }
+        // Thermal / scalar diffusion are SEPARATE operators from the momentum
+        // solve, with their own -- far laxer -- explicit stability limit, so
+        // they are accumulated here and applied ONCE per `step()` with the
+        // total advanced time (see `flush_diffusion_operators`). This is
+        // ordinary operator splitting at each operator's own stable rate, not
+        // an approximation introduced for speed.
+        //
+        // Quantified for this engine's own water config (`conductivity 0.6`,
+        // `rho 1000`, `c_p 4182`, `dx 0.01`): `alpha_grid = 0.0014 1/s`, so
+        // `ThermalConfig::stability_dt = 1/(4*alpha) = 174 SECONDS`. The
+        // acoustic CFL drives `sub_dt` to ~0.0055 s, i.e. diffusion was being
+        // sub-cycled ~31,000x more often than its own stability requires;
+        // even a full 0.1 s frame sits 1743x inside the limit. Live-measured
+        // cost of that waste: `thermal_us` was ~7500 us of a ~34000 us step
+        // (22%, the second-largest phase).
+        //
+        // `stability_dt` is still folded into `choose_substep_dt`, so a scene
+        // whose diffusion genuinely IS the bottleneck still clamps the whole
+        // substep and this stays correct for it too.
+        self.pending_diffusion_dt += sub_dt;
+        self.substep_index_in_frame = self.substep_index_in_frame.saturating_add(1);
         // Nonlocal Granular Fluidity (see `energy::thermodynamics::
         // granular_fluidity` module doc) -- same one-substep-lag placement
         // as thermal/scalar diffusion above: computed here from THIS
@@ -1080,25 +1133,26 @@ impl Simulation {
 
         // ── Phase rules + sleep scoring ───────────────────────────────────────
         let t5 = std::time::Instant::now();
-        if !self.phase_rules.is_empty() {
+        // Per-substep by default (CLAUDE.md's documented contract). A scene
+        // whose rules are thermodynamic -- which cannot change within a frame,
+        // since diffusion advances once per `step()` -- can opt into
+        // once-per-step via `SimConfig::phase_rules_once_per_step` and skip
+        // ~17 redundant O(N) scans per frame. See that field's own doc.
+        let evaluate_phase_rules =
+            !self.config.phase_rules_once_per_step || self.substep_index_in_frame == 0;
+        if !self.phase_rules.is_empty() && evaluate_phase_rules {
             let rules = std::mem::take(&mut self.phase_rules);
-            let heat_capacity = self.thermal.as_ref().map(|t| t.config.heat_capacity);
             for i in 0..self.active_count {
                 let p = self.particles.get(i);
                 for rule in &rules {
                     if let Some(new_id) = rule(&p) {
-                        self.particles.material_id[i] = new_id;
-                        let latent_heat = self.materials.get(new_id).latent_heat();
-                        if let (true, Some(cp)) = (latent_heat != 0.0, heat_capacity) {
-                            self.particles.temperature[i] -= latent_heat / cp;
-                        }
-                        // See `Simulation::phase_transition`'s doc: reset
-                        // material-specific plastic state to the new material's
-                        // own defaults instead of silently inheriting the old
-                        // material's stale values under a different meaning.
-                        let mut p = self.particles.get(i);
-                        self.materials.get(new_id).init_particle(&mut p);
-                        self.particles.set(i, p);
+                        // Shared with `Simulation::phase_transition` -- see
+                        // `apply_phase_transition`'s own doc (`solver::
+                        // particles`) for the real elastic-reference
+                        // rebaseline this applies (the fix for a genuine
+                        // fluid->solid "spring" artifact) and the
+                        // material-specific-state reset it also performs.
+                        self.apply_phase_transition(i, new_id);
                         break;
                     }
                 }

@@ -74,6 +74,9 @@ struct GridVisibilityParams {
 @group(0) @binding(1) var<storage, read_write> grid_visibility_state: array<f32>;
 @group(0) @binding(2) var<uniform> grid_visibility_params: GridVisibilityParams;
 
+// MUST stay equal to `curvature_flow.wgsl`'s own `VISIBILITY_HIGH_FACTOR`/
+// `VISIBILITY_LOW_FACTOR` -- same Schmitt-trigger technique, no cross-module
+// const sharing to enforce it automatically. See that file's own doc.
 const GRID_VISIBILITY_HIGH_FACTOR: f32 = 1.3;
 const GRID_VISIBILITY_LOW_FACTOR: f32 = 0.7;
 
@@ -235,6 +238,9 @@ fn material_accum_at(cx: i32, cy: i32) -> MaterialAccum {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Invert the same orthographic mapping Renderer::set_camera uses:
     // clip = grid_pos * (sx, sy) + (tx, ty)  =>  grid_pos = (clip - t) / s
+    // Same formula as `curvature_flow.wgsl`'s own `ndc_to_surface_pos` -- a
+    // separate shader module, so WGSL has no way to share that function
+    // here; keep this inverse in sync by hand if either one changes.
     let grid_pos = vec2<f32>(
         (in.ndc.x - params.tx) / params.sx,
         (in.ndc.y - params.ty) / params.sy,
@@ -347,6 +353,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // one interior depth-band step (`1.0/DEPTH_BANDS`) so the edge reads as
     // solid material color right up to where alpha fades it.
     const EDGE_COLOR_REFERENCE_DEPTH: f32 = 3.0;
+    // A separate shader module from `curvature_flow.wgsl` -- WGSL has no
+    // cross-module const sharing, so this literal MUST be kept equal to
+    // that file's own (file-scope) `DEPTH_BANDS` by hand.
     const DEPTH_BANDS: f32 = 4.0;
     let sigma_a = optical_slot.rgb;
 

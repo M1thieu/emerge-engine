@@ -29,7 +29,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    reserved_velocity_slot: f32,
+    vel_limit:          f32,
     sleep_threshold:    f32,
     contact_friction:   f32, // repurposes the first of GpuStepParams' 3 pad slots
     grid_cell_size:     f32, // repurposes the second pad slot -- SimConfig::grid_cell_size
@@ -81,7 +81,6 @@ const MIN_MASS_FRACTION: f32 = 1.0e-6;
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v:         array<vec2<f32>>;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v:         array<vec2<f32>>;
 @group(1) @binding(19) var<uniform>             grip_params:             DirectionalGripParams;
-@group(1) @binding(32) var<storage, read_write> solver_status:           array<atomic<u32>>;
 
 // Exact port of solve3x3 (src/spacetime/grid/mod.rs) — Cramer's rule for a general 3x3
 // linear system. `ok` is written false (leaving `out` untouched) when the system is
@@ -316,6 +315,14 @@ fn debug_fit_normal_main() {
     contact_debug_output[2] = result.z;
 }
 
+fn clamp_speed(v: vec2<f32>, vel_limit: f32) -> vec2<f32> {
+    let spd = length(v);
+    if spd > vel_limit {
+        return v * (vel_limit / spd);
+    }
+    return v;
+}
+
 // Exact port of DirectionalContactGrip::resolve (src/spacetime/grid/mod.rs) --
 // `mu_easy == mu_resist` (the uninvolved default) makes `mu` always that same value
 // regardless of `aligned`, reducing exactly to plain symmetric Coulomb -- so this ONE
@@ -365,7 +372,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     }
 
     let v_cm = total.momentum;
-    let v_grip = grip.momentum / grip_mass + step_params.gravity * step_params.dt;
+    let v_grip = clamp_speed(grip.momentum / grip_mass + step_params.gravity * step_params.dt, step_params.vel_limit);
 
     let node_pos = vec2<f32>(f32(cx), f32(cy));
     var local_points: array<vec4<f32>, 128>;
@@ -383,7 +390,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         // resolve nothing at this node (matches CPU's own "no confident normal"
         // branch: both fields keep their own velocities, total-momentum-consistent).
         resolved_grip_v[idx] = v_grip;
-        resolved_rest_v[idx] = (v_cm * total.mass - v_grip * grip_mass) / rest_mass;
+        resolved_rest_v[idx] = clamp_speed((v_cm * total.mass - v_grip * grip_mass) / rest_mass, step_params.vel_limit);
         return;
     }
 
@@ -420,9 +427,9 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         }
     }
 
-    let v_grip_new = v_cm + v_rel;
+    let v_grip_new = clamp_speed(v_cm + v_rel, step_params.vel_limit);
     let total_momentum = v_cm * total.mass;
-    let v_rest_new = (total_momentum - v_grip_new * grip_mass) / rest_mass;
+    let v_rest_new = clamp_speed((total_momentum - v_grip_new * grip_mass) / rest_mass, step_params.vel_limit);
 
     resolved_grip_v[idx] = v_grip_new;
     resolved_rest_v[idx] = v_rest_new;
@@ -433,7 +440,6 @@ fn resolve_contact_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-    if atomicLoad(&solver_status[0]) != 0u { return; }
     var block: u32;
     if wg_id.x < NUM_BLOCKS {
         if wg_id.x >= atomicLoad(&active_block_count) { return; }

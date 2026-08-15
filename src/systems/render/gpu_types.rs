@@ -99,8 +99,17 @@ pub(super) struct SurfaceParams {
     /// needs, not a render-frame time. Ignored by every other pass sharing
     /// this struct.
     pub(super) dt: f32,
+    /// Splat kernel width in physics-grid cells -- see `curvature_flow.
+    /// wgsl`'s own `SurfaceParams::splat_width_cells` doc. 1.0 = original
+    /// full MPM B-spline support.
+    pub(super) splat_width_cells: f32,
+    /// Yu & Turk 2013 neighbourhood-fitted kernel anisotropy strength, used by
+    /// `splat_density_main` only. 0.0 disables the fit entirely (the previous
+    /// behaviour, bit for bit); 1.0 applies it at full strength. See
+    /// `Renderer::set_anisotropy_strength` and the `render::anisotropy` module.
+    pub(super) anisotropy_strength: f32,
 }
-const _: () = assert!(mem::size_of::<SurfaceParams>() == 24);
+const _: () = assert!(mem::size_of::<SurfaceParams>() == 32);
 
 /// Mirrors `curvature_flow.wgsl`'s `LightDiffuseParams` -- the real,
 /// persistent light-fluence diffusion pass's own uniform (see that shader's
@@ -162,7 +171,9 @@ const _: () = assert!(mem::size_of::<GridVisibilityParams>() == 16);
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct BandHysteresisParams {
     pub(super) surface_res: u32,
-    pub(super) _pad0: u32,
+    /// Mass of one fully-occupied cell -- see the shader's own doc. 1.0
+    /// reproduces the previous absolute-threshold behaviour exactly.
+    pub(super) reference_cell_mass: f32,
     pub(super) _pad1: u32,
     pub(super) _pad2: u32,
 }
@@ -192,7 +203,18 @@ pub(super) struct SurfaceRenderParams {
     /// own doc for the mechanism). Was `_pad1: f32`, an unused pad field --
     /// same offset, same size, `SurfaceRenderParams` stays 48 bytes.
     pub(super) material_mass_enabled: u32,
-    pub(super) _pad2: [f32; 2],
+    /// Real per-cell mass scale this scene's densities are expressed in, same
+    /// value `BandHysteresisParams` already carries -- see `Renderer::
+    /// set_grid_reference_cell_mass`. `fs_main` divides by it before
+    /// quantizing depth into bands, which is what makes the band range a
+    /// dimensionless "how many reference cell-masses deep is this" rather than
+    /// an absolute mass that only happens to be right for one material.
+    /// Was one half of `_pad2` -- same offset, same size, struct stays 48 bytes.
+    pub(super) reference_cell_mass: f32,
+    /// Floor on optical depth for edge color, in the SAME dimensionless band
+    /// units as the quantizer above (see `Renderer::set_edge_reference_depth`).
+    /// Was the other half of `_pad2`.
+    pub(super) edge_reference_depth: f32,
 }
 const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 48);
 

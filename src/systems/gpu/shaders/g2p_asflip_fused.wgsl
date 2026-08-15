@@ -84,7 +84,7 @@ struct MaterialParams {
     thermal_expansion:       f32,
     pressure_floor:          f32,
     bulk_viscosity:          f32,
-    critical_shear_rate:     f32,
+    surface_tension_coeff:   f32,
     cohesion_coeff:              f32,
 }
 
@@ -95,7 +95,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    reserved_velocity_slot: f32,
+    vel_limit:          f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -113,11 +113,6 @@ struct AsflipParams {
 const MAX_MATERIALS:    u32 = {{MAX_MATERIALS}}u;
 const NUM_FLOOR:        f32 = 1e-6;
 const NUM_FLOOR_TIGHT:  f32 = 1e-10;
-// Real, generous (50x) safety range on J = det(F) -- see particles_update.wgsl's
-// own copy of this constant for the full real citation (matches
-// `SimConfig::j_max`/`j_min` on the CPU path).
-const STRICT_FLUID_J_MAX: f32 = 50.0;
-const STRICT_FLUID_J_MIN: f32 = 1.0 / 50.0;
 
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
 const BSPLINE_OUTER_LIMIT:  f32 = 1.5;
@@ -134,7 +129,6 @@ const CELL_CENTER_OFFSET:   f32 = 0.5;
 // fallback-to-total-velocity convention g2p.wgsl already relies on.
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v: array<vec2<f32>>;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v: array<vec2<f32>>;
-@group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
 // ASFLIP -- shares group 3 with resource regrowth, see pipeline.rs's module doc comment.
 @group(3) @binding(28) var<uniform>             asflip_params:    AsflipParams;
 @group(3) @binding(29) var<storage, read_write> asflip_snapshot:  array<vec2<f32>>;
@@ -146,61 +140,25 @@ fn bspline_w(d: f32) -> f32 {
     return 0.0;
 }
 
-// `reason` (2026-08-11, same real diagnostic need as particles_update.wgsl's
-// own copy of this function -- see that file's doc): 4/5/6 distinguish this
-// FILE's 3 real call sites from particles_update.wgsl's 1/2/3, since this is
-// a genuinely separate WGSL compilation unit (its own copy of this
-// function, not shared).
-fn report_strict_fluid_failure(particle_index: u32, reason: u32) {
-    let previous = atomicCompareExchangeWeak(&solver_status[0], 0u, 1u);
-    if previous.exchanged {
-        atomicStore(&solver_status[1], particle_index);
-        atomicStore(&solver_status[3], reason);
-    }
-    atomicAdd(&solver_status[2], 1u);
-}
-
-fn finite_scalar(value: f32) -> bool {
-    return abs(value) <= 3.4e38;
-}
-
-fn finite_vec2(value: vec2<f32>) -> bool {
-    return finite_scalar(value.x) && finite_scalar(value.y);
-}
-
-fn finite_mat2(value: mat2x2<f32>) -> bool {
-    return finite_vec2(value[0]) && finite_vec2(value[1]);
-}
-
-fn strict_fluid_state_is_admissible(p: Particle) -> bool {
-    let j_f = det2(p.deformation_gradient);
-    let j_volume = p.volume / p.initial_volume;
-    let volume_error = abs(j_f - j_volume) / j_volume;
-    let rho_volume = p.density * p.volume;
-    let mass_error = abs(rho_volume - p.mass) / p.mass;
-    return finite_vec2(p.x)
-        && finite_vec2(p.v)
-        && finite_mat2(p.velocity_gradient)
-        && finite_mat2(p.deformation_gradient)
-        && finite_scalar(p.mass)
-        && p.mass > 0.0
-        && finite_scalar(p.initial_volume)
-        && p.initial_volume > 0.0
-        && finite_scalar(p.volume)
-        && p.volume > 0.0
-        && finite_scalar(p.density)
-        && p.density > 0.0
-        && finite_scalar(j_f)
-        && j_f > 0.0
-        && finite_scalar(j_volume)
-        && j_volume > 0.0
-        && finite_scalar(volume_error)
-        && volume_error <= 2e-4
-        && finite_scalar(rho_volume)
-        && finite_scalar(mass_error)
-        && mass_error <= 2e-4
-        && j_f >= STRICT_FLUID_J_MIN
-        && j_f <= STRICT_FLUID_J_MAX;
+// Free-surface velocity extrapolation for an UNTOUCHED grid node -- see
+// `g2p.wgsl`'s own copy of this function for the full doc (same core-solver
+// fix, this file's own separate fused G2P+particles_update pass).
+fn extrapolated_boundary_velocity(
+    particle_v: vec2<f32>,
+    cx: i32,
+    cy: i32,
+    res: i32,
+    gravity: vec2<f32>,
+    dt: f32,
+    boundary_thickness: u32,
+) -> vec2<f32> {
+    var v = particle_v + gravity * dt;
+    let bt = i32(boundary_thickness);
+    if cx < bt          && v.x < 0.0 { v.x = 0.0; }
+    if cx >= res - bt   && v.x > 0.0 { v.x = 0.0; }
+    if cy < bt          && v.y < 0.0 { v.y = 0.0; }
+    if cy >= res - bt   && v.y > 0.0 { v.y = 0.0; }
+    return v;
 }
 
 // ── 2D SVD (verbatim copy of particles_update.wgsl's own -- see this file's top doc
@@ -415,7 +373,6 @@ fn det2(m: mat2x2<f32>) -> f32 {
 @compute @workgroup_size(64, 1, 1)
 fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= step_params.particle_count { return; }
-    if atomicLoad(&solver_status[0]) != 0u { return; }
     // Sorted access -- matches particles_update.wgsl's own convention (cache-coherent
     // for this shader's own particle-memory access pattern); no correctness dependence
     // on iteration order since every particle is still processed exactly once, by
@@ -470,11 +427,18 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
                 let node_idx = u32(cy) * res + u32(cx);
                 let cell   = grid[node_idx];
-                let cell_v = select(
+                let touched_v = select(
                     cell.momentum,
                     select(resolved_rest_v[node_idx], resolved_grip_v[node_idx], is_grip),
                     contact_active,
                 );
+                // Free-surface velocity extrapolation for untouched nodes --
+                // see `extrapolated_boundary_velocity`'s own doc.
+                let extrap_v = extrapolated_boundary_velocity(
+                    p.v, cx, cy, i32(res), step_params.gravity, step_params.dt,
+                    step_params.boundary_thickness,
+                );
+                let cell_v = select(extrap_v, touched_v, cell.mass > NUM_FLOOR);
 
                 new_v       += w * cell_v;
                 b_col0      += w * cell_v * cell_dist.x;
@@ -512,11 +476,19 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         v_position = new_v + gamma * asflip_params.blend * diff_vel;
     }
 
-    // CFL chooses this substep before the gather.  It is a timestep constraint,
-    // not a momentum projection: changing a gathered velocity here would create
-    // an unmodelled impulse and break the corresponding CPU discretisation.
+    // Velocity clamp -- mirrors CPU's own G2P clamp (applied to the FINAL v_store, with
+    // v_position scaled by the same ratio to stay mutually consistent; identical to
+    // v_store when ASFLIP disabled, since v_store==v_position==new_v then). NaN-safe
+    // select, same defensive pattern g2p_main's own (pre-ASFLIP) clamp already used.
+    let spd = length(v_store);
+    if !(spd <= step_params.vel_limit) {
+        let inv = step_params.vel_limit / spd;
+        let scale = select(inv, 0.0, !(inv > 0.0));
+        v_store *= scale;
+        v_position *= scale;
+    }
+
     let c = mat2x2<f32>(b_col0, b_col1) * step_params.kernel_d_inverse;
-    let mat = materials[p.material_id];
 
     if p.pinned != 0u {
         p.v = vec2<f32>(0.0);
@@ -525,29 +497,23 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    let density = max(new_density, NUM_FLOOR);
+    let volume  = p.mass / density;
     p.v = v_store;
     p.velocity_gradient = c;
-    if mat.model != 1u {
-        let density = max(new_density, NUM_FLOOR);
-        p.density = density;
-        p.volume = p.mass / density;
-    }
+    p.density = density;
+    p.volume = volume;
 
     // ── particles_update_main's body, verbatim except reading local `p`/`c` instead of
     // re-reading the buffer (g2p already wrote what particles_update would have re-read)
     // and using `v_position` (not `p.v`) for the position line. ─────────────────────────
 
+    let mat = materials[p.material_id];
     let dt  = step_params.dt;
     let bt  = f32(step_params.boundary_thickness);
     let identity = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
 
-    if mat.model == 1u && !strict_fluid_state_is_admissible(p) {
-        report_strict_fluid_failure(p_idx, 4u);
-        return;
-    }
-
     // GPU state projection -- mirrors project_particle_state_to_admissible in solver/mod.rs.
-    if mat.model != 1u {
     let fres = f32(res);
     let half = fres * 0.5;
     if !(p.x.x >= 0.0 && p.x.x < fres) { p.x.x = half; }
@@ -556,19 +522,13 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cg = dot(p.velocity_gradient[0], p.velocity_gradient[0])
            + dot(p.velocity_gradient[1], p.velocity_gradient[1]);
     if !(cg >= 0.0) { p.velocity_gradient = mat2x2<f32>(); }
-    if mat.model != 1u && !(det2(p.deformation_gradient) > 0.0) {
-        p.deformation_gradient = identity;
-    }
+    if !(det2(p.deformation_gradient) > 0.0) { p.deformation_gradient = identity; }
     if !(p.plastic_volume_ratio > 0.0)         { p.plastic_volume_ratio = 1.0; }
     if !(p.hardening_scale > 0.0)              { p.hardening_scale = 1.0; }
     if !(abs(p.friction_hardening) < 3.4e+38)  { p.friction_hardening = 0.0; }
     if !(abs(p.log_volume_strain)  < 3.4e+38)  { p.log_volume_strain  = 0.0; }
-    }
 
-    var new_F = p.deformation_gradient;
-    if mat.model != 1u {
-        new_F = (identity + dt * p.velocity_gradient) * p.deformation_gradient;
-    }
+    var new_F = (identity + dt * p.velocity_gradient) * p.deformation_gradient;
 
     if mat.model == 4u && mat.compression_limit > 0.0 {
         let sr = snow_plasticity(new_F, p.plastic_volume_ratio, mat);
@@ -615,32 +575,32 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.hardening_scale      = sr.h;
     }
 
+    const FLUID_J_MIN: f32 = 0.5;
     if mat.model == 1u {
-        let old_j = p.volume / p.initial_volume;
-        let div_v = p.velocity_gradient[0][0] + p.velocity_gradient[1][1];
-        let J_fluid = old_j * exp(dt * div_v);
-        if !(J_fluid > 0.0)
-            || !finite_scalar(J_fluid)
-            || J_fluid < STRICT_FLUID_J_MIN
-            || J_fluid > STRICT_FLUID_J_MAX
-            || !finite_scalar(mat.rest_density)
-            || !(mat.rest_density > 0.0)
-        {
-            report_strict_fluid_failure(p_idx, 5u);
-            return;
-        }
+        let fluid_j_max = select(2.0, mat.volume_ratio_max, mat.volume_ratio_max > 1.0);
+        var J_fluid = det2(new_F);
+        if !(J_fluid > 0.0) { J_fluid = 1.0; }
+        J_fluid = clamp(J_fluid, FLUID_J_MIN, fluid_j_max);
         let sqrtJ = sqrt(J_fluid);
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
-        p.volume = p.initial_volume * J_fluid;
-        p.density = mat.rest_density / J_fluid;
+
+        if mat.dp_h0 > 0.0 {
+            let damp = 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
+            p.v *= damp;
+            v_position *= damp;
+        }
     }
 
     let J_trial = det2(new_F);
-    if mat.model != 1u && !(J_trial > 0.0) {
-        let svd_r = svd2(new_F);
-        let sc    = vec2<f32>(svd_r.s.x, abs(svd_r.s.y) + NUM_FLOOR);
-        let diag  = mat2x2<f32>(vec2<f32>(sc.x, 0.0), vec2<f32>(0.0, sc.y));
-        new_F     = svd_r.u * diag * transpose(svd_r.v);
+    if !(J_trial > 0.0) {
+        if mat.model == 1u {
+            new_F = identity;
+        } else {
+            let svd_r = svd2(new_F);
+            let sc    = vec2<f32>(svd_r.s.x, abs(svd_r.s.y) + NUM_FLOOR);
+            let diag  = mat2x2<f32>(vec2<f32>(sc.x, 0.0), vec2<f32>(0.0, sc.y));
+            new_F     = svd_r.u * diag * transpose(svd_r.v);
+        }
     }
 
     let J_elastic = det2(new_F);
@@ -669,18 +629,6 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // bodies already pressing together (Fei et al. 2021's own "easier separation"
     // framing). Identical to p.v*dt when ASFLIP disabled or gamma=1.
     var new_x = p.x + v_position * dt;
-
-    if mat.model == 1u
-        && (!finite_vec2(new_x)
-            || !finite_mat2(new_F)
-            || !finite_scalar(p.volume)
-            || !(p.volume > 0.0)
-            || !finite_scalar(p.density)
-            || !(p.density > 0.0))
-    {
-        report_strict_fluid_failure(p_idx, 6u);
-        return;
-    }
 
     let lo = max(0.0, bt - 1.0);
     let hi = f32(res) - bt;

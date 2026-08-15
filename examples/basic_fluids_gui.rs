@@ -209,6 +209,13 @@ fn make_sim() -> Simulation {
         // speed is the whole point of a stiffer EOS), fps ~50 -> ~13. Moving C
         // 0.1 -> 0.3 recovers ~3x of that from the safety margin rather than
         // from the physics.
+        // This demo's only phase rule is the water->ice freeze predicate, a
+        // thermodynamic test -- and temperature now advances once per step
+        // (diffusion runs at its own stable rate), so it cannot change within
+        // a frame. Opting in skips ~17 redundant O(N) scans per frame; see
+        // SimConfig::phase_rules_once_per_step for why this is a caller's
+        // choice rather than a silent default.
+        phase_rules_once_per_step: true,
         material_cfl_coefficient: 0.3,
         cfl_include_affine_speed: false,
         // `fluid_near_wall_cfl_scale` (real, proven fix for the wall-contact
@@ -413,6 +420,17 @@ struct State {
     grid_bridge_buf: wgpu::Buffer,
     material_mass_bridge_buf: wgpu::Buffer,
     particle_bridge_buf: wgpu::Buffer,
+    /// Persistent scratch for the per-frame CPU->GPU render bridges.
+    ///
+    /// These used to be freshly `vec![]`/`collect()`ed every frame, which at
+    /// this scene's size churned ~373 KB (Surface: 2912 particles x 128 B)
+    /// or ~320 KB (GridVolume: 64x64x4 + 64x64x16 f32) of allocate-fill-free
+    /// per frame for zero benefit -- the contents are fully rewritten each
+    /// time either way, so reusing the storage is bit-identical output with
+    /// no allocator traffic.
+    bridge_particles: Vec<Particle>,
+    bridge_dense: Vec<f32>,
+    bridge_material_mass: Vec<f32>,
 }
 
 impl State {
@@ -478,6 +496,60 @@ impl State {
         // "fraction of a full cell", which is what they were always intended
         // to mean.
         renderer.set_grid_reference_cell_mass(0.1);
+        // Surface grid at 4x the physics grid, not the 6x default -- a real
+        // sampling-statistics fix for the speckle/"white noise" on the
+        // surface, not a quality cut.
+        //
+        // The reconstruction runs at `grid_res * multiplier`, so at 6x this
+        // scene had 384x384 = 147k surface cells for only 2912 particles --
+        // ~51 cells per particle. Each cell therefore samples a tiny, noisy
+        // subset of the particle distribution, and since the shading normal
+        // is a finite difference OF that density field, per-cell density noise
+        // becomes per-pixel lighting noise. Coarsening to 4x gives 256x256 =
+        // 65k cells (~23 per particle): each cell averages more than twice as
+        // many particles, so the field -- and the normals taken from it -- are
+        // measurably smoother.
+        //
+        // Cost scales with the SQUARE of the multiplier, so this is also 0.44x
+        // the surface-pass work. Strictly better on both axes at this particle
+        // count; raise it again if the particle count rises.
+        renderer.set_surface_res_multiplier(4);
+        // Splat width left at the plain default (1.0). A derivation from real
+        // particle spacing exists (`Renderer::set_particle_spacing_cells`,
+        // reasoning in its own doc) and was wired in here 2026-08-14, but
+        // live review found a real regression once composed with an
+        // additional boundary-truncation factor and this demo's own already-
+        // raised `surface_res_multiplier` -- a gap opening at the free
+        // surface, worsening further with resolution. Un-wired here pending
+        // a proper visual diagnosis of that interaction; the derivation
+        // function itself stays available, just not called by default.
+        // Optical properties for the volumetric render paths. Without these
+        // every slot keeps its 0.0 default, so `grid-volume`/`surface` shade
+        // with no absorption, no subsurface scattering and no Fresnel -- which
+        // is exactly why this demo's water rendered flat GREY while the same
+        // scene in `basic_fluids_gpu.rs` (which does set them) looks like
+        // water. Ported from that demo, same values, rather than re-guessed.
+        //
+        // The absorption triple is physically meaningful, not a palette pick:
+        // water's absorption coefficient rises steeply with wavelength, so red
+        // is attenuated ~12x more strongly than blue. Encoding that as
+        // sigma_a = [0.85, 0.25, 0.07] (R,G,B) makes transmitted light go blue
+        // through depth for the real Beer-Lambert reason, instead of being
+        // tinted blue by hand.
+        renderer.set_optical_params(&queue, MAT_WATER as usize, [0.85, 0.25, 0.07]);
+        renderer.set_optical_scattering(&queue, MAT_WATER as usize, 0.03);
+        renderer.set_specular_r0(&queue, MAT_WATER as usize, 0.02);
+        // Mud + ice keep their own distinct look (both currently unspawned in
+        // this water-only isolation, but registered, so their slots must not
+        // silently inherit water's).
+        renderer.set_optical_params(&queue, MAT_MUD as usize, [0.30, 0.20, 0.12]);
+        renderer.set_optical_scattering(&queue, MAT_MUD as usize, 0.08);
+        renderer.set_specular_r0(&queue, MAT_MUD as usize, 0.005);
+        // Ice: far less absorbing than liquid water (clear ice transmits
+        // deeply) and much glossier -- r0 ~0.05 vs water's 0.02.
+        renderer.set_optical_params(&queue, MAT_ICE as usize, [0.30, 0.12, 0.05]);
+        renderer.set_optical_scattering(&queue, MAT_ICE as usize, 0.06);
+        renderer.set_specular_r0(&queue, MAT_ICE as usize, 0.05);
 
         // CPU->GPU render bridges for RenderMode::GridVolume/Surface -- see
         // RenderMode's own doc for why these exist (no persistent GPU buffer
@@ -600,6 +672,9 @@ impl State {
             grid_bridge_buf,
             material_mass_bridge_buf,
             particle_bridge_buf,
+            bridge_particles: Vec::new(),
+            bridge_dense: Vec::new(),
+            bridge_material_mass: Vec::new(),
         }
     }
 
@@ -610,10 +685,13 @@ impl State {
     /// for dominant-material color selection, not a physics-accuracy claim).
     /// Only called when `render_mode == GridVolume`, so every other mode
     /// (including the default) pays zero extra cost.
-    fn upload_grid_volume_bridge(&self) {
+    fn upload_grid_volume_bridge(&mut self) {
         const SLOTS: usize = 16;
         let grid = self.sim.grid();
-        let mut dense = vec![0f32; GRID * GRID * 4];
+        // Reused across frames -- see `bridge_dense`'s own doc.
+        self.bridge_dense.clear();
+        self.bridge_dense.resize(GRID * GRID * 4, 0.0);
+        let dense = &mut self.bridge_dense;
         for y in 0..GRID {
             for x in 0..GRID {
                 let idx = y * GRID + x;
@@ -624,7 +702,9 @@ impl State {
             .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense));
 
         let particles = self.sim.particles();
-        let mut material_mass = vec![0f32; GRID * GRID * SLOTS];
+        self.bridge_material_mass.clear();
+        self.bridge_material_mass.resize(GRID * GRID * SLOTS, 0.0);
+        let material_mass = &mut self.bridge_material_mass;
         for i in 0..particles.x.len() {
             let p = particles.x[i];
             let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
@@ -659,15 +739,16 @@ impl State {
     /// (`material_mass_enabled`), which colors every cell from its own real
     /// per-material mass -- water/mud/ice all stay visually distinct, no
     /// remap needed here at all.
-    fn upload_particle_bridge(&self) {
+    fn upload_particle_bridge(&mut self) {
         // No ice->water remap: render_surface_reconstruction's material_mass_enabled
         // path colors every real material_id (water/mud/ice) from its own per-cell
         // mass, so all 3 stay visually distinct instead of collapsing to one slot.
-        let snapshot: Vec<Particle> = self.sim.particles().iter().collect();
+        self.bridge_particles.clear();
+        self.bridge_particles.extend(self.sim.particles().iter());
         self.queue.write_buffer(
             &self.particle_bridge_buf,
             0,
-            bytemuck::cast_slice(&snapshot),
+            bytemuck::cast_slice(&self.bridge_particles),
         );
     }
 
@@ -689,10 +770,13 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
-        )
+        let (gx, gy) = self.renderer.screen_to_grid(
+            self.cursor_pos[0],
+            self.cursor_pos[1],
+            self.surface_config.width,
+            self.surface_config.height,
+        );
+        Vec2::new(gx, gy)
     }
 
     /// Applies the live gravity slider + freeze/thaw ambient/cooling-rate
@@ -818,17 +902,44 @@ impl State {
             if step_ms > 50.0 {
                 let snap = self.sim.diagnostics_snapshot();
                 let t = snap.timing;
+                // Every phase timer `StepTiming` actually has -- the previous
+                // line printed only 4 of them, leaving ~69% of a 178ms step
+                // unattributed and making the real cost impossible to find.
+                // `grid_update_us` INCLUDES `pressure_us` (documented subset,
+                // not additive); everything else is disjoint, so these should
+                // sum to ~`total_us`.
+                let accounted = t.p2g_us
+                    + t.grid_update_us
+                    + t.g2p_us
+                    + t.fields_us
+                    + t.thermal_us
+                    + t.cfl_us
+                    + t.spatial_hash_us
+                    + t.phase_sleep_us
+                    + t.project_us
+                    + t.density_us
+                    + t.retry_snapshot_us;
                 eprintln!(
-                    "SPIKE frame={} step={:.1}ms  substeps={}  cfl={:.3}  pressure_us={}  p2g_us={}  project_us={}  spatial_hash_us={}  total_us={}",
+                    "SPIKE frame={} step={:.1}ms subs={} cfl={:.3} | p2g={} grid_update={} (pressure={}) g2p={} cfl_sel={} project={} spatial_hash={} phase_sleep={} fields={} thermal={} density={} retry_snap={} | accounted={} total={} MISSING={}",
                     self.frame,
                     step_ms,
                     snap.substeps_last_step,
                     snap.cfl_number,
-                    t.pressure_us,
                     t.p2g_us,
+                    t.grid_update_us,
+                    t.pressure_us,
+                    t.g2p_us,
+                    t.cfl_us,
                     t.project_us,
                     t.spatial_hash_us,
+                    t.phase_sleep_us,
+                    t.fields_us,
+                    t.thermal_us,
+                    t.density_us,
+                    t.retry_snapshot_us,
+                    accounted,
                     t.total_us,
+                    t.total_us.saturating_sub(accounted),
                 );
             }
             self.frame += 1;
@@ -951,6 +1062,11 @@ impl State {
         let mut gravity_fraction = self.gravity_fraction;
         let mut digging = self.digging;
         let mut cold = self.cold;
+        // Live render-solver dials, read back from the renderer so the widgets
+        // always show the value actually in use.
+        let mut curvature_iters = self.renderer.curvature_iterations();
+        let mut surface_mult = self.renderer.surface_res_multiplier();
+        let mut splat_width = self.renderer.splat_width_cells();
         let water_n = self
             .sim
             .particles()
@@ -996,6 +1112,20 @@ impl State {
                     ui.separator();
                     ui.checkbox(&mut cold, "Cold ambient (water freezes below 273K)");
                     ui.separator();
+                    ui.label("Renderer (surface/grid-volume modes):");
+                    ui.add(
+                        egui::Slider::new(&mut curvature_iters, 2..=32)
+                            .text("Smoothing passes (higher = rounder)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut surface_mult, 1..=10)
+                            .text("Surface detail (cost = square!)"),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut splat_width, 0.2..=2.0)
+                            .text("Splat width, cells (lower = sharper)"),
+                    );
+                    ui.separator();
                     ui.label("LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
@@ -1007,6 +1137,18 @@ impl State {
         self.gravity_fraction = gravity_fraction;
         self.digging = digging;
         self.cold = cold;
+        // Only call the setters when the value actually moved -- the surface
+        // multiplier forces a buffer realloc, so writing it every frame would
+        // rebuild the surface buffers continuously.
+        if curvature_iters != self.renderer.curvature_iterations() {
+            self.renderer.set_curvature_iterations(curvature_iters);
+        }
+        if surface_mult != self.renderer.surface_res_multiplier() {
+            self.renderer.set_surface_res_multiplier(surface_mult);
+        }
+        if (splat_width - self.renderer.splat_width_cells()).abs() > 1.0e-4 {
+            self.renderer.set_splat_width_cells(splat_width);
+        }
         if reset {
             let sim = make_sim();
             self.real_gravity = sim.config().gravity;

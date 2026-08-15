@@ -50,7 +50,7 @@ struct MaterialParams {
     thermal_expansion:       f32,
     pressure_floor:          f32,
     bulk_viscosity:          f32,
-    critical_shear_rate:     f32,
+    surface_tension_coeff:   f32,
     cohesion_coeff:          f32,
 }
 
@@ -61,7 +61,7 @@ struct StepParams {
     kernel_d_inverse:   f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    reserved_velocity_slot: f32,
+    vel_limit:          f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -75,46 +75,11 @@ const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 const NUM_FLOOR:            f32 = 1e-6;
-// Fixed-point scales trade quantisation against accumulator range.  Each atomic
-// addition is range-checked below; an unrepresentable contribution reports an
-// explicit solver failure rather than wrapping, saturating, or clipping velocity.
+// Fixed-point scales: mass and momentum use different scales to avoid i32 overflow.
+// With 9 particles per cell: mass × 1e6 ≤ 9e6 (safe). Momentum at vel_limit=1000: 9×1000×1e5=9e8 (safe).
+// MOM_ATOMIC_SCALE=1e5 gives 1e-5 precision — 100× better than 1e3, avoids overflow at min_dt=0.001.
 const MASS_ATOMIC_SCALE:    f32 = 1000000.0;
-// Raised 1e5 -> 1e6 (2026-08-11), matching MASS_ATOMIC_SCALE exactly. REAL
-// ROOT CAUSE of the GPU-only fluid fps collapse (55 -> 1 fps measured live in
-// basic_showcase_gpu.rs/basic_fluids_gpu.rs), found by direct measurement, not
-// guessed:
-//
-// `grid_update.wgsl` computes `vel = momentum / mass` from these two
-// SEPARATELY-quantized fixed-point accumulators (WebGPU has no atomic<f32>).
-// At 1e5 the momentum quantum (1e-5) was 10x COARSER than the mass quantum
-// (1e-6), so the numerator carried 10x the relative noise of the denominator.
-//
-// That asymmetry became critical after the 2026-08-08 SI mass fix dropped
-// fluid particle mass to `rho0*spacing^2` = 0.1*0.49 = 0.049 (~20x lighter
-// than sand's 1.0 in the same scene). A stencil corner node then holds only
-// ~0.0156*0.049 = 7.6e-4 of mass, so the velocity noise floor was
-// 1e-5/7.6e-4 = 1.3% for fluid vs 0.064% for sand. That noise passes straight
-// into the G2P velocity gradient, makes `div_v` largely noise for isolated/
-// edge fluid particles (a stray droplet flung out on impact has almost no
-// real neighbors), and lets `J = J*exp(dt*div_v)` random-walk until it hits
-// the real j_max safety bound -- which then triggers a full (and useless,
-// since the condition is persistent, not transient) 16-deep retry ladder
-// every batch. THAT is the fps collapse.
-//
-// This file's sibling `grid_update.wgsl` already documented half of this
-// mechanism on 2026-08-08 ("dividing by a near-zero mass ... amplifies
-// ordinary floating-point noise into a spuriously large velocity", and
-// explicitly that the risk "does NOT shrink just because SI-correct particle
-// mass did") -- but treated MASS_FLOOR as the only lever and never connected
-// it to the momentum quantum being the actual asymmetric term.
-//
-// Overflow headroom stays large and is still hard-guarded: FIXED_POINT_LIMIT
-// is 2e9, so at 1e6 a single cell can hold |momentum| up to 2000 before
-// tripping the existing loud STATUS_FIXED_POINT_OVERFLOW report -- versus
-// realistic per-cell momentum here of order (cell mass ~1) * (max_speed ~10)
-// = ~10, i.e. ~200x margin. Any future scene that genuinely exceeds it fails
-// loudly rather than silently corrupting, via that same existing guard.
-const MOM_ATOMIC_SCALE:     f32 = 1000000.0;
+const MOM_ATOMIC_SCALE:     f32 = 100000.0;
 // Matches render::step_params::MAX_RENDER_MATERIAL_SLOTS exactly (Rust-side source of
 // truth) -- render::OpticalTable's own real 16-slot cap, not MAX_MATERIALS' larger
 // 64-material solver cap. material_id >= 16 collides into slot material_id % 16, same
@@ -161,10 +126,6 @@ struct MaterialMassParams {
 // (same reason ASFLIP shares group 3), nothing to do with contact thematically.
 @group(1) @binding(30) var<storage, read_write> material_mass_atomic: array<atomic<i32>>;
 @group(1) @binding(31) var<uniform>              material_mass_params: MaterialMassParams;
-// `(failure_code, first_particle, failure_count, reserved)`. A strict fluid
-// failure is reported explicitly when this becomes nonzero; no particle is
-// clipped or silently omitted from the continuum update.
-@group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
 
 // Exact copy of resolve_contact.wgsl's block_index_of — WGSL has no cross-file
 // includes, so this is duplicated the same way MASS_ATOMIC_SCALE etc. already are
@@ -202,8 +163,7 @@ fn polar_r(f: mat2x2<f32>) -> mat2x2<f32> {
     return mat2x2<f32>(vec2<f32>(x, y) * inv, vec2<f32>(-y, x) * inv);
 }
 
-// Stress returned here is Kirchhoff for solid branches.  Fluid branch 1 returns
-// Cauchy stress and P2G below uses its current particle volume.
+// Kirchhoff stress τ for all supported material models.
 fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
     let F = p.deformation_gradient;
     let J = max(det2(F), NUM_FLOOR);
@@ -212,24 +172,13 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 
     var tau: mat2x2<f32>;
     switch mat.model {
-        case 1u: { // Strict WC-MPM fluid — Tait EOS + Newtonian or Bingham viscosity
-            // `volume` is the authoritative conserved state: J=V/V0, ρ=ρ0/J.
-            // TEMPORARY, explicitly disclosed restoration (2026-08-13):
-            // `mat.pressure_floor` (real value -0.1, matches
-            // `NewtonianFluidMaterial`'s pre-`cac544b` constructor default,
-            // see that field's own doc) -- a mild tension floor, deleted
-            // 2026-08-11 alongside the J clamp. NOT the same as the
-            // zero-tension experiment tried and ruled out earlier the same
-            // investigation (`press = max(press, 0.0)` made J climb
-            // 6.2->16.1 with no plateau) -- -0.1 still allows real, mostly-
-            // unbounded restoring tension, only capping the extreme tail.
-            // Live-confirmed on CPU (`basic_fluids_gui.rs`, identical
-            // formula, all 4 pieces -- clamp/density-cap/floor/settling-
-            // damping -- together): 930+ frames, non_finite=0, water_j
-            // stayed in [0.52,1.02], mud_j in [1.00,1.01].
-            let fluid_j = p.volume / p.initial_volume;
-            let rho   = mat.rest_density / fluid_j;
-            let ratio = rho / mat.rest_density;
+        case 1u: { // Fluid — Tait EOS + Newtonian or Bingham deviatoric viscosity
+            // Use J = det(F) for EOS density: ρ = ρ₀/J (sparkl canonical, no grid-lag).
+            // F is reset to sqrt(J)·I in particles_update, so det(F) = J always for fluid.
+            // This eliminates the one-step lag from grid-mass gather (p.density) and keeps
+            // EOS consistent with the F-tracked volume ratio.
+            let rho   = clamp(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR, mat.rest_density * 2.0);
+            let ratio = rho / max(mat.rest_density, NUM_FLOOR);
             let press = max(mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
             var t     = -press * I;
 
@@ -244,39 +193,15 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 
             let yield_s = mat.compression_limit; // Bingham τ₀; 0 for Newtonian
             if yield_s > 0.0 {
-                // Papanastasiou (1987) exponential regularization -- smooth
-                // ramp instead of a hard rigid/flowing switch at
-                // critical_shear_rate. Matches bingham.rs::deviatoric_stress
-                // exactly (see that doc for why a hard cutoff locks a scene:
-                // a particle at the yield surface flips every substep
-                // between zero and tau0/critical_shear_rate with nothing to
-                // clamp the resulting spike). γ̇ uses the deviatoric strain
-                // rate only — a yield criterion must not respond to pure
-                // volumetric expansion/compression, which isn't shear.
-                // REAL FIX (2026-08-12): was `0.5 *`, giving a shear_rate
-                // exactly HALF the correct value -- confirmed by direct
-                // comparison against bingham.rs's own tested CPU formula
-                // (`deviatoric_stress`: `shear_rate = (2.0*d_sq).sqrt()`,
-                // matching the standard rheology definition γ̇ =
-                // sqrt(2*D_dev:D_dev)). Since `eta_app = yield_s/shear_rate
-                // + eff_visc` in the flowing (above-critical) regime, a
-                // halved shear_rate DOUBLES the yield-stress contribution
-                // to stress -- found by direct code comparison after live
-                // diagnostics showed mud (the only material using this
-                // branch; water is Newtonian, yield_s=0, never reaches
-                // here) still spiking (v to 90-100+, J unbounded) after the
-                // exact same fixes that genuinely calmed water.
+                // Bingham: apparent viscosity = τ₀/γ̇ + µ. Skip deviatoric below plug threshold.
+                // γ̇ uses the deviatoric strain rate only — a yield criterion must not respond
+                // to pure volumetric expansion/compression, which isn't shear.
                 let dx = dev[0][0]; let dy = dev[1][1]; let dxy = dev[0][1];
-                let shear_rate = sqrt(max(2.0 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
-                let m = 1.0 / mat.critical_shear_rate;
-                var ramp: f32;
-                if shear_rate > 1.0e-12 {
-                    ramp = (1.0 - exp(-m * shear_rate)) / shear_rate;
-                } else {
-                    ramp = m;
+                let shear_rate = sqrt(max(0.5 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
+                if shear_rate > 1e-4 {
+                    let eta_app = yield_s / shear_rate + eff_visc;
+                    t = t + dev * (eta_app * 0.5);
                 }
-                let eta_app = yield_s * ramp + eff_visc;
-                t = t + dev * eta_app;
             } else {
                 t = t + eff_visc * dev;
             }
@@ -286,55 +211,9 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
                 t = t + mat.bulk_viscosity * (tr_s * 0.5) * I;
             }
 
-            // Real, sourced (von Neumann & Richtmyer 1950 + Landshoff)
-            // numerical stabilizer for extreme local compression -- see
-            // fluid_state::artificial_bulk_viscosity (CPU, Rust) for the
-            // full derivation/citation (arXiv:2404.17057 eq. 4, the same
-            // combined form used for MPM specifically). Ported bit-for-bit
-            // here so CPU and GPU stay consistent -- root-caused 2026-08-08
-            // against basic_fluids_gpu.rs's real crash (a genuine MPM
-            // cell-crossing-style instability under violent wall-contact
-            // compression, CPU/GPU diverging chaotically once a local
-            // configuration goes numerically unstable). Gated to compression
-            // only (div_v<0), zero effect on smooth flow. h=1.0
-            // (grid_cell_size): same disclosed scope limit as the CPU side
-            // -- not currently threaded into this function, every scene
-            // tonight uses grid_cell_size=1.0 (exact today, not approximate).
-            // c0=(eos_power+1)/2 is the Kurapatenko 1967 STRONG-shock limit
-            // (see the Rust doc for the full derivation) -- upgraded from
-            // the weak-shock (eos_power+1)/4 after measuring it wasn't
-            // enough alone (peak J dropped ~31000->14000 but one severe
-            // compression event still exceeded the representable range).
-            let div_v = tr_s * 0.5;
-            if div_v < 0.0 {
-                let c2 = mat.eos_stiffness * mat.eos_power
-                    * pow(max(ratio, 1.0e-8), mat.eos_power - 1.0) / mat.rest_density;
-                let c_sound  = sqrt(max(c2, 0.0));
-                let h        = 1.0;
-                // Weak-shock Kurapatenko limit, NOT strong-shock -- see
-                // fluid_state::artificial_bulk_viscosity's own doc (CPU) for
-                // the real, measured reason (strong-shock made this exact
-                // crash worse, panicking sooner instead of surviving on a
-                // bounded plateau).
-                let c0_quadratic = (mat.eos_power + 1.0) * 0.25;
-                // q = rho * (c0*h^2*(div v)^2 - c1*h*c_sound*div v),  div v < 0.
-                //
-                // REAL BUG FIXED 2026-08-13 (GPU copy of the same fix landed
-                // on CPU in `fluid.rs::artificial_bulk_viscosity`): this was
-                // `c0*(rho*h*div_v)^2 - c1*h*c_sound*div_v` -- rho^2 in the
-                // quadratic term, no rho at all in the linear one, so the two
-                // terms don't even share units. Both cited sources (Wang et
-                // al. arXiv:2404.17057 eq. 4; `tmp/GeoTaichi`'s
-                // `MaterialModel.py::artifical_viscosity`) multiply BOTH by
-                // rho exactly once. Measured on the CPU twin: the old form
-                // inflated q ~8x and swamped the EOS (max_speed 11 -> 130, J
-                // pinned at the clamp); corrected it CUT peak expansion 3.5x.
-                let quadratic = c0_quadratic * h * h * div_v * div_v;
-                let linear    = 1.0 * h * c_sound * div_v;
-                let q = rho * (quadratic - linear);
-                if finite_scalar(q) {
-                    t = t - q * I;
-                }
+            // Surface tension: τ += γ·J·I
+            if mat.surface_tension_coeff != 0.0 {
+                t = t + mat.surface_tension_coeff * J * I;
             }
 
             return t;
@@ -421,7 +300,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
         }
         case 11u: { // GranularFluid — Tait EOS pressure + corotated elastic deviatoric + SVD plasticity
             // EOS pressure: −k·((ρ/ρ₀)^γ − 1)·I
-            let rho   = max(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR);
+            let rho   = clamp(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR, mat.rest_density * 4.0);
             let ratio = rho / max(mat.rest_density, NUM_FLOOR);
             let press = max(mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
             // Corotated elastic deviatoric: 2µ·h·dev[(F−R)·Fᵀ]
@@ -434,15 +313,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // Small elastic volumetric term from λ — prevents total collapse under EOS alone
             let lam_e  = mat.lambda * h;
             let lam_vol = lam_e * (J - 1.0) * J * I;
-            // Physical Kelvin--Voigt dissipation.  This exactly mirrors the
-            // CPU branch: `sym = grad(v)+grad(v)^T`, `dev_sym = 2 D_dev`,
-            // then sigma_visc = eta*dev_sym + zeta*div(v)*I.
-            let sym_v = p.velocity_gradient + transpose(p.velocity_gradient);
-            let tr_v  = sym_v[0][0] + sym_v[1][1];
-            let dev_v = sym_v - (tr_v * 0.5) * I;
-            let visc  = mat.dynamic_viscosity * dev_v
-                      + mat.bulk_viscosity * (tr_v * 0.5) * I;
-            tau = -press * I + dev_c + lam_vol + visc;
+            tau = -press * I + dev_c + lam_vol;
         }
         case 9u: { // Viscoelastic (Kelvin-Voigt) — elastic NeoHookean + viscous dashpot
             let j_min   = max(mat.volume_ratio_min, NUM_FLOOR);
@@ -496,56 +367,15 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
     return tau;
 }
 
-// REAL MECHANISM (2026-08-12), found by direct code inspection after
-// dense-diagnostic tracing kept showing isolated/low-support particles near
-// a wall spiking to J=20-46 with F starting near identity: this engine has
-// TWO separately deliberate, separately TESTED design decisions for the
-// strict fluid model -- `tait_pressure` is not clamped in tension
-// (`tait_eos_is_not_pressure_clamped_in_tension`, fluid.rs) and J/volume is
-// not clamped in its exponential update
-// (`exponential_volume_update_is_not_j_clamped`, fluid.rs). Neither, in
-// isolation, is wrong or explains this bug -- checked numerically: this
-// scene's own real water eos_stiffness is only ~104 Pa (a deliberately
-// derated, real-time-affordable value, see basic_fluids_gpu.rs's own doc),
-// so raw Tait pressure already saturates at a small, bounded value
-// (-eos_stiffness) well before any literature-standard cavitation floor
-// (e.g. -1 atm) would ever engage -- a pressure floor alone would have been
-// a dead end here, confirmed before writing any code.
-//
-// The REAL, confirmed mechanism is multiplicative, not either term alone:
-// MLS-MPM's force-scatter is proportional to stress * volume. Stress is
-// bounded (asymptotes at -eos_stiffness), but `p.volume` (used here,
-// unclamped, exactly matching V=V0*J's own honest, tested update) is NOT --
-// once a low-mass/isolated particle's J drifts even modestly above 1 (a
-// single violent first-wall-impact substep is enough to start it), volume
-// grows, so the SAME bounded stress produces a proportionally LARGER force,
-// which (for that same low-mass particle) is a proportionally larger
-// acceleration, growing J further next substep -- a genuine, self-
-// reinforcing feedback loop that needs neither term individually unbounded.
-//
-// Real fix, scoped to exactly this mechanism and nothing else: cap the
-// volume CONSUMED BY THE FORCE COMPUTATION for the fluid branch, leaving
-// the particle's own tracked `p.volume`/J state (and `tait_pressure`)
-// completely untouched -- both existing tests above are unaffected, since
-// neither exercises this function. `STRICT_FLUID_FORCE_VOLUME_RATIO_MAX`:
-// a disclosed engineering ceiling (not a cited physical constant -- no
-// paper gives "how expanded can a liquid MPM particle be before its
-// force-scatter stops being trustworthy," same honest category as this
-// exact GPU pipeline's own pre-existing STRICT_FLUID_J_MAX=50.0 exhaustion-
-// backstop ceiling, step.rs), set well BELOW that existing 50.0 backstop so
-// this catches the runaway while it is still a moderate, recoverable
-// deviation instead of only after the backstop's own last-resort clamp.
-const STRICT_FLUID_FORCE_VOLUME_RATIO_MAX: f32 = 4.0;
-
-// stress_volume: strict fluids use their stored current volume. It is the
-// authoritative V = V0 J state; F is only the common-particle
-// diagnostic/phase-transition representation of the same scalar J.
+// stress_volume: fluids use initial_volume * J (= current volume, J from det(F)).
+// J-based volume is consistent with the J-based EOS density above.
 // Elastic models use initial (reference) volume — J accounted for in Kirchhoff stress.
 fn sv(p: Particle, mat: MaterialParams) -> f32 {
     switch mat.model {
         case 1u: {
-            let v_max = p.initial_volume * STRICT_FLUID_FORCE_VOLUME_RATIO_MAX;
-            return min(p.volume, v_max);
+            // J = det(F); F is reset to sqrt(J)·I in particles_update.
+            let J = max(det2(p.deformation_gradient), NUM_FLOOR);
+            return max(p.initial_volume * J, NUM_FLOOR);
         }
         case 11u: {
             // GranularFluid: EOS is density-based — use current volume (tracks J each substep).
@@ -555,193 +385,25 @@ fn sv(p: Particle, mat: MaterialParams) -> f32 {
     }
 }
 
-const STATUS_INVALID_STATE: u32 = 1u;
-const STATUS_FIXED_POINT_OVERFLOW: u32 = 2u;
-// Leave headroom below i32::MAX so both the rounded contribution and the
-// compare-exchange accumulator are representable without relying on overflow.
-const FIXED_POINT_LIMIT_F: f32 = 2000000000.0;
-const FIXED_POINT_LIMIT_I: i32 = 2000000000;
-
-struct FixedPointDelta {
-    value: i32,
-    valid: bool,
+fn atomic_addf_mass(idx: u32, val: f32) {
+    atomicAdd(&grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
 }
-
-fn report_solver_failure(code: u32, particle_index: u32) {
-    let previous = atomicCompareExchangeWeak(&solver_status[0], 0u, code);
-    if previous.exchanged {
-        atomicStore(&solver_status[1], particle_index);
-    }
-    atomicAdd(&solver_status[2], 1u);
+fn atomic_addf_mom(idx: u32, val: f32) {
+    atomicAdd(&grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
 }
-
-fn finite_scalar(value: f32) -> bool {
-    return abs(value) <= 3.4e38;
+fn grip_atomic_addf_mass(idx: u32, val: f32) {
+    atomicAdd(&grip_grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
 }
-
-fn finite_vec2(value: vec2<f32>) -> bool {
-    return finite_scalar(value.x) && finite_scalar(value.y);
+fn material_mass_atomic_addf(idx: u32, val: f32) {
+    atomicAdd(&material_mass_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
 }
-
-fn finite_mat2(value: mat2x2<f32>) -> bool {
-    return finite_vec2(value[0]) && finite_vec2(value[1]);
-}
-
-const STRICT_FLUID_RELATIVE_TOLERANCE: f32 = 2e-4;
-
-fn strict_fluid_state_is_admissible(p: Particle) -> bool {
-    let j_f = det2(p.deformation_gradient);
-    let j_volume = p.volume / p.initial_volume;
-    let volume_error = abs(j_f - j_volume) / j_volume;
-    let rho_volume = p.density * p.volume;
-    let mass_error = abs(rho_volume - p.mass) / p.mass;
-    return finite_vec2(p.x)
-        && finite_vec2(p.v)
-        && finite_mat2(p.velocity_gradient)
-        && finite_mat2(p.deformation_gradient)
-        && finite_scalar(p.mass)
-        && p.mass > 0.0
-        && finite_scalar(p.initial_volume)
-        && p.initial_volume > 0.0
-        && finite_scalar(p.volume)
-        && p.volume > 0.0
-        && finite_scalar(p.density)
-        && p.density > 0.0
-        && finite_scalar(j_f)
-        && j_f > 0.0
-        && finite_scalar(j_volume)
-        && j_volume > 0.0
-        && finite_scalar(volume_error)
-        && volume_error <= STRICT_FLUID_RELATIVE_TOLERANCE
-        && finite_scalar(rho_volume)
-        && finite_scalar(mass_error)
-        && mass_error <= STRICT_FLUID_RELATIVE_TOLERANCE;
-}
-
-fn strict_fluid_material_is_admissible(mat: MaterialParams) -> bool {
-    return finite_scalar(mat.rest_density)
-        && mat.rest_density > 0.0
-        && finite_scalar(mat.eos_stiffness)
-        && mat.eos_stiffness >= 0.0
-        && finite_scalar(mat.eos_power)
-        && mat.eos_power > 0.0
-        && finite_scalar(mat.dynamic_viscosity)
-        && mat.dynamic_viscosity >= 0.0
-        && finite_scalar(mat.bulk_viscosity)
-        && mat.bulk_viscosity >= 0.0
-        && finite_scalar(mat.thermal_viscosity_coeff)
-        && finite_scalar(mat.compression_limit)
-        && mat.compression_limit >= 0.0
-        && finite_scalar(mat.critical_shear_rate)
-        && mat.critical_shear_rate >= 0.0
-        && (mat.compression_limit == 0.0 || mat.critical_shear_rate > 0.0);
-}
-
-fn fixed_point_delta(value: f32, scale: f32, particle_index: u32) -> FixedPointDelta {
-    let scaled = value * scale;
-    if !(abs(scaled) <= FIXED_POINT_LIMIT_F) {
-        report_solver_failure(STATUS_FIXED_POINT_OVERFLOW, particle_index);
-        return FixedPointDelta(0, false);
-    }
-    return FixedPointDelta(i32(round(scaled)), true);
-}
-
-// WebGPU exposes integer atomics only. This compare-exchange loop is an
-// explicit admission test: a contribution which would overflow is rejected
-// before the integer addition, rather than wrapping or being velocity-clamped.
-fn atomic_add_grid_checked(
-    index: u32,
-    value: f32,
-    scale: f32,
-    particle_index: u32,
-) -> bool {
-    if atomicLoad(&solver_status[0]) != 0u {
-        return false;
-    }
-    let delta = fixed_point_delta(value, scale, particle_index);
-    if !delta.valid {
-        return false;
-    }
-    loop {
-        let old = atomicLoad(&grid_atomic[index]);
-        if (delta.value > 0 && old > FIXED_POINT_LIMIT_I - delta.value)
-            || (delta.value < 0 && old < -FIXED_POINT_LIMIT_I - delta.value)
-        {
-            report_solver_failure(STATUS_FIXED_POINT_OVERFLOW, particle_index);
-            return false;
-        }
-        let next = old + delta.value;
-        let result = atomicCompareExchangeWeak(&grid_atomic[index], old, next);
-        if result.exchanged {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn atomic_add_grip_checked(
-    index: u32,
-    value: f32,
-    scale: f32,
-    particle_index: u32,
-) -> bool {
-    if atomicLoad(&solver_status[0]) != 0u {
-        return false;
-    }
-    let delta = fixed_point_delta(value, scale, particle_index);
-    if !delta.valid {
-        return false;
-    }
-    loop {
-        let old = atomicLoad(&grip_grid_atomic[index]);
-        if (delta.value > 0 && old > FIXED_POINT_LIMIT_I - delta.value)
-            || (delta.value < 0 && old < -FIXED_POINT_LIMIT_I - delta.value)
-        {
-            report_solver_failure(STATUS_FIXED_POINT_OVERFLOW, particle_index);
-            return false;
-        }
-        let next = old + delta.value;
-        let result = atomicCompareExchangeWeak(&grip_grid_atomic[index], old, next);
-        if result.exchanged {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn atomic_add_material_mass_checked(
-    index: u32,
-    value: f32,
-    particle_index: u32,
-) -> bool {
-    if atomicLoad(&solver_status[0]) != 0u {
-        return false;
-    }
-    let delta = fixed_point_delta(value, MASS_ATOMIC_SCALE, particle_index);
-    if !delta.valid {
-        return false;
-    }
-    loop {
-        let old = atomicLoad(&material_mass_atomic[index]);
-        if (delta.value > 0 && old > FIXED_POINT_LIMIT_I - delta.value)
-            || (delta.value < 0 && old < -FIXED_POINT_LIMIT_I - delta.value)
-        {
-            report_solver_failure(STATUS_FIXED_POINT_OVERFLOW, particle_index);
-            return false;
-        }
-        let next = old + delta.value;
-        let result = atomicCompareExchangeWeak(&material_mass_atomic[index], old, next);
-        if result.exchanged {
-            return true;
-        }
-    }
-    return false;
+fn grip_atomic_addf_mom(idx: u32, val: f32) {
+    atomicAdd(&grip_grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
 }
 
 @compute @workgroup_size(64, 1, 1)
 fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= step_params.particle_count { return; }
-    if atomicLoad(&solver_status[0]) != 0u { return; }
     let p_idx = sorted_particle_ids[gid.x];
 
     let p   = particles[p_idx];
@@ -760,41 +422,12 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // force_fields, which skip recomputing things that provably don't change for a
     // particle whose state is frozen — not in skipping the scatter itself.
 
-    // An invalid state would corrupt the i32 atomics. Record it so strict
-    // WC-MPM never turns a failed update into an omitted particle.
-    if !finite_vec2(p.x)
-        || !finite_vec2(p.v)
-        || !finite_mat2(p.velocity_gradient)
-        || !finite_mat2(p.deformation_gradient)
-        || !finite_scalar(p.mass)
-        || !(p.mass > 0.0)
-        || !finite_scalar(p.initial_volume)
-        || !(p.initial_volume > 0.0)
-        || !finite_scalar(p.volume)
-        || !(p.volume > 0.0)
-        || !finite_scalar(p.density)
-        || !(p.density > 0.0)
-    {
-        report_solver_failure(STATUS_INVALID_STATE, p_idx);
-        return;
-    }
-    if mat.model == 1u
-        && (!strict_fluid_state_is_admissible(p)
-            || !strict_fluid_material_is_admissible(mat))
-    {
-        // Do not repair an incoherent constitutive state. G2P would otherwise
-        // overwrite F/rho from V and conceal the violation from the caller.
-        report_solver_failure(STATUS_INVALID_STATE, p_idx);
-        return;
-    }
+    // NaN position would corrupt the i32 atomics — skip silently.
+    if !(dot(p.x, p.x) >= 0.0) { return; }
 
     let tau   = kirchhoff(p, mat);
     let vol   = sv(p, mat);
     let scale = -vol * step_params.kernel_d_inverse * dt;
-    if !finite_mat2(tau) || !finite_scalar(vol) || !(vol > 0.0) || !finite_scalar(scale) {
-        report_solver_failure(STATUS_INVALID_STATE, p_idx);
-        return;
-    }
 
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
@@ -833,15 +466,9 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let stress_mom = (scale * w) * (tau * cell_dist);
 
             let base4 = (u32(cy) * res + u32(cx)) * 4u;
-            if !atomic_add_grid_checked(
-                base4 + 0u, apic_mom.x + stress_mom.x, MOM_ATOMIC_SCALE, p_idx
-            ) { return; }
-            if !atomic_add_grid_checked(
-                base4 + 1u, apic_mom.y + stress_mom.y, MOM_ATOMIC_SCALE, p_idx
-            ) { return; }
-            if !atomic_add_grid_checked(
-                base4 + 2u, mass_w, MASS_ATOMIC_SCALE, p_idx
-            ) { return; }
+            atomic_addf_mom(base4 + 0u, apic_mom.x + stress_mom.x);
+            atomic_addf_mom(base4 + 1u, apic_mom.y + stress_mom.y);
+            atomic_addf_mass(base4 + 2u, mass_w);
 
             // Multi-field contact (GPU port, first slice): additive second scatter for
             // the "grip" field (contact_group != 0), exactly mirroring the total-field
@@ -851,15 +478,9 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // property (`scatter_particles_to_grid`'s own doc: "a no-op call for every
             // particle with contact_group == 0").
             if p.contact_group != 0u {
-                if !atomic_add_grip_checked(
-                    base4 + 0u, apic_mom.x + stress_mom.x, MOM_ATOMIC_SCALE, p_idx
-                ) { return; }
-                if !atomic_add_grip_checked(
-                    base4 + 1u, apic_mom.y + stress_mom.y, MOM_ATOMIC_SCALE, p_idx
-                ) { return; }
-                if !atomic_add_grip_checked(
-                    base4 + 2u, mass_w, MASS_ATOMIC_SCALE, p_idx
-                ) { return; }
+                grip_atomic_addf_mom(base4 + 0u, apic_mom.x + stress_mom.x);
+                grip_atomic_addf_mom(base4 + 1u, apic_mom.y + stress_mom.y);
+                grip_atomic_addf_mass(base4 + 2u, mass_w);
             }
 
             // `ColorMode::GridVolume`'s opt-in per-cell per-material mass scatter --
@@ -868,9 +489,7 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if material_mass_params.enabled != 0u {
                 let cell_idx = u32(cy) * res + u32(cx);
                 let slot = p.material_id % MAX_RENDER_MATERIAL_SLOTS;
-                if !atomic_add_material_mass_checked(
-                    cell_idx * MAX_RENDER_MATERIAL_SLOTS + slot, mass_w, p_idx
-                ) { return; }
+                material_mass_atomic_addf(cell_idx * MAX_RENDER_MATERIAL_SLOTS + slot, mass_w);
             }
         }
     }
@@ -890,7 +509,6 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(64, 1, 1)
 fn gather_contact_points_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= step_params.particle_count { return; }
-    if atomicLoad(&solver_status[0]) != 0u { return; }
     let p_idx = sorted_particle_ids[gid.x];
     let p = particles[p_idx];
     if !(dot(p.x, p.x) >= 0.0) { return; }

@@ -41,7 +41,7 @@ struct StepParams {
     kernel_d_inverse:          f32,
     gravity:            vec2<f32>,
     boundary_thickness: u32,
-    reserved_velocity_slot: f32,
+    vel_limit:          f32,
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
@@ -109,7 +109,6 @@ const MASK_ALL:                  u32 = 0xFFFFFFFFu;
 @group(0) @binding(3) var<uniform>             step_params:  StepParams;
 @group(0) @binding(4) var<uniform>             force_fields: ForceFieldsParams;
 @group(0) @binding(7) var<uniform>             sleep_wake:   SleepWakeParams;
-@group(1) @binding(32) var<storage, read_write> solver_status: array<atomic<u32>>;
 
 // Returns true if entry applies to the given material.
 fn material_matches(entry: ForceFieldEntry, material_id: u32) -> bool {
@@ -130,7 +129,6 @@ fn force_switch(dist: f32, cutoff: f32, switch_on: f32) -> f32 {
 fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p_idx = gid.x;
     if p_idx >= step_params.particle_count { return; }
-    if atomicLoad(&solver_status[0]) != 0u { return; }
 
     var p = particles[p_idx];
 
@@ -150,8 +148,8 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if is_wake_tagged { p.sleeping = 0u; }
 
-    // Still-sleeping particles get no field forces and no rescoring — frozen,
-    // same as CPU excluding them from the force-field loop
+    // Still-sleeping particles get no field forces, no velocity clamp, and no
+    // rescoring — frozen, same as CPU excluding them from the force-field loop
     // entirely (`for i in 0..self.active_count`). No writeback needed: nothing changes.
     if p.sleeping != 0u { return; }
 
@@ -168,8 +166,8 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt = step_params.dt;
 
     // force_fields.count == 0u is handled by the loop condition below (i < count
-    // is immediately false) — no need for an early return, since sleep
-    // scoring after this loop must always run regardless.
+    // is immediately false) — no need for an early return, since the velocity
+    // clamp and sleep-scoring after this loop must always run regardless.
     for (var i: u32 = 0u; i < force_fields.count && i < MAX_FORCE_FIELDS; i++) {
         let entry = force_fields.entries[i];
         if entry.field_type == FIELD_DISABLED { continue; }
@@ -333,8 +331,12 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Preserve the field-updated velocity exactly; the next substep derives
-    // its CFL bound from this state rather than clipping it.
+    // Clamp velocity magnitude (same limit applied in g2p).
+    let v_len = length(p.v);
+    if v_len > step_params.vel_limit && v_len > FF_NUM_FLOOR {
+        p.v = p.v * (step_params.vel_limit / v_len);
+    }
+
     // Sleep scoring — mirrors src/solver/mod.rs (~lines 855-870) exactly, including the
     // lack of a same-substep re-sleep guard (CPU doesn't have one either). Runs last per
     // substep, after force fields, since a field can keep a particle that looks sleepy

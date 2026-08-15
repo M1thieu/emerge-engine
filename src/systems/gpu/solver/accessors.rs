@@ -95,15 +95,6 @@ impl GpuSimulation {
         &self.buffers.particles
     }
 
-    /// Blocking readback of `count` f32 values from `grid_buffer()` -- test/
-    /// diagnostic use only, never call from the render/game loop. Wraps
-    /// `GpuBuffers::readback_f32_blocking`, which external test code (a
-    /// separate crate) cannot call directly since `buffers` is private.
-    pub fn readback_grid_f32_blocking(&self, count: usize) -> Vec<f32> {
-        self.buffers
-            .readback_f32_blocking(&self.device, &self.queue, &self.buffers.grid, count)
-    }
-
     /// Read-only access to the CPU particle mirror (one frame behind GPU when strided).
     pub fn particles(&self) -> &[Particle] {
         &self.particles
@@ -111,9 +102,8 @@ impl GpuSimulation {
 
     /// Mutable access to the CPU particle mirror.
     ///
-    /// **State warning:** velocity changes are used exactly. The next frame
-    /// recomputes CFL from the altered state; keep values finite and model
-    /// physically meaningful forcing explicitly.
+    /// **CFL WARNING:** velocity changes bypass the solver's CFL clamp.
+    /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
     /// After modifying, call `mark_particles_dirty()` so the GPU sees the changes.
     pub fn particles_mut(&mut self) -> &mut Vec<Particle> {
         &mut self.particles
@@ -192,13 +182,6 @@ impl GpuSimulation {
     /// Number of substeps run during the most recent `step_frame` call.
     pub fn last_substeps(&self) -> usize {
         self.last_substeps
-    }
-
-    /// Simulation time the most recent `step_frame` call did not advance
-    /// because the per-frame substep budget ran out first. 0.0 = honest,
-    /// full-`dt` frame.
-    pub fn last_sim_time_dropped(&self) -> f32 {
-        self.last_sim_time_dropped
     }
 
     /// Total frames stepped since creation.

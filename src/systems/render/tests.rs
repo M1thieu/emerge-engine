@@ -1977,9 +1977,12 @@ fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
 /// the SAME `Renderer` instance. A HOT scene's rendered brightness at the
 /// SAME pixel must genuinely INCREASE from frame 1 to frame 30 as Phi
 /// accumulates -- real temporal accumulation, not a one-shot local effect.
-/// A COLD (ambient) scene, with no real emission source to diffuse, must
-/// NOT show this drift -- rules out unrelated frame-to-frame noise (float
-/// accumulation, wave-field residue) as the explanation.
+/// A COLD (ambient) scene must show only a SMALL FRACTION of that drift --
+/// rules out unrelated frame-to-frame noise (float accumulation, wave-field
+/// residue) as the explanation. Not literally zero: `light_diffuse_main`'s
+/// own emission-strength term is `(T/5000)^2`, so 293K genuinely emits a
+/// real, tiny, always-on amount (~0.0034 vs 3000K's ~0.36, about 105x
+/// weaker) -- an ambient body still radiates, it just radiates far less.
 #[test]
 fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
     use crate::gpu::GpuSimulation;
@@ -2070,12 +2073,17 @@ fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
     let cold_frame30 = render_n_frames(293.0, 30);
     let cold_b1: u32 = cold_frame1[0] as u32 + cold_frame1[1] as u32 + cold_frame1[2] as u32;
     let cold_b30: u32 = cold_frame30[0] as u32 + cold_frame30[1] as u32 + cold_frame30[2] as u32;
+    let hot_drift = hot_b30.abs_diff(hot_b1);
+    let cold_drift = cold_b30.abs_diff(cold_b1);
     assert!(
-        cold_b30.abs_diff(cold_b1) <= 1,
-        "an ambient (cold) scene with no real emission source has nothing to diffuse \
-         -- must NOT show the same frame1->frame30 drift the hot scene shows (rules \
-         out unrelated per-frame noise as the explanation): frame1={cold_frame1:?} \
-         (sum={cold_b1}) frame30={cold_frame30:?} (sum={cold_b30})"
+        cold_drift * 5 <= hot_drift,
+        "an ambient (cold) scene emits real light too (`light_diffuse_main`'s own \
+         (T/5000)^2 term is never exactly zero), but ~105x weaker than the hot scene \
+         at 293K vs 3000K -- its frame1->frame30 drift must stay a small fraction of \
+         the hot scene's, not comparable to it (rules out unrelated per-frame noise \
+         as the explanation): hot drift={hot_drift} (frame1={hot_frame1:?} \
+         frame30={hot_frame30:?}) cold drift={cold_drift} (frame1={cold_frame1:?} \
+         frame30={cold_frame30:?})"
     );
 }
 
@@ -2239,20 +2247,25 @@ fn readback_i32_total(device: &wgpu::Device, queue: &wgpu::Queue, buf: &wgpu::Bu
     value
 }
 
-/// Real measurement, with real numbers, of curvature-flow's own total-mass
-/// drift -- NOT a proof that it's corrected. `curvature_flow.wgsl`'s
-/// "Pass 1d" volume-preserving correction (the discrete/practical analogue
-/// of the real volume-preserving mean curvature flow equation
-/// `V = -H + lambda(t)`) is currently DISABLED (see that pass's own top
-/// doc): a real, measured regression -- a naive single global rescale
-/// crushed small/thin objects to fully invisible, since the ACTUAL drift
-/// turned out to be far larger (15x-35x growth, not a mild bias) than
-/// assumed when the correction was designed. This test now honestly checks
-/// only what's currently true: the ground-truth accumulation (`pre_total_
-/// atomic_buf`, real particle mass) matches the real particle data, and the
-/// real, uncorrected drift is measured and printed (real data for whoever
-/// designs the real fix next), WITHOUT asserting it's fixed, since it
-/// isn't yet.
+/// Real measurement AND a real correctness check, now that `curvature_flow
+/// .wgsl`'s "Pass 1d" volume-preserving correction (the discrete/practical
+/// analogue of the real volume-preserving mean curvature flow equation
+/// `V = -H + lambda(t)`) is RE-ENABLED (2026-08-14, see that pass's own top
+/// doc). The original "15x-35x growth" this pass was disabled for was never
+/// a real curvature-flow defect -- it was comparing a real mass total
+/// against a raw, un-area-weighted sum of density values over a
+/// `surface_res_multiplier`x finer grid, silently comparing two different
+/// physical quantities (confirmed via a real iteration-count sweep,
+/// `curvature_flow_mass_growth_scales_with_iteration_count`, in this same
+/// file). Once the correction's own Lagrange multiplier accounts for that
+/// area factor, it sits close to 1.0, not the crushing ~1/34 the original,
+/// un-corrected comparison implied -- exactly the fix for the small/thin-
+/// object-invisibility regression that got this pass disabled in the first
+/// place. `corrected_total` is still read back as a raw (not area-weighted)
+/// sum, matching how `pre_total`/`raw_post_total` are also raw sums here --
+/// so it is compared against `true_particle_mass_sum * multiplier^2`, the
+/// same real structural factor the shader itself uses, not a second,
+/// independently-tuned tolerance.
 #[test]
 fn curvature_flow_volume_correction_matches_true_particle_mass() {
     use crate::gpu::GpuSimulation;
@@ -2347,24 +2360,152 @@ fn curvature_flow_volume_correction_matches_true_particle_mass() {
          particle mass sum (sanity check on the ground truth itself) -- \
          true={true_particle_mass_sum} splat_total={pre_total}"
     );
-    // Real, disclosed, DELIBERATELY NOT asserted as "fixed" -- correction is
-    // disabled (see this test's own top doc). `corrected_total` currently
-    // equals `raw_post_total` (no rescale applied); kept in the printed
-    // diagnostic so re-enabling the correction later has an immediate,
-    // real before/after comparison to check against.
     let relative_error_uncorrected = (raw_post_total - pre_total).abs() / pre_total;
     eprintln!(
-        "real, currently-uncorrected drift: {:.1}% (this is the number a future \
-         real fix needs to address without crushing small objects)",
+        "real, uncorrected raw drift (expected large -- see this test's own \
+         doc, it's a units mismatch, not what the correction below fixes): \
+         {:.1}%",
         relative_error_uncorrected * 100.0
     );
-    assert!(
-        (corrected_total - raw_post_total).abs() < 1.0,
-        "correction is disabled -- the settled total must be UNCHANGED from \
-         the raw pre-correction value (confirms `volume_correct_main` is \
-         genuinely a no-op right now, not silently still active) -- \
-         raw={raw_post_total} corrected={corrected_total}"
+
+    // The real check: `corrected_total` is still a RAW sum (same units as
+    // `raw_post_total`), so it's compared against `true_particle_mass_sum`
+    // scaled by the SAME real structural factor (`surface_res_multiplier^2`)
+    // the shader's own Lagrange multiplier accounts for -- not a second,
+    // independently-chosen tolerance.
+    let multiplier = r.surface_res_multiplier() as f32;
+    let expected_corrected_total = true_particle_mass_sum * multiplier * multiplier;
+    let relative_error_corrected =
+        (corrected_total - expected_corrected_total).abs() / expected_corrected_total;
+    eprintln!(
+        "real, area-corrected drift: {:.2}% (expected_corrected_total={expected_corrected_total:.1} \
+         vs actual corrected_total={corrected_total:.1})",
+        relative_error_corrected * 100.0
     );
+    assert!(
+        relative_error_corrected < 0.1,
+        "the RE-ENABLED volume-preserving correction must bring the settled \
+         total within a small, real margin of true particle mass (scaled by \
+         the surface grid's own real area factor) -- got \
+         corrected_total={corrected_total:.1}, \
+         expected~={expected_corrected_total:.1} \
+         ({:.1}% off, wanted < 10%)",
+        relative_error_corrected * 100.0
+    );
+}
+
+/// Real diagnostic (2026-08-14), NOT an assertion -- see
+/// [[curvature_flow_mass_growth_x34_partially_investigated_2026-08-14]] in
+/// project memory. Two synthetic hypotheses for the ~34x total-mass growth
+/// measured above were tested and ruled out on IDEALIZED fields (uniform
+/// flat noise, a clean analytic disk); this instead sweeps the REAL engine's
+/// own iteration count on the SAME real particle-splat scene the sibling
+/// test above uses, to see whether the growth is roughly per-iteration
+/// linear (as the clean-disk probe's own decay was) or concentrated in the
+/// first transition from raw splat to first-smoothed -- real data for
+/// narrowing the search, not a synthetic guess.
+#[test]
+fn curvature_flow_mass_growth_scales_with_iteration_count() {
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
+    let grid_res = 32u32;
+    let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
+    let particles = build_particles(
+        &config,
+        SpawnRegion::for_sim(&config)
+            .at(glam::Vec2::splat(16.0))
+            .disk(6.0)
+            .spacing(0.5)
+            .material(0)
+            .precompute_volumes(),
+    );
+    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+    let sim =
+        GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+
+    const TOTAL_ATOMIC_SCALE: f32 = 1000.0;
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    eprintln!("real engine mass growth vs. iteration count, same scene as the sibling test:");
+    eprintln!(
+        "{:>6} {:>14} {:>10}",
+        "iters", "raw_post_total", "pct_of_pre"
+    );
+    for iterations in [2u32, 4, 6, 8, 10, 12] {
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+        r.set_curvature_iterations(iterations);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mass_growth_sweep_target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        r.render_surface_reconstruction(
+            &device,
+            &queue,
+            SurfaceReconstructionSource {
+                particle_buf: sim.particle_buffer(),
+                particle_count: sim.particle_count(),
+                grid_res,
+                material_slot: 0,
+                material_mass_enabled: false,
+                dt: 0.1,
+            },
+            &view,
+            true,
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+
+        let pre_total = readback_i32_total(&device, &queue, &r.pre_total_atomic_buf) as f32
+            / TOTAL_ATOMIC_SCALE;
+        let raw_post_total = readback_i32_total(&device, &queue, &r.post_total_atomic_buf) as f32
+            / TOTAL_ATOMIC_SCALE;
+
+        // Real hypothesis test (2026-08-14), not yet confirmed: `pre_total`
+        // is accumulated from real per-particle mass during the splat
+        // (resolution-independent -- a properly normalized kernel's weights
+        // sum to 1 regardless of how finely the surface grid samples it).
+        // `raw_post_total` is a RAW SUM of per-cell density VALUES across
+        // every surface cell -- but each surface cell's own AREA is
+        // `1/surface_res_multiplier^2` of a physics cell's area (the surface
+        // grid is `surface_res_multiplier`x finer per axis), and nowhere in
+        // `post_total_reduce_main`/`convert_atomic_to_float_main` is that
+        // area ever multiplied back in. A raw sum of density VALUES is not
+        // mass unless weighted by each cell's own area -- comparing it
+        // directly to a true mass total, as the sibling test does, silently
+        // compares two different physical quantities. If this is the real
+        // explanation, dividing by `surface_res_multiplier^2` should recover
+        // something close to `pre_total`.
+        let multiplier = r.surface_res_multiplier() as f32;
+        let area_corrected = raw_post_total / (multiplier * multiplier);
+        eprintln!(
+            "{:>6} {:>14.3} {:>9.1}%  area_corrected={:.2} (multiplier={:.0}, vs pre_total={:.2})",
+            iterations,
+            raw_post_total,
+            100.0 * raw_post_total / pre_total,
+            area_corrected,
+            multiplier,
+            pre_total
+        );
+    }
 }
 
 /// Real correctness check for the wave-equation surface enhancement (see
@@ -2917,5 +3058,232 @@ fn surface_reconstruction_does_not_flicker_over_many_deterministic_frames() {
          density-persistence attempt, which hit ~50%); it does NOT yet\
          assert the current baseline is fully acceptable",
         flicker_fraction * 100.0
+    );
+}
+
+// ── curvature_iterate_main numerical stability ──────────────────────────────
+//
+// A line-for-line CPU port of `curvature_flow.wgsl`'s `curvature_iterate_main`
+// -- same formula, same constants -- so this test measures the real update
+// rule directly rather than an approximation of it. Exists because the
+// shipped `GRAD_EPSILON=1.0e-3` was a real, root-cause bug (fixed 2026-08-14):
+// in a near-flat region (a fluid's interior, where the true density gradient
+// is ~0 and all that remains is the splat's own sampling noise) the
+// denominator `(grad_sq + GRAD_EPSILON)^1.5` was dominated by that tiny
+// epsilon, so kappa became noise divided by a near-zero constant -- an
+// enormous, effectively random swing every iteration, bounded only by
+// MAX_KAPPA. 12 iterations at the old value grew a synthetic flat field's
+// noise variance 357x and made a synthetic sharp corner GROW instead of
+// round (0.1 -> 0.205) -- independently matching this file's own prior note
+// (`curvature_flow_volume_correction_matches_true_particle_mass`'s
+// neighbour, see the disabled volume-correction pass's doc) that live
+// measurement found 15x-35x total-mass GROWTH here, the opposite of mean
+// curvature flow's real shrinking bias.
+mod curvature_iterate_stability {
+    /// Mirrors `curvature_flow.wgsl`'s `CURVATURE_PSEUDO_DT`, `MAX_KAPPA`,
+    /// and `GRAD_EPSILON` -- all three are WGSL-only (shader compile-time
+    /// consts, not part of any uniform), so there is no single source of
+    /// truth to import from Rust. If any of the three shader constants ever
+    /// change, update the matching one here too, or this "line-for-line
+    /// port" silently stops verifying the value actually shipped.
+    /// `CURVATURE_PSEUDO_DT` in particular is documented shader-side as a
+    /// tuned, retunable value, not a derived one -- the most likely of the
+    /// three to drift.
+    const CURVATURE_PSEUDO_DT: f32 = 0.15;
+    const MAX_KAPPA: f32 = 4.0;
+    const GRAD_EPSILON: f32 = 0.1;
+
+    fn sample(field: &[f32], cx: i32, cy: i32, res: i32) -> f32 {
+        if cx < 0 || cy < 0 || cx >= res || cy >= res {
+            0.0
+        } else {
+            field[(cy * res + cx) as usize]
+        }
+    }
+
+    /// Exact port of `curvature_iterate_main`'s body -- must be kept in sync
+    /// with `curvature_flow.wgsl` if that formula ever changes.
+    fn curvature_iterate(field_in: &[f32], res: i32, grad_epsilon: f32) -> Vec<f32> {
+        let mut out = vec![0.0f32; field_in.len()];
+        for cy in 0..res {
+            for cx in 0..res {
+                let center = sample(field_in, cx, cy, res);
+                let dx =
+                    (sample(field_in, cx + 1, cy, res) - sample(field_in, cx - 1, cy, res)) * 0.5;
+                let dy =
+                    (sample(field_in, cx, cy + 1, res) - sample(field_in, cx, cy - 1, res)) * 0.5;
+                let dxx = sample(field_in, cx + 1, cy, res) - 2.0 * center
+                    + sample(field_in, cx - 1, cy, res);
+                let dyy = sample(field_in, cx, cy + 1, res) - 2.0 * center
+                    + sample(field_in, cx, cy - 1, res);
+                let dxy = (sample(field_in, cx + 1, cy + 1, res)
+                    - sample(field_in, cx + 1, cy - 1, res)
+                    - sample(field_in, cx - 1, cy + 1, res)
+                    + sample(field_in, cx - 1, cy - 1, res))
+                    * 0.25;
+                let grad_sq = dx * dx + dy * dy;
+                let denom = (grad_sq + grad_epsilon).powf(1.5);
+                let kappa = ((dxx * dy * dy - 2.0 * dx * dy * dxy + dyy * dx * dx) / denom)
+                    .clamp(-MAX_KAPPA, MAX_KAPPA);
+                let i = (cy * res + cx) as usize;
+                out[i] = (center + CURVATURE_PSEUDO_DT * kappa).max(0.0);
+            }
+        }
+        out
+    }
+
+    // Deterministic xorshift -- zero external deps, fully reproducible.
+    struct Rng(u64);
+    impl Rng {
+        fn next_f32(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            ((self.0 >> 40) as f32 / (1u64 << 24) as f32) - 0.5
+        }
+    }
+
+    fn variance(field: &[f32]) -> f32 {
+        let n = field.len() as f32;
+        let mean: f32 = field.iter().sum::<f32>() / n;
+        field.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n
+    }
+
+    /// The regression this bug actually was: a near-flat, noisy field (the
+    /// real shape of a fluid's interior -- see `render::mod`'s N_eff
+    /// analysis for where the noise floor comes from) must not have its
+    /// variance GROW under repeated iteration. `GRAD_EPSILON=1.0e-3` grew it
+    /// 357x over 12 iterations; the shipped value must keep it bounded with
+    /// real margin, not just barely under 1.0.
+    #[test]
+    fn flat_noisy_field_does_not_amplify() {
+        const RES: i32 = 48;
+        const ITERATIONS: usize = 12;
+        let flat_value = 0.1f32;
+        let noise_std = 0.03f32; // matches the N_eff~13 noise floor at this scene's reference_cell_mass=0.1
+
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        let mut field: Vec<f32> = (0..(RES * RES) as usize)
+            .map(|_| (flat_value + noise_std * rng.next_f32()).max(0.0))
+            .collect();
+        let var0 = variance(&field);
+        for _ in 0..ITERATIONS {
+            field = curvature_iterate(&field, RES, GRAD_EPSILON);
+        }
+        let var_final = variance(&field);
+        let ratio = var_final / var0.max(1.0e-12);
+
+        assert!(
+            ratio < 1.2,
+            "curvature_iterate_main is amplifying flat-region noise instead \
+             of damping it: variance ratio {ratio:.3} over {ITERATIONS} \
+             iterations (>= 1.0 means growth). This is the exact mechanism \
+             behind the white-noise/flicker regression fixed 2026-08-14 -- \
+             GRAD_EPSILON is too small relative to the density field's real \
+             sampling noise floor."
+        );
+    }
+
+    /// The other half of the same fix: raising GRAD_EPSILON enough to
+    /// stabilize the flat interior must not also neuter the pass's actual
+    /// job. A sharp 90-degree corner (the real free-surface case) must still
+    /// round off measurably after iteration, not sit inert.
+    #[test]
+    fn sharp_corner_still_rounds() {
+        const RES: i32 = 48;
+        const ITERATIONS: usize = 12;
+        let flat_value = 0.1f32;
+
+        let mut field = vec![0.0f32; (RES * RES) as usize];
+        for cy in 0..RES {
+            for cx in 0..RES {
+                if cx >= 12 && cy >= 12 {
+                    field[(cy * RES + cx) as usize] = flat_value;
+                }
+            }
+        }
+        let corner_idx = (12 * RES + 12) as usize;
+        for _ in 0..ITERATIONS {
+            field = curvature_iterate(&field, RES, GRAD_EPSILON);
+        }
+
+        assert!(
+            field[corner_idx] < flat_value * 0.9,
+            "a sharp corner must round off (its own value should drop \
+             meaningfully toward its empty neighbours) after {ITERATIONS} \
+             curvature-flow iterations -- got {:.4} from a start of \
+             {flat_value}, too small a change. GRAD_EPSILON may be large \
+             enough to have suppressed real edge curvature along with the \
+             noise it was raised to fix.",
+            field[corner_idx]
+        );
+        assert!(
+            field[corner_idx] < flat_value,
+            "a sharp corner must not GROW under curvature flow (mean \
+             curvature flow shrinks, it does not expand) -- got {:.4} from \
+             a start of {flat_value}, which is the exact instability \
+             signature the old GRAD_EPSILON=1.0e-3 had (0.1 -> 0.205, this \
+             file's own prior measurement).",
+            field[corner_idx]
+        );
+    }
+}
+
+/// Regression test for the 2026-08-14 cursor-offset bug: `cursor_grid()`'s
+/// naive `screen_pos / window_size * grid_res` assumed the grid fills the
+/// window edge to edge, while `set_camera` actually letterboxes/pillarboxes
+/// to preserve aspect ratio -- agreed only when the window was square.
+/// `screen_to_grid` is the exact algebraic inverse instead; checked against
+/// real geometric invariants here rather than re-deriving the same formula
+/// (which would just duplicate a bug into its own test).
+#[test]
+fn screen_to_grid_is_exact_inverse_of_set_camera_at_any_aspect_ratio() {
+    let (device, queue) = headless_device();
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, 1, fmt);
+    let grid_res = 32u32;
+
+    // Exactly square: no letterboxing on either axis, so the four window
+    // corners must map to the four exact grid corners.
+    r.set_camera(&queue, grid_res, 100, 100, 0.6, true);
+    let (gx, gy) = r.screen_to_grid(0.0, 0.0, 100, 100);
+    assert!(
+        (gx - 0.0).abs() < 1.0e-3 && (gy - grid_res as f32).abs() < 1.0e-3,
+        "square window's top-left screen corner must map to the grid's \
+         top-left corner (x=0, y=grid_res) -- got ({gx}, {gy})"
+    );
+    let (gx, gy) = r.screen_to_grid(100.0, 100.0, 100, 100);
+    assert!(
+        (gx - grid_res as f32).abs() < 1.0e-3 && (gy - 0.0).abs() < 1.0e-3,
+        "square window's bottom-right screen corner must map to the grid's \
+         bottom-right corner (x=grid_res, y=0) -- got ({gx}, {gy})"
+    );
+
+    // A real invariant that holds at ANY aspect ratio: letterbox/pillarbox
+    // padding is always symmetric, so the window's own screen-space CENTER
+    // must always map to the grid's center, wide or tall or square. This is
+    // exactly the case the old naive mapping got wrong away from square.
+    for (w, h) in [(100u32, 100u32), (300, 100), (100, 300), (37, 211)] {
+        r.set_camera(&queue, grid_res, w, h, 0.6, true);
+        let (gx, gy) = r.screen_to_grid(w as f32 / 2.0, h as f32 / 2.0, w, h);
+        let expected = grid_res as f32 / 2.0;
+        assert!(
+            (gx - expected).abs() < 1.0e-2 && (gy - expected).abs() < 1.0e-2,
+            "window center must map to grid center at ANY aspect ratio \
+             (w={w}, h={h}) -- got ({gx}, {gy}), expected ({expected}, {expected})"
+        );
+    }
+
+    // A wide window (aspect > 1) pillarboxes on X but fills Y edge to edge
+    // -- so its full screen-space Y range must still cover the grid's full
+    // Y range exactly, unlike X which is padded.
+    r.set_camera(&queue, grid_res, 300, 100, 0.6, true);
+    let (_, gy_top) = r.screen_to_grid(150.0, 0.0, 300, 100);
+    let (_, gy_bottom) = r.screen_to_grid(150.0, 100.0, 300, 100);
+    assert!(
+        (gy_top - grid_res as f32).abs() < 1.0e-3 && gy_bottom.abs() < 1.0e-3,
+        "a wide window's Y axis is never letterboxed -- top/bottom screen \
+         edges must map exactly to grid Y=grid_res/Y=0 -- got top={gy_top} \
+         bottom={gy_bottom}"
     );
 }

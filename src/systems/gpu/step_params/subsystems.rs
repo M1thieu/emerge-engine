@@ -41,54 +41,6 @@ impl GpuThermalParams {
 
 const _: () = assert!(core::mem::size_of::<GpuThermalParams>() == 16);
 
-/// Real grid-mediated cohesion/surface-tension force (Continuum Surface Force,
-/// Brackbill, Kothe & Zemach 1992; grid-mass-as-color-field variant: GIMP-CSF,
-/// Yang et al., CMES 86(3), 2012 -- same real technique confirmed independently
-/// both in that published paper and in a real, running reference implementation,
-/// `tmp/floom/src/floom/system.js`). Consumed by `grid_cohesion_main`
-/// (`grid_update.wgsl`), a dedicated pass that runs strictly after grid mass has
-/// been decoded from its fixed-point atomic accumulator (a genuine data race
-/// otherwise -- reading a neighbor cell's mass before ITS thread has decoded it
-/// reads raw fixed-point bits reinterpreted as garbage float) and strictly
-/// before `grid_update_main`'s normalize/gravity/boundary work.
-///
-/// Simplified to a GRADIENT-driven cohesive force (not full curvature×normal
-/// CSF) for a first, lower-risk implementation -- `F = gamma_grid * grad(c)`,
-/// `c = mass/rest_density_grid`, pulling momentum toward locally denser
-/// neighboring mass. A real, disclosed scope reduction from full CSF (which
-/// needs a second derivative/curvature estimate, a wider stencil, more
-/// implementation risk), not the textbook formula -- upgrading to full
-/// curvature-based CSF is a real, separate future refinement, not implied here.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GpuCohesionParams {
-    /// Surface tension coefficient in grid units, derived from a real SI value
-    /// (water: 0.0728 N/m at ~20C) via `SimConfig::stress_from_si` -- that
-    /// method's own doc explicitly lists "surface tension" as an intended use.
-    /// 0.0 = disabled (default, every existing scene) -- `grid_cohesion_main`
-    /// returns immediately for every cell, zero cost.
-    pub gamma_grid: f32,
-    /// Rest density in grid units (`rho_kg_m3 * dx_meters^2`, the SAME real
-    /// conversion every other material property in this codebase already
-    /// uses) -- normalizes grid mass into the CSF color field `c`.
-    pub rest_density_grid: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
-}
-
-impl GpuCohesionParams {
-    pub fn disabled() -> Self {
-        Self {
-            gamma_grid: 0.0,
-            rest_density_grid: 0.0,
-            _pad0: 0.0,
-            _pad1: 0.0,
-        }
-    }
-}
-
-const _: () = assert!(core::mem::size_of::<GpuCohesionParams>() == 16);
-
 /// Generic reaction-diffusion resource field — GPU mirror of `ScalarDiffusionField`
 /// (`src/energy/thermodynamics/scalar_field.rs`), specialized to the one source term
 /// its own CPU test module uses: logistic growth (Verhulst 1838, `dφ/dt = r·φ·(1−φ/K)`).

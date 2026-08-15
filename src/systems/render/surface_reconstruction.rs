@@ -57,20 +57,12 @@ impl Renderer {
                 phase_filter_material_id: -1, // v1 behavior: every particle contributes
                 material_mass_enabled: material_mass_enabled as u32,
                 dt,
+                splat_width_cells: self.splat_width_cells,
+                anisotropy_strength: self.anisotropy_strength,
             }),
         );
 
-        // Real derivation, not a fresh camera computation: `set_camera`'s own
-        // orthographic formula has `sx/sy` scale as 1/grid_res and `tx/ty`
-        // independent of resolution entirely (translation, not scale) --
-        // rescaling the ALREADY-cached grid-space transform by
-        // `grid_res/surface_res` on sx/sy alone (tx/ty unchanged) gives the
-        // exact same real projection expressed directly in this pass's own,
-        // finer coordinate units, with no separate width/height bookkeeping.
-        let (sx_grid, tx, sy_grid, ty) = self.cached_ortho;
-        let res_ratio = grid_res as f32 / surface_res as f32;
-        let sx = sx_grid * res_ratio;
-        let sy = sy_grid * res_ratio;
+        let (sx, tx, sy, ty) = self.surface_render_projection(grid_res, surface_res);
 
         queue.write_buffer(
             &self.surface_render_params_buf,
@@ -82,16 +74,15 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                // Same real reasoning as `render_grid_volume`'s own mass_floor
-                // (see that method's doc): a floor low enough to need real
-                // local density, high enough that bilinear smoothing doesn't
-                // overshoot true particle extent. The B-spline kernel here
-                // deposits real mass (not a normalized [0,1] density), same
-                // units `render_grid_volume` already uses.
-                mass_floor: 0.15 * self.grid_reference_cell_mass,
+                // See `SURFACE_MASS_FLOOR_FRACTION`'s own doc: sized off what
+                // ONE isolated particle's B-spline splat can concentrate into a
+                // single surface cell, not copied from `render_grid_volume`'s
+                // own (differently-diluted) units.
+                mass_floor: SURFACE_MASS_FLOOR_FRACTION * self.grid_reference_cell_mass,
                 material_slot,
                 material_mass_enabled: material_mass_enabled as u32,
-                _pad2: [0.0, 0.0],
+                reference_cell_mass: self.grid_reference_cell_mass,
+                edge_reference_depth: self.edge_reference_depth,
             }),
         );
 
@@ -120,7 +111,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&VisibilityParams {
                 surface_res,
-                mass_floor: 0.15 * self.grid_reference_cell_mass,
+                mass_floor: SURFACE_MASS_FLOOR_FRACTION * self.grid_reference_cell_mass,
                 _pad0: 0,
                 _pad1: 0,
             }),
@@ -131,7 +122,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&BandHysteresisParams {
                 surface_res,
-                _pad0: 0,
+                reference_cell_mass: self.grid_reference_cell_mass,
                 _pad1: 0,
                 _pad2: 0,
             }),
@@ -169,6 +160,10 @@ impl Renderer {
                     binding: 6,
                     resource: self.surface_material_mass_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.surface_moments_buf.as_entire_binding(),
+                },
             ],
         });
         // clear_surface_main only ever reads binding 1/2/3/4/5/6 (its own
@@ -205,6 +200,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: self.surface_material_mass_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.surface_moments_buf.as_entire_binding(),
                 },
             ],
         });
@@ -504,7 +503,21 @@ impl Renderer {
             });
             cp.set_pipeline(&self.surface_clear_pipeline);
             cp.set_bind_group(0, &clear_bg, &[]);
-            cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
+            // Covers both the surface buffers (sized off `surface_res`) and
+            // the moments buffer (sized off `grid_res`); neither is reliably
+            // the larger at every `surface_res_multiplier`, and the shader
+            // guards each store against its own range.
+            let clear_threads = cell_count.max(grid_res * grid_res * MOMENTS_PER_CELL as u32);
+            cp.dispatch_workgroups(clear_threads.div_ceil(SURFACE_CLEAR_WG), 1, 1);
+        }
+        if self.anisotropy_strength > 0.0 {
+            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("surface_moments"),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(&self.surface_moments_pipeline);
+            cp.set_bind_group(0, &splat_bg, &[]);
+            cp.dispatch_workgroups((particle_count as u32).div_ceil(SURFACE_SPLAT_WG), 1, 1);
         }
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -524,6 +537,43 @@ impl Renderer {
             cp.set_bind_group(0, &convert_bg, &[]);
             cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
         }
+        // ROOT FIX (2026-08-13): `temp_avg_main` recovers per-cell AVERAGE
+        // temperature by dividing the raw mass-weighted temperature sum by
+        // mass -- and, in this file's own already-stated words, "that ratio is
+        // only meaningful against the mass value the weighted sum was
+        // ORIGINALLY splatted against".
+        //
+        // That principle was previously enforced against ONE mutator of
+        // `surface_a_buf` (the volume-preserving correction) by moving this
+        // pass before it -- but the curvature iterate loop below mutates the
+        // very same buffer, and used to run FIRST. So the division paired a
+        // RAW numerator with a SMOOTHED denominator: wherever curvature flow
+        // moves mass out of a cell the denominator shrinks while the numerator
+        // does not, and the recovered "temperature" blows up far past any real
+        // value.
+        //
+        // Visible symptom that traced back to here: `fs_main`'s blackbody term
+        // is `heat(0.5 + t_norm*0.5) * t_norm^2 * 2` with
+        // `t_norm = clamp(avg_temp/5000, 0, 1)`, and `heat(1.0)` is PURE RED.
+        // So rim/thin cells of 300 K water rendered as saturated red-pink
+        // added on top of the correct body colour -- measured as body
+        // (0.078, 0.43, 0.59) vs artifact (1.0, 0.43, 0.59): identical green
+        // and blue, red alone driven to 1.0, which is exactly an additive
+        // heat(1.0).
+        //
+        // Running it HERE -- straight after convert, before any smoothing --
+        // divides raw by raw, which is the pairing the algorithm actually
+        // requires. `temp_diffuse` below still smooths the resulting
+        // temperature field, so nothing is lost.
+        {
+            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("temp_avg"),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(&self.temp_avg_pipeline);
+            cp.set_bind_group(0, &temp_avg_bg, &[]);
+            cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
+        }
         // `CURVATURE_ITERATIONS` real dispatches, ping-ponged -- kept EVEN so
         // the settled result always lands back in `surface_a` (see this
         // struct's own field doc, and the module-level const assertion
@@ -531,7 +581,7 @@ impl Renderer {
         // unconditionally rather than choosing at runtime.
         let iterate_wg_x = surface_res.div_ceil(8);
         let iterate_wg_y = surface_res.div_ceil(8);
-        for i in 0..CURVATURE_ITERATIONS {
+        for i in 0..self.curvature_iterations {
             let bg = if i % 2 == 0 {
                 &iterate_a_to_b
             } else {
@@ -563,15 +613,6 @@ impl Renderer {
         // "volume preservation" at all, so it must be computed from the
         // real, as-settled mass, before that mass is corrected for anything
         // else.
-        {
-            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("temp_avg"),
-                timestamp_writes: None,
-            });
-            cp.set_pipeline(&self.temp_avg_pipeline);
-            cp.set_bind_group(0, &temp_avg_bg, &[]);
-            cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
-        }
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("temp_diffuse"),
@@ -655,6 +696,21 @@ impl Renderer {
             cp.set_pipeline(&self.volume_correct_pipeline);
             cp.set_bind_group(0, &volume_correct_bg, &[]);
             cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
+        }
+        // First real frame since `wave_density_prev_buf` was last a zero
+        // placeholder: seed it from this frame's own settled density so the
+        // wave step below reads prev == now (force = 0) instead of a false
+        // "density appeared from nothing" kick. See `wave_prev_seeded`'s own
+        // doc.
+        if !self.wave_prev_seeded {
+            enc.copy_buffer_to_buffer(
+                &self.surface_a_buf,
+                0,
+                &self.wave_density_prev_buf,
+                0,
+                (cell_count as u64) * mem::size_of::<f32>() as u64,
+            );
+            self.wave_prev_seeded = true;
         }
         // Real wave-equation step, reading this frame's now-settled density
         // (`surface_a_buf`) as its excitation source -- must run AFTER the
@@ -805,6 +861,13 @@ impl Renderer {
                     binding: 6,
                     resource: material_mass_buf.as_entire_binding(),
                 },
+                // Shared across both phases, not per-phase: the fit is a
+                // geometric property of where matter is, see the moments
+                // buffer's own shader doc.
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.surface_moments_buf.as_entire_binding(),
+                },
             ],
         });
         let splat_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -838,6 +901,13 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: material_mass_buf.as_entire_binding(),
+                },
+                // Shared across both phases, not per-phase: the fit is a
+                // geometric property of where matter is, see the moments
+                // buffer's own shader doc.
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: self.surface_moments_buf.as_entire_binding(),
                 },
             ],
         });
@@ -937,7 +1007,7 @@ impl Renderer {
         }
         let iterate_wg_x = surface_res.div_ceil(8);
         let iterate_wg_y = surface_res.div_ceil(8);
-        for i in 0..CURVATURE_ITERATIONS {
+        for i in 0..self.curvature_iterations {
             let bg = if i % 2 == 0 {
                 &iterate_a_to_b
             } else {
@@ -1058,6 +1128,8 @@ impl Renderer {
                 // unrelated to this 2-phase filter -- always off here.
                 material_mass_enabled: 0,
                 dt,
+                splat_width_cells: self.splat_width_cells,
+                anisotropy_strength: self.anisotropy_strength,
             }),
         );
         queue.write_buffer(
@@ -1070,15 +1142,13 @@ impl Renderer {
                 phase_filter_material_id: material_id_b as i32,
                 material_mass_enabled: 0,
                 dt,
+                splat_width_cells: self.splat_width_cells,
+                anisotropy_strength: self.anisotropy_strength,
             }),
         );
 
-        // Same real derivation as `render_surface_reconstruction`'s own doc
-        // -- identical for both phases, they share one camera/surface_res.
-        let (sx_grid, tx, sy_grid, ty) = self.cached_ortho;
-        let res_ratio = grid_res as f32 / surface_res as f32;
-        let sx = sx_grid * res_ratio;
-        let sy = sy_grid * res_ratio;
+        // Identical for both phases -- they share one camera/surface_res.
+        let (sx, tx, sy, ty) = self.surface_render_projection(grid_res, surface_res);
 
         queue.write_buffer(
             &self.surface_render_params_buf,
@@ -1090,10 +1160,11 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                mass_floor: 0.15 * self.grid_reference_cell_mass,
+                mass_floor: SURFACE_MASS_FLOOR_FRACTION * self.grid_reference_cell_mass,
                 material_slot: material_id_a,
                 material_mass_enabled: 0,
-                _pad2: [0.0, 0.0],
+                reference_cell_mass: self.grid_reference_cell_mass,
+                edge_reference_depth: self.edge_reference_depth,
             }),
         );
         queue.write_buffer(
@@ -1106,10 +1177,11 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                mass_floor: 0.15 * self.grid_reference_cell_mass,
+                mass_floor: SURFACE_MASS_FLOOR_FRACTION * self.grid_reference_cell_mass,
                 material_slot: material_id_b,
                 material_mass_enabled: 0,
-                _pad2: [0.0, 0.0],
+                reference_cell_mass: self.grid_reference_cell_mass,
+                edge_reference_depth: self.edge_reference_depth,
             }),
         );
 
@@ -1130,7 +1202,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&VisibilityParams {
                 surface_res,
-                mass_floor: 0.15 * self.grid_reference_cell_mass,
+                mass_floor: SURFACE_MASS_FLOOR_FRACTION * self.grid_reference_cell_mass,
                 _pad0: 0,
                 _pad1: 0,
             }),
@@ -1140,7 +1212,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&BandHysteresisParams {
                 surface_res,
-                _pad0: 0,
+                reference_cell_mass: self.grid_reference_cell_mass,
                 _pad1: 0,
                 _pad2: 0,
             }),
@@ -1330,6 +1402,31 @@ impl Renderer {
                 },
             ],
         });
+        // First real frame since either phase's `*_wave_density_prev_buf`
+        // was last a zero placeholder: seed it from this frame's own
+        // settled density before its wave step runs. See the single-phase
+        // path's `wave_prev_seeded` check for the full doc.
+        let wave_history_bytes = (surface_res * surface_res) as u64 * mem::size_of::<f32>() as u64;
+        if !self.wave_prev_seeded {
+            enc.copy_buffer_to_buffer(
+                &self.surface_a_buf,
+                0,
+                &self.wave_density_prev_buf,
+                0,
+                wave_history_bytes,
+            );
+            self.wave_prev_seeded = true;
+        }
+        if !self.phase_b_wave_prev_seeded {
+            enc.copy_buffer_to_buffer(
+                &self.phase_b_a_buf,
+                0,
+                &self.phase_b_wave_density_prev_buf,
+                0,
+                wave_history_bytes,
+            );
+            self.phase_b_wave_prev_seeded = true;
+        }
         for (label, bg) in [
             ("phase_a_wave_step", &phase_a_wave_step_bg),
             ("phase_b_wave_step", &phase_b_wave_step_bg),
@@ -1353,9 +1450,9 @@ impl Renderer {
             cp.set_bind_group(0, bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Per-phase snapshot -- see the single-phase path's identical copy
-        // above for the full doc.
-        let wave_history_bytes = (surface_res * surface_res) as u64 * mem::size_of::<f32>() as u64;
+        // Per-phase snapshot -- feeds the NEXT frame's wave step. Always
+        // unconditional (unlike the seed above): every frame's own settled
+        // density becomes next frame's "previous", not just the first.
         enc.copy_buffer_to_buffer(
             &self.surface_a_buf,
             0,
@@ -1460,12 +1557,41 @@ impl Renderer {
         self.wave_frame_index = self.wave_frame_index.wrapping_add(1);
     }
 
+    /// The orthographic projection for THIS pass's own, finer coordinate
+    /// units -- shared by `render_surface_reconstruction` and its
+    /// dual-phase sibling (identical for both, one camera/surface_res), so
+    /// they can't independently drift like `cursor_grid`/`set_camera` once
+    /// did. Not a fresh computation: `set_camera`'s `sx/sy` scale as
+    /// `1/grid_res` and `tx/ty` are resolution-independent, so rescaling the
+    /// cached transform by `grid_res/surface_res` on `sx/sy` alone gives the
+    /// same projection in this pass's own units.
+    fn surface_render_projection(&self, grid_res: u32, surface_res: u32) -> (f32, f32, f32, f32) {
+        let (sx_grid, tx, sy_grid, ty) = self.cached_ortho;
+        let res_ratio = grid_res as f32 / surface_res as f32;
+        (sx_grid * res_ratio, tx, sy_grid * res_ratio, ty)
+    }
+
     /// Grows the three curvature-flow surface buffers together when a
     /// caller's `grid_res * SURFACE_RES_MULTIPLIER` exceeds the currently
     /// allocated `surface_res` -- same lazy-growth pattern `ensure_capacity`
     /// already uses for the particle instance buffers.
     pub(super) fn ensure_surface_capacity(&mut self, device: &wgpu::Device, grid_res: u32) {
-        let needed = grid_res * SURFACE_RES_MULTIPLIER;
+        // Grown BEFORE the surface early-return below: the moments buffer is
+        // sized off `grid_res` alone, so it can need growing on a call where
+        // the (multiplier-scaled) surface buffers do not.
+        if grid_res > self.surface_moments_res {
+            self.surface_moments_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("surface_moments"),
+                size: (grid_res as u64)
+                    * (grid_res as u64)
+                    * MOMENTS_PER_CELL
+                    * mem::size_of::<i32>() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.surface_moments_res = grid_res;
+        }
+        let needed = grid_res * self.surface_res_multiplier;
         if needed <= self.surface_res {
             return;
         }
@@ -1606,6 +1732,9 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        // Back to a zero placeholder -- needs reseeding before the next
+        // `wave_step`, see `wave_prev_seeded`'s own doc.
+        self.wave_prev_seeded = false;
         // Real hysteresis visibility state, grown together -- a resize
         // resets it to all-"not visible" (the same real, disclosed,
         // harmless one-time bias the constructor's own placeholder
@@ -1662,6 +1791,7 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        self.phase_b_wave_prev_seeded = false;
         self.phase_b_visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("phase_b_visibility_state"),
             size: float_size,

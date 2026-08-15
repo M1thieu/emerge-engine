@@ -329,6 +329,9 @@ pub(super) fn build_surface_clear_pipeline(
             // (gated, real cost only when opted in) -- see
             // `surface_material_mass_atomic`'s own doc in the shader.
             bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
+            // Yu & Turk neighbourhood moments, also cleared here -- see
+            // `surface_moments_atomic`'s own doc in the shader.
+            bgl_storage_rw(7, wgpu::ShaderStages::COMPUTE),
         ],
     });
     let shader = build_curvature_flow_shader(device);
@@ -367,6 +370,10 @@ pub(super) fn build_surface_splat_pipeline(
             // N-material extension's per-cell mass array -- see
             // `surface_material_mass_atomic`'s own doc in the shader.
             bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
+            // Yu & Turk neighbourhood moments -- written by
+            // `splat_moments_main`, read back by `splat_density_main` to fit
+            // each particle's kernel shape. See that buffer's own shader doc.
+            bgl_storage_rw(7, wgpu::ShaderStages::COMPUTE),
         ],
     });
     let shader = build_curvature_flow_shader(device);
@@ -378,6 +385,26 @@ pub(super) fn build_surface_splat_pipeline(
         "splat_density_main",
     );
     (pipeline, bgl)
+}
+
+/// `curvature_flow.wgsl`'s `splat_moments_main` pipeline -- scatters the
+/// weighted moments of the particle distribution onto the physics grid so the
+/// splat pass can fit each particle a neighbourhood-derived kernel shape
+/// (Yu & Turk 2013). Shares the splat pass's own bind group layout: it reads
+/// the same particles and params and writes the same moments buffer, so no
+/// separate layout or bind group is needed.
+pub(super) fn build_surface_moments_pipeline(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+) -> wgpu::ComputePipeline {
+    let shader = build_curvature_flow_shader(device);
+    build_compute_pipeline(
+        device,
+        "surface_moments_pipeline",
+        bgl,
+        &shader,
+        "splat_moments_main",
+    )
 }
 
 /// `curvature_flow.wgsl`'s `convert_atomic_to_float_main` pipeline --

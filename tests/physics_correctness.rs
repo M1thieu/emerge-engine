@@ -1602,6 +1602,21 @@ fn fluid_impact_shows_real_free_surface_splash_separation() {
             .map(|p| p.deformation_gradient.determinant())
             .fold(f32::NEG_INFINITY, f32::max)
     };
+    // Real diagnostic (2026-08-14): `NewtonianFluidMaterial::update_particle`
+    // clamps `det(F)` to `[0.5, 2.0]` -- memory records the lower bound as
+    // "now dormant" since the EOS-stiffness fix raised the observed floor to
+    // ~0.964 on calm scenes, but that was never checked against a genuinely
+    // violent impact, which is exactly what a free-floor edge case would
+    // need to actually approach the clamp. Tracked alongside `max_j_seen`
+    // (same real pattern, not a new mechanism) so this hard scene answers
+    // that question directly instead of by assumption.
+    let min_j = |solver: &Simulation| -> f32 {
+        solver
+            .particles()
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .fold(f32::INFINITY, f32::min)
+    };
     let horizontal_spread = |solver: &Simulation| -> f32 {
         let xs = &solver.particles().x;
         let min_x = xs.iter().map(|p| p.x).fold(f32::MAX, f32::min);
@@ -1611,9 +1626,11 @@ fn fluid_impact_shows_real_free_surface_splash_separation() {
 
     let initial_spread = horizontal_spread(&solver);
     let mut max_j_seen = max_j(&solver);
+    let mut min_j_seen = min_j(&solver);
     for _ in 0..250 {
         solver.step_n(1);
         max_j_seen = max_j_seen.max(max_j(&solver));
+        min_j_seen = min_j_seen.min(min_j(&solver));
         for p in solver.particles().iter() {
             assert!(
                 p.x.is_finite()
@@ -1641,6 +1658,11 @@ fn fluid_impact_shows_real_free_surface_splash_separation() {
     }
     let final_spread = horizontal_spread(&solver);
 
+    eprintln!(
+        "hard-impact J range over 250 steps: min_j_seen={min_j_seen:.4} \
+         max_j_seen={max_j_seen:.4} (clamp is [0.5, 2.0])"
+    );
+
     assert!(
         max_j_seen > 1.1,
         "a real impact should show measurable free-surface separation \
@@ -1651,6 +1673,117 @@ fn fluid_impact_shows_real_free_surface_splash_separation() {
         final_spread > initial_spread * 1.3,
         "a real splash should spread measurably wider on impact than the \
          initial compact block: initial={initial_spread:.3} final={final_spread:.3}"
+    );
+}
+
+// â”€â”€â”€ Phase-transition elastic-reference rebaseline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/// Real regression (2026-08-14): a particle transitioning from a fluid
+/// (whose `deformation_gradient` only ever encodes volume ratio -- no real
+/// shear/rest-shape memory) into a solid material must NOT spuriously
+/// spring/oscillate on its leftover, real, non-1.0 volume ratio. The
+/// solid's elastic law must read the particle's post-transition
+/// configuration as ITS OWN zero-strain rest state, not as strain away from
+/// an assumed `F=Identity` origin it never actually had as a solid.
+///
+/// The compression here is REAL, not fabricated by hand-setting `F`: a real
+/// inward radial impulse compresses a small fluid block, then several free
+/// steps let that compression genuinely settle into the particles' own
+/// `deformation_gradient` before any transition happens -- exactly the kind
+/// of ordinary, expected fluid state (J slightly off 1 from real dynamics)
+/// a freeze/solidify rule would encounter live.
+#[test]
+fn fluid_to_solid_transition_does_not_spring() {
+    let gravity = Vec2::ZERO; // isolates the transition's own effect completely
+    let grid = 32usize;
+    let config = SimConfig::standard(grid, 0.05, gravity);
+
+    let center = Vec2::splat(grid as f32 * 0.5);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(6, 6),
+        box_center: center,
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+
+    const FLUID_ID: u32 = 0;
+    const SOLID_ID: u32 = 1;
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(
+            4.0, 1.0e-3, 50.0, 7.0,
+        )))
+        .with_material(SOLID_ID, Box::new(CorotatedMaterial::new(200.0, 100.0)));
+
+    // Real inward compression (negative strength = pull toward center), not
+    // a hand-set F -- then real free steps let it settle into the actual
+    // per-particle deformation_gradient before the transition.
+    solver.apply_radial_impulse(center, 5.0, -3.0);
+    solver.step_n(15);
+
+    let mean_j = |solver: &Simulation| -> f32 {
+        let particles = solver.particles();
+        let js: Vec<f32> = particles
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .collect();
+        js.iter().sum::<f32>() / js.len() as f32
+    };
+    let j_before_transition = mean_j(&solver);
+    assert!(
+        (j_before_transition - 1.0).abs() > 0.01,
+        "setup check: the real compression should have produced a genuinely \
+         non-1.0 mean J before transitioning, or this test isn't actually \
+         isolating anything -- got mean_j={j_before_transition:.4}"
+    );
+
+    let max_speed = |solver: &Simulation| -> f32 {
+        solver
+            .particles()
+            .iter()
+            .map(|p| p.v.length())
+            .fold(0.0f32, f32::max)
+    };
+    let speed_at_transition = max_speed(&solver);
+
+    solver.phase_transition(|p| p.material_id == FLUID_ID, SOLID_ID);
+
+    // Direct check on the rebaseline itself: every transitioned particle's
+    // elastic reference must be reset to Identity, not inherit the fluid's
+    // leftover (isotropic but non-1.0) F.
+    for p in solver.particles().iter() {
+        assert_eq!(
+            p.deformation_gradient,
+            Mat2::IDENTITY,
+            "a freshly-transitioned solid particle's deformation_gradient \
+             must be rebaselined to Identity (its current shape becomes its \
+             own zero-strain reference), got {:?}",
+            p.deformation_gradient
+        );
+    }
+
+    let mut max_speed_after = speed_at_transition;
+    for _ in 0..20 {
+        solver.step_n(1);
+        max_speed_after = max_speed_after.max(max_speed(&solver));
+    }
+
+    eprintln!(
+        "fluid->solid transition: mean_j_before={j_before_transition:.4} \
+         speed_at_transition={speed_at_transition:.4} \
+         max_speed_over_next_20_steps={max_speed_after:.4}"
+    );
+
+    assert!(
+        max_speed_after < speed_at_transition + 1.0,
+        "a real fluid->solid phase transition must not inject spurious \
+         kinetic energy from a spring/oscillation artifact -- speed at the \
+         instant of transition was {speed_at_transition:.4}, but grew to \
+         {max_speed_after:.4} over the next 20 steps with zero external \
+         gravity/force. This is the exact 'spring' regression the elastic-\
+         reference rebaseline in `Simulation::apply_phase_transition` \
+         exists to prevent."
     );
 }
 

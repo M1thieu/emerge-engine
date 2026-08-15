@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 
 use super::{LcgRng, Simulation, SpawnRegion, density, initialize_particles};
 use crate::particle::Particle;
@@ -16,25 +16,118 @@ use crate::solver::density::estimate_particle_volumes;
 use crate::thermodynamics::ScalarDiffusionField;
 
 impl Simulation {
+    /// Real, shared phase-transition logic -- the single place both
+    /// `phase_transition` (this file) and the per-substep `add_phase_rule`
+    /// evaluation (`solver::step`) apply a material change, so the two
+    /// can never drift apart on what a transition actually does.
+    ///
+    /// Real fix (2026-08-14) for a genuine "spring" artifact live-reported
+    /// on a fluid->solid transition (e.g. the water->ice freeze rule): a
+    /// particle arriving from a material with no real rest-shape memory (a
+    /// fluid's `F` only ever encodes volume ratio, `sqrt(J)*I` -- see
+    /// `NewtonianFluidMaterial`'s own doc) into a material that interprets
+    /// `F` as elastic strain away from a rest configuration (any solid) had
+    /// its leftover, almost-never-exactly-1.0 `J` misread as real elastic
+    /// strain -- generating a spurious restoring stress that visibly
+    /// oscillates instead of the particle freezing smoothly into its
+    /// current shape. `MaterialModel::init_particle`'s default is a no-op
+    /// and no existing solid material touches `deformation_gradient` there
+    /// (confirmed by reading `CorotatedMaterial::init_particle` and the
+    /// trait default), so nothing rebaselined it before this fix.
+    ///
+    /// Real physical justification, not a workaround: a genuine phase
+    /// transition (water becoming ice, rock becoming lava) changes the
+    /// material's actual physical structure, so whatever elastic strain
+    /// existed relative to the OLD phase's reference configuration has no
+    /// meaning in the NEW phase -- the new phase's zero-strain reference is
+    /// wherever the particle physically IS at the instant of transition.
+    /// Standard treatment for phase-transforming materials in computational
+    /// solid mechanics, applied generically here rather than as a per-solid-
+    /// material patch (this project's own standing preference for a single
+    /// reusable mechanism over duplicated per-material boilerplate).
+    ///
+    /// Deliberately volume/density-CONTINUOUS, not a reset to some default:
+    /// `initial_volume` is rebaselined to the particle's CURRENT volume (not
+    /// its original spawn volume), so there is no discontinuous size jump
+    /// at the instant of transition -- only the ELASTIC STRAIN memory is
+    /// cleared, not the particle's real physical size. A material whose own
+    /// `init_particle` subsequently redefines volume/density from ITS OWN
+    /// rest_density (e.g. `NewtonianFluidMaterial`, for a melting
+    /// transition) is free to do so -- that is a real, physically expected
+    /// density change on phase transition (most real materials change
+    /// density when they melt/freeze too), not a bug this rebaseline
+    /// introduces.
+    ///
+    /// ## Real, disclosed roadmap toward a genuine Stefan-condition treatment
+    ///
+    /// This function (and every `add_phase_rule` predicate, e.g. "water
+    /// freezes below 273K") implements phase change as an instantaneous,
+    /// per-particle THRESHOLD -- a particle flips the instant its own local
+    /// temperature crosses a fixed point, with no notion of how fast that
+    /// transformation should actually happen. The real, governing PDE this
+    /// approximates is the Stefan condition for a moving phase boundary:
+    /// `L * rho * v_interface = -[k * grad(T)]` -- the interface velocity is
+    /// set by the JUMP in heat flux across it, i.e. by how much MORE energy
+    /// is leaving one side than entering the other. A threshold switch is
+    /// exactly that condition's zeroth-order limit (`v_interface ->
+    /// infinity`, the phase change treated as instantaneous once enough
+    /// energy has crossed the threshold at all, regardless of RATE) -- a
+    /// real, named simplification, not an unexamined one.
+    ///
+    /// What is ALREADY real and load-bearing in that equation, today: `L`
+    /// (latent heat, debited below from `MaterialModel::latent_heat()`) and
+    /// `k`/`grad(T)` (real thermal conductivity and gradient, already
+    /// computed every substep by `ThermalDiffusion`, see
+    /// `energy::thermodynamics::diffusion`). The missing piece is using
+    /// `grad(T)` at the moment of transition to RATE-LIMIT the transition
+    /// itself, instead of switching materials outright once `L` has been
+    /// debited -- the real next increment, not attempted here. This is
+    /// disclosed so it can be picked up as a genuine PDE-consistency
+    /// upgrade to this exact function later, without re-deriving where the
+    /// gap is.
+    pub(super) fn apply_phase_transition(&mut self, i: usize, new_material_id: u32) {
+        self.particles.material_id[i] = new_material_id;
+
+        let current_volume = self.particles.volume[i];
+        if current_volume.is_finite() && current_volume > 0.0 {
+            self.particles.deformation_gradient[i] = Mat2::IDENTITY;
+            self.particles.initial_volume[i] = current_volume;
+            self.particles.density[i] = self.particles.mass[i] / current_volume;
+        }
+
+        let latent_heat = self.materials.get(new_material_id).latent_heat();
+        if latent_heat != 0.0
+            && let Some(thermal) = &self.thermal
+        {
+            self.particles.temperature[i] -= latent_heat / thermal.config.heat_capacity;
+        }
+
+        let mut p = self.particles.get(i);
+        self.materials.get(new_material_id).init_particle(&mut p);
+        self.particles.set(i, p);
+    }
+
     /// Switch material for every particle where `predicate` returns true.
     ///
-    /// Material initialization establishes any target constitutive state after
-    /// the transition. `recompute_initial_volumes()` measures only materials
-    /// that opt into a kernel-density state; strict WC-MPM liquids retain
-    /// `V0=m/rho0` and must not be remeasured from their free-surface kernel.
+    /// Rebaselines each transitioned particle's elastic reference state to
+    /// its current physical configuration and calls the new material's own
+    /// `init_particle` -- see `apply_phase_transition`'s own doc for the
+    /// real reasoning (this is not a cosmetic reset: without it, a solid
+    /// material arriving from a fluid's leftover volumetric state visibly
+    /// springs/oscillates instead of freezing smoothly). Otherwise a
+    /// transitioned particle would also inherit stale material-specific
+    /// plastic fields (`hardening_scale`, `friction_hardening`,
+    /// `plastic_volume_ratio`, etc.) from its OLD material, reinterpreted
+    /// under the new material's semantics (e.g. Rankine's damage
+    /// accumulator read as Drucker-Prager's friction accumulator) --
+    /// `init_particle` resets those to the new material's own defaults,
+    /// exactly like `reinit_all_particle_state`/`add_body` do for every
+    /// other material-assignment path.
     ///
     /// If `new_material_id`'s `MaterialModel::latent_heat()` is non-zero and a thermal
     /// model is configured (`with_thermal`/`set_thermal`), debits `temperature` by
     /// `latent_heat / heat_capacity` for every transitioned particle — see
     /// `MaterialModel::latent_heat` for the sign convention.
-    ///
-    /// Calls the new material's own `init_particle` right after the swap, exactly
-    /// like `reinit_all_particle_state` and `add_body` do for every other
-    /// material-assignment path — otherwise a transitioned particle inherits stale
-    /// material-specific plastic fields (`hardening_scale`, `friction_hardening`,
-    /// `plastic_volume_ratio`, etc.) from its OLD material, reinterpreted under the
-    /// new material's semantics (e.g. Rankine's damage accumulator read as
-    /// Drucker-Prager's friction accumulator).
     pub fn phase_transition<F>(&mut self, predicate: F, new_material_id: u32)
     where
         F: Fn(&Particle) -> bool,
@@ -44,18 +137,10 @@ impl Simulation {
             "phase_transition: material_id {new_material_id} is not registered — \
              call solver.with_material({new_material_id}, ...) first"
         );
-        let latent_heat = self.materials.get(new_material_id).latent_heat();
-        let heat_capacity = self.thermal.as_ref().map(|t| t.config.heat_capacity);
         for i in 0..self.particles.len() {
             let p = self.particles.get(i);
             if predicate(&p) {
-                self.particles.material_id[i] = new_material_id;
-                if let (true, Some(cp)) = (latent_heat != 0.0, heat_capacity) {
-                    self.particles.temperature[i] -= latent_heat / cp;
-                }
-                let mut p = self.particles.get(i);
-                self.materials.get(new_material_id).init_particle(&mut p);
-                self.particles.set(i, p);
+                self.apply_phase_transition(i, new_material_id);
             }
         }
     }
