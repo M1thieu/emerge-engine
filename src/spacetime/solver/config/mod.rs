@@ -582,7 +582,22 @@ impl SimConfig {
 
     /// Convert SI stress or pressure (Pa) to grid units.
     ///
-    /// Use for: yield stress, tensile strength, eos_stiffness, surface tension.
+    /// **Not the general-purpose stress conversion for new code.** This
+    /// solver keeps time in real seconds and only rescales length by `dx`
+    /// (confirmed via `gravity_to_grid`'s own real, already-correct, dt-free
+    /// `g_grid = g_SI/dx_meters`; independently re-derived and numerically
+    /// verified 2026-08-17, see `NewtonianFluidMaterial::from_physical`'s
+    /// own doc for the full derivation and a real regression this exact
+    /// `dt²` factor caused) -- so a genuinely correct SI-stress conversion
+    /// is RAW, unconverted Pa, not this formula. This method survives only
+    /// because `Pressurized::material()` (`property_dispatch.rs`) pairs it
+    /// with `lame_from_si`'s OWN (separately unconfirmed, deliberately not
+    /// touched -- see [[project_lame_from_si_solid_material_unit_question_2026-08-17]]
+    /// in project memory) convention for internal-pressure/elastic-
+    /// stiffness self-consistency -- changing one without the other would
+    /// break that pairing. Do not reach for this in new code; pass real SI
+    /// Pa directly instead unless you are deliberately matching
+    /// `lame_from_si`'s own (currently unverified) scale.
     /// Scale: `p_grid = p_SI · dt² / (ρ · dx²)`
     pub fn stress_from_si(&self, pa: f32, rho_kg_m3: f32) -> f32 {
         pa * self.dt_seconds * self.dt_seconds / (rho_kg_m3 * self.dx_meters * self.dx_meters)
@@ -590,9 +605,16 @@ impl SimConfig {
 
     /// Convert SI dynamic viscosity (Pa·s) to grid units.
     ///
-    /// Viscosity multiplies the velocity gradient (units: 1/step in grid space), so its
-    /// non-dimensionalization has one extra factor of dt versus stress:
-    /// `η_grid = η_SI · ρ · dx² / dt³`
+    /// **Confirmed wrong for this solver's real unit convention, kept only
+    /// for external API compatibility.** Real materials (`NewtonianFluidMaterial`,
+    /// `BinghamFluidMaterial`, `ViscoelasticMaterial`) all pass real SI
+    /// Pa·s through RAW/unconverted as of 2026-08-17 -- see `NewtonianFluidMaterial::
+    /// from_physical`'s own doc for the full derivation (this solver keeps
+    /// time in real seconds, only length is rescaled by `dx`) and the real
+    /// regression history (a wholesale file revert silently reintroduced
+    /// this exact formula into 3 real material constructors; all 3 fixed).
+    /// Do not use this for new code.
+    /// Scale: `η_grid = η_SI · ρ · dx² / dt³`
     pub fn visc_from_si(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
         eta_pa_s * rho_kg_m3 * self.dx_meters * self.dx_meters
             / (self.dt_seconds * self.dt_seconds * self.dt_seconds)

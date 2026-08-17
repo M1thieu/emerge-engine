@@ -1,6 +1,6 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame, scale_visc};
+use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame};
 use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
@@ -90,8 +90,20 @@ impl FromSI<Viscoelastic> for ViscoelasticMaterial {
             props.elastic.rho_kg_m3,
             config,
         );
-        let visc = scale_visc(props.eta_pa_s, props.elastic.rho_kg_m3, config);
-        Self::new(lambda, mu, visc)
+        // Real fix (2026-08-17), same class as `NewtonianFluidMaterial::
+        // from_physical`'s own regression (see that method's own doc for
+        // the full derivation/git-history): viscosity multiplies a
+        // velocity-gradient-derived strain rate to produce a stress
+        // (`tau_viscous = eta*D_dev`, the exact same dimensional shape as
+        // the fluid case), so it stays raw SI Pa*s -- `scale_visc`'s
+        // `dt^2/(rho*dx^2)`-family scaling does not apply here either. No
+        // existing test exercised this specific constructor (every
+        // Viscoelastic test uses `::new`/`::from_young_modulus`, grid-unit
+        // paths), so this was a real, silent, zero-coverage gap, not a
+        // verified-then-broken regression like the fluid case -- fixed
+        // proactively while the correct convention was freshly re-derived
+        // and confirmed.
+        Self::new(lambda, mu, props.eta_pa_s)
     }
 }
 
@@ -309,6 +321,48 @@ mod analytical_validation_tests {
              Kelvin-Voigt, not a coupled model): combined={tau_combined:?} \
              elastic+viscous={:?}",
             tau_elastic + tau_viscous
+        );
+    }
+
+    /// **Real regression guard (2026-08-17)**: `from_physical` had zero test
+    /// coverage at all before this -- every other test in this file uses
+    /// `::new`/`::from_young_modulus` (grid-unit paths), which never
+    /// exercised the SI-construction code path where the real bug lived
+    /// (see `from_physical`'s own doc for the fix and its shared root cause
+    /// with `NewtonianFluidMaterial::from_physical`'s regression). Real,
+    /// exact check: SI viscosity must survive unconverted, matching this
+    /// solver's own real time/length convention (time in real seconds,
+    /// only length rescaled by dx) -- not scaled by any dt/dx/rho factor.
+    #[test]
+    fn from_physical_preserves_si_viscosity_unconverted() {
+        use crate::materials::physical_props::{Elastic, Viscoelastic};
+        use crate::solver::config::SimConfig;
+
+        let props = Viscoelastic {
+            elastic: Elastic {
+                e_pa: 5.0e4,
+                nu: 0.45,
+                rho_kg_m3: 1100.0,
+            },
+            eta_pa_s: 10.0,
+        };
+        // Real, distinct dx/dt from any "1.0" default -- if a dt^2/(rho*dx^2)-
+        // style scaling ever creeps back in, these values make it numerically
+        // obvious (a 0.02s/0.01m pair scales viscosity by a large factor,
+        // not silently ~1.0).
+        let config = SimConfig {
+            dx_meters: 0.01,
+            dt_seconds: 0.02,
+            ..SimConfig::default()
+        };
+
+        let mat = ViscoelasticMaterial::from_physical(&props, &config);
+
+        assert_eq!(
+            mat.viscosity, props.eta_pa_s,
+            "from_physical must pass SI viscosity through raw/unconverted: \
+             expected {} (the real input Pa*s), got {}",
+            props.eta_pa_s, mat.viscosity
         );
     }
 }

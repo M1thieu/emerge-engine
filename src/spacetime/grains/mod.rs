@@ -7,7 +7,7 @@
 //! kinematic state, same role `Particle` plays) lives in
 //! `matter::particle::grain`; the contact force law (`GrainContactState`,
 //! `ContactLawConfig`, `resolve_contact_pair`) lives in
-//! `matter::materials::granular::grain_contact_law` alongside the other constitutive
+//! `matter::materials::solid::granular::grain_contact_law` alongside the other constitutive
 //! models. Everything in THIS module -- `population` (the `GrainPopulation`
 //! container plus its own integration step), `coupling` (grid
 //! scatter/gather), `oracle` (packing-fraction-driven WHERE-are-grains-

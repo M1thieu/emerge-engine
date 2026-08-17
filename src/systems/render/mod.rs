@@ -11,6 +11,8 @@
 ///   Pass `sim.particle_buffer()` + `sim.particle_count()`. No `sync_particles_blocking()`.
 use std::mem;
 
+use glam::{Mat2, Vec2};
+
 use crate::particle::{Particle, Particles};
 use crate::systems::gpu::MAX_RENDER_MATERIAL_SLOTS;
 
@@ -166,6 +168,17 @@ pub mod anisotropy;
 // Curvature-flow surface reconstruction (render_surface_reconstruction[_dual_phase]
 // + its own capacity helpers) lives in surface_reconstruction.rs -- see that file's doc.
 mod surface_reconstruction;
+
+// Real, general, opt-in window+event-loop runner (`DemoApp`/`run_demo`) --
+// extracted from the winit/wgpu boilerplate every example was hand-
+// duplicating. See that file's own doc for the full rationale (real,
+// published capability, not example-only tooling).
+pub mod demo_harness;
+
+// Real, general, opt-in fading-polyline orbit/motion trail renderer -- see
+// that file's own doc. Self-contained (own pipeline/camera/vertex buffer),
+// not wired into `Renderer` itself, so any demo can add it independently.
+pub mod trails;
 use gpu_types::{
     BandHysteresisParams, LightDiffuseParams, SurfaceParams, SurfaceRenderParams, VisibilityParams,
     WaveStepParams,
@@ -179,6 +192,7 @@ use pipelines::{
     build_surface_splat_pipeline, build_temp_avg_pipeline, build_temp_diffuse_pipeline,
     build_visibility_step_pipeline, build_volume_correct_pipeline, build_wave_step_pipeline,
 };
+pub use trails::TrailRenderer;
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
 
@@ -220,6 +234,25 @@ pub struct Renderer {
     /// clippy's argument-count lint.
     cached_ortho: (f32, f32, f32, f32),
     cached_grid_res: u32,
+    /// Real, cached glow strength -- see `set_glow_strength`'s own doc.
+    /// Needed here because `set_camera_centered` re-writes the WHOLE
+    /// `CameraParams` buffer (including this field) on every resize/pan/
+    /// zoom, so it must remember the last value `set_glow_strength` set,
+    /// not silently reset it to 0.0 on the next camera update.
+    cached_glow_strength: f32,
+    /// Real, cached point-light position + shading strength for the
+    /// round-particle billboard-sphere Lambertian shading -- see
+    /// `set_light_source`'s own doc. Same "must survive `set_camera_
+    /// centered`'s whole-buffer rewrite" reason as `cached_glow_strength`.
+    cached_light_pos: Vec2,
+    cached_shading_strength: f32,
+    cached_light_reference_distance: f32,
+    /// When true, `render`/`render_slice` draw every particle as an
+    /// undeformed disc (identity in place of `p.deformation_gradient`)
+    /// instead of the real per-particle quad deformation -- see
+    /// `set_rigid_render`'s own doc for why. Default `false`: byte-
+    /// identical to every existing caller.
+    rigid_render: bool,
     /// Real light direction for `render_grid_volume`/`render_surface_
     /// reconstruction`(`_dual_phase`)'s Lambertian + specular shading -- set
     /// via `set_light_dir`, defaults to the same value those shaders used
@@ -640,6 +673,11 @@ impl Renderer {
             grid_visibility_res: 1,
             cached_ortho: (1.0, 0.0, 1.0, 0.0),
             cached_grid_res: 1,
+            cached_glow_strength: 0.0,
+            cached_light_pos: Vec2::ZERO,
+            cached_shading_strength: 0.0,
+            cached_light_reference_distance: 0.0,
+            rigid_render: false,
             light_dir: (-0.5, 0.7),
             grid_reference_cell_mass: 1.0,
             curvature_iterations: CURVATURE_ITERATIONS,
@@ -750,7 +788,10 @@ impl Renderer {
 
     // ── Configuration ─────────────────────────────────────────────────────────
 
-    /// Call at init and on every resize.
+    /// Call at init and on every resize. Centers the view on the grid's own
+    /// center `(grid_res/2, grid_res/2)` -- thin wrapper over
+    /// `set_camera_centered` for every existing caller that never needed to
+    /// pan. Unchanged behavior, byte-identical to before this existed.
     pub fn set_camera(
         &mut self,
         queue: &wgpu::Queue,
@@ -761,12 +802,40 @@ impl Renderer {
         round_particles: bool,
     ) {
         let gr = grid_res as f32;
+        self.set_camera_centered(
+            queue,
+            grid_res,
+            width,
+            height,
+            particle_scale,
+            round_particles,
+            Vec2::splat(gr * 0.5),
+        );
+    }
+
+    /// Real generalization of `set_camera`: same letterboxed orthographic
+    /// projection, but centered on an arbitrary `center` (grid coords)
+    /// instead of always the grid's own center -- the real hook a caller
+    /// needs for cursor-drag pan (compute a grid-space delta via
+    /// `screen_to_grid`, accumulate it into `center` across frames).
+    pub fn set_camera_centered(
+        &mut self,
+        queue: &wgpu::Queue,
+        grid_res: u32,
+        width: u32,
+        height: u32,
+        particle_scale: f32,
+        round_particles: bool,
+        center: Vec2,
+    ) {
+        let gr = grid_res as f32;
         let aspect = width.max(1) as f32 / height.max(1) as f32;
-        let (sx, tx, sy, ty) = if aspect >= 1.0 {
-            (2.0 / (gr * aspect), -1.0 / aspect, 2.0 / gr, -1.0)
+        let (sx, sy) = if aspect >= 1.0 {
+            (2.0 / (gr * aspect), 2.0 / gr)
         } else {
-            (2.0 / gr, -1.0, 2.0 * aspect / gr, -aspect)
+            (2.0 / gr, 2.0 * aspect / gr)
         };
+        let (tx, ty) = (-sx * center.x, -sy * center.y);
         self.cached_ortho = (sx, tx, sy, ty);
         self.cached_grid_res = grid_res;
         queue.write_buffer(
@@ -778,9 +847,93 @@ impl Renderer {
                 ],
                 particle_scale,
                 round_particles: round_particles as u32,
-                _pad: [0.0; 2],
+                glow_strength: self.cached_glow_strength,
+                light_pos: self.cached_light_pos.to_array(),
+                shading_strength: self.cached_shading_strength,
+                light_reference_distance: self.cached_light_reference_distance,
+                _pad: [0.0; 1],
             }),
         );
+    }
+
+    /// Real, general, opt-in soft-glow strength for round particles -- see
+    /// `render_particles.wgsl`'s own fragment-shader doc for the falloff
+    /// formula. `0.0` (never calling this) is byte-identical to every
+    /// existing caller's current look. Deliberately a SEPARATE, focused
+    /// setter rather than another `set_camera_centered` parameter: glow is
+    /// independent of position/zoom, so bundling it in would force every
+    /// resize/pan/zoom call to also know the current glow value. A direct
+    /// partial buffer write at `glow_strength`'s own byte offset (72) --
+    /// cheap, doesn't need the full camera math re-run.
+    pub fn set_glow_strength(&mut self, queue: &wgpu::Queue, glow_strength: f32) {
+        self.cached_glow_strength = glow_strength;
+        const GLOW_STRENGTH_BYTE_OFFSET: u64 = 72;
+        queue.write_buffer(
+            &self.camera_buffer,
+            GLOW_STRENGTH_BYTE_OFFSET,
+            bytemuck::bytes_of(&glow_strength),
+        );
+    }
+
+    /// Real, general, opt-in billboard-sphere Lambertian shading for round
+    /// particles -- see `render_particles.wgsl`'s own fragment-shader doc
+    /// for the technique (hemisphere-normal reconstruction + Lambert's
+    /// cosine law against the real direction to `position`, modulated by a
+    /// real inverse-square intensity falloff). Pass the scene's own real
+    /// light-source position (grid coords) each frame it moves -- e.g. a
+    /// star's actual, physically-computed position, not a fixed art-
+    /// direction light.
+    ///
+    /// `reference_distance` (grid units) is the distance at which a
+    /// particle reads at intensity 1.0 -- pick a real, physically
+    /// meaningful value for the scene (e.g. a planet's own real orbital
+    /// distance from its star, matching the literal definition of "solar
+    /// constant"), not an arbitrary tuning number. `0.0` disables the
+    /// inverse-square falloff (direction-only shading, uniform intensity).
+    ///
+    /// `strength=0.0` (never calling this) is byte-identical to every
+    /// existing caller's current flat-disc look; same partial-buffer-write
+    /// pattern as `set_glow_strength`, for the same reason (shading is
+    /// independent of camera position/zoom).
+    pub fn set_light_source(
+        &mut self,
+        queue: &wgpu::Queue,
+        position: Vec2,
+        strength: f32,
+        reference_distance: f32,
+    ) {
+        self.cached_light_pos = position;
+        self.cached_shading_strength = strength;
+        self.cached_light_reference_distance = reference_distance;
+        const LIGHT_POS_BYTE_OFFSET: u64 = 76;
+        queue.write_buffer(
+            &self.camera_buffer,
+            LIGHT_POS_BYTE_OFFSET,
+            bytemuck::bytes_of(&[position.x, position.y, strength, reference_distance]),
+        );
+    }
+
+    /// Real, general, opt-in: when a particle's `deformation_gradient`
+    /// carries no real physical meaning for what it represents -- e.g. one
+    /// MPM particle standing in for an entire rigid/point-mass body (a
+    /// planet in an N-body scene) rather than a differential element of a
+    /// deforming continuum -- its own local velocity-gradient-driven F
+    /// still evolves every substep (ordinary MPM/APIC mechanics don't know
+    /// the particle is "supposed to" stay rigid), and visualizing that F
+    /// distorts what should read as a plain point/disc into a spuriously
+    /// stretched or sheared quad. This does not indicate a physics bug in
+    /// the body's real motion (governed by real N-body gravity, verified
+    /// independently via conservation laws) -- it is `render_particles.
+    /// wgsl`'s own quad-deformation feature applied somewhere it isn't
+    /// meaningful.
+    ///
+    /// `true` renders every particle in this `Renderer` as an undeformed
+    /// disc/quad (identity in place of F) -- correct for point-mass/rigid-
+    /// body demos, wrong for a real deforming continuum (jelly, sand,
+    /// fluid), where the deformation IS the real, meaningful signal. Default
+    /// `false` is byte-identical to every existing caller.
+    pub fn set_rigid_render(&mut self, rigid: bool) {
+        self.rigid_render = rigid;
     }
 
     /// Exact inverse of `set_camera`'s own NDC projection -- the single
@@ -802,6 +955,19 @@ impl Renderer {
         let ndc_y = 1.0 - (screen_y / height.max(1) as f32) * 2.0;
         let (sx, tx, sy, ty) = self.cached_ortho;
         ((ndc_x - tx) / sx, (ndc_y - ty) / sy)
+    }
+
+    /// The same orthographic view-projection matrix `set_camera`/
+    /// `set_camera_centered` just wrote to the GPU camera uniform, as a
+    /// plain `Mat4` -- for a caller running a SECOND, independent render
+    /// pass (e.g. [`super::TrailRenderer`]) that needs to stay pixel-
+    /// aligned with this one without duplicating the projection math by
+    /// hand. Matches `set_camera_centered`'s own `view_proj` layout exactly.
+    pub fn view_proj(&self) -> glam::Mat4 {
+        let (sx, tx, sy, ty) = self.cached_ortho;
+        glam::Mat4::from_cols_array(&[
+            sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, 0.0, 1.0,
+        ])
     }
 
     /// Real light direction for `render_grid_volume`/surface-reconstruction
@@ -1121,11 +1287,17 @@ impl Renderer {
 
         self.scratch.clear();
         for p in particles.iter() {
+            let f = if self.rigid_render {
+                Mat2::IDENTITY
+            } else {
+                p.deformation_gradient
+            };
             self.scratch.push(InstanceData {
-                deform_col0: p.deformation_gradient.x_axis.to_array(),
-                deform_col1: p.deformation_gradient.y_axis.to_array(),
+                deform_col0: f.x_axis.to_array(),
+                deform_col1: f.y_axis.to_array(),
                 position: p.x.to_array(),
-                _pad: [0.0; 2],
+                emission: blackbody_glow_factor(p.temperature),
+                _pad: [0.0; 1],
                 color: self.particle_color(&p),
             });
         }
@@ -1158,11 +1330,17 @@ impl Renderer {
 
         self.scratch.clear();
         for p in particles {
+            let f = if self.rigid_render {
+                Mat2::IDENTITY
+            } else {
+                p.deformation_gradient
+            };
             self.scratch.push(InstanceData {
-                deform_col0: p.deformation_gradient.x_axis.to_array(),
-                deform_col1: p.deformation_gradient.y_axis.to_array(),
+                deform_col0: f.x_axis.to_array(),
+                deform_col1: f.y_axis.to_array(),
                 position: p.x.to_array(),
-                _pad: [0.0; 2],
+                emission: blackbody_glow_factor(p.temperature),
+                _pad: [0.0; 1],
                 color: self.particle_color(p),
             });
         }
@@ -1245,7 +1423,7 @@ impl Renderer {
 // color.rs alongside the rest of the "Color helpers" section below -- see
 // that file's own doc comment.
 mod color;
-use color::write_optical_table;
+use color::{blackbody_glow_factor, write_optical_table};
 
 // Test suite split into its own file -- was ~150 of this file's ~930 lines,
 // same pattern as `gpu/solver/device_lost_tests.rs`.

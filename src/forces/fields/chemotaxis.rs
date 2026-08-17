@@ -111,7 +111,7 @@ impl ChemotaxisField {
 }
 
 impl Field for ChemotaxisField {
-    fn prepare(&mut self, _particles: &Particles) {
+    fn prepare(&mut self, _particles: &Particles, _dt: f32) {
         // Gradient is computed on-demand from the snapshot; no pre-computation needed.
     }
 

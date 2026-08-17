@@ -1,6 +1,7 @@
 extern crate emerge_engine as emerge;
 
 use emerge::fields::GravityWellField;
+use emerge::render::demo_harness::{DemoApp, run_demo};
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// Real solar-system-scale orbital mechanics, live: Sun (fixed) + Earth + Mars,
@@ -22,12 +23,8 @@ use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 ///     real astronomy diagram, not an emerge-specific shortcut).
 ///
 ///   cargo run --example basic_orbital --features "render"
-use std::sync::Arc;
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use glam::{IVec2, Vec2};
+use winit::keyboard::KeyCode;
 
 /// 1 grid cell = 250,000 km -- real, measured (not guessed) choice: puts
 /// Earth's orbital radius at ~598 grid units, where a real grid-resolution
@@ -54,16 +51,7 @@ fn circular_orbit_speed_grid(r_si: f64) -> f32 {
     ((MU_SUN_SI / r_si).sqrt() / DX_METERS) as f32
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    state: Option<State>,
-}
-
 struct State {
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
     sim: Simulation,
     renderer: Renderer,
     days_elapsed: f32,
@@ -71,12 +59,12 @@ struct State {
 }
 
 fn make_sim() -> Simulation {
-    let sun_pos = glam::Vec2::splat(GRID as f32 / 2.0);
+    let sun_pos = Vec2::splat(GRID as f32 / 2.0);
     let config = SimConfig {
         dx_meters: DX_METERS as f32,
         dt_seconds: DT_SECONDS as f32,
-        gravity: glam::Vec2::ZERO,
-        ..SimConfig::standard(GRID, DT_SECONDS as f32, glam::Vec2::ZERO)
+        gravity: Vec2::ZERO,
+        ..SimConfig::standard(GRID, DT_SECONDS as f32, Vec2::ZERO)
     };
 
     let r_earth = (AU_M / DX_METERS) as f32;
@@ -86,7 +74,7 @@ fn make_sim() -> Simulation {
 
     let spawn_sun = SpawnRegion {
         spacing: 1.0,
-        box_size: glam::IVec2::new(1, 1),
+        box_size: IVec2::new(1, 1),
         box_center: sun_pos,
         position_jitter: 0.0,
         material_id: MAT_SUN,
@@ -95,8 +83,8 @@ fn make_sim() -> Simulation {
     };
     let spawn_earth = SpawnRegion {
         spacing: 1.0,
-        box_size: glam::IVec2::new(1, 1),
-        box_center: sun_pos + glam::Vec2::new(r_earth, 0.0),
+        box_size: IVec2::new(1, 1),
+        box_center: sun_pos + Vec2::new(r_earth, 0.0),
         position_jitter: 0.0,
         material_id: MAT_EARTH,
         mass_override: Some(EARTH_MASS_KG),
@@ -104,8 +92,8 @@ fn make_sim() -> Simulation {
     };
     let spawn_mars = SpawnRegion {
         spacing: 1.0,
-        box_size: glam::IVec2::new(1, 1),
-        box_center: sun_pos + glam::Vec2::new(0.0, r_mars),
+        box_size: IVec2::new(1, 1),
+        box_center: sun_pos + Vec2::new(0.0, r_mars),
         position_jitter: 0.0,
         material_id: MAT_MARS,
         mass_override: Some(MARS_MASS_KG),
@@ -126,66 +114,35 @@ fn make_sim() -> Simulation {
     solver.particles_mut().pinned[0] = 1;
 
     let _ = solver.add_body(spawn_earth);
-    solver.particles_mut().v[1] = glam::Vec2::new(0.0, v_earth);
+    solver.particles_mut().v[1] = Vec2::new(0.0, v_earth);
 
     let _ = solver.add_body(spawn_mars);
     // Mars starts 90 degrees around from Earth (spawned along +y instead of
     // +x above) -- real tangential velocity for THAT position is along -x.
-    solver.particles_mut().v[2] = glam::Vec2::new(-v_mars, 0.0);
+    solver.particles_mut().v[2] = Vec2::new(-v_mars, 0.0);
 
     solver
 }
 
-impl State {
-    async fn new(window: Arc<Window>) -> Self {
-        let size = window.inner_size();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("no GPU adapter");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let caps = surface.get_capabilities(&adapter);
-        let fmt = caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0]);
-        let sc = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: fmt,
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &sc);
+impl DemoApp for State {
+    const TITLE: &'static str = "emerge -- Orbital [Sun / Earth / Mars]";
+    const SIZE: (u32, u32) = (640, 640);
+
+    fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let sim = make_sim();
-        let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
+        let mut renderer = Renderer::new(device, sim.particles().len(), format);
         // particle_scale=6.0 -- purely visual (real relative sizes are
         // un-renderable at this distance scale, see module doc).
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 6.0, true);
+        renderer.set_camera(queue, GRID as u32, width, height, 6.0, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
         println!("orbital: Sun + Earth + Mars, real NASA masses/distances  |  R reset  Q quit");
         Self {
-            surface,
-            surface_config: sc,
-            device,
-            queue,
             sim,
             renderer,
             days_elapsed: 0.0,
@@ -193,18 +150,17 @@ impl State {
         }
     }
 
-    fn resize(&mut self, w: u32, h: u32) {
-        if w == 0 || h == 0 {
-            return;
-        }
-        self.surface_config.width = w;
-        self.surface_config.height = h;
-        self.surface.configure(&self.device, &self.surface_config);
+    fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
         self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, 6.0, true);
+            .set_camera(queue, GRID as u32, width, height, 6.0, true);
     }
 
-    fn update_and_render(&mut self) {
+    fn update_and_render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+    ) {
         self.sim.step();
         self.frame += 1;
         self.days_elapsed += DT_SECONDS as f32 / 86400.0;
@@ -212,75 +168,20 @@ impl State {
             // ~30 real days per print (720 hourly substeps).
             println!("day {:.0}", self.days_elapsed);
         }
-        let output = match self.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
-        output.present();
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
-        let w = Arc::new(
-            el.create_window(
-                winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Orbital [Sun / Earth / Mars]")
-                    .with_inner_size(winit::dpi::LogicalSize::new(640u32, 640u32)),
-            )
-            .unwrap(),
-        );
-        self.state = Some(pollster::block_on(State::new(w.clone())));
-        self.window = Some(w);
+            .render(device, queue, self.sim.particles(), view, true);
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(s) = self.state.as_mut() else {
-            return;
-        };
-        match event {
-            WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(key),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => match key {
-                KeyCode::Escape | KeyCode::KeyQ => el.exit(),
-                KeyCode::KeyR => {
-                    s.sim = make_sim();
-                    s.days_elapsed = 0.0;
-                    s.frame = 0;
-                    println!("reset");
-                }
-                _ => {}
-            },
-            WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),
-            WindowEvent::RedrawRequested => {
-                s.update_and_render();
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
-            }
-            _ => {}
+    fn key_pressed(&mut self, key: KeyCode) {
+        if key == KeyCode::KeyR {
+            self.sim = make_sim();
+            self.days_elapsed = 0.0;
+            self.frame = 0;
+            println!("reset");
         }
     }
 }
 
 fn main() {
-    let el = EventLoop::new().unwrap();
-    el.set_control_flow(ControlFlow::Poll);
-    let mut app = App {
-        window: None,
-        state: None,
-    };
-    el.run_app(&mut app).unwrap();
+    run_demo::<State>();
 }

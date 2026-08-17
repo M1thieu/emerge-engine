@@ -56,6 +56,21 @@ pub struct Particles {
     /// True when sleeping (skipped by P2G/G2P). `pub(crate)`: write only via
     /// `Simulation::wake`/`sleep`, which keep the tail-partition invariant intact.
     pub(crate) sleeping: Vec<bool>,
+
+    /// Kahan (compensated) summation residual for `x`'s position integration
+    /// in `transfer::g2p::gather_grid_to_particles` -- same real technique,
+    /// same citation (Kahan 1965), as `RodPoints::position_compensation`
+    /// already uses for rods: an ordinary velocity*dt increment can fall
+    /// below f32's representable precision at the particle's own grid-
+    /// coordinate magnitude (e.g. a barely-moving body far from the domain
+    /// origin) even though the underlying velocity is real and sustained --
+    /// this tracks the rounding error each addition drops and folds it back
+    /// in next time. NOT part of the `Particle` AoS view (no spare byte on
+    /// that 128-byte GPU-shared struct -- see its own doc; this is a pure
+    /// CPU-integration scratch value, reset to zero on push, same
+    /// convention `sleeping` above already established for a field with no
+    /// `Particle` counterpart).
+    pub(crate) position_compensation: Vec<Vec2>,
 }
 
 /// Per-particle mutable view into one particle's warm state, used by
@@ -157,6 +172,7 @@ impl Particles {
             scalar_field: Vec::new(),
             internal_pressure: Vec::new(),
             sleeping: Vec::new(),
+            position_compensation: Vec::new(),
         }
     }
 
@@ -186,6 +202,7 @@ impl Particles {
             scalar_field: Vec::with_capacity(cap),
             internal_pressure: Vec::with_capacity(cap),
             sleeping: Vec::with_capacity(cap),
+            position_compensation: Vec::with_capacity(cap),
         }
     }
 
@@ -288,6 +305,9 @@ impl Particles {
         // live GPU particles (sleeping state included) into this SoA. Freshly-spawned
         // particles always have sleeping=0 already, so this is a no-op for that path.
         self.sleeping.push(p.sleeping != 0);
+        // A new particle starts with zero accumulated rounding error, same
+        // convention `sleeping` above uses for a field with no `Particle` counterpart.
+        self.position_compensation.push(Vec2::ZERO);
     }
 
     /// Swap all SoA fields for indices `a` and `b`. Used by sleep/wake partition logic.
@@ -319,6 +339,7 @@ impl Particles {
         self.scalar_field.swap(a, b);
         self.internal_pressure.swap(a, b);
         self.sleeping.swap(a, b);
+        self.position_compensation.swap(a, b);
     }
 
     /// Rotate `[start..end]` so that `[mid..end]` precedes `[start..mid]`.
@@ -363,8 +384,10 @@ impl Particles {
             if pred(&p) {
                 if write != read {
                     self.set(write, p);
-                    // sleeping is not part of the AoS Particle view — copy explicitly.
+                    // sleeping/position_compensation are not part of the AoS
+                    // Particle view — copy explicitly.
                     self.sleeping[write] = self.sleeping[read];
+                    self.position_compensation[write] = self.position_compensation[read];
                 }
                 write += 1;
             }
@@ -392,6 +415,7 @@ impl Particles {
         self.scalar_field.truncate(write);
         self.internal_pressure.truncate(write);
         self.sleeping.truncate(write);
+        self.position_compensation.truncate(write);
     }
 
     /// Apply `f` to every particle, writing all changes back.

@@ -1,6 +1,6 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
+use crate::materials::physical_props::{FromSI, NewtonianFluid};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -175,10 +175,31 @@ impl NewtonianFluidMaterial {
         // identically in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994;
         // Becker & Teschner 2007, already cited elsewhere in this project).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(eta_pa_s, rho_kg_m3, config);
-        let k_si = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
-        let eos = scale_stress(k_si, rho_kg_m3, config);
-        Self::new(rho_kg_m3, visc, eos, GAMMA)
+        assert!(
+            config.dx_meters.is_finite() && config.dx_meters > 0.0,
+            "weakly_compressible requires a positive dx_meters"
+        );
+        // Real, confirmed regression (2026-08-17): `cac544b` (2026-08-11)
+        // fixed this to pass pressure/viscosity through RAW, unconverted --
+        // solver time is already real seconds and only length is rescaled
+        // by dx (same convention `gravity_to_grid`'s `g_grid = g_SI/dx`
+        // already uses), so applying the legacy `dt^2/(rho*dx^2)`-style
+        // scaling here double-scales it (see `from_physical`'s own doc,
+        // just below, for the full derivation). `57b83dc` (2026-08-13,
+        // "restore pre-cac544b material state") wholesale-reverted this
+        // whole file to fix an UNRELATED problem (a missing J/pressure
+        // clamp) and silently brought the old, wrong `scale_visc`/
+        // `scale_stress` calls back with it -- confirmed via `git show
+        // cac544b:...fluid.rs` and a live re-run of `tests/physics_
+        // correctness.rs::diag_wcsph_unit_consistency_sweep_under_full_
+        // real_gravity`, which prints `B_grid=1.4575e4` today vs. that
+        // fix's own already-recorded `1.4575e5` (exactly 10x, matching the
+        // `dt^2/(rho*dx^2)` factor for this test's own DT=0.1/DX=0.01/
+        // RHO=1000). Also independently re-derived and numerically
+        // verified via `examples/diag_lame_from_si_wave_speed_check.rs`.
+        let rho_grid = rho_kg_m3 * config.dx_meters * config.dx_meters;
+        let tait_b_pa = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
+        Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA)
     }
 }
 
@@ -189,18 +210,37 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // Tait EOS polytropic exponent for water -- Cole 1948, "Underwater Explosions";
         // standard in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // rest_density must be in the SAME units `particles.density[i]` actually comes
-        // out in -- i.e. whatever `estimate_particle_volumes`'s kernel-based density
-        // estimate produces for a particle spawned via `ParticleMass::particle_mass`
-        // (real SI kilograms) at rest: `rho_grid = rho_SI * dx_meters^2`. Do not add
-        // an extra `/dt_seconds^2` factor here -- it pins any real fluid's EOS
-        // pressure at its floor regardless of real depth/compression. Inflating
-        // particle mass by `1/dt^2` instead breaks the gravity/EOS force balance --
-        // see `Elastic::particle_mass`'s doc.
+        assert!(
+            config.dx_meters.is_finite() && config.dx_meters > 0.0,
+            "NewtonianFluidMaterial::from_physical requires a positive dx_meters"
+        );
+        // Solver time is already real seconds and positions are grid cells
+        // (`x_grid = x_SI/dx`), so pressure and dynamic viscosity stay in
+        // raw SI stress units -- only density converts, to mass per
+        // grid-cell area. With `V_grid = V_SI/dx^2` and `rho_grid =
+        // rho_SI*dx^2`, a stress coefficient in Pa already produces exactly
+        // `sigma/(rho*dx^2)` grid acceleration; applying the legacy
+        // `dt^2/(rho*dx^2)` conversion here would double-scale it (see
+        // `weakly_compressible`'s own doc, just above, for the fuller
+        // regression history -- this exact reasoning was already shipped
+        // once in `cac544b` and silently reverted by `57b83dc`).
+        //
+        // rest_density must be in the SAME units `particles.density[i]`
+        // actually comes out in -- i.e. whatever `estimate_particle_
+        // volumes`'s kernel-based density estimate produces for a particle
+        // spawned via `ParticleMass::particle_mass` (real SI kilograms) at
+        // rest: `rho_grid = rho_SI * dx_meters^2`. Do not add an extra
+        // `/dt_seconds^2` factor here -- it pins any real fluid's EOS
+        // pressure at its floor regardless of real depth/compression.
+        // Inflating particle mass by `1/dt^2` instead breaks the
+        // gravity/EOS force balance -- see `Elastic::particle_mass`'s doc.
         let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
-        Self::new(rho_grid, visc, eos, GAMMA)
+        Self::new(
+            rho_grid,
+            props.eta_pa_s,
+            props.bulk_modulus_pa / GAMMA,
+            GAMMA,
+        )
     }
 }
 

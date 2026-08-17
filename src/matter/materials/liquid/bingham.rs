@@ -1,6 +1,6 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{BinghamProps, FromSI, scale_stress, scale_visc};
+use crate::materials::physical_props::{BinghamProps, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -156,11 +156,14 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         // volumetric/EOS part of a Bingham fluid same as any other weakly-compressible
         // liquid; the yield-stress physics (tau0 below) is separate and unaffected.
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let tau0 = scale_stress(props.yield_stress_pa, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
-        // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
+        // Real, confirmed regression (2026-08-17), same class/cause as
+        // `NewtonianFluidMaterial::from_physical`'s -- see that method's own
+        // doc for the full derivation and regression history. Pressure,
+        // yield stress, and viscosity all stay raw SI; only density
+        // converts.
+        let visc = props.eta_pa_s;
+        let tau0 = props.yield_stress_pa;
+        let eos = props.bulk_modulus_pa / GAMMA;
         let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
         Self::new(rho_grid, visc, eos, GAMMA, tau0)
     }
@@ -235,12 +238,12 @@ impl MaterialModel for BinghamFluidMaterial {
         // it was lost from the CPU path by the same wholesale revert.
         let gradient = particles.velocity_gradient[i];
         let div_v_true = gradient.x_axis.x + gradient.y_axis.y;
-        let j_now = crate::materials::fluid::volume_j(
+        let j_now = crate::materials::liquid::fluid::volume_j(
             particles.initial_volume[i],
             particles.volume[i],
             "BinghamFluidMaterial",
         );
-        let q = crate::materials::fluid::artificial_bulk_viscosity(
+        let q = crate::materials::liquid::fluid::artificial_bulk_viscosity(
             self.eos_stiffness,
             self.eos_power,
             self.rest_density,

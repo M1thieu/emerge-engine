@@ -13,12 +13,32 @@
 //! correction -- mirrors `apply_rod_internal_and_wind_forces`'s own
 //! documented reason for not re-applying gravity a second time.
 
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 
 use crate::grid::Grid;
 use crate::grid::kernel::quadratic_weights;
+use crate::solver::config::KERNEL_D_INVERSE;
+use crate::solver::operator::{CoupledBody, OperatorCtx, Stage};
 
 use super::population::GrainPopulation;
+
+/// First real `CoupledBody` implementor -- see `solver::operator` module
+/// doc. Delegates straight to the 3 functions below, unchanged; this is
+/// only the calling shape, not new physics.
+impl CoupledBody for GrainPopulation {
+    fn stages(&self) -> &'static [Stage] {
+        &[Stage::Scatter, Stage::Gather, Stage::PostGather]
+    }
+    fn scatter(&mut self, ctx: &mut OperatorCtx, _dt: f32) {
+        scatter_grains_to_grid(self, ctx.grid);
+    }
+    fn gather(&mut self, ctx: &mut OperatorCtx, dt: f32) {
+        gather_grid_to_grains(self, ctx.grid, dt);
+    }
+    fn post_gather(&mut self, _ctx: &mut OperatorCtx, dt: f32) {
+        apply_grain_contact_forces(self, dt);
+    }
+}
 
 /// Grain -> grid scatter. From the grid's point of view a grain is just
 /// another mass+momentum source, same as an ordinary particle or a rod
@@ -41,17 +61,47 @@ pub fn scatter_grains_to_grid(grains: &GrainPopulation, grid: &mut Grid) {
     }
 }
 
-/// Grid -> grain gather. Pure PIC (no APIC/`C`-matrix, matching
+/// Grid -> grain gather. Translation stays pure PIC (matching
 /// `gather_grid_to_rod`'s own rationale: a grain has no deformation
-/// gradient, its rigid-body velocity is the whole story). Advances position
-/// here, in the gather step, not in `apply_grain_contact_forces` below --
-/// same convention `gather_grid_to_rod` documents: real MPM integrates
-/// `x += v*dt` using the grid-gathered velocity, with any additional
-/// force correction only affecting the NEXT substep's advection.
+/// gradient, its rigid-body velocity is the whole story) -- but rotation is
+/// now real APIC, not absent. Advances position here, in the gather step,
+/// not in `apply_grain_contact_forces` below -- same convention
+/// `gather_grid_to_rod` documents: real MPM integrates `x += v*dt` using the
+/// grid-gathered velocity, with any additional force correction only
+/// affecting the NEXT substep's advection.
+///
+/// Real gap this closes, found 2026-08-16: a lone grain (no other grain to
+/// contact) could never spin -- `apply_grain_contact_forces` only produces
+/// torque from grain-VS-grain contact pairs (`GrainPopulation::resolve_
+/// contact_forces` iterates `i` against `(i+1)..n`; with one grain, zero
+/// pairs, zero torque, forever), and this function was pure translation.
+/// Real fix: gather the same APIC affine matrix ordinary MPM particles
+/// already compute in G2P (`spacetime/transfer/g2p.rs`, `b += weighted_v
+/// (x) dist`, `C = b * KERNEL_D_INVERSE`) -- Jiang, Schroeder, Selle, Teran,
+/// Stomakhin, 2015, "The Affine Particle-In-Cell Method" (SIGGRAPH), the
+/// exact citation that G2P path already uses (Stomakhin is also the author
+/// of this engine's own snow material -- a real, not coincidental,
+/// connection). `dist` uses the identical `cell_pos - grain.x + 0.5`
+/// convention `g2p.rs` uses (the `+0.5` recenters a lower-corner cell index
+/// onto its real sampling point, matching this kernel's own node
+/// placement).
+///
+/// `C[row][col] = d(v_row)/d(x_col)` (standard velocity-gradient layout,
+/// `col0 = x_axis` is the d/dx direction, `col1 = y_axis` is d/dy): 2D
+/// vorticity (the real, standard curl-of-velocity-field formula, not
+/// invented) is `omega = 0.5*(dvy/dx - dvx/dy) = 0.5*(C.x_axis.y -
+/// C.y_axis.x)`. Set directly onto `grain.spin`, the same PIC-style
+/// convention this function already uses for `grain.v` (no separate
+/// force/torque path) -- a real frictional shear at a grain's contact with
+/// a boundary (already correct on the grid side, e.g. `HeightmapBoundary`'s
+/// own Coulomb correction) shows up as real local velocity shear here,
+/// which becomes real spin, exactly like a real ball picking up rotation
+/// from ground friction.
 pub fn gather_grid_to_grains(grains: &mut GrainPopulation, grid: &Grid, dt: f32) {
     for grain in &mut grains.grains {
         let weights = quadratic_weights(grain.x);
         let mut v = Vec2::ZERO;
+        let mut b = Mat2::ZERO;
         for gx in 0..3usize {
             for gy in 0..3usize {
                 let weight = weights.wx[gx] * weights.wy[gy];
@@ -59,11 +109,17 @@ pub fn gather_grid_to_grains(grains: &mut GrainPopulation, grid: &Grid, dt: f32)
                     continue;
                 }
                 let cell_pos = weights.base_cell + glam::IVec2::new(gx as i32 - 1, gy as i32 - 1);
-                v += weight * grid.velocity_at(cell_pos);
+                let node_v = grid.velocity_at(cell_pos);
+                let weighted_v = node_v * weight;
+                v += weighted_v;
+                let dist = cell_pos.as_vec2() - grain.x + Vec2::splat(0.5);
+                b += Mat2::from_cols(weighted_v * dist.x, weighted_v * dist.y);
             }
         }
         grain.v = v;
         grain.x += v * dt;
+        let c = b * KERNEL_D_INVERSE;
+        grain.spin = 0.5 * (c.x_axis.y - c.y_axis.x);
     }
 }
 
@@ -86,7 +142,7 @@ pub fn apply_grain_contact_forces(grains: &mut GrainPopulation, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matter::materials::granular::grain_contact_law::ContactLawConfig;
+    use crate::matter::materials::solid::granular::grain_contact_law::ContactLawConfig;
     use crate::matter::particle::Grain;
 
     fn config() -> ContactLawConfig {
@@ -168,6 +224,56 @@ mod tests {
             "expected the grain's gathered velocity to reflect the heavier \
              co-located contributor, got {:?}",
             pop.grains[0].v
+        );
+    }
+
+    #[test]
+    fn solo_grain_picks_up_real_spin_from_a_grid_velocity_shear() {
+        // Real, direct proof of the Part A fix: a grain with NO other grain
+        // to contact (resolve_contact_forces produces zero pairs, zero
+        // torque for n=1) must still be able to spin, picking it up from a
+        // real local velocity gradient on the grid -- exactly what a
+        // frictional boundary correction (e.g. `HeightmapBoundary`'s own
+        // Coulomb correction) would produce near a rolling contact.
+        //
+        // Construct a real, KNOWN, uniform shear directly on the grid (same
+        // direct-injection technique `grain_and_a_second_grid_contributor_
+        // genuinely_exchange_momentum` above already uses): v_y varies
+        // linearly with x (dvy/dx = 1.0 grid-unit/s per cell), v_x is zero
+        // everywhere (dvx/dy = 0) -- a real, uniform vorticity field, exact
+        // hand-computed expected value `omega = 0.5*(dvy/dx - dvx/dy) =
+        // 0.5`. APIC's own affine estimate reproduces a truly linear
+        // velocity field exactly (a well-known real property of the
+        // method, not a coincidence of this test), so this is a precise
+        // check, not just a sign check.
+        //
+        // Grain placed at a half-cell position (16.5, 16.5), not an exact
+        // grid node -- at an exact integer position `quadratic_weights`
+        // gives one stencil cell zero weight (a real, documented edge case
+        // the OTHER tests in this file already work around), which would
+        // make the injected shear asymmetric across the stencil for no
+        // physical reason. A half-cell offset keeps all 3x3 stencil cells
+        // engaged with the clean, symmetric weights this test's hand
+        // computation assumes.
+        let mut grid = Grid::new(32);
+        for x in 15..=17 {
+            let vy = (x as f32 - 16.0) * 1.0; // -1.0, 0.0, +1.0
+            for y in 15..=17 {
+                grid.add_mass_momentum(glam::IVec2::new(x, y), 1.0, Vec2::new(0.0, vy));
+            }
+        }
+        grid.update_velocities(0.0, Vec2::ZERO); // normalize only, no gravity
+
+        let mut pop =
+            GrainPopulation::new(vec![Grain::new(Vec2::new(16.5, 16.5), 1.0, 1.0)], config());
+        gather_grid_to_grains(&mut pop, &grid, 0.0);
+
+        let expected_omega = 0.5;
+        assert!(
+            (pop.grains[0].spin - expected_omega).abs() < 0.05,
+            "expected spin near {expected_omega} (0.5*dvy/dx from the real \
+             injected shear), got {}",
+            pop.grains[0].spin
         );
     }
 }

@@ -1,48 +1,39 @@
-pub mod bingham;
-pub mod corotated;
-pub mod elastic;
-pub mod fluid;
-pub mod granular;
-pub mod granular_fluid;
-pub mod nacc;
-pub mod no_compression;
+pub mod liquid;
+pub mod mixture;
 pub mod params;
 pub mod physical_props;
 mod property_dispatch;
-pub mod rankine;
 pub mod registry;
 pub mod rod_material;
-pub mod snow;
+pub mod solid;
 pub(crate) mod svd;
 pub mod utils;
-pub mod viscoelastic;
-pub mod von_mises;
 
 pub use physical_props::{
     BrittleProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI, NoCompression,
     ParticleMass, PlasticityModel, Pressurized, Viscoelastic,
 };
 
-pub use bingham::BinghamFluidMaterial;
-pub use corotated::CorotatedMaterial;
-pub use elastic::NeoHookeanMaterial;
-pub use fluid::NewtonianFluidMaterial;
-pub use granular::sand::DruckerPragerMaterial;
-pub use granular::sand_mui::MuIRheologyMaterial;
-pub use granular_fluid::GranularFluidMaterial;
-pub use nacc::NaccMaterial;
-pub use no_compression::NoCompressionMaterial;
+pub use liquid::bingham::BinghamFluidMaterial;
+pub use liquid::fluid::NewtonianFluidMaterial;
+pub use mixture::granular_fluid::GranularFluidMaterial;
 pub use params::MaterialParams;
-pub use rankine::RankineMaterial;
 pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
 pub use rod_material::RodMaterial;
-pub use snow::StomakhinMaterial;
+pub use solid::corotated::CorotatedMaterial;
+pub use solid::elastic::NeoHookeanMaterial;
+pub use solid::granular::sand::DruckerPragerMaterial;
+pub use solid::granular::sand_mui::MuIRheologyMaterial;
+pub use solid::nacc::NaccMaterial;
+pub use solid::no_compression::NoCompressionMaterial;
+pub use solid::rankine::RankineMaterial;
+pub use solid::snow::StomakhinMaterial;
+pub use solid::viscoelastic::ViscoelasticMaterial;
+pub use solid::von_mises::VonMisesMaterial;
 pub use utils::{
     elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
     rankine_damage_estimate,
 };
-pub use viscoelastic::ViscoelasticMaterial;
-pub use von_mises::VonMisesMaterial;
 
 use glam::Mat2;
 

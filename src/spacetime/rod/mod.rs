@@ -82,8 +82,9 @@ pub use growth::{Growth, GrowthResistance, apply_growth};
 pub use implicit::{RodImplicitStepParams, step_rod_implicit};
 pub use integrator::{apply_mass_scaling_for_target_dt, rod_cfl_dt, step_rod};
 pub use network::{
-    NetworkBendingVertex, NetworkEdge, RodNetwork, YBranchSpec, build_y_branch,
-    compute_network_internal_forces, network_cfl_dt, step_network,
+    NetworkBendingVertex, NetworkEdge, RodNetwork, YBranchSpec, apply_network_internal_forces,
+    build_y_branch, compute_network_internal_forces, gather_grid_to_network, network_cfl_dt,
+    scatter_network_to_grid, step_network,
 };
 pub use plasticity::{RodPlasticity, apply_bending_plasticity};
 pub use secondary_growth::{SecondaryGrowth, apply_secondary_growth};

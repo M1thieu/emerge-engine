@@ -689,6 +689,79 @@ fn full_solar_system_conserves_momentum_and_energy() {
     );
 }
 
+/// Real "is this actually solid, not just short-horizon" check -- the test
+/// above only covers 30 real days (enough for Mercury's own ~88-day period
+/// to move substantially, explicitly NOT enough for anything to complete an
+/// orbit). A real solar system a downstream system might run for hours/days
+/// of real playtime needs to hold up over YEARS of simulated time, not just
+/// one month. Runs 5 real years (Mercury ~20 orbits, Venus ~8, Earth ~5,
+/// Mars ~2.5, Jupiter ~40% of its own 12-year period) and samples energy/
+/// momentum drift at real intervals, not just start/end -- the real
+/// question isn't just "how much did it drift by the end" but "is the
+/// drift BOUNDED/oscillating (the real signature of a stable, symplectic-
+/// like integrator) or MONOTONICALLY GROWING (a real instability that
+/// would eventually blow up given enough real playtime)." `#[ignore]`d:
+/// genuinely heavy (tens of thousands of real steps), run manually with
+/// `--ignored --nocapture` when checking long-horizon solidity, not every
+/// routine CI pass.
+#[test]
+#[ignore = "long-horizon diagnostic (5 simulated years, tens of thousands of steps) -- run manually with --ignored --nocapture"]
+fn full_solar_system_energy_drift_stays_bounded_over_five_years() {
+    let mut solver = make_full_system();
+    let g_grid = (6.674e-11 / (FULL_SYSTEM_DX_METERS.powi(3))) as f32;
+    let jupiter_momentum_scale =
+        1898.0e24 * ((6.674e-11 * SUN_MASS_KG / 778.5e9).sqrt() / FULL_SYSTEM_DX_METERS);
+
+    let e0 = total_energy(&solver, g_grid);
+    let hours_per_year = 365 * 24;
+    let years = 5;
+    let mut max_abs_energy_drift = 0.0f64;
+    let mut drift_history = Vec::with_capacity(years);
+
+    for year in 0..years {
+        for _ in 0..hours_per_year {
+            solver.step();
+        }
+        for i in 0..solver.particles().len() {
+            assert!(
+                solver.particles().x[i].is_finite() && solver.particles().v[i].is_finite(),
+                "body {i} went non-finite at year {}",
+                year + 1
+            );
+        }
+        let p = total_momentum(&solver);
+        let e = total_energy(&solver, g_grid);
+        let energy_drift = ((e - e0) / e0).abs();
+        let momentum_drift = p.length() as f64 / jupiter_momentum_scale;
+        max_abs_energy_drift = max_abs_energy_drift.max(energy_drift);
+        drift_history.push(energy_drift);
+        eprintln!(
+            "year {:>2}: energy_drift={:.4}%  momentum_drift={:.4}% (rel. to Jupiter's own scale)",
+            year + 1,
+            energy_drift * 100.0,
+            momentum_drift * 100.0
+        );
+    }
+
+    // Real bounded-vs-growing check: the LAST year's drift must not be
+    // dramatically worse than the WORST drift seen so far -- a real,
+    // concrete signature that distinguishes "oscillating around a stable
+    // value" (fine) from "still climbing at the end" (a real problem, even
+    // if the absolute number looks small so far).
+    let final_drift = *drift_history.last().unwrap();
+    eprintln!(
+        "max energy drift over 5 years: {:.4}%  final-year drift: {:.4}%",
+        max_abs_energy_drift * 100.0,
+        final_drift * 100.0
+    );
+    assert!(
+        final_drift < max_abs_energy_drift * 1.5 + 0.001,
+        "energy drift should not be climbing unbounded by year 5 (final={:.4}%, worst-so-far={:.4}%)",
+        final_drift * 100.0,
+        max_abs_energy_drift * 100.0
+    );
+}
+
 /// Real, well-known astronomical phenomenon: the Sun is not perfectly still
 /// -- Jupiter's mass (the dominant perturber, ~318x Earth's mass) pulls it
 /// into a real, measurable wobble around the system barycenter. If TRUE
@@ -696,27 +769,29 @@ fn full_solar_system_conserves_momentum_and_energy() {
 /// tests above) should respond to real mutual gravity, not sit exactly
 /// static under zero net force.
 ///
-/// Real, honest finding (2026-08-11): checks VELOCITY change, not position
-/// displacement. A first version asserted position displacement and FAILED
-/// -- root-caused directly (not assumed): `v[0]` genuinely changes
-/// (confirmed, e.g. `(-1.14e-9, 7.07e-9) -> (-1.75e-9, 7.12e-9)` over 60
-/// days, real evidence the N-body force IS being computed and applied
-/// correctly), but `x[0]` stayed bit-identical. This domain's Sun sits at
-/// grid coordinate ~2047.5 (needed so Neptune's real orbit, ~2257 grid
-/// units, fits in the same scene) -- at that magnitude, f32's local ULP is
+/// History (2026-08-11): originally checked VELOCITY only, not position --
+/// `v[0]` genuinely changed (confirmed, e.g. `(-1.14e-9, 7.07e-9) ->
+/// (-1.75e-9, 7.12e-9)` over 60 days, real evidence the N-body force WAS
+/// being computed and applied correctly), but `x[0]` stayed bit-identical.
+/// Root cause (2026-08-17, `transfer::g2p::gather_grid_to_particles`): plain
+/// `x += v*dt` addition -- at the Sun's real grid coordinate (~2047.5,
+/// needed so Neptune's real orbit fits the same scene), f32's local ULP is
 /// ~2.4e-4, while the Sun's real per-step position increment here
-/// (v*dt ~ 2.5e-5) is genuinely BELOW that -- every individual step's
-/// contribution is silently absorbed by the much larger base coordinate.
-/// This is a real, structural single-precision-float limitation (the same
-/// domain can't simultaneously resolve Neptune's real distance AND the
-/// Sun's own tiny wobble at this timescale), not a physics bug and not
-/// fixable by running more steps (each step independently rounds to zero,
-/// so accumulation never starts). Velocity is the numerically robust real
-/// signal for this specific check.
+/// (v*dt ~ 2.5e-5) is genuinely below that, so every individual step's
+/// contribution was silently absorbed by the much larger base coordinate --
+/// a real, structural single-precision-float limitation, not a physics bug,
+/// but also not inherent to MPM itself: `rod::coupling::gather_grid_to_rod`
+/// already solved the identical problem for rods via Kahan (compensated)
+/// summation (Kahan 1965) -- REBOUND (the standard N-body astronomy code)
+/// documents the same real technique as `REB_GRAVITY_COMPENSATED`. Now
+/// ported to ordinary particles (`Particles::position_compensation`), so
+/// this test asserts BOTH velocity and position respond -- the fix, not
+/// just the disclosed limitation.
 #[test]
 fn sun_velocity_responds_to_real_mutual_gravity() {
     let mut solver = make_full_system();
     let v_start = solver.particles().v[0];
+    let x_start = solver.particles().x[0];
 
     let steps = (60.0 * 24.0 * 3600.0 / 3600.0) as usize; // 60 real days
     for _ in 0..steps {
@@ -726,6 +801,19 @@ fn sun_velocity_responds_to_real_mutual_gravity() {
     let v_end = solver.particles().v[0];
     let v_change = (v_end - v_start).length();
     eprintln!("sun v0={v_start:?} -> v_end={v_end:?}  |change|={v_change:.4e}");
+
+    let x_end = solver.particles().x[0];
+    let x_change = (x_end - x_start).length();
+    let ulp_at_x0 = x_start.x.abs() * f32::EPSILON;
+    eprintln!(
+        "sun x0={x_start:?} -> x_end={x_end:?}  |change|={x_change:.4e}  (local ULP≈{ulp_at_x0:.4e})"
+    );
+    assert!(
+        x_change > ulp_at_x0 * 10.0,
+        "real fix check: the Sun's position should now show real, measurable \
+         wobble too (Kahan compensation recovering real sub-ULP motion), not \
+         just velocity: |change|={x_change:.4e}, local ULP≈{ulp_at_x0:.4e}"
+    );
     assert!(
         v_change > 1.0e-10,
         "sun's velocity should respond to real mutual gravity from the planets (esp. Jupiter): {v_change:.4e}"

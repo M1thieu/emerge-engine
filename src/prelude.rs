@@ -49,6 +49,10 @@ pub use crate::{
     GripFrictionBoundary,
     HeightmapBoundary,
 
+    // Kinematically-driven moving obstacle (position/velocity set live, no
+    // rigid-body dynamics of its own -- see feedback_engine_scope memory)
+    KinematicCircleBoundary,
+
     // Creature locomotion controller
     Lnn,
     MaterialCountPlugin,
@@ -63,6 +67,8 @@ pub use crate::{
     NewtonianFluidMaterial,
     NoCompression,
     NoCompressionMaterial,
+    NoSlipBoundary,
+
     Particle,
     ParticleGroup,
     ParticleMass,
@@ -72,6 +78,7 @@ pub use crate::{
     PredictiveBoundary,
     Pressurized,
     RadialConfinementField,
+    RadianceField,
     RankineMaterial,
     RatchetFrictionBoundary,
     RollingPlugin,

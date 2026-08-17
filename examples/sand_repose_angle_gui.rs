@@ -55,7 +55,7 @@ use egui_wgpu::ScreenDescriptor;
 ///
 ///   cargo run --example sand_repose_angle_gui --features render
 use emerge::grains::population::GrainPopulation;
-use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
+use emerge::materials::solid::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
 use emerge::particle::Grain;
 use emerge::particle::Particle;
 use emerge::render::{ColorMode, Renderer};

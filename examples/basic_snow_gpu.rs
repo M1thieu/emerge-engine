@@ -227,8 +227,13 @@ impl State {
             // isolation). `is_multiple_of(15)`, matching `material_sandbox_
             // gpu`'s own already-proven gated-scan interval, not a fresh guess.
             if self.frame.is_multiple_of(15) {
+                // Fracture trigger: real plastic compression (Jp), not raw
+                // speed -- the old `v.length() > 5.0` fired at launch,
+                // before any collision (already fixed in basic_snow.rs/
+                // basic_snow_gui.rs 2026-08-16; this GPU sibling was missed
+                // at the time and carried the same live regression until now).
                 self.sim.phase_transition(
-                    |p| p.material_id == MAT_PACKED && p.v.length() > 5.0,
+                    |p| p.material_id == MAT_PACKED && p.plastic_volume_ratio < 0.9,
                     MAT_SHATTER,
                 );
             }

@@ -4249,29 +4249,41 @@ fn no_compression_settles_more_compactly_than_ordinary_elastic_under_self_weight
 /// the same call any real caller in this engine uses -- eliminating both
 /// the pressure and the viscosity legacy-scaling bugs in one real fix.
 ///
-/// **Real, honest follow-up (2026-08-11): the fix did NOT close the gap --
-/// it got WORSE, not better.** Re-run with the corrected, real SI
-/// construction: `predicted_rho_ratio=1.0049` (0.49%, matches the old
-/// prediction almost exactly, as expected -- the hydrostatic formula only
-/// depends on `B_grid`, which was already numerically correct at the old
-/// `mult=10`). `MEASURED_max_rho_ratio=1.7980` -- **79.80% compression**,
-/// worse than the old (buggy-viscosity) `mult=10` run's 27.89%. The
-/// unit-conversion fix is real and structurally correct (verified against
-/// `NewtonianFluidMaterial`'s own already-tested `si_constructor_preserves_
-/// pressure_and_viscosity_units`), but real, honest evidence now says the
-/// predicted-vs-measured gap is NOT caused by the unit-conversion bug at
-/// all -- most likely, the old ~100x-too-large `eta_grid` was accidentally
-/// providing extra numerical damping that masked a separate, deeper dynamic/
-/// transient instability; removing it (correctly) exposed that instability
-/// more, not less. Genuinely open research question, now MORE isolated than
-/// before (the scaling confusion is eliminated, so whatever remains is a
-/// real dynamics/stability question, not a units question) but not solved.
-/// Real next step whenever picked up: investigate the pressure-projection/
-/// retry chain's behavior at this now-confirmed-correct stiffness with
-/// REAL (not accidentally-inflated) viscosity -- likely needs its own
-/// dedicated CFL/stability investigation, same class of multi-session work
-/// as the sand repose-angle gap turned out to be.
-#[ignore = "unit-conversion bug fixed (real, structurally correct) but did NOT close the gap -- 79.80% measured vs 0.49% predicted, WORSE than the old buggy run's 27.89%; genuinely open dynamics/stability research question, not routine-suite material (~32min/run)"]
+/// **2026-08-11 follow-up (WRONG CONCLUSION, corrected 2026-08-17): the fix
+/// appeared not to close the gap** -- re-run at the time showed
+/// `MEASURED_max_rho_ratio=1.7980` (79.80% compression) against a predicted
+/// 0.49%, and was written up as "genuinely open research question," NOT a
+/// units question. That conclusion was itself a false negative.
+///
+/// **Real root cause, found 2026-08-17**: `57b83dc` ("restore pre-cac544b
+/// material state," 2026-08-13 -- landed AFTER the write-up above, which is
+/// why it went unnoticed) wholesale-reverted `fluid.rs`/`bingham.rs` to fix
+/// an unrelated missing J/pressure clamp, and in doing so silently
+/// resurrected the exact `scale_stress`/`scale_visc` legacy-scaling bug this
+/// test's own history already fixed once -- `weakly_compressible` was
+/// re-applying `dt^2/(rho*dx^2)` to pressure/viscosity again, PLUS a second,
+/// independent bug (missing the `rho_grid = rho_kg_m3*dx^2` conversion
+/// entirely, passing raw SI density instead) that the original 2026-08-11
+/// fix may never have had. Confirmed three independent ways before touching
+/// any code: (1) dimensional re-derivation from this engine's own already-
+/// correct, dt-free gravity conversion (`g_grid = g_SI/dx_meters`); (2)
+/// `examples/diag_lame_from_si_wave_speed_check.rs`, a standalone numerical
+/// check against the real elastic-wave-speed invariant; (3) `git show
+/// cac544b:src/matter/materials/fluid.rs` showing the original, deliberate,
+/// well-reasoned fix this test's own doc above already describes correctly.
+///
+/// Restored `weakly_compressible`/`from_physical` (`fluid.rs`) and
+/// `BinghamFluidMaterial::from_physical` (`bingham.rs`, same regression) to
+/// raw-SI pressure/viscosity, dx²-only density conversion. Re-run with the
+/// fix: `B_grid=1.4575e5` (matches this test's own original finding
+/// exactly), `predicted_rho_ratio=1.0049` (0.49%, unchanged, as expected),
+/// **`MEASURED_max_rho_ratio=1.0061` -- 0.61% compression**, closing the
+/// gap to a small, real, discretization-scale margin above prediction, not
+/// a 79.80% blowup. The "genuinely open dynamics/stability research
+/// question" this test was filed under never existed -- it was two stacked
+/// unit-conversion regressions, both now fixed and covered by the assertion
+/// below.
+#[ignore = "passes cleanly post-fix (0.61% measured vs 0.49% predicted, well inside the WCSPH <1% criterion) -- kept ignored for runtime only (~9min in release, slower in the debug builds this project develops under), not for correctness; safe to promote to the routine suite if that cost becomes acceptable"]
 #[test]
 fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
     use emerge::{SimConfig, SpawnRegion, build_particles};
@@ -4358,5 +4370,29 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
          predicted_rho_ratio={predicted_ratio:.4}  MEASURED_max_rho_ratio={max_ratio:.4}  \
          compression={:.2}%  nonfinite={nonfinite}",
         (max_ratio - 1.0) * 100.0
+    );
+
+    // Real regression guard, not just a diagnostic print (this exact
+    // scenario -- a silently reverted SI-conversion fix -- already slipped
+    // past this test once when it only printed numbers for a human to
+    // eyeball; see this test's own doc). 2% is a real, generous margin
+    // above the measured 0.61% at fix time, comfortably inside the
+    // published WCSPH "<1% at c_s=10*v_max" criterion this test exists to
+    // check, while not being so tight it flags ordinary run-to-run
+    // discretization noise.
+    assert_eq!(
+        nonfinite, 0,
+        "fluid must stay fully finite under full real gravity"
+    );
+    assert!(
+        max_ratio < 1.02,
+        "weakly-compressible water should stay within ~1% of rest density under \
+         real hydrostatic loading (WCSPH criterion, c_s=10*v_max) -- got {:.2}% \
+         compression (predicted {:.2}%); if this fires, check for exactly the \
+         class of regression this test's own doc describes: a wholesale file \
+         revert silently reintroducing `scale_stress`/`scale_visc` into \
+         `NewtonianFluidMaterial`/`BinghamFluidMaterial`'s SI constructors",
+        (max_ratio - 1.0) * 100.0,
+        (predicted_ratio - 1.0) * 100.0
     );
 }

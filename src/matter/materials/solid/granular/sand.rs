@@ -578,7 +578,7 @@ impl DruckerPragerMaterial {
         // Zero cost, zero behavior change when `cosserat_modulus_pa == 0.0`
         // (every existing preset/scene).
         let couple_stress_term = if self.cosserat_modulus_pa != 0.0 {
-            let m = crate::materials::granular::cosserat::elastic_couple_stress_2d(
+            let m = crate::materials::solid::granular::cosserat::elastic_couple_stress_2d(
                 cosserat_curvature,
                 self.cosserat_modulus_pa,
                 self.cosserat_length_scale_m,

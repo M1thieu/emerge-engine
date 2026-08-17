@@ -25,7 +25,7 @@
 
 use glam::Vec2;
 
-use crate::matter::materials::granular::grain_contact_law::{
+use crate::matter::materials::solid::granular::grain_contact_law::{
     ContactLawConfig, ContactSpring, resolve_contact_pair,
 };
 use crate::matter::particle::Grain;

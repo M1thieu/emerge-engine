@@ -29,8 +29,9 @@ use emerge::Particle;
 use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
-    BinghamFluidMaterial, FixedStepConfig, FixedStepController, NeoHookeanMaterial,
-    NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, WithLatentHeat,
+    BinghamFluidMaterial, FixedStepConfig, FixedStepController, GravityWellField,
+    NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    WithLatentHeat,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -355,6 +356,119 @@ fn make_sim() -> Simulation {
     solver
 }
 
+// Ported unchanged from basic_fluids_gpu.rs's own PROVEN, live-verified
+// `Pattern::Vortex` (see that match arm's own extensive doc, and project_
+// vortex_siphon_saga_2026-08-15 memory) -- grid-cell-unit constants, not
+// tied to gravity/material specifics, so they transfer directly. Mechanism:
+// a `GravityWellField` drain + a free-vortex (constant angular momentum,
+// v=L/r, NOT solid-body v=omega*r) seed velocity. NO RadialConfinement, NO
+// mass sink -- both real, tried-and-rejected on the GPU side (see that
+// file's doc): a sink drains the whole pool into a scattered mess within a
+// minute (wrong physical target -- real ocean whirlpools persist via
+// Kelvin's circulation theorem, Thomson 1869, no continuous outflow
+// needed); RadialConfinement forcibly reshapes ordinary resting pool water
+// far outside the vortex's own radius. Headless-verified on THIS demo's own
+// config 2026-08-16 (`diag_cpu_vortex_probe.rs`): 400 steps, mass exactly
+// conserved, core structure (particles within the seed radius) stays
+// orbiting at a stable mean radius/speed, not collapsing or scattering.
+const VORTEX_POOL_BOX: IVec2 = IVec2::new(54, 48);
+const VORTEX_DRAIN_EDGE_R: f32 = 17.0;
+const VORTEX_DRAIN_EDGE_ACCEL_FRACTION: f32 = 0.02;
+const VORTEX_DRAIN_SOFTENING: f32 = 2.0;
+const VORTEX_SWIRL_SEED_RADIUS: f32 = 22.0;
+const VORTEX_SEED_EDGE_SPEED: f32 = 1.0;
+
+/// The drain's real gravitational-parameter (G*M product), scaled by the
+/// LIVE gravity magnitude (this demo's gravity is itself a live slider,
+/// unlike the GPU demo's fixed derated value) and the drain-strength slider
+/// -- same formula shape as the proven recipe
+/// (`DRAIN_EDGE_ACCEL_FRACTION * |gravity| * drain_edge_r^2`), evaluated
+/// fresh so the drain stays in the same real physical relationship to
+/// gravity as the user adjusts either slider, rather than freezing at
+/// whatever gravity happened to be when the vortex was turned on.
+fn vortex_drain_gm(live_gravity_mag: f32, drain_strength: f32) -> f32 {
+    drain_strength
+        * VORTEX_DRAIN_EDGE_ACCEL_FRACTION
+        * live_gravity_mag
+        * VORTEX_DRAIN_EDGE_R
+        * VORTEX_DRAIN_EDGE_R
+}
+
+fn make_vortex_sim(drain_strength: f32) -> Simulation {
+    let mut config = SimConfig {
+        min_dt: 1.0e-4,
+        max_substeps_per_step: 150,
+        phase_rules_once_per_step: true,
+        material_cfl_coefficient: 0.3,
+        cfl_include_affine_speed: false,
+        ..SimConfig::earth(GRID, 0.01, DT)
+    };
+    // Same real default live gravity this demo already uses everywhere else
+    // (`gravity_fraction` default 0.003 against `SimConfig::earth`'s real
+    // IRL magnitude) -- not a new number.
+    let live_gravity = config.gravity * 0.003;
+    config.gravity = live_gravity;
+
+    const WATER_EOS_POWER: f32 = 3.0;
+    let pool_height_cells = VORTEX_POOL_BOX.y as f32 * SPACING;
+    let v_max_grid = (2.0 * live_gravity.length() * pool_height_cells).sqrt();
+    let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
+    let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
+    let water =
+        NewtonianFluidMaterial::new(0.1, 1.0e-3, water_tait_b_pa.max(1.0e-6), WATER_EOS_POWER);
+
+    let pool_center = Vec2::new(32.0, 26.0);
+    // Drain near the FLOOR (pool spans ~y=[2,50]), not the pool's vertical
+    // midpoint -- real, live feedback 2026-08-16: pulling toward the
+    // midpoint reads as a swirl "floating in the middle," not a downward
+    // funnel. Same mechanism/formulas, only the attraction point's height
+    // changed -- headless-reverified stable (`diag_cpu_vortex_probe.rs`):
+    // mass exactly conserved, core structure (mean radius ~13.8) persists
+    // over 400 steps, not collapsing/scattering.
+    let drain_center = Vec2::new(pool_center.x, 10.0);
+    const WATER_MASS: f32 = 0.1 * SPACING * SPACING;
+    let spawn_water = SpawnRegion {
+        spacing: SPACING,
+        box_size: VORTEX_POOL_BOX,
+        box_center: pool_center,
+        material_id: MAT_WATER,
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        mass_override: Some(WATER_MASS),
+        ..SpawnRegion::for_sim(&config)
+    };
+
+    let mut solver = Simulation::new(config, spawn_water)
+        .with_default_material(Box::new(water))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
+        .with_named_force_field(
+            "vortex_drain",
+            Box::new(GravityWellField::new(
+                vec![(
+                    drain_center,
+                    vortex_drain_gm(live_gravity.length(), drain_strength),
+                )],
+                1.0,
+                VORTEX_DRAIN_SOFTENING,
+            )),
+        );
+
+    let seed_l = VORTEX_SEED_EDGE_SPEED * VORTEX_DRAIN_EDGE_R;
+    for i in 0..solver.particles().x.len() {
+        let x = solver.particles().x[i];
+        let r = x - drain_center;
+        let dist = r.length();
+        if dist < VORTEX_SWIRL_SEED_RADIUS {
+            let d = dist.max(VORTEX_DRAIN_SOFTENING);
+            solver.particles_mut().v[i] = (seed_l / (d * d)) * Vec2::new(-r.y, r.x);
+        }
+    }
+    for t in solver.particles_mut().temperature.iter_mut() {
+        *t = WARM_AMBIENT;
+    }
+    solver
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -375,6 +489,15 @@ struct State {
     real_gravity: Vec2,
     gravity_fraction: f32,
     cold: bool,
+    /// Real, live-verified vortex/drain (see `make_vortex_sim`'s own doc) --
+    /// when on, the scene is a flat resting pool with a real
+    /// `GravityWellField` drain instead of the dam-break column.
+    vortex_mode: bool,
+    /// 0 = drain off (still a flat pool, just no force), 1 = the proven
+    /// recipe's own real strength, up to 2 for headroom -- multiplies
+    /// `vortex_drain_gm`'s formula, does not replace it with an arbitrary
+    /// number.
+    drain_strength: f32,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
@@ -619,6 +742,8 @@ impl State {
             // same grid scale -- not re-guessed live.
             gravity_fraction: 0.003,
             cold: false,
+            vortex_mode: false,
+            drain_strength: 1.0,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -1062,6 +1187,9 @@ impl State {
         let mut gravity_fraction = self.gravity_fraction;
         let mut digging = self.digging;
         let mut cold = self.cold;
+        let vortex_mode_before = self.vortex_mode;
+        let mut vortex_mode = self.vortex_mode;
+        let mut drain_strength = self.drain_strength;
         // Live render-solver dials, read back from the renderer so the widgets
         // always show the value actually in use.
         let mut curvature_iters = self.renderer.curvature_iterations();
@@ -1112,6 +1240,21 @@ impl State {
                     ui.separator();
                     ui.checkbox(&mut cold, "Cold ambient (water freezes below 273K)");
                     ui.separator();
+                    ui.label("Vortex/drain (real GravityWellField + free-vortex seed):");
+                    if ui
+                        .checkbox(
+                            &mut vortex_mode,
+                            "Vortex pool (replaces dam-break on toggle)",
+                        )
+                        .changed()
+                    {
+                        reset = true;
+                    }
+                    ui.add_enabled(
+                        vortex_mode,
+                        egui::Slider::new(&mut drain_strength, 0.0..=2.0).text("Drain strength"),
+                    );
+                    ui.separator();
                     ui.label("Renderer (surface/grid-volume modes):");
                     ui.add(
                         egui::Slider::new(&mut curvature_iters, 2..=32)
@@ -1137,6 +1280,8 @@ impl State {
         self.gravity_fraction = gravity_fraction;
         self.digging = digging;
         self.cold = cold;
+        self.vortex_mode = vortex_mode;
+        self.drain_strength = drain_strength;
         // Only call the setters when the value actually moved -- the surface
         // multiplier forces a buffer realloc, so writing it every frame would
         // rebuild the surface buffers continuously.
@@ -1150,12 +1295,37 @@ impl State {
             self.renderer.set_splat_width_cells(splat_width);
         }
         if reset {
-            let sim = make_sim();
+            let sim = if self.vortex_mode {
+                make_vortex_sim(self.drain_strength)
+            } else {
+                make_sim()
+            };
             self.real_gravity = sim.config().gravity;
             self.sim = sim;
             self.frame = 0;
             self.stepper.reset();
             self.last_instant = std::time::Instant::now();
+        } else if self.vortex_mode && vortex_mode_before {
+            // Live-refresh the drain's real strength every frame it's
+            // active -- both `gravity_fraction` and `drain_strength` are
+            // live sliders, so the field must stay in the SAME physical
+            // relationship to current gravity `make_vortex_sim` established
+            // at construction, not freeze at whatever it was when the
+            // vortex was first turned on.
+            let live_gravity_mag = (self.real_gravity * self.gravity_fraction).length();
+            self.sim.remove_force_field("vortex_drain");
+            let drain_center = Vec2::new(32.0, 10.0); // must match make_vortex_sim's own
+            self.sim.add_named_force_field(
+                "vortex_drain",
+                Box::new(GravityWellField::new(
+                    vec![(
+                        drain_center,
+                        vortex_drain_gm(live_gravity_mag, self.drain_strength),
+                    )],
+                    1.0,
+                    VORTEX_DRAIN_SOFTENING,
+                )),
+            );
         }
 
         self.egui_state
@@ -1263,7 +1433,11 @@ impl ApplicationHandler for App {
                         };
                     }
                     KeyCode::KeyR if pressed => {
-                        let sim = make_sim();
+                        let sim = if s.vortex_mode {
+                            make_vortex_sim(s.drain_strength)
+                        } else {
+                            make_sim()
+                        };
                         s.real_gravity = sim.config().gravity;
                         s.sim = sim;
                         s.frame = 0;

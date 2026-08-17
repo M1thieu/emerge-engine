@@ -13,16 +13,38 @@ use crate::particle::ParticleUpdateCtx;
 
 mod friction;
 mod heightmap;
+mod kinematic_obstacle;
+mod no_slip;
 mod predictive;
 mod slip;
 
 pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
+pub use kinematic_obstacle::KinematicCircleBoundary;
+pub use no_slip::NoSlipBoundary;
 pub use predictive::PredictiveBoundary;
 pub use slip::SlipBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2);
+    /// Optional reaction hook: called once per corrected grid cell with that
+    /// cell's own grid-index position and the MASS-WEIGHTED momentum the
+    /// correction just removed from it, sign-flipped (Newton's third law --
+    /// what the grid LOST, this boundary GAINED). Default no-op, zero cost
+    /// for every existing boundary (a static wall has nothing to react
+    /// with). `KinematicCircleBoundary` is the one real implementor -- see
+    /// its own doc for why this exists (real two-way momentum coupling
+    /// without a rigid-body solver, without touching `Particle::
+    /// contact_group`/`WithMixturePhase`, both of which are unsafe or
+    /// unsupported for strict WC-MPM fluid; see project_fluid_solid_
+    /// coupling_real_root_cause_and_path memory). `cell_pos` (added
+    /// 2026-08-16, alongside the impulse from day one -- this hook is new
+    /// enough this session that widening its signature directly, rather
+    /// than adding a second method, is the honest choice) lets a real
+    /// implementor also accumulate TORQUE (`cross(cell_pos - center,
+    /// impulse)`), needed for genuine rotational dynamics (a rolling ball's
+    /// own real angular momentum), not just linear reaction.
+    fn on_grid_correction(&self, _cell_pos: Vec2, _reaction_impulse: Vec2) {}
     /// Clamp particle position to the valid domain after G2P.
     /// Not a physical force — last-resort domain enforcement so particles never escape the grid.
     /// Proper no-penetration physics lives in `apply_to_grid_velocity`.
@@ -50,6 +72,10 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
 impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
     fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
         (**self).apply_to_grid_velocity(cell_index, grid_res, velocity);
+    }
+
+    fn on_grid_correction(&self, cell_pos: Vec2, reaction_impulse: Vec2) {
+        (**self).on_grid_correction(cell_pos, reaction_impulse);
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {
@@ -110,6 +136,29 @@ pub(crate) const fn apply_slip_wall_velocity(
     }
     if y > hi {
         velocity.y = velocity.y.min(0.0);
+    }
+}
+
+/// True no-slip wall: velocity forced to exactly zero (both normal AND
+/// tangential) inside the wall band, unconditionally -- not gated on
+/// approach direction the way `apply_slip_wall_velocity`'s per-axis clamp
+/// is, because the real Navier-Stokes no-slip condition is `v = 0` AT the
+/// wall, always, not just "don't penetrate." Real, cited source: `tmp/
+/// sparkl`'s (Dimforge, Apache-2.0, already used elsewhere in this engine
+/// for its Monaghan-SPH Tait EOS) own `grid_update.rs`,
+/// `BoundaryHandling::Stick` variant -- `if is_inside: cell.velocity = 0`,
+/// the exact same unconditional-zero rule, not a hand-derived approximation.
+pub(crate) const fn apply_no_slip_wall_velocity(
+    thickness: usize,
+    cell_index: usize,
+    grid_res: usize,
+    velocity: &mut Vec2,
+) {
+    let hi = grid_res - (thickness + 1);
+    let x = cell_index / grid_res;
+    let y = cell_index % grid_res;
+    if x < thickness || x > hi || y < thickness || y > hi {
+        *velocity = Vec2::ZERO;
     }
 }
 

@@ -1,5 +1,5 @@
 //! Cosserat micro-rotation field — the real, grid-level angular-momentum
-//! channel that closes the loop `matter::materials::granular::cosserat`'s kinematics
+//! channel that closes the loop `matter::materials::solid::granular::cosserat`'s kinematics
 //! module deliberately left open. Same architectural family as
 //! `GranularFluidityField`: a standalone, opt-in, grid-sized scratch field
 //! with its own P2G-scatter → solve → G2P-gather cycle, entirely separate
@@ -10,7 +10,7 @@
 //! # Real citation
 //! de Borst, R., Sabet, S.A. and Hageman, T. (2022), "Non-associated
 //! Cosserat plasticity", International Journal of Mechanical Sciences,
-//! 230, 107535. See `matter::materials::granular::cosserat`'s own doc for the
+//! 230, 107535. See `matter::materials::solid::granular::cosserat`'s own doc for the
 //! kinematics/constitutive equations this field solves for.
 //!
 //! # What this solves
@@ -39,14 +39,15 @@
 use glam::{IVec2, Vec2};
 
 use crate::{
-    grid::kernel::quadratic_weights, matter::materials::granular::cosserat::micro_curvature_2d,
+    grid::kernel::quadratic_weights,
+    matter::materials::solid::granular::cosserat::micro_curvature_2d,
 };
 
 /// Real physical parameters for the Cosserat micro-rotation field.
 #[derive(Clone, Copy, Debug)]
 pub struct CosseratConfig {
     /// Real elastic coupling modulus `alpha` \[Pa\] — see
-    /// `matter::materials::granular::cosserat`'s own doc for the cited relation this
+    /// `matter::materials::solid::granular::cosserat`'s own doc for the cited relation this
     /// feeds (`m = alpha * l^2 * kappa`, and the coupling torque
     /// `2*alpha*(omega_macro - omega_c)`).
     pub coupling_modulus_pa: f32,

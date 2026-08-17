@@ -17,7 +17,22 @@ pub(super) fn apply_boundary_conditions_to_grid(
 ) {
     for (i, cell) in grid.active_cells_with_index_mut() {
         if cell.mass > 0.0 {
+            let before = cell.momentum;
             boundary.apply_to_grid_velocity(i, grid_res, &mut cell.momentum);
+            let removed = cell.momentum - before;
+            if removed != Vec2::ZERO {
+                // What the grid (fluid/solid) just lost, the boundary gained --
+                // Newton's third law, mass-weighted since `momentum` here is
+                // already-normalized VELOCITY (see resolve_contact's own
+                // "already normalized + gravity-applied" comment), not raw
+                // momentum -- must multiply by cell.mass to get a real impulse.
+                // `cell_pos`: same grid-index convention `apply_to_grid_
+                // velocity` itself already uses -- lets a real implementor
+                // (e.g. a rolling ball) accumulate real torque, not just
+                // linear reaction.
+                let cell_pos = Vec2::new((i / grid_res) as f32, (i % grid_res) as f32);
+                boundary.on_grid_correction(cell_pos, -removed * cell.mass);
+            }
         }
     }
 }

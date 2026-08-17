@@ -22,6 +22,13 @@ struct MutFieldPtrs {
     plastic_volume_ratio: *mut f32,
     log_volume_strain: *mut f32,
     friction_hardening: *mut f32,
+    /// Kahan compensation residual for `x`'s position integration -- see
+    /// `Particles::position_compensation`'s own doc. Deliberately NOT part
+    /// of `ParticleUpdateCtx` (that struct is public API for external
+    /// `MaterialModel`/`BoundaryCondition` implementors; this is a pure
+    /// internal scratch value with no meaning outside this function), so
+    /// it gets its own accessor method below instead.
+    position_compensation: *mut Vec2,
 }
 // SAFETY: raw pointers aren't Send/Sync by default, but this type is only ever
 // used to derive disjoint per-index references (see the SAFETY comment where
@@ -73,6 +80,15 @@ impl MutFieldPtrs {
                 cosserat_curvature,
             }
         }
+    }
+
+    /// SAFETY: same contract as `ctx_at` -- caller must ensure `i` is unique
+    /// across every concurrent call. A real, separate method (not direct
+    /// field access) for the same reason `ctx_at` is: routing through a
+    /// method call forces the closure to capture `MutFieldPtrs` as a whole,
+    /// not the individual (non-`Sync`) raw pointer field.
+    unsafe fn position_compensation_at(&self, i: usize) -> &mut Vec2 {
+        unsafe { &mut *self.position_compensation.add(i) }
     }
 }
 
@@ -293,6 +309,7 @@ pub fn gather_grid_to_particles(
         plastic_volume_ratio: particles.plastic_volume_ratio.as_mut_ptr(),
         log_volume_strain: particles.log_volume_strain.as_mut_ptr(),
         friction_hardening: particles.friction_hardening.as_mut_ptr(),
+        position_compensation: particles.position_compensation.as_mut_ptr(),
     };
     // Gate once, not per particle: when no grip particle ever touched the grid this
     // substep (every scene that doesn't use `Particle::contact_group`), this is false
@@ -336,6 +353,9 @@ pub fn gather_grid_to_particles(
                     cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
                 )
             };
+            // SAFETY: same contract as `ctx` above -- index `i` is unique to
+            // this task.
+            let pos_compensation = unsafe { ptrs.position_compensation_at(i) };
             let mixture_phase = if mixture_active {
                 material.mixture_phase()
             } else {
@@ -441,8 +461,23 @@ pub fn gather_grid_to_particles(
                     v_position = new_v + gamma * asflip_blend * diff_vel;
                 }
 
-                // Apply all boundaries' position clamp (pure function, no particle-struct access).
-                let mut new_pos = *ctx.x + v_position * dt;
+                // Kahan (compensated) summation (Kahan 1965) -- same real
+                // technique, same citation, `rod::coupling::gather_grid_to_rod`
+                // already uses for rods (see `Particles::position_compensation`'s
+                // own doc for the full derivation): a real, sustained velocity's
+                // own `v*dt` increment can fall below f32's representable
+                // precision at the particle's own grid-coordinate magnitude,
+                // silently rounding away to nothing every substep even though
+                // the underlying motion is real. Tracks the rounding error each
+                // addition drops and folds it back in next time. The boundary
+                // clamp below is a separate, unrelated, already-existing
+                // mechanism -- Kahan compensation only concerns the raw
+                // addition itself, not what a boundary does to the result
+                // afterward.
+                let y = v_position * dt - *pos_compensation;
+                let t = *ctx.x + y;
+                *pos_compensation = (t - *ctx.x) - y;
+                let mut new_pos = t;
                 for boundary in boundaries.iter() {
                     new_pos = boundary.clamp_particle_position(new_pos, grid_res);
                 }

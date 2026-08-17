@@ -65,6 +65,9 @@ impl Simulation {
             scratch_indices: Vec::new(),
             rods: Vec::new(),
             grain_populations: Vec::new(),
+            rod_networks: Vec::new(),
+            stage_ops: Vec::new(),
+            coupled_bodies: Vec::new(),
         }
     }
 
@@ -127,6 +130,9 @@ impl Simulation {
             scratch_indices: Vec::new(),
             rods: Vec::new(),
             grain_populations: Vec::new(),
+            rod_networks: Vec::new(),
+            stage_ops: Vec::new(),
+            coupled_bodies: Vec::new(),
         };
         solver
             .spatial_hash
@@ -564,6 +570,27 @@ impl Simulation {
 
     pub fn grain_populations_mut(&mut self) -> &mut [crate::grains::population::GrainPopulation] {
         &mut self.grain_populations
+    }
+
+    /// Adds a branching rod/root network (`spacetime::rod::network`),
+    /// returning its index. Mirrors `add_rod`/`add_grain_population` exactly.
+    pub fn add_rod_network(&mut self, network: crate::rod::RodNetwork) -> usize {
+        self.rod_networks.push(network);
+        self.rod_networks.len() - 1
+    }
+
+    /// Builder variant of `add_rod_network`.
+    pub fn with_rod_network(mut self, network: crate::rod::RodNetwork) -> Self {
+        self.add_rod_network(network);
+        self
+    }
+
+    pub fn rod_networks(&self) -> &[crate::rod::RodNetwork] {
+        &self.rod_networks
+    }
+
+    pub fn rod_networks_mut(&mut self) -> &mut [crate::rod::RodNetwork] {
+        &mut self.rod_networks
     }
 }
 

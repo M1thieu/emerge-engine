@@ -373,12 +373,6 @@ pub(super) fn scale_stress(pa: f32, rho: f32, config: &SimConfig) -> f32 {
     config.stress_from_si(pa, rho)
 }
 
-/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI · ρ · dx² / dt³`.
-#[inline]
-pub(super) fn scale_visc(eta: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.visc_from_si(eta, rho)
-}
-
 /// Scale SI Young's modulus to grid Lamé parameters.
 #[inline]
 pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f32, f32) {

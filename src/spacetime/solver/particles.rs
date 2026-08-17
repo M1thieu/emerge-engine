@@ -280,6 +280,80 @@ impl Simulation {
         removed
     }
 
+    /// Grows `grain_populations[population_idx].grains[grain_idx]` by
+    /// absorbing every active particle within `radius` of the grain's
+    /// current position matching `predicate` -- real conserved-momentum
+    /// merge, not an ad-hoc velocity kick: a perfectly inelastic collision
+    /// (`new_v = (m_grain*v_grain + sum(m_i*v_i)) / new_mass`), and real 2D
+    /// area-based radius growth (`new_area = old_area + sum(particle.
+    /// volume)`, `new_radius = sqrt(new_area/pi)` -- `Particle::volume` is
+    /// this engine's own real 2D "footprint" field, the same one
+    /// `estimate_particle_volumes` maintains for every ordinary particle,
+    /// not a separately-assumed constant). Absorbed particles are REMOVED
+    /// via `remove_particles` (the tag-then-remove pattern that method's
+    /// own doc already documents), not hacked into near-zero mass -- real
+    /// removal, not a workaround. Returns the number of particles absorbed.
+    ///
+    /// Real gap this closes, found 2026-08-16: no particle-merge-into-a-
+    /// rigid-body mechanism existed anywhere in this engine. A demo needing
+    /// a growing rolling body (a snowball, a boulder picking up debris, a
+    /// coalescing ice chunk) had to hand-roll this at the app level, which
+    /// is what produced three real, distinct bugs in one evening (see
+    /// `examples/rolling_snowball_demo.rs`'s own history) -- fighting the
+    /// real solver after the fact instead of using it. This composes three
+    /// already-real, already-tested primitives (`particles_near`,
+    /// `Particles::get`, `remove_particles`), it does not invent new
+    /// machinery.
+    pub fn grain_absorb_particles<F: Fn(&Particle) -> bool>(
+        &mut self,
+        population_idx: usize,
+        grain_idx: usize,
+        radius: f32,
+        predicate: F,
+    ) -> usize {
+        let center = self.grain_populations[population_idx].grains[grain_idx].x;
+        let nearby = self.particles_near(center, radius);
+
+        // Reserved sentinel, not `Particle::user_tag` -- that field is
+        // caller-defined (LP uses it for creature ownership, per its own
+        // doc), and stomping it here even briefly would be a real
+        // correctness risk if any other code observed it before removal.
+        // `material_id` is safe to borrow transiently: it's set and the
+        // particle is removed within this single synchronous call, with no
+        // `step()` (the only place `material_id` is actually dispatched on)
+        // running in between.
+        const ABSORBED_SENTINEL: u32 = u32::MAX;
+        let mut sum_mass = 0.0f32;
+        let mut sum_momentum = Vec2::ZERO;
+        let mut sum_area = 0.0f32;
+        let mut absorbed = 0usize;
+        for i in nearby {
+            let p = self.particles.get(i);
+            if !predicate(&p) {
+                continue;
+            }
+            sum_mass += p.mass;
+            sum_momentum += p.mass * p.v;
+            sum_area += p.volume;
+            self.particles.material_id[i] = ABSORBED_SENTINEL;
+            absorbed += 1;
+        }
+        if absorbed == 0 {
+            return 0;
+        }
+
+        let grain = &mut self.grain_populations[population_idx].grains[grain_idx];
+        let new_mass = grain.mass + sum_mass;
+        grain.v = (grain.mass * grain.v + sum_momentum) / new_mass;
+        grain.mass = new_mass;
+        let old_area = std::f32::consts::PI * grain.radius * grain.radius;
+        let new_area = old_area + sum_area;
+        grain.radius = (new_area / std::f32::consts::PI).sqrt();
+
+        self.remove_particles(|p| p.material_id == ABSORBED_SENTINEL);
+        absorbed
+    }
+
     /// Iterate physical indices of all particles with `tag`. O(group_size) via tag_index.
     ///
     /// Returns indices only — read particle data via `solver.particles().x[i]` etc.
@@ -529,5 +603,154 @@ impl Simulation {
     pub fn with_scalar_field(mut self, field: ScalarDiffusionField) -> Self {
         self.attach_scalar_field(field);
         self
+    }
+}
+
+#[cfg(test)]
+mod grain_absorb_particles_tests {
+    use super::*;
+    use crate::grains::population::GrainPopulation;
+    use crate::materials::solid::granular::grain_contact_law::ContactLawConfig;
+    use crate::particle::Grain;
+    use crate::solver::SimConfig;
+
+    fn contact_config() -> ContactLawConfig {
+        ContactLawConfig {
+            normal_stiffness: 1.0e5,
+            tangential_stiffness: 0.8e5,
+            rolling_stiffness: 5.0e3,
+            normal_damping: 50.0,
+            tangential_damping: 50.0,
+            rolling_damping: 50.0,
+            friction: 0.5,
+            rolling_friction: 0.1,
+        }
+    }
+
+    /// Real, minimal, fully-known particle -- `Particle::zeroed()` is this
+    /// codebase's own established test convention (dozens of real
+    /// precedents, e.g. `spacetime/transfer/g2p_tests.rs`), safe here since
+    /// this test never calls `step()` -- only `grain_absorb_particles`
+    /// itself, which only reads `x`/`v`/`mass`/`volume`.
+    fn make_particle(x: Vec2, v: Vec2, mass: f32, volume: f32) -> Particle {
+        let mut p = Particle::zeroed();
+        p.x = x;
+        p.v = v;
+        p.mass = mass;
+        p.volume = volume;
+        p.material_id = 0;
+        p
+    }
+
+    #[test]
+    fn grain_absorbs_nearby_particles_with_real_conserved_momentum_and_area() {
+        // Real, precise, hand-computable check -- not "doesn't crash".
+        let mut sim = Simulation::empty(SimConfig::standard(32, 0.05, Vec2::ZERO));
+        sim.particles.push(make_particle(
+            Vec2::new(10.5, 10.0),
+            Vec2::new(1.0, 0.0),
+            2.0,
+            0.36,
+        ));
+        sim.particles.push(make_particle(
+            Vec2::new(10.0, 10.5),
+            Vec2::new(0.0, 2.0),
+            3.0,
+            0.36,
+        ));
+        // A third particle, deliberately OUTSIDE the absorb radius -- proves
+        // the radius/predicate actually filters, not "absorbs everything".
+        sim.particles.push(make_particle(
+            Vec2::new(25.0, 25.0),
+            Vec2::new(5.0, 5.0),
+            100.0,
+            0.36,
+        ));
+        sim.active_count = sim.particles.len();
+        // Manual `particles.push` (not `add_body`) doesn't mark the spatial
+        // hash dirty the way the normal spawn path does -- without this,
+        // `particles_near` (which `grain_absorb_particles` depends on) sees
+        // a stale, empty hash and finds nothing. Real, found live via this
+        // test's own first failed run (0 absorbed instead of 2), not
+        // guessed.
+        sim.spatial_hash_dirty.set(true);
+
+        let grain = Grain::new(Vec2::new(10.0, 10.0), 1.0, 1.0);
+        let grain_mass_before = grain.mass;
+        let grain_radius_before = grain.radius;
+        let grain_v_before = grain.v;
+        sim.add_grain_population(GrainPopulation::new(vec![grain], contact_config()));
+
+        let absorbed = sim.grain_absorb_particles(0, 0, 2.0, |p| p.material_id == 0);
+
+        assert_eq!(
+            absorbed, 2,
+            "expected exactly the two nearby particles absorbed"
+        );
+        assert_eq!(
+            sim.particles().len(),
+            1,
+            "the two absorbed particles must be REMOVED from the simulation, not just relabeled"
+        );
+        // The one remaining particle must be the far one (real identity check,
+        // not just a count check).
+        assert!((sim.particles().x[0] - Vec2::new(25.0, 25.0)).length() < 1e-5);
+
+        let g = &sim.grain_populations()[0].grains[0];
+        let expected_mass = grain_mass_before + 2.0 + 3.0;
+        assert!(
+            (g.mass - expected_mass).abs() < 1e-4,
+            "mass not conserved: got {}, expected {expected_mass}",
+            g.mass
+        );
+        let expected_momentum = grain_mass_before * grain_v_before
+            + 2.0 * Vec2::new(1.0, 0.0)
+            + 3.0 * Vec2::new(0.0, 2.0);
+        let expected_v = expected_momentum / expected_mass;
+        assert!(
+            (g.v - expected_v).length() < 1e-4,
+            "momentum not conserved: v={:?}, expected={:?}",
+            g.v,
+            expected_v
+        );
+        let expected_area =
+            std::f32::consts::PI * grain_radius_before * grain_radius_before + 0.36 + 0.36;
+        let expected_radius = (expected_area / std::f32::consts::PI).sqrt();
+        assert!(
+            (g.radius - expected_radius).abs() < 1e-4,
+            "radius not from real area accounting: got {}, expected {expected_radius}",
+            g.radius
+        );
+    }
+
+    #[test]
+    fn grain_absorb_particles_respects_the_predicate() {
+        // A particle within radius but failing the predicate must be left
+        // alone entirely -- real filtering, not "radius is the only gate".
+        let mut sim = Simulation::empty(SimConfig::standard(32, 0.05, Vec2::ZERO));
+        let mut other_material = make_particle(Vec2::new(10.5, 10.0), Vec2::ZERO, 2.0, 0.36);
+        other_material.material_id = 99;
+        sim.particles.push(other_material);
+        sim.active_count = sim.particles.len();
+        // Manual `particles.push` (not `add_body`) doesn't mark the spatial
+        // hash dirty the way the normal spawn path does -- without this,
+        // `particles_near` (which `grain_absorb_particles` depends on) sees
+        // a stale, empty hash and finds nothing. Real, found live via this
+        // test's own first failed run (0 absorbed instead of 2), not
+        // guessed.
+        sim.spatial_hash_dirty.set(true);
+        sim.add_grain_population(GrainPopulation::new(
+            vec![Grain::new(Vec2::new(10.0, 10.0), 1.0, 1.0)],
+            contact_config(),
+        ));
+
+        let absorbed = sim.grain_absorb_particles(0, 0, 2.0, |p| p.material_id == 0);
+
+        assert_eq!(absorbed, 0);
+        assert_eq!(
+            sim.particles().len(),
+            1,
+            "non-matching particle must not be removed"
+        );
     }
 }

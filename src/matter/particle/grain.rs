@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-use crate::matter::materials::granular::grain_contact_law::GrainContactState;
+use crate::matter::materials::solid::granular::grain_contact_law::GrainContactState;
 
 /// One rigid circular grain -- the discrete-element analog of `Particle`:
 /// pure per-point kinematic state, no dynamics of its own (moved out of

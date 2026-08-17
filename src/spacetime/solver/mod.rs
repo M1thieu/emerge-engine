@@ -4,6 +4,7 @@ pub mod config;
 pub mod density;
 pub mod handle;
 mod lifecycle;
+pub mod operator;
 mod particles;
 mod projection;
 mod queries;
@@ -14,6 +15,7 @@ pub use body_state::{BodyState, body_state_of, region_body_state_of};
 pub use config::{SimConfig, SpawnRegion};
 pub use density::compute_density_grid;
 pub use handle::{MaterialHandle, ParticleGroup};
+pub use operator::{CoupledBody, IntoSimEntry, OperatorCtx, Plugin, Stage, StageOp};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
@@ -85,7 +87,7 @@ pub struct Simulation {
     /// cosserat_field` module doc) -- `None` (default) for every scene that
     /// doesn't opt in, same zero-cost-when-unused property `granular_fluidity`
     /// already has. Real grid-level angular-momentum channel, added to close
-    /// the loop `matter::materials::granular::cosserat`'s kinematics module leaves open.
+    /// the loop `matter::materials::solid::granular::cosserat`'s kinematics module leaves open.
     cosserat: Option<CosseratField>,
     /// Persistent per-particle gathered micro-rotation, one-substep-lag
     /// convention matching `granular_fluidity_g` exactly.
@@ -188,9 +190,27 @@ pub struct Simulation {
     /// piece (see `project_dem_rolling_resistance_scoped` memory); today a
     /// caller decides explicitly, same as `add_rod`.
     grain_populations: Vec<crate::grains::population::GrainPopulation>,
+    /// Branching rod/root topologies (`spacetime::rod::network`) sharing this
+    /// simulation's own MPM grid — real scatter/gather/internal-force
+    /// `CoupledBody` impl, mirroring `rods` above exactly (generalized from
+    /// linear i-1/i+1 adjacency to explicit edge/bending topology). Empty
+    /// for every scene that never calls `add_rod_network`/`with_rod_network`
+    /// (zero-cost: 0-iteration loops).
+    rod_networks: Vec<crate::rod::RodNetwork>,
     /// Scratch buffer for wake/sleep candidates — pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.
     scratch_indices: Vec<usize>,
+    /// Genuinely new physics with no existing mechanism to fit -- see
+    /// `operator` module doc. Empty for every scene today (no implementor
+    /// exists yet); dispatched at each real stage in `do_substep` so this
+    /// is a live, zero-cost-when-empty extension point, not just a type.
+    stage_ops: Vec<Box<dyn operator::StageOp>>,
+    /// Coupled sub-solvers registered through the generic `add`/`with`
+    /// path (see `operator` module doc). `rods`/`grain_populations` above
+    /// stay their own concrete `Vec`s for now (real duplication between
+    /// them is the actual migration target, not yet done) -- this is where
+    /// a future `CoupledBody` implementor lands once it exists.
+    coupled_bodies: Vec<Box<dyn operator::CoupledBody>>,
 }
 
 impl std::fmt::Debug for Simulation {

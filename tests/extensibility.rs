@@ -132,7 +132,7 @@ struct ExternalWind {
 }
 
 impl Field for ExternalWind {
-    fn prepare(&mut self, _particles: &Particles) {
+    fn prepare(&mut self, _particles: &Particles, _dt: f32) {
         self.prepare_calls.fetch_add(1, Ordering::Relaxed);
     }
     fn acceleration(&self, _particles: &Particles, _i: usize) -> Vec2 {

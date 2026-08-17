@@ -341,9 +341,22 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
         default: { return mat2x2<f32>(); }
     }
 
-    // Snow cohesion: compacted snow resists re-expansion. Only fires when Jp < 1 and J > 1.
-    if mat.model == 4u && mat.cohesion_coeff > 0.0 && p.plastic_volume_ratio < 1.0 && J > 1.0 {
-        tau = tau + mat.cohesion_coeff * p.plastic_volume_ratio * (J - 1.0) * J * I;
+    // Snow cohesion: real isotropic TENSION that resists FURTHER COMPACTION
+    // (grows as Jp<1 deepens), matching the CPU reference exactly
+    // (src/matter/materials/snow.rs, kirchhoff_stress: `tau -= cohesion_
+    // coeff*(1-Jp)*I` when Jp<1). Real, root-caused fix, 2026-08-16: this
+    // branch previously used a DIFFERENT formula (opposite sign, gated on
+    // an extra `J>1` condition, claimed to resist RE-EXPANSION instead) --
+    // confirmed via `gpu_snow_compacts_and_cohesion_resists_compaction`
+    // (tests/gpu.rs) that the old GPU formula's own cohesion-differentiation
+    // signal was ~16x weaker than CPU's and barely correctly-signed. CPU's
+    // formula has real, passing empirical backing (`snow_compacts_and_
+    // hardens_under_self_weight_and_cohesion_resists_compaction`,
+    // tests/physics_correctness.rs) -- this GPU branch now matches it
+    // byte-for-byte instead of encoding a second, untested, unvalidated
+    // cohesion model under the same name.
+    if mat.model == 4u && mat.cohesion_coeff > 0.0 && p.plastic_volume_ratio < 1.0 {
+        tau = tau - mat.cohesion_coeff * (1.0 - p.plastic_volume_ratio) * I;
     }
 
     // Active stress. Viscoelastic (9) uses isotropic form (matches CPU viscoelastic.rs).

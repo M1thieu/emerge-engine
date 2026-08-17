@@ -177,7 +177,7 @@ mod marginal_yield_tests {
 #[cfg(test)]
 mod scale_contract_integration {
     use super::*;
-    use crate::materials::granular::scale_contract::{
+    use crate::materials::solid::granular::scale_contract::{
         dx_in_valid_granular_range, granular_dx_window,
     };
 

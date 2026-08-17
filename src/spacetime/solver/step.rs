@@ -12,26 +12,30 @@
 //! guards (`projection.rs`).
 
 use glam::Vec2;
+use rayon::prelude::*;
 
 use super::Simulation;
 use super::cfl::choose_substep_dt;
+use super::operator::{CoupledBody, OperatorCtx, Stage};
 use super::projection::{
     apply_boundary_conditions_to_grid, assert_owned_deformation_state,
     assert_owned_deformation_state_j_range_deferred, project_particle_state_to_admissible,
 };
-use crate::grains::coupling::{
-    apply_grain_contact_forces, gather_grid_to_grains, scatter_grains_to_grid,
-};
 use crate::rod::{
-    RodForceParams, RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism,
-    apply_growth, apply_phototropism, apply_rod_internal_and_wind_forces, apply_secondary_growth,
-    gather_grid_to_rod, scatter_rod_to_grid, step_rod_implicit,
+    RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism, apply_growth,
+    apply_phototropism, apply_secondary_growth, step_rod_implicit,
 };
 use crate::solver::density::estimate_particle_volumes;
 use crate::transfer::{
     G2PParams, gather_contact_point_cloud, gather_grid_to_particles, scatter_particles_to_grid,
     scatter_particles_to_grid_sorted, spatial_sort_order,
 };
+
+/// Below this many active particles, the force-fields accumulation loop
+/// runs serially instead of through rayon -- see the fields_us branch in
+/// `do_substep` for the real, measured justification (tiny-N solar-system
+/// scene, `examples/diag_nbody_tiny_n_profile.rs`).
+const PARALLEL_FIELDS_MIN_PARTICLES: usize = 64;
 
 impl Simulation {
     /// Strict WC-MPM liquids have a deliberately narrow supported coupling
@@ -41,7 +45,24 @@ impl Simulation {
     /// look like a fluid solution when it is not one.
     fn assert_strict_fluid_mode_is_supported(&self) {
         let mut has_strict_fluid = false;
+        // Tracks ANY particle with contact_group != 0, regardless of its own
+        // material -- not just whether a strict-fluid particle itself tries
+        // to opt in (checked separately below). G2P
+        // (`transfer/g2p.rs`, `contact_active` branch) routes EVERY
+        // contact_group==0 particle through `grid.rest_velocity_at`, the
+        // Bardenhagen 2001 solid-contact "rest" field, the instant any OTHER
+        // particle anywhere on the grid has contact_group != 0 -- with no
+        // material check. A strict fluid particle (contact_group == 0, as
+        // required below) sitting near an unrelated contact body would
+        // silently have its velocity corrected by solid-contact machinery
+        // (Coulomb friction cone, Baumgarte overlap correction) instead of
+        // its own liquid continuity equation, exactly the silent-wrong-
+        // physics failure mode this whole function exists to prevent.
+        let mut has_grip_particle = false;
         for i in 0..self.particles.len() {
+            if self.particles.contact_group[i] != 0 {
+                has_grip_particle = true;
+            }
             let material = self.materials.get(self.particles.material_id[i]);
             if !material.owns_deformation_volume_state() {
                 // Pressure-projection incompressibility (`grid::pressure`) has
@@ -74,6 +95,10 @@ impl Simulation {
             );
         }
         if has_strict_fluid {
+            assert!(
+                !has_grip_particle,
+                "strict WC-MPM fluid is present alongside a multi-field contact body elsewhere in the scene (some particle has contact_group != 0); G2P would silently route this fluid's own contact_group==0 particles through the solid-contact-resolved field once that other body touches the grid, corrupting the liquid continuity equation -- use a fluid--solid boundary/coupling model instead"
+            );
             assert!(
                 self.boundaries
                     .iter()
@@ -232,6 +257,7 @@ impl Simulation {
                 self.active_count,
                 &self.materials,
                 &self.rods,
+                &self.rod_networks,
                 remaining,
                 self.granular_fluidity
                     .as_ref()
@@ -326,6 +352,10 @@ impl Simulation {
             for field in &mut self.scalar_fields {
                 field.apply(&mut self.particles, diffusion_dt);
             }
+            // `StageOp`s tagged `Stage::Diffuse` share this exact cadence --
+            // accumulated across the substep loop, applied once here -- not
+            // `do_substep`'s per-substep dispatch. See `operator` module doc.
+            self.dispatch_stage(Stage::Diffuse, diffusion_dt);
         }
         self.last_timing.thermal_us += t_diff.elapsed().as_micros() as u64;
 
@@ -629,25 +659,14 @@ impl Simulation {
         // contact-active nodes aren't fully known until every grip particle's mass
         // has been scattered. No-op when `contact_group` is unused anywhere.
         gather_contact_point_cloud(&self.particles, &mut self.grid, self.active_count);
-        // Rod -> grid scatter, same P2G pass, same shared `Grid` -- BEFORE the
-        // wake pass below so a rod touching settled sand/fluid wakes it with
-        // zero new code (the wake scan just sees active cells the rod itself
-        // created). No-op for every scene that never calls add_rod/with_rod.
-        // Sleeping rods skip this entirely (see `Rod::sleeping` doc) -- they
-        // neither scatter mass/momentum nor self-trigger their own wake check
-        // below; they're woken only by genuinely external activity.
-        //
-        for rod in &self.rods {
-            if !rod.sleeping && !rod.use_implicit_integration {
-                scatter_rod_to_grid(&rod.points, &mut self.grid);
-            }
-        }
-        // Grain -> grid scatter, same shared `Grid`, same convention as rods
-        // above -- see `grains::coupling`'s own doc. No-op for every scene
-        // that never calls `add_grain_population`.
-        for population in &self.grain_populations {
-            scatter_grains_to_grid(population, &mut self.grid);
-        }
+        // Rod/grain -> grid scatter, same P2G pass, same shared `Grid` --
+        // BEFORE the wake pass below so a rod/grain touching settled
+        // sand/fluid wakes it with zero new code (the wake scan just sees
+        // active cells the body itself created). Goes through
+        // `dispatch_stage` below (`Rod`/`GrainPopulation` implement
+        // `CoupledBody`) -- see `operator` module doc. Sleeping rods skip
+        // this entirely via `CoupledBody::stages()` returning `&[]`.
+        self.dispatch_stage(Stage::Scatter, sub_dt);
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
         // Wake any sleeping particle whose kernel overlaps a MEANINGFULLY active
@@ -760,6 +779,7 @@ impl Simulation {
         for boundary in &self.boundaries {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
         }
+        self.dispatch_stage(Stage::GridCorrect, sub_dt);
         // Multi-field frictional contact (Bardenhagen 2001). It is rejected for
         // strict WC-MPM liquids above; ordinary solid/contact scenes retain this
         // separate constraint solve. No-op when no particle uses contact groups.
@@ -881,22 +901,13 @@ impl Simulation {
                 cosserat_curvature: &self.cosserat_curvature[..cosserat_len],
             },
         );
-        // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
-        // already baked in via the shared grid-update step above) AND
-        // advances `rod.points.x`, mirroring `gather_grid_to_particles`'s own
-        // position-advection contract exactly (see `coupling::gather_grid_to_rod`'s
-        // doc) so rod force integration below only ever touches velocity,
-        // matching how particle force fields never touch `particles.x` either.
-        for rod in &mut self.rods {
-            if !rod.sleeping && !rod.use_implicit_integration {
-                gather_grid_to_rod(&mut rod.points, &self.grid, sub_dt);
-            }
-        }
-        // Grid -> grain gather, same convention as rods above -- see
-        // `grains::coupling::gather_grid_to_grains`'s own doc.
-        for population in &mut self.grain_populations {
-            gather_grid_to_grains(population, &self.grid, sub_dt);
-        }
+        // Grid -> rod/grain gather (this body's own G2P): pulls velocity
+        // (gravity already baked in via the shared grid-update step above)
+        // AND advances position, mirroring `gather_grid_to_particles`'s own
+        // position-advection contract exactly, so force integration below
+        // only ever touches velocity -- matching how particle force fields
+        // never touch `particles.x` either. Goes through `dispatch_stage`.
+        self.dispatch_stage(Stage::Gather, sub_dt);
         self.last_timing.g2p_us += t2.elapsed().as_micros() as u64;
 
         // ── Force fields ──────────────────────────────────────────────────────
@@ -911,26 +922,67 @@ impl Simulation {
             let t3 = std::time::Instant::now();
             let mut fields = std::mem::take(&mut self.force_fields);
             for (_, field) in &mut fields {
-                field.prepare(&self.particles);
+                field.prepare(&self.particles, sub_dt);
             }
-            for i in 0..self.active_count {
-                // Dirichlet/kinematic anchor (`Particle::pinned`): must stay at v=0,
-                // matching G2P's own unconditional pinned branch just before this pass.
-                // Force fields ran AFTER G2P with no pinned check, silently un-zeroing
-                // pinned particles' velocity every substep -- P2G then scatters that as
-                // real momentum next substep (`scatter_particles_to_grid` doesn't special-
-                // case pinned particles either, since a pinned particle's mass/stress
-                // SHOULD still be felt by neighbors, just not its velocity). A supposedly-
-                // fixed anchor was quietly injecting wind-driven momentum into the grid
-                // every substep -- a real, confirmed root cause of long-horizon energy
-                // injection at every pinned+force-field composition, not just this scene.
-                if self.particles.pinned[i] != 0 {
-                    continue;
-                }
-                let mut dv = Vec2::ZERO;
-                for (_, field) in &fields {
-                    dv += field.acceleration(&self.particles, i);
-                }
+            // Real, measured fix (`examples/diag_nbody_scale_profile.rs`):
+            // for an expensive field (Barnes-Hut N-body query, O(log N) per
+            // particle) this loop was 69-84% of total step cost at 732-5236
+            // particles -- each particle's own `acceleration()` call is
+            // read-only and independent of every other particle's, so this
+            // is embarrassingly parallel, same real shape P2G/G2P/the CFL
+            // scan already exploit with rayon.
+            //
+            // Real, measured counter-case (`examples/diag_nbody_tiny_n_
+            // profile.rs`, prompted by a live lag report on the 9-body solar
+            // system demo): at N=9, forcing the pool to 1 thread via
+            // `RAYON_NUM_THREADS=1` made fields_us ~19% FASTER than the
+            // default 8-thread dispatch (29.7us/step vs 35.4us/step) -- the
+            // per-task spawn/steal overhead exceeds the actual work at tiny
+            // N. `PARALLEL_FIELDS_MIN_PARTICLES` falls back to a plain
+            // serial loop below that threshold, same standard technique
+            // rayon's own docs recommend for cheap per-item work.
+            let dv: Vec<Vec2> = if self.active_count < PARALLEL_FIELDS_MIN_PARTICLES {
+                (0..self.active_count)
+                    .map(|i| {
+                        if self.particles.pinned[i] != 0 {
+                            return Vec2::ZERO;
+                        }
+                        fields.iter().fold(Vec2::ZERO, |acc, (_, field)| {
+                            acc + field.acceleration(&self.particles, i)
+                        })
+                    })
+                    .collect()
+            } else {
+                // Computed into a scratch buffer first (can't mutate
+                // `self.particles.v` while `field.acceleration(&self.
+                // particles, ..)` still needs to read the whole struct
+                // immutably), applied in a second, serial,
+                // real-work-negligible pass.
+                let min_len = (self.active_count / (rayon::current_num_threads() * 2)).max(1);
+                (0..self.active_count)
+                    .into_par_iter()
+                    .with_min_len(min_len)
+                    .map(|i| {
+                        // Dirichlet/kinematic anchor (`Particle::pinned`): must stay at v=0,
+                        // matching G2P's own unconditional pinned branch just before this pass.
+                        // Force fields ran AFTER G2P with no pinned check, silently un-zeroing
+                        // pinned particles' velocity every substep -- P2G then scatters that as
+                        // real momentum next substep (`scatter_particles_to_grid` doesn't special-
+                        // case pinned particles either, since a pinned particle's mass/stress
+                        // SHOULD still be felt by neighbors, just not its velocity). A supposedly-
+                        // fixed anchor was quietly injecting wind-driven momentum into the grid
+                        // every substep -- a real, confirmed root cause of long-horizon energy
+                        // injection at every pinned+force-field composition, not just this scene.
+                        if self.particles.pinned[i] != 0 {
+                            return Vec2::ZERO;
+                        }
+                        fields.iter().fold(Vec2::ZERO, |acc, (_, field)| {
+                            acc + field.acceleration(&self.particles, i)
+                        })
+                    })
+                    .collect()
+            };
+            for (i, dv) in dv.into_iter().enumerate() {
                 self.particles.v[i] += sub_dt * dv;
             }
             self.force_fields = fields;
@@ -968,105 +1020,19 @@ impl Simulation {
             }
         }
 
-        // ── Grain contact forces ────────────────────────────────────────────────
-        // Same real convention as rod internal forces below: velocity-only
-        // (position already advanced in the gather above), gravity NOT
-        // reapplied here (already received via the shared grid-update step) --
-        // see `grains::coupling::apply_grain_contact_forces`'s own doc.
-        for population in &mut self.grain_populations {
-            apply_grain_contact_forces(population, sub_dt);
-        }
-
-        // ── Rod internal + wind forces ──────────────────────────────────────────
+        // ── Rod internal + wind forces, grain contact forces ────────────────────
         // Runs where particle force fields just ran, on the SAME real convention:
         // velocity-only (position already advanced in the gather above), so a
-        // rod's own stretch/bend/damping + wind drag land exactly like an
-        // ordinary force field would. Gravity is NOT reapplied here — the rod
-        // already received it via the shared grid-update step, same mechanism
-        // ordinary particles use. No-op for every scene with no rods.
-        //
-        for rod in &mut self.rods {
-            if rod.sleeping || rod.use_implicit_integration {
-                continue;
-            }
-            apply_rod_internal_and_wind_forces(
-                &mut rod.points,
-                &rod.material,
-                RodForceParams {
-                    wind_velocity: rod.wind_velocity,
-                    wind_drag_coeff: rod.wind_drag_coeff,
-                    push_center: rod.push_center,
-                    push_strength: rod.push_strength,
-                    push_radius: rod.push_radius,
-                    dx_meters: self.config.dx_meters,
-                    dt: sub_dt,
-                },
-            );
-            // Real root gravitropism (Porat, Rivière, Meroz 2024 -- see
-            // `rod::gravitropism` module doc): evolves the tip's own
-            // rest_curvature toward gravity-alignment. No-op for every rod
-            // that doesn't opt in (plain stems/blades don't grow toward
-            // gravity).
-            if let Some(gravitropism) = &rod.gravitropism {
-                apply_gravitropism(
-                    &mut rod.points,
-                    gravitropism,
-                    self.config.gravity,
-                    &self.grid,
-                    sub_dt,
-                );
-            }
-            // Real phototropism (Cholodny & Went auxin-asymmetry theory --
-            // see `rod::gravitropism` module doc's own "Phototropism reuses
-            // the SAME core" section). No-op for every rod that doesn't
-            // opt in.
-            if let Some(phototropism) = &rod.phototropism {
-                apply_phototropism(
-                    &mut rod.points,
-                    phototropism,
-                    self.config.light_dir,
-                    &self.grid,
-                    sub_dt,
-                );
-            }
-            // Real elongation growth (Verhulst 1838 logistic law -- see
-            // `rod::growth` module doc). No-op for every rod that doesn't
-            // opt in.
-            if let Some(growth) = &mut rod.growth {
-                apply_growth(
-                    &mut rod.points,
-                    growth,
-                    &self.grid,
-                    self.config.light_dir,
-                    self.config.dx_meters,
-                    sub_dt,
-                );
-            }
-            // Real stress-driven secondary growth (Jaffe 1973, Mattheck &
-            // Kübler 1995 -- see `rod::secondary_growth` module doc). No-op
-            // for every rod that doesn't opt in. Gated on the rod STILL
-            // being over-critical -- see the other call site's own doc for
-            // the real, measured bug this fixes (unbounded stiffening long
-            // past the point it was actually needed).
-            if let Some(secondary_growth) = &rod.secondary_growth {
-                let gravity_si = self.config.gravity.length() * self.config.dx_meters;
-                if rod.buckling_warning(gravity_si).is_some() {
-                    apply_secondary_growth(
-                        &mut rod.points,
-                        secondary_growth,
-                        self.config.dx_meters,
-                        sub_dt,
-                    );
-                }
-            }
-            // Real elastic-perfectly-plastic bending (see `rod::plasticity`
-            // module doc) -- same ordering rationale as the implicit branch's
-            // own call site: mechanical yield applies on top of whatever
-            // biological reshaping already happened this substep.
-            if let Some(plasticity) = &rod.plasticity {
-                apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
-            }
-        }
+        // rod's own stretch/bend/damping + wind drag (and a grain's own inter-
+        // grain contact forces) land exactly like an ordinary force field
+        // would. Gravity is NOT reapplied here — every body already received
+        // it via the shared grid-update step, same mechanism ordinary
+        // particles use. Real 6-part rod sequence (internal+wind forces,
+        // gravitropism, phototropism, growth, secondary growth, plasticity)
+        // now lives in `Rod`'s own `CoupledBody::post_gather` impl
+        // (`rod::coupling`), unchanged order/gating, reached via
+        // `dispatch_stage` below -- see `operator` module doc.
+        self.dispatch_stage(Stage::PostGather, sub_dt);
 
         // ── Thermal / scalar diffusion ────────────────────────────────────────
         let t4 = std::time::Instant::now();
@@ -1251,6 +1217,56 @@ impl Simulation {
             }
         }
         self.last_timing.phase_sleep_us += t5.elapsed().as_micros() as u64;
+    }
+
+    /// Runs every registered `StageOp`/`CoupledBody` at `stage`, once, for
+    /// `dt` -- see `operator` module doc. `rods`/`grain_populations` keep
+    /// their own concrete `Vec`s (real, load-bearing: `rods()`/`_mut()` and
+    /// `grain_populations()`/`_mut()` return concrete slices, and real call
+    /// sites across tests/examples read fields `CoupledBody` doesn't
+    /// expose, e.g. `GrainPopulation::grains`) -- chained in here as
+    /// `&mut dyn CoupledBody` so the actual dispatch is still ONE shared
+    /// loop, not two hand-copied ones, without breaking either accessor.
+    fn dispatch_stage(&mut self, stage: Stage, dt: f32) {
+        if self.stage_ops.is_empty()
+            && self.coupled_bodies.is_empty()
+            && self.grain_populations.is_empty()
+            && self.rods.is_empty()
+            && self.rod_networks.is_empty()
+        {
+            return;
+        }
+        let mut ctx = OperatorCtx {
+            grid: &mut self.grid,
+            particles: &mut self.particles,
+            config: &self.config,
+        };
+        for op in self.stage_ops.iter_mut().filter(|op| op.stage() == stage) {
+            op.apply(&mut ctx, dt);
+        }
+        let bodies = self
+            .rods
+            .iter_mut()
+            .map(|r| r as &mut dyn CoupledBody)
+            .chain(
+                self.grain_populations
+                    .iter_mut()
+                    .map(|g| g as &mut dyn CoupledBody),
+            )
+            .chain(
+                self.rod_networks
+                    .iter_mut()
+                    .map(|n| n as &mut dyn CoupledBody),
+            )
+            .chain(self.coupled_bodies.iter_mut().map(|b| b.as_mut()));
+        for body in bodies.filter(|b| b.stages().contains(&stage)) {
+            match stage {
+                Stage::Scatter => body.scatter(&mut ctx, dt),
+                Stage::Gather => body.gather(&mut ctx, dt),
+                Stage::PostGather => body.post_gather(&mut ctx, dt),
+                Stage::GridCorrect | Stage::Diffuse => {}
+            }
+        }
     }
 
     pub const fn effective_dt(&self) -> f32 {

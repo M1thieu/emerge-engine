@@ -384,11 +384,27 @@ pub struct NBodyGravityField {
     /// Smaller = finer tree (more accuracy, slower build). Default: `DEFAULT_MAX_BODIES_PER_NODE` (4).
     pub max_bodies_per_node: usize,
 
-    // Internal — rebuilt each substep by prepare().
+    /// Real, tunable fraction of the system's own dynamical timescale used
+    /// as the tree's staleness bound -- see `prepare`'s own doc for the
+    /// full derivation and citation. Smaller = rebuilds more often (more
+    /// accurate, slower); larger = fewer rebuilds. 0.05 is a plausible,
+    /// NOT independently verified default (same honesty standard `theta`'s
+    /// own doc already applies to its own 0.5 default) -- real accuracy
+    /// impact should be checked per-scene, same as `theta`/`softening`.
+    pub max_tree_staleness_fraction: f32,
+
+    // Internal -- rebuilt only when `time_since_rebuild` crosses
+    // `rebuild_interval`, not necessarily every substep. See `prepare`.
     tree: Option<Quadtree>,
     /// Snapshot of (particle_index, position, mass) used to build the tree.
     /// Filtered to particles with positive mass only.
     snapshot: Vec<(usize, Vec2, f32)>,
+    /// Real accumulated simulation time since the tree was last rebuilt.
+    time_since_rebuild: f32,
+    /// Real, computed staleness bound for the CURRENT tree -- see
+    /// `dynamical_timescale`'s own doc. `0.0` before the first rebuild
+    /// (forces one on the very first `prepare()` call).
+    rebuild_interval: f32,
 }
 
 impl NBodyGravityField {
@@ -404,14 +420,78 @@ impl NBodyGravityField {
             theta,
             max_depth: DEFAULT_MAX_DEPTH,
             max_bodies_per_node: DEFAULT_MAX_BODIES_PER_NODE,
+            max_tree_staleness_fraction: 0.05,
             tree: None,
             snapshot: Vec::new(),
+            time_since_rebuild: 0.0,
+            rebuild_interval: 0.0,
         }
+    }
+
+    /// Real, standard N-body timestep criterion (system-level dynamical/
+    /// free-fall timescale -- Aarseth 2003, *Gravitational N-Body
+    /// Simulations*, §2.2; the same real formula `tests/
+    /// self_gravitating_body.rs`'s own doc already cites for this exact
+    /// scene, `t_dyn ~ sqrt(r^3/(G*M))`), computed here from the just-
+    /// captured snapshot's own real total mass and mass-weighted RMS
+    /// radius (radius of gyration) about its own center of mass -- no new
+    /// physics, the same quantity this codebase's own test file already
+    /// computes to characterize this exact system.
+    ///
+    /// Real, disclosed simplification: this is a SYSTEM-LEVEL bound, not
+    /// Aarseth's own later, more sophisticated per-particle individual
+    /// timesteps (a separate, larger undertaking, not attempted here) --
+    /// honest for the common case (a roughly co-evolving cluster/system)
+    /// but would under-refresh a system with a small fast-orbiting
+    /// sub-cluster inside a much larger slow one. `f32::INFINITY` (never
+    /// stale) for fewer than 2 massive bodies or zero total mass, where no
+    /// meaningful dynamical timescale exists.
+    fn dynamical_timescale(&self) -> f32 {
+        if self.snapshot.len() < 2 {
+            return f32::INFINITY;
+        }
+        let total_mass: f32 = self.snapshot.iter().map(|&(_, _, m)| m).sum();
+        if total_mass <= 0.0 {
+            return f32::INFINITY;
+        }
+        let com: Vec2 = self
+            .snapshot
+            .iter()
+            .map(|&(_, pos, m)| pos * m)
+            .sum::<Vec2>()
+            / total_mass;
+        let r_char = (self
+            .snapshot
+            .iter()
+            .map(|&(_, pos, m)| m * (pos - com).length_squared())
+            .sum::<f32>()
+            / total_mass)
+            .sqrt();
+        if r_char <= 0.0 || self.gravitational_constant <= 0.0 {
+            return f32::INFINITY;
+        }
+        (r_char.powi(3) / (self.gravitational_constant * total_mass)).sqrt()
     }
 }
 
 impl Field for NBodyGravityField {
-    fn prepare(&mut self, particles: &crate::particle::Particles) {
+    /// Real fix for a real, measured cost: rebuilding a Barnes-Hut tree
+    /// (plus its quadrupole pass) from scratch every SINGLE substep, when
+    /// gravity's own dynamical timescale is normally many orders of
+    /// magnitude longer than the mechanical CFL substep, is the exact same
+    /// over-sub-cycling shape already found and fixed for thermal/scalar
+    /// diffusion (`step.rs`'s own accumulate-then-flush comment) --
+    /// measured directly (`examples/diag_nbody_scale_profile.rs`) at
+    /// 71-84% of total step cost, growing with particle count, while CFL
+    /// substep count itself stayed flat (not a CFL/stability problem, a
+    /// pure over-refresh problem). `acceleration()` below is UNCHANGED --
+    /// it still runs every substep, querying whichever tree (fresh or
+    /// reused) `prepare` decided on this call.
+    fn prepare(&mut self, particles: &crate::particle::Particles, dt: f32) {
+        self.time_since_rebuild += dt;
+        if self.tree.is_some() && self.time_since_rebuild < self.rebuild_interval {
+            return;
+        }
         self.snapshot.clear();
         self.snapshot.extend(
             particles
@@ -424,6 +504,8 @@ impl Field for NBodyGravityField {
             self.max_depth,
             self.max_bodies_per_node,
         ));
+        self.rebuild_interval = self.dynamical_timescale() * self.max_tree_staleness_fraction;
+        self.time_since_rebuild = 0.0;
     }
 
     fn acceleration(&self, particles: &Particles, i: usize) -> Vec2 {
@@ -597,7 +679,7 @@ mod quadrupole_tests {
 
         let mut field = NBodyGravityField::new(g, 0.0, 1.0);
         field.max_bodies_per_node = 2;
-        field.prepare(&particles);
+        field.prepare(&particles, 0.0);
         let a_actual = field.acceleration(&particles, query_idx);
 
         // Exact direct pairwise sum (unsoftened, matches softening=0.0 above).

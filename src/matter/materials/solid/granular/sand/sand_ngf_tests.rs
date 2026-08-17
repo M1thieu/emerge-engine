@@ -439,7 +439,7 @@ mod ngf_verification_tests {
             let n = mags.len();
             let couple_stress_p90 = if n > 0 {
                 let kappa = mags[(n as f32 * 0.9) as usize];
-                let m = crate::materials::granular::cosserat::elastic_couple_stress_2d(
+                let m = crate::materials::solid::granular::cosserat::elastic_couple_stress_2d(
                     Vec2::new(kappa, 0.0),
                     coupling_modulus_pa,
                     GRAIN_DIAMETER_M,

@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use super::{MaterialRegistry, SimConfig};
 use crate::particle::Particles;
-use crate::rod::{Rod, rod_cfl_dt};
+use crate::rod::{Rod, RodNetwork, network_cfl_dt, rod_cfl_dt};
 
 // choose_substep_dt: picks the largest CFL-safe dt ≤ max_dt.
 // Called inside step()'s substep loop — max_dt is the remaining frame time.
@@ -24,6 +24,7 @@ pub(crate) fn choose_substep_dt(
     active_count: usize,
     materials: &MaterialRegistry,
     rods: &[Rod],
+    rod_networks: &[RodNetwork],
     max_dt: f32,
     granular_fluidity_dt_bound: Option<f32>,
     thermal_dt_bound: Option<f32>,
@@ -192,6 +193,17 @@ pub(crate) fn choose_substep_dt(
         let rod_dt = rod_cfl_dt(&rod.points, &rod.material, config.rod_cfl_coefficient);
         if rod_dt.is_finite() && rod_dt > 0.0 {
             min_mat_dt = min_mat_dt.min(rod_dt);
+        }
+    }
+    // Same real fold as rods above, same reason: a network going unstable
+    // must never silently escape the adaptive substep logic. Real Gershgorin
+    // CFL bound (`network_cfl_dt`), same `rod_cfl_coefficient` a single rod
+    // uses -- the underlying stiffness/damping physics is identical, only
+    // the topology iteration differs (see `network.rs`'s own doc).
+    for network in rod_networks {
+        let net_dt = network_cfl_dt(network, config.rod_cfl_coefficient);
+        if net_dt.is_finite() && net_dt > 0.0 {
+            min_mat_dt = min_mat_dt.min(net_dt);
         }
     }
     // Nonlocal Granular Fluidity's own real, quoted Von Neumann stability
@@ -395,6 +407,7 @@ mod tests {
             1,
             &materials,
             &[],
+            &[],
             1.0,
             None,
             None,
@@ -411,6 +424,7 @@ mod tests {
             &particles,
             1,
             &materials,
+            &[],
             &[],
             1.0,
             None,
@@ -441,6 +455,7 @@ mod tests {
             1,
             &materials,
             &[],
+            &[],
             1.0,
             None,
             None,
@@ -451,6 +466,7 @@ mod tests {
             &particles,
             1,
             &materials,
+            &[],
             &[],
             1.0,
             None,

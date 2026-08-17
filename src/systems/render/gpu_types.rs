@@ -48,7 +48,16 @@ pub(super) struct InstanceData {
     pub(super) deform_col0: [f32; 2],
     pub(super) deform_col1: [f32; 2],
     pub(super) position: [f32; 2],
-    pub(super) _pad: [f32; 2],
+    /// Real, per-particle blackbody-emission factor (`color::
+    /// blackbody_glow_factor`, shared with `ByPhysics`'s own thermal-glow
+    /// term) -- grounds `CameraParams::glow_strength`'s round-particle
+    /// soft-glow in the particle's OWN physical state instead of applying
+    /// the same brightness boost uniformly regardless of what a particle
+    /// represents. 0.0 = no glow contribution (cold/untracked-temperature
+    /// particles), byte-identical to the old always-on-uniform behavior
+    /// only for particles that are genuinely hot.
+    pub(super) emission: f32,
+    pub(super) _pad: [f32; 1],
     pub(super) color: [f32; 4],
 }
 const _: () = assert!(mem::size_of::<InstanceData>() == 48);
@@ -59,9 +68,30 @@ pub(super) struct CameraParams {
     pub(super) view_proj: [f32; 16],
     pub(super) particle_scale: f32,
     pub(super) round_particles: u32,
-    pub(super) _pad: [f32; 2],
+    /// Real, general, opt-in soft-glow strength for round particles (0.0 =
+    /// old hard-edged disc, byte-identical for every existing caller of
+    /// `set_camera`/`set_camera_centered` that never passes a nonzero
+    /// value). See `render_particles.wgsl`'s own fragment shader doc for
+    /// the falloff formula.
+    pub(super) glow_strength: f32,
+    /// Real, general, opt-in point-light position (grid coords) for
+    /// billboard-sphere Lambertian shading -- see `set_light_source`'s own
+    /// doc and `render_particles.wgsl`'s `fs_main` for the real technique
+    /// (reconstructs a hemisphere normal from each particle's own on-quad
+    /// position, shades by its dot product with the direction to this
+    /// light). Ignored unless `shading_strength > 0.0`.
+    pub(super) light_pos: [f32; 2],
+    /// 0.0 = no shading (old flat-disc look, byte-identical default).
+    pub(super) shading_strength: f32,
+    /// Real inverse-square-law reference distance (grid units): a particle
+    /// exactly this far from `light_pos` gets intensity 1.0, closer is
+    /// brighter, farther is dimmer, matching real physical falloff rather
+    /// than the direction-only shading this replaces. `0.0` (never set)
+    /// disables the falloff entirely -- see `set_light_source`'s own doc.
+    pub(super) light_reference_distance: f32,
+    pub(super) _pad: [f32; 1],
 }
-const _: () = assert!(mem::size_of::<CameraParams>() == 80);
+const _: () = assert!(mem::size_of::<CameraParams>() == 96);
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

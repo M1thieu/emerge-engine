@@ -7,7 +7,7 @@
 
 extern crate emerge_engine as emerge;
 use emerge::grains::population::GrainPopulation;
-use emerge::materials::granular::grain_contact_law::ContactLawConfig;
+use emerge::materials::solid::granular::grain_contact_law::ContactLawConfig;
 use emerge::particle::Grain;
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};

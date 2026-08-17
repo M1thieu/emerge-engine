@@ -94,7 +94,8 @@ pub use materials::{
 // Boundary conditions
 pub use boundary::{
     BoundaryCondition, FrictionBoundary, GripFrictionBoundary, HeightmapBoundary,
-    PredictiveBoundary, RatchetFrictionBoundary, SlipBoundary,
+    KinematicCircleBoundary, NoSlipBoundary, PredictiveBoundary, RatchetFrictionBoundary,
+    SlipBoundary,
 };
 
 // Force fields
@@ -158,8 +159,9 @@ pub fn estimate_particle_volumes(particles: &mut Vec<Particle>, grid_res: usize)
 
 // Thermodynamics
 pub use thermodynamics::{
-    GranularFluidityConfig, GranularFluidityField, ScalarDiffusionConfig, ScalarDiffusionField,
-    ThermalConfig, ThermalDiffusion, saturating_uptake,
+    GranularFluidityConfig, GranularFluidityField, RadianceField, ScalarDiffusionConfig,
+    ScalarDiffusionField, ThermalConfig, ThermalDiffusion, irradiance_at_distance,
+    saturating_uptake, stellar_luminosity_w,
 };
 
 // Diagnostics + plugin system

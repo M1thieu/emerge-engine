@@ -25,6 +25,10 @@
 
 use glam::Vec2;
 
+use crate::grid::Grid;
+use crate::grid::kernel::quadratic_weights;
+use crate::solver::operator::{CoupledBody, OperatorCtx, Stage};
+
 use super::forces::{discrete_curvature, discrete_curvature_gradient};
 
 #[derive(Debug, Clone, Copy)]
@@ -366,6 +370,107 @@ pub fn step_network(net: &mut RodNetwork, gravity: Vec2, dx_meters: f32, dt: f32
     }
 }
 
+/// Network -> grid scatter, mirroring `coupling::scatter_rod_to_grid`'s core
+/// mass/momentum transfer -- real, disclosed simplification: no coverage-gap
+/// sub-sampling yet (that fix walks LINEAR i-1/i+1 neighbors; a network's
+/// adjacency is explicit via `edges`, real future work generalizing it, not
+/// attempted here). Every point still deposits its own real mass/momentum
+/// via the same kernel ordinary MPM particles and single rods use.
+pub fn scatter_network_to_grid(net: &RodNetwork, grid: &mut Grid) {
+    for i in 0..net.len() {
+        let weights = quadratic_weights(net.x[i]);
+        let momentum = net.mass[i] * net.v[i];
+        for gx in 0..3usize {
+            for gy in 0..3usize {
+                let weight = weights.wx[gx] * weights.wy[gy];
+                if weight <= 0.0 {
+                    continue;
+                }
+                let cell_pos = weights.base_cell + glam::IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                grid.add_mass_momentum(cell_pos, weight * net.mass[i], weight * momentum);
+            }
+        }
+    }
+}
+
+/// Grid -> network gather, mirroring `coupling::gather_grid_to_rod` exactly:
+/// pure PIC, pinned points held at `v=0`, position advanced HERE using the
+/// grid-gathered velocity (real MPM convention -- force integration below
+/// only ever touches velocity). Same Kahan compensated summation for the
+/// same reason (a network's CFL-bound dt is as small as a single rod's).
+pub fn gather_grid_to_network(net: &mut RodNetwork, grid: &Grid, dt: f32) {
+    for i in 0..net.len() {
+        if net.pinned[i] != 0 {
+            net.v[i] = Vec2::ZERO;
+            continue;
+        }
+        let weights = quadratic_weights(net.x[i]);
+        let mut v = Vec2::ZERO;
+        for gx in 0..3usize {
+            for gy in 0..3usize {
+                let weight = weights.wx[gx] * weights.wy[gy];
+                if weight <= 0.0 {
+                    continue;
+                }
+                let cell_pos = weights.base_cell + glam::IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                v += weight * grid.velocity_at(cell_pos);
+            }
+        }
+        net.v[i] = v;
+        let y = v * dt - net.position_compensation[i];
+        let t = net.x[i] + y;
+        net.position_compensation[i] = (t - net.x[i]) - y;
+        net.x[i] = t;
+    }
+}
+
+/// Applies the network's own internal (stretch+bending+damping) forces --
+/// called AFTER `gather_grid_to_network`, mirroring
+/// `coupling::apply_rod_internal_and_wind_forces`'s placement. Deliberately
+/// does NOT re-apply gravity: the grid-update step already applied gravity
+/// to every cell the network scattered into, the same shared mechanism
+/// ordinary particles and single rods already use.
+pub fn apply_network_internal_forces(net: &mut RodNetwork, dx_meters: f32, dt: f32) {
+    let internal = compute_network_internal_forces(net, dx_meters);
+    for (i, force) in internal.iter().enumerate() {
+        if net.pinned[i] != 0 {
+            continue;
+        }
+        let a = *force / (net.mass[i].max(1.0e-9) * dx_meters);
+        net.v[i] += a * dt;
+    }
+}
+
+/// Real, disclosed-unwired-until-now `CoupledBody` implementor -- see
+/// `solver::operator` module doc. Third real proof the trait generalizes
+/// beyond the two bodies (`Rod`, `GrainPopulation`) it was built for: grid
+/// coupling for `RodNetwork` did not exist in the engine before this impl
+/// (only the standalone, non-grid-coupled `step_network` did), so this is a
+/// genuine new capability -- branching rod/root networks that exchange real
+/// momentum with the shared MPM grid (water, sand, snow), not previously
+/// possible -- not a refactor of something that already worked.
+impl CoupledBody for RodNetwork {
+    fn stages(&self) -> &'static [Stage] {
+        &[Stage::Scatter, Stage::Gather, Stage::PostGather]
+    }
+
+    fn scatter(&mut self, ctx: &mut OperatorCtx, _dt: f32) {
+        scatter_network_to_grid(self, ctx.grid);
+    }
+
+    fn gather(&mut self, ctx: &mut OperatorCtx, dt: f32) {
+        gather_grid_to_network(self, ctx.grid, dt);
+    }
+
+    fn post_gather(&mut self, ctx: &mut OperatorCtx, dt: f32) {
+        apply_network_internal_forces(self, ctx.config.dx_meters, dt);
+    }
+
+    fn stable_dt(&self, cfl_coefficient: f32) -> f32 {
+        network_cfl_dt(self, cfl_coefficient)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,6 +489,69 @@ mod tests {
             axial_damping: 2.0,
             bending_damping: 3.0,
         })
+    }
+
+    /// Real, direct proof the NEW grid-coupling mechanism itself works,
+    /// mirroring `grains::coupling`'s own identical-shaped test: a network
+    /// at rest, scattered into an otherwise-empty grid, should pick up
+    /// EXACTLY the grid's own gravity-integrated velocity after a round
+    /// trip -- not because the network integrated gravity itself (it
+    /// didn't; `gather_grid_to_network` only reads from the grid), but
+    /// because the shared grid mechanism (`update_velocities`) is the same
+    /// one ordinary MPM particles and single rods already use. `ea=0`/
+    /// `ei=0` (via `test_network`) isolates this from the network's own
+    /// internal forces, which aren't under test here.
+    #[test]
+    fn network_feels_gravity_through_the_shared_grid_not_its_own_integration() {
+        let mut grid = Grid::new(32);
+        let mut net = test_network();
+        for x in &mut net.x {
+            *x += Vec2::splat(16.0);
+        }
+        let gravity = Vec2::new(0.0, -9.8);
+        let dt = 0.01;
+
+        scatter_network_to_grid(&net, &mut grid);
+        grid.update_velocities(dt, gravity);
+        gather_grid_to_network(&mut net, &grid, dt);
+
+        let expected_v = gravity * dt;
+        for (i, v) in net.v.iter().enumerate() {
+            assert!(
+                (*v - expected_v).length() < 1e-4,
+                "point {i}: v={v:?} expected={expected_v:?}"
+            );
+        }
+    }
+
+    /// Real proof of genuine two-way momentum exchange, mirroring
+    /// `grains::coupling`'s own test: a second, independent mass+momentum
+    /// contribution injected at the same node the network scatters into
+    /// must influence the network's own gathered velocity -- not just its
+    /// own contribution replayed back unchanged.
+    #[test]
+    fn network_and_a_second_grid_contributor_genuinely_exchange_momentum() {
+        let mut grid = Grid::new(32);
+        let mut net = test_network();
+        for x in &mut net.x {
+            *x += Vec2::splat(16.0);
+        }
+        let other_mass = 50.0;
+        let other_v = Vec2::new(3.0, 0.0);
+        // Junction point sits at local (0,2)+16 offset = (16,18).
+        grid.add_mass_momentum(glam::IVec2::new(16, 18), other_mass, other_mass * other_v);
+
+        scatter_network_to_grid(&net, &mut grid);
+        grid.update_velocities(0.0, Vec2::ZERO); // normalize only, isolate mixing
+        gather_grid_to_network(&mut net, &grid, 0.0);
+
+        let junction_idx = 2; // n_trunk_points - 1, per test_network()
+        assert!(
+            net.v[junction_idx].x > 0.5,
+            "expected the junction's gathered velocity to reflect the heavier \
+             co-located contributor, got {:?}",
+            net.v[junction_idx]
+        );
     }
 
     #[test]
