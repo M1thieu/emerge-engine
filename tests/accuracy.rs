@@ -5095,6 +5095,91 @@ fn diag_post_event_relax_performance_probe() {
     );
 }
 
+/// Real-time sand plan: is there a cheap lever available today, no rewrite
+/// needed? The CFL cost is set by the elastic wave speed
+/// `c = sqrt((lambda+2mu)/rho)`, independent of plastic state (confirmed
+/// above) -- but bulk sand's own visible BEHAVIOR (collapse dynamics, angle,
+/// how it responds when poked) is dominated by the friction/plasticity law,
+/// not by its exact elastic stiffness, as long as it's "stiff enough" not to
+/// visibly compress. If softening Young's modulus (E) lowers the substep
+/// cost without changing collapse dynamics, that's a real, free, no-
+/// architecture-change win. If it changes the dynamics (height/half-width/
+/// angle right after the collapse) or fails to lower substep count, that's
+/// an honest negative result, not something to force. E=1.0e5 (100 kPa) is
+/// already softer than real dry sand's real stiffness (10s of MPa range) --
+/// this scene may already be near its own floor, untested until now.
+///
+/// RESULT: real trade-off, not a free win. E=1e5 (current): 29.6deg, 27000
+/// substeps/500 steps. E=5e4: 20.8deg, 19000 substeps (-30%). E=2e4: 11.9deg,
+/// 12000 (-56%). E=1e4: 7.3deg, 8500 (-69%). E=5e3: 4.1deg, 6000 (-78%).
+/// Substep cost DOES drop substantially with softer E, confirming the
+/// elastic-wave-CFL link directly and quantitatively -- but the collapse
+/// dynamics' own resulting angle degrades just as substantially, even
+/// before any long-horizon creep. The current E is already the best of the
+/// five tested for angle, not an arbitrary pick with slack left unused.
+/// Softening stiffness is not a costless lever here -- the two effects are
+/// tightly coupled, not independently tunable at this scene's config.
+#[ignore = "slow (~2-3 min): 5 E values x (1500 dynamics + 500 measured) steps each."]
+#[test]
+fn diag_elastic_stiffness_convergence_study() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(young_modulus_pa: f32) -> (f32, f32, f32, f32, usize, usize) {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let sand = DruckerPragerMaterial::from_young_modulus(young_modulus_pa, 0.2);
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        // Dynamics-only checkpoint -- same 1500-step window every other
+        // collapse test in this file uses, for direct comparability.
+        solver.step_n(1500);
+        let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+
+        // Real substep/wall-clock measurement, same instrumentation as
+        // diag_post_event_relax_performance_probe above.
+        let start = std::time::Instant::now();
+        let mut total_substeps = 0usize;
+        let mut max_substeps_seen = 0usize;
+        for _ in 0..500 {
+            solver.step();
+            let s = solver.last_substeps();
+            total_substeps += s;
+            max_substeps_seen = max_substeps_seen.max(s);
+        }
+        (
+            shape.height,
+            shape.base_half_width,
+            shape.angle_deg,
+            start.elapsed().as_secs_f32(),
+            total_substeps,
+            max_substeps_seen,
+        )
+    }
+
+    println!(
+        "── ELASTIC STIFFNESS CONVERGENCE STUDY (dynamics-only @1500, then 500 measured steps) ──"
+    );
+    for &e in &[1.0e5f32, 5.0e4, 2.0e4, 1.0e4, 5.0e3] {
+        let (h, hw, a, t, sub, max) = run(e);
+        println!(
+            "E={e:>8.0} Pa: height={h:.2} half-w={hw:.2} angle={a:.1}deg | {t:.2}s wall, {sub} total substeps, max {max}/step"
+        );
+    }
+}
+
 /// Real, deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
 /// (Cicoira et al. 2022 / Jop-Forterre-Pouliquen 2006, already in this engine,
 /// never tested against THIS scene) makes friction genuinely rate-dependent
