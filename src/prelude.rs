@@ -11,7 +11,7 @@
 pub use crate::{
     AabbConfinementField,
     ActivationStatsPlugin,
-    // Materials — all thirteen (*Material types only)
+    // Materials — all fourteen (*Material types only)
     BinghamFluidMaterial,
     // Queries + density field export
     BodyState,
@@ -42,6 +42,7 @@ pub use crate::{
     FrameLogger,
     FrictionBoundary,
     FromSI,
+    GasMaterial,
     GranularFluidMaterial,
     GravityWellField,
     // Directional/phase-gated grip boundaries (shipped with the ratchet

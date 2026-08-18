@@ -102,8 +102,19 @@ impl Simulation {
             self.particles.temperature[i] -= latent_heat / thermal.config.heat_capacity;
         }
 
+        // Real, general engine hook (added 2026-08-18, see `MaterialModel::
+        // init_particle_from_transition`'s own doc for the full story):
+        // defaults to `init_particle` unchanged for every material that
+        // doesn't override it -- zero behavior change for water->ice and
+        // every other existing phase-transition demo. A material whose own
+        // rest state differs dramatically from what it might be
+        // transitioning FROM (water->steam, `GasMaterial`) overrides this
+        // instead, to honor the real, continuous rebaseline just above
+        // rather than blindly recomputing from `mass/rest_density`.
         let mut p = self.particles.get(i);
-        self.materials.get(new_material_id).init_particle(&mut p);
+        self.materials
+            .get(new_material_id)
+            .init_particle_from_transition(&mut p);
         self.particles.set(i, p);
     }
 

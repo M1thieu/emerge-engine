@@ -1,3 +1,4 @@
+pub mod gas;
 pub mod liquid;
 pub mod mixture;
 pub mod params;
@@ -14,6 +15,7 @@ pub use physical_props::{
     ParticleMass, PlasticityModel, Pressurized, Viscoelastic,
 };
 
+pub use gas::ideal_gas::GasMaterial;
 pub use liquid::bingham::BinghamFluidMaterial;
 pub use liquid::fluid::NewtonianFluidMaterial;
 pub use mixture::granular_fluid::GranularFluidMaterial;
@@ -59,6 +61,13 @@ pub enum ConstitutiveModel {
     Nacc = 10,            // Non-Associated Cam-Clay — wet soil, clay, bio tissue under compression
     GranularFluid = 11, // Granular-fluid mixture — Tait EOS + corotated deviatoric + SVD plasticity
     NoCompression = 12, // Tension-only (no-compression) reversible elastic — silk, tendons, membranes
+    /// Ideal gas EOS (p=ρRT) — CPU only. GPU shaders (`p2g.wgsl`,
+    /// `particles_update.wgsl`) have no case-13 branch yet; an unrecognised
+    /// `mat.model` falls through their `default: { return mat2x2<f32>(); }`
+    /// arm, i.e. zero stress on GPU today. Real, disclosed limitation, not
+    /// silent — see `GasMaterial`'s own doc. CPU correctness first, GPU
+    /// port second (per this engine's own standing development rule).
+    Gas = 13,
 }
 
 // WGSL shaders (p2g.wgsl, particles_update.wgsl) index material branches by the
@@ -79,6 +88,7 @@ const _: () = {
     assert!(C::Nacc as u32 == 10);
     assert!(C::GranularFluid as u32 == 11);
     assert!(C::NoCompression as u32 == 12);
+    assert!(C::Gas as u32 == 13);
 };
 
 /// Cap on simultaneous mixture phases -- see `MixturePhase`'s own doc.
@@ -217,6 +227,42 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// Default: no-op (elastic materials need no initial plastic state).
     /// Override for materials that have a non-zero neutral accumulator (e.g. sand).
     fn init_particle(&self, _particle: &mut Particle) {}
+
+    /// Seed per-particle state when TRANSITIONING into this material from
+    /// another (via `Simulation::phase_transition`/`add_phase_rule`), as
+    /// opposed to a fresh spawn. Default: delegates to `init_particle`
+    /// unchanged -- exactly today's existing behavior for every material
+    /// that doesn't override this, zero behavior change.
+    ///
+    /// Real, found live 2026-08-18 (`examples/basic_steam.rs`, water
+    /// boiling into `GasMaterial` steam): `Simulation::
+    /// apply_phase_transition` (`spacetime::solver::particles`) already
+    /// rebaselines a transitioning particle to its real, continuous prior
+    /// state (F=IDENTITY, `initial_volume`=its actual current volume)
+    /// before calling this. For a material whose own fresh-spawn
+    /// analytical state (`init_particle`'s own `mass/rest_density`
+    /// formula) is close to what it's transitioning FROM, blindly
+    /// overwriting that rebaseline is harmless (e.g. water->ice, similar
+    /// real densities) -- but for a material transitioning from something
+    /// with a dramatically different rest density (water->steam, a real
+    /// ~1700x ratio), it makes the particle's claimed VOLUME jump that
+    /// same ~1700x in a single instant, injecting a real but wildly
+    /// under-resolved force spike (P2G's `stress*volume*kernel_gradient`
+    /// scatters that huge volume at the particle's own, unmoved grid
+    /// location) -- confirmed live as the direct cause of a real crash.
+    ///
+    /// Override this (leaving `init_particle` itself untouched for the
+    /// fresh-spawn case) when a material's rest state can differ enough
+    /// from whatever it might be transitioning from that continuity, not
+    /// a fresh analytical reset, is the physically honest choice -- see
+    /// `GasMaterial`'s own override for the real, worked pattern (keep the
+    /// reference volume TRUE, matching what per-substep dynamics already
+    /// assume, and instead set the STARTING deformation gradient to
+    /// reflect real compression relative to that true reference, clamped
+    /// to the material's own valid range).
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.init_particle(particle)
+    }
 
     /// Whether `update_particle` does real work on the CPU.
     ///
@@ -368,7 +414,7 @@ macro_rules! forward_material_model_common {
 }
 
 /// Wraps any `MaterialModel` to give it a non-zero `latent_heat()` without writing a full
-/// delegating impl by hand — none of the 12 built-in materials expose a settable
+/// delegating impl by hand — none of the built-in materials expose a settable
 /// `latent_heat` field directly, since most users never need one.
 ///
 /// ```rust,no_run
@@ -393,6 +439,15 @@ impl<M: MaterialModel> MaterialModel for WithLatentHeat<M> {
     forward_material_model_common!();
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
+    }
+    // Real, explicit forward (not the trait default): the trait's own
+    // default would call THIS wrapper's `init_particle` (i.e. `inner.
+    // init_particle`), silently skipping `inner`'s own overridden
+    // transition-continuity logic if it has one (e.g. `GasMaterial`) --
+    // found live 2026-08-18 while adding this method, same real class of
+    // gap the method itself exists to close.
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle)
     }
     fn mixture_phase(&self) -> Option<MixturePhase> {
         self.inner.mixture_phase()
@@ -432,6 +487,9 @@ impl<M: MaterialModel> MaterialModel for WithMixturePhase<M> {
     forward_material_model_common!();
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
+    }
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle)
     }
     fn latent_heat(&self) -> f32 {
         self.inner.latent_heat()
@@ -473,6 +531,10 @@ impl<M: MaterialModel> MaterialModel for WithPreStress<M> {
     forward_material_model_common!();
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle);
+        particle.internal_pressure = self.pressure;
+    }
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle);
         particle.internal_pressure = self.pressure;
     }
     fn mixture_phase(&self) -> Option<MixturePhase> {

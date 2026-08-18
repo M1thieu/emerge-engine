@@ -1,9 +1,9 @@
 //! Ideal gas equation of state — pure IRL physics, SI units, same
 //! "library function" convention as `transfer.rs`'s scalar primitives.
 //!
-//! Real, standing gap this addresses: the engine ships 13 real material
-//! models (solids, granular, liquids) but has never modeled a gaseous
-//! phase at all. Confirmed via real literature search (2026-08-17, not
+//! Real gap this addressed (2026-08-17): the engine shipped 13 material
+//! models (solids, granular, liquids) but had never modeled a gaseous
+//! phase. Confirmed via real literature search (2026-08-17, not
 //! guessed) that the Material Point Method genuinely extends to
 //! compressible gas dynamics -- Wikipedia's own MPM article states MPM
 //! simulates "solids, liquids, gases, and any other continuum material";
@@ -17,21 +17,21 @@
 //! has NO such offset -- pressure genuinely goes to zero as density does
 //! (`p = 0` at `ρ = 0`), a pure power law, not shifted.
 //!
-//! # Scope, honestly bounded (2026-08-17)
-//! This is the EOS/sound-speed layer only -- verified against the real,
+//! # Scope, honestly bounded (2026-08-17, updated 2026-08-18)
+//! This file is the EOS/sound-speed layer -- verified against the real,
 //! independently-known speed of sound in air, two different ways (see
-//! this file's own tests). No `GasMaterial`/`MaterialModel` impl, no
-//! wiring into the solver, no shock-capturing tuning, and NOT yet
-//! verified against Sod's shock tube (the standard real, exact-analytical-
-//! solution benchmark for a compressible-gas solver, Toro *Riemann
-//! Solvers and Numerical Methods for Fluid Dynamics* -- needs an
-//! iterative Riemann solver for the star-region pressure, genuinely more
-//! work, real next step when this is picked up for real). This engine's
-//! existing artificial bulk viscosity (`matter::materials::liquid::fluid::
-//! artificial_bulk_viscosity`, von Neumann & Richtmyer 1950, already
-//! shock-capturing for liquids) is the same real technique gas shocks
-//! would need -- a real, reusable piece already present, not yet applied
-//! here.
+//! this file's own tests). `matter::materials::gas::GasMaterial` (landed
+//! 2026-08-18) is the real `MaterialModel` wired on top of it: kirchhoff
+//! stress from `ideal_gas_pressure`, shock viscosity via the shared
+//! `matter::materials::utils::von_neumann_richtmyer_q` (the same real
+//! Von Neumann & Richtmyer 1950 term liquids use, fed this EOS's own real
+//! γ instead of Tait's stand-in). CPU only -- no GPU shader branch yet
+//! (`ConstitutiveModel::Gas`'s own doc), and NOT yet verified against
+//! Sod's shock tube (the standard real, exact-analytical-solution
+//! benchmark for a compressible-gas solver, Toro *Riemann Solvers and
+//! Numerical Methods for Fluid Dynamics* -- needs an iterative Riemann
+//! solver for the star-region pressure, genuinely more work, real next
+//! step).
 
 /// Specific gas constant for dry air (J/(kg·K)) -- `R/M`, universal gas
 /// constant R=8.314 J/(mol·K) divided by air's real molar mass

@@ -323,6 +323,41 @@ pub fn lame_from_si(
     (lambda_si * scale, mu_si * scale)
 }
 
+/// Von Neumann & Richtmyer 1950 (LA-671) artificial bulk viscosity, EOS-
+/// agnostic core: `q = rho*(c0*h^2*(div v)^2 - c1*h*c_sound*div v)`, gated
+/// to compression (`div v < 0`) -- real shocks only form under
+/// compression. `c0 = (gamma+1)/4` is the Kurapatenko 1967 weak-shock
+/// coefficient; `c1 = 1.0` (Landshoff) is the standard linear term. Every
+/// EOS supplies its OWN `c_sound` (its own `dp/drho` at the current state)
+/// and its own real `gamma` (an ideal gas's actual adiabatic index, or a
+/// Tait-EOS liquid's `eos_power` used as Kurapatenko's stand-in -- see
+/// `liquid::fluid::artificial_bulk_viscosity`'s doc) -- this function owns
+/// only the shared shock-viscosity FORM, not any one EOS's derivative.
+/// Extracted 2026-08-18 so a genuinely different EOS (ideal gas) can reuse
+/// the real, cited shock-capturing term without faking Tait parameters to
+/// back into it.
+#[inline]
+pub(crate) fn von_neumann_richtmyer_q(
+    rest_density: f32,
+    j: f32,
+    div_v: f32,
+    grid_cell_size: f32,
+    c_sound: f32,
+    weak_shock_gamma: f32,
+) -> f32 {
+    if div_v.is_nan() || div_v >= 0.0 {
+        return 0.0;
+    }
+    let c0_quadratic = (weak_shock_gamma + 1.0) * 0.25;
+    const C1_LINEAR: f32 = 1.0;
+    let rho = rest_density / j;
+    let h = grid_cell_size;
+    let quadratic = c0_quadratic * h * h * div_v * div_v;
+    let linear = C1_LINEAR * h * c_sound * div_v;
+    let q = rho * (quadratic - linear);
+    if q.is_finite() { q } else { 0.0 }
+}
+
 /// Convert SI gravity (m/s²) to solver units (grid cells / s²).
 ///
 /// In the solver `v += gravity * sub_dt` where sub_dt is in real seconds,

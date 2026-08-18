@@ -82,7 +82,7 @@ pub use solver::handle::{MaterialHandle, ParticleGroup};
 // Materials
 pub use materials::{
     BinghamFluidMaterial, BrittleProps, ConstitutiveModel, CorotatedMaterial,
-    DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
+    DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI, GasMaterial,
     GranularFluidMaterial, MAX_MATERIAL_SLOTS, MaterialModel, MaterialParams, MaterialRegistry,
     MixturePhase, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
     NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
