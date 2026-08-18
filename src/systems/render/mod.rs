@@ -818,6 +818,7 @@ impl Renderer {
     /// instead of always the grid's own center -- the real hook a caller
     /// needs for cursor-drag pan (compute a grid-space delta via
     /// `screen_to_grid`, accumulate it into `center` across frames).
+    #[allow(clippy::too_many_arguments)]
     pub fn set_camera_centered(
         &mut self,
         queue: &wgpu::Queue,

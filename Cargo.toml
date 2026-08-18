@@ -258,3 +258,15 @@ required-features = ["render"]
 [[example]]
 name = "rock_fracture"
 required-features = ["render"]
+
+[[example]]
+name = "reactive_obstacle_water_demo"
+required-features = ["render"]
+
+[[example]]
+name = "basic_gas"
+required-features = ["render"]
+
+[[example]]
+name = "basic_steam"
+required-features = ["render"]

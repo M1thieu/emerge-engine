@@ -87,6 +87,11 @@ impl MutFieldPtrs {
     /// field access) for the same reason `ctx_at` is: routing through a
     /// method call forces the closure to capture `MutFieldPtrs` as a whole,
     /// not the individual (non-`Sync`) raw pointer field.
+    ///
+    /// Clippy's `mut_from_ref` heuristic can't see the disjoint-index proof
+    /// above (same as `ctx_at`'s identical pattern); the `&self` receiver is
+    /// required so callers keep capturing `MutFieldPtrs` as a whole.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn position_compensation_at(&self, i: usize) -> &mut Vec2 {
         unsafe { &mut *self.position_compensation.add(i) }
     }
@@ -250,6 +255,7 @@ pub fn f_update_vjp(c: Mat2, f_old: Mat2, dt: f32, d_loss_d_f_new: Mat2) -> (Mat
 /// The return value is retained for source compatibility with the old
 /// `last_vel_clamp_count` diagnostic. The solver no longer clips velocities,
 /// so it is always zero.
+#[allow(clippy::too_many_arguments)]
 pub fn gather_grid_to_particles(
     particles: &mut Particles,
     grid: &Grid,
