@@ -442,6 +442,19 @@ fn diag_static_kinetic_hysteresis_calibration_sweep() {
 /// used (baseline: 29.6->25.6->24.9->22.1->19.1->10.8deg, never plateaus),
 /// or does it just delay the same flat ending? Same checkpoints, directly
 /// comparable to that test's own documented trajectory.
+///
+/// RESULT: delays, doesn't arrest. Real measured trajectory: 41.2deg@1500
+/// -> 35.4@7500 -> 31.9@13500 -> 26.8@26500 -> 21.0@51500 -> 14.5@101500 --
+/// monotonically decaying the whole way, never plateaus, same shape as the
+/// unboosted baseline just slower. Confirms this mechanism's own "falsified"
+/// label (already referenced by name elsewhere in this file) with real
+/// captured evidence for the first time, rather than an undocumented cross-
+/// reference. Also note this run still applies the apic_blend/cundall_damping
+/// phase switch at step 1500 -- `static_friction_boost` was never tested
+/// standalone without that switch, so this result specifically means "the
+/// boost doesn't fix the switch recipe's own residual creep," not "the
+/// boost fails as a switch-free mechanism" (a narrower, separate claim this
+/// test was never designed to test).
 #[test]
 fn static_kinetic_hysteresis_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
