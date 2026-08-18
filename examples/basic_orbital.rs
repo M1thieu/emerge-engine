@@ -164,7 +164,7 @@ impl DemoApp for State {
         self.sim.step();
         self.frame += 1;
         self.days_elapsed += DT_SECONDS as f32 / 86400.0;
-        if self.frame % 720 == 0 {
+        if self.frame.is_multiple_of(720) {
             // ~30 real days per print (720 hourly substeps).
             println!("day {:.0}", self.days_elapsed);
         }

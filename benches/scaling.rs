@@ -165,6 +165,8 @@ fn bench_g2p(c: &mut Criterion) {
                     &mut fx.particles,
                     &fx.grid,
                     dt,
+                    fx.config.gravity,
+                    fx.config.boundary_thickness,
                     &boundaries,
                     &fx.registry,
                     emerge::transfer::G2PParams {

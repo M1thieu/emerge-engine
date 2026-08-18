@@ -1366,14 +1366,14 @@ mod gpu_tests {
     ///     under a different condition (needs simultaneous elastic dilation
     ///     `J>1`, not present in CPU's check at all) and pushes the
     ///     opposite sign for the same compacted (`Jp<1`) state.
-    /// These are not the same physics with a numerical/ordering
-    /// discrepancy -- they're two different constitutive choices that
-    /// happen to share a name. Snow plasticity itself (`snow_plasticity`
-    /// in `particles_update.wgsl:154-168`) IS byte-for-byte identical to
-    /// CPU's `update_particle` (same clamp formula, same Jp/h formulas,
-    /// even the same "h clamped [0.1,7.0], CFL-driven" comment) -- ruling
-    /// out the clamp-ordering hypothesis originally suspected; the
-    /// divergence is isolated entirely to the cohesion stress term.
+    ///     These are not the same physics with a numerical/ordering
+    ///     discrepancy -- they're two different constitutive choices that
+    ///     happen to share a name. Snow plasticity itself (`snow_plasticity`
+    ///     in `particles_update.wgsl:154-168`) IS byte-for-byte identical to
+    ///     CPU's `update_particle` (same clamp formula, same Jp/h formulas,
+    ///     even the same "h clamped [0.1,7.0], CFL-driven" comment) -- ruling
+    ///     out the clamp-ordering hypothesis originally suspected; the
+    ///     divergence is isolated entirely to the cohesion stress term.
     ///
     /// FIXED 2026-08-16, user-directed: CPU's formula has real, passing
     /// empirical backing in this codebase's own test suite (the CPU test
@@ -5476,14 +5476,14 @@ mod gpu_tests {
     ///    stabilized a DIFFERENT hard scene earlier the same investigation,
     ///    ported to GPU for the first time here (previously CPU-only,
     ///    explicitly disclosed as "needs porting").
-    /// Real, measured result: peak J dropped from 34653 (no fix) to a
-    /// stable, non-growing plateau around 5-6 (both fixes combined) -- NOT
-    /// perfectly bounded near 1.0 (a real, disclosed remaining limitation:
-    /// this is still the single hardest known wall-contact scene in the
-    /// whole codebase), but genuinely stable, not exploding. 80 frames (not
+    ///    Real, measured result: peak J dropped from 34653 (no fix) to a
+    ///    stable, non-growing plateau around 5-6 (both fixes combined) -- NOT
+    ///    perfectly bounded near 1.0 (a real, disclosed remaining limitation:
+    ///    this is still the single hardest known wall-contact scene in the
+    ///    whole codebase), but genuinely stable, not exploding. 80 frames (not
     /// 300) to keep this a realistic permanent-suite cost -- real, measured
-    /// diagnostic runs during the investigation showed the plateau is
-    /// reached and holds well within that window.
+    ///      diagnostic runs during the investigation showed the plateau is
+    ///      reached and holds well within that window.
     #[test]
     fn gpu_basic_fluids_hard_wall_scene_stays_bounded_not_exploding() {
         if !gpu_available() {

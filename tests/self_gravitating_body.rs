@@ -154,7 +154,7 @@ fn radius_of_gyration(sim: &Simulation) -> f32 {
 #[test]
 fn regolith_body_stays_gravitationally_bound_under_self_gravity() {
     let mut solver = make_body();
-    let g_grid = (6.674e-11 / (DX_METERS * DX_METERS * DX_METERS)) as f64;
+    let g_grid = 6.674e-11 / (DX_METERS * DX_METERS * DX_METERS);
     let n = solver.particles().len();
 
     let total_mass_kg: f64 = (0..n).map(|i| solver.particles().mass[i] as f64).sum();

@@ -82,8 +82,8 @@ fn main() {
     // their real, disclosed end-effect (NoSlipBoundary applies to all 4
     // walls, not just top/bottom -- see module doc).
     const N_BINS: usize = 12;
-    let mut bin_sum = vec![0.0f32; N_BINS];
-    let mut bin_n = vec![0usize; N_BINS];
+    let mut bin_sum = [0.0f32; N_BINS];
+    let mut bin_n = [0usize; N_BINS];
     for i in 0..sim.particles().x.len() {
         let p = sim.particles().x[i];
         if p.x < 22.0 || p.x > 42.0 {

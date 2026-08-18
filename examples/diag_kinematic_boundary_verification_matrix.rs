@@ -142,35 +142,32 @@ fn run_case(
 }
 
 fn main() {
-    let mut results = Vec::new();
-
-    results.push(run_case(
-        "water, moderate speed, horizontal (baseline, re-confirm)",
-        Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
-        Vec2::X,
-        2.0,
-    ));
-
-    results.push(run_case(
-        "water, HIGH speed, horizontal",
-        Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
-        Vec2::X,
-        6.0,
-    ));
-
-    results.push(run_case(
-        "Bingham mud, moderate speed, horizontal",
-        Box::new(BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0)),
-        Vec2::X,
-        2.0,
-    ));
-
-    results.push(run_case(
-        "water, moderate speed, VERTICAL drop",
-        Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
-        Vec2::NEG_Y,
-        2.0,
-    ));
+    let results = vec![
+        run_case(
+            "water, moderate speed, horizontal (baseline, re-confirm)",
+            Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
+            Vec2::X,
+            2.0,
+        ),
+        run_case(
+            "water, HIGH speed, horizontal",
+            Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
+            Vec2::X,
+            6.0,
+        ),
+        run_case(
+            "Bingham mud, moderate speed, horizontal",
+            Box::new(BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0)),
+            Vec2::X,
+            2.0,
+        ),
+        run_case(
+            "water, moderate speed, VERTICAL drop",
+            Box::new(NewtonianFluidMaterial::low_viscosity(0.1, 2.5)),
+            Vec2::NEG_Y,
+            2.0,
+        ),
+    ];
 
     println!("\n=== KinematicCircleBoundary verification matrix ===");
     let mut all_passed = true;

@@ -6,13 +6,13 @@ extern crate emerge_engine as emerge;
 /// disclosed performance wall (SPACING=3.0, ~5236 particles, real
 /// elastoplastic self-gravitating dynamics under NBodyGravityField, ran
 /// >30 real minutes and was stopped -- never root-caused, just worked
-/// around by coarsening to SPACING=8.0 / ~750 particles). This probe
-/// reuses that exact scene at a few particle counts and prints the
-/// engine's own real per-substep `StepTiming` breakdown (already
-/// instrumented, no external profiler needed) for a small, bounded number
-/// of real steps -- to find WHERE the cost actually concentrates
-/// (force-field/Barnes-Hut cost vs. CFL-forced substep count vs. ordinary
-/// P2G/G2P) before touching any code.
+/// > around by coarsening to SPACING=8.0 / ~750 particles). This probe
+/// > reuses that exact scene at a few particle counts and prints the
+/// > engine's own real per-substep `StepTiming` breakdown (already
+/// > instrumented, no external profiler needed) for a small, bounded number
+/// > of real steps -- to find WHERE the cost actually concentrates
+/// > (force-field/Barnes-Hut cost vs. CFL-forced substep count vs. ordinary
+/// > P2G/G2P) before touching any code.
 use emerge::fields::NBodyGravityField;
 use emerge::{Elastic, Elastoplastic, PlasticityModel, SimConfig, Simulation, SpawnRegion};
 use glam::Vec2;

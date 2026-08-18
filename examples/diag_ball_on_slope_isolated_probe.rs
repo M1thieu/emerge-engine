@@ -5,9 +5,9 @@ extern crate emerge_engine as emerge;
 /// Isolation test for `project_rolling_snowball_demo_attempt_2026-08-16`:
 /// a bare kinematic ball on a slope, NO snow, NO accretion -- just gravity
 /// + the slope-normal contact correction. If this alone doesn't roll
-/// downhill and approach Rubin 2019's real (1/6)*g*sin(theta) target, the
-/// bug is in the slope-normal physics itself, not the accretion/snow
-/// interaction (rules one of the two suspected confounds in/out).
+///   downhill and approach Rubin 2019's real (1/6)*g*sin(theta) target, the
+///   bug is in the slope-normal physics itself, not the accretion/snow
+///   interaction (rules one of the two suspected confounds in/out).
 use glam::Vec2;
 
 const GRID: usize = 64;
