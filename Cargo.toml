@@ -270,3 +270,11 @@ required-features = ["render"]
 [[example]]
 name = "basic_steam"
 required-features = ["render"]
+
+[[example]]
+name = "kinematic_obstacle_water_demo"
+required-features = ["render"]
+
+[[example]]
+name = "rolling_snowball_demo"
+required-features = ["render"]
