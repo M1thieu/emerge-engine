@@ -4969,24 +4969,42 @@ fn diag_post_event_relax_moderate_constant_regime_sweep() {
 /// SETTLED window (well past the point the pile stops moving), baseline
 /// (threshold=0, plain SimConfig::standard default apic_blend=1.0 -- the
 /// unmitigated regime the plain basic_sand*.rs demos currently ship) vs the
-/// fix (threshold=0.001, moderate constant apic_blend=0.4/cundall_damping=0.5,
-/// pending confirmation from the sweep above that this combo actually
-/// settles rather than freezing or over-spreading).
+/// REAL validated recipe (apic_blend=0.6 through the collapse, phase-switch
+/// to apic_blend=0.05/cundall_damping=1.0, threshold=0.001 throughout).
+/// Not the moderate-constant regime originally guessed here -- the sweep
+/// above found that combo (and every moderate combo tried) still creeps to
+/// near-flat by step 20000, so it's not a real fix worth performance-
+/// testing; the phase-switch recipe is the only one actually proven to
+/// hold a real angle long-horizon.
 #[test]
 fn diag_post_event_relax_performance_probe() {
     const LOCAL_GRID: usize = 128;
 
-    fn run(
-        apic_blend: f32,
-        cundall_damping: f32,
-        threshold: f32,
-        settle_steps: usize,
-        measure_steps: usize,
-    ) -> (f32, usize, usize, f32) {
+    fn run_baseline(settle_steps: usize, measure_steps: usize) -> (f32, usize, usize, f32) {
         let config = SimConfig {
             max_substeps_per_step: 64,
-            apic_blend,
-            cundall_damping,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        solver.step_n(settle_steps);
+        measure(&mut solver, measure_steps)
+    }
+
+    fn run_validated_recipe(settle_steps: usize, measure_steps: usize) -> (f32, usize, usize, f32) {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
             ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
         };
         let column = SpawnRegion {
@@ -4998,16 +5016,21 @@ fn diag_post_event_relax_performance_probe() {
             ..SpawnRegion::for_sim(&config)
         };
         let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
-        sand.post_event_relax_threshold = threshold;
+        sand.post_event_relax_threshold = 0.001;
         let mut solver = Simulation::new(config, column)
             .with_default_material(Box::new(sand))
             .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        // Real collapse dynamics first, exactly matching
+        // post_event_relax_long_horizon_full_confirmation's own recipe.
+        solver.step_n(1500);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+        solver.step_n(settle_steps.saturating_sub(1500));
+        measure(&mut solver, measure_steps)
+    }
 
-        // Let it fully settle first (not measured) -- the real question is
-        // steady-state substep cost once "at rest", not the collapse itself.
-        solver.step_n(settle_steps);
+    fn measure(solver: &mut Simulation, measure_steps: usize) -> (f32, usize, usize, f32) {
         let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
-
         let start = std::time::Instant::now();
         let mut total_substeps = 0usize;
         let mut max_substeps_seen = 0usize;
@@ -5026,13 +5049,13 @@ fn diag_post_event_relax_performance_probe() {
     }
 
     println!("── POST-EVENT RELAX PERFORMANCE PROBE (settle 6500, measure 500 steps) ──");
-    let (t0, sub0, max0, a0) = run(1.0, 0.0, 0.0, 6500, 500);
+    let (t0, sub0, max0, a0) = run_baseline(6500, 500);
     println!(
         "baseline (apic_blend=1.0 default, threshold=0)      : {t0:.2}s wall, {sub0} total substeps, max {max0}/step, angle at settle={a0:.1}deg"
     );
-    let (t1, sub1, max1, a1) = run(0.4, 0.5, 0.001, 6500, 500);
+    let (t1, sub1, max1, a1) = run_validated_recipe(6500, 500);
     println!(
-        "fix (apic_blend=0.4, cundall=0.5, threshold=0.001)  : {t1:.2}s wall, {sub1} total substeps, max {max1}/step, angle at settle={a1:.1}deg"
+        "validated recipe (switch @1500, threshold=0.001)    : {t1:.2}s wall, {sub1} total substeps, max {max1}/step, angle at settle={a1:.1}deg"
     );
 }
 
