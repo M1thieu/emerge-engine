@@ -1,10 +1,10 @@
 extern crate emerge_engine as emerge;
 
 use emerge::render::demo_harness::{DemoApp, run_demo};
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, Renderer, SurfaceReconstructionSource};
 use emerge::{
-    DruckerPragerMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion,
+    DruckerPragerMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, Particle, SimConfig,
+    Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
 /// CPU three-material showcase -- sand terrain, fluid pool, elastic blob.
@@ -13,7 +13,7 @@ use glam::{IVec2, Vec2};
 ///   Mat 1  Sand Drucker-Prager (gold) -- terrain
 ///   Mat 2  Newtonian fluid  (cyan)    -- water pool
 ///
-///   ^v<>  drive elastic blob  |  LMB push  RMB pull  |  R reset  Q quit
+///   ^v<>  drive elastic blob  |  LMB push  RMB pull  |  G surface render  |  R reset  Q quit
 ///   cargo run --example basic_showcase --features "render"
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
@@ -38,12 +38,30 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
+    // Real curvature-flow surface reconstruction (van der Laan et al.
+    // 2009), toggled with G -- same real technique/pattern
+    // `basic_fluids_gui.rs` already established for the CPU solver
+    // (upload a particle snapshot to a GPU bridge buffer each frame,
+    // `render_surface_reconstruction`'s N-material `material_mass_enabled`
+    // path colors each reconstructed cell from its own real per-material
+    // mass). Not the default view: proves the engine isn't "just
+    // particles" on demand, without slowing down the default path.
+    surface_mode: bool,
+    particle_bridge_buf: wgpu::Buffer,
+    bridge_particles: Vec<Particle>,
 }
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 0.005,
-        max_substeps_per_step: 16,
+        // Real, live-found bug (2026-08-18): 16 was too low for the
+        // "drive blob" control -- pushing it aggressively into the water
+        // region hits the same real strict-fluid CFL/retry panic gate
+        // seen elsewhere tonight (step.rs:326). Raised as an immediate,
+        // conservative safety margin; not independently re-derived from
+        // this demo's own real material stiffness, just enough headroom
+        // to stop the crash under normal interactive use.
+        max_substeps_per_step: 64,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -139,8 +157,27 @@ impl DemoApp for State {
         let mut renderer = Renderer::new(device, sim.particles().len(), format);
         renderer.set_camera(queue, GRID as u32, width, height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // Real optical coefficients per material, feeding the surface
+        // reconstruction path's own N-material coloring. Sand: real,
+        // measured absorption (Sherman & Waite 1985, iron-oxide quartz
+        // sand), same value basic_sand.rs already uses. Fluid: real water
+        // values, same as basic_fluids_gui.rs. Elastic: NOT independently
+        // sourced -- a disclosed placeholder chosen to read as a soft,
+        // translucent blue body consistent with its ByMaterial color, real
+        // per-material optical measurement not done for this material.
+        renderer.set_optical_params(queue, SAND_ID as usize, [0.180, 0.220, 0.550]);
+        renderer.set_optical_params(queue, FLUID_ID as usize, [0.85, 0.25, 0.07]);
+        renderer.set_optical_scattering(queue, FLUID_ID as usize, 0.03);
+        renderer.set_optical_params(queue, ELASTIC_ID as usize, [0.35, 0.55, 0.85]);
+        renderer.set_optical_scattering(queue, ELASTIC_ID as usize, 0.05);
+        let particle_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("basic_showcase_particle_bridge"),
+            size: (sim.particles().len() * std::mem::size_of::<Particle>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         println!(
-            "showcase: {} particles  |  ^v<> drive blob  LMB push  RMB pull  R reset  Q quit",
+            "showcase: {} particles  |  ^v<> drive blob  LMB push  RMB pull  G surface render  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -156,6 +193,9 @@ impl DemoApp for State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
+            surface_mode: false,
+            particle_bridge_buf,
+            bridge_particles: Vec::new(),
         }
     }
 
@@ -194,7 +234,14 @@ impl DemoApp for State {
                 });
             if n > 0 {
                 let centroid = sum / n as f32;
-                let impulse = dir.normalize() * 10.0;
+                // Real, live-found tuning (2026-08-18): 10.0, applied every
+                // frame while held, was strong enough to push the elastic
+                // blob into the water hard enough to trip the real strict-
+                // fluid CFL/retry gate (same real crash class as the
+                // substep-cap fix just above, different lever). Softer
+                // drive force so normal interactive use doesn't approach
+                // that threshold.
+                let impulse = dir.normalize() * 4.0;
                 self.sim.apply_impulse(centroid, 12.0, impulse);
             }
         }
@@ -209,12 +256,47 @@ impl DemoApp for State {
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
-            println!("frame={} fps={:.0}", self.frame, fps);
+            println!(
+                "frame={} fps={:.0} surface_mode={}",
+                self.frame, fps, self.surface_mode
+            );
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
         }
-        self.renderer
-            .render(device, queue, self.sim.particles(), view, true);
+        if self.surface_mode {
+            // Real curvature-flow surface reconstruction (van der Laan et
+            // al. 2009) -- same real CPU-bridge pattern basic_fluids_gui.rs
+            // already established: upload this frame's particle snapshot
+            // to a GPU buffer, then reconstruct a finer-than-physics-grid
+            // surface from it. `material_mass_enabled=true` colors each
+            // reconstructed cell from its own real per-material mass, so
+            // sand/fluid/elastic all stay visually distinct (not one
+            // material_slot's optical color painted over everything).
+            self.bridge_particles.clear();
+            self.bridge_particles.extend(self.sim.particles().iter());
+            queue.write_buffer(
+                &self.particle_bridge_buf,
+                0,
+                bytemuck::cast_slice(&self.bridge_particles),
+            );
+            self.renderer.render_surface_reconstruction(
+                device,
+                queue,
+                SurfaceReconstructionSource {
+                    particle_buf: &self.particle_bridge_buf,
+                    particle_count: self.bridge_particles.len(),
+                    grid_res: GRID as u32,
+                    material_slot: 0,
+                    material_mass_enabled: true,
+                    dt: DT,
+                },
+                view,
+                true,
+            );
+        } else {
+            self.renderer
+                .render(device, queue, self.sim.particles(), view, true);
+        }
     }
 
     fn cursor_moved(&mut self, x_frac: f32, y_frac: f32) {
@@ -234,6 +316,10 @@ impl DemoApp for State {
             self.sim = make_sim();
             self.frame = 0;
             println!("reset");
+        }
+        if key == KeyCode::KeyG {
+            self.surface_mode = !self.surface_mode;
+            println!("surface_mode={}", self.surface_mode);
         }
         self.set_arrow(key, true);
     }

@@ -52,33 +52,36 @@ println!("avg speed: {:.3}", state.avg_speed);
 
 ## Materials
 
-Thirteen constitutive models, grouped by what they're for:
+Fourteen constitutive models, grouped by real continuum state of matter — `matter/materials/{solid,liquid,gas,mixture}/` on disk mirrors this exactly, not an implementation-layer split:
 
-| Group | Models |
+| State | Models |
 |---|---|
-| **Elastic solids** | `NeoHookeanMaterial` (finite-strain), `CorotatedMaterial` (stiffer, corotated-linear), `ViscoelasticMaterial` (Kelvin-Voigt) |
-| **Fluids** | `NewtonianFluidMaterial` (Tait EOS + viscosity), `BinghamFluidMaterial` (adds a yield stress — mud, not water) — both take `surface_tension_coeff` for free |
-| **Granular** | `StomakhinMaterial` (snow), `DruckerPragerMaterial` / `MuIRheologyMaterial` (two ways to get sand right), `GranularFluidMaterial` (granular suspensions) |
-| **Plastic / failure** | `VonMisesMaterial` (ductile), `RankineMaterial` (brittle, damage softening), `NaccMaterial` (Cam-Clay soil) |
-| **Tension-only** | `NoCompressionMaterial` (cables, membranes, tendons) |
+| **Solid** — elastic | `NeoHookeanMaterial` (finite-strain), `CorotatedMaterial` (stiffer, corotated-linear), `ViscoelasticMaterial` (Kelvin-Voigt) |
+| **Solid** — granular | `StomakhinMaterial` (snow), `DruckerPragerMaterial` / `MuIRheologyMaterial` (two ways to get sand right) |
+| **Solid** — plastic / failure | `VonMisesMaterial` (ductile), `RankineMaterial` (brittle, damage softening), `NaccMaterial` (Cam-Clay soil) |
+| **Solid** — tension-only | `NoCompressionMaterial` (cables, membranes, tendons) |
+| **Liquid** | `NewtonianFluidMaterial` (Tait EOS + viscosity), `BinghamFluidMaterial` (adds a yield stress — mud, not water) — both take `surface_tension_coeff` for free |
+| **Gas** | `GasMaterial` (isentropic ideal-gas EOS, real adiabatic sound speed — CPU only, no GPU shader branch yet) |
+| **Mixture** | `GranularFluidMaterial` — genuinely both at once (`τ = τ_EOS(liquid) + τ_corotated(solid)`, Dunatunga & Kamrin 2015), not a fifth state |
 
-Each cites its source paper in the doc comment — see [Physics references](#physics-references). Quick presets:
+`plasma/` exists as a documented placeholder folder — real quantum/exotic states beyond these four are out of scope for a classical continuum engine. Each material cites its source paper in the doc comment — see [Physics references](#physics-references). Quick presets:
 
 | Type | Key preset |
 |---|---|
 | `NeoHookeanMaterial` | `from_young_modulus(E, nu)` |
 | `CorotatedMaterial` | `from_young_modulus(E, nu)` |
 | `ViscoelasticMaterial` | `.near_incompressible()` `.moderately_compressible()` |
-| `NewtonianFluidMaterial` | `.low_viscosity(density, stiffness)` |
-| `BinghamFluidMaterial` | `.low_yield()` `.medium_yield()` `.high_yield()` |
 | `StomakhinMaterial` | `from_young_modulus(E, nu)` `.low_cohesion()` |
 | `DruckerPragerMaterial` | `.cohesionless()` `.low_friction()` `.dilatant()` |
 | `MuIRheologyMaterial` | `.small_grain()` `.dense_packed()` |
 | `VonMisesMaterial` | `from_young_modulus(E, nu, yield_stress)` |
 | `RankineMaterial` | `.stiff_brittle()` `.high_tensile()` |
 | `NaccMaterial` | `.soft_clay(E, nu)` `.wet_soil(E, nu)` |
-| `GranularFluidMaterial` | `.saturated_loam(E, nu)` `.cytoplasmic(E, nu)` |
 | `NoCompressionMaterial` | `FromSI<Elastic>` |
+| `NewtonianFluidMaterial` | `.low_viscosity(density, stiffness)` |
+| `BinghamFluidMaterial` | `.low_yield()` `.medium_yield()` `.high_yield()` |
+| `GasMaterial` | `::air(rho_kg_m3, temperature_k, &config)` `::from_physical(...)` |
+| `GranularFluidMaterial` | `.saturated_loam(E, nu)` `.cytoplasmic(E, nu)` |
 
 ## Rod solver
 
