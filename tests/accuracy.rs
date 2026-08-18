@@ -304,6 +304,7 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
 /// real, at the SAME long horizon the pre-shaped pile was trusted at, or
 /// whether a dynamically-collapsed pile (as opposed to one built already
 /// at rest) never truly stabilizes at all.
+#[ignore = "slow (100k-step horizon, ~30-60+ min under CI contention): pure printout, no assertions -- this is the baseline trajectory other tests' docs already cite by name (29.6deg@1500 -> 10.8deg@101500, never plateaus). Rerun manually, not on every CI push."]
 #[test]
 fn sand_collapse_relaxation_long_horizon_plateau_check() {
     const LOCAL_GRID: usize = 128;
@@ -367,6 +368,7 @@ fn sand_collapse_relaxation_long_horizon_plateau_check() {
 /// committing to one expensive full-length confirmation run. Both knobs
 /// are new and uncalibrated -- real values are found empirically here, not
 /// guessed once and trusted.
+#[ignore = "slow (~47 min under CI contention): pure printout, no assertions -- superseded by the full confirmation run below (static_kinetic_hysteresis_long_horizon_full_confirmation), whose own doc has the decisive RESULT. Rerun manually, not on every CI push."]
 #[test]
 fn diag_static_kinetic_hysteresis_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -455,6 +457,7 @@ fn diag_static_kinetic_hysteresis_calibration_sweep() {
 /// boost doesn't fix the switch recipe's own residual creep," not "the
 /// boost fails as a switch-free mechanism" (a narrower, separate claim this
 /// test was never designed to test).
+#[ignore = "slow (100k-step horizon, 30-60+ min under CI contention): pure printout, no assertions -- RESULT already fully captured in this function's own doc comment (41.2deg@1500 -> ... -> 14.5deg@101500, delays but never arrests). Rerun manually, not on every CI push."]
 #[test]
 fn static_kinetic_hysteresis_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
@@ -583,6 +586,7 @@ fn diag_static_friction_boost_performance_probe() {
 /// of the whole friction curve, not the strongest -- the opposite
 /// direction from what would arrest creep. Running the real test rather
 /// than trusting the prediction.
+#[ignore = "slow (~34 min under CI contention): pure printout, no assertions -- comparison diagnostic from the sand mu(I)-rheology investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_mui_rheology_long_horizon_hold_vs_dp_baseline() {
     const LOCAL_GRID: usize = 128;
@@ -688,6 +692,7 @@ fn diag_mui_rheology_long_horizon_hold_vs_dp_baseline() {
 /// pile pre-shaped, one pile dynamically collapsed then switched to
 /// holding -- do their friction_hardening/log_volume_strain
 /// distributions actually differ?
+#[ignore = "slow (~4-5 min under CI contention): pure printout, no assertions -- real finding (TWENTY-THIRD FINDING above) already captured in this function's own doc. Rerun manually, not on every CI push."]
 #[test]
 fn diag_preshaped_vs_collapsed_internal_state_comparison() {
     const LOCAL_GRID: usize = 128;
@@ -788,6 +793,7 @@ fn diag_preshaped_vs_collapsed_internal_state_comparison() {
 /// position/velocity/deformation_gradient untouched -- should make the
 /// pile behave like a pre-shaped one going forward: hold, not keep
 /// creeping.
+#[ignore = "slow (~6-7 min under CI contention): pure printout, no assertions -- real finding (TWENTY-FOURTH FINDING above: resetting friction_hardening/log_volume_strain to baseline changes nothing) already captured in this function's own doc. Rerun manually, not on every CI push."]
 #[test]
 fn diag_collapsed_pile_after_internal_state_reset() {
     const LOCAL_GRID: usize = 128;
@@ -857,6 +863,7 @@ fn diag_collapsed_pile_after_internal_state_reset() {
 /// (`spacing: 0.25` cells for both spawns) -- if the collapsed pile's
 /// packing is measurably more irregular, that is real, direct support
 /// for the structural hypothesis.
+#[ignore = "slow (~4-5 min under CI contention): pure printout, no assertions -- real finding (TWENTY-FIFTH FINDING above) already captured in this function's own doc. Rerun manually, not on every CI push."]
 #[test]
 fn diag_preshaped_vs_collapsed_packing_regularity() {
     const LOCAL_GRID: usize = 128;
@@ -4397,6 +4404,7 @@ mod rod_cantilever_tests {
 /// decisively at something PROCESS-level (residual velocity/momentum
 /// distribution, or the contact-force network) rather than any stored
 /// per-particle quantity.
+#[ignore = "slow (~14 min under CI contention): pure printout, no assertions -- diagnostic from the sand internal-state-reset investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_collapsed_pile_after_full_tensor_state_reset() {
     const LOCAL_GRID: usize = 128;
@@ -4478,6 +4486,7 @@ fn diag_collapsed_pile_after_full_tensor_state_reset() {
 /// the full reset's 29.5deg frozen plateau, F-reset is the real,
 /// sufficient ingredient. If it doesn't, the win needs the three fields
 /// together specifically.
+#[ignore = "slow (~14 min under CI contention): pure printout, no assertions -- diagnostic from the sand internal-state-reset investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
     const LOCAL_GRID: usize = 128;
@@ -4546,6 +4555,7 @@ fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
 /// not the full 100000) to triangulate a real rate before committing to
 /// an expensive full-length confirmation, same discipline as the
 /// hysteresis sweep.
+#[ignore = "slow (~60 min under CI contention): pure printout, no assertions -- calibration sweep from the sand relaxation investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_elastic_relaxation_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -4617,6 +4627,7 @@ fn diag_elastic_relaxation_calibration_sweep() {
 /// first few dozen/hundred substeps (functionally mimicking an instant
 /// reset) reproduces the ablation's real win, instead of assuming the
 /// mechanism's FORM was wrong.
+#[ignore = "slow (~60 min under CI contention): pure printout, no assertions -- diagnostic sweep from the sand relaxation-rate investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_elastic_relaxation_aggressive_rate_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -4686,6 +4697,7 @@ fn diag_elastic_relaxation_aggressive_rate_sweep() {
 /// (`diag_collapsed_pile_after_deformation_gradient_only_reset`, 29.6deg
 /// bit-for-bit frozen)? Same reduced-checkpoint discipline as every sweep
 /// tonight before an expensive full-length confirmation.
+#[ignore = "slow (~65 min under CI contention): pure printout, no assertions -- calibration sweep from the sand post-event-relax investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_post_event_relax_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -4755,6 +4767,7 @@ fn diag_post_event_relax_calibration_sweep() {
 /// `static_kinetic_hysteresis_long_horizon_full_confirmation`), or does
 /// something subtle break down past 26500 steps that the shorter sweep
 /// couldn't show?
+#[ignore = "slow (100k-step horizon, 30-60+ min under CI contention): pure printout, no assertions -- the validated-recipe long-horizon trajectory this file's other tests already cite by name. Rerun manually to re-verify, not on every CI push."]
 #[test]
 fn post_event_relax_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
@@ -4813,6 +4826,7 @@ fn post_event_relax_long_horizon_full_confirmation() {
 /// principles") rather than assumed. If the held angle is only sane near
 /// 1500 and garbage elsewhere, that's a genuine cherry-picked-constant
 /// problem, not a robust fix.
+#[ignore = "slow (~21+ min under CI contention): pure printout, no assertions -- sweep across switch_step values, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn post_event_relax_switch_step_sensitivity() {
     const LOCAL_GRID: usize = 128;
@@ -4862,6 +4876,7 @@ fn post_event_relax_switch_step_sensitivity() {
 /// the column in its tall, obviously-unstable starting shape, that's a
 /// real, honest reason a switch is needed -- reported either way, not
 /// assumed.
+#[ignore = "slow (~11 min under CI contention): pure printout, no assertions -- real finding (froze the column rigid at 76.4deg, unchanged step 0->20000) already referenced by the moderate-regime sweep test's own doc. Rerun manually, not on every CI push."]
 #[test]
 fn post_event_relax_constant_damping_from_start_no_switch() {
     const LOCAL_GRID: usize = 128;
@@ -5192,6 +5207,7 @@ fn diag_elastic_stiffness_convergence_study() {
 /// all). If this arrests near a real angle and HOLDS long-horizon on its own,
 /// that is a genuine fix. If it just slides like plain DP, that's a real,
 /// honest negative result too -- reported either way.
+#[ignore = "slow (~30 min under CI contention): pure printout, no assertions -- real negative-result diagnostic from the sand mu(I)-rheology investigation, finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn mu_i_rheology_column_collapse_natural_arrest_check() {
     use emerge::MuIRheologyMaterial;
@@ -5245,6 +5261,7 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
 /// stays low the whole time -- meaning the real hardening this engine
 /// already implements correctly never actually gets a chance to engage
 /// during a fast collapse. Measuring directly instead of guessing further.
+#[ignore = "slow (~13 min under CI contention): pure printout, no assertions -- diagnostic from the sand hardening-saturation investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_hardening_state_saturation_during_plain_collapse() {
     const LOCAL_GRID: usize = 128;
@@ -5302,6 +5319,7 @@ fn diag_hardening_state_saturation_during_plain_collapse() {
 /// sweeps it too: if the resulting angle is robust across a real range of
 /// fallback_fraction, that's genuine evidence the peak-detection is doing
 /// real work, not just relocating the same hardcode to a different knob.
+#[ignore = "slow (~50 min under CI contention): pure printout, no assertions -- diagnostic from the sand KE-peak-detector investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_ke_peak_triggered_switch_sensitivity() {
     const LOCAL_GRID: usize = 128;
@@ -5373,6 +5391,7 @@ fn diag_ke_peak_triggered_switch_sensitivity() {
 /// held fixed at the already-established-stable 0.6 (isolating cundall_
 /// damping's own effect, not conflating it with a transfer-scheme change
 /// like the earlier, confounded test did).
+#[ignore = "slow (~50 min under CI contention): pure printout, no assertions -- calibration sweep from the sand damping investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_constant_realistic_cundall_coefficient_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -5425,6 +5444,7 @@ fn diag_constant_realistic_cundall_coefficient_sweep() {
 /// are the ones persistently elevated and still growing). Same reduced-
 /// checkpoint discipline as the (falsified) elastic-relaxation sweep above,
 /// before committing to an expensive full-length confirmation.
+#[ignore = "slow (~60 min under CI contention): pure printout, no assertions -- calibration sweep from the sand relaxation investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_hardening_relaxation_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -5556,6 +5576,7 @@ fn diag_real_strain_rate_norm_during_holding_phase() {
 /// and was falsified, so this checks whether J itself drifts away from 1
 /// at THAT longer horizon too (the short sample may simply have been too
 /// early to see it).
+#[ignore = "slow (~14 min under CI contention): pure printout, no assertions -- long-horizon diagnostic from the sand investigation, real finding recorded in this function's own doc comment. Rerun manually, not on every CI push."]
 #[test]
 fn diag_j_and_plastic_memory_drift_long_horizon() {
     const LOCAL_GRID: usize = 128;
