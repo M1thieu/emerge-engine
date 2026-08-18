@@ -4902,6 +4902,17 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
 /// kinetic energy AND settle near the real 30-35deg repose target, for a
 /// continuously-interactive demo that has no single "collapse is over"
 /// moment to fire a global switch on?
+///
+/// RESULT: no. All three combos tested (0.3/0.3, 0.4/0.5, 0.6/0.5) show the
+/// same failure shape -- overshoot high right after the dynamics (48-57deg
+/// at step 1500, since these are weaker than the validated 0.05/1.0 pair),
+/// then decay continuously past the real target (12-19deg by step 6500,
+/// 2-4deg by step 20000), spreading the whole time (half-width growing
+/// 7 -> 27-34 cells). Same unbounded creep as the unmitigated bug, just
+/// slower. The phase switch is doing real, necessary work that no constant
+/// regime tested here substitutes for.
+#[ignore = "slow (~24 min): 3 combos x 20,000 steps each. Real result already \
+            captured in this function's own doc above -- rerun manually, not on every CI push."]
 #[test]
 fn diag_post_event_relax_moderate_constant_regime_sweep() {
     const LOCAL_GRID: usize = 128;
@@ -4976,6 +4987,18 @@ fn diag_post_event_relax_moderate_constant_regime_sweep() {
 /// near-flat by step 20000, so it's not a real fix worth performance-
 /// testing; the phase-switch recipe is the only one actually proven to
 /// hold a real angle long-horizon.
+///
+/// RESULT: no effect on substep count. Baseline and the validated recipe
+/// both measured 27,000 total substeps / 500 steps, max 54/step -- bit-
+/// for-bit identical -- even though the recipe genuinely holds 29.5deg vs
+/// baseline's flat 0.0deg. The "chatter dies down" hypothesis above is
+/// FALSIFIED. `timestep_bound` reads only Lame parameters and density, so
+/// this is expected in hindsight: the elastic-wave CFL bound doesn't care
+/// whether the material is plastically flowing or at rest. The substep
+/// ceiling and the angle-of-repose gap are two separate problems that
+/// happen to share a root cause conceptually, not two symptoms of one bug.
+#[ignore = "slow (~6 min): two 7000-step runs. Real result already captured in \
+            this function's own doc above -- rerun manually, not on every CI push."]
 #[test]
 fn diag_post_event_relax_performance_probe() {
     const LOCAL_GRID: usize = 128;
