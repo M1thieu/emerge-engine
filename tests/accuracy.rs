@@ -4890,6 +4890,152 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
     }
 }
 
+/// Real-time sand plan, phase 0b: the full-strength
+/// constant regime above (`apic_blend=0.05, cundall_damping=1.0` from t=0)
+/// froze the column rigid at its unstable starting shape (76.4deg,
+/// unchanged step 0->20000) -- real evidence a CONSTANT regime can be too
+/// strong, but that test only tried the strongest end of the validated
+/// recipe's values, not a genuinely moderate one. This is the real,
+/// previously-untested question: does a MODERATE constant regime (no phase
+/// switch, no magic step count -- same zero-hardcoded-trigger goal as the
+/// full-strength test above) let the column actually collapse via real
+/// kinetic energy AND settle near the real 30-35deg repose target, for a
+/// continuously-interactive demo that has no single "collapse is over"
+/// moment to fire a global switch on?
+#[test]
+fn diag_post_event_relax_moderate_constant_regime_sweep() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(apic_blend: f32, cundall_damping: f32) -> Vec<(usize, f32, f32, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend,
+            cundall_damping,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.post_event_relax_threshold = 0.001;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        let mut results = Vec::new();
+        let mut cumulative = 0usize;
+        // Same checkpoints as the full-strength constant-from-start test,
+        // directly comparable to its 76.4/76.4/76.4/76.4deg trajectory.
+        for &target in &[1500usize, 6500, 20000] {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let xs: Vec<Vec2> = solver.particles().x.clone();
+            let shape = measure_pile_shape(&xs, FLOOR);
+            results.push((
+                cumulative,
+                shape.height,
+                shape.base_half_width,
+                shape.angle_deg,
+            ));
+        }
+        results
+    }
+
+    println!("── MODERATE CONSTANT DAMPING FROM t=0, post_event_relax_threshold=0.001 ──");
+    for &(apic_blend, cundall_damping) in &[(0.3f32, 0.3f32), (0.4, 0.5), (0.6, 0.5)] {
+        println!("apic_blend={apic_blend} cundall_damping={cundall_damping}:");
+        for (step, h, hw, a) in run(apic_blend, cundall_damping) {
+            println!("  step {step:6}: height={h:.2} half-w={hw:.2} angle={a:.1} deg");
+        }
+    }
+}
+
+/// Real-time sand plan, phase 0a: does
+/// `post_event_relax_threshold` also relax the substep/CFL cost, or only
+/// fix the angle? `DruckerPragerMaterial::timestep_bound` never reads
+/// `friction_hardening` directly, so any performance win would be
+/// INDIRECT -- a particle sitting exactly at yield keeps replastifying on
+/// grid-transfer noise, which keeps velocity-gradient chatter alive across
+/// the pile, which is what actually feeds `choose_substep_dt`; resetting
+/// F->IDENTITY on the quiet edge should let that chatter die and the CFL
+/// bound relax. Plausible, not proven before this test. Measures actual
+/// substep counts + wall-clock (same real instrumentation as
+/// `diag_static_friction_boost_performance_probe` above) for a genuinely
+/// SETTLED window (well past the point the pile stops moving), baseline
+/// (threshold=0, plain SimConfig::standard default apic_blend=1.0 -- the
+/// unmitigated regime the plain basic_sand*.rs demos currently ship) vs the
+/// fix (threshold=0.001, moderate constant apic_blend=0.4/cundall_damping=0.5,
+/// pending confirmation from the sweep above that this combo actually
+/// settles rather than freezing or over-spreading).
+#[test]
+fn diag_post_event_relax_performance_probe() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(
+        apic_blend: f32,
+        cundall_damping: f32,
+        threshold: f32,
+        settle_steps: usize,
+        measure_steps: usize,
+    ) -> (f32, usize, usize, f32) {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend,
+            cundall_damping,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.post_event_relax_threshold = threshold;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        // Let it fully settle first (not measured) -- the real question is
+        // steady-state substep cost once "at rest", not the collapse itself.
+        solver.step_n(settle_steps);
+        let shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+
+        let start = std::time::Instant::now();
+        let mut total_substeps = 0usize;
+        let mut max_substeps_seen = 0usize;
+        for _ in 0..measure_steps {
+            solver.step();
+            let s = solver.last_substeps();
+            total_substeps += s;
+            max_substeps_seen = max_substeps_seen.max(s);
+        }
+        (
+            start.elapsed().as_secs_f32(),
+            total_substeps,
+            max_substeps_seen,
+            shape.angle_deg,
+        )
+    }
+
+    println!("── POST-EVENT RELAX PERFORMANCE PROBE (settle 6500, measure 500 steps) ──");
+    let (t0, sub0, max0, a0) = run(1.0, 0.0, 0.0, 6500, 500);
+    println!(
+        "baseline (apic_blend=1.0 default, threshold=0)      : {t0:.2}s wall, {sub0} total substeps, max {max0}/step, angle at settle={a0:.1}deg"
+    );
+    let (t1, sub1, max1, a1) = run(0.4, 0.5, 0.001, 6500, 500);
+    println!(
+        "fix (apic_blend=0.4, cundall=0.5, threshold=0.001)  : {t1:.2}s wall, {sub1} total substeps, max {max1}/step, angle at settle={a1:.1}deg"
+    );
+}
+
 /// Real, deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
 /// (Cicoira et al. 2022 / Jop-Forterre-Pouliquen 2006, already in this engine,
 /// never tested against THIS scene) makes friction genuinely rate-dependent
