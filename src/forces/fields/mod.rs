@@ -1,7 +1,7 @@
-//! Classical field implementations — spatial sources that apply acceleration to particles.
+//! Classical field implementations -- spatial sources that apply acceleration to particles.
 //!
 //! All positions are in grid coordinates (same units as `Particle::x`).
-//! The `Field` trait is defined here — it is the substep hook for external body forces.
+//! The `Field` trait is defined here -- it is the substep hook for external body forces.
 //! Dependency is one-way: fields → core particle, never reverse.
 
 /// Fraction of `cutoff` at which the force-switch fade begins.
@@ -17,6 +17,7 @@ pub mod cutoff;
 pub mod drag;
 pub mod em;
 mod force_field;
+mod grain_field;
 pub mod gravity;
 pub mod n_body;
 
@@ -27,5 +28,6 @@ pub use coulomb::CoulombField;
 pub use drag::{LinearDragField, SpatialDragField};
 pub use em::UniformElectricField;
 pub use force_field::Field;
+pub use grain_field::GrainField;
 pub use gravity::GravityWellField;
 pub use n_body::NBodyGravityField;
