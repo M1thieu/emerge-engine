@@ -44,8 +44,8 @@ struct Params {
     vis_lambda: f32,
     vis_mu: f32,
     vis_viscosity: f32,
-    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand_gui.rs/
-    // basic_snow_gui.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
+    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand.rs/
+    // basic_snow.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
     // not grounded in anything real.
     gravity_fraction: f32,
 }

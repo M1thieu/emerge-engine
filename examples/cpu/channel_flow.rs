@@ -54,7 +54,7 @@ fn make_sim() -> Simulation {
         cfl_include_affine_speed: false,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_fluids_gui.rs's
+        // this grid scale. Disclosed, deferred: basic_fluids.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.15),

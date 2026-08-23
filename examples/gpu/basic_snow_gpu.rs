@@ -67,7 +67,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         max_substeps_per_step: 20,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_snow_gui.rs's
+        // this grid scale. Disclosed, deferred: basic_snow.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.08),

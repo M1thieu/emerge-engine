@@ -10,7 +10,7 @@ mod gui_common;
 /// equivalent -- all independently confirmed the underlying mechanism is
 /// correct the same night; see `tests/grains_grid_coupling.rs` and
 /// `tests/particle_neighbor_momentum_transfer.rs`). The existing Grains mode
-/// in `sand_repose_angle_gui.rs` has ~80 grains in a chaotic column collapse
+/// in `sand_repose_angle.rs` has ~80 grains in a chaotic column collapse
 /// -- physically correct, but genuinely hard to visually track ONE grain's
 /// own rotation in that mess. This scene is the "ant-scale zoom" idea flagged
 /// back on 2026-08-03 and never built: few grains, camera zoomed in tight,
@@ -34,7 +34,7 @@ mod gui_common;
 /// uses ordinary straight-down gravity -- the actual engine capability, not
 /// a per-demo gravity-rotation workaround.
 ///
-///   cargo run --example grain_rolling_closeup_gui --features render
+///   cargo run --example grain_rolling_closeup --features render
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
 use emerge::particle::{Grain, Particle};
@@ -68,11 +68,11 @@ const SIGMA_TERRAIN: [f32; 3] = [0.550, 0.400, 0.220];
 /// approximation of it.
 const TERRAIN_SAMPLES_PER_CELL: usize = 2;
 
-/// Same real, already-proven-stable stiffness `sand_repose_angle_gui.rs`
+/// Same real, already-proven-stable stiffness `sand_repose_angle.rs`
 /// uses -- not a fresh guess (see that file's own `grain_contact_config`
 /// doc for why real-SI stiffness would need a punishingly fine forced dt).
 ///
-/// `rolling_friction` real fix (2026-08-21): `sand_repose_angle_gui.rs`'s
+/// `rolling_friction` real fix (2026-08-21): `sand_repose_angle.rs`'s
 /// own `0.2` is a REAL, calibrated value, but for a different real physical
 /// scenario -- it was tuned to match dry sand's own natural angle of repose
 /// (a PILE of angular, interlocking grains that needs to stay put), not a
@@ -251,7 +251,7 @@ struct State {
 
 /// Real click-to-nudge: LMB applies a small radial impulse to any grain
 /// within `NUDGE_RADIUS` of the cursor's grid position -- a genuine, useful
-/// capability the existing Grains mode in `sand_repose_angle_gui.rs`
+/// capability the existing Grains mode in `sand_repose_angle.rs`
 /// explicitly does NOT have ("Push/pull inactive here (grains, not
 /// particles)"), and directly on-topic here: lets you perturb an already-
 /// settled grain and watch it react/roll again, not just the one scripted
@@ -266,7 +266,7 @@ impl State {
         let incline_deg = 22.0;
         let sim = make_sim(incline_deg);
         // Real headroom: 2 marker particles per grain (body + rolling accent
-        // dot), same real technique `sand_repose_angle_gui.rs` already uses,
+        // dot), same real technique `sand_repose_angle.rs` already uses,
         // plus 2 terrain markers per grid column tracing the real ramp
         // surface (the actual `HeightmapBoundary::heights` this scene
         // builds, not decoration -- see `terrain_markers`'s own doc).
@@ -282,7 +282,7 @@ impl State {
         renderer.set_optical_params(&gfx.queue, TERRAIN_MARKER_MAT_ID as usize, SIGMA_TERRAIN);
 
         println!(
-            "grain_rolling_closeup_gui: {N_GRAINS} grains  |  SPACE=pause  R=reset  UP/DOWN=incline angle  LMB=nudge nearest grain  Q=quit"
+            "grain_rolling_closeup: {N_GRAINS} grains  |  SPACE=pause  R=reset  UP/DOWN=incline angle  LMB=nudge nearest grain  Q=quit"
         );
         Self {
             gfx,
@@ -364,7 +364,7 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         // Same real marker-particle rendering technique already proven in
-        // `sand_repose_angle_gui.rs`: grains aren't ordinary `Particle`s, so
+        // `sand_repose_angle.rs`: grains aren't ordinary `Particle`s, so
         // a zero-physics render proxy carries their real, physically
         // simulated position/orientation straight through.
         let mut all: Vec<Particle> = terrain_markers(self.incline_deg);

@@ -121,8 +121,8 @@ path = "examples/cpu/basic_orbital.rs"
 required-features = ["render"]
 
 [[example]]
-name = "basic_solar_system_gui"
-path = "examples/cpu/basic_solar_system_gui.rs"
+name = "basic_solar_system"
+path = "examples/cpu/basic_solar_system.rs"
 required-features = ["render"]
 
 [[example]]
@@ -186,8 +186,8 @@ path = "examples/gpu/resource_regrowth_gpu.rs"
 required-features = ["render"]
 
 [[example]]
-name = "rod_blade_of_grass_gui"
-path = "examples/cpu/rod_blade_of_grass_gui.rs"
+name = "rod_blade_and_root"
+path = "examples/cpu/rod_blade_and_root.rs"
 required-features = ["render"]
 
 [[example]]
@@ -216,8 +216,8 @@ path = "examples/gpu/wind_around_obstacle_gpu.rs"
 required-features = ["render"]
 
 [[example]]
-name = "fluid_pressure_projection_gui"
-path = "examples/cpu/fluid_pressure_projection_gui.rs"
+name = "fluid_pressure_projection"
+path = "examples/cpu/fluid_pressure_projection.rs"
 required-features = ["render"]
 
 [[example]]
@@ -226,33 +226,33 @@ path = "examples/gpu/basic_sand_grid_gpu.rs"
 required-features = ["render"]
 
 [[example]]
-name = "basic_granular_fluid_gui"
-path = "examples/cpu/basic_granular_fluid_gui.rs"
+name = "basic_granular_fluid"
+path = "examples/cpu/basic_granular_fluid.rs"
 required-features = ["render"]
 
 [[example]]
-name = "sand_compaction_gui"
-path = "examples/cpu/sand_compaction_gui.rs"
+name = "sand_compaction"
+path = "examples/cpu/sand_compaction.rs"
 required-features = ["render"]
 
 [[example]]
-name = "sand_ngf_collapse_gui"
-path = "examples/cpu/sand_ngf_collapse_gui.rs"
+name = "sand_ngf_collapse"
+path = "examples/cpu/sand_ngf_collapse.rs"
 required-features = ["render"]
 
 [[example]]
-name = "sand_repose_angle_gui"
-path = "examples/cpu/sand_repose_angle_gui.rs"
+name = "sand_repose_angle"
+path = "examples/cpu/sand_repose_angle.rs"
 required-features = ["render"]
 
 [[example]]
-name = "grain_rolling_closeup_gui"
-path = "examples/cpu/grain_rolling_closeup_gui.rs"
+name = "grain_rolling_closeup"
+path = "examples/cpu/grain_rolling_closeup.rs"
 required-features = ["render"]
 
 [[example]]
-name = "grain_newtons_cradle_gui"
-path = "examples/cpu/grain_newtons_cradle_gui.rs"
+name = "grain_newtons_cradle"
+path = "examples/cpu/grain_newtons_cradle.rs"
 required-features = ["render"]
 
 [[example]]

@@ -6,7 +6,7 @@ use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// TRUE full N-body solar system, live: Sun + all 8 real planets, REAL MUTUAL
 /// gravity (every body pulls on every other, Sun included and free to move) --
-/// the real structural upgrade from `basic_orbital(_gui).rs`'s restricted
+/// the real structural upgrade from `basic_orbital.rs`'s restricted
 /// two-body model (fixed Sun, Earth+Mars only). Uses the engine's existing
 /// `NBodyGravityField` (Barnes-Hut + a real quadrupole correction, Hernquist
 /// 1987) -- the same real technique proven headless in
@@ -36,7 +36,7 @@ use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 ///   - Real orbital phase is arbitrary (planets spread at even angles, not
 ///     a real ephemeris snapshot) -- real distances/masses/speeds throughout.
 ///
-///   cargo run --example basic_solar_system_gui --features render
+///   cargo run --example basic_solar_system --features render
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};

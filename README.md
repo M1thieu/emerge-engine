@@ -208,8 +208,8 @@ cargo run --example basic_jellies   --features render
 cargo run --example basic_creature  --features render  # LNN-driven muscle locomotion
 cargo run --example basic_showcase  --features render  # three materials at once
 cargo run --example basic_sand_grid_gpu --features render
-cargo run --example rod_blade_of_grass                       # rod solver, no window
-cargo run --example rod_blade_of_grass_gui --features render # rod solver, live + pushable
+cargo run --example rod_blade_of_grass                    # rod solver, single blade, no window
+cargo run --example rod_blade_and_root --features render  # rod solver, two-blade buckling comparison + root, live + pushable
 ```
 
 Windowed examples (everything except `headless` and `validate_materials`) need `--features render` -- they draw via wgpu/winit directly, no Bevy.

@@ -326,7 +326,7 @@ impl State {
         // untouched -- only this cloned, render-only copy has F reset to
         // identity, so what you SEE is fixed-size dots whose density
         // (how tightly they pack) is the honest signal for a gas cloud,
-        // the same "sim vs render LOD" split `sand_repose_angle_gui.rs`'s
+        // the same "sim vs render LOD" split `sand_repose_angle.rs`'s
         // Grains-mode marker particles already establish, just applied to
         // every particle here instead of a marker subset.
         let render_particles: Vec<emerge::Particle> = (0..self.sim.particles().len())
