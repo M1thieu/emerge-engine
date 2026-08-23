@@ -1,5 +1,8 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../snake_on_terrain_scene/mod.rs"]
+mod scene;
+
 /// Snake crawling on REAL granular sand terrain -- GPU path, zero-copy rendering.
 ///
 /// GPU counterpart to `snake_on_terrain.rs` (CPU), built after the full GPU multi-field
@@ -23,38 +26,23 @@ use std::sync::Arc;
 
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DruckerPragerMaterial, FixedStepController, GpuSimulation, Lnn, MaterialRegistry,
-    NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles,
+    FixedStepController, GpuSimulation, Lnn, MaterialRegistry, SimConfig, build_particles,
 };
-use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-const GRID: usize = 128;
-// Physics solver AND CPG must both step by the SAME DT -- DT is whatever a
-// physics frame represents in real time, and the CPG has no independent
-// awareness of that. Splitting them (solver at 1/60, CPG still stepping by an
-// old larger DT) cycles the muscle faster than it was ever tuned for and
-// causes real, escalating instability.
-const DT: f32 = 1.0 / 60.0;
-const MUSCLE_GROUPS: u32 = 8;
-const N_RINGS: usize = 2;
-const N_PER_RING: usize = MUSCLE_GROUPS as usize / N_RINGS;
-const RING_CROSS_COUPLING: f32 = 0.5;
-const MUSCLE_AMPLITUDE: f32 = 0.9;
-const CPG_BURN_IN_STEPS: usize = 600;
-const SNAKE_CONTACT_GROUP: u32 = 1;
-const FIBER_DIAG: f32 = 3.0;
-const BODY_LEN: f32 = 18.0;
-const BODY_CENTER: Vec2 = Vec2::new(64.0, 20.0);
-
 fn make_cpg() -> Lnn {
-    let mut lnn = Lnn::coupled_traveling_wave(N_RINGS, N_PER_RING, 1.0, RING_CROSS_COUPLING);
-    for _ in 0..CPG_BURN_IN_STEPS {
-        lnn.step(DT);
+    let mut lnn = Lnn::coupled_traveling_wave(
+        scene::N_RINGS,
+        scene::N_PER_RING,
+        1.0,
+        scene::RING_CROSS_COUPLING,
+    );
+    for _ in 0..scene::CPG_BURN_IN_STEPS {
+        lnn.step(scene::DT);
     }
     lnn
 }
@@ -89,71 +77,32 @@ fn make_sim_data(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 ) -> (GpuSimulation, std::ops::Range<usize>, Vec<u32>) {
+    // GPU has no `DirectionalContactGrip` equivalent yet (see this file's own
+    // top-of-file doc) -- `contact_friction` is the real, disclosed stand-in,
+    // layered on top of the shared base config rather than in it, since CPU's
+    // own config doesn't use this field at all.
     let config = SimConfig {
         contact_friction: 0.5,
-        // `min_dt` is a hard floor on the substep, not a target -- `cfl_bound`
-        // clamps the chosen substep to be AT LEAST `min_dt` regardless of what
-        // the material's own stability bound requires. A `min_dt` override safe
-        // for a soft material can silently become unsafe (forces an oversized
-        // step) once stiffness increases. No override here -- inherits the safe
-        // `1.0e-3` default.
-        max_substeps_per_step: 128,
-        project_invalid_state: true,
-        ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
+        ..scene::base_config()
     };
 
-    let terrain_particles = build_particles(
-        &config,
-        SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(100, 12),
-            box_center: Vec2::new(64.0, 10.0),
-            material_id: 0,
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        },
-    );
-
-    // Terrain stiffness matches this engine's own validated real-sand reference
-    // (`sand_angle_of_repose_is_physical`, tests/accuracy.rs, `from_young_modulus
-    // (1.0e5, 0.2)`, also sparkl/wgsparkl's own canonical demo value) -- a much
-    // softer value deforms continuously under load and behaves like fluid, not
-    // sand.
-    let terrain_mat = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
-    let registry = MaterialRegistry::with_default(Box::new(terrain_mat));
+    let terrain_particles = build_particles(&config, scene::terrain_spawn(&config));
+    let registry = MaterialRegistry::with_default(Box::new(scene::terrain_material()));
     let mut sim = GpuSimulation::with_device(device, queue, config, terrain_particles, registry);
 
-    let mut snake_mat = NeoHookeanMaterial::new(13.0, 26.0);
-    snake_mat.active_stress_coeff = 80.0;
-    snake_mat.viscosity = 150.0;
-    let snake_mat_id = sim.register_material(Box::new(snake_mat));
-    let snake_spawn = SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(36, 4),
-        box_center: BODY_CENTER,
-        material_id: snake_mat_id.id(),
-        precompute_initial_volumes: true,
-        ..SpawnRegion::for_sim(sim.config())
-    };
+    let snake_mat_id = sim.register_material(Box::new(scene::snake_material()));
+    let snake_spawn = scene::snake_spawn(sim.config(), snake_mat_id.id());
     let snake_range = sim.spawn_region(snake_spawn);
 
-    let body_left = BODY_CENTER.x - BODY_LEN / 2.0;
     let mut muscle_group_of = Vec::with_capacity(snake_range.len());
     {
         let particles = sim.particles_mut();
         for i in snake_range.clone() {
-            particles[i].contact_group = SNAKE_CONTACT_GROUP;
-            let t = ((particles[i].x.x - body_left) / BODY_LEN).clamp(0.0, 1.0);
-            let group = ((t * MUSCLE_GROUPS as f32) as u32).min(MUSCLE_GROUPS - 1);
+            particles[i].contact_group = scene::SNAKE_CONTACT_GROUP;
+            let (group, dir) = scene::snake_particle_tag(particles[i].x);
             particles[i].muscle_group_id = group;
             muscle_group_of.push(group);
-            let local_y = particles[i].x.y - BODY_CENTER.y;
-            let flip = if group % 2 == 1 { -1.0 } else { 1.0 };
-            particles[i].activation_dir = if local_y >= 0.0 {
-                Vec2::new(-FIBER_DIAG * flip, 1.0).normalize()
-            } else {
-                Vec2::new(FIBER_DIAG * flip, 1.0).normalize()
-            };
+            particles[i].activation_dir = dir;
         }
     }
     sim.mark_particles_dirty();
@@ -200,7 +149,14 @@ impl State {
         surface.configure(&device, &sc);
         let (sim, snake_range, muscle_group_of) = make_sim_data(Arc::new(device), Arc::new(queue));
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
-        renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
+        renderer.set_camera(
+            sim.queue(),
+            scene::GRID as u32,
+            size.width,
+            size.height,
+            0.6,
+            true,
+        );
         renderer.set_color_mode(ColorMode::ByMaterial);
         println!(
             "snake_on_terrain_gpu: {} particles ({} snake)  |  up/down wave speed  Space pause  R reset  Q quit  (steering API now exists -- GpuSimulation::set_grip_direction/set_grip_friction -- but the underlying directional effect is measurably unstable run to run, not wired into this demo yet; see gpu_directional_grip_is_direction_aware's #[ignore] reason)",
@@ -220,7 +176,7 @@ impl State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
-            stepper: FixedStepController::standard(DT, 1.0 / DT),
+            stepper: FixedStepController::standard(scene::DT, 1.0 / scene::DT),
             last_instant: std::time::Instant::now(),
         }
     }
@@ -234,7 +190,7 @@ impl State {
         self.surface
             .configure(self.sim.device(), &self.surface_config);
         self.renderer
-            .set_camera(self.sim.queue(), GRID as u32, w, h, 0.6, true);
+            .set_camera(self.sim.queue(), scene::GRID as u32, w, h, 0.6, true);
     }
 
     fn reset(&mut self) {
@@ -259,14 +215,14 @@ impl State {
         if !self.paused {
             let steps = self.stepper.steps_for_frame(frame_delta);
             for _ in 0..steps {
-                self.lnn.step(DT * self.wave_speed);
+                self.lnn.step(scene::DT * self.wave_speed);
                 let activations: Vec<f32> = self.lnn.activations().collect();
                 {
                     let particles = self.sim.particles_mut();
                     for (offset, i) in self.snake_range.clone().enumerate() {
                         let group = self.muscle_group_of[offset] as usize;
                         particles[i].activation =
-                            (MUSCLE_AMPLITUDE * activations[group]).clamp(0.0, 1.0);
+                            (scene::MUSCLE_AMPLITUDE * activations[group]).clamp(0.0, 1.0);
                     }
                 }
                 self.sim.mark_particles_dirty();
