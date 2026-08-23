@@ -1,36 +1,19 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// Live proof of tonight's real fix (see `MEMORY.md` -- fluid-recovery notes,
-/// Round 9): an exact DCT/Fourier pressure projection (Stam 1999, "Stable
-/// Fluids") replaces the stiff Tait EOS for strict WC-MPM fluids, removing
-/// the acoustic-CFL wall that made SUSTAINED wall contact (a puddle resting
-/// against a floor/wall) either explode or crawl at ~1fps.
-///
-/// Deliberately a SEPARATE, minimal example rather than a change to
-/// `basic_fluids_gui.rs`: that demo's water->ice phase transition uses
-/// `NeoHookeanMaterial` (not a strict fluid), and `SimConfig::
-/// fluid_pressure_iterations` currently requires EVERY particle on the grid
-/// to be a strict fluid (see that field's own doc) -- freezing a single
-/// water particle mid-run would violate that and panic. Water + mud here are
-/// BOTH strict fluids (`NewtonianFluidMaterial`/`BinghamFluidMaterial`), so
-/// no such conflict -- solo-maximal proof first, combining with the
-/// freeze feature is real future work, not attempted tonight.
-///
-/// SAME hard geometry used all night to find and verify the fix: water
-/// starts only ~2 cells from the left wall, spanning nearly the full grid
-/// height -- the scene that used to explode under the old stiff-EOS
-/// acoustic CFL.
-///
-///   cargo run --example fluid_pressure_projection_gui --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    BinghamFluidMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    CorotatedMaterial, NeoHookeanMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    ViscoelasticMaterial,
 };
 use glam::{IVec2, Vec2};
+/// CPU elastic solids -- NeoHookean / Corotated / Viscoelastic, three-blob comparison.
+///
+///   G  toggle ByPhysics/ByMaterial  |  LMB push  RMB pull  |  R reset  Q quit
+///   cargo run --example basic_jellies --features "render"
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -40,78 +23,46 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_WATER: u32 = 0;
-const MAT_MUD: u32 = 1;
-const DIG_RADIUS: f32 = 4.0;
+const MAT_NEO: u32 = 0;
+const MAT_COR: u32 = 1;
+const MAT_VIS: u32 = 2;
 
-fn make_sim() -> Simulation {
-    let config = SimConfig {
-        min_dt: 1.0e-4,
-        // 150 -> 400 (2026-08-15): live-measured headless via
-        // `diag_pressure_projection_timing`, this exact scene's real first-
-        // contact violent transient (water starting ~2 cells from the wall)
-        // now genuinely needs slightly more than 150 substeps in its worst
-        // single frame (~frame 20) before it settles -- confirmed bounded,
-        // not divergent: a 2000-cap run completes all 120 frames cleanly,
-        // recovering to a cheap ~15ms/frame steady state immediately after
-        // the peak (avg 16.5fps over the full run, dominated by that one
-        // transient). 400 gives real headroom over the observed peak without
-        // masking a genuine runaway the way an unbounded cap would (this
-        // strict-fluid path still fails loud, see step.rs's own panic doc,
-        // if 400 is ever insufficient).
-        max_substeps_per_step: 400,
-        material_cfl_coefficient: 0.1,
-        cfl_include_affine_speed: false,
-        fluid_pressure_iterations: 1,
-        // Real, verified fix for this exact hard geometry (see
-        // `SimConfig::fluid_near_wall_cfl_scale`'s own doc for the full
-        // derivation): predictively tightens the gravity-CFL bound for
-        // strict-fluid particles near a wall, BEFORE any compression has
-        // happened (unlike the field's original acoustic-only tightening,
-        // structurally inert once `eos_stiffness=0`). Verified headless:
-        // this exact scene completes all 120 frames with no crash, no
-        // non-finite state (a real, honest, disclosed remaining slow drift
-        // late in the run, not eliminated, but bounded).
-        fluid_near_wall_cfl_scale: 20.0,
-        fluid_near_wall_compression_threshold: 0.0,
-        ..SimConfig::earth(GRID, 0.01, DT)
-    };
-    // eos_stiffness = 0.0: the acoustic-CFL term this whole fix removes.
-    // Real, legal value (`fluid_state::tait_pressure`'s own `>= 0.0`
-    // contract) -- incompressibility now comes from the grid-level pressure
-    // projection, not from an explicit stiff spring.
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
-    let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.0);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 0.0, 3.0, 4.0);
-    const WATER_MASS: f32 = 0.1 * 0.6 * 0.6;
-    const MUD_MASS: f32 = 4.0 * 0.6 * 0.6;
-    let spawn_water = SpawnRegion {
-        spacing: 0.6,
-        box_size: IVec2::new(14, 52),
-        box_center: Vec2::new(11.0, 30.0),
-        material_id: MAT_WATER,
-        initial_velocity_scale: 0.0,
-        precompute_initial_volumes: true,
-        mass_override: Some(WATER_MASS),
-        ..SpawnRegion::for_sim(&config)
-    };
-    let spawn_mud = SpawnRegion {
-        spacing: 0.6,
-        box_size: IVec2::new(16, 18),
-        box_center: Vec2::new(50.0, 38.0),
-        material_id: MAT_MUD,
-        initial_velocity_scale: 0.0,
-        precompute_initial_volumes: true,
-        mass_override: Some(MUD_MASS),
-        ..SpawnRegion::for_sim(&config)
-    };
-    let mut solver = Simulation::new(config, spawn_water)
-        .with_default_material(Box::new(water))
-        .with_material(MAT_MUD, Box::new(mud))
-        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn_mud);
-    solver
+const SIGMA_NEO: [f32; 3] = [0.05, 0.55, 0.60];
+const SIGMA_COR: [f32; 3] = [0.10, 0.45, 0.50];
+const SIGMA_VIS: [f32; 3] = [0.08, 0.35, 0.45];
+
+struct App {
+    window: Option<Arc<Window>>,
+    state: Option<State>,
+}
+
+struct Params {
+    neo_lambda: f32,
+    neo_mu: f32,
+    cor_lambda: f32,
+    cor_mu: f32,
+    vis_lambda: f32,
+    vis_mu: f32,
+    vis_viscosity: f32,
+    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand_gui.rs/
+    // basic_snow_gui.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
+    // not grounded in anything real.
+    gravity_fraction: f32,
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            neo_lambda: 10.0,
+            neo_mu: 20.0,
+            cor_lambda: 30.0,
+            cor_mu: 60.0,
+            vis_lambda: 10.0,
+            vis_mu: 15.0,
+            vis_viscosity: 0.15,
+            gravity_fraction: 0.01,
+        }
+    }
 }
 
 struct State {
@@ -124,19 +75,52 @@ struct State {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    p: Params,
+    real_gravity: Vec2,
     cursor_pos: [f32; 2],
-    last_cursor_grid: Vec2,
     lmb: bool,
     rmb: bool,
-    digging: bool,
-    push_strength: f32,
-    dig_strength: f32,
-    real_gravity: Vec2,
-    gravity_fraction: f32,
+    physics_colors: bool,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
+}
+
+fn make_sim(p: &Params) -> Simulation {
+    let mut config = SimConfig {
+        min_dt: 0.01,
+        max_substeps_per_step: 8,
+        ..SimConfig::earth(GRID, 0.01, DT)
+    };
+    config.gravity *= p.gravity_fraction;
+    let spawn = |c: Vec2, mat| SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(14, 14),
+        box_center: c,
+        material_id: mat,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, 50.0), MAT_NEO))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(p.neo_lambda, p.neo_mu)))
+        .with_material(
+            MAT_COR,
+            Box::new(CorotatedMaterial::new(p.cor_lambda, p.cor_mu)),
+        )
+        .with_material(
+            MAT_VIS,
+            Box::new(ViscoelasticMaterial::new(
+                p.vis_lambda,
+                p.vis_mu,
+                p.vis_viscosity,
+            )),
+        )
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let _ = solver.add_body(spawn(Vec2::new(32.0, 50.0), MAT_COR));
+    let _ = solver.add_body(spawn(Vec2::new(50.0, 50.0), MAT_VIS));
+    solver
 }
 
 impl State {
@@ -154,7 +138,7 @@ impl State {
             .expect("no GPU adapter");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
+                required_limits: adapter.limits(), // use full hardware limits, not wgpu defaults
                 ..Default::default()
             })
             .await
@@ -177,11 +161,17 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let sim = make_sim();
-        let real_gravity = sim.config().gravity;
+
+        let p = Params::default();
+        let sim = make_sim(&p);
+        let real_gravity = SimConfig::earth(GRID, 0.01, DT).gravity;
+
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.set_optical_params(&queue, MAT_NEO as usize, SIGMA_NEO);
+        renderer.set_optical_params(&queue, MAT_COR as usize, SIGMA_COR);
+        renderer.set_optical_params(&queue, MAT_VIS as usize, SIGMA_VIS);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -202,7 +192,7 @@ impl State {
         );
 
         println!(
-            "fluid_pressure_projection_gui: {} particles  |  LMB push  RMB pull  D toggle dig  R reset  Q quit",
+            "jellies: {} particles  G=colors  LMB/RMB=push/pull  R=reset  Q=quit",
             sim.particles().len()
         );
         Self {
@@ -215,15 +205,12 @@ impl State {
             egui_ctx,
             egui_state,
             egui_renderer,
+            p,
+            real_gravity,
             cursor_pos: [0.0; 2],
-            last_cursor_grid: Vec2::ZERO,
             lmb: false,
             rmb: false,
-            digging: false,
-            push_strength: 5.0,
-            dig_strength: 18.0,
-            real_gravity,
-            gravity_fraction: 0.003,
+            physics_colors: true,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -251,31 +238,37 @@ impl State {
         )
     }
 
+    fn reset(&mut self) {
+        self.sim = make_sim(&self.p);
+        self.frame = 0;
+    }
+
     fn update_and_render(&mut self, window: &Window) {
+        // Push live params to solver
         self.sim
-            .set_gravity(self.real_gravity * self.gravity_fraction);
+            .set_gravity(self.real_gravity * self.p.gravity_fraction);
+        self.sim
+            .set_default_material(Box::new(NeoHookeanMaterial::new(
+                self.p.neo_lambda,
+                self.p.neo_mu,
+            )));
+        self.sim.set_material(
+            MAT_COR,
+            Box::new(CorotatedMaterial::new(self.p.cor_lambda, self.p.cor_mu)),
+        );
+        self.sim.set_material(
+            MAT_VIS,
+            Box::new(ViscoelasticMaterial::new(
+                self.p.vis_lambda,
+                self.p.vis_mu,
+                self.p.vis_viscosity,
+            )),
+        );
+
         if self.lmb || self.rmb {
-            let mag = if self.lmb {
-                self.push_strength
-            } else {
-                -self.push_strength
-            };
-            self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
+            let mag = if self.lmb { 2.0 } else { -2.0 };
+            self.sim.apply_radial_impulse(self.cursor_grid(), 6.0, mag);
         }
-        let cursor = self.cursor_grid();
-        if self.digging {
-            let delta = cursor - self.last_cursor_grid;
-            if delta.length_squared() > 1.0e-8 {
-                let dir = delta.normalize();
-                let particles = self.sim.particles_mut();
-                for i in 0..particles.len() {
-                    if (particles.x[i] - cursor).length() < DIG_RADIUS {
-                        particles.v[i] += dir * self.dig_strength * DT;
-                    }
-                }
-            }
-        }
-        self.last_cursor_grid = cursor;
         self.sim.step();
         self.frame += 1;
         self.fps_frames += 1;
@@ -292,54 +285,51 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
+        // --- egui --- extract locals to avoid borrow conflict with closure
         let raw_input = self.egui_state.take_egui_input(window);
+        let n = self.sim.particles().len();
         let fps = self.last_fps;
-        let mut push_strength = self.push_strength;
-        let mut dig_strength = self.dig_strength;
-        let mut gravity_fraction = self.gravity_fraction;
-        let mut digging = self.digging;
         let mut reset = false;
-        let snap = self.sim.diagnostics_snapshot();
-        let substeps = self.sim.last_substeps();
+        let p = &mut self.p;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Fluid pressure projection (real fix, live)")
+            egui::Window::new("Jellies")
                 .default_pos([10.0, 10.0])
-                .default_width(300.0)
+                .default_width(260.0)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("fps={fps:.0}  substeps/frame={substeps}"));
-                    ui.label(format!(
-                        "max_speed={:.3}  non_finite={}",
-                        snap.max_particle_speed, snap.non_finite_particle_values
-                    ));
+                    ui.label(format!("fps={:.0}  n={}  [G] toggle colors", fps, n));
                     ui.separator();
-                    ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
-                    ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=2.0));
+                    ui.add(
+                        egui::Slider::new(&mut p.gravity_fraction, 0.0..=2.0)
+                            .text("gravity (1.0 = real IRL)"),
+                    );
                     ui.separator();
-                    ui.label("Push/pull strength:");
-                    ui.add(egui::Slider::new(&mut push_strength, 0.0..=20.0));
-                    ui.checkbox(&mut digging, "Digging/stirring active (or press D)");
-                    ui.add(egui::Slider::new(&mut dig_strength, 0.0..=40.0).text("Dig strength"));
+                    ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
+                    ui.add(egui::Slider::new(&mut p.neo_lambda, 1.0..=200.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.neo_mu, 1.0..=400.0).text("mu"));
                     ui.separator();
-                    ui.label("LMB push  RMB pull  D toggle dig  R reset  Q quit");
+                    ui.colored_label(egui::Color32::from_rgb(64, 199, 166), "Corotated");
+                    ui.add(egui::Slider::new(&mut p.cor_lambda, 1.0..=200.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.cor_mu, 1.0..=400.0).text("mu"));
+                    ui.separator();
+                    ui.colored_label(egui::Color32::from_rgb(184, 102, 230), "Viscoelastic");
+                    ui.add(egui::Slider::new(&mut p.vis_lambda, 1.0..=200.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.vis_mu, 1.0..=400.0).text("mu"));
+                    ui.add(egui::Slider::new(&mut p.vis_viscosity, 0.0..=5.0).text("viscosity"));
+                    ui.separator();
+                    ui.label("LMB push  RMB pull  G colors  R reset");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
                 });
         });
-        self.push_strength = push_strength;
-        self.dig_strength = dig_strength;
-        self.gravity_fraction = gravity_fraction;
-        self.digging = digging;
         if reset {
-            let sim = make_sim();
-            self.real_gravity = sim.config().gravity;
-            self.sim = sim;
-            self.frame = 0;
+            self.reset();
         }
 
         self.egui_state
@@ -387,17 +377,12 @@ impl State {
     }
 }
 
-struct App {
-    window: Option<Arc<Window>>,
-    state: Option<State>,
-}
-
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Fluid Pressure Projection (real fix)")
+                    .with_title("emerge -- Jellies [NeoHookean / Corotated / Viscoelastic]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -407,9 +392,7 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(s) = self.state.as_mut() else {
-            return;
-        };
+        let Some(s) = self.state.as_mut() else { return };
         if let Some(w) = &self.window {
             let resp = s.egui_state.on_window_event(w, &event);
             if resp.consumed {
@@ -430,30 +413,30 @@ impl ApplicationHandler for App {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(key),
-                        state: key_state,
+                        state: ElementState::Pressed,
                         ..
                     },
                 ..
-            } => {
-                let pressed = key_state == ElementState::Pressed;
-                match key {
-                    KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
-                    KeyCode::KeyD if pressed => s.digging = !s.digging,
-                    KeyCode::KeyR if pressed => {
-                        let sim = make_sim();
-                        s.real_gravity = sim.config().gravity;
-                        s.sim = sim;
-                        s.frame = 0;
-                        println!("reset");
-                    }
-                    _ => {}
+            } => match key {
+                KeyCode::Escape | KeyCode::KeyQ => el.exit(),
+                KeyCode::KeyG => {
+                    s.physics_colors = !s.physics_colors;
+                    s.renderer.set_color_mode(if s.physics_colors {
+                        ColorMode::ByPhysics
+                    } else {
+                        ColorMode::ByMaterial
+                    });
                 }
-            }
+                KeyCode::KeyR => {
+                    s.reset();
+                    println!("reset");
+                }
+                _ => {}
+            },
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),
             WindowEvent::RedrawRequested => {
                 if let Some(w) = &self.window {
-                    let w = w.clone();
-                    s.update_and_render(&w);
+                    s.update_and_render(w);
                     w.request_redraw();
                 }
             }

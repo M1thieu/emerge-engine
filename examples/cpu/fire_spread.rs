@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 /// Real fire spread through wood -- composition of already-shipped mechanisms, zero

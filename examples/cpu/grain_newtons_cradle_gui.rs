@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/mod.rs"]
+#[path = "../gui_common/mod.rs"]
 mod gui_common;
 
 /// Real Newton's cradle -- a direct, targeted proof of concept for the SAME

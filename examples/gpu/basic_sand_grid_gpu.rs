@@ -1,22 +1,24 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// GPU snowballs colliding -- Stomakhin 2013 snow plasticity, zero CPU readback.
+/// GPU Drucker-Prager sand, rendered from the solver's own P2G mass field
+/// (`Renderer::render_grid_volume`) instead of one splat per particle --
+/// real, already-shipped MPM-native technique (see `render-pipeline-plan`
+/// memory): adjacent cells with mass blend into one continuous shape instead
+/// of reading as a cloud of discrete dots, at zero extra simulation cost
+/// (the solver already builds this field every substep for its own P2G
+/// step). G toggles back to the per-particle view to compare directly.
 ///
-///   Mat 0  soft powder (blue)  -- low hardening, wide plastic limits
-///   Mat 1  packed snow (gold)  -- high hardening, tight limits
-///   Mat 2  shatter     (cyan)  -- loose granular after violent impact
-///
-///   cargo run --example basic_snow_gpu --features "render"
+///   cargo run --example basic_sand_grid_gpu --features "render"
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GridVolumeSource, Renderer};
 use emerge::{
     DruckerPragerMaterial, FixedStepController, GpuSimulation, MaterialRegistry, SimConfig,
-    SpawnRegion, StomakhinMaterial, build_particles,
+    SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -27,18 +29,11 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_SOFT: u32 = 0;
-const MAT_PACKED: u32 = 1;
-const MAT_SHATTER: u32 = 2;
-const BALL_R: f32 = 9.0;
-const BALL_A: Vec2 = Vec2::new(16.0, 44.0);
-const BALL_B: Vec2 = Vec2::new(48.0, 44.0);
-const SPEED: f32 = 15.0;
-const LABELS: &[(u32, &str)] = &[
-    (MAT_SOFT, "soft"),
-    (MAT_PACKED, "packed"),
-    (MAT_SHATTER, "shatter"),
-];
+const MAT_LOOSE: u32 = 0;
+const MAT_DENSE: u32 = 1;
+const LABELS: &[(u32, &str)] = &[(MAT_LOOSE, "loose"), (MAT_DENSE, "dense")];
+// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand).
+const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -52,6 +47,8 @@ struct State {
     renderer: Renderer,
     cursor_pos: [f32; 2],
     lmb: bool,
+    rmb: bool,
+    grid_volume_mode: bool,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
@@ -62,50 +59,43 @@ struct State {
     max_steps_seen: usize,
 }
 
+fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
+    let mut m = DruckerPragerMaterial::new(lambda, mu);
+    m.friction_angle = phi_deg.to_radians();
+    m
+}
+
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        max_substeps_per_step: 20,
+        boundary_thickness: 3,
+        max_substeps_per_step: 12,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_snow_gui.rs's
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
-        gravity: Vec2::new(0.0, -0.08),
+        gravity: Vec2::new(0.0, -0.3),
+        // Same already-validated CFL margin as basic_sand.rs's CPU DP-sand.
+        material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let spawn_ball = |center: Vec2, mat: u32, seed: u32| SpawnRegion {
+    let spawn = |c: Vec2, mat: u32, seed: u32| SpawnRegion {
         spacing: 0.5,
-        box_size: IVec2::new((BALL_R * 2.0) as i32, (BALL_R * 2.0) as i32),
-        box_center: center,
+        box_size: IVec2::new(18, 14),
+        box_center: c,
         material_id: mat,
         precompute_initial_volumes: true,
         rng_seed: seed,
+        position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let mut particles = build_particles(&config, spawn_ball(BALL_A, MAT_SOFT, 1));
-    for p in particles.iter_mut() {
-        p.v.x = SPEED;
-    }
-    let mut right = build_particles(&config, spawn_ball(BALL_B, MAT_PACKED, 2));
-    for p in right.iter_mut() {
-        p.v.x = -SPEED;
-    }
-    particles.extend(right);
-
-    let mut registry = MaterialRegistry::with_default(Box::new(StomakhinMaterial::new(
-        1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0,
-    )));
-    registry.insert(
-        MAT_PACKED,
-        Box::new(
-            StomakhinMaterial::new(1389.0, 2083.0, 10.0, 0.012, 0.004, 0.6, 20.0)
-                .with_cohesion(400.0),
-        ),
-    );
-    registry.insert(
-        MAT_SHATTER,
-        Box::new(DruckerPragerMaterial::low_friction(266.7, 0.333)),
-    );
+    let mut particles = build_particles(&config, spawn(Vec2::new(17.0, 40.0), MAT_LOOSE, 11));
+    particles.extend(build_particles(
+        &config,
+        spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22),
+    ));
+    let mut registry = MaterialRegistry::with_default(Box::new(make_sand(2000.0, 3000.0, 20.0)));
+    registry.insert(MAT_DENSE, Box::new(make_sand(2000.0, 3000.0, 40.0)));
     GpuSimulation::with_device(device, queue, config, particles, registry)
 }
 
@@ -124,7 +114,7 @@ impl State {
             .expect("no GPU adapter");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(), // use full hardware limits, not wgpu defaults
+                required_limits: adapter.limits(),
                 ..Default::default()
             })
             .await
@@ -147,12 +137,18 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let sim = make_sim_data(Arc::new(device), Arc::new(queue));
+        let mut sim = make_sim_data(Arc::new(device), Arc::new(queue));
+        // Real per-cell material tracking, needed by the grid-volume path to
+        // pick each cell's dominant material (loose vs dense) -- see
+        // grid_volume.wgsl's own doc.
+        sim.attach_grid_material_render_gpu();
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.set_optical_params(sim.queue(), MAT_LOOSE as usize, SIGMA_SAND);
+        renderer.set_optical_params(sim.queue(), MAT_DENSE as usize, SIGMA_SAND);
         println!(
-            "snow GPU: {} particles  |  LMB push  R reset  Q quit",
+            "sand grid-volume GPU: {} particles  |  LMB push  RMB pull  G toggle grid/particle view  R reset  Q quit",
             sim.particle_count()
         );
         Self {
@@ -162,6 +158,11 @@ impl State {
             renderer,
             cursor_pos: [0.0; 2],
             lmb: false,
+            rmb: false,
+            // Default ON -- this example exists specifically to show the
+            // continuous-surface look; G still lets you A/B against the
+            // per-particle view directly.
+            grid_volume_mode: true,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -195,6 +196,7 @@ impl State {
     fn reset(&mut self) {
         let (device, queue) = (self.sim.device().clone(), self.sim.queue().clone());
         self.sim = make_sim_data(device, queue);
+        self.sim.attach_grid_material_render_gpu();
         self.frame = 0;
         self.stepper.reset();
         self.last_instant = std::time::Instant::now();
@@ -202,8 +204,9 @@ impl State {
     }
 
     fn update_and_render(&mut self) {
-        if self.lmb {
-            self.sim.apply_radial_impulse(self.cursor_grid(), 6.0, 10.0);
+        if self.lmb || self.rmb {
+            let mag = if self.lmb { 12.0 } else { -12.0 };
+            self.sim.apply_radial_impulse(self.cursor_grid(), 7.0, mag);
         }
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
@@ -217,26 +220,6 @@ impl State {
         for _ in 0..steps {
             self.sim.step_frame();
             self.frame += 1;
-            // Gated, not evaluated every step -- `phase_transition` does a real,
-            // BLOCKING GPU->CPU sync internally (`sync_particles_blocking`, see
-            // its own doc), so calling it once per real simulation step (rather
-            // than once per RENDER callback, the pre-2026-07-30 behavior) was a
-            // genuine, self-inflicted cost multiplication once multiple steps
-            // could happen per callback -- confirmed live: fps collapsed to
-            // 13-16 with a chronic 4-steps-per-render pattern. Isolated timing
-            // showed BOTH `step_frame()` (~6ms) and `phase_transition()` alone
-            // (~1ms) are individually cheap -- the real cost is the sync POINT
-            // itself breaking CPU/GPU pipelining in the live interleaved
-            // render+compute loop (a real, well-known GPU perf pattern:
-            // synchronization stalls cost far more in context than in
-            // isolation). `is_multiple_of(15)`, matching `material_sandbox_
-            // gpu`'s own already-proven gated-scan interval, not a fresh guess.
-            if self.frame.is_multiple_of(15) {
-                self.sim.phase_transition(
-                    |p| p.material_id == MAT_PACKED && p.v.length() > 5.0,
-                    MAT_SHATTER,
-                );
-            }
             if self.frame.is_multiple_of(60) {
                 log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
                 let snap = self.sim.diagnostics_snapshot();
@@ -254,8 +237,8 @@ impl State {
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             println!(
-                "frame={} fps={:.0} max_steps_per_render={}",
-                self.frame, fps, self.max_steps_seen
+                "frame={} fps={:.0} grid_view={} max_steps_per_render={}",
+                self.frame, fps, self.grid_volume_mode, self.max_steps_seen
             );
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
@@ -264,14 +247,28 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render_gpu(
-            self.sim.device(),
-            self.sim.queue(),
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
-        );
+        if self.grid_volume_mode {
+            self.renderer.render_grid_volume(
+                self.sim.device(),
+                self.sim.queue(),
+                GridVolumeSource {
+                    grid: self.sim.grid_buffer(),
+                    material_mass: self.sim.material_mass_buffer(),
+                    material_mass_enabled: true,
+                },
+                &view,
+                true,
+            );
+        } else {
+            self.renderer.render_gpu(
+                self.sim.device(),
+                self.sim.queue(),
+                self.sim.particle_buffer(),
+                self.sim.particle_count(),
+                &view,
+                true,
+            );
+        }
         output.present();
     }
 }
@@ -281,7 +278,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Snow GPU [Stomakhin 2013: soft / packed / shatter]")
+                    .with_title("emerge -- Sand, grid-volume render [G: toggle particle view]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -291,17 +288,19 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(s) = self.state.as_mut() else { return };
+        let Some(s) = self.state.as_mut() else {
+            return;
+        };
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::CursorMoved { position, .. } => {
                 s.cursor_pos = [position.x as f32, position.y as f32];
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => s.lmb = state == ElementState::Pressed,
+            WindowEvent::MouseInput { state, button, .. } => match button {
+                MouseButton::Left => s.lmb = state == ElementState::Pressed,
+                MouseButton::Right => s.rmb = state == ElementState::Pressed,
+                _ => {}
+            },
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -313,6 +312,13 @@ impl ApplicationHandler for App {
             } => match key {
                 KeyCode::Escape | KeyCode::KeyQ => el.exit(),
                 KeyCode::KeyR => s.reset(),
+                KeyCode::KeyG => {
+                    s.grid_volume_mode = !s.grid_volume_mode;
+                    println!(
+                        "grid-volume render: {}",
+                        if s.grid_volume_mode { "on" } else { "off" }
+                    );
+                }
                 _ => {}
             },
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),

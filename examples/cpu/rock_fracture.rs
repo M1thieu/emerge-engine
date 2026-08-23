@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 /// Real rock fracture -- 4 real rock types side by side (`RankineMaterial`'s

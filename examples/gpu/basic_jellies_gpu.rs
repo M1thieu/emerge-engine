@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 /// GPU elastic solids -- NeoHookean / Corotated / Viscoelastic, zero CPU readback.

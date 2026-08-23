@@ -10,7 +10,7 @@
 //! --release; debug-mode timing is noise.
 extern crate emerge_engine as emerge;
 
-#[path = "diag_common/mod.rs"]
+#[path = "../diag_common/mod.rs"]
 mod diag_common;
 
 use emerge::{

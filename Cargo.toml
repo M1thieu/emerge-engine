@@ -66,193 +66,278 @@ codegen-units = 1
 
 [[example]]
 name = "headless"
+path = "examples/cpu/headless.rs"
 
 # --- GPU examples: current focus ---
 [[example]]
 name = "basic_jellies_gpu"
+path = "examples/gpu/basic_jellies_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_snow_gpu"
+path = "examples/gpu/basic_snow_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_fluids_gpu"
+path = "examples/gpu/basic_fluids_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_showcase_gpu"
+path = "examples/gpu/basic_showcase_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "material_sandbox_gpu"
+path = "examples/gpu/material_sandbox_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "render_physics"
+path = "examples/gpu/render_physics.rs"
 required-features = ["render"]
 
 # --- CPU examples: deferred. Reference / fallback only. ---
 [[example]]
 name = "basic_showcase"
+path = "examples/cpu/basic_showcase.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_fluids"
+path = "examples/cpu/basic_fluids.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_gas"
+path = "examples/cpu/basic_gas.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_orbital"
+path = "examples/cpu/basic_orbital.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_orbital_gui"
+path = "examples/cpu/basic_orbital_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_solar_system_gui"
+path = "examples/cpu/basic_solar_system_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "mixture_sand_water"
+path = "examples/cpu/mixture_sand_water.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_plant"
+path = "examples/cpu/basic_plant.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_jellies"
+path = "examples/cpu/basic_jellies.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_snow"
+path = "examples/cpu/basic_snow.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_sand"
+path = "examples/cpu/basic_sand.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_creature"
+path = "examples/cpu/basic_creature.rs"
 required-features = ["render"]
 
 [[example]]
 name = "stress_realtime_scaling"
+path = "examples/gpu/stress_realtime_scaling.rs"
 required-features = ["render"]
 
 [[example]]
 name = "stress_cfl_scan_50k"
+path = "examples/gpu/stress_cfl_scan_50k.rs"
 required-features = ["render"]
 
 [[example]]
 name = "channel_flow"
+path = "examples/cpu/channel_flow.rs"
 required-features = ["render"]
 
 [[example]]
 name = "day_night_thermal_gpu"
+path = "examples/gpu/day_night_thermal_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "fire_spread"
+path = "examples/cpu/fire_spread.rs"
 required-features = ["render"]
 
 [[example]]
 name = "grass_field"
+path = "examples/cpu/grass_field.rs"
 required-features = ["render"]
 
 [[example]]
 name = "resource_regrowth_gpu"
+path = "examples/gpu/resource_regrowth_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "rod_blade_of_grass_gui"
+path = "examples/cpu/rod_blade_of_grass_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "slip_hopper"
+path = "examples/cpu/slip_hopper.rs"
 required-features = ["render"]
 
 [[example]]
 name = "snake_on_terrain"
+path = "examples/cpu/snake_on_terrain.rs"
 required-features = ["render"]
 
 [[example]]
 name = "snake_on_terrain_gpu"
+path = "examples/gpu/snake_on_terrain_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "trophic_predation_demo"
+path = "examples/cpu/trophic_predation_demo.rs"
 required-features = ["render"]
 
 [[example]]
 name = "wind_around_obstacle_gpu"
+path = "examples/gpu/wind_around_obstacle_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_fluids_gui"
+path = "examples/cpu/basic_fluids_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "fluid_pressure_projection_gui"
+path = "examples/cpu/fluid_pressure_projection_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_sand_grid_gpu"
+path = "examples/gpu/basic_sand_grid_gpu.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_sand_gui"
+path = "examples/cpu/basic_sand_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_granular_fluid_gui"
+path = "examples/cpu/basic_granular_fluid_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "basic_snow_gui"
+path = "examples/cpu/basic_snow_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "sand_compaction_gui"
+path = "examples/cpu/sand_compaction_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "sand_ngf_collapse_gui"
+path = "examples/cpu/sand_ngf_collapse_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "sand_repose_angle_gui"
+path = "examples/cpu/sand_repose_angle_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "grain_rolling_closeup_gui"
+path = "examples/cpu/grain_rolling_closeup_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "grain_newtons_cradle_gui"
+path = "examples/cpu/grain_newtons_cradle_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "sand_collapse_settle_demo"
+path = "examples/cpu/sand_collapse_settle_demo.rs"
 required-features = ["render"]
 
 [[example]]
 name = "fire_spread_gui"
+path = "examples/cpu/fire_spread_gui.rs"
 required-features = ["render"]
 
 [[example]]
 name = "permafrost"
+path = "examples/cpu/permafrost.rs"
 required-features = ["render"]
 
 [[example]]
 name = "soil_horizons"
+path = "examples/cpu/soil_horizons.rs"
 required-features = ["render"]
 
 [[example]]
 name = "rock_fracture"
+path = "examples/cpu/rock_fracture.rs"
 required-features = ["render"]
+
+# --- Headless (no window, no render feature needed) ---
+[[example]]
+name = "diag_pressure_projection_timing"
+path = "examples/cpu/diag_pressure_projection_timing.rs"
+
+[[example]]
+name = "diag_step_timing_breakdown"
+path = "examples/cpu/diag_step_timing_breakdown.rs"
+
+[[example]]
+name = "diag_vortex_projection_headless"
+path = "examples/cpu/diag_vortex_projection_headless.rs"
+
+[[example]]
+name = "diff_neohookean_toy"
+path = "examples/cpu/diff_neohookean_toy.rs"
+
+[[example]]
+name = "latent_heat"
+path = "examples/cpu/latent_heat.rs"
+
+[[example]]
+name = "phase_states_headless"
+path = "examples/cpu/phase_states_headless.rs"
+
+[[example]]
+name = "rod_blade_of_grass"
+path = "examples/cpu/rod_blade_of_grass.rs"
+
+[[example]]
+name = "rod_y_branch"
+path = "examples/cpu/rod_y_branch.rs"
+
+[[example]]
+name = "validate_materials"
+path = "examples/cpu/validate_materials.rs"
