@@ -18,5 +18,6 @@
 //! scaffolding.
 
 pub mod coupling;
+pub mod micro_rotation;
 pub mod oracle;
 pub mod population;

@@ -47,19 +47,31 @@ pub struct Simulation {
     /// Maps user_tag → physical indices of all particles with that tag.
     /// HashSet gives O(1) insert/remove on every sleep/wake swap.
     tag_index: HashMap<u32, HashSet<usize>>,
-    /// Monotonically increasing counter — next tag issued by add_body.
+    /// Monotonically increasing counter -- next tag issued by add_body.
     next_tag: u32,
     grid: Grid,
     materials: MaterialRegistry,
     boundaries: Vec<Box<dyn BoundaryCondition>>,
+    /// True while `boundaries` still holds only the auto-inserted default
+    /// `SlipBoundary` from construction (see `empty`/`new`). The FIRST real
+    /// `add_boundary_condition` call clears it before pushing instead of
+    /// stacking underneath it -- see that method's own doc for why a silent
+    /// stack was a real, confirmed bug (2026-08-20): the default's
+    /// zero-friction no-penetration correction runs first every substep,
+    /// zeroing the into-wall velocity component before a user's own
+    /// `FrictionBoundary` ever sees it nonzero, permanently defeating its
+    /// friction with no error, no warning -- found chasing a grain that
+    /// coasted at a dead-constant velocity for 500,000+ steps against a
+    /// real `FrictionBoundary(2, 0.7)` floor.
+    boundaries_are_default: bool,
     /// Optional directional (setae-style) friction for the multi-field contact
-    /// "grip" field — see `DirectionalContactGrip`'s doc. `None` (default) keeps
+    /// "grip" field -- see `DirectionalContactGrip`'s doc. `None` (default) keeps
     /// the existing plain symmetric `contact_friction` behavior; every scene that
     /// never opts in is completely unaffected.
     contact_grip: Option<std::sync::Arc<crate::grid::DirectionalContactGrip>>,
     force_fields: Vec<(String, Box<dyn Field>)>,
     thermal: Option<ThermalDiffusion>,
-    /// Scalar diffusion fields (pheromone, nutrients, morphogen) — run automatically each substep.
+    /// Scalar diffusion fields (pheromone, nutrients, morphogen) -- run automatically each substep.
     scalar_fields: Vec<ScalarDiffusionField>,
     /// Simulation time accumulated across this `step()`'s substeps, waiting to
     /// be handed to the diffusion operators in ONE application -- see
@@ -148,21 +160,21 @@ pub struct Simulation {
     /// `particles_knn`/`region_state`.
     ///
     /// Lazily rebuilt: `step()` only marks it dirty (`spatial_hash_dirty`),
-    /// it does NOT rebuild eagerly every frame — real, measured cost found
+    /// it does NOT rebuild eagerly every frame -- real, measured cost found
     /// 2026-08-03 (see `perf_opportunities_survey` memory): rebuilding
     /// unconditionally every step cost 16.4% of a step's total time even in
     /// scenes that never call any of the four query methods above. Mirrors
     /// the identical fix already shipped on the GPU path (`GpuSimulation`'s
     /// own lazy spatial-hash rebuild, 2026-07-12, 25% win at 100k particles)
-    /// — this ports the same real technique to CPU. `RefCell` because the
+    /// -- this ports the same real technique to CPU. `RefCell` because the
     /// four query methods take `&self` (a real, established public API
-    /// contract LP depends on) but need to trigger a rebuild internally —
+    /// contract LP depends on) but need to trigger a rebuild internally --
     /// the classic "conceptually read-only, lazily-computed cache" case
     /// interior mutability exists for. Structural mutations that change
     /// particle count/positions outside `step()` (`add_body`, `remove_where`,
     /// `split_particles`, construction) still rebuild EAGERLY right after
     /// mutating and clear the dirty flag, so a query issued between two
-    /// `step()` calls (LP's actual usage pattern) always sees fresh data —
+    /// `step()` calls (LP's actual usage pattern) always sees fresh data --
     /// only the once-per-frame "rebuild whether or not anyone will query it"
     /// cost is what became lazy.
     spatial_hash: RefCell<SpatialHash>,
@@ -173,22 +185,22 @@ pub struct Simulation {
     /// split), since those clear it immediately after rebuilding.
     spatial_hash_dirty: Cell<bool>,
     /// Discrete elastic rods (Cosserat-rod family, `spacetime::rod`) sharing
-    /// this simulation's own MPM grid — see `step.rs`'s `do_substep` for the
+    /// this simulation's own MPM grid -- see `step.rs`'s `do_substep` for the
     /// real scatter/gather insertion points. Empty for every scene that
     /// never calls `add_rod`/`with_rod` (zero-cost: 0-iteration loops).
     rods: Vec<Rod>,
     /// Discrete-element grain populations (`spacetime::grains`) sharing this
-    /// simulation's own MPM grid — real, cited elastic-plastic rolling
+    /// simulation's own MPM grid -- real, cited elastic-plastic rolling
     /// resistance (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011),
     /// see `grains::coupling` for the real scatter/gather insertion points
     /// (mirroring `rods` above exactly). Empty for every scene that never
     /// calls `add_grain_population`/`with_grain_population` (zero-cost:
     /// 0-iteration loops). Not yet gated by any automatic oracle deciding
-    /// where grains are needed — that's a real, separate, not-yet-built
+    /// where grains are needed -- that's a real, separate, not-yet-built
     /// piece (see `project_dem_rolling_resistance_scoped` memory); today a
     /// caller decides explicitly, same as `add_rod`.
     grain_populations: Vec<crate::grains::population::GrainPopulation>,
-    /// Scratch buffer for wake/sleep candidates — pre-allocated once, cleared per substep.
+    /// Scratch buffer for wake/sleep candidates -- pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.
     scratch_indices: Vec<usize>,
 }
@@ -222,7 +234,7 @@ pub(crate) fn initialize_particles(
         while j < max.y {
             let pos = Vec2::new(i, j);
 
-            // Apply shape mask — skip particles outside the disk if disk shape is active.
+            // Apply shape mask -- skip particles outside the disk if disk shape is active.
             let inside = match spawn.shape {
                 SpawnShape::Box => true,
                 SpawnShape::Disk { radius } => (pos - spawn.box_center).length() <= radius,

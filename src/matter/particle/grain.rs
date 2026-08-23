@@ -1,4 +1,4 @@
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 
 use crate::matter::materials::granular::grain_contact_law::GrainContactState;
 
@@ -35,6 +35,23 @@ pub struct Grain {
     /// tonight's rolling-resistance fixes), but nothing tracked an angle to
     /// actually draw that rolling with.
     pub orientation: f32,
+    /// Real APIC affine matrix (Jiang, Schroeder, Selle, Teran & Stomakhin
+    /// 2015, "The Affine Particle-In-Cell Method") -- self-consistent grid
+    /// transfer state, NOT a duplicate of `spin`: `c` is reconstructed FRESH
+    /// each substep from the grid's own gathered local velocity field
+    /// (`gather_grid_to_grains`) and consumed by the NEXT scatter
+    /// (`scatter_grains_to_grid`), exactly the closed loop
+    /// `Particle::velocity_gradient` already provides for ordinary MPM
+    /// particles. `spin` stays the real, independent, `contact_law`-owned
+    /// rigid-body angular velocity (the actual physics grains roll with);
+    /// `c` is purely a transfer-layer device that lets a grain's momentum
+    /// exchange with the shared grid conserve linear AND angular momentum
+    /// without the grid-level dissipation pure PIC has (confirmed real,
+    /// 2026-08-20: a grid-coupled grain pile stayed frozen near its initial
+    /// shape under pure PIC, matching the literature's own documented "PIC
+    /// causes sand to clump together" failure mode -- Jiang et al. 2015's
+    /// own granular collision comparison).
+    pub c: Mat2,
 }
 
 impl Grain {
@@ -46,6 +63,7 @@ impl Grain {
             radius,
             mass,
             orientation: 0.0,
+            c: Mat2::ZERO,
         }
     }
 

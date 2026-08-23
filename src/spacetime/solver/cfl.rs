@@ -11,11 +11,12 @@ use glam::Vec2;
 use rayon::prelude::*;
 
 use super::{MaterialRegistry, SimConfig};
+use crate::grains::population::GrainPopulation;
 use crate::particle::Particles;
 use crate::rod::{Rod, rod_cfl_dt};
 
 // choose_substep_dt: picks the largest CFL-safe dt ≤ max_dt.
-// Called inside step()'s substep loop — max_dt is the remaining frame time.
+// Called inside step()'s substep loop -- max_dt is the remaining frame time.
 // pub(crate) so the GPU solver can reuse this without duplicating CFL logic.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn choose_substep_dt(
@@ -24,6 +25,7 @@ pub(crate) fn choose_substep_dt(
     active_count: usize,
     materials: &MaterialRegistry,
     rods: &[Rod],
+    grain_populations: &[GrainPopulation],
     max_dt: f32,
     granular_fluidity_dt_bound: Option<f32>,
     thermal_dt_bound: Option<f32>,
@@ -168,6 +170,31 @@ pub(crate) fn choose_substep_dt(
             |(ms1, md1, nw1), (ms2, md2, nw2)| (ms1.max(ms2), md1.min(md2), nw1.max(nw2)),
         );
     let mut min_mat_dt = min_mat_dt;
+    let mut max_speed = max_speed;
+    // Grains aren't scanned by the particle loop above (separate storage,
+    // same reason rods below aren't either) -- fold in their own advection
+    // speed the same way, so a spinning grain can never silently escape the
+    // adaptive substep logic. Real, found-not-guessed need (2026-08-20):
+    // `scatter_grains_to_grid` now scatters a grain's TRUE rigid-body
+    // rotational velocity field (`v_com + spin*perp(r)`, see that
+    // function's own doc), which can put a FAR larger velocity on the grid
+    // than the grain's own `v.length()` once `spin` is large -- exactly the
+    // same real effect ordinary particles' own affine `velocity_gradient`
+    // term already gets a CFL contribution for
+    // (`AFFINE_CFL_STENCIL_CORNER_DISTANCE`, reused here unchanged: same
+    // 3x3 kernel, same max corner offset, same reasoning). Before this,
+    // a scene relying on `adaptive_timestep` still had zero protection once
+    // grain spin grew large -- confirmed directly: a real column-collapse
+    // isolation test exploded (domain-spanning positions, spin up to ~10.6)
+    // once real spin started feeding the grid, at a dt sized only for the
+    // grains' own DEM contact stiffness, blind to this term entirely.
+    for population in grain_populations {
+        for grain in &population.grains {
+            let s = grain.v.length()
+                + grain.spin.abs() * AFFINE_CFL_STENCIL_CORNER_DISTANCE * config.grid_cell_size;
+            max_speed = max_speed.max(s);
+        }
+    }
     // Rods aren't scanned by the particle loop above (separate SoA) -- fold
     // in their own CFL bound the same way a stiff material would clamp
     // min_mat_dt, so a rod going unstable can never silently escape the
@@ -292,7 +319,7 @@ fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) -> bool {
 
 // The APIC affine matrix C encodes the local velocity gradient.
 // The farthest point in the quadratic B-spline 3×3 stencil is at 1.5 cells per axis,
-// so its corner distance is 1.5*√2 cells — the effective maximum affine speed contribution.
+// so its corner distance is 1.5*√2 cells -- the effective maximum affine speed contribution.
 // Hoisted to module scope (2026-08-14, was local to `affine_cfl_speed_contribution`)
 // so `choose_substep_dt`'s own fold can share it too, without duplicating the
 // magic number, when it inlines this same formula against a pre-shared
@@ -395,6 +422,7 @@ mod tests {
             1,
             &materials,
             &[],
+            &[],
             1.0,
             None,
             None,
@@ -411,6 +439,7 @@ mod tests {
             &particles,
             1,
             &materials,
+            &[],
             &[],
             1.0,
             None,
@@ -441,6 +470,7 @@ mod tests {
             1,
             &materials,
             &[],
+            &[],
             1.0,
             None,
             None,
@@ -451,6 +481,7 @@ mod tests {
             &particles,
             1,
             &materials,
+            &[],
             &[],
             1.0,
             None,

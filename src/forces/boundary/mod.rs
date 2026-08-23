@@ -24,7 +24,7 @@ pub use slip::SlipBoundary;
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2);
     /// Clamp particle position to the valid domain after G2P.
-    /// Not a physical force — last-resort domain enforcement so particles never escape the grid.
+    /// Not a physical force -- last-resort domain enforcement so particles never escape the grid.
     /// Proper no-penetration physics lives in `apply_to_grid_velocity`.
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2;
     /// Optional post-G2P per-particle hook (e.g. `GripFrictionBoundary`'s muscle
@@ -40,9 +40,60 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         false
     }
+
+    /// Real local contact normal + penetration overlap for a grain of the
+    /// given `radius` at `position`, if it's touching this boundary's
+    /// surface -- lets grain-vs-terrain contact produce a real rolling
+    /// torque via `grain_contact_law::resolve_wall_contact`, the same real
+    /// physics grain-vs-grain contact already has. Found missing live
+    /// 2026-08-21 (see `heightmap.rs`'s own doc for the full story): without
+    /// this, a grain resting on ANY boundary has literally no mechanism to
+    /// ever start rolling from rest.
+    ///
+    /// `normal` must point AWAY from the surface (toward free space, where
+    /// the grain is); `overlap = radius - distance_to_surface`. Default:
+    /// `None` (no rolling torque from this boundary) -- safe and backward
+    /// compatible; a boundary that's mostly outer box walls a grain rarely
+    /// embeds into the way it rests on terrain doesn't need to opt in.
+    fn grain_contact(
+        &self,
+        _position: Vec2,
+        _radius: f32,
+        _grid_res: usize,
+    ) -> Option<(Vec2, f32)> {
+        None
+    }
+
+    /// Real position backstop for a GRAIN specifically (radius-aware),
+    /// after its own velocity integration -- see `clamp_particle_position`'s
+    /// own doc for why a backstop exists at all (last-resort domain
+    /// enforcement, not physics). Default just delegates to `clamp_particle_
+    /// position` -- correct for any boundary with no grain-specific contact
+    /// logic (e.g. `FrictionBoundary`, which only ever had the generic,
+    /// point-particle clamp to begin with).
+    ///
+    /// `HeightmapBoundary` overrides this (see that file's own doc): its
+    /// generic `clamp_particle_position` hardcodes a "+1" vertical
+    /// clearance and checks straight-down `y`, ignoring both the grain's
+    /// real radius and a sloped surface's own tilt. An earlier attempt
+    /// (2026-08-21) tried layering a `grain_contact`-based correction on
+    /// TOP of `clamp_particle_position`'s own terrain clamp, gated by a
+    /// `grain_contact().is_some()` check -- but `grain_contact`'s `None` is
+    /// ambiguous (it means both "no grain logic at all" and "genuinely not
+    /// touching," and the generic clamp's own OVER-correction made the
+    /// second case indistinguishable from the first, an endless fight
+    /// between two disagreeing notions of "on the surface" that silently
+    /// regressed outer-wall containment too when worked around with a bare
+    /// boolean flag). This single method is the real fix: each boundary
+    /// fully owns its own grain backstop end to end, no ambiguity to
+    /// resolve at the call site.
+    fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
+        let _ = radius;
+        self.clamp_particle_position(position, grid_res)
+    }
 }
 
-/// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly —
+/// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly --
 /// lets a caller keep its OWN clone of the `Arc` (e.g. to call
 /// `RatchetFrictionBoundary::set_easy_direction` from a game loop) while the same
 /// underlying instance is also installed on the solver, sharing state instead of
@@ -62,6 +113,14 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
 
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         (**self).is_strict_wc_mpm_fluid_compatible()
+    }
+
+    fn grain_contact(&self, position: Vec2, radius: f32, grid_res: usize) -> Option<(Vec2, f32)> {
+        (**self).grain_contact(position, radius, grid_res)
+    }
+
+    fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
+        (**self).clamp_grain_position(position, radius, grid_res)
     }
 }
 
@@ -97,7 +156,7 @@ pub(crate) const fn apply_slip_wall_velocity(
     let hi = grid_res - (thickness + 1);
     let x = cell_index / grid_res;
     let y = cell_index % grid_res;
-    // Only block the inward component — let outward (escape) velocity pass through.
+    // Only block the inward component -- let outward (escape) velocity pass through.
     // Standard MPM slip: no-penetration, free tangential slip.
     if x < thickness {
         velocity.x = velocity.x.max(0.0);

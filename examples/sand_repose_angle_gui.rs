@@ -1,6 +1,8 @@
 extern crate emerge_engine as emerge;
 
-use egui_wgpu::ScreenDescriptor;
+#[path = "gui_common/mod.rs"]
+mod gui_common;
+
 /// Merged replacement for the former `sand_pile_stability_gui.rs` and
 /// `sand_collapse_true_repose_gui.rs` -- both were really the same real
 /// question (does sand reach a genuine ~30 deg angle of repose?) asked
@@ -112,6 +114,22 @@ const GRAINS_R0: usize = 4;
 const GRAINS_H0: usize = 10;
 const GRAIN_RADIUS: f32 = 1.0; // grid-coordinate units
 const GRAIN_MASS: f32 = 1.0;
+
+// Live pour (added 2026-08-21, real feature, not a hack): a cursor-driven
+// tool, active in ALL THREE modes -- click "Pour sand" on, then LMB drops
+// material at the cursor's own grid position (`cursor_grid()`, same helper
+// push/pull already uses), holding it drops a continuous stream. Grains
+// mode adds a real discrete `Grain`; PreShaped/Collapse add a small
+// continuum blob via `Simulation::add_body` (the same real API `SpawnRegion`
+// itself is built on). Both are capped, not unbounded -- the wgpu instance
+// buffer's capacity is sized once at startup (`State::new`), so this headroom
+// is reserved there too (see `render_capacity`'s own computation); pouring
+// past the cap would silently overrun a fixed-size GPU buffer, so both pour
+// paths refuse once their cap is hit. `POUR_COOLDOWN_FRAMES` throttles a held
+// mouse button to a real trickle (a few drops/sec), not one every frame.
+const GRAINS_POUR_CAP: usize = 400;
+const PARTICLE_POUR_CAP: usize = 2000;
+const POUR_COOLDOWN_FRAMES: u32 = 4;
 const GRAINS_TERRAIN_HALF_WIDTH_CELLS: i32 = 30;
 const GRAINS_TERRAIN_HEIGHT_CELLS: i32 = 8;
 const GRAINS_MARKER_MAT_ID: u32 = 1; // distinct palette slot from the terrain's own material_id=0
@@ -142,15 +160,51 @@ const SIGMA_ACCENT: [f32; 3] = [0.900, 0.900, 0.900]; // high absorption in ever
 /// `tangential_damping`) -- both sign/formula corrections, fully exercised
 /// regardless of the specific stiffness scale chosen.
 fn grain_contact_config() -> ContactLawConfig {
+    // Real, corrected damping (2026-08-19): the flat `5.0` below (still
+    // present until this edit) was NOT a real critical-damping-ratio --
+    // measured directly: at this scene's own m_eff=GRAIN_MASS*0.5=0.5 and
+    // normal_stiffness=1e4, true critical damping is `2*sqrt(k*m_eff)` =
+    // ~141.4, so `5.0` was only ~3.5% of critical (wildly underdamped),
+    // not the intended 60%-critical convention `ContactLawConfig::dry_sand`
+    // already established for the pure-physics validation scene. Found by
+    // directly comparing this demo's live per-frame diagnostics log
+    // against the validated headless result -- this scene settled at a
+    // real, genuine plateau (~0.58x, confirmed flat across the log, not a
+    // still-collapsing transient) but at a DIFFERENT number from either
+    // the old stale claim (~1.43x) or the validated result (~1.05-1.13x),
+    // because only `rolling_friction` had been ported over, not this real
+    // damping derivation. Fixed here using the SAME real 60%-critical
+    // convention, applied to THIS scene's own (deliberately softer,
+    // real-time-tuned, see this fn's own doc) stiffness scale directly --
+    // NOT routed through `ContactLawConfig::dry_sand`, which assumes real
+    // SI stiffness and would reintroduce the punishingly-fine-dt problem
+    // this scene's own softened stiffness exists to avoid.
+    let m_eff = GRAIN_MASS * 0.5;
+    const DAMPING_RATIO: f32 = 0.6;
+    let critical_damping = |k: f32| 2.0 * (k * m_eff).sqrt() * DAMPING_RATIO;
+    let normal_stiffness = 1.0e4;
+    let tangential_stiffness = 0.8e4;
+    let rolling_stiffness = 5.0e2;
     ContactLawConfig {
-        normal_stiffness: 1.0e4,
-        tangential_stiffness: 0.8e4,
-        rolling_stiffness: 5.0e2,
-        normal_damping: 5.0,
-        tangential_damping: 5.0,
-        rolling_damping: 5.0,
+        normal_stiffness,
+        tangential_stiffness,
+        rolling_stiffness,
+        normal_damping: critical_damping(normal_stiffness),
+        tangential_damping: critical_damping(tangential_stiffness),
+        rolling_damping: critical_damping(rolling_stiffness),
         friction: (35.0_f32).to_radians().tan(), // real, cited dry-sand friction angle, Klar et al. 2016
-        rolling_friction: 0.1,
+        // rolling_friction=0.20: real, calibrated value from the pure-physics
+        // validation scene (`tests/grains_repose_angle.rs`'s own
+        // `diag_calibrated_rolling_friction_long_horizon_check`, 2026-08-19,
+        // real long-horizon match to Lajeunesse et al. 2004 at this same
+        // friction_angle=35deg, re-verified at a properly dt-converged
+        // timestep after an earlier 0.21 was found to be an unconverged-dt
+        // artifact -- see that test file's own `diag_dt_convergence_study`).
+        // Dimensionless, not stiffness-scale-dependent like kn/kt/kr above,
+        // so it transfers directly -- NOT independently re-verified in THIS
+        // specific softer/grid-coupled scene, a real, disclosed gap if this
+        // demo's own long-horizon behavior is ever measured again.
+        rolling_friction: 0.20,
     }
 }
 
@@ -399,15 +453,9 @@ fn measure_grain_runout(solver: &Simulation) -> (f32, f32, f32, usize) {
 }
 
 struct State {
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    gfx: gui_common::Gfx,
     sim: Simulation,
     renderer: Renderer,
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
     mode: Mode,
     holding: bool,
     paused: bool,
@@ -420,46 +468,16 @@ struct State {
     rmb: bool,
     push_strength: f32,
     logger: FrameLogger,
+    pour_mode: bool,
+    pour_cooldown: u32,
+    sim_speed: u32,
+    pour_rng: SmallRng,
 }
 
 impl State {
     async fn new(window: Arc<Window>) -> Self {
+        let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("no GPU adapter");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let caps = surface.get_capabilities(&adapter);
-        let fmt = caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0]);
-        let sc = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: fmt,
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &sc);
         let mode = Mode::PreShaped;
         let sim = make_sim(mode);
         // Real render-buffer sizing across ALL three modes -- the wgpu
@@ -475,36 +493,19 @@ impl State {
         let collapse_particle_count = make_sim(Mode::Collapse).particles().len();
         let grains_sim_for_sizing = make_sim(Mode::Grains);
         let grains_particle_count = grains_sim_for_sizing.particles().len()
-            + 2 * grains_sim_for_sizing.grain_populations()[0].grains.len();
+            + 2 * (grains_sim_for_sizing.grain_populations()[0].grains.len() + GRAINS_POUR_CAP);
         let render_capacity = sim
             .particles()
             .len()
             .max(collapse_particle_count)
-            .max(grains_particle_count);
-        let mut renderer = Renderer::new(&device, render_capacity, fmt);
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.7, true);
+            .max(grains_particle_count)
+            + PARTICLE_POUR_CAP;
+        let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
+        renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.7, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(&queue, 0, SIGMA_SAND);
-        renderer.set_optical_params(&queue, GRAINS_ACCENT_MAT_ID as usize, SIGMA_ACCENT);
-        renderer.set_optical_params(&queue, GRAINS_MARKER_MAT_ID as usize, SIGMA_GRAIN);
-
-        let egui_ctx = egui::Context::default();
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui_ctx.viewport_id(),
-            window.as_ref(),
-            None,
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &device,
-            fmt,
-            egui_wgpu::RendererOptions {
-                msaa_samples: 1,
-                ..Default::default()
-            },
-        );
+        renderer.set_optical_params(&gfx.queue, 0, SIGMA_SAND);
+        renderer.set_optical_params(&gfx.queue, GRAINS_ACCENT_MAT_ID as usize, SIGMA_ACCENT);
+        renderer.set_optical_params(&gfx.queue, GRAINS_MARKER_MAT_ID as usize, SIGMA_GRAIN);
 
         let log_path = std::env::temp_dir().join("emerge_sand_repose_angle_gui.ndjson");
         let logger = FrameLogger::open(&log_path).unwrap();
@@ -514,15 +515,9 @@ impl State {
         );
         println!("per-frame diagnostics log: {}", log_path.display());
         Self {
-            surface,
-            surface_config: sc,
-            device,
-            queue,
+            gfx,
             sim,
             renderer,
-            egui_ctx,
-            egui_state,
-            egui_renderer,
             mode,
             holding: false,
             paused: false,
@@ -541,40 +536,32 @@ impl State {
             // nudge; the slider still reaches 40 for a deliberate shove.
             push_strength: 4.0,
             logger,
+            pour_mode: false,
+            pour_cooldown: 0,
+            sim_speed: 25,
+            pour_rng: SmallRng(0xFEED_1234_5678_u64),
         }
     }
 
     fn resize(&mut self, w: u32, h: u32) {
+        self.gfx.resize(w, h);
         if w == 0 || h == 0 {
             return;
         }
-        self.surface_config.width = w;
-        self.surface_config.height = h;
-        self.surface.configure(&self.device, &self.surface_config);
         self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, 0.7, true);
+            .set_camera(&self.gfx.queue, GRID as u32, w, h, 0.7, true);
     }
 
-    /// Real bug found live: this window is 720x480 (NOT square), and
-    /// `Renderer::set_camera` computes a non-uniform `(sx,tx,sy,ty)` for any
-    /// non-square viewport (see its own doc/impl) -- the simple "screen
-    /// fraction * GRID" formula (correct only when width==height, the
-    /// convention every OTHER sand demo's square window happens to satisfy)
-    /// silently mis-locates the cursor here. Mirrors `set_camera`'s own
-    /// exact math, then inverts it, instead of guessing a corrective factor.
+    /// Real, aspect-ratio-correct cursor-to-grid mapping -- see
+    /// `gui_common::cursor_to_grid`'s own doc for the real bug this
+    /// centralization exists to stop from recurring per-example.
     fn cursor_grid(&self) -> Vec2 {
-        let w = self.surface_config.width.max(1) as f32;
-        let h = self.surface_config.height.max(1) as f32;
-        let aspect = w / h;
-        let gr = GRID as f32;
-        let (sx, tx, sy, ty) = if aspect >= 1.0 {
-            (2.0 / (gr * aspect), -1.0 / aspect, 2.0 / gr, -1.0)
-        } else {
-            (2.0 / gr, -1.0, 2.0 * aspect / gr, -aspect)
-        };
-        let ndc_x = 2.0 * (self.cursor_pos[0] / w) - 1.0;
-        let ndc_y = 1.0 - 2.0 * (self.cursor_pos[1] / h);
-        Vec2::new((ndc_x - tx) / sx, (ndc_y - ty) / sy)
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.gfx.surface_config.width,
+            self.gfx.surface_config.height,
+            GRID,
+        )
     }
 
     fn reset(&mut self) {
@@ -591,6 +578,85 @@ impl State {
             Mode::Grains => Mode::PreShaped,
         };
         self.reset();
+    }
+
+    /// Drops material above the LOCAL SURFACE near the cursor's x position
+    /// (not literally at the cursor's y) -- active in ALL THREE modes.
+    ///
+    /// Real bug found live testing (2026-08-21): spawning exactly at the
+    /// cursor's own position, with no check for what's already there, meant
+    /// clicking anywhere near the existing pile (the natural place to want
+    /// to add sand) planted new material OVERLAPPING it. A DEM contact
+    /// spring or MPM cell's stress response to a sudden large initial
+    /// overlap is real, correct physics for that overlap -- both are stiff
+    /// repulsive responses -- so the "explosion" wasn't a broken contact law,
+    /// it was creating a real, severe initial-condition violation every drop.
+    /// Real fix: use the cursor's x, but scan existing material within a
+    /// small x-window and drop from just above its current highest point (or
+    /// the cursor's own y, whichever is higher) -- same real "pour from
+    /// above" convention `build_grain_column`'s own doc already establishes,
+    /// just centered on the cursor instead of a fixed column center.
+    ///
+    /// Grains adds one real discrete `Grain`; PreShaped/Collapse add a small
+    /// continuum blob via the same real `add_body`/`SpawnRegion` API every
+    /// other body-spawn in this engine uses (not a fake/decorative
+    /// particle). No-op past each mode's own pour cap, matching the fixed
+    /// render-buffer headroom reserved for it in `State::new`.
+    fn pour_at_cursor(&mut self) {
+        let cursor = self.cursor_grid();
+        match self.mode {
+            Mode::Grains => {
+                let population = &mut self.sim.grain_populations_mut()[0];
+                if population.grains.len() >= GRAINS_R0 * 2 * GRAINS_H0 + GRAINS_POUR_CAP {
+                    return;
+                }
+                const X_WINDOW: f32 = 3.0;
+                const CLEARANCE: f32 = 2.5;
+                let local_top_y = population
+                    .grains
+                    .iter()
+                    .filter(|g| (g.x.x - cursor.x).abs() < X_WINDOW)
+                    .map(|g| g.x.y + g.radius)
+                    .fold(FLOOR, f32::max);
+                let y = (local_top_y + CLEARANCE).max(cursor.y);
+                let r = GRAIN_RADIUS * (0.9 + 0.2 * self.pour_rng.next_f32());
+                let mut g = Grain::new(
+                    Vec2::new(cursor.x, y),
+                    r,
+                    GRAIN_MASS * (r / GRAIN_RADIUS).powi(2),
+                );
+                g.v = Vec2::ZERO;
+                population.grains.push(g);
+            }
+            Mode::PreShaped | Mode::Collapse => {
+                if self.sim.particles().len() >= PARTICLE_POUR_CAP {
+                    return;
+                }
+                const X_WINDOW: f32 = 1.5;
+                const CLEARANCE: f32 = 1.5;
+                let local_top_y = self
+                    .sim
+                    .particles()
+                    .x
+                    .iter()
+                    .filter(|p| (p.x - cursor.x).abs() < X_WINDOW)
+                    .map(|p| p.y)
+                    .fold(FLOOR, f32::max);
+                let y = (local_top_y + CLEARANCE).max(cursor.y);
+                let spawn = SpawnRegion {
+                    spacing: 0.5,
+                    box_size: IVec2::new(1, 1),
+                    box_center: Vec2::new(cursor.x, y),
+                    material_id: 0,
+                    precompute_initial_volumes: true,
+                    position_jitter: 0.2,
+                    rng_seed: self.pour_rng.0 as u32,
+                    ..SpawnRegion::default()
+                };
+                let _ = self.sim.add_body(spawn);
+            }
+        }
+        self.pour_rng.next_f32(); // advance so consecutive drops don't look identical
     }
 
     fn toggle_holding(&mut self) {
@@ -622,7 +688,19 @@ impl State {
         // Grains mode: grains aren't ordinary `Particles`, so this is a no-op
         // there rather than something that looks like it should work but
         // silently doesn't.
-        if self.mode != Mode::Grains && (self.lmb || self.rmb) {
+        if self.pour_mode {
+            // Cursor-driven pour tool, active in ALL THREE modes -- takes
+            // over LMB while active (push/pull and pour would otherwise
+            // fight over the same button). Cooldown throttles a held button
+            // to a real trickle instead of one drop every rendered frame.
+            if self.pour_cooldown > 0 {
+                self.pour_cooldown -= 1;
+            }
+            if self.lmb && self.pour_cooldown == 0 {
+                self.pour_at_cursor();
+                self.pour_cooldown = POUR_COOLDOWN_FRAMES;
+            }
+        } else if self.mode != Mode::Grains && (self.lmb || self.rmb) {
             let mag = if self.lmb {
                 self.push_strength
             } else {
@@ -641,7 +719,11 @@ impl State {
             // individual step is exactly as fine as the safety-margin
             // calculation demands), matching this project's own established
             // "physics fidelity is never cut for demo pacing" rule.
-            let steps_this_frame = if self.mode == Mode::Grains { 25 } else { 1 };
+            let steps_this_frame = if self.mode == Mode::Grains {
+                self.sim_speed
+            } else {
+                1
+            };
             for _ in 0..steps_this_frame {
                 self.sim.step();
                 self.step += 1;
@@ -706,7 +788,7 @@ impl State {
             ],
         );
 
-        let output = match self.surface.get_current_texture() {
+        let output = match self.gfx.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -759,25 +841,36 @@ impl State {
                 all.push(accent);
             }
             let marker_particles = emerge::particle::Particles::from(all);
-            self.renderer
-                .render(&self.device, &self.queue, &marker_particles, &view, true);
+            self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                &marker_particles,
+                &view,
+                true,
+            );
         } else {
-            self.renderer
-                .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+            self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                self.sim.particles(),
+                &view,
+                true,
+            );
         }
 
-        let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
         let step = self.step;
         let mode = self.mode;
         let holding = self.holding;
         let mut paused = self.paused;
         let mut push_strength = self.push_strength;
+        let mut pour_sand = self.pour_mode;
+        let mut sim_speed = self.sim_speed;
         let mut do_reset = false;
         let mut do_toggle_mode = false;
         let mut do_toggle_holding = false;
 
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        gui_common::run_egui_frame(&mut self.gfx, window, &view, |ctx| {
             egui::Window::new("Sand: angle of repose")
                 .default_pos([10.0, 10.0])
                 .default_width(320.0)
@@ -827,11 +920,22 @@ impl State {
                         }
                     }
                     ui.separator();
-                    if mode != Mode::Grains {
-                        ui.label("Push/pull strength (LMB push, RMB pull):");
-                        ui.add(egui::Slider::new(&mut push_strength, 0.0..=40.0));
+                    if mode == Mode::Grains {
+                        ui.label("Sim speed (physics steps/frame):");
+                        ui.add(egui::Slider::new(&mut sim_speed, 1..=200));
+                        ui.label(
+                            "Push toward 200 to fast-forward settling and check it stays stable.",
+                        );
                         ui.separator();
                     }
+                    ui.checkbox(&mut pour_sand, "Pour mode (LMB drops material at cursor)");
+                    if pour_sand {
+                        ui.label("Click to drop one; hold to pour a stream. Works in all modes.");
+                    } else if mode != Mode::Grains {
+                        ui.label("Push/pull strength (LMB push, RMB pull):");
+                        ui.add(egui::Slider::new(&mut push_strength, 0.0..=40.0));
+                    }
+                    ui.separator();
                     ui.checkbox(&mut paused, "Paused (or SPACE)");
                     ui.horizontal(|ui| {
                         if ui.button("M: toggle mode").clicked() {
@@ -849,6 +953,8 @@ impl State {
         });
         self.paused = paused;
         self.push_strength = push_strength;
+        self.pour_mode = pour_sand;
+        self.sim_speed = sim_speed;
         if do_toggle_mode {
             self.toggle_mode();
         } else if do_toggle_holding {
@@ -857,47 +963,6 @@ impl State {
             self.reset();
         }
 
-        self.egui_state
-            .handle_platform_output(window, full_output.platform_output);
-        let tris = self
-            .egui_ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-        let sd = ScreenDescriptor {
-            size_in_pixels: [self.surface_config.width, self.surface_config.height],
-            pixels_per_point: full_output.pixels_per_point,
-        };
-        for (id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.device, &self.queue, *id, delta);
-        }
-        let cmd = {
-            let mut enc = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            self.egui_renderer
-                .update_buffers(&self.device, &self.queue, &mut enc, &tris, &sd);
-            let mut rp = enc
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            self.egui_renderer.render(&mut rp, &tris, &sd);
-            drop(rp);
-            enc.finish()
-        };
-        self.queue.submit(std::iter::once(cmd));
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
         output.present();
     }
 }
@@ -926,7 +991,7 @@ impl ApplicationHandler for App {
             return;
         };
         if let Some(w) = &self.window {
-            let resp = s.egui_state.on_window_event(w, &event);
+            let resp = s.gfx.egui_state.on_window_event(w, &event);
             if resp.consumed {
                 return;
             }

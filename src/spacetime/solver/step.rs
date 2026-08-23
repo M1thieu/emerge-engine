@@ -22,6 +22,7 @@ use super::projection::{
 use crate::grains::coupling::{
     apply_grain_contact_forces, gather_grid_to_grains, scatter_grains_to_grid,
 };
+use crate::grains::micro_rotation::{GrainMicroRotationConfig, couple_grain_spin_to_local_average};
 use crate::rod::{
     RodForceParams, RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism,
     apply_growth, apply_phototropism, apply_rod_internal_and_wind_forces, apply_secondary_growth,
@@ -100,13 +101,13 @@ impl Simulation {
     }
 
     /// One MLS-MPM timestep: particle→grid→particle cycle.
-    /// The grid is temporary scratch — only particles hold long-term material memory.
+    /// The grid is temporary scratch -- only particles hold long-term material memory.
     pub fn step(&mut self) {
         self.assert_strict_fluid_mode_is_supported();
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).
         // Without this loop, the FixedStepController accounts for config.dt per call but the
-        // simulation only advances sub_dt — causing it to run orders of magnitude too slowly.
+        // simulation only advances sub_dt -- causing it to run orders of magnitude too slowly.
         let step_start = std::time::Instant::now();
         self.substep_index_in_frame = 0;
         let mut remaining = self.config.dt;
@@ -232,6 +233,7 @@ impl Simulation {
                 self.active_count,
                 &self.materials,
                 &self.rods,
+                &self.grain_populations,
                 remaining,
                 self.granular_fluidity
                     .as_ref()
@@ -553,7 +555,7 @@ impl Simulation {
     fn do_substep(&mut self, sub_dt: f32) {
         // Project invalid particle state before it can corrupt the grid scatter.
         // Running pre-P2G (not post) means a bad particle from a previous substep is
-        // fixed before its momentum enters the grid — no NaN cascade possible.
+        // fixed before its momentum enters the grid -- no NaN cascade possible.
         let t_pre = std::time::Instant::now();
         // The two branches below are NOT the same kind of work, and only one
         // of them has to run every substep:
@@ -652,7 +654,7 @@ impl Simulation {
 
         // Wake any sleeping particle whose kernel overlaps a MEANINGFULLY active
         // grid cell. This propagates activity from moving regions into
-        // neighbouring sleeping ones without a separate O(N) scan — we only
+        // neighbouring sleeping ones without a separate O(N) scan -- we only
         // visit the sleeping partition.
         //
         // Must gate on the neighbour's actual velocity, not just `cell_is_active`
@@ -660,8 +662,8 @@ impl Simulation {
         // every substep but never itself goes to sleep (e.g. a rod gated awake by
         // ongoing `Growth`, see `Rod::is_growing`) would otherwise count as
         // permanent "activity" for every neighbour touching its cells, even once
-        // its own residual speed is tiny — causing spurious sleep/wake cycling.
-        // Requiring the neighbour's actual velocity (momentum/mass — `cell.momentum`
+        // its own residual speed is tiny -- causing spurious sleep/wake cycling.
+        // Requiring the neighbour's actual velocity (momentum/mass -- `cell.momentum`
         // is still RAW scattered momentum at this point in the substep, before
         // `update_velocities` normalizes it) to exceed THIS body's own sleep
         // threshold gives the same hysteresis a "settled" body already assumes:
@@ -688,7 +690,7 @@ impl Simulation {
                     }
                 }
             }
-            // Index directly — wake_particle doesn't touch scratch_indices, capacity preserved.
+            // Index directly -- wake_particle doesn't touch scratch_indices, capacity preserved.
             for j in 0..self.scratch_indices.len() {
                 let i = self.scratch_indices[j];
                 self.wake_particle(i);
@@ -771,7 +773,7 @@ impl Simulation {
             self.contact_grip.as_deref(),
         );
         // Two-phase mixture coupling (Tampubolon et al. 2017). Strict WC-MPM
-        // liquids reject this separate porous-medium model above. No-op when unused — see
+        // liquids reject this separate porous-medium model above. No-op when unused -- see
         // `Grid::resolve_mixture_coupling` doc.
         self.grid.resolve_mixture_coupling(
             sub_dt,
@@ -892,10 +894,30 @@ impl Simulation {
                 gather_grid_to_rod(&mut rod.points, &self.grid, sub_dt);
             }
         }
-        // Grid -> grain gather, same convention as rods above -- see
-        // `grains::coupling::gather_grid_to_grains`'s own doc.
+        // Grid -> grain gather -- velocity only, does NOT advance position
+        // (unlike rods above): see `grains::coupling::gather_grid_to_grains`'s
+        // own doc for why grains need contact resolved before integration.
+        // Real APIC (2026-08-20), reusing the SAME `apic_blend` config knob
+        // ordinary particles already use (no new parameter) -- confirmed
+        // necessity for grains specifically: pure PIC held a real, jittered
+        // column-collapse frozen near its initial lattice shape (matches
+        // Jiang et al. 2015's own documented "PIC causes sand to clump
+        // together" finding); an interim pure-FLIP fix worked but showed
+        // real, literature-predicted noise/dt-instability. APIC is the
+        // literature's own real resolution to both problems at once.
+        // Also reuses `asflip_blend`/`pre_force_snapshot` (2026-08-20) --
+        // the SAME real hybrid ordinary particles already get from
+        // `gather_grid_to_particles`, no new config surface. `asflip_blend`
+        // defaults to 0.0 (every existing scene), so this is a zero-cost,
+        // zero-behavior-change extension until a scene explicitly opts in.
         for population in &mut self.grain_populations {
-            gather_grid_to_grains(population, &self.grid, sub_dt);
+            gather_grid_to_grains(
+                population,
+                &self.grid,
+                self.config.apic_blend,
+                self.config.asflip_blend,
+                pre_force_snapshot.as_ref(),
+            );
         }
         self.last_timing.g2p_us += t2.elapsed().as_micros() as u64;
 
@@ -969,19 +991,56 @@ impl Simulation {
         }
 
         // ── Grain contact forces ────────────────────────────────────────────────
-        // Same real convention as rod internal forces below: velocity-only
-        // (position already advanced in the gather above), gravity NOT
-        // reapplied here (already received via the shared grid-update step) --
-        // see `grains::coupling::apply_grain_contact_forces`'s own doc.
+        // Corrects velocity AND advances position -- unlike rod internal
+        // forces below (position already advanced in their own gather),
+        // matching the proven standalone `GrainPopulation::step`'s own
+        // order. Gravity NOT reapplied here (already received via the
+        // shared grid-update step) -- see
+        // `grains::coupling::apply_grain_contact_forces`'s own doc.
         for population in &mut self.grain_populations {
-            apply_grain_contact_forces(population, sub_dt);
+            apply_grain_contact_forces(population, sub_dt, &self.boundaries, grid_res);
+        }
+        // Real, bounded grid-mediated rotational coupling between nearby
+        // grains -- see `grains::micro_rotation`'s own doc for the full
+        // story: replaces an earlier, reverted attempt that scattered
+        // `spin` directly into the shared momentum grid (exact for an
+        // isolated grain, but a confirmed unbounded energy leak once many
+        // spinning grains share overlapping grid nodes).
+        //
+        // Real, honest, disclosed status (2026-08-20): proven SAFE
+        // (unconditionally stable by construction, confirmed directly at
+        // both 1.0 and 1000x that value against a real, deterministic
+        // replay of a genuine near-instability capture) but NOT proven
+        // sufficient on its own to fix the real column-collapse isolation
+        // test's own frozen-lattice result (`tests/grains_grid_coupling.rs`)
+        // -- swept 1.0 to 1000.0, bit-for-bit IDENTICAL final spread ratio
+        // at every value. That test's own geometry dump shows the pile
+        // reaching a genuinely static, friction-locked mechanical
+        // equilibrium within the first ~20% of the run and simply staying
+        // there -- current leading hypothesis is that the grid coupling
+        // path itself gives the pile MORE stability than the same real
+        // contact_law physics provides standalone (not proven, not yet
+        // root-caused -- see memory for the full, real investigation
+        // history). Kept enabled at a modest value: real, safe, physically
+        // motivated (Cosserat-family rotational coupling), zero known
+        // downside -- just not, on its own, the fix for the frozen-column
+        // question above.
+        const GRAIN_MICRO_ROTATION_COUPLING_MODULUS: f32 = 1.0;
+        for population in &mut self.grain_populations {
+            couple_grain_spin_to_local_average(
+                population,
+                &GrainMicroRotationConfig {
+                    coupling_modulus: GRAIN_MICRO_ROTATION_COUPLING_MODULUS,
+                },
+                sub_dt,
+            );
         }
 
         // ── Rod internal + wind forces ──────────────────────────────────────────
         // Runs where particle force fields just ran, on the SAME real convention:
         // velocity-only (position already advanced in the gather above), so a
         // rod's own stretch/bend/damping + wind drag land exactly like an
-        // ordinary force field would. Gravity is NOT reapplied here — the rod
+        // ordinary force field would. Gravity is NOT reapplied here -- the rod
         // already received it via the shared grid-update step, same mechanism
         // ordinary particles use. No-op for every scene with no rods.
         //
