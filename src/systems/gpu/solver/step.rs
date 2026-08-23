@@ -19,7 +19,7 @@ use crate::solver::{affine_cfl_speed_contribution, cfl_bound};
 impl GpuSimulation {
     /// Advance one frame of simulation time (`config.dt`) using the GPU.
     ///
-    /// All substeps are encoded into a single command buffer and submitted once — one driver
+    /// All substeps are encoded into a single command buffer and submitted once -- one driver
     /// call regardless of adaptive substep count. Step params are pre-computed from the CPU
     /// particle mirror (same one-frame CFL lag as before, no physics change).
     pub fn step_frame(&mut self) {
@@ -34,9 +34,9 @@ impl GpuSimulation {
 
         // Upload CPU → GPU only when positions/materials actually changed.
         // Impulses are now applied by a dedicated GPU compute pass (apply_impulses) that
-        // reads LIVE GPU positions — no CPU mirror upload needed for impulse-only frames.
+        // reads LIVE GPU positions -- no CPU mirror upload needed for impulse-only frames.
         //
-        // Do not resort `self.particles` by grid cell here — GPU `particle_sort` already
+        // Do not resort `self.particles` by grid cell here -- GPU `particle_sort` already
         // provides spatial locality via a separate index buffer (`sorted_particle_ids`)
         // that never touches actual particle storage order. Resorting the backing array
         // would invalidate `spawn_region`'s promised stable `Range<usize>` particle
@@ -48,7 +48,7 @@ impl GpuSimulation {
         }
 
         // Pre-compute all sub_dts from CPU mirror (same one-frame lag as before).
-        // CFL scan is O(N) — run it ONCE and reuse the result to fill the sub_dts array.
+        // CFL scan is O(N) -- run it ONCE and reuse the result to fill the sub_dts array.
         // The CPU mirror is static within a frame so every repeated call would return the
         // same value anyway.
         //
@@ -89,14 +89,14 @@ impl GpuSimulation {
             }
         }
         // If every particle is asleep AND something could actually disturb them this
-        // frame, there's no awake velocity to base an estimate on — choose_substep_dt
+        // frame, there's no awake velocity to base an estimate on -- choose_substep_dt
         // would fall back to max_dt (max_speed=0 fails its `> f32::EPSILON` guard), the
         // COARSEST possible substep, right when a wake event needs the FINEST. But wake
         // propagation only happens via a neighbor's grid activity (which requires some
-        // OTHER awake particle to exist — if the awake set is truly empty, there is none)
+        // OTHER awake particle to exist -- if the awake set is truly empty, there is none)
         // or an external impulse. So "everyone asleep" alone isn't a risk: nothing CAN
         // wake spontaneously with no awake particles and no incoming disturbance. Only
-        // pay for the fine fallback when a pending impulse could actually wake someone —
+        // pay for the fine fallback when a pending impulse could actually wake someone --
         // otherwise a fully-settled scene would pay maximum substep cost forever, which
         // defeats sleep/wake's entire purpose.
         let might_wake_this_frame = !self.pending_impulses.is_empty();
@@ -122,7 +122,7 @@ impl GpuSimulation {
 
         // Sleep delay: a particle spawned at rest (v=0) satisfies any positive
         // sleep_threshold on its very first substep, before gravity has accelerated it
-        // at all — same fix every real physics engine uses for this (Box2D, PhysX,
+        // at all -- same fix every real physics engine uses for this (Box2D, PhysX,
         // Bullet all require sustained low velocity before sleeping, never an instant
         // single-frame check). Can't add a per-particle timer here (Particle has no
         // spare bytes left), so this is the simulation-level equivalent: don't let
@@ -130,7 +130,7 @@ impl GpuSimulation {
         // giving real dynamics a chance to start.
         //
         // Window re-arms from `last_spawn_frame` (updated by `spawn_region`), not just
-        // frame 0 — otherwise a particle spawned live mid-scene (e.g. a paint tool) would
+        // frame 0 -- otherwise a particle spawned live mid-scene (e.g. a paint tool) would
         // get `sleep_threshold` applied at v=0 on its very first substep and freeze
         // asleep before gravity ever touched it.
         const SLEEP_WARMUP_FRAMES: u64 = 10;
@@ -152,49 +152,49 @@ impl GpuSimulation {
         self.buffers
             .upload_force_fields_params(&self.queue, &ff_params);
 
-        // Multi-field contact (GPU port) — directional grip friction, uploaded once per
+        // Multi-field contact (GPU port) -- directional grip friction, uploaded once per
         // frame like ff_params above. `self.grip_params` starts symmetric (no
         // directional bias, identical to every scene before this existed) and is only
-        // live-adjustable via `set_grip_direction`/`set_grip_friction` — a real
+        // live-adjustable via `set_grip_direction`/`set_grip_friction` -- a real
         // GPU-side `DirectionalContactGrip` equivalent, matching CPU's own
         // atomics-based live-adjustable pattern (plain field here since GpuSimulation
         // isn't Arc-shared across threads the way CPU's boundary conditions are).
         self.buffers
             .upload_grip_params(&self.queue, &self.grip_params);
 
-        // Day-night/ambient thermal diffusion (GPU port) — uploaded once per frame,
+        // Day-night/ambient thermal diffusion (GPU port) -- uploaded once per frame,
         // same pattern as grip_params above. `enabled == 0` (the default, every
         // existing scene) makes the 4 thermal passes below skip their dispatch
-        // entirely, not just early-return per-thread — real, not just disabled-in-name.
+        // entirely, not just early-return per-thread -- real, not just disabled-in-name.
         self.buffers
             .upload_thermal_params(&self.queue, &self.thermal_params);
         let thermal_active = self.thermal_params.enabled != 0;
 
-        // Resource regrowth (GPU port) — same upload + real dispatch-skip pattern as
+        // Resource regrowth (GPU port) -- same upload + real dispatch-skip pattern as
         // thermal above.
         self.buffers
             .upload_resource_params(&self.queue, &self.resource_params);
         let resource_active = self.resource_params.enabled != 0;
 
-        // ASFLIP (GPU port) — same upload + real dispatch-skip pattern as thermal/
+        // ASFLIP (GPU port) -- same upload + real dispatch-skip pattern as thermal/
         // resource above, but the "skip" here means the fused g2p_asflip_fused pass
         // REPLACES g2p+particles_update rather than an extra pass being skipped
-        // entirely — see SubstepGates::asflip_active's use in encode_substep.rs.
+        // entirely -- see SubstepGates::asflip_active's use in encode_substep.rs.
         self.buffers
             .upload_asflip_params(&self.queue, &self.asflip_params);
         let asflip_active = self.asflip_params.enabled != 0;
 
-        // `ColorMode::GridVolume` material-mass tracking — same upload pattern, real
+        // `ColorMode::GridVolume` material-mass tracking -- same upload pattern, real
         // per-substep cost (an extra P2G atomic scatter + grid_clear zeroing) only
         // when `attach_grid_material_render_gpu` has been called.
         self.buffers
             .upload_material_mass_params(&self.queue, &self.material_mass_params);
 
-        // Force-sleep/force-wake-by-tag — minimal hook for LP's future chunk system.
+        // Force-sleep/force-wake-by-tag -- minimal hook for LP's future chunk system.
         // Uploaded every frame (zeroed when nothing's pending, same as ff_params above)
         // and read once per substep in force_fields.wgsl; cleared after upload since
         // each call is a one-shot edge-trigger, not a persistent state (a tag that's
-        // force-asleep doesn't need to be re-sent every frame — sleeping is sticky on
+        // force-asleep doesn't need to be re-sent every frame -- sleeping is sticky on
         // the particle itself until something genuinely wakes it).
         let mut sw_params: GpuSleepWakeParams = bytemuck::Zeroable::zeroed();
         sw_params.sleep_count = self.pending_sleep_tags.len() as u32;
@@ -215,7 +215,7 @@ impl GpuSimulation {
         // and sleep-scoring disabled (the pass's only other job). Even with an empty loop
         // body it still reads+writes every particle's full 128-byte struct, so skipping
         // the whole dispatch (not just the loop) when unneeded avoids that memory traffic
-        // — same principle as the lazy spatial hash and sparse-grid active-block dispatch.
+        // -- same principle as the lazy spatial hash and sparse-grid active-block dispatch.
         let force_fields_needed = ff_params.count > 0
             || sw_params.sleep_count > 0
             || sw_params.wake_count > 0
@@ -245,7 +245,7 @@ impl GpuSimulation {
         }
         let bind_groups = &self.bind_group_pool;
 
-        // Encode everything into one command buffer — one GPU submit per frame.
+        // Encode everything into one command buffer -- one GPU submit per frame.
         // Order: [apply_impulses?] → [particle_sort?] → substep_0 → … → substep_N
         //
         // apply_impulses runs first so physics sees the freshly-applied velocities.
@@ -258,7 +258,7 @@ impl GpuSimulation {
                 label: Some("mpm_frame"),
             });
 
-        // — apply_impulses pass (GPU-native, no stale CPU mirror) —
+        // -- apply_impulses pass (GPU-native, no stale CPU mirror) --
         if !self.pending_impulses.is_empty() {
             let vel_limit = self.config.grid_cell_size / self.config.min_dt;
             let mut params = GpuImpulseParams {
@@ -286,10 +286,10 @@ impl GpuSimulation {
             self.pending_impulses.clear();
         }
 
-        // — particle_sort pass: clear -> count -> scan -> scatter, every frame —
+        // -- particle_sort pass: clear -> count -> scan -> scatter, every frame --
         //
         // Runs unconditionally (not gated on layout_dirty) because particle positions drift
-        // every substep even when the CPU mirror is never touched — without a per-frame
+        // every substep even when the CPU mirror is never touched -- without a per-frame
         // re-sort, sorted_particle_ids would stay frozen at whatever ordering existed at the
         // last CPU upload, going stale as GPU-resident particles move. See particle_sort.wgsl.
         {
@@ -323,7 +323,7 @@ impl GpuSimulation {
             pass.dispatch_workgroups(1, 1, 1); // 1 workgroup of 256 == NUM_BLOCKS
             pass.set_pipeline(&self.pipelines.particle_sort_count);
             pass.dispatch_workgroups(particle_wg, 1, 1);
-            // No particle_sort_compact here anymore — active-block detection now runs
+            // No particle_sort_compact here anymore -- active-block detection now runs
             // every substep (see encode_substep's active_block_refresh pass), since
             // particles move every substep and this once-per-frame pass would go stale by
             // substep 2+. This pass's count output is used only for the sort permutation
@@ -389,7 +389,7 @@ impl GpuSimulation {
         // this IS where GPU execution time shows up for multi-chunk (>64 substep) frames.
         let submit_ns = wait_ns;
 
-        // Async GPU → CPU readback — never blocks the render thread.
+        // Async GPU → CPU readback -- never blocks the render thread.
         //
         // Two-phase: begin_readback submits a GPU copy + async map (non-blocking).
         // The receiver fires on a subsequent frame when the GPU copy + map completes.
@@ -405,7 +405,7 @@ impl GpuSimulation {
         self.device.poll(wgpu::PollType::Poll).ok();
 
         // Check if a previous async readback completed -- Ok, Err, or still pending.
-        // Every completion path must explicitly unmap regardless of Ok/Err — an
+        // Every completion path must explicitly unmap regardless of Ok/Err -- an
         // unhandled Err leaves the staging buffer mapped forever (finish_readback, the
         // only unmapper, never called) and pending_readback stuck Some forever, until
         // something else tries to map the same buffer and panics.
@@ -416,7 +416,7 @@ impl GpuSimulation {
         if let Some(result) = readback_done {
             self.pending_readback = None;
             // The device-lost check at the TOP of step_frame only guards against a
-            // device that was ALREADY lost before this call started — it says nothing
+            // device that was ALREADY lost before this call started -- it says nothing
             // about a device that dies DURING this same call (e.g. an earlier
             // queue.submit() in this frame's chunked substep loop triggers an
             // uncaptured OOM). Re-check here: once lost, the staging buffer may already
@@ -431,7 +431,7 @@ impl GpuSimulation {
             } else {
                 let gpu_particles = self.buffers.finish_readback(self.particle_count);
 
-                // CPU plasticity pass — skipped if all materials run plasticity on GPU.
+                // CPU plasticity pass -- skipped if all materials run plasticity on GPU.
                 //
                 // IMPORTANT: GPU g2p already integrated F via `F_new = (I + dt·C)·F_old`.
                 // Zero affine before update_particle so only the plasticity projection runs.
@@ -439,7 +439,7 @@ impl GpuSimulation {
                 // Convert AoS to SoA, run the CPU pass via a per-particle
                 // `ParticleUpdateCtx`, then scatter results back.
                 if any_cpu {
-                    // Stash GPU affine matrices — we zero affine for the plasticity call then restore.
+                    // Stash GPU affine matrices -- we zero affine for the plasticity call then restore.
                     let gpu_affines: Vec<_> =
                         gpu_particles.iter().map(|p| p.velocity_gradient).collect();
                     // Copy readback into AoS cpu mirror (zeroing affine for plasticity).
@@ -448,7 +448,7 @@ impl GpuSimulation {
                         p_cpu.velocity_gradient = glam::Mat2::ZERO;
                     }
                     // Build SoA wrapper, run CPU plasticity, scatter plastic state back.
-                    // Skip sleeping particles — same reasoning as every GPU-side pass: their
+                    // Skip sleeping particles -- same reasoning as every GPU-side pass: their
                     // F/plastic state is frozen, re-running plasticity on unchanged input
                     // wastes exactly the compute sleep/wake exists to avoid.
                     let mut soa = Particles::from(std::mem::take(&mut self.particles));

@@ -69,7 +69,7 @@ mod marginal_yield_tests {
 
     /// Isolates whether `project()` itself matches the analytically-derived 2D
     /// Mohr-Coulomb marginal-yield condition, bypassing MPM's grid/transfer pipeline
-    /// entirely (no P2G, no gravity, no free surface — a single particle, a single
+    /// entirely (no P2G, no gravity, no free surface -- a single particle, a single
     /// hand-built deformation gradient, called directly).
     ///
     /// Derivation: converting this 2D log-strain DP

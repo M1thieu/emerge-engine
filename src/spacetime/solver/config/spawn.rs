@@ -21,12 +21,12 @@ pub enum SpawnShape {
     Box,
     /// Fill a disk of `radius` grid-cells centered on `box_center`.
     ///
-    /// Set `box_size` large enough to contain the disk — a square of side
+    /// Set `box_size` large enough to contain the disk -- a square of side
     /// `2 * radius` is exactly right, e.g. `IVec2::splat((2.0 * radius) as i32 + 1)`.
     Disk { radius: f32 },
 }
 
-/// Initial particle layout — consumed once at spawn, not needed afterward.
+/// Initial particle layout -- consumed once at spawn, not needed afterward.
 ///
 /// Build via fluent methods on `SpawnRegion::for_sim`:
 /// ```rust,no_run
@@ -59,15 +59,15 @@ pub struct SpawnRegion {
     /// Material for all particles in this region (default 0).
     pub material_id: u32,
     /// Per-region particle mass override (grid units). `None` (default) falls back to
-    /// `SimConfig::particle_mass` — the single global value used when every material in a
+    /// `SimConfig::particle_mass` -- the single global value used when every material in a
     /// scene has the same real density. Set this explicitly when spawning multiple materials
     /// with different `rho_kg_m3` in the same simulation: `SimConfig::particle_mass` is one
     /// value shared by the whole `Simulation`, so without a per-region override every
-    /// material's particles get identical mass regardless of their specified density —
+    /// material's particles get identical mass regardless of their specified density --
     /// stiffness differs correctly (via Lamé/EOS conversion) but inertia does not.
     /// Compute as `rho_kg_m3 * (spacing * dx_meters).powi(2)` for a 2D areal-density particle.
     /// `.mass_from(&props, &config)` computes and sets this from a physical-property struct
-    /// using this region's own `spacing` — prefer it over `.mass()` to avoid passing spacing
+    /// using this region's own `spacing` -- prefer it over `.mass()` to avoid passing spacing
     /// twice (a real duplication risk).
     pub mass_override: Option<f32>,
 }
@@ -147,7 +147,7 @@ impl SpawnRegion {
 
     /// Like `.mass()`, but computes the value from a physical-property struct and
     /// THIS region's own `spacing` (already set via `.spacing()` or the `spacing`
-    /// field) — avoids passing spacing twice, a real duplication risk (see
+    /// field) -- avoids passing spacing twice, a real duplication risk (see
     /// `mass_override`'s field doc; LP hit a sync bug from this exact pattern).
     pub fn mass_from(mut self, props: &impl crate::ParticleMass, config: &SimConfig) -> Self {
         self.mass_override = Some(props.particle_mass(self.spacing, config));

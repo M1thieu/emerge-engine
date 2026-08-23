@@ -37,9 +37,9 @@ pub struct DruckerPragerMaterial {
     pub mu: f32,
     /// φ₀: Initial friction angle (radians). Dry sand ≈ 35° = 0.611 rad. (Klar 2016 h₀)
     pub friction_angle: f32,
-    /// φ₁: Friction hardening sensitivity — slope of φ(q) near q=0. (Klar 2016 h₁)
+    /// φ₁: Friction hardening sensitivity -- slope of φ(q) near q=0. (Klar 2016 h₁)
     pub hardening_peak: f32,
-    /// φ₂: Hardening decay rate — exponential falloff coefficient. (Klar 2016 h₂)
+    /// φ₂: Hardening decay rate -- exponential falloff coefficient. (Klar 2016 h₂)
     pub hardening_decay: f32,
     /// φ_r: Residual friction angle (radians). ≈ 10° = 0.175 rad. (Klar 2016 h₃)
     pub friction_residual: f32,
@@ -55,13 +55,13 @@ pub struct DruckerPragerMaterial {
     /// units as `lambda`/`mu`). 0.0 = true cohesionless Mohr-Coulomb (real dry sand,
     /// the Klar 2016 default).
     ///
-    /// NOT a claim that dry sand has real cohesion — it doesn't. This compensates for
+    /// NOT a claim that dry sand has real cohesion -- it doesn't. This compensates for
     /// a real, measured continuum-MPM-resolution artifact: pressure-proportional
     /// friction (`alpha * trace`) vanishes in thin, fast-flowing layers where local
-    /// confining pressure is near zero, regardless of the friction angle — confirmed
+    /// confining pressure is near zero, regardless of the friction angle -- confirmed
     /// by three different friction coefficients (DP 35°, µ(I) 20.9-32.8°, µ(I)
     /// 35-40°) all producing IDENTICAL excess runout (~4.7x the Lajeunesse et al. 2004
-    /// empirical scaling law for this aspect ratio — see
+    /// empirical scaling law for this aspect ratio -- see
     /// `sand_column_collapse_runout_matches_lajeunesse_scaling`). Real grain-scale
     /// effects (interlocking, local rearrangement) give actual sand a baseline
     /// resistance in thin layers that point-wise continuum MPM at this resolution
@@ -70,17 +70,17 @@ pub struct DruckerPragerMaterial {
     pub cohesion: f32,
     /// The Drucker-Prager cone yield surface, BY CONSTRUCTION in the published model
     /// (Klar 2016, verified identical in sparkl/wgsparkl), only ever trims DEVIATORIC
-    /// (shear) strain — `project()`'s Case III preserves `trace(eps)` exactly. A
+    /// (shear) strain -- `project()`'s Case III preserves `trace(eps)` exactly. A
     /// near-hydrostatic impact (mostly compression, little shear) is judged "elastic"
     /// essentially always, regardless of how hard the impact is, because `gamma` stays
-    /// negative — nothing in the published model caps pure volumetric compression, and
+    /// negative -- nothing in the published model caps pure volumetric compression, and
     /// real sand cannot physically compact past its own void-ratio limit (~20-40%
     /// volume change between loose and dense packing).
     ///
     /// Same mechanism as `StomakhinMaterial`'s `min_plastic_jacobian`: a hard floor on
     /// the STORED singular values' product (the actual `deformation_gradient` written
     /// back), applied AFTER the shear-yield projection so friction/cohesion physics
-    /// stay unaffected — only engages when volumetric compression alone would exceed
+    /// stay unaffected -- only engages when volumetric compression alone would exceed
     /// sand's own packing limit. 0.6 matches Snow's default. The rescale itself floors
     /// each axis individually first -- see `update_particle`'s own comment at the
     /// point of use for why (a pure product-rescale can't recover an axis already at
@@ -457,10 +457,10 @@ impl DruckerPragerMaterial {
     /// φ(q) = friction_angle + compaction_boost + (hardening_peak·q − friction_residual)·exp(−hardening_decay·q)
     /// α(q) = √(2/3) · 2·sin(φ) / (3 − sin(φ))
     ///
-    /// `compaction_boost = compaction_sensitivity * max(0, -trace_ln_volume_ratio)` —
+    /// `compaction_boost = compaction_sensitivity * max(0, -trace_ln_volume_ratio)` --
     /// `trace_ln_volume_ratio` is `project`'s own `trace` (ln of the current net
     /// volume ratio vs the particle's initial state, instantaneous + accumulated
-    /// history combined) at the exact moment of yielding — see
+    /// history combined) at the exact moment of yielding -- see
     /// `compaction_sensitivity`'s own doc. Zero when the field is at its 0.0
     /// default, so this is byte-identical to the original q-only formula unless
     /// opted in.
@@ -546,7 +546,7 @@ impl DruckerPragerMaterial {
         let dev_norm = dev.length();
 
         // Tension cutoff or purely volumetric deformation: project to identity (σ = 1).
-        // dq = dev_norm only — friction hardening is driven by shear, not volumetric expansion.
+        // dq = dev_norm only -- friction hardening is driven by shear, not volumetric expansion.
         // Using eps.length() here would include the log_volume_strain offset and cause
         // unbounded q growth in static/settled sand.
         if dev_norm == 0.0 || trace > 0.0 {
@@ -556,7 +556,7 @@ impl DruckerPragerMaterial {
         // Yield function: γ = |dev_ε| + ratio · tr · α − cohesion/(2µ).
         // Klar 2016 eq. 25, d=2: (d·λ + 2µ)/(2µ) = (2λ+2µ)/(2µ) = (λ+µ)/µ.
         // Verified against sparkl DruckerPragerPlasticity::project and wgsparkl drucker_prager.wgsl.
-        // The cohesion term shifts the yield threshold by a pressure-INDEPENDENT amount —
+        // The cohesion term shifts the yield threshold by a pressure-INDEPENDENT amount --
         // converting stress-space Mohr-Coulomb cohesion c (||dev(sigma)|| <= alpha*p + c)
         // into this strain-space equation via dev(sigma) = 2*mu*dev(eps) gives the c/(2*mu)
         // divisor below. See `cohesion`'s doc comment for why this exists.
@@ -636,7 +636,7 @@ impl DruckerPragerMaterial {
         });
 
         if gamma <= 0.0 {
-            return None; // Inside yield surface — elastic step.
+            return None; // Inside yield surface -- elastic step.
         }
 
         // NGF rate limiter (real, disclosed synthesis -- see this function's
@@ -882,11 +882,11 @@ impl MaterialModel for DruckerPragerMaterial {
         // the yield projection already chose -- only overall volume is corrected.
         //
         // Take magnitudes FIRST: this engine's `svd2` does NOT guarantee non-negative
-        // singular values like textbook SVD — it keeps U a proper rotation by encoding
+        // singular values like textbook SVD -- it keeps U a proper rotation by encoding
         // a reflection as sigma.y going NEGATIVE instead (see svd2's
         // `if u.determinant() < 0.0 { ...; sigma.y = -sigma.y }`). An already-inverted
         // state is exactly the "exceeded sand's packing limit" case this floor exists
-        // for, just approached from the other side — handles "too compressed" and
+        // for, just approached from the other side -- handles "too compressed" and
         // "already inverted" with one uniform rule instead of two different guards.
         let mut new_sigma = new_sigma.abs();
         // Floor each AXIS individually before the product-based rescale below:

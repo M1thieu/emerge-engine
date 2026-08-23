@@ -26,7 +26,7 @@ pub(super) struct SubstepGates {
 }
 
 impl GpuSimulation {
-    /// Encode one substep's passes into an existing encoder. No submission — caller batches.
+    /// Encode one substep's passes into an existing encoder. No submission -- caller batches.
     pub(super) fn encode_substep(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -42,21 +42,21 @@ impl GpuSimulation {
             asflip_active,
         } = gates;
         {
-            // GPU sparse grid Phase 1 — re-detect active blocks from CURRENT particle
+            // GPU sparse grid Phase 1 -- re-detect active blocks from CURRENT particle
             // positions, every substep, immediately before grid_clear uses the result.
             // particle_sort's once-per-frame detection (computed from frame-START
             // positions) would go stale by substep 2+ since particles move every
-            // substep, so clear+count+compact reruns every substep (NOT scan/scatter —
+            // substep, so clear+count+compact reruns every substep (NOT scan/scatter --
             // those only matter for the once-per-frame sort permutation).
             //
             // A block that stops being active (a particle moves away) must still get
-            // cleared once more — grid_clear only clears CURRENTLY active blocks, so
+            // cleared once more -- grid_clear only clears CURRENTLY active blocks, so
             // without this a block's last P2G contribution would sit there permanently
             // until a particle wandered back near it, and P2G's atomic ADD would
             // compound onto the stale residual. active_block_swap (dispatched FIRST,
             // before clear/count/compact) snapshots this substep's about-to-be-
             // overwritten active list into active_block_ids_prev/count_prev, and
-            // grid_clear processes the union of both lists — a one-substep grace
+            // grid_clear processes the union of both lists -- a one-substep grace
             // period. See active_block_swap_main's doc comment in particle_sort.wgsl.
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("active_block_refresh"),
@@ -86,7 +86,7 @@ impl GpuSimulation {
             pass.set_bind_group(2, &self.thermal_bind_group, &[]);
             pass.set_bind_group(3, &self.resource_bind_group, &[]);
             // GPU sparse grid Phase 1: one workgroup per potential active-block slot, for
-            // EACH of the two lists (this substep's + last substep's grace period) — fixed
+            // EACH of the two lists (this substep's + last substep's grace period) -- fixed
             // worst-case size (2 * NUM_BLOCKS), not grid_res-dependent anymore. Most slots
             // beyond their list's real count exit immediately via the shader's own guard.
             // See grid_clear.wgsl.
@@ -226,11 +226,11 @@ impl GpuSimulation {
             pass.set_bind_group(3, &self.resource_bind_group, &[]);
             pass.dispatch_workgroups(particle_wg, 1, 1);
         }
-        // Day-night/ambient thermal diffusion (GPU port) — skipped ENTIRELY (not just
+        // Day-night/ambient thermal diffusion (GPU port) -- skipped ENTIRELY (not just
         // early-returning per-thread) when no thermal system is attached, same
         // dispatch-skip discipline as contact_active/force_fields_needed above. Runs
         // after force_fields, matching CPU's own `ThermalDiffusion::apply` ordering
-        // ("after force fields, before state projection") — fully decoupled from
+        // ("after force fields, before state projection") -- fully decoupled from
         // mechanics (operates only on particle.temperature), so exact ordering
         // relative to force_fields doesn't affect correctness, just matches CPU's own
         // call site for consistency.
@@ -286,7 +286,7 @@ impl GpuSimulation {
                 pass.dispatch_workgroups(particle_wg, 1, 1);
             }
         }
-        // Resource regrowth (GPU port) — same real dispatch-skip discipline as thermal
+        // Resource regrowth (GPU port) -- same real dispatch-skip discipline as thermal
         // above. Independent system (own buffers/group), can run alongside thermal in
         // the same frame (both gated separately) even though both currently carry
         // state in particle.temperature -- a real scene using both simultaneously

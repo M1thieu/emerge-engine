@@ -1,4 +1,4 @@
-// Force fields — non-uniform body forces applied after G2P. One thread per particle.
+// Force fields -- non-uniform body forces applied after G2P. One thread per particle.
 //
 // Field types: 0=disabled, 1=GravityWell, 2=Coulomb, 3=AabbConfinement,
 //              4=RadialConfinement, 5=UniformElectric, 6=Buoyancy.
@@ -7,7 +7,7 @@
 //
 // MAX_FORCE_FIELDS is a pipeline-overridable constant set from src/gpu/mod.rs at pipeline creation.
 
-// ── Particle struct — 128 bytes, matches repr(C) in src/matter/particle.rs ────────────────
+// ── Particle struct -- 128 bytes, matches repr(C) in src/matter/particle.rs ────────────────
 struct Particle {
     x:                    vec2<f32>,
     v:                    vec2<f32>,
@@ -48,7 +48,7 @@ struct StepParams {
     _pad2:              u32,
 }
 
-// 48 bytes — matches GpuForceFieldEntry in src/gpu/mod.rs
+// 48 bytes -- matches GpuForceFieldEntry in src/gpu/mod.rs
 struct ForceFieldEntry {
     field_type:    u32,
     material_mask: u32,  // bit i = material i affected; 0xFFFFFFFF = all
@@ -58,7 +58,7 @@ struct ForceFieldEntry {
     params45:      vec4<f32>,  // params[4..7]
 }
 
-// 784 bytes — matches GpuForceFieldsParams in src/gpu/mod.rs
+// 784 bytes -- matches GpuForceFieldsParams in src/gpu/mod.rs
 struct ForceFieldsParams {
     count:   u32,
     _pad0:   u32,
@@ -67,10 +67,10 @@ struct ForceFieldsParams {
     entries: array<ForceFieldEntry, 16>,
 }
 
-// 80 bytes — matches GpuSleepWakeParams in src/gpu/mod.rs.
+// 80 bytes -- matches GpuSleepWakeParams in src/gpu/mod.rs.
 // Minimal hook for LP's future chunk system: force-sleep/force-wake by user_tag,
 // independent of velocity. See sleep_tag/wake_tag doc comments on GpuSimulation.
-// Tags packed 4-per-vec4<u32> (8 tags = 2 vec4s) — a flat array<u32,8> would need
+// Tags packed 4-per-vec4<u32> (8 tags = 2 vec4s) -- a flat array<u32,8> would need
 // 16-byte-strided elements in uniform address space and waste 3x the space.
 struct SleepWakeParams {
     sleep_count: u32,
@@ -134,13 +134,13 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Force-wake-by-tag: checked unconditionally (not just while currently sleeping),
     // because the sleep_wake uniform stays loaded for every substep in this step_frame()
-    // call (uploaded once per frame — see GpuSimulation::step_frame), not just the one
+    // call (uploaded once per frame -- see GpuSimulation::step_frame), not just the one
     // substep where the caller's wake_tag() takes effect. A tagged particle hasn't been
-    // given any real velocity by waking — it's still genuinely at rest — so without
+    // given any real velocity by waking -- it's still genuinely at rest -- so without
     // exempting it from the natural sleep-scoring below for the WHOLE frame (not just the
     // substep where the flag flips), substep 2 onward would see near-zero velocity and
     // immediately re-sleep it, undoing the wake before step_frame() ever returns.
-    // force_sleep_tag (checked last, below) still wins over this — a deliberate forced
+    // force_sleep_tag (checked last, below) still wins over this -- a deliberate forced
     // sleep beats a forced wake, same "last write wins" rule as any other conflict here.
     var is_wake_tagged = false;
     for (var i: u32 = 0u; i < sleep_wake.wake_count && i < MAX_SLEEP_WAKE_TAGS; i++) {
@@ -149,14 +149,14 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if is_wake_tagged { p.sleeping = 0u; }
 
     // Still-sleeping particles get no field forces, no velocity clamp, and no
-    // rescoring — frozen, same as CPU excluding them from the force-field loop
+    // rescoring -- frozen, same as CPU excluding them from the force-field loop
     // entirely (`for i in 0..self.active_count`). No writeback needed: nothing changes.
     if p.sleeping != 0u { return; }
 
     // Dirichlet/kinematic anchor (`Particle::pinned`): must stay at v=0, matching
     // g2p.wgsl's own unconditional pinned branch earlier in the same substep. This
     // pass runs AFTER g2p with no pinned check, silently un-zeroing pinned
-    // particles' velocity every substep — p2g.wgsl then scatters that as real
+    // particles' velocity every substep -- p2g.wgsl then scatters that as real
     // momentum next substep (p2g doesn't special-case pinned particles either,
     // since a pinned particle's mass/stress should still be felt by neighbors,
     // just not its velocity). Mirrors the same fix in step.rs's force-fields
@@ -166,13 +166,13 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt = step_params.dt;
 
     // force_fields.count == 0u is handled by the loop condition below (i < count
-    // is immediately false) — no need for an early return, since the velocity
+    // is immediately false) -- no need for an early return, since the velocity
     // clamp and sleep-scoring after this loop must always run regardless.
     for (var i: u32 = 0u; i < force_fields.count && i < MAX_FORCE_FIELDS; i++) {
         let entry = force_fields.entries[i];
         if entry.field_type == FIELD_DISABLED { continue; }
         // GravityWell (1) and Coulomb (2) are applied to grid velocities in grid_update.wgsl.
-        // Applying them here too would double their effect — skip.
+        // Applying them here too would double their effect -- skip.
         if entry.field_type == FIELD_GRAVITY_WELL || entry.field_type == FIELD_COULOMB { continue; }
         if !material_matches(entry, p.material_id) { continue; }
 
@@ -284,8 +284,8 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             case FIELD_BUOYANCY: {
                 // True Archimedes buoyancy: net a = g·(ρ_fluid/ρ₀_particle − 1) upward.
                 // Formula: Δv = −g · (ρ_fluid/ρ₀) · dt. Solver already applies −g, so
-                // net = −g + g·(ρ_fluid/ρ₀) = g·(ρ_fluid/ρ₀ − 1) — upward for lighter particles.
-                // Uses rest density (m/V₀) not instantaneous density — prevents expansion runaway.
+                // net = −g + g·(ρ_fluid/ρ₀) = g·(ρ_fluid/ρ₀ − 1) -- upward for lighter particles.
+                // Uses rest density (m/V₀) not instantaneous density -- prevents expansion runaway.
                 // params01 = (gravity_x, gravity_y, fluid_density, _unused)
                 let gravity_vec  = vec2<f32>(entry.params01.x, entry.params01.y);
                 let fluid_rho    = entry.params01.z;
@@ -337,11 +337,11 @@ fn force_fields_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         p.v = p.v * (step_params.vel_limit / v_len);
     }
 
-    // Sleep scoring — mirrors src/solver/mod.rs (~lines 855-870) exactly, including the
+    // Sleep scoring -- mirrors src/solver/mod.rs (~lines 855-870) exactly, including the
     // lack of a same-substep re-sleep guard (CPU doesn't have one either). Runs last per
     // substep, after force fields, since a field can keep a particle that looks sleepy
     // awake. No-op whenever sleep_threshold <= 0.0 (the SimConfig default). Skipped this
-    // substep if force-woken above — a force-woken particle hasn't been given any
+    // substep if force-woken above -- a force-woken particle hasn't been given any
     // velocity, so without this guard it would immediately re-sleep here, undoing the
     // wake before it's ever observed outside this function.
     if !is_wake_tagged && step_params.sleep_threshold > 0.0 && p.activation == 0.0

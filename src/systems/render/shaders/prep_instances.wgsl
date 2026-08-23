@@ -4,11 +4,11 @@
 // InstanceData feeds the render_particles vertex shader as per-instance attributes.
 //
 // Color modes (RenderConfig::mode):
-//   0 = ByMaterial — material_id % 16 → fixed palette
-//   1 = ByVelocity — |v| * vel_scale → blue→red heat map
-//   2 = ByVolume   — det(F) → blue (compressed) / white (rest) / red (expanded)
+//   0 = ByMaterial -- material_id % 16 → fixed palette
+//   1 = ByVelocity -- |v| * vel_scale → blue→red heat map
+//   2 = ByVolume   -- det(F) → blue (compressed) / white (rest) / red (expanded)
 //
-// Particle struct layout (128 bytes) must match src/matter/particle.rs exactly —
+// Particle struct layout (128 bytes) must match src/matter/particle.rs exactly --
 // any field/padding drift here silently misaligns every WGSL array index past 0.
 
 struct Particle {
@@ -37,7 +37,7 @@ struct Particle {
     internal_pressure:    f32,
 }
 
-// InstanceData layout (48 bytes) — must match MpmRenderer's VertexBufferLayout:
+// InstanceData layout (48 bytes) -- must match MpmRenderer's VertexBufferLayout:
 //   deform_col0: vec2<f32> @ offset  0
 //   deform_col1: vec2<f32> @ offset  8
 //   position:    vec2<f32> @ offset 16
@@ -173,7 +173,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let with_specular = with_scattering + vec3(r0);
         //
         // Thermal emission: blackbody additive glow above ~300 K.
-        //   Normalized to 5000 K (solar surface) — biological temps near zero.
+        //   Normalized to 5000 K (solar surface) -- biological temps near zero.
         let t_norm = clamp(p.temperature / 5000.0, 0.0, 1.0);
         let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
         //
@@ -196,8 +196,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     instances[id] = InstanceData(
-        f[0],        // deform_col0 — F's x-axis
-        f[1],        // deform_col1 — F's y-axis
+        f[0],        // deform_col0 -- F's x-axis
+        f[1],        // deform_col1 -- F's y-axis
         p.x,         // position in grid coords
         vec2(0.0),   // _pad
         color,

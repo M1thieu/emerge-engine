@@ -24,7 +24,7 @@ fn gpu_available() -> bool {
 }
 
 /// Real, white-box verification of the device-lost guard added for emerge
-/// issue #10 (see project memory gpu_readback_error_path_bug_issue10 — the
+/// issue #10 (see project memory gpu_readback_error_path_bug_issue10 -- the
 /// root cause, a genuine `Out of Memory` device loss under sustained
 /// slow-backend load, was confirmed with hard evidence via a real
 /// `device_lost_callback` firing; forcing that same OOM condition again just

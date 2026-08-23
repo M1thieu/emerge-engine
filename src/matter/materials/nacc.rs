@@ -8,7 +8,7 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Non-Associated Cam-Clay (NACC) elastoplastic solid.
 ///
 /// Elastic energy: Neo-Hookean (κ bulk, µ shear).
-/// Yield surface: ellipse in (p, q) space — q² + M²·(p + β·p₀)·(p − p₀) ≤ 0
+/// Yield surface: ellipse in (p, q) space -- q² + M²·(p + β·p₀)·(p − p₀) ≤ 0
 ///   p = −tr(σ)/d  (mean pressure, positive in compression)
 ///   q = deviatoric stress magnitude
 ///   p₀ = preconsolidation pressure (hardens under plastic volumetric compression)
@@ -20,7 +20,7 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 ///   Positive α = plastic compression → larger p₀ → harder material.
 ///   Init: α = 0 (unstressed, reference state).
 ///
-/// Unlike Drucker-Prager (cone), NACC has a *cap* — it limits compression too.
+/// Unlike Drucker-Prager (cone), NACC has a *cap* -- it limits compression too.
 /// This captures preconsolidation: previously consolidated soils yield at lower stress.
 ///
 /// Reference: Klar et al. 2016; sparkl `plasticity_nacc.rs`.
@@ -38,7 +38,7 @@ pub struct NaccMaterial {
     /// the 3D κ=λ+2µ/3 relation; see `timestep_bound` and `params()` below,
     /// which invert as λ=κ−µ).
     pub kappa: f32,
-    /// Friction slope M — controls yield surface width in q direction.
+    /// Friction slope M -- controls yield surface width in q direction.
     /// Related to friction angle φ (sparkl's `NaccPlasticity::new`, general-d form:
     /// M = √(2/3)·2·sin φ/(3−sin φ)·d/√(2/(6−d))): in 2D (d=2) this reduces to
     /// M = (8/√3)·sin φ/(3−sin φ) ≈ 4.619·sin φ/(3−sin φ). Not called by any
@@ -47,7 +47,7 @@ pub struct NaccMaterial {
     /// ~1.84x too large at d=2.
     /// Typical: 1.0–2.0.
     pub friction: f32,
-    /// Cohesion (beta β) — shifts yield surface min tip.
+    /// Cohesion (beta β) -- shifts yield surface min tip.
     /// 0.0 = no tensile strength (standard). 1.0 = symmetric around p=0.
     pub cohesion: f32,
     /// Hardening factor ξ. Controls how fast p₀ grows: p₀ = κ·(1e-5 + sinh(ξ·max(−α,0))).
@@ -143,9 +143,9 @@ impl NaccMaterial {
     /// NACC yield surface projection. Returns updated (F, alpha).
     ///
     /// Three cases from sparkl canonical:
-    ///   A — p_trial > p₀:          compress past preconsolidation → project to max cap
-    ///   B — p_trial < −β·p₀:       pull past tensile limit → project to min tip
-    ///   C — yield surface exceeded: project onto ellipse
+    ///   A -- p_trial > p₀:          compress past preconsolidation → project to max cap
+    ///   B -- p_trial < −β·p₀:       pull past tensile limit → project to min tip
+    ///   C -- yield surface exceeded: project onto ellipse
     ///   elastic: inside yield surface → no projection
     fn project(&self, f: Mat2, mut alpha: f32) -> (Mat2, f32) {
         let xi = self.hardening_factor;
@@ -202,7 +202,7 @@ impl NaccMaterial {
         let y = y0 * s_norm_sq + y1;
 
         if y < 1.0e-4 {
-            // Inside yield surface — elastic, no projection.
+            // Inside yield surface -- elastic, no projection.
             return (f, alpha);
         }
 

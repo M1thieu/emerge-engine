@@ -1,24 +1,24 @@
 extern crate emerge_engine as emerge;
 
-/// Real-time particle-count ramp test — finds the actual current FPS ceiling, not a
+/// Real-time particle-count ramp test -- finds the actual current FPS ceiling, not a
 /// guessed one. Falling-sand-game style: ONE fixed pour point near the top of the grid (an
 /// hourglass neck, not a sweeping nozzle), sand falls through it continuously and
-/// automatically forever, piling up on the floor (domain boundary). No input required —
+/// automatically forever, piling up on the floor (domain boundary). No input required --
 /// nothing to configure, nothing to click. Rendered live, FPS shown on-screen.
 ///
 /// FINDING (confirmed 2026-06-21): with growth running every frame and no throttle, FPS was
-/// already DEGRADED (35-52fps) at just ~250 particles — not from real physics/render cost, but
+/// already DEGRADED (35-52fps) at just ~250 particles -- not from real physics/render cost, but
 /// because the regrowth stall (rebuilding the whole GpuSimulation every single frame) costs
 /// ~20-28ms on its own, regardless of how little is actually being simulated. This proves
 /// "grow via full recreation" cannot be a real runtime particle-creation mechanism at any
-/// frequency above occasional — LP needs a genuine incremental add-particles GPU API.
+/// frequency above occasional -- LP needs a genuine incremental add-particles GPU API.
 ///
 /// IMPORTANT CAVEAT (this is itself a finding, not just a benchmark detail): GpuSimulation has
 /// no "add particles to a running simulation" API. To grow the particle count, this example
 /// reads back the current particles, builds a bigger combined list, and recreates the whole
-/// GpuSimulation + Renderer from scratch — the only way possible with today's API. LP's
+/// GpuSimulation + Renderer from scratch -- the only way possible with today's API. LP's
 /// roadmap explicitly wants runtime particle creation (creature spawning, "particle reseeding"
-/// for cell division/phase changes) — this example's growth mechanism is a workaround for a
+/// for cell division/phase changes) -- this example's growth mechanism is a workaround for a
 /// missing capability, and the regrowth stall itself is measured and printed below so the cost
 /// of that workaround is visible, not hidden inside the FPS average.
 ///

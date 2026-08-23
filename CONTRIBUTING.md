@@ -6,7 +6,7 @@ emerge is a 2D MLS-MPM continuum physics engine in pure Rust, built for real-tim
 
 ## Issues
 
-Bug reports and questions are welcome via GitHub issues. This is a solo-maintained project — response time is best-effort, not guaranteed. Include a minimal repro (a failing test or example is ideal) where possible; it's the fastest path to a fix.
+Bug reports and questions are welcome via GitHub issues. This is a solo-maintained project -- response time is best-effort, not guaranteed. Include a minimal repro (a failing test or example is ideal) where possible; it's the fastest path to a fix.
 
 ---
 
@@ -25,7 +25,7 @@ No `cargo clean`; incremental builds work fine. Debug mode only, never `--releas
 
 ## Architecture
 
-Domain-taxonomy layout — each top-level directory mirrors one universe-scale domain,
+Domain-taxonomy layout -- each top-level directory mirrors one universe-scale domain,
 not an implementation layer:
 
 ```
@@ -71,7 +71,7 @@ A new material requires changes in four places:
 Implement the `MaterialModel` trait:
 
 All methods have default implementations (an elastic-only material can override just
-`kirchhoff_stress`). The signatures below are exact — copy them, not the idea of them:
+`kirchhoff_stress`). The signatures below are exact -- copy them, not the idea of them:
 
 ```rust
 pub struct MyMaterial { /* parameters */ }
@@ -80,10 +80,10 @@ impl MaterialModel for MyMaterial {
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 { ... }
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 { ... }
     fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) { ... }
-    // Seeds per-particle plastic state at spawn time — takes a single `Particle`,
+    // Seeds per-particle plastic state at spawn time -- takes a single `Particle`,
     // not the `Particles` collection (called once per particle, before it's in the SoA).
     fn init_particle(&self, particle: &mut Particle) { ... }
-    // CFL bound — reads the spawned particle's own state, not just dx/rho.
+    // CFL bound -- reads the spawned particle's own state, not just dx/rho.
     fn timestep_bound(
         &self,
         particles: &Particles,
@@ -169,9 +169,9 @@ cargo test --features gpu              # GPU path (requires wgpu-compatible GPU)
 
 **`--all-features --tests` (or `cargo test --all-features`) can crash the linker**
 (`STATUS_STACK_BUFFER_OVERRUN` from `rustc.exe`/the linker, not an emerge bug) on
-machines with limited memory — building every integration test binary with
+machines with limited memory -- building every integration test binary with
 `gpu`+`render`+`experimental` all at once, fully parallel, exhausts a real resource.
-Confirmed fix: cap build parallelism —
+Confirmed fix: cap build parallelism --
 
 ```sh
 cargo test --all-features -j 2

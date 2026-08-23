@@ -1,4 +1,4 @@
-//! Discrete elastic rod internal forces — stretch (axial spring) + bending
+//! Discrete elastic rod internal forces -- stretch (axial spring) + bending
 //! (discrete curvature) + damping, specialized to 2D.
 //!
 //! Real citation: Bergou, Wardetzky, Robinson, Audoly, Grinspun 2008,
@@ -14,9 +14,9 @@ use super::RodMaterial;
 /// specialized to 2D). In 3D `kb` is a vector along the (out-of-plane)
 /// binormal with magnitude `2*tan(turning_angle/2)`; in 2D the binormal
 /// direction is FIXED (the plane's own normal), so the whole quantity
-/// collapses to this signed scalar — a real dimensional reduction (2D
+/// collapses to this signed scalar -- a real dimensional reduction (2D
 /// genuinely has one fewer curvature DOF than 3D), not an invented
-/// shortcut. DIMENSIONLESS (≈ turning angle for small bends) — the
+/// shortcut. DIMENSIONLESS (≈ turning angle for small bends) -- the
 /// per-unit-length normalization happens in the bending-FORCE formula
 /// below (division by rest Voronoi length), not here.
 ///
@@ -35,7 +35,7 @@ pub fn discrete_curvature(p0: Vec2, p1: Vec2, p2: Vec2) -> f32 {
 
 /// Analytic gradient of `discrete_curvature` w.r.t. its 3 input points,
 /// hand-derived via the chain rule on that function's own closed form.
-/// Verified against central differences in this module's own tests — same
+/// Verified against central differences in this module's own tests -- same
 /// house discipline as `grid::kernel::axis_weights_derivative` and every
 /// `*_vjp` function in `spacetime::transfer`: derive by hand, ship a
 /// finite-difference check in the same file.
@@ -74,23 +74,23 @@ pub fn discrete_curvature_gradient(p0: Vec2, p1: Vec2, p2: Vec2) -> [Vec2; 3] {
 
 /// Per-point internal force (Newtons, real SI) from axial stretch, bending,
 /// and damping. `x`/`v` are grid-cell units; `dx_meters` converts to/from
-/// real meters for the stiffness terms, then back to a grid acceleration —
+/// real meters for the stiffness terms, then back to a grid acceleration --
 /// mirrors `gravity_to_grid`'s own `g_grid = g_SI / dx_meters` pattern (mass
 /// handled explicitly here since force, unlike gravity, is not already
 /// per-unit-mass).
 ///
 /// `ea`/`ei` are PER-ELEMENT (length N-1/N-2, same shape as
 /// `rest_edge_length`/`rest_curvature`) rather than the single scalar
-/// `RodMaterial::ea`/`ei` — real prior art `network::NetworkEdge::ea`/
+/// `RodMaterial::ea`/`ei` -- real prior art `network::NetworkEdge::ea`/
 /// `NetworkBendingVertex::ei` already does this for a branching
 /// `RodNetwork`; this is the same non-uniform-stiffness capability for a
 /// plain chain (a stem stiffer at its base than its growing tip). An EMPTY
 /// slice falls back to `material.ea`/`material.ei` uniformly (the prior
-/// single-scalar behavior, bit-for-bit) — `Rod::new` normally fills these
+/// single-scalar behavior, bit-for-bit) -- `Rod::new` normally fills these
 /// to full length, but this fallback also covers any `RodPoints` built
 /// directly (bypassing `Rod::new`, e.g. some existing tests) without
 /// panicking or requiring every such call site to remember to pre-fill.
-/// Damping stays scalar (`material.axial_damping`/`bending_damping`) — out
+/// Damping stays scalar (`material.axial_damping`/`bending_damping`) -- out
 /// of this phase's scope, not yet made per-element.
 /// Bundles a rod's per-element rest/stiffness state -- the 4 parallel
 /// arrays (same length convention as `rest_edge_length`, i.e. N-1/N-2 of

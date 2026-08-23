@@ -1,9 +1,9 @@
 /// Flat material parameters for a single registered material slot.
 ///
-/// Layout is a union — only the fields relevant to the constitutive model are filled;
+/// Layout is a union -- only the fields relevant to the constitutive model are filled;
 /// all others are zero. `model` is the `ConstitutiveModel` discriminant and is always set.
 ///
-/// 112 bytes, 16-byte aligned — directly uploadable to a GPU uniform buffer as
+/// 112 bytes, 16-byte aligned -- directly uploadable to a GPU uniform buffer as
 /// `array<MaterialParams, N>` indexed by `particle.material_id`. Grew from 96
 /// (2026-08-15) to add `owns_deformation_volume_state` -- see that field's own
 /// doc. `_pad` is explicit, always-zeroed real reserved space (same Pod-safety
@@ -15,16 +15,16 @@ pub struct MaterialParams {
     pub model: u32,
 
     // --- Elastic (Neo-Hookean, Corotated, Snow) ---
-    /// First Lamé parameter λ — controls bulk-like volumetric stiffness.
+    /// First Lamé parameter λ -- controls bulk-like volumetric stiffness.
     pub lambda: f32,
-    /// Second Lamé parameter µ — controls shear stiffness.
+    /// Second Lamé parameter µ -- controls shear stiffness.
     pub mu: f32,
 
     // --- Snow plasticity (Stomakhin 2013) ---
     /// Hardening exponent ξ. Scales stiffness as h = exp(ξ(1−Jp)).
     /// VonMises: repurposed as `yield_stress` (union layout).
     pub hardening_exponent: f32,
-    /// Snow: compression limit θ_c — singular values below (1−θ_c) are clamped.
+    /// Snow: compression limit θ_c -- singular values below (1−θ_c) are clamped.
     /// DP (Sand): repurposed as Reynolds dilatancy angle ψ (radians).
     ///            δεᵥᵖ = sin(ψ)·dq per plastic step. 0.0 = no dilation.
     pub compression_limit: f32,
@@ -88,14 +88,14 @@ pub struct MaterialParams {
     /// the unmodified Tait law; a free-surface cavitation model is not encoded
     /// in this union field.
     pub pressure_floor: f32,
-    /// Fluid: bulk (second) viscosity ζ — adds ζ·(∇·v)·I to Cauchy stress.
+    /// Fluid: bulk (second) viscosity ζ -- adds ζ·(∇·v)·I to Cauchy stress.
     /// 0.0 = off (Stokes assumption).
     pub bulk_viscosity: f32,
     /// Bingham-only regularisation cutoff for the shear rate. This shares a
     /// union slot because curvature-based surface tension is deliberately not
     /// implemented without an interface reconstruction.
     pub critical_shear_rate: f32,
-    /// Snow: cohesion — τ += c·Jp·(J−1)·J·I when Jp<1 and J>1.
+    /// Snow: cohesion -- τ += c·Jp·(J−1)·J·I when Jp<1 and J>1.
     /// Resists elastic expansion in plastically compacted snow. Stable (no feedback loop).
     /// 0.0 = disabled (Stomakhin default). ~200–800 for wet/packed snow.
     /// Repurposed from padding; zero for all other materials.

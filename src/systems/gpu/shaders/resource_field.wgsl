@@ -1,4 +1,4 @@
-// Resource regrowth — GPU port of ScalarDiffusionField's real logistic-growth source
+// Resource regrowth -- GPU port of ScalarDiffusionField's real logistic-growth source
 // (src/energy/thermodynamics/scalar_field.rs). Same real PDE shape as thermal.wgsl
 // (scatter -> normalize -> Laplacian+reaction -> gather), but the reaction term is
 // logistic growth (Verhulst 1838, dφ/dt = r·φ·(1−φ/K)) instead of Newton cooling.
@@ -10,10 +10,10 @@
 // 4 passes, same reasoning as thermal.wgsl for why they're separate dispatches (the
 // Laplacian pass needs every cell's normalized φ settled first, a genuine global
 // barrier):
-//   1. resource_clear_main               — zero resource_mass + resource_work
-//   2. resource_p2g_main                 — scatter mass-weighted φ (particle.scalar_field)
-//   3. resource_normalize_laplacian_main — normalize, 5-point Laplacian, logistic growth
-//   4. resource_g2p_main                 — gather Δφ back to particles
+//   1. resource_clear_main               -- zero resource_mass + resource_work
+//   2. resource_p2g_main                 -- scatter mass-weighted φ (particle.scalar_field)
+//   3. resource_normalize_laplacian_main -- normalize, 5-point Laplacian, logistic growth
+//   4. resource_g2p_main                 -- gather Δφ back to particles
 
 struct Particle {
     x:                    vec2<f32>,

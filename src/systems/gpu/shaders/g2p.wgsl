@@ -1,4 +1,4 @@
-// G2P — gather grid velocity/momentum into particle velocity and APIC affine matrix C.
+// G2P -- gather grid velocity/momentum into particle velocity and APIC affine matrix C.
 // One thread per particle. F update, plasticity, position advance: particles_update.wgsl.
 
 struct Particle {
@@ -101,9 +101,9 @@ const NUM_FLOOR:            f32 = 1e-6;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
 @group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
-// Multi-field contact (GPU port) — resolved velocities from resolve_contact_main, one
+// Multi-field contact (GPU port) -- resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
-// contact-active field wasn't found (see resolve_contact.wgsl's resolve_cell doc) —
+// contact-active field wasn't found (see resolve_contact.wgsl's resolve_cell doc) --
 // safe to read unconditionally at every stencil node, mirroring CPU's
 // grip_velocity_at/rest_velocity_at fallback exactly.
 @group(1) @binding(17) var<storage, read_write> resolved_grip_v: array<vec2<f32>>;
@@ -153,19 +153,19 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let res = step_params.grid_res;
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
-    // Sleeping particles are never gathered into — same as CPU, which excludes them
+    // Sleeping particles are never gathered into -- same as CPU, which excludes them
     // from G2P entirely, leaving v/velocity_gradient frozen at whatever they were when
-    // they fell asleep. Exception: wake propagation — if a nearby cell shows REAL motion
+    // they fell asleep. Exception: wake propagation -- if a nearby cell shows REAL motion
     // this substep, this particle wakes and falls through to the full gather below,
     // getting a real G2P this same substep (matches CPU: wake_particle happens before
     // G2P runs).
     //
     // Checks velocity, not mass: P2G now scatters mass for every particle, awake or
     // asleep (sleeping particles still need to deposit support for neighbors resting on
-    // them — see p2g.wgsl). So "mass nearby" is true almost everywhere near any particle
+    // them -- see p2g.wgsl). So "mass nearby" is true almost everywhere near any particle
     // at all, sleeping or not, and can no longer distinguish real activity from a calm,
     // settled neighbor. grid.momentum holds actual velocity by this point (grid_update
-    // already converted it) — a cell fed only by frozen, at-rest particles has velocity
+    // already converted it) -- a cell fed only by frozen, at-rest particles has velocity
     // near zero; one fed by a genuinely moving particle does not.
     if p.sleeping != 0u {
         var should_wake = false;
@@ -199,7 +199,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var new_v       = vec2<f32>(0.0);
     var B_col0      = vec2<f32>(0.0);
     var B_col1      = vec2<f32>(0.0);
-    var new_density = 0.0; // Σ w_i·m_i — grid-gathered density, avoids F-tracked drift
+    var new_density = 0.0; // Σ w_i·m_i -- grid-gathered density, avoids F-tracked drift
 
     // Multi-field contact (GPU port): a grip particle (contact_group != 0) gathers
     // from the resolved GRIP field; any other particle (the "rest" field, the default)
@@ -207,7 +207,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // gather_grid_to_particles routing (transfer.rs), which reads
     // grid.grip_velocity_at/rest_velocity_at by the SAME contact_group check. Density
     // still comes from the ordinary total mass field (unaffected by which velocity
-    // field a particle reads — mirrors CPU exactly, mass is never per-field).
+    // field a particle reads -- mirrors CPU exactly, mass is never per-field).
     let is_grip = p.contact_group != 0u;
     // Global gate (mirrors CPU's Grid::has_contact_activity() check at
     // transfer.rs's gather_grid_to_particles call site exactly): when NO particle anywhere
@@ -249,7 +249,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Velocity clamp: !(spd <= limit) also catches NaN (NaN <= x = false).
-    // Inf guard: if spd=Inf, inv=0, then Inf×0=NaN — zero out via select.
+    // Inf guard: if spd=Inf, inv=0, then Inf×0=NaN -- zero out via select.
     let spd = length(new_v);
     if !(spd <= step_params.vel_limit) {
         let inv = step_params.vel_limit / spd;

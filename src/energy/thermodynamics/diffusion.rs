@@ -3,10 +3,10 @@
 //! Implements ∂T/∂t = α·∇²T (Fourier's law) where α = k / (ρ·c_p).
 //!
 //! # Algorithm (per substep)
-//! 1. **P2G** — scatter particle temperatures (mass-weighted) to a temporary grid
-//! 2. **Normalize** — grid_temp = grid_heat / grid_mass (mass-weighted average)
-//! 3. **Laplacian** — explicit Euler FD: T_new = T + α·dt·∇²T
-//! 4. **G2P** — gather temperature delta back to particles
+//! 1. **P2G** -- scatter particle temperatures (mass-weighted) to a temporary grid
+//! 2. **Normalize** -- grid_temp = grid_heat / grid_mass (mass-weighted average)
+//! 3. **Laplacian** -- explicit Euler FD: T_new = T + α·dt·∇²T
+//! 4. **G2P** -- gather temperature delta back to particles
 //!
 //! Uses the same quadratic B-spline kernel as MPM transfer for consistency.
 //!
@@ -14,10 +14,10 @@
 //! Thermal CFL limit: dt_thermal ≤ dx² / (4α), exposed as
 //! [`ThermalConfig::stability_dt`] and folded into `choose_substep_dt`
 //! whenever a `ThermalDiffusion` is attached. For typical materials (water
-//! α≈1.4e-7 m²/s, dx=0.1m) this is ~18000s — orders of magnitude larger
+//! α≈1.4e-7 m²/s, dx=0.1m) this is ~18000s -- orders of magnitude larger
 //! than MPM's wave-speed CFL (~0.002s), so it's normally a no-op. It only
 //! bites on a real misconfiguration (e.g. passing `grid_cell_size` instead
-//! of `dx_meters`, see that field's own doc) — enforcing it turns that from
+//! of `dx_meters`, see that field's own doc) -- enforcing it turns that from
 //! a silent runaway into an automatically clamped, still-correct substep.
 
 use glam::IVec2;
@@ -68,11 +68,11 @@ pub struct ThermalConfig {
     /// Boundary cells equilibrate toward this value.
     pub ambient: f32,
 
-    /// Grid cell physical size in meters — pass `SimConfig::dx_meters`, NOT
+    /// Grid cell physical size in meters -- pass `SimConfig::dx_meters`, NOT
     /// `SimConfig::grid_cell_size` (which is always `1.0`, a grid-unit constant, never a
     /// physical length). Passing `grid_cell_size` here understates the real cell size by
     /// orders of magnitude, inflates `alpha_grid()` to match, and silently blows the
-    /// "thermal CFL is never the bottleneck" assumption — explicit Euler overshoots into
+    /// "thermal CFL is never the bottleneck" assumption -- explicit Euler overshoots into
     /// runaway temperatures within a few hundred steps. Verified by reproducing it directly.
     ///
     /// Used to convert conductivity/capacity into grid-unit diffusivity.
@@ -80,7 +80,7 @@ pub struct ThermalConfig {
 
     /// Newton cooling rate k_c in 1/s: dT/dt = −k_c·(T − ambient).
     ///
-    /// Models convective heat loss to the environment. Linear in ΔT — understates
+    /// Models convective heat loss to the environment. Linear in ΔT -- understates
     /// loss at high temperature, where real radiative loss (below) dominates
     /// (T⁴ vs T). 0.0 = no cooling (default, adiabatic walls).
     pub cooling_rate: f32,
@@ -90,10 +90,10 @@ pub struct ThermalConfig {
     ///
     /// Same blanket per-particle approximation `cooling_rate` already makes (every
     /// particle treated as if radiating to ambient, not gated on real free-surface
-    /// exposure) — this is a second, more accurate term for the SAME simplification,
+    /// exposure) -- this is a second, more accurate term for the SAME simplification,
     /// not a new architecture. `A` is the particle's own current `volume` (this
     /// engine's 2D areal-density convention already treats it as a real m² footprint
-    /// with implicit unit depth, same convention `Elastic::particle_mass` uses) — the
+    /// with implicit unit depth, same convention `Elastic::particle_mass` uses) -- the
     /// face the render emission pass would show, per `heat_radiation`'s own doc
     /// ("physical basis for blackbody glow in the render emission pass").
     pub emissivity: f32,
@@ -136,10 +136,10 @@ impl ThermalConfig {
 pub struct ThermalDiffusion {
     pub config: ThermalConfig,
     grid_res: usize,
-    // Preallocated scratch buffers — no per-substep heap allocation.
+    // Preallocated scratch buffers -- no per-substep heap allocation.
     grid_work: Vec<f32>, // dual-use: P2G scatter (Σ w·m·T), then Laplacian output (T_new)
     grid_mass: Vec<f32>, // Σ (w · mass) per cell
-    grid_temp: Vec<f32>, // normalized T_old — needed for G2P delta (T_new − T_old)
+    grid_temp: Vec<f32>, // normalized T_old -- needed for G2P delta (T_new − T_old)
 }
 
 impl ThermalDiffusion {

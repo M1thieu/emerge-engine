@@ -31,7 +31,7 @@ pub struct StomakhinMaterial {
     pub max_plastic_jacobian: f32,
     /// Cohesion pressure: τ += −c · max(1−Jp, 0) · I.
     /// Creates attractive stress in plastically compacted snow (Jp < 1).
-    /// 0.0 = no cohesion (Stomakhin 2013 default — powder, loose snow).
+    /// 0.0 = no cohesion (Stomakhin 2013 default -- powder, loose snow).
     /// ~500–2000 for packed/wet snow that sticks after impact.
     pub cohesion_coeff: f32,
 }
@@ -64,7 +64,7 @@ impl StomakhinMaterial {
     }
 
     /// Stomakhin 2013 canonical plasticity: ξ=10, θ_c=0.025, θ_s=0.0075.
-    /// Canonical: E = 1.4e5, ν = 0.2 — matches MPM2D reference and sparkl snow demos.
+    /// Canonical: E = 1.4e5, ν = 0.2 -- matches MPM2D reference and sparkl snow demos.
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)
@@ -194,7 +194,7 @@ impl MaterialModel for StomakhinMaterial {
         material_cfl: f32,
         _viscous_cfl: f32,
     ) -> f32 {
-        // h grows when snow compresses — accounts for stiffening in CFL bound
+        // h grows when snow compresses -- accounts for stiffening in CFL bound
         elastic_wave_dt(
             self.lambda,
             self.mu,

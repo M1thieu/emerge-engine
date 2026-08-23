@@ -10,7 +10,7 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Above yield stress τ₀: Newtonian with apparent viscosity η_app = τ₀/γ̇ + η.
 ///
 /// Stress decomposition: σ = −p·I + τ_deviatoric
-/// Pressure: Tait EOS — p = k·((ρ/ρ₀)^γ − 1), same as NewtonianFluid.
+/// Pressure: Tait EOS -- p = k·((ρ/ρ₀)^γ − 1), same as NewtonianFluid.
 /// Deviatoric:
 ///   γ̇ = √(2·D_dev:D_dev)   (scalar shear rate, D_dev = deviatoric part of D)
 ///   τ = (τ₀/γ̇ + η)·D_dev   if γ̇ > critical_shear_rate, else 0
@@ -25,13 +25,13 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 #[derive(Debug, Clone, Copy)]
 pub struct BinghamFluidMaterial {
     pub rest_density: f32,
-    /// Dynamic viscosity η (Pa·s) — slope of stress-rate curve above yield.
+    /// Dynamic viscosity η (Pa·s) -- slope of stress-rate curve above yield.
     pub dynamic_viscosity: f32,
     /// Tait EOS stiffness k (pressure scale factor).
     pub eos_stiffness: f32,
     /// Tait EOS exponent γ (7 for water-like, 1 for linear).
     pub eos_power: f32,
-    /// Yield stress τ₀ — shear stress required to initiate flow.
+    /// Yield stress τ₀ -- shear stress required to initiate flow.
     /// Below this, deviatoric stress is zero (plug flow).
     pub yield_stress: f32,
     /// Minimum shear rate to avoid τ₀/γ̇ singularity.
@@ -55,7 +55,7 @@ pub struct BinghamFluidMaterial {
     pub pressure_floor: f32,
     pub min_density: f32,
     pub min_volume: f32,
-    /// Surface tension coefficient γ — adds γ·J·I to Kirchhoff stress.
+    /// Surface tension coefficient γ -- adds γ·J·I to Kirchhoff stress.
     /// See `NewtonianFluidMaterial::surface_tension_coeff` for details.
     pub surface_tension_coeff: f32,
     /// Per-step velocity decay: v *= (1 − settling_damping · dt).
@@ -119,7 +119,7 @@ impl BinghamFluidMaterial {
     /// Compute deviatoric Bingham stress from the APIC velocity gradient C.
     ///
     /// D = (C + Cᵀ)/2 (symmetric strain rate)
-    /// γ̇ = √(2·D_dev:D_dev) (scalar shear rate — deviatoric only: a yield criterion
+    /// γ̇ = √(2·D_dev:D_dev) (scalar shear rate -- deviatoric only: a yield criterion
     /// must not respond to pure volumetric expansion/compression, which isn't shear)
     /// Below yield: returns zero matrix (plug flow).
     /// Above yield: returns (τ₀/γ̇ + η)·D_dev.
@@ -132,7 +132,7 @@ impl BinghamFluidMaterial {
         let trace = d.x_axis.x + d.y_axis.y;
         let d_dev = d - Mat2::from_diagonal(Vec2::splat(trace * 0.5));
 
-        // Scalar shear rate γ̇ = √(2·D_dev:D_dev) — Frobenius norm of deviatoric D, scaled.
+        // Scalar shear rate γ̇ = √(2·D_dev:D_dev) -- Frobenius norm of deviatoric D, scaled.
         let d_xx = d_dev.x_axis.x;
         let d_yy = d_dev.y_axis.y;
         let d_xy = d_dev.x_axis.y; // = d_dev.y_axis.x for symmetric D
@@ -328,7 +328,7 @@ impl MaterialModel for BinghamFluidMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        // Viscous diffusion bound — apparent viscosity is at least dynamic_viscosity
+        // Viscous diffusion bound -- apparent viscosity is at least dynamic_viscosity
         if self.dynamic_viscosity > 0.0 {
             let kinematic_viscosity = self.dynamic_viscosity / density;
             if kinematic_viscosity > f32::EPSILON {

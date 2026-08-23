@@ -1,22 +1,22 @@
-//! Real elongation growth — the tip segment's `rest_edge_length` grows via
+//! Real elongation growth -- the tip segment's `rest_edge_length` grows via
 //! logistic growth (Verhulst 1838, `dL/dt = r·L·(1−L/K)`), the SAME real,
 //! already-tested equation `ScalarDiffusionField`'s own resource-regrowth
 //! source already uses (`src/energy/thermodynamics/scalar_field.rs`,
-//! `resource_field.wgsl`) — reused here for length instead of a scalar
+//! `resource_field.wgsl`) -- reused here for length instead of a scalar
 //! field, not a new invented law. The multiplicative growth-decomposition
 //! CONCEPT this rests on (elongation as a real, separate kinematic quantity
 //! from elastic strain) is Rodriguez, Hoger, McCulloch (1994), "Stress-
 //! dependent finite growth in soft elastic tissues," *Journal of
-//! Biomechanics* 27(4):455–467 — real growth theory, not plant-specific
+//! Biomechanics* 27(4):455–467 -- real growth theory, not plant-specific
 //! (also used for tumors, blood vessels, tissue growth generally).
 //!
-//! Only the tip's own edge grows — real apical-meristem elongation happens
+//! Only the tip's own edge grows -- real apical-meristem elongation happens
 //! at the growing tip; mature tissue further back doesn't keep stretching.
 //!
 //! **Point insertion (cell division)**: once the tip
 //! edge matures (reaches `0.99*max_segment_length_m`, the same threshold
 //! `Rod::is_growing`'s own doc already uses for "still actively growing"),
-//! a new point is inserted beyond it — real apical-meristem cell division,
+//! a new point is inserted beyond it -- real apical-meristem cell division,
 //! not just indefinite stretching of one segment (Rodriguez, Hoger,
 //! McCulloch 1994's own growth-decomposition framework already cited above
 //! explicitly separates growth from elastic strain; repeated division is
@@ -24,7 +24,7 @@
 //! infinitely stretching what it already has). The new edge starts at
 //! `NEW_SEGMENT_FRACTION` of `max_segment_length_m` (a real, illustrative
 //! "freshly-divided cell starts small" choice, same disclosed-calibration
-//! status as this file's other rate constants — not a specific species'
+//! status as this file's other rate constants -- not a specific species'
 //! measured division size) and becomes the new tip edge the logistic law
 //! above grows next, so growth keeps producing new points instead of
 //! plateauing at one segment's own `max_segment_length_m` ceiling forever.
@@ -35,41 +35,41 @@
 //! distinct force-balance term (cavity-expansion + interfacial friction),
 //! and the classical Lockhart (1965) framework states elongation proceeds
 //! only once internal turgor pressure exceeds the combined cell-wall +
-//! soil resistance — growth is NOT unconditional. Local soil resistance is
+//! soil resistance -- growth is NOT unconditional. Local soil resistance is
 //! sensed here via the shared grid's own mass density near the growing tip
-//! — a real, but honestly SIMPLIFIED substitute for Bengough & Mullins' own
+//! -- a real, but honestly SIMPLIFIED substitute for Bengough & Mullins' own
 //! particle-scale cavity-expansion force, which needs grain-level contact
 //! data this engine's continuum grid doesn't expose. `turgor_pressure_pa`/
 //! `resistance_per_unit_mass_pa` are illustrative (the real measured turgor
 //! range, ~0.1-1 MPa, came from secondary sources, not an independently
-//! re-verified primary citation) — same disclosed-calibration status as
+//! re-verified primary citation) -- same disclosed-calibration status as
 //! `Gravitropism`'s own rate constants.
 //!
 //! **Finite resource budget**: `GrowthResistance`
 //! only ever modeled the SOIL half of Lockhart's own "cell-wall + soil
-//! resistance" — with no soil (a scene with no MPM particles at all),
+//! resistance" -- with no soil (a scene with no MPM particles at all),
 //! `resistance` gates nothing and `rate*L*(1-L/K)` growth, combined with
 //! point insertion, elongates without any real physical limit. Real plants
 //! do not grow forever either way: before photosynthesis is established, a
 //! seedling's root elongation is funded ENTIRELY by finite seed/storage
 //! reserves (Deleens, Gregory, Bourdu 1984, "Transition between seed
 //! reserve use and photosynthetic supply during development of maize
-//! seedlings," *Plant Science Letters* — maize roots draw NO autotrophic
+//! seedlings," *Plant Science Letters* -- maize roots draw NO autotrophic
 //! carbon at all until day 10-14, running purely on seed reserves until
 //! then). `Growth::resource_budget_m` models this directly: a real, finite
 //! total length the plant's current reserves can still fund, decremented by
 //! the REAL elongation added each call (both ordinary stretching and any
 //! length seeded into a newly-inserted point), reaching zero and halting
-//! growth entirely once exhausted — a real "growth crisis" (the same
+//! growth entirely once exhausted -- a real "growth crisis" (the same
 //! transition-point terminology Deleens et al. use), not an arbitrary demo
 //! cap. `None` (default) = unlimited, exactly the prior behavior.
 //!
 //! **Light-driven growth rate**: `LightResponse`
 //! couples `Growth::rate` to real photosynthetic light exposure (a
-//! rectangular-hyperbola photosynthesis-irradiance curve — see
+//! rectangular-hyperbola photosynthesis-irradiance curve -- see
 //! `LightResponse`'s own doc) instead of growing at a fixed rate regardless
 //! of light. This is the real ongoing-supply mechanism the finite resource
-//! budget above always disclosed itself as standing in for — both can
+//! budget above always disclosed itself as standing in for -- both can
 //! coexist (budget = total reserves remaining, light response = how fast
 //! *current* reserves are being spent/replenished).
 
@@ -80,23 +80,23 @@ use crate::grid::Grid;
 use crate::grid::kernel::quadratic_weights;
 
 /// Real photosynthesis-driven growth-rate coupling (see module doc's own
-/// "Real light-driven growth rate" section) — a rectangular hyperbola
+/// "Real light-driven growth rate" section) -- a rectangular hyperbola
 /// (Michaelis-Menten-shaped) photosynthesis-irradiance response curve, the
 /// same real, widely-used family covered in e.g. Ye et al. 2019, *Scientific
 /// Reports*, "A general non-rectangular hyperbola equation for
-/// photosynthetic light response curve of rice at various leaf ages" — this
+/// photosynthetic light response curve of rice at various leaf ages" -- this
 /// engine uses the SIMPLER rectangular (Θ=0) special case of that family,
 /// not the full non-rectangular form. `Growth::rate` becomes the light-
 /// SATURATED maximum rate; the real, current EFFECTIVE rate is
 /// `rate * exposure/(half_saturation_exposure + exposure)`, saturating
-/// toward `rate` at high exposure and toward zero in the dark — real "no
+/// toward `rate` at high exposure and toward zero in the dark -- real "no
 /// light, no growth" behavior a fixed-rate logistic cannot express at all.
 #[derive(Debug, Clone, Copy)]
 pub struct LightResponse {
     /// Exposure (see `apply_growth`'s own doc for how it's measured) at
     /// which the effective rate reaches half of `Growth::rate`.
     /// Dimensionless, same units as `apply_growth`'s own Lambertian
-    /// exposure term (0-1) — illustrative, same disclosed-calibration
+    /// exposure term (0-1) -- illustrative, same disclosed-calibration
     /// status as this file's other rate constants.
     pub half_saturation_exposure: f32,
 }
@@ -114,7 +114,7 @@ pub struct GrowthResistance {
     /// Internal turgor driving pressure, Pa.
     pub turgor_pressure_pa: f32,
     /// Conversion from local grid mass density to an equivalent soil
-    /// resistance pressure, Pa per unit mass — a real, but simplified,
+    /// resistance pressure, Pa per unit mass -- a real, but simplified,
     /// stand-in for Bengough & Mullins' particle-scale cavity-expansion
     /// force (see module doc).
     pub resistance_per_unit_mass_pa: f32,
@@ -124,24 +124,24 @@ pub struct GrowthResistance {
 pub struct Growth {
     /// Logistic growth rate `r`, 1/s.
     pub rate: f32,
-    /// Carrying capacity `K` — the real maximum length the growing tip
+    /// Carrying capacity `K` -- the real maximum length the growing tip
     /// segment approaches, meters. A segment starts well below this and
     /// approaches it asymptotically (real sigmoidal growth curve), never
     /// exceeding it.
     pub max_segment_length_m: f32,
     /// Real turgor-vs-soil-resistance growth gate (see module doc). `None`
-    /// (default) = ungated logistic growth, exactly the prior behavior —
+    /// (default) = ungated logistic growth, exactly the prior behavior --
     /// zero cost, zero change for anything that doesn't opt in.
     pub resistance: Option<GrowthResistance>,
     /// Real finite seed/storage-reserve budget (see module doc's own
     /// "Real finite resource budget" section, Deleens, Gregory, Bourdu
-    /// 1984) — total remaining length, meters, the plant's current
+    /// 1984) -- total remaining length, meters, the plant's current
     /// reserves can still fund. `None` (default) = unlimited, exactly the
     /// prior behavior.
     pub resource_budget_m: Option<f32>,
     /// Real photosynthesis/light-response growth-rate coupling (see
     /// `LightResponse`'s own doc). `None` (default) = ungated, exactly the
-    /// prior fixed-rate behavior — zero cost, zero change for anything
+    /// prior fixed-rate behavior -- zero cost, zero change for anything
     /// that doesn't opt in.
     pub light_response: Option<LightResponse>,
 }
@@ -162,7 +162,7 @@ impl Growth {
         self
     }
 
-    /// Opt into a real, finite growth budget (see module doc) — without
+    /// Opt into a real, finite growth budget (see module doc) -- without
     /// this, growth (combined with point insertion) has no total-length
     /// limit at all, unrealistic for any real plant given enough real time.
     pub const fn with_resource_budget(mut self, budget_m: f32) -> Self {
@@ -171,7 +171,7 @@ impl Growth {
     }
 
     /// Opt into real photosynthesis-driven growth rate (see `LightResponse`'s
-    /// own doc) — without this, growth proceeds at the fixed `rate`
+    /// own doc) -- without this, growth proceeds at the fixed `rate`
     /// regardless of light, exactly the prior behavior.
     pub const fn with_light_response(mut self, light_response: LightResponse) -> Self {
         self.light_response = Some(light_response);
@@ -179,7 +179,7 @@ impl Growth {
     }
 }
 
-/// Real, quadratic-B-spline-weighted local mass density near `pos` — same
+/// Real, quadratic-B-spline-weighted local mass density near `pos` -- same
 /// kernel every other grid sample in this engine uses, not a naive
 /// single-cell lookup. `pub(super)`: also reused by `gravitropism.rs` --
 /// gravitropic curling is itself mediated by real differential cell
@@ -204,7 +204,7 @@ pub(super) fn sample_mass_density(grid: &Grid, pos: Vec2) -> f32 {
 }
 
 /// Real "freshly-divided cell starts small" fraction of `max_segment_
-/// length_m` a brand new tip edge is seeded at — illustrative, same
+/// length_m` a brand new tip edge is seeded at -- illustrative, same
 /// disclosed-calibration status as this file's rate constants (see module
 /// doc), not a specific species' measured division size.
 const NEW_SEGMENT_FRACTION: f32 = 0.1;
@@ -212,7 +212,7 @@ const NEW_SEGMENT_FRACTION: f32 = 0.1;
 /// Same maturity threshold `Rod::is_growing`'s own doc already uses.
 const MATURITY_FRACTION: f32 = 0.99;
 
-/// Real apical-meristem cell division — inserts a new point beyond the
+/// Real apical-meristem cell division -- inserts a new point beyond the
 /// current tip, splitting what was one growing edge into a mature edge
 /// (unchanged) and a fresh, small new edge (the new tip, which `apply_growth`
 /// grows next). Every per-point/per-edge/per-vertex array is extended

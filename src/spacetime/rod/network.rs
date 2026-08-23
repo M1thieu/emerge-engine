@@ -1,17 +1,17 @@
-//! Real branching rod topology — a genuine graph, not two `Rod`s synchronized
+//! Real branching rod topology -- a genuine graph, not two `Rod`s synchronized
 //! after the fact.
 //! A branch's root point literally IS a point in the SAME array as its
-//! parent — one array, one source of truth, no post-hoc synchronization.
+//! parent -- one array, one source of truth, no post-hoc synchronization.
 //!
 //! Reuses `forces::discrete_curvature`/`discrete_curvature_gradient`
-//! completely unchanged — those functions are already point-based (three
+//! completely unchanged -- those functions are already point-based (three
 //! raw `Vec2`s), not index-based, so the real curvature math from Bergou et
 //! al. 2008 needs no modification at all to work at a branch vertex; only
 //! the TOPOLOGY (which points form which edges/bending triples) needed to
 //! generalize from "always i-1,i,i+1" (implicit, linear-chain `RodPoints`)
 //! to an explicit list.
 //!
-//! Scope, disclosed: binary branching only — a point may have at most 3
+//! Scope, disclosed: binary branching only -- a point may have at most 3
 //! incident edges (one "parent" side, two "child" sides), giving exactly 2
 //! meaningful bending vertices at a branch point. Real botanical branching
 //! is overwhelmingly bifurcation; true simultaneous trifurcation would need
@@ -19,7 +19,7 @@
 //!
 //! Per-edge/per-bending-vertex stiffness and damping (`ea`/`ei`,
 //! `axial_damping`/`bending_damping`) are stored explicitly, not one shared
-//! `RodMaterial` — a real trunk and its fine branches genuinely differ in
+//! `RodMaterial` -- a real trunk and its fine branches genuinely differ in
 //! their mechanical response, unlike a single unbranched rod where one
 //! material was always a reasonable assumption.
 
@@ -72,7 +72,7 @@ impl RodNetwork {
     }
 }
 
-/// Grouped parameters for `build_y_branch` — one struct instead of an
+/// Grouped parameters for `build_y_branch` -- one struct instead of an
 /// 11-argument function signature.
 #[derive(Debug, Clone, Copy)]
 pub struct YBranchSpec {
@@ -91,7 +91,7 @@ pub struct YBranchSpec {
 
 /// Builds a simple Y-branch: a straight trunk from `trunk_start` to
 /// `junction`, with a straight branch continuing from `junction` to
-/// `branch_end` — the smallest real, testable branching topology. The
+/// `branch_end` -- the smallest real, testable branching topology. The
 /// junction point is shared: it is NOT duplicated, it is literally point
 /// index `n_trunk - 1`, referenced by both the trunk's last edge and the
 /// branch's first edge.
@@ -244,7 +244,7 @@ pub fn build_y_branch(spec: YBranchSpec) -> RodNetwork {
 /// Real per-point internal force (Newtons), generalizing
 /// `forces::compute_internal_forces` from implicit linear-chain adjacency
 /// to an explicit edge/bending topology. Same stretch + bending + damping
-/// physics, same underlying curvature math — only the iteration is
+/// physics, same underlying curvature math -- only the iteration is
 /// different (over explicit lists instead of an index range).
 pub fn compute_network_internal_forces(net: &RodNetwork, dx_meters: f32) -> Vec<Vec2> {
     let n = net.len();
@@ -297,7 +297,7 @@ pub fn compute_network_internal_forces(net: &RodNetwork, dx_meters: f32) -> Vec<
 
 /// Real Gershgorin CFL bound, generalizing `integrator::rod_cfl_dt` from
 /// implicit `i-1/i/i+1` neighbor lookups to an explicit edges/bending pass
-/// — same principle (sum every stiffness/damping term touching each point),
+/// -- same principle (sum every stiffness/damping term touching each point),
 /// single accumulation pass instead of a per-point neighbor scan since the
 /// topology is no longer a fixed linear pattern.
 pub fn network_cfl_dt(net: &RodNetwork, safety: f32) -> f32 {
@@ -340,7 +340,7 @@ pub fn network_cfl_dt(net: &RodNetwork, safety: f32) -> f32 {
     min_dt
 }
 
-/// Standalone explicit (symplectic Euler) network step — no grid, mirrors
+/// Standalone explicit (symplectic Euler) network step -- no grid, mirrors
 /// `integrator::step_rod`'s own Phase 0/1 role for the linear rod. No
 /// built-in CFL enforcement, matching `step_rod`'s own contract: the caller
 /// must pick a stable `dt`, typically via `network_cfl_dt`.

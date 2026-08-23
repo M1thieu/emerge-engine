@@ -13,7 +13,7 @@ pub struct FixedStepController {
 }
 
 impl FixedStepController {
-    /// Standard interactive stepper — `hz` solver steps per real second, capped at 64/frame.
+    /// Standard interactive stepper -- `hz` solver steps per real second, capped at 64/frame.
     ///
     /// Equivalent to `FixedStepController::new(FixedStepConfig { dt, simulation_speed: hz * dt,
     /// max_substeps_per_frame: 64, max_frame_delta: 1.0 / 15.0 })`.
@@ -58,7 +58,7 @@ impl FixedStepController {
     pub const fn simulation_speed(&self) -> f32 {
         self.config.simulation_speed
     }
-    /// Reset the time accumulator — call on save-load or pause-resume to prevent stutter.
+    /// Reset the time accumulator -- call on save-load or pause-resume to prevent stutter.
     pub const fn reset(&mut self) {
         self.accumulator = 0.0;
     }

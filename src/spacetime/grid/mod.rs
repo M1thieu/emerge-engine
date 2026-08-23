@@ -1,10 +1,10 @@
 //! Sparse Eulerian background grid for MLS-MPM P2G/G2P.
 //!
-//! Split by subsystem — the struct partitions into 3 nearly-independent field
+//! Split by subsystem -- the struct partitions into 3 nearly-independent field
 //! groups (`cells`, `contact_cells`, `mixture_cells`, each with its own dirty
 //! list). `contact.rs` and `mixture.rs` each add their own `impl Grid { ... }`
 //! block (ordinary Rust: multiple impl blocks for one type across files) rather
-//! than living inside this one — every method these files define is private to
+//! than living inside this one -- every method these files define is private to
 //! the `grid` module (visible to `grid` and its descendants by Rust's normal
 //! privacy rule), so no visibility widening was needed for `Grid`'s own fields;
 //! only the two per-subsystem cell types (`ContactCell`/`ContactCellMap`,
@@ -31,11 +31,11 @@ use mixture::MixtureCellMap;
 
 /// FxHash-style hasher for the grid's `u32` flat-index keys.
 ///
-/// `std::collections::HashMap` defaults to SipHash — a cryptographic, DoS-resistant
+/// `std::collections::HashMap` defaults to SipHash -- a cryptographic, DoS-resistant
 /// hash that is deliberately slow. The grid is hashed 9× per particle every substep
 /// (the hottest loop in the solver) on an internal `u32` key with no adversarial input,
 /// so a single-multiply non-cryptographic hash is both correct and far faster.
-/// Constant is the standard FxHash multiplier. Zero dependencies — keeps the
+/// Constant is the standard FxHash multiplier. Zero dependencies -- keeps the
 /// glam + bytemuck-only invariant.
 const FXHASH_K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
 
@@ -47,7 +47,7 @@ pub struct FxU32Hasher {
 impl Hasher for FxU32Hasher {
     #[inline]
     fn write_u32(&mut self, i: u32) {
-        // Grid keys are always exactly one u32 — this is the only path taken in practice.
+        // Grid keys are always exactly one u32 -- this is the only path taken in practice.
         self.hash = (i as u64).wrapping_mul(FXHASH_K);
     }
 
@@ -83,7 +83,7 @@ pub(crate) type CellMap = HashMap<u32, Cell, FxU32BuildHasher>;
 pub type VelocitySnapshot = HashMap<u32, Vec2, FxU32BuildHasher>;
 
 /// Converts a cell position to the flat HashMap key, or `None` if out of domain bounds.
-/// Shared by `Grid::add_mass_momentum` and the parallel P2G scatter in `transfer.rs` — both
+/// Shared by `Grid::add_mass_momentum` and the parallel P2G scatter in `transfer.rs` -- both
 /// must agree on bounds-checking and indexing, so this is the single source of truth.
 pub(crate) const fn flat_index(cell_pos: IVec2, resolution: usize) -> Option<u32> {
     if cell_pos.x < 0 || cell_pos.y < 0 {
@@ -97,7 +97,7 @@ pub(crate) const fn flat_index(cell_pos: IVec2, resolution: usize) -> Option<u32
     Some((x * resolution + y) as u32)
 }
 
-/// One grid cell — `repr(C)` for stable GPU buffer layout.
+/// One grid cell -- `repr(C)` for stable GPU buffer layout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cell {
@@ -108,7 +108,7 @@ pub struct Cell {
     pub mass: f32,
 }
 
-/// Sparse grid — HashMap-backed, only touched cells allocated.
+/// Sparse grid -- HashMap-backed, only touched cells allocated.
 ///
 /// `resolution` defines the simulation domain (soft boundary enforcement).
 /// Memory cost is O(active particles × stencil) not O(resolution²).
@@ -124,13 +124,13 @@ pub struct Grid {
     /// Flat indices of cells touched this frame, in insertion order.
     /// Separate from `cells` to enable O(touched) clear without iterating HashMap buckets.
     dirty: Vec<u32>,
-    /// Second velocity field for multi-field contact — see `contact::ContactCell` doc.
+    /// Second velocity field for multi-field contact -- see `contact::ContactCell` doc.
     /// Empty for every scene that never sets `Particle::contact_group`, which is the
     /// critical zero-cost property: `has_contact_activity()` gates the extra work in
     /// P2G/G2P/step so a scene that doesn't use this feature runs unaffected.
     contact_cells: ContactCellMap,
     contact_dirty: Vec<u32>,
-    /// Two-phase mixture coupling field — see `mixture::MixtureCell` doc. Empty for
+    /// Two-phase mixture coupling field -- see `mixture::MixtureCell` doc. Empty for
     /// every scene that never uses `WithMixturePhase`, the same zero-cost property
     /// `contact_cells` already has.
     mixture_cells: MixtureCellMap,
@@ -167,7 +167,7 @@ impl Grid {
     }
 
     /// True if any grip particle touched the grid this substep. Gates the extra
-    /// contact-aware work in P2G/G2P/step — when false (every scene that never sets
+    /// contact-aware work in P2G/G2P/step -- when false (every scene that never sets
     /// `Particle::contact_group`), those paths run their original, unmodified logic.
     pub const fn has_contact_activity(&self) -> bool {
         !self.contact_dirty.is_empty()
@@ -201,7 +201,7 @@ impl Grid {
     }
 
     /// True if any mixture-phase particle touched the grid this substep. Gates
-    /// the extra mixture-aware work in P2G/G2P/step — same convention as
+    /// the extra mixture-aware work in P2G/G2P/step -- same convention as
     /// `has_contact_activity`.
     pub const fn has_mixture_activity(&self) -> bool {
         !self.mixture_dirty.is_empty()
@@ -239,7 +239,7 @@ impl Grid {
     }
 
     /// Accumulate by pre-computed flat index (already bounds-checked by the caller).
-    /// Single hash lookup via entry() — was contains_key + insert + get_mut (3 lookups)
+    /// Single hash lookup via entry() -- was contains_key + insert + get_mut (3 lookups)
     /// in the hottest scatter loop. dirty only grows on first touch of a cell.
     fn accumulate(&mut self, idx: u32, mass: f32, momentum: Vec2) {
         match self.cells.entry(idx) {
@@ -255,7 +255,7 @@ impl Grid {
         }
     }
 
-    /// Grid velocity at `cell_pos` — valid after `update_velocities()`. Zero for OOB/untouched.
+    /// Grid velocity at `cell_pos` -- valid after `update_velocities()`. Zero for OOB/untouched.
     pub fn velocity_at(&self, cell_pos: IVec2) -> Vec2 {
         if cell_pos.x < 0 || cell_pos.y < 0 {
             return Vec2::ZERO;
@@ -363,7 +363,7 @@ impl Grid {
 
     /// Normalize momentum → velocity and apply gravity. Operates only on active cells.
     ///
-    /// A thin wrapper over `normalize_velocities` + `apply_gravity` — split so ASFLIP
+    /// A thin wrapper over `normalize_velocities` + `apply_gravity` -- split so ASFLIP
     /// (`SimConfig::asflip_blend`) can snapshot the grid's pre-force velocity in between
     /// the two (see `snapshot_velocities`). Behavior here is unchanged for every existing
     /// caller (`solver::step`, `spacetime::diff`'s `update_velocities_vjp` differentiates
@@ -399,8 +399,8 @@ impl Grid {
 
     /// Snapshot of every active cell's CURRENT velocity, keyed the same way as `cells`
     /// (flat index → velocity). Used only by ASFLIP (`SimConfig::asflip_blend > 0.0`) to
-    /// capture the grid's velocity right after `normalize_velocities` — i.e. before this
-    /// substep's gravity, boundary conditions, or contact resolution modify it — so G2P
+    /// capture the grid's velocity right after `normalize_velocities` -- i.e. before this
+    /// substep's gravity, boundary conditions, or contact resolution modify it -- so G2P
     /// can later compute the classic FLIP residual `v_p_old - old_v` (Fei et al. 2021).
     /// O(touched cells), not O(grid²): iterates `dirty`, not the full domain. Never called
     /// when ASFLIP is disabled (the default), so this has zero cost for every other scene.
@@ -515,12 +515,12 @@ impl Grid {
     }
 
     /// Iterate active cells with flat index: `(flat_idx, &mut Cell)`.
-    /// `flat_idx = x * resolution + y` — same convention used by boundary conditions.
+    /// `flat_idx = x * resolution + y` -- same convention used by boundary conditions.
     pub fn active_cells_with_index_mut(&mut self) -> impl Iterator<Item = (usize, &mut Cell)> {
         let (dirty, cells) = (&self.dirty, &mut self.cells);
         let ptr = cells as *mut CellMap;
         dirty.iter().filter_map(move |&idx| {
-            // SAFETY: same as active_cells_mut — unique indices, no concurrent inserts.
+            // SAFETY: same as active_cells_mut -- unique indices, no concurrent inserts.
             unsafe { (*ptr).get_mut(&idx).map(|cell| (idx as usize, cell)) }
         })
     }

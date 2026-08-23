@@ -9,7 +9,7 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
-/// Rankine (maximum principal stress) elastoplastic material — brittle tensile failure.
+/// Rankine (maximum principal stress) elastoplastic material -- brittle tensile failure.
 ///
 /// Elastic response: corotated linear elastic (same as DruckerPragerMaterial / VonMisesMaterial).
 /// Yield criterion: max(τ₁, τ₂) ≤ σ_t_eff, where τᵢ are principal Kirchhoff stresses and
@@ -19,7 +19,7 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 ///
 /// Return mapping: when a principal stress exceeds σ_t_eff, it is projected back to the
 /// tensile cutoff surface; the remaining stress component is unaffected (1D projection).
-/// Biaxial tension (both τ₁ > σ_t AND τ₂ > σ_t) projects at the corner — both set to σ_t.
+/// Biaxial tension (both τ₁ > σ_t AND τ₂ > σ_t) projects at the corner -- both set to σ_t.
 ///
 /// Damage accumulates in `Particle::friction_hardening` (repurposed as damage), bounded
 /// above by `rankine_damage_saturation_point(softening_rate)` -- the point past which
@@ -44,7 +44,7 @@ pub struct RankineMaterial {
     pub tensile_strength: f32,
     /// Exponential softening rate. 0.0 = no softening (hard cutoff).
     /// Positive values reduce σ_t as damage accumulates.
-    /// Typical: 0.5–5.0 — higher = more brittle (strength collapses fast after first crack).
+    /// Typical: 0.5–5.0 -- higher = more brittle (strength collapses fast after first crack).
     pub softening_rate: f32,
 }
 
@@ -182,7 +182,7 @@ impl FromSI<BrittleProps> for RankineMaterial {
 impl RankineMaterial {
     /// Rankine return mapping in 2D principal stress space.
     ///
-    /// Returns (projected_tau, yielded) — `yielded` is true if any projection occurred.
+    /// Returns (projected_tau, yielded) -- `yielded` is true if any projection occurred.
     #[inline]
     fn project_stress(&self, tau: Vec2, t_eff: f32) -> (Vec2, bool) {
         let t1 = tau.x > t_eff;

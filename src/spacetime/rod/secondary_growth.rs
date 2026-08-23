@@ -1,14 +1,14 @@
-//! Stress-driven secondary growth (thigmomorphogenesis) — a stem's own
-//! bending stiffness (`RodPoints::ei`, per vertex — see Phase 1's own doc)
+//! Stress-driven secondary growth (thigmomorphogenesis) -- a stem's own
+//! bending stiffness (`RodPoints::ei`, per vertex -- see Phase 1's own doc)
 //! grows over time in response to the REAL bending moment already acting
 //! at that vertex, not a fixed schedule. Real, cited mechanism: Jaffe 1973,
 //! "Thigmomorphogenesis: The response of plant growth and development to
-//! mechanical stimulation," *Planta* 114(2):143–157 — mechanical loading
+//! mechanical stimulation," *Planta* 114(2):143–157 -- mechanical loading
 //! (wind sway, a push) measurably changes real plant growth, not just
-//! elastic response. The specific direction of that change — the cambium
+//! elastic response. The specific direction of that change -- the cambium
 //! adds wood preferentially where mechanical stress is locally high, moving
-//! the whole structure toward a more uniform stress distribution — is
-//! Mattheck & Kübler 1995's "axiom of uniform stress" (*Wood — The Internal
+//! the whole structure toward a more uniform stress distribution -- is
+//! Mattheck & Kübler 1995's "axiom of uniform stress" (*Wood -- The Internal
 //! Optimization of Trees*), a real, established tree-biomechanics principle
 //! also covered in Niklas 1992, *Plant Biomechanics*.
 //!
@@ -18,7 +18,7 @@
 //! stress. Bending MOMENT (`forces::compute_internal_forces`'s own
 //! `coeff = (ei/voronoi_length)*(kappa-kappa_rest)`, real N·m, already
 //! computed there for the force itself) is used as the real driving signal
-//! instead — a standard beam-theory proxy for bending stress (bending
+//! instead -- a standard beam-theory proxy for bending stress (bending
 //! stress at a fixed cross-section IS a direct function of bending moment,
 //! `sigma = M*c/I`; without a separate `c`/`I` this engine can compare
 //! moment directly, same real physical driver, one less independent
@@ -30,18 +30,18 @@
 //! `d(ei)/dt = bending_rate * max(0, |M| - M_threshold)`, `d(ea)/dt =
 //! axial_rate * max(0, |F| - F_threshold)`. Rate/threshold constants are
 //! disclosed as illustrative (same disclosed-calibration status as
-//! `Gravitropism`'s own rate constants) — not fitted to a specific species.
+//! `Gravitropism`'s own rate constants) -- not fitted to a specific species.
 //!
 //! **Mass update**: real wood deposition also adds mass at
 //! that cross-section (thicker = heavier), not just stiffness. Derived from
 //! the SAME real relationship already used for `ea`/`ei` themselves:
 //! `EA = E*A` with `E` constant means `d(area)/area == d(ea)/ea` exactly, so
 //! that fraction is applied directly to `RodPoints::linear_density_kg_per_m`
-//! and the two endpoint masses of the growing edge — no new invented
+//! and the two endpoint masses of the growing edge -- no new invented
 //! mechanism, the same real physics the stiffness growth already assumes.
 //! Deliberately keyed on `ea`'s own growth only (not `ei`'s): `EA` is
 //! linearly proportional to cross-sectional area with no ambiguity, while
-//! `EI ~ width^3` entangles which geometric dimension is growing — using
+//! `EI ~ width^3` entangles which geometric dimension is growing -- using
 //! `ea` avoids double-counting the same wood through two different,
 //! independently-tunable rate constants.
 
@@ -54,7 +54,7 @@ pub struct SecondaryGrowth {
     /// m/s. Illustrative, not species-calibrated (see module doc).
     pub bending_rate: f32,
     /// Bending moment below which no stiffening occurs, N·m (the real
-    /// "allowable stress" threshold, expressed in moment terms — see
+    /// "allowable stress" threshold, expressed in moment terms -- see
     /// module doc).
     pub bending_moment_threshold_n_m: f32,
     /// Axial stiffness growth rate per unit force excess, N/(N·s) = 1/s.
@@ -83,7 +83,7 @@ impl SecondaryGrowth {
 /// Kübler 1995) by growing stiffness wherever the real, current bending
 /// moment/axial force exceeds `growth`'s own threshold. No-op for a rod
 /// with fewer than 2 points. Requires `rod.ea`/`rod.ei` to already be
-/// filled to full length (`Rod::new` does this — see Phase 1's own doc);
+/// filled to full length (`Rod::new` does this -- see Phase 1's own doc);
 /// a rod with empty `ea`/`ei` is skipped entirely rather than panicking,
 /// since there is nowhere real to store the growth.
 pub fn apply_secondary_growth(

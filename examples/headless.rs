@@ -221,7 +221,7 @@ fn main() {
     solver.apply_radial_impulse(center, 6.0, 5.0);
     solver.step_n(1);
 
-    // Final timing summary — useful for spotting regressions across runs.
+    // Final timing summary -- useful for spotting regressions across runs.
     {
         let snap = solver.diagnostics_snapshot();
         println!("\n-- Step timing (last step) --");

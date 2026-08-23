@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::diagnostics::per_material::MaterialStats;
 use crate::diagnostics::snapshot::SimSnapshot;
 
-/// NDJSON frame logger — one JSON object per line, one file per run.
+/// NDJSON frame logger -- one JSON object per line, one file per run.
 ///
 /// Each `log()` call appends one line. The file is flushed immediately so
 /// `tail -f run.ndjson | jq` gives live output during a simulation.
@@ -41,7 +41,7 @@ impl FrameLogger {
     /// Append one frame line. Labels map material_id → name (same as `log_frame_full`).
     ///
     /// `extra` is an optional list of app-defined scalar fields (e.g. a demo's
-    /// live steer input or wave speed) merged into the top-level JSON object —
+    /// live steer input or wave speed) merged into the top-level JSON object --
     /// context the engine has no name for, but that matters when replaying a
     /// run's telemetry (why did the body do that at frame N?).
     pub fn log(
@@ -75,7 +75,7 @@ impl FrameLogger {
         );
 
         // Real, generic sanity check: any pinned/Dirichlet-anchored particle should
-        // read exactly v=0 (see `SimSnapshot::max_pinned_particle_speed`'s own doc) —
+        // read exactly v=0 (see `SimSnapshot::max_pinned_particle_speed`'s own doc) --
         // only emitted when the scene actually uses `Particle::pinned` (nonzero here
         // means either real motion at an anchor -- a genuine engine bug -- or, more
         // often, that no particle is pinned at all, in which case this stays absent).
@@ -86,7 +86,7 @@ impl FrameLogger {
             ));
         }
 
-        // Optional warn fields — only when non-zero.
+        // Optional warn fields -- only when non-zero.
         if snap.vel_clamp_count > 0 {
             line.push_str(&format!(",\"vel_clamp\":{}", snap.vel_clamp_count));
         }

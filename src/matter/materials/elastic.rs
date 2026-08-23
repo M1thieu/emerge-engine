@@ -8,7 +8,7 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// Compressible Neo-Hookean hyperelastic solid (jelly, soft tissue).
 ///
 /// `kirchhoff_stress` below uses a Simo-Pister volumetric-deviatoric split
-/// (`k=λ+µ`, the 2D plane-strain bulk modulus) — see that function's own body for
+/// (`k=λ+µ`, the 2D plane-strain bulk modulus) -- see that function's own body for
 /// the current formula. Free energy: Ψ = µ/2·(tr(FᵀF)−d) − µ·ln(J) + λ/2·ln(J)²
 /// Reference: standard hyperelasticity; used in Stomakhin et al. 2013 (snow paper) §2.
 #[derive(Debug, Clone, Copy)]
@@ -21,17 +21,17 @@ pub struct NeoHookeanMaterial {
     pub thermal_expansion: f32,
     /// Active stress coefficient for muscle/motile-cell behaviour.
     /// τ_total = τ_elastic + activation × coeff × I  (contractile: pulls inward like a muscle).
-    /// Independent of elastic state — generates force even at rest.
+    /// Independent of elastic state -- generates force even at rest.
     /// 0.0 = passive (default). Tune to be on the order of µ for visible locomotion.
     pub active_stress_coeff: f32,
-    /// Continuum damage softening rate — real mechanical consequence of accumulated
+    /// Continuum damage softening rate -- real mechanical consequence of accumulated
     /// structural damage (`Particle::friction_hardening`, e.g. from
     /// `rankine_damage_estimate`), not just a passive health readout. Effective
-    /// stiffness: µ_eff = µ·exp(−rate·damage), λ_eff = λ·exp(−rate·damage) — the
+    /// stiffness: µ_eff = µ·exp(−rate·damage), λ_eff = λ·exp(−rate·damage) -- the
     /// same exponential softening `RankineMaterial` uses for its own tensile
     /// strength (continuum damage mechanics), applied here to elastic stiffness
     /// instead. Damaged tissue gets progressively softer/weaker as a smooth,
-    /// continuous function of real accumulated strain — not a hard on/off failure
+    /// continuous function of real accumulated strain -- not a hard on/off failure
     /// threshold. 0.0 = no damage coupling (default, unchanged behavior).
     pub damage_softening_rate: f32,
     /// EXPERIMENTAL, not yet FD-verified for the differentiable trainer (see
@@ -68,7 +68,7 @@ impl NeoHookeanMaterial {
 
     /// Construct from Young's modulus E and Poisson's ratio ν.
     ///
-    /// Canonical values: E = 5e6, ν = 0.2 (wgsparkl elasticity2 — stiff soft solid).
+    /// Canonical values: E = 5e6, ν = 0.2 (wgsparkl elasticity2 -- stiff soft solid).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
@@ -211,10 +211,10 @@ impl MaterialModel for NeoHookeanMaterial {
         // Must stay the log form `k·ln(J)`, not a bounded polynomial like
         // `k/2·(J²−1)`: the polynomial form is bounded as J→0 (its Kirchhoff
         // contribution approaches a finite `-k/2` regardless of k), so it only
-        // supplies a FINITE ceiling against compression — a sustained cyclic load
+        // supplies a FINITE ceiling against compression -- a sustained cyclic load
         // (e.g. muscle activation compressing tissue every gait cycle) can
         // eventually overpower any finite ceiling. `k·ln(J)` has no such ceiling:
-        // as J→0, ln(J)→−∞, so the restoring stress diverges too — a genuine
+        // as J→0, ln(J)→−∞, so the restoring stress diverges too -- a genuine
         // physical barrier against total compression.
         // Reference: Simo & Pister 1984; Bonet & Wood §6.4 (2D plane-strain form).
         let b = f * f.transpose();
@@ -298,7 +298,7 @@ impl MaterialModel for NeoHookeanMaterial {
         );
         // A high-viscosity body needs its own substep bound: elastic stability alone
         // (dt ~ h/c, wave speed) is far too loose for the viscous (parabolic/diffusive)
-        // term, which needs dt ~ h²/ν instead — same formula and bound
+        // term, which needs dt ~ h²/ν instead -- same formula and bound
         // `ViscoelasticMaterial::timestep_bound` already uses.
         let viscous_dt = if self.viscosity > 0.0 {
             let density = density.max(1.0e-6);

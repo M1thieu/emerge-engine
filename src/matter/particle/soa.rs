@@ -18,26 +18,26 @@ use super::Particle;
 /// All vecs have the same length at all times. Methods panic on out-of-bounds.
 #[derive(Clone)]
 pub struct Particles {
-    // ── Kinematics — hot (read every substep) ────────────────────────────────
+    // ── Kinematics -- hot (read every substep) ────────────────────────────────
     pub x: Vec<Vec2>,
     pub v: Vec<Vec2>,
     pub velocity_gradient: Vec<Mat2>,
     pub deformation_gradient: Vec<Mat2>,
 
-    // ── Volume / mass — hot ───────────────────────────────────────────────────
+    // ── Volume / mass -- hot ───────────────────────────────────────────────────
     pub mass: Vec<f32>,
     pub initial_volume: Vec<f32>,
     pub volume: Vec<f32>,
     pub density: Vec<f32>,
     pub material_id: Vec<u32>,
 
-    // ── Plastic state — warm ──────────────────────────────────────────────────
+    // ── Plastic state -- warm ──────────────────────────────────────────────────
     pub plastic_volume_ratio: Vec<f32>,
     pub hardening_scale: Vec<f32>,
     pub friction_hardening: Vec<f32>,
     pub log_volume_strain: Vec<f32>,
 
-    // ── Extended — cold ───────────────────────────────────────────────────────
+    // ── Extended -- cold ───────────────────────────────────────────────────────
     pub temperature: Vec<f32>,
     pub user_tag: Vec<u32>,
     pub activation: Vec<f32>,
@@ -52,7 +52,7 @@ pub struct Particles {
     /// Generic internal pre-stress pressure. See `Particle::internal_pressure` doc.
     pub internal_pressure: Vec<f32>,
 
-    // ── Sleep state — not in the hot path ────────────────────────────────────
+    // ── Sleep state -- not in the hot path ────────────────────────────────────
     /// True when sleeping (skipped by P2G/G2P). `pub(crate)`: write only via
     /// `Simulation::wake`/`sleep`, which keep the tail-partition invariant intact.
     pub(crate) sleeping: Vec<bool>,
@@ -283,7 +283,7 @@ impl Particles {
         self.pinned.push(p.pinned);
         self.scalar_field.push(p.scalar_field);
         self.internal_pressure.push(p.internal_pressure);
-        // Honor the incoming particle's real sleeping state — needed by GpuSimulation's
+        // Honor the incoming particle's real sleeping state -- needed by GpuSimulation's
         // CPU-plasticity readback path (Particles::from(Vec<Particle>)), which converts
         // live GPU particles (sleeping state included) into this SoA. Freshly-spawned
         // particles always have sleeping=0 already, so this is a no-op for that path.
@@ -323,7 +323,7 @@ impl Particles {
 
     /// Rotate `[start..end]` so that `[mid..end]` precedes `[start..mid]`.
     /// Used by add_body to insert new particles before the sleeping zone.
-    /// Standard 3-reversal algorithm — O(end − start) swaps.
+    /// Standard 3-reversal algorithm -- O(end − start) swaps.
     pub fn rotate_range(&mut self, start: usize, mid: usize, end: usize) {
         if start >= mid || mid >= end {
             return;
@@ -363,7 +363,7 @@ impl Particles {
             if pred(&p) {
                 if write != read {
                     self.set(write, p);
-                    // sleeping is not part of the AoS Particle view — copy explicitly.
+                    // sleeping is not part of the AoS Particle view -- copy explicitly.
                     self.sleeping[write] = self.sleeping[read];
                 }
                 write += 1;
@@ -417,7 +417,7 @@ impl Default for Particles {
 
 /// Lazy iterator over [`Particle`] views from a borrowed [`Particles`] store.
 ///
-/// Constructs each `Particle` on demand from SoA storage — no upfront allocation.
+/// Constructs each `Particle` on demand from SoA storage -- no upfront allocation.
 pub struct ParticlesIter<'a> {
     particles: &'a Particles,
     index: usize,

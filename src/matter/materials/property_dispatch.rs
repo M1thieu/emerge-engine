@@ -2,8 +2,8 @@
 //! `props.particle_mass(spacing, &config)` for each of the 7 property
 //! families (`Elastic`, `Elastoplastic`, `Viscoelastic`, `Pressurized`,
 //! `NoCompression`, `FluidGranular`, `Fluid`, defined in `physical_props.rs`)
-//! — dispatching each preset to its concrete `MaterialModel` constructor.
-//! Split out of `mod.rs` purely for LOC — no behavior change.
+//! -- dispatching each preset to its concrete `MaterialModel` constructor.
+//! Split out of `mod.rs` purely for LOC -- no behavior change.
 
 use super::physical_props::{BinghamProps, DuctileProps, GranularProps, NewtonianFluid, SnowProps};
 use super::{
@@ -24,7 +24,7 @@ impl Elastic {
     /// Particle mass (real SI kilograms -- `rho_kg_m3 * (spacing*dx_meters)^2`, an areal
     /// mass for this 2D solver) for a `SpawnRegion` spawning this material at `spacing`.
     /// Pass to `SpawnRegion { mass_override: Some(props.particle_mass(spacing, &config)),
-    /// .. }` — without this, every material in a multi-material scene gets the same
+    /// .. }` -- without this, every material in a multi-material scene gets the same
     /// inertia regardless of `rho_kg_m3` (only `SimConfig::particle_mass`, one global
     /// value, is used).
     ///
@@ -96,7 +96,7 @@ impl Elastoplastic {
         }
     }
 
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
+    /// See `Elastic::particle_mass` -- density lives in `self.elastic.rho_kg_m3`.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.elastic.particle_mass(spacing, config)
     }
@@ -107,7 +107,7 @@ impl Viscoelastic {
         Box::new(ViscoelasticMaterial::from_physical(self, config))
     }
 
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
+    /// See `Elastic::particle_mass` -- density lives in `self.elastic.rho_kg_m3`.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.elastic.particle_mass(spacing, config)
     }
@@ -125,7 +125,7 @@ impl Pressurized {
         Box::new(WithPreStress::new(base, pressure_grid))
     }
 
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
+    /// See `Elastic::particle_mass` -- density lives in `self.elastic.rho_kg_m3`.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.elastic.particle_mass(spacing, config)
     }
@@ -136,14 +136,14 @@ impl NoCompression {
         Box::new(NoCompressionMaterial::from_physical(&self.elastic, config))
     }
 
-    /// See `Elastic::particle_mass` — density lives in `self.elastic.rho_kg_m3`.
+    /// See `Elastic::particle_mass` -- density lives in `self.elastic.rho_kg_m3`.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.elastic.particle_mass(spacing, config)
     }
 }
 
 impl FluidGranular {
-    /// Dispatches to `GranularFluidMaterial` — Tait EOS pressure + corotated deviatoric + SVD plasticity.
+    /// Dispatches to `GranularFluidMaterial` -- Tait EOS pressure + corotated deviatoric + SVD plasticity.
     pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
         use super::physical_props::scale_lame;
         // Tait EOS polytropic exponent -- Cole 1948, "Underwater Explosions"; standard
@@ -268,7 +268,7 @@ mod particle_mass_tests {
         SimConfig::earth(64, 0.01, 0.05)
     }
 
-    /// mass_from(&props) == props.particle_mass(spacing) called directly — no duplication risk.
+    /// mass_from(&props) == props.particle_mass(spacing) called directly -- no duplication risk.
     #[test]
     fn mass_from_matches_direct_call() {
         let config = earth_config();

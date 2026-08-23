@@ -1,15 +1,15 @@
 // Multi-field contact resolution (GPU port). Ports `Grid::resolve_contact`/
-// `fit_contact_normal_lr` (src/spacetime/grid/mod.rs, CPU) to WGSL — Bardenhagen 2001 +
+// `fit_contact_normal_lr` (src/spacetime/grid/mod.rs, CPU) to WGSL -- Bardenhagen 2001 +
 // Nairn 2020 LR normal fit + velocity-floor Baumgarte stabilization (not the earlier
 // unconditional-additive form, which causes long-horizon energy injection).
 //
 // Point-cloud storage is bucketed per coarse BLOCK, not per exact grid node (per-node
-// sizing scales as `grid_res² × capacity` and OOMs — see `MAX_CONTACT_POINTS_PER_BLOCK`'s
+// sizing scales as `grid_res² × capacity` and OOMs -- see `MAX_CONTACT_POINTS_PER_BLOCK`'s
 // doc in step_params.rs). The fit here (`fit_contact_normal_lr`) gathers a node's
 // candidate points from its own block PLUS its 8 neighbors (`gather_local_points`,
 // mirroring the halo-expansion `particle_sort_compact_main` uses for occupancy) into a
 // small fixed-size LOCAL array, filtered to actual kernel range (`|rel| < 1.5` cells, the
-// 3x3 B-spline stencil reach P2G uses) — only then does the Newton-Raphson iteration run,
+// 3x3 B-spline stencil reach P2G uses) -- only then does the Newton-Raphson iteration run,
 // same as CPU's per-node exact list, just gathered differently underneath.
 //
 // `debug_fit_normal_main` runs the same fit against one whole block's raw points with no
@@ -36,7 +36,7 @@ struct StepParams {
     _pad1:              u32,
 }
 
-// Field order matches ContactDebugParams (Rust, step_params.rs) exactly — node_pos
+// Field order matches ContactDebugParams (Rust, step_params.rs) exactly -- node_pos
 // first (8-byte alignment), then the two u32s.
 struct ContactDebugParams {
     node_pos:     vec2<f32>,
@@ -44,10 +44,10 @@ struct ContactDebugParams {
     point_count:  u32,
 }
 
-// Directional (setae-style) grip friction — GPU mirror of `DirectionalContactGrip`
+// Directional (setae-style) grip friction -- GPU mirror of `DirectionalContactGrip`
 // (src/spacetime/grid/mod.rs). `mu_easy == mu_resist` (the default, uploaded whenever
 // no directional bias is active) reduces this EXACTLY to plain symmetric Coulomb
-// friction at `contact_friction` — see `resolve_direction_aware` below for why one
+// friction at `contact_friction` -- see `resolve_direction_aware` below for why one
 // code path covers both cases instead of maintaining two.
 struct DirectionalGripParams {
     easy_direction: vec2<f32>,
@@ -58,7 +58,7 @@ struct DirectionalGripParams {
 const MAX_POINTS_PER_BLOCK: u32 = 256u;
 const MAX_LOCAL_POINTS:     u32 = 128u;
 // Dedicated finer contact-point partition (see MAX_CONTACT_POINTS_PER_BLOCK's doc in
-// step_params.rs) — deliberately NOT the same override as this file's OWN
+// step_params.rs) -- deliberately NOT the same override as this file's OWN
 // NUM_BLOCKS_PER_DIM below (that one sizes active_block_ids/active_block_count, the
 // unrelated sparse-MPM-dispatch partition).
 override NUM_CONTACT_BLOCKS_PER_DIM: u32;
@@ -82,7 +82,7 @@ const MIN_MASS_FRACTION: f32 = 1.0e-6;
 @group(1) @binding(18) var<storage, read_write> resolved_rest_v:         array<vec2<f32>>;
 @group(1) @binding(19) var<uniform>             grip_params:             DirectionalGripParams;
 
-// Exact port of solve3x3 (src/spacetime/grid/mod.rs) — Cramer's rule for a general 3x3
+// Exact port of solve3x3 (src/spacetime/grid/mod.rs) -- Cramer's rule for a general 3x3
 // linear system. `ok` is written false (leaving `out` untouched) when the system is
 // singular (|det| <= epsilon), matching the Rust version's `Option::None` return.
 //
@@ -112,7 +112,7 @@ fn solve3x3(m: mat3x3<f32>, rhs: vec3<f32>, out: ptr<function, vec3<f32>>) -> bo
     return true;
 }
 
-// Exact port of fit_contact_normal_lr's core Newton-Raphson NLLS iteration — same
+// Exact port of fit_contact_normal_lr's core Newton-Raphson NLLS iteration -- same
 // numerics, same 15-iteration cap, same penalty, same z-clamp, same sign-consistency
 // check against the actual labels. Operates on a caller-supplied LOCAL point list
 // (`points[0..count)`), decoupling this core math from where the points came from
@@ -190,7 +190,7 @@ fn fit_normal_from_local_points(points: ptr<function, array<vec4<f32>, 128>>, co
         return vec3<f32>(0.0, 0.0, 0.0);
     }
 
-    // Sign-consistency check against the actual labels — see fit_contact_normal_lr's
+    // Sign-consistency check against the actual labels -- see fit_contact_normal_lr's
     // own Rust doc for the full rationale (Newton can converge to a backwards normal).
     var grip_sum = 0.0;
     var grip_n = 0.0;
@@ -230,7 +230,7 @@ fn grip_mass_at(cx: i32, cy: i32, res: u32) -> f32 {
 // Fallback contact normal: Sobel-3x3 gradient of the grip field's own grid mass -- exact
 // port of `grip_mass_gradient_normal` (CPU, src/spacetime/grid/mod.rs). Needed because a
 // falling body's first touch has a shallow, one-sided point cloud where the LR fit often
-// has no answer yet — without this fallback, `resolve_cell` would skip correction
+// has no answer yet -- without this fallback, `resolve_cell` would skip correction
 // outright and let the body free-fall straight through before tunneling deep and only
 // then decelerating. Returns z<=0.0 (matching `fit_normal_from_local_points`'s own "no
 // confident normal" convention) when there's no local gradient either.
@@ -250,7 +250,7 @@ fn grip_mass_gradient_normal(cx: u32, cy: u32, res: u32) -> vec3<f32> {
     return vec3<f32>(n.x, n.y, 1.0);
 }
 
-// Contact-point bucket geometry — uses the DEDICATED NUM_CONTACT_BLOCKS_PER_DIM
+// Contact-point bucket geometry -- uses the DEDICATED NUM_CONTACT_BLOCKS_PER_DIM
 // partition, not this file's own NUM_BLOCKS_PER_DIM (that one is the sparse-MPM
 // active-block partition resolve_contact_main iterates cells within, an unrelated
 // purpose). Must stay byte-for-byte identical to p2g.wgsl's contact_block_index.
@@ -299,10 +299,10 @@ fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, 
     return n;
 }
 
-// Debug-only entry point (1 thread) — runs the fit against `gather_local_points`'s
+// Debug-only entry point (1 thread) -- runs the fit against `gather_local_points`'s
 // neighbor-expanded, distance-filtered point cloud around `contact_debug_params.
 // node_pos`, i.e. the EXACT same input `resolve_cell` itself uses. `target_block`/
-// `point_count` are unused (kept for struct layout compatibility only) — a single
+// `point_count` are unused (kept for struct layout compatibility only) -- a single
 // un-expanded block's raw points would not represent what `resolve_cell` actually sees.
 @compute @workgroup_size(1, 1, 1)
 fn debug_fit_normal_main() {

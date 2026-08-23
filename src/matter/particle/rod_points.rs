@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-/// A single rod's centerline state — own SoA, independent of `Particles`.
+/// A single rod's centerline state -- own SoA, independent of `Particles`.
 /// `x`/`v` are in grid-cell units (same convention as `Particle::x`/`v`);
 /// `mass` is real, unscaled kilograms (matches `Particle::mass`'s own
 /// convention, confirmed via `Elastic::particle_mass` returning real kg).
@@ -9,7 +9,7 @@ use glam::Vec2;
 /// `spacetime::rod` 2026-08-05 to match the exact precedent `Grain` set
 /// earlier the same session: `Particle` lives in `matter::particle`, its own
 /// P2G/G2P dynamics live in `spacetime`; `RodPoints` now follows the same
-/// split). `RodMaterial` stays behind in `spacetime::rod` — two of its own
+/// split). `RodMaterial` stays behind in `spacetime::rod` -- two of its own
 /// methods (`modal_critical_damping`, `fundamental_period_s`) take
 /// `&RodPoints` directly, a genuine solver-side coupling `RodPoints` itself
 /// never has.
@@ -19,7 +19,7 @@ pub struct RodPoints {
     pub v: Vec<Vec2>,
     /// Real kilograms per point.
     pub mass: Vec<f32>,
-    /// Dirichlet anchor — identical semantics to `Particle::pinned`: G2P/the
+    /// Dirichlet anchor -- identical semantics to `Particle::pinned`: G2P/the
     /// rod's own gather forces `v=0` for a pinned point instead of gathering,
     /// and its position is left completely untouched (not re-clamped to
     /// itself, avoiding float drift), while it still scatters mass/momentum
@@ -29,16 +29,16 @@ pub struct RodPoints {
     pub rest_edge_length: Vec<f32>,
     /// Rest discrete curvature at interior vertex i (points i, i+1, i+2).
     /// Length N-2. DIMENSIONLESS (collapses to the turning angle for small
-    /// bends — see `forces::discrete_curvature`'s own doc) — 0.0 for a
+    /// bends -- see `forces::discrete_curvature`'s own doc) -- 0.0 for a
     /// straight rod. NOT 1/meters; the per-length normalization lives in the
     /// bending-force formula's own Voronoi-length division, not here.
     pub rest_curvature: Vec<f32>,
     /// Per-edge axial stiffness `E*A`, Newtons. Length N-1. Real prior art:
     /// `network::NetworkEdge::ea` already does this for a branching
     /// `RodNetwork` (different branches are genuinely different
-    /// thicknesses) — this ports the same pattern to a plain single-chain
+    /// thicknesses) -- this ports the same pattern to a plain single-chain
     /// `Rod`, e.g. a stem stiffer at its base than its growing tip.
-    /// Uninitialized (empty) when returned by `build_straight_rod` — filled
+    /// Uninitialized (empty) when returned by `build_straight_rod` -- filled
     /// with `RodMaterial::ea` at every index by `Rod::new`, so a normal
     /// construction is bit-identical to the prior uniform-material behavior;
     /// only a caller that explicitly overwrites entries after construction
@@ -55,20 +55,20 @@ pub struct RodPoints {
     /// offset from the domain origin). Each individual `x[i] += v*dt`
     /// increment (velocity*dt ~ 1e-8 to 1e-9 at typical wind-driven speeds)
     /// falls BELOW f32's representable precision at that magnitude (ULP at
-    /// 32.0 is ~3.8e-6) — naive accumulation silently rounds every substep's
+    /// 32.0 is ~3.8e-6) -- naive accumulation silently rounds every substep's
     /// contribution away to nothing even though the underlying velocity is
     /// sustained and correct. Kahan summation (Kahan 1965, standard
     /// floating-point technique) fixes this by tracking the rounding error
     /// each addition drops and folding it back in next time, without needing
     /// f64 storage.
     pub position_compensation: Vec<Vec2>,
-    /// Real multi-field frictional contact opt-in — identical semantics to
+    /// Real multi-field frictional contact opt-in -- identical semantics to
     /// `Particle::contact_group` (Bardenhagen 2001 + Nairn, Hammerquist,
     /// Smith 2020 normal fit): 0 = ordinary (sticks to whatever it touches,
     /// the MPM default), nonzero = a genuine slip/stick interface against
     /// everything else, resolved via `SimConfig::contact_friction`. Real
     /// measured root-soil friction coefficients (McKenzie et al. 2013,
-    /// *Plant, Cell & Environment*) span ~0.02-0.31 depending on surface —
+    /// *Plant, Cell & Environment*) span ~0.02-0.31 depending on surface --
     /// set `contact_friction` to a value in that real range for a root
     /// scene, rather than relying on default MPM stick contact.
     pub contact_group: Vec<u32>,

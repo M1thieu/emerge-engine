@@ -1,4 +1,4 @@
-// P2G — scatter particle mass, momentum and stress to the 3×3 grid neighbourhood.
+// P2G -- scatter particle mass, momentum and stress to the 3×3 grid neighbourhood.
 // One thread per particle. Uses fixed-point atomicAdd (WebGPU has no atomic<f32>).
 
 struct Particle {
@@ -85,7 +85,7 @@ const CELL_CENTER_OFFSET:   f32 = 0.5;
 const NUM_FLOOR:            f32 = 1e-6;
 // Fixed-point scales: mass and momentum use different scales to avoid i32 overflow.
 // With 9 particles per cell: mass × 1e6 ≤ 9e6 (safe). Momentum at vel_limit=1000: 9×1000×1e5=9e8 (safe).
-// MOM_ATOMIC_SCALE=1e5 gives 1e-5 precision — 100× better than 1e3, avoids overflow at min_dt=0.001.
+// MOM_ATOMIC_SCALE=1e5 gives 1e-5 precision -- 100× better than 1e3, avoids overflow at min_dt=0.001.
 const MASS_ATOMIC_SCALE:    f32 = 1000000.0;
 const MOM_ATOMIC_SCALE:     f32 = 100000.0;
 // Matches render::step_params::MAX_RENDER_MATERIAL_SLOTS exactly (Rust-side source of
@@ -93,20 +93,20 @@ const MOM_ATOMIC_SCALE:     f32 = 100000.0;
 // 64-material solver cap. material_id >= 16 collides into slot material_id % 16, same
 // convention Renderer::set_optical_params already uses.
 const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
-// Multi-field contact (GPU port, first slice) — must match
+// Multi-field contact (GPU port, first slice) -- must match
 // `step_params::MAX_CONTACT_POINTS_PER_BLOCK` (Rust-side source of truth, sizes the
 // `contact_points` buffer at construction) exactly, same duplicated-constant
 // convention already used for MASS_ATOMIC_SCALE/MOM_ATOMIC_SCALE above. Bucketed per
-// a DEDICATED finer contact-block partition, not per exact node — see that constant's
+// a DEDICATED finer contact-block partition, not per exact node -- see that constant's
 // own doc in step_params.rs for why (a first per-node version OOM'd at high grid_res;
 // a 2026-07-18 re-partition then split this off from the coarser P2G-sort partition to
 // fix a real scan-to-keep mismatch, see MAX_CONTACT_POINTS_PER_BLOCK's doc).
 const MAX_POINTS_PER_BLOCK: u32 = 256u;
-// override, not a hardcoded literal — must match resolve_contact.wgsl's
+// override, not a hardcoded literal -- must match resolve_contact.wgsl's
 // NUM_CONTACT_BLOCKS_PER_DIM exactly, single Rust-side source of truth
 // (src/gpu/step_params.rs). Needed here so gather_contact_points_main computes the SAME
 // block index resolve_contact's gather_local_points reads. DEDICATED to contact-point
-// bucketing — deliberately NOT the same override as particle_sort.wgsl's
+// bucketing -- deliberately NOT the same override as particle_sort.wgsl's
 // NUM_BLOCKS_PER_DIM (an unrelated partition, sort-permutation/active-block occupancy).
 override NUM_CONTACT_BLOCKS_PER_DIM: u32;
 
@@ -115,7 +115,7 @@ override NUM_CONTACT_BLOCKS_PER_DIM: u32;
 @group(0) @binding(2) var<uniform>             materials:           array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params:         StepParams;
 @group(0) @binding(5) var<storage, read_write> sorted_particle_ids: array<u32>;
-// Multi-field contact (GPU port, first slice) — see buffers.rs doc. binding 12 is the
+// Multi-field contact (GPU port, first slice) -- see buffers.rs doc. binding 12 is the
 // SAME underlying buffer as grid_clear.wgsl's `grip_grid: array<Cell>` binding, viewed
 // here as raw atomics for scatter (same dual-view convention already used for `grid`
 // itself, bound as `array<Cell>` in grid_clear.wgsl and `array<atomic<i32>>` here).
@@ -135,7 +135,7 @@ struct MaterialMassParams {
 @group(1) @binding(30) var<storage, read_write> material_mass_atomic: array<atomic<i32>>;
 @group(1) @binding(31) var<uniform>              material_mass_params: MaterialMassParams;
 
-// Exact copy of resolve_contact.wgsl's block_index_of — WGSL has no cross-file
+// Exact copy of resolve_contact.wgsl's block_index_of -- WGSL has no cross-file
 // includes, so this is duplicated the same way MASS_ATOMIC_SCALE etc. already are
 // across shader files. Must stay byte-for-byte identical: gather_contact_points_main
 // needs the SAME contact-block a given cell belongs to as resolve_contact's
@@ -161,7 +161,7 @@ fn det2(m: mat2x2<f32>) -> f32 {
     return m[0][0] * m[1][1] - m[0][1] * m[1][0];
 }
 
-// 2D polar decomposition R — analytical, mirrors corotated.rs.
+// 2D polar decomposition R -- analytical, mirrors corotated.rs.
 fn polar_r(f: mat2x2<f32>) -> mat2x2<f32> {
     let x = f[0][0] + f[1][1];
     let y = f[0][1] - f[1][0];
@@ -180,7 +180,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 
     var tau: mat2x2<f32>;
     switch mat.model {
-        case 1u: { // Fluid — Tait EOS + Newtonian or Bingham deviatoric viscosity
+        case 1u: { // Fluid -- Tait EOS + Newtonian or Bingham deviatoric viscosity
             // Use J = det(F) for EOS density: ρ = ρ₀/J (sparkl canonical, no grid-lag).
             // F is reset to sqrt(J)·I in particles_update, so det(F) = J always for fluid.
             // This eliminates the one-step lag from grid-mass gather (p.density) and keeps
@@ -202,7 +202,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let yield_s = mat.compression_limit; // Bingham τ₀; 0 for Newtonian
             if yield_s > 0.0 {
                 // Bingham: apparent viscosity = τ₀/γ̇ + µ. Skip deviatoric below plug threshold.
-                // γ̇ uses the deviatoric strain rate only — a yield criterion must not respond
+                // γ̇ uses the deviatoric strain rate only -- a yield criterion must not respond
                 // to pure volumetric expansion/compression, which isn't shear.
                 let dx = dev[0][0]; let dy = dev[1][1]; let dxy = dev[0][1];
                 let shear_rate = sqrt(max(0.5 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
@@ -226,7 +226,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 
             return t;
         }
-        case 2u: { // NeoHookean — Simo-Pister vol-dev split
+        case 2u: { // NeoHookean -- Simo-Pister vol-dev split
             // REAL FIX (2026-07-30, root-caused via a headless reproduction --
             // see elastic.rs's `j_min` doc for the full writeup): this used to
             // hard-zero stress below `NUM_FLOOR` (1e-6), matching CPU's OLD
@@ -306,7 +306,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let lam_e = mat.lambda * h * t_scale;
             tau = 2.0 * mu_e * (F - R) * transpose(F) + lam_e * (J - 1.0) * J * I;
         }
-        case 11u: { // GranularFluid — Tait EOS pressure + corotated elastic deviatoric + SVD plasticity
+        case 11u: { // GranularFluid -- Tait EOS pressure + corotated elastic deviatoric + SVD plasticity
             // EOS pressure: −k·((ρ/ρ₀)^γ − 1)·I
             let rho   = clamp(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR, mat.rest_density * 4.0);
             let ratio = rho / max(mat.rest_density, NUM_FLOOR);
@@ -318,12 +318,12 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let coro   = 2.0 * mu_eff * (F - R) * transpose(F);
             let tr_c   = coro[0][0] + coro[1][1];
             let dev_c  = coro - (tr_c * 0.5) * I;
-            // Small elastic volumetric term from λ — prevents total collapse under EOS alone
+            // Small elastic volumetric term from λ -- prevents total collapse under EOS alone
             let lam_e  = mat.lambda * h;
             let lam_vol = lam_e * (J - 1.0) * J * I;
             tau = -press * I + dev_c + lam_vol;
         }
-        case 9u: { // Viscoelastic (Kelvin-Voigt) — elastic NeoHookean + viscous dashpot
+        case 9u: { // Viscoelastic (Kelvin-Voigt) -- elastic NeoHookean + viscous dashpot
             let j_min   = max(mat.volume_ratio_min, NUM_FLOOR);
             let J_vis   = clamp(J, j_min, 1.0 / j_min);
             let B       = F * transpose(F);
@@ -364,7 +364,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
         }
     }
 
-    // Internal pre-stress (turgor-pressure-style, generic — see Particle::internal_pressure
+    // Internal pre-stress (turgor-pressure-style, generic -- see Particle::internal_pressure
     // doc). Isotropic -P*I, gated on the same 3 models that override pressure_scale() on the
     // CPU side (NeoHookean=2, Corotated=3, Viscoelastic=9) -- pressure_scale() is a fixed
     // per-model constant (1.0 or 0.0), not a per-instance tunable, so no new MaterialParams
@@ -377,7 +377,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
 
 // stress_volume: fluids use initial_volume * J (= current volume, J from det(F)).
 // J-based volume is consistent with the J-based EOS density above.
-// Elastic models use initial (reference) volume — J accounted for in Kirchhoff stress.
+// Elastic models use initial (reference) volume -- J accounted for in Kirchhoff stress.
 fn sv(p: Particle, mat: MaterialParams) -> f32 {
     switch mat.model {
         case 1u: {
@@ -386,7 +386,7 @@ fn sv(p: Particle, mat: MaterialParams) -> f32 {
             return max(p.initial_volume * J, NUM_FLOOR);
         }
         case 11u: {
-            // GranularFluid: EOS is density-based — use current volume (tracks J each substep).
+            // GranularFluid: EOS is density-based -- use current volume (tracks J each substep).
             return max(p.volume, NUM_FLOOR);
         }
         default: { return p.initial_volume; }
@@ -419,18 +419,18 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dt  = step_params.dt;
     let mat = materials[p.material_id];
 
-    // Sleeping particles still scatter normally — their mass+stress is exactly what
+    // Sleeping particles still scatter normally -- their mass+stress is exactly what
     // provides support to anything resting on top of them. Skipping P2G for sleeping
     // particles (an earlier version of this code did) makes them invisible to the grid:
     // an awake neighbor stacked on a sleeping one would suddenly find no support beneath
-    // it, generating permanent unresolvable jitter at every awake/asleep boundary — the
+    // it, generating permanent unresolvable jitter at every awake/asleep boundary -- the
     // pile could never fully settle. Frozen (x, v, F) means the SAME scatter contribution
     // every substep, so this is deterministic, not wasted-but-harmless extra work: it's
     // the actual support mechanism. The real savings are in g2p/particles_update/
     // force_fields, which skip recomputing things that provably don't change for a
-    // particle whose state is frozen — not in skipping the scatter itself.
+    // particle whose state is frozen -- not in skipping the scatter itself.
 
-    // NaN position would corrupt the i32 atomics — skip silently.
+    // NaN position would corrupt the i32 atomics -- skip silently.
     if !(dot(p.x, p.x) >= 0.0) { return; }
 
     let tau   = kirchhoff(p, mat);
@@ -480,7 +480,7 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             // Multi-field contact (GPU port, first slice): additive second scatter for
             // the "grip" field (contact_group != 0), exactly mirroring the total-field
-            // scatter above — same weights, same stress/APIC contributions — into the
+            // scatter above -- same weights, same stress/APIC contributions -- into the
             // separate grip_grid accumulator. No-op (branch not taken) for every
             // particle with contact_group == 0, matching CPU's zero-cost-when-unused
             // property (`scatter_particles_to_grid`'s own doc: "a no-op call for every
@@ -503,7 +503,7 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// Multi-field contact (GPU port, first slice) — mirrors CPU's `gather_contact_point_cloud`
+// Multi-field contact (GPU port, first slice) -- mirrors CPU's `gather_contact_point_cloud`
 // (transfer.rs): a SECOND per-particle pass, run AFTER p2g_main has fully scattered grip
 // mass (wgpu inserts the necessary barrier between separate compute dispatches
 // automatically, same guarantee particle_sort's own multi-pass sequence already relies
@@ -511,7 +511,7 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // by p2g_main) is nonzero, atomically claims a slot in that node's point-cloud bucket and
 // records this particle's (position, label). Labeling and the "only where grip already
 // registered" gating exactly match CPU's `add_contact_point`/`gather_contact_point_cloud`
-// semantics — see those functions' doc comments in `transfer.rs`/`grid/mod.rs` for the
+// semantics -- see those functions' doc comments in `transfer.rs`/`grid/mod.rs` for the
 // full rationale (this is what lets the LR normal fit ignore particles far from any real
 // contact interface, not just cheaply skip the whole pass).
 @compute @workgroup_size(64, 1, 1)
@@ -527,16 +527,16 @@ fn gather_contact_points_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Real gate, not an optimization shortcut: only a particle whose OWN home cell
     // already has nonzero grip mass this substep is near a genuine contact interface
     // (matches CPU's `add_contact_point`, which only ever appends to an ALREADY-
-    // existing `contact_cells` entry — the CPU equivalent of "grip mass already
+    // existing `contact_cells` entry -- the CPU equivalent of "grip mass already
     // registered here"). Checking one representative cell (not all 9 stencil cells)
     // is deliberate: bucketing is per dedicated contact-block now (see
     // MAX_POINTS_PER_BLOCK's doc), and resolve_contact's gather_local_points scans a
     // node's own block PLUS its neighbors, so a particle recorded once in its own
-    // block is already visible to every node that could plausibly need it — recording
+    // block is already visible to every node that could plausibly need it -- recording
     // once per particle avoids redundantly writing the same particle into the same
     // block bucket up to 9 times. Note this partition is now finer than P2G's own
     // block_size (that's the whole point of the 2026-07-18 re-partition), so a
-    // particle's 3×3 cell stencil CAN span multiple contact blocks — still correct:
+    // particle's 3×3 cell stencil CAN span multiple contact blocks -- still correct:
     // gather_local_points's own 3×3 NEIGHBOR-BLOCK scan is exactly what covers that.
     let home_x = clamp(u32(p.x.x), 0u, res - 1u);
     let home_y = clamp(u32(p.x.y), 0u, res - 1u);
@@ -547,7 +547,7 @@ fn gather_contact_points_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let block = contact_block_index(p.x, res);
     // NOTE for any future reader of `contact_point_counts`: this counter keeps
     // incrementing past MAX_POINTS_PER_BLOCK even though writes beyond it are dropped
-    // below (a real, honest overflow signal, not silently capped) — any consumer must
+    // below (a real, honest overflow signal, not silently capped) -- any consumer must
     // clamp its own iteration to `min(count, MAX_POINTS_PER_BLOCK)`, never trust the
     // raw count as the number of VALID slots in `contact_points`.
     let slot_in_block = atomicAdd(&contact_point_counts[block], 1u);

@@ -38,7 +38,7 @@ mod p2g_tests;
 /// Elastic/plastic Kirchhoff stress plus the active-stress (muscle contraction) term, if any.
 ///
 /// KNOWN OPEN BUG: a driven creature body settles into an unbounded compaction
-/// ratchet over long horizons — net drift collapses to ~0 while min(J) keeps
+/// ratchet over long horizons -- net drift collapses to ~0 while min(J) keeps
 /// falling and never recovers. Confirmed specific to the muscle-driven
 /// cyclic-loading + directional-friction interaction, not a general
 /// integration artifact: a passive (zero-activation) body's min(J) settles to
@@ -48,33 +48,33 @@ mod p2g_tests;
 /// Five fix attempts were tried and empirically falsified via headless
 /// sweeps on `basic_creature`'s exact
 /// Simulation/RatchetFrictionBoundary/NeoHookeanMaterial setup:
-///   1. Higher material stiffness — only delays onset.
-///   2. Lower `apic_blend` (numerical PIC damping) — only delays onset.
-///   3. Signed [-1,1] activation via naive `2*sigmoid-1` remap — worse
+///   1. Higher material stiffness -- only delays onset.
+///   2. Lower `apic_blend` (numerical PIC damping) -- only delays onset.
+///   3. Signed [-1,1] activation via naive `2*sigmoid-1` remap -- worse
 ///      (also doubled drive amplitude, not a clean signedness test).
 ///   4. `NeoHookeanMaterial`'s volumetric Kirchhoff term was a separate, real
 ///      bug: it used a bounded `k/2*(J²-1)` where Simo & Pister's actual 1984
 ///      formulation uses the log-barrier `k*(ln J)²` potential (τ_vol =
 ///      k·ln(J), diverges as J→0). Fixed in `kirchhoff_stress`/
-///      `kirchhoff_stress_vjp` below — legitimate and kept, but not
+///      `kirchhoff_stress_vjp` below -- legitimate and kept, but not
 ///      sufficient alone; the creature sweep still stalls. `MIN_J` (1e-6)
 ///      ruled out as an interfering clamp.
 ///   5. Signed activation with amplitude matched to the unsigned case (not
-///      doubled) — still stalls, without the earlier catastrophic collapse.
+///      doubled) -- still stalls, without the earlier catastrophic collapse.
 ///
 /// Root cause remains unsolved; a real fix likely needs rethinking the
 /// friction/actuation mechanism itself (e.g. a redesigned contact model, or
 /// a controller that never enters the failure regime) rather than another
 /// parameter or activation-scheme tweak.
 ///
-/// Single source of truth for "what stress does this particle contribute to P2G" — shared by
+/// Single source of truth for "what stress does this particle contribute to P2G" -- shared by
 /// `scatter_particles_to_grid` and tests, so the two can never drift apart. Mirrors the GPU
 /// shader's post-switch active-stress block in `p2g.wgsl` exactly: Viscoelastic uses an
 /// isotropic contractile term (matches its own Kelvin-Voigt formulation), every other elastic
 /// model uses the directional F·(n₀⊗n₀)·Fᵀ fiber form (follows material deformation).
 ///
 /// Also adds an isotropic internal pre-stress term (`-internal_pressure × pressure_scale ×
-/// I`) when a material opts in via `MaterialModel::pressure_scale()` — the standard
+/// I`) when a material opts in via `MaterialModel::pressure_scale()` -- the standard
 /// "prestressed structure" treatment (real motivating case: turgor pressure, see
 /// `Particle::internal_pressure` doc). Independent of, and composes freely with, the
 /// activation term above since both are plain additions to the same `tau`.

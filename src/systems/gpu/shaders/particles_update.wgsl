@@ -1,4 +1,4 @@
-// particles_update — per-particle F update, plasticity, volume/density, position, boundary.
+// particles_update -- per-particle F update, plasticity, volume/density, position, boundary.
 // MLS-MPM, Hu et al. 2018 SIGGRAPH §4.
 //
 // One thread per particle (sorted access via sorted_particle_ids).
@@ -12,7 +12,7 @@
 //   4. Von Mises      (model 6): 2D SVD → J2 yield check → deviatoric return mapping
 //   5. J = det(F), volume = initial_volume × J, density = mass / volume
 //   6. Position: x = x + v · dt
-//   7. Boundary clamp: slip — clamp x within [bt, grid_res−bt)
+//   7. Boundary clamp: slip -- clamp x within [bt, grid_res−bt)
 //
 // Sorted particle access: reads particles[sorted_particle_ids[gid.x]] for
 // cache-coherent scatter in p2g (same permutation used there).
@@ -192,7 +192,7 @@ fn dp_plasticity(sigma_in: vec2<f32>, log_volume_strain: f32, q: f32, mat: Mater
     let dn    = length(dev);
 
     if dn < NUM_FLOOR_TIGHT || tr > 0.0 {
-        // dq = dn only (not length(eps)) — log_volume_strain offset must not contribute.
+        // dq = dn only (not length(eps)) -- log_volume_strain offset must not contribute.
         // length(eps) causes unbounded q growth in settled sand. Mirrors sand.rs:130.
         let prev_det = sigma.x * sigma.y;
         return DpReturn(vec2<f32>(1.0), dn, log(max(prev_det, NUM_FLOOR_TIGHT * NUM_FLOOR_TIGHT)));
@@ -200,9 +200,9 @@ fn dp_plasticity(sigma_in: vec2<f32>, log_volume_strain: f32, q: f32, mat: Mater
 
     // Single-pass: alpha evaluated once from the pre-step q, matching
     // wgsparkl::models::drucker_prager::project_deformation_gradient exactly (the
-    // reference GPU implementation of Klar et al. 2016 — no self-consistency corrector).
+    // reference GPU implementation of Klar et al. 2016 -- no self-consistency corrector).
     // stretch_limit repurposed for DP: cohesion floor, see sand.rs's `cohesion` doc
-    // comment — NOT real "sand cohesion" (dry sand is ~0), a continuum-MPM-resolution
+    // comment -- NOT real "sand cohesion" (dry sand is ~0), a continuum-MPM-resolution
     // regularization for thin flowing layers, calibrated against the Lajeunesse 2004
     // runout benchmark.
     let ratio = (mat.lambda + mat.mu) / max(mat.mu, NUM_FLOOR_TIGHT);
@@ -363,7 +363,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var p   = particles[p_idx];
 
-    // Still-sleeping particles (didn't wake in g2p this substep) are frozen — skip
+    // Still-sleeping particles (didn't wake in g2p this substep) are frozen -- skip
     // state projection, F update, every plasticity branch, and position integration
     // entirely. Particles that woke in g2p have sleeping=0u by this point and get the
     // full update below, same as CPU (a newly-woken particle gets a real update the
@@ -375,7 +375,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let res = step_params.grid_res;
     let bt  = f32(step_params.boundary_thickness);
 
-    // Identity matrix — used both in state projection and F update below.
+    // Identity matrix -- used both in state projection and F update below.
     let I = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
 
     // ── GPU state projection ──────────────────────────────────────────────────
@@ -395,7 +395,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !(cg >= 0.0) { p.velocity_gradient = mat2x2<f32>(); }
     // deformation_gradient: NaN or det ≤ 0 → identity (J-projection below also covers post-update).
     if !(det2(p.deformation_gradient) > 0.0) { p.deformation_gradient = I; }
-    // Plastic state — NaN can cascade from bad F or extreme stress over long GPU sims.
+    // Plastic state -- NaN can cascade from bad F or extreme stress over long GPU sims.
     // !(x > 0) catches NaN+negative; !(abs(x) < BIG) catches NaN+Inf for signed fields.
     // Mirrors project_particle_state_to_admissible in solver/mod.rs lines 864–875.
     if !(p.plastic_volume_ratio > 0.0)           { p.plastic_volume_ratio = 1.0; }
@@ -407,7 +407,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // F = (I + dt·C) · F_old  (C = velocity_gradient written by g2p pass)
     var new_F = (I + dt * p.velocity_gradient) * p.deformation_gradient;
 
-    // Plasticity — all three models via 2D analytical SVD.
+    // Plasticity -- all three models via 2D analytical SVD.
     if mat.model == 4u && mat.compression_limit > 0.0 {
         // Snow: clamp singular values to elastic range; accumulate Jp and hardening h.
         let sr          = snow_plasticity(new_F, p.plastic_volume_ratio, mat);
@@ -425,7 +425,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // deviatoric shape, only corrects overall volume.
         //
         // Take magnitudes FIRST: this engine's svd2 does NOT guarantee non-negative
-        // singular values — it keeps u a proper rotation by encoding a reflection as a
+        // singular values -- it keeps u a proper rotation by encoding a reflection as a
         // NEGATIVE s.y instead (see this file's own svd2: `if det_f < 0.0 { s.y = -s.y;
         // ... }`). An inverted particle (sigma.y < 0) is exactly the "exceeded packing
         // limit" case this floor exists for, just approached from the other side.
@@ -465,7 +465,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         new_F                = mi_res.f_e;
         p.friction_hardening = mi_res.mu_i;
     } else if mat.model == 11u && mat.compression_limit > 0.0 {
-        // GranularFluid: snow-style SVD plasticity — clamp singular values, accumulate Jp and h.
+        // GranularFluid: snow-style SVD plasticity -- clamp singular values, accumulate Jp and h.
         let sr               = snow_plasticity(new_F, p.plastic_volume_ratio, mat);
         new_F                = sr.f_e;
         p.plastic_volume_ratio = sr.jp;
@@ -474,12 +474,12 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Fluid F reset: extract J = det(F), reset to isotropic F = sqrt(J)·I.
     //
-    // Rotation and shear in F are physically meaningless for fluids — the EOS uses only
+    // Rotation and shear in F are physically meaningless for fluids -- the EOS uses only
     // J = det(F) (volume ratio). Accumulated shear/rotation can cause individual F elements
     // to drift toward ±∞ even when det(F) stays bounded → Inf−Inf=NaN. Reset preserves J.
     //
     // Fluid F reset: extract J = det(F), reset to isotropic F = sqrt(J)·I.
-    // Rotation and shear in F are physically meaningless for fluids — only J = det(F) matters.
+    // Rotation and shear in F are physically meaningless for fluids -- only J = det(F) matters.
     //
     // J bounds come from MaterialParams (set in NewtonianFluidMaterial::params()):
     //   J_MIN = 0.1: prevents sqrt(negative) and log(0) in stress.
@@ -496,7 +496,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
 
         // Settling damping: v *= (1 − k·dt). Damps gravity-wave sloshing and slow creep.
-        // k = dp_h0 (repurposed — dp_h0..dp_h3 are DP-only, unused for fluid model 1).
+        // k = dp_h0 (repurposed -- dp_h0..dp_h3 are DP-only, unused for fluid model 1).
         if mat.dp_h0 > 0.0 {
             p.v *= 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
         }
@@ -517,7 +517,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // J-projection for elastic/plastic models: near-boundary APIC C can flip det(F) negative.
-    // Uses !(J > 0) instead of J <= 0 to also catch NaN — mirrors CPU project_invalid_state.
+    // Uses !(J > 0) instead of J <= 0 to also catch NaN -- mirrors CPU project_invalid_state.
     // (NaN > 0 = false, so !(NaN > 0) = true → reset triggered. NaN <= 0 = false → missed.)
     let J_trial = det2(new_F);
     if !(J_trial > 0.0) {
@@ -533,7 +533,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Elastic F/J clamping — only Viscoelastic (9) needs explicit bounds on F.
+    // Elastic F/J clamping -- only Viscoelastic (9) needs explicit bounds on F.
     //
     // NeoHookean (2) and Corotated (3): NO floor applied here.
     //   p2g kirchhoff() already does J=max(det2(F), NUM_FLOOR) in stress → no explosion.
@@ -556,16 +556,16 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // density and volume are written by g2p (grid-mass gather: Σ w_i·m_i).
     // This mirrors CPU estimate_density_and_volume_impl (density.rs) exactly.
-    // p.density and p.volume already hold the correct values — nothing to recompute here.
+    // p.density and p.volume already hold the correct values -- nothing to recompute here.
 
-    // No velocity damping for elastic/viscoelastic models (0, 2, 3, 9) — APIC is
+    // No velocity damping for elastic/viscoelastic models (0, 2, 3, 9) -- APIC is
     // energy-conserving and extra damping causes over-settling that leads to floor-compression
     // instability. Plastic flow (snow, sand, VM, etc.) provides its own dissipation.
     // For plasticity models we apply a very light damping as a boundary-edge safety margin.
     // Model 1u (fluid) excluded: explicit viscosity already dissipates; extra damping slows flow.
-    // Light damping for plasticity models — their explicit dissipation (yield, flow) is enough,
+    // Light damping for plasticity models -- their explicit dissipation (yield, flow) is enough,
     // but a small margin prevents edge-particle instability near boundaries.
-    // Elastic (2, 3) and fluid (0, 1) excluded — APIC is energy-conserving; damping fights that.
+    // Elastic (2, 3) and fluid (0, 1) excluded -- APIC is energy-conserving; damping fights that.
     // Viscoelastic (9) excluded: viscosity stress handles dissipation during deformation.
     // Velocity damping would bleed into free-fall and make vis fall slower than other materials.
     if mat.model != 0u && mat.model != 1u && mat.model != 2u && mat.model != 3u && mat.model != 9u {
@@ -575,7 +575,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Position update: x += v · dt  (v written by g2p pass)
     var new_x = p.x + p.v * dt;
 
-    // Boundary clamp (slip boundary — mirrors clamp_position_inside_grid in boundary.rs).
+    // Boundary clamp (slip boundary -- mirrors clamp_position_inside_grid in boundary.rs).
     // CPU: min = thickness.saturating_sub(1) = bt-1, max = grid_res - bt.
     let lo = max(0.0, bt - 1.0);
     let hi = f32(res) - bt;

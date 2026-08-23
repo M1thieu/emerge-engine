@@ -10,7 +10,7 @@
 //! (built in `SimPipelines::new` from the four bind-group layouts) plus
 //! whichever WGSL `override` constants its shaders need, and returns a tuple
 //! of the pipelines it built, in the same order `SimPipelines::new` destructures
-//! them — mirrors `systems::render::pipelines`' `(Pipeline, BindGroupLayout)`
+//! them -- mirrors `systems::render::pipelines`' `(Pipeline, BindGroupLayout)`
 //! tuple style, just wider tuples since one pipeline_layout is shared by many
 //! more passes here.
 use super::super::step_params::MAX_MATERIALS;
@@ -19,7 +19,7 @@ use super::shaders;
 /// Replaces `{{MAX_MATERIALS}}` with the Rust-side value.
 /// Needed because naga requires array-size constants to be CREATION_RESOLVED (known at
 /// shader-module creation time), so WGSL `override` constants cannot be used there.
-/// MAX_FORCE_FIELDS is a loop bound only — it uses `override` and is handled via constants.
+/// MAX_FORCE_FIELDS is a loop bound only -- it uses `override` and is handled via constants.
 fn patch_shader(source: &str) -> String {
     source.replace("{{MAX_MATERIALS}}", &MAX_MATERIALS.to_string())
 }
@@ -27,9 +27,9 @@ fn patch_shader(source: &str) -> String {
 /// `skip_workgroup_zero_init`: opt-IN per pipeline, NOT a global default. WebGPU mandates
 /// zeroing `var<workgroup>` memory before use, as a safety net against reading stale data from
 /// a prior dispatch. Pass `true` ONLY if every `var<workgroup>` declared in this specific
-/// shader is provably written by every thread before any read (barrier-guarded) — skipping the
+/// shader is provably written by every thread before any read (barrier-guarded) -- skipping the
 /// zero-init then costs nothing in correctness and saves real time (measured: ~10-18% on the
-/// one pipeline that currently qualifies, particle_sort_scan). This is NOT compiler-checked —
+/// one pipeline that currently qualifies, particle_sort_scan). This is NOT compiler-checked --
 /// if a future edit to that shader (or a copy-pasted call site for a new shader) adds a
 /// `var<workgroup>` without re-verifying the write-before-read invariant, this flag must be
 /// re-audited or set back to `false`. Default to `false` for any new pipeline.
@@ -63,9 +63,9 @@ fn make_pipeline(
 /// histogram -> count per-block -> compact (active-block list, GPU sparse grid Phase 1)
 /// -> scan (exclusive prefix sum) -> scatter into sorted_particle_ids. `active_block_swap`
 /// lives in the same shader module but is actually dispatched FIRST each substep, before
-/// clear/count/compact — see `active_block_swap_main`'s doc in particle_sort.wgsl. All six
+/// clear/count/compact -- see `active_block_swap_main`'s doc in particle_sort.wgsl. All six
 /// need `block_consts` (`NUM_BLOCKS_PER_DIM`) supplied, even entry points that don't read it
-/// — NUM_BLOCKS_PER_DIM is an `override` at the particle_sort.wgsl MODULE level.
+/// -- NUM_BLOCKS_PER_DIM is an `override` at the particle_sort.wgsl MODULE level.
 pub(super) fn build_sort_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
@@ -96,7 +96,7 @@ pub(super) fn build_sort_pipelines(
         block_consts,
         false,
     );
-    // GPU sparse grid Phase 1 — reads the raw histogram before scan overwrites it into a
+    // GPU sparse grid Phase 1 -- reads the raw histogram before scan overwrites it into a
     // scatter cursor, so must run between count and scan, never reordered.
     let particle_sort_compact = make_pipeline(
         device,
@@ -108,7 +108,7 @@ pub(super) fn build_sort_pipelines(
         false,
     );
     // Dispatched FIRST each substep, before clear/count/compact in the per-substep
-    // sequence (not the once-per-frame sort sequence) — see active_block_swap_main's doc
+    // sequence (not the once-per-frame sort sequence) -- see active_block_swap_main's doc
     // comment in particle_sort.wgsl for why.
     let active_block_swap = make_pipeline(
         device,
@@ -119,7 +119,7 @@ pub(super) fn build_sort_pipelines(
         block_consts,
         false,
     );
-    // particle_sort_scan is the ONLY pipeline with var<workgroup> memory (scan_temp) —
+    // particle_sort_scan is the ONLY pipeline with var<workgroup> memory (scan_temp) --
     // see the skip_workgroup_zero_init doc on make_pipeline for the safety argument.
     // Every other pipeline keeps the WebGPU-mandated zero-init (false here = default ON).
     let particle_sort_scan = make_pipeline(
@@ -156,7 +156,7 @@ pub(super) fn build_sort_pipelines(
 /// (needed by `gather_contact_points_main`'s contact_block_index call) -- both entry
 /// points compiled from that module need it supplied, even though p2g_main itself
 /// doesn't reference it. grid_update needs BOTH the force-field loop bound AND the
-/// block-dispatch constant (Phase 2 — see grid_update.wgsl doc comment), passed in via
+/// block-dispatch constant (Phase 2 -- see grid_update.wgsl doc comment), passed in via
 /// `grid_update_consts`.
 pub(super) fn build_p2g_and_grid_pipelines(
     device: &wgpu::Device,
@@ -170,7 +170,7 @@ pub(super) fn build_p2g_and_grid_pipelines(
     wgpu::ComputePipeline, // gather_contact_points
     wgpu::ComputePipeline, // grid_update
 ) {
-    // MAX_MATERIALS: array-size constant — must be injected via string template
+    // MAX_MATERIALS: array-size constant -- must be injected via string template
     // (naga requires CREATION_RESOLVED; WGSL `override` doesn't apply to array sizes).
     let p2g_src = patch_shader(shaders::P2G);
 
@@ -192,7 +192,7 @@ pub(super) fn build_p2g_and_grid_pipelines(
         contact_block_consts,
         false,
     );
-    // Multi-field contact (GPU port, first slice) — populates `contact_points` from
+    // Multi-field contact (GPU port, first slice) -- populates `contact_points` from
     // each particle's 9-node stencil, gated on grip mass already being nonzero at that
     // node (written by `p2g` immediately before this runs). See `p2g.wgsl`'s
     // `gather_contact_points_main` doc for the full rationale.
@@ -280,7 +280,7 @@ pub(super) fn build_asflip_pipeline(
     )
 }
 
-/// Impulse pass — a dedicated single-pipeline layout (particles + impulse_params only,
+/// Impulse pass -- a dedicated single-pipeline layout (particles + impulse_params only,
 /// built in `layouts::build_impulse_bind_group_layout`), separate from the main
 /// 4-group `pipeline_layout` shared by every other pass in this file.
 pub(super) fn build_impulse_pipeline(
