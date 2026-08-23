@@ -1,6 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
+use crate::materials::utils::von_neumann_richtmyer_q;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -45,36 +46,30 @@ pub(crate) fn artificial_bulk_viscosity(
     div_v: f32,
     grid_cell_size: f32,
 ) -> f32 {
-    if !(div_v < 0.0) {
-        return 0.0;
-    }
-    let c0_quadratic = (eos_power + 1.0) * 0.25;
-    const C1_LINEAR: f32 = 1.0;
+    // REAL BUG FIXED 2026-08-13: an earlier form used rho^2 in the
+    // quadratic term and NO rho at all in the linear one -- neither
+    // matches the cited sources (Wang et al. arXiv:2404.17057 eq. 4;
+    // `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity`), both of
+    // which multiply BOTH terms by rho exactly once, the same real form
+    // `von_neumann_richtmyer_q` (shared, EOS-agnostic) implements below.
+    // Dimensionally the old form was inconsistent, and at this engine's
+    // grid-unit rho ~ 0.1 it inflated q by ~8x, swamping the EOS --
+    // live-measured: max_speed 11 -> 130, J pinned at the upper clamp 2.0,
+    // fps 45 -> 12. The corrected form lands q at ~63 against an EOS
+    // pressure scale of ~94, the intended same-order balance.
+    //
+    // Tait EOS's own real `c_sound` (this material's own `dp/drho`) --
+    // `von_neumann_richtmyer_q` owns only the shared shock-viscosity form,
+    // not any one EOS's sound speed, so it's computed here and passed in.
+    // `eos_power` doubles as Kurapatenko's weak-shock gamma (a real,
+    // disclosed stand-in, see `von_neumann_richtmyer_q`'s own doc).
     let density_ratio = 1.0 / j;
-    let rho = rest_density * density_ratio;
     let c2 = eos_stiffness
         * eos_power
         * crate::materials::utils::fast_pow(density_ratio, eos_power - 1.0)
         / rest_density;
     let c_sound = c2.max(0.0).sqrt();
-    let h = grid_cell_size;
-    // q = rho * (c0*h^2*(div v)^2 - c1*h*c_sound*div v),  div v < 0.
-    //
-    // REAL BUG FIXED 2026-08-13: the previous form was
-    // `c0*(rho*h*div_v)^2 - c1*h*c_sound*div_v` -- i.e. rho^2 in the
-    // quadratic term and NO rho at all in the linear one. Neither matches
-    // the cited sources: Wang et al. (arXiv:2404.17057, eq. 4) and
-    // `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity` both
-    // multiply BOTH terms by rho exactly once. Dimensionally the old form
-    // is inconsistent (the two terms don't even share units), and with this
-    // engine's grid-unit rho ~ 0.1 it inflated q by ~8x, swamping the EOS --
-    // live-measured: max_speed 11 -> 130, J pinned at the upper clamp 2.0,
-    // fps 45 -> 12. With the corrected form q lands at ~63 against an EOS
-    // pressure scale of ~94, which is the intended same-order balance.
-    let quadratic = c0_quadratic * h * h * div_v * div_v;
-    let linear = C1_LINEAR * h * c_sound * div_v;
-    let q = rho * (quadratic - linear);
-    if q.is_finite() { q } else { 0.0 }
+    von_neumann_richtmyer_q(rest_density, j, div_v, grid_cell_size, c_sound, eos_power)
 }
 
 /// Weakly-compressible Newtonian fluid (Tait EOS + deviatoric viscosity).

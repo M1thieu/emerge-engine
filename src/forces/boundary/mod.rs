@@ -1,7 +1,7 @@
-//! Boundary conditions: the `BoundaryCondition` trait plus 6 real models.
+//! Boundary conditions: the `BoundaryCondition` trait plus 5 real models.
 //! The 3 Coulomb-friction variants (plain/grip/ratchet) are a real, tightly
 //! related family -- grouped under `friction/` (see that module's own doc);
-//! `heightmap`/`predictive`/`slip` are each standalone, one file apiece.
+//! `heightmap`/`slip` are each standalone, one file apiece.
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
 //! `clamp_position_inside_grid`) and their direct unit tests live here,
@@ -13,12 +13,10 @@ use crate::particle::ParticleUpdateCtx;
 
 mod friction;
 mod heightmap;
-mod predictive;
 mod slip;
 
 pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
-pub use predictive::PredictiveBoundary;
 pub use slip::SlipBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {

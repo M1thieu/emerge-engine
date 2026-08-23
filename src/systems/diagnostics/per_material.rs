@@ -216,31 +216,6 @@ fn per_material_stats_iter(iter: impl Iterator<Item = Particle>) -> Vec<Material
         .collect()
 }
 
-/// Print a clean per-frame summary: header + one line per material.
-///
-/// Pass `labels` to annotate material IDs with names (e.g. `&[(0, "snow"), (1, "sand")]`).
-/// Only prints if `frame % interval == 0` -- set `interval = 1` to print every frame.
-pub fn log_frame(
-    frame: u64,
-    dt: f32,
-    particles: &Particles,
-    labels: &[(u32, &str)],
-    interval: u64,
-) {
-    if interval > 0 && !frame.is_multiple_of(interval) {
-        return;
-    }
-    let stats = per_material_stats(particles);
-    println!("── frame {}  dt={:.4}  n={} ──", frame, dt, particles.len());
-    for s in &stats {
-        let label = labels
-            .iter()
-            .find(|(id, _)| *id == s.material_id)
-            .map(|(_, l)| *l);
-        println!("  {}", s.format(label));
-    }
-}
-
 /// Print per-frame summary + global health status (CFL, mass/momentum conservation, NaN checks).
 ///
 /// Header shows CFL and health -- if unhealthy, the violated checks are listed.

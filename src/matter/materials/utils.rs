@@ -168,6 +168,25 @@ pub fn polar_decomposition_2d(f: Mat2) -> Mat2 {
     }
 }
 
+/// Corotated-elastic Kirchhoff stress: `2*mu*(F-R)*F^T + lambda*(J-1)*J*I`,
+/// the standard hyperelastic form (Stomakhin et al. 2013, the same
+/// corotated model this engine's snow material already cites). Every
+/// plastic material that returns to this SAME elastic branch after its own
+/// return-mapping (DruckerPragerMaterial, VonMisesMaterial, RankineMaterial,
+/// MuIRheologyMaterial) used to hand-duplicate this exact formula in its own
+/// `kirchhoff_stress` -- each material's plasticity lives entirely in its
+/// own `update_particle`, this function owns only the shared elastic stress
+/// evaluated on the (already plastically corrected) current F.
+#[inline]
+pub(crate) fn corotated_elastic_stress(f: Mat2, lambda: f32, mu: f32) -> Mat2 {
+    let j = f.determinant();
+    if j <= MIN_J {
+        return Mat2::ZERO;
+    }
+    let r = polar_decomposition_2d(f);
+    2.0 * mu * (f - r) * f.transpose() + lambda * (j - 1.0) * j * Mat2::IDENTITY
+}
+
 /// Fixed-point iteration to a self-consistent (closest-point-projection)
 /// plastic multiplier -- real numerical rigor per Simo & Taylor 1985
 /// ("Consistent tangent operators for rate-independent elastoplasticity,"
