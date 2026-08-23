@@ -250,6 +250,7 @@ fn run_collapse_sized(steps: usize, r0_grains: usize, h0_grains: usize) -> (f32,
 /// nor timestep changes affected the full-size explosion at all -- this
 /// checks the one remaining real variable, scale/contact-count, directly.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_small_column_scale_isolation() {
     println!("── SMALL-COLUMN SCALE ISOLATION (2 wide x 4 tall = 8 grains) ──");
     // 10x the original checkpoints -- real physical-time equivalents at the
@@ -270,6 +271,7 @@ fn diag_small_column_scale_isolation() {
 /// settle into a more-supported-than-expected shape) from an actual bug in
 /// the force computation (nothing ever really moves at all).
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_max_speed_reached_during_collapse() {
     const R0_GRAINS: usize = 4;
     const H0_GRAINS: usize = 10;
@@ -473,6 +475,7 @@ fn column_collapse_long_horizon_stability_check() {
 // ---------------------------------------------------------------------
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_size_sweep_threshold() {
     println!("── SIZE SWEEP: where does the growth stop being bounded? ──");
     for &(r0, h0) in &[
@@ -500,6 +503,7 @@ fn diag_size_sweep_threshold() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_extended_horizon_both_scales() {
     println!("── EXTENDED HORIZON: does either scale actually asymptote? ──");
     // 10x the original checkpoints -- real physical-time equivalents at the
@@ -517,6 +521,7 @@ fn diag_extended_horizon_both_scales() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_dt_margin_sensitivity() {
     // Same physical duration (steps*dt held fixed), dt 10x finer -- if the
     // residual creep is a real dt-margin/dense-coordination stability issue
@@ -604,6 +609,7 @@ fn diag_dt_margin_sensitivity() {
 /// keep drifting without bound (which would mean the whole calibration is
 /// unreliable regardless of rolling_friction, a much bigger problem)?
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_dt_convergence_study() {
     const RADIUS_M: f32 = 0.01;
     fn run_at_dt_scale(dt_scale: f32, r0: usize, h0: usize, total_time_s: f32) -> f32 {
@@ -669,6 +675,7 @@ fn diag_dt_convergence_study() {
 /// was calibrated at the UNCONVERGED dt, so it needs re-finding at a real,
 /// trustworthy dt, not assumed to still be right.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_rolling_friction_calibration_at_fine_dt() {
     const RADIUS_M: f32 = 0.01;
     const DT_SCALE: f32 = 0.003; // real, meaningfully finer reference point -- see diag_dt_convergence_study
@@ -725,6 +732,7 @@ fn diag_rolling_friction_calibration_at_fine_dt() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_per_grain_contact_count_vs_energy() {
     // Correlates real per-grain contact count (coordination number) with
     // per-grain kinetic energy growth in the failing 80-grain scenario --
@@ -796,6 +804,7 @@ fn diag_per_grain_contact_count_vs_energy() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_contact_churn() {
     // How often does the active-contact SET change (contacts appearing or
     // disappearing) between consecutive substeps, in the failing 80-grain
@@ -842,6 +851,7 @@ fn diag_contact_churn() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_trace_blowup_mechanism() {
     // Real mechanistic trace: find the exact grain and exact step window
     // where the 80-grain column transitions from "looks settled" to
@@ -917,6 +927,7 @@ fn diag_trace_blowup_mechanism() {
 }
 
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_trace_single_grain_spin_history() {
     // Full-history trace of grain 47 (the one diag_trace_blowup_mechanism
     // found runs away with spin=-201.75 rad/s at step 72853 while having
@@ -1003,6 +1014,7 @@ fn diag_trace_single_grain_spin_history() {
 /// increasing rolling resistance toward its own cited upper bound close
 /// the overshoot toward 1.0x, the way a real physical calibration should?
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_rolling_friction_calibration_sweep() {
     fn run_with_rolling_friction(rolling_friction: f32, r0: usize, h0: usize, steps: usize) -> f32 {
         const RADIUS_M: f32 = 0.01;
@@ -1062,6 +1074,7 @@ fn diag_rolling_friction_calibration_sweep() {
 /// every rate-dependent mechanism this project has ever tried eventually
 /// did?
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_calibrated_rolling_friction_long_horizon_check() {
     fn run_with_rolling_friction_tracked(
         rolling_friction: f32,
@@ -1152,6 +1165,7 @@ fn diag_calibrated_rolling_friction_long_horizon_check() {
 /// arbitrary -- confirming this is real material-property portability, not
 /// a lucky fit to one specific angle.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_portability_across_friction_angle() {
     fn run_with_angle(friction_angle_deg: f32, r0: usize, h0: usize, steps: usize) -> (f32, f32) {
         const RADIUS_M: f32 = 0.01;
@@ -1223,6 +1237,7 @@ fn diag_portability_across_friction_angle() {
 /// somewhere else (which would point at a real, separate cause: grid
 /// coupling or the real terrain surface, not dt margin)?
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_live_demo_dt_convergence() {
     // Real, exact values from `sand_repose_angle_gui.rs`'s own
     // `grain_contact_config`/`GRAIN_RADIUS`/`GRAIN_MASS` constants.
