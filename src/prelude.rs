@@ -11,7 +11,7 @@
 pub use crate::{
     AabbConfinementField,
     ActivationStatsPlugin,
-    // Materials — all thirteen (*Material types only)
+    // Materials -- all fourteen (*Material types only)
     BinghamFluidMaterial,
     // Queries + density field export
     BodyState,
@@ -49,6 +49,7 @@ pub use crate::{
     GripFrictionBoundary,
     HeightmapBoundary,
 
+    IdealGasMaterial,
     // Creature locomotion controller
     Lnn,
     MaterialCountPlugin,
@@ -100,6 +101,7 @@ pub use crate::{
     ViscoelasticMaterial,
     VonMisesMaterial,
     WithLatentHeat,
+    WithLatentHeatTable,
     WithPreStress,
     // Particle construction helpers
     build_particles,
@@ -118,5 +120,5 @@ pub use crate::{
     rankine_damage_estimate,
 };
 
-// Math types — re-exported so consumers don't need a separate glam dependency.
+// Math types -- re-exported so consumers don't need a separate glam dependency.
 pub use glam::{IVec2, Mat2, Vec2};
