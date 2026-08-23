@@ -2,6 +2,7 @@ pub mod bingham;
 pub mod corotated;
 pub mod elastic;
 pub mod fluid;
+pub mod gas;
 pub mod granular;
 pub mod granular_fluid;
 pub mod nacc;
@@ -27,6 +28,7 @@ pub use bingham::BinghamFluidMaterial;
 pub use corotated::CorotatedMaterial;
 pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
+pub use gas::IdealGasMaterial;
 pub use granular::sand::DruckerPragerMaterial;
 pub use granular::sand_mui::MuIRheologyMaterial;
 pub use granular_fluid::GranularFluidMaterial;
@@ -39,7 +41,7 @@ pub use rod_material::RodMaterial;
 pub use snow::StomakhinMaterial;
 pub use utils::{
     elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
-    rankine_damage_estimate,
+    rankine_damage_estimate, stokes_drag_rate_from_si,
 };
 pub use viscoelastic::ViscoelasticMaterial;
 pub use von_mises::VonMisesMaterial;
@@ -50,7 +52,7 @@ use crate::particle::{Particle, Particles};
 
 /// Identifies which constitutive model a material implements.
 /// `repr(u32)` so this discriminant can be stored directly in GPU uniform buffers.
-/// Explicit values are stable across recompiles — do not change them.
+/// Explicit values are stable across recompiles -- do not change them.
 #[non_exhaustive]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,13 +63,20 @@ pub enum ConstitutiveModel {
     Corotated = 3,        // Corotated linear elastic (stiffer baseline)
     Snow = 4,             // Corotated + SVD plasticity (Stomakhin 2013)
     DruckerPrager = 5,    // Corotated elastic + DP yield surface (sand, soil, rock)
-    VonMises = 6,         // J2 perfect plasticity — ductile flow, no hardening (lava, metal, clay)
-    Rankine = 7,          // Tensile cutoff + exponential softening — brittle rock, bone, ice
-    DruckerPragerMuI = 8, // Rate-dependent DP — µ(I) rheology, granular flow
+    VonMises = 6,         // J2 perfect plasticity -- ductile flow, no hardening (lava, metal, clay)
+    Rankine = 7,          // Tensile cutoff + exponential softening -- brittle rock, bone, ice
+    DruckerPragerMuI = 8, // Rate-dependent DP -- µ(I) rheology, granular flow
     Viscoelastic = 9,     // Kelvin-Voigt: NeoHookean elastic + viscous dashpot in parallel
-    Nacc = 10,            // Non-Associated Cam-Clay — wet soil, clay, bio tissue under compression
-    GranularFluid = 11, // Granular-fluid mixture — Tait EOS + corotated deviatoric + SVD plasticity
-    NoCompression = 12, // Tension-only (no-compression) reversible elastic — silk, tendons, membranes
+    Nacc = 10,            // Non-Associated Cam-Clay -- wet soil, clay, bio tissue under compression
+    GranularFluid = 11, // Granular-fluid mixture -- Tait EOS + corotated deviatoric + SVD plasticity
+    NoCompression = 12, // Tension-only (no-compression) reversible elastic -- silk, tendons, membranes
+    /// Ideal gas EOS (p=ρRT) -- CPU only. GPU shaders (`p2g.wgsl`,
+    /// `particles_update.wgsl`) have no case-13 branch yet; an unrecognised
+    /// `mat.model` falls through their `default: { return mat2x2<f32>(); }`
+    /// arm, i.e. zero stress on GPU today. Real, disclosed limitation, not
+    /// silent -- see `IdealGasMaterial`'s own doc. CPU correctness first, GPU
+    /// port second (per this engine's own standing development rule).
+    Gas = 13,
 }
 
 // WGSL shaders (p2g.wgsl, particles_update.wgsl) index material branches by the
@@ -88,6 +97,7 @@ const _: () = {
     assert!(C::Nacc as u32 == 10);
     assert!(C::GranularFluid as u32 == 11);
     assert!(C::NoCompression as u32 == 12);
+    assert!(C::Gas as u32 == 13);
 };
 
 /// Cap on simultaneous mixture phases -- see `MixturePhase`'s own doc.
@@ -135,16 +145,16 @@ impl MixturePhase {
 /// `insert`/`set_default` time) and caches a match-dispatched copy;
 /// unrecognised types (a wrapper like `WithMixturePhase`, or an LP-side
 /// custom material) simply fail every downcast and keep using the trait
-/// object as before — zero behavior change, only unlocks a fast path for
+/// object as before -- zero behavior change, only unlocks a fast path for
 /// materials the engine already knows about.
 ///
 /// Split into its own blanket-impl'd trait (rather than a default method
 /// directly on `MaterialModel`) because `fn as_any(&self) -> &dyn Any { self }`
 /// as a *default* method on a `Self: ?Sized`-context trait doesn't typecheck
-/// (the unsized coercion needs a concrete, Sized `Self`) — the standard fix
+/// (the unsized coercion needs a concrete, Sized `Self`) -- the standard fix
 /// (used by e.g. the `downcast-rs` crate) is a supertrait with a blanket
-/// `impl<T: Any> AsAny for T`, which every `Sized` material — including any
-/// external/LP-defined one — gets automatically, no per-material code needed.
+/// `impl<T: Any> AsAny for T`, which every `Sized` material -- including any
+/// external/LP-defined one -- gets automatically, no per-material code needed.
 pub trait AsAny: core::any::Any {
     fn as_any(&self) -> &dyn core::any::Any;
 }
@@ -173,7 +183,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     }
 
     /// CFL timestep bound for one particle. Takes `density`/`hardening_scale` as plain
-    /// scalars rather than `&Particles, i: usize` — every implementation only ever reads
+    /// scalars rather than `&Particles, i: usize` -- every implementation only ever reads
     /// these two fields, both of which exist directly on `Particle` (AoS) too, so the CPU
     /// (SoA) and GPU (AoS) CFL scans can both call this without either one needing the
     /// other's storage representation.
@@ -227,10 +237,46 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// Override for materials that have a non-zero neutral accumulator (e.g. sand).
     fn init_particle(&self, _particle: &mut Particle) {}
 
+    /// Seed per-particle state when TRANSITIONING into this material from
+    /// another (via `Simulation::phase_transition`/`add_phase_rule`), as
+    /// opposed to a fresh spawn. Default: delegates to `init_particle`
+    /// unchanged -- exactly today's existing behavior for every material
+    /// that doesn't override this, zero behavior change.
+    ///
+    /// Real, found live 2026-08-18 (`examples/basic_steam.rs`, water
+    /// boiling into `IdealGasMaterial` steam): `Simulation::
+    /// apply_phase_transition` (`spacetime::solver::particles`) already
+    /// rebaselines a transitioning particle to its real, continuous prior
+    /// state (F=IDENTITY, `initial_volume`=its actual current volume)
+    /// before calling this. For a material whose own fresh-spawn
+    /// analytical state (`init_particle`'s own `mass/rest_density`
+    /// formula) is close to what it's transitioning FROM, blindly
+    /// overwriting that rebaseline is harmless (e.g. water->ice, similar
+    /// real densities) -- but for a material transitioning from something
+    /// with a dramatically different rest density (water->steam, a real
+    /// ~1700x ratio), it makes the particle's claimed VOLUME jump that
+    /// same ~1700x in a single instant, injecting a real but wildly
+    /// under-resolved force spike (P2G's `stress*volume*kernel_gradient`
+    /// scatters that huge volume at the particle's own, unmoved grid
+    /// location) -- confirmed live as the direct cause of a real crash.
+    ///
+    /// Override this (leaving `init_particle` itself untouched for the
+    /// fresh-spawn case) when a material's rest state can differ enough
+    /// from whatever it might be transitioning from that continuity, not
+    /// a fresh analytical reset, is the physically honest choice -- see
+    /// `IdealGasMaterial`'s own override for the real, worked pattern (keep the
+    /// reference volume TRUE, matching what per-substep dynamics already
+    /// assume, and instead set the STARTING deformation gradient to
+    /// reflect real compression relative to that true reference, clamped
+    /// to the material's own valid range).
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.init_particle(particle)
+    }
+
     /// Whether `update_particle` does real work on the CPU.
     ///
     /// Return `false` if plasticity is fully handled on GPU (default).
-    /// Return `true` for CPU-only plasticity paths — the GPU solver uses this to
+    /// Return `true` for CPU-only plasticity paths -- the GPU solver uses this to
     /// decide whether to download particles and run the CPU pass each frame.
     fn needs_cpu_update(&self) -> bool {
         false
@@ -269,7 +315,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// active matter: muscles, motile cells, contractile tissue.
     ///
     /// Physics: τ_total = τ_elastic + activation × coeff × I  (contractile active pressure)
-    /// Default: 0.0 — activation has no effect on passive materials.
+    /// Default: 0.0 -- activation has no effect on passive materials.
     fn activation_scale(&self) -> f32 {
         0.0
     }
@@ -278,15 +324,15 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     ///
     /// When non-zero, the per-particle `internal_pressure` field (already SI-
     /// converted to grid stress units) contributes an isotropic `-P·I` term to
-    /// the Kirchhoff stress — the standard "prestressed structure" treatment
+    /// the Kirchhoff stress -- the standard "prestressed structure" treatment
     /// (a balloon: envelope tension balanced against internal gas pressure).
     /// Generic engine-level hook, not plant-specific: real motivating case is
-    /// turgor pressure (plants aren't held up by cell-wall elasticity alone —
+    /// turgor pressure (plants aren't held up by cell-wall elasticity alone --
     /// see Niklas 1992's "hydro-skeleton" theory), but applies to any
     /// internally-pressurized body a material wants to model this way.
     ///
     /// Physics: τ_total = τ_elastic + τ_active − internal_pressure × coeff × I
-    /// Default: 0.0 — pre-stress has no effect on materials that don't opt in
+    /// Default: 0.0 -- pre-stress has no effect on materials that don't opt in
     /// (fluids already carry their own EOS pressure and should not double up).
     fn pressure_scale(&self) -> f32 {
         0.0
@@ -300,10 +346,29 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
 
     /// Energy cost (J/kg, in whatever temperature unit `Particle::temperature` uses)
     /// of transitioning INTO this material via `Simulation::phase_transition` /
-    /// `add_phase_rule`. Positive = endothermic (e.g. melting into a liquid — absorbs
-    /// energy, cooling the particle). Negative = exothermic (e.g. freezing into a
-    /// solid — releases energy, warming the particle). Default 0.0 = no energy cost
-    /// (existing behavior for every material, unchanged).
+    /// `add_phase_rule`, as a function of `from_material_id` (the particle's own
+    /// material immediately before this transition). Positive = endothermic (e.g.
+    /// melting into a liquid -- absorbs energy, cooling the particle). Negative =
+    /// exothermic (e.g. freezing into a solid -- releases energy, warming the
+    /// particle). Default: ignores `from_material_id` and returns 0.0 -- no energy
+    /// cost, existing behavior for every material unchanged.
+    ///
+    /// Real, general extension (2026-08-23): a real substance can be the
+    /// destination of MULTIPLE physically distinct transitions with DIFFERENT real
+    /// energies -- water is the destination for both melting-in (endothermic,
+    /// +334,000 J/kg, real fusion) AND condensing-in (exothermic, -2,257,000 J/kg,
+    /// real vaporization) -- two genuinely different values a single flat scalar
+    /// per material could never represent (confirmed live, `examples/
+    /// phase_states_headless.rs`'s own real solid<->liquid<->gas cycle work).
+    /// `from_material_id` is what makes that representable: an implementor reads
+    /// it to pick the right real value for whichever transition actually
+    /// happened, rather than being limited to one value for every incoming path.
+    /// Not gas-specific or demo-specific -- any material (solid, liquid, gas,
+    /// mixture) transitioning from more than one real physical source can use
+    /// this the same way; see `WithLatentHeatTable` for the real, general,
+    /// multi-source implementation (`WithLatentHeat` stays the simple single-
+    /// value case, unchanged, for materials with only ever one real incoming
+    /// transition).
     ///
     /// Applied in `Simulation::phase_transition`/`add_phase_rule` (CPU) against
     /// `ThermalDiffusion::heat_capacity` when a thermal model is configured, and in
@@ -311,14 +376,15 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// `attach_thermal_gpu` -- same debit, same formula, on both. GPU has no automatic
     /// `add_phase_rule` counterpart yet (only the manual, one-shot `phase_transition`);
     /// that gap is real and separate from this energy accounting.
-    fn latent_heat(&self) -> f32 {
+    fn latent_heat(&self, from_material_id: u32) -> f32 {
+        let _ = from_material_id;
         0.0
     }
 }
 
 /// The `MaterialModel` methods every delegating wrapper below (`WithLatentHeat`,
 /// `WithMixturePhase`, `WithPreStress`) forwards to `self.inner` byte-for-byte.
-/// Factored into one macro so these three impls can't drift out of sync — a new
+/// Factored into one macro so these three impls can't drift out of sync -- a new
 /// `MaterialModel` method that should default-forward gets added here ONCE, not
 /// copy-pasted three times.
 ///
@@ -377,7 +443,7 @@ macro_rules! forward_material_model_common {
 }
 
 /// Wraps any `MaterialModel` to give it a non-zero `latent_heat()` without writing a full
-/// delegating impl by hand — none of the 12 built-in materials expose a settable
+/// delegating impl by hand -- none of the 12 built-in materials expose a settable
 /// `latent_heat` field directly, since most users never need one.
 ///
 /// ```rust,no_run
@@ -403,11 +469,83 @@ impl<M: MaterialModel> MaterialModel for WithLatentHeat<M> {
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
     }
+    // Real, explicit forward (not the trait default): the trait's own
+    // default would call THIS wrapper's `init_particle` (i.e. `inner.
+    // init_particle`), silently skipping `inner`'s own overridden
+    // transition-continuity logic if it has one (e.g. `IdealGasMaterial`) --
+    // found live 2026-08-18 while adding this method, same real class of
+    // gap the method itself exists to close.
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle)
+    }
     fn mixture_phase(&self) -> Option<MixturePhase> {
         self.inner.mixture_phase()
     }
-    fn latent_heat(&self) -> f32 {
+    fn latent_heat(&self, from_material_id: u32) -> f32 {
+        let _ = from_material_id;
         self.latent_heat
+    }
+}
+
+/// Real, general multi-source extension of `WithLatentHeat`: instead of ONE
+/// flat energy value regardless of where a particle is transitioning FROM,
+/// holds a real per-source table -- for a substance that's the destination of
+/// multiple physically distinct transitions with different real energies
+/// (water: +334,000 J/kg melting-in from ice, -2,257,000 J/kg condensing-in
+/// from steam -- confirmed live as a real, structural need, `examples/
+/// phase_states_headless.rs`). Not gas/water-specific: any material (solid,
+/// liquid, gas, mixture) with more than one real incoming transition can use
+/// this the same way -- `WithLatentHeat` stays the simple, unchanged, single-
+/// value case for materials that only ever have one real source.
+///
+/// A `from_material_id` with no matching entry gets 0.0 (no energy cost) --
+/// a real, disclosed default (an undeclared transition path is treated as
+/// free, not as an error) rather than a hard panic, so adding a new phase
+/// rule without updating every destination's table doesn't crash a scene;
+/// declare every real transition path you care about explicitly.
+///
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// # use emerge::{NewtonianFluidMaterial, WithLatentHeatTable};
+/// const ICE_ID: u32 = 0;
+/// const STEAM_ID: u32 = 2;
+/// let water = WithLatentHeatTable::new(
+///     NewtonianFluidMaterial::low_viscosity(1000.0, 1.0e5),
+///     vec![(ICE_ID, 334_000.0), (STEAM_ID, -2_257_000.0)],
+/// );
+/// ```
+#[derive(Debug, Clone)]
+pub struct WithLatentHeatTable<M> {
+    pub inner: M,
+    pub latent_heat_by_source: Vec<(u32, f32)>,
+}
+
+impl<M> WithLatentHeatTable<M> {
+    pub fn new(inner: M, latent_heat_by_source: Vec<(u32, f32)>) -> Self {
+        Self {
+            inner,
+            latent_heat_by_source,
+        }
+    }
+}
+
+impl<M: MaterialModel> MaterialModel for WithLatentHeatTable<M> {
+    forward_material_model_common!();
+    fn init_particle(&self, particle: &mut Particle) {
+        self.inner.init_particle(particle)
+    }
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle)
+    }
+    fn mixture_phase(&self) -> Option<MixturePhase> {
+        self.inner.mixture_phase()
+    }
+    fn latent_heat(&self, from_material_id: u32) -> f32 {
+        self.latent_heat_by_source
+            .iter()
+            .find(|(id, _)| *id == from_material_id)
+            .map(|(_, e)| *e)
+            .unwrap_or(0.0)
     }
 }
 
@@ -442,8 +580,11 @@ impl<M: MaterialModel> MaterialModel for WithMixturePhase<M> {
     fn init_particle(&self, particle: &mut Particle) {
         self.inner.init_particle(particle)
     }
-    fn latent_heat(&self) -> f32 {
-        self.inner.latent_heat()
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle)
+    }
+    fn latent_heat(&self, from_material_id: u32) -> f32 {
+        self.inner.latent_heat(from_material_id)
     }
     fn mixture_phase(&self) -> Option<MixturePhase> {
         Some(self.phase)
@@ -451,13 +592,13 @@ impl<M: MaterialModel> MaterialModel for WithMixturePhase<M> {
 }
 
 /// Wraps any `MaterialModel` to give particles a nonzero `internal_pressure` at spawn
-/// time, without writing a full delegating impl by hand — same pattern as
+/// time, without writing a full delegating impl by hand -- same pattern as
 /// `WithLatentHeat`/`WithMixturePhase`. The wrapped material's own `pressure_scale()`
 /// still gates whether the pressure actually contributes stress (see
 /// `combined_kirchhoff_stress`); this wrapper only supplies the per-particle value.
 ///
 /// Real motivating case: turgor pressure in plants (see `Particle::internal_pressure`
-/// doc) — but generic, not plant-specific: any internally-pressurized body.
+/// doc) -- but generic, not plant-specific: any internally-pressurized body.
 ///
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
@@ -484,11 +625,15 @@ impl<M: MaterialModel> MaterialModel for WithPreStress<M> {
         self.inner.init_particle(particle);
         particle.internal_pressure = self.pressure;
     }
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        self.inner.init_particle_from_transition(particle);
+        particle.internal_pressure = self.pressure;
+    }
     fn mixture_phase(&self) -> Option<MixturePhase> {
         self.inner.mixture_phase()
     }
-    fn latent_heat(&self) -> f32 {
-        self.inner.latent_heat()
+    fn latent_heat(&self, from_material_id: u32) -> f32 {
+        self.inner.latent_heat(from_material_id)
     }
 }
 
@@ -498,3 +643,48 @@ impl<M: MaterialModel> MaterialModel for WithPreStress<M> {
 pub(crate) struct FallbackMaterial;
 
 impl MaterialModel for FallbackMaterial {}
+
+#[cfg(test)]
+mod latent_heat_tests {
+    use super::*;
+    use crate::materials::NeoHookeanMaterial;
+
+    const ICE_ID: u32 = 0;
+    const STEAM_ID: u32 = 2;
+
+    #[test]
+    fn with_latent_heat_ignores_source_and_stays_flat() {
+        // Real regression check: the 2026-08-23 signature change
+        // (`latent_heat(&self)` -> `latent_heat(&self, from_material_id: u32)`)
+        // must be a no-op for every existing single-value use.
+        let water = WithLatentHeat::new(NeoHookeanMaterial::new(10.0, 20.0), 334_000.0);
+        assert_eq!(water.latent_heat(ICE_ID), 334_000.0);
+        assert_eq!(water.latent_heat(STEAM_ID), 334_000.0);
+        assert_eq!(water.latent_heat(999), 334_000.0);
+    }
+
+    #[test]
+    fn with_latent_heat_table_picks_the_real_value_for_each_real_source() {
+        // Water's own real, distinct energies for its two real incoming
+        // transitions -- the actual motivating case this type exists for.
+        let water = WithLatentHeatTable::new(
+            NeoHookeanMaterial::new(10.0, 20.0),
+            vec![(ICE_ID, 334_000.0), (STEAM_ID, -2_257_000.0)],
+        );
+        assert_eq!(water.latent_heat(ICE_ID), 334_000.0);
+        assert_eq!(water.latent_heat(STEAM_ID), -2_257_000.0);
+    }
+
+    #[test]
+    fn with_latent_heat_table_defaults_to_zero_for_an_undeclared_source() {
+        // Real, disclosed default (see the type's own doc): an unlisted
+        // source is treated as a free transition, not an error, so a new
+        // phase rule doesn't crash a scene whose tables weren't updated.
+        let water = WithLatentHeatTable::new(
+            NeoHookeanMaterial::new(10.0, 20.0),
+            vec![(ICE_ID, 334_000.0)],
+        );
+        assert_eq!(water.latent_heat(STEAM_ID), 0.0);
+        assert_eq!(water.latent_heat(999), 0.0);
+    }
+}

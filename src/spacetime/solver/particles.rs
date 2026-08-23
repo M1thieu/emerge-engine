@@ -86,6 +86,11 @@ impl Simulation {
     /// upgrade to this exact function later, without re-deriving where the
     /// gap is.
     pub(super) fn apply_phase_transition(&mut self, i: usize, new_material_id: u32) {
+        // Captured BEFORE being overwritten below -- `MaterialModel::
+        // latent_heat`'s own real, general multi-source extension
+        // (2026-08-23) needs to know which material this particle is
+        // transitioning FROM, not just which one it's arriving at.
+        let from_material_id = self.particles.material_id[i];
         self.particles.material_id[i] = new_material_id;
 
         let current_volume = self.particles.volume[i];
@@ -95,15 +100,29 @@ impl Simulation {
             self.particles.density[i] = self.particles.mass[i] / current_volume;
         }
 
-        let latent_heat = self.materials.get(new_material_id).latent_heat();
+        let latent_heat = self
+            .materials
+            .get(new_material_id)
+            .latent_heat(from_material_id);
         if latent_heat != 0.0
             && let Some(thermal) = &self.thermal
         {
             self.particles.temperature[i] -= latent_heat / thermal.config.heat_capacity;
         }
 
+        // Real, general engine hook (added 2026-08-18, see `MaterialModel::
+        // init_particle_from_transition`'s own doc for the full story):
+        // defaults to `init_particle` unchanged for every material that
+        // doesn't override it -- zero behavior change for water->ice and
+        // every other existing phase-transition demo. A material whose own
+        // rest state differs dramatically from what it might be
+        // transitioning FROM (water->steam, `IdealGasMaterial`) overrides this
+        // instead, to honor the real, continuous rebaseline just above
+        // rather than blindly recomputing from `mass/rest_density`.
         let mut p = self.particles.get(i);
-        self.materials.get(new_material_id).init_particle(&mut p);
+        self.materials
+            .get(new_material_id)
+            .init_particle_from_transition(&mut p);
         self.particles.set(i, p);
     }
 
