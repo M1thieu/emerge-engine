@@ -102,6 +102,10 @@ name = "basic_fluids"
 required-features = ["render"]
 
 [[example]]
+name = "basic_gas"
+required-features = ["render"]
+
+[[example]]
 name = "basic_orbital"
 required-features = ["render"]
 
@@ -223,6 +227,14 @@ required-features = ["render"]
 
 [[example]]
 name = "sand_repose_angle_gui"
+required-features = ["render"]
+
+[[example]]
+name = "grain_rolling_closeup_gui"
+required-features = ["render"]
+
+[[example]]
+name = "grain_newtons_cradle_gui"
 required-features = ["render"]
 
 [[example]]
