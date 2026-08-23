@@ -1,7 +1,7 @@
 use glam::Vec2;
 
 /// D⁻¹ = 4.0 for the quadratic B-spline MLS-MPM kernel (always).
-/// Not a tunable parameter — hardcoded from Hu 2018 Table 1.
+/// Not a tunable parameter -- hardcoded from Hu 2018 Table 1.
 pub(crate) const KERNEL_D_INVERSE: f32 = 4.0;
 
 /// Parameters that control the physics solver and its runtime behavior.
@@ -12,14 +12,43 @@ pub struct SimConfig {
     pub dt: f32,
     pub adaptive_timestep: bool,
     pub cfl_include_affine_speed: bool,
+    /// Safety factor on the ADVECTIVE (velocity) CFL bound: `dt <=
+    /// cfl_coefficient * cell_width / max_speed` -- the classic
+    /// Courant-Friedrichs-Lewy (1928) condition, applied here to a
+    /// particle's own displacement per substep instead of a fixed-grid
+    /// advection scheme. Not a value with one "true" derivation -- a CFL
+    /// coefficient is inherently a conservative margin under the
+    /// theoretical stability limit (Courant number <= 1.0), and 0.9 is a
+    /// standard, common choice for the mild advective bound specifically
+    /// (see `material_cfl_coefficient` below for why the material/viscous
+    /// bounds use a tighter 0.5 instead -- same convention
+    /// `rod_cfl_coefficient` documents for the rod solver's own bound).
     pub cfl_coefficient: f32,
+    /// Safety factor on the MATERIAL (elastic wave speed) CFL bound,
+    /// `elastic_wave_dt`: `dt <= material_cfl_coefficient * cell_width /
+    /// c_p` where `c_p = sqrt((lambda+2*mu)/rho)` is the longitudinal
+    /// elastic wave speed. Kept tighter (0.5) than the plain advective
+    /// `cfl_coefficient` (0.9): a stiffness-driven instability from
+    /// under-resolving the acoustic/elastic wave speed tends to blow up
+    /// hard and immediately, unlike a mild velocity-CFL overshoot, so a
+    /// stricter margin is the standard conservative choice (matches common
+    /// explicit-MPM/FEM practice, not a value derived from one specific
+    /// formula -- like any CFL number, it's a stability margin, not a
+    /// measured material property).
     pub material_cfl_coefficient: f32,
+    /// Safety factor on the VISCOUS (diffusive) timestep bound for
+    /// viscosity-bearing fluid materials (Newtonian/Bingham) -- a diffusion-
+    /// type stability condition (`dt <= C * dx^2 / nu`-shaped, distinct
+    /// power of `dx` from the acoustic bound above). Same conservative-
+    /// margin reasoning and same 0.5 value as `material_cfl_coefficient`
+    /// (viscous diffusion instability is likewise an immediate blowup, not
+    /// a mild overshoot).
     pub viscous_timestep_coefficient: f32,
     /// Safety factor for `rod::rod_cfl_dt`'s own bound, folded into
     /// `choose_substep_dt` alongside `material_cfl_coefficient`. Not the same
     /// 0.5 as `material_cfl_coefficient`: `rod_cfl_dt` sums every stiffness/
     /// damping term touching each point (a Gershgorin row-sum bound), which
-    /// is real but LOOSE for the rod's geometrically nonlinear dynamics — 0.5
+    /// is real but LOOSE for the rod's geometrically nonlinear dynamics -- 0.5
     /// diverges for a long/stiff-EI cantilever at N=30/40; 0.4 is the
     /// bisected, long-horizon-verified safe value across that regime and a
     /// short/soft blade-of-grass regime (see `project_rod_cfl_gershgorin_and_cookbook_2026-07-21` memory).
@@ -38,11 +67,11 @@ pub struct SimConfig {
     pub gravity: Vec2,
     /// Direction light is sensed as coming FROM, for `rod::Phototropism`
     /// (see that struct's own doc). A FIXED, externally-set vector, NOT a
-    /// real solar/orbital model — `emerge`/LP work at continuum scale, no
+    /// real solar/orbital model -- `emerge`/LP work at continuum scale, no
     /// day/night sun-angle system exists (the existing `day_night_thermal_gpu`
     /// demo is a pure scalar ambient-temperature oscillation with no light
     /// direction at all). Default: straight up (`Vec2::new(0.0, 1.0)`,
-    /// opposite the default `gravity` direction) — "light from directly
+    /// opposite the default `gravity` direction) -- "light from directly
     /// above," the common illustrative case. Zero cost/no behavior change
     /// for any rod that doesn't opt into `Phototropism`.
     pub light_dir: Vec2,
@@ -253,7 +282,7 @@ pub struct SimConfig {
     /// APIC affine-matrix blend [0, 1].
     /// 1.0 = full APIC (angular-momentum-conserving, taichi default).
     /// 0.0 = pure PIC (maximum numerical dissipation, fastest settling).
-    /// Intermediate values blend between the two — equivalent to taichi's `apic_damping`.
+    /// Intermediate values blend between the two -- equivalent to taichi's `apic_damping`.
     ///
     /// For strict WC-MPM liquid materials, APIC transports momentum while the
     /// thermodynamic state remains `V=V0 J`, `rho=rho0/J`. Calibrate a spawn
@@ -297,16 +326,16 @@ pub struct SimConfig {
     /// Sleeping particles skip P2G and G2P entirely; woken by neighbouring active cells.
     pub sleep_threshold: f32,
     /// Speed below which a whole rod (max over ALL its points) becomes eligible
-    /// for sleep — separate knob from `sleep_threshold` since a rod's natural
+    /// for sleep -- separate knob from `sleep_threshold` since a rod's natural
     /// residual-sway speed under wind is a different scale than an MPM
-    /// particle's. 0.0 = sleep disabled (default — no existing rod scene's
+    /// particle's. 0.0 = sleep disabled (default -- no existing rod scene's
     /// behavior changes). A rod with an active push (`Rod::push_strength > 0`)
     /// never sleeps regardless of this value. Sleeping rods skip scatter/
     /// gather/internal-force integration AND their own `rod_cfl_dt` term in
-    /// `choose_substep_dt` — the real cost driver for many simultaneous rods.
+    /// `choose_substep_dt` -- the real cost driver for many simultaneous rods.
     pub rod_sleep_threshold: f32,
     /// Coulomb friction coefficient for multi-field contact between a `contact_group != 0`
-    /// particle and everything else (Bardenhagen 2001 — see `Particle::contact_group` doc).
+    /// particle and everything else (Bardenhagen 2001 -- see `Particle::contact_group` doc).
     /// Only has any effect at all when at least one particle actually sets a nonzero
     /// `contact_group`; otherwise `Grid::resolve_contact` never has anything to resolve,
     /// regardless of this value. 0.0 = frictionless (normal no-penetration only, free
@@ -316,7 +345,7 @@ pub struct SimConfig {
     /// the Material Point Method: A Scheme for Easier Separation and Less Dissipation", ACM
     /// TOG 40(4)). Reintroduces a FLIP-style velocity/position correction on top of ordinary
     /// APIC, letting granular/debris material separate crisply instead of smearing together.
-    /// 0.0 = disabled — byte-identical to plain APIC, the default for every existing scene/
+    /// 0.0 = disabled -- byte-identical to plain APIC, the default for every existing scene/
     /// test. ~0.97 matches the paper's own reference implementation (`nepluno/pyasflip`).
     /// Costs nothing when 0.0: no grid-velocity snapshot is taken, G2P takes the exact
     /// original code path.
@@ -324,31 +353,31 @@ pub struct SimConfig {
     /// Cundall local non-viscous damping coefficient [0, 1] (Cundall 1982/1987
     /// "dynamic relaxation"; MPM formulation per Beuth, Benz, Vermeer, Coetzee,
     /// Bonnier & van den Berg 2007, "Formulation and Application of a Quasi-
-    /// Static Material Point Method," NUMOG X — used in production geotechnical
+    /// Static Material Point Method," NUMOG X -- used in production geotechnical
     /// MPM, e.g. Anura3D). Real, material-agnostic fix for the mismatch an
     /// explicit-dynamic MPM solver has with an inherently quasi-static problem
     /// (a granular pile creeping toward equilibrium): damps the component of
     /// each grid cell's velocity change THIS substep (a real proxy for applied
     /// force, since Δv = F·dt/m at fixed dt/mass) that opposes nothing but its
-    /// own oscillation — proportional to the FORCE just applied, not to
+    /// own oscillation -- proportional to the FORCE just applied, not to
     /// velocity itself (that's ordinary viscous damping, a different real
     /// mechanism already available via `ViscoelasticMaterial`). Self-gating by
     /// construction: a cell with zero velocity has nothing to oppose (zero
     /// damping), and steady DIRECTED motion (a creature walking, a fluid
-    /// splash) barely engages it — only genuine wobble/settling does. Lives at
+    /// splash) barely engages it -- only genuine wobble/settling does. Lives at
     /// the grid level, not inside any one material's constitutive law, so
     /// every material benefits once enabled, not just granular ones.
-    /// 0.0 = disabled (default) — no velocity snapshot taken, byte-identical
+    /// 0.0 = disabled (default) -- no velocity snapshot taken, byte-identical
     /// to every existing scene, same zero-cost convention as `asflip_blend`.
     pub cundall_damping: f32,
     /// N-phase mixture coupling drag coefficient (generalizes Tampubolon et al.
-    /// 2017, "Multi-species simulation of porous sand and water mixtures" —
+    /// 2017, "Multi-species simulation of porous sand and water mixtures" --
     /// Darcy-style momentum exchange between materials wrapped in different
     /// `MixturePhase` slots, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
-    /// NOT the paper's own permeability-derived `c_E` directly — this is a first,
+    /// NOT the paper's own permeability-derived `c_E` directly -- this is a first,
     /// simplified scalar-coefficient version; mapping to real soil permeability/
     /// porosity is real, disclosed future work, not attempted yet).
-    /// 0.0 = disabled (default) — `Grid::has_mixture_activity()` gates the extra
+    /// 0.0 = disabled (default) -- `Grid::has_mixture_activity()` gates the extra
     /// P2G scatter and the whole resolve pass, zero cost for every scene that
     /// doesn't use `WithMixturePhase`, matching `asflip_blend`'s own convention.
     pub mixture_drag_coefficient: f32,
@@ -359,10 +388,10 @@ pub struct SimConfig {
     /// mixture's actual incompressibility constraint, so under sustained/
     /// confined loading (water settled into sand) the violation compounds
     /// silently over hundreds of steps until velocities blow past the CFL
-    /// bound. 0 = disabled (default) — byte-identical to the original
+    /// bound. 0 = disabled (default) -- byte-identical to the original
     /// momentum-only coupling, matching every other opt-in field's convention.
     /// Real, disclosed caveat: this is an approximate, real-time-affordable
-    /// Jacobi solve, not an exact Poisson solve — pick this value by measuring
+    /// Jacobi solve, not an exact Poisson solve -- pick this value by measuring
     /// against your actual scene's long-settle behavior (a settled, confined
     /// liquid is the documented worst case for a low iteration count), not by
     /// assuming a small fixed count is free.
@@ -379,7 +408,7 @@ pub struct SimConfig {
     /// proven in this codebase for the two-phase mixture case, see
     /// `mixture_pressure_iterations`'s own doc), solved EXACTLY via a
     /// discrete cosine transform (Stam 1999), enforces incompressibility as a
-    /// solved constraint instead of an explicit stiff spring — set the
+    /// solved constraint instead of an explicit stiff spring -- set the
     /// fluid's own `eos_stiffness` to 0.0 (already a legal, asserted-
     /// permitted value, see `fluid_state::tait_pressure`'s own `>= 0.0`
     /// contract) when using this, so the two mechanisms don't double-count
@@ -425,11 +454,11 @@ pub struct SimConfig {
     /// Real, disclosed scope limit: when this is nonzero,
     /// `Simulation::step`'s strict-fluid assertions additionally require
     /// EVERY particle in the scene to be a strict fluid (`owns_deformation_
-    /// volume_state() == true`) — a scene mixing fluid with sand/solid bodies
+    /// volume_state() == true`) -- a scene mixing fluid with sand/solid bodies
     /// on the same grid is not yet supported here (would need per-cell
     /// fluid-fraction tracking, the same kind of bookkeeping
     /// `mixture_cells` already does for the porous case, just not built for
-    /// this non-porous case — deliberately out of scope until a real scene
+    /// this non-porous case -- deliberately out of scope until a real scene
     /// needs it, not a hidden gap).
     pub fluid_pressure_iterations: u32,
 
@@ -462,7 +491,7 @@ pub struct SimConfig {
 
 impl Default for SimConfig {
     /// Safe production defaults: adaptive timestepping on, state projection on.
-    /// Use [`SimConfig::standard`] or [`SimConfig::earth`] in practice — they set the
+    /// Use [`SimConfig::standard`] or [`SimConfig::earth`] in practice -- they set the
     /// important physical parameters (grid_res, dt, gravity) from arguments.
     fn default() -> Self {
         Self {
@@ -530,7 +559,7 @@ impl SimConfig {
     ///
     /// Use only for: unit tests that need exact deterministic substeps, benchmarks
     /// where you want to measure a fixed workload, or comparing against an external reference.
-    /// Never use for real simulations — J can go negative and NaN-cascade.
+    /// Never use for real simulations -- J can go negative and NaN-cascade.
     pub fn unsafe_defaults() -> Self {
         Self {
             adaptive_timestep: false,
@@ -545,9 +574,9 @@ impl SimConfig {
     /// material parameters passed via `lame_from_si` produce correct behaviour.
     ///
     /// # Arguments
-    /// * `grid_res`    — number of cells per side
-    /// * `cell_m`      — physical size of one grid cell in metres (e.g. `0.01` for 1 cm)
-    /// * `dt`          — frame time step in simulation seconds (e.g. `0.05`)
+    /// * `grid_res`    -- number of cells per side
+    /// * `cell_m`      -- physical size of one grid cell in metres (e.g. `0.01` for 1 cm)
+    /// * `dt`          -- frame time step in simulation seconds (e.g. `0.05`)
     ///
     /// # Derived values
     /// `gravity_solver = 9.81 / cell_m` cells/s² (downward, −Y).

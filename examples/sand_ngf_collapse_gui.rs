@@ -350,7 +350,7 @@ impl State {
             let right_line_x = (center_x_cells + r_inf) / GRID as f32 * w;
 
             let painter = ctx.debug_painter();
-            let stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 60, 60));
+            let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 60, 60));
             painter.line_segment(
                 [egui::pos2(left_line_x, 0.0), egui::pos2(left_line_x, h)],
                 stroke,

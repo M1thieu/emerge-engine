@@ -126,7 +126,7 @@ impl Simulation {
     ///
     /// If `new_material_id`'s `MaterialModel::latent_heat()` is non-zero and a thermal
     /// model is configured (`with_thermal`/`set_thermal`), debits `temperature` by
-    /// `latent_heat / heat_capacity` for every transitioned particle — see
+    /// `latent_heat / heat_capacity` for every transitioned particle -- see
     /// `MaterialModel::latent_heat` for the sign convention.
     pub fn phase_transition<F>(&mut self, predicate: F, new_material_id: u32)
     where
@@ -134,7 +134,7 @@ impl Simulation {
     {
         assert!(
             self.materials.is_registered(new_material_id),
-            "phase_transition: material_id {new_material_id} is not registered — \
+            "phase_transition: material_id {new_material_id} is not registered -- \
              call solver.with_material({new_material_id}, ...) first"
         );
         for i in 0..self.particles.len() {
@@ -154,7 +154,7 @@ impl Simulation {
     /// All `new_material_id` values returned by the rule must be pre-registered via
     /// `solver.with_material(id, ...)` before any step is taken.
     ///
-    /// Applies the same `latent_heat` energy debit as `phase_transition` — see there.
+    /// Applies the same `latent_heat` energy debit as `phase_transition` -- see there.
     ///
     /// # Examples
     /// ```rust,ignore
@@ -248,13 +248,26 @@ impl Simulation {
     ///
     /// LP pattern: tag particles with a sentinel before the step, then call
     /// `solver.remove_particles(|p| p.user_tag == DEAD)`. The tag-based group API
-    /// remains valid after removal — tag_index is rebuilt internally.
+    /// remains valid after removal -- tag_index is rebuilt internally.
     pub fn remove_particles<F: Fn(&Particle) -> bool>(&mut self, predicate: F) -> usize {
         let before = self.particles.len();
         self.particles.retain(|p| !predicate(p));
         let removed = before - self.particles.len();
         if removed > 0 {
-            // retain() compacted the array — all physical indices in tag_index are stale.
+            // Real, confirmed bug fix (2026-08-19, found chasing the new
+            // grain-enrichment work): retain() compacts the array, shifting
+            // which particle sits at which physical index -- but the
+            // spatial hash caches particle INDICES from before the
+            // compaction (`ensure_spatial_hash_fresh`'s own doc: rebuilt
+            // only when `step()` marks it dirty). Without this, a spatial
+            // query (`particles_near`/`region_state`/`count_near`) called
+            // AFTER a removal but BEFORE the next `step()` would silently
+            // use stale indices -- pointing at the wrong particle, or past
+            // the now-shorter array. Real risk for any caller doing
+            // multiple region-based removals/enrichments in sequence
+            // without a `step()` between them, not just a theoretical gap.
+            self.spatial_hash_dirty.set(true);
+            // retain() compacted the array -- all physical indices in tag_index are stale.
             // Rebuild from scratch and re-establish the sleep partition.
             self.tag_index.clear();
             // Re-partition: move all sleeping particles to the back.
@@ -282,7 +295,7 @@ impl Simulation {
 
     /// Iterate physical indices of all particles with `tag`. O(group_size) via tag_index.
     ///
-    /// Returns indices only — read particle data via `solver.particles().x[i]` etc.
+    /// Returns indices only -- read particle data via `solver.particles().x[i]` etc.
     /// This avoids cloning 112B per particle on every call.
     pub fn particles_with_tag(&self, tag: u32) -> impl Iterator<Item = usize> + '_ {
         self.tag_index
@@ -308,7 +321,7 @@ impl Simulation {
         if i != last_active {
             let tag_i = self.particles.user_tag[i];
             let tag_j = self.particles.user_tag[last_active];
-            // Same-tag swap: both indices stay in the same set — no update needed.
+            // Same-tag swap: both indices stay in the same set -- no update needed.
             // Different-tag swap: each particle moves to the other's former position.
             if tag_i != tag_j {
                 Self::tag_index_replace(&mut self.tag_index, tag_i, i, last_active);
@@ -409,7 +422,7 @@ impl Simulation {
 
     /// Spawn particles, tag them, and return the stable tag.
     ///
-    /// The returned `u32` tag is the only stable identity for this group — physical
+    /// The returned `u32` tag is the only stable identity for this group -- physical
     /// indices change whenever particles sleep or wake. Pass it to `group_state`,
     /// `set_group_activation`, `group_centroid`, etc.
     ///
@@ -426,14 +439,14 @@ impl Simulation {
     /// solver.set_group_activation(creature, 1.0);
     /// let centroid = solver.group_centroid(creature);
     /// ```
-    #[must_use = "store the tag — it is the only stable identity for this group"]
+    #[must_use = "store the tag -- it is the only stable identity for this group"]
     pub fn add_body(&mut self, spawn: SpawnRegion) -> u32 {
         let tag = self.next_tag;
         self.next_tag += 1;
 
         let old_active = self.active_count;
         let old_len = self.particles.len();
-        // sleeping zone is [old_active..old_len] — new particles must land before it.
+        // sleeping zone is [old_active..old_len] -- new particles must land before it.
 
         spawn.validate_for_sim(&self.config);
         debug_assert!(
@@ -485,7 +498,7 @@ impl Simulation {
         self.active_count = group_end;
 
         // Scatter only particles in the spawn region + 3-cell margin.
-        // O(active_count) scan but O(local × stencil) grid work — fast for sparse spawns.
+        // O(active_count) scan but O(local × stencil) grid work -- fast for sparse spawns.
         density::estimate_particle_volumes_local(
             &mut self.particles,
             &mut self.grid,
@@ -503,7 +516,7 @@ impl Simulation {
 
     /// Attach a scalar diffusion field (pheromone, nutrients, morphogen).
     ///
-    /// Attached fields are applied automatically every substep — LP does not need
+    /// Attached fields are applied automatically every substep -- LP does not need
     /// to call `field.apply()` manually.
     ///
     /// ```rust,no_run
@@ -519,7 +532,7 @@ impl Simulation {
     ///     64,
     /// );
     /// solver.attach_scalar_field(pheromone);
-    /// // No manual field.apply() needed — runs automatically in solver.step()
+    /// // No manual field.apply() needed -- runs automatically in solver.step()
     /// ```
     pub fn attach_scalar_field(&mut self, field: ScalarDiffusionField) {
         self.scalar_fields.push(field);
