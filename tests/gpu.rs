@@ -4323,7 +4323,7 @@ mod gpu_tests {
     struct LatentHeatMaterial(f32);
 
     impl emerge::MaterialModel for LatentHeatMaterial {
-        fn latent_heat(&self) -> f32 {
+        fn latent_heat(&self, _from_material_id: u32) -> f32 {
             self.0
         }
     }
