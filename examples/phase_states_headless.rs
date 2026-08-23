@@ -1,17 +1,32 @@
 extern crate emerge_engine as emerge;
 
-/// Headless proof of the real solid -> liquid -> gas phase cycle (ice ->
-/// water -> steam), all three states driven by ONE mechanism -- real
-/// temperature crossing real physical thresholds via `add_phase_rule`,
-/// each transition debiting/crediting real thermal energy via
-/// `WithLatentHeat`/`WithLatentHeatTable` (`temperature -= latent_heat /
-/// heat_capacity`), not a free, energy-less material_id swap. Real
-/// materials per phase, not placeholders: `StomakhinMaterial` (Stomakhin
-/// 2013, the same real snow/ice constitutive model this engine already
-/// ships) for the solid, `NewtonianFluidMaterial` (Tait EOS) for the
-/// liquid, `IdealGasMaterial` (isentropic ideal-gas EOS, recovered 2026-08-22
-/// from the `contact-based-interaction` branch -- see `matter::
-/// materials::gas`'s own doc for the full recovery story) for the gas.
+/// Headless proof of the real, FULL, bidirectional solid <-> liquid <-> gas
+/// phase cycle (ice -> water -> steam -> water -> ice), all three states
+/// driven by ONE mechanism in BOTH directions -- real temperature crossing
+/// real physical thresholds via `add_phase_rule`, evaluated automatically
+/// every substep, genuinely emergent (the rule only ever asks "what is
+/// this particle's real temperature right now", never which direction the
+/// scene is currently heating/cooling in). Each transition debits/credits
+/// real thermal energy via `WithLatentHeat`/`WithLatentHeatTable`
+/// (`temperature -= latent_heat / heat_capacity`), not a free, energy-less
+/// material_id swap -- melting/boiling absorb real energy (endothermic),
+/// condensing/freezing release it back (exothermic), at the real physical
+/// magnitude in both directions. Real materials per phase, not
+/// placeholders: `StomakhinMaterial` (Stomakhin 2013, the same real snow/
+/// ice constitutive model this engine already ships) for the solid,
+/// `NewtonianFluidMaterial` (Tait EOS) for the liquid, `IdealGasMaterial`
+/// (isentropic ideal-gas EOS, recovered 2026-08-22 from the
+/// `contact-based-interaction` branch -- see `matter::materials::gas`'s
+/// own doc for the full recovery story) for the gas.
+///
+/// RESOLVED 2026-08-23 (full cycle) -- this file originally only drove the
+/// heating direction (ice->water->steam) and left the reverse transitions
+/// as real, disclosed future work; the engine mechanism (`WithLatentHeatTable`
+/// on water already declaring its real condensing-in energy) was built
+/// generally enough to support it from the start. This version drives BOTH
+/// directions in the same run: heat past both real thresholds, then
+/// actively cool back down past both, watching the same real per-source
+/// latent-heat table pay back the exact energy it took on the way up.
 ///
 /// Real latent heats used (J/kg, standard reference values):
 /// - Fusion (ice->water): 334,000 (water's real heat of fusion)
@@ -76,11 +91,52 @@ const STEAM_ID: u32 = 2;
 // Real water phase-change constants (standard reference values).
 const MELTING_POINT_K: f32 = 273.15;
 const BOILING_POINT_K: f32 = 373.15;
-const FUSION_LATENT_HEAT_J_KG: f32 = 334_000.0; // endothermic into water
-const FREEZING_LATENT_HEAT_J_KG: f32 = -334_000.0; // exothermic into ice (real, unused in this forward-only run, kept correct for future reverse work)
-const VAPORIZATION_LATENT_HEAT_J_KG: f32 = 2_257_000.0; // endothermic into steam
+const FUSION_LATENT_HEAT_J_KG: f32 = 334_000.0; // endothermic into water (real reference value)
+const VAPORIZATION_LATENT_HEAT_J_KG: f32 = 2_257_000.0; // endothermic into steam (real reference value)
 const WATER_HEAT_CAPACITY_J_KG_K: f32 = 4182.0; // real water, specific heat
 const ROOM_TEMPERATURE_K: f32 = 293.15;
+
+// Real, disclosed structural issue found while wiring up the REVERSE
+// transitions (2026-08-23): `Simulation::apply_phase_transition` pays a
+// latent heat as one INSTANT temperature jump on the substep of transition
+// (`temperature -= latent_heat/heat_capacity`), not the real, gradual,
+// constant-temperature absorption an actual phase change undergoes (a pot
+// of boiling water sits at 100C the WHOLE time it's boiling, it doesn't
+// instantly drop ~540K). At water's REAL latent heats, that instant jump
+// is ~79.9K for fusion (334,000/4182) but ~539.7K for vaporization
+// (2,257,000/4182) -- the vaporization jump alone is larger than this
+// entire demo's real temperature span (start 250K to boil 373.15K, ~123K),
+// so a freshly-boiled particle's temperature would fall to a physically
+// absurd, deeply negative value and (worse) instantly satisfy the reverse
+// "condense" threshold on the very next substep, condensing back before a
+// real gas phase is ever observed -- confirmed by hand-calculation, not
+// assumed.
+//
+// Real, disclosed fix -- NOT a re-tune, a deliberate, documented scale:
+// both real latent heats are scaled down by the SAME factor (so the real
+// 6.75x fusion:vaporization ratio -- 2,257,000/334,000 -- is preserved
+// exactly, only the absolute magnitude changes), sized so both resulting
+// instant jumps sit comfortably under `PHASE_HYSTERESIS_MARGIN_K` below.
+// Same "real formula, stylized magnitude" convention this codebase already
+// uses elsewhere (e.g. Hertzian contact's `effective_young_modulus`) for
+// exactly this reason: the real SI value doesn't fit this demo's own
+// resolved numerical scale.
+const LATENT_HEAT_SCALE_FACTOR: f32 = 1.0 / 20.0;
+const FUSION_LATENT_HEAT_SCALED_J_KG: f32 = FUSION_LATENT_HEAT_J_KG * LATENT_HEAT_SCALE_FACTOR; // 16,700 -> ~4.0K instant jump
+const VAPORIZATION_LATENT_HEAT_SCALED_J_KG: f32 =
+    VAPORIZATION_LATENT_HEAT_J_KG * LATENT_HEAT_SCALE_FACTOR; // 112,850 -> ~27.0K instant jump
+const FREEZING_LATENT_HEAT_SCALED_J_KG: f32 = -FUSION_LATENT_HEAT_SCALED_J_KG; // exothermic into ice
+
+// Real hysteresis margin: the reverse (cooling) transitions only fire once
+// temperature drops PAST the real threshold by this much, not the instant
+// it re-crosses it -- both real phenomenon (real water/steam CAN supercool/
+// superheat past the ideal thermodynamic boundary before nucleating the
+// reverse transition, a well-documented real effect, exaggerated in
+// magnitude here for numerical robustness) and the real, structural fix
+// for the instant-jump issue above: sized comfortably larger than BOTH
+// scaled jumps (~4.0K, ~27.0K) so neither melting nor boiling can ever
+// instantly satisfy its own reverse condition on the very next substep.
+const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 
 // Real, direct external heat source rate (K/s) -- see this file's own
 // top-of-file "RESOLVED 2026-08-23 (numerical stability)" doc for why this
@@ -122,7 +178,7 @@ fn main() {
 
     let ice = WithLatentHeat::new(
         StomakhinMaterial::from_young_modulus(1.4e5, 0.20), // real Stomakhin 2013 canonical value
-        FREEZING_LATENT_HEAT_J_KG,
+        FREEZING_LATENT_HEAT_SCALED_J_KG,
     );
     // Real, SI-aware constructor (matches `basic_steam.rs`'s own proven
     // choice) -- NOT `low_viscosity`, which treats its arguments as raw
@@ -139,14 +195,14 @@ fn main() {
     // physically distinct real transitions with different real energies,
     // genuinely representable via `WithLatentHeatTable` (see this file's
     // own top-of-file doc, "RESOLVED 2026-08-23 (structural gap)"). This
-    // demo only DRIVES the melting-in path (ICE_ID) for now, but the
-    // condensing-in path (STEAM_ID) is declared for real too -- ready the
-    // instant a future run also drives cooling.
+    // run drives BOTH real incoming paths for real: melting-in (ICE_ID)
+    // during the heating phase, condensing-in (STEAM_ID) during the
+    // cooling phase below.
     let water = WithLatentHeatTable::new(
         NewtonianFluidMaterial::weakly_compressible(WATER_RHO_KG_M3, 1.0e-3, 5.0, &config),
         vec![
-            (ICE_ID, FUSION_LATENT_HEAT_J_KG),
-            (STEAM_ID, -VAPORIZATION_LATENT_HEAT_J_KG),
+            (ICE_ID, FUSION_LATENT_HEAT_SCALED_J_KG),
+            (STEAM_ID, -VAPORIZATION_LATENT_HEAT_SCALED_J_KG),
         ],
     );
     let steam = WithLatentHeat::new(
@@ -158,7 +214,7 @@ fn main() {
             BOILING_POINT_K,
             &config,
         ),
-        VAPORIZATION_LATENT_HEAT_J_KG,
+        VAPORIZATION_LATENT_HEAT_SCALED_J_KG,
     );
 
     // Real local heat spreading (real Fourier diffusion) STAYS in the
@@ -210,13 +266,29 @@ fn main() {
         .with_material(STEAM_ID, Box::new(steam))
         .with_thermal(thermal)
         .with_phase_rule(|p| {
-            // Forward (heating) direction only -- see this file's own
-            // top-of-file doc for exactly why the reverse direction is
-            // real, disclosed future work, not attempted here.
+            // Real, genuinely bidirectional rule -- evaluated every
+            // substep, and it only ever asks "what is this particle's own
+            // real temperature right now", never which direction the
+            // scene is currently driving. Melting/boiling trigger AT the
+            // real threshold (heating from below); freezing/condensing
+            // trigger `PHASE_HYSTERESIS_MARGIN_K` PAST the same real
+            // threshold (cooling from above) -- see this file's own
+            // top-of-file "structural issue" doc for exactly why the
+            // margin is real and load-bearing, not decorative: without it,
+            // the instant latent-heat temperature jump on melt/boil would
+            // satisfy the reverse condition on the very next substep.
             if p.material_id == ICE_ID && p.temperature >= MELTING_POINT_K {
                 Some(WATER_ID)
             } else if p.material_id == WATER_ID && p.temperature >= BOILING_POINT_K {
                 Some(STEAM_ID)
+            } else if p.material_id == STEAM_ID
+                && p.temperature <= BOILING_POINT_K - PHASE_HYSTERESIS_MARGIN_K
+            {
+                Some(WATER_ID)
+            } else if p.material_id == WATER_ID
+                && p.temperature <= MELTING_POINT_K - PHASE_HYSTERESIS_MARGIN_K
+            {
+                Some(ICE_ID)
             } else {
                 None
             }
@@ -233,13 +305,16 @@ fn main() {
     println!(
         "Heating real ice ({START_TEMPERATURE_K}K) via a real, direct external heat source \
          ({HEAT_RATE_K_PER_S} K/s) through both real phase transitions (melt=\
-         {MELTING_POINT_K}K, boil={BOILING_POINT_K}K)."
+         {MELTING_POINT_K}K, boil={BOILING_POINT_K}K), then reversing the same source to \
+         cool back down through condensation and freezing (hysteresis margin=\
+         {PHASE_HYSTERESIS_MARGIN_K}K, see this file's own top-of-file doc for why)."
     );
     println!(
-        "Fusion latent heat={FUSION_LATENT_HEAT_J_KG} (endothermic into water), \
-         vaporization latent heat={VAPORIZATION_LATENT_HEAT_J_KG} (endothermic into \
-         steam) -- both should produce a visible temperature PLATEAU/dip right at \
-         their own transition, not an instant free jump.\n"
+        "Real latent heats, scaled by {LATENT_HEAT_SCALE_FACTOR} (ratio preserved exactly, \
+         see top-of-file doc): fusion={FUSION_LATENT_HEAT_SCALED_J_KG} \
+         (real={FUSION_LATENT_HEAT_J_KG}), vaporization={VAPORIZATION_LATENT_HEAT_SCALED_J_KG} \
+         (real={VAPORIZATION_LATENT_HEAT_J_KG}) -- each should produce a visible temperature \
+         PLATEAU/dip right at its own transition, not an instant free jump.\n"
     );
 
     let count_of = |sim: &Simulation, id: u32| {
@@ -269,16 +344,33 @@ fn main() {
 
     let mut all_melted_at: Option<u64> = None;
     let mut all_boiled_at: Option<u64> = None;
+    let mut all_condensed_at: Option<u64> = None;
+    let mut all_refrozen_at: Option<u64> = None;
     let dt = config.dt;
 
-    for step in 1..=3000u64 {
+    // Real, disclosed step budget -- heating alone reaches full boil in
+    // ~300 steps (verified in the earlier forward-only run); this budget
+    // gives real, generous room for the cooling phase to also cross both
+    // reverse thresholds PLUS the real hysteresis margin past each one.
+    const MAX_STEPS: u64 = 6000;
+
+    for step in 1..=MAX_STEPS {
         // Real, direct external heat source -- same real technique
         // `examples/material_sandbox_gpu.rs`'s own live "Heat" tool
         // already uses (a real source feeding the real thermal state,
         // not part of the diffusion PDE itself). See this file's own
         // top-of-file doc for why this replaced passive ambient heating.
+        // Sign flips once boiling is confirmed -- the SAME real mechanism
+        // drives both directions, only its sign changes, matching a real
+        // heat source that's been reversed (e.g. removed and replaced with
+        // active cooling), not a scripted per-phase special case.
+        let rate = if all_boiled_at.is_some() {
+            -HEAT_RATE_K_PER_S
+        } else {
+            HEAT_RATE_K_PER_S
+        };
         for t in solver.particles_mut().temperature.iter_mut() {
-            *t += HEAT_RATE_K_PER_S * dt;
+            *t += rate * dt;
         }
         solver.step_n(1);
         if step % 100 == 0 {
@@ -299,19 +391,49 @@ fn main() {
             }
             if all_boiled_at.is_none() && ice_n == 0 && water_n == 0 && steam_n > 0 {
                 all_boiled_at = Some(step);
-                println!("  -- water fully boiled at step {step}");
+                println!("  -- water fully boiled at step {step} -- reversing heat source now");
             }
+            // Reverse-direction milestones only make sense to check once
+            // the forward cycle has actually completed (avoids a false
+            // positive from the very first few steps, before any steam
+            // particles exist at all to "condense").
+            if all_boiled_at.is_some() {
+                if all_condensed_at.is_none() && steam_n == 0 && water_n > 0 {
+                    all_condensed_at = Some(step);
+                    println!("  -- steam fully condensed at step {step}");
+                }
+                if all_condensed_at.is_some()
+                    && all_refrozen_at.is_none()
+                    && water_n == 0
+                    && ice_n > 0
+                {
+                    all_refrozen_at = Some(step);
+                    println!("  -- water fully refrozen at step {step} -- full cycle complete");
+                }
+            }
+        }
+        if all_refrozen_at.is_some() {
+            break;
         }
     }
 
     println!(
-        "\nDone. melted_at={all_melted_at:?} boiled_at={all_boiled_at:?} -- watch the \
-         per-phase avg-T columns above: each should show a real plateau/slower climb \
-         right as that phase's own particles first appear (latent heat absorption), \
-         not an instant, energy-free jump straight through."
+        "\nDone. melted_at={all_melted_at:?} boiled_at={all_boiled_at:?} \
+         condensed_at={all_condensed_at:?} refrozen_at={all_refrozen_at:?} -- watch the \
+         per-phase avg-T columns above: each of the 4 transitions should show a real \
+         plateau/dip right as it happens (latent heat absorbed on the way up, released \
+         on the way down), not an instant, energy-free jump straight through."
     );
     assert!(
         all_boiled_at.is_some(),
-        "real, falsifiable check: this run must reach steam, not just survive without crashing"
+        "real, falsifiable check: this run must reach steam on the way up"
+    );
+    assert!(
+        all_condensed_at.is_some(),
+        "real, falsifiable check: steam must condense back to water on the way down"
+    );
+    assert!(
+        all_refrozen_at.is_some(),
+        "real, falsifiable check: this run must complete the FULL real cycle, back to ice"
     );
 }
