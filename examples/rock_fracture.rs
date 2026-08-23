@@ -1,6 +1,9 @@
 extern crate emerge_engine as emerge;
 
-/// Real rock fracture — 4 real rock types side by side (`RankineMaterial`'s
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
+/// Real rock fracture -- 4 real rock types side by side (`RankineMaterial`'s
 /// granite/sandstone/limestone/shale presets, real cited E/tensile-strength
 /// ratios), struck with an adjustable-force downward impulse to compare how much
 /// real damage accumulates per rock, per strike, and across REPEATED strikes
@@ -245,9 +248,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 

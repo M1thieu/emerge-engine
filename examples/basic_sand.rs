@@ -1,5 +1,8 @@
 extern crate emerge_engine as emerge;
 
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
 use emerge::render::{ColorMode, Renderer};
 use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -20,8 +23,8 @@ const GRID: usize = 64;
 const DT: f32 = 0.1;
 const MAT_LOOSE: u32 = 0;
 const MAT_DENSE: u32 = 1;
-// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand) — see
-// basic_sand_gpu.rs for the full reasoning.
+// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand) -- see
+// basic_sand_grid_gpu.rs for the full reasoning.
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
 struct App {
@@ -80,13 +83,13 @@ fn make_sim() -> Simulation {
         precompute_initial_volumes: true,
         initial_velocity_scale: 0.0,
         rng_seed: seed,
-        // See basic_sand_gpu.rs's spawn closure for the full reasoning: a perfectly regular
+        // See basic_sand_grid_gpu.rs's spawn closure for the full reasoning: a perfectly regular
         // spawn lattice is a grid-crossing artifact with quadratic B-spline MPM kernels,
         // confirmed via direct frame capture on the GPU path (same spawn pattern here).
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    // lambda=2000, mu=3000 -> nu≈0.2 — see basic_sand_gpu.rs's make_sand call for the full
+    // lambda=2000, mu=3000 -> nu≈0.2 -- see basic_sand_grid_gpu.rs's make_sand call for the full
     // reasoning (the previous 5000/3000 implied nu≈0.31, above real dry sand's established
     // 0.1-0.3 range, and directly resists Drucker-Prager yielding via the (lambda+mu)/mu ratio).
     let mut solver = Simulation::new(config, spawn(Vec2::new(17.0, 40.0), MAT_LOOSE, 11))
@@ -173,9 +176,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 

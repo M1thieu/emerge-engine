@@ -1,10 +1,13 @@
 extern crate emerge_engine as emerge;
 
-/// GPU snowballs colliding — Stomakhin 2013 snow plasticity, zero CPU readback.
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
+/// GPU snowballs colliding -- Stomakhin 2013 snow plasticity, zero CPU readback.
 ///
-///   Mat 0  soft powder (blue)  — low hardening, wide plastic limits
-///   Mat 1  packed snow (gold)  — high hardening, tight limits
-///   Mat 2  shatter     (cyan)  — loose granular after violent impact
+///   Mat 0  soft powder (blue)  -- low hardening, wide plastic limits
+///   Mat 1  packed snow (gold)  -- high hardening, tight limits
+///   Mat 2  shatter     (cyan)  -- loose granular after violent impact
 ///
 ///   cargo run --example basic_snow_gpu --features "render"
 use std::sync::Arc;
@@ -181,9 +184,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 
@@ -276,7 +281,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge — Snow GPU [Stomakhin 2013: soft / packed / shatter]")
+                    .with_title("emerge -- Snow GPU [Stomakhin 2013: soft / packed / shatter]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),

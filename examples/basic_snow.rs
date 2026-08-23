@@ -1,5 +1,8 @@
 ﻿extern crate emerge_engine as emerge;
 
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
     DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
@@ -171,9 +174,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 

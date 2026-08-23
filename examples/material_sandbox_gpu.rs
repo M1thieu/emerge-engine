@@ -1,5 +1,8 @@
 extern crate emerge_engine as emerge;
 
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
 /// GPU material sandbox -- paint real continuum materials with the mouse.
 ///
 /// The pitch this proves: unlike a falling-sand/cellular-automaton toy (single
@@ -106,7 +109,7 @@ const PALETTE: &[(u32, &str, [u8; 3])] = &[
 // driven by `particle.temperature` (see prep_instances.wgsl's ByPhysics branch), so
 // heating is visible continuously, not just at the phase-transition instant.
 const SIGMA_JELLY: [f32; 3] = [0.05, 0.55, 0.60]; // basic_jellies_gpu (SIGMA_NEO)
-const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550]; // basic_sand_gpu
+const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550]; // basic_sand_grid_gpu
 const SIGMA_WATER: [f32; 3] = [0.85, 0.25, 0.07]; // render_physics (real: water absorbs red faster than blue)
 // REAL water absorption coefficients, per-meter -- Pope & Fry 1997 (via the OMLC
 // optical absorption compendium, omlc.org/spectra/water/abs, same real-source
@@ -472,9 +475,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 
