@@ -1,27 +1,25 @@
 extern crate emerge_engine as emerge;
 
+use egui_wgpu::ScreenDescriptor;
 use emerge::fields::GravityWellField;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
-/// Real solar-system-scale orbital mechanics, live: Sun (fixed) + Earth + Mars,
-/// real masses/distances (NASA NSSDCA Planetary Fact Sheet), real Newtonian
-/// gravity via the engine's existing `GravityWellField` -- proven headless in
-/// `tests/orbital_mechanics.rs` (Kepler's third law holds within 0.09%, a
-/// real measured/tuned grid-resolution choice -- see that file's own
-/// `diag_kepler_error_vs_grid_resolution_sweep`). For a live speed slider,
-/// see `basic_orbital_gui.rs`.
+/// `basic_orbital.rs` (Sun + Earth + Mars, real `GravityWellField` gravity)
+/// with a real, live egui panel -- same pattern as `basic_fluids_gui.rs`: a
+/// speed slider (steps-per-frame, NOT `dt_seconds` -- keeps the validated
+/// integration accuracy fixed regardless of playback speed) and a live real
+/// day/year readout.
 ///
-/// Real, disclosed simplifications for this first pass ("the system itself,
-/// not full detail" -- see that test file's own doc for the full real vs.
-/// simplified breakdown):
-///   - Sun treated as fixed (restricted two-body problem -- Sun is
-///     ~333,000x Earth's mass, so this is standard practice, not a hack).
-///   - No inter-planet gravity (Earth/Mars don't pull on each other).
-///   - Bodies rendered at equal visual size -- real relative sizes AND
-///     distances can never be shown to the same scale at once (true of every
-///     real astronomy diagram, not an emerge-specific shortcut).
+/// Real, measured accuracy tuning (2026-08-11, see `tests/orbital_mechanics.rs`
+/// for the full sweep data): `DX_METERS`/`GRID` below were chosen from a real
+/// grid-resolution sweep, not guessed -- Kepler's third law (T^2 ~ a^3,
+/// checked headless between Earth and Mars) holds within 0.09% at this scale,
+/// down from 0.36% at the original (coarser) grid. A separate `dt_seconds`
+/// sweep proved accuracy does NOT depend on timestep here (spatial
+/// discretization, not temporal, was the real limiting factor) -- so the
+/// speed slider is free to change playback pace without touching accuracy.
 ///
-///   cargo run --example basic_orbital --features "render"
+///   cargo run --example basic_orbital_gui --features render
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -29,15 +27,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// 1 grid cell = 250,000 km -- real, measured (not guessed) choice: puts
-/// Earth's orbital radius at ~598 grid units, where a real grid-resolution
-/// sweep (`tests/orbital_mechanics.rs::diag_kepler_error_vs_grid_resolution_sweep`)
-/// measured Kepler's-third-law error at 0.09%, down from 0.36% at the
-/// original 4x-coarser scale.
-const GRID: usize = 2048;
+/// 1 grid cell = 250,000 km -- the real, measured (not guessed) choice from
+/// `tests/orbital_mechanics.rs`'s own grid-resolution sweep: puts Earth's
+/// orbital radius at ~598 grid units, where Kepler's third law measured
+/// 0.09% error (vs. 0.36% at the original, 4x coarser scale).
 const DX_METERS: f64 = 2.5e8;
-/// 1 real hour per substep -- Earth's real 365-day year plays out in ~8760
-/// steps, i.e. ~2.4 real minutes at 60fps. No artificial time compression.
+/// Large enough to hold Mars's real orbit (~912 grid units) with margin.
+const GRID: usize = 2048;
+/// 1 real hour per nominal substep -- proven (via the same test file's own
+/// `diag_kepler_error_vs_dt_sweep`) NOT to be the accuracy bottleneck here.
 const DT_SECONDS: f64 = 3600.0;
 
 const MU_SUN_SI: f64 = 1.32712e20; // G*M_sun, m^3/s^2 -- NASA/JPL
@@ -52,22 +50,6 @@ const MAT_MARS: u32 = 2;
 
 fn circular_orbit_speed_grid(r_si: f64) -> f32 {
     ((MU_SUN_SI / r_si).sqrt() / DX_METERS) as f32
-}
-
-struct App {
-    window: Option<Arc<Window>>,
-    state: Option<State>,
-}
-
-struct State {
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    sim: Simulation,
-    renderer: Renderer,
-    days_elapsed: f32,
-    frame: u64,
 }
 
 fn make_sim() -> Simulation {
@@ -123,6 +105,8 @@ fn make_sim() -> Simulation {
 
     // Sun is fixed (restricted two-body problem, see module doc) -- pin it
     // so it stays put and visible without feeling its own gravity well.
+    // Real, permanent regression proof this actually holds:
+    // `tests/orbital_mechanics.rs::pinned_sun_stays_exactly_fixed_while_earth_orbits`.
     solver.particles_mut().pinned[0] = 1;
 
     let _ = solver.add_body(spawn_earth);
@@ -134,6 +118,26 @@ fn make_sim() -> Simulation {
     solver.particles_mut().v[2] = glam::Vec2::new(-v_mars, 0.0);
 
     solver
+}
+
+struct State {
+    surface: wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    sim: Simulation,
+    renderer: Renderer,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
+    days_elapsed: f32,
+    /// Real steps-per-frame, NOT a `dt_seconds` change -- keeps the
+    /// validated 0.09% Kepler-law accuracy fixed regardless of playback
+    /// speed (accuracy was proven dt-independent in this scene, but
+    /// changing dt would still be a real, separate physics change; a
+    /// steps-per-frame multiplier is purely a playback-speed control).
+    steps_per_frame: u32,
+    paused: bool,
 }
 
 impl State {
@@ -180,6 +184,25 @@ impl State {
         // un-renderable at this distance scale, see module doc).
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 6.0, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui_ctx.viewport_id(),
+            window.as_ref(),
+            None,
+            None,
+            None,
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &device,
+            fmt,
+            egui_wgpu::RendererOptions {
+                msaa_samples: 1,
+                ..Default::default()
+            },
+        );
+
         println!("orbital: Sun + Earth + Mars, real NASA masses/distances  |  R reset  Q quit");
         Self {
             surface,
@@ -188,8 +211,12 @@ impl State {
             queue,
             sim,
             renderer,
+            egui_ctx,
+            egui_state,
+            egui_renderer,
             days_elapsed: 0.0,
-            frame: 0,
+            steps_per_frame: 1,
+            paused: false,
         }
     }
 
@@ -204,14 +231,14 @@ impl State {
             .set_camera(&self.queue, GRID as u32, w, h, 6.0, true);
     }
 
-    fn update_and_render(&mut self) {
-        self.sim.step();
-        self.frame += 1;
-        self.days_elapsed += DT_SECONDS as f32 / 86400.0;
-        if self.frame % 720 == 0 {
-            // ~30 real days per print (720 hourly substeps).
-            println!("day {:.0}", self.days_elapsed);
+    fn update_and_render(&mut self, window: &Window) {
+        if !self.paused {
+            for _ in 0..self.steps_per_frame {
+                self.sim.step();
+                self.days_elapsed += DT_SECONDS as f32 / 86400.0;
+            }
         }
+
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
@@ -221,8 +248,89 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+
+        // --- egui panel ---
+        let raw_input = self.egui_state.take_egui_input(window);
+        let mut steps_per_frame = self.steps_per_frame as f32;
+        let mut paused = self.paused;
+        let days = self.days_elapsed;
+        let mut reset = false;
+        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            egui::Window::new("Orbital")
+                .default_pos([10.0, 10.0])
+                .default_width(260.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "day {days:.0}  ({:.2} years)  |  Earth year: 365.25d  Mars: 687d",
+                        days / 365.25
+                    ));
+                    ui.separator();
+                    ui.checkbox(&mut paused, "Paused");
+                    ui.label("Speed (real steps per rendered frame):");
+                    ui.add(egui::Slider::new(&mut steps_per_frame, 1.0..=200.0).logarithmic(true));
+                    ui.separator();
+                    ui.label("R reset  Q quit");
+                    if ui.button("Reset").clicked() {
+                        reset = true;
+                    }
+                });
+        });
+        self.steps_per_frame = steps_per_frame.round() as u32;
+        self.paused = paused;
+        if reset {
+            self.sim = make_sim();
+            self.days_elapsed = 0.0;
+        }
+
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
+        let tris = self
+            .egui_ctx
+            .tessellate(full_output.shapes, full_output.pixels_per_point);
+        let sd = ScreenDescriptor {
+            size_in_pixels: [self.surface_config.width, self.surface_config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+        for (id, delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, delta);
+        }
+        let cmd = {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            self.egui_renderer
+                .update_buffers(&self.device, &self.queue, &mut enc, &tris, &sd);
+            let mut rp = enc
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            self.egui_renderer.render(&mut rp, &tris, &sd);
+            drop(rp);
+            enc.finish()
+        };
+        self.queue.submit(std::iter::once(cmd));
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
         output.present();
     }
+}
+
+struct App {
+    window: Option<Arc<Window>>,
+    state: Option<State>,
 }
 
 impl ApplicationHandler for App {
@@ -230,7 +338,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Orbital [Sun / Earth / Mars]")
+                    .with_title("emerge -- Orbital [Sun / Earth / Mars] (GUI)")
                     .with_inner_size(winit::dpi::LogicalSize::new(640u32, 640u32)),
             )
             .unwrap(),
@@ -243,6 +351,12 @@ impl ApplicationHandler for App {
         let Some(s) = self.state.as_mut() else {
             return;
         };
+        if let Some(w) = &self.window {
+            let resp = s.egui_state.on_window_event(w, &event);
+            if resp.consumed {
+                return;
+            }
+        }
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::KeyboardInput {
@@ -258,15 +372,15 @@ impl ApplicationHandler for App {
                 KeyCode::KeyR => {
                     s.sim = make_sim();
                     s.days_elapsed = 0.0;
-                    s.frame = 0;
                     println!("reset");
                 }
                 _ => {}
             },
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),
             WindowEvent::RedrawRequested => {
-                s.update_and_render();
                 if let Some(w) = &self.window {
+                    let w = w.clone();
+                    s.update_and_render(&w);
                     w.request_redraw();
                 }
             }

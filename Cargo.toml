@@ -121,11 +121,6 @@ path = "examples/cpu/basic_orbital.rs"
 required-features = ["render"]
 
 [[example]]
-name = "basic_orbital_gui"
-path = "examples/cpu/basic_orbital_gui.rs"
-required-features = ["render"]
-
-[[example]]
 name = "basic_solar_system_gui"
 path = "examples/cpu/basic_solar_system_gui.rs"
 required-features = ["render"]
@@ -226,11 +221,6 @@ path = "examples/gpu/wind_around_obstacle_gpu.rs"
 required-features = ["render"]
 
 [[example]]
-name = "basic_fluids_gui"
-path = "examples/cpu/basic_fluids_gui.rs"
-required-features = ["render"]
-
-[[example]]
 name = "fluid_pressure_projection_gui"
 path = "examples/cpu/fluid_pressure_projection_gui.rs"
 required-features = ["render"]
@@ -241,18 +231,8 @@ path = "examples/gpu/basic_sand_grid_gpu.rs"
 required-features = ["render"]
 
 [[example]]
-name = "basic_sand_gui"
-path = "examples/cpu/basic_sand_gui.rs"
-required-features = ["render"]
-
-[[example]]
 name = "basic_granular_fluid_gui"
 path = "examples/cpu/basic_granular_fluid_gui.rs"
-required-features = ["render"]
-
-[[example]]
-name = "basic_snow_gui"
-path = "examples/cpu/basic_snow_gui.rs"
 required-features = ["render"]
 
 [[example]]
@@ -283,11 +263,6 @@ required-features = ["render"]
 [[example]]
 name = "sand_collapse_settle_demo"
 path = "examples/cpu/sand_collapse_settle_demo.rs"
-required-features = ["render"]
-
-[[example]]
-name = "fire_spread_gui"
-path = "examples/cpu/fire_spread_gui.rs"
 required-features = ["render"]
 
 [[example]]
