@@ -981,6 +981,207 @@ fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
     );
 }
 
+/// Real, direct proof of `Simulation::enrich_region_into_grain` -- the
+/// continuum-to-discrete "enrichment" half of the Hybrid Grains pipeline
+/// (Yue, Smith, Chen, Chantharayukhonthorn, Kamrin & Grinspun, ACM TOG
+/// 2018). Real conservation check, not a "doesn't crash" smoke test: the
+/// new grain's mass, momentum, and 2D area must exactly match the sum of
+/// what the consumed particles carried, and every consumed particle must
+/// genuinely be gone from the continuum population afterward (not just
+/// zeroed out in place).
+#[test]
+fn enrich_region_into_grain_conserves_mass_momentum_and_area() {
+    let config = zero_gravity_config(48);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::new(16.0, 16.0),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
+    {
+        // Real, known, nonzero velocity field so the merge has real
+        // momentum to conserve, not just mass.
+        let particles = solver.particles_mut();
+        for i in 0..particles.len() {
+            particles.v[i] = Vec2::new(0.4, -0.1);
+        }
+    }
+    solver.add_grain_population(GrainPopulation::new(Vec::new(), contact_config()));
+
+    let particles_before = solver.particles().len();
+    let expected_mass: f32 = solver.particles().iter().map(|p| p.mass).sum();
+    let expected_momentum: Vec2 = solver
+        .particles()
+        .iter()
+        .map(|p| p.mass * p.v)
+        .fold(Vec2::ZERO, |a, b| a + b);
+    let expected_area: f32 = solver.particles().iter().map(|p| p.volume).sum();
+
+    // Radius large enough to catch the whole 4x4 spawn box (half-diagonal
+    // in grid cells, plus real margin).
+    let grain_idx = solver
+        .enrich_region_into_grain(0, Vec2::new(16.0, 16.0), 4.0, |_p| true)
+        .expect("expected a real grain to be spawned from real nearby particles");
+
+    assert_eq!(
+        solver.particles().len(),
+        0,
+        "all {particles_before} particles should have been consumed, {} remain",
+        solver.particles().len()
+    );
+
+    let grain = solver.grain_populations()[0].grains[grain_idx];
+    assert!(
+        (grain.mass - expected_mass).abs() < 1e-4,
+        "mass not conserved: grain.mass={} expected={expected_mass}",
+        grain.mass
+    );
+    assert!(
+        (grain.v - expected_momentum / expected_mass).length() < 1e-4,
+        "momentum not conserved: grain.v={:?} expected={:?}",
+        grain.v,
+        expected_momentum / expected_mass
+    );
+    let expected_radius = (expected_area / std::f32::consts::PI).sqrt();
+    assert!(
+        (grain.radius - expected_radius).abs() < 1e-4,
+        "area not conserved: grain.radius={} expected={expected_radius}",
+        grain.radius
+    );
+}
+
+/// Real predicate-filtering check: particles OUTSIDE `radius` or failing
+/// `predicate` must be left untouched -- same real discipline
+/// `grain_absorb_particles`'s own precedent already established for the
+/// reverse direction.
+#[test]
+fn enrich_region_into_grain_respects_radius_and_predicate() {
+    let config = zero_gravity_config(64);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::new(16.0, 32.0),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
+    // A second, far-away block that must be untouched (out of radius).
+    let _far_block_tag = solver.add_body(SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::new(48.0, 32.0),
+        ..SpawnRegion::for_sim(&zero_gravity_config(64))
+    });
+    let total_before = solver.particles().len();
+    let near_block_count = solver
+        .particles()
+        .iter()
+        .filter(|p| (p.x - Vec2::new(16.0, 32.0)).length() < 3.0)
+        .count();
+    assert!(
+        near_block_count > 0 && near_block_count < total_before,
+        "test setup invalid: near_block_count={near_block_count} total={total_before}"
+    );
+
+    solver.add_grain_population(GrainPopulation::new(Vec::new(), contact_config()));
+    solver
+        .enrich_region_into_grain(0, Vec2::new(16.0, 32.0), 3.0, |_p| true)
+        .expect("expected the near block to be consumed");
+
+    assert_eq!(
+        solver.particles().len(),
+        total_before - near_block_count,
+        "only the near block should have been consumed"
+    );
+    // Everything remaining must be from the FAR block, not stragglers from
+    // the near one.
+    for p in solver.particles().iter() {
+        assert!(
+            (p.x - Vec2::new(16.0, 32.0)).length() >= 3.0,
+            "a near-block particle survived enrichment: x={:?}",
+            p.x
+        );
+    }
+}
+
+/// Real, direct regression test for the spatial-hash-staleness bug found
+/// and fixed in `remove_particles` (2026-08-19): TWO enrichment calls back
+/// to back, with NO `step()` in between (the exact condition that exposes
+/// it -- the spatial hash only auto-refreshes on `step()`). Before the
+/// fix, the second call's `particles_near` used indices cached from BEFORE
+/// the first call's removal/compaction -- either missing the second
+/// block entirely, grabbing the wrong particles, or panicking on an
+/// out-of-range index. Three well-separated blocks: enrich the first two
+/// in immediate succession, confirm the third (never touched) survives
+/// untouched and the first two are both genuinely gone.
+#[test]
+fn enrich_region_into_grain_twice_in_a_row_without_a_step_between() {
+    let config = zero_gravity_config(96);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: Vec2::new(16.0, 16.0),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
+    let block_b_center = Vec2::new(48.0, 16.0);
+    let block_c_center = Vec2::new(80.0, 16.0);
+    let _tag_b = solver.add_body(SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: block_b_center,
+        ..SpawnRegion::for_sim(&zero_gravity_config(96))
+    });
+    let _tag_c = solver.add_body(SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(4, 4),
+        box_center: block_c_center,
+        ..SpawnRegion::for_sim(&zero_gravity_config(96))
+    });
+    let total_before = solver.particles().len();
+    let count_c_before = solver
+        .particles()
+        .iter()
+        .filter(|p| (p.x - block_c_center).length() < 3.0)
+        .count();
+    assert!(count_c_before > 0, "test setup invalid: block C is empty");
+
+    solver.add_grain_population(GrainPopulation::new(Vec::new(), contact_config()));
+    // Block A, then immediately block B -- NO step() call between them.
+    solver
+        .enrich_region_into_grain(0, Vec2::new(16.0, 16.0), 3.0, |_p| true)
+        .expect("block A should be consumed");
+    solver
+        .enrich_region_into_grain(0, block_b_center, 3.0, |_p| true)
+        .expect("block B should be consumed");
+
+    assert_eq!(
+        solver.grain_populations()[0].grains.len(),
+        2,
+        "expected exactly 2 grains spawned (one per enriched block)"
+    );
+    // Block C must be completely untouched -- if the spatial hash were
+    // stale, block B's query could have wrongly grabbed block C's
+    // particles (or missed its own), corrupting this count.
+    let count_c_after = solver
+        .particles()
+        .iter()
+        .filter(|p| (p.x - block_c_center).length() < 3.0)
+        .count();
+    assert_eq!(
+        count_c_after, count_c_before,
+        "block C was corrupted by a stale spatial-hash query from block B's enrichment"
+    );
+    assert_eq!(
+        solver.particles().len(),
+        count_c_before,
+        "only block C's particles should remain, total_before={total_before}"
+    );
+}
+
 /// Real, decisive isolation test (2026-08-19): `examples/
 /// sand_repose_angle_gui.rs`'s own Grains mode settles at ~0.58x the
 /// Lajeunesse target -- but the SAME exact contact-law parameters, run

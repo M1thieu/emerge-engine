@@ -293,6 +293,88 @@ impl Simulation {
         removed
     }
 
+    /// Real, oracle-triggered continuum -> discrete conversion (the
+    /// "enrichment" direction of Hybrid Grains, Yue, Smith, Chen,
+    /// Chantharayukhonthorn, Kamrin & Grinspun, ACM TOG 2018): converts
+    /// every active particle within `radius` of `center` matching
+    /// `predicate` into ONE new discrete `Grain`, added to
+    /// `grain_populations[population_idx]`. Real conserved-quantity merge
+    /// (not an ad-hoc spawn): summed mass, mass-weighted momentum (gives
+    /// the new grain's real velocity), mass-weighted position (real
+    /// center of mass -- this is a NEW body, unlike `grain_absorb_particles`'s
+    /// existing-grain case, so there is no prior position to keep), and
+    /// real 2D area-based radius (`new_area = sum(particle.volume)`,
+    /// `radius = sqrt(area/pi)`, the SAME `Particle::volume` convention
+    /// this engine already uses everywhere else for a particle's own 2D
+    /// footprint). Consumed particles are REMOVED via `remove_particles`
+    /// (this file's own tag-then-remove pattern), not hacked to near-zero
+    /// mass. Returns the new grain's index within that population, or
+    /// `None` if nothing in range matched `predicate` (no grain spawned
+    /// from nothing).
+    ///
+    /// Real, disclosed scope: this is the ENRICHMENT half of the real
+    /// pipeline (`grains::oracle::needs_discrete_treatment` decides WHERE
+    /// this should fire -- typically a thin, low-packing-fraction free-
+    /// surface cell, exactly the regime this project's whole sand
+    /// investigation found continuum-only mechanisms structurally cannot
+    /// hold a real repose angle in, see `dem_rolling_resistance_real_
+    /// repose_angle_success` memory). The reverse direction
+    /// (HOMOGENIZATION -- converting a settled/re-densified grain back into
+    /// continuum particles) is real, separate, cited work (Christoffersen
+    /// et al. 1981's discrete-to-continuum stress mapping, per the paper's
+    /// own method) and is NOT implemented here -- this function alone does
+    /// not make grains ever convert back, a real, honest gap for whoever
+    /// builds that side next.
+    pub fn enrich_region_into_grain(
+        &mut self,
+        population_idx: usize,
+        center: Vec2,
+        radius: f32,
+        predicate: impl Fn(&Particle) -> bool,
+    ) -> Option<usize> {
+        let nearby = self.particles_near(center, radius);
+
+        // Reserved sentinel, not `Particle::user_tag` -- same real
+        // justification `grain_absorb_particles`'s own precedent
+        // established: that field is caller-defined (LP uses it for
+        // creature ownership), stomping it even transiently is a real
+        // correctness risk. `material_id` is safe here: set and the
+        // particle removed within this single synchronous call, no
+        // `step()` (the only place `material_id` is actually dispatched
+        // on) running in between.
+        const ENRICHED_SENTINEL: u32 = u32::MAX;
+        let mut sum_mass = 0.0f32;
+        let mut sum_momentum = Vec2::ZERO;
+        let mut sum_area = 0.0f32;
+        let mut weighted_center = Vec2::ZERO;
+        let mut consumed = 0usize;
+        for i in nearby {
+            let p = self.particles.get(i);
+            if !predicate(&p) {
+                continue;
+            }
+            sum_mass += p.mass;
+            sum_momentum += p.mass * p.v;
+            sum_area += p.volume;
+            weighted_center += p.mass * p.x;
+            self.particles.material_id[i] = ENRICHED_SENTINEL;
+            consumed += 1;
+        }
+        if consumed == 0 || sum_mass <= 0.0 {
+            return None;
+        }
+
+        let grain_x = weighted_center / sum_mass;
+        let grain_v = sum_momentum / sum_mass;
+        let radius = (sum_area / std::f32::consts::PI).sqrt();
+        let mut grain = crate::particle::Grain::new(grain_x, radius, sum_mass);
+        grain.v = grain_v;
+
+        self.remove_particles(|p| p.material_id == ENRICHED_SENTINEL);
+        self.grain_populations[population_idx].grains.push(grain);
+        Some(self.grain_populations[population_idx].grains.len() - 1)
+    }
+
     /// Iterate physical indices of all particles with `tag`. O(group_size) via tag_index.
     ///
     /// Returns indices only -- read particle data via `solver.particles().x[i]` etc.
