@@ -1,19 +1,17 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 use emerge::render::{ColorMode, Renderer};
-use emerge::{
-    BinghamFluidMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
-};
+use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
-/// CPU viscoplastic fluids -- Newtonian water dam-break + Bingham mud blob.
+/// CPU Drucker-Prager sand -- angle of repose comparison.
 ///
-///   Mat 0  Newtonian water (blue)  -- Tait EOS + deviatoric viscosity
-///   Mat 1  Bingham mud    (gold)   -- viscoplastic with yield stress
+///   Mat 0  loose sand  (blue, phi=20 deg) -- shallow repose angle
+///   Mat 1  dense sand  (gold, phi=40 deg) -- steep repose angle
 ///
-///   cargo run --example basic_fluids --features "render"
+///   cargo run --example basic_sand --features "render"
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -23,8 +21,11 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_WATER: u32 = 0;
-const MAT_MUD: u32 = 1;
+const MAT_LOOSE: u32 = 0;
+const MAT_DENSE: u32 = 1;
+// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand) -- see
+// basic_sand_grid_gpu.rs for the full reasoning.
+const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -46,106 +47,56 @@ struct State {
     fps_frames: u64,
 }
 
+fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
+    let mut m = DruckerPragerMaterial::new(lambda, mu);
+    m.friction_angle = phi_deg.to_radians();
+    m
+}
+
 fn make_sim() -> Simulation {
     let config = SimConfig {
-        min_dt: 1.0e-4,
-        // Real g_grid (981) was tried 2026-08-07 and reverted: measured 4fps,
-        // not the fix -- the CFL cost of real gravity's fall speed dwarfs any
-        // visual gain, and it didn't even fix the cohesion look (see the
-        // numerical-dissipation note below). Back to the deliberately weak,
-        // legible-demo gravity.
-        max_substeps_per_step: 60,
+        boundary_thickness: 3,
+        max_substeps_per_step: 12,
+        // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
+        // SimConfig::earth) -- tuned down for a calmer, more legible demo at
+        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // gravity_fraction slider is the real-IRL-with-live-control
+        // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
-        // Newtonian/Bingham WC-MPM owns rho=rho0/J and V=V0*J, so a
-        // free-surface-biased kernel density gather is neither needed nor used.
-        recompute_density_each_step: false,
-        cfl_include_affine_speed: false,
+        // Drucker-Prager sand's own plastic "q-creep" (friction_hardening never
+        // fully settles to zero even at apparent rest -- see MEMORY.md's known
+        // open issue) means this material pins the substep count at the cap
+        // indefinitely rather than dropping once settled -- confirmed live
+        // 2026-07-22 (substeps=12 continuously, never lower). 0.7 is the same
+        // real, already-validated coefficient (`gpu_relaxed_cfl_coefficient_
+        // stays_correct_50k_dpsand`) used for this exact material class at the
+        // GPU 50k target -- still within the literature's normal 0.3-1.0 range,
+        // not a new gamble.
+        material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
-    // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    // eos_stiffness=100 -- a disclosed, measured real-time compromise, not a
-    // hidden regression. Swept 2026-08-07 (headless, release, 60-frame window):
-    // eos=10 (the old broken pair) = 11.8% mean / 60.5% max density error at
-    // 213fps; eos=1000 (fully correct) = 0.3%/6.5% at 127fps; eos=100 sits at
-    // 2.1%/21.7% error (~10x more accurate than the old bug) at 247fps (~2x
-    // eos=1000's cost). taichi_mpm's own production default is k=10000 (fully
-    // correct, offline-grade); 100 is a deliberate, disclosed real-time trade,
-    // not a re-introduction of the original ~1000x-too-soft bug.
-    //
-    // rest_density=0.1, NOT the old 4.0 (real SI fix, 2026-08-08, see
-    // MEMORY.md's fluid-recovery notes, Round 9): `NewtonianFluidMaterial::
-    // weakly_compressible`/`from_physical`'s own real conversion is
-    // `rho_grid = rho_kg_m3 * dx_meters^2` -- for real water (1000 kg/m3) at
-    // this scene's `dx_meters=0.01`, that's `1000*0.01^2=0.1`, not 4.0 (a
-    // real, previously-undetected 40x error, present since this demo's own
-    // origin, not introduced tonight). Mud's own `4.0` is intentionally left
-    // unchanged -- no equally solid, verified SI citation for "real mud
-    // density at this scale" was established tonight (scope, not an
-    // oversight).
-    //
-    // eos_stiffness=2.5, NOT 100 -- a second, real, DISCOVERED-not-guessed
-    // consequence of the rest_density fix above, found 2026-08-08 after this
-    // exact demo crashed (`Tait pressure is unrepresentable`) post-fix.
-    // `NewtonianFluidMaterial::timestep_bound` (fluid.rs) computes
-    // `c2 = eos_stiffness * eos_power * density_ratio^(power-1) / rest_density`
-    // -- c2 (sound-speed-squared, what the CFL bound is built from) is
-    // INVERSELY proportional to rest_density. Shrinking rest_density 40x
-    // without rescaling eos_stiffness made c2 40x larger at every compression
-    // level, silently tightening the required substep far past what
-    // max_substeps_per_step could deliver -- J spiraled past the pressure
-    // formula's representable range under ordinary wall/gravity compression.
-    // eos_stiffness=100 was measured/swept (see above) specifically AT
-    // rest_density=4.0; rescaling it by the same factor rest_density shrunk
-    // (100 * 0.1/4.0 = 2.5) restores the bit-identical c2 -- and therefore
-    // the exact already-verified 247fps/2.1%/21.7%-error behavior -- at the
-    // new, SI-correct density. Not a re-tune, an exact algebraic correction.
-    let water = NewtonianFluidMaterial::low_viscosity(0.1, 2.5);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
-    // spacing=0.9, NOT the old 0.6 -- real, measured 45fps-debug-minimum fix
-    // (2026-08-09, user-set target after this exact demo's config was
-    // profiled headless and found NOT regressed, just genuinely costly:
-    // P2G/G2P/CFL already near-optimal for the current architecture --
-    // rayon chunk-size retuning swept and confirmed the existing tuning is
-    // already the best of 4 tested values, no redundant per-particle
-    // computation found in the hot dispatch path). Coarser particle spacing
-    // is a real, disclosed RESOLUTION tradeoff (fewer, larger material
-    // points -- like reducing mesh density), NOT a physics-accuracy
-    // compromise -- `eos_stiffness`/`rest_density` above are untouched, so
-    // the constitutive model is exactly as correct as before, just resolved
-    // more coarsely. Measured: particle count 2925->1288 (spacing scales
-    // particle count ~1/spacing^2), fps ~30->47.1 debug (200-frame headless
-    // average), crossing the 45fps bar with margin. Real, disclosed cost:
-    // the density-error sweep in this file's own eos_stiffness comment
-    // (2.1%/21.7% mean/max at spacing=0.6) was measured at the OLD spacing --
-    // coarser resolution generally makes MPM density estimation somewhat
-    // LESS accurate, not re-verified at this new spacing.
-    const SPACING: f32 = 0.9;
-    let spawn_water = SpawnRegion {
-        spacing: SPACING,
-        // In solver units m = rho0 * spacing^2. This makes V0=m/rho0
-        // equal to the lattice area represented by one material point.
-        mass_override: Some(0.1 * SPACING * SPACING),
-        box_size: IVec2::new(14, 52),
-        box_center: Vec2::new(11.0, 30.0),
-        material_id: MAT_WATER,
+    let spawn = |c: Vec2, mat, seed| SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(18, 14),
+        box_center: c,
+        material_id: mat,
+        precompute_initial_volumes: true,
         initial_velocity_scale: 0.0,
+        rng_seed: seed,
+        // See basic_sand_grid_gpu.rs's spawn closure for the full reasoning: a perfectly regular
+        // spawn lattice is a grid-crossing artifact with quadratic B-spline MPM kernels,
+        // confirmed via direct frame capture on the GPU path (same spawn pattern here).
+        position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let spawn_mud = SpawnRegion {
-        spacing: SPACING,
-        mass_override: Some(4.0 * SPACING * SPACING),
-        box_size: IVec2::new(16, 18),
-        box_center: Vec2::new(50.0, 38.0),
-        material_id: MAT_MUD,
-        initial_velocity_scale: 0.0,
-        ..SpawnRegion::for_sim(&config)
-    };
-    let mut solver = Simulation::new(config, spawn_water)
-        .with_default_material(Box::new(water))
-        .with_material(MAT_MUD, Box::new(mud))
+    // lambda=2000, mu=3000 -> nu≈0.2 -- see basic_sand_grid_gpu.rs's make_sand call for the full
+    // reasoning (the previous 5000/3000 implied nu≈0.31, above real dry sand's established
+    // 0.1-0.3 range, and directly resists Drucker-Prager yielding via the (lambda+mu)/mu ratio).
+    let mut solver = Simulation::new(config, spawn(Vec2::new(17.0, 40.0), MAT_LOOSE, 11))
+        .with_default_material(Box::new(make_sand(2000.0, 3000.0, 20.0)))
+        .with_material(MAT_DENSE, Box::new(make_sand(2000.0, 3000.0, 40.0)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn_mud);
+    let _ = solver.add_body(spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22));
     solver
 }
 
@@ -190,9 +141,11 @@ impl State {
         let sim = make_sim();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.set_optical_params(&queue, MAT_LOOSE as usize, SIGMA_SAND);
+        renderer.set_optical_params(&queue, MAT_DENSE as usize, SIGMA_SAND);
         println!(
-            "fluids: {} particles  |  LMB push  RMB pull  R reset  Q quit",
+            "sand: {} particles  |  LMB push  RMB pull  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -233,8 +186,8 @@ impl State {
 
     fn update_and_render(&mut self) {
         if self.lmb || self.rmb {
-            let mag = if self.lmb { 2.0 } else { -2.0 };
-            self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
+            let mag = if self.lmb { 12.0 } else { -12.0 };
+            self.sim.apply_radial_impulse(self.cursor_grid(), 7.0, mag);
         }
         self.sim.step();
         self.frame += 1;
@@ -263,7 +216,9 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Fluids [Water / Bingham Mud]")
+                    .with_title(
+                        "emerge -- Sand [Angle of Repose: loose phi=20 deg / dense phi=40 deg]",
+                    )
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),

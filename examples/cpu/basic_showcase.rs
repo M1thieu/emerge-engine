@@ -1,24 +1,22 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-use emerge::diagnostics::log_frame_gpu;
-use emerge::gpu::GpuSimulation;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DruckerPragerMaterial, FixedStepController, MaterialRegistry, NeoHookeanMaterial,
-    NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
+    DruckerPragerMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
+    SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
-/// GPU three-material showcase -- sand terrain, fluid pool, elastic blob.
+/// CPU three-material showcase -- sand terrain, fluid pool, elastic blob.
 ///
 ///   Mat 0  NeoHookean elastic (blue)  -- creature body, arrow-key drive
 ///   Mat 1  Sand Drucker-Prager (gold) -- terrain
 ///   Mat 2  Newtonian fluid  (cyan)    -- water pool
 ///
-///   arrow keys  drive elastic blob  |  LMB push  RMB pull  |  R reset  Q quit
-///   cargo run --example basic_showcase_gpu --features "render,gpu"
+///   ^v<>  drive elastic blob  |  LMB push  RMB pull  |  R reset  Q quit
+///   cargo run --example basic_showcase --features "render"
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -32,11 +30,6 @@ const ELASTIC_ID: u32 = 0;
 const SAND_ID: u32 = 1;
 const FLUID_ID: u32 = 2;
 const SPACING: f32 = 0.7;
-const LABELS: &[(u32, &str)] = &[
-    (ELASTIC_ID, "elastic"),
-    (SAND_ID, "sand"),
-    (FLUID_ID, "fluid"),
-];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -46,12 +39,11 @@ struct App {
 struct State {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    sim: GpuSimulation,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    sim: Simulation,
     renderer: Renderer,
     cursor_pos: [f32; 2],
-    physics_colors: bool,
     lmb: bool,
     rmb: bool,
     arrow_up: bool,
@@ -61,14 +53,9 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
-    /// Real-time-decoupled stepping -- see `basic_fluids_gpu.rs`'s own field
-    /// doc for the full real bug/fix writeup.
-    stepper: FixedStepController,
-    last_instant: std::time::Instant,
-    max_steps_seen: usize,
 }
 
-fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
+fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 0.005,
         max_substeps_per_step: 16,
@@ -81,45 +68,6 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let mut p = build_particles(
-        &config,
-        SpawnRegion {
-            spacing: SPACING,
-            box_size: IVec2::new(22, 14),
-            box_center: Vec2::new(19.0, 9.0),
-            material_id: SAND_ID,
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        },
-    );
-    p.extend(build_particles(
-        &config,
-        SpawnRegion {
-            spacing: SPACING,
-            box_size: IVec2::new(22, 14),
-            box_center: Vec2::new(45.0, 9.0),
-            material_id: FLUID_ID,
-            precompute_initial_volumes: true,
-            // Without this, mass falls back to `config.particle_mass` (1.0),
-            // completely decoupled from the material's own rest_density=0.1
-            // -- a real, separate gap found 2026-08-08 alongside the SI fix
-            // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
-            // derivation used everywhere else.
-            mass_override: Some(0.1 * SPACING * SPACING),
-            ..SpawnRegion::for_sim(&config)
-        },
-    ));
-    p.extend(build_particles(
-        &config,
-        SpawnRegion {
-            spacing: SPACING,
-            box_size: IVec2::new(12, 12),
-            box_center: Vec2::new(32.0, 46.0),
-            material_id: ELASTIC_ID,
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        },
-    ));
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
     let sand = DruckerPragerMaterial::new(400.0, 200.0);
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
@@ -133,10 +81,44 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
     // basic_fluids.rs's own doc for the full derivation.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
-    let mut reg = MaterialRegistry::with_default(Box::new(elastic));
-    reg.insert(SAND_ID, Box::new(sand));
-    reg.insert(FLUID_ID, Box::new(fluid));
-    GpuSimulation::with_device(device, queue, config, p, reg)
+
+    let mut solver = Simulation::empty(config)
+        .with_default_material(Box::new(elastic))
+        .with_material(SAND_ID, Box::new(sand))
+        .with_material(FLUID_ID, Box::new(fluid))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+    let _ = solver.add_body(SpawnRegion {
+        spacing: SPACING,
+        box_size: IVec2::new(22, 14),
+        box_center: Vec2::new(19.0, 9.0),
+        material_id: SAND_ID,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    });
+    let _ = solver.add_body(SpawnRegion {
+        spacing: SPACING,
+        box_size: IVec2::new(22, 14),
+        box_center: Vec2::new(45.0, 9.0),
+        material_id: FLUID_ID,
+        precompute_initial_volumes: true,
+        // Without this, mass falls back to `config.particle_mass` (1.0),
+        // completely decoupled from the material's own rest_density=0.1
+        // -- a real, separate gap found 2026-08-08 alongside the SI fix
+        // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
+        // derivation used everywhere else.
+        mass_override: Some(0.1 * SPACING * SPACING),
+        ..SpawnRegion::for_sim(&config)
+    });
+    let _ = solver.add_body(SpawnRegion {
+        spacing: SPACING,
+        box_size: IVec2::new(12, 12),
+        box_center: Vec2::new(32.0, 46.0),
+        material_id: ELASTIC_ID,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    });
+    solver
 }
 
 impl State {
@@ -159,8 +141,6 @@ impl State {
             })
             .await
             .unwrap();
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
         let caps = surface.get_capabilities(&adapter);
         let fmt = caps
             .formats
@@ -179,13 +159,13 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let sim = make_sim(device.clone(), queue.clone());
-        let mut renderer = Renderer::new(&device, sim.particle_count(), fmt);
+        let sim = make_sim();
+        let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.set_color_mode(ColorMode::ByMaterial);
         println!(
-            "showcase_gpu: {} particles  |  arrow keys=drive blob  LMB/RMB push/pull  R reset  Q quit",
-            sim.particle_count()
+            "showcase: {} particles  |  ^v<> drive blob  LMB push  RMB pull  R reset  Q quit",
+            sim.particles().len()
         );
         Self {
             surface,
@@ -196,7 +176,6 @@ impl State {
             renderer,
             cursor_pos: [0.0; 2],
             lmb: false,
-            physics_colors: true,
             rmb: false,
             arrow_up: false,
             arrow_down: false,
@@ -205,9 +184,6 @@ impl State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
-            stepper: FixedStepController::standard(DT, 60.0),
-            last_instant: std::time::Instant::now(),
-            max_steps_seen: 0,
         }
     }
 
@@ -232,7 +208,7 @@ impl State {
     }
 
     fn update_and_render(&mut self) {
-        // Arrow-key drive on elastic blob centroid.
+        // Arrow-key drive: find elastic centroid, apply impulse.
         let mut dir = Vec2::ZERO;
         if self.arrow_up {
             dir.y += 1.0;
@@ -247,14 +223,16 @@ impl State {
             dir.x += 1.0;
         }
         if dir != Vec2::ZERO {
-            let impulse = dir.normalize() * 10.0;
             let particles = self.sim.particles();
             let (sum, n) = particles
-                .iter()
-                .filter(|p| p.material_id == ELASTIC_ID)
-                .fold((Vec2::ZERO, 0usize), |(s, n), p| (s + p.x, n + 1));
+                .indices()
+                .filter(|&i| particles.material_id[i] == ELASTIC_ID)
+                .fold((Vec2::ZERO, 0usize), |(s, n), i| {
+                    (s + particles.x[i], n + 1)
+                });
             if n > 0 {
                 let centroid = sum / n as f32;
+                let impulse = dir.normalize() * 10.0;
                 self.sim.apply_impulse(centroid, 12.0, impulse);
             }
         }
@@ -264,54 +242,24 @@ impl State {
             self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
         }
 
+        self.sim.step();
+        self.frame += 1;
+        self.fps_frames += 1;
+        if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
+            let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
+            println!("frame={} fps={:.0}", self.frame, fps);
+            self.fps_timer = std::time::Instant::now();
+            self.fps_frames = 0;
+        }
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
         };
-
-        let now = std::time::Instant::now();
-        let frame_delta = (now - self.last_instant).as_secs_f32();
-        self.last_instant = now;
-        let steps = self.stepper.steps_for_frame(frame_delta);
-        self.max_steps_seen = self.max_steps_seen.max(steps);
-        for _ in 0..steps {
-            self.sim.step_frame();
-            self.frame += 1;
-            if self.frame.is_multiple_of(60) {
-                log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
-                let snap = self.sim.diagnostics_snapshot();
-                println!(
-                    "  non_finite={}  out_of_bounds={}  max_speed={:.3}  sub={}  cfl={:.4}",
-                    snap.non_finite_particle_values,
-                    snap.out_of_bounds_particles,
-                    snap.max_particle_speed,
-                    snap.substeps_last_step,
-                    snap.cfl_number,
-                );
-            }
-        }
-        self.fps_frames += 1;
-        if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
-            let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
-            println!(
-                "frame={} fps={:.0} max_steps_per_render={}",
-                self.frame, fps, self.max_steps_seen
-            );
-            self.fps_timer = std::time::Instant::now();
-            self.fps_frames = 0;
-            self.max_steps_seen = 0;
-        }
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render_gpu(
-            &self.device,
-            &self.queue,
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
-        );
+        self.renderer
+            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
         output.present();
     }
 }
@@ -321,7 +269,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Showcase GPU [Sand / Fluid / Elastic]")
+                    .with_title("emerge -- Showcase [Sand / Fluid / Elastic]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -354,19 +302,9 @@ impl ApplicationHandler for App {
                 let pressed = state == ElementState::Pressed;
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
-                    KeyCode::KeyG if pressed => {
-                        s.physics_colors = !s.physics_colors;
-                        s.renderer.set_color_mode(if s.physics_colors {
-                            ColorMode::ByPhysics
-                        } else {
-                            ColorMode::ByMaterial
-                        });
-                    }
                     KeyCode::KeyR if pressed => {
-                        s.sim = make_sim(s.device.clone(), s.queue.clone());
+                        s.sim = make_sim();
                         s.frame = 0;
-                        s.stepper.reset();
-                        s.last_instant = std::time::Instant::now();
                         println!("reset");
                     }
                     KeyCode::ArrowUp => s.arrow_up = pressed,

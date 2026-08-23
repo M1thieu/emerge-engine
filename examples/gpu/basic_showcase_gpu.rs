@@ -1,26 +1,25 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// GPU Drucker-Prager sand, rendered from the solver's own P2G mass field
-/// (`Renderer::render_grid_volume`) instead of one splat per particle --
-/// real, already-shipped MPM-native technique (see `render-pipeline-plan`
-/// memory): adjacent cells with mass blend into one continuous shape instead
-/// of reading as a cloud of discrete dots, at zero extra simulation cost
-/// (the solver already builds this field every substep for its own P2G
-/// step). G toggles back to the per-particle view to compare directly.
-///
-///   cargo run --example basic_sand_grid_gpu --features "render"
-use std::sync::Arc;
-
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer};
+use emerge::gpu::GpuSimulation;
+use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DruckerPragerMaterial, FixedStepController, GpuSimulation, MaterialRegistry, SimConfig,
-    SpawnRegion, build_particles,
+    DruckerPragerMaterial, FixedStepController, MaterialRegistry, NeoHookeanMaterial,
+    NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
+/// GPU three-material showcase -- sand terrain, fluid pool, elastic blob.
+///
+///   Mat 0  NeoHookean elastic (blue)  -- creature body, arrow-key drive
+///   Mat 1  Sand Drucker-Prager (gold) -- terrain
+///   Mat 2  Newtonian fluid  (cyan)    -- water pool
+///
+///   arrow keys  drive elastic blob  |  LMB push  RMB pull  |  R reset  Q quit
+///   cargo run --example basic_showcase_gpu --features "render,gpu"
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -29,11 +28,15 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_LOOSE: u32 = 0;
-const MAT_DENSE: u32 = 1;
-const LABELS: &[(u32, &str)] = &[(MAT_LOOSE, "loose"), (MAT_DENSE, "dense")];
-// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand).
-const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
+const ELASTIC_ID: u32 = 0;
+const SAND_ID: u32 = 1;
+const FLUID_ID: u32 = 2;
+const SPACING: f32 = 0.7;
+const LABELS: &[(u32, &str)] = &[
+    (ELASTIC_ID, "elastic"),
+    (SAND_ID, "sand"),
+    (FLUID_ID, "fluid"),
+];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -43,12 +46,18 @@ struct App {
 struct State {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     sim: GpuSimulation,
     renderer: Renderer,
     cursor_pos: [f32; 2],
+    physics_colors: bool,
     lmb: bool,
     rmb: bool,
-    grid_volume_mode: bool,
+    arrow_up: bool,
+    arrow_down: bool,
+    arrow_left: bool,
+    arrow_right: bool,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
@@ -59,44 +68,75 @@ struct State {
     max_steps_seen: usize,
 }
 
-fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
-    let mut m = DruckerPragerMaterial::new(lambda, mu);
-    m.friction_angle = phi_deg.to_radians();
-    m
-}
-
-fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
+fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        boundary_thickness: 3,
-        max_substeps_per_step: 12,
+        min_dt: 0.005,
+        max_substeps_per_step: 16,
+        recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),
-        // Same already-validated CFL margin as basic_sand.rs's CPU DP-sand.
-        material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let spawn = |c: Vec2, mat: u32, seed: u32| SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(18, 14),
-        box_center: c,
-        material_id: mat,
-        precompute_initial_volumes: true,
-        rng_seed: seed,
-        position_jitter: 0.5,
-        ..SpawnRegion::for_sim(&config)
-    };
-    let mut particles = build_particles(&config, spawn(Vec2::new(17.0, 40.0), MAT_LOOSE, 11));
-    particles.extend(build_particles(
+    let mut p = build_particles(
         &config,
-        spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22),
+        SpawnRegion {
+            spacing: SPACING,
+            box_size: IVec2::new(22, 14),
+            box_center: Vec2::new(19.0, 9.0),
+            material_id: SAND_ID,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        },
+    );
+    p.extend(build_particles(
+        &config,
+        SpawnRegion {
+            spacing: SPACING,
+            box_size: IVec2::new(22, 14),
+            box_center: Vec2::new(45.0, 9.0),
+            material_id: FLUID_ID,
+            precompute_initial_volumes: true,
+            // Without this, mass falls back to `config.particle_mass` (1.0),
+            // completely decoupled from the material's own rest_density=0.1
+            // -- a real, separate gap found 2026-08-08 alongside the SI fix
+            // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
+            // derivation used everywhere else.
+            mass_override: Some(0.1 * SPACING * SPACING),
+            ..SpawnRegion::for_sim(&config)
+        },
     ));
-    let mut registry = MaterialRegistry::with_default(Box::new(make_sand(2000.0, 3000.0, 20.0)));
-    registry.insert(MAT_DENSE, Box::new(make_sand(2000.0, 3000.0, 40.0)));
-    GpuSimulation::with_device(device, queue, config, particles, registry)
+    p.extend(build_particles(
+        &config,
+        SpawnRegion {
+            spacing: SPACING,
+            box_size: IVec2::new(12, 12),
+            box_center: Vec2::new(32.0, 46.0),
+            material_id: ELASTIC_ID,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        },
+    ));
+    let elastic = NeoHookeanMaterial::new(40.0, 80.0);
+    let sand = DruckerPragerMaterial::new(400.0, 200.0);
+    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
+    // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
+    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
+    // basic_fluids.rs's own doc for the full derivation.
+    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
+    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
+    // stiffness for the same compression; confirmed by a real crash in
+    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
+    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
+    // basic_fluids.rs's own doc for the full derivation.
+    let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
+    let mut reg = MaterialRegistry::with_default(Box::new(elastic));
+    reg.insert(SAND_ID, Box::new(sand));
+    reg.insert(FLUID_ID, Box::new(fluid));
+    GpuSimulation::with_device(device, queue, config, p, reg)
 }
 
 impl State {
@@ -114,11 +154,13 @@ impl State {
             .expect("no GPU adapter");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
+                required_limits: adapter.limits(), // use full hardware limits, not wgpu defaults
                 ..Default::default()
             })
             .await
             .unwrap();
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
         let caps = surface.get_capabilities(&adapter);
         let fmt = caps
             .formats
@@ -137,32 +179,29 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let mut sim = make_sim_data(Arc::new(device), Arc::new(queue));
-        // Real per-cell material tracking, needed by the grid-volume path to
-        // pick each cell's dominant material (loose vs dense) -- see
-        // grid_volume.wgsl's own doc.
-        sim.attach_grid_material_render_gpu();
-        let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
-        renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
+        let sim = make_sim(device.clone(), queue.clone());
+        let mut renderer = Renderer::new(&device, sim.particle_count(), fmt);
+        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(sim.queue(), MAT_LOOSE as usize, SIGMA_SAND);
-        renderer.set_optical_params(sim.queue(), MAT_DENSE as usize, SIGMA_SAND);
         println!(
-            "sand grid-volume GPU: {} particles  |  LMB push  RMB pull  G toggle grid/particle view  R reset  Q quit",
+            "showcase_gpu: {} particles  |  arrow keys=drive blob  LMB/RMB push/pull  R reset  Q quit",
             sim.particle_count()
         );
         Self {
             surface,
             surface_config: sc,
+            device,
+            queue,
             sim,
             renderer,
             cursor_pos: [0.0; 2],
             lmb: false,
+            physics_colors: true,
             rmb: false,
-            // Default ON -- this example exists specifically to show the
-            // continuous-surface look; G still lets you A/B against the
-            // per-particle view directly.
-            grid_volume_mode: true,
+            arrow_up: false,
+            arrow_down: false,
+            arrow_left: false,
+            arrow_right: false,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -178,10 +217,9 @@ impl State {
         }
         self.surface_config.width = w;
         self.surface_config.height = h;
-        self.surface
-            .configure(self.sim.device(), &self.surface_config);
+        self.surface.configure(&self.device, &self.surface_config);
         self.renderer
-            .set_camera(self.sim.queue(), GRID as u32, w, h, 0.6, true);
+            .set_camera(&self.queue, GRID as u32, w, h, 0.6, true);
     }
 
     fn cursor_grid(&self) -> Vec2 {
@@ -193,25 +231,44 @@ impl State {
         )
     }
 
-    fn reset(&mut self) {
-        let (device, queue) = (self.sim.device().clone(), self.sim.queue().clone());
-        self.sim = make_sim_data(device, queue);
-        self.sim.attach_grid_material_render_gpu();
-        self.frame = 0;
-        self.stepper.reset();
-        self.last_instant = std::time::Instant::now();
-        println!("reset");
-    }
-
     fn update_and_render(&mut self) {
-        if self.lmb || self.rmb {
-            let mag = if self.lmb { 12.0 } else { -12.0 };
-            self.sim.apply_radial_impulse(self.cursor_grid(), 7.0, mag);
+        // Arrow-key drive on elastic blob centroid.
+        let mut dir = Vec2::ZERO;
+        if self.arrow_up {
+            dir.y += 1.0;
         }
+        if self.arrow_down {
+            dir.y -= 1.0;
+        }
+        if self.arrow_left {
+            dir.x -= 1.0;
+        }
+        if self.arrow_right {
+            dir.x += 1.0;
+        }
+        if dir != Vec2::ZERO {
+            let impulse = dir.normalize() * 10.0;
+            let particles = self.sim.particles();
+            let (sum, n) = particles
+                .iter()
+                .filter(|p| p.material_id == ELASTIC_ID)
+                .fold((Vec2::ZERO, 0usize), |(s, n), p| (s + p.x, n + 1));
+            if n > 0 {
+                let centroid = sum / n as f32;
+                self.sim.apply_impulse(centroid, 12.0, impulse);
+            }
+        }
+
+        if self.lmb || self.rmb {
+            let mag = if self.lmb { 2.0 } else { -2.0 };
+            self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
+        }
+
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
         };
+
         let now = std::time::Instant::now();
         let frame_delta = (now - self.last_instant).as_secs_f32();
         self.last_instant = now;
@@ -237,8 +294,8 @@ impl State {
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             println!(
-                "frame={} fps={:.0} grid_view={} max_steps_per_render={}",
-                self.frame, fps, self.grid_volume_mode, self.max_steps_seen
+                "frame={} fps={:.0} max_steps_per_render={}",
+                self.frame, fps, self.max_steps_seen
             );
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
@@ -247,28 +304,14 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        if self.grid_volume_mode {
-            self.renderer.render_grid_volume(
-                self.sim.device(),
-                self.sim.queue(),
-                GridVolumeSource {
-                    grid: self.sim.grid_buffer(),
-                    material_mass: self.sim.material_mass_buffer(),
-                    material_mass_enabled: true,
-                },
-                &view,
-                true,
-            );
-        } else {
-            self.renderer.render_gpu(
-                self.sim.device(),
-                self.sim.queue(),
-                self.sim.particle_buffer(),
-                self.sim.particle_count(),
-                &view,
-                true,
-            );
-        }
+        self.renderer.render_gpu(
+            &self.device,
+            &self.queue,
+            self.sim.particle_buffer(),
+            self.sim.particle_count(),
+            &view,
+            true,
+        );
         output.present();
     }
 }
@@ -278,7 +321,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Sand, grid-volume render [G: toggle particle view]")
+                    .with_title("emerge -- Showcase GPU [Sand / Fluid / Elastic]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -288,9 +331,7 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(s) = self.state.as_mut() else {
-            return;
-        };
+        let Some(s) = self.state.as_mut() else { return };
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::CursorMoved { position, .. } => {
@@ -305,22 +346,36 @@ impl ApplicationHandler for App {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(key),
-                        state: ElementState::Pressed,
+                        state,
                         ..
                     },
                 ..
-            } => match key {
-                KeyCode::Escape | KeyCode::KeyQ => el.exit(),
-                KeyCode::KeyR => s.reset(),
-                KeyCode::KeyG => {
-                    s.grid_volume_mode = !s.grid_volume_mode;
-                    println!(
-                        "grid-volume render: {}",
-                        if s.grid_volume_mode { "on" } else { "off" }
-                    );
+            } => {
+                let pressed = state == ElementState::Pressed;
+                match key {
+                    KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
+                    KeyCode::KeyG if pressed => {
+                        s.physics_colors = !s.physics_colors;
+                        s.renderer.set_color_mode(if s.physics_colors {
+                            ColorMode::ByPhysics
+                        } else {
+                            ColorMode::ByMaterial
+                        });
+                    }
+                    KeyCode::KeyR if pressed => {
+                        s.sim = make_sim(s.device.clone(), s.queue.clone());
+                        s.frame = 0;
+                        s.stepper.reset();
+                        s.last_instant = std::time::Instant::now();
+                        println!("reset");
+                    }
+                    KeyCode::ArrowUp => s.arrow_up = pressed,
+                    KeyCode::ArrowDown => s.arrow_down = pressed,
+                    KeyCode::ArrowLeft => s.arrow_left = pressed,
+                    KeyCode::ArrowRight => s.arrow_right = pressed,
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),
             WindowEvent::RedrawRequested => {
                 s.update_and_render();

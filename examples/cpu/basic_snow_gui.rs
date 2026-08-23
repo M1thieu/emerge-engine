@@ -1,19 +1,31 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/coords.rs"]
+#[path = "../gui_common/coords.rs"]
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
+/// `basic_snow.rs` (two real snowballs colliding -- Stomakhin 2013 snow
+/// plasticity, soft powder vs packed snow, packed snow fractures into loose
+/// granular on hard impact via a real phase transition) with a real, live
+/// egui panel -- same pattern as `basic_sand_gui.rs`: real gravity slider
+/// (1.0 = genuine IRL 9.81 m/s²) and push/pull strength. Materials, the
+/// collision setup, and the fracture mechanic are unchanged from
+/// `basic_snow.rs` -- already real and good, not touched.
+///
+/// Real gravity default: 0.01, NOT re-guessed -- a headless sweep
+/// (2026-07-23, see MEMORY.md's ecosystem-roadmap note) confirmed every
+/// fraction from 0.001 to 1.0 stays numerically finite here, and the same
+/// 0.01 checkpoint already validated for sand and fluids only adds ~12
+/// grid-units/s on top of this scene's own intrinsic ~15 grid-units/s
+/// collision-launch speed -- consistent across all three tier-0 materials
+/// rather than a fresh guess.
+///
+///   cargo run --example basic_snow_gui --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    CorotatedMaterial, NeoHookeanMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
-    ViscoelasticMaterial,
+    DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
 };
 use glam::{IVec2, Vec2};
-/// CPU elastic solids -- NeoHookean / Corotated / Viscoelastic, three-blob comparison.
-///
-///   G  toggle ByPhysics/ByMaterial  |  LMB push  RMB pull  |  R reset  Q quit
-///   cargo run --example basic_jellies --features "render"
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -23,46 +35,58 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_NEO: u32 = 0;
-const MAT_COR: u32 = 1;
-const MAT_VIS: u32 = 2;
+const MAT_SOFT: u32 = 0;
+const MAT_PACKED: u32 = 1;
+const MAT_SHATTER: u32 = 2;
+const BALL_R: f32 = 9.0;
+const BALL_A: Vec2 = Vec2::new(16.0, 44.0);
+const BALL_B: Vec2 = Vec2::new(48.0, 44.0);
+const SPEED: f32 = 15.0;
+// Radius of the directional dig nudge, grid cells -- matches basic_sand_gui.rs.
+const DIG_RADIUS: f32 = 4.0;
 
-const SIGMA_NEO: [f32; 3] = [0.05, 0.55, 0.60];
-const SIGMA_COR: [f32; 3] = [0.10, 0.45, 0.50];
-const SIGMA_VIS: [f32; 3] = [0.08, 0.35, 0.45];
+fn make_sim() -> Simulation {
+    let config = SimConfig {
+        max_substeps_per_step: 20,
+        ..SimConfig::earth(GRID, 0.01, DT)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(58, 58),
+        rng_seed: 7,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(StomakhinMaterial::new(
+            1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0,
+        )))
+        .with_material(
+            MAT_PACKED,
+            Box::new(
+                StomakhinMaterial::new(1389.0, 2083.0, 10.0, 0.012, 0.004, 0.6, 20.0)
+                    .with_cohesion(400.0),
+            ),
+        )
+        .with_material(
+            MAT_SHATTER,
+            Box::new(DruckerPragerMaterial::low_friction(266.7, 0.333)),
+        )
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
 
-struct App {
-    window: Option<Arc<Window>>,
-    state: Option<State>,
-}
-
-struct Params {
-    neo_lambda: f32,
-    neo_mu: f32,
-    cor_lambda: f32,
-    cor_mu: f32,
-    vis_lambda: f32,
-    vis_mu: f32,
-    vis_viscosity: f32,
-    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand_gui.rs/
-    // basic_snow_gui.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
-    // not grounded in anything real.
-    gravity_fraction: f32,
-}
-
-impl Default for Params {
-    fn default() -> Self {
-        Self {
-            neo_lambda: 10.0,
-            neo_mu: 20.0,
-            cor_lambda: 30.0,
-            cor_mu: 60.0,
-            vis_lambda: 10.0,
-            vis_mu: 15.0,
-            vis_viscosity: 0.15,
-            gravity_fraction: 0.01,
+    solver.retain_particles(|p| {
+        (p.x - BALL_A).length() <= BALL_R || (p.x - BALL_B).length() <= BALL_R
+    });
+    solver.particles_mut().for_each_mut(|p| {
+        if (p.x - BALL_A).length() <= BALL_R {
+            p.material_id = MAT_SOFT;
+            p.v = Vec2::new(SPEED, 0.0);
+        } else {
+            p.material_id = MAT_PACKED;
+            p.v = Vec2::new(-SPEED, 0.0);
         }
-    }
+    });
+    solver.recompute_initial_volumes();
+    solver
 }
 
 struct State {
@@ -75,52 +99,19 @@ struct State {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    p: Params,
-    real_gravity: Vec2,
     cursor_pos: [f32; 2],
+    last_cursor_grid: Vec2,
     lmb: bool,
     rmb: bool,
-    physics_colors: bool,
+    digging: bool,
+    push_strength: f32,
+    dig_strength: f32,
+    real_gravity: Vec2,
+    gravity_fraction: f32,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
-}
-
-fn make_sim(p: &Params) -> Simulation {
-    let mut config = SimConfig {
-        min_dt: 0.01,
-        max_substeps_per_step: 8,
-        ..SimConfig::earth(GRID, 0.01, DT)
-    };
-    config.gravity *= p.gravity_fraction;
-    let spawn = |c: Vec2, mat| SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(14, 14),
-        box_center: c,
-        material_id: mat,
-        precompute_initial_volumes: true,
-        initial_velocity_scale: 0.0,
-        ..SpawnRegion::for_sim(&config)
-    };
-    let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, 50.0), MAT_NEO))
-        .with_default_material(Box::new(NeoHookeanMaterial::new(p.neo_lambda, p.neo_mu)))
-        .with_material(
-            MAT_COR,
-            Box::new(CorotatedMaterial::new(p.cor_lambda, p.cor_mu)),
-        )
-        .with_material(
-            MAT_VIS,
-            Box::new(ViscoelasticMaterial::new(
-                p.vis_lambda,
-                p.vis_mu,
-                p.vis_viscosity,
-            )),
-        )
-        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn(Vec2::new(32.0, 50.0), MAT_COR));
-    let _ = solver.add_body(spawn(Vec2::new(50.0, 50.0), MAT_VIS));
-    solver
 }
 
 impl State {
@@ -138,7 +129,7 @@ impl State {
             .expect("no GPU adapter");
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(), // use full hardware limits, not wgpu defaults
+                required_limits: adapter.limits(),
                 ..Default::default()
             })
             .await
@@ -161,17 +152,11 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-
-        let p = Params::default();
-        let sim = make_sim(&p);
-        let real_gravity = SimConfig::earth(GRID, 0.01, DT).gravity;
-
+        let sim = make_sim();
+        let real_gravity = sim.config().gravity;
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(&queue, MAT_NEO as usize, SIGMA_NEO);
-        renderer.set_optical_params(&queue, MAT_COR as usize, SIGMA_COR);
-        renderer.set_optical_params(&queue, MAT_VIS as usize, SIGMA_VIS);
+        renderer.set_color_mode(ColorMode::ByMaterial);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -192,7 +177,7 @@ impl State {
         );
 
         println!(
-            "jellies: {} particles  G=colors  LMB/RMB=push/pull  R=reset  Q=quit",
+            "basic_snow_gui: {} particles  |  LMB push  RMB pull  D toggle dig  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -205,12 +190,16 @@ impl State {
             egui_ctx,
             egui_state,
             egui_renderer,
-            p,
-            real_gravity,
             cursor_pos: [0.0; 2],
+            last_cursor_grid: Vec2::ZERO,
             lmb: false,
             rmb: false,
-            physics_colors: true,
+            digging: false,
+            push_strength: 10.0,
+            dig_strength: 18.0,
+            real_gravity,
+            // 0.01 -> 0.005, user-confirmed live: "un peu fort" at 0.01.
+            gravity_fraction: 0.005,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -238,38 +227,41 @@ impl State {
         )
     }
 
-    fn reset(&mut self) {
-        self.sim = make_sim(&self.p);
-        self.frame = 0;
-    }
-
     fn update_and_render(&mut self, window: &Window) {
-        // Push live params to solver
         self.sim
-            .set_gravity(self.real_gravity * self.p.gravity_fraction);
-        self.sim
-            .set_default_material(Box::new(NeoHookeanMaterial::new(
-                self.p.neo_lambda,
-                self.p.neo_mu,
-            )));
-        self.sim.set_material(
-            MAT_COR,
-            Box::new(CorotatedMaterial::new(self.p.cor_lambda, self.p.cor_mu)),
-        );
-        self.sim.set_material(
-            MAT_VIS,
-            Box::new(ViscoelasticMaterial::new(
-                self.p.vis_lambda,
-                self.p.vis_mu,
-                self.p.vis_viscosity,
-            )),
-        );
-
+            .set_gravity(self.real_gravity * self.gravity_fraction);
         if self.lmb || self.rmb {
-            let mag = if self.lmb { 2.0 } else { -2.0 };
+            let mag = if self.lmb {
+                self.push_strength
+            } else {
+                -self.push_strength
+            };
             self.sim.apply_radial_impulse(self.cursor_grid(), 6.0, mag);
         }
+        // Digging: nudges nearby particles along the cursor's OWN movement
+        // direction (a furrow), not radially like push/pull -- same proven
+        // mechanism as basic_sand_gui.rs, no second body, no impulse call.
+        let cursor = self.cursor_grid();
+        if self.digging {
+            let delta = cursor - self.last_cursor_grid;
+            if delta.length_squared() > 1.0e-8 {
+                let dir = delta.normalize();
+                let particles = self.sim.particles_mut();
+                for i in 0..particles.len() {
+                    if (particles.x[i] - cursor).length() < DIG_RADIUS {
+                        particles.v[i] += dir * self.dig_strength * DT;
+                    }
+                }
+            }
+        }
+        self.last_cursor_grid = cursor;
         self.sim.step();
+        // Fracture trigger: real plastic compression (Jp), not raw speed --
+        // the old `v.length() > 5.0` fired at launch, before any collision.
+        self.sim.phase_transition(
+            |p| p.material_id == MAT_PACKED && p.plastic_volume_ratio < 0.9,
+            MAT_SHATTER,
+        );
         self.frame += 1;
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
@@ -285,51 +277,70 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // --- egui --- extract locals to avoid borrow conflict with closure
+        // --- egui panel ---
         let raw_input = self.egui_state.take_egui_input(window);
-        let n = self.sim.particles().len();
         let fps = self.last_fps;
+        let mut push_strength = self.push_strength;
+        let mut dig_strength = self.dig_strength;
+        let mut gravity_fraction = self.gravity_fraction;
+        let mut digging = self.digging;
+        let soft_n = self
+            .sim
+            .particles()
+            .iter()
+            .filter(|p| p.material_id == MAT_SOFT)
+            .count();
+        let packed_n = self
+            .sim
+            .particles()
+            .iter()
+            .filter(|p| p.material_id == MAT_PACKED)
+            .count();
+        let shatter_n = self
+            .sim
+            .particles()
+            .iter()
+            .filter(|p| p.material_id == MAT_SHATTER)
+            .count();
         let mut reset = false;
-        let p = &mut self.p;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Jellies")
+            egui::Window::new("Snow")
                 .default_pos([10.0, 10.0])
                 .default_width(260.0)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("fps={:.0}  n={}  [G] toggle colors", fps, n));
+                    ui.label(format!("fps={fps:.0}"));
+                    ui.label(format!(
+                        "soft={soft_n}  packed={packed_n}  shatter={shatter_n}"
+                    ));
                     ui.separator();
-                    ui.add(
-                        egui::Slider::new(&mut p.gravity_fraction, 0.0..=2.0)
-                            .text("gravity (1.0 = real IRL)"),
-                    );
+                    ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
+                    ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=2.0));
                     ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
-                    ui.add(egui::Slider::new(&mut p.neo_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.neo_mu, 1.0..=400.0).text("mu"));
+                    ui.label("Push/pull strength:");
+                    ui.add(egui::Slider::new(&mut push_strength, 0.0..=30.0));
+                    ui.checkbox(&mut digging, "Digging active (or press D)");
+                    ui.add(egui::Slider::new(&mut dig_strength, 0.0..=40.0).text("Dig strength"));
                     ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(64, 199, 166), "Corotated");
-                    ui.add(egui::Slider::new(&mut p.cor_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.cor_mu, 1.0..=400.0).text("mu"));
-                    ui.separator();
-                    ui.colored_label(egui::Color32::from_rgb(184, 102, 230), "Viscoelastic");
-                    ui.add(egui::Slider::new(&mut p.vis_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.vis_mu, 1.0..=400.0).text("mu"));
-                    ui.add(egui::Slider::new(&mut p.vis_viscosity, 0.0..=5.0).text("viscosity"));
-                    ui.separator();
-                    ui.label("LMB push  RMB pull  G colors  R reset");
+                    ui.label("LMB push  RMB pull  D toggle dig  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
                 });
         });
+        self.push_strength = push_strength;
+        self.dig_strength = dig_strength;
+        self.gravity_fraction = gravity_fraction;
+        self.digging = digging;
         if reset {
-            self.reset();
+            let sim = make_sim();
+            self.real_gravity = sim.config().gravity;
+            self.sim = sim;
+            self.frame = 0;
         }
 
         self.egui_state
@@ -377,12 +388,17 @@ impl State {
     }
 }
 
+struct App {
+    window: Option<Arc<Window>>,
+    state: Option<State>,
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Jellies [NeoHookean / Corotated / Viscoelastic]")
+                    .with_title("emerge -- Snow (GUI)")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -392,7 +408,9 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(s) = self.state.as_mut() else { return };
+        let Some(s) = self.state.as_mut() else {
+            return;
+        };
         if let Some(w) = &self.window {
             let resp = s.egui_state.on_window_event(w, &event);
             if resp.consumed {
@@ -413,30 +431,30 @@ impl ApplicationHandler for App {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(key),
-                        state: ElementState::Pressed,
+                        state: key_state,
                         ..
                     },
                 ..
-            } => match key {
-                KeyCode::Escape | KeyCode::KeyQ => el.exit(),
-                KeyCode::KeyG => {
-                    s.physics_colors = !s.physics_colors;
-                    s.renderer.set_color_mode(if s.physics_colors {
-                        ColorMode::ByPhysics
-                    } else {
-                        ColorMode::ByMaterial
-                    });
+            } => {
+                let pressed = key_state == ElementState::Pressed;
+                match key {
+                    KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
+                    KeyCode::KeyD if pressed => s.digging = !s.digging,
+                    KeyCode::KeyR if pressed => {
+                        let sim = make_sim();
+                        s.real_gravity = sim.config().gravity;
+                        s.sim = sim;
+                        s.frame = 0;
+                        println!("reset");
+                    }
+                    _ => {}
                 }
-                KeyCode::KeyR => {
-                    s.reset();
-                    println!("reset");
-                }
-                _ => {}
-            },
+            }
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),
             WindowEvent::RedrawRequested => {
                 if let Some(w) = &self.window {
-                    s.update_and_render(w);
+                    let w = w.clone();
+                    s.update_and_render(&w);
                     w.request_redraw();
                 }
             }

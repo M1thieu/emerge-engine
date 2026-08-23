@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/mod.rs"]
+#[path = "../gui_common/mod.rs"]
 mod gui_common;
 
 /// Merged replacement for the former `sand_pile_stability_gui.rs` and

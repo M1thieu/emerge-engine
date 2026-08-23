@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "gui_common/mod.rs"]
+#[path = "../gui_common/mod.rs"]
 mod gui_common;
 
 /// Real, dedicated close-up scene for grain rolling -- built 2026-08-21 after
