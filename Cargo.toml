@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 authors = ["Eremat"]
 license = "MIT OR Apache-2.0"
-description = "Real-time MLS-MPM continuum physics engine — fluids, granular, elastic solids, active matter."
+description = "Real-time MLS-MPM continuum physics engine -- fluids, granular, elastic solids, active matter."
 repository = "https://github.com/erematorg/emerge-engine"
 readme = "README.md"
 keywords = ["physics", "mpm", "simulation", "game", "continuum"]
@@ -38,7 +38,7 @@ gpu = ["dep:wgpu"]
 # Standalone debug renderer: instanced particle draw via wgpu. Requires gpu.
 render = ["gpu"]
 # Experimental physics modules: acoustics, EM, information theory.
-# Not part of the guaranteed public API — no concrete LP use yet.
+# Not part of the guaranteed public API -- no concrete LP use yet.
 experimental = []
 
 [dev-dependencies]
@@ -70,10 +70,6 @@ name = "headless"
 # --- GPU examples: current focus ---
 [[example]]
 name = "basic_jellies_gpu"
-required-features = ["render"]
-
-[[example]]
-name = "basic_sand_gpu"
 required-features = ["render"]
 
 [[example]]

@@ -1,6 +1,8 @@
 extern crate emerge_engine as emerge;
 
-use egui_wgpu::ScreenDescriptor;
+#[path = "gui_common/mod.rs"]
+mod gui_common;
+
 /// `basic_sand.rs` with a real, live egui panel (same wgpu-native egui
 /// already used by `rod_blade_of_grass_gui.rs`/`material_sandbox_gpu`):
 /// same push/pull cursor interaction as every other sand example (LMB push,
@@ -87,15 +89,9 @@ fn make_sim() -> Simulation {
 }
 
 struct State {
-    surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    gfx: gui_common::Gfx,
     sim: Simulation,
     renderer: Renderer,
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
     cursor_pos: [f32; 2],
     lmb: bool,
     rmb: bool,
@@ -121,49 +117,15 @@ struct State {
 
 impl State {
     async fn new(window: Arc<Window>) -> Self {
+        let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let surface = instance.create_surface(window.clone()).unwrap();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("no GPU adapter");
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: adapter.limits(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let caps = surface.get_capabilities(&adapter);
-        let fmt = caps
-            .formats
-            .iter()
-            .find(|f| f.is_srgb())
-            .copied()
-            .unwrap_or(caps.formats[0]);
-        let sc = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: fmt,
-            width: size.width,
-            height: size.height,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &sc);
         let sim = make_sim();
         // Real IRL gravity, captured before anything ever overrides it --
         // `earth()`'s own real conversion, not a tuned constant.
         let real_gravity = sim.config().gravity;
         // Real extra headroom for pouring -- see POUR_BUDGET's own doc.
         let render_capacity = sim.particles().len() + POUR_BUDGET;
-        let mut renderer = Renderer::new(&device, render_capacity, fmt);
+        let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
         // particle_scale=0.9, not the usual 0.6: particles are seeded at
         // spacing=0.5 with position_jitter=0.5 (see make_sim/pour), so a 0.6
         // disc leaves real visible gaps wherever jitter spreads two
@@ -173,43 +135,19 @@ impl State {
         // tuning fix, not the deeper "particles vs. a real reconstructed
         // surface" question -- that's the curvature-flow work already
         // planned separately (see render-pipeline-plan memory).
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.9, true);
+        renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.9, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        renderer.set_optical_params(&queue, MAT_LOOSE as usize, SIGMA_SAND);
-        renderer.set_optical_params(&queue, MAT_DENSE as usize, SIGMA_SAND);
-
-        let egui_ctx = egui::Context::default();
-        let egui_state = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui_ctx.viewport_id(),
-            window.as_ref(),
-            None,
-            None,
-            None,
-        );
-        let egui_renderer = egui_wgpu::Renderer::new(
-            &device,
-            fmt,
-            egui_wgpu::RendererOptions {
-                msaa_samples: 1,
-                ..Default::default()
-            },
-        );
+        renderer.set_optical_params(&gfx.queue, MAT_LOOSE as usize, SIGMA_SAND);
+        renderer.set_optical_params(&gfx.queue, MAT_DENSE as usize, SIGMA_SAND);
 
         println!(
             "basic_sand_gui: {} particles  |  LMB push  RMB pull  D toggle dig  hold P to pour  R reset  Q quit",
             sim.particles().len()
         );
         Self {
-            surface,
-            surface_config: sc,
-            device,
-            queue,
+            gfx,
             sim,
             renderer,
-            egui_ctx,
-            egui_state,
-            egui_renderer,
             cursor_pos: [0.0; 2],
             lmb: false,
             rmb: false,
@@ -236,20 +174,20 @@ impl State {
     }
 
     fn resize(&mut self, w: u32, h: u32) {
+        self.gfx.resize(w, h);
         if w == 0 || h == 0 {
             return;
         }
-        self.surface_config.width = w;
-        self.surface_config.height = h;
-        self.surface.configure(&self.device, &self.surface_config);
         self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, 0.9, true);
+            .set_camera(&self.gfx.queue, GRID as u32, w, h, 0.9, true);
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.gfx.surface_config.width,
+            self.gfx.surface_config.height,
+            GRID,
         )
     }
 
@@ -367,18 +305,22 @@ impl State {
             );
         }
 
-        let output = match self.surface.get_current_texture() {
+        let output = match self.gfx.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
         };
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        self.renderer.render(
+            &self.gfx.device,
+            &self.gfx.queue,
+            self.sim.particles(),
+            &view,
+            true,
+        );
 
         // --- egui panel ---
-        let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
         let mut push_strength = self.push_strength;
         let mut pour_dense = self.pour_dense;
@@ -389,7 +331,7 @@ impl State {
         let poured = self.poured_count;
         let mut reset = false;
 
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        gui_common::run_egui_frame(&mut self.gfx, window, &view, |ctx| {
             egui::Window::new("Sand")
                 .default_pos([10.0, 10.0])
                 .default_width(240.0)
@@ -432,47 +374,6 @@ impl State {
             self.poured_count = 0;
         }
 
-        self.egui_state
-            .handle_platform_output(window, full_output.platform_output);
-        let tris = self
-            .egui_ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
-        let sd = ScreenDescriptor {
-            size_in_pixels: [self.surface_config.width, self.surface_config.height],
-            pixels_per_point: full_output.pixels_per_point,
-        };
-        for (id, delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.device, &self.queue, *id, delta);
-        }
-        let cmd = {
-            let mut enc = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            self.egui_renderer
-                .update_buffers(&self.device, &self.queue, &mut enc, &tris, &sd);
-            let mut rp = enc
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                })
-                .forget_lifetime();
-            self.egui_renderer.render(&mut rp, &tris, &sd);
-            drop(rp);
-            enc.finish()
-        };
-        self.queue.submit(std::iter::once(cmd));
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
         output.present();
     }
 }
@@ -501,7 +402,7 @@ impl ApplicationHandler for App {
             return;
         };
         if let Some(w) = &self.window {
-            let resp = s.egui_state.on_window_event(w, &event);
+            let resp = s.gfx.egui_state.on_window_event(w, &event);
             if resp.consumed {
                 return;
             }

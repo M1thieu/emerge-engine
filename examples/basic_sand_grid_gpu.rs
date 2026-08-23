@@ -1,7 +1,10 @@
 extern crate emerge_engine as emerge;
 
+#[path = "gui_common/coords.rs"]
+mod gui_common;
+
 /// GPU Drucker-Prager sand, rendered from the solver's own P2G mass field
-/// (`Renderer::render_grid_volume`) instead of one splat per particle —
+/// (`Renderer::render_grid_volume`) instead of one splat per particle --
 /// real, already-shipped MPM-native technique (see `render-pipeline-plan`
 /// memory): adjacent cells with mass blend into one continuous shape instead
 /// of reading as a cloud of discrete dots, at zero extra simulation cost
@@ -182,9 +185,11 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
-        Vec2::new(
-            self.cursor_pos[0] / self.surface_config.width as f32 * GRID as f32,
-            (1.0 - self.cursor_pos[1] / self.surface_config.height as f32) * GRID as f32,
+        gui_common::cursor_to_grid(
+            self.cursor_pos,
+            self.surface_config.width,
+            self.surface_config.height,
+            GRID,
         )
     }
 
@@ -273,7 +278,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge — Sand, grid-volume render [G: toggle particle view]")
+                    .with_title("emerge -- Sand, grid-volume render [G: toggle particle view]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),

@@ -1,4 +1,4 @@
-//! GPU solver smoke tests — basic stability checks for GpuSimulation.
+//! GPU solver smoke tests -- basic stability checks for GpuSimulation.
 //!
 //! These tests run headlessly (no window, no Bevy) using pollster::block_on.
 //! They verify that the GPU pipeline doesn't crash or produce NaN on standard
@@ -772,7 +772,7 @@ mod gpu_tests {
 
     /// Parity smoke test: `thermal_expansion` (CPU formula verified in
     /// tests/physics_correctness.rs) uses the identical `t_scale = 1.0 + thermal_expansion *
-    /// temperature` formula in p2g.wgsl — this just confirms the GPU path doesn't crash or
+    /// temperature` formula in p2g.wgsl -- this just confirms the GPU path doesn't crash or
     /// diverge with it enabled and a real per-particle temperature gradient, not a re-derivation
     /// of the physics (already covered on CPU).
     #[test]
@@ -834,7 +834,7 @@ mod gpu_tests {
 
     /// GPU-side parity check for DP-sand's `friction_hardening` (q): `dp_plasticity` in
     /// particles_update.wgsl mirrors wgsparkl's reference single-pass return mapping
-    /// exactly (no self-consistency corrector — see sand.rs::project's doc comment). q is
+    /// exactly (no self-consistency corrector -- see sand.rs::project's doc comment). q is
     /// the accumulated plastic shear-strain norm and is expected to keep growing slowly
     /// under sustained load; this only checks it stays bounded by `q_max` and finite, not
     /// that it stops moving.
@@ -1039,7 +1039,7 @@ mod gpu_tests {
             .fold(0.0f32, f32::max);
         assert!(
             max_reach < 28.0,
-            "GPU sand hit the walls (reach {max_reach:.1}) — domain too small"
+            "GPU sand hit the walls (reach {max_reach:.1}) -- domain too small"
         );
 
         let height = xs
@@ -1057,7 +1057,7 @@ mod gpu_tests {
 
         assert!(
             base_half_width > 1.0,
-            "GPU pile did not spread — collapse failed"
+            "GPU pile did not spread -- collapse failed"
         );
 
         println!("── GPU ANGLE OF REPOSE BENCHMARK ──");
@@ -1336,7 +1336,7 @@ mod gpu_tests {
     fn gpu_rankine_stable() {
         // Rankine has needs_cpu_update()=false and a real GPU plasticity branch
         // (particles_update.wgsl, model==7) but had zero GPU-specific test coverage
-        // before this — implemented, never verified on that path.
+        // before this -- implemented, never verified on that path.
         if !gpu_available() {
             return;
         }
@@ -1395,17 +1395,17 @@ mod gpu_tests {
     fn gpu_sleep_freezes_settled_particles() {
         // Phase 1 GPU sleep/wake (flag-based, no compaction). With sleep_threshold > 0.0,
         // particles that settle under gravity should eventually get sleeping=1u and then
-        // stop changing entirely — frozen, same as CPU excluding them from P2G/G2P.
+        // stop changing entirely -- frozen, same as CPU excluding them from P2G/G2P.
         if !gpu_available() {
             return;
         }
         // A particle spawned at rest (v=0) sits BELOW any positive threshold on its very
-        // first substep, before gravity has accelerated it at all — measured: with cold
+        // first substep, before gravity has accelerated it at all -- measured: with cold
         // spawn, per-substep cold-start velocity can be as low as ~0.0065 (scene-dependent
         // adaptive substep count), overlapping genuine post-settling rest velocity
         // (~0.001-0.01). No fixed threshold cleanly separates "just spawned" from "truly
         // at rest" when starting cold. Sidestep this by giving the disk a deterministic
-        // downward kick well above any reasonable threshold right after construction —
+        // downward kick well above any reasonable threshold right after construction --
         // it now only crosses back below threshold after real impact deceleration.
         let config = SimConfig {
             sleep_threshold: 0.05,
@@ -1418,7 +1418,7 @@ mod gpu_tests {
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
         solver.apply_impulse(Vec2::splat(16.0), 8.0, Vec2::new(0.0, -1.0));
 
-        // Real granular piles never reach a perfectly static global state — surface grains
+        // Real granular piles never reach a perfectly static global state -- surface grains
         // keep jostling indefinitely (measured: sleeping count oscillates 10-260 over 2000+
         // steps after a hard impulse kick, real chaos, not a bug). So don't wait for global
         // quiescence. The actual invariant to verify is narrower and doesn't require it:
@@ -1442,16 +1442,16 @@ mod gpu_tests {
         );
 
         // Position must stay near-frozen while observed asleep at every external
-        // checkpoint — but NOT bit-exact. step_frame() runs up to max_substeps_per_step
+        // checkpoint -- but NOT bit-exact. step_frame() runs up to max_substeps_per_step
         // (8) substeps internally; a particle can legitimately wake on substep 3 (a
         // neighbor's P2G deposits nearby mass), get one real position integration, and
-        // re-sleep by substep 6 — entirely invisible at step_frame()-call granularity.
+        // re-sleep by substep 6 -- entirely invisible at step_frame()-call granularity.
         // Verified directly: isolation check (two sync_particles_blocking() calls with
-        // zero stepping in between) showed zero drift — confirming the drift only ever
+        // zero stepping in between) showed zero drift -- confirming the drift only ever
         // appears after real step_frame() calls, i.e. it's a genuine sub-frame wake blip,
         // not a readback artifact. 0.01 measured flaky across 5 runs (real blips up to
         // ~0.0117 when a particle stays briefly awake for a couple of substeps instead of
-        // one) — 0.05 keeps real margin below genuine free motion (freefall ~0.03-2.0,
+        // one) -- 0.05 keeps real margin below genuine free motion (freefall ~0.03-2.0,
         // settling jostle ~0.03-0.4 per step_frame) while comfortably absorbing the blip.
         const FROZEN_TOLERANCE: f32 = 0.05;
         let mut tracked: std::collections::HashMap<usize, Vec2> = snapshot.into_iter().collect();
@@ -1461,13 +1461,13 @@ mod gpu_tests {
             tracked.retain(|&i, &mut x_before| {
                 let p = &solver.particles()[i];
                 if p.sleeping == 0 {
-                    return false; // woke — drop from tracking, not a failure
+                    return false; // woke -- drop from tracking, not a failure
                 }
                 let drift = (p.x - x_before).length();
                 assert!(
                     drift < FROZEN_TOLERANCE,
                     "gpu sleep particle {i}: moved {drift:.5} grid-units while marked \
-                     sleeping — far beyond a sub-frame wake blip"
+                     sleeping -- far beyond a sub-frame wake blip"
                 );
                 true
             });
@@ -1477,13 +1477,13 @@ mod gpu_tests {
     #[test]
     fn gpu_sleep_wakes_on_nearby_activity() {
         // Companion to gpu_sleep_freezes_settled_particles: a low cluster settles and
-        // sleeps first, then a second cluster dropped from higher up lands nearby —
+        // sleeps first, then a second cluster dropped from higher up lands nearby --
         // the settled particles near the impact must wake (g2p.wgsl's 3x3 mass-neighbor
         // check), proving wake propagation actually works, not just the freeze.
         if !gpu_available() {
             return;
         }
-        // Same cold-start fix as gpu_sleep_freezes_settled_particles — deterministic kick
+        // Same cold-start fix as gpu_sleep_freezes_settled_particles -- deterministic kick
         // sidesteps the cold-spawn-velocity/genuine-rest threshold ambiguity.
         let config = SimConfig {
             sleep_threshold: 0.05,
@@ -1501,7 +1501,7 @@ mod gpu_tests {
         solver.apply_impulse(low_center, 8.0, Vec2::new(0.0, -1.0));
         solver.apply_impulse(high_center, 8.0, Vec2::new(0.0, -1.0));
 
-        // Let the low cluster (close to the floor — falls and settles fast) sleep before
+        // Let the low cluster (close to the floor -- falls and settles fast) sleep before
         // the high cluster (falling ~21 units) arrives.
         for _ in 0..190 {
             solver.step_frame();
@@ -1519,7 +1519,7 @@ mod gpu_tests {
         );
 
         // Let the high cluster fall and land, checking at every checkpoint rather than
-        // only the final state — by the time everything has re-settled (also asleep),
+        // only the final state -- by the time everything has re-settled (also asleep),
         // a single end-of-test check would miss the transient wake during impact.
         let mut woke_during_impact = false;
         for _ in 0..30 {
@@ -1547,26 +1547,26 @@ mod gpu_tests {
         // Minimal hook for LP's future chunk system (see mpm_technique_survey memory
         // note): sleep_tag/wake_tag force a tagged group asleep/awake by user_tag.
         //
-        // Tests the realistic LP use case — freezing/unfreezing a chunk of already-at-rest
-        // terrain — not an arbitrary velocity. That distinction matters: g2p.wgsl's
+        // Tests the realistic LP use case -- freezing/unfreezing a chunk of already-at-rest
+        // terrain -- not an arbitrary velocity. That distinction matters: g2p.wgsl's
         // wake-check scans a sleeping particle's own 3x3 neighborhood including its own
         // home cell, and P2G still scatters a sleeping particle's frozen momentum every
-        // substep (deliberately — see gpu_sleep_wake_phase1 memory note, it's how sleeping
+        // substep (deliberately -- see gpu_sleep_wake_phase1 memory note, it's how sleeping
         // particles keep providing support). So force-sleeping a particle that's still
         // genuinely fast would see its own residual momentum exceed the threshold and
-        // immediately wake itself back up next substep — a real limitation of this minimal
+        // immediately wake itself back up next substep -- a real limitation of this minimal
         // hook, not exercised here because it doesn't match the intended use (distant
         // terrain is already calm, not mid-flight).
         if !gpu_available() {
             return;
         }
-        // One pile, particles interleaved 50/50 between TAG_A and TAG_B by spawn index —
+        // One pile, particles interleaved 50/50 between TAG_A and TAG_B by spawn index --
         // both tags settle identically (same physical pile, same dynamics), so there's no
         // separate-pile destabilization to chase and no spatial-sort reordering concern for
         // the isolation check (both tags are already scattered through the same region).
         // The "frozen while asleep" physics itself is already proven by
         // gpu_sleep_freezes_settled_particles (same flag, same P2G mechanism, regardless of
-        // whether sleep was natural or tag-forced) — this test only needs to prove the new
+        // whether sleep was natural or tag-forced) -- this test only needs to prove the new
         // part: sleep_tag/wake_tag flip the right particles' flags and only the right ones.
         const TAG_A: u32 = 7;
         const TAG_B: u32 = 9;
@@ -1579,7 +1579,7 @@ mod gpu_tests {
         for (i, p) in particles.iter_mut().enumerate() {
             p.user_tag = if i % 2 == 0 { TAG_A } else { TAG_B };
         }
-        // DruckerPrager (sand), not NeoHookean — elastic materials can keep jiggling near
+        // DruckerPrager (sand), not NeoHookean -- elastic materials can keep jiggling near
         // rest and never reliably cross the sleep threshold; sand genuinely comes to rest,
         // same material used by gpu_sleep_freezes_settled_particles for this reason.
         let registry =
@@ -1587,7 +1587,7 @@ mod gpu_tests {
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
         solver.apply_impulse(center, 8.0, Vec2::new(0.0, -1.0));
 
-        // Settle until genuinely calm — same deterministic-kick pattern as
+        // Settle until genuinely calm -- same deterministic-kick pattern as
         // gpu_sleep_freezes_settled_particles, sidesteps the cold-spawn-velocity ambiguity.
         for _ in 0..200 {
             solver.step_frame();
@@ -1602,9 +1602,9 @@ mod gpu_tests {
         );
 
         // wake_tag forces a group back to active simulation regardless of its current
-        // state — checked immediately, one step after the call, not across a long window
+        // state -- checked immediately, one step after the call, not across a long window
         // (a long window risks chasing real cascading resettlement, not what's being tested
-        // here). Only TAG_A should be affected; TAG_B's sleeping count should barely move —
+        // here). Only TAG_A should be affected; TAG_B's sleeping count should barely move --
         // tolerate a little drift, not exact equality, since real granular piles never reach
         // perfect quiescence (a grain or two toggling state on any given step is normal,
         // same documented behavior as gpu_sleep_freezes_settled_particles).
@@ -1637,7 +1637,7 @@ mod gpu_tests {
         // own doc comment), but the active-block dispatch/clearing changes shifted dispatch
         // order and floating-point summation timing slightly, observed pushing this specific
         // noise as high as diff=6 in one run (3/3 immediate reruns passed cleanly at the old
-        // threshold). 10 is still tiny relative to ~150-300 total TAG_B particles — nowhere
+        // threshold). 10 is still tiny relative to ~150-300 total TAG_B particles -- nowhere
         // close to what a genuine tag-isolation break would produce (most/all of TAG_B).
         assert!(
             b_diff <= 10,
@@ -1645,7 +1645,7 @@ mod gpu_tests {
              (before={b_sleeping_before}, after={b_sleeping_after}, diff={b_diff})"
         );
 
-        // sleep_tag forces it back down deterministically, on demand — at-rest velocity
+        // sleep_tag forces it back down deterministically, on demand -- at-rest velocity
         // here is well under the 0.05 threshold, so this sticks (no self-wake conflict).
         // Checked immediately after the call, same reasoning as wake_tag above.
         solver.sleep_tag(TAG_A);
@@ -1699,22 +1699,22 @@ mod gpu_tests {
     }
 
     /// Characterizes GPU per-step cost AND VRAM footprint vs. grid resolution, pushed up to
-    /// just below wgpu's default `max_storage_buffer_binding_size` (128 MiB) — the real wall.
+    /// just below wgpu's default `max_storage_buffer_binding_size` (128 MiB) -- the real wall.
     ///
-    /// The GPU grid buffer is dense — allocated as grid_res² · 16 bytes (sizeof(GpuCell))
+    /// The GPU grid buffer is dense -- allocated as grid_res² · 16 bytes (sizeof(GpuCell))
     /// regardless of how many particles are active (src/gpu/buffers.rs). The CPU grid is
     /// sparse (HashMap keyed by touched cell, src/grid/mod.rs) and stays flat under the same
     /// test (benches/scaling.rs::grid_resolution_scaling: ~15.2ms @ grid=32 -> ~16.6ms @ grid=256).
     ///
     /// Measured wall: wgpu's default storage-binding limit is 128 MiB = 8,388,608 cells,
-    /// i.e. grid_res ≈ 2896 — NOT VRAM capacity. A 4096² grid (256 MiB) would already exceed
+    /// i.e. grid_res ≈ 2896 -- NOT VRAM capacity. A 4096² grid (256 MiB) would already exceed
     /// the default binding limit before VRAM itself becomes the constraint. This is a wgpu API
     /// ceiling, not a hardware one (raisable via `required_limits` at device request time, up
     /// to whatever `adapter.limits()` actually allows).
     ///
     /// Verifies the particle_sort pipeline (clear -> count -> scan -> scatter) produces a valid
     /// permutation of `sorted_particle_ids`: every index 0..N appears exactly once. This is the
-    /// strict correctness check beyond "physics looks stable" — a scan/scatter off-by-one could
+    /// strict correctness check beyond "physics looks stable" -- a scan/scatter off-by-one could
     /// duplicate or drop slots while still leaving particles numerically finite (e.g. if a
     /// dropped slot happens to retain a harmless stale value), so this checks the permutation
     /// invariant directly rather than inferring correctness from particle state.
@@ -1760,7 +1760,7 @@ mod gpu_tests {
     }
 
     /// GPU sparse grid Phase 1 (see mpm_technique_survey memory note): the new active-block
-    /// list must exactly match real particle occupancy — every block containing a particle is
+    /// list must exactly match real particle occupancy -- every block containing a particle is
     /// present, no spurious entries, and an empty region's blocks never appear. Two disks far
     /// apart in a large domain so the math is unambiguous: the empty middle should produce
     /// zero active blocks of its own.
@@ -1793,7 +1793,7 @@ mod gpu_tests {
             let block_y = (cell_y / block_size).min(num_blocks_per_dim - 1);
             block_y * num_blocks_per_dim + block_x
         };
-        // A block is active iff IT OR ANY of its 8 neighbors contains a particle — not just
+        // A block is active iff IT OR ANY of its 8 neighbors contains a particle -- not just
         // itself. Mirrors particle_sort.wgsl's particle_sort_compact_main exactly: the
         // quadratic B-spline P2G kernel's 3-cell-wide scatter stencil routinely crosses a
         // block boundary, so grid_clear must clear a block's neighbors too, not just blocks
@@ -1837,7 +1837,7 @@ mod gpu_tests {
         );
         assert_eq!(
             active, expected,
-            "active block set must exactly match real particle occupancy — no missing, \
+            "active block set must exactly match real particle occupancy -- no missing, \
              no spurious entries"
         );
 
@@ -1851,11 +1851,11 @@ mod gpu_tests {
     }
 
     /// GPU sparse grid Phase 1: the real failure mode a block-boundary mapping bug in
-    /// grid_clear.wgsl would produce is a stale, never-cleared cell far from any particle —
+    /// grid_clear.wgsl would produce is a stale, never-cleared cell far from any particle --
     /// not a crash, not a NaN, just quietly wrong leftover momentum/mass. Verify directly:
     /// a cell far from both particle disks must read exactly zero after a step, since it was
     /// either correctly cleared (in an active block) or never touched by P2G at all (outside
-    /// any active block) — either way, genuinely zero, never a stale nonzero value.
+    /// any active block) -- either way, genuinely zero, never a stale nonzero value.
     #[test]
     fn gpu_grid_clear_zeroes_cells_far_from_particles() {
         if !gpu_available() {
@@ -1866,7 +1866,7 @@ mod gpu_tests {
             max_substeps_per_step: 4,
             ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
         };
-        // Single disk in one corner — most of the domain, including the opposite corner, is
+        // Single disk in one corner -- most of the domain, including the opposite corner, is
         // genuinely empty.
         let particles = spawn_disk(&config, Vec2::new(16.0, 16.0), 0);
         let registry =
@@ -1877,12 +1877,12 @@ mod gpu_tests {
         }
         let cells = solver.grid_cells_blocking();
 
-        // Far corner — well outside the disk's 5-unit radius plus kernel support, and outside
+        // Far corner -- well outside the disk's 5-unit radius plus kernel support, and outside
         // any block touched by it.
         //
         // Checking MASS, not momentum: grid_update.wgsl deliberately applies gravity to every
         // cell unconditionally, even ones with zero mass ("Empty cells: gravity for stray
-        // particles, but enforce boundary slip") — a legitimate, pre-existing behavior
+        // particles, but enforce boundary slip") -- a legitimate, pre-existing behavior
         // unrelated to this phase's change, which gives every cell a tiny nonzero velocity
         // artifact regardless of whether grid_clear is dense or block-bounded. Mass is the
         // unambiguous signal: it's only ever set by P2G scatter, never touched by gravity, so
@@ -1898,7 +1898,7 @@ mod gpu_tests {
     }
 
     /// Run with `cargo test --features gpu --test gpu gpu_grid_resolution_cost -- --nocapture`.
-    /// No hard perf assertion (timing varies by machine/CI runner) — only stability is asserted.
+    /// No hard perf assertion (timing varies by machine/CI runner) -- only stability is asserted.
     #[test]
     fn gpu_grid_resolution_cost() {
         if !gpu_available() {
@@ -1913,7 +1913,7 @@ mod gpu_tests {
              wall at grid_res~{wall_grid_res} (grid_res^2 * 16B = 128MiB)"
         );
 
-        // dt = 1/60 (a real 60fps frame's worth of world-time), not 0.1 — using 0.1 implies the
+        // dt = 1/60 (a real 60fps frame's worth of world-time), not 0.1 -- using 0.1 implies the
         // world runs at 6x real-time speed, inflating CFL-driven substep count and reported cost.
         const REAL_TIME_DT: f32 = 1.0 / 60.0;
         for &grid_res in &[32usize, 64, 128, 256, 512, 1024, 2048] {
@@ -1952,14 +1952,14 @@ mod gpu_tests {
     }
 
     /// Stress-tests GPU per-step cost at LP's stated target particle budget
-    /// (100k-500k particles @ 60fps, see project_lp_world_design memory) — fixed grid_res=512
+    /// (100k-500k particles @ 60fps, see project_lp_world_design memory) -- fixed grid_res=512
     /// (well clear of the grid_resolution_cost cliff at 1024-2048), varying particle count.
     ///
     /// IMPORTANT CONTEXT: GpuSimulation has NO sleep/wake mechanism (unlike CPU Simulation,
-    /// which partitions active/sleeping particles — src/solver/mod.rs). Every step_frame()
+    /// which partitions active/sleeping particles -- src/solver/mod.rs). Every step_frame()
     /// processes every particle regardless of camera distance. LP's chunk design assumes
     /// "chunks distants = gelés (sleep system emerge = mécanisme naturel)" on a GPU-primary
-    /// architecture — that assumption does not hold today. This test measures the cost of
+    /// architecture -- that assumption does not hold today. This test measures the cost of
     /// that gap directly: if LP's world has 500k total particles and none can sleep on GPU,
     /// this is the per-step cost LP would actually pay regardless of how many are on-screen.
     ///
@@ -2159,9 +2159,9 @@ mod gpu_tests {
 
     /// Direct test of the readback_stride hypothesis: the 7 compute passes measured by
     /// `gpu_profile_passes_at_50k` only total ~3.8ms, but wall-clock per_step at the same scene
-    /// was ~20ms — a ~16ms gap GPU compute timestamps can't explain. `step_frame()` defaults to
+    /// was ~20ms -- a ~16ms gap GPU compute timestamps can't explain. `step_frame()` defaults to
     /// `readback_stride=1` (CPU↔GPU sync every frame); its own doc comment already says
-    /// "2+ = skip frames, reducing GPU stall cost" — this measures exactly how much.
+    /// "2+ = skip frames, reducing GPU stall cost" -- this measures exactly how much.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- readback-stride cost benchmark at 50k particles, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_readback_stride_cost_at_50k() {
@@ -2216,11 +2216,11 @@ mod gpu_tests {
         }
     }
 
-    /// Baseline 2x2 grid (material x settle duration) for the per-frame CFL scan cost — see
+    /// Baseline 2x2 grid (material x settle duration) for the per-frame CFL scan cost -- see
     /// project_mvp_definition memory for the full investigation. Three rewrite attempts to cut
     /// this block's measured ~10.5ms/frame cost all regressed ~2x specifically on long-settled
     /// granular scenes (confirmed real via this exact grid, not contention noise); all were
-    /// reverted as unsafe to ship blind (a safe version needs the q-creep bug fixed first — see
+    /// reverted as unsafe to ship blind (a safe version needs the q-creep bug fixed first -- see
     /// the comment at the CFL-scan call site in `src/gpu/mod.rs`). This test exists to keep a
     /// real, comparable baseline across all 4 combinations for whoever revisits this.
     #[test]
@@ -2307,7 +2307,7 @@ mod gpu_tests {
     /// Correctness verification for the relaxed CFL coefficient (0.7, up from the 0.5 default)
     /// that closed the gap to 55-60fps live (see project_mvp_definition memory: substeps
     /// dropped 3->2 for DP-sand at the 50k target, sustained 60-64fps over thousands of real
-    /// frames with no visible instability) — this test makes the same claim rigorously, with
+    /// frames with no visible instability) -- this test makes the same claim rigorously, with
     /// explicit assertions the live example doesn't have (no finite/J-collapse checks there).
     /// Long-settled, not just a quick smoke test, matching the real scenario's duration.
     #[test]
@@ -2443,7 +2443,7 @@ mod gpu_tests {
                         }
                     }
                 }
-                // Sync after EVERY frame — no batching, no backlog to amortize.
+                // Sync after EVERY frame -- no batching, no backlog to amortize.
                 const STEPS: u32 = 20;
                 let mut per_step_times = Vec::with_capacity(STEPS as usize);
                 for _ in 0..STEPS {
@@ -2527,7 +2527,7 @@ mod gpu_tests {
         }
         eprintln!("  {:<28} {:>9.1} ns", "TOTAL (one substep)", total);
 
-        // CPU-side breakdown of the SAME step_frame() calls — answers whether the missing
+        // CPU-side breakdown of the SAME step_frame() calls -- answers whether the missing
         // ~9-10ms (wall-clock per_step minus the ~3.8ms of measured GPU compute) is CPU-side
         // work getting in the way, not more GPU compute.
         for _ in 0..10 {
@@ -2537,7 +2537,7 @@ mod gpu_tests {
             solver.last_cpu_timings_ns();
         let accounted = cfl_scan_ns + encode_ns + submit_ns + readback_ns;
         eprintln!(
-            "gpu_profile_passes_at_50k: CPU side — cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
+            "gpu_profile_passes_at_50k: CPU side -- cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
             cfl_scan_ns / 1.0e6,
             encode_ns / 1.0e6,
             submit_ns / 1.0e6,
@@ -2702,7 +2702,7 @@ mod gpu_tests {
             solver.last_cpu_timings_ns();
         let accounted = cfl_scan_ns + encode_ns + submit_ns + readback_ns;
         eprintln!(
-            "gpu_profile_fluid_passes_at_50k: CPU side — cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
+            "gpu_profile_fluid_passes_at_50k: CPU side -- cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
             cfl_scan_ns / 1.0e6,
             encode_ns / 1.0e6,
             submit_ns / 1.0e6,
@@ -2783,7 +2783,7 @@ mod gpu_tests {
                 eprintln!("    {label:<28} {:.4}ms", ns / 1.0e6);
             }
             // Real wall-clock per_step alongside the GPU-pass total, plus the full CPU-side
-            // breakdown including total_ns — pinpoints exactly how much of the wall-clock cost
+            // breakdown including total_ns -- pinpoints exactly how much of the wall-clock cost
             // is NEITHER the CFL scan NOR the measured GPU passes.
             let wall_start = std::time::Instant::now();
             solver.step_frame();
@@ -2805,10 +2805,10 @@ mod gpu_tests {
     }
 
     /// Same scene as `gpu_particle_count_lp_budget_0_1_0_scene`, but with GPU sleep/wake
-    /// enabled (`sleep_threshold`, see gpu_sleep_wake_phase1 memory — opt-in, default off,
+    /// enabled (`sleep_threshold`, see gpu_sleep_wake_phase1 memory -- opt-in, default off,
     /// measured 32-55% faster at 20k particles in its own bench) AND measured AFTER the scene
     /// settles, not right after spawn. Sleep/wake only helps once particles are actually at
-    /// rest — measuring a still-falling block (as the other test does) can't show its real
+    /// rest -- measuring a still-falling block (as the other test does) can't show its real
     /// win. This matches LP's actual common case better: a human standing near mostly-static
     /// terrain, not a block in constant free-fall.
     #[test]
@@ -2896,7 +2896,7 @@ mod gpu_tests {
 
     /// Stress-tests the apply_impulses GPU pass at its hard cap (MAX_GPU_IMPULSES=16 per
     /// frame). Pushes 16 simultaneous radial impulses every frame for 20 frames and asserts
-    /// particles stay finite and bounded — the apply_impulses pass runs once per frame before
+    /// particles stay finite and bounded -- the apply_impulses pass runs once per frame before
     /// any substep, so this checks the GPU-native impulse path under max simultaneous load
     /// (e.g. many creature limbs pushing at once in LP), not just the single-impulse smoke test.
     #[test]
@@ -2934,7 +2934,7 @@ mod gpu_tests {
 
     /// Queries the ACTUAL runtime device limits (not the textbook wgpu::Limits::default()
     /// assumed elsewhere) and computes the real hard ceilings for particle count and grid
-    /// resolution on whatever hardware this runs on. Safe — no buffer creation, just
+    /// resolution on whatever hardware this runs on. Safe -- no buffer creation, just
     /// arithmetic against `adapter.limits()`. Run with `-- --nocapture` to see the numbers.
     #[test]
     fn gpu_runtime_limits_report() {
@@ -2971,7 +2971,7 @@ mod gpu_tests {
         );
 
         // Sanity: LP's stated 500k-particle target must fit under whatever this hardware
-        // actually reports — if this ever fails, LP's budget assumption is unreachable
+        // actually reports -- if this ever fails, LP's budget assumption is unreachable
         // regardless of compute speed, on any hardware reporting limits this low.
         assert!(
             max_particles_by_binding >= 500_000,
@@ -2981,7 +2981,7 @@ mod gpu_tests {
     }
 
     /// Pushes GPU particle count toward the storage-binding ceiling (~1.19M particles at the
-    /// default 128MiB limit) to find the REAL compute wall beyond LP's stated 500k target —
+    /// default 128MiB limit) to find the REAL compute wall beyond LP's stated 500k target --
     /// answering "what happens past the documented budget" with measurement, not guesswork.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- pushes toward the ~1.19M particle storage-binding ceiling, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
@@ -3032,7 +3032,7 @@ mod gpu_tests {
 
     /// Combined LP-realistic worst case: sand terrain + water + creature bodies (viscoelastic
     /// with active-stress fields populated) sharing one grid at LP's actual particle budget,
-    /// all at once — not one axis at a time. This is the integration test that actually answers
+    /// all at once -- not one axis at a time. This is the integration test that actually answers
     /// "does LP's real scene hold together," not just "does each isolated axis scale."
     ///
     /// #[ignore]d 2026-08-08: this scene's own configuration (water eos_stiffness=1.28e5,
@@ -3131,7 +3131,7 @@ mod gpu_tests {
         );
 
         // Radial confinement radii must clear the terrain's actual extent (it spans nearly
-        // the full grid width) — too tight, and corner particles overshoot by tens of cells
+        // the full grid width) -- too tight, and corner particles overshoot by tens of cells
         // at frame 0, causing a violent first-substep correction. SlipBoundary already bounds
         // the domain; these three fields stack on top of it at a safe radius for the stress.
         let mut solver = block_on(GpuSimulation::new(config, all_particles, registry));
@@ -3175,7 +3175,7 @@ mod gpu_tests {
 
     #[test]
     fn gpu_earth_config_gravity_correct() {
-        // g_solver = 9.81 / cell_m — velocity-based: v += g * sub_dt (sub_dt in real seconds)
+        // g_solver = 9.81 / cell_m -- velocity-based: v += g * sub_dt (sub_dt in real seconds)
         let config = SimConfig::earth(64, 0.01, 0.05);
         let expected_g = 9.81f32 / 0.01; // = 981 cells/s²
         assert!(
@@ -3540,7 +3540,7 @@ mod gpu_tests {
         // Same node_pos as the CPU test. debug_fit_normal_main now gathers its own
         // neighbor-expanded, distance-filtered point cloud around node_pos (the same
         // gather_local_points the real resolve_cell pass uses), so no block-index
-        // arithmetic is needed here anymore — see debug_fit_contact_normal_blocking's doc.
+        // arithmetic is needed here anymore -- see debug_fit_contact_normal_blocking's doc.
         let node_pos = Vec2::new(32.0, 10.0);
         let total_points: u32 = solver.contact_point_counts_blocking().iter().sum();
         assert!(
@@ -3622,10 +3622,10 @@ mod gpu_tests {
         );
     }
 
-    /// Multi-field contact (GPU port) — THE real end-to-end acceptance test: does a
+    /// Multi-field contact (GPU port) -- THE real end-to-end acceptance test: does a
     /// particle actually FEEL the resolved contact correction now that G2P routes to
     /// it? Exact same rig as CPU's own `multi_field_contact_produces_real_coulomb_slip_and_stick`
-    /// (`tests/physics_correctness.rs`) — a small block (contact_group=1) resting on a
+    /// (`tests/physics_correctness.rs`) -- a small block (contact_group=1) resting on a
     /// wide floor slab (contact_group=0), settled first, then given a real horizontal
     /// velocity and measured after a short window. At friction=0 it must keep real
     /// speed (free slip); at friction=3 it must decelerate to near the floor's rest
@@ -4232,7 +4232,7 @@ mod gpu_tests {
             solver.last_cpu_timings_ns();
         let accounted = cfl_scan_ns + encode_ns + submit_ns + readback_ns;
         eprintln!(
-            "gpu_profile_contact_passes_at_50k_target: CPU side — cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
+            "gpu_profile_contact_passes_at_50k_target: CPU side -- cfl_scan={:.2}ms encode={:.2}ms submit={:.2}ms readback={:.2}ms TOTAL={:.2}ms unaccounted={:.2}ms",
             cfl_scan_ns / 1.0e6,
             encode_ns / 1.0e6,
             submit_ns / 1.0e6,
@@ -4780,7 +4780,7 @@ mod gpu_tests {
     }
 
     /// Same real diagnostic as `fluids_gpu_boundary_velocity_investigation`,
-    /// applied to `basic_sand_gpu`'s exact scene -- comparing whether a
+    /// applied to `basic_sand_grid_gpu`'s exact scene -- comparing whether a
     /// frictional granular material (Drucker-Prager) settles within the same
     /// window a low-viscosity fluid doesn't, to isolate whether the "some
     /// examples are fine, some aren't" difference is the frictionless GPU
