@@ -1,4 +1,4 @@
-//! Electromagnetic wave and material property math — the Energy half of
+//! Electromagnetic wave and material property math -- the Energy half of
 //! `electromagnetics::`.
 //!
 //! Pure-Rust, no ECS. Ported from `crates/energy/src/electromagnetism/interactions.rs`.
@@ -42,19 +42,27 @@ impl ElectromagneticWave {
         }
     }
 
-    /// E and B field vectors at `position` and `time`.
+    /// E and B fields at `position` and `time`.
     ///
-    /// E is perpendicular to propagation; B is perpendicular to E (in-plane 2D approximation).
+    /// Real fix, 2026-08-21: B used to be built from an in-plane `m_dir`
+    /// vector (rotating `e_dir` a further 90°, which lands ANTIPARALLEL to
+    /// the propagation direction) -- that makes the wave LONGITUDINAL, the
+    /// opposite of this function's own doc claim ("E and B are transverse to
+    /// the propagation direction"). Real fix: in 2D, B is the out-of-plane
+    /// scalar (see `MagneticField`'s own doc), genuinely transverse to a
+    /// propagation direction that only ever lives in the plane -- E, B,
+    /// and the propagation direction are mutually perpendicular exactly as a
+    /// real EM wave requires, once B is allowed to point out of the page
+    /// instead of being forced back into it.
     pub fn get_fields_at(&self, position: Vec2, time: f32) -> (ElectricField, MagneticField) {
         let proj = self.direction.dot(position);
         let phi = self.wave_number * proj - 2.0 * std::f32::consts::PI * self.frequency * time
             + self.phase;
         let sin_p = phi.sin();
         let e_dir = Vec2::new(-self.direction.y, self.direction.x);
-        let m_dir = Vec2::new(-e_dir.y, e_dir.x);
         (
             ElectricField::new(e_dir * (self.electric_amplitude * sin_p), position),
-            MagneticField::new(m_dir * (self.magnetic_amplitude * sin_p), position),
+            MagneticField::new(self.magnetic_amplitude * sin_p, position),
         )
     }
 }
