@@ -8,7 +8,7 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::Particles;
 
-/// No-compression (tension-only) elastic material — the continuum-mechanics dual of
+/// No-compression (tension-only) elastic material -- the continuum-mechanics dual of
 /// no-tension masonry theory, a real, established treatment for cables, membranes,
 /// tendons, and spider silk (unified variational framework for no-tension/no-
 /// compression solids; the classic special case, tension-field theory for wrinkling
@@ -17,28 +17,28 @@ use crate::particle::Particles;
 /// instead forming wrinkles").
 ///
 /// Elastic response: isotropic Hencky (log-strain) elasticity in principal stress
-/// space — the SAME formula `RankineMaterial`/`VonMisesMaterial` use for their own
-/// passive elastic term — but any COMPRESSIVE (negative) principal Kirchhoff stress
+/// space -- the SAME formula `RankineMaterial`/`VonMisesMaterial` use for their own
+/// passive elastic term -- but any COMPRESSIVE (negative) principal Kirchhoff stress
 /// is clamped to zero instead of being resisted, so the material offers zero
 /// resistance to being pushed together along that axis.
 ///
 /// Fully REVERSIBLE, unlike every plasticity model in this engine: a particle that
 /// goes slack under compression regains full tensile stiffness immediately once
-/// stretched back past zero — no permanent damage/hardening state, and
+/// stretched back past zero -- no permanent damage/hardening state, and
 /// `deformation_gradient` is never modified by this material directly (no
 /// `update_particle` override; F advances through the ordinary G2P integration, same
 /// as `NeoHookeanMaterial`/`CorotatedMaterial`). This is a genuinely different kind
 /// of material from Rankine/VonMises/Sand: an asymmetric nonlinear ELASTIC law, not
-/// an irreversible return-mapping plasticity law — belongs alongside `Elastic`/
+/// an irreversible return-mapping plasticity law -- belongs alongside `Elastic`/
 /// `Viscoelastic` in the property taxonomy, not `PlasticityModel`.
 ///
-/// CPU-only for now — a real, disclosed scope limit (this engine's own "CPU
+/// CPU-only for now -- a real, disclosed scope limit (this engine's own "CPU
 /// correctness first, GPU port second" rule): a WGSL SVD-based stress branch is real,
 /// separate follow-up work, not silently skipped.
 ///
 /// Suitable for: spider silk/webs, tendons/ligaments, membranes (wings, fins, drum
-/// skins, inflatable structures — pairs naturally with `Particle::internal_pressure`
-/// for a pressurized membrane), climbing-plant tendrils — any structure that only
+/// skins, inflatable structures -- pairs naturally with `Particle::internal_pressure`
+/// for a pressurized membrane), climbing-plant tendrils -- any structure that only
 /// carries tension.
 #[derive(Debug, Clone, Copy)]
 pub struct NoCompressionMaterial {
@@ -133,7 +133,7 @@ mod tension_compression_tests {
     /// Real, checkable asymmetry: pure uniaxial STRETCH must produce the full
     /// underlying elastic stiffness (same as an ordinary elastic material), pure
     /// uniaxial COMPRESSION of the same magnitude must produce exactly zero stress
-    /// on that axis (goes slack) — the textbook no-compression signature, not a
+    /// on that axis (goes slack) -- the textbook no-compression signature, not a
     /// vibes check.
     #[test]
     fn stretch_gives_full_stiffness_compression_gives_zero() {

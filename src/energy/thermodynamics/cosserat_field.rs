@@ -1,10 +1,10 @@
-//! Cosserat micro-rotation field — the real, grid-level angular-momentum
+//! Cosserat micro-rotation field -- the real, grid-level angular-momentum
 //! channel that closes the loop `matter::materials::granular::cosserat`'s kinematics
 //! module deliberately left open. Same architectural family as
 //! `GranularFluidityField`: a standalone, opt-in, grid-sized scratch field
 //! with its own P2G-scatter → solve → G2P-gather cycle, entirely separate
 //! from the core `Cell`/momentum machinery every material already depends
-//! on — adding this touches ZERO shared code when unconfigured (no scene
+//! on -- adding this touches ZERO shared code when unconfigured (no scene
 //! that never constructs a `CosseratField` sees any difference at all).
 //!
 //! # Real citation
@@ -24,14 +24,14 @@
 //! ```
 //! where `L` is scattered micro-angular-momentum (mass-weighted, mirroring
 //! ordinary P2G momentum scatter), `I_eff` is scattered micro-inertia, and
-//! `τ` is the real coupling torque `2·coupling_modulus·(ω_macro − ω_c)` —
+//! `τ` is the real coupling torque `2·coupling_modulus·(ω_macro − ω_c)` --
 //! the antisymmetric part of the elastic Cosserat stress relation (de Borst
 //! et al. 2022 eq. 36's `(μ+μc)e + μ(e)ᵀ` term is exactly this once split
 //! into symmetric/antisymmetric halves), NOT an invented shortcut.
 //!
 //! Real, disclosed simplifying assumption: grains are treated as
 //! effectively spherical/rounded for the micro-inertia coefficient
-//! (`1/10` — the mass-specific polar moment of inertia of a solid sphere of
+//! (`1/10` -- the mass-specific polar moment of inertia of a solid sphere of
 //! diameter `d`, elementary mechanics, not paper-specific), matching the
 //! same single-scalar "grain diameter" convention `GranularFluidityConfig`
 //! already uses rather than modeling real grain angularity explicitly.
@@ -45,19 +45,19 @@ use crate::{
 /// Real physical parameters for the Cosserat micro-rotation field.
 #[derive(Clone, Copy, Debug)]
 pub struct CosseratConfig {
-    /// Real elastic coupling modulus `alpha` \[Pa\] — see
+    /// Real elastic coupling modulus `alpha` \[Pa\] -- see
     /// `matter::materials::granular::cosserat`'s own doc for the cited relation this
     /// feeds (`m = alpha * l^2 * kappa`, and the coupling torque
     /// `2*alpha*(omega_macro - omega_c)`).
     pub coupling_modulus_pa: f32,
-    /// Real grain diameter `l` \[m\] — same physical quantity
+    /// Real grain diameter `l` \[m\] -- same physical quantity
     /// `GranularFluidityConfig::grain_diameter_m` already uses, not a
     /// separate free parameter.
     pub grain_diameter_m: f32,
     /// Dimensionless micro-inertia shape coefficient. `1/10` (a solid
     /// sphere/disk's real mass-specific polar moment of inertia,
     /// `I = (2/5)*r^2 = (1/10)*d^2`) is the real, disclosed default for
-    /// effectively-rounded grains — a genuine simplifying assumption, not
+    /// effectively-rounded grains -- a genuine simplifying assumption, not
     /// an arbitrary numerical knob.
     pub micro_inertia_coefficient: f32,
 }

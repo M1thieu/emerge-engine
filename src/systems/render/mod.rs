@@ -185,8 +185,8 @@ use pipelines::{
 pub struct Renderer {
     render_pipeline: wgpu::RenderPipeline,
     render_bind_group: wgpu::BindGroup,
-    instance_buffer: wgpu::Buffer, // VERTEX | COPY_DST — drawn as per-instance attributes
-    storage_instances: wgpu::Buffer, // STORAGE | COPY_SRC — compute write target (GPU path)
+    instance_buffer: wgpu::Buffer, // VERTEX | COPY_DST -- drawn as per-instance attributes
+    storage_instances: wgpu::Buffer, // STORAGE | COPY_SRC -- compute write target (GPU path)
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,

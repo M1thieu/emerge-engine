@@ -7,12 +7,12 @@ use crate::materials::{MAX_MIXTURE_PHASES, MixturePhase};
 
 /// N-phase mixture coupling cell (generalizes Tampubolon et al. 2017's 2-phase
 /// Darcy drag -- see `MixturePhase`'s own doc). Only allocated at nodes touched
-/// by at least one mixture-phase particle (via `WithMixturePhase`) — a scene
+/// by at least one mixture-phase particle (via `WithMixturePhase`) -- a scene
 /// that never wraps a material this way never allocates a single one of these.
 ///
 /// `mass`/`momentum` accumulate during P2G exactly like `Cell`'s own fields,
 /// but per phase slot, indexed by `MixturePhase::0` (both ADDITIVE alongside
-/// the ordinary `Cell` scatter, not a replacement — mirrors `ContactCell`'s own
+/// the ordinary `Cell` scatter, not a replacement -- mirrors `ContactCell`'s own
 /// convention). `resolved_v` is filled in by `Grid::resolve_mixture_coupling`
 /// (after `update_velocities` + gravity, same pipeline position as
 /// `resolve_contact`) and is what G2P reads for a phase's particles at nodes
@@ -40,7 +40,7 @@ pub(super) type MixtureCellMap = HashMap<u32, MixtureCell, FxU32BuildHasher>;
 
 impl Grid {
     /// Accumulate mass and momentum for one mixture phase during P2G, additively
-    /// alongside the normal `add_mass_momentum` call for the SAME particle — see
+    /// alongside the normal `add_mass_momentum` call for the SAME particle -- see
     /// `MixtureCell` doc. OOB cell position silently ignored; an out-of-range
     /// `phase` (`>= MAX_MIXTURE_PHASES`) is a real configuration error and
     /// panics via the array index, same as any other programmer mistake.
@@ -71,7 +71,7 @@ impl Grid {
         }
     }
 
-    /// Resolved velocity for one mixture phase at `cell_pos` — valid after
+    /// Resolved velocity for one mixture phase at `cell_pos` -- valid after
     /// `resolve_mixture_coupling()`. Falls back to the ordinary total velocity
     /// when no mixture coupling was ever registered at this node, same
     /// convention as `grip_velocity_at`.
@@ -87,7 +87,7 @@ impl Grid {
 
     /// Resolves N-phase mixture coupling (generalizes Tampubolon et al. 2017's
     /// 2-phase Darcy-style momentum exchange to up to `MAX_MIXTURE_PHASES`
-    /// simultaneously-present phases at a node) at every mixture-active node —
+    /// simultaneously-present phases at a node) at every mixture-active node --
     /// call after `update_velocities()` (needs the gravity-applied total
     /// field), same pipeline position as `resolve_contact`.
     ///
@@ -134,7 +134,7 @@ impl Grid {
     ) {
         const MIN_MASS_FRACTION: f32 = 1.0e-6;
         if drag_coefficient <= 0.0 {
-            // Disabled: every phase just reads the ordinary total velocity —
+            // Disabled: every phase just reads the ordinary total velocity --
             // matches every other opt-in system's "true default is a no-op".
             for &idx in &self.mixture_dirty {
                 let Some(&total) = self.cells.get(&idx) else {

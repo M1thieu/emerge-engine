@@ -2,7 +2,7 @@ use super::{GpuProfiling, GpuSimulation, PROFILE_PASS_LABELS};
 
 impl GpuSimulation {
     /// Turns on per-pass GPU timing for `encode_substep`'s 7 labeled passes. Returns false
-    /// (no-op) if this device wasn't created with `TIMESTAMP_QUERY` support — `new()`
+    /// (no-op) if this device wasn't created with `TIMESTAMP_QUERY` support -- `new()`
     /// requests it opportunistically when the adapter supports it; `with_device()` depends
     /// on whatever device the caller already built. Call once after construction; read
     /// results back with `last_pass_timings_ns()` after stepping a few frames.
@@ -43,7 +43,7 @@ impl GpuSimulation {
     }
 
     /// Reads back the last substep's per-pass GPU timings (label, nanoseconds), in
-    /// `encode_substep`'s pass order. Blocks until the GPU work + readback completes — a
+    /// `encode_substep`'s pass order. Blocks until the GPU work + readback completes -- a
     /// diagnostic call, not for the hot path. Returns None if `enable_profiling()` wasn't
     /// called or wasn't supported on this device.
     pub fn last_pass_timings_ns(&mut self) -> Option<Vec<(&'static str, f32)>> {
@@ -75,7 +75,7 @@ impl GpuSimulation {
     }
 
     /// Builds `ComputePassTimestampWrites` for pass index `i` (in `PROFILE_PASS_LABELS`
-    /// order) if profiling is enabled, else `None` — keeps each pass's descriptor a
+    /// order) if profiling is enabled, else `None` -- keeps each pass's descriptor a
     /// one-liner regardless of whether profiling is active.
     pub(super) fn profile_writes(&self, i: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
         self.profiling

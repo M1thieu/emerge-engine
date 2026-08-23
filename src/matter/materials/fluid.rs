@@ -106,7 +106,7 @@ pub struct NewtonianFluidMaterial {
     pub thermal_viscosity_coeff: f32,
     /// Bulk viscosity ζ (second viscosity, Pa·s in physical units).
     ///
-    /// Adds τ += ζ·(∇·v)·I to Kirchhoff stress — damps compression waves (acoustic damping).
+    /// Adds τ += ζ·(∇·v)·I to Kirchhoff stress -- damps compression waves (acoustic damping).
     /// Physical: Navier-Stokes second viscosity, distinct from shear viscosity µ.
     /// Stokes assumption (ζ=0) holds for dilute ideal gases; real liquids have ζ > 0.
     /// For water: ζ ≈ 3e-3 Pa·s (Dukhin & Goetz 2009). In simulation units set to
@@ -114,12 +114,12 @@ pub struct NewtonianFluidMaterial {
     pub bulk_viscosity: f32,
     /// Surface tension coefficient γ (N/m in physical units).
     ///
-    /// Adds isotropic Kirchhoff stress τ += γ·J·I — continuum surface energy ψ = γ·J.
+    /// Adds isotropic Kirchhoff stress τ += γ·J·I -- continuum surface energy ψ = γ·J.
     /// Reference: Ziran 2020, `SurfaceTension.h` (Chenfanfu Jiang group).
     ///
     /// **Limitation**: curvature-free. Young-Laplace gives Δp = γ·κ (interface curvature κ),
     /// but MPM particles carry no interface normal. This term resists volumetric compression
-    /// isotropically — sufficient for cohesion/droplet stability, not for curvature-driven
+    /// isotropically -- sufficient for cohesion/droplet stability, not for curvature-driven
     /// flow (e.g. Rayleigh-Plateau instability). 0.0 = disabled.
     pub surface_tension_coeff: f32,
     /// Per-step velocity decay: v *= (1 − settling_damping · dt).
@@ -154,7 +154,7 @@ impl NewtonianFluidMaterial {
 
     /// Low-viscosity preset: γ=7, µ=1e-3 Pa·s. Corresponds to water at 20°C.
     ///
-    /// `eos_stiffness` controls incompressibility — higher = stiffer; 1e4 works
+    /// `eos_stiffness` controls incompressibility -- higher = stiffer; 1e4 works
     /// well at emerge's default grid scale. Reference: Becker & Teschner 2007 §4.
     pub fn low_viscosity(rest_density: f32, eos_stiffness: f32) -> Self {
         Self::new(rest_density, 1.0e-3, eos_stiffness, 7.0)
@@ -301,7 +301,7 @@ impl MaterialModel for NewtonianFluidMaterial {
         let strain_dev = sym_strain - Mat2::from_diagonal(Vec2::splat(div_v * 0.5));
         stress += eff_viscosity * strain_dev;
 
-        // Bulk viscosity ζ: τ += ζ·(∇·v)·I — damps longitudinal/acoustic waves.
+        // Bulk viscosity ζ: τ += ζ·(∇·v)·I -- damps longitudinal/acoustic waves.
         // ∇·v ≈ div_v/2 (div_v here is trace of sym_strain = C+Cᵀ = 2D, so ∇·v = div_v/2).
         if self.bulk_viscosity > 0.0 {
             stress += Mat2::from_diagonal(Vec2::splat(self.bulk_viscosity * div_v * 0.5));

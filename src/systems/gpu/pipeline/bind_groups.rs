@@ -8,7 +8,7 @@ use super::SimPipelines;
 
 impl SimPipelines {
     /// Build a bind group for the apply_impulses pass (particles + impulse_params).
-    /// Created on-demand each cursor frame — cheap, no GPU work.
+    /// Created on-demand each cursor frame -- cheap, no GPU work.
     pub fn make_impulse_bind_group(
         &self,
         device: &wgpu::Device,
@@ -31,7 +31,7 @@ impl SimPipelines {
     }
 
     /// Build a bind group for one substep using the given step_params buffer slot.
-    /// Cheap — wgpu bind groups are descriptor tables, not data copies.
+    /// Cheap -- wgpu bind groups are descriptor tables, not data copies.
     pub fn make_bind_group(
         &self,
         device: &wgpu::Device,
@@ -96,11 +96,11 @@ impl SimPipelines {
 
     /// Build the group-1 (contact subsystem) bind group. Unlike `make_bind_group`, this
     /// takes no `step_params` slot and, like every buffer it originally bound, is
-    /// particle-count-independent — `spawn_region` reallocating `buffers.particles`
+    /// particle-count-independent -- `spawn_region` reallocating `buffers.particles`
     /// never invalidates it. One exception since `material_mass` joined this group
     /// (bind-group economy, see its own binding comment): that buffer IS replaced once,
     /// lazily, on first `attach_grid_material_render_gpu` call, so this bind group must
-    /// be rebuilt then too — mirrors `attach_asflip_gpu` rebuilding `resource_bind_group`
+    /// be rebuilt then too -- mirrors `attach_asflip_gpu` rebuilding `resource_bind_group`
     /// for the exact same reason. See the module doc comment on the bind-group-layout
     /// split for why this is a separate group at all.
     pub fn make_contact_bind_group(

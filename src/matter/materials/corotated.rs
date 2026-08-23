@@ -8,7 +8,7 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Corotated linear elasticity.
 ///
 /// Kirchhoff stress: τ = 2µ·h·(F−R)·Fᵀ + λ·h·(J−1)·J·I
-/// R is the rotation from 2D polar decomposition (analytical — no SVD needed in 2D).
+/// R is the rotation from 2D polar decomposition (analytical -- no SVD needed in 2D).
 /// h = particle.hardening_scale (1.0 baseline; snow plasticity scales this up on compression).
 /// Reference: Stomakhin et al. 2013, eq. (5)–(8). Used as the elastic base for snow.
 /// Also the elastic component of Drucker-Prager (Klar et al. 2016).

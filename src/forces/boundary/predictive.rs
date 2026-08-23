@@ -4,7 +4,7 @@ use super::{BoundaryCondition, apply_slip_wall_velocity};
 
 /// Grid-level slip boundary with a tighter inner keep-out zone.
 ///
-/// Identical physics to `SlipBoundary` — no-penetration enforced on grid velocities.
+/// Identical physics to `SlipBoundary` -- no-penetration enforced on grid velocities.
 /// `predictive_wall_min` shrinks the safe zone so fast particles hitting the boundary
 /// layer are caught by `clamp_particle_position` before they can escape. The actual
 /// wall physics is still the grid-level normal-zeroing, not a particle-level correction.

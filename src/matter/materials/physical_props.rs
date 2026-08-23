@@ -1,11 +1,11 @@
-//! Physical property families — the entry point for all material construction.
+//! Physical property families -- the entry point for all material construction.
 //!
 //! Five families cover all continuum matter:
-//! - [`Elastic`]        — pure elastic solid (NeoHookean / Corotated)
-//! - [`Elastoplastic`]  — elastic + plastic yield (snow, granular, ductile, brittle)
-//! - [`Viscoelastic`]   — elastic + viscous damping (Kelvin-Voigt)
-//! - [`Fluid`]          — viscous fluid (Newtonian if no yield, Bingham if yield set)
-//! - [`FluidGranular`]  — fluid-granular blend (EOS pressure + corotated deviatoric + SVD plasticity = mud)
+//! - [`Elastic`]        -- pure elastic solid (NeoHookean / Corotated)
+//! - [`Elastoplastic`]  -- elastic + plastic yield (snow, granular, ductile, brittle)
+//! - [`Viscoelastic`]   -- elastic + viscous damping (Kelvin-Voigt)
+//! - [`Fluid`]          -- viscous fluid (Newtonian if no yield, Bingham if yield set)
+//! - [`FluidGranular`]  -- fluid-granular blend (EOS pressure + corotated deviatoric + SVD plasticity = mud)
 //!
 //! # Usage
 //! ```rust,no_run
@@ -71,7 +71,7 @@ pub struct Elastoplastic {
 pub enum PlasticityModel {
     /// Volumetric snow plasticity (Stomakhin 2013).
     /// Hardening ξ=10, critical compression θ_c=0.025, critical stretch θ_s=0.0075.
-    /// No extra parameters — determined by MPM snow physics.
+    /// No extra parameters -- determined by MPM snow physics.
     Snow,
 
     /// Drucker-Prager cohesionless granular (rate-independent).
@@ -124,11 +124,11 @@ pub struct Viscoelastic {
     pub eta_pa_s: f32,
 }
 
-/// Elastic solid under real internal pre-stress pressure — a "prestressed structure"
+/// Elastic solid under real internal pre-stress pressure -- a "prestressed structure"
 /// (Kirchhoff stress gets an added isotropic `-P·I` term; see `Particle::internal_pressure`
 /// doc for the full mechanism). Real motivating case: turgor pressure, the internal
 /// hydrostatic pressure that does real structural work in plant cells, genuinely
-/// distinct from cell-wall elastic stiffness (Niklas 1992's "hydro-skeleton" theory) —
+/// distinct from cell-wall elastic stiffness (Niklas 1992's "hydro-skeleton" theory) --
 /// but generic, not plant-specific: any internally-pressurized body.
 ///
 /// → `NeoHookeanMaterial` wrapped in `WithPreStress`
@@ -136,14 +136,14 @@ pub struct Viscoelastic {
 pub struct Pressurized {
     pub elastic: Elastic,
     /// Internal pre-stress pressure `[Pa]`. Real, measured range for healthy plant
-    /// cells: 0.2–2.0 MPa (root cells ~0.6 MPa, leaf epidermal cells 1.5–2.0 MPa —
+    /// cells: 0.2–2.0 MPa (root cells ~0.6 MPa, leaf epidermal cells 1.5–2.0 MPa --
     /// Niklas 1992; Wikipedia "Turgor pressure", sourced from real measurements).
     pub internal_pressure_pa: f32,
 }
 
-/// Tension-only (no-compression) elastic solid — real, established continuum theory
+/// Tension-only (no-compression) elastic solid -- real, established continuum theory
 /// for cables, membranes, tendons, spider silk (see `NoCompressionMaterial`'s own doc
-/// for the full citation). Fully reversible, distinct from `Elastoplastic` — this is
+/// for the full citation). Fully reversible, distinct from `Elastoplastic` -- this is
 /// an asymmetric nonlinear ELASTIC law (goes slack under compression, regains full
 /// stiffness under tension with no memory), not an irreversible yield criterion.
 ///
@@ -163,9 +163,9 @@ pub struct NoCompression {
 pub struct FluidGranular {
     /// Rest density `[kg/m³]`
     pub rho_kg_m3: f32,
-    /// Bulk modulus K `[Pa]` — EOS stiffness. Controls compressibility.
+    /// Bulk modulus K `[Pa]` -- EOS stiffness. Controls compressibility.
     pub bulk_modulus_pa: f32,
-    /// Young's modulus E `[Pa]` — elastic shear stiffness. Controls shape-restoring force.
+    /// Young's modulus E `[Pa]` -- elastic shear stiffness. Controls shape-restoring force.
     pub e_pa: f32,
     /// Poisson's ratio ν
     pub nu: f32,
@@ -187,7 +187,7 @@ impl FluidGranular {
     // unsuffixed, parameterized versions unless you specifically want this
     // property family's fixed literature-style defaults.
 
-    /// Saturated loam — yields easily, flows slowly under sustained load.
+    /// Saturated loam -- yields easily, flows slowly under sustained load.
     ///
     /// UPDATED (2026-08-15): the conversion mechanism (`scale_lame`/
     /// `scale_stress`) was already real and verified (2026-07-17 audit).
@@ -220,7 +220,7 @@ impl FluidGranular {
         }
     }
 
-    /// Consolidated clay — stiffer shear, slow plastic creep.
+    /// Consolidated clay -- stiffer shear, slow plastic creep.
     ///
     /// CONFIRMED (2026-08-15): `rho_kg_m3=2000` is above the general loose
     /// clay/fine-silt range, but is realistic for the stiff overconsolidated
@@ -249,7 +249,7 @@ impl FluidGranular {
         }
     }
 
-    /// Cytoplasmic matrix — very soft elastic, near-fluid, large yield surface.
+    /// Cytoplasmic matrix -- very soft elastic, near-fluid, large yield surface.
     ///
     /// CONFIRMED (2026-08-15): real AFM (atomic force microscopy) cell-
     /// mechanics literature reports cell elastic modulus spanning ~100 Pa
@@ -307,17 +307,17 @@ pub trait FromSI<P> {
 }
 
 /// Particle mass (grid units) for a `SpawnRegion` spawning this material at a
-/// given spacing — `rho_kg_m3 * (spacing * dx_meters)^2` for a 2D areal-density
+/// given spacing -- `rho_kg_m3 * (spacing * dx_meters)^2` for a 2D areal-density
 /// particle. Implemented identically by every physical-property family so
 /// `SpawnRegion::mass_from` can stay generic over which material is being spawned.
 pub trait ParticleMass {
     fn particle_mass(&self, spacing: f32, config: &SimConfig) -> f32;
 }
 
-// ── Internal bridging structs (pub(super) — not part of LP API) ──────────────
+// ── Internal bridging structs (pub(super) -- not part of LP API) ──────────────
 //
 // These carry the exact parameters that each material impl's `from_physical` needs.
-// They are constructed inside `.material()` dispatch — callers never see them.
+// They are constructed inside `.material()` dispatch -- callers never see them.
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct GranularProps {
@@ -365,7 +365,7 @@ pub(super) struct BinghamProps {
     pub yield_stress_pa: f32,
 }
 
-// ── Scaling helpers (pub(super) — used by material impls) ─────────────────────
+// ── Scaling helpers (pub(super) -- used by material impls) ─────────────────────
 
 /// Scale SI stress (Pa) to grid units: `p_grid = p_SI · dt² / (ρ · dx²)`.
 #[inline]
@@ -390,14 +390,14 @@ pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f
 mod _ref {
     use super::*;
 
-    // Elastic — E [Pa], ν, ρ [kg/m³]
+    // Elastic -- E [Pa], ν, ρ [kg/m³]
     pub const SOFT_ELASTIC: Elastic = Elastic {
         e_pa: 500.0,
         nu: 0.45,
         rho_kg_m3: 1000.0,
     };
 
-    // Viscoelastic — η [Pa·s]
+    // Viscoelastic -- η [Pa·s]
     pub const SOFT_VISCOELASTIC: Viscoelastic = Viscoelastic {
         elastic: Elastic {
             e_pa: 50_000.0,
@@ -407,7 +407,7 @@ mod _ref {
         eta_pa_s: 10.0,
     };
 
-    // Granular — φ=35°
+    // Granular -- φ=35°
     pub const COHESIONLESS_GRANULAR: Elastoplastic = Elastoplastic {
         elastic: Elastic {
             e_pa: 50.0e6,
@@ -430,7 +430,7 @@ mod _ref {
         model: super::PlasticityModel::Snow,
     };
 
-    // Ductile — σ_Y=30 kPa
+    // Ductile -- σ_Y=30 kPa
     pub const SOFT_DUCTILE: Elastoplastic = Elastoplastic {
         elastic: Elastic {
             e_pa: 1.0e6,
@@ -442,7 +442,7 @@ mod _ref {
         },
     };
 
-    // Brittle — σ_t=10 MPa
+    // Brittle -- σ_t=10 MPa
     pub const STIFF_BRITTLE: Elastoplastic = Elastoplastic {
         elastic: Elastic {
             e_pa: 70.0e9,
@@ -455,7 +455,7 @@ mod _ref {
         },
     };
 
-    // Fluid — Newtonian (no yield)
+    // Fluid -- Newtonian (no yield)
     pub const LOW_VISCOSITY_FLUID: Fluid = Fluid {
         rho_kg_m3: 1000.0,
         eta_pa_s: 0.001,
@@ -463,7 +463,7 @@ mod _ref {
         yield_stress_pa: None,
     };
 
-    // Fluid — Bingham (yield=100 Pa)
+    // Fluid -- Bingham (yield=100 Pa)
     pub const VISCOPLASTIC_FLUID: Fluid = Fluid {
         rho_kg_m3: 1500.0,
         eta_pa_s: 0.5,
@@ -471,7 +471,7 @@ mod _ref {
         yield_stress_pa: Some(100.0),
     };
 
-    /// Verify all reference presets construct successfully — catches API breakage.
+    /// Verify all reference presets construct successfully -- catches API breakage.
     #[test]
     fn all_presets_build() {
         use crate::solver::config::SimConfig;

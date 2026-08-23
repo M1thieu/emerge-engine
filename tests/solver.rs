@@ -372,7 +372,7 @@ fn rankine_softening_reduces_tensile_strength() {
     );
 }
 
-/// Test-only material exposing a fixed `latent_heat()` — everything else (stress,
+/// Test-only material exposing a fixed `latent_heat()` -- everything else (stress,
 /// CFL bound) defaults to Fallback (zero), since these tests only exercise the
 /// `phase_transition`/`add_phase_rule` energy-debit mechanism in isolation, never step().
 #[derive(Debug, Default)]
@@ -430,7 +430,7 @@ fn phase_transition_skips_latent_heat_without_thermal_model() {
     let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
         .with_default_material(Box::new(LatentHeatMaterial(0.0)))
         .with_material(MELTED_ID, Box::new(LatentHeatMaterial(334.0)));
-    // No `.with_thermal(...)` — latent_heat must be a no-op without a thermal model.
+    // No `.with_thermal(...)` -- latent_heat must be a no-op without a thermal model.
 
     for t in solver.particles_mut().temperature.iter_mut() {
         *t = 12.0;
@@ -1043,7 +1043,7 @@ fn radial_confinement_keeps_particles_inside() {
 /// `LinearDragField` (Stokes drag / Rayleigh friction toward a target flow velocity, see its
 /// doc comment for the real physics) has a real, analytically checkable prediction: with no
 /// other forces acting, velocity should relax as `v(t) = target + (v0 - target)*exp(-k*t)`.
-/// Uses a whole block of particles starting at rest (not just one) — since every particle
+/// Uses a whole block of particles starting at rest (not just one) -- since every particle
 /// feels the identical field from identical initial velocity, the block translates rigidly
 /// (zero relative internal motion => zero confounding elastic stress), so the AVERAGE
 /// velocity across the block should still track the single-particle ODE solution closely.
@@ -1125,7 +1125,7 @@ fn pinned_particles_stay_at_zero_velocity_under_force_fields() {
                 p.v,
                 Vec2::ZERO,
                 "pinned particle must stay at EXACTLY v=0 under an active force field, \
-                 not just small — found v={:?}",
+                 not just small -- found v={:?}",
                 p.v
             );
         } else if p.v.length() > 0.1 {
@@ -1586,10 +1586,10 @@ fn mechanically_isolated_system_conducts_heat_with_zero_mechanical_work() {
 /// Real day-night/seasonal cycle composition: `Simulation::thermal_config_mut` (the one
 /// small new accessor added for this) lets a scene externally drive `ThermalConfig::
 /// ambient` over time, and the ALREADY-EXISTING Newton-cooling term (`dT/dt =
-/// -k_c*(T-ambient)`) does the rest — no new physics, just the missing hook to reach it
+/// -k_c*(T-ambient)`) does the rest -- no new physics, just the missing hook to reach it
 /// from outside the solver. Proves both directions: temperature genuinely tracks a "day"
 /// (hot) ambient, then genuinely tracks a "night" (cold) ambient after the SAME accessor
-/// changes it mid-run — a real external oscillation, not a one-shot config value.
+/// changes it mid-run -- a real external oscillation, not a one-shot config value.
 #[test]
 fn thermal_config_mut_drives_day_night_ambient_cycle() {
     let config = SimConfig {
@@ -1974,7 +1974,7 @@ fn gravity_well_cutoff_prevents_far_particles_from_moving() {
         1.0, // strong G
         1.0, // softening
     )
-    .with_cutoff(5.0); // cutoff â€” particles at dist=24 are 4.8Ã— beyond cutoff
+    .with_cutoff(5.0); // cutoff â€” particles at dist=24 are 4.8Ã-- beyond cutoff
     let spawn = SpawnRegion {
         box_center: Vec2::new(56.0, 32.0),
         box_size: IVec2::new(4, 4),
@@ -2219,11 +2219,11 @@ fn split_particles_conserves_mass_and_jitters_apart() {
 }
 
 /// A settled DP-sand pile's friction-hardening variable `q` is the accumulated plastic
-/// shear-strain norm (Klar et al. 2016) — it is expected to keep growing slowly under
+/// shear-strain norm (Klar et al. 2016) -- it is expected to keep growing slowly under
 /// sustained load even once a pile looks visually settled (real critical-state soil
 /// mechanics: friction angle relaxes from peak toward residual as cumulative shear strain
 /// grows). `project()` deliberately matches sparkl/wgsparkl's reference single-pass return
-/// mapping with no self-consistency corrector (see [[sand.rs]] doc comment) — q is not meant
+/// mapping with no self-consistency corrector (see [[sand.rs]] doc comment) -- q is not meant
 /// to hit an exact fixed point. This test only verifies q stays bounded by `q_max` and finite,
 /// not that it stops moving.
 #[test]
@@ -2250,7 +2250,7 @@ fn sand_q_stays_bounded_once_settled() {
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
 
     // Settle well past the point the original diagnostic confirmed visible creep (frame 780
-    // onward) — run to frame 1000 first (already well-settled by then), sample, then run much
+    // onward) -- run to frame 1000 first (already well-settled by then), sample, then run much
     // further (matching the original 780-7500 window that showed real growth) and sample again.
     solver.step_n(7500);
 

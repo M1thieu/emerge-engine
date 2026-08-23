@@ -1,12 +1,12 @@
 //! Energy domain: how it flows and transforms.
 //!
-//! `thermodynamics` — `ThermalDiffusion` (Fourier heat), `ScalarDiffusionField`
+//! `thermodynamics` -- `ThermalDiffusion` (Fourier heat), `ScalarDiffusionField`
 //! (generic reaction-diffusion: pheromone, nutrients, morphogen). `acoustics`
-//! [feature = "experimental"] — `WaveEquation2D`, pressure-wave propagation.
-//! `electromagnetics` [feature = "experimental"] — `ElectromagneticWave`,
+//! [feature = "experimental"] -- `WaveEquation2D`, pressure-wave propagation.
+//! `electromagnetics` [feature = "experimental"] -- `ElectromagneticWave`,
 //! optical `MaterialProperties` (refractive index, permittivity/permeability);
 //! the point-charge force-application half lives in `forces::electromagnetics`
-//! instead. `orbital` [feature = "experimental"] — real Earth rotation +
+//! instead. `orbital` [feature = "experimental"] -- real Earth rotation +
 //! axial-tilt-driven sun direction (`OrbitalClock`), the real cause of a
 //! day/night + seasonal cycle, first real step toward replacing the existing
 //! arbitrary thermal day/night oscillation.

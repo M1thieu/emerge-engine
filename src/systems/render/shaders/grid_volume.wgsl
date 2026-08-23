@@ -1,4 +1,4 @@
-// MPM-native grid-volume rendering — samples the solver's own P2G mass field
+// MPM-native grid-volume rendering -- samples the solver's own P2G mass field
 // directly instead of drawing one instanced splat per particle, so adjacent
 // cells blend into one continuous shape instead of a cloud of discrete dots.
 //
@@ -279,7 +279,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // divide-by-near-zero in sparse/edge cells where both values are tiny.
     let avg_temp = weighted_temp / max(mass, 1.0e-4);
 
-    // Gate visibility on the NEAREST cell's mass, not the bilinear-blended value —
+    // Gate visibility on the NEAREST cell's mass, not the bilinear-blended value --
     // the blend is nonzero up to a full cell beyond the nearest occupied cell, which
     // would overshoot true particle extent no matter how high mass_floor is raised.
     // Bilinear mass is still used for interior shading below.
@@ -331,7 +331,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // falloff at the shape's own edge instead of a hard per-particle silhouette.
     //
     // Color depth is floored at EDGE_COLOR_REFERENCE_DEPTH, separately from the
-    // alpha ramp below which still uses the true raw mass — without this split,
+    // alpha ramp below which still uses the true raw mass -- without this split,
     // the thin edge-transition band (where mass -> mass_floor) renders as a
     // near-white halo before reaching full alpha.
     //

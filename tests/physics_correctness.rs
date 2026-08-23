@@ -354,7 +354,7 @@ fn sand_tension_cutoff_removes_tensile_stress() {
     p.initial_volume = 1.0;
     p.volume = 1.0;
     p.density = 1.0;
-    // Pure extension: F = diag(1.5, 1.5) â€” volume 2.25Ã—, tensile state
+    // Pure extension: F = diag(1.5, 1.5) â€” volume 2.25Ã--, tensile state
     p.deformation_gradient = Mat2::from_cols(Vec2::new(1.5, 0.0), Vec2::new(0.0, 1.5));
     p.velocity_gradient = Mat2::ZERO;
 
@@ -481,7 +481,7 @@ fn sand_stress_symmetric() {
 
 // â”€â”€â”€ SVD CORRECTNESS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Our analytical 2Ã—2 SVD must satisfy F = UÂ·diag(Ïƒ)Â·Váµ€ and U,V orthogonal.
+/// Our analytical 2Ã--2 SVD must satisfy F = UÂ·diag(Ïƒ)Â·Váµ€ and U,V orthogonal.
 /// This is tested internally in mechanics/svd.rs, but we verify the public path
 /// through StomakhinMaterial.update_particle which uses svd2().
 #[test]
@@ -730,7 +730,7 @@ fn large_initial_stretch_corotated_shows_real_elastic_recovery() {
 // â”€â”€â”€ CFL STABILITY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Adaptive substep must never produce a sub_dt that violates particle CFL.
-/// Proxy: particle speed Ã— sub_dt â‰¤ 1 cell (with CFL coeff).
+/// Proxy: particle speed Ã-- sub_dt â‰¤ 1 cell (with CFL coeff).
 /// We verify this by checking velocities never exceed the grid/dt threshold.
 #[test]
 fn adaptive_substep_keeps_velocities_bounded() {
@@ -1023,7 +1023,7 @@ fn scalar_diffusion_decay_reduces_total() {
 
 // â”€â”€â”€ MATERIAL RATE CONSISTENCY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Half-step Ã— 2 must be approximately equivalent to one full step.
+/// Half-step Ã-- 2 must be approximately equivalent to one full step.
 /// This tests that material update is smooth/continuous (not discontinuous jumps).
 #[test]
 fn snow_half_step_consistency() {
@@ -1056,7 +1056,7 @@ fn snow_half_step_consistency() {
     // J should be close (within 1% â€” subcycling plasticity has small discrepancies)
     assert!(
         (j_full - j_half).abs() < 0.01,
-        "snow: full-step J={j_full:.6} vs halfÃ—2 J={j_half:.6} â€” too different"
+        "snow: full-step J={j_full:.6} vs halfÃ--2 J={j_half:.6} â€” too different"
     );
 }
 
@@ -2537,7 +2537,7 @@ fn neohookean_negative_thermal_expansion_softens_stress() {
     p.initial_volume = 1.0;
     p.volume = 1.0;
     p.density = 1.0;
-    // Same moderate shear/stretch deformation for both — only temperature differs.
+    // Same moderate shear/stretch deformation for both -- only temperature differs.
     p.deformation_gradient = Mat2::from_cols(Vec2::new(1.2, 0.1), Vec2::new(0.15, 0.9));
     mat.init_particle(&mut p);
 
@@ -2555,7 +2555,7 @@ fn neohookean_negative_thermal_expansion_softens_stress() {
          deformation): cold={norm_cold:.4} hot={norm_hot:.4}"
     );
 
-    // Sanity: thermal_expansion=0.0 (the default) must be completely temperature-independent —
+    // Sanity: thermal_expansion=0.0 (the default) must be completely temperature-independent --
     // this is the "zero behavior change for anything that doesn't opt in" guarantee.
     let neutral = NeoHookeanMaterial::new(100.0, 200.0);
     let mut p_neutral = p;

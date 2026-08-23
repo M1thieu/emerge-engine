@@ -1,18 +1,18 @@
 //! N-body gravity via Barnes-Hut quadtree.
 //!
-//! For discrete macro-scale sources (stars, planets) use `GravityWellField` — it's O(sources)
+//! For discrete macro-scale sources (stars, planets) use `GravityWellField` -- it's O(sources)
 //! per particle and simpler. Use `NBodyGravityField` when MPM particles themselves gravitate
-//! each other (planetary terrain, accretion disks) — Barnes-Hut reduces this from O(N²) to
+//! each other (planetary terrain, accretion disks) -- Barnes-Hut reduces this from O(N²) to
 //! O(N log N) per substep at the cost of one tree rebuild.
 //!
 //! # Physics
 //! Plummer-softened gravity: **a = G·M·r̂ / (|r|² + ε²)^(3/2)**
 //!
 //! Barnes-Hut approximation: treat a cluster of bodies as a single body at their
-//! center of mass when the cluster is "far enough" away — width/distance < θ (theta).
+//! center of mass when the cluster is "far enough" away -- width/distance < θ (theta).
 //! θ = 0.5 is a common Barnes-Hut trade-off value in practice (e.g. GADGET-2's
 //! default region uses values in this neighborhood, Springel 2005, MNRAS
-//! 364:1105 — not independently confirmed as a specific universal default
+//! 364:1105 -- not independently confirmed as a specific universal default
 //! from that paper itself); lower is more accurate, higher is faster.
 //!
 //! # Reference
@@ -28,7 +28,7 @@ use crate::particle::Particles;
 // These control tree quality vs. build cost. Both are configurable via the
 // builder methods on NBodyGravityField.
 
-/// Default maximum tree depth. 8 levels → 4^8 = 65536 leaf nodes — fine for up to ~100k bodies.
+/// Default maximum tree depth. 8 levels → 4^8 = 65536 leaf nodes -- fine for up to ~100k bodies.
 const DEFAULT_MAX_DEPTH: usize = 8;
 
 /// Default maximum bodies per leaf node before the node is subdivided.
@@ -107,11 +107,11 @@ impl MassProps {
 }
 
 /// Quadrupole moment tensor (Hernquist 1987; Binney & Tremaine, *Galactic Dynamics*
-/// §2.5) — a real second-order correction on top of monopole-only Barnes-Hut, not a
+/// §2.5) -- a real second-order correction on top of monopole-only Barnes-Hut, not a
 /// heuristic. All bodies/field points live in this engine's z=0 plane, so the true 3D
 /// trace-free quadrupole tensor Q_ij = Σ m_k(3·x_k,i·x_k,j − δ_ij·|x_k|²) reduces to a
 /// symmetric 2×2 (Q_zx=Q_zy=0 exactly when every x_k,z=0, so it exerts zero out-of-plane
-/// force on an in-plane field point — Q_zz is never needed and isn't stored).
+/// force on an in-plane field point -- Q_zz is never needed and isn't stored).
 #[derive(Clone, Debug, Default)]
 struct QuadProps {
     qxx: f32,
@@ -124,9 +124,9 @@ impl QuadProps {
     /// center of mass, or a point mass's trivially-zero self-quadrupole) into `self`
     /// (about a different origin, `offset` away). Real theorem, not an approximation:
     /// Q_ij(new origin) = Q_ij(child's own COM) + mass·(3·offset_i·offset_j −
-    /// δ_ij·|offset|²) — the cross term Σm_k(x_k−child_com) vanishes exactly because
+    /// δ_ij·|offset|²) -- the cross term Σm_k(x_k−child_com) vanishes exactly because
     /// child_com IS that child's own center of mass (derived directly from the
-    /// definition, not copied from a table — verified against the parallel-axis
+    /// definition, not copied from a table -- verified against the parallel-axis
     /// theorem for moment of inertia, which this specializes to for a spherically
     /// symmetric child).
     fn add_shifted(&mut self, child: &QuadProps, mass: f32, offset: Vec2) {
@@ -163,7 +163,7 @@ impl Node {
     }
 
     /// Post-order pass computing each node's quadrupole tensor about its OWN final
-    /// center of mass — must run only after every `insert()` for the tree is done
+    /// center of mass -- must run only after every `insert()` for the tree is done
     /// (unlike `mass`, which is correct incrementally, `center_of_mass` shifts with
     /// every insert, so a tensor computed relative to it can't be updated online the
     /// same way; real Barnes-Hut tree codes compute multipole moments bottom-up in a
@@ -190,7 +190,7 @@ impl Node {
 
     fn is_far_enough(&self, pos: Vec2, theta: f32, softening: f32) -> bool {
         let dist = (pos - self.aabb.center).length();
-        // Skip Barnes-Hut approximation if we're inside or touching the softening radius —
+        // Skip Barnes-Hut approximation if we're inside or touching the softening radius --
         // at these distances the multipole expansion is inaccurate.
         if dist < softening || self.mass.total_mass <= 0.0 {
             return false;
@@ -363,7 +363,7 @@ impl Quadtree {
 ///
 /// # When to use
 /// - Particles gravitate each other (accretion, planetary terrain at LP planetary scale).
-/// - Use `GravityWellField` instead for fixed point-mass sources — much cheaper.
+/// - Use `GravityWellField` instead for fixed point-mass sources -- much cheaper.
 ///
 /// # Parameters
 /// - `gravitational_constant`: G in simulation units. Tune to your scale.
@@ -384,7 +384,7 @@ pub struct NBodyGravityField {
     /// Smaller = finer tree (more accuracy, slower build). Default: `DEFAULT_MAX_BODIES_PER_NODE` (4).
     pub max_bodies_per_node: usize,
 
-    // Internal — rebuilt each substep by prepare().
+    // Internal -- rebuilt each substep by prepare().
     tree: Option<Quadtree>,
     /// Snapshot of (particle_index, position, mass) used to build the tree.
     /// Filtered to particles with positive mass only.
@@ -441,7 +441,7 @@ impl Field for NBodyGravityField {
 }
 
 /// Orbital-mechanics helpers for placing bodies in stable orbits under
-/// [`NBodyGravityField`]. All take `g` explicitly — pass the same `gravitational_constant`
+/// [`NBodyGravityField`]. All take `g` explicitly -- pass the same `gravitational_constant`
 /// you gave the field. Units are simulation units (grid cells, cells/s).
 ///
 /// Use these to seed initial velocities so spawned bodies orbit rather than fall in.

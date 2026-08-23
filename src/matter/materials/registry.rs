@@ -7,13 +7,13 @@ use crate::materials::{
     StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial,
 };
 
-/// Maximum number of material slots — matches `MAX_MATERIALS` in WGSL shaders.
+/// Maximum number of material slots -- matches `MAX_MATERIALS` in WGSL shaders.
 /// The GPU uniform buffer holds exactly this many `MaterialParams` entries.
 /// CPU accepts any count up to this limit; exceeding it panics to catch silent GPU truncation.
 pub const MAX_MATERIAL_SLOTS: usize = 64;
 
 /// A by-value copy of a registered material's concrete type, matched via
-/// `MaterialModel::as_any` downcasting at registration time — see that
+/// `MaterialModel::as_any` downcasting at registration time -- see that
 /// method's doc for why this exists. `Unknown` covers every wrapper
 /// (`WithMixturePhase` etc.) and any external (e.g. LP-side) material: those
 /// keep using the `Box<dyn MaterialModel>` vtable exactly as before, so this
@@ -144,12 +144,12 @@ impl MaterialDispatch {
 }
 
 /// Maps material IDs to constitutive models.
-/// IDs must be contiguous starting at 0 — index 0 is the default/fallback.
+/// IDs must be contiguous starting at 0 -- index 0 is the default/fallback.
 /// The GPU path binds this as a flat `array<MaterialParams>` indexed by material_id.
 #[derive(Debug)]
 pub struct MaterialRegistry {
     materials: Vec<Box<dyn MaterialModel>>,
-    // Parallel to `materials` — see `MaterialDispatch`'s own doc.
+    // Parallel to `materials` -- see `MaterialDispatch`'s own doc.
     dispatch: Vec<MaterialDispatch>,
 }
 
@@ -164,15 +164,15 @@ impl MaterialRegistry {
 
     /// Set material at `material_id`, replacing it if already registered.
     ///
-    /// For new IDs, insertion must still be contiguous (0, 1, 2…) — you cannot
+    /// For new IDs, insertion must still be contiguous (0, 1, 2…) -- you cannot
     /// skip slots. Replacing an existing ID is always allowed (idempotent update).
     ///
-    /// Panics if `material_id >= MAX_MATERIAL_SLOTS` — GPU uniform buffer is fixed-size.
+    /// Panics if `material_id >= MAX_MATERIAL_SLOTS` -- GPU uniform buffer is fixed-size.
     pub fn insert(&mut self, material_id: u32, material: Box<dyn MaterialModel>) {
         let idx = material_id as usize;
         assert!(
             idx < MAX_MATERIAL_SLOTS,
-            "material_id {material_id} exceeds GPU limit of {MAX_MATERIAL_SLOTS} — \
+            "material_id {material_id} exceeds GPU limit of {MAX_MATERIAL_SLOTS} -- \
              increase MAX_MATERIAL_SLOTS in material_registry.rs and WGSL shaders together"
         );
         let dispatch = MaterialDispatch::from_model(material.as_ref());

@@ -1,4 +1,4 @@
-// Grid update — momentum normalization, gravity, force fields, boundary enforcement.
+// Grid update -- momentum normalization, gravity, force fields, boundary enforcement.
 // Runs between P2G and G2P.
 //
 // GPU sparse grid Phase 2: dispatch one workgroup per active-block SLOT, same pattern as
@@ -39,7 +39,7 @@ struct ForceFieldsParams {
     entries: array<ForceFieldEntry, 16>,
 }
 
-// ASFLIP (GPU port, Fei et al. 2021) — see GpuAsflipParams' own Rust doc.
+// ASFLIP (GPU port, Fei et al. 2021) -- see GpuAsflipParams' own Rust doc.
 struct AsflipParams {
     blend:   f32,
     enabled: u32,
@@ -56,11 +56,11 @@ const FIELD_COULOMB:      u32 = 2u;
 override MAX_FORCE_FIELDS: u32;
 const FF_NUM_FLOOR:       f32 = 1e-10;
 
-// override, not a hardcoded literal — must match particle_sort.wgsl's NUM_BLOCKS_PER_DIM
+// override, not a hardcoded literal -- must match particle_sort.wgsl's NUM_BLOCKS_PER_DIM
 // exactly, single Rust-side source of truth (src/gpu/mod.rs step_params module). Same
 // convention as grid_clear.wgsl.
 override NUM_BLOCKS_PER_DIM: u32;
-const NUM_BLOCKS: u32 = 256u; // NUM_BLOCKS_PER_DIM² — array sizes can't be override-derived
+const NUM_BLOCKS: u32 = 256u; // NUM_BLOCKS_PER_DIM² -- array sizes can't be override-derived
 const BLOCK_THREADS_PER_DIM: u32 = 16u;
 
 @group(0) @binding(1)  var<storage, read_write> grid_int:               array<i32>;
@@ -70,12 +70,12 @@ const BLOCK_THREADS_PER_DIM: u32 = 16u;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
 @group(0) @binding(11) var<storage, read_write> active_block_count_prev: u32;
-// Multi-field contact (GPU port) — raw-int view of grip_grid, same fixed-point atomic
+// Multi-field contact (GPU port) -- raw-int view of grip_grid, same fixed-point atomic
 // convention as `grid_int` above. Must be decoded (fixed-point → f32, bitcast back)
 // alongside the main grid's own decode below, or a raw reader (e.g. a readback) sees
 // the still-fixed-point integer bit pattern reinterpreted as a nonsensical near-zero float.
 @group(1) @binding(12) var<storage, read_write> grip_grid_int:          array<i32>;
-// ASFLIP (GPU port) — shares group 3 with resource regrowth, see pipeline.rs's module
+// ASFLIP (GPU port) -- shares group 3 with resource regrowth, see pipeline.rs's module
 // doc comment for why (WebGPU's 4-bind-group baseline is already fully used).
 @group(3) @binding(28) var<uniform>             asflip_params:           AsflipParams;
 @group(3) @binding(29) var<storage, read_write> asflip_snapshot:         array<vec2<f32>>;
@@ -88,7 +88,7 @@ fn force_switch(dist: f32, cutoff: f32, switch_on: f32) -> f32 {
     return t * t * (3.0 - 2.0 * t);
 }
 
-// Unchanged from the pre-Phase-2 version — one cell's worth of momentum normalization,
+// Unchanged from the pre-Phase-2 version -- one cell's worth of momentum normalization,
 // gravity, force fields, boundary enforcement, and CFL clamp. Only the CALLER (which cells
 // get visited) changed.
 fn update_cell(cx: u32, cy: u32, res: u32) {
@@ -97,7 +97,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     let mass  = f32(grid_int[base4 + 2u]) / MASS_ATOMIC_SCALE;
     grid_int[base4 + 2u] = bitcast<i32>(mass);
 
-    // Multi-field contact (GPU port, first slice) — same fixed-point decode for the
+    // Multi-field contact (GPU port, first slice) -- same fixed-point decode for the
     // grip field, but WITHOUT gravity/boundary/CFL (those apply to the resolved grip
     // velocity later, in a future resolve_contact pass, exactly matching CPU's own
     // `resolve_contact`: `v_grip = grip_momentum/grip_mass + gravity*dt` is computed
@@ -147,7 +147,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
 
     vel += step_params.gravity * step_params.dt;
 
-    // Apply cursor force fields in grid space (same substep as position advance — no lag).
+    // Apply cursor force fields in grid space (same substep as position advance -- no lag).
     if force_fields.count > 0u {
         let cell_pos = vec2<f32>(f32(cx), f32(cy)) + vec2<f32>(CELL_CENTER_OFFSET);
         for (var fi: u32 = 0u; fi < force_fields.count && fi < MAX_FORCE_FIELDS; fi++) {
@@ -199,7 +199,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     if cy < bt          && vel.y < 0.0 { vel.y = 0.0; }
     if cy >= res - bt   && vel.y > 0.0 { vel.y = 0.0; }
 
-    // CFL clamp before G2P — bounds both particle velocity AND affine matrix C at the source.
+    // CFL clamp before G2P -- bounds both particle velocity AND affine matrix C at the source.
     let spd = length(vel);
     if spd > step_params.vel_limit { vel *= step_params.vel_limit / spd; }
 
@@ -208,10 +208,10 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     grid_int[base4 + 1u] = bitcast<i32>(vel.y);
 }
 
-// Dispatch: (2 * NUM_BLOCKS, 1, 1) workgroups, every frame, fixed — identical convention to
+// Dispatch: (2 * NUM_BLOCKS, 1, 1) workgroups, every frame, fixed -- identical convention to
 // grid_clear_main. workgroup_id.x is a SLOT: slots 0..NUM_BLOCKS index THIS substep's
 // active_block_ids, slots NUM_BLOCKS..2*NUM_BLOCKS index active_block_ids_prev (last
-// substep's list) — the same one-substep grace period grid_clear uses, needed here for the
+// substep's list) -- the same one-substep grace period grid_clear uses, needed here for the
 // same reason: a block that just stopped being active still needs ITS cells' velocity
 // written consistently with what grid_clear just zeroed them to (an empty cell must still
 // get the "gravity for stray particles" treatment if some nearby active particle's G2P
@@ -231,10 +231,10 @@ fn grid_update_main(
         block = active_block_ids_prev[slot];
         // Unlike grid_clear (whose write is always the same constant zero, so two
         // workgroups racing on it are harmless), grid_update computes each cell's velocity
-        // via several read-modify-write steps — two workgroups doing that concurrently on
+        // via several read-modify-write steps -- two workgroups doing that concurrently on
         // the same non-atomic `grid_int` cells is a genuine data race. A block active BOTH
         // this substep and last substep appears in BOTH lists, so skip it here if it's
-        // already in the CURRENT list — its own current-list workgroup already handles it;
+        // already in the CURRENT list -- its own current-list workgroup already handles it;
         // only a block PURELY in the grace-period list (deactivated this substep) needs
         // this branch.
         let current_count = atomicLoad(&active_block_count);

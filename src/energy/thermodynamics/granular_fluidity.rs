@@ -1,4 +1,4 @@
-//! Nonlocal Granular Fluidity (NGF) field — lets granular flow "cooperate"
+//! Nonlocal Granular Fluidity (NGF) field -- lets granular flow "cooperate"
 //! spatially instead of every point deciding to yield in total local
 //! isolation. Real, published mechanism (Kamrin & Koval, PRL 2012; Henann &
 //! Kamrin, several follow-ups); the MPM-specific numerical scheme below
@@ -10,7 +10,7 @@
 //! # Physics
 //! `g` (granular fluidity) relates plastic shear strain rate to the stress
 //! ratio: `γ̇ = g·μ`. Governed by (Henann & Kamrin 2014, arXiv:1408.5205,
-//! eq. 6 — the dynamical form, verified via `pdftotext` against the real
+//! eq. 6 -- the dynamical form, verified via `pdftotext` against the real
 //! PDF, not recalled from memory):
 //! ```text
 //! t0 · ∂g/∂t = A²d²·∇²g − (μs−μ)·g − b·√(P/ρs)·d·g·|g|
@@ -21,12 +21,12 @@
 //! `MuIRheologyMaterial`'s own `b = (μ2−μs)/I0`).
 //!
 //! # Numerical scheme
-//! Explicit finite-difference — matches Haeri & Skonieczny's own verified
+//! Explicit finite-difference -- matches Haeri & Skonieczny's own verified
 //! choice, not an invented shortcut. Same P2G→normalize→Laplacian→G2P shape
 //! as [`super::scalar_field::ScalarDiffusionField`]/[`super::diffusion::ThermalDiffusion`]
 //! (reuses the shared [`super::stencil::laplacian_step`]), plus a real reaction
 //! step for the two extra terms above. Real, quoted stability bound from
-//! that same paper: `Δt < Δx²·t0 / (2·A²·d²)` — unlike `ScalarDiffusionField`'s
+//! that same paper: `Δt < Δx²·t0 / (2·A²·d²)` -- unlike `ScalarDiffusionField`'s
 //! bound (only ever documented, never enforced, since thermal diffusivity is
 //! tiny relative to MPM's own elastic-wave CFL), this one is plausibly
 //! binding and is exposed via [`GranularFluidityField::stability_dt`] for
@@ -35,7 +35,7 @@
 //! # `g` is grid-only state, not a particle field
 //! Unlike temperature/pheromone, `g` has no natural per-particle home:
 //! `Particle` is fixed at exactly 128 bytes with no spare padding
-//! (`src/matter/particle/mod.rs`). This matches the real physics anyway —
+//! (`src/matter/particle/mod.rs`). This matches the real physics anyway --
 //! nonlocal fluidity is fundamentally a spatial/grid quantity, not a
 //! per-particle property. `g` therefore persists as this struct's own grid
 //! state between calls to [`GranularFluidityField::apply`], and is
@@ -46,7 +46,7 @@
 //! Pressure `P` and stress ratio `μ` are computed fresh each substep from a
 //! particle's own `deformation_gradient`, reusing the exact same
 //! Hencky-trace formula `MuIRheologyMaterial::update_particle`
-//! (`src/matter/materials/sand_mui.rs`) already uses — real, cited reuse,
+//! (`src/matter/materials/sand_mui.rs`) already uses -- real, cited reuse,
 //! not a new formula invented here. The caller supplies
 //! `pressure_and_ratio: fn(&Particle) -> (f32, f32)` since only the coupled
 //! material knows its own elastic Lamé parameters.
@@ -58,15 +58,15 @@ use crate::{grid::kernel::quadratic_weights, particle::Particles};
 /// Real, physical parameters for the NGF PDE above.
 #[derive(Clone, Copy, Debug)]
 pub struct GranularFluidityConfig {
-    /// Static friction coefficient μs (dimensionless) — the same real value
+    /// Static friction coefficient μs (dimensionless) -- the same real value
     /// as the coupled material's own `tan(friction_angle)`.
     pub mu_s: f32,
-    /// Real grain diameter `d` \[m\] — see e.g.
+    /// Real grain diameter `d` \[m\] -- see e.g.
     /// `DruckerPragerMaterial::GRAIN_DIAMETER_M`.
     pub grain_diameter_m: f32,
     /// Grain density ρs \[kg/m³\].
     pub grain_density_kg_m3: f32,
-    /// Nonlocal amplitude `A` (dimensionless) — real, cited value 0.48
+    /// Nonlocal amplitude `A` (dimensionless) -- real, cited value 0.48
     /// (Henann & Kamrin 2013 glass beads; independently reconfirmed for
     /// real sand by Haeri & Skonieczny 2022, same value).
     pub nonlocal_amplitude: f32,
@@ -113,10 +113,10 @@ pub struct GranularFluidityField {
     pub pressure_and_ratio: fn(&crate::particle::Particle) -> (f32, f32),
 
     grid_res: usize,
-    grid_mass: Vec<f32>, // Σ(w·mass)              — cleared each step
-    grid_p: Vec<f32>,    // scattered pressure       — cleared each step
-    grid_mu: Vec<f32>,   // scattered stress ratio   — cleared each step
-    grid_g: Vec<f32>,    // persistent PDE state — NOT cleared between steps
+    grid_mass: Vec<f32>, // Σ(w·mass)              -- cleared each step
+    grid_p: Vec<f32>,    // scattered pressure       -- cleared each step
+    grid_mu: Vec<f32>,   // scattered stress ratio   -- cleared each step
+    grid_g: Vec<f32>,    // persistent PDE state -- NOT cleared between steps
     grid_work: Vec<f32>, // scratch: diffusion/reaction output before it replaces grid_g
 }
 
@@ -144,14 +144,14 @@ impl GranularFluidityField {
     /// pressure/stress-ratio → normalize → diffuse (shared stencil) →
     /// react (the two extra NGF terms, explicit Euler) → G2P-gather `g`.
     ///
-    /// `sub_dt` must respect [`GranularFluidityConfig::stability_dt`] —
+    /// `sub_dt` must respect [`GranularFluidityConfig::stability_dt`] --
     /// callers are responsible for folding that bound into their own
     /// adaptive substep choice (this field does not clamp `sub_dt` itself,
     /// matching how `ScalarDiffusionField`'s bound is also caller-enforced).
     ///
     /// `dx_meters`: real physical grid cell size (`SimConfig::dx_meters`).
     /// [`super::stencil::laplacian_step`]'s 4-neighbor-minus-center sum is a
-    /// bare grid-INDEX-space finite difference (no implicit cell size) — it
+    /// bare grid-INDEX-space finite difference (no implicit cell size) -- it
     /// must be scaled by `1/dx_meters²` to become the real `∇²g` the PDE
     /// actually calls for, exactly the convention `ThermalConfig::alpha_grid`
     /// already documents ("Folding dx² in keeps the Laplacian formula
@@ -160,7 +160,7 @@ impl GranularFluidityField {
     /// dx-normalization: without it, the diffusion term's magnitude doesn't
     /// depend on the real cell size at all, so refining the grid (same `A`,
     /// `d`, `t0`) changes how many REAL METERS the same "diffusivity_dt"
-    /// spreads `g` per step — the direct cause of this module's own
+    /// spreads `g` per step -- the direct cause of this module's own
     /// resolution-dependence bug (see `sand.rs`'s `ngf_lajeunesse_runout_
     /// resolution_independence` test history).
     pub fn apply(&mut self, particles: &Particles, sub_dt: f32, dx_meters: f32, out: &mut [f32]) {
@@ -295,7 +295,7 @@ impl GranularFluidityField {
 
         self.grid_g.copy_from_slice(&self.grid_work);
 
-        // --- G2P: gather g back to particles (transient — not stored) ---
+        // --- G2P: gather g back to particles (transient -- not stored) ---
         for pi in 0..particles.len().min(out.len()) {
             let p = particles.get(pi);
             let w = quadratic_weights(p.x);

@@ -6,16 +6,16 @@ use crate::{grid::Grid, grid::kernel::quadratic_weights, particle::Particles};
 
 /// Export the mass-density field as a flat `grid_res × grid_res` buffer.
 ///
-/// Each cell value is Σ(w_ij · mass_j) — the same mass accumulation used internally
+/// Each cell value is Σ(w_ij · mass_j) -- the same mass accumulation used internally
 /// by P2G. Values are NOT normalized by cell volume; callers can divide by
 /// `grid_cell_size²` if physical units are needed.
 ///
-/// # Use case — LP metaball surface rendering
+/// # Use case -- LP metaball surface rendering
 /// Call once per render frame (not per substep) after `solver.step()`.
 /// Upload the result to a `wgpu::Texture` and threshold in a fragment shader
 /// to get a particle density surface.
 ///
-/// Layout: column-major, index = x * grid_res + y — matches mechanics grid.
+/// Layout: column-major, index = x * grid_res + y -- matches mechanics grid.
 pub fn compute_density_grid(particles: &Particles, grid_res: usize) -> Vec<f32> {
     let mut buf = vec![0.0f32; grid_res * grid_res];
     let res = grid_res as i32;
@@ -94,9 +94,9 @@ pub fn estimate_particle_volumes(
 ///
 /// Scatters only particles whose positions fall within the AABB of the new group
 /// expanded by 3 grid cells (the quadratic B-spline influence radius). All other
-/// active particles are ignored — their density contribution to the new group is zero.
+/// active particles are ignored -- their density contribution to the new group is zero.
 ///
-/// O(active_count) scan but O(local × stencil) grid work — fast for sparse spawns.
+/// O(active_count) scan but O(local × stencil) grid work -- fast for sparse spawns.
 pub fn estimate_particle_volumes_local(
     particles: &mut Particles,
     grid: &mut Grid,

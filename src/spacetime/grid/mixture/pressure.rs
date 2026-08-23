@@ -73,7 +73,7 @@ impl Grid {
     /// The mobility `K` must be folded into the Laplacian operator itself via
     /// harmonic-mean FACE coefficients (`K_face = 2*K_i*K_j/(K_i+K_j)`), not
     /// divided out of a constant-coefficient Laplacian's right-hand side and
-    /// reapplied only in the final correction step — `alpha = 1/mass` is
+    /// reapplied only in the final correction step -- `alpha = 1/mass` is
     /// unbounded at the near-zero-mass nodes that are ordinary at MPM
     /// kernel-support edges, and a mismatched formulation lets that unbounded
     /// alpha produce an unbounded velocity correction. Harmonic-mean faces are

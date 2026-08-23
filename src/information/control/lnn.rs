@@ -3,7 +3,7 @@
 // the caller integrates, writing its output into
 // `Particle::activation`/`activation_dir` between steps.
 
-/// Liquid Time-constant Network (LNN) — Hasani, Lechner, Amini, Rus, Grosu,
+/// Liquid Time-constant Network (LNN) -- Hasani, Lechner, Amini, Rus, Grosu,
 /// "Liquid Time-constant Networks" (arXiv preprint 2020; published AAAI 2021,
 /// not NeurIPS as an earlier version of this comment said).
 ///
@@ -12,9 +12,9 @@
 ///
 /// Each neuron has a state x, a decay time constant τ, and a saturation
 /// amplitude A. The gate σ(W·x + b) mixes current states before driving the update.
-/// Outputs are σ(x) ∈ (0, 1) — read directly as muscle activation values.
+/// Outputs are σ(x) ∈ (0, 1) -- read directly as muscle activation values.
 ///
-/// All parameters (τ, A, W, b) are plain f32 — drop into a genome flat vec.
+/// All parameters (τ, A, W, b) are plain f32 -- drop into a genome flat vec.
 /// Integration: Euler at the caller's dt (physics sub-step rate).
 ///
 /// # Quick-start
@@ -28,7 +28,7 @@
 /// ```
 #[derive(Debug, Clone)]
 pub struct Lnn {
-    /// Neuron states xᵢ ∈ ℝ.  Persist between steps — carry oscillator memory.
+    /// Neuron states xᵢ ∈ ℝ.  Persist between steps -- carry oscillator memory.
     state: Vec<f32>,
     /// Time constants τᵢ > 0.  Controls how fast each neuron decays toward its attractor.
     pub tau: Vec<f32>,
@@ -59,7 +59,7 @@ impl Lnn {
         self.state.len()
     }
 
-    /// Overwrite neuron states — use to seed the oscillator before running.
+    /// Overwrite neuron states -- use to seed the oscillator before running.
     /// Without seeding, all states start at 0 and no wave forms.
     pub fn set_state(&mut self, state: Vec<f32>) {
         assert_eq!(state.len(), self.state.len());
@@ -143,7 +143,7 @@ impl Lnn {
     ///
     /// Two mutually-coupled half-center rings (`n_rings = 2`) is the standard CPG
     /// model for bilateral locomotion (e.g. lamprey spinal cord: left/right half-
-    /// centers) — driving one ring's baseline harder than the other (see
+    /// centers) -- driving one ring's baseline harder than the other (see
     /// [`Self::set_ring_bias`]) turns a symmetric traveling wave into an
     /// asymmetric one, the real mechanism animals use to steer. `n_rings` isn't
     /// restricted to 2; any number of coupled oscillator groups works.
@@ -268,7 +268,7 @@ impl Lnn {
 
     /// Overwrite the baseline bias of every neuron in ring `ring` (0-indexed,
     /// `n_per_ring` neurons per ring, matching the layout produced by
-    /// [`Self::coupled_traveling_wave`]) to `value` — a tonic drive offset, the
+    /// [`Self::coupled_traveling_wave`]) to `value` -- a tonic drive offset, the
     /// same lever real CPGs use to steer: bias one ring harder than another and
     /// the traveling wave becomes asymmetric.
     pub fn set_ring_bias(&mut self, ring: usize, n_per_ring: usize, value: f32) {
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn zero_cross_coupling_matches_independent_rings() {
         // n_rings=1 (via traveling_wave) run twice should equal n_rings=2 with
-        // cross_coupling=0.0 — proves coupling is opt-in, not baked in.
+        // cross_coupling=0.0 -- proves coupling is opt-in, not baked in.
         let mut solo_a = Lnn::traveling_wave(4, 1.0);
         let mut solo_b = Lnn::traveling_wave(4, 1.0);
         let mut coupled = Lnn::coupled_traveling_wave(2, 4, 1.0, 0.0);

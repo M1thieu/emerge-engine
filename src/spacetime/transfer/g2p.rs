@@ -296,10 +296,10 @@ pub fn gather_grid_to_particles(
     };
     // Gate once, not per particle: when no grip particle ever touched the grid this
     // substep (every scene that doesn't use `Particle::contact_group`), this is false
-    // and the loop below takes the exact same path it always has — a plain
+    // and the loop below takes the exact same path it always has -- a plain
     // `grid.velocity_at` lookup, no extra branching cost worth measuring.
     let contact_active = grid.has_contact_activity();
-    // Same gate for two-phase mixture coupling (Tampubolon et al. 2017) — see
+    // Same gate for two-phase mixture coupling (Tampubolon et al. 2017) -- see
     // `WithMixturePhase` doc. False (the default) for every scene that never
     // wraps a material this way, same zero-cost property as contact above.
     let mixture_active = grid.has_mixture_activity();
@@ -346,7 +346,7 @@ pub fn gather_grid_to_particles(
                 // Dirichlet/kinematic anchor (`Particle::pinned`): force v=0 and
                 // velocity_gradient=0 instead of gathering from the grid, so a
                 // pinned particle never moves and never accumulates local strain
-                // from being dragged — while its own mass/stress still scattered
+                // from being dragged -- while its own mass/stress still scattered
                 // into P2G normally, so it acts as a real, immovable anchor other
                 // bodies push against (the standard technique for static/bedrock
                 // geometry in deformable-body sims). Position is deliberately left

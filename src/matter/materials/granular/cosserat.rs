@@ -1,22 +1,22 @@
-//! Cosserat (micropolar) granular kinematics — real grain-scale rolling
+//! Cosserat (micropolar) granular kinematics -- real grain-scale rolling
 //! resistance, the confirmed root cause of `DruckerPragerMaterial`'s
 //! self-arrest gap (see memory: sand collapse never naturally stops under
 //! plain Coulomb/DP friction; real angle-of-repose literature attributes
-//! this to rolling friction, not damping — a scalar sliding-friction model
+//! this to rolling friction, not damping -- a scalar sliding-friction model
 //! has no notion of rolling at all).
 //!
 //! # Status: kinematics + elastic constitutive relation only
 //! This module deliberately does NOT yet close the loop into
 //! `DruckerPragerMaterial`'s stress/yield computation. A full Cosserat
 //! coupling needs a genuine second grid-level balance (linear momentum AND
-//! angular momentum/couple-stress, `div(m) + e:σ = 0`) — a real physics
+//! angular momentum/couple-stress, `div(m) + e:σ = 0`) -- a real physics
 //! channel, not a shortcut. Faking that with a local relaxation instead of
 //! the real spatial balance would be exactly the "cheat with a PDE" this
 //! project explicitly rejects. What's implemented here is the real,
 //! independently-testable piece: the micro-curvature kinematics and the
 //! real elastic couple-stress relation, verified against the cited
 //! reference. Closing the loop (feeding this into an actual stress/yield
-//! coupling) is real, disclosed future work — see
+//! coupling) is real, disclosed future work -- see
 //! `project_grain_scale_rolling_resistance_two_real_paths` in memory.
 //!
 //! # Real citation
@@ -28,7 +28,7 @@
 //!
 //! # The real equations (2D, this project's own notation)
 //! A Cosserat continuum carries a micro-rotation field ω_c (a scalar in 2D
-//! — rotation about the out-of-plane axis) that is NOT slaved to the
+//! -- rotation about the out-of-plane axis) that is NOT slaved to the
 //! ordinary velocity gradient's antisymmetric part, unlike classical
 //! continuum mechanics. Its spatial gradient is the micro-curvature:
 //! ```text
@@ -45,20 +45,20 @@
 //! ```
 //! The same paper reports the shear-band width predicted by this model is
 //! real and citable: roughly 15-20 times `l`, i.e. `l` is not a free numerical
-//! knob — it is set by the real grain diameter, same convention already used
+//! knob -- it is set by the real grain diameter, same convention already used
 //! by `GranularFluidityField`'s own `grain_diameter_m`.
 
 /// Central-difference micro-curvature (`κ = ∇ω_c`) from a grid-scattered
 /// micro-rotation field. Same column-major indexing (`idx = x*grid_res+y`)
 /// and Dirichlet-at-domain-edge convention as
 /// `energy::thermodynamics::stencil::laplacian_step`, so this can reuse the
-/// exact same P2G-scatter/gather scaffolding once wired into a live field —
+/// exact same P2G-scatter/gather scaffolding once wired into a live field --
 /// not invented independently.
 ///
 /// Real, standard second-order central difference: `∂ω/∂x ≈ (ω(x+1,y) −
 /// ω(x−1,y)) / (2·dx)`. Off-grid neighbors at the domain edge use a
 /// one-sided difference instead of assuming an ambient value (unlike
-/// `laplacian_step`'s Dirichlet boundary) — curvature has no natural
+/// `laplacian_step`'s Dirichlet boundary) -- curvature has no natural
 /// "ambient" value the way temperature does, so a one-sided estimate is the
 /// real, honest choice at the edge, not an arbitrary substitute.
 pub fn micro_curvature_2d(
@@ -93,7 +93,7 @@ pub fn micro_curvature_2d(
 /// Real elastic couple-stress relation (de Borst, Sabet & Hageman 2022, the
 /// planar reduction of their eq. 36-38): `m = alpha * l^2 * κ`.
 ///
-/// `length_scale_m` is the real internal length scale `l` — physically the
+/// `length_scale_m` is the real internal length scale `l` -- physically the
 /// grain diameter (same real quantity `GranularFluidityConfig::
 /// grain_diameter_m` already uses), NOT a free numerical fitting knob.
 /// `coupling_modulus` is `alpha`, a real elastic modulus with units of
@@ -114,7 +114,7 @@ mod tests {
 
     /// Real analytic check: for ω_c(x,y) = 2x + 3y (a plane, exact constant
     /// gradient everywhere), the central-difference stencil must reproduce
-    /// the exact analytic gradient (2, 3) at every interior point — no
+    /// the exact analytic gradient (2, 3) at every interior point -- no
     /// truncation error at all for a linear function, since central
     /// differences are exact for polynomials up to degree 1.
     #[test]

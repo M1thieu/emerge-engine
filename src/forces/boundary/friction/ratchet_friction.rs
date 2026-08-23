@@ -2,30 +2,30 @@ use glam::Vec2;
 
 use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_position_inside_grid};
 
-/// Directional (anisotropic) Coulomb floor friction — a real "ratchet" mechanism,
+/// Directional (anisotropic) Coulomb floor friction -- a real "ratchet" mechanism,
 /// not a phase-gated one.
 ///
 /// Research finding (checked against SoftZoo, the published MPM soft-robot
 /// locomotion benchmark, `tmp/softzoo`): its ground contact uses only constant,
 /// SYMMETRIC Coulomb friction (`Sticky`/`Slip`/`Separate` in
-/// `engine/static/flat_surface.py`) — no activation-gated or phase-coupled
+/// `engine/static/flat_surface.py`) -- no activation-gated or phase-coupled
 /// friction anywhere. Real crawlers (earthworms) don't gate friction on muscle
-/// state either — they use a structurally asymmetric surface: setae (directional
+/// state either -- they use a structurally asymmetric surface: setae (directional
 /// bristles) that resist sliding one way and permit it the other, a real
 /// mechanical ratchet independent of muscle timing. This is that mechanism,
 /// applied to the floor wall's tangential (horizontal) friction: sliding in
 /// `easy_direction` sees `mu_easy`, sliding against it sees `mu_resist`. Combined
-/// with any traveling-wave contraction (no special phase-coordination required —
+/// with any traveling-wave contraction (no special phase-coordination required --
 /// this is the point: the asymmetry lives in the boundary, not in choreographing
 /// the gait against it), net drift accumulates in `easy_direction` because
 /// backward slip is preferentially resisted.
-/// `easy_direction` is LIVE, not baked in at construction — real animals decide
+/// `easy_direction` is LIVE, not baked in at construction -- real animals decide
 /// which way to anchor moment to moment (a real neural/behavioral choice, not a
 /// fixed body plan), so this is `set_easy_direction`-updatable from outside
 /// (e.g. every frame, from player/AI steering input) with no reconstruction and
 /// no boundary-swap. Stored as two `AtomicU32` (bit-cast f32) rather than a plain
 /// `Vec2` field so the type stays `Sync` or the `BoundaryCondition: Send + Sync`
-/// bound is impossible — a `Cell` would be `Send` but not `Sync`.
+/// bound is impossible -- a `Cell` would be `Send` but not `Sync`.
 #[derive(Debug)]
 pub struct RatchetFrictionBoundary {
     pub thickness: usize,
@@ -60,7 +60,7 @@ impl RatchetFrictionBoundary {
         }
     }
 
-    /// Update the ratchet's preferred crawl direction live — e.g. driven by
+    /// Update the ratchet's preferred crawl direction live -- e.g. driven by
     /// real-time player or AI steering input. Takes effect on the very next
     /// substep; no reconstruction, no boundary replacement.
     pub fn set_easy_direction(&self, direction: Vec2) {
@@ -120,7 +120,7 @@ impl BoundaryCondition for RatchetFrictionBoundary {
         let y = cell_index % grid_res;
 
         // Side and ceiling walls: plain symmetric slip+friction, same as
-        // FrictionBoundary — the ratchet only applies to the floor, where a
+        // FrictionBoundary -- the ratchet only applies to the floor, where a
         // resting/crawling body actually spends its contact time.
         let mu_side = 0.5 * (self.mu_easy() + self.mu_resist());
         if x < t {

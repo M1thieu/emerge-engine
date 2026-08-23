@@ -23,7 +23,7 @@ pub mod pipeline;
 #[cfg(feature = "gpu")]
 pub mod buffers;
 
-// WGSL shader sources — embedded at compile time.
+// WGSL shader sources -- embedded at compile time.
 #[cfg(feature = "gpu")]
 pub mod shaders {
     pub const PARTICLE_SORT: &str = include_str!("shaders/particle_sort.wgsl");
@@ -58,7 +58,7 @@ mod step_params;
 mod solver;
 
 /// Every real `wgpu::Instance` construction in this crate (production and
-/// tests) must go through here — NOT `InstanceDescriptor::default()`
+/// tests) must go through here -- NOT `InstanceDescriptor::default()`
 /// directly. Default selects the Fxc DX12 shader compiler, which fails to
 /// compile `resolve_contact.wgsl` on the D3D12 WARP software adapter CI
 /// runs on (`windows-latest` has no real GPU): FXC cannot unroll one of its

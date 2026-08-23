@@ -2,7 +2,7 @@ use glam::Vec2;
 
 use crate::particle::{Particle, Particles};
 
-/// Aggregate state for a set of particles — returned by spatial and material queries.
+/// Aggregate state for a set of particles -- returned by spatial and material queries.
 ///
 /// Use this to drive phase transitions, rendering effects, or any consumer system
 /// that needs to read simulation state without iterating particles directly.
@@ -107,7 +107,7 @@ pub fn region_body_state_of_slice(particles: &[Particle], center: Vec2, radius: 
 }
 
 impl BodyState {
-    /// Empty state — returned when no particles match the query.
+    /// Empty state -- returned when no particles match the query.
     pub const fn empty() -> Self {
         Self {
             count: 0,

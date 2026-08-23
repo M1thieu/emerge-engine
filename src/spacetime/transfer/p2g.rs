@@ -183,13 +183,13 @@ pub fn scatter_particles_to_grid(
                 let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
                 let momentum = weight
                     * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
-                // Additive second scatter for multi-field contact (Bardenhagen 2001) —
+                // Additive second scatter for multi-field contact (Bardenhagen 2001) --
                 // see `Particle::contact_group` doc.
                 if contact_group != 0 {
                     grid.add_grip_mass_momentum(cell_pos, weight * mass_i, momentum);
                 }
                 // Additive second scatter for two-phase mixture coupling (Tampubolon
-                // et al. 2017) — see `WithMixturePhase`/`MixturePhase` doc.
+                // et al. 2017) -- see `WithMixturePhase`/`MixturePhase` doc.
                 if let Some(phase) = mixture_phase {
                     grid.add_mixture_mass_momentum(cell_pos, phase, weight * mass_i, momentum);
                 }
@@ -336,11 +336,11 @@ pub fn spatial_sort_order(
 /// Deliberately a SECOND pass over particles, not merged into `scatter_particles_to_grid`
 /// above: which nodes are contact-active isn't fully known until that first pass has
 /// scattered every grip particle's mass, and `Grid::add_contact_point` only appends to a
-/// node that already exists in `contact_cells` (never creates one) — so running this
+/// node that already exists in `contact_cells` (never creates one) -- so running this
 /// before the first pass completes would silently miss point-cloud data for nodes whose
 /// grip contribution hadn't been seen yet. Gated on `grid.has_contact_activity()`: a full
 /// no-op, not even a loop iteration, for every scene that never sets
-/// `Particle::contact_group` — the same zero-cost-when-unused property as the rest of
+/// `Particle::contact_group` -- the same zero-cost-when-unused property as the rest of
 /// this feature.
 pub fn gather_contact_point_cloud(particles: &Particles, grid: &mut Grid, active_count: usize) {
     if !grid.has_contact_activity() {

@@ -5,7 +5,7 @@
 //! axial tilt sweeping through a real Kepler orbit around the sun. This module
 //! computes the real sun DIRECTION (a 2D unit vector: horizontal sweep across
 //! the sky + vertical elevation above the horizon) as a function of simulated
-//! time — genuinely varying with both time-of-day and season, not a fudge.
+//! time -- genuinely varying with both time-of-day and season, not a fudge.
 //!
 //! # Scope (disclosed, matches this crate's own "just the idea, not full
 //! detail" first pass)

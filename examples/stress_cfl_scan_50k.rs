@@ -1,7 +1,7 @@
 extern crate emerge_engine as emerge;
 
 /// Real-time, vsync-paced verification of the CFL-scan fix at the actual 0.1.0 target scene
-/// (~50k DP-sand particles, grid_res=320, dt=1/60) — built specifically to check whether the
+/// (~50k DP-sand particles, grid_res=320, dt=1/60) -- built specifically to check whether the
 /// real, paced interactive case behaves like the synthetic tight-loop headless benchmarks
 /// (which showed wild 16-919ms per-frame variance, almost certainly a benchmark-pattern
 /// artifact, not a real-use problem). Prints live FPS every 2 seconds.
@@ -46,10 +46,10 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         max_substeps_per_step: 4,
         // Default 0.5 is a real, conservative CFL safety margin (matches Klar/sparkl's typical
         // usage). 0.7 is still inside the literature's normal range (commonly 0.3-1.0
-        // depending on scheme) — a modest, principled relaxation, not an extreme gamble. Real
+        // depending on scheme) -- a modest, principled relaxation, not an extreme gamble. Real
         // per-frame GPU cost scales ~linearly with substep count (3 substeps for this stiff
         // DP-sand material at the default), so cutting substeps is the legitimate lever for
-        // closing the gap to 60fps, not a band-aid — verify stability carefully, don't just trust it.
+        // closing the gap to 60fps, not a band-aid -- verify stability carefully, don't just trust it.
         material_cfl_coefficient: 0.7,
         ..SimConfig::standard(GRID, REAL_TIME_DT, Vec2::new(0.0, -0.3))
     };
@@ -71,7 +71,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     // sim.particle_buffer(), never the CPU mirror) and never calls particles()/
     // sync_particles_blocking(). DP-sand also needs zero CPU-side plasticity (any_cpu=false).
     // The default readback_stride=1 was paying for a full GPU->CPU particle copy every frame
-    // for a CPU mirror nothing here ever reads — measured as the single largest chunk of
+    // for a CPU mirror nothing here ever reads -- measured as the single largest chunk of
     // step_frame's CPU-side cost (4-7.5ms of ~6.6-10.6ms total). Effectively disabled: a
     // pure-rendering scene like this one has no use for it.
     sim.readback_stride = 1_000_000;
@@ -213,13 +213,13 @@ impl State {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
-        // Borderless fullscreen — bypasses DWM window composition overhead, a known real fix
+        // Borderless fullscreen -- bypasses DWM window composition overhead, a known real fix
         // for compositor-induced present/acquire stalls on Windows that windowed swapchains
         // can suffer from.
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("stress_cfl_scan_50k — real-time, vsync-paced, ~50k particles")
+                    .with_title("stress_cfl_scan_50k -- real-time, vsync-paced, ~50k particles")
                     .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
             )
             .unwrap(),

@@ -31,7 +31,7 @@ impl GpuSimulation {
 
     /// Force every particle with `user_tag == tag` asleep, regardless of velocity,
     /// applied at the start of the next `step_frame()`. P2G still scatters for them
-    /// (see `gpu_sleep_wake_phase1` memory note — sleeping particles must keep
+    /// (see `gpu_sleep_wake_phase1` memory note -- sleeping particles must keep
     /// providing structural support); only their own gather/integration/force-field
     /// work is skipped.
     ///
@@ -43,7 +43,7 @@ impl GpuSimulation {
             self.pending_sleep_tags.push(tag);
         } else {
             eprintln!(
-                "emerge: GPU sleep-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) — tag dropped"
+                "emerge: GPU sleep-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) -- tag dropped"
             );
         }
     }
@@ -55,12 +55,12 @@ impl GpuSimulation {
             self.pending_wake_tags.push(tag);
         } else {
             eprintln!(
-                "emerge: GPU wake-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) — tag dropped"
+                "emerge: GPU wake-tag queue full ({MAX_SLEEP_WAKE_TAGS}/frame max) -- tag dropped"
             );
         }
     }
 
-    /// Mark CPU particles as layout-changed (positions/materials) — triggers sort + upload.
+    /// Mark CPU particles as layout-changed (positions/materials) -- triggers sort + upload.
     pub fn mark_particles_dirty(&mut self) {
         self.layout_dirty = true;
     }
@@ -78,17 +78,17 @@ impl GpuSimulation {
         &mut self.registry
     }
 
-    /// The wgpu Device — share with the LP render system to read the particle buffer directly.
+    /// The wgpu Device -- share with the LP render system to read the particle buffer directly.
     pub fn device(&self) -> &Arc<wgpu::Device> {
         &self.device
     }
 
-    /// The wgpu Queue — share with the LP render system for command submission.
+    /// The wgpu Queue -- share with the LP render system for command submission.
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
 
-    /// The GPU particle storage buffer — bind this in LP's custom render shader.
+    /// The GPU particle storage buffer -- bind this in LP's custom render shader.
     /// Layout: `array<Particle>`, each Particle is 112 bytes, repr(C).
     /// Stays in VRAM between frames; read-only from the render side.
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
@@ -149,7 +149,7 @@ impl GpuSimulation {
 
     /// Register a material, auto-assigning the next available ID.
     ///
-    /// Mirrors `Simulation::register_material` — use this instead of `set_material`
+    /// Mirrors `Simulation::register_material` -- use this instead of `set_material`
     /// when you don't want to track IDs manually. Returns a typed handle.
     ///
     /// LP pattern: call at world-init time to build a material palette, then

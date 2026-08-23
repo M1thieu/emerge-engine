@@ -1,9 +1,9 @@
 use crate::particle::RodPoints;
 
-/// Real SI-unit rod material parameters — `EA`/`EI` use the SAME `E`
+/// Real SI-unit rod material parameters -- `EA`/`EI` use the SAME `E`
 /// (Young's modulus) and `I` (second moment of area, `I ~ width^3` for a
 /// rectangular section) used in the Greenhill self-buckling analysis
-/// (`h_crit = (7.8373*EI/(linear_density*g))^(1/3)`) — direct continuity
+/// (`h_crit = (7.8373*EI/(linear_density*g))^(1/3)`) -- direct continuity
 /// with that formula, not a new concept.
 ///
 /// Moved here from `spacetime::rod` 2026-08-05 -- not a `MaterialModel`
@@ -27,7 +27,7 @@ pub struct RodMaterial {
     /// `viscosity` field, 1D-projected onto each edge), N·s/m.
     pub axial_damping: f32,
     /// Rayleigh bending dissipation coefficient, N·m·s. Real, standard
-    /// generalized-force construction (Rayleigh 1873) — disclosed as this
+    /// generalized-force construction (Rayleigh 1873) -- disclosed as this
     /// plan's own composition of two separately-citable classical-mechanics
     /// results (Kelvin-Voigt + Rayleigh dissipation); Bergou et al. 2008
     /// itself does not define damping at all.
@@ -46,11 +46,11 @@ impl RodMaterial {
 
     /// Rectangular cross-section convenience: `A = width*thickness`,
     /// `I = width^3*thickness/12` (bending about the axis perpendicular to
-    /// the simulation's own 2D plane — the same `I ~ width^3` relationship
+    /// the simulation's own 2D plane -- the same `I ~ width^3` relationship
     /// as Wikipedia's "Self-buckling" reference). `thickness_m` is the
     /// engine's own implicit out-of-plane depth (same convention
     /// `Elastic::particle_mass`'s areal
-    /// density already assumes) — pass `1.0` unless modeling a real
+    /// density already assumes) -- pass `1.0` unless modeling a real
     /// non-unit depth.
     pub fn from_young_modulus_rectangular(
         young_modulus_pa: f32,
@@ -86,15 +86,15 @@ impl RodMaterial {
     /// local stiffness/mass ratio), not a substitute for the true modal
     /// value.
     ///
-    /// The two outputs are different kinds of quantities —
+    /// The two outputs are different kinds of quantities --
     /// `axial_damping` [N·s/m] is a real translational dashpot, while
     /// `bending_damping` [N·m·s] is conjugate to the dimensionless discrete
-    /// curvature (see `forces::discrete_curvature`) — so naive `c=2*sqrt(k*m)`
+    /// curvature (see `forces::discrete_curvature`) -- so naive `c=2*sqrt(k*m)`
     /// with the same translational stiffness is dimensionally wrong for the
     /// bending term. `bending_damping`'s generalized stiffness is `EI/l0`
     /// [N·m] (matching `compute_internal_forces`'s own `coeff`), its
     /// generalized mass `point_mass*l0²` [kg·m²] (from equating kinetic
-    /// energies given curvature's own `|d(kappa)/dx| ~ O(1/l0)` gradient) —
+    /// energies given curvature's own `|d(kappa)/dx| ~ O(1/l0)` gradient) --
     /// `c_crit=2*sqrt(k_gen*m_gen)` then comes out in the correct N·m·s.
     pub fn critical_damping(l0_m: f32, point_mass_kg: f32, ea: f32, ei: f32) -> (f32, f32) {
         let l0_m = l0_m.max(1.0e-9);
@@ -145,7 +145,7 @@ impl RodMaterial {
     /// # Scope: takes ONE `ea`/`ei`, not `RodPoints::ea`/`ei`
     /// The closed-form mode shape above is only exact for a UNIFORM rod.
     /// For a genuinely non-uniform rod (see `RodPoints::ei`'s own doc) this
-    /// is a real, disclosed approximation — pass a representative (e.g.
+    /// is a real, disclosed approximation -- pass a representative (e.g.
     /// mean, or the caller's own base `RodMaterial`) value; a true
     /// non-uniform modal solution needs a different, not-yet-built method
     /// (e.g. a real Rayleigh-Ritz or FE eigenvalue solve), not attempted
@@ -203,7 +203,7 @@ impl RodMaterial {
         (axial_damping, bending_damping)
     }
 
-    /// Real fundamental bending-mode period (seconds) for a fixed-free rod —
+    /// Real fundamental bending-mode period (seconds) for a fixed-free rod --
     /// same real `beta_1*L=1.8751` eigenvalue and omega formula
     /// `modal_critical_damping` and `energy::acoustics::modal` both use, so
     /// this always agrees with them (single source of truth for this
@@ -211,7 +211,7 @@ impl RodMaterial {
     ///
     /// Real use (root-cause fix): the rod sleep-scoring test
     /// (`step.rs`) used to require a FIXED 0.5s of sustained low velocity
-    /// before sleeping, regardless of the rod's own natural period — for a
+    /// before sleeping, regardless of the rod's own natural period -- for a
     /// soft, slow rod whose own period is comparable to or longer than that
     /// fixed window, a genuine, still-large-amplitude oscillation can dwell
     /// below the speed threshold near a swing peak for that whole window,
@@ -253,7 +253,7 @@ impl RodMaterial {
     /// height) -- a rod with per-vertex `RodPoints::ei` has no single exact
     /// non-uniform generalization here; `Rod::buckling_warning` covers that
     /// real case by calling this with the rod's own WEAKEST `ei` (the
-    /// conservative bound — a non-uniform rod buckles first at its most
+    /// conservative bound -- a non-uniform rod buckles first at its most
     /// slender point), not by extending this function itself.
     pub fn greenhill_critical_height_m(
         ei: f32,

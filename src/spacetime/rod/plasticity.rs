@@ -1,7 +1,7 @@
-//! Real elastic-perfectly-plastic bending — permanent curvature set once a
+//! Real elastic-perfectly-plastic bending -- permanent curvature set once a
 //! vertex's real bending moment exceeds the material's own real yield
 //! moment. Standard mechanics-of-materials result (elastic-plastic bending
-//! of a beam — e.g. Gere & Goodno, *Mechanics of Materials*, "Elastoplastic
+//! of a beam -- e.g. Gere & Goodno, *Mechanics of Materials*, "Elastoplastic
 //! Bending"): for a rectangular cross-section, first yield (outer-fiber
 //! stress reaching `sigma_yield`) occurs at the real YIELD MOMENT
 //! `M_yield = sigma_yield * I / c` (`I` the second moment of area, `c` the
@@ -10,11 +10,11 @@
 //! Real, disclosed dimensional note (the actual bug this module's own
 //! integration test caught before this doc was written): `forces::
 //! discrete_curvature`'s own output `kappa` is DIMENSIONLESS (≈ the real
-//! turning angle for small bends, see that function's own doc) — NOT a real
+//! turning angle for small bends, see that function's own doc) -- NOT a real
 //! per-meter curvature. `forces::compute_internal_forces`'s own bending
 //! moment is `coeff = (ei/voronoi_length)*(kappa-kappa_rest)`, a real N·m
 //! quantity (`secondary_growth.rs` already uses this SAME `coeff` as its own
-//! real stress proxy for exactly this reason — no separate cross-section
+//! real stress proxy for exactly this reason -- no separate cross-section
 //! area is tracked independent of `EA`/`EI`, so comparing a raw `kappa`
 //! against a stress-derived threshold is dimensionally meaningless; the
 //! real moment is the correct, real-unit quantity to compare). This module
@@ -25,7 +25,7 @@
 //!
 //! This is the SAME real, established concept the engine already uses for
 //! bulk MPM materials (`VonMisesMaterial`'s own return-mapping projects an
-//! over-yield stress state back onto its yield surface) — here the "stress
+//! over-yield stress state back onto its yield surface) -- here the "stress
 //! tensor" is replaced by a single scalar (the bending moment), so the
 //! return mapping reduces to the engine's own shared, dimension-agnostic
 //! `matter::materials::utils::scalar_return_map` core (the same "true core
@@ -40,18 +40,18 @@
 //! but has a real, well-documented failure mode under a SUSTAINED load that
 //! never itself drops below the yield threshold: the structure never
 //! "shakes down" and instead undergoes unrestricted ongoing plastic
-//! deformation — "ratcheting" / "incremental collapse", the classical
+//! deformation -- "ratcheting" / "incremental collapse", the classical
 //! opposite outcome to shakedown in Melan's (1938, static/lower-bound
 //! theorem) and Koiter's (1956, "A new general theorem on shakedown of
 //! elastic-plastic structures," Proc. Koninklijke Nederlandsche Akademie
-//! van Wetenschappen B59:24-34, kinematic/upper-bound theorem) — the two
+//! van Wetenschappen B59:24-34, kinematic/upper-bound theorem) -- the two
 //! foundational results in this area of plasticity theory, re-verified via
 //! web search, not recalled from memory alone. This is exactly what a rod
 //! under a
 //! sustained real bending moment (e.g. its own weight, in a geometry bad
 //! enough that gravity alone keeps exceeding a fixed yield moment) will do
 //! with zero hardening: creep, permanently, indefinitely, with no external
-//! force needed to sustain it — confirmed directly (a real, reproduced,
+//! force needed to sustain it -- confirmed directly (a real, reproduced,
 //! not hypothetical finding).
 //!
 //! The real, standard fix: `hardening_modulus_n_m` (mirrors
@@ -63,15 +63,15 @@
 //! held push, not cyclic loading) makes the material progressively harder
 //! to yield further, until the effective yield moment finally exceeds the
 //! sustaining moment and the structure shakes down to a stable, purely
-//! elastic residual shape — it does NOT ratchet forever. Real, disclosed
+//! elastic residual shape -- it does NOT ratchet forever. Real, disclosed
 //! scope limit: this is ISOTROPIC hardening specifically, which a real
 //! literature search confirms is the correct, sufficient fix for
 //! monotonic, one-direction sustained loading (this engine's actual case)
 //! but is known to NOT capture ratcheting under genuinely CYCLIC/reversed
 //! loading (that needs KINEMATIC hardening, a real, distinct, harder
-//! mechanism — not attempted here, no current scenario needs it). Default
+//! mechanism -- not attempted here, no current scenario needs it). Default
 //! `hardening_modulus_n_m = 0.0` (perfectly plastic, the original
-//! behavior) — opt in via `with_hardening`.
+//! behavior) -- opt in via `with_hardening`.
 
 use super::RodPoints;
 use super::forces::discrete_curvature;
@@ -79,11 +79,11 @@ use crate::matter::materials::utils::scalar_return_map;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RodPlasticity {
-    /// Real yield moment, `sigma_yield*I/c`, N·m — see module doc. Use
+    /// Real yield moment, `sigma_yield*I/c`, N·m -- see module doc. Use
     /// `from_young_modulus_rectangular` rather than computing this by hand.
     pub yield_moment_n_m: f32,
     /// Real isotropic hardening modulus, N·m per unit accumulated plastic
-    /// curvature — see module doc's "Real, cited fix for unbounded creep"
+    /// curvature -- see module doc's "Real, cited fix for unbounded creep"
     /// section. `0.0` (default) = perfectly plastic, the original behavior.
     pub hardening_modulus_n_m: f32,
 }
@@ -96,7 +96,7 @@ impl RodPlasticity {
         }
     }
 
-    /// Opt into real isotropic hardening (see module doc) — without this,
+    /// Opt into real isotropic hardening (see module doc) -- without this,
     /// the material stays perfectly plastic and can ratchet indefinitely
     /// under a sustained moment.
     pub const fn with_hardening(mut self, hardening_modulus_n_m: f32) -> Self {
@@ -105,11 +105,11 @@ impl RodPlasticity {
     }
 
     /// Real derivation for a rectangular cross-section bent about the axis
-    /// perpendicular to the simulation's own 2D plane — same `width_m`/
+    /// perpendicular to the simulation's own 2D plane -- same `width_m`/
     /// `thickness_m` convention as `RodMaterial::from_young_modulus_
     /// rectangular` (`I = width_m^3*thickness_m/12`, bending about this SAME
     /// axis, outer fiber at `c = width_m/2`): `M_yield = sigma_yield_pa * I
-    /// / c`. `hardening_modulus_n_m` defaults to `0.0` — chain
+    /// / c`. `hardening_modulus_n_m` defaults to `0.0` -- chain
     /// `.with_hardening(...)` to opt in.
     pub fn from_young_modulus_rectangular(
         yield_stress_pa: f32,
@@ -122,7 +122,7 @@ impl RodPlasticity {
     }
 }
 
-/// Real elastic-plastic return mapping — at every interior vertex, clamps
+/// Real elastic-plastic return mapping -- at every interior vertex, clamps
 /// the real bending MOMENT (`ei/voronoi_length * (kappa-rest_curvature)`,
 /// exactly `forces::compute_internal_forces`'s own `coeff`) to
 /// `[-effective_yield, +effective_yield]`, permanently absorbing any excess
@@ -131,10 +131,10 @@ impl RodPlasticity {
 /// single global threshold), and accumulating the absorbed magnitude into
 /// `RodPoints::accumulated_plastic_curvature`. `effective_yield =
 /// yield_moment_n_m + hardening_modulus_n_m * accumulated_plastic_
-/// curvature[i]` — real isotropic hardening (see module doc), `0.0` by
+/// curvature[i]` -- real isotropic hardening (see module doc), `0.0` by
 /// default (perfectly plastic). No-op for a rod with fewer than 3 points,
 /// or whose `ei`/`accumulated_plastic_curvature` aren't filled to the real
-/// per-vertex length (`Rod::new`/`build_straight_rod` do this — same guard
+/// per-vertex length (`Rod::new`/`build_straight_rod` do this -- same guard
 /// `secondary_growth`'s own apply function uses).
 pub fn apply_bending_plasticity(rod: &mut RodPoints, plasticity: &RodPlasticity, dx_meters: f32) {
     let n = rod.x.len();

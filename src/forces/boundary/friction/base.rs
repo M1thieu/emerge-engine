@@ -6,7 +6,7 @@ use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_posit
 ///
 /// No-penetration (normal zeroed) + Coulomb friction on tangential component,
 /// applied to grid cell velocities during grid update. Matches the Lagrangian
-/// particle experience to first order — this is the standard MPM friction model.
+/// particle experience to first order -- this is the standard MPM friction model.
 ///
 /// `friction_coefficient = 0.0` → pure slip (same as SlipBoundary).
 /// `friction_coefficient = 1.0` → strong friction.

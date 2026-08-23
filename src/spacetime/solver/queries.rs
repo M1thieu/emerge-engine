@@ -116,12 +116,12 @@ impl Simulation {
     }
 
     /// Directly overwrite `v` (not add, unlike `apply_group_impulse`) on every
-    /// particle with `tag` — the real primitive for a KINEMATICALLY-driven body
+    /// particle with `tag` -- the real primitive for a KINEMATICALLY-driven body
     /// (position/velocity set by an external controller, e.g. player input,
     /// rather than by internal elastic/plastic forces). Combined with a real,
     /// large `mass` on that group and a nonzero `contact_group` (Bardenhagen
     /// 2001 multi-field contact), this lets an externally-driven tool genuinely
-    /// PUSH/displace other real matter through real momentum exchange — no
+    /// PUSH/displace other real matter through real momentum exchange -- no
     /// mass is created or destroyed, unlike deleting particles outright.
     /// O(group_size).
     pub fn set_group_velocity(&mut self, tag: u32, velocity: glam::Vec2) {
@@ -132,7 +132,7 @@ impl Simulation {
         }
     }
 
-    /// Set `contact_group` uniformly on all particles with `tag` — opts a
+    /// Set `contact_group` uniformly on all particles with `tag` -- opts a
     /// body into its own real multi-field Coulomb contact (Bardenhagen 2001)
     /// against everything else, instead of MPM's default infinite-friction
     /// stick. O(group_size).
@@ -144,7 +144,7 @@ impl Simulation {
         }
     }
 
-    /// Scale `mass` uniformly on all particles with `tag` — a real, disclosed
+    /// Scale `mass` uniformly on all particles with `tag` -- a real, disclosed
     /// way to make a kinematically-driven body act like a much heavier real
     /// object (e.g. a tool vs. the loose material it displaces) without
     /// changing its own internal material response. O(group_size).
@@ -158,7 +158,7 @@ impl Simulation {
 
     /// Lazily rebuilds the spatial hash if `step()` has run since the last
     /// rebuild (see `spatial_hash`'s own doc on `Simulation`). No-op when
-    /// already fresh — at most one real rebuild per `step()` call no matter
+    /// already fresh -- at most one real rebuild per `step()` call no matter
     /// how many query methods get called before the next `step()`.
     fn ensure_spatial_hash_fresh(&self) {
         if self.spatial_hash_dirty.get() {
@@ -199,9 +199,9 @@ impl Simulation {
 
     /// Indices of active particles within `radius` grid-cells of `center`.
     ///
-    /// Returns indices only — read particle data via `solver.particles().x[i]` etc.
+    /// Returns indices only -- read particle data via `solver.particles().x[i]` etc.
     /// O(candidates) via spatial hash, not O(N). Collected eagerly into a `Vec`
-    /// (not a lazy iterator, unlike an earlier version of this method) — the
+    /// (not a lazy iterator, unlike an earlier version of this method) -- the
     /// lazy spatial-hash rebuild below needs a `Ref` borrow that can't outlive
     /// this call, so results are gathered up front instead. Negligible extra
     /// cost relative to the O(candidates) work already being done.

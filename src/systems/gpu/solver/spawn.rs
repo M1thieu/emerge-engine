@@ -24,7 +24,7 @@ impl GpuSimulation {
     /// Returns the index range the new particles occupy in the internal mirror.
     /// LP uses this as `creature_id → particle_range` for ownership tracking.
     ///
-    /// Call before `step_frame` — mid-frame spawning is not supported.
+    /// Call before `step_frame` -- mid-frame spawning is not supported.
     pub fn spawn_region(
         &mut self,
         spawn: crate::solver::config::SpawnRegion,
@@ -33,7 +33,7 @@ impl GpuSimulation {
         spawn.validate_for_sim(&self.config);
         debug_assert!(
             self.registry.is_registered(spawn.material_id),
-            "spawn_region: material_id {} is not registered — call solver.set_material({}, ...) first",
+            "spawn_region: material_id {} is not registered -- call solver.set_material({}, ...) first",
             spawn.material_id,
             spawn.material_id
         );
@@ -163,7 +163,7 @@ impl GpuSimulation {
     }
 
     /// Blocking GPU → CPU particle sync. Updates `self.particles` immediately.
-    /// Stalls the CPU until all in-flight GPU work completes — use only after step_frame
+    /// Stalls the CPU until all in-flight GPU work completes -- use only after step_frame
     /// when you need current positions right now (e.g. rendering). Not for the hot path.
     pub fn sync_particles_blocking(&mut self) {
         // Safe no-op once the device is lost -- see step_frame's identical guard.

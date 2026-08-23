@@ -5,32 +5,32 @@ use crate::forces::boundary::BoundaryCondition;
 use crate::particle::ParticleUpdateCtx;
 
 /// Coulomb wall friction whose EFFECTIVE grip is modulated by each particle's own
-/// muscle contraction PHASE — real anchoring behavior in soft-bodied peristaltic
+/// muscle contraction PHASE -- real anchoring behavior in soft-bodied peristaltic
 /// crawling.
 ///
 /// A symmetric contract/release cycle against CONSTANT friction produces near-zero
 /// net drift: pushing forward during contraction is resisted exactly as much as the
 /// recovery slide, so the two phases cancel (the same reason you can't swim forward
-/// clapping your hands symmetrically underwater — verified directly in emerge's own
+/// clapping your hands symmetrically underwater -- verified directly in emerge's own
 /// `basic_creature` demo diagnostics, which measured near-zero net locomotion under
 /// plain `FrictionBoundary` regardless of muscle fiber direction). Real crawlers
 /// (earthworms, inchworms) break this symmetry with setae/anchoring structures that
 /// engage the substrate specifically during a segment's SHORTENING phase and
 /// disengage during LENGTHENING (Trueman 1975, "The Locomotion of Soft-Bodied
-/// Animals") — grip is gated on phase, not on activation magnitude alone. An
+/// Animals") -- grip is gated on phase, not on activation magnitude alone. An
 /// earlier magnitude-only design (grip ∝ activation, independent of whether the
 /// segment was shortening or lengthening) measured WORSE than no grip at all
 /// (near-total lockup, since a resting body sits continuously in the grip zone
-/// regardless of phase) — this version fixes that by keying grip to the real
+/// regardless of phase) -- this version fixes that by keying grip to the real
 /// mechanical signal: the fiber-aligned strain RATE (derived from the already-
 /// tracked `velocity_gradient` and `activation_dir`, no new stored state), which
 /// is negative while a fiber is shortening (contracting → anchor) and positive
 /// while lengthening (extending → release).
 ///
 /// Base wall physics (no-penetration + Coulomb tangential damping) is identical to
-/// `FrictionBoundary` — delegated to an inner instance. This only ADDS an extra,
+/// `FrictionBoundary` -- delegated to an inner instance. This only ADDS an extra,
 /// phase-gated velocity damping to particles inside the boundary layer, via
-/// `post_g2p_particle` — a per-particle hook every other boundary here leaves as a
+/// `post_g2p_particle` -- a per-particle hook every other boundary here leaves as a
 /// no-op, so this composes with any material/creature that sets `activation` and
 /// `activation_dir` without any grid- or GPU-side changes.
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +40,7 @@ pub struct GripFrictionBoundary {
     /// 0.0 = identical to plain `FrictionBoundary` (no grip coupling, the
     /// symmetric-cycle case above). At `grip_gain = 1.0`, a particle that is both
     /// active AND actively shortening its fiber is fully anchored (horizontal
-    /// velocity zeroed) — the real "power stroke" anchor; a particle that is
+    /// velocity zeroed) -- the real "power stroke" anchor; a particle that is
     /// relaxed, or actively lengthening (the recovery slide), is unaffected beyond
     /// the base Coulomb friction.
     pub grip_gain: f32,

@@ -22,8 +22,8 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// - Rubber dampers: E=1–10 MPa, η=100–10000 Pa·s
 ///
 /// # Why Kelvin-Voigt, not Maxwell?
-/// Maxwell (spring + dashpot in series) has stress relaxation to zero — models fluids/polymers.
-/// KV (parallel) has strain creep that stops — models biological solids correctly.
+/// Maxwell (spring + dashpot in series) has stress relaxation to zero -- models fluids/polymers.
+/// KV (parallel) has strain creep that stops -- models biological solids correctly.
 /// Biological tissues (Fung 1993) are better approximated by KV at the MPM particle scale.
 /// Maxwell requires storing Fₑ per particle (new Mat2 field); KV uses only existing `velocity_gradient`.
 ///
@@ -123,7 +123,7 @@ impl MaterialModel for ViscoelasticMaterial {
         let d_dev = d - Mat2::from_diagonal(Vec2::splat(trace * 0.5));
         let viscous = self.viscosity * t_scale * d_dev;
 
-        // Active stress is NOT added here — `activation_scale()` below reports
+        // Active stress is NOT added here -- `activation_scale()` below reports
         // `active_stress_coeff` to the shared P2G path (`transfer::combined_kirchhoff_stress`),
         // which applies it isotropically for this model. Adding it here too would double-count.
         elastic + viscous

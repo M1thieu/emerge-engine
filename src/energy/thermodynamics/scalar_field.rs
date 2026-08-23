@@ -3,24 +3,24 @@
 //! Implements ∂φ/∂t = D·∇²φ − λ·φ + S  (diffusion + first-order decay + sources)
 //! where φ is any per-particle scalar, read/written via function pointers.
 //!
-//! # Algorithm (per substep) — identical to ThermalDiffusion
-//! 1. **Source** — optional: inject S(p)·dt into each particle before scattering
-//! 2. **P2G** — scatter mass-weighted φ to the grid
-//! 3. **Normalize** — grid_φ = Σ(w·m·φ) / Σ(w·m); empty cells = ambient
-//! 4. **Laplacian FD** — explicit Euler: φ_new = φ + dt·D·∇²φ
-//! 5. **Decay** — φ_new *= exp(−λ·dt)  (or equivalently φ_new += −λ·φ·dt for small λ·dt)
-//! 6. **G2P** — gather Δφ back to particles
+//! # Algorithm (per substep) -- identical to ThermalDiffusion
+//! 1. **Source** -- optional: inject S(p)·dt into each particle before scattering
+//! 2. **P2G** -- scatter mass-weighted φ to the grid
+//! 3. **Normalize** -- grid_φ = Σ(w·m·φ) / Σ(w·m); empty cells = ambient
+//! 4. **Laplacian FD** -- explicit Euler: φ_new = φ + dt·D·∇²φ
+//! 5. **Decay** -- φ_new *= exp(−λ·dt)  (or equivalently φ_new += −λ·φ·dt for small λ·dt)
+//! 6. **G2P** -- gather Δφ back to particles
 //!
 //! # Use cases
-//! - **Heat** — same as `ThermalDiffusion`, D = k/(ρ·cₚ·dx²)
-//! - **Chemical / pheromone** — high decay_rate (seconds to minutes half-life)
-//! - **Nutrient / oxygen** — low decay_rate, sourced by terrain particles
-//! - **Signal / pressure wave** — high diffusivity, zero decay
+//! - **Heat** -- same as `ThermalDiffusion`, D = k/(ρ·cₚ·dx²)
+//! - **Chemical / pheromone** -- high decay_rate (seconds to minutes half-life)
+//! - **Nutrient / oxygen** -- low decay_rate, sourced by terrain particles
+//! - **Signal / pressure wave** -- high diffusivity, zero decay
 //!
 //! # Fn pointer API
 //! `get` and `set` are plain function pointers (not closures) so the field
 //! is `Send + Sync` and can be stored without lifetime annotation.
-//! `set` receives the **delta** (Δφ), not the new absolute value — this
+//! `set` receives the **delta** (Δφ), not the new absolute value -- this
 //! preserves per-particle state not captured by the grid (sparse regions, edges).
 
 use glam::IVec2;
@@ -32,7 +32,7 @@ use crate::{
 
 /// A diffusing, decaying scalar field grid-coupled to MPM particles.
 ///
-/// # Example — pheromone field
+/// # Example -- pheromone field
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// # use emerge::{ScalarDiffusionConfig, ScalarDiffusionField};
@@ -58,14 +58,14 @@ pub struct ScalarDiffusionField {
     /// Optional per-particle source term in φ/s.
     /// Each substep: φ_particle += source(p, φ) · dt before P2G.
     ///
-    /// Second argument is the current φ value of the particle — enables
+    /// Second argument is the current φ value of the particle -- enables
     /// nonlinear (reaction-diffusion) sources, e.g. Gray-Scott: `−u·v²`.
     /// Use for fire emitting heat, creatures emitting pheromone, Turing patterns, etc.
     pub source: Option<fn(&Particle, f32) -> f32>,
 
     grid_res: usize,
-    grid_mass: Vec<f32>, // Σ(w · mass)          — cleared each step
-    grid_norm: Vec<f32>, // φ_grid (pre-Laplacian) — needed for G2P delta
+    grid_mass: Vec<f32>, // Σ(w · mass)          -- cleared each step
+    grid_norm: Vec<f32>, // φ_grid (pre-Laplacian) -- needed for G2P delta
     grid_work: Vec<f32>, // dual-use: P2G scatter buffer, then Laplacian output
                          // Note: grid_work is reused between P2G and Laplacian to avoid a 4th allocation.
                          // P2G phase:       grid_work = Σ(w · mass · φ)
@@ -212,7 +212,7 @@ impl ScalarDiffusionField {
             d_dt,
             self.config.ambient,
         );
-        // Decay pulls toward zero (not ambient — a real, deliberate
+        // Decay pulls toward zero (not ambient -- a real, deliberate
         // difference from ThermalDiffusion's Newton cooling, see module doc).
         let decay_factor = 1.0 - self.config.decay_rate * sub_dt;
         if decay_factor != 1.0 {
@@ -222,7 +222,7 @@ impl ScalarDiffusionField {
         }
 
         // --- G2P: gather Δφ = (φ_new − φ_old) back to particles ---
-        // Scatter delta, not absolute — preserves per-particle state in sparse/edge regions.
+        // Scatter delta, not absolute -- preserves per-particle state in sparse/edge regions.
         // grid_work = φ_new, grid_norm = φ_old.
         for pi in 0..particles.len() {
             let p_ref = particles.get(pi);

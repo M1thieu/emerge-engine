@@ -1,22 +1,22 @@
-// Day-night/ambient thermal diffusion — GPU port of ThermalDiffusion
+// Day-night/ambient thermal diffusion -- GPU port of ThermalDiffusion
 // (src/energy/thermodynamics/diffusion.rs). Same real PDE: Fourier's law
 // ∂T/∂t = α·∇²T, plus Newton cooling dT/dt = −k_c·(T−ambient). Dense
 // grid_res² dispatch every substep, no active-block optimization (matches
-// CPU's own unconditional-dense-grid behavior — real, bounded scope).
+// CPU's own unconditional-dense-grid behavior -- real, bounded scope).
 //
 // 4 passes, mirroring CPU's ThermalDiffusion::apply stages exactly, each a
 // separate dispatch because the Laplacian pass needs every cell's NORMALIZED
-// temperature to be settled before it reads any neighbor — a genuine global
+// temperature to be settled before it reads any neighbor -- a genuine global
 // barrier, not something a single fused pass can satisfy:
-//   1. thermal_clear_main      — zero thermal_mass + thermal_work
-//   2. thermal_p2g_main        — one thread per particle, scatter mass-
+//   1. thermal_clear_main      -- zero thermal_mass + thermal_work
+//   2. thermal_p2g_main        -- one thread per particle, scatter mass-
 //                                 weighted temperature (fixed-point atomics,
 //                                 same convention as p2g.wgsl)
-//   3. thermal_normalize_laplacian_main — one thread per cell: normalize
+//   3. thermal_normalize_laplacian_main -- one thread per cell: normalize
 //                                 (thermal_temp_old = work/mass, or ambient
 //                                 if empty), 5-point Laplacian FD into
 //                                 thermal_work, Newton cooling folded in
-//   4. thermal_g2p_main        — one thread per particle, gather Δparticle
+//   4. thermal_g2p_main        -- one thread per particle, gather Δparticle
 //                                 temperature = (T_new − T_old) at this
 //                                 particle's position
 
@@ -73,7 +73,7 @@ const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 // Same fixed-point atomic convention as p2g.wgsl's MASS_ATOMIC_SCALE/MOM_ATOMIC_SCALE
-// (duplicated per-shader-file, WGSL has no cross-file includes — same precedent).
+// (duplicated per-shader-file, WGSL has no cross-file includes -- same precedent).
 const THERMAL_ATOMIC_SCALE: f32 = 100000.0;
 
 @group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;

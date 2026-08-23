@@ -1,9 +1,9 @@
 extern crate emerge_engine as emerge;
 
-/// GPU viscoplastic fluids — Newtonian water dam-break + Bingham mud blob, zero CPU readback.
+/// GPU viscoplastic fluids -- Newtonian water dam-break + Bingham mud blob, zero CPU readback.
 ///
-///   Mat 0  Newtonian water (blue) — Tait EOS + deviatoric viscosity
-///   Mat 1  Bingham mud    (gold)  — viscoplastic with yield stress
+///   Mat 0  Newtonian water (blue) -- Tait EOS + deviatoric viscosity
+///   Mat 1  Bingham mud    (gold)  -- viscoplastic with yield stress
 ///
 ///   cargo run --example basic_fluids_gpu --features "render"
 use std::sync::Arc;

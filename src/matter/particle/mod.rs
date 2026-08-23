@@ -29,7 +29,7 @@ pub struct Particle {
     /// Dimensionless hardening scale h = exp(ξ·(1−Jp)). Multiplies µ and λ in corotated stress.
     /// 1.0 = baseline stiffness. > 1.0 = stiffened by compression (e.g. compacted snow).
     pub hardening_scale: f32,
-    /// Per-material plastic scalar — meaning depends on the active material:
+    /// Per-material plastic scalar -- meaning depends on the active material:
     /// - `DruckerPragerMaterial`: Drucker-Prager friction accumulator q (Klar 2016)
     /// - `MuIRheologyMaterial`: current µ(I) value (rate-dependent friction coefficient)
     /// - `VonMisesMaterial`: isotropic hardening κ (equivalent plastic strain)
@@ -42,11 +42,11 @@ pub struct Particle {
     /// Initialize to 0.0; set per-particle for thermal simulations.
     pub temperature: f32,
     /// Caller-defined tag. LP uses this as creature_id for ownership tracking.
-    /// Any u32 the consumer wants — zero means untagged.
+    /// Any u32 the consumer wants -- zero means untagged.
     pub user_tag: u32,
     /// Consumer-defined actuation scalar in [0, 1].
     ///
-    /// Intended as a generic hook for active-matter materials — any material
+    /// Intended as a generic hook for active-matter materials -- any material
     /// that scales its stress response based on an external drive signal.
     /// 0.0 = fully passive. 1.0 = fully activated.
     /// Particles that are not actively driven keep this at 0.0.
@@ -54,7 +54,7 @@ pub struct Particle {
     /// Muscle fiber direction in the material (reference) frame.
     ///
     /// Unit vector pointing along the contractile axis. Active stress is applied as
-    /// τ_active = F · (activation × coeff × n₀⊗n₀) · Fᵀ — contracting along this
+    /// τ_active = F · (activation × coeff × n₀⊗n₀) · Fᵀ -- contracting along this
     /// direction and following the body's deformation.
     /// Zero vector = isotropic fallback (same as old behaviour).
     /// LP sets this per muscle region at spawn time.
@@ -68,22 +68,22 @@ pub struct Particle {
     /// Multi-field frictional contact group (Bardenhagen, Guilkey, Roessig, Brackbill
     /// 2001, "An Improved Contact Algorithm for the Material Point Method"). 0 (default)
     /// = ordinary single-field particle, identical to every material before this field
-    /// existed — the solver only allocates a second velocity field, and only resolves
+    /// existed -- the solver only allocates a second velocity field, and only resolves
     /// contact, at grid nodes touched by at least one particle with `contact_group != 0`,
     /// so a scene that never sets this is byte-for-byte unaffected.
     ///
-    /// Any nonzero value means "carries its own grip" — real Coulomb friction (finite,
+    /// Any nonzero value means "carries its own grip" -- real Coulomb friction (finite,
     /// slip-capable) is resolved between this particle's field and everything with
     /// `contact_group == 0` at shared grid nodes, instead of the default MPM behavior
     /// (all particles share one velocity field, i.e. infinite friction, no slip ever
     /// possible). Distinct nonzero values are NOT currently distinguished from each
-    /// other — this is a 2-field (grip vs. rest) implementation, not full N-body
+    /// other -- this is a 2-field (grip vs. rest) implementation, not full N-body
     /// multi-field contact; a real, disclosed scope limit, not a hidden one. See
     /// `SimConfig::contact_friction` for the friction coefficient.
     pub contact_group: u32,
     /// GPU sleep flag: 0 = active, 1 = sleeping (skipped by P2G/G2P/plasticity/force
     /// fields on the GPU path). Mirrors `Particles.sleeping` for the CPU `Simulation`'s
-    /// own (separate) partition-based sleep bookkeeping — this field is what travels
+    /// own (separate) partition-based sleep bookkeeping -- this field is what travels
     /// with a single particle when converted to/from the AoS form `GpuSimulation` uses
     /// directly. Only meaningful when `SimConfig::sleep_threshold > 0.0`; otherwise
     /// always 0 and has no effect.
@@ -123,20 +123,20 @@ pub struct Particle {
     pub scalar_field: f32,
     /// Generic internal pre-stress pressure, already SI-converted to grid stress
     /// units at construction (same treatment as other converted stress-scale
-    /// state — not raw Pa). Consumed as an isotropic `-P·I` addition to Kirchhoff
+    /// state -- not raw Pa). Consumed as an isotropic `-P·I` addition to Kirchhoff
     /// stress by any material that opts in via `MaterialModel::pressure_scale()`
-    /// (see `combined_kirchhoff_stress`) — the standard "prestressed structure"
+    /// (see `combined_kirchhoff_stress`) -- the standard "prestressed structure"
     /// treatment (a balloon: envelope tension balanced against internal gas
     /// pressure). Generic, not plant-specific: real motivating case is turgor
-    /// pressure (real, measured 0.2-2.0 MPa in plant cells — Niklas 1992;
+    /// pressure (real, measured 0.2-2.0 MPa in plant cells -- Niklas 1992;
     /// Wikipedia "Turgor pressure"), which the self-weight-buckling literature
     /// (Niklas's "hydro-skeleton" theory; pressurized-cylinder self-buckling)
     /// confirms is a genuinely different structural mechanism from bulk elastic
-    /// stiffness — but the field itself makes no assumption about what's
+    /// stiffness -- but the field itself makes no assumption about what's
     /// pressurized (any internally-pressurized body: cells, membranes, bladders).
     /// 0.0 = untouched (existing behavior for every scene that doesn't use it).
     ///
-    /// Consumes the struct's last spare pad slot — appended at the end, not
+    /// Consumes the struct's last spare pad slot -- appended at the end, not
     /// inserted where it semantically "belongs" (next to `activation`), matching
     /// `scalar_field`'s own doc comment on why: a 2026-07-17 confirmed bug
     /// showed inserting a field mid-struct corrupts GPU readback even when both
@@ -193,7 +193,7 @@ impl Particle {
 
     /// View a particle slice as raw bytes for wgpu buffer upload.
     ///
-    /// Byte view of a particle slice — zero-cost, safe via `bytemuck::Pod`.
+    /// Byte view of a particle slice -- zero-cost, safe via `bytemuck::Pod`.
     pub fn slice_as_bytes(particles: &[Particle]) -> &[u8] {
         bytemuck::cast_slice(particles)
     }

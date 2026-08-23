@@ -56,7 +56,7 @@ impl VonMisesMaterial {
     }
 
     /// Linear isotropic hardening. `hardening_modulus` > 0 makes the material stiffen
-    /// as it deforms plastically — yield stress grows as `yield_stress + H·κ`.
+    /// as it deforms plastically -- yield stress grows as `yield_stress + H·κ`.
     pub fn with_hardening(lambda: f32, mu: f32, yield_stress: f32, hardening_modulus: f32) -> Self {
         assert!(hardening_modulus >= 0.0, "hardening_modulus must be ≥ 0");
         Self {

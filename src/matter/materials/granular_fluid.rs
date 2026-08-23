@@ -9,10 +9,10 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 ///
 /// Constitutive law (Dunatunga & Kamrin 2015, §3):
 ///   τ = τ_EOS + τ_corotated_dev
-///   τ_EOS  = −k·((ρ/ρ₀)^γ − 1)·I                 — weakly-compressible fluid bulk (Tait EOS)
-///   τ_dev  = 2µ·h·dev[(F−R)·Fᵀ] + λ·h·(J−1)·J·I  — corotated elastic (shape-restoring + vol)
+///   τ_EOS  = −k·((ρ/ρ₀)^γ − 1)·I                 -- weakly-compressible fluid bulk (Tait EOS)
+///   τ_dev  = 2µ·h·dev[(F−R)·Fᵀ] + λ·h·(J−1)·J·I  -- corotated elastic (shape-restoring + vol)
 ///
-/// Plasticity: SVD clamp on F singular values (Stomakhin 2013 §4 — identical to StomakhinMaterial).
+/// Plasticity: SVD clamp on F singular values (Stomakhin 2013 §4 -- identical to StomakhinMaterial).
 ///   Jp accumulates plastic volume change. h = exp(ξ·(1−Jp)) hardens on compression.
 ///
 /// This differs from:
@@ -27,9 +27,9 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// file's three presets below; see each preset's own honest-disclosure doc comment.
 #[derive(Debug, Clone, Copy)]
 pub struct GranularFluidMaterial {
-    /// Elastic shear modulus µ — corotated deviatoric stiffness.
+    /// Elastic shear modulus µ -- corotated deviatoric stiffness.
     pub mu: f32,
-    /// Elastic first Lamé λ — volumetric elastic contribution.
+    /// Elastic first Lamé λ -- volumetric elastic contribution.
     pub lambda: f32,
     /// Rest density ρ₀. EOS pressure is zero when ρ = ρ₀.
     pub rest_density: f32,
@@ -39,13 +39,13 @@ pub struct GranularFluidMaterial {
     pub eos_power: f32,
     /// Hardening exponent ξ. h = exp(ξ·(1−Jp)). 0 = perfect plasticity.
     pub hardening_exponent: f32,
-    /// Compression limit θ_c — singular values clamped at (1−θ_c).
+    /// Compression limit θ_c -- singular values clamped at (1−θ_c).
     pub compression_limit: f32,
-    /// Stretch limit θ_s — singular values clamped at (1+θ_s).
+    /// Stretch limit θ_s -- singular values clamped at (1+θ_s).
     pub stretch_limit: f32,
-    /// Jp lower bound — prevents h from exploding under sustained compression.
+    /// Jp lower bound -- prevents h from exploding under sustained compression.
     pub min_plastic_jacobian: f32,
-    /// Jp upper bound — limits plastic volume expansion.
+    /// Jp upper bound -- limits plastic volume expansion.
     pub max_plastic_jacobian: f32,
     /// Granular contact/no-tension pressure floor. This is a constitutive
     /// choice for the granular branch, not free-surface surface tension and
@@ -83,7 +83,7 @@ pub struct GranularFluidMaterial {
 impl GranularFluidMaterial {
     /// Raw field constructor, for consistency with every other material struct
     /// in this crate (`sand.rs`/`fluid.rs`/`snow.rs`/etc. all have a `::new()`
-    /// — this was the sole exception). Takes the physically-meaningful
+    /// -- this was the sole exception). Takes the physically-meaningful
     /// parameters directly; the remaining numerical-stability fields default
     /// to the same values the `saturated_loam` preset already uses (eos_power
     /// 7.0 = standard near-incompressible Tait EOS, pressure_floor 0.0 = no
@@ -114,12 +114,12 @@ impl GranularFluidMaterial {
         }
     }
 
-    /// Saturated loam: eos_stiffness=200, ξ=5, θ_c=0.4 — yields easily, flows under load.
+    /// Saturated loam: eos_stiffness=200, ξ=5, θ_c=0.4 -- yields easily, flows under load.
     ///
     /// HONEST DISCLOSURE (audit 2026-07-17): the constitutive LAW above (Tait EOS +
     /// corotated elastic + Stomakhin SVD plasticity) is real and cited. These specific
     /// shape-parameter VALUES (eos_stiffness, hardening_exponent, compression_limit,
-    /// stretch_limit, plastic-Jacobian bounds, rest_density) are NOT — checked directly
+    /// stretch_limit, plastic-Jacobian bounds, rest_density) are NOT -- checked directly
     /// against SoftZoo's own mud material (`mud.py`, the file this module's top doc
     /// pointed to) and they don't trace to it: SoftZoo uses one fixed parameter set
     /// (not three material variants), a different (linear, not Tait power-law) EOS
@@ -168,7 +168,7 @@ impl GranularFluidMaterial {
         }
     }
 
-    /// Consolidated clay: eos_stiffness=500, ξ=3, θ_c=0.3 — higher stiffness, slower creep.
+    /// Consolidated clay: eos_stiffness=500, ξ=3, θ_c=0.3 -- higher stiffness, slower creep.
     ///
     /// Same honest disclosure as `saturated_loam` above: real cited law, hand-tuned
     /// (not measured) shape parameters -- not yet verified against real consolidated-

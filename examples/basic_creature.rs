@@ -306,7 +306,7 @@ impl State {
 
     /// Read the solver's own diagnostics and body geometry, print a full
     /// telemetry line, and WARN immediately if anything is physically wrong.
-    /// Returns nothing — this is pure observation, no simulation effect.
+    /// Returns nothing -- this is pure observation, no simulation effect.
     fn log_telemetry(&mut self, fps: f32) {
         let snap = self.sim.diagnostics_snapshot();
 
@@ -376,7 +376,7 @@ impl State {
             &[("steer", self.steer), ("wave_speed", self.wave_speed)],
         );
 
-        // Immediate WARN on the first frame anything goes wrong — pinpoints the
+        // Immediate WARN on the first frame anything goes wrong -- pinpoints the
         // exact moment the "huge issues" start, which periodic logging can miss.
         let mut problems: Vec<String> = Vec::new();
         if snap.non_finite_particle_values > 0 || snap.non_finite_grid_values > 0 {
@@ -393,7 +393,7 @@ impl State {
         }
         if snap.sim_time_dropped > 1e-6 {
             problems.push(format!(
-                "solver DROPPED {:.4} of sim time — hit max_substeps and gave up (unstable)",
+                "solver DROPPED {:.4} of sim time -- hit max_substeps and gave up (unstable)",
                 snap.sim_time_dropped
             ));
         }
@@ -414,7 +414,7 @@ impl State {
         }
         if snap.substeps_last_step >= self.sim.config().max_substeps_per_step {
             problems.push(format!(
-                "substeps MAXED ({}) — CFL is fighting hard, near the stability edge",
+                "substeps MAXED ({}) -- CFL is fighting hard, near the stability edge",
                 snap.substeps_last_step
             ));
         }

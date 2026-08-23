@@ -1,5 +1,5 @@
 //! Real implicit (backward Euler) time integration for a discrete elastic
-//! rod — the actual fix for the CFL-driven substep ceiling explicit
+//! rod -- the actual fix for the CFL-driven substep ceiling explicit
 //! integration hits for a stiff rod (see `mod.rs`'s own doc and
 //! `integrator::rod_cfl_dt`). Standard, established numerical method for
 //! stiff ODEs (Baraff & Witkin 1998, "Large Steps in Cloth Simulation";
@@ -119,7 +119,7 @@ fn solve_dense(mut a: Vec<f32>, mut b: Vec<f32>, n: usize) -> Option<Vec<f32>> {
 /// standard reduction to only the FREE degrees of freedom, not a special
 /// case bolted on afterward.
 ///
-/// Grouped step parameters for `step_rod_implicit` — everything except the
+/// Grouped step parameters for `step_rod_implicit` -- everything except the
 /// rod/material being stepped (one struct instead of an 8-argument tail).
 #[derive(Debug, Clone, Copy)]
 pub struct RodImplicitStepParams {
@@ -338,7 +338,7 @@ pub fn step_rod_implicit(
     // -- gives `[M + dt*C + dt^2*K] * dv = dt*F_n - dt^2*K*v_n`. Getting the
     // sign wrong on the left-hand matrix, or dropping the `-dt^2*K*v_n` term on
     // the right, turns this into an amplifying (unstable) system instead of a
-    // damping one — an incorrectly-signed version blows up with alternating
+    // damping one -- an incorrectly-signed version blows up with alternating
     // sign and exponentially growing magnitude within tens of steps on even a
     // single damped spring.
     let mut a_mat = vec![0.0f32; ndof * ndof];

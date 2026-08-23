@@ -8,7 +8,7 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
-/// µ(I)-rheology sand — rate-dependent Drucker-Prager (Cicoira et al. / matter "DPMui").
+/// µ(I)-rheology sand -- rate-dependent Drucker-Prager (Cicoira et al. / matter "DPMui").
 ///
 /// Extends plain Drucker-Prager by making the friction coefficient pressure- and
 /// rate-dependent via the inertial number I = γ̇·d/√(p/ρₛ):
@@ -16,12 +16,12 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 ///   µ(I) = µ₁ + (µ₂ − µ₁) / (Q·√p / γ̇ + 1)
 ///
 /// where:
-///   µ₁   — static friction coefficient  (slow/quasi-static flows)
-///   µ₂   — dynamic friction coefficient (rapid granular flows)
-///   Q    = I₀ / (d · √ρₛ)  — single merged inertial rate parameter
+///   µ₁   -- static friction coefficient  (slow/quasi-static flows)
+///   µ₂   -- dynamic friction coefficient (rapid granular flows)
+///   Q    = I₀ / (d · √ρₛ)  -- single merged inertial rate parameter
 ///
-/// At low shear rate (γ̇ → 0): µ(I) → µ₁  — material resists flow like dry sand.
-/// At high shear rate (γ̇ → ∞): µ(I) → µ₂ — material flows more easily.
+/// At low shear rate (γ̇ → 0): µ(I) → µ₁  -- material resists flow like dry sand.
+/// At high shear rate (γ̇ → ∞): µ(I) → µ₂ -- material flows more easily.
 ///
 /// The plastic multiplier γ̇ is solved analytically via a quadratic at each step.
 /// This gives rate-softening without requiring a Newton iteration.

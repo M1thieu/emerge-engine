@@ -81,7 +81,7 @@ pub struct StabilityStatus {
     pub sim_time_dropped_violation: bool,
     /// Legacy compatibility signal for removed G2P velocity clipping.
     pub vel_clamp_violation: bool,
-    /// J went negative and was projected back — explicit integration diverged.
+    /// J went negative and was projected back -- explicit integration diverged.
     pub j_projection_violation: bool,
 }
 
