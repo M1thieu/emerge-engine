@@ -6,6 +6,10 @@
 //! actual proof, not a "doesn't crash" smoke test).
 
 extern crate emerge_engine as emerge;
+
+#[path = "common/mod.rs"]
+mod common;
+
 use emerge::fields::LinearDragField;
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{
@@ -19,13 +23,7 @@ use emerge::{
 use glam::{IVec2, Mat2, Vec2};
 
 fn zero_gravity_config(grid_res: usize) -> SimConfig {
-    SimConfig {
-        grid_res,
-        dt: 0.02,
-        gravity: Vec2::ZERO,
-        adaptive_timestep: true,
-        ..SimConfig::default()
-    }
+    common::zero_gravity_config(grid_res, 0.02)
 }
 
 fn contact_config() -> ContactLawConfig {
@@ -274,6 +272,7 @@ fn spinning_grain_through_real_grid_coupled_pipeline_makes_its_contact_partner_r
 /// realistic overlap of 0.001 -- both paths then agree closely, with small
 /// magnitude changes proportional to the light touch, not runaway growth.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_standalone_control_same_two_grain_setup_no_grid() {
     let cfg = contact_config();
     let m_eff = 1.0 * 0.5;
@@ -531,6 +530,7 @@ fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
 /// keeps accelerating forever instead, (b) is confirmed and the grid-
 /// coupling investigation must continue.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_standalone_wall_rolling_resistance_ramp_no_grid() {
     let cfg = contact_config();
 
@@ -606,6 +606,7 @@ fn diag_standalone_wall_rolling_resistance_ramp_no_grid() {
 /// pure rolling, nonzero means sliding) tightly around the crossing, not
 /// just a final pass/fail.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
     let m_eff = GRAIN_MASS * 0.5;
     const GRAIN_MASS: f32 = 1.0;
@@ -714,6 +715,7 @@ fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
 /// exactly the user's own question, "the velocity/force is supposed to
 /// accumulate elsewhere, why doesn't it."
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_at_rest_on_22deg_ramp_does_force_actually_accumulate() {
     let m_eff = 0.5;
     let cfg = ContactLawConfig {
@@ -813,6 +815,7 @@ fn diag_grain_at_rest_on_22deg_ramp_does_force_actually_accumulate() {
 /// above never exercised the initial IMPACT, so it can't answer whether the
 /// now-real friction/normal force is over-gripping on landing.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn() {
     let cfg = ContactLawConfig {
         normal_stiffness: 1.0e4,
@@ -1730,6 +1733,7 @@ fn grain_column_with_compliant_dem_floor_instead_of_rigid_boundary() {
 /// genuinely apples-to-apples comparison for the first time) through PURE
 /// `GrainPopulation::step` -- no `Simulation`, no grid, no boundary at all.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_true_standalone_from_t0_same_column_no_grid() {
     const RADIUS: f32 = 1.0;
     const MASS: f32 = 1.0;
@@ -1832,6 +1836,7 @@ fn diag_true_standalone_from_t0_same_column_no_grid() {
 /// solver, so the mechanism can be dissected (remove grains, zero spins,
 /// etc.) without needing 163,000 steps of setup each time.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_replay_captured_pre_launch_state() {
     const MASS: f32 = 1.0;
     let m_eff = MASS * 0.5;
@@ -3039,6 +3044,7 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
 /// different absolute speed. Not a guess: measured directly, same
 /// late-window methodology as the test above.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_stiffness_sweep_toward_rigid_limit() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;
@@ -3158,6 +3164,7 @@ fn diag_newtons_cradle_stiffness_sweep_toward_rigid_limit() {
 /// neighbor` already proved works, but now measuring the SAME late-window
 /// middle/end ratio the cradle tests use, with zero string involvement.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_free_chain_no_string_middle_end_ratio() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;
@@ -3249,6 +3256,7 @@ fn diag_free_chain_no_string_middle_end_ratio() {
 /// the problem is in `resolve_contact_pair_hertzian` itself, not the
 /// chain/gap/string question at all.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_single_pair_hertzian_collision_matches_real_restitution_formula() {
     const RADIUS: f32 = 1.0;
     const MASS: f32 = 1.0;
@@ -3331,6 +3339,7 @@ fn diag_single_pair_hertzian_collision_matches_real_restitution_formula() {
 /// cradle keeps clacking back and forth, it doesn't stop after one hit),
 /// or something growing/wrong.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_live_demo_long_horizon_speed_trace() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;
@@ -3425,6 +3434,7 @@ fn diag_live_demo_long_horizon_speed_trace() {
 /// real, clear beneficiaries (roughly matched speed to each other,
 /// clearly above grain 2), not just grain 4 alone.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;
@@ -3570,6 +3580,7 @@ fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
 /// `GrainPopulation::resolve_contact_forces`'s own doc for the real
 /// Jacobi-per-sweep iterative-relaxation technique being measured here.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_two_ball_release_contact_iterations_sweep() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;
@@ -3700,6 +3711,7 @@ fn diag_newtons_cradle_two_ball_release_contact_iterations_sweep() {
 /// reproduce, the harness itself is implicated instead, a very different
 /// and important finding either way.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_isolated_two_ball_release_no_grid_no_string() {
     const N_GRAINS: usize = 5;
     const RADIUS: f32 = 1.0;

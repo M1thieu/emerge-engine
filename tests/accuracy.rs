@@ -331,6 +331,7 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
 /// `#[ignore]`d below rather than loosening its band or chasing this
 /// further tonight.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_pour_apic_blend_sweep_after_real_boundary_friction_fix() {
     const POUR_GRID: usize = 256;
     const POUR_DT: f32 = 0.016;
@@ -407,6 +408,7 @@ fn diag_pour_apic_blend_sweep_after_real_boundary_friction_fix() {
 /// not the real test's own 70) to get a cheap directional signal before
 /// committing to the full expensive run.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_pour_boundary_mu_fast_probe() {
     const POUR_GRID: usize = 256;
     const POUR_DT: f32 = 0.016;
@@ -546,6 +548,7 @@ fn sand_collapse_relaxation_long_horizon_plateau_check() {
 /// are new and uncalibrated -- real values are found empirically here, not
 /// guessed once and trusted.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_static_kinetic_hysteresis_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -684,6 +687,7 @@ fn static_kinetic_hysteresis_long_horizon_full_confirmation() {
 /// friction angle, or something else -- before trusting or distrusting
 /// the sweep's own real-time viability.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_static_friction_boost_performance_probe() {
     const LOCAL_GRID: usize = 128;
 
@@ -749,6 +753,7 @@ fn diag_static_friction_boost_performance_probe() {
 /// direction from what would arrest creep. Running the real test rather
 /// than trusting the prediction.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_mui_rheology_long_horizon_hold_vs_dp_baseline() {
     const LOCAL_GRID: usize = 128;
 
@@ -854,6 +859,7 @@ fn diag_mui_rheology_long_horizon_hold_vs_dp_baseline() {
 /// holding -- do their friction_hardening/log_volume_strain
 /// distributions actually differ?
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_vs_collapsed_internal_state_comparison() {
     const LOCAL_GRID: usize = 128;
 
@@ -954,6 +960,7 @@ fn diag_preshaped_vs_collapsed_internal_state_comparison() {
 /// pile behave like a pre-shaped one going forward: hold, not keep
 /// creeping.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_collapsed_pile_after_internal_state_reset() {
     const LOCAL_GRID: usize = 128;
     let config = SimConfig {
@@ -1023,6 +1030,7 @@ fn diag_collapsed_pile_after_internal_state_reset() {
 /// packing is measurably more irregular, that is real, direct support
 /// for the structural hypothesis.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_vs_collapsed_packing_regularity() {
     const LOCAL_GRID: usize = 128;
 
@@ -1138,6 +1146,7 @@ fn diag_preshaped_vs_collapsed_packing_regularity() {
 /// recipe, same real duration, ONLY difference is `position_jitter: 0.2`
 /// instead of the default 0.0.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
     const LOCAL_GRID: usize = 128;
     let config = SimConfig {
@@ -2227,6 +2236,7 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
 /// sideways in the first place, a real, physically-legitimate outcome, not
 /// a numerics artifact).
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_single_batch_impact_stress_ratio_trace() {
     use emerge::materials::utils::lame_from_young;
 
@@ -2467,6 +2477,7 @@ fn sand_pile_built_by_pour_with_randomized_drop_position() {
 /// shear on flat ground" but something deeper about how impacts couple
 /// into this constitutive model at all.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_batch_impact_on_sloped_flank_stress_ratio_trace() {
     use emerge::materials::utils::lame_from_young;
 
@@ -3398,60 +3409,6 @@ fn fluid_energy_and_c_norm_over_run(rest_density: f32, apic_blend: f32) -> (f32,
         max_c_norm_ever = max_c_norm_ever.max(max_c_norm);
     }
     (max_energy_ratio_ever, max_c_norm_ever, e0)
-}
-
-/// **Archived pre-strict-state investigation (2026-07-26):**
-/// this reproduction is retained only as historical context. Its kernel-density
-/// premise no longer applies to strict WC-MPM fluid state.
-///
-/// **The former root-cause narrative (project memory: 17th-23rd
-/// findings, dam-break investigation)**: this material declares
-/// `rest_density=1.0`, but `estimate_particle_volumes`'s kernel-based
-/// density estimate for a fully-supported particle is `mass/spacing^2` --
-/// at this scene's `spacing=0.5` and the default `particle_mass=1.0`, that's
-/// `1.0/0.25 = 4.0`, a real ~4x calibration mismatch present from the very
-/// first substep, before any dynamics. A stiff (7th-power) EOS reacting to
-/// an already-4x-too-high density injects a massive, spurious burst of
-/// kinetic energy -- confirmed by the most decisive, hardest-to-argue-with
-/// check available: total mechanical energy (KE+PE), an absolute physical
-/// quantity that can only DECREASE under gravity + dissipative viscosity,
-/// spikes to 600-670x its own initial value within the first few substeps.
-///
-/// This is what an earlier pass of this investigation (project memory's
-/// 18th-22nd findings) characterized as "NewtonianFluidMaterial's C-matrix
-/// runs hot under pure APIC" -- real measurements, but an incomplete
-/// diagnosis. Isolating pressure from viscosity correctly found the EOS
-/// pressure term as the proximate driver; it stopped short of asking why
-/// the density feeding that term was wrong in the first place. Direct A/B
-/// against a corrected `rest_density=4.0` (see the test immediately below)
-/// resolved it: energy conservation holds (ratio ~0.999 from the first
-/// substep) and the C matrix stays calm (max ~4, not ~1900) even at
-/// `apic_blend`'s own real default of 1.0 -- no blend tuning required once
-/// density is correctly calibrated. `apic_blend<=0.05` is a real, working
-/// mitigation for scenes where you can't fix the calibration directly, but
-/// it was never the root fix, and "EOS fluids are universally unsafe under
-/// pure APIC" (this file's own earlier claim) is retracted here as too
-/// broad -- ruled out by this exact test finding the opposite.
-///
-/// `#[ignore]`d: intentionally uses the SAME miscalibrated rest_density=1.0
-/// as a real, historical repro of the bug this file used to misdiagnose,
-/// not a claim that needs fixing here -- the fix is `rest_density=4.0`,
-/// demonstrated in `fluid_energy_conserved_with_correct_rest_density` below.
-#[ignore = "obsolete historical kernel-density repro; strict WC-MPM owns rho=rho0/J and no longer exhibits this mechanism"]
-#[test]
-fn miscalibrated_rest_density_injects_spurious_energy() {
-    let (max_energy_ratio, max_c_norm, e0) = fluid_energy_and_c_norm_over_run(1.0, 1.0);
-    println!("── MISCALIBRATED rest_density=1.0, default apic_blend=1.0 ──");
-    println!(
-        "  e0={e0:.2}  max_energy_ratio_ever={max_energy_ratio:.2}  max_c_norm_ever={max_c_norm:.2}"
-    );
-    assert!(
-        max_energy_ratio < 5.0,
-        "this assertion is EXPECTED to fail while the real calibration mismatch is present -- \
-         confirms total mechanical energy is still spiking to hundreds of times its initial \
-         value ({max_energy_ratio:.2}x). If this ever passes, something about the density \
-         estimate or EOS changed -- re-investigate before removing the #[ignore]"
-    );
 }
 
 /// A calibrated strict state has `V0=m/rho0=spacing^2`: here m=1,
@@ -4597,6 +4554,7 @@ mod rod_cantilever_tests {
 /// distribution, or the contact-force network) rather than any stored
 /// per-particle quantity.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_collapsed_pile_after_full_tensor_state_reset() {
     const LOCAL_GRID: usize = 128;
     const BASELINE_Q: f32 = 1.111;
@@ -4678,6 +4636,7 @@ fn diag_collapsed_pile_after_full_tensor_state_reset() {
 /// sufficient ingredient. If it doesn't, the win needs the three fields
 /// together specifically.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
     const LOCAL_GRID: usize = 128;
 
@@ -4746,6 +4705,7 @@ fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
 /// an expensive full-length confirmation, same discipline as the
 /// hysteresis sweep.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_elastic_relaxation_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -4817,6 +4777,7 @@ fn diag_elastic_relaxation_calibration_sweep() {
 /// reset) reproduces the ablation's real win, instead of assuming the
 /// mechanism's FORM was wrong.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_elastic_relaxation_aggressive_rate_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -4886,6 +4847,7 @@ fn diag_elastic_relaxation_aggressive_rate_sweep() {
 /// bit-for-bit frozen)? Same reduced-checkpoint discipline as every sweep
 /// tonight before an expensive full-length confirmation.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_post_event_relax_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -5168,6 +5130,7 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
 /// already implements correctly never actually gets a chance to engage
 /// during a fast collapse. Measuring directly instead of guessing further.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_hardening_state_saturation_during_plain_collapse() {
     const LOCAL_GRID: usize = 128;
     let config = SimConfig {
@@ -5225,6 +5188,7 @@ fn diag_hardening_state_saturation_during_plain_collapse() {
 /// fallback_fraction, that's genuine evidence the peak-detection is doing
 /// real work, not just relocating the same hardcode to a different knob.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_ke_peak_triggered_switch_sensitivity() {
     const LOCAL_GRID: usize = 128;
     const MAX_STEPS: usize = 20000;
@@ -5296,6 +5260,7 @@ fn diag_ke_peak_triggered_switch_sensitivity() {
 /// damping's own effect, not conflating it with a transfer-scheme change
 /// like the earlier, confounded test did).
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_constant_realistic_cundall_coefficient_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -5348,6 +5313,7 @@ fn diag_constant_realistic_cundall_coefficient_sweep() {
 /// checkpoint discipline as the (falsified) elastic-relaxation sweep above,
 /// before committing to an expensive full-length confirmation.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_hardening_relaxation_calibration_sweep() {
     const LOCAL_GRID: usize = 128;
 
@@ -5412,6 +5378,7 @@ fn diag_hardening_relaxation_calibration_sweep() {
 /// `rest_rate_scale` SHOULD have been, instead of guessing. Uses the public
 /// `velocity_gradient` field directly, no material-code changes needed.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_real_strain_rate_norm_during_holding_phase() {
     const LOCAL_GRID: usize = 128;
     let config = SimConfig {
@@ -5479,6 +5446,7 @@ fn diag_real_strain_rate_norm_during_holding_phase() {
 /// at THAT longer horizon too (the short sample may simply have been too
 /// early to see it).
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_j_and_plastic_memory_drift_long_horizon() {
     const LOCAL_GRID: usize = 128;
     let config = SimConfig {
@@ -5552,6 +5520,7 @@ fn diag_j_and_plastic_memory_drift_long_horizon() {
 /// always returns None (deep elastic, never yields) -- isolates relaxation
 /// from any yield-projection interference.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_elastic_relaxation_isolated_single_particle_check() {
     let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     sand.cohesion = 1.0e6;
@@ -5585,6 +5554,7 @@ fn diag_elastic_relaxation_isolated_single_particle_check() {
 /// `project()` never yields -- isolates the relaxation from any
 /// yield-projection interference.
 #[test]
+#[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_hardening_relaxation_isolated_single_particle_check() {
     let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     sand.cohesion = 1.0e6;

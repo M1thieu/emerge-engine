@@ -7,7 +7,10 @@
 //! (sparkl, matter, taichi128).
 
 extern crate emerge_engine as emerge;
-use emerge::fields::LinearDragField;
+
+#[path = "common/mod.rs"]
+mod common;
+
 use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
@@ -43,13 +46,7 @@ fn update_particle_of(mat: &dyn emerge::materials::MaterialModel, p: &mut Partic
 }
 
 fn zero_gravity_config(grid_res: usize) -> SimConfig {
-    SimConfig {
-        grid_res,
-        dt: 0.05,
-        gravity: Vec2::ZERO,
-        adaptive_timestep: true,
-        ..SimConfig::default()
-    }
+    common::zero_gravity_config(grid_res, 0.05)
 }
 
 fn center_spawn(grid_res: usize, side: usize) -> SpawnRegion {
@@ -4048,100 +4045,6 @@ fn pressurized_column_droops_less_than_unpressurized_under_self_weight() {
          pressure genuinely resists compression/buckling): droop_plain={droop_plain:.4} \
          droop_pressurized={droop_pressurized:.4}"
     );
-}
-
-/// TEMP DIAGNOSTIC (not a permanent regression, to be removed after use): real
-/// pressure sweep against basic_plant.rs's EXACT geometry (height=12, root
-/// pinned at y<=11, width=3, gravity=-0.3, GRID=64, dx=0.01, DT=0.1),
-/// self-weight only (no wind), to find a pressure value that genuinely fixes
-/// the real self-weight droop at the ORIGINAL 400/600 stiffness -- rather
-/// than guess-and-check inside the full windowed demo again.
-#[test]
-#[ignore]
-fn diag_basic_plant_pressure_sweep_self_weight_only() {
-    // Real basic_plant.rs wind constants, replayed exactly (not re-derived).
-    const WIND_DRAG_COEFFICIENT: f32 = 1.5;
-    const WIND_SPEED: f32 = 0.00075;
-    const WIND_GUST_PERIOD_SECONDS: f32 = 4.0;
-    const DT: f32 = 0.1;
-
-    fn run_with_checkpoints(
-        lambda: f32,
-        mu: f32,
-        total_steps: u32,
-        checkpoint_every: u32,
-        with_wind: bool,
-    ) {
-        let config = SimConfig {
-            min_dt: 0.0005,
-            max_substeps_per_step: 400,
-            gravity: Vec2::new(0.0, -0.3),
-            ..SimConfig::earth(64, 0.01, 0.1)
-        };
-        let spawn = SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(3, 12),
-            box_center: Vec2::new(32.0, 15.0),
-            material_id: 0,
-            precompute_initial_volumes: true,
-            ..SpawnRegion::for_sim(&config)
-        };
-        let material: Box<dyn MaterialModel> =
-            Box::new(ViscoelasticMaterial::new(lambda, mu, 0.1 * mu));
-        let mut sim = Simulation::new(config, spawn).with_default_material(material);
-        {
-            let particles = sim.particles_mut();
-            for i in 0..particles.len() {
-                if particles.x[i].y <= 11.0 {
-                    particles.pinned[i] = 1;
-                }
-            }
-        }
-        let mut step = 0;
-        let mut wind_time = 0.0f32;
-        while step < total_steps {
-            let n = checkpoint_every.min(total_steps - step);
-            for _ in 0..n {
-                if with_wind {
-                    wind_time += DT;
-                    let omega = std::f32::consts::TAU / WIND_GUST_PERIOD_SECONDS;
-                    let gust_speed = WIND_SPEED * (wind_time * omega).sin();
-                    sim.remove_force_field("wind");
-                    sim.add_named_force_field(
-                        "wind",
-                        Box::new(LinearDragField::new(
-                            Vec2::new(gust_speed, 0.0),
-                            WIND_DRAG_COEFFICIENT,
-                            1,
-                        )),
-                    );
-                }
-                sim.step();
-            }
-            step += n;
-            let particles = sim.particles();
-            let (mut min_x, mut max_x, mut min_y, mut max_y) =
-                (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-            for p in particles.iter() {
-                min_x = min_x.min(p.x.x);
-                max_x = max_x.max(p.x.x);
-                min_y = min_y.min(p.x.y);
-                max_y = max_y.max(p.x.y);
-            }
-            let snap = sim.diagnostics_snapshot();
-            println!(
-                "lambda={lambda} mu={mu} wind={with_wind} step={step} (t={:.0}s): height={:.3} width={:.3} jmin={:.4} jmax={:.4} ke={:.6}",
-                step as f32 * 0.1,
-                max_y - min_y,
-                max_x - min_x,
-                snap.min_deformation_j,
-                snap.max_deformation_j,
-                snap.total_kinetic_energy,
-            );
-        }
-    }
-
-    run_with_checkpoints(8000.0, 12000.0, 50000, 2500, false);
 }
 
 // ─── No-Compression (tension-only) ─────────────────────────────────────────

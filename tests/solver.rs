@@ -1,3 +1,9 @@
+//! General/misc `Simulation` suite -- material stability smokes, thermal,
+//! phase transitions, force fields, particle split/retain, mixture-phase
+//! rejection, GPU/CPU parity. Doesn't share `accuracy.rs`'s real-world-value
+//! validation scope or `physics_correctness.rs`'s conservation-law scope; if
+//! a new test doesn't fit either of those, it belongs here.
+
 extern crate emerge_engine as emerge;
 
 use std::collections::HashMap;
@@ -2453,130 +2459,6 @@ fn diag_sand_only_no_mixture_long_horizon_erupts_or_not() {
     println!(
         "diag_sand_only_no_mixture: baseline_max_y(frame200)={baseline_max_y:.2} \
          max_y_ever={max_y_ever:.2} at frame={max_y_frame} over {FRAMES} frames"
-    );
-}
-
-#[test]
-#[ignore = "archived: strict WC-MPM rejects this porous-mixture hybrid and solvers no longer drop time"]
-fn diag_mixture_sand_water_dropped_time_long_horizon() {
-    const GRID: usize = 96;
-    const DT: f32 = 0.1;
-    const MAT_SAND: u32 = 0;
-    const MAT_WATER: u32 = 1;
-
-    let config = SimConfig {
-        min_dt: 3.0e-4,
-        max_substeps_per_step: 96,
-        recompute_density_each_step: true,
-        gravity: Vec2::new(0.0, -0.3),
-        mixture_drag_coefficient: 30.0,
-        mixture_pressure_iterations: 8,
-        ..SimConfig::earth(GRID, 0.01, DT)
-    };
-    let spawn_sand = SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(56, 10),
-        box_center: Vec2::new(48.0, 8.0),
-        material_id: MAT_SAND,
-        precompute_initial_volumes: true,
-        mass_override: Some(1.8),
-        ..SpawnRegion::for_sim(&config)
-    };
-    let spawn_water = SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(16, 16),
-        box_center: Vec2::new(48.0, 42.0),
-        material_id: MAT_WATER,
-        precompute_initial_volumes: true,
-        ..SpawnRegion::for_sim(&config)
-    };
-    let sand = WithMixturePhase::new(
-        DruckerPragerMaterial::new(10_000.0, 15_000.0),
-        MixturePhase::SOLID,
-    );
-    let water = WithMixturePhase::new(
-        NewtonianFluidMaterial::low_viscosity(4.0, 10.0),
-        MixturePhase::FLUID,
-    );
-    let mut solver = Simulation::new(config, spawn_sand)
-        .with_default_material(Box::new(sand))
-        .with_material(MAT_WATER, Box::new(water))
-        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn_water);
-
-    // Original bug report: `dropped` stayed exactly 0.0 through frame ~1650,
-    // then climbed again once CFL wanted more than the (already-tripled)
-    // 96-substep cap. 2400 frames covers well past that real onset point.
-    // Observational only (see doc comment) -- no assert, this is tracking an
-    // open bug, not guarding a fixed one.
-    const FRAMES: u32 = 2400;
-    // "Near floor" = within a few cells of the SlipBoundary's own thickness --
-    // real, disclosed candidate mechanisms (boundary kernel truncation, DP's
-    // own volumetric floor) are both specifically boundary-adjacent, so a
-    // near-floor/bulk split is the direct way to discriminate them from a
-    // scene-wide effect.
-    let near_floor_y = config.boundary_thickness as f32 + 4.0;
-    let mut max_dropped_fraction = 0.0f32;
-    let mut first_frame_past_10_percent: Option<u32> = None;
-    for frame in 0..FRAMES {
-        solver.step();
-        let snap = solver.diagnostics_snapshot();
-        // `dropped` as a fraction of the configured frame dt -- same
-        // normalization the example's own printed diagnostic used.
-        let dropped_fraction = snap.sim_time_dropped / DT;
-        max_dropped_fraction = max_dropped_fraction.max(dropped_fraction);
-        if first_frame_past_10_percent.is_none() && dropped_fraction > 0.1 {
-            first_frame_past_10_percent = Some(frame);
-        }
-        // Dense sampling bracketing the real onset window found 2026-08-04
-        // (a genuine ~20x velocity spike hitting BOTH materials around frame
-        // 2200, `dropped` first crosses 10% at frame 1863) -- sparse 200-
-        // frame sampling missed the actual event entirely. Every frame in
-        // [1700,2300), every 200 elsewhere.
-        let dense_window = (1700..2300).contains(&frame);
-        if frame % 200 == 0 || frame == FRAMES - 1 || dense_window {
-            let particles = solver.particles();
-            let mut sand_min_j = f32::INFINITY;
-            let mut sand_min_j_near_floor = f32::INFINITY;
-            let mut sand_max_speed = 0.0f32;
-            let mut sand_max_speed_pos = Vec2::ZERO;
-            let mut water_max_speed = 0.0f32;
-            let mut water_max_speed_pos = Vec2::ZERO;
-            let mut water_min_j = f32::INFINITY;
-            for p in particles.iter() {
-                let j = p.deformation_gradient.determinant();
-                let speed = p.v.length();
-                if p.material_id == MAT_SAND {
-                    sand_min_j = sand_min_j.min(j);
-                    if speed > sand_max_speed {
-                        sand_max_speed = speed;
-                        sand_max_speed_pos = p.x;
-                    }
-                    if p.x.y < near_floor_y {
-                        sand_min_j_near_floor = sand_min_j_near_floor.min(j);
-                    }
-                } else {
-                    water_min_j = water_min_j.min(j);
-                    if speed > water_max_speed {
-                        water_max_speed = speed;
-                        water_max_speed_pos = p.x;
-                    }
-                }
-            }
-            let tag = if dense_window { "DENSE" } else { "sparse" };
-            println!(
-                "  [{tag} frame {frame}] dropped={dropped_fraction:.4} cfl={:.5} substeps={} \
-                 sand_min_j={sand_min_j:.4} sand_min_j_near_floor={sand_min_j_near_floor:.4} \
-                 sand_max_speed={sand_max_speed:.4}@{sand_max_speed_pos:?} \
-                 water_min_j={water_min_j:.4} water_max_speed={water_max_speed:.4}@{water_max_speed_pos:?}",
-                snap.cfl_number, snap.substeps_last_step
-            );
-        }
-    }
-    println!(
-        "diag_mixture_sand_water_dropped_time_long_horizon: max_dropped_fraction={:.5} \
-         first_frame_past_10pct={:?} over {FRAMES} frames",
-        max_dropped_fraction, first_frame_past_10_percent
     );
 }
 
