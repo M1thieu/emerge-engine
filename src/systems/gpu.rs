@@ -26,18 +26,18 @@ pub mod buffers;
 // WGSL shader sources -- embedded at compile time.
 #[cfg(feature = "gpu")]
 pub mod shaders {
-    pub const PARTICLE_SORT: &str = include_str!("shaders/particle_sort.wgsl");
-    pub const GRID_CLEAR: &str = include_str!("shaders/grid_clear.wgsl");
-    pub const P2G: &str = include_str!("shaders/p2g.wgsl");
-    pub const GRID_UPDATE: &str = include_str!("shaders/grid_update.wgsl");
-    pub const G2P: &str = include_str!("shaders/g2p.wgsl");
-    pub const PARTICLES_UPDATE: &str = include_str!("shaders/particles_update.wgsl");
-    pub const FORCE_FIELDS: &str = include_str!("shaders/force_fields.wgsl");
-    pub const APPLY_IMPULSES: &str = include_str!("shaders/apply_impulses.wgsl");
-    pub const RESOLVE_CONTACT: &str = include_str!("shaders/resolve_contact.wgsl");
-    pub const THERMAL: &str = include_str!("shaders/thermal.wgsl");
-    pub const RESOURCE_FIELD: &str = include_str!("shaders/resource_field.wgsl");
-    pub const G2P_ASFLIP_FUSED: &str = include_str!("shaders/g2p_asflip_fused.wgsl");
+    pub const PARTICLE_SORT: &str = include_str!("gpu/shaders/particle_sort.wgsl");
+    pub const GRID_CLEAR: &str = include_str!("gpu/shaders/grid_clear.wgsl");
+    pub const P2G: &str = include_str!("gpu/shaders/p2g.wgsl");
+    pub const GRID_UPDATE: &str = include_str!("gpu/shaders/grid_update.wgsl");
+    pub const G2P: &str = include_str!("gpu/shaders/g2p.wgsl");
+    pub const PARTICLES_UPDATE: &str = include_str!("gpu/shaders/particles_update.wgsl");
+    pub const FORCE_FIELDS: &str = include_str!("gpu/shaders/force_fields.wgsl");
+    pub const APPLY_IMPULSES: &str = include_str!("gpu/shaders/apply_impulses.wgsl");
+    pub const RESOLVE_CONTACT: &str = include_str!("gpu/shaders/resolve_contact.wgsl");
+    pub const THERMAL: &str = include_str!("gpu/shaders/thermal.wgsl");
+    pub const RESOURCE_FIELD: &str = include_str!("gpu/shaders/resource_field.wgsl");
+    pub const G2P_ASFLIP_FUSED: &str = include_str!("gpu/shaders/g2p_asflip_fused.wgsl");
 }
 
 #[cfg(feature = "gpu")]
