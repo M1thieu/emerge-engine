@@ -126,11 +126,6 @@ path = "examples/cpu/basic_solar_system_gui.rs"
 required-features = ["render"]
 
 [[example]]
-name = "mixture_sand_water"
-path = "examples/cpu/mixture_sand_water.rs"
-required-features = ["render"]
-
-[[example]]
 name = "basic_plant"
 path = "examples/cpu/basic_plant.rs"
 required-features = ["render"]
@@ -281,18 +276,6 @@ path = "examples/cpu/rock_fracture.rs"
 required-features = ["render"]
 
 # --- Headless (no window, no render feature needed) ---
-[[example]]
-name = "diag_pressure_projection_timing"
-path = "examples/cpu/diag_pressure_projection_timing.rs"
-
-[[example]]
-name = "diag_step_timing_breakdown"
-path = "examples/cpu/diag_step_timing_breakdown.rs"
-
-[[example]]
-name = "diag_vortex_projection_headless"
-path = "examples/cpu/diag_vortex_projection_headless.rs"
-
 [[example]]
 name = "diff_neohookean_toy"
 path = "examples/cpu/diff_neohookean_toy.rs"
