@@ -38,6 +38,7 @@ impl Simulation {
             grid: Grid::new(config.grid_res),
             materials,
             boundaries: vec![default_boundary],
+            boundaries_are_default: true,
             contact_grip: None,
             force_fields: Vec::new(),
             thermal: None,
@@ -100,6 +101,7 @@ impl Simulation {
             grid,
             materials,
             boundaries: vec![default_boundary],
+            boundaries_are_default: true,
             contact_grip: None,
             force_fields: Vec::new(),
             thermal: None,
@@ -148,7 +150,7 @@ impl Simulation {
     }
 
     /// Set directional (setae-style) friction for the multi-field contact "grip"
-    /// field — see `DirectionalContactGrip`'s doc. Takes an `Arc` so the same
+    /// field -- see `DirectionalContactGrip`'s doc. Takes an `Arc` so the same
     /// instance can be shared with external code (player/AI input) for live
     /// steering, matching `RatchetFrictionBoundary`'s own established pattern.
     /// Only affects particles with `contact_group != 0`; a scene that never sets
@@ -167,7 +169,7 @@ impl Simulation {
         self
     }
 
-    /// Append a named force field — name can be used later to remove or replace it.
+    /// Append a named force field -- name can be used later to remove or replace it.
     pub fn with_named_force_field(
         mut self,
         name: impl Into<String>,
@@ -215,7 +217,7 @@ impl Simulation {
     /// Mutable access to the attached thermal model's config, if any (`None` when no
     /// `with_thermal`/`set_thermal` was ever called). The real, minimal hook for a
     /// scene/LP-driven day-night or seasonal cycle: mutate `.ambient` each frame from a
-    /// time-varying function (e.g. a sinusoid) BEFORE calling `step()` — `ThermalDiffusion
+    /// time-varying function (e.g. a sinusoid) BEFORE calling `step()` -- `ThermalDiffusion
     /// ::apply` already runs automatically every substep and reads `config.ambient` fresh
     /// each time via the existing Newton-cooling term (`dT/dt = -k_c*(T-ambient)`), so no
     /// new physics is needed, just this accessor to reach the config from outside.
@@ -231,7 +233,7 @@ impl Simulation {
 
     /// Register a material and return its typed `MaterialHandle`.
     ///
-    /// Preferred over `with_material(id, mat)` — handle is type-safe, auto-allocates ID.
+    /// Preferred over `with_material(id, mat)` -- handle is type-safe, auto-allocates ID.
     /// ```rust,no_run
     /// # extern crate emerge_engine as emerge;
     /// # use emerge::solver::Simulation;
@@ -247,7 +249,7 @@ impl Simulation {
         MaterialHandle(id)
     }
 
-    /// Builder variant of `register_material` — chains with other `.with_*` calls.
+    /// Builder variant of `register_material` -- chains with other `.with_*` calls.
     /// Note: returns `(Self, MaterialHandle)` so the handle is accessible.
     pub fn with_registered_material(
         mut self,
@@ -310,7 +312,7 @@ impl Simulation {
         self.particles.retain(pred);
         let new_len = self.particles.len();
         self.active_count = new_len;
-        // Rebuild tag index from scratch — indices shift after retain.
+        // Rebuild tag index from scratch -- indices shift after retain.
         self.tag_index.clear();
         for i in 0..new_len {
             self.tag_index
@@ -326,13 +328,13 @@ impl Simulation {
 
     /// Splits active particles matching `should_split` into two half-mass/half-volume
     /// children, jittered apart by `jitter` (grid units) so they don't start exactly
-    /// overlapping — an un-jittered split would put both children at the literal same
+    /// overlapping -- an un-jittered split would put both children at the literal same
     /// position, the same lattice-symmetry failure mode ("combed" sand) that spawn
     /// lattices need jitter to avoid. Every other field (velocity, deformation gradient,
     /// material_id, temperature, etc.) is inherited unchanged from the parent; only
     /// mass/volume/position differ, and children always wake up (a freshly-fractured
     /// piece has no reason to start asleep). Sleeping particles are left untouched, never
-    /// split. CPU-only (`Simulation`, not `GpuSimulation`) — splitting requires growing the
+    /// split. CPU-only (`Simulation`, not `GpuSimulation`) -- splitting requires growing the
     /// particle buffer, which the GPU path's fixed-size buffers don't support; not
     /// attempted here, future work if needed.
     ///
@@ -427,16 +429,36 @@ impl Simulation {
     pub fn set_boundary_condition(&mut self, boundary: Box<dyn BoundaryCondition>) {
         self.boundaries.clear();
         self.boundaries.push(boundary);
+        self.boundaries_are_default = false;
     }
 
     /// Append an additional boundary condition (stacks with existing ones).
+    ///
+    /// The FIRST call clears the auto-inserted default `SlipBoundary` (see
+    /// `empty`/`new`) instead of stacking underneath it -- a real, confirmed
+    /// bug otherwise (2026-08-20): the default's zero-friction no-penetration
+    /// pass runs first every substep and zeroes the into-wall velocity
+    /// component before a user's own boundary (e.g. `FrictionBoundary`) ever
+    /// sees it nonzero, permanently defeating that boundary's own friction
+    /// with no error, no warning -- a scene calling `.with_boundary(real)`
+    /// exactly once, the overwhelming common case (38 of 39 real call sites
+    /// across the whole codebase at the time this was found; the one
+    /// exception, `tests::boundary_count_stress`, only asserts finite/
+    /// contained, not friction magnitude, so is unaffected), almost
+    /// certainly means "this is THE boundary," not "add me to a hidden
+    /// pile." Calls after the first genuinely stack, unchanged.
     pub fn add_boundary_condition(&mut self, boundary: Box<dyn BoundaryCondition>) {
+        if self.boundaries_are_default {
+            self.boundaries.clear();
+            self.boundaries_are_default = false;
+        }
         self.boundaries.push(boundary);
     }
 
     /// Remove all boundary conditions.
     pub fn clear_boundaries(&mut self) {
         self.boundaries.clear();
+        self.boundaries_are_default = false;
     }
 
     /// Append an anonymous force field (auto-named "force_field_N").
@@ -499,7 +521,7 @@ impl Simulation {
 
     /// Append a rod, returning its index into `rods()`/`rods_mut()`. A rod's
     /// `points.x` must already be in this simulation's grid-cell coordinate
-    /// space (same convention as `Particle::x`) — build it with
+    /// space (same convention as `Particle::x`) -- build it with
     /// `rod::build_straight_rod(start, end, n, linear_density, config.dx_meters)`
     /// so `start`/`end` (grid-cell units) and the resulting rest lengths
     /// (real meters) both land in the right space for `scatter_rod_to_grid`/

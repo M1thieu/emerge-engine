@@ -25,13 +25,32 @@
 
 use glam::Vec2;
 
+use crate::forces::boundary::BoundaryCondition;
+use crate::forces::fields::GrainField;
 use crate::matter::materials::granular::grain_contact_law::{
-    ContactLawConfig, ContactSpring, resolve_contact_pair,
+    ContactLawConfig, ContactSpring, GrainContactState, HertzianContactConfig,
+    resolve_contact_pair, resolve_contact_pair_hertzian, resolve_wall_contact,
+    resolve_wall_contact_hertzian,
 };
 use crate::matter::particle::Grain;
 
+/// Which real contact force law a `GrainPopulation` resolves every contact
+/// through -- `Linear` (Cundall & Strack 1979, constant stiffness, the
+/// original and still-default model, right for granular/sand material) or
+/// `Hertzian` (nonlinear, contact-patch-dependent stiffness, right for
+/// smooth hard bodies -- see `HertzianContactConfig`'s own doc). A real,
+/// additive capability, not a breaking change: `GrainPopulation::new` keeps
+/// its exact original signature and wraps its `ContactLawConfig` as
+/// `Linear` internally, so every existing call site across this codebase
+/// compiles unchanged.
+#[derive(Clone, Copy, Debug)]
+pub enum ContactModel {
+    Linear(ContactLawConfig),
+    Hertzian(HertzianContactConfig),
+}
+
 /// One currently-active contact pair, with its own persistent elastic
-/// spring history. `i < j` always (canonical ordering — avoids storing the
+/// spring history. `i < j` always (canonical ordering -- avoids storing the
 /// same pair twice or ever comparing a grain against itself).
 #[derive(Clone, Copy, Debug)]
 struct ActiveContact {
@@ -45,7 +64,31 @@ struct ActiveContact {
 pub struct GrainPopulation {
     pub grains: Vec<Grain>,
     contacts: Vec<ActiveContact>,
-    pub config: ContactLawConfig,
+    /// Persistent per-grain wall-contact spring state (real elastic-plastic
+    /// memory, same role as `contacts` above but for grain-vs-boundary
+    /// contact instead of grain-grain -- see `resolve_wall_contact_forces`'s
+    /// own doc). Resized lazily to match `grains.len()` rather than kept in
+    /// sync at every push site -- indices beyond the current length are
+    /// just treated as a fresh (zeroed) spring the first time they're used.
+    wall_springs: Vec<ContactSpring>,
+    pub config: ContactModel,
+    /// Real, opt-in sweep count for `resolve_contact_forces`'s own
+    /// iterative relaxation -- see that function's doc for the real
+    /// technique/citation. Defaults to `1` (today's exact single-pass
+    /// behavior, zero blast radius) via `new`/`new_hertzian`; opt into
+    /// K>1 real sweeps via `with_contact_iterations` for scenes with
+    /// simultaneous multi-body contact chains (e.g. releasing >1 grain
+    /// together in a Newton's-cradle-style row).
+    pub contact_iterations: usize,
+    /// Real, opt-in external body forces (drag, wind, anything shaped like
+    /// `GrainField`) applied on top of gravity + contact forces every
+    /// `step`. Empty by default -- zero blast radius for every existing
+    /// scene. A standalone `GrainPopulation` bypasses `Simulation`'s own
+    /// `Field` pipeline entirely (see module doc: not grid-coupled yet), so
+    /// this is its own equivalent hook rather than a duplicated one-off
+    /// function per demo -- see `GrainField`'s own doc for why it's a
+    /// separate trait from `Field` instead of reusing it directly.
+    pub grain_fields: Vec<Box<dyn GrainField>>,
 }
 
 impl GrainPopulation {
@@ -53,8 +96,40 @@ impl GrainPopulation {
         Self {
             grains,
             contacts: Vec::new(),
-            config,
+            wall_springs: Vec::new(),
+            config: ContactModel::Linear(config),
+            contact_iterations: 1,
+            grain_fields: Vec::new(),
         }
+    }
+
+    /// Real, additive entry point for the Hertzian (nonlinear) contact
+    /// model -- see `ContactModel`/`HertzianContactConfig`'s own doc.
+    pub const fn new_hertzian(grains: Vec<Grain>, config: HertzianContactConfig) -> Self {
+        Self {
+            grains,
+            contacts: Vec::new(),
+            wall_springs: Vec::new(),
+            config: ContactModel::Hertzian(config),
+            contact_iterations: 1,
+            grain_fields: Vec::new(),
+        }
+    }
+
+    /// Opts this population into K real iterative-relaxation sweeps per
+    /// substep for `resolve_contact_forces` -- see that function's own doc.
+    /// `k=1` (the default) is a no-op (bit-identical to not calling this).
+    pub fn with_contact_iterations(mut self, contact_iterations: usize) -> Self {
+        self.contact_iterations = contact_iterations;
+        self
+    }
+
+    /// Adds one real external body force (e.g. `LinearDragField`) applied
+    /// every `step`, on top of gravity and contact forces -- see
+    /// `grain_fields`'s own doc.
+    pub fn with_grain_field(mut self, field: impl GrainField + 'static) -> Self {
+        self.grain_fields.push(Box::new(field));
+        self
     }
 
     /// Real number of currently-resolved contacts -- diagnostic/test use.
@@ -87,76 +162,286 @@ impl GrainPopulation {
     /// internal forces apply after `gather_grid_to_rod`, not instead of it.
     pub fn resolve_contact_forces(&mut self, dt: f32) -> (Vec<Vec2>, Vec<f32>) {
         let n = self.grains.len();
-        let mut forces = vec![Vec2::ZERO; n];
-        let mut torques = vec![0.0f32; n];
+        let k = self.contact_iterations.max(1);
+        let sub_dt = dt / k as f32;
 
-        let mut new_contacts: Vec<ActiveContact> = Vec::new();
+        struct Pair {
+            i: usize,
+            j: usize,
+            spring: ContactSpring,
+            active: bool,
+        }
+        let mut pairs: Vec<Pair> = Vec::new();
         for i in 0..n {
             for j in (i + 1)..n {
                 let gi = self.grains[i].contact_state();
                 let gj = self.grains[j].contact_state();
                 // Cheap reject before the real contact-law geometry check --
                 // avoids allocating/looking up spring history for pairs that
-                // are nowhere near each other.
+                // are nowhere near each other. Determined ONCE from
+                // start-of-substep positions -- positions never move inside
+                // this function (only velocity/spin do, see below), so this
+                // stays valid across every sweep.
                 let max_dist = gi.radius + gj.radius;
                 if (gj.x - gi.x).length_squared() > max_dist * max_dist {
                     continue;
                 }
-                let mut spring = self
+                let spring = self
                     .contacts
                     .iter()
                     .find(|c| c.i == i && c.j == j)
                     .map(|c| c.spring)
                     .unwrap_or_default();
-                if let Some(resolution) =
-                    resolve_contact_pair(&gi, &gj, &mut spring, &self.config, dt)
-                {
+                pairs.push(Pair {
+                    i,
+                    j,
+                    spring,
+                    active: false,
+                });
+            }
+        }
+
+        let v0: Vec<Vec2> = self.grains.iter().map(|g| g.v).collect();
+        let spin0: Vec<f32> = self.grains.iter().map(|g| g.spin).collect();
+
+        // Real iterative relaxation, Jacobi-per-sweep, K sweeps: each sweep
+        // resolves every active pair against velocities FROZEN at that
+        // sweep's own start (same structure as the original always-single-
+        // pass code -- pair order inside a sweep never matters), then
+        // commits every pair's delta together before the next sweep reads
+        // it. This lets a momentum handoff (grain0->grain1->grain2) cross
+        // MORE THAN ONE contact interface within a single substep --
+        // impossible in one sweep at any stiffness, which is exactly the
+        // confirmed multi-body-chain bug (real data:
+        // `diag_newtons_cradle_two_ball_release_real_conservation_check`,
+        // stiffness-independent, 1x-1000x, no convergence). Real, standard
+        // technique family: iterative constraint relaxation for
+        // simultaneous-contact chains, same lineage as Erin Catto/Box2D's
+        // sequential-impulse solver -- Jacobi ordering (not Gauss-Seidel's
+        // usual immediate per-pair commit) is deliberately used here so
+        // `contact_iterations=1` (the default) reduces to EXACTLY today's
+        // math, sweep for sweep, keeping every existing scene (sand piles,
+        // grain columns) that never opts in fully unaffected.
+        for _ in 0..k {
+            let mut dv = vec![Vec2::ZERO; n];
+            let mut dspin = vec![0.0f32; n];
+            for pair in &mut pairs {
+                let gi = self.grains[pair.i].contact_state();
+                let gj = self.grains[pair.j].contact_state();
+                let resolution = match &self.config {
+                    ContactModel::Linear(cfg) => {
+                        resolve_contact_pair(&gi, &gj, &mut pair.spring, cfg, sub_dt)
+                    }
+                    ContactModel::Hertzian(cfg) => {
+                        resolve_contact_pair_hertzian(&gi, &gj, &mut pair.spring, cfg, sub_dt)
+                    }
+                };
+                pair.active = resolution.is_some();
+                if let Some(resolution) = resolution {
                     let force_on_j = resolution.normal_force * (gj.x - gi.x).normalize()
                         + resolution.tangential_force;
-                    forces[j] += force_on_j;
-                    forces[i] -= force_on_j;
-                    // Rolling moment acts as a real action-reaction pair on
-                    // spin, same convention as the linear force above (see
-                    // `ContactResolution::rolling_moment`'s own doc).
-                    torques[j] += resolution.rolling_moment;
-                    torques[i] -= resolution.rolling_moment;
-                    // Real, SEPARATE torque source: the tangential force
-                    // itself acts at the contact point, offset from each
-                    // grain's own center by its own radius -- NOT an
-                    // action-reaction pair with a shared sign flip like the
-                    // two terms above, because the moment ARM differs
-                    // per grain (i.radius vs j.radius) even though the
-                    // underlying force is the same -- see
-                    // `ContactResolution::friction_torque_on_i/j`'s own doc.
-                    // Missing this term was a real, confirmed bug (found via
-                    // `diag_max_speed_reached_during_collapse`: max_spin_ever
-                    // measured at EXACTLY 0.0 across 2000 real steps of
-                    // otherwise-dynamic contact) -- without it, grains can
-                    // only ever slide against each other, never actually
-                    // start rolling from sliding contact at all.
-                    torques[i] += resolution.friction_torque_on_i;
-                    torques[j] += resolution.friction_torque_on_j;
-                    new_contacts.push(ActiveContact { i, j, spring });
+                    dv[pair.j] += force_on_j / gj.mass * sub_dt;
+                    dv[pair.i] -= force_on_j / gi.mass * sub_dt;
+                    // Rolling moment: real action-reaction pair on spin.
+                    // Friction torque: a SEPARATE source (the tangential
+                    // force acting at the contact point, offset by each
+                    // grain's own radius -- not an action-reaction pair
+                    // since the moment arm differs per grain even though
+                    // the underlying force is shared). See
+                    // `ContactResolution`'s own doc for both; missing the
+                    // friction-torque term was a real, confirmed bug found
+                    // 2026-08 (`diag_max_speed_reached_during_collapse`).
+                    let moi_i = self.grains[pair.i].moment_of_inertia();
+                    let moi_j = self.grains[pair.j].moment_of_inertia();
+                    dspin[pair.j] += (resolution.rolling_moment + resolution.friction_torque_on_j)
+                        / moi_j
+                        * sub_dt;
+                    dspin[pair.i] += (-resolution.rolling_moment + resolution.friction_torque_on_i)
+                        / moi_i
+                        * sub_dt;
+                }
+            }
+            for i in 0..n {
+                self.grains[i].v += dv[i];
+                self.grains[i].spin += dspin[i];
+            }
+        }
+
+        // Convert the total, K-sweep velocity/spin change back into an
+        // equivalent net force/torque so the caller (`grains::coupling`)
+        // keeps integrating with its own existing `v += F/m*dt` unchanged
+        // -- identical external contract, only the internal resolution
+        // algorithm changed. This function never leaves grain state mutated
+        // as a side effect (same contract as before), so restore v0/spin0
+        // after reading off the equivalent force.
+        let mut forces = vec![Vec2::ZERO; n];
+        let mut torques = vec![0.0f32; n];
+        for i in 0..n {
+            forces[i] = self.grains[i].mass * (self.grains[i].v - v0[i]) / dt;
+            torques[i] = self.grains[i].moment_of_inertia() * (self.grains[i].spin - spin0[i]) / dt;
+            self.grains[i].v = v0[i];
+            self.grains[i].spin = spin0[i];
+        }
+
+        self.contacts = pairs
+            .into_iter()
+            .filter(|p| p.active)
+            .map(|p| ActiveContact {
+                i: p.i,
+                j: p.j,
+                spring: p.spring,
+            })
+            .collect();
+
+        (forces, torques)
+    }
+
+    /// Real, DIRECT per-grain normal-velocity correction against any
+    /// touching boundary -- found necessary live 2026-08-21, alongside the
+    /// rolling-torque fix: the grid's OWN boundary correction
+    /// (`BoundaryCondition::apply_to_grid_velocity`) applies PER GRID CELL,
+    /// but a grain's momentum spreads across a 3x3 kernel of cells via
+    /// P2G/G2P, several of which sit ABOVE the local terrain height and
+    /// never receive the correction. The grain's gathered velocity ends up
+    /// a noisy BLEND of corrected and uncorrected cell contributions, not
+    /// the clean result real single-rigid-body contact needs -- confirmed
+    /// the hard way: a grain given this blended velocity as the input to
+    /// `resolve_wall_contact` rolled in the WRONG direction and appeared to
+    /// fall through the terrain, even though `resolve_wall_contact`'s own
+    /// math was hand-verified correct in isolation.
+    ///
+    /// This replaces the grid's own (noisy) normal correction with a clean,
+    /// direct, per-grain one using the exact real local normal -- run
+    /// BEFORE any contact-force resolution, so everything downstream
+    /// (tangential friction, rolling torque) reacts to a physically clean
+    /// velocity, not kernel-blend noise. The grid's own per-cell correction
+    /// still runs too (harmless -- both push in the same direction, and
+    /// this one runs last, fully re-establishing correctness regardless of
+    /// what came before).
+    pub fn clean_wall_normal_velocity(
+        &mut self,
+        boundaries: &[Box<dyn BoundaryCondition>],
+        grid_res: usize,
+    ) {
+        for grain in &mut self.grains {
+            for boundary in boundaries {
+                let contact = boundary.grain_contact(grain.x, grain.radius, grid_res);
+                if let Some((normal, overlap)) = contact {
+                    if overlap > 0.0 {
+                        let v_n = grain.v.dot(normal);
+                        if v_n < 0.0 {
+                            grain.v -= v_n * normal;
+                        }
+                    }
                 }
             }
         }
-        self.contacts = new_contacts;
+    }
+
+    /// Real grain-vs-BOUNDARY contact forces/torques -- found missing live
+    /// 2026-08-21 (see `BoundaryCondition::grain_contact`'s own doc): before
+    /// this, a grain resting on the ground had literally no mechanism to
+    /// ever start rolling from rest, since only grain-grain contact
+    /// (`resolve_contact_forces` above) ever produced torque. Separate from
+    /// that method (not merged into it) because a boundary isn't a `Grain`
+    /// -- it has no index into `self.grains`, no mass, no spin of its own.
+    ///
+    /// Real persistent elastic memory per grain (`wall_springs`, same "broken
+    /// contact has no memory" convention as `contacts` above) -- reset to a
+    /// fresh spring whenever a grain isn't touching any boundary this
+    /// substep, carried forward otherwise. Only tracks ONE spring per grain
+    /// (not per grain-per-boundary): a real, disclosed simplification for a
+    /// grain touching multiple boundaries at once (e.g. a corner) -- rare,
+    /// and this codebase's own DEM work has repeatedly found "handle the
+    /// common case correctly, don't chase rare corner geometry" the right
+    /// tradeoff (same spirit as `HeightmapBoundary`'s own real, disclosed
+    /// fixed-+Y-normal-for-outer-walls simplification elsewhere).
+    pub fn resolve_wall_contact_forces(
+        &mut self,
+        boundaries: &[Box<dyn BoundaryCondition>],
+        grid_res: usize,
+        dt: f32,
+    ) -> (Vec<Vec2>, Vec<f32>) {
+        let n = self.grains.len();
+        let mut forces = vec![Vec2::ZERO; n];
+        let mut torques = vec![0.0f32; n];
+        if self.wall_springs.len() < n {
+            self.wall_springs.resize(n, ContactSpring::default());
+        }
+
+        for i in 0..n {
+            let grain = self.grains[i];
+            let gi: GrainContactState = grain.contact_state();
+            let mut touched = false;
+            for boundary in boundaries {
+                let Some((normal, overlap)) = boundary.grain_contact(gi.x, gi.radius, grid_res)
+                else {
+                    continue;
+                };
+                let resolution = match &self.config {
+                    ContactModel::Linear(cfg) => resolve_wall_contact(
+                        &gi,
+                        normal,
+                        overlap,
+                        &mut self.wall_springs[i],
+                        cfg,
+                        dt,
+                    ),
+                    ContactModel::Hertzian(cfg) => resolve_wall_contact_hertzian(
+                        &gi,
+                        normal,
+                        overlap,
+                        &mut self.wall_springs[i],
+                        cfg,
+                        dt,
+                    ),
+                };
+                if let Some(resolution) = resolution {
+                    // Real, load-bearing choice (found the hard way, see this
+                    // method's own doc): apply ONLY the tangential friction
+                    // force and its resulting torque here -- NOT `resolution.
+                    // normal_force`. The grid's own hard position/velocity
+                    // clamp already owns the normal direction (stable,
+                    // rigid); this spring's own normal_force is only ever
+                    // used internally, as the Coulomb-friction cap basis.
+                    // Applying it as a real force too double-counts the
+                    // normal direction against a clamp that keeps resetting
+                    // the same small overlap every step, so the spring keeps
+                    // "refilling" a large repulsive force with nothing to
+                    // bring it back down -- confirmed directly via debug
+                    // instrumentation: normal_force stayed in the hundreds
+                    // every single substep, launching the grain rather than
+                    // letting it settle.
+                    forces[i] += resolution.tangential_force;
+                    torques[i] += resolution.rolling_moment + resolution.friction_torque_on_j;
+                    touched = true;
+                }
+            }
+            if !touched {
+                self.wall_springs[i] = ContactSpring::default();
+            }
+        }
         (forces, torques)
     }
 
     /// One real, standalone semi-implicit Euler substep (gravity + contact
-    /// forces integrated directly into velocity/spin, then position
-    /// integrated from the new velocity) -- for a `GrainPopulation` NOT
-    /// coupled to the shared MPM grid (real, standard, more stable than
-    /// explicit-Euler for stiff contact springs, same rationale this
-    /// engine's own MLS-MPM P2G/G2P cycle already follows for the grid
-    /// velocity update). Grid-coupled use goes through `grains::coupling`
-    /// instead, which applies `resolve_contact_forces`'s output after a
-    /// grid-gathered velocity rather than through this method.
+    /// forces + any `grain_fields` integrated directly into velocity/spin,
+    /// then position integrated from the new velocity) -- for a
+    /// `GrainPopulation` NOT coupled to the shared MPM grid (real,
+    /// standard, more stable than explicit-Euler for stiff contact springs,
+    /// same rationale this engine's own MLS-MPM P2G/G2P cycle already
+    /// follows for the grid velocity update). Grid-coupled use goes through
+    /// `grains::coupling` instead, which applies `resolve_contact_forces`'s
+    /// output after a grid-gathered velocity rather than through this
+    /// method (and does not yet apply `grain_fields` -- out of scope until
+    /// a grid-coupled scene actually needs one).
     pub fn step(&mut self, gravity: Vec2, dt: f32) {
         let (forces, torques) = self.resolve_contact_forces(dt);
         for (idx, grain) in self.grains.iter_mut().enumerate() {
-            let accel = gravity + forces[idx] / grain.mass;
+            let mut accel = gravity + forces[idx] / grain.mass;
+            for field in &self.grain_fields {
+                accel += field.acceleration(grain);
+            }
             grain.v += accel * dt;
             let angular_accel = torques[idx] / grain.moment_of_inertia();
             grain.spin += angular_accel * dt;
@@ -374,15 +659,17 @@ mod tests {
             let gi = pop.grains[0];
             let gj = pop.grains[1];
             let overlap = (gi.radius + gj.radius - (gj.x - gi.x).length()).max(0.0);
-            let normal_pe = 0.5 * pop.config.normal_stiffness * overlap * overlap;
+            let ContactModel::Linear(cfg) = pop.config else {
+                panic!("this energy-conservation test is built around the linear model")
+            };
+            let normal_pe = 0.5 * cfg.normal_stiffness * overlap * overlap;
             let spring = pop
                 .contacts
                 .iter()
                 .find(|c| c.i == 0 && c.j == 1)
                 .map(|c| c.spring)
                 .unwrap_or_default();
-            let tangential_pe =
-                0.5 * pop.config.tangential_stiffness * spring.tangential.length_squared();
+            let tangential_pe = 0.5 * cfg.tangential_stiffness * spring.tangential.length_squared();
             ke + normal_pe + tangential_pe
         };
 

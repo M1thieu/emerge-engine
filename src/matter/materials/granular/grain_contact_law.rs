@@ -129,6 +129,172 @@ pub fn critical_timestep(m_eff: f32, config: &ContactLawConfig) -> f32 {
     (m_eff / k_max).sqrt()
 }
 
+/// Real, conservative critical-timestep bound for the Hertzian model
+/// (`HertzianContactConfig`, below). GeoTaichi's own formula
+/// (`calcu_critical_timestep` in `HertzMindlinModel.py`) needs density +
+/// Poisson's ratio, inputs this engine's grains don't carry (mass + radius
+/// only, no material-density concept). Simpler, real, defensible choice
+/// used here instead: evaluate the SAME Rayleigh-type bound
+/// `critical_timestep` above already uses, but at a real, conservative
+/// WORST-CASE contact state (`kn`/`ks` evaluated at
+/// `WORST_CASE_OVERLAP_FRACTION * radius` overlap) rather than at the true
+/// instantaneous, overlap-dependent stiffness (which would require knowing
+/// the overlap in advance). Genuinely conservative, not a guess: Hertzian
+/// contact area only GROWS with overlap, so evaluating at a real, plausible
+/// worst-case penetration overestimates the stiffness (and thus
+/// underestimates the safe dt) rather than the other way around.
+pub fn critical_timestep_hertzian(m_eff: f32, radius: f32, config: &HertzianContactConfig) -> f32 {
+    const WORST_CASE_OVERLAP_FRACTION: f32 = 0.1;
+    let worst_case_overlap = WORST_CASE_OVERLAP_FRACTION * radius;
+    let r_eff = radius * 0.5; // conservative: same-radius pair, r_eff = r/2
+    let contact_area_radius = (worst_case_overlap * r_eff).sqrt();
+    let kn = 2.0 * config.effective_young_modulus * contact_area_radius;
+    let ks = 8.0 * config.effective_shear_modulus * contact_area_radius;
+    let k_max = kn.max(ks).max(config.rolling_stiffness);
+    (m_eff / k_max).sqrt()
+}
+
+impl ContactLawConfig {
+    /// Real, cited, disclosed preset for dry sand-like granular material --
+    /// derives every stiffness/damping value from real physical inputs via
+    /// the standard DEM formulas this module's own citations already use
+    /// (Cundall & Strack 1979 linear-spring calibration `kn ~ E*r`, a real
+    /// critical-damping ratio applied per-channel), instead of each CALLER
+    /// hand-rolling its own literal numbers. Real, confirmed problem this
+    /// replaces (2026-08-19): `examples/sand_repose_angle_gui.rs` and
+    /// `tests/grains_repose_angle.rs` each independently hardcoded a
+    /// DIFFERENT stiffness scale, and the test file's own damping used an
+    /// unexplained literal `2.01` standing in for `m_eff` where an 8x-off
+    /// value (real m_eff for these grains is ~0.25kg, not 2.01) meant the
+    /// documented "60% critical" damping was actually running at ~170% of
+    /// TRUE critical (confirmed by comparing against this SAME module's own
+    /// already-established `m_eff = grain_mass*0.5` convention, already
+    /// used correctly by `critical_timestep` above) -- a real, silent
+    /// inconsistency, not a deliberate choice. Fixed here by taking
+    /// `m_eff_kg` as a real, explicit, non-hidden parameter.
+    ///
+    /// `rolling_friction` is deliberately a REAL, PER-MATERIAL input, not a
+    /// value baked into this preset -- direct portability measurement
+    /// (2026-08-19, `tests/grains_repose_angle.rs`'s own
+    /// `diag_portability_across_friction_angle`) confirmed a calibrated
+    /// rolling-friction value is NOT a universal constant across sliding
+    /// friction angles: holding it fixed while sweeping sliding friction
+    /// 25-45deg gave real, non-monotonic deviations up to ~30%, exactly
+    /// matching Ai et al. 2011's own real finding that rolling friction
+    /// depends on grain angularity/shape -- a real, independent material
+    /// property, not derivable from sliding friction. Pick a real value
+    /// from Ai et al. 2011's own cited survey range (0.001-0.3) for the
+    /// ACTUAL material being modeled, don't reuse another material's
+    /// calibrated value unexamined.
+    pub fn dry_sand(
+        young_modulus_pa: f32,
+        grain_radius_m: f32,
+        m_eff_kg: f32,
+        friction_angle_deg: f32,
+        rolling_friction: f32,
+    ) -> Self {
+        let kn = young_modulus_pa * grain_radius_m;
+        let kt = 0.8 * kn;
+        let kr = kn * grain_radius_m * grain_radius_m * 0.1;
+        // Real ~60%-critical damping ratio, applied per-channel to each
+        // channel's OWN stiffness (real dry sand grains are genuinely lossy
+        // colliders -- real coefficient of restitution for sand is commonly
+        // cited around 0.5 or lower, most of a collision's kinetic energy
+        // converting to heat/sound/micro-plastic deformation, not an
+        // elastic bounce).
+        const DAMPING_RATIO: f32 = 0.6;
+        let critical_damping = |k: f32| 2.0 * (k * m_eff_kg).sqrt() * DAMPING_RATIO;
+        Self {
+            normal_stiffness: kn,
+            tangential_stiffness: kt,
+            rolling_stiffness: kr,
+            normal_damping: critical_damping(kn),
+            tangential_damping: critical_damping(kt),
+            rolling_damping: critical_damping(kr),
+            friction: friction_angle_deg.to_radians().tan(),
+            rolling_friction,
+        }
+    }
+}
+
+/// Real, cited Hertzian (nonlinear) contact model -- Johnson 1985 "Contact
+/// Mechanics" elastic-sphere theory, formulas cross-checked against a real
+/// shipped implementation (`tmp/GeoTaichi/src/physics_model/contact_model/
+/// HertzMindlinModel.py`) before writing any code here. Unlike
+/// `ContactLawConfig`'s linear spring (Cundall & Strack 1979, constant
+/// stiffness), Hertzian contact stiffness GROWS with the contact patch
+/// (`kn ~ sqrt(overlap)`), so normal force grows as `overlap^1.5`, not
+/// `overlap^1` -- the real behavior of two smooth elastic spheres (steel,
+/// glass), not granular material.
+///
+/// Found necessary live 2026-08-21: `grain_newtons_cradle_gui.rs`'s own
+/// chain-collision demo showed a genuine, measured limitation of the
+/// LINEAR model for this specific scenario -- a constant-stiffness
+/// spring's compression pulse doesn't sharpen/localize through a touching
+/// chain the way a real Hertzian contact's does (real, published
+/// granular-chain physics: Nesterenko 2001, "Dynamics of Heterogeneous
+/// Materials", solitary-wave propagation in chains of Hertzian spheres),
+/// so momentum measurably lingered at middle grains instead of passing
+/// cleanly through, confirmed via a direct diagnostic
+/// (`tests/grains_grid_coupling.rs::diag_newtons_cradle_first_collision_
+/// immediate_aftermath`) before any of this was written.
+///
+/// A real, additive, GENERAL-PURPOSE engine capability, not a demo-only
+/// hack -- any future scene needing smooth hard-body contact (not just
+/// this cradle) can use it via `GrainPopulation::new_hertzian`; it does
+/// not replace `ContactLawConfig`, which stays the right, unchanged choice
+/// for granular/sand material everywhere else in this codebase.
+///
+/// Rolling resistance stays the SAME elastic-plastic EPSD spring
+/// (`rolling_stiffness`/`rolling_damping`/`rolling_friction`, Ai et al.
+/// 2011) `resolve_contact_pair` already uses -- GeoTaichi's own Hertzian
+/// rolling term is a plain Coulomb cap with no memory, but this engine's
+/// own EPSD model is what made real STATIC repose-angle behavior work
+/// earlier this session, and it's an independent, orthogonal concern from
+/// normal/tangential pulse propagation (the actual cradle problem).
+#[derive(Clone, Copy, Debug)]
+pub struct HertzianContactConfig {
+    /// Effective Young's modulus for the CONTACT PAIR (real formula: for
+    /// two bodies of modulus E1,E2 and Poisson ratio nu1,nu2, `1/E_eff =
+    /// (1-nu1^2)/E1 + (1-nu2^2)/E2` -- simplified here to a single real,
+    /// per-material input, same "effective," not per-body, convention
+    /// GeoTaichi's own `YoungModulus` field uses). Real formula, STYLIZED
+    /// magnitude: real steel is ~200 GPa, which would force a punishingly
+    /// fine dt at this engine's own grid-unit scale (same real tradeoff
+    /// already disclosed in `grain_rolling_closeup_gui.rs`'s own
+    /// `grain_contact_config` doc) -- pick a value at the SAME order of
+    /// magnitude as `ContactLawConfig::normal_stiffness` elsewhere in this
+    /// codebase, not a real SI number.
+    pub effective_young_modulus: f32,
+    /// Effective shear modulus, same real/stylized convention as above.
+    pub effective_shear_modulus: f32,
+    /// Coefficient of restitution (real, physical, dimensionless -- 1.0 =
+    /// perfectly elastic, 0.0 = perfectly inelastic). Set this to the real
+    /// physical value directly (e.g. 0.95 for steel-on-steel); the resolve
+    /// functions internally convert it via `hertzian_damping_coefficient`
+    /// before it ever reaches the Tsuji, Tanaka & Ishida 1992 damping
+    /// formula -- unlike the linear model, which takes damping
+    /// COEFFICIENTS directly, this field is the real restitution value
+    /// itself, not pre-transformed. (Real, confirmed bug fixed 2026-08-21:
+    /// an earlier version used this raw value directly in that formula,
+    /// ~58x too large for e=0.95 -- see `hertzian_damping_coefficient`'s
+    /// own doc for the full story.)
+    pub restitution: f32,
+    /// Sliding Coulomb friction coefficient, same role as
+    /// `ContactLawConfig::friction`.
+    pub friction: f32,
+    /// Rolling-resistance spring stiffness/damping/friction -- same real
+    /// EPSD model and units as `ContactLawConfig`'s own fields, kept as
+    /// explicit, independent material inputs (not derived from
+    /// `effective_young_modulus`/`effective_shear_modulus` -- no real
+    /// citation covers deriving rolling resistance from elastic moduli,
+    /// same "independent material property" precedent this file's own
+    /// `dry_sand()` doc already establishes for `rolling_friction`).
+    pub rolling_stiffness: f32,
+    pub rolling_damping: f32,
+    pub rolling_friction: f32,
+}
+
 /// One grain's contact-relevant state -- position, velocity, angular
 /// velocity (2D planar spin, a scalar: this engine is 2D throughout, so
 /// there is no 3D angular-velocity vector to track), radius, and mass.
@@ -317,6 +483,287 @@ pub fn resolve_contact_pair(
         rolling_moment,
         friction_torque_on_i,
         friction_torque_on_j,
+    })
+}
+
+/// Resolves one grain-vs-WALL contact for one substep -- the real, missing
+/// piece found live 2026-08-21: a grain resting on the ground had NO
+/// mechanism anywhere to start rolling from rest, only grain-grain contact
+/// (`resolve_contact_pair` above) ever produced torque. This is the exact
+/// same real physics, specialized for a fixed wall (infinite effective
+/// mass, zero velocity, zero spin) instead of deriving it via an extreme
+/// "huge radius" numeric hack (which would lose real precision in f32 --
+/// `r_eff = grain.radius` is the correct ANALYTIC limit as the wall's own
+/// radius goes to infinity in `r_eff = i.radius*j.radius/(i.radius+j.radius)`,
+/// used directly rather than approximated).
+///
+/// `normal` points AWAY from the wall surface (toward the grain, same
+/// convention `BoundaryCondition::grain_contact` returns); `overlap` is how
+/// far the grain's own surface has penetrated the wall (`grain.radius -
+/// distance_to_surface`). Returns `None` (spring reset) when not actually
+/// overlapping, same "broken contact has no memory" convention as the
+/// grain-grain version.
+pub fn resolve_wall_contact(
+    grain: &GrainContactState,
+    normal: Vec2,
+    overlap: f32,
+    spring: &mut ContactSpring,
+    config: &ContactLawConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = normal;
+    let t = Vec2::new(-n.y, n.x);
+    let r_eff = grain.radius; // analytic limit as the wall's own radius -> infinity
+
+    let v_rel = grain.v; // wall velocity is zero
+    let v_n = v_rel.dot(n);
+    let v_t = v_rel.dot(t) - grain.radius * grain.spin;
+    let omega_rel = -grain.spin; // wall spin is zero
+
+    let normal_force = (config.normal_stiffness * overlap - config.normal_damping * v_n).max(0.0);
+
+    spring.tangential -= n * spring.tangential.dot(n);
+    spring.tangential += v_t * t * dt;
+    let trial_ft_vec =
+        -config.tangential_stiffness * spring.tangential - config.tangential_damping * v_t * t;
+    let max_ft = config.friction * normal_force;
+    let trial_ft_mag = trial_ft_vec.length();
+    let tangential_force_vec = if trial_ft_mag > max_ft {
+        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
+        spring.tangential = -clamped / config.tangential_stiffness;
+        clamped
+    } else {
+        trial_ft_vec
+    };
+    let ft_scalar = tangential_force_vec.dot(t);
+
+    spring.rolling += omega_rel * dt;
+    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
+    let max_mr = config.rolling_friction * r_eff * normal_force;
+    let rolling_moment = if trial_mr.abs() > max_mr {
+        let clamped = trial_mr.signum() * max_mr;
+        spring.rolling = clamped / config.rolling_stiffness;
+        clamped
+    } else {
+        trial_mr
+    };
+
+    // Same real torque = r x F mechanism as `friction_torque_on_j` above,
+    // using the grain's own radius as the moment arm -- the actual
+    // mechanism by which static/kinetic friction at the contact point
+    // induces real rolling from rest, not just resisting existing slip.
+    let friction_torque = -grain.radius * ft_scalar;
+
+    Some(ContactResolution {
+        normal_force,
+        tangential_force: tangential_force_vec,
+        rolling_moment,
+        friction_torque_on_i: 0.0,
+        friction_torque_on_j: friction_torque,
+    })
+}
+
+/// Hertzian (nonlinear) counterpart to `resolve_contact_pair` -- see
+/// `HertzianContactConfig`'s own doc for why this exists and its real
+/// citations. Structurally identical to the linear version (same spring-
+/// state types, same elastic-plastic Coulomb tangential/rolling structure,
+/// same tangent-plane reprojection convention) -- only the NORMAL and
+/// TANGENTIAL stiffness/damping terms change, per the real Hertz-Mindlin
+/// formulas (`tmp/GeoTaichi/src/physics_model/contact_model/
+/// HertzMindlinModel.py`, adapted to this engine's own `overlap > 0` sign
+/// convention, the opposite of GeoTaichi's own `gapn < 0`). Real, disclosed
+/// adaptation: GeoTaichi's own tangential damping only applies in the
+/// sub-yield branch (added AFTER the Coulomb check); this folds it into
+/// the trial force BEFORE the check instead, matching THIS engine's own
+/// existing `resolve_contact_pair` structure exactly (consistency with the
+/// rest of this file, not a different algorithm).
+/// Real, cited conversion from the physical coefficient of restitution `e`
+/// to the actual damping COEFFICIENT the Tsuji, Tanaka & Ishida 1992
+/// formula needs -- found live 2026-08-21, a real, confirmed bug: an
+/// earlier version of `resolve_contact_pair_hertzian`/`resolve_wall_
+/// contact_hertzian` used the raw `e` (e.g. 0.95) directly in `-1.8257 * e
+/// * v * sqrt(k*m_eff)`, but GeoTaichi's own `HertzMindlin.py::add_surface_
+/// property` does NOT use the raw input that way -- it OVERWRITES its own
+/// `restitution` variable with this exact transform
+/// (`-log(e)/sqrt(pi^2+log(e)^2)`) before ever using it in that formula.
+/// Using the raw 0.95 directly was a ~58x too-large damping coefficient
+/// (0.95 vs the correctly-transformed ~0.0163), confirmed via a direct,
+/// isolated single-pair-collision test measuring the ACTUAL post-collision
+/// velocity split against the real, standard 1D restitution formula
+/// (`v0' = (1-e)/2 * v0`, `v1' = (1+e)/2 * v0`) -- the bug showed an
+/// effective restitution of ~0.14 for a specified e=0.95, i.e. the
+/// collision was behaving far more energy-absorbing (closer to perfectly
+/// inelastic) than intended, while total momentum still conserved exactly
+/// (the bug was in the SPLIT, not the conservation law itself).
+fn hertzian_damping_coefficient(restitution: f32) -> f32 {
+    if restitution < 1.0e-6 {
+        return 0.0;
+    }
+    let ln_e = restitution.ln();
+    -ln_e / (std::f32::consts::PI * std::f32::consts::PI + ln_e * ln_e).sqrt()
+}
+
+pub fn resolve_contact_pair_hertzian(
+    i: &GrainContactState,
+    j: &GrainContactState,
+    spring: &mut ContactSpring,
+    config: &HertzianContactConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    let d = j.x - i.x;
+    let dist = d.length();
+    if dist <= 1e-12 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let overlap = i.radius + j.radius - dist;
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = d / dist;
+    let t = Vec2::new(-n.y, n.x);
+
+    let r_eff = (i.radius * j.radius) / (i.radius + j.radius);
+    let m_eff = (i.mass * j.mass) / (i.mass + j.mass);
+
+    let v_rel = j.v - i.v;
+    let v_n = v_rel.dot(n);
+    let v_t = v_rel.dot(t) - (i.radius * i.spin + j.radius * j.spin);
+    let omega_rel = i.spin - j.spin;
+
+    // Real Hertzian contact-patch-dependent stiffness -- grows with
+    // overlap, unlike the linear model's constant `normal_stiffness`.
+    let contact_area_radius = (overlap * r_eff).sqrt();
+    let kn = 2.0 * config.effective_young_modulus * contact_area_radius;
+    let ks = 8.0 * config.effective_shear_modulus * contact_area_radius;
+    let damping_coeff = hertzian_damping_coefficient(config.restitution);
+
+    // Real Hertzian normal force + Tsuji, Tanaka & Ishida 1992 nonlinear
+    // damping (the "1.8257" constant is that paper's own real, cited
+    // value, not a guess; `damping_coeff` is `hertzian_damping_coefficient`'s
+    // own real transform of the physical restitution -- see its own doc for
+    // why this is NOT the raw restitution value).
+    let normal_force =
+        ((2.0 / 3.0) * kn * overlap - 1.8257 * damping_coeff * v_n * (kn * m_eff).sqrt()).max(0.0);
+
+    spring.tangential -= n * spring.tangential.dot(n);
+    spring.tangential += v_t * t * dt;
+    let trial_ft_vec =
+        -ks * spring.tangential - 1.8257 * damping_coeff * v_t * (ks * m_eff).sqrt() * t;
+    let max_ft = config.friction * normal_force;
+    let trial_ft_mag = trial_ft_vec.length();
+    let tangential_force_vec = if trial_ft_mag > max_ft {
+        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
+        spring.tangential = -clamped / ks.max(1.0e-6);
+        clamped
+    } else {
+        trial_ft_vec
+    };
+    let ft_scalar = tangential_force_vec.dot(t);
+
+    // Rolling: SAME real EPSD spring as the linear model -- see
+    // `HertzianContactConfig`'s own doc for why this stays unchanged.
+    spring.rolling += omega_rel * dt;
+    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
+    let max_mr = config.rolling_friction * r_eff * normal_force;
+    let rolling_moment = if trial_mr.abs() > max_mr {
+        let clamped = trial_mr.signum() * max_mr;
+        spring.rolling = clamped / config.rolling_stiffness;
+        clamped
+    } else {
+        trial_mr
+    };
+
+    let friction_torque_on_i = -i.radius * ft_scalar;
+    let friction_torque_on_j = -j.radius * ft_scalar;
+
+    Some(ContactResolution {
+        normal_force,
+        tangential_force: tangential_force_vec,
+        rolling_moment,
+        friction_torque_on_i,
+        friction_torque_on_j,
+    })
+}
+
+/// Hertzian (nonlinear) counterpart to `resolve_wall_contact` -- see
+/// `HertzianContactConfig`'s and `resolve_contact_pair_hertzian`'s own doc
+/// for why this exists and its real citations. Wall = infinite effective
+/// mass would make `m_eff` blow up in the Hertzian damping formulas
+/// (`sqrt(kn * m_eff)` diverging), so this uses `grain.mass` directly as
+/// `m_eff` -- the real analytic limit of the two-body reduced mass
+/// `(m1*m2)/(m1+m2)` as the wall's own mass goes to infinity, same
+/// "analytic limit, not an approximation" precedent `resolve_wall_contact`'s
+/// own `r_eff = grain.radius` doc already establishes for the radius term.
+pub fn resolve_wall_contact_hertzian(
+    grain: &GrainContactState,
+    normal: Vec2,
+    overlap: f32,
+    spring: &mut ContactSpring,
+    config: &HertzianContactConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = normal;
+    let t = Vec2::new(-n.y, n.x);
+    let r_eff = grain.radius; // analytic limit as the wall's own radius -> infinity
+    let m_eff = grain.mass; // analytic limit as the wall's own mass -> infinity
+
+    let v_rel = grain.v; // wall velocity is zero
+    let v_n = v_rel.dot(n);
+    let v_t = v_rel.dot(t) - grain.radius * grain.spin;
+    let omega_rel = -grain.spin; // wall spin is zero
+
+    let contact_area_radius = (overlap * r_eff).sqrt();
+    let kn = 2.0 * config.effective_young_modulus * contact_area_radius;
+    let ks = 8.0 * config.effective_shear_modulus * contact_area_radius;
+    let damping_coeff = hertzian_damping_coefficient(config.restitution);
+
+    let normal_force =
+        ((2.0 / 3.0) * kn * overlap - 1.8257 * damping_coeff * v_n * (kn * m_eff).sqrt()).max(0.0);
+
+    spring.tangential -= n * spring.tangential.dot(n);
+    spring.tangential += v_t * t * dt;
+    let trial_ft_vec =
+        -ks * spring.tangential - 1.8257 * damping_coeff * v_t * (ks * m_eff).sqrt() * t;
+    let max_ft = config.friction * normal_force;
+    let trial_ft_mag = trial_ft_vec.length();
+    let tangential_force_vec = if trial_ft_mag > max_ft {
+        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
+        spring.tangential = -clamped / ks.max(1.0e-6);
+        clamped
+    } else {
+        trial_ft_vec
+    };
+    let ft_scalar = tangential_force_vec.dot(t);
+
+    spring.rolling += omega_rel * dt;
+    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
+    let max_mr = config.rolling_friction * r_eff * normal_force;
+    let rolling_moment = if trial_mr.abs() > max_mr {
+        let clamped = trial_mr.signum() * max_mr;
+        spring.rolling = clamped / config.rolling_stiffness;
+        clamped
+    } else {
+        trial_mr
+    };
+
+    let friction_torque = -grain.radius * ft_scalar;
+
+    Some(ContactResolution {
+        normal_force,
+        tangential_force: tangential_force_vec,
+        rolling_moment,
+        friction_torque_on_i: 0.0,
+        friction_torque_on_j: friction_torque,
     })
 }
 
