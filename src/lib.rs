@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// emerge — MPM physics engine for Life's Progress
+// emerge -- MPM physics engine for Life's Progress
 //
 // Module layout:
 //
@@ -66,7 +66,7 @@ pub use systems::gpu;
 #[cfg(feature = "render")]
 pub use systems::render;
 
-// ── Prelude — common imports for LP/game consumers ───────────────────────────
+// ── Prelude -- common imports for LP/game consumers ───────────────────────────
 pub mod prelude;
 
 // ── Flat re-exports ───────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ pub use materials::{
     NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
     RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
     WithLatentHeat, WithMixturePhase, WithPreStress, gravity_to_grid, lame_from_si,
-    lame_from_young, rankine_damage_estimate,
+    lame_from_young, rankine_damage_estimate, stokes_drag_rate_from_si,
 };
 
 // Boundary conditions
@@ -110,7 +110,7 @@ pub use control::Lnn;
 pub use solver::body_state::BodyState;
 pub use solver::density::compute_density_grid;
 
-/// Build a `Vec<Particle>` from a `SpawnRegion` — the primary way to construct
+/// Build a `Vec<Particle>` from a `SpawnRegion` -- the primary way to construct
 /// initial particle regions for `GpuSimulation::new` or to merge multiple regions.
 ///
 /// Respects `SpawnRegion::shape` (box or disk), jitter, and material assignment.

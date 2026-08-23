@@ -18,7 +18,7 @@ pub(crate) fn fast_pow(x: f32, exp: f32) -> f32 {
     }
 }
 
-/// Floor applied to singular values before taking log — prevents ln(0).
+/// Floor applied to singular values before taking log -- prevents ln(0).
 /// All material `update_particle` implementations clamp σᵢ above this value.
 pub(crate) const LOG_CLAMP: f32 = 1e-10;
 
@@ -85,12 +85,12 @@ pub(crate) fn reconstruct_f(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
 /// Reconstruct a full symmetric Kirchhoff stress tensor from principal (Hencky-basis)
 /// stresses and the LEFT singular vectors of `F`'s SVD (`F = U·Σ·Vᵀ`).
 ///
-/// τ = U · diag(τ_principal) · Uᵀ — the standard result for an isotropic hyperelastic
+/// τ = U · diag(τ_principal) · Uᵀ -- the standard result for an isotropic hyperelastic
 /// material: Kirchhoff/Cauchy stress is coaxial with the left stretch tensor's
 /// eigenvectors (U), not V (see e.g. Bonet & Wood, "Nonlinear Continuum Mechanics for
 /// Finite Element Analysis"). Distinct from `reconstruct_f`, which rebuilds F itself
 /// (U on the left, Vᵀ on the right) for PLASTIC/irreversible return-mapping materials
-/// (Rankine, VonMises) that permanently alter the deformation gradient — this helper
+/// (Rankine, VonMises) that permanently alter the deformation gradient -- this helper
 /// is for REVERSIBLE materials whose principal stress response is asymmetric (e.g. a
 /// no-compression/tension-only law) but that never modify F, only its own stress
 /// output for the CURRENT F.
@@ -304,12 +304,12 @@ pub fn lame_from_young(young_modulus: f32, poisson_ratio: f32) -> (f32, f32) {
 /// Pair with `SimConfig::earth()` and set `config.particle_mass =
 /// rest_density_kg_m3 * (spacing * dx_meters).powi(2)` for a fully IRL-calibrated sim.
 ///
-/// # Example — soft tissue (E ≈ 5 kPa, ν = 0.45, ρ = 1000 kg/m³, 1 cm/cell)
+/// # Example -- soft tissue (E ≈ 5 kPa, ν = 0.45, ρ = 1000 kg/m³, 1 cm/cell)
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// use emerge::lame_from_si;
 /// let (lambda, mu) = lame_from_si(5_000.0, 0.45, 1000.0, 0.01, 0.1);
-/// // lambda ≈ 1552, mu ≈ 172 — ready for NeoHookeanMaterial or ViscoelasticMaterial
+/// // lambda ≈ 1552, mu ≈ 172 -- ready for NeoHookeanMaterial or ViscoelasticMaterial
 /// ```
 pub fn lame_from_si(
     young_modulus_pa: f32,
@@ -329,7 +329,7 @@ pub fn lame_from_si(
 /// so gravity must be in [cells/s²] = g_SI / dx_meters.
 /// The `dt_seconds` parameter is unused but kept for API compatibility.
 ///
-/// # Example — Earth gravity at 1 cm/cell
+/// # Example -- Earth gravity at 1 cm/cell
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// use emerge::gravity_to_grid;
@@ -339,6 +339,49 @@ pub fn lame_from_si(
 /// ```
 pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32, _dt_seconds: f32) -> glam::Vec2 {
     g_si / dx_meters
+}
+
+/// Real single-sphere Stokes drag rate (Stokes 1851), converted from SI to
+/// the engine's own `LinearDragField::drag_coefficient` convention (units
+/// 1/time). `F = 6*pi*mu*r*v` gives `dv/dt = -(6*pi*mu*r/m)*v`, so
+/// `k_SI = 6*pi*mu*r/m` [1/s]; converting to grid-time units follows the
+/// SAME non-dimensionalization family as `lame_from_si`/`stress_from_si`
+/// above, just for a pure rate (1/time only, no mass or length dimension
+/// of its own to cancel): `k_grid = k_SI * dt_seconds`.
+///
+/// # Validity -- check this before using
+/// Stokes' law is only exact for LOW Reynolds number (`Re = rho*v*d/mu
+/// <~ 1`, creeping/laminar flow) -- real, correctly-scoped uses are fine
+/// dust or sand grains in a gentle wind (sub-millimeter radius, low
+/// speed), matching `LinearDragField`'s own doc precedent (real aeolian
+/// sand-transport literature). It is the WRONG formula for a fist-sized
+/// object moving at real everyday speeds: a real Newton's-cradle-scale
+/// steel ball (~1 cm radius) swinging at ~1 m/s sits at `Re ~ 2000-3000`,
+/// where real drag is actually quadratic (form drag), not linear -- this
+/// was checked directly for that case (2026-08-22,
+/// `examples/grain_newtons_cradle_gui.rs`) and found to underpredict a
+/// real cradle's observed damping by roughly 1000x. Compute
+/// `rho_air * velocity * (2.0*radius_m) / dynamic_viscosity_pa_s` yourself
+/// and confirm it's `<~ 1` before trusting this function's output as the
+/// dominant real damping mechanism for a given scene.
+///
+/// # Example -- fine dust grain in air (r=50 micron, m=6.5e-10 kg, 20 C air)
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// use emerge::materials::stokes_drag_rate_from_si;
+/// let k_grid = stokes_drag_rate_from_si(5.0e-5, 6.5e-10, 1.81e-5, 1.0);
+/// // dt_seconds = 1.0 (grid time unit = 1 real second) -- ready for
+/// // LinearDragField::drag_coefficient / GrainField drag.
+/// # let _ = k_grid;
+/// ```
+pub fn stokes_drag_rate_from_si(
+    radius_m: f32,
+    mass_kg: f32,
+    dynamic_viscosity_pa_s: f32,
+    dt_seconds: f32,
+) -> f32 {
+    let k_si = 6.0 * std::f32::consts::PI * dynamic_viscosity_pa_s * radius_m / mass_kg;
+    k_si * dt_seconds
 }
 
 #[cfg(test)]
