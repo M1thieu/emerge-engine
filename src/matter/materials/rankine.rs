@@ -3,10 +3,11 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{BrittleProps, FromSI, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, RANKINE_MIN_RESIDUAL_TENSILE_FRACTION, elastic_wave_dt, hencky_strains, lame_from_young,
-    rankine_damage_saturation_point, reconstruct_f, stress_to_hencky,
+    MIN_J, RANKINE_MIN_RESIDUAL_TENSILE_FRACTION, corotated_elastic_stress, elastic_wave_dt,
+    hencky_strains, lame_from_young, rankine_damage_saturation_point, reconstruct_f,
+    stress_to_hencky,
 };
-use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
+use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Rankine (maximum principal stress) elastoplastic material -- brittle tensile failure.
@@ -202,13 +203,7 @@ impl MaterialModel for RankineMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        let f = particles.deformation_gradient[i];
-        let j = f.determinant();
-        if j <= MIN_J {
-            return Mat2::ZERO;
-        }
-        let r = polar_decomposition_2d(f);
-        2.0 * self.mu * (f - r) * f.transpose() + self.lambda * (j - 1.0) * j * Mat2::IDENTITY
+        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {

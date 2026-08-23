@@ -350,6 +350,141 @@ pub struct ContactResolution {
 ///   this codebase's own material plasticity).
 /// - Rolling: elastic trial `-kr*spring`, capped at `mu_r*r_eff*F_n`, same
 ///   plastic correction on cap.
+/// Rolling-resistance spring shared by every contact model (linear AND
+/// Hertzian) and every geometry (grain-grain AND grain-wall) -- the real
+/// Ai et al. 2011 elastic-plastic EPSD spring is byte-identical across all
+/// four `resolve_*` functions below, only the caller-derived kinematics
+/// (`omega_rel`, `r_eff`) and the already-resolved `normal_force` differ.
+///
+/// Real sign fix, 2026-08-03: `spring.rolling` (call it R) is exactly the
+/// relative-rotation coordinate R = integral(omega_rel dt) = theta_i -
+/// theta_j -- a genuine torsional-spring coordinate between the two
+/// bodies' own rotation angles, same role as the tangential spring but
+/// for the ROTATIONAL dof. `resolve_contact_forces` (population.rs)
+/// documents and applies `rolling_moment` with the SAME convention as the
+/// linear forces: "acting on j, equal and opposite on i"
+/// (`torques[j] += rolling_moment; torques[i] -= rolling_moment;`). For a
+/// torsional spring potential U(R) = 0.5*kr*R^2, the physically correct
+/// generalized force (real Lagrangian mechanics, Q = -dU/dtheta) on that
+/// convention is Q_j = -kr*R*(dR/dtheta_j) = -kr*R*(-1) = +kr*R -- i.e.
+/// `rolling_moment` itself must carry a PLUS sign, not minus. The
+/// previous `-kr*R` was exactly backwards (it's the formula for Q_i, not
+/// Q_j, applied at j's callsite) -- confirmed empirically, not just by
+/// derivation: instrumenting a single grain resting on a huge tilted
+/// pinned floor (tests/grains_repose_angle.rs's
+/// `diag_instrumented_single_step_breakdown`) showed `omega_rel`/`spin_i`
+/// growing MONOTONICALLY (never oscillating back toward zero, the
+/// opposite of what a real restoring torsional spring does) and, once
+/// the Coulomb-like cap engaged, a torque that stayed pinned in a
+/// constant, growth-REINFORCING direction forever instead of opposing
+/// continued spin-up -- the textbook signature of positive feedback from
+/// a flipped restoring-force sign, not a stiff-but-stable oscillator.
+/// This is the real root cause of the long-standing column-collapse
+/// divergence too (any real pile has grains resting at off-axis angles,
+/// which is exactly the code path a perfectly-vertical stack never
+/// exercises).
+#[allow(clippy::too_many_arguments)]
+fn resolve_rolling_spring(
+    spring: &mut ContactSpring,
+    omega_rel: f32,
+    dt: f32,
+    rolling_stiffness: f32,
+    rolling_damping: f32,
+    rolling_friction: f32,
+    r_eff: f32,
+    normal_force: f32,
+) -> f32 {
+    spring.rolling += omega_rel * dt;
+    // Real dashpot damping added alongside the elastic term (2026-08-03,
+    // same real necessity as `tangential_damping`'s own doc): a positive
+    // `omega_rel` contributes a positive moment here (matching the fixed
+    // elastic sign above), so it reinforces -- not opposes -- the spring's
+    // own restoring action, genuinely dissipating relative-rotation energy
+    // rather than just storing/returning it elastically.
+    let trial_mr = rolling_stiffness * spring.rolling + rolling_damping * omega_rel;
+    let max_mr = rolling_friction * r_eff * normal_force;
+    if trial_mr.abs() > max_mr {
+        let clamped = trial_mr.signum() * max_mr;
+        spring.rolling = clamped / rolling_stiffness;
+        clamped
+    } else {
+        trial_mr
+    }
+}
+
+/// Real, shared linear-model (Cundall & Strack 1979) contact core --
+/// `resolve_contact_pair` and `resolve_wall_contact` differ only in how
+/// they derive `overlap`/`n`/`t`/`v_n`/`v_t`/`omega_rel`/`r_eff` (two free
+/// bodies vs. one grain against a fixed wall); once derived, the actual
+/// spring/Coulomb resolution is byte-identical, so it lives here once.
+/// Returns `(normal_force, tangential_force_vec, rolling_moment, ft_scalar)`
+/// -- callers turn `ft_scalar` into their own torque distribution (two-body
+/// action-reaction vs. one-sided wall torque).
+#[allow(clippy::too_many_arguments)]
+fn resolve_contact_core_linear(
+    overlap: f32,
+    n: Vec2,
+    t: Vec2,
+    v_n: f32,
+    v_t: f32,
+    omega_rel: f32,
+    r_eff: f32,
+    spring: &mut ContactSpring,
+    config: &ContactLawConfig,
+    dt: f32,
+) -> (f32, Vec2, f32, f32) {
+    // Normal: linear spring-dashpot (Cundall & Strack 1979), repulsive only.
+    let normal_force = (config.normal_stiffness * overlap - config.normal_damping * v_n).max(0.0);
+
+    // Tangential: elastic-plastic Coulomb spring + real dashpot damping
+    // (see `tangential_damping`'s own doc -- the actual dissipation
+    // mechanism for the tangential/rotational subsystem; without it this
+    // is undamped and explicit integration genuinely injects energy into
+    // it over many contact cycles).
+    //
+    // Real tangent-plane rotation correction (see module doc, 2026-08-03
+    // fix): reproject the spring onto the CURRENT tangent plane before
+    // adding this step's increment, discarding whatever normal-direction
+    // component has drifted in as `n` itself rotated since the spring was
+    // last updated -- without this, a real, confirmed, dt-independent
+    // energy-conservation violation occurs whenever the contact normal
+    // changes direction over time (the general two-mutually-free-bodies
+    // case; a one-body-fixed contact's normal barely rotates, which is why
+    // that case tested fine in isolation).
+    spring.tangential -= n * spring.tangential.dot(n);
+    spring.tangential += v_t * t * dt;
+    let trial_ft_vec =
+        -config.tangential_stiffness * spring.tangential - config.tangential_damping * v_t * t;
+    let max_ft = config.friction * normal_force;
+    let trial_ft_mag = trial_ft_vec.length();
+    let tangential_force_vec = if trial_ft_mag > max_ft {
+        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
+        spring.tangential = -clamped / config.tangential_stiffness;
+        clamped
+    } else {
+        trial_ft_vec
+    };
+    let ft_scalar = tangential_force_vec.dot(t);
+
+    let rolling_moment = resolve_rolling_spring(
+        spring,
+        omega_rel,
+        dt,
+        config.rolling_stiffness,
+        config.rolling_damping,
+        config.rolling_friction,
+        r_eff,
+        normal_force,
+    );
+
+    (
+        normal_force,
+        tangential_force_vec,
+        rolling_moment,
+        ft_scalar,
+    )
+}
+
 pub fn resolve_contact_pair(
     i: &GrainContactState,
     j: &GrainContactState,
@@ -387,84 +522,10 @@ pub fn resolve_contact_pair(
     let v_t = v_rel.dot(t) - (i.radius * i.spin + j.radius * j.spin);
     let omega_rel = i.spin - j.spin;
 
-    // Normal: linear spring-dashpot (Cundall & Strack 1979), repulsive only.
-    let normal_force = (config.normal_stiffness * overlap - config.normal_damping * v_n).max(0.0);
-
-    // Tangential: elastic-plastic Coulomb spring + real dashpot damping
-    // (see `tangential_damping`'s own doc -- the actual dissipation
-    // mechanism for the tangential/rotational subsystem; without it this
-    // is undamped and explicit integration genuinely injects energy into
-    // it over many contact cycles).
-    //
-    // Real tangent-plane rotation correction (see module doc, 2026-08-03
-    // fix): reproject the spring onto the CURRENT tangent plane before
-    // adding this step's increment, discarding whatever normal-direction
-    // component has drifted in as `n` itself rotated since the spring was
-    // last updated -- without this, a real, confirmed, dt-independent
-    // energy-conservation violation occurs whenever the contact normal
-    // changes direction over time (the general two-mutually-free-bodies
-    // case; a one-body-fixed contact's normal barely rotates, which is why
-    // that case tested fine in isolation).
-    spring.tangential -= n * spring.tangential.dot(n);
-    spring.tangential += v_t * t * dt;
-    let trial_ft_vec =
-        -config.tangential_stiffness * spring.tangential - config.tangential_damping * v_t * t;
-    let max_ft = config.friction * normal_force;
-    let trial_ft_mag = trial_ft_vec.length();
-    let tangential_force_vec = if trial_ft_mag > max_ft {
-        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
-        spring.tangential = -clamped / config.tangential_stiffness;
-        clamped
-    } else {
-        trial_ft_vec
-    };
-    let ft_scalar = tangential_force_vec.dot(t);
-
-    // Rolling: elastic-plastic EPSD spring (Ai et al. 2011).
-    //
-    // Real sign fix, 2026-08-03: `spring.rolling` (call it R) is exactly the
-    // relative-rotation coordinate R = integral(omega_rel dt) = theta_i -
-    // theta_j -- a genuine torsional-spring coordinate between the two
-    // bodies' own rotation angles, same role as the tangential spring but
-    // for the ROTATIONAL dof. `resolve_contact_forces` (population.rs)
-    // documents and applies `rolling_moment` with the SAME convention as the
-    // linear forces: "acting on j, equal and opposite on i"
-    // (`torques[j] += rolling_moment; torques[i] -= rolling_moment;`). For a
-    // torsional spring potential U(R) = 0.5*kr*R^2, the physically correct
-    // generalized force (real Lagrangian mechanics, Q = -dU/dtheta) on that
-    // convention is Q_j = -kr*R*(dR/dtheta_j) = -kr*R*(-1) = +kr*R -- i.e.
-    // `rolling_moment` itself must carry a PLUS sign, not minus. The
-    // previous `-kr*R` was exactly backwards (it's the formula for Q_i, not
-    // Q_j, applied at j's callsite) -- confirmed empirically, not just by
-    // derivation: instrumenting a single grain resting on a huge tilted
-    // pinned floor (tests/grains_repose_angle.rs's
-    // `diag_instrumented_single_step_breakdown`) showed `omega_rel`/`spin_i`
-    // growing MONOTONICALLY (never oscillating back toward zero, the
-    // opposite of what a real restoring torsional spring does) and, once
-    // the Coulomb-like cap engaged, a torque that stayed pinned in a
-    // constant, growth-REINFORCING direction forever instead of opposing
-    // continued spin-up -- the textbook signature of positive feedback from
-    // a flipped restoring-force sign, not a stiff-but-stable oscillator.
-    // This is the real root cause of the long-standing column-collapse
-    // divergence too (any real pile has grains resting at off-axis angles,
-    // which is exactly the code path a perfectly-vertical stack never
-    // exercises).
-    spring.rolling += omega_rel * dt;
-    // Real dashpot damping added alongside the elastic term (2026-08-03,
-    // same real necessity as `tangential_damping`'s own doc): a positive
-    // `omega_rel` contributes a positive moment here (matching the fixed
-    // elastic sign above), so it reinforces -- not opposes -- the spring's
-    // own restoring action, genuinely dissipating relative-rotation energy
-    // rather than just storing/returning it elastically.
-    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
-    let max_mr = config.rolling_friction * r_eff * normal_force;
-    let rolling_moment = if trial_mr.abs() > max_mr {
-        let clamped = trial_mr.signum() * max_mr;
-        spring.rolling = clamped / config.rolling_stiffness;
-        clamped
-    } else {
-        trial_mr
-    };
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
+        resolve_contact_core_linear(
+            overlap, n, t, v_n, v_t, omega_rel, r_eff, spring, config, dt,
+        );
 
     // Real torque from the tangential force acting at the true contact
     // point (offset from each center by its own radius along n): derived
@@ -524,38 +585,16 @@ pub fn resolve_wall_contact(
     let v_t = v_rel.dot(t) - grain.radius * grain.spin;
     let omega_rel = -grain.spin; // wall spin is zero
 
-    let normal_force = (config.normal_stiffness * overlap - config.normal_damping * v_n).max(0.0);
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
+        resolve_contact_core_linear(
+            overlap, n, t, v_n, v_t, omega_rel, r_eff, spring, config, dt,
+        );
 
-    spring.tangential -= n * spring.tangential.dot(n);
-    spring.tangential += v_t * t * dt;
-    let trial_ft_vec =
-        -config.tangential_stiffness * spring.tangential - config.tangential_damping * v_t * t;
-    let max_ft = config.friction * normal_force;
-    let trial_ft_mag = trial_ft_vec.length();
-    let tangential_force_vec = if trial_ft_mag > max_ft {
-        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
-        spring.tangential = -clamped / config.tangential_stiffness;
-        clamped
-    } else {
-        trial_ft_vec
-    };
-    let ft_scalar = tangential_force_vec.dot(t);
-
-    spring.rolling += omega_rel * dt;
-    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
-    let max_mr = config.rolling_friction * r_eff * normal_force;
-    let rolling_moment = if trial_mr.abs() > max_mr {
-        let clamped = trial_mr.signum() * max_mr;
-        spring.rolling = clamped / config.rolling_stiffness;
-        clamped
-    } else {
-        trial_mr
-    };
-
-    // Same real torque = r x F mechanism as `friction_torque_on_j` above,
-    // using the grain's own radius as the moment arm -- the actual
-    // mechanism by which static/kinetic friction at the contact point
-    // induces real rolling from rest, not just resisting existing slip.
+    // Same real torque = r x F mechanism as `resolve_contact_pair`'s own
+    // `friction_torque_on_j`, using the grain's own radius as the moment
+    // arm -- the actual mechanism by which static/kinetic friction at the
+    // contact point induces real rolling from rest, not just resisting
+    // existing slip.
     let friction_torque = -grain.radius * ft_scalar;
 
     Some(ContactResolution {
@@ -607,35 +646,26 @@ fn hertzian_damping_coefficient(restitution: f32) -> f32 {
     -ln_e / (std::f32::consts::PI * std::f32::consts::PI + ln_e * ln_e).sqrt()
 }
 
-pub fn resolve_contact_pair_hertzian(
-    i: &GrainContactState,
-    j: &GrainContactState,
+/// Real, shared Hertzian-model contact core -- same real relationship to
+/// `resolve_contact_pair_hertzian`/`resolve_wall_contact_hertzian` that
+/// `resolve_contact_core_linear` has to the linear pair: the two callers
+/// differ only in how they derive `overlap`/`n`/`t`/`v_n`/`v_t`/
+/// `omega_rel`/`r_eff`/`m_eff`, the actual Hertz-Mindlin + Tsuji-damping
+/// resolution is byte-identical once those are known.
+#[allow(clippy::too_many_arguments)]
+fn resolve_contact_core_hertzian(
+    overlap: f32,
+    n: Vec2,
+    t: Vec2,
+    v_n: f32,
+    v_t: f32,
+    omega_rel: f32,
+    r_eff: f32,
+    m_eff: f32,
     spring: &mut ContactSpring,
     config: &HertzianContactConfig,
     dt: f32,
-) -> Option<ContactResolution> {
-    let d = j.x - i.x;
-    let dist = d.length();
-    if dist <= 1e-12 {
-        *spring = ContactSpring::default();
-        return None;
-    }
-    let overlap = i.radius + j.radius - dist;
-    if overlap <= 0.0 {
-        *spring = ContactSpring::default();
-        return None;
-    }
-    let n = d / dist;
-    let t = Vec2::new(-n.y, n.x);
-
-    let r_eff = (i.radius * j.radius) / (i.radius + j.radius);
-    let m_eff = (i.mass * j.mass) / (i.mass + j.mass);
-
-    let v_rel = j.v - i.v;
-    let v_n = v_rel.dot(n);
-    let v_t = v_rel.dot(t) - (i.radius * i.spin + j.radius * j.spin);
-    let omega_rel = i.spin - j.spin;
-
+) -> (f32, Vec2, f32, f32) {
     // Real Hertzian contact-patch-dependent stiffness -- grows with
     // overlap, unlike the linear model's constant `normal_stiffness`.
     let contact_area_radius = (overlap * r_eff).sqrt();
@@ -668,16 +698,58 @@ pub fn resolve_contact_pair_hertzian(
 
     // Rolling: SAME real EPSD spring as the linear model -- see
     // `HertzianContactConfig`'s own doc for why this stays unchanged.
-    spring.rolling += omega_rel * dt;
-    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
-    let max_mr = config.rolling_friction * r_eff * normal_force;
-    let rolling_moment = if trial_mr.abs() > max_mr {
-        let clamped = trial_mr.signum() * max_mr;
-        spring.rolling = clamped / config.rolling_stiffness;
-        clamped
-    } else {
-        trial_mr
-    };
+    let rolling_moment = resolve_rolling_spring(
+        spring,
+        omega_rel,
+        dt,
+        config.rolling_stiffness,
+        config.rolling_damping,
+        config.rolling_friction,
+        r_eff,
+        normal_force,
+    );
+
+    (
+        normal_force,
+        tangential_force_vec,
+        rolling_moment,
+        ft_scalar,
+    )
+}
+
+pub fn resolve_contact_pair_hertzian(
+    i: &GrainContactState,
+    j: &GrainContactState,
+    spring: &mut ContactSpring,
+    config: &HertzianContactConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    let d = j.x - i.x;
+    let dist = d.length();
+    if dist <= 1e-12 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let overlap = i.radius + j.radius - dist;
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = d / dist;
+    let t = Vec2::new(-n.y, n.x);
+
+    let r_eff = (i.radius * j.radius) / (i.radius + j.radius);
+    let m_eff = (i.mass * j.mass) / (i.mass + j.mass);
+
+    let v_rel = j.v - i.v;
+    let v_n = v_rel.dot(n);
+    let v_t = v_rel.dot(t) - (i.radius * i.spin + j.radius * j.spin);
+    let omega_rel = i.spin - j.spin;
+
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
+        resolve_contact_core_hertzian(
+            overlap, n, t, v_n, v_t, omega_rel, r_eff, m_eff, spring, config, dt,
+        );
 
     let friction_torque_on_i = -i.radius * ft_scalar;
     let friction_torque_on_j = -j.radius * ft_scalar;
@@ -722,39 +794,10 @@ pub fn resolve_wall_contact_hertzian(
     let v_t = v_rel.dot(t) - grain.radius * grain.spin;
     let omega_rel = -grain.spin; // wall spin is zero
 
-    let contact_area_radius = (overlap * r_eff).sqrt();
-    let kn = 2.0 * config.effective_young_modulus * contact_area_radius;
-    let ks = 8.0 * config.effective_shear_modulus * contact_area_radius;
-    let damping_coeff = hertzian_damping_coefficient(config.restitution);
-
-    let normal_force =
-        ((2.0 / 3.0) * kn * overlap - 1.8257 * damping_coeff * v_n * (kn * m_eff).sqrt()).max(0.0);
-
-    spring.tangential -= n * spring.tangential.dot(n);
-    spring.tangential += v_t * t * dt;
-    let trial_ft_vec =
-        -ks * spring.tangential - 1.8257 * damping_coeff * v_t * (ks * m_eff).sqrt() * t;
-    let max_ft = config.friction * normal_force;
-    let trial_ft_mag = trial_ft_vec.length();
-    let tangential_force_vec = if trial_ft_mag > max_ft {
-        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
-        spring.tangential = -clamped / ks.max(1.0e-6);
-        clamped
-    } else {
-        trial_ft_vec
-    };
-    let ft_scalar = tangential_force_vec.dot(t);
-
-    spring.rolling += omega_rel * dt;
-    let trial_mr = config.rolling_stiffness * spring.rolling + config.rolling_damping * omega_rel;
-    let max_mr = config.rolling_friction * r_eff * normal_force;
-    let rolling_moment = if trial_mr.abs() > max_mr {
-        let clamped = trial_mr.signum() * max_mr;
-        spring.rolling = clamped / config.rolling_stiffness;
-        clamped
-    } else {
-        trial_mr
-    };
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
+        resolve_contact_core_hertzian(
+            overlap, n, t, v_n, v_t, omega_rel, r_eff, m_eff, spring, config, dt,
+        );
 
     let friction_torque = -grain.radius * ft_scalar;
 

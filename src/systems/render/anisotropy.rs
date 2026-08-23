@@ -51,6 +51,13 @@
 //! matter (flat sheet, isotropic bulk, sparse splash), so the GPU port is a
 //! translation of verified code rather than eigendecomposition debugged
 //! through a shader.
+//!
+//! Disclosed 2026-08-23: this Rust implementation does NOT run at runtime --
+//! `curvature_flow.wgsl` carries its own hand-ported copy of this exact
+//! math (that shader's own comment says so explicitly), since WGSL has no
+//! way to share code with a `.rs` module. This file's real, live job is
+//! being the verified reference the shader was ported from and is checked
+//! against, per the rule above -- not a dead-code oversight.
 
 use glam::{Mat2, Vec2};
 

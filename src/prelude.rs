@@ -70,7 +70,6 @@ pub use crate::{
     Particles,
 
     PlasticityModel,
-    PredictiveBoundary,
     Pressurized,
     RadialConfinementField,
     RankineMaterial,
@@ -112,7 +111,6 @@ pub use crate::{
 
     lame_from_si,
     lame_from_young,
-    log_frame,
     log_frame_full,
     log_frame_gpu,
     per_material_stats,

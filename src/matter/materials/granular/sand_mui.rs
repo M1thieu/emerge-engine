@@ -3,7 +3,8 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, elastic_wave_dt, hencky_strains, lame_from_young, reconstruct_f,
+    MIN_J, corotated_elastic_stress, elastic_wave_dt, hencky_strains, lame_from_young,
+    reconstruct_f,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -130,13 +131,7 @@ impl MaterialModel for MuIRheologyMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        let f = particles.deformation_gradient[i];
-        let j = f.determinant();
-        if j <= MIN_J {
-            return Mat2::ZERO;
-        }
-        let r = crate::materials::polar_decomposition_2d(f);
-        2.0 * self.mu * (f - r) * f.transpose() + self.lambda * (j - 1.0) * j * Mat2::IDENTITY
+        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {

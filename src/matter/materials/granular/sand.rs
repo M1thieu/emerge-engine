@@ -3,9 +3,10 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, elastic_wave_dt, lame_from_young, self_consistent_plastic_multiplier,
+    LOG_CLAMP, MIN_J, corotated_elastic_stress, elastic_wave_dt, lame_from_young,
+    self_consistent_plastic_multiplier,
 };
-use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
+use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Real, cited dry-sand grain diameter (medium sand, standard soil-
@@ -706,16 +707,7 @@ impl MaterialModel for DruckerPragerMaterial {
     /// Corotated elastic Kirchhoff stress: τ = 2µ(F−R)Fᵀ + λ(J−1)J·I
     /// R is the rotation from 2D polar decomposition of F.
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        let f = particles.deformation_gradient[i];
-        let j = f.determinant();
-        if j <= MIN_J {
-            return Mat2::ZERO;
-        }
-
-        let r = polar_decomposition_2d(f);
-
-        let f_t = f.transpose();
-        2.0 * self.mu * (f - r) * f_t + self.lambda * (j - 1.0) * j * Mat2::IDENTITY
+        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {

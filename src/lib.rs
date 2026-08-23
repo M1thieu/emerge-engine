@@ -95,7 +95,7 @@ pub use materials::{
 // Boundary conditions
 pub use boundary::{
     BoundaryCondition, FrictionBoundary, GripFrictionBoundary, HeightmapBoundary,
-    PredictiveBoundary, RatchetFrictionBoundary, SlipBoundary,
+    RatchetFrictionBoundary, SlipBoundary,
 };
 
 // Force fields
@@ -185,7 +185,6 @@ pub use diagnostics::{
     collect_snapshot,
     collect_snapshot_particles_only,
     evaluate_stability,
-    log_frame,
     log_frame_full,
     log_frame_gpu,
     per_material_stats,

@@ -3,9 +3,10 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{DuctileProps, FromSI, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, elastic_wave_dt, hencky_strains, lame_from_young, reconstruct_f,
+    LOG_CLAMP, MIN_J, corotated_elastic_stress, elastic_wave_dt, hencky_strains, lame_from_young,
+    reconstruct_f,
 };
-use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
+use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
 /// Von Mises elastoplastic material: J2 plasticity with optional linear isotropic hardening.
@@ -92,13 +93,7 @@ impl MaterialModel for VonMisesMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        let f = particles.deformation_gradient[i];
-        let j = f.determinant();
-        if j <= MIN_J {
-            return Mat2::ZERO;
-        }
-        let r = polar_decomposition_2d(f);
-        2.0 * self.mu * (f - r) * f.transpose() + self.lambda * (j - 1.0) * j * Mat2::IDENTITY
+        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
