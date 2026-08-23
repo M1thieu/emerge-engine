@@ -18,7 +18,7 @@ use egui_wgpu::ScreenDescriptor;
 /// lines -- do not expect a dramatic visual difference between the two
 /// modes, the real measured effect is ~3% tighter, not a fix.
 ///
-///   cargo run --example sand_ngf_collapse_gui --features render
+///   cargo run --example sand_ngf_collapse --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::thermodynamics::{GranularFluidityConfig, GranularFluidityField};
 use emerge::{
@@ -234,7 +234,7 @@ impl State {
         );
 
         println!(
-            "sand_ngf_collapse_gui: {} particles  |  B=baseline reset  N=ngf reset  SPACE=pause  Q=quit",
+            "sand_ngf_collapse: {} particles  |  B=baseline reset  N=ngf reset  SPACE=pause  Q=quit",
             sim.particles().len()
         );
         println!(

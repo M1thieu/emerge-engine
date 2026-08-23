@@ -75,7 +75,7 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // this grid scale. Disclosed, deferred: basic_sand.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.3),

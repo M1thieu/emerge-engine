@@ -55,7 +55,7 @@ mod gui_common;
 /// literal 1.0x target, a real disclosed remaining calibration gap, not a
 /// bug.
 ///
-///   cargo run --example sand_repose_angle_gui --features render
+///   cargo run --example sand_repose_angle --features render
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
 use emerge::particle::Grain;
@@ -73,10 +73,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-// Same push/pull cursor convention as every other sand example (basic_sand_gui.rs):
+// Same push/pull cursor convention as every other sand example (basic_sand.rs):
 // LMB push, RMB pull, `apply_radial_impulse` at a fixed real radius.
 //
-// REAL BUG FOUND AND FIXED: 7.0 (basic_sand_gui.rs's own value) was copied
+// REAL BUG FOUND AND FIXED: 7.0 (basic_sand.rs's own value) was copied
 // without checking it against THIS demo's own much smaller pile -- that
 // scene's sand mass spans a wide multi-body area, so 7 cells is a small
 // local nudge there. This pile is only 12 cells tall / ~41 wide (see
@@ -507,10 +507,10 @@ impl State {
         renderer.set_optical_params(&gfx.queue, GRAINS_ACCENT_MAT_ID as usize, SIGMA_ACCENT);
         renderer.set_optical_params(&gfx.queue, GRAINS_MARKER_MAT_ID as usize, SIGMA_GRAIN);
 
-        let log_path = std::env::temp_dir().join("emerge_sand_repose_angle_gui.ndjson");
+        let log_path = std::env::temp_dir().join("emerge_sand_repose_angle.ndjson");
         let logger = FrameLogger::open(&log_path).unwrap();
         println!(
-            "sand_repose_angle_gui: {} particles  |  M=cycle mode (PreShaped/Collapse/Grains)  H=toggle holding (collapse mode only)  LMB=push RMB=pull (continuum modes only)  SPACE=pause  R=reset  Q=quit",
+            "sand_repose_angle: {} particles  |  M=cycle mode (PreShaped/Collapse/Grains)  H=toggle holding (collapse mode only)  LMB=push RMB=pull (continuum modes only)  SPACE=pause  R=reset  Q=quit",
             sim.particles().len()
         );
         println!("per-frame diagnostics log: {}", log_path.display());
@@ -528,7 +528,7 @@ impl State {
             cursor_pos: [0.0; 2],
             lmb: false,
             rmb: false,
-            // Lower than basic_sand_gui.rs's own 12.0 default -- real,
+            // Lower than basic_sand.rs's own 12.0 default -- real,
             // measured live: holding the button re-applies this force EVERY
             // frame with no decay (same convention every sand demo uses), so
             // it's the DURATION held, not the radius, that determines how
@@ -741,7 +741,7 @@ impl State {
         // sliding) can be verified after the fact from the log, not just
         // eyeballed live. `is_pushing`/`is_pulling` and the cursor's own
         // grid position ride in `extra` (app-specific context the generic
-        // snapshot has no name for), same slot `rod_blade_of_grass_gui.rs`
+        // snapshot has no name for), same slot `rod_blade_and_root.rs`
         // already uses for its own steer input. Grains mode measures the
         // same real quantity (lateral runout vs the real Lajeunesse
         // prediction) off the grains' own physically-simulated positions
@@ -798,7 +798,7 @@ impl State {
         // Real render buffer: ordinary particles as-is, plus (Grains mode
         // only) one synthetic marker per real grain, position copied
         // DIRECTLY from the grain's own real physically-simulated state --
-        // same real technique `rod_blade_of_grass_gui.rs` already uses for
+        // same real technique `rod_blade_and_root.rs` already uses for
         // the rod solver (a different non-Particle solver entity): the
         // marker carries zero physics of its own, it's a rendering proxy
         // for real state. Isotropic scale (a circle, not an oriented

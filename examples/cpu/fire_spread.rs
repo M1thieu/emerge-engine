@@ -32,7 +32,7 @@ use egui_wgpu::ScreenDescriptor;
 ///     "ignition temperature" to cite, so the phase-rule condition structurally
 ///     never fires rather than merely being unlikely to.
 ///
-///   cargo run --example fire_spread_gui --features "render"
+///   cargo run --example fire_spread --features "render"
 use emerge::render::{ColorMode, GridVolumeSource, Renderer};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
@@ -117,7 +117,7 @@ impl FuelKind {
                 emissivity: 0.92, // real, white/cream paper (Incropera)
                 // Target appearance: pale cream (0.92, 0.90, 0.80).
                 // sigma_a = -ln(target), verified via particle_color() to
-                // reproduce it (see fire_spread_gui_real_colors test).
+                // reproduce it (see fire_spread_real_colors test).
                 absorption: [0.083, 0.105, 0.223],
                 name: "Paper (very flammable)",
             },
@@ -157,7 +157,7 @@ fn make_sim(fuel_kind: FuelKind) -> Simulation {
         max_substeps_per_step: 16,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
-        // this grid scale. Disclosed, deferred: basic_sand_gui.rs's
+        // this grid scale. Disclosed, deferred: basic_sand.rs's
         // gravity_fraction slider is the real-IRL-with-live-control
         // pattern, not yet ported to every plain example.
         gravity: Vec2::new(0.0, -0.08),
@@ -312,20 +312,20 @@ impl State {
         );
 
         println!(
-            "fire_spread_gui: {} particles  |  click to ignite (real match, {MATCH_TEMP}K)  |  \
+            "fire_spread: {} particles  |  click to ignite (real match, {MATCH_TEMP}K)  |  \
              G grid-volume  R reset  Q quit",
             sim.particles().len()
         );
 
         const RENDER_MATERIAL_SLOTS: u64 = 16;
         let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fire_spread_gui_grid_bridge"),
+            label: Some("fire_spread_grid_bridge"),
             size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fire_spread_gui_material_mass_bridge"),
+            label: Some("fire_spread_material_mass_bridge"),
             size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,

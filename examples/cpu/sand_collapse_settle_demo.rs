@@ -69,7 +69,7 @@ fn measure_pile_shape(xs: &[Vec2]) -> (f32, f32, f32) {
         return (0.0, 0.0, 0.0);
     }
     let center_x = xs.iter().map(|p| p.x).sum::<f32>() / n;
-    // Same real bug-fixed fallback as `sand_repose_angle_gui.rs::measure_angle_deg`:
+    // Same real bug-fixed fallback as `sand_repose_angle.rs::measure_angle_deg`:
     // a wide-spread pile can leave the +-2 cell band around center_x empty.
     let height = xs
         .iter()

@@ -20,7 +20,7 @@ use egui_wgpu::ScreenDescriptor;
 /// egui panel (same wgpu-native egui already used by `material_sandbox_gpu`)
 /// exposes the push strength as a live slider.
 ///
-///   cargo run --example rod_blade_of_grass_gui --features render
+///   cargo run --example rod_blade_and_root --features render
 use emerge::particle::{Particle, Particles};
 use emerge::render::Renderer;
 use emerge::rod::{
@@ -523,9 +523,9 @@ impl State {
         );
 
         println!(
-            "rod_blade_of_grass_gui: hover near the blade to push, W toggles wind, R resets, Q quits"
+            "rod_blade_and_root: hover near the blade to push, W toggles wind, R resets, Q quits"
         );
-        let log_path = std::env::temp_dir().join("emerge_rod_blade_gui.ndjson");
+        let log_path = std::env::temp_dir().join("emerge_rod_blade_and_root.ndjson");
         let logger = FrameLogger::open(&log_path).unwrap();
         println!("per-frame diagnostics log: {}", log_path.display());
         Self {

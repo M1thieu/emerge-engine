@@ -3,9 +3,9 @@ extern crate emerge_engine as emerge;
 use egui_wgpu::ScreenDescriptor;
 use emerge::Particle;
 /// `basic_fluids.rs` (Newtonian water dam-break + Bingham mud blob) with a real,
-/// live egui panel -- same pattern as `basic_sand_gui.rs`/`basic_snow_gui.rs`:
+/// live egui panel -- same pattern as `basic_sand.rs`/`basic_snow.rs`:
 /// real gravity slider (1.0 = genuine IRL 9.81 m/s²), push/pull, and directional-
-/// drag digging (the SAME proven mechanism from `basic_sand_gui.rs`: a per-particle
+/// drag digging (the SAME proven mechanism from `basic_sand.rs`: a per-particle
 /// velocity nudge along the cursor's own movement, no second body, no contact_group
 /// tuning -- mass-conserving by construction). Materials and the dam-break setup
 /// are unchanged from `basic_fluids.rs`.
@@ -25,7 +25,7 @@ use emerge::Particle;
 /// resolved scene rather than treating the gravity slider as a stabilization
 /// parameter.
 ///
-///   cargo run --example basic_fluids_gui --features render
+///   cargo run --example basic_fluids --features render
 use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
@@ -65,7 +65,7 @@ enum RenderMode {
 // Foam/spray (Ihmsen-simplified trapped-air potential + Spray/Foam
 // secondary particles) was built and shipped 2026-08-10, then REVERTED same
 // day on the user's own direct instruction: real, measured perf cost (see
-// [[basic_fluids_gui_foam_spray_shipped_2026-08-10]] for the full postmortem
+// [[basic_fluids_foam_spray_shipped_2026-08-10]] for the full postmortem
 // -- visual tuning was never confirmed and the user judged it not worth
 // carrying while the CORE render/perf/physics work below is still unsettled.
 // Deliberately deferred, not abandoned -- pick it back up from that memory
@@ -135,7 +135,7 @@ const COLD_AMBIENT: f32 = 250.0;
 // empirically for a reasonable interactive wait (ice appears within ~2
 // minutes).
 const FREEZER_COOLING_RATE: f32 = 0.08;
-// Radius of the directional dig nudge, grid cells -- matches basic_sand_gui.rs.
+// Radius of the directional dig nudge, grid cells -- matches basic_sand.rs.
 const DIG_RADIUS: f32 = 4.0;
 
 fn make_sim() -> Simulation {
@@ -150,7 +150,7 @@ fn make_sim() -> Simulation {
         // time every frame while still reporting a flat, comfortable fps --
         // that was NEVER disclosed or tracked, this is). RE-MEASURED
         // 2026-08-10 (previous sweep numbers here were stale, measured under
-        // a since-fixed time-dilation bug -- see [[basic_fluids_gui_
+        // a since-fixed time-dilation bug -- see [[basic_fluids_
         // realtime_stepping_fixed_2026-08-10]]): on a genuinely quiet
         // machine, real-time-corrected stepping, cap=12 -> stable 46-59fps
         // clean 20s (zero spikes); cap=16 -> 38-47fps, real dips below the
@@ -557,19 +557,19 @@ impl State {
         // scene setup, matching `fire_spread.rs`'s own grid-bridge precedent.
         const RENDER_MATERIAL_SLOTS: u64 = 16;
         let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_gui_grid_bridge"),
+            label: Some("basic_fluids_grid_bridge"),
             size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_gui_material_mass_bridge"),
+            label: Some("basic_fluids_material_mass_bridge"),
             size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let particle_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_gui_particle_bridge"),
+            label: Some("basic_fluids_particle_bridge"),
             size: (sim.particles().len() * std::mem::size_of::<Particle>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -594,7 +594,7 @@ impl State {
         );
 
         println!(
-            "basic_fluids_gui: {} particles  |  LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit",
+            "basic_fluids: {} particles  |  LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -894,7 +894,7 @@ impl State {
             // Low-cost permanent tripwire (silent in normal operation) --
             // 2026-08-10, chased a real periodic ~150ms spike that turned
             // out to be system noise, not an engine bug (see
-            // [[basic_fluids_gui_perf_regression_and_cleanup_2026-08-10]]
+            // [[basic_fluids_perf_regression_and_cleanup_2026-08-10]]
             // items 7-8: substeps_last_step is pinned at the cap regardless
             // of CFL, and a genuinely quiet-machine run showed zero spikes).
             // Left in place with full phase-timing + substep-count context

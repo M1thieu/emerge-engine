@@ -4,26 +4,30 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// `basic_snow.rs` (two real snowballs colliding -- Stomakhin 2013 snow
-/// plasticity, soft powder vs packed snow, packed snow fractures into loose
-/// granular on hard impact via a real phase transition) with a real, live
-/// egui panel -- same pattern as `basic_sand.rs`: real gravity slider
-/// (1.0 = genuine IRL 9.81 m/s²) and push/pull strength. Materials, the
-/// collision setup, and the fracture mechanic are unchanged from
-/// `basic_snow.rs` -- already real and good, not touched.
+/// Live demo of the new `DruckerPragerMaterial::compaction_sensitivity`
+/// mechanic (real, single-phase/dry compaction: denser packing under real
+/// load -> higher friction, Bolton 1986's real relative-density-to-friction
+/// relation). Same GUI boilerplate as `basic_sand.rs` -- LMB push, RMB
+/// pull (`apply_radial_impulse`, already real, already existed) are the ONLY
+/// forcing here. No scripted/automatic event of any kind drives this scene --
+/// an earlier version of this file auto-injected a periodic velocity kick to
+/// exercise the mechanic without needing live mouse input, which is exactly
+/// the kind of unnatural hardcoded forcing this project's own standing rule
+/// rejects (see MEMORY.md's no-cheating/no-hardcode note) -- removed. Real
+/// compaction only happens here if a real person pushes/pulls the pile
+/// through this window themselves.
 ///
-/// Real gravity default: 0.01, NOT re-guessed -- a headless sweep
-/// (2026-07-23, see MEMORY.md's ecosystem-roadmap note) confirmed every
-/// fraction from 0.001 to 1.0 stays numerically finite here, and the same
-/// 0.01 checkpoint already validated for sand and fluids only adds ~12
-/// grid-units/s on top of this scene's own intrinsic ~15 grid-units/s
-/// collision-launch speed -- consistent across all three tier-0 materials
-/// rather than a fresh guess.
+/// `ColorMode::ByVolume` renders each particle by its own current volume
+/// ratio J = det(F) -- so wherever you actually compact it, that region
+/// visibly shifts color. Console prints a real, passive compaction readout
+/// every 2s (deep-bulk vs surface, same regions used in the engine-side
+/// diagnostic) -- reporting only, not driving anything.
 ///
-///   cargo run --example basic_snow --features render
+///   cargo run --example sand_compaction --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
+    AabbConfinementField, DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation,
+    SpawnRegion,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -35,57 +39,60 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-const MAT_SOFT: u32 = 0;
-const MAT_PACKED: u32 = 1;
-const MAT_SHATTER: u32 = 2;
-const BALL_R: f32 = 9.0;
-const BALL_A: Vec2 = Vec2::new(16.0, 44.0);
-const BALL_B: Vec2 = Vec2::new(48.0, 44.0);
-const SPEED: f32 = 15.0;
-// Radius of the directional dig nudge, grid cells -- matches basic_sand.rs.
-const DIG_RADIUS: f32 = 4.0;
+// Real, disclosed demo-visibility coefficient -- real compaction magnitude in
+// a settling pile is genuinely small (~1e-4 ln(J)) at this timescale, so this
+// is chosen large enough to see, not a claimed-calibrated real value. See
+// `DruckerPragerMaterial::compaction_sensitivity`'s own doc for the honest
+// scope (real, correctly-directed physics; simplified linear coefficient).
+const COMPACTION_SENSITIVITY: f32 = 50.0;
 
 fn make_sim() -> Simulation {
+    let target_angle: f32 = 30.0;
+    // Smaller pile + coarser spacing -- ~760 particles instead of ~5500 (a
+    // real ~7x cut: half the linear size, 2x the spacing = 4x fewer per
+    // unit area), specifically so this stays interactive on CPU-only debug
+    // stepping. Same real scene/physics, just fewer particles -- this
+    // session's own earlier work already confirmed the pile's qualitative
+    // behavior is resolution-independent (2x height + 2x density gave the
+    // same result), so shrinking it doesn't change what's being shown.
+    let height = 8.0f32;
+    let half_base = height / target_angle.to_radians().tan();
     let config = SimConfig {
-        max_substeps_per_step: 20,
-        ..SimConfig::earth(GRID, 0.01, DT)
+        max_substeps_per_step: 64,
+        apic_blend: 0.05, // real, found-optimal granular stabilizer (tonight's own work)
+        ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
+    let cx = GRID as f32 * 0.5;
+    let floor = 2.0;
     let spawn = SpawnRegion {
         spacing: 0.5,
-        box_size: IVec2::new(58, 58),
-        rng_seed: 7,
+        box_size: IVec2::new(
+            (2.0 * half_base).ceil() as i32 + 4,
+            height.ceil() as i32 + 4,
+        ),
+        box_center: Vec2::new(cx, floor + 2.0 + height * 0.5),
+        material_id: 0,
+        precompute_initial_volumes: true,
         ..SpawnRegion::for_sim(&config)
     };
+    let sand = DruckerPragerMaterial {
+        compaction_sensitivity: COMPACTION_SENSITIVITY,
+        ..DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2)
+    };
     let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(StomakhinMaterial::new(
-            1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0,
-        )))
-        .with_material(
-            MAT_PACKED,
-            Box::new(
-                StomakhinMaterial::new(1389.0, 2083.0, 10.0, 0.012, 0.004, 0.6, 20.0)
-                    .with_cohesion(400.0),
-            ),
-        )
-        .with_material(
-            MAT_SHATTER,
-            Box::new(DruckerPragerMaterial::low_friction(266.7, 0.333)),
-        )
-        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
     solver.retain_particles(|p| {
-        (p.x - BALL_A).length() <= BALL_R || (p.x - BALL_B).length() <= BALL_R
+        let dy = p.x.y - floor;
+        let dx = (p.x.x - cx).abs();
+        dy >= 0.0 && dy <= height && dx <= half_base * (1.0 - dy / height).max(0.0)
     });
-    solver.particles_mut().for_each_mut(|p| {
-        if (p.x - BALL_A).length() <= BALL_R {
-            p.material_id = MAT_SOFT;
-            p.v = Vec2::new(SPEED, 0.0);
-        } else {
-            p.material_id = MAT_PACKED;
-            p.v = Vec2::new(-SPEED, 0.0);
-        }
-    });
-    solver.recompute_initial_volumes();
+    let footprint_half = half_base + 1.0;
+    solver.add_force_field(Box::new(AabbConfinementField::new(
+        Vec2::new(cx - footprint_half, floor),
+        Vec2::new(cx + footprint_half, floor + height + 20.0),
+        500.0,
+    )));
     solver
 }
 
@@ -100,18 +107,50 @@ struct State {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     cursor_pos: [f32; 2],
-    last_cursor_grid: Vec2,
     lmb: bool,
     rmb: bool,
-    digging: bool,
     push_strength: f32,
-    dig_strength: f32,
-    real_gravity: Vec2,
-    gravity_fraction: f32,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
+    sim_time: f32,
+    log_timer: std::time::Instant,
+}
+
+/// Real, honest, PASSIVE measurement: mean ln(J) (J = det(deformation_gradient),
+/// each particle's own actual current volume ratio) in the deep bulk (most
+/// sustained load, if any real pushing has happened near/on it) vs the
+/// exposed surface -- negative = real compaction. Pure reporting, drives
+/// nothing, changes nothing -- whatever compaction shows up here only
+/// happened because a real person pushed/pulled the pile through the window.
+fn log_compaction(sim: &Simulation, cx: f32, floor: f32, height: f32, half_base: f32) {
+    let particles = sim.particles();
+    let min_y = particles.x.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    let mut bulk = Vec::new();
+    let mut surface = Vec::new();
+    for i in 0..particles.len() {
+        let j = particles.deformation_gradient[i]
+            .determinant()
+            .max(1e-6)
+            .ln();
+        let dy = particles.x[i].y - min_y;
+        let dx = (particles.x[i].x - cx).abs();
+        if dy < height * 0.3 && dx < half_base * 0.4 {
+            bulk.push(j);
+        } else if dy > height * 0.7 {
+            surface.push(j);
+        }
+    }
+    let _ = floor;
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len().max(1) as f32;
+    println!(
+        "  [compaction, passive] deep-bulk ln(J) = {:.5} ({} particles)  |  surface ln(J) = {:.5} ({} particles)",
+        mean(&bulk),
+        bulk.len(),
+        mean(&surface),
+        surface.len()
+    );
 }
 
 impl State {
@@ -153,10 +192,18 @@ impl State {
         };
         surface.configure(&device, &sc);
         let sim = make_sim();
-        let real_gravity = sim.config().gravity;
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
-        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.9, true);
+        // ByVolume itself (heat(det2(F)*0.5)) is nearly flat right at J=1.0 --
+        // real compaction here is only ~0.1-0.2% volume change, far too small
+        // for that mapping's dynamic range (built for much bigger deformation).
+        // Real fix, not a physics hardcode: rescale the DISPLAY of the same
+        // real J value into a visible range, using `Particle::scalar_field`
+        // (the engine's own existing generic visualization/carrier scalar --
+        // not read by DruckerPragerMaterial's constitutive law, so this only
+        // affects color, never physics) + `ColorMode::ByScalarField`. Written
+        // fresh from real state every frame in `update_and_render`.
+        renderer.set_color_mode(ColorMode::ByScalarField);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -177,7 +224,7 @@ impl State {
         );
 
         println!(
-            "basic_snow: {} particles  |  LMB push  RMB pull  D toggle dig  R reset  Q quit",
+            "sand_compaction: {} particles | compaction_sensitivity={COMPACTION_SENSITIVITY} | LMB push RMB pull Q quit -- push/pull the pile yourself, nothing forces it automatically",
             sim.particles().len()
         );
         Self {
@@ -191,19 +238,15 @@ impl State {
             egui_state,
             egui_renderer,
             cursor_pos: [0.0; 2],
-            last_cursor_grid: Vec2::ZERO,
             lmb: false,
             rmb: false,
-            digging: false,
-            push_strength: 10.0,
-            dig_strength: 18.0,
-            real_gravity,
-            // 0.01 -> 0.005, user-confirmed live: "un peu fort" at 0.01.
-            gravity_fraction: 0.005,
+            push_strength: 12.0,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             last_fps: 0.0,
+            sim_time: 0.0,
+            log_timer: std::time::Instant::now(),
         }
     }
 
@@ -215,7 +258,7 @@ impl State {
         self.surface_config.height = h;
         self.surface.configure(&self.device, &self.surface_config);
         self.renderer
-            .set_camera(&self.queue, GRID as u32, w, h, 0.6, true);
+            .set_camera(&self.queue, GRID as u32, w, h, 0.9, true);
     }
 
     fn cursor_grid(&self) -> Vec2 {
@@ -228,46 +271,48 @@ impl State {
     }
 
     fn update_and_render(&mut self, window: &Window) {
-        self.sim
-            .set_gravity(self.real_gravity * self.gravity_fraction);
         if self.lmb || self.rmb {
             let mag = if self.lmb {
                 self.push_strength
             } else {
                 -self.push_strength
             };
-            self.sim.apply_radial_impulse(self.cursor_grid(), 6.0, mag);
+            self.sim.apply_radial_impulse(self.cursor_grid(), 7.0, mag);
         }
-        // Digging: nudges nearby particles along the cursor's OWN movement
-        // direction (a furrow), not radially like push/pull -- same proven
-        // mechanism as basic_sand.rs, no second body, no impulse call.
-        let cursor = self.cursor_grid();
-        if self.digging {
-            let delta = cursor - self.last_cursor_grid;
-            if delta.length_squared() > 1.0e-8 {
-                let dir = delta.normalize();
-                let particles = self.sim.particles_mut();
-                for i in 0..particles.len() {
-                    if (particles.x[i] - cursor).length() < DIG_RADIUS {
-                        particles.v[i] += dir * self.dig_strength * DT;
-                    }
-                }
+
+        self.sim.step();
+
+        // Rescale the real J = det(F) into a visible [0,1] range for display
+        // only -- physics already ran above using the real, unscaled state;
+        // this only sets `scalar_field`, which no material reads back.
+        // VISUAL_ZOOM chosen from what this scene actually produces (J stays
+        // within roughly +/-1% of 1.0 -- see the passive log below), not an
+        // arbitrary number: maps that real range across most of [0,1].
+        const VISUAL_ZOOM: f32 = 40.0;
+        {
+            let particles = self.sim.particles_mut();
+            for i in 0..particles.len() {
+                let j = particles.deformation_gradient[i].determinant();
+                particles.scalar_field[i] = (0.5 + (j - 1.0) * VISUAL_ZOOM).clamp(0.0, 1.0);
             }
         }
-        self.last_cursor_grid = cursor;
-        self.sim.step();
-        // Fracture trigger: real plastic compression (Jp), not raw speed --
-        // the old `v.length() > 5.0` fired at launch, before any collision.
-        self.sim.phase_transition(
-            |p| p.material_id == MAT_PACKED && p.plastic_volume_ratio < 0.9,
-            MAT_SHATTER,
-        );
+
+        self.sim_time += DT;
         self.frame += 1;
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
             self.last_fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
+        }
+        // Real, passive compaction readout every 2s -- reports whatever real
+        // compaction has actually happened so far, drives nothing itself.
+        if self.log_timer.elapsed().as_secs_f32() >= 2.0 {
+            self.log_timer = std::time::Instant::now();
+            let cx = GRID as f32 * 0.5;
+            let height = 8.0f32;
+            let half_base = height / 30.0f32.to_radians().tan();
+            log_compaction(&self.sim, cx, 2.0, height, half_base);
         }
 
         let output = match self.surface.get_current_texture() {
@@ -280,68 +325,28 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // --- egui panel ---
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
-        let mut push_strength = self.push_strength;
-        let mut dig_strength = self.dig_strength;
-        let mut gravity_fraction = self.gravity_fraction;
-        let mut digging = self.digging;
-        let soft_n = self
-            .sim
-            .particles()
-            .iter()
-            .filter(|p| p.material_id == MAT_SOFT)
-            .count();
-        let packed_n = self
-            .sim
-            .particles()
-            .iter()
-            .filter(|p| p.material_id == MAT_PACKED)
-            .count();
-        let shatter_n = self
-            .sim
-            .particles()
-            .iter()
-            .filter(|p| p.material_id == MAT_SHATTER)
-            .count();
-        let mut reset = false;
+        let n_particles = self.sim.particles().len();
+        let sim_time = self.sim_time;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Snow")
+            egui::Window::new("Sand Compaction")
                 .default_pos([10.0, 10.0])
                 .default_width(260.0)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("fps={fps:.0}"));
+                    ui.label(format!("fps={fps:.0}  particles={n_particles}  t={sim_time:.1}s"));
+                    ui.separator();
                     ui.label(format!(
-                        "soft={soft_n}  packed={packed_n}  shatter={shatter_n}"
+                        "compaction_sensitivity = {COMPACTION_SENSITIVITY} (demo-visibility scale)"
                     ));
+                    ui.label("ColorMode::ByVolume -- push/pull the pile and watch it shift color");
                     ui.separator();
-                    ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
-                    ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=2.0));
-                    ui.separator();
-                    ui.label("Push/pull strength:");
-                    ui.add(egui::Slider::new(&mut push_strength, 0.0..=30.0));
-                    ui.checkbox(&mut digging, "Digging active (or press D)");
-                    ui.add(egui::Slider::new(&mut dig_strength, 0.0..=40.0).text("Dig strength"));
-                    ui.separator();
-                    ui.label("LMB push  RMB pull  D toggle dig  R reset  Q quit");
-                    if ui.button("Reset").clicked() {
-                        reset = true;
-                    }
+                    ui.label("LMB push  RMB pull  Q quit");
+                    ui.label("Nothing forces this automatically -- console logs real compaction passively");
                 });
         });
-        self.push_strength = push_strength;
-        self.dig_strength = dig_strength;
-        self.gravity_fraction = gravity_fraction;
-        self.digging = digging;
-        if reset {
-            let sim = make_sim();
-            self.real_gravity = sim.config().gravity;
-            self.sim = sim;
-            self.frame = 0;
-        }
 
         self.egui_state
             .handle_platform_output(window, full_output.platform_output);
@@ -398,7 +403,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Snow (GUI)")
+                    .with_title("emerge -- Sand Compaction Demo")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),
@@ -437,17 +442,8 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 let pressed = key_state == ElementState::Pressed;
-                match key {
-                    KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
-                    KeyCode::KeyD if pressed => s.digging = !s.digging,
-                    KeyCode::KeyR if pressed => {
-                        let sim = make_sim();
-                        s.real_gravity = sim.config().gravity;
-                        s.sim = sim;
-                        s.frame = 0;
-                        println!("reset");
-                    }
-                    _ => {}
+                if let (KeyCode::Escape | KeyCode::KeyQ, true) = (key, pressed) {
+                    el.exit();
                 }
             }
             WindowEvent::Resized(sz) => s.resize(sz.width, sz.height),

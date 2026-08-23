@@ -172,7 +172,7 @@ fn make_sim_data(
         // CPU scene) panics on frame 1 here ("GPU strict fluid update became
         // inadmissible"). Not swept per-value for this scene yet; 0.1 is the
         // known-stable pairing from the CPU sweep at higher compression.
-        // 0.3, not 0.1 (2026-08-13) -- matches `basic_fluids_gui.rs`'s own
+        // 0.3, not 0.1 (2026-08-13) -- matches `basic_fluids.rs`'s own
         // change and the standard explicit CFL number range (0.2-0.4;
         // Monaghan 0.25-0.3 for SPH, MLS-MPM commonly 0.3-0.5). See that
         // demo's own comment for the full reasoning: 0.1 was 3x more
@@ -193,7 +193,7 @@ fn make_sim_data(
         // gravity (just 0.3% of true g_grid, itself already ~10x the old
         // constant) settled to ~0.01-0.04 -- ~100x flatter, genuinely
         // stabilized. This is the SAME `gravity_fraction`-style real-IRL-
-        // scaled convention `basic_sand_gui.rs`/`basic_fluids_gui.rs`
+        // scaled convention `basic_sand.rs`/`basic_fluids.rs`
         // already use, ported here directly rather than another hand-picked
         // constant.
         gravity: Vec2::new(0.0, -981.0 * 0.003),
@@ -202,7 +202,7 @@ fn make_sim_data(
         // exact demo's real, reproduced crash: J up to 34653 under sustained
         // wall-contact compression). Tightens the CFL bound specifically for
         // strict-fluid particles near a wall -- the SAME real mechanism that
-        // took `fluid_pressure_projection_gui.rs`'s hardest known scene from
+        // took `fluid_pressure_projection.rs`'s hardest known scene from
         // exploding to a full, real 120-frame settle, now applied to this
         // demo's stiff-EOS (non-projection) fluid path.
         // Tried lowered to 5.0 (2026-08-09) to cut the substep tax further after
@@ -247,7 +247,7 @@ fn make_sim_data(
     // rho_kg_m3*dx_meters^2 = 1000*0.01^2 = 0.1` for real water at this
     // scene's scale). Mud's own `4.0` is intentionally unchanged (no
     // equally solid SI citation established for mud density tonight).
-    // 0.5 (2026-08-14) -- matches `basic_fluids_gui.rs` exactly (4 PPC), was
+    // 0.5 (2026-08-14) -- matches `basic_fluids.rs` exactly (4 PPC), was
     // 0.9 (~1.2 PPC) since a 45fps fix predating today's GPU solver revert.
     // Real, measured win: denser sampling gives the velocity-divergence
     // estimate less room to spuriously spike (sub=19 steady vs the sparse
@@ -375,7 +375,7 @@ fn make_sim_data(
             // this GPU strict-fluid path uses a weakly-compressible Tait
             // EOS, not true incompressible pressure projection, so
             // cyclostrophic balance is only approximated. The engine's own
-            // DCT/Gauss-Seidel solver (`fluid_pressure_projection_gui.rs`)
+            // DCT/Gauss-Seidel solver (`fluid_pressure_projection.rs`)
             // is the accurate path -- real current perf there, 16-30fps
             // depending on `GS_CORRECTION_SWEEPS` (see that constant's own
             // doc, `grid/pressure.rs`), the old "0.1-0.2fps" figure was
@@ -775,7 +775,7 @@ impl State {
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
-        // Ported from `basic_fluids_gui.rs` (2026-08-14): never called here, so
+        // Ported from `basic_fluids.rs` (2026-08-14): never called here, so
         // GridVolume/Surface thresholded this scene's real SI water mass
         // (WATER_RHO_GRID=0.1, a FULL cell) against the old absolute
         // mass_floor -- discarding almost everything (live-reported:
@@ -897,7 +897,7 @@ impl State {
         // Exact inverse of set_camera's NDC projection (accounts for
         // aspect-ratio letterboxing) -- the naive width/height scaling this
         // replaced was the same bug already found and fixed in
-        // basic_fluids_gui.rs earlier this session, just never ported here:
+        // basic_fluids.rs earlier this session, just never ported here:
         // it only matched the grid at a square window, drifting off (LMB/
         // RMB push/pull landing at the wrong point, reading as "the cursor
         // doesn't work") at any other aspect ratio.

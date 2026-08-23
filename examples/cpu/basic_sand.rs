@@ -4,7 +4,7 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 /// `basic_sand.rs` with a real, live egui panel (same wgpu-native egui
-/// already used by `rod_blade_of_grass_gui.rs`/`material_sandbox_gpu`):
+/// already used by `rod_blade_and_root.rs`/`material_sandbox_gpu`):
 /// same push/pull cursor interaction as every other sand example (LMB push,
 /// RMB pull, `apply_radial_impulse`), POURING (holding P spawns a small
 /// trickle of new sand particles at the cursor via `Simulation::add_body`),
@@ -23,7 +23,7 @@ mod gui_common;
 /// -- particle deletion, and a kinematic "shovel" body that broke under real
 /// gravity).
 ///
-///   cargo run --example basic_sand_gui --features render
+///   cargo run --example basic_sand --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -141,7 +141,7 @@ impl State {
         renderer.set_optical_params(&gfx.queue, MAT_DENSE as usize, SIGMA_SAND);
 
         println!(
-            "basic_sand_gui: {} particles  |  LMB push  RMB pull  D toggle dig  hold P to pour  R reset  Q quit",
+            "basic_sand: {} particles  |  LMB push  RMB pull  D toggle dig  hold P to pour  R reset  Q quit",
             sim.particles().len()
         );
         Self {

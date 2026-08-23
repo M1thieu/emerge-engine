@@ -29,7 +29,7 @@ mod gui_common;
 /// only the "never stretches" string constraint is asserted directly,
 /// exactly like a real cradle's own effectively-inextensible wires.
 ///
-///   cargo run --example grain_newtons_cradle_gui --features render
+///   cargo run --example grain_newtons_cradle --features render
 use emerge::fields::LinearDragField;
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{
@@ -354,7 +354,7 @@ impl State {
         renderer.set_optical_params(&gfx.queue, STRING_MARKER_MAT_ID as usize, SIGMA_STRING);
 
         println!(
-            "grain_newtons_cradle_gui: {N_GRAINS} grains  |  SPACE=pause  R=reset  LMB=nudge nearest grain  Q=quit"
+            "grain_newtons_cradle: {N_GRAINS} grains  |  SPACE=pause  R=reset  LMB=nudge nearest grain  Q=quit"
         );
         Self {
             gfx,

@@ -5,7 +5,7 @@ use emerge::fields::GravityWellField;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// `basic_orbital.rs` (Sun + Earth + Mars, real `GravityWellField` gravity)
-/// with a real, live egui panel -- same pattern as `basic_fluids_gui.rs`: a
+/// with a real, live egui panel -- same pattern as `basic_fluids.rs`: a
 /// speed slider (steps-per-frame, NOT `dt_seconds` -- keeps the validated
 /// integration accuracy fixed regardless of playback speed) and a live real
 /// day/year readout.
@@ -19,7 +19,7 @@ use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// discretization, not temporal, was the real limiting factor) -- so the
 /// speed slider is free to change playback pace without touching accuracy.
 ///
-///   cargo run --example basic_orbital_gui --features render
+///   cargo run --example basic_orbital --features render
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
