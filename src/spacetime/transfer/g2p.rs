@@ -49,6 +49,7 @@ impl MutFieldPtrs {
         initial_volume: f32,
         activation: f32,
         activation_dir: Vec2,
+        scalar_field: f32,
         nonlocal_fluidity: f32,
         cosserat_curvature: Vec2,
     ) -> ParticleUpdateCtx<'_> {
@@ -69,6 +70,7 @@ impl MutFieldPtrs {
                 initial_volume,
                 activation,
                 activation_dir,
+                scalar_field,
                 nonlocal_fluidity,
                 cosserat_curvature,
             }
@@ -274,6 +276,7 @@ pub fn gather_grid_to_particles(
     let initial_volumes = &particles.initial_volume[..active_count];
     let activations = &particles.activation[..active_count];
     let activation_dirs = &particles.activation_dir[..active_count];
+    let scalar_fields = &particles.scalar_field[..active_count];
     // Mutable fields: raw pointers taken once, before the parallel loop --
     // avoids an 18-way nested `.zip()` (unreadable, error-prone to extend).
     // SAFETY: `(0..active_count).into_par_iter()` is an IndexedParallelIterator
@@ -332,6 +335,7 @@ pub fn gather_grid_to_particles(
                     initial_volumes[i],
                     activations[i],
                     activation_dirs[i],
+                    scalar_fields[i],
                     nonlocal_fluidity.get(i).copied().unwrap_or(0.0),
                     cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
                 )
