@@ -105,10 +105,6 @@ pub(super) fn project_particle_state_to_admissible(
         projected = true;
     }
 
-    if !particles.mass[i].is_finite() || particles.mass[i] <= 0.0 {
-        particles.mass[i] = config.particle_mass;
-        projected = true;
-    }
     if !particles.initial_volume[i].is_finite() || particles.initial_volume[i] <= 0.0 {
         particles.initial_volume[i] = config
             .default_initial_volume
@@ -117,6 +113,13 @@ pub(super) fn project_particle_state_to_admissible(
     }
     if !particles.volume[i].is_finite() || particles.volume[i] <= 0.0 {
         particles.volume[i] = particles.initial_volume[i].max(config.projection_min_volume);
+        projected = true;
+    }
+    // Recovered AFTER volume, so the rebuilt mass carries the grid density the
+    // rest of the solver assumes (`m = rho_grid * V`) rather than a per-particle
+    // constant that would depend on the spawn's spacing. See `SimConfig::grid_density`.
+    if !particles.mass[i].is_finite() || particles.mass[i] <= 0.0 {
+        particles.mass[i] = config.grid_density * particles.volume[i];
         projected = true;
     }
     if !particles.density[i].is_finite() || particles.density[i] <= 0.0 {

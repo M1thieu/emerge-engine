@@ -320,8 +320,10 @@ pub fn lame_from_young(young_modulus: f32, poisson_ratio: f32) -> (f32, f32) {
 /// The correct non-dimensionalization gives:
 ///   `λ_grid = λ_SI · dt² / (ρ₀ · dx²)`
 ///
-/// Pair with `SimConfig::earth()` and set `config.particle_mass =
-/// rest_density_kg_m3 * (spacing * dx_meters).powi(2)` for a fully IRL-calibrated sim.
+/// Pair with `SimConfig::earth()`. Do NOT also set a particle mass: mass is
+/// derived from `SimConfig::grid_density` (default 1.0) and the region's own
+/// spacing, which is what keeps the gravity/stiffness ratio independent of how
+/// finely the region is discretized.
 ///
 /// # Example -- soft tissue (E ≈ 5 kPa, ν = 0.45, ρ = 1000 kg/m³, 1 cm/cell)
 /// ```rust,no_run
@@ -339,6 +341,45 @@ pub fn lame_from_si(
 ) -> (f32, f32) {
     let (lambda_si, mu_si) = lame_from_young(young_modulus_pa, poisson_ratio);
     let scale = dt_seconds * dt_seconds / (rest_density_kg_m3 * dx_meters * dx_meters);
+    (lambda_si * scale, mu_si * scale)
+}
+
+/// Dimensionally-correct SI -> grid Lame conversion. Prefer this over
+/// [`lame_from_si`] for any new scene.
+///
+/// `scale = 1 / (rho * dx^2)`, with **no `dt` factor** -- the solver's
+/// velocity is cells/SECOND (fixed by [`gravity_to_grid`]'s own contract:
+/// `v += gravity * sub_dt` with `sub_dt` in real seconds), so a converted
+/// stiffness must not depend on the timestep. The result is exactly the
+/// squared elastic wave speed in cells/s: `c_grid^2 = (E/rho)/dx^2`.
+///
+/// # Why this exists separately (real, measured, 2026-08-24)
+/// [`lame_from_si`] carries an extra `dt^2`, which makes grid stiffness
+/// depend on the timestep. Measured directly, zero gravity, identical
+/// physical initial condition and identical simulated elapsed time: peak
+/// elastic rebound speed came out 58.4 / 7.77 / 0.276 cells/s at
+/// dt = 0.1 / 0.01 / 0.001. A physical result must be dt-INDEPENDENT; a
+/// 200x spread is a unit mismatch, not discretization error. Under gravity
+/// the same bug reads as "everything crushes far too violently": an elastic
+/// column that analytically compresses `rho*g*h/E` = 0.02% compressed
+/// 6-100% instead, 300-4900x too much, and worse at smaller dt. With this
+/// function the stiffness is identical at every dt and the strain matches
+/// the analytic value to ~1.7x.
+///
+/// Kept as a SEPARATE function rather than fixing `lame_from_si` in place:
+/// every currently-tuned scene was calibrated against the old conversion,
+/// so changing it globally re-breaks all of them at once (tried, reverted).
+/// Migrate scenes to this one at a time -- and when a scene switches, its
+/// `gravity_fraction` fudge should be deleted in the same change, because
+/// that fudge exists to compensate for exactly this bug.
+pub fn lame_from_si_physical(
+    young_modulus_pa: f32,
+    poisson_ratio: f32,
+    rest_density_kg_m3: f32,
+    dx_meters: f32,
+) -> (f32, f32) {
+    let (lambda_si, mu_si) = lame_from_young(young_modulus_pa, poisson_ratio);
+    let scale = 1.0 / (rest_density_kg_m3 * dx_meters * dx_meters);
     (lambda_si * scale, mu_si * scale)
 }
 

@@ -58,17 +58,24 @@ pub struct SpawnRegion {
     pub rng_seed: u32,
     /// Material for all particles in this region (default 0).
     pub material_id: u32,
-    /// Per-region particle mass override (grid units). `None` (default) falls back to
-    /// `SimConfig::particle_mass` -- the single global value used when every material in a
-    /// scene has the same real density. Set this explicitly when spawning multiple materials
-    /// with different `rho_kg_m3` in the same simulation: `SimConfig::particle_mass` is one
-    /// value shared by the whole `Simulation`, so without a per-region override every
-    /// material's particles get identical mass regardless of their specified density --
-    /// stiffness differs correctly (via Lamé/EOS conversion) but inertia does not.
-    /// Compute as `rho_kg_m3 * (spacing * dx_meters).powi(2)` for a 2D areal-density particle.
-    /// `.mass_from(&props, &config)` computes and sets this from a physical-property struct
-    /// using this region's own `spacing` -- prefer it over `.mass()` to avoid passing spacing
-    /// twice (a real duplication risk).
+    /// Per-region particle mass override (GRID units). `None` (default) derives
+    /// it as `SimConfig::grid_density * spacing^2`, which is correct for any
+    /// single-material scene and adapts automatically when the region is
+    /// refined.
+    ///
+    /// Set it only to give one region a real density CONTRAST against another:
+    /// `(rho_kg_m3 / config.reference_density_kg_m3) * spacing^2`, with every
+    /// material's stress converted using that same `reference_density_kg_m3`.
+    /// Without it, mixed-density regions differ correctly in stiffness (via the
+    /// Lamé/EOS conversion) but not in inertia.
+    ///
+    /// Note the units: this is NOT the SI kilogram mass
+    /// `rho_kg_m3 * (spacing * dx_meters)^2` that `ParticleMass::particle_mass`
+    /// returns. The two differ by exactly `rho * dx_meters^2` -- the same
+    /// factor `lame_from_si_physical` divides stress by -- so passing an SI
+    /// mass in here directly is a unit mismatch. `.mass_from(&props, &config)`
+    /// applies that conversion for you and uses this region's own `spacing`;
+    /// prefer it over `.mass()`.
     pub mass_override: Option<f32>,
 }
 
@@ -138,19 +145,29 @@ impl SpawnRegion {
         self
     }
 
-    /// Per-region particle mass override (grid units), for scenes mixing materials with
-    /// different real densities. See the field doc on `mass_override` for the SI formula.
-    pub const fn mass(mut self, particle_mass: f32) -> Self {
-        self.mass_override = Some(particle_mass);
+    /// Per-region particle mass override, in GRID units, for scenes mixing
+    /// materials with different real densities. See the field doc on
+    /// `mass_override` -- an SI kilogram mass passed here is a unit mismatch.
+    pub const fn mass(mut self, grid_mass: f32) -> Self {
+        self.mass_override = Some(grid_mass);
         self
     }
 
-    /// Like `.mass()`, but computes the value from a physical-property struct and
+    /// Like `.mass()`, but derives the value from a physical-property struct and
     /// THIS region's own `spacing` (already set via `.spacing()` or the `spacing`
     /// field) -- avoids passing spacing twice, a real duplication risk (see
     /// `mass_override`'s field doc; LP hit a sync bug from this exact pattern).
+    ///
+    /// `ParticleMass::particle_mass` reports real SI kilograms, so this divides
+    /// by `reference_density_kg_m3 * dx_meters^2` to land in the grid units the
+    /// solver actually integrates -- the same conversion
+    /// `lame_from_si_physical` applies to stress. What survives the division is
+    /// the density RATIO: a region of water at `spacing` gets exactly
+    /// `spacing^2`, and denser materials get proportionally more.
     pub fn mass_from(mut self, props: &impl crate::ParticleMass, config: &SimConfig) -> Self {
-        self.mass_override = Some(props.particle_mass(self.spacing, config));
+        let si_kg = props.particle_mass(self.spacing, config);
+        let to_grid = 1.0 / (config.reference_density_kg_m3 * config.dx_meters * config.dx_meters);
+        self.mass_override = Some(si_kg * to_grid);
         self
     }
 

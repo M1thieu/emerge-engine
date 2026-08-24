@@ -222,7 +222,15 @@ pub(crate) fn initialize_particles(
     rng: &mut LcgRng,
 ) -> Vec<Particle> {
     use crate::solver::config::SpawnShape;
-    let mass = spawn.mass_override.unwrap_or(config.particle_mass);
+    // Mass per particle from mass per CELL AREA: a lattice at `spacing` cells
+    // packs `1/spacing^2` particles into each cell, so the grid sees
+    // `grid_density` regardless of how finely the region is discretized.
+    // Without the `spacing^2`, refining a scene silently multiplied its grid
+    // density -- and therefore gravity relative to stiffness -- by
+    // `1/spacing^2`. See `SimConfig::grid_density`.
+    let mass = spawn
+        .mass_override
+        .unwrap_or(config.grid_density * spawn.spacing * spawn.spacing);
     let mut particles = Vec::new();
     let half = spawn.box_size.as_vec2() * 0.5;
     let min = spawn.box_center - half;

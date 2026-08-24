@@ -1666,19 +1666,21 @@ mod gpu_tests {
         if !gpu_available() {
             return;
         }
-        // Full IRL calibration: earth() + lame_from_si + particle_mass.
+        // Full IRL calibration: earth() + lame_from_si, with particle mass left
+        // to `SimConfig::grid_density`. RHO is the reference density, so the
+        // derived `grid_density * spacing^2` is already the right grid mass --
+        // assigning the SI kilogram value here instead used to make the region
+        // 1/spacing^2 too heavy relative to its own stiffness.
         // Soft gel (5 kPa, ν=0.45, ρ=1000 kg/m³) at 1cm/cell under Earth gravity.
         // J must stay > 0 (no collapse) and positions must be finite.
         const CELL_M: f32 = 0.01;
         const DT: f32 = 0.1;
         const RHO: f32 = 1000.0;
-        const SPACING: f32 = 0.5;
 
-        let mut config = SimConfig {
+        let config = SimConfig {
             max_substeps_per_step: 20,
             ..SimConfig::earth(32, CELL_M, DT)
         };
-        config.particle_mass = RHO * (SPACING * CELL_M).powi(2);
 
         let (lambda, mu) = emerge::lame_from_si(5_000.0, 0.45, RHO, CELL_M, DT);
         let particles = spawn_disk(&config, Vec2::splat(16.0), 0);

@@ -21,12 +21,15 @@ impl Elastic {
         Box::new(NeoHookeanMaterial::from_physical(self, config))
     }
 
-    /// Particle mass (real SI kilograms -- `rho_kg_m3 * (spacing*dx_meters)^2`, an areal
-    /// mass for this 2D solver) for a `SpawnRegion` spawning this material at `spacing`.
-    /// Pass to `SpawnRegion { mass_override: Some(props.particle_mass(spacing, &config)),
-    /// .. }` -- without this, every material in a multi-material scene gets the same
-    /// inertia regardless of `rho_kg_m3` (only `SimConfig::particle_mass`, one global
-    /// value, is used).
+    /// Particle mass in real SI kilograms -- `rho_kg_m3 * (spacing*dx_meters)^2`,
+    /// an areal mass for this 2D solver.
+    ///
+    /// Do NOT assign this to `SpawnRegion::mass_override`: that field is in GRID
+    /// units, and the two differ by `rho * dx_meters^2`. Use
+    /// `SpawnRegion::mass_from(&props, &config)`, which applies the conversion.
+    /// A multi-material scene needs it so regions differ in inertia and not only
+    /// in stiffness; a single-material scene does not, since
+    /// `SimConfig::grid_density` already puts it at grid density 1.
     ///
     /// Do not add a `1/dt_seconds^2` factor here to fix fluid force balance --
     /// this formula is correct as-is for every material. The scaling that

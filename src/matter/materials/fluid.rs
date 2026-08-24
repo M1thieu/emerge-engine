@@ -186,15 +186,19 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         const GAMMA: f32 = 7.0;
         let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
         let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // rest_density must be in the SAME units `particles.density[i]` actually comes
-        // out in -- i.e. whatever `estimate_particle_volumes`'s kernel-based density
-        // estimate produces for a particle spawned via `ParticleMass::particle_mass`
-        // (real SI kilograms) at rest: `rho_grid = rho_SI * dx_meters^2`. Do not add
-        // an extra `/dt_seconds^2` factor here -- it pins any real fluid's EOS
-        // pressure at its floor regardless of real depth/compression. Inflating
-        // particle mass by `1/dt^2` instead breaks the gravity/EOS force balance --
-        // see `Elastic::particle_mass`'s doc.
-        let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
+        // rest_density must be in the SAME units `particles.density[i]` actually
+        // comes out in. A particle spawned at `spacing` carries
+        // `grid_density * spacing^2` of mass in a `spacing^2` cell area, so the
+        // density the solver measures is a RATIO against the scene's reference
+        // density -- exactly 1.0 for a fluid at that reference. Getting this
+        // wrong is not a small error: it makes the fluid believe it is spawned
+        // pre-compressed, and the Tait EOS answers a `rho/rho_0` of 4 with a
+        // pressure spike no CFL substep can bound.
+        //
+        // Do not reintroduce a `dx_meters^2` (or `/dt_seconds^2`) factor here.
+        // Those pin a real fluid's EOS pressure at its floor regardless of
+        // actual depth or compression -- see `SimConfig::grid_density`.
+        let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
         Self::new(rho_grid, visc, eos, GAMMA)
     }
 }
@@ -204,7 +208,11 @@ impl MaterialModel for NewtonianFluidMaterial {
         ConstitutiveModel::Fluid
     }
 
-    // TEMPORARY, explicitly disclosed restoration (2026-08-13): this
+    // Restored 2026-08-13 after a wholesale revert silently dropped it;
+    // PERMANENT and required (no longer "temporary" -- the uncertainty that
+    // word carried is resolved, the override is proven necessary and is
+    // covered by this file's own tests). Historical detail kept because it
+    // explains WHY the override is needed at all: this
     // material never overrode `init_particle` even in the true pre-
     // `cac544b` file (confirmed: `git show 6234d06:...` has no override
     // either) -- but the CURRENT (non-reverted) engine's spawn contract
@@ -230,7 +238,10 @@ impl MaterialModel for NewtonianFluidMaterial {
     /// Rest-state acoustic speed squared, `c^2 = B*gamma/rho0` (Tait EOS
     /// evaluated at `J = 1`).
     ///
-    /// TEMPORARY, explicitly disclosed restoration (2026-08-13): the THIRD
+    /// Restored 2026-08-13; PERMANENT and required -- without it the
+    /// near-wall CFL gate silently degrades (see below). Kept documented
+    /// because the failure it prevents is invisible, not because it is
+    /// provisional. It was the THIRD
     /// trait method the wholesale pre-`cac544b` revert silently dropped
     /// (after `owns_deformation_volume_state` and `init_particle`) -- it
     /// postdates this file's restored form. Without it the near-wall CFL
@@ -407,7 +418,9 @@ impl MaterialModel for NewtonianFluidMaterial {
         *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
-    // TEMPORARY, explicitly disclosed restoration (2026-08-13): this trait
+    // Restored 2026-08-13; PERMANENT and required -- removing it froze GPU
+    // water completely from frame 1 (live-confirmed, see below). Not
+    // provisional. This trait
     // method did not exist before `cac544b` -- this file predates it, so
     // reverting the file wholesale silently dropped the override, leaving
     // the default `false`. REAL, LIVE-CONFIRMED bug this caused on GPU:
