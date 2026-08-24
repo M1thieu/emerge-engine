@@ -54,6 +54,9 @@ name = "scaling"
 harness = false
 
 [profile.dev]
+# Measured 2026-08-25: raising this to 3 moved a real demo frame from 19.8ms
+# to 19.5ms of solve -- 1.5%, for +1m31s of compile. The solver is not
+# codegen-bound at this particle count, so 1 stays.
 opt-level = 1
 debug = 1
 
