@@ -85,6 +85,13 @@ pub struct ParticleUpdateCtx<'a> {
     pub initial_volume: f32,
     pub activation: f32,
     pub activation_dir: Vec2,
+    /// Generic second scalar carrier, read-only here -- see `Particle::scalar_field`
+    /// doc. A material that wants to respond to a coupled `ScalarDiffusionField`
+    /// value (e.g. moisture/saturation) reads this; only the diffusion field itself
+    /// writes it (via P2G/G2P), same "gather, never own" convention `nonlocal_fluidity`
+    /// below already uses. 0.0 (the field's own real rest state) for every scene that
+    /// doesn't wire up such a field.
+    pub scalar_field: f32,
     /// Gathered granular fluidity `g` from a coupled
     /// `GranularFluidityField` (see `energy::thermodynamics::granular_fluidity`),
     /// for this substep only -- transient, never stored on `Particle` itself
@@ -126,6 +133,7 @@ impl Particles {
             initial_volume: self.initial_volume[i],
             activation: self.activation[i],
             activation_dir: self.activation_dir[i],
+            scalar_field: self.scalar_field[i],
             nonlocal_fluidity: 0.0,
             cosserat_curvature: Vec2::ZERO,
         }

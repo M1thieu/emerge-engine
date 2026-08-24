@@ -380,6 +380,30 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
         let _ = from_material_id;
         0.0
     }
+
+    /// Extra cohesion-like yield resistance (Pa-equivalent, same stress-space
+    /// units any material's own cohesion concept already uses) contributed by
+    /// a coupled `ScalarDiffusionField` value (`Particle::scalar_field` --
+    /// e.g. moisture/saturation, but generic: whatever a scene wires that
+    /// carrier to mean).
+    ///
+    /// Generic engine-level hook, deliberately NOT material-specific: any
+    /// material with a real yield surface can define how ITS OWN physics
+    /// responds to the shared scalar (e.g. `DruckerPragerMaterial` uses real
+    /// capillary-cohesion literature for wet sand). A material without a
+    /// meaningful notion of cohesion (a fluid's constitutive law, a purely
+    /// elastic solid) simply never overrides this -- that is a material
+    /// choosing not to participate, not the engine special-casing it. The
+    /// hook itself is universal; only the real physics behind an override is
+    /// material-specific, the same relationship `pressure_scale`/
+    /// `latent_heat` already establish for their own domains.
+    ///
+    /// Default: 0.0 -- the shared scalar has no effect on any material that
+    /// doesn't opt in, byte-identical to every existing scene.
+    fn cohesion_bonus_pa(&self, scalar_field: f32) -> f32 {
+        let _ = scalar_field;
+        0.0
+    }
 }
 
 /// The `MaterialModel` methods every delegating wrapper below (`WithLatentHeat`,
@@ -435,6 +459,9 @@ macro_rules! forward_material_model_common {
         }
         fn pressure_scale(&self) -> f32 {
             self.inner.pressure_scale()
+        }
+        fn cohesion_bonus_pa(&self, scalar_field: f32) -> f32 {
+            self.inner.cohesion_bonus_pa(scalar_field)
         }
         fn params(&self) -> MaterialParams {
             self.inner.params()

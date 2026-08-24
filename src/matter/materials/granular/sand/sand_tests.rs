@@ -208,3 +208,105 @@ mod scale_contract_integration {
         );
     }
 }
+
+#[cfg(test)]
+mod saturation_cohesion_tests {
+    use super::*;
+    use crate::materials::MaterialModel;
+
+    /// Real, direct check on the inert default: `saturation_cohesion_coeff`
+    /// starts at 0.0 (`new()`'s own default), so `cohesion_bonus_pa` must
+    /// return exactly 0.0 regardless of saturation -- the "byte-identical to
+    /// every existing scene" guarantee this field's own doc promises.
+    #[test]
+    fn cohesion_bonus_is_inert_by_default() {
+        let dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        assert_eq!(dp.saturation_cohesion_coeff, 0.0);
+        for saturation in [0.0, 0.1, 0.3, 0.5, 1.0] {
+            assert_eq!(
+                dp.cohesion_bonus_pa(saturation),
+                0.0,
+                "saturation={saturation} must be inert when saturation_cohesion_coeff==0.0"
+            );
+        }
+    }
+
+    /// Real check on the pendular-regime shape: rises with saturation up to
+    /// `pendular_regime_ceiling`, then plateaus -- the disclosed
+    /// simplification `cohesion_bonus_pa`'s own doc describes (real rise,
+    /// real cap, NOT the full post-peak decline).
+    #[test]
+    fn cohesion_bonus_rises_through_pendular_regime_then_plateaus() {
+        let dp = DruckerPragerMaterial {
+            saturation_cohesion_coeff: 1000.0,
+            pendular_regime_ceiling: 0.3,
+            ..DruckerPragerMaterial::cohesionless(1.0e5, 0.2)
+        };
+
+        let dry = dp.cohesion_bonus_pa(0.0);
+        let damp = dp.cohesion_bonus_pa(0.15);
+        let at_ceiling = dp.cohesion_bonus_pa(0.3);
+        let past_ceiling = dp.cohesion_bonus_pa(0.7);
+        let fully_saturated = dp.cohesion_bonus_pa(1.0);
+
+        assert_eq!(dry, 0.0, "bone-dry sand has zero apparent cohesion");
+        assert!(damp > dry, "cohesion must rise with saturation in the pendular regime");
+        assert!(
+            (at_ceiling - dp.saturation_cohesion_coeff).abs() < 1.0e-4,
+            "at the ceiling, bonus should equal the full coefficient, got {at_ceiling}"
+        );
+        // Real, disclosed scope limit: this core does NOT model the real
+        // literature's post-peak decline -- it plateaus instead of falling.
+        assert_eq!(
+            past_ceiling, at_ceiling,
+            "past the pendular ceiling this simplified core plateaus, doesn't decline"
+        );
+        assert_eq!(fully_saturated, at_ceiling);
+    }
+
+    /// The real, load-bearing proof, not just a check on the raw formula in
+    /// isolation: a trial strain state that WOULD yield when dry must NOT
+    /// yield once wet enough, because `saturation_cohesion_term` genuinely
+    /// raises the yield threshold inside `project()` -- confirms the wiring
+    /// (ProjectInputs -> project()'s yield check) actually works end to end,
+    /// not just that the standalone formula returns a plausible number.
+    #[test]
+    fn wet_sand_resists_yielding_that_dry_sand_would_not() {
+        let dp = DruckerPragerMaterial {
+            saturation_cohesion_coeff: 5.0e4,
+            pendular_regime_ceiling: 0.3,
+            ..DruckerPragerMaterial::cohesionless(1.0e5, 0.2)
+        };
+
+        // A real, marginal trial state: small deviatoric strain, near-zero
+        // trace, chosen so the dry case genuinely yields (gamma > 0) but
+        // isn't buried so deep past the surface that the cohesion bonus
+        // couldn't plausibly matter.
+        let sigma = Vec2::new(1.003, 0.997);
+
+        let dry_inputs = |cohesion_bonus_pa: f32| ProjectInputs {
+            sigma,
+            log_volume_strain: 0.0,
+            q: 0.0,
+            dt: 0.01,
+            nonlocal_fluidity: 0.0,
+            strain_rate_norm: 0.0,
+            cosserat_curvature: Vec2::ZERO,
+            cohesion_bonus_pa,
+        };
+
+        let dry_result = dp.project(dry_inputs(dp.cohesion_bonus_pa(0.0)));
+        assert!(
+            dry_result.is_some(),
+            "test setup invalid: dry case must actually yield for this to be a real check"
+        );
+
+        let wet_result = dp.project(dry_inputs(dp.cohesion_bonus_pa(0.3)));
+        assert!(
+            wet_result.is_none(),
+            "wet sand with real apparent cohesion must resist the SAME trial strain \
+             that yields dry sand -- if this fails, the cohesion bonus isn't reaching \
+             the yield check"
+        );
+    }
+}

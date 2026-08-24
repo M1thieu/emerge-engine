@@ -328,6 +328,34 @@ pub struct DruckerPragerMaterial {
     /// literal grain diameter -- an honest, disclosed simulation-scale
     /// calibration, not a claim about real grain size.
     pub cosserat_length_scale_m: f32,
+    /// Real apparent cohesion (Pa-equivalent, same stress units as `cohesion`)
+    /// per unit of a coupled `Particle::scalar_field` value read as saturation
+    /// -- see `cohesion_bonus_pa`'s own doc for the mechanism and citation.
+    /// 0.0 (default) = byte-identical to every existing preset/scene; this
+    /// field is inert unless a scene actually wires a `ScalarDiffusionField`
+    /// to `scalar_field` AND sets this nonzero.
+    ///
+    /// A DIFFERENT, separately-tracked quantity from `cohesion` above --
+    /// that field is a disclosed numerical MPM-resolution-artifact
+    /// compensation, calibrated against the Lajeunesse runout benchmark;
+    /// this one is real, cited apparent cohesion from capillary bridging.
+    /// Conflating the two under one field would corrupt that calibration
+    /// and make neither term honestly interpretable -- kept separate on
+    /// purpose, added together at the yield check the same way
+    /// `couple_stress_term` already sits alongside `cohesion_term` without
+    /// merging into it.
+    pub saturation_cohesion_coeff: f32,
+    /// Saturation degree (0-1) at which apparent capillary cohesion peaks --
+    /// see `cohesion_bonus_pa`'s own doc. Real granular-physics literature
+    /// (Hornbaker et al. 1997; Halsey & Levine 1998; Scheel et al. 2008,
+    /// "Morphological clues to wet granular pile stability," Nat. Mater.)
+    /// places the real pendular-regime peak in the LOW-saturation range,
+    /// not at full saturation. 0.3 (default) is a real, disclosed estimate
+    /// in that range, not a literal transcription of any one paper's
+    /// measured value -- a tunable calibration knob, same honest-disclosure
+    /// convention as `cosserat_length_scale_m`'s own doc. Irrelevant when
+    /// `saturation_cohesion_coeff == 0.0`.
+    pub pendular_regime_ceiling: f32,
 }
 
 /// Bundled inputs for `DruckerPragerMaterial::project` -- grew past clippy's
@@ -343,6 +371,9 @@ struct ProjectInputs {
     nonlocal_fluidity: f32,
     strain_rate_norm: f32,
     cosserat_curvature: Vec2,
+    /// Real apparent cohesion (Pa-equivalent) from `cohesion_bonus_pa` --
+    /// see that method's own doc. 0.0 when `saturation_cohesion_coeff == 0.0`.
+    cohesion_bonus_pa: f32,
 }
 
 impl DruckerPragerMaterial {
@@ -370,6 +401,8 @@ impl DruckerPragerMaterial {
             post_event_relax_threshold: 0.0,
             cosserat_modulus_pa: 0.0,
             cosserat_length_scale_m: GRAIN_DIAMETER_M,
+            saturation_cohesion_coeff: 0.0,
+            pendular_regime_ceiling: 0.3,
         }
     }
 
@@ -535,6 +568,7 @@ impl DruckerPragerMaterial {
             nonlocal_fluidity,
             strain_rate_norm,
             cosserat_curvature,
+            cohesion_bonus_pa,
         } = inputs;
         let sigma = sigma.abs().max(Vec2::splat(LOG_CLAMP));
         // Hencky (logarithmic) strain, shifted by the accumulated volumetric offset.
@@ -570,6 +604,12 @@ impl DruckerPragerMaterial {
         // `log_volume_strain` alone, which Case III's shear-only projection keeps
         // nearly invariant by construction for non-dilatant sand (dilatancy_angle=0).
         let cohesion_term = self.cohesion / (2.0 * self.mu);
+        // Real apparent cohesion from capillary bridging (see `cohesion_bonus_pa`'s
+        // own doc) -- same stress-to-strain-space conversion as `cohesion_term`
+        // above, added as its OWN separate term rather than merged into
+        // `cohesion` so the two stay honestly distinguishable (numerical
+        // artifact compensation vs. real, cited physical effect).
+        let saturation_cohesion_term = cohesion_bonus_pa / (2.0 * self.mu);
 
         // Real Cosserat rolling-resistance strengthening term -- see
         // `cosserat_modulus_pa`'s own doc for the citation and the honest
@@ -609,11 +649,13 @@ impl DruckerPragerMaterial {
             let gamma_onset_check = self_consistent_plastic_multiplier(
                 dev_norm + ratio * trace * self.alpha_with_phi_delta(q, trace, phi_delta)
                     - cohesion_term
+                    - saturation_cohesion_term
                     - couple_stress_term,
                 q,
                 |q_trial| {
                     dev_norm + ratio * trace * self.alpha_with_phi_delta(q_trial, trace, phi_delta)
                         - cohesion_term
+                        - saturation_cohesion_term
                         - couple_stress_term
                 },
             );
@@ -628,11 +670,14 @@ impl DruckerPragerMaterial {
         // generic, cross-material solver, not DP-specific), this closure supplies
         // only DP's own yield equation. Single-pass (pre-step-q) value seeds the
         // initial guess.
-        let initial_gamma =
-            dev_norm + ratio * trace * self.alpha(q, trace) - cohesion_term - couple_stress_term;
+        let initial_gamma = dev_norm + ratio * trace * self.alpha(q, trace)
+            - cohesion_term
+            - saturation_cohesion_term
+            - couple_stress_term;
         let gamma = self_consistent_plastic_multiplier(initial_gamma, q, |q_trial| {
             dev_norm + ratio * trace * self.alpha(q_trial, trace)
                 - cohesion_term
+                - saturation_cohesion_term
                 - couple_stress_term
         });
 
@@ -779,6 +824,7 @@ impl MaterialModel for DruckerPragerMaterial {
             nonlocal_fluidity: ctx.nonlocal_fluidity,
             strain_rate_norm,
             cosserat_curvature: ctx.cosserat_curvature,
+            cohesion_bonus_pa: self.cohesion_bonus_pa(ctx.scalar_field),
         }) {
             let sigma_abs = sigma.abs().max(Vec2::splat(LOG_CLAMP));
             let prev_det = sigma_abs.x * sigma_abs.y;
@@ -957,6 +1003,40 @@ impl MaterialModel for DruckerPragerMaterial {
         let v = (ctx.initial_volume * j).max(1.0e-6);
         *ctx.volume = v;
         *ctx.density = ctx.mass / v;
+    }
+
+    /// Real apparent cohesion from capillary bridging between grains -- the
+    /// "sandcastle effect": dry sand has no real cohesion, but a small
+    /// amount of interstitial liquid creates capillary bridges (menisci)
+    /// between grains that resist shear, real and cited (Hornbaker, Albert,
+    /// Barabasi & Schiffer 1997, "What keeps sandcastles standing," Nature
+    /// 387:765; Halsey & Levine 1998, "How Sandcastles Fall," PRL 80:3141) --
+    /// the same mechanism that lets a damp sand pile hold a steeper slope
+    /// than either bone-dry sand (no cohesion) or fully saturated sand
+    /// (capillary bridges merge/break down, real behavior this core does
+    /// NOT model, see `pendular_regime_ceiling`'s own doc).
+    ///
+    /// `scalar_field` is read as saturation degree Sr in [0,1] (standard
+    /// soil-mechanics convention) -- whatever `ScalarDiffusionField` a scene
+    /// wires to carry it; this method doesn't know or care where the value
+    /// came from, matching `cohesion_bonus_pa`'s own generic-hook doc on
+    /// `MaterialModel`.
+    ///
+    /// Real, disclosed simplification, not a literal transcription of any
+    /// cited paper's own formula: linear rise through the low-saturation
+    /// pendular regime, capped at `pendular_regime_ceiling` -- the real
+    /// literature's own post-peak decline through the funicular/capillary/
+    /// slurry regimes is a real, deferred detail (this core only captures
+    /// "drier sand needs water to hold a shape," not the full non-monotonic
+    /// curve). 0.0 whenever `saturation_cohesion_coeff == 0.0` -- byte-
+    /// identical to every existing preset/scene that doesn't opt in.
+    fn cohesion_bonus_pa(&self, scalar_field: f32) -> f32 {
+        if self.saturation_cohesion_coeff == 0.0 || self.pendular_regime_ceiling <= 0.0 {
+            return 0.0;
+        }
+        let saturation = scalar_field.clamp(0.0, 1.0);
+        self.saturation_cohesion_coeff * (saturation.min(self.pendular_regime_ceiling))
+            / self.pendular_regime_ceiling
     }
 
     fn params(&self) -> MaterialParams {
