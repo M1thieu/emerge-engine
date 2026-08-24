@@ -6,7 +6,7 @@
 
 An MLS-MPM continuum solver (Hu et al. 2018). Fluids, sand, snow, elastic and plastic solids -- one particle-grid transfer for all of them. No rigid bodies, no separate fluid/cloth/soft-body systems bolted together. Pure Rust on the CPU path; an optional wgpu backend runs the whole pipeline on GPU.
 
-Built for [Life's Progress](https://github.com/erematorg/LP). Not a game engine -- no ECS, no game loop, no asset pipeline. It steps particles forward and answers queries about regions of space; everything else is up to the caller.
+Not a game engine -- no ECS, no game loop, no asset pipeline. It steps particles forward and answers queries about regions of space; everything else is up to the caller. Originally built to power [Life's Progress](https://github.com/erematorg/LP), but standalone and usable for anything else that needs the same real-time continuum solver.
 
 ```toml
 [dependencies]
