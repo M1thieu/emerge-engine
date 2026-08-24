@@ -107,7 +107,7 @@ Ten force fields, six boundary conditions -- mix and match, all optional, zero c
 | **Flow / drag** | `LinearDragField` (fixed target velocity -- wind, current), `SpatialDragField` (spatially-varying flow) |
 | **Confinement** | `RadialConfinementField`, `AabbConfinementField` |
 | **Chemotaxis** | `ChemotaxisField` (gradient-following, Keller-Segel) |
-| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `PredictiveBoundary` (tighter keep-out), `GripFrictionBoundary` (strain-rate-gated grip), `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile) |
+| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `GripFrictionBoundary` (strain-rate-gated grip), `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile) |
 
 ## Particle fields
 
