@@ -19,8 +19,6 @@ cargo clippy -- -D warnings        # must be clean before any PR
 cargo run --example headless       # smoke test, no feature flags needed
 ```
 
-No `cargo clean`; incremental builds work fine. Debug mode only, never `--release` during development.
-
 ---
 
 ## Architecture
@@ -30,38 +28,38 @@ not an implementation layer:
 
 ```
 src/
-  matter.rs            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
-                       RodPoints · Particles SoA)
-    materials.rs        MaterialModel trait · registry · 14 material models ·
-                        granular/ (sand, sand_mui, cosserat, grain_contact_law,
-                        scale_contract -- grouped by active research thread)
-  spacetime.rs          the actual solver
-    solver.rs            Simulation · SimConfig · SpawnRegion · spatial hash ·
-                         body_state (BodyState aggregation)
-    grid.rs               Grid · Cell · ContactCell (multi-field contact) · kernel
-    transfer.rs           P2G scatter + G2P gather (MLS-APIC)
-    diff.rs               differentiable/gradient-trainable stepping
-    rod.rs                Rod · RodMaterial · build_straight_rod ·
-                          coupling.rs (scatter/gather to the shared Grid)
-    grains.rs             DEM grain dynamics: population/coupling/oracle
-                          (state lives in matter::particle::Grain)
-  forces.rs             boundary.rs (Slip / Heightmap / friction.rs
-                        [Friction / GripFriction / RatchetFriction]) ·
-                        fields.rs (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
-                        electromagnetics.rs
-  energy.rs             thermodynamics.rs (ThermalDiffusion · ScalarDiffusionField) ·
-                        acoustics.rs, electromagnetics.rs [feature=experimental]
-  information.rs        control.rs (Lnn neural locomotion controller) · measures.rs
-  runtime.rs            FixedStepController
-  systems.rs            gpu.rs [feature=gpu] GpuSimulation + WGSL shaders ·
-                        render.rs [feature=render] instanced particle renderer ·
-                        diagnostics.rs plugin system · health · per-material stats
+  matter/            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
+                     RodPoints · Particles SoA)
+    materials/        MaterialModel trait · registry · 14 material models ·
+                      granular/ (sand, sand_mui, cosserat, grain_contact_law,
+                      scale_contract -- grouped by active research thread)
+  spacetime/          the actual solver
+    solver/            Simulation · SimConfig · SpawnRegion · spatial hash ·
+                       body_state (BodyState aggregation)
+    grid/               Grid · Cell · ContactCell (multi-field contact) · kernel
+    transfer/           P2G scatter + G2P gather (MLS-APIC)
+    diff.rs             differentiable/gradient-trainable stepping
+    rod/                Rod · RodMaterial · build_straight_rod ·
+                        coupling.rs (scatter/gather to the shared Grid)
+    grains/             DEM grain dynamics: population/coupling/oracle
+                        (state lives in matter::particle::Grain)
+  forces/             boundary/ (Slip / Heightmap / friction/
+                      [Friction / GripFriction / RatchetFriction]) ·
+                      fields/ (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
+                      electromagnetics.rs
+  energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
+                      acoustics/, electromagnetics.rs [feature=experimental]
+  information/        control/ (Lnn neural locomotion controller) · measures/
+  runtime/            FixedStepController
+  systems/            gpu/ [feature=gpu] GpuSimulation + WGSL shaders ·
+                      render/ [feature=render] instanced particle renderer ·
+                      diagnostics/ plugin system · health · per-material stats
 ```
 
-Every domain root uses `foo.rs` + a sibling `foo/` directory for its own
-submodules (no `mod.rs` anywhere in this tree) -- the modern Rust 2018+ style,
-adopted repo-wide so file tabs read as the module they are, not a stack of
-identically-named `mod.rs` files.
+Every domain root is a `mod.rs` inside its own folder (`energy/mod.rs`, not a
+sibling `energy.rs`) -- keeps `lib.rs` the only file at the true top level,
+each domain visually self-contained in its own directory rather than spread
+across loose sibling files.
 
 Feature flags: `gpu` | `render` (requires `gpu`) | `experimental`
 
@@ -77,7 +75,7 @@ Implement the `MaterialModel` trait:
 
 All methods have default implementations (an elastic-only material can override just
 `kirchhoff_stress`). The signatures below are exact, copied directly from the trait's
-own current definition (`src/matter/materials.rs`) -- copy them, not the idea of them,
+own current definition (`src/matter/materials/mod.rs`) -- copy them, not the idea of them,
 and re-check against the trait itself before relying on this doc, since it's the kind
 of thing that silently drifts:
 
@@ -107,7 +105,7 @@ impl MaterialModel for MyMaterial {
 }
 ```
 
-### 2. `src/matter/materials.rs`
+### 2. `src/matter/materials/mod.rs`
 
 Add a variant to `ConstitutiveModel`. The discriminant must be the next consecutive `u32`, and a matching compile-time ABI assertion is required:
 
@@ -122,7 +120,7 @@ pub enum ConstitutiveModel {
 assert!(ConstitutiveModel::MyMaterial as u32 == 14);
 ```
 
-Re-export from `materials.rs` and add to `src/prelude.rs`.
+Re-export from `mod.rs` and add to `src/prelude.rs`.
 
 ### 3. `src/systems/gpu/shaders/p2g.wgsl`
 
