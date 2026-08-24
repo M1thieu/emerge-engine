@@ -236,6 +236,11 @@ path = "examples/cpu/sand_compaction.rs"
 required-features = ["render"]
 
 [[example]]
+name = "sand_water_saturation"
+path = "examples/cpu/sand_water_saturation.rs"
+required-features = ["render"]
+
+[[example]]
 name = "sand_ngf_collapse"
 path = "examples/cpu/sand_ngf_collapse.rs"
 required-features = ["render"]
