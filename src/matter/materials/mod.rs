@@ -40,8 +40,8 @@ pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
 pub use rod_material::RodMaterial;
 pub use snow::StomakhinMaterial;
 pub use utils::{
-    elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
-    rankine_damage_estimate, stokes_drag_rate_from_si,
+    elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_si_physical, lame_from_young,
+    polar_decomposition_2d, rankine_damage_estimate, stokes_drag_rate_from_si,
 };
 pub use viscoelastic::ViscoelasticMaterial;
 pub use von_mises::VonMisesMaterial;

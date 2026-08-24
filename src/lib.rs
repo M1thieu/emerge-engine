@@ -88,7 +88,7 @@ pub use materials::{
     NewtonianFluidMaterial, NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel,
     Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial,
     VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase, WithPreStress,
-    gravity_to_grid, lame_from_si, lame_from_young, rankine_damage_estimate,
+    gravity_to_grid, lame_from_si, lame_from_si_physical, lame_from_young, rankine_damage_estimate,
     stokes_drag_rate_from_si,
 };
 

@@ -81,7 +81,34 @@ pub struct SimConfig {
     /// Strict WC-MPM liquids keep their constitutive `rho=rho0/J` state and
     /// are excluded even when this is enabled.
     pub recompute_density_each_step: bool,
-    pub particle_mass: f32,
+    /// Base grid density: particle mass PER CELL AREA, not per particle.
+    /// A spawn's actual particle mass is `grid_density * spacing^2`, because a
+    /// lattice at `spacing` cells carries `1/spacing^2` particles per cell.
+    ///
+    /// It is a density, not a mass, for a dimensional reason. `lame_from_si_
+    /// physical` converts SI stress to grid units by dividing by
+    /// `rho_kg_m3 * dx_meters^2`; the MPM grid update accelerates a node by
+    /// `f/m`, i.e. by `sigma_grid / rho_grid`. Those two agree only when
+    /// `rho_grid == 1`. Carrying a per-PARTICLE mass here instead made the
+    /// gravity/stiffness ratio scale as `1/spacing^2`: a scene sagged 3x too
+    /// far at `spacing = 0.5` and 10x at `0.25`, while `spacing = 1.0`
+    /// happened to be correct -- which is why the error hid for so long
+    /// (measured against the analytic self-weight strain `rho*g*h/2E`; see
+    /// `physics_correctness::self_weight_strain_is_spacing_independent`).
+    ///
+    /// Default 1.0 = "this material IS the reference density," correct for any
+    /// single-material scene. For a scene mixing real densities, keep 1.0 and
+    /// give each region a `mass_override` of `(rho_i/rho_ref) * spacing^2`
+    /// (`SpawnRegion::mass_from` does this), converting every material's
+    /// stress with the same `reference_density_kg_m3`.
+    pub grid_density: f32,
+    /// Shared density that multi-material scenes measure every material
+    /// against, so real density CONTRAST survives the grid-unit conversion.
+    ///
+    /// Only read by `SpawnRegion::mass_from`. A single-material scene never
+    /// needs it: converting that material's stress by its own `rho_kg_m3`
+    /// already puts it at `grid_density = 1`. Default 1000.0 (water).
+    pub reference_density_kg_m3: f32,
     /// Initial substep-resource budget for GPU scheduling and diagnostics.
     ///
     /// It is not a physics cap: a solver step must advance the full requested
@@ -514,7 +541,8 @@ impl Default for SimConfig {
             boundary_thickness: 2,
             default_initial_volume: 1.0,
             recompute_density_each_step: false,
-            particle_mass: 1.0,
+            grid_density: 1.0,
+            reference_density_kg_m3: 1000.0,
             max_substeps_per_step: 64,
             fluid_step_retry_enabled: false,
             phase_rules_once_per_step: false,
@@ -609,6 +637,40 @@ impl SimConfig {
         crate::materials::lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters, self.dt_seconds)
     }
 
+    /// Dimensionally-correct SI -> grid Lame conversion for this config.
+    /// Prefer this over [`Self::lame_from_si_cfg`] for any new scene -- see
+    /// [`crate::materials::lame_from_si_physical`] for the measured evidence
+    /// (the older path's `dt^2` makes stiffness timestep-dependent, which is
+    /// what makes real gravity crush everything and forces each demo to
+    /// carry its own `gravity_fraction` fudge).
+    ///
+    /// Deliberately does NOT read `self.dt_seconds`: a converted stiffness
+    /// must not depend on the timestep.
+    pub fn lame_from_si_physical_cfg(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
+        crate::materials::lame_from_si_physical(e_pa, nu, rho_kg_m3, self.dx_meters)
+    }
+
+    /// Dimensionally-correct SI stress -> grid conversion: `p_SI / (rho *
+    /// dx^2)`, which is exactly the squared wave speed in cells/s. Prefer
+    /// over [`Self::stress_from_si`] for any new scene; see
+    /// [`crate::materials::lame_from_si_physical`] for why the older one's
+    /// `dt^2` is wrong.
+    pub fn stress_from_si_physical(&self, pa: f32, rho_kg_m3: f32) -> f32 {
+        pa / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    }
+
+    /// Dimensionally-correct SI dynamic viscosity -> grid conversion:
+    /// `eta_SI / (rho * dx^2)`, i.e. kinematic viscosity in cells^2/s.
+    ///
+    /// Derived from how viscosity is consumed (`fluid.rs`: `stress +=
+    /// eff_viscosity * strain_dev`, strain rate in 1/s, grid stress in
+    /// cells^2/s^2). The older [`Self::visc_from_si`] is
+    /// `eta * rho * dx^2 / dt^3` -- it multiplies by `rho` and `dx^2` where
+    /// it must divide, and carries a spurious `dt^3`.
+    pub fn visc_from_si_physical(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
+        eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    }
+
     /// Convert SI stress or pressure (Pa) to grid units.
     ///
     /// Use for: yield stress, tensile strength, eos_stiffness, surface tension.
@@ -662,7 +724,11 @@ impl SimConfig {
             self.projection_min_deformation_j > 0.0,
             "projection_min_deformation_j must be positive"
         );
-        assert!(self.particle_mass > 0.0, "particle_mass must be positive");
+        assert!(self.grid_density > 0.0, "grid_density must be positive");
+        assert!(
+            self.reference_density_kg_m3 > 0.0,
+            "reference_density_kg_m3 must be positive"
+        );
         assert!(
             self.contact_friction >= 0.0,
             "contact_friction must be non-negative"

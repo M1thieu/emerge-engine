@@ -2274,27 +2274,51 @@ fn sand_q_stays_bounded_once_settled() {
     }
 }
 
+/// `mass_from` converts SI kilograms into the grid units `mass_override` is in.
+/// It must NOT equal `ParticleMass::particle_mass` -- the two differ by
+/// `reference_density_kg_m3 * dx_meters^2`, the same factor
+/// `lame_from_si_physical` divides stress by. What survives is the density
+/// RATIO, which is the whole point: it is what lets two materials in one scene
+/// differ in inertia and not only in stiffness.
 #[test]
-fn spawn_region_mass_from_matches_manual_particle_mass() {
+fn mass_from_converts_si_to_grid_units_and_preserves_density_ratio() {
     let config = small_solver_config();
-    let elastic = Elastic {
-        e_pa: 1.0e5,
-        nu: 0.2,
-        rho_kg_m3: 1000.0,
-    };
     let spacing = 0.5;
+    let mass_for = |rho| {
+        SpawnRegion {
+            spacing,
+            ..SpawnRegion::for_sim(&config)
+        }
+        .mass_from(
+            &Elastic {
+                e_pa: 1.0e5,
+                nu: 0.2,
+                rho_kg_m3: rho,
+            },
+            &config,
+        )
+        .mass_override
+        .expect("mass_from sets mass_override")
+    };
 
-    let region = SpawnRegion {
-        spacing,
-        ..SpawnRegion::for_sim(&config)
-    }
-    .mass_from(&elastic, &config);
+    // A material AT the reference density lands exactly on the default the
+    // solver would have derived on its own: grid_density * spacing^2.
+    let at_reference = mass_for(config.reference_density_kg_m3);
+    let derived_default = config.grid_density * spacing * spacing;
+    assert!(
+        (at_reference - derived_default).abs() < 1.0e-6,
+        "water at the reference density should match the derived default: \
+         {at_reference} vs {derived_default}"
+    );
 
-    let expected = elastic.particle_mass(spacing, &config);
-    assert_eq!(
-        region.mass_override,
-        Some(expected),
-        "mass_from should produce the exact same value as calling particle_mass manually"
+    // Denser material, proportionally more inertia -- the ratio is what the
+    // grid-unit conversion has to preserve.
+    let sand = mass_for(1600.0);
+    let expected_ratio = 1600.0 / config.reference_density_kg_m3;
+    assert!(
+        (sand / at_reference - expected_ratio).abs() < 1.0e-4,
+        "density ratio must survive the conversion: got {}, want {expected_ratio}",
+        sand / at_reference
     );
 }
 
@@ -2518,6 +2542,11 @@ fn scalar_field_sum_for_material(solver: &Simulation, material_id: u32) -> f32 {
 fn water_saturates_nearby_sand_through_the_real_solver() {
     let config = SimConfig {
         gravity: Vec2::ZERO,
+        // Correct grid density is 1.0, not the 4.0 this scene used to spawn at,
+        // so the fluid's real wave speed `c = sqrt(gamma*K/rho)` is 2x what it
+        // was and CFL asks for ~2x the substeps. That is the true cost of the
+        // right density, not an instability -- the budget has to cover it.
+        max_substeps_per_step: 256,
         ..small_solver_config()
     };
     let sand_spawn = SpawnRegion {
@@ -2547,7 +2576,11 @@ fn water_saturates_nearby_sand_through_the_real_solver() {
         pendular_regime_ceiling: 0.3,
         ..DruckerPragerMaterial::cohesionless(1.0e5, 0.2)
     };
-    let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
+    // rest_density is a ratio against the scene's reference density, so a fluid
+    // at that reference rests at `grid_density`. The literal 4.0 this used to
+    // carry was `1/spacing^2` in disguise, which told the Tait EOS the water
+    // spawned 4x compressed.
+    let water = NewtonianFluidMaterial::low_viscosity(config.grid_density, 10.0);
 
     let mut solver = Simulation::new(config, sand_spawn)
         .with_default_material(Box::new(sand))

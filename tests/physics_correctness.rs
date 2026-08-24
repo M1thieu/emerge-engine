@@ -4265,3 +4265,94 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
         (max_ratio - 1.0) * 100.0
     );
 }
+
+/// A column standing under its own weight settles to the analytic strain
+/// `rho*g*h / (2E)`, and that result must not depend on how finely the column
+/// is discretized or on the material's real density.
+///
+/// This is the regression guard for the grid-density bug: particle mass used to
+/// be one global constant (`SimConfig::particle_mass = 1.0`) independent of
+/// spawn spacing, while stress was converted per unit density by
+/// `lame_from_si_physical`. The MPM grid accelerates a node by
+/// `sigma_grid / rho_grid`, so the two only agree at `rho_grid == 1`; a
+/// per-particle constant instead made `rho_grid` scale as `1/spacing^2`.
+/// Measured sag against this analytic before the fix: 3.2x too far at
+/// `spacing = 0.5`, 10.4x at `spacing = 0.25`, and correct at `spacing = 1.0`
+/// -- which is precisely why it stayed hidden. Every refinement of a scene
+/// silently strengthened gravity relative to stiffness.
+///
+/// The absolute ratio sits near 0.85 rather than 1.0 for a discretization
+/// reason unrelated to the bug: particle centers sit half a spacing inside the
+/// free surface, so the measured height slightly understates the real column.
+/// What this test pins is that the ratio is CONSTANT.
+#[test]
+fn self_weight_strain_is_spacing_independent() {
+    const E_PA: f32 = 1.0e5;
+
+    fn settled_strain_ratio(spacing: f32, rho: f32) -> f32 {
+        let config = SimConfig {
+            boundary_thickness: 3,
+            max_substeps_per_step: 500,
+            ..SimConfig::earth(64, 0.01, 0.005)
+        };
+        let spawn = SpawnRegion {
+            spacing,
+            // box_size is in CELLS: the same physical column at every spacing,
+            // resting ON the floor so there is no free-fall impact transient.
+            box_size: IVec2::new(6, 10),
+            box_center: Vec2::new(32.0, 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            initial_velocity_scale: 0.0,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let (lambda, mu) = config.lame_from_si_physical_cfg(E_PA, 0.2, rho);
+        let mut sim = Simulation::new(config, spawn)
+            .with_default_material(Box::new(NeoHookeanMaterial::new(lambda, mu)))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+        let height = |s: &Simulation| {
+            let p = s.particles();
+            p.x.iter().map(|x| x.y).fold(f32::MIN, f32::max)
+                - p.x.iter().map(|x| x.y).fold(f32::MAX, f32::min)
+        };
+        let h0 = height(&sim);
+        // Self-weight stress is triangular, so the mean is rho*g*h/2.
+        let analytic = rho * 9.81 * (h0 * config.dx_meters) / (2.0 * E_PA);
+
+        for _ in 0..400 {
+            sim.step();
+        }
+        // Undamped elastic release oscillates about the static deflection, so
+        // average rather than sampling one instant.
+        let (mut acc, mut n) = (0.0f64, 0);
+        for _ in 0..400 {
+            sim.step();
+            acc += ((h0 - height(&sim)) / h0) as f64;
+            n += 1;
+        }
+        (acc / n as f64) as f32 / analytic
+    }
+
+    let mut ratios = Vec::new();
+    for spacing in [0.25f32, 0.5, 1.0] {
+        for rho in [1000.0f32, 1600.0, 2650.0] {
+            let ratio = settled_strain_ratio(spacing, rho);
+            println!("spacing={spacing:<5} rho={rho:<7} strain/analytic={ratio:.3}x");
+            assert!(
+                (0.6..1.4).contains(&ratio),
+                "self-weight sag must track the analytic rho*g*h/2E within the \
+                 discretization offset, got {ratio:.3}x at spacing={spacing} rho={rho}"
+            );
+            ratios.push(ratio);
+        }
+    }
+
+    let lo = ratios.iter().copied().fold(f32::MAX, f32::min);
+    let hi = ratios.iter().copied().fold(f32::MIN, f32::max);
+    assert!(
+        hi / lo < 1.3,
+        "the gravity/stiffness ratio must not depend on spacing or density: \
+         spread {lo:.3}x..{hi:.3}x across the sweep"
+    );
+}
