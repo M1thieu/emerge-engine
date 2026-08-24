@@ -171,7 +171,7 @@ impl MaterialModel for BinghamFluidMaterial {
         ConstitutiveModel::Fluid
     }
 
-    // TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same
+    // Restored 2026-08-13; PERMANENT and required -- same
     // reasoning as `NewtonianFluidMaterial::init_particle`, see that
     // method's own doc for the full live-confirmed root cause.
     fn init_particle(&self, particle: &mut Particle) {
@@ -284,7 +284,7 @@ impl MaterialModel for BinghamFluidMaterial {
         *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
-    // TEMPORARY, explicitly disclosed restoration (2026-08-13) -- same
+    // Restored 2026-08-13; PERMANENT and required -- same
     // reasoning as `NewtonianFluidMaterial::owns_deformation_volume_state`,
     // see that method's own doc for the full live-confirmed root cause.
     fn owns_deformation_volume_state(&self) -> bool {

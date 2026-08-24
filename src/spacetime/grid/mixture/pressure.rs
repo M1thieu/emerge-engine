@@ -213,8 +213,12 @@ impl Grid {
             }
         };
 
-        // TEMP DIAGNOSTIC (2026-08-04), env-gated (zero cost otherwise, same
-        // pattern as `sand.rs`'s `EMERGE_DIAG_FLOOR_FIX`): chasing the real
+        // Opt-in diagnostic, env-gated (`EMERGE_DIAG_MIXTURE_PRESSURE`,
+        // zero cost when unset -- same pattern as `sand.rs`'s
+        // `EMERGE_DIAG_FLOOR_FIX`). Permanent debugging facility, not a
+        // pending cleanup: the investigation that motivated it concluded,
+        // but a way to inspect mobility `k` in a consolidated region stays
+        // useful. Originally added 2026-08-04 chasing the real
         // "geyser" event found live in `mixture_sand_water.rs` -- sand
         // erupting to 3-7x its settled pile height once water is fully
         // consolidated at the bottom. Checking whether the mobility `k`

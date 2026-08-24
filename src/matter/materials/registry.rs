@@ -113,7 +113,6 @@ impl MaterialDispatch {
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     fn timestep_bound(
         &self,
         density: f32,
@@ -246,7 +245,6 @@ impl MaterialRegistry {
 
     /// Real, static-dispatched `timestep_bound` -- same fallback contract as
     /// `kirchhoff_stress` above. Hot per-particle CFL call.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn timestep_bound(
         &self,
         material_id: u32,

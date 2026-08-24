@@ -384,17 +384,28 @@ pub struct ContactResolution {
 /// divergence too (any real pile has grains resting at off-axis angles,
 /// which is exactly the code path a perfectly-vertical stack never
 /// exercises).
-#[allow(clippy::too_many_arguments)]
+/// The three rolling-resistance coefficients, which always travel together
+/// from a contact config. Bundled so `resolve_rolling_spring` stays under
+/// clippy's argument threshold by FIXING the cause (too many loose
+/// parameters) rather than silencing the lint -- same pattern
+/// `ProjectInputs`/`G2PParams` already use elsewhere in this codebase.
+#[derive(Clone, Copy)]
+struct RollingParams {
+    stiffness: f32,
+    damping: f32,
+    friction: f32,
+}
+
 fn resolve_rolling_spring(
     spring: &mut ContactSpring,
     omega_rel: f32,
     dt: f32,
-    rolling_stiffness: f32,
-    rolling_damping: f32,
-    rolling_friction: f32,
+    rolling: RollingParams,
     r_eff: f32,
     normal_force: f32,
 ) -> f32 {
+    let (rolling_stiffness, rolling_damping, rolling_friction) =
+        (rolling.stiffness, rolling.damping, rolling.friction);
     spring.rolling += omega_rel * dt;
     // Real dashpot damping added alongside the elastic term (2026-08-03,
     // same real necessity as `tangential_damping`'s own doc): a positive
@@ -421,8 +432,14 @@ fn resolve_rolling_spring(
 /// Returns `(normal_force, tangential_force_vec, rolling_moment, ft_scalar)`
 /// -- callers turn `ft_scalar` into their own torque distribution (two-body
 /// action-reaction vs. one-sided wall torque).
-#[allow(clippy::too_many_arguments)]
-fn resolve_contact_core_linear(
+/// The contact-pair kinematics both core resolvers consume, bundled so
+/// neither needs `#[allow(clippy::too_many_arguments)]` -- fixing the cause
+/// (too many loose parameters that always travel together) rather than
+/// silencing the lint, matching `ProjectInputs`/`G2PParams` elsewhere in
+/// this codebase. Every field is derived from the same contact geometry and
+/// relative-velocity computation at the call site.
+#[derive(Clone, Copy)]
+struct ContactKinematics {
     overlap: f32,
     n: Vec2,
     t: Vec2,
@@ -430,10 +447,23 @@ fn resolve_contact_core_linear(
     v_t: f32,
     omega_rel: f32,
     r_eff: f32,
+}
+
+fn resolve_contact_core_linear(
+    kin: ContactKinematics,
     spring: &mut ContactSpring,
     config: &ContactLawConfig,
     dt: f32,
 ) -> (f32, Vec2, f32, f32) {
+    let ContactKinematics {
+        overlap,
+        n,
+        t,
+        v_n,
+        v_t,
+        omega_rel,
+        r_eff,
+    } = kin;
     // Normal: linear spring-dashpot (Cundall & Strack 1979), repulsive only.
     let normal_force = (config.normal_stiffness * overlap - config.normal_damping * v_n).max(0.0);
 
@@ -471,9 +501,11 @@ fn resolve_contact_core_linear(
         spring,
         omega_rel,
         dt,
-        config.rolling_stiffness,
-        config.rolling_damping,
-        config.rolling_friction,
+        RollingParams {
+            stiffness: config.rolling_stiffness,
+            damping: config.rolling_damping,
+            friction: config.rolling_friction,
+        },
         r_eff,
         normal_force,
     );
@@ -525,7 +557,18 @@ pub fn resolve_contact_pair(
 
     let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
         resolve_contact_core_linear(
-            overlap, n, t, v_n, v_t, omega_rel, r_eff, spring, config, dt,
+            ContactKinematics {
+                overlap,
+                n,
+                t,
+                v_n,
+                v_t,
+                omega_rel,
+                r_eff,
+            },
+            spring,
+            config,
+            dt,
         );
 
     // Real torque from the tangential force acting at the true contact
@@ -588,7 +631,18 @@ pub fn resolve_wall_contact(
 
     let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
         resolve_contact_core_linear(
-            overlap, n, t, v_n, v_t, omega_rel, r_eff, spring, config, dt,
+            ContactKinematics {
+                overlap,
+                n,
+                t,
+                v_n,
+                v_t,
+                omega_rel,
+                r_eff,
+            },
+            spring,
+            config,
+            dt,
         );
 
     // Same real torque = r x F mechanism as `resolve_contact_pair`'s own
@@ -654,20 +708,22 @@ fn hertzian_damping_coefficient(restitution: f32) -> f32 {
 /// differ only in how they derive `overlap`/`n`/`t`/`v_n`/`v_t`/
 /// `omega_rel`/`r_eff`/`m_eff`, the actual Hertz-Mindlin + Tsuji-damping
 /// resolution is byte-identical once those are known.
-#[allow(clippy::too_many_arguments)]
 fn resolve_contact_core_hertzian(
-    overlap: f32,
-    n: Vec2,
-    t: Vec2,
-    v_n: f32,
-    v_t: f32,
-    omega_rel: f32,
-    r_eff: f32,
+    kin: ContactKinematics,
     m_eff: f32,
     spring: &mut ContactSpring,
     config: &HertzianContactConfig,
     dt: f32,
 ) -> (f32, Vec2, f32, f32) {
+    let ContactKinematics {
+        overlap,
+        n,
+        t,
+        v_n,
+        v_t,
+        omega_rel,
+        r_eff,
+    } = kin;
     // Real Hertzian contact-patch-dependent stiffness -- grows with
     // overlap, unlike the linear model's constant `normal_stiffness`.
     let contact_area_radius = (overlap * r_eff).sqrt();
@@ -704,9 +760,11 @@ fn resolve_contact_core_hertzian(
         spring,
         omega_rel,
         dt,
-        config.rolling_stiffness,
-        config.rolling_damping,
-        config.rolling_friction,
+        RollingParams {
+            stiffness: config.rolling_stiffness,
+            damping: config.rolling_damping,
+            friction: config.rolling_friction,
+        },
         r_eff,
         normal_force,
     );
@@ -750,7 +808,19 @@ pub fn resolve_contact_pair_hertzian(
 
     let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
         resolve_contact_core_hertzian(
-            overlap, n, t, v_n, v_t, omega_rel, r_eff, m_eff, spring, config, dt,
+            ContactKinematics {
+                overlap,
+                n,
+                t,
+                v_n,
+                v_t,
+                omega_rel,
+                r_eff,
+            },
+            m_eff,
+            spring,
+            config,
+            dt,
         );
 
     let friction_torque_on_i = -i.radius * ft_scalar;
@@ -798,7 +868,19 @@ pub fn resolve_wall_contact_hertzian(
 
     let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) =
         resolve_contact_core_hertzian(
-            overlap, n, t, v_n, v_t, omega_rel, r_eff, m_eff, spring, config, dt,
+            ContactKinematics {
+                overlap,
+                n,
+                t,
+                v_n,
+                v_t,
+                omega_rel,
+                r_eff,
+            },
+            m_eff,
+            spring,
+            config,
+            dt,
         );
 
     let friction_torque = -grain.radius * ft_scalar;

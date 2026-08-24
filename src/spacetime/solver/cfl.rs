@@ -18,17 +18,28 @@ use crate::rod::{Rod, rod_cfl_dt};
 // choose_substep_dt: picks the largest CFL-safe dt ≤ max_dt.
 // Called inside step()'s substep loop -- max_dt is the remaining frame time.
 // pub(crate) so the GPU solver can reuse this without duplicating CFL logic.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn choose_substep_dt(
-    config: &SimConfig,
-    particles: &Particles,
-    active_count: usize,
-    materials: &MaterialRegistry,
-    rods: &[Rod],
-    grain_populations: &[GrainPopulation],
-    max_dt: f32,
-    granular_fluidity_dt_bound: Option<f32>,
-    thermal_dt_bound: Option<f32>,
+/// The simulated bodies this CFL scan reads. Bundled with `SubstepBounds`
+/// below so `choose_substep_dt` needs no
+/// `#[allow(clippy::too_many_arguments)]` -- fixing the cause (ten loose
+/// parameters that always travel together from the same `Simulation`)
+/// rather than silencing the lint, same pattern as `G2PParams`/
+/// `ProjectInputs` elsewhere in this codebase. Pure regrouping: every field
+/// is passed through unchanged, no logic or numeric value is altered.
+pub(crate) struct SubstepScene<'a> {
+    pub particles: &'a Particles,
+    pub active_count: usize,
+    pub materials: &'a MaterialRegistry,
+    pub rods: &'a [Rod],
+    pub grain_populations: &'a [GrainPopulation],
+}
+
+/// The externally-supplied timestep bounds and lagged measurements this CFL
+/// scan folds in alongside the bodies' own bounds. See `SubstepScene`.
+pub(crate) struct SubstepBounds {
+    /// Remaining frame time -- the hard upper bound on the returned dt.
+    pub max_dt: f32,
+    pub granular_fluidity_dt_bound: Option<f32>,
+    pub thermal_dt_bound: Option<f32>,
     // Real max particle speed from the PREVIOUS call to this function
     // (one-substep-lagged -- see `Simulation::last_max_particle_speed`'s own
     // doc). Used ONLY by the near-wall gate's Mach-relative compression
@@ -37,8 +48,27 @@ pub(crate) fn choose_substep_dt(
     // it (it's still being folded), so the previous substep's value is the
     // freshest real data available, same "react at the next sync point"
     // pattern this codebase's GPU batch CFL scan already uses.
-    last_max_speed: f32,
+    pub last_max_speed: f32,
+}
+
+pub(crate) fn choose_substep_dt(
+    config: &SimConfig,
+    scene: SubstepScene<'_>,
+    bounds: SubstepBounds,
 ) -> (f32, f32) {
+    let SubstepScene {
+        particles,
+        active_count,
+        materials,
+        rods,
+        grain_populations,
+    } = scene;
+    let SubstepBounds {
+        max_dt,
+        granular_fluidity_dt_bound,
+        thermal_dt_bound,
+        last_max_speed,
+    } = bounds;
     if !config.adaptive_timestep {
         return (max_dt.min(config.dt), 0.0);
     }
@@ -343,7 +373,7 @@ pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
 mod tests {
     use glam::{Mat2, Vec2};
 
-    use super::{cfl_bound, choose_substep_dt};
+    use super::{SubstepBounds, SubstepScene, cfl_bound, choose_substep_dt};
     use crate::materials::{MaterialRegistry, NewtonianFluidMaterial};
     use crate::particle::Particles;
     use crate::solver::SimConfig;
@@ -418,15 +448,19 @@ mod tests {
         // the gate SHOULD fire (near-wall 20x tightening applies).
         let (dt_low_speed, _) = choose_substep_dt(
             &config,
-            &particles,
-            1,
-            &materials,
-            &[],
-            &[],
-            1.0,
-            None,
-            None,
-            1.0,
+            SubstepScene {
+                particles: &particles,
+                active_count: 1,
+                materials: &materials,
+                rods: &[],
+                grain_populations: &[],
+            },
+            SubstepBounds {
+                max_dt: 1.0,
+                granular_fluidity_dt_bound: None,
+                thermal_dt_bound: None,
+                last_max_speed: 1.0,
+            },
         );
 
         // At last_max_speed=20.0 (Mach~=0.756, close to the material's own
@@ -436,15 +470,19 @@ mod tests {
         // should NOT fire (no 20x tightening).
         let (dt_high_speed, _) = choose_substep_dt(
             &config,
-            &particles,
-            1,
-            &materials,
-            &[],
-            &[],
-            1.0,
-            None,
-            None,
-            20.0,
+            SubstepScene {
+                particles: &particles,
+                active_count: 1,
+                materials: &materials,
+                rods: &[],
+                grain_populations: &[],
+            },
+            SubstepBounds {
+                max_dt: 1.0,
+                granular_fluidity_dt_bound: None,
+                thermal_dt_bound: None,
+                last_max_speed: 20.0,
+            },
         );
 
         assert!(
@@ -466,27 +504,35 @@ mod tests {
 
         let (dt_low_speed, _) = choose_substep_dt(
             &config,
-            &particles,
-            1,
-            &materials,
-            &[],
-            &[],
-            1.0,
-            None,
-            None,
-            1.0,
+            SubstepScene {
+                particles: &particles,
+                active_count: 1,
+                materials: &materials,
+                rods: &[],
+                grain_populations: &[],
+            },
+            SubstepBounds {
+                max_dt: 1.0,
+                granular_fluidity_dt_bound: None,
+                thermal_dt_bound: None,
+                last_max_speed: 1.0,
+            },
         );
         let (dt_high_speed, _) = choose_substep_dt(
             &config,
-            &particles,
-            1,
-            &materials,
-            &[],
-            &[],
-            1.0,
-            None,
-            None,
-            500.0,
+            SubstepScene {
+                particles: &particles,
+                active_count: 1,
+                materials: &materials,
+                rods: &[],
+                grain_populations: &[],
+            },
+            SubstepBounds {
+                max_dt: 1.0,
+                granular_fluidity_dt_bound: None,
+                thermal_dt_bound: None,
+                last_max_speed: 500.0,
+            },
         );
 
         // With eos_stiffness=0 the acoustic term is dead (`timestep_bound`

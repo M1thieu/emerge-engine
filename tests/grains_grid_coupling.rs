@@ -569,8 +569,8 @@ fn diag_standalone_wall_rolling_resistance_ramp_no_grid() {
         // mirrors `apply_grain_contact_forces`'s own force/torque combine exactly
         // (kept as a loop, not a direct index, so this stays correct if the grain
         // count here ever changes).
-        for i in 0..pop.grains.len() {
-            forces[i] += gravity * pop.grains[i].mass;
+        for (f, g) in forces.iter_mut().zip(pop.grains.iter()) {
+            *f += gravity * g.mass;
         }
         for (idx, g) in pop.grains.iter_mut().enumerate() {
             g.v += (forces[idx] / g.mass) * dt;
@@ -1492,12 +1492,13 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
         // position ever actually violate the boundary clamp's own safe
         // margin (min=1.0 for thickness=2, confirmed exactly via
         // `diag_isolated_spinning_grain_near_domain_edge_truncated_kernel`)?
-        if !edge_violation_reported {
-            if let Some((idx, g)) = pop
+        if !edge_violation_reported
+            && let Some((idx, g)) = pop
                 .grains
                 .iter()
                 .enumerate()
                 .find(|(_, g)| g.x.x < 1.0 || g.x.y < 1.0 || g.x.x > 318.0 || g.x.y > 318.0)
+        {
             {
                 edge_violation_reported = true;
                 println!(
@@ -1879,17 +1880,22 @@ fn diag_replay_captured_pre_launch_state() {
     .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)))
     .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    let mut grains: Vec<Grain> = Vec::new();
-    // grain#0
-    grains.push(Grain {
-        x: Vec2::new(149.30905, 2.7380674),
-        v: Vec2::new(-0.0017817446, -0.011352835),
-        spin: -0.0010981292,
-        radius: 0.98481476,
-        mass: 0.96986014,
-        orientation: -0.0026953584,
-        c: Mat2::ZERO,
-    });
+    // Captured replay state -- grain#0 seeds the vec so the remaining
+    // captured grains can keep their own `// grain#N` provenance comments
+    // as successive pushes (clippy's vec-init-then-push only fires on an
+    // EMPTY initial vec).
+    let mut grains: Vec<Grain> = vec![
+        // grain#0
+        Grain {
+            x: Vec2::new(149.30905, 2.7380674),
+            v: Vec2::new(-0.0017817446, -0.011352835),
+            spin: -0.0010981292,
+            radius: 0.98481476,
+            mass: 0.96986014,
+            orientation: -0.0026953584,
+            c: Mat2::ZERO,
+        },
+    ];
     // grain#1
     grains.push(Grain {
         x: Vec2::new(152.05238, 2.727474),

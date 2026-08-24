@@ -137,11 +137,15 @@ impl GrainPopulation {
         self.contacts.len()
     }
 
-    /// TEMP DIAGNOSTIC (2026-08-03 scale-residual investigation): real
-    /// per-grain active contact count this substep -- used to correlate
-    /// contact count (coordination number) with per-grain energy growth in
-    /// the long-horizon column-collapse scale investigation. Remove once
-    /// the investigation concludes.
+    /// Per-grain active contact count this substep -- the real
+    /// COORDINATION NUMBER, a standard granular-physics measure (how many
+    /// neighbours each grain is actually touching), not a debug counter.
+    ///
+    /// Originally added for the 2026-08-03 scale-residual investigation and
+    /// labelled temporary; kept as permanent API because it is genuinely
+    /// meaningful on its own and four real tests consume it
+    /// (`grains_grid_coupling.rs`, `grains_repose_angle.rs`) to correlate
+    /// contact count with per-grain energy behaviour.
     pub fn contact_count_per_grain(&self) -> Vec<usize> {
         let mut counts = vec![0usize; self.grains.len()];
         for c in &self.contacts {

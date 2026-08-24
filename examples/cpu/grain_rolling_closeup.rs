@@ -444,9 +444,7 @@ impl State {
         // Changing the incline rebuilds the ramp's own real heights, so the
         // whole scene resets (a `HeightmapBoundary` isn't live-mutable the
         // way a scalar like gravity is).
-        if (incline_deg - incline_changed_before).abs() > 1e-6 {
-            self.reset();
-        } else if do_reset {
+        if (incline_deg - incline_changed_before).abs() > 1e-6 || do_reset {
             self.reset();
         }
 

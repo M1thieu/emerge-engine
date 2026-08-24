@@ -349,7 +349,10 @@ pub fn gather_grid_to_particles(
                         activation_dir: activation_dirs[i],
                         scalar_field: scalar_fields[i],
                         nonlocal_fluidity: nonlocal_fluidity.get(i).copied().unwrap_or(0.0),
-                        cosserat_curvature: cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
+                        cosserat_curvature: cosserat_curvature
+                            .get(i)
+                            .copied()
+                            .unwrap_or(Vec2::ZERO),
                     },
                 )
             };
