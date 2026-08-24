@@ -350,6 +350,7 @@ pub struct ContactResolution {
 ///   this codebase's own material plasticity).
 /// - Rolling: elastic trial `-kr*spring`, capped at `mu_r*r_eff*F_n`, same
 ///   plastic correction on cap.
+///
 /// Rolling-resistance spring shared by every contact model (linear AND
 /// Hertzian) and every geometry (grain-grain AND grain-wall) -- the real
 /// Ai et al. 2011 elastic-plastic EPSD spring is byte-identical across all
@@ -620,24 +621,25 @@ pub fn resolve_wall_contact(
 /// the trial force BEFORE the check instead, matching THIS engine's own
 /// existing `resolve_contact_pair` structure exactly (consistency with the
 /// rest of this file, not a different algorithm).
+///
 /// Real, cited conversion from the physical coefficient of restitution `e`
 /// to the actual damping COEFFICIENT the Tsuji, Tanaka & Ishida 1992
 /// formula needs -- found live 2026-08-21, a real, confirmed bug: an
 /// earlier version of `resolve_contact_pair_hertzian`/`resolve_wall_
-/// contact_hertzian` used the raw `e` (e.g. 0.95) directly in `-1.8257 * e
-/// * v * sqrt(k*m_eff)`, but GeoTaichi's own `HertzMindlin.py::add_surface_
-/// property` does NOT use the raw input that way -- it OVERWRITES its own
-/// `restitution` variable with this exact transform
+/// contact_hertzian` used the raw `e` (e.g. 0.95) directly in the formula
+/// `-1.8257 * e * v * sqrt(k*m_eff)`, but GeoTaichi's own `HertzMindlin.py::
+/// add_surface_property` does NOT use the raw input that way -- it
+/// OVERWRITES its own `restitution` variable with this exact transform
 /// (`-log(e)/sqrt(pi^2+log(e)^2)`) before ever using it in that formula.
 /// Using the raw 0.95 directly was a ~58x too-large damping coefficient
 /// (0.95 vs the correctly-transformed ~0.0163), confirmed via a direct,
 /// isolated single-pair-collision test measuring the ACTUAL post-collision
-/// velocity split against the real, standard 1D restitution formula
-/// (`v0' = (1-e)/2 * v0`, `v1' = (1+e)/2 * v0`) -- the bug showed an
-/// effective restitution of ~0.14 for a specified e=0.95, i.e. the
-/// collision was behaving far more energy-absorbing (closer to perfectly
-/// inelastic) than intended, while total momentum still conserved exactly
-/// (the bug was in the SPLIT, not the conservation law itself).
+/// velocity split against the real, standard 1D restitution formula:
+/// `v0' = (1-e)/2 * v0`, `v1' = (1+e)/2 * v0`. The bug showed an effective
+/// restitution of ~0.14 for a specified e=0.95, i.e. the collision was
+/// behaving far more energy-absorbing (closer to perfectly inelastic) than
+/// intended, while total momentum still conserved exactly (the bug was in
+/// the SPLIT, not the conservation law itself).
 fn hertzian_damping_coefficient(restitution: f32) -> f32 {
     if restitution < 1.0e-6 {
         return 0.0;

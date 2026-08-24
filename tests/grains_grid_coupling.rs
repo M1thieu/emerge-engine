@@ -2686,7 +2686,7 @@ fn diag_replay_captured_pre_launch_state() {
     // beyond what `contact_law` alone provides? Same exact captured state,
     // same config, one copy through each path.
     let standalone_grains = grains.clone();
-    solver.add_grain_population(GrainPopulation::new(grains, cfg.clone()));
+    solver.add_grain_population(GrainPopulation::new(grains, cfg));
 
     fn spread(xs: &[f32]) -> f32 {
         let n = xs.len() as f32;

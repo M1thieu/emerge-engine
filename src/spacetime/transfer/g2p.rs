@@ -30,6 +30,24 @@ struct MutFieldPtrs {
 unsafe impl Send for MutFieldPtrs {}
 unsafe impl Sync for MutFieldPtrs {}
 
+/// The read-only-per-particle values `ctx_at` copies into a
+/// `ParticleUpdateCtx` -- grouped into one struct (not loose arguments)
+/// once the real parameter count crossed clippy's own too-many-arguments
+/// threshold, the same reason `G2PParams`/`ProjectInputs` already exist
+/// elsewhere in this codebase. Fixing the root cause (too many real
+/// arguments) rather than `#[allow]`-ing the lint, per this project's own
+/// standing "no warnings, fix root cause" rule.
+struct ParticleReadOnlyScalars {
+    mass: f32,
+    temperature: f32,
+    initial_volume: f32,
+    activation: f32,
+    activation_dir: Vec2,
+    scalar_field: f32,
+    nonlocal_fluidity: f32,
+    cosserat_curvature: Vec2,
+}
+
 impl MutFieldPtrs {
     /// Builds the real `ParticleUpdateCtx` directly, for one index -- a method
     /// (not direct field access) on purpose: Rust 2021's disjoint closure
@@ -40,19 +58,7 @@ impl MutFieldPtrs {
     ///
     /// SAFETY: caller must ensure `i` is unique across every concurrent call
     /// (see the SAFETY comment where `MutFieldPtrs` is constructed).
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn ctx_at(
-        &self,
-        i: usize,
-        mass: f32,
-        temperature: f32,
-        initial_volume: f32,
-        activation: f32,
-        activation_dir: Vec2,
-        scalar_field: f32,
-        nonlocal_fluidity: f32,
-        cosserat_curvature: Vec2,
-    ) -> ParticleUpdateCtx<'_> {
+    unsafe fn ctx_at(&self, i: usize, s: ParticleReadOnlyScalars) -> ParticleUpdateCtx<'_> {
         unsafe {
             ParticleUpdateCtx {
                 x: &mut *self.x.add(i),
@@ -65,14 +71,14 @@ impl MutFieldPtrs {
                 plastic_volume_ratio: &mut *self.plastic_volume_ratio.add(i),
                 log_volume_strain: &mut *self.log_volume_strain.add(i),
                 friction_hardening: &mut *self.friction_hardening.add(i),
-                mass,
-                temperature,
-                initial_volume,
-                activation,
-                activation_dir,
-                scalar_field,
-                nonlocal_fluidity,
-                cosserat_curvature,
+                mass: s.mass,
+                temperature: s.temperature,
+                initial_volume: s.initial_volume,
+                activation: s.activation,
+                activation_dir: s.activation_dir,
+                scalar_field: s.scalar_field,
+                nonlocal_fluidity: s.nonlocal_fluidity,
+                cosserat_curvature: s.cosserat_curvature,
             }
         }
     }
@@ -105,6 +111,11 @@ pub struct G2PParams<'a> {
     /// -- every read below falls back to `Vec2::ZERO`, matching
     /// `ParticleUpdateCtx::cosserat_curvature`'s own real-rest-state default.
     pub cosserat_curvature: &'a [Vec2],
+    /// `SimConfig::boundary_thickness` -- folded in here (not a loose
+    /// argument) once `gather_grid_to_particles` crossed clippy's own
+    /// too-many-arguments threshold; grouped with the other plain scalars
+    /// above for the same reason `apic_blend`/`asflip_blend` already are.
+    pub boundary_thickness: usize,
 }
 
 /// Analytic adjoint of G2P's velocity gather (`new_v = sum_c weight_c *
@@ -241,7 +252,6 @@ pub fn gather_grid_to_particles(
     grid: &Grid,
     dt: f32,
     gravity: Vec2,
-    boundary_thickness: usize,
     boundaries: &[Box<dyn BoundaryCondition>],
     materials: &MaterialRegistry,
     params: G2PParams,
@@ -250,6 +260,7 @@ pub fn gather_grid_to_particles(
         apic_blend,
         active_count,
         asflip_blend,
+        boundary_thickness,
         pre_force_snapshot,
         nonlocal_fluidity,
         cosserat_curvature,
@@ -330,14 +341,16 @@ pub fn gather_grid_to_particles(
             let mut ctx = unsafe {
                 ptrs.ctx_at(
                     i,
-                    masses[i],
-                    temperatures[i],
-                    initial_volumes[i],
-                    activations[i],
-                    activation_dirs[i],
-                    scalar_fields[i],
-                    nonlocal_fluidity.get(i).copied().unwrap_or(0.0),
-                    cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
+                    ParticleReadOnlyScalars {
+                        mass: masses[i],
+                        temperature: temperatures[i],
+                        initial_volume: initial_volumes[i],
+                        activation: activations[i],
+                        activation_dir: activation_dirs[i],
+                        scalar_field: scalar_fields[i],
+                        nonlocal_fluidity: nonlocal_fluidity.get(i).copied().unwrap_or(0.0),
+                        cosserat_curvature: cosserat_curvature.get(i).copied().unwrap_or(Vec2::ZERO),
+                    },
                 )
             };
             let mixture_phase = if mixture_active {

@@ -854,13 +854,13 @@ impl Simulation {
             &self.grid,
             sub_dt,
             self.config.gravity,
-            self.config.boundary_thickness,
             &self.boundaries,
             &self.materials,
             G2PParams {
                 apic_blend: self.config.apic_blend,
                 active_count: self.active_count,
                 asflip_blend: self.config.asflip_blend,
+                boundary_thickness: self.config.boundary_thickness,
                 // Real, honest, minor shared cost: if only `cundall_damping` is enabled
                 // (asflip_blend still 0.0), G2P still takes the `Some` branch and computes
                 // the extra pre-force stencil gather -- harmless (asflip_blend=0.0 zeroes

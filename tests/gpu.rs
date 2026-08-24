@@ -5331,6 +5331,7 @@ mod gpu_tests {
     ///    stabilized a DIFFERENT hard scene earlier the same investigation,
     ///    ported to GPU for the first time here (previously CPU-only,
     ///    explicitly disclosed as "needs porting").
+    ///
     /// Real, measured result: peak J dropped from 34653 (no fix) to a
     /// stable, non-growing plateau around 5-6 (both fixes combined) -- NOT
     /// perfectly bounded near 1.0 (a real, disclosed remaining limitation:

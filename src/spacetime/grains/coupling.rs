@@ -739,7 +739,7 @@ mod tests {
                 Grain::new(Vec2::new(17.9, 16.0), 1.0, 1.0), // 0.1 overlap, real contact from step 0
             ]
         };
-        let mut standalone = GrainPopulation::new(make_grains(), cfg.clone());
+        let mut standalone = GrainPopulation::new(make_grains(), cfg);
         let ke0 = total_ke(&standalone);
         let mut standalone_max_ke = ke0;
         for _ in 0..STEPS {
