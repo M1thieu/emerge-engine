@@ -14,10 +14,10 @@ use std::mem;
 use crate::particle::{Particle, Particles};
 use crate::systems::gpu::MAX_RENDER_MATERIAL_SLOTS;
 
-const RENDER_SHADER: &str = include_str!("render/shaders/render_particles.wgsl");
-const PREP_SHADER: &str = include_str!("render/shaders/prep_instances.wgsl");
-const GRID_VOLUME_SHADER: &str = include_str!("render/shaders/grid_volume.wgsl");
-const CURVATURE_FLOW_SHADER: &str = include_str!("render/shaders/curvature_flow.wgsl");
+const RENDER_SHADER: &str = include_str!("shaders/render_particles.wgsl");
+const PREP_SHADER: &str = include_str!("shaders/prep_instances.wgsl");
+const GRID_VOLUME_SHADER: &str = include_str!("shaders/grid_volume.wgsl");
+const CURVATURE_FLOW_SHADER: &str = include_str!("shaders/curvature_flow.wgsl");
 const PREP_WG: u32 = 64;
 const SURFACE_CLEAR_WG: u32 = 64;
 const SURFACE_SPLAT_WG: u32 = 64;
