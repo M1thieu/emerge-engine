@@ -9,8 +9,8 @@ use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
     AabbConfinementField, DruckerPragerMaterial, Elastic, FrictionBoundary, FromSI,
-    MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion,
+    MaterialRegistry, MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
+    Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Mat2, Vec2};
 
@@ -3592,6 +3592,17 @@ fn asflip_preserves_momentum_conservation_under_free_fall() {
 /// **Exponential decay** -- a single warm particle in a `decay_rate = λ` field
 /// should cool as T(t) = T₀·exp(−λ·t). We verify the measured ratio matches
 /// the analytical prediction computed from the same λ and t used in the test.
+/// Minimal placeholder registry for the scalar-diffusion tests below -- they
+/// exercise `ScalarDiffusionField`'s own math (decay, diffusion, source
+/// terms), not material physics, so the wrapped material's own params don't
+/// matter; `apply()` still needs a real `MaterialRegistry` to resolve each
+/// particle's material for its own `source` fn (see `ScalarDiffusionField::
+/// source`'s doc on why -- real property-based classification, not a name
+/// check, needs the resolved material).
+fn placeholder_registry() -> MaterialRegistry {
+    MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(1.0, 1.0)))
+}
+
 #[test]
 fn scalar_diffusion_decay_matches_analytical() {
     let decay_rate = 1.5_f32;
@@ -3618,8 +3629,9 @@ fn scalar_diffusion_decay_matches_analytical() {
         ..Particle::zeroed()
     }]);
 
+    let registry = placeholder_registry();
     for _ in 0..n_steps {
-        field.apply(&mut particles, sub_dt);
+        field.apply(&mut particles, sub_dt, &registry);
     }
 
     let t_final = particles.temperature[0];
@@ -3650,7 +3662,7 @@ fn scalar_diffusion_decay_matches_analytical() {
 /// below checks against its own closed-form analytical solution).
 const LOGISTIC_R: f32 = 0.5; // growth rate, 1/s
 const LOGISTIC_K: f32 = 1.0; // carrying capacity
-fn logistic_regrowth_source(_p: &Particle, phi: f32) -> f32 {
+fn logistic_regrowth_source(_p: &Particle, phi: f32, _material: &dyn MaterialModel) -> f32 {
     LOGISTIC_R * phi * (1.0 - phi / LOGISTIC_K)
 }
 
@@ -3687,8 +3699,9 @@ fn resource_regrowth_matches_logistic_curve() {
         ..Particle::zeroed()
     }]);
 
+    let registry = placeholder_registry();
     for _ in 0..n_steps {
-        field.apply(&mut particles, sub_dt);
+        field.apply(&mut particles, sub_dt, &registry);
     }
 
     let phi_final = particles.temperature[0];
@@ -3760,8 +3773,9 @@ fn scalar_diffusion_is_symmetric() {
         },
     ]);
 
+    let registry = placeholder_registry();
     for _ in 0..40 {
-        field.apply(&mut particles, 0.02);
+        field.apply(&mut particles, 0.02, &registry);
     }
 
     let t_left = particles.temperature[1];
@@ -3828,8 +3842,9 @@ fn scalar_diffusion_conserves_total_heat_dense() {
         .map(|(&m, &t)| m * t)
         .sum();
 
+    let registry = placeholder_registry();
     for _ in 0..20 {
-        field.apply(&mut particles, 0.01);
+        field.apply(&mut particles, 0.01, &registry);
     }
 
     let heat_after: f32 = particles

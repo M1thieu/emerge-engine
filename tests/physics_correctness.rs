@@ -20,9 +20,9 @@ use emerge::{
 };
 use emerge::{
     BinghamFluidMaterial, CorotatedMaterial, DruckerPragerMaterial, GranularFluidMaterial,
-    MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
-    NoCompressionMaterial, SimConfig, Simulation, SpawnRegion, StomakhinMaterial,
-    ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
+    MaterialRegistry, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial,
+    NewtonianFluidMaterial, NoCompressionMaterial, SimConfig, Simulation, SpawnRegion,
+    StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
 };
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
@@ -945,9 +945,10 @@ fn scalar_diffusion_spreads_and_conserves() {
 
     let t_total_before: f32 = particles.temperature.iter().sum();
 
+    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(1.0, 1.0)));
     // 10 substeps of diffusion
     for _ in 0..10 {
-        field.apply(&mut particles, 0.01);
+        field.apply(&mut particles, 0.01, &registry);
     }
 
     let t_total_after: f32 = particles.temperature.iter().sum();
@@ -1000,8 +1001,9 @@ fn scalar_diffusion_decay_reduces_total() {
         ..Particle::zeroed()
     }]);
 
+    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(1.0, 1.0)));
     for _ in 0..50 {
-        field.apply(&mut particles, 0.02); // 1s total
+        field.apply(&mut particles, 0.02, &registry); // 1s total
     }
 
     // After 1s at decay_rate=1.0: T should be ~100*e^(-1) â‰ˆ 36.8

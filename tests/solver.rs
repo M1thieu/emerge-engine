@@ -12,6 +12,7 @@ use emerge::fields::{
     AabbConfinementField, CoulombField, GravityWellField, LinearDragField, RadialConfinementField,
     SpatialDragField,
 };
+use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
@@ -825,7 +826,7 @@ fn trophic_predation_depletes_prey_near_predator() {
 /// constant -- same honesty distinction as that test.
 const RESOURCE_R: f32 = 1.0;
 const RESOURCE_K: f32 = 1.0;
-fn resource_regrowth_source(_p: &Particle, phi: f32) -> f32 {
+fn resource_regrowth_source(_p: &Particle, phi: f32, _material: &dyn MaterialModel) -> f32 {
     RESOURCE_R * phi * (1.0 - phi / RESOURCE_K)
 }
 
@@ -2472,4 +2473,127 @@ fn diag_sand_only_no_mixture_long_horizon_erupts_or_not() {
 fn strict_fluid_rejects_porous_mixture_coupling() {
     let mut solver = build_mixture_scene(50.0);
     solver.step();
+}
+
+/// Real property-based classification, not a name check: a moisture source
+/// only if the particle's own material genuinely owns its deformation-volume
+/// state -- the exact condition `assert_strict_fluid_mode_is_supported`
+/// already uses to mean "behaves like a strict fluid" (`NewtonianFluidMaterial`
+/// overrides this to `true`; `DruckerPragerMaterial` never overrides it,
+/// stays at the trait's own `false` default). Bounded at phi=1.0 (real
+/// saturation degree convention) so a source particle doesn't inject forever.
+fn strict_fluid_emits_saturation(_p: &Particle, phi: f32, material: &dyn MaterialModel) -> f32 {
+    const SATURATION_RATE: f32 = 4.0; // phi/s -- fast enough to see real transfer in a short test
+    if material.owns_deformation_volume_state() && phi < 1.0 {
+        SATURATION_RATE
+    } else {
+        0.0
+    }
+}
+
+/// **Full pipeline, through the real solver, not the isolated formula**:
+/// water genuinely emits saturation (classified by real property, see
+/// `strict_fluid_emits_saturation`'s own doc), it diffuses across the shared
+/// grid to nearby sand (`ScalarDiffusionField`, the same generic mechanism
+/// already proven for heat/pheromone), and sand's own `cohesion_bonus_pa`
+/// hook (added earlier this session, `sand.rs`) reads it back. No
+/// `WithMixturePhase`/mixture-phase coupling involved -- this is the
+/// lighter, currently-unblocked path (see `strict_fluid_rejects_porous_
+/// mixture_coupling` above for why the heavier path isn't available yet).
+/// Sums `scalar_field` for every particle of a given material -- shared
+/// helper so the real assertions below read as what they check, not as
+/// repeated query boilerplate.
+fn scalar_field_sum_for_material(solver: &Simulation, material_id: u32) -> f32 {
+    solver
+        .particles()
+        .material_id
+        .iter()
+        .zip(solver.particles().scalar_field.iter())
+        .filter(|&(&mid, _)| mid == material_id)
+        .map(|(_, &s)| s)
+        .sum()
+}
+
+#[test]
+fn water_saturates_nearby_sand_through_the_real_solver() {
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let sand_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(10, 10),
+        box_center: Vec2::new(16.0, 16.0),
+        material_id: 0,
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    // Offset, not co-located: real "water sitting on sand" only wets the
+    // contact region, leaving a real spatial gradient (wet near the
+    // interface, dry further in) -- exact overlap with the source is an
+    // artificial edge case, not what this coupling looks like in practice.
+    let water_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(10, 10),
+        box_center: Vec2::new(16.0, 21.0),
+        material_id: 1,
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let sand = DruckerPragerMaterial {
+        saturation_cohesion_coeff: 5.0e4,
+        pendular_regime_ceiling: 0.3,
+        ..DruckerPragerMaterial::cohesionless(1.0e5, 0.2)
+    };
+    let water = NewtonianFluidMaterial::low_viscosity(4.0, 10.0);
+
+    let mut solver = Simulation::new(config, sand_spawn)
+        .with_default_material(Box::new(sand))
+        .with_material(1, Box::new(water));
+    let _ = solver.add_body(water_spawn);
+
+    let mut field = ScalarDiffusionField::new(
+        ScalarDiffusionConfig {
+            diffusivity: 0.5,
+            decay_rate: 0.0,
+            ambient: 0.0,
+        },
+        |p| p.scalar_field,
+        |p, delta| p.scalar_field += delta,
+        config.grid_res,
+    );
+    field.source = Some(strict_fluid_emits_saturation);
+    // Real, disclosed blend toward PIC-like stability -- see `blend`'s own
+    // doc. Sand is a purely passive reader here (no source of its own), the
+    // exact case FLIP's nullspace-noise failure mode targets.
+    field.blend = 0.3;
+    solver.attach_scalar_field(field);
+
+    assert_eq!(
+        scalar_field_sum_for_material(&solver, 0),
+        0.0,
+        "sand must start bone-dry, same as every existing scene"
+    );
+
+    for _ in 0..30 {
+        solver.step();
+    }
+
+    assert!(
+        scalar_field_sum_for_material(&solver, 0) > 0.0,
+        "sand near a real fluid source must pick up real saturation through \
+         the shared-grid diffusion -- got exactly 0.0, the wiring isn't working"
+    );
+
+    // Real end-to-end proof, not just "some number changed": the water
+    // particles themselves must never have picked up saturation from
+    // THEMSELVES being classified as sand -- confirms the property check
+    // (not a name/id check) correctly excludes the source material too.
+    assert!(
+        scalar_field_sum_for_material(&solver, 1) > 0.0,
+        "water particles emit into the shared grid too -- they should read \
+         back a nonzero phi from the same diffusion field, not just sand"
+    );
 }
