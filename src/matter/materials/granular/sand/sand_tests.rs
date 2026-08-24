@@ -250,7 +250,10 @@ mod saturation_cohesion_tests {
         let fully_saturated = dp.cohesion_bonus_pa(1.0);
 
         assert_eq!(dry, 0.0, "bone-dry sand has zero apparent cohesion");
-        assert!(damp > dry, "cohesion must rise with saturation in the pendular regime");
+        assert!(
+            damp > dry,
+            "cohesion must rise with saturation in the pendular regime"
+        );
         assert!(
             (at_ceiling - dp.saturation_cohesion_coeff).abs() < 1.0e-4,
             "at the ceiling, bonus should equal the full coefficient, got {at_ceiling}"

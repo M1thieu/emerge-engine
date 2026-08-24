@@ -326,7 +326,7 @@ impl Simulation {
                 thermal.apply(&mut self.particles, diffusion_dt);
             }
             for field in &mut self.scalar_fields {
-                field.apply(&mut self.particles, diffusion_dt);
+                field.apply(&mut self.particles, diffusion_dt, &self.materials);
             }
         }
         self.last_timing.thermal_us += t_diff.elapsed().as_micros() as u64;
