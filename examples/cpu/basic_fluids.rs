@@ -120,7 +120,7 @@ const SPACING: f32 = 0.5;
 /// particle draws precisely the fluid area it actually stands for -- no
 /// arbitrary fudge factor, and it stays correct automatically if SPACING
 /// changes.
-const PARTICLE_RENDER_DIAMETER: f32 = SPACING * 1.128_379_2; // 2/sqrt(pi)
+const PARTICLE_RENDER_DIAMETER: f32 = SPACING * std::f32::consts::FRAC_2_SQRT_PI;
 const MAT_WATER: u32 = 0;
 const MAT_MUD: u32 = 1;
 const MAT_ICE: u32 = 2;
@@ -699,7 +699,7 @@ impl State {
             }
         }
         self.queue
-            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense));
+            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense[..]));
 
         let particles = self.sim.particles();
         self.bridge_material_mass.clear();
@@ -715,7 +715,7 @@ impl State {
         self.queue.write_buffer(
             &self.material_mass_bridge_buf,
             0,
-            bytemuck::cast_slice(&material_mass),
+            bytemuck::cast_slice(&material_mass[..]),
         );
     }
 

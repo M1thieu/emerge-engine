@@ -229,17 +229,22 @@ impl Simulation {
             let t_cfl = std::time::Instant::now();
             let (sub_dt, measured_max_speed) = choose_substep_dt(
                 &self.config,
-                &self.particles,
-                self.active_count,
-                &self.materials,
-                &self.rods,
-                &self.grain_populations,
-                remaining,
-                self.granular_fluidity
-                    .as_ref()
-                    .map(|f| f.config.stability_dt(self.config.dx_meters)),
-                self.thermal.as_ref().map(|t| t.config.stability_dt()),
-                self.last_max_particle_speed,
+                crate::solver::cfl::SubstepScene {
+                    particles: &self.particles,
+                    active_count: self.active_count,
+                    materials: &self.materials,
+                    rods: &self.rods,
+                    grain_populations: &self.grain_populations,
+                },
+                crate::solver::cfl::SubstepBounds {
+                    max_dt: remaining,
+                    granular_fluidity_dt_bound: self
+                        .granular_fluidity
+                        .as_ref()
+                        .map(|f| f.config.stability_dt(self.config.dx_meters)),
+                    thermal_dt_bound: self.thermal.as_ref().map(|t| t.config.stability_dt()),
+                    last_max_speed: self.last_max_particle_speed,
+                },
             );
             // One-substep-lagged, real (not estimated): feeds the near-wall
             // gate's Mach-relative threshold on the NEXT call -- see

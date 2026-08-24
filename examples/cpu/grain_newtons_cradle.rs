@@ -426,7 +426,7 @@ impl State {
                 self.population.step(GRAVITY, self.dt);
                 apply_string_constraints(&mut self.population);
                 self.step += 1;
-                if self.step % 2000 == 0 {
+                if self.step.is_multiple_of(2000) {
                     let v: Vec<f32> = self
                         .population
                         .grains
@@ -567,9 +567,7 @@ impl State {
         self.sim_speed = sim_speed;
         self.pull_deg = pull_deg;
         self.pull_count = pull_count;
-        if (pull_deg - pull_before).abs() > 1.0e-6 || pull_count != pull_count_before {
-            self.reset();
-        } else if do_reset {
+        if (pull_deg - pull_before).abs() > 1.0e-6 || pull_count != pull_count_before || do_reset {
             self.reset();
         }
 

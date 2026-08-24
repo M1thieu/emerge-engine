@@ -9,6 +9,25 @@
 
 use super::*;
 
+/// The ten GPU buffers one phase of the surface-reconstruction pipeline
+/// binds. Bundled so `encode_phase_pipeline` needs no
+/// `#[allow(clippy::too_many_arguments)]` -- fixing the cause (buffers that
+/// always travel together as one phase's buffer set) rather than silencing
+/// the lint. Pure regrouping: every buffer is passed through unchanged.
+#[derive(Clone, Copy)]
+struct PhasePipelineBuffers<'a> {
+    params_buf: &'a wgpu::Buffer,
+    atomic_buf: &'a wgpu::Buffer,
+    a_buf: &'a wgpu::Buffer,
+    b_buf: &'a wgpu::Buffer,
+    raw_splat_history_buf: &'a wgpu::Buffer,
+    temp_atomic_buf: &'a wgpu::Buffer,
+    temp_float_buf: &'a wgpu::Buffer,
+    pre_total_buf: &'a wgpu::Buffer,
+    post_total_buf: &'a wgpu::Buffer,
+    material_mass_buf: &'a wgpu::Buffer,
+}
+
 impl Renderer {
     // ── Curvature-flow surface reconstruction ──────────────────────────────────
 
@@ -804,7 +823,6 @@ impl Renderer {
     /// already-shipped code) and `render_surface_reconstruction_dual_phase`
     /// (below, calls this twice) both need. `params_buf` must already carry
     /// the real `phase_filter_material_id` for this specific phase.
-    #[allow(clippy::too_many_arguments)]
     fn encode_phase_pipeline(
         &self,
         device: &wgpu::Device,
@@ -812,22 +830,25 @@ impl Renderer {
         particle_buf: &wgpu::Buffer,
         particle_count: usize,
         surface_res: u32,
-        params_buf: &wgpu::Buffer,
-        atomic_buf: &wgpu::Buffer,
-        a_buf: &wgpu::Buffer,
-        b_buf: &wgpu::Buffer,
-        raw_splat_history_buf: &wgpu::Buffer,
-        temp_atomic_buf: &wgpu::Buffer,
-        temp_float_buf: &wgpu::Buffer,
-        pre_total_buf: &wgpu::Buffer,
-        post_total_buf: &wgpu::Buffer,
+        bufs: PhasePipelineBuffers<'_>,
         // N-material extension's own buffer -- always bound (layout is
         // shared with the single-phase path), but a harmless dead-code
         // path here: both dual-phase calls set `material_mass_enabled: 0`
         // in `params_buf`, so the shader branch that reads this never
         // executes.
-        material_mass_buf: &wgpu::Buffer,
     ) {
+        let PhasePipelineBuffers {
+            params_buf,
+            atomic_buf,
+            a_buf,
+            b_buf,
+            raw_splat_history_buf,
+            temp_atomic_buf,
+            temp_float_buf,
+            pre_total_buf,
+            post_total_buf,
+            material_mass_buf,
+        } = bufs;
         let cell_count = surface_res * surface_res;
         let clear_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("phase_clear_bg"),
@@ -1228,16 +1249,18 @@ impl Renderer {
             particle_buf,
             particle_count,
             surface_res,
-            &self.surface_params_buf,
-            &self.surface_atomic_buf,
-            &self.surface_a_buf,
-            &self.surface_b_buf,
-            &self.raw_splat_history_buf,
-            &self.surface_temp_atomic_buf,
-            &self.surface_temp_float_buf,
-            &self.pre_total_atomic_buf,
-            &self.post_total_atomic_buf,
-            &self.surface_material_mass_buf,
+            PhasePipelineBuffers {
+                params_buf: &self.surface_params_buf,
+                atomic_buf: &self.surface_atomic_buf,
+                a_buf: &self.surface_a_buf,
+                b_buf: &self.surface_b_buf,
+                raw_splat_history_buf: &self.raw_splat_history_buf,
+                temp_atomic_buf: &self.surface_temp_atomic_buf,
+                temp_float_buf: &self.surface_temp_float_buf,
+                pre_total_buf: &self.pre_total_atomic_buf,
+                post_total_buf: &self.post_total_atomic_buf,
+                material_mass_buf: &self.surface_material_mass_buf,
+            },
         );
         self.encode_phase_pipeline(
             device,
@@ -1245,16 +1268,18 @@ impl Renderer {
             particle_buf,
             particle_count,
             surface_res,
-            &self.phase_b_params_buf,
-            &self.phase_b_atomic_buf,
-            &self.phase_b_a_buf,
-            &self.phase_b_b_buf,
-            &self.phase_b_raw_splat_history_buf,
-            &self.phase_b_temp_atomic_buf,
-            &self.phase_b_temp_float_buf,
-            &self.phase_b_pre_total_atomic_buf,
-            &self.phase_b_post_total_atomic_buf,
-            &self.surface_material_mass_buf,
+            PhasePipelineBuffers {
+                params_buf: &self.phase_b_params_buf,
+                atomic_buf: &self.phase_b_atomic_buf,
+                a_buf: &self.phase_b_a_buf,
+                b_buf: &self.phase_b_b_buf,
+                raw_splat_history_buf: &self.phase_b_raw_splat_history_buf,
+                temp_atomic_buf: &self.phase_b_temp_atomic_buf,
+                temp_float_buf: &self.phase_b_temp_float_buf,
+                pre_total_buf: &self.phase_b_pre_total_atomic_buf,
+                post_total_buf: &self.phase_b_post_total_atomic_buf,
+                material_mass_buf: &self.surface_material_mass_buf,
+            },
         );
 
         // Real per-phase wave/visibility/band steps -- reuses the SAME
