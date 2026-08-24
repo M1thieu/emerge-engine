@@ -174,7 +174,6 @@ fn bench_g2p(c: &mut Criterion) {
                     &fx.grid,
                     dt,
                     fx.config.gravity,
-                    fx.config.boundary_thickness,
                     &boundaries,
                     &fx.registry,
                     emerge::transfer::G2PParams {
@@ -182,6 +181,7 @@ fn bench_g2p(c: &mut Criterion) {
                         active_count: fx.n,
                         pre_force_snapshot: None,
                         asflip_blend: 0.0,
+                        boundary_thickness: fx.config.boundary_thickness,
                         nonlocal_fluidity: &[],
                         cosserat_curvature: &[],
                     },

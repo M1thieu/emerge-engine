@@ -50,6 +50,12 @@ use crate::{
 ///     64,
 /// );
 /// ```
+/// Signature for `ScalarDiffusionField::source` -- factored into its own
+/// alias (clippy's own complexity threshold, not just cosmetic) once the
+/// resolved-material parameter joined the particle/phi pair. See `source`'s
+/// own doc for what each argument is for.
+pub type ScalarFieldSource = fn(&Particle, f32, &dyn MaterialModel) -> f32;
+
 pub struct ScalarDiffusionField {
     pub config: ScalarDiffusionConfig,
     /// Read the scalar value φ from a particle.
@@ -71,7 +77,7 @@ pub struct ScalarDiffusionField {
     /// material's own construction already follows (`ElasticProps`,
     /// `FluidProps`, etc. -- see `matter::materials::physical_props`).
     /// Use for fire emitting heat, creatures emitting pheromone, Turing patterns, etc.
-    pub source: Option<fn(&Particle, f32, &dyn MaterialModel) -> f32>,
+    pub source: Option<ScalarFieldSource>,
 
     /// PIC/FLIP-style transfer blend, real and established (Zhu & Bridson
     /// 2005; standard in production fluid solvers, commonly ~0.95 FLIP/0.05

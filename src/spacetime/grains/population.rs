@@ -326,12 +326,12 @@ impl GrainPopulation {
         for grain in &mut self.grains {
             for boundary in boundaries {
                 let contact = boundary.grain_contact(grain.x, grain.radius, grid_res);
-                if let Some((normal, overlap)) = contact {
-                    if overlap > 0.0 {
-                        let v_n = grain.v.dot(normal);
-                        if v_n < 0.0 {
-                            grain.v -= v_n * normal;
-                        }
+                if let Some((normal, overlap)) = contact
+                    && overlap > 0.0
+                {
+                    let v_n = grain.v.dot(normal);
+                    if v_n < 0.0 {
+                        grain.v -= v_n * normal;
                     }
                 }
             }
