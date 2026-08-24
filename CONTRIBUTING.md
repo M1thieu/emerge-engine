@@ -30,33 +30,38 @@ not an implementation layer:
 
 ```
 src/
-  matter/            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
-                     RodPoints · Particles SoA)
-    materials/        MaterialModel trait · registry · 11 standalone models ·
-                      granular/ (sand, sand_mui, cosserat, grain_contact_law,
-                      scale_contract -- grouped by active research thread)
-  spacetime/          the actual solver
-    solver/            Simulation · SimConfig · SpawnRegion · spatial hash ·
-                       body_state (BodyState aggregation)
-    grid/               Grid · Cell · ContactCell (multi-field contact) · kernel
-    transfer/           P2G scatter + G2P gather (MLS-APIC)
-    diff.rs             differentiable/gradient-trainable stepping
-    rod/                Rod · RodMaterial · build_straight_rod ·
-                        coupling.rs (scatter/gather to the shared Grid)
-    grains/             DEM grain dynamics: population/coupling/oracle
-                        (state lives in matter::particle::Grain)
-  forces/             boundary/ (Slip / Predictive / Heightmap / friction/
-                      [Friction / GripFriction / RatchetFriction]) ·
-                      fields/ (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
-                      electromagnetics.rs
-  energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
-                      acoustics/, electromagnetics.rs [feature=experimental]
-  information/        control/ (Lnn neural locomotion controller) · measures/
-  runtime/            FixedStepController
-  systems/            gpu/ [feature=gpu] GpuSimulation + WGSL shaders ·
-                      render/ [feature=render] instanced particle renderer ·
-                      diagnostics/ plugin system · health · per-material stats
+  matter.rs            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
+                       RodPoints · Particles SoA)
+    materials.rs        MaterialModel trait · registry · 14 material models ·
+                        granular/ (sand, sand_mui, cosserat, grain_contact_law,
+                        scale_contract -- grouped by active research thread)
+  spacetime.rs          the actual solver
+    solver.rs            Simulation · SimConfig · SpawnRegion · spatial hash ·
+                         body_state (BodyState aggregation)
+    grid.rs               Grid · Cell · ContactCell (multi-field contact) · kernel
+    transfer.rs           P2G scatter + G2P gather (MLS-APIC)
+    diff.rs               differentiable/gradient-trainable stepping
+    rod.rs                Rod · RodMaterial · build_straight_rod ·
+                          coupling.rs (scatter/gather to the shared Grid)
+    grains.rs             DEM grain dynamics: population/coupling/oracle
+                          (state lives in matter::particle::Grain)
+  forces.rs             boundary.rs (Slip / Heightmap / friction.rs
+                        [Friction / GripFriction / RatchetFriction]) ·
+                        fields.rs (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
+                        electromagnetics.rs
+  energy.rs             thermodynamics.rs (ThermalDiffusion · ScalarDiffusionField) ·
+                        acoustics.rs, electromagnetics.rs [feature=experimental]
+  information.rs        control.rs (Lnn neural locomotion controller) · measures.rs
+  runtime.rs            FixedStepController
+  systems.rs            gpu.rs [feature=gpu] GpuSimulation + WGSL shaders ·
+                        render.rs [feature=render] instanced particle renderer ·
+                        diagnostics.rs plugin system · health · per-material stats
 ```
+
+Every domain root uses `foo.rs` + a sibling `foo/` directory for its own
+submodules (no `mod.rs` anywhere in this tree) -- the modern Rust 2018+ style,
+adopted repo-wide so file tabs read as the module they are, not a stack of
+identically-named `mod.rs` files.
 
 Feature flags: `gpu` | `render` (requires `gpu`) | `experimental`
 
@@ -71,7 +76,10 @@ A new material requires changes in four places:
 Implement the `MaterialModel` trait:
 
 All methods have default implementations (an elastic-only material can override just
-`kirchhoff_stress`). The signatures below are exact -- copy them, not the idea of them:
+`kirchhoff_stress`). The signatures below are exact, copied directly from the trait's
+own current definition (`src/matter/materials.rs`) -- copy them, not the idea of them,
+and re-check against the trait itself before relying on this doc, since it's the kind
+of thing that silently drifts:
 
 ```rust
 pub struct MyMaterial { /* parameters */ }
@@ -79,15 +87,18 @@ pub struct MyMaterial { /* parameters */ }
 impl MaterialModel for MyMaterial {
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 { ... }
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 { ... }
-    fn update_particle(&self, particles: &mut Particles, i: usize, dt: f32) { ... }
+    // Disjoint per-field borrows (`ParticleUpdateCtx`), not `&mut Particles, i` --
+    // this shape is what lets G2P run every particle's update in parallel.
+    fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) { ... }
     // Seeds per-particle plastic state at spawn time -- takes a single `Particle`,
     // not the `Particles` collection (called once per particle, before it's in the SoA).
     fn init_particle(&self, particle: &mut Particle) { ... }
-    // CFL bound -- reads the spawned particle's own state, not just dx/rho.
+    // CFL bound -- plain scalars (not &Particles, i), so both the CPU (SoA) and
+    // GPU (AoS) CFL scans can call it without either needing the other's layout.
     fn timestep_bound(
         &self,
-        particles: &Particles,
-        i: usize,
+        density: f32,
+        hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
         viscous_cfl: f32,
@@ -96,7 +107,7 @@ impl MaterialModel for MyMaterial {
 }
 ```
 
-### 2. `src/matter/materials/mod.rs`
+### 2. `src/matter/materials.rs`
 
 Add a variant to `ConstitutiveModel`. The discriminant must be the next consecutive `u32`, and a matching compile-time ABI assertion is required:
 
@@ -104,22 +115,22 @@ Add a variant to `ConstitutiveModel`. The discriminant must be the next consecut
 #[repr(u32)]
 pub enum ConstitutiveModel {
     // ... existing variants ...
-    MyMaterial = 13,  // next available discriminant
+    MyMaterial = 14,  // next available discriminant (14 material models exist today)
 }
 
 // in the assert block:
-assert!(ConstitutiveModel::MyMaterial as u32 == 13);
+assert!(ConstitutiveModel::MyMaterial as u32 == 14);
 ```
 
-Re-export from `mod.rs` and add to `src/prelude.rs`.
+Re-export from `materials.rs` and add to `src/prelude.rs`.
 
 ### 3. `src/systems/gpu/shaders/p2g.wgsl`
 
-Add `case 13u` to the Kirchhoff stress `switch`. If the material is CPU-only, return zero stress and set `needs_cpu_update = true` in Rust.
+Add `case 14u` to the Kirchhoff stress `switch`. If the material is CPU-only, return zero stress and set `needs_cpu_update = true` in Rust.
 
 ### 4. `src/systems/gpu/shaders/particles_update.wgsl`
 
-Add `case 13u` to the plasticity update `switch`. CPU-only materials can leave this as a no-op.
+Add `case 14u` to the plasticity update `switch`. CPU-only materials can leave this as a no-op.
 
 ---
 
