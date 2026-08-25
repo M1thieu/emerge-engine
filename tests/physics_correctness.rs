@@ -2195,7 +2195,19 @@ fn nacc_preconsolidates_more_under_deeper_self_weight() {
     // already applied to the hydrostatic tests above) gives real overburden
     // a much bigger shallow-vs-deep gap to work with, well above the noise
     // floor.
-    let config = SimConfig::standard(128, 0.02, Vec2::new(0.0, -9.81));
+    // Legacy raw-grid-unit scene: this test was calibrated (before
+    // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
+    // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
+    // PRE-EXISTING calibration explicitly, not inventing a new one:
+    // unsourced, so KEPT rather than replaced (standing rule). Real SI
+    // migration (every constant grounded in a measured value, so this
+    // qualitative relationship holds for a physical reason, not by
+    // coincidence) is real, scoped follow-up work, not done here. See
+    // project_grid_density_six_failing_tests memory.
+    let config = SimConfig {
+        grid_density: 4.0,
+        ..SimConfig::standard(128, 0.02, Vec2::new(0.0, -9.81))
+    };
     let spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(16, 60),
@@ -2291,7 +2303,19 @@ fn snow_compacts_and_hardens_under_self_weight_and_cohesion_resists_compaction()
     let base = StomakhinMaterial::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0);
 
     let run_and_measure = |mat: StomakhinMaterial| -> (f32, f32) {
-        let config = SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81));
+        // Legacy raw-grid-unit scene: this test was calibrated (before
+        // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
+        // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
+        // PRE-EXISTING calibration explicitly, not inventing a new one:
+        // unsourced, so KEPT rather than replaced (standing rule). Real SI
+        // migration (every constant grounded in a measured value, so this
+        // qualitative relationship holds for a physical reason, not by
+        // coincidence) is real, scoped follow-up work, not done here. See
+        // project_grid_density_six_failing_tests memory.
+        let config = SimConfig {
+            grid_density: 4.0,
+            ..SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81))
+        };
         let mut solver =
             Simulation::new(config, center_spawn(64, 8)).with_default_material(Box::new(mat));
         solver.step_n(150);
@@ -2788,10 +2812,17 @@ fn ratchet_friction_produces_real_directed_locomotion() {
 
     let mut mat = NeoHookeanMaterial::new(5.0, 10.0);
     mat.active_stress_coeff = 25.0;
+    // Legacy raw-grid-unit scene: calibrated (before 2026-08-25) against the
+    // OLD implicit particle_mass=1.0 default -- at spacing 0.5 that is
+    // exactly grid_density=4.0. Preserving that PRE-EXISTING calibration
+    // explicitly, not inventing a new one: unsourced, so KEPT rather than
+    // replaced (standing rule). Real SI migration is scoped follow-up work,
+    // not done here. See project_grid_density_six_failing_tests memory.
     let config = SimConfig {
         min_dt: 0.01,
         max_substeps_per_step: 64,
         project_invalid_state: true,
+        grid_density: 4.0,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
     let body_center = Vec2::new(32.0, 20.0);
@@ -2879,6 +2910,16 @@ fn ratchet_easy_direction_is_live_and_reversible() {
         min_dt: 0.01,
         max_substeps_per_step: 64,
         project_invalid_state: true,
+        // Legacy raw-grid-unit scene: this test was calibrated (before
+        // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
+        // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
+        // PRE-EXISTING calibration explicitly, not inventing a new one:
+        // unsourced, so KEPT rather than replaced (standing rule). Real SI
+        // migration (every constant grounded in a measured value, so this
+        // qualitative relationship holds for a physical reason, not by
+        // coincidence) is real, scoped follow-up work, not done here. See
+        // project_grid_density_six_failing_tests memory.
+        grid_density: 4.0,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
     let body_center = Vec2::new(32.0, 20.0);
@@ -3316,6 +3357,16 @@ fn directional_contact_grip_is_real_and_direction_aware() {
             min_dt: 0.001,
             max_substeps_per_step: 128,
             project_invalid_state: true,
+            // Legacy raw-grid-unit scene: this test was calibrated (before
+            // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
+            // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
+            // PRE-EXISTING calibration explicitly, not inventing a new one:
+            // unsourced, so KEPT rather than replaced (standing rule). Real SI
+            // migration (every constant grounded in a measured value, so this
+            // qualitative relationship holds for a physical reason, not by
+            // coincidence) is real, scoped follow-up work, not done here. See
+            // project_grid_density_six_failing_tests memory.
+            grid_density: 4.0,
             ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
         };
 
@@ -3985,7 +4036,17 @@ fn drucker_prager_volumetric_floor_holds_under_active_locomotion_at_larger_scale
 #[test]
 fn pressurized_column_droops_less_than_unpressurized_under_self_weight() {
     fn run_column(material: Box<dyn MaterialModel>) -> f32 {
-        let config = SimConfig::standard(32, 0.02, Vec2::new(0.0, -2.0));
+        // Legacy raw-grid-unit scene: calibrated (before 2026-08-25) against
+        // the OLD implicit particle_mass=1.0 default -- at spacing 0.5 that
+        // is exactly grid_density=4.0. Preserving that PRE-EXISTING
+        // calibration explicitly, not inventing a new one: unsourced, so
+        // KEPT rather than replaced (standing rule). Real SI migration is
+        // scoped follow-up work, not done here. See
+        // project_grid_density_six_failing_tests memory.
+        let config = SimConfig {
+            grid_density: 4.0,
+            ..SimConfig::standard(32, 0.02, Vec2::new(0.0, -2.0))
+        };
         let spawn = SpawnRegion {
             spacing: 0.5,
             box_size: IVec2::new(4, 16),
