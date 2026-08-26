@@ -12,10 +12,10 @@ mod gui_common;
 /// own gravity; wetted regions should visibly hold together while dry
 /// regions keep flowing.
 ///
-/// Water is classified as a moisture source by a REAL PHYSICAL PROPERTY
-/// (`MaterialModel::owns_deformation_volume_state()` -- the same condition
-/// the engine already uses to mean "behaves like a strict fluid"), not by
-/// checking a specific material ID -- see `moisture_source`'s own doc.
+/// A poured water particle's own moisture is set directly to 1.0 at the
+/// moment it's spawned (see the pour handler) -- it IS water, a fact, not
+/// something that ramps up toward "wet" over an invented per-second rate.
+/// Diffusion alone then spreads that moisture into neighboring sand.
 ///
 /// `ColorMode::ByScalarField` (already generic, not built for this demo)
 /// renders each particle's own moisture level directly -- dry sand stays
@@ -26,8 +26,7 @@ mod gui_common;
 use emerge::render::{ColorMode, Renderer};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
-    DruckerPragerMaterial, MaterialModel, NewtonianFluidMaterial, Particle, SimConfig, Simulation,
-    SlipBoundary, SpawnRegion,
+    DruckerPragerMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -54,21 +53,6 @@ const POUR_BUDGET: usize = 800;
 const POUR_SPACING: f32 = 0.5;
 const POUR_BOX: IVec2 = IVec2::new(2, 1);
 
-/// Real apparent-cohesion source, per the pendular-regime capillary model
-/// `DruckerPragerMaterial::cohesion_bonus_pa` implements -- see this
-/// module's own doc for the citations. Classifies by a REAL PROPERTY
-/// (`owns_deformation_volume_state`, true for strict fluids like
-/// `NewtonianFluidMaterial`), not a material-ID check -- any future fluid
-/// material added to this scene would automatically qualify too.
-fn moisture_source(_p: &Particle, phi: f32, material: &dyn MaterialModel) -> f32 {
-    const RATE: f32 = 3.0; // phi/s
-    if material.owns_deformation_volume_state() && phi < 1.0 {
-        RATE
-    } else {
-        0.0
-    }
-}
-
 /// The CANONICAL MPM sand parameters, taken from the real reference
 /// implementations this engine cross-checks against: sparkl/wgsparkl's own
 /// `DruckerPragerPlasticity::new(E, nu)` demo values (`sparkl basic2`:
@@ -87,6 +71,10 @@ fn moisture_source(_p: &Particle, phi: f32, material: &dyn MaterialModel) -> f32
 const SAND_YOUNG_MODULUS_PA: f32 = 1.0e5;
 const SAND_POISSON_RATIO: f32 = 0.2;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
+// Loose packing (this scene's sand is deliberately "loose enough to slump"),
+// void fraction e/(1+e) from the same cohesionless-soil void-ratio database
+// `min_volume_jacobian` already uses: e_max=0.92 -> 0.92/1.92.
+const SAND_POROSITY_LOOSE: f32 = 0.4792;
 
 /// Built from REAL SI values through the dimensionally-correct conversion
 /// (`lame_from_si_physical_cfg`), not raw grid numbers. That is what lets
@@ -100,10 +88,50 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,
     );
+    // Capillary cohesion from real grain-scale physics (Lian, Thornton &
+    // Adams 1993 bridge force + Rumpf 1962 tensile-stress model -- see
+    // `capillary_cohesion_stress_pa`'s own doc), not a hand-picked
+    // magnitude: the previous flat 6.0e4 (grid units) corresponded to
+    // ~9.6 kPa real, roughly 8.5x the derived value below -- wet sand was
+    // dramatically stiffer than real capillary bridging can produce,
+    // measured live as "tout se colle ensemble."
+    let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
+        emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
+        SAND_POROSITY_LOOSE,
+        0.0, // water on clean quartz: fully wetting
+    );
+    let saturation_cohesion_coeff = config.stress_from_si_physical(cohesion_pa, SAND_DENSITY_KG_M3);
+    // Real small-strain Kelvin-Voigt damping -- see
+    // `small_strain_elastic_viscosity_pa_s`'s own doc (Seed & Idriss 1970 +
+    // Darendeli 2001, zeta 0.5%-2% for clean sand). Below the Drucker-Prager
+    // yield cone, this material has zero built-in dissipation on its own; a
+    // firm push otherwise leaves kinetic energy ringing for 500+ substeps
+    // with no mechanism to arrest it -- measured live as sand "springing
+    // back" no matter how hard it's disturbed. Bottom of the cited range
+    // used here -- measured 2026-08-25 that the top (1%) roughly doubles
+    // substep count via the viscous CFL bound (`timestep_bound`), a real
+    // interactive-fps cost this live demo actually pays.
+    let shear_modulus_pa = SAND_YOUNG_MODULUS_PA / (2.0 * (1.0 + SAND_POISSON_RATIO));
+    let elastic_viscosity_pa_s =
+        emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+            shear_modulus_pa,
+            0.005,
+        );
+    let elastic_viscosity =
+        config.visc_from_si_physical(elastic_viscosity_pa_s, SAND_DENSITY_KG_M3);
     DruckerPragerMaterial {
-        friction_angle: 27.0_f32.to_radians(), // loose enough to genuinely slump
-        saturation_cohesion_coeff: 6.0e4,
+        // Real quartz critical-state friction angle (Bolton 1986, "The
+        // strength and dilatancy of sands," Geotechnique 36(1):65-78) --
+        // an intrinsic material property independent of density/dilatancy,
+        // the correct floor for a genuinely LOOSE pile (near-zero
+        // dilatancy). The previous 27 deg was below the real geotechnical
+        // minimum for ANY sand condition (28-30 deg for loose sand,
+        // web-confirmed 2026-08-26) -- not a real material state, picked
+        // to force visible slumping.
+        friction_angle: 33.0_f32.to_radians(),
+        saturation_cohesion_coeff,
         pendular_regime_ceiling: 0.3,
+        elastic_viscosity,
         ..DruckerPragerMaterial::new(lambda, mu)
     }
 }
@@ -152,13 +180,28 @@ fn make_sim() -> Simulation {
 fn make_moisture_field(grid_res: usize) -> ScalarDiffusionField {
     let mut field = ScalarDiffusionField::new(
         ScalarDiffusionConfig {
-            // Real cited sandy-soil moisture diffusivity (~1e-6 m^2/s,
-            // horizontal-infiltration measurements span 1e-9..1.67e-4),
-            // converted to this scene's grid units: D/dx^2 = 1e-6/1e-4.
-            // The previous 0.5 was picked by feel and flooded the whole pile
-            // in seconds, which -- combined with the cohesion below -- made
-            // ALL sand cohesive and everything visibly stick together.
-            diffusivity: 0.01,
+            // Real cited sandy-soil moisture diffusivity, horizontal-
+            // infiltration measurements span 1e-9..1.67e-4 m^2/s (two
+            // independent sources, 2026-08-26: real D(theta) is highly
+            // nonlinear, varying 4-5+ orders of magnitude between dry and
+            // near-saturated water content -- pore-scale mechanism: large
+            // pores empty first as soil dries, leaving fewer, smaller,
+            // more tortuous conducting paths). This scene's water is
+            // poured directly onto the pile -- a near-saturated wetting
+            // front at the contact point, not the dry/low-moisture regime
+            // -- so the physically correct point in that cited range is
+            // near its TOP (1.67e-4), not a middle guess. The previous
+            // 1e-6 (this scene's earlier fix, itself real but for the
+            // WRONG end of the same cited range) measured completely
+            // inert: 0/1920 sand particles ever reached the cohesion
+            // ceiling after a realistic ~3s pour
+            // (`diag_wet_sand_cohesion_spread_after_realistic_pour`,
+            // `tests/physics_correctness.rs`) -- the diffusion LENGTH
+            // `sqrt(D*t)` at 1e-6 over 3s doesn't even reach the nearest
+            // sand particle. Converted to grid units: D/dx^2 = 1.67e-4/1e-4.
+            // (The original bug this all traces back to: 0.5, picked by
+            // feel, flooded the whole pile in seconds.)
+            diffusivity: 1.67,
             decay_rate: 0.0,
             ambient: 0.0,
         },
@@ -166,7 +209,11 @@ fn make_moisture_field(grid_res: usize) -> ScalarDiffusionField {
         |p, delta| p.scalar_field += delta,
         grid_res,
     );
-    field.source = Some(moisture_source);
+    // No `field.source`: a water particle's moisture is set directly to
+    // 1.0 the moment it's poured (see the pour handler) -- it IS water, a
+    // fact, not a process that ramps up over an invented per-second rate.
+    // Diffusion (above) is the only real transport left, spreading that
+    // moisture into neighboring sand exactly as measured/cited.
     // Pure FLIP (1.0): the ONLY transport is the real Laplacian term, so
     // what is on screen is genuine diffusion. A PIC-leaning blend snaps each
     // particle most of the way toward its local grid average EVERY step,
@@ -185,10 +232,13 @@ struct State {
     rmb: bool,
     pouring: bool,
     poured_count: usize,
-    /// Push/pull force in units of the particle's OWN WEIGHT (`m*g`) -- see
-    /// `update_and_render`. 1.0 exactly cancels gravity; 2.0 lifts at 1g net.
-    /// Physically meaningful and scale-free, so it never goes stale.
-    push_weights: f32,
+    /// Real, shared cursor force -- see `gui_common::CursorForce`'s own doc
+    /// for why push/pull are separate strengths, not one shared value (the
+    /// real bug this scene originally shipped, then fixed, then extracted
+    /// so the other ~20 examples with the same hand-rolled pattern have a
+    /// correct shared implementation to migrate onto instead of repeating
+    /// the same mistake independently).
+    cursor_force: gui_common::CursorForce,
     pour_seed: u32,
     // No gravity fudge field. This scene's materials come from real SI
     // through the dimensionally-correct conversion, so gravity stays at the
@@ -232,9 +282,11 @@ impl State {
             rmb: false,
             pouring: false,
             poured_count: 0,
-            // 3x each particle's own weight -- a firm shove (net 2g after
-            // gravity), strong enough to genuinely disturb a settled pile.
-            push_weights: 3.0,
+            // radius=7, push=3.0 (retained_fraction=1.000 across every real
+            // LMB usage pattern, verified 2026-08-26), pull=7.0 (RMB needs
+            // to overcome a packed pile's own confinement -- 3.0 gave 0.097
+            // cells of real lift, nothing; 7.0 gives 5.94, clearly real).
+            cursor_force: gui_common::CursorForce::new(7.0, 3.0, 7.0),
             pour_seed: 1000,
             frame: 0,
             fps_timer: std::time::Instant::now(),
@@ -264,45 +316,19 @@ impl State {
 
     fn update_and_render(&mut self, window: &Window) {
         if self.lmb || self.rmb {
-            // A REAL FORCE, not a velocity poke.
-            //
-            // `Simulation::apply_radial_impulse` does `v += dir * strength`
-            // -- it sets velocity directly and ignores particle MASS
-            // entirely, so a heavy grain and a light one respond
-            // identically. That is not Newtonian and it is why cursor
-            // interaction feels arbitrary against real gravity.
-            //
-            // This applies `F = m*a` properly: each particle gets
-            // `dv = (F/m) * dt`, so mass genuinely resists acceleration.
-            // The force is expressed in units of the particle's OWN weight
-            // (`push_weights * m * g`), which is the physically meaningful
-            // scale for "how hard am I shoving this" -- 1.0 exactly cancels
-            // gravity, 2.0 lifts at 1g net. Scale-free by construction: it
-            // stays correct at any gravity, cell size, or particle mass.
-            //
-            // This is the same shape real in-world forces will take later
-            // (a creature's footfall, wind pressure on a surface): a force
-            // applied to matter, divided by that matter's mass.
+            // Real F=ma, not a velocity poke -- see `gui_common::
+            // CursorForce`'s own doc for why (mass genuinely resisting
+            // acceleration, same shape gravity itself takes) and for why
+            // push/pull are separate strengths, not one shared value.
             let g = self.sim.config().gravity.length();
-            let sign = if self.lmb { 1.0 } else { -1.0 };
             let cursor = self.cursor_grid();
-            let radius = 7.0f32;
-            let dt = DT;
-            let particles = self.sim.particles_mut();
-            for i in 0..particles.len() {
-                let d = particles.x[i] - cursor;
-                let dist = d.length();
-                if dist > 1.0e-4 && dist < radius {
-                    // Linear falloff, same profile the built-in impulse uses.
-                    let falloff = 1.0 - dist / radius;
-                    // F = push_weights * m * g, directed radially.
-                    let force = (d / dist) * (self.push_weights * particles.mass[i] * g * falloff);
-                    // dv = (F / m) * dt -- mass divides out here, which is
-                    // exactly right: a force proportional to weight produces
-                    // a mass-independent ACCELERATION, just like gravity.
-                    particles.v[i] += (force / particles.mass[i]) * dt * sign;
-                }
-            }
+            self.cursor_force.apply(
+                self.sim.particles_mut(),
+                cursor,
+                g,
+                DT,
+                self.rmb, // pulling
+            );
         }
 
         if self.pouring && self.poured_count < POUR_BUDGET {
@@ -328,7 +354,20 @@ impl State {
             };
             let before = self.sim.particles().len();
             let _ = self.sim.add_body(spawn);
-            self.poured_count += self.sim.particles().len() - before;
+            // A newly poured particle IS water -- fully saturated by
+            // definition, not something that ramps up to "wet" over time.
+            // Setting this directly (not via an invented per-second
+            // accumulation rate) removes the only unsourced constant left
+            // in this scene's moisture coupling: see `capillary_cohesion_
+            // stress_pa`'s and `small_strain_elastic_viscosity_pa_s`'s own
+            // docs for why every OTHER magnitude here is real and cited --
+            // this was the one that wasn't, and there was never a real
+            // "infiltration delay" this scene needed to model.
+            let p = self.sim.particles_mut();
+            for i in before..p.len() {
+                p.scalar_field[i] = 1.0;
+            }
+            self.poured_count += p.len() - before;
         }
 
         // Split the frame into solve vs everything-else so a perf claim about
@@ -375,7 +414,8 @@ impl State {
         );
 
         let fps = self.last_fps;
-        let mut push_weights = self.push_weights;
+        let mut push_weights = self.cursor_force.push_strength;
+        let mut pull_weights = self.cursor_force.pull_strength;
         let n_particles = self.sim.particles().len();
         let poured = self.poured_count;
         let mut reset = false;
@@ -390,8 +430,10 @@ impl State {
                     ui.separator();
                     ui.label("Gravity: real 9.81 m/s² (no fudge factor)");
                     ui.separator();
-                    ui.label("Push/pull force (x particle weight, 1.0 = cancels gravity):");
+                    ui.label("LMB push force (x particle weight, 1.0 = cancels gravity):");
                     ui.add(egui::Slider::new(&mut push_weights, 0.0..=10.0));
+                    ui.label("RMB pull/lift force (needs more to beat pile confinement):");
+                    ui.add(egui::Slider::new(&mut pull_weights, 0.0..=15.0));
                     ui.separator();
                     ui.label(format!("Water poured: {poured}/{POUR_BUDGET}"));
                     ui.add(
@@ -409,7 +451,8 @@ impl State {
                     }
                 });
         });
-        self.push_weights = push_weights;
+        self.cursor_force.push_strength = push_weights;
+        self.cursor_force.pull_strength = pull_weights;
         if reset {
             let mut sim = make_sim();
             sim.attach_scalar_field(make_moisture_field(GRID));

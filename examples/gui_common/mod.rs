@@ -35,6 +35,9 @@ use winit::window::Window;
 pub mod coords;
 pub use coords::cursor_to_grid;
 
+pub mod cursor_force;
+pub use cursor_force::CursorForce;
+
 /// The GPU + egui state every interactive example needs, identically
 /// constructed. Owns the surface/device/queue (real rendering) and the
 /// egui context/state/renderer (real immediate-mode UI) -- NOT the
