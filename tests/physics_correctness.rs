@@ -4417,3 +4417,1227 @@ fn self_weight_strain_is_spacing_independent() {
          spread {lo:.3}x..{hi:.3}x across the sweep"
     );
 }
+
+/// A firm lateral push into a sand pile must leave substantial PERMANENT
+/// displacement, not fully elastically rebound. Also traces the settling
+/// trajectory over time -- final retained displacement can look fine while
+/// the pile visibly overshoots and oscillates back toward the push point
+/// first, which is a distinct "springy" sensation a single before/after
+/// snapshot cannot catch.
+#[test]
+fn sand_push_leaves_permanent_displacement_not_full_elastic_rebound() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        // Same combination `sand_pile_built_by_slow_pour_with_phase_gated_
+        // damping` (tests/accuracy.rs) already validates: apic_blend=0.05
+        // held from the start (real, standing default for granular settling
+        // -- `set_apic_blend`'s own doc calls it "the proven quasi-static
+        // holding value"), cundall_damping phase-gated live via
+        // `set_cundall_damping` -- OFF while the push's own genuine impulse
+        // is still propagating, ON only once that initial dynamic response
+        // has played out, matching Cundall 1982/1987's own "kinetic
+        // damping" (already cited on `cundall_damping`'s own doc): it damps
+        // velocity CHANGE, not velocity itself, so applying it while a real
+        // driven event is still under way fights the real forcing (measured
+        // tonight: max damping applied from step 0 produced a genuine
+        // runaway, not a fix).
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    // Real small-strain Kelvin-Voigt damping -- see
+    // `small_strain_elastic_viscosity_pa_s`'s own doc (Seed & Idriss 1970 +
+    // Darendeli 2001, zeta 0.5%-2% for clean sand; bottom of the range used
+    // here -- measured 2026-08-25 that the top (1%) roughly doubles substep
+    // count on this exact scene via the viscous CFL bound).
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let elastic_viscosity_pa_s =
+        emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+            shear_modulus_pa,
+            0.005,
+        );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity: config.visc_from_si_physical(elastic_viscosity_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+    for _ in 0..300 {
+        sim.step();
+    }
+    let x_settled: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+
+    let g = sim.config().gravity.length();
+    let push_center = Vec2::new(20.0, 12.0);
+    {
+        let p = sim.particles_mut();
+        for i in 0..p.len() {
+            let d = p.x[i] - push_center;
+            let dist = d.length().max(0.1);
+            if dist < 6.0 {
+                let falloff = (1.0 - dist / 6.0).max(0.0);
+                let force = Vec2::new(1.0, 0.0) * (3.0 * p.mass[i] * g * falloff);
+                p.v[i] += (force / p.mass[i]) * config.dt;
+            }
+        }
+    }
+
+    let ke = |s: &Simulation| -> f64 {
+        s.particles()
+            .iter()
+            .map(|p| 0.5 * p.mass as f64 * p.v.length_squared() as f64)
+            .sum()
+    };
+    let mut peak_displacement = 0.0f32;
+    const DRIVEN_PHASE_STEPS: usize = 20;
+    for step in 0..600 {
+        if step == DRIVEN_PHASE_STEPS {
+            // The push's own genuine impulse has propagated by now (KE was
+            // already well off its peak by step 15 in the ungated baseline)
+            // -- gate damping ON only for the relaxation tail, the same
+            // "pours done, now gate damping ON" moment
+            // `sand_pile_built_by_slow_pour_with_phase_gated_damping` uses.
+            sim.set_cundall_damping(1.0);
+        }
+        sim.step();
+        let x_now = sim.particles();
+        let step_max = (0..x_now.len())
+            .map(|i| (x_now.x[i] - x_settled[i]).length())
+            .fold(0.0f32, f32::max);
+        peak_displacement = peak_displacement.max(step_max);
+        if step % 15 == 0 {
+            println!("  trace step={step} disp={step_max:.4} ke={:.6}", ke(&sim));
+        }
+        if ke(&sim) < 1.0e-6 {
+            println!("  settled at step={step}");
+            break;
+        }
+    }
+    let x_final: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+    let residual_displacement: f32 = (0..x_final.len())
+        .map(|i| (x_final[i] - x_settled[i]).length())
+        .fold(0.0f32, f32::max);
+
+    let retained_fraction = residual_displacement / peak_displacement.max(1.0e-9);
+    println!(
+        "peak_displacement={peak_displacement:.4}  residual_after_resettle={residual_displacement:.4}  \
+         retained_fraction={retained_fraction:.3}"
+    );
+    assert!(
+        retained_fraction > 0.5,
+        "retained only {retained_fraction:.3} of peak displacement"
+    );
+}
+
+/// Regression check for `elastic_viscosity`'s own viscous CFL bound (see
+/// `DruckerPragerMaterial::timestep_bound`) on the exact scene
+/// `sand_water_saturation` uses. Measured 2026-08-25: `zeta=1%` (top of the
+/// cited Seed & Idriss / Darendeli range) roughly DOUBLES substep count over
+/// baseline (31->56/step) via this bound -- a real interactive-fps cost, not
+/// free -- while `zeta=0.5%` (bottom of the same range, what the demo
+/// actually ships with) lands exactly at the baseline's own pre-existing
+/// elastic-CFL cost, adding nothing measurable. Guards against a future
+/// change silently pushing the shipped value back toward the expensive end.
+#[test]
+fn diag_elastic_viscosity_substep_cost_vs_baseline() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 2000,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_grid_for = |damping_ratio: f32| {
+        let eta_pa_s =
+            emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+                shear_modulus_pa,
+                damping_ratio,
+            );
+        config.visc_from_si_physical(eta_pa_s, 1600.0)
+    };
+
+    let cases = [
+        ("baseline (elastic_viscosity=0)", 0.0f32),
+        (
+            "zeta=0.5% (bottom of cited range, shipped)",
+            eta_grid_for(0.005),
+        ),
+        ("zeta=1% (top of cited range)", eta_grid_for(0.01)),
+    ];
+    let mut avg_substeps = [0.0f32; 3];
+    for (i, (label, ev)) in cases.iter().enumerate() {
+        let sand = DruckerPragerMaterial {
+            friction_angle: 33.0_f32.to_radians(),
+            elastic_viscosity: *ev,
+            ..DruckerPragerMaterial::new(lambda, mu)
+        };
+        let mut sim = Simulation::new(config, spawn.clone())
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+        let mut total_substeps = 0usize;
+        const N: usize = 30;
+        for _ in 0..N {
+            sim.step();
+            total_substeps += sim.last_substeps();
+        }
+        avg_substeps[i] = total_substeps as f32 / N as f32;
+        println!(
+            "{label}: avg substeps/step = {:.1} (eta_grid={ev:.2})",
+            avg_substeps[i]
+        );
+    }
+    let (baseline, half_percent, one_percent) = (avg_substeps[0], avg_substeps[1], avg_substeps[2]);
+    assert!(
+        half_percent <= baseline * 1.1,
+        "shipped zeta=0.5% now costs meaningfully more than baseline substeps \
+         ({half_percent:.1} vs {baseline:.1}) -- the free-fps property this scene relies on \
+         has regressed"
+    );
+    assert!(
+        one_percent > half_percent,
+        "zeta=1% should cost at least as much as zeta=0.5% (more damping, tighter viscous CFL) \
+         -- got {one_percent:.1} vs {half_percent:.1}, a real regression in the CFL bound itself"
+    );
+}
+
+/// DIAGNOSTIC: user reported `sand_water_saturation` still "sticks together".
+/// First run (rate-based moisture source, `RATE=3.0` unsourced) found
+/// cohesion completely inert -- 0/1920 particles ever reached the ceiling.
+/// Root-caused and fixed in the real example: a poured water particle's own
+/// moisture is now SET to 1.0 directly at spawn (it IS water, not something
+/// that ramps up), no invented rate at all -- see that example's own doc.
+/// This reproduces the SAME fixed scene and measures, after a realistic ~3s
+/// pour + settle, what fraction of the sand pile actually crosses
+/// `pendular_regime_ceiling` (0.3) into max cohesion, and how far from the
+/// pour point that spread reaches -- real numbers, not another guess.
+#[test]
+fn diag_wet_sand_cohesion_spread_after_realistic_pour() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
+        emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
+        0.4792,
+        0.0,
+    );
+    let saturation_cohesion_coeff = config.stress_from_si_physical(cohesion_pa, 1600.0);
+    let elastic_viscosity_pa_s =
+        emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+            shear_modulus_pa,
+            0.005,
+        );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        saturation_cohesion_coeff,
+        pendular_regime_ceiling: 0.3,
+        elastic_viscosity: config.visc_from_si_physical(elastic_viscosity_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let water_id = sim.register_material(Box::new(NewtonianFluidMaterial::low_viscosity(1.0, 4.0)));
+
+    for _ in 0..200 {
+        sim.step();
+    }
+    let pour_center = Vec2::new(32.0, 20.0);
+
+    let mut field = ScalarDiffusionField::new(
+        ScalarDiffusionConfig {
+            // Near-saturation soil-water diffusivity, not the dry/low-
+            // moisture end of the same cited range -- see the real
+            // example's own doc for the two independent sources.
+            diffusivity: 1.67,
+            decay_rate: 0.0,
+            ambient: 0.0,
+        },
+        |p| p.scalar_field,
+        |p, delta| p.scalar_field += delta,
+        64,
+    );
+    field.blend = 1.0;
+    sim.attach_scalar_field(field);
+
+    // ~3s realistic pour: a small water cluster added every 0.3s (10 outer
+    // steps), matching the demo's own POUR_BOX=(2,1)/POUR_SPACING=0.5 shape,
+    // for 300 steps total (3s at dt=0.01) -- comparable to holding the P key
+    // for a few real seconds, not an instantaneous flood.
+    for step in 0..300 {
+        if step % 10 == 0 {
+            let before = sim.particles().len();
+            let _ = sim.add_body(SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(2, 1),
+                box_center: pour_center,
+                material_id: water_id.0,
+                precompute_initial_volumes: true,
+                initial_velocity_scale: 0.0,
+                rng_seed: 11,
+                ..SpawnRegion::for_sim(&config)
+            });
+            // Same real-example fix: poured water IS water, phi=1.0 set
+            // directly, not accumulated via an invented rate.
+            let p = sim.particles_mut();
+            for i in before..p.len() {
+                p.scalar_field[i] = 1.0;
+            }
+        }
+        sim.step();
+    }
+
+    let ceiling = 0.3f32;
+    let mut sand_count = 0usize;
+    let mut at_max_cohesion = 0usize;
+    let mut max_reach_cells = 0.0f32;
+    let mut phi_values: Vec<f32> = Vec::new();
+    for p in sim.particles().iter() {
+        if p.material_id != 0 {
+            continue;
+        }
+        sand_count += 1;
+        let phi = p.scalar_field.clamp(0.0, 1.0);
+        phi_values.push(phi);
+        if phi >= ceiling {
+            at_max_cohesion += 1;
+            max_reach_cells = max_reach_cells.max((p.x - pour_center).length());
+        }
+    }
+    phi_values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_phi = phi_values[phi_values.len() / 2];
+    let fraction_at_max = at_max_cohesion as f32 / sand_count.max(1) as f32;
+
+    println!(
+        "wet-sand spread after ~3s pour: {at_max_cohesion}/{sand_count} sand particles \
+         ({:.1}%) at/past max-cohesion ceiling (phi>={ceiling}), median phi={median_phi:.3}, \
+         max reach from pour point={max_reach_cells:.2} cells, cohesion_pa={cohesion_pa:.1}",
+        fraction_at_max * 100.0
+    );
+
+    assert!(
+        fraction_at_max.is_finite() && (0.0..=1.0).contains(&fraction_at_max),
+        "sanity: fraction_at_max out of range: {fraction_at_max}"
+    );
+}
+
+/// DIAGNOSTIC: user reports the demo still feels "sticky" after tonight's
+/// changes; the wet-cohesion path was just measured completely inert at
+/// realistic pour rates (see
+/// `diag_wet_sand_cohesion_spread_after_realistic_pour`), so cohesion isn't
+/// it. The other real candidate: `elastic_viscosity` resists strain RATE
+/// continuously, not just post-disturbance ringing -- it could be damping
+/// ordinary DRY flow too, which has no real-sand analog (dry quartz grains
+/// have no rate-dependent viscosity). Measures displacement growth in the
+/// EARLY active-flow window (steps 0-20, BEFORE `cundall_damping` engages)
+/// with and without `elastic_viscosity`, same push, same seed -- isolates
+/// whether the viscosity term itself measurably slows dry sand while it's
+/// actively moving, not just while it's ringing down afterward.
+#[test]
+fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_grid_for = |damping_ratio: f32| {
+        let eta_pa_s =
+            emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+                shear_modulus_pa,
+                damping_ratio,
+            );
+        config.visc_from_si_physical(eta_pa_s, 1600.0)
+    };
+
+    let mut results = Vec::new();
+    for (label, ev) in [
+        ("baseline (elastic_viscosity=0)", 0.0f32),
+        ("zeta=0.5% (shipped)", eta_grid_for(0.005)),
+        ("zeta=1%", eta_grid_for(0.01)),
+    ] {
+        let sand = DruckerPragerMaterial {
+            friction_angle: 33.0_f32.to_radians(),
+            elastic_viscosity: ev,
+            ..DruckerPragerMaterial::new(lambda, mu)
+        };
+        let mut sim = Simulation::new(config, spawn.clone())
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+        for _ in 0..300 {
+            sim.step();
+        }
+        let x_settled: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+        let g = sim.config().gravity.length();
+        let push_center = Vec2::new(20.0, 12.0);
+        {
+            let p = sim.particles_mut();
+            for i in 0..p.len() {
+                let d = p.x[i] - push_center;
+                let dist = d.length().max(0.1);
+                if dist < 6.0 {
+                    let falloff = (1.0 - dist / 6.0).max(0.0);
+                    let force = Vec2::new(1.0, 0.0) * (3.0 * p.mass[i] * g * falloff);
+                    p.v[i] += (force / p.mass[i]) * config.dt;
+                }
+            }
+        }
+        // Pure active-flow window: NO cundall damping ever engaged here
+        // (unlike the full push-test), isolating elastic_viscosity's own
+        // effect on freely-responding dry sand.
+        let mut peak_disp = 0.0f32;
+        for _ in 0..20 {
+            sim.step();
+            let x_now = sim.particles();
+            let step_max = (0..x_now.len())
+                .map(|i| (x_now.x[i] - x_settled[i]).length())
+                .fold(0.0f32, f32::max);
+            peak_disp = peak_disp.max(step_max);
+        }
+        println!("{label}: peak displacement in first 20 active-flow steps = {peak_disp:.4}");
+        results.push(peak_disp);
+    }
+
+    println!(
+        "ratio zeta=0.5%/baseline = {:.3}, ratio zeta=1%/baseline = {:.3}",
+        results[1] / results[0],
+        results[2] / results[0]
+    );
+}
+
+/// DIAGNOSTIC: does `min_volume_jacobian`'s compression floor (0.6 -> 0.807,
+/// shipped tonight) engage MUCH more often during ORDINARY passive settling
+/// (self-weight only, no push) than the old threshold did? Every engagement
+/// is a genuine dead-stop (`ctx.v` zeroed entirely -- see the floor's own
+/// comment at the point of use in `sand.rs`), not a partial damping. If this
+/// fires constantly on ordinary settling, individual grains get arbitrarily
+/// frozen mid-motion over and over, which would read as sand "sticking"/
+/// clumping instead of flowing smoothly -- a real, untested candidate ruled
+/// neither in nor out yet (cohesion and elastic_viscosity were both already
+/// ruled out with real numbers). Uses the engine's own existing
+/// `EMERGE_DIAG_FLOOR_FIX` print hook (`sand.rs`'s `update_particle`,
+/// `#[cfg(test)]`-gated) as the counting signal, piped through stdout.
+#[test]
+fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
+    unsafe {
+        std::env::set_var("EMERGE_DIAG_FLOOR_FIX", "1");
+    }
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+
+    for (label, min_j) in [
+        ("OLD threshold (0.6)", 0.6f32),
+        ("NEW threshold (0.807, shipped)", 0.807f32),
+    ] {
+        let sand = DruckerPragerMaterial {
+            friction_angle: 33.0_f32.to_radians(),
+            min_volume_jacobian: min_j,
+            ..DruckerPragerMaterial::new(lambda, mu)
+        };
+        let mut sim = Simulation::new(config, spawn.clone())
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+        // The real trigger count comes from the engine's own
+        // `EMERGE_DIAG_FLOOR_FIX` print hook (one "[floor-fix]" line per
+        // ACTUAL engagement, printed live from inside `update_particle`
+        // itself) -- counted externally via `grep -c` on this test's own
+        // captured stdout, not reproduced here, since the floor's rescaled
+        // state is already back at exactly `min_j` by the time this loop
+        // could inspect it after the fact.
+        println!("=== {label} ===");
+        for _ in 0..300 {
+            sim.step();
+        }
+    }
+    unsafe {
+        std::env::remove_var("EMERGE_DIAG_FLOOR_FIX");
+    }
+}
+
+/// Applies the EXACT same radial force formula
+/// `sand_water_saturation.rs::update_and_render` uses for LMB/RMB
+/// (`d/dist * push_weights * m * g * falloff`, `falloff = 1 - dist/radius`,
+/// `dv = (F/m)*dt*sign`) -- not an approximation, copied verbatim so this
+/// diagnostic tests the REAL interaction code path, not a stand-in.
+fn diag_apply_radial_force(
+    particles: &mut Particles,
+    cursor: Vec2,
+    radius: f32,
+    push_weights: f32,
+    g: f32,
+    dt: f32,
+    sign: f32,
+) {
+    for i in 0..particles.len() {
+        let d = particles.x[i] - cursor;
+        let dist = d.length();
+        if dist > 1.0e-4 && dist < radius {
+            let falloff = 1.0 - dist / radius;
+            let force = (d / dist) * (push_weights * particles.mass[i] * g * falloff);
+            particles.v[i] += (force / particles.mass[i]) * dt * sign;
+        }
+    }
+}
+
+/// DEEP STRESS TEST: every realistic interaction the demo actually exposes
+/// (LMB radial push, RMB radial pull/lift-then-drop, sustained hold vs
+/// quick tap, dragging cursor), using the REAL force code above, not a
+/// synthetic directional shove -- closing the gap the user found live
+/// tonight (`project_sand_springback_elastic_viscosity_shipped_2026-08-25.
+/// md`'s "THIRD scenario" section): every prior test tonight validated a
+/// uniform directional push, never this scene's actual radial mechanic.
+/// Each scenario traces KE and aggregate displacement the same way the
+/// original push-test does, so results are directly comparable.
+#[test]
+fn diag_stress_test_all_real_interaction_scenarios() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let elastic_viscosity = config.visc_from_si_physical(eta_pa_s, 1600.0);
+    let make_sand = || DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity,
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+
+    let ke = |s: &Simulation| -> f64 {
+        s.particles()
+            .iter()
+            .map(|p| 0.5 * p.mass as f64 * p.v.length_squared() as f64)
+            .sum()
+    };
+    let run_scenario = |label: &str, apply: &dyn Fn(&mut Simulation, usize)| {
+        let mut sim = Simulation::new(config, spawn.clone())
+            .with_default_material(Box::new(make_sand()))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+        for _ in 0..300 {
+            sim.step();
+        }
+        let x_settled: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+        let mut peak_disp = 0.0f32;
+        let mut peak_ke = 0.0f64;
+        for step in 0..300 {
+            apply(&mut sim, step);
+            sim.step();
+            let x_now = sim.particles();
+            let step_max = (0..x_now.len())
+                .map(|i| (x_now.x[i] - x_settled[i]).length())
+                .fold(0.0f32, f32::max);
+            peak_disp = peak_disp.max(step_max);
+            peak_ke = peak_ke.max(ke(&sim));
+        }
+        let x_final: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+        let residual: f32 = (0..x_final.len())
+            .map(|i| (x_final[i] - x_settled[i]).length())
+            .fold(0.0f32, f32::max);
+        let ke_final = ke(&sim);
+        let retained = residual / peak_disp.max(1.0e-9);
+        println!(
+            "{label}: peak_disp={peak_disp:.4} residual={residual:.4} retained={retained:.3} \
+             peak_ke={peak_ke:.2} ke_final={ke_final:.6}"
+        );
+    };
+
+    let g = config.gravity.length();
+    let dt = config.dt;
+    let cursor = Vec2::new(20.0, 12.0);
+
+    run_scenario(
+        "LMB quick tap (5 steps, stationary cursor)",
+        &|sim, step| {
+            if step < 5 {
+                let p = sim.particles_mut();
+                diag_apply_radial_force(p, cursor, 7.0, 3.0, g, dt, 1.0);
+            }
+        },
+    );
+
+    run_scenario(
+        "LMB sustained hold (60 steps, stationary cursor)",
+        &|sim, step| {
+            if step < 60 {
+                let p = sim.particles_mut();
+                diag_apply_radial_force(p, cursor, 7.0, 3.0, g, dt, 1.0);
+            }
+        },
+    );
+
+    run_scenario(
+        "LMB dragging cursor (60 steps, cursor sweeps +8 cells in x)",
+        &|sim, step| {
+            if step < 60 {
+                let sweep_cursor = cursor + Vec2::new(step as f32 * (8.0 / 60.0), 0.0);
+                let p = sim.particles_mut();
+                diag_apply_radial_force(p, sweep_cursor, 7.0, 3.0, g, dt, 1.0);
+            }
+        },
+    );
+
+    run_scenario(
+        "RMB lift (sustained pull, cursor rises 10 cells over 80 steps) then free-fall",
+        &|sim, step| {
+            if step < 80 {
+                let lift_cursor = cursor + Vec2::new(0.0, step as f32 * (10.0 / 80.0));
+                let p = sim.particles_mut();
+                diag_apply_radial_force(p, lift_cursor, 7.0, 3.0, g, dt, -1.0);
+            }
+            // step >= 80: RMB released, pure free-fall/settle, no force applied.
+        },
+    );
+}
+
+/// The one combination NEVER tested tonight: sand AND water TOGETHER, with
+/// a real push applied ON the wet, cohesive region -- every prior
+/// scenario tested either dry sand alone or the moisture field in
+/// isolation, never both live at once, which is exactly the live demo's
+/// actual normal use (pour water, then push). Uses the real force code
+/// (`diag_apply_radial_force`), the real fixed moisture mechanism (water
+/// spawned with `scalar_field=1.0` directly, no invented rate), the real
+/// corrected diffusivity (1.67e-4 SI), and the real corrected friction
+/// angle (33 deg) -- every fix shipped tonight, combined, under load.
+#[test]
+fn diag_wet_sand_push_combined_never_tested_before() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
+        emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
+        0.4792,
+        0.0,
+    );
+    let saturation_cohesion_coeff = config.stress_from_si_physical(cohesion_pa, 1600.0);
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        saturation_cohesion_coeff,
+        pendular_regime_ceiling: 0.3,
+        elastic_viscosity: config.visc_from_si_physical(eta_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let water_id = sim.register_material(Box::new(NewtonianFluidMaterial::low_viscosity(1.0, 4.0)));
+
+    for _ in 0..200 {
+        sim.step();
+    }
+    let x_settled: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+
+    // Pour water directly on the settling pile's top surface for ~3s --
+    // same real fix as the demo: water IS water, phi=1.0 at spawn.
+    let pour_center = Vec2::new(20.0, 20.0);
+    let mut field = ScalarDiffusionField::new(
+        ScalarDiffusionConfig {
+            diffusivity: 1.67,
+            decay_rate: 0.0,
+            ambient: 0.0,
+        },
+        |p| p.scalar_field,
+        |p, delta| p.scalar_field += delta,
+        64,
+    );
+    field.blend = 1.0;
+    sim.attach_scalar_field(field);
+    for step in 0..300 {
+        if step % 10 == 0 {
+            let before = sim.particles().len();
+            let _ = sim.add_body(SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(2, 1),
+                box_center: pour_center,
+                material_id: water_id.0,
+                precompute_initial_volumes: true,
+                initial_velocity_scale: 0.0,
+                rng_seed: 11,
+                ..SpawnRegion::for_sim(&config)
+            });
+            let p = sim.particles_mut();
+            for i in before..p.len() {
+                p.scalar_field[i] = 1.0;
+            }
+        }
+        sim.step();
+    }
+
+    let wet_count_before_push = sim
+        .particles()
+        .iter()
+        .filter(|p| p.material_id == 0 && p.scalar_field >= 0.3)
+        .count();
+
+    let ke = |s: &Simulation| -> f64 {
+        s.particles()
+            .iter()
+            .map(|p| 0.5 * p.mass as f64 * p.v.length_squared() as f64)
+            .sum()
+    };
+    let g = config.gravity.length();
+    // Push directly ON the wet region (same point water was poured), the
+    // exact scenario the demo actually invites: wet it, then push it.
+    let mut peak_disp = 0.0f32;
+    let mut peak_ke = 0.0f64;
+    for step in 0..300 {
+        if step < 30 {
+            let p = sim.particles_mut();
+            diag_apply_radial_force(p, pour_center, 7.0, 3.0, g, config.dt, 1.0);
+        }
+        sim.step();
+        let x_now = sim.particles();
+        let step_max = (0..x_now.len().min(x_settled.len()))
+            .map(|i| (x_now.x[i] - x_settled[i]).length())
+            .fold(0.0f32, f32::max);
+        peak_disp = peak_disp.max(step_max);
+        peak_ke = peak_ke.max(ke(&sim));
+    }
+    let x_final = sim.particles();
+    let residual: f32 = (0..x_final.len().min(x_settled.len()))
+        .map(|i| (x_final.x[i] - x_settled[i]).length())
+        .fold(0.0f32, f32::max);
+    let retained = residual / peak_disp.max(1.0e-9);
+
+    println!(
+        "wet+push combined: wet_particles_before_push={wet_count_before_push} peak_disp={peak_disp:.4} \
+         residual={residual:.4} retained={retained:.3} peak_ke={peak_ke:.2}"
+    );
+}
+
+/// `retained_fraction` (every prior push/lift test tonight) answers "did
+/// the group spring back to its ORIGINAL position" -- it does NOT answer
+/// "did the grains separate FROM EACH OTHER." A perfectly rigid block that
+/// moves to a new position and stays there scores retained=1.000
+/// identically to real granular sand that scatters -- the two are
+/// indistinguishable by that metric alone. This is the metric the user's
+/// actual complaint needs: lift a chunk with RMB (same real force code,
+/// which pulls radially TOWARD the cursor -- an active compaction while
+/// held, by construction, not a natural "scoop"), release it, and track
+/// DISPERSION (mean pairwise distance from the group's own centroid) of
+/// the SAME particles over time -- settled (natural spacing) -> during
+/// pull (expected to compress, that's the force's own design) -> after
+/// release, free-falling -> after it lands and settles. Real loose dry
+/// sand with no cohesion should show dispersion recovering toward (or
+/// past) its natural pre-pull value once the compacting force is gone;
+/// dispersion staying near its compacted minimum after release, with
+/// nothing holding it there, is the real signature of unwanted cohesion.
+#[test]
+fn diag_lifted_chunk_dispersion_not_just_retained_position() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity: config.visc_from_si_physical(eta_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    for _ in 0..300 {
+        sim.step();
+    }
+
+    let cursor0 = Vec2::new(20.0, 12.0);
+    let radius = 7.0f32;
+    // The group: particles within the pull radius BEFORE any force is
+    // applied -- fixed set, tracked by index for the whole test.
+    let group: Vec<usize> = {
+        let p = sim.particles();
+        (0..p.len())
+            .filter(|&i| (p.x[i] - cursor0).length() < radius)
+            .collect()
+    };
+    assert!(
+        group.len() > 20,
+        "sanity: too few particles in the pull radius ({})",
+        group.len()
+    );
+
+    let dispersion = |sim: &Simulation, group: &[usize]| -> f32 {
+        let p = sim.particles();
+        let centroid: Vec2 =
+            group.iter().map(|&i| p.x[i]).fold(Vec2::ZERO, |a, b| a + b) / group.len() as f32;
+        let mean_dist: f32 = group
+            .iter()
+            .map(|&i| (p.x[i] - centroid).length())
+            .sum::<f32>()
+            / group.len() as f32;
+        mean_dist
+    };
+
+    let centroid_y = |sim: &Simulation, group: &[usize]| -> f32 {
+        let p = sim.particles();
+        group.iter().map(|&i| p.x[i].y).sum::<f32>() / group.len() as f32
+    };
+    let d_settled = dispersion(&sim, &group);
+    let y_settled = centroid_y(&sim, &group);
+
+    let g = config.gravity.length();
+    let dt = config.dt;
+    // Lift: cursor rises 10 cells over 80 steps, RMB (sign=-1, pulls
+    // toward cursor) -- the real force code, unmodified.
+    for step in 0..80 {
+        let lift_cursor = cursor0 + Vec2::new(0.0, step as f32 * (10.0 / 80.0));
+        let p = sim.particles_mut();
+        diag_apply_radial_force(p, lift_cursor, radius, 3.0, g, dt, -1.0);
+        sim.step();
+    }
+    let d_during_pull = dispersion(&sim, &group);
+    let y_peak = centroid_y(&sim, &group);
+
+    // Released: pure free-fall/settle, no force, for 300 steps.
+    let mut d_trace = Vec::new();
+    for step in 0..300 {
+        sim.step();
+        if step % 30 == 0 {
+            d_trace.push((step, dispersion(&sim, &group), centroid_y(&sim, &group)));
+        }
+    }
+    let d_final = dispersion(&sim, &group);
+    let y_final = centroid_y(&sim, &group);
+
+    println!(
+        "dispersion (mean dist from group centroid): settled={d_settled:.4} during_pull={d_during_pull:.4} \
+         final_after_release_and_settle={d_final:.4}"
+    );
+    println!(
+        "centroid Y: settled={y_settled:.3} peak_lift={y_peak:.3} (rose {:.3} cells) final={y_final:.3} \
+         (fell back {:.3} cells from peak)",
+        y_peak - y_settled,
+        y_peak - y_final
+    );
+    for (step, d, y) in &d_trace {
+        println!("  after release, step={step} dispersion={d:.4} centroid_y={y:.3}");
+    }
+    println!(
+        "recovery fraction (final/settled, 1.0=fully recovered natural spacing, <1.0=still compacted) = {:.3}",
+        d_final / d_settled.max(1.0e-6)
+    );
+}
+
+/// Follow-up to `diag_lifted_chunk_dispersion_not_just_retained_position`:
+/// that test's RMB pull barely moved the group (0.03 cells of real lift
+/// against a 10-cell cursor travel) -- deep in the pile, buried under real
+/// overburden weight, so there was no real fall to test dispersal against.
+/// This retries from the pile's TOP SURFACE (least confinement) with a
+/// much stronger pull (`push_weights=15.0` vs the demo's default 3.0) to
+/// force genuine separation, then checks whether dispersion recovers once
+/// there IS a real lift-and-fall.
+#[test]
+fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity: config.visc_from_si_physical(eta_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    for _ in 0..300 {
+        sim.step();
+    }
+
+    // Find the pile's real top surface: max Y among settled particles near
+    // the pull's X target, not a guessed coordinate.
+    let target_x = 20.0f32;
+    let surface_y = {
+        let p = sim.particles();
+        (0..p.len())
+            .filter(|&i| (p.x[i].x - target_x).abs() < 4.0)
+            .map(|i| p.x[i].y)
+            .fold(f32::MIN, f32::max)
+    };
+    let cursor0 = Vec2::new(target_x, surface_y - 1.0);
+    let radius = 7.0f32;
+    let group: Vec<usize> = {
+        let p = sim.particles();
+        (0..p.len())
+            .filter(|&i| (p.x[i] - cursor0).length() < radius)
+            .collect()
+    };
+    assert!(
+        group.len() > 10,
+        "sanity: too few particles ({})",
+        group.len()
+    );
+
+    let dispersion = |sim: &Simulation, group: &[usize]| -> f32 {
+        let p = sim.particles();
+        let centroid: Vec2 =
+            group.iter().map(|&i| p.x[i]).fold(Vec2::ZERO, |a, b| a + b) / group.len() as f32;
+        group
+            .iter()
+            .map(|&i| (p.x[i] - centroid).length())
+            .sum::<f32>()
+            / group.len() as f32
+    };
+    let centroid_y = |sim: &Simulation, group: &[usize]| -> f32 {
+        let p = sim.particles();
+        group.iter().map(|&i| p.x[i].y).sum::<f32>() / group.len() as f32
+    };
+
+    let d_settled = dispersion(&sim, &group);
+    let y_settled = centroid_y(&sim, &group);
+    println!(
+        "surface_y={surface_y:.3} cursor0={cursor0:?} group_size={}",
+        group.len()
+    );
+
+    let g = config.gravity.length();
+    let dt = config.dt;
+    const STRONG_PUSH: f32 = 15.0;
+    for step in 0..80 {
+        let lift_cursor = cursor0 + Vec2::new(0.0, step as f32 * (10.0 / 80.0));
+        let p = sim.particles_mut();
+        diag_apply_radial_force(p, lift_cursor, radius, STRONG_PUSH, g, dt, -1.0);
+        sim.step();
+    }
+    let d_during_pull = dispersion(&sim, &group);
+    let y_peak = centroid_y(&sim, &group);
+
+    let mut d_trace = Vec::new();
+    for step in 0..300 {
+        sim.step();
+        if step % 30 == 0 {
+            d_trace.push((step, dispersion(&sim, &group), centroid_y(&sim, &group)));
+        }
+    }
+    let d_final = dispersion(&sim, &group);
+    let y_final = centroid_y(&sim, &group);
+
+    println!(
+        "dispersion: settled={d_settled:.4} during_pull={d_during_pull:.4} final={d_final:.4} \
+         (recovery={:.3})",
+        d_final / d_settled.max(1.0e-6)
+    );
+    println!(
+        "centroid Y: settled={y_settled:.3} peak={y_peak:.3} (real lift={:.3} cells) final={y_final:.3} \
+         (real fall={:.3} cells)",
+        y_peak - y_settled,
+        y_peak - y_final
+    );
+    for (step, d, y) in &d_trace {
+        println!("  step={step} dispersion={d:.4} centroid_y={y:.3}");
+    }
+}
+
+/// The demo's RMB slider only allows `push_weights` up to 10.0
+/// (`egui::Slider::new(&mut push_weights, 0.0..=10.0)`), but the dispersion
+/// fix was verified with 15.0 -- OUTSIDE that range. Sweeps values actually
+/// reachable in the live UI (3.0 default, 5.0, 7.0, 10.0 max) from the same
+/// real surface point, measuring actual centroid lift for each, to find a
+/// real, tested default -- not a guess -- and to check whether the
+/// slider's own max needs raising too.
+#[test]
+fn diag_push_weights_sweep_real_lift_within_ui_range() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let make_sand = || DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity: config.visc_from_si_physical(eta_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+
+    for push_weights in [3.0f32, 5.0, 7.0, 10.0] {
+        let mut sim = Simulation::new(config, spawn.clone())
+            .with_default_material(Box::new(make_sand()))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+        for _ in 0..300 {
+            sim.step();
+        }
+        let target_x = 20.0f32;
+        let surface_y = {
+            let p = sim.particles();
+            (0..p.len())
+                .filter(|&i| (p.x[i].x - target_x).abs() < 4.0)
+                .map(|i| p.x[i].y)
+                .fold(f32::MIN, f32::max)
+        };
+        let cursor0 = Vec2::new(target_x, surface_y - 1.0);
+        let radius = 7.0f32;
+        let group: Vec<usize> = {
+            let p = sim.particles();
+            (0..p.len())
+                .filter(|&i| (p.x[i] - cursor0).length() < radius)
+                .collect()
+        };
+        let centroid_y = |sim: &Simulation, group: &[usize]| -> f32 {
+            let p = sim.particles();
+            group.iter().map(|&i| p.x[i].y).sum::<f32>() / group.len() as f32
+        };
+        let y_settled = centroid_y(&sim, &group);
+
+        let g = config.gravity.length();
+        let dt = config.dt;
+        for step in 0..80 {
+            let lift_cursor = cursor0 + Vec2::new(0.0, step as f32 * (10.0 / 80.0));
+            let p = sim.particles_mut();
+            diag_apply_radial_force(p, lift_cursor, radius, push_weights, g, dt, -1.0);
+            sim.step();
+        }
+        let y_peak = centroid_y(&sim, &group);
+        println!(
+            "push_weights={push_weights:.1}: real_lift={:.3} cells (settled_y={y_settled:.3}, peak_y={y_peak:.3})",
+            y_peak - y_settled
+        );
+    }
+}
+
+/// Sanity check for the new `push_weights=7.0` default (up from 3.0, see
+/// `sand_water_saturation.rs`'s own doc): does the LMB PUSH direction
+/// (same field, `sign=1.0`) stay stable and well-behaved at the new,
+/// stronger value, or does raising it to fix RMB lift accidentally make
+/// LMB push excessive/unstable? Same retained-position + KE diagnostics
+/// as the original stress test, just at the new default.
+#[test]
+fn diag_lmb_push_stability_at_new_stronger_default() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 400,
+        apic_blend: 0.05,
+        ..SimConfig::earth(64, 0.01, 0.01)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(30, 16),
+        box_center: Vec2::new(32.0, 12.0),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        rng_seed: 11,
+        position_jitter: 0.5,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(1.0e5, 0.2, 1600.0);
+    let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
+    let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
+        shear_modulus_pa,
+        0.005,
+    );
+    let sand = DruckerPragerMaterial {
+        friction_angle: 33.0_f32.to_radians(),
+        elastic_viscosity: config.visc_from_si_physical(eta_pa_s, 1600.0),
+        ..DruckerPragerMaterial::new(lambda, mu)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    for _ in 0..300 {
+        sim.step();
+    }
+    let x_settled: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+    let ke = |s: &Simulation| -> f64 {
+        s.particles()
+            .iter()
+            .map(|p| 0.5 * p.mass as f64 * p.v.length_squared() as f64)
+            .sum()
+    };
+    let g = config.gravity.length();
+    let cursor = Vec2::new(20.0, 12.0);
+    let mut peak_disp = 0.0f32;
+    let mut peak_ke = 0.0f64;
+    let mut max_speed = 0.0f32;
+    for step in 0..60 {
+        if step < 5 {
+            let p = sim.particles_mut();
+            diag_apply_radial_force(p, cursor, 7.0, 7.0, g, config.dt, 1.0);
+        }
+        sim.step();
+        let x_now = sim.particles();
+        let step_max = (0..x_now.len())
+            .map(|i| (x_now.x[i] - x_settled[i]).length())
+            .fold(0.0f32, f32::max);
+        peak_disp = peak_disp.max(step_max);
+        peak_ke = peak_ke.max(ke(&sim));
+        max_speed = max_speed.max(
+            (0..x_now.len())
+                .map(|i| x_now.v[i].length())
+                .fold(0.0f32, f32::max),
+        );
+    }
+    let x_final: Vec<Vec2> = sim.particles().iter().map(|p| p.x).collect();
+    let residual: f32 = (0..x_final.len())
+        .map(|i| (x_final[i] - x_settled[i]).length())
+        .fold(0.0f32, f32::max);
+    let retained = residual / peak_disp.max(1.0e-9);
+    println!(
+        "LMB push at push_weights=7.0: peak_disp={peak_disp:.4} residual={residual:.4} retained={retained:.3} \
+         peak_ke={peak_ke:.2} max_speed={max_speed:.3}"
+    );
+    assert!(
+        max_speed.is_finite() && max_speed < 500.0,
+        "push_weights=7.0 produced an unstable/runaway max_speed={max_speed:.2} -- too strong for LMB push"
+    );
+}
