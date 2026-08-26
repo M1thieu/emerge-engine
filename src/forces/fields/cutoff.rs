@@ -1,6 +1,11 @@
 //! C¹ smooth cutoff function for pair interactions.
 //!
-//! Cubic spline force-switch (GROMACS/LAMMPS standard).
+//! Standard cubic Hermite smoothstep (S = 1-3x²+2x³, zero slope at both
+//! endpoints) -- NOT the GROMACS/LAMMPS force-switch (that's a different
+//! additive quadratic+cubic correction applied to the force itself, not a
+//! multiplicative factor on it; an earlier version of this comment wrongly
+//! equated the two). This is the same smoothstep used broadly in
+//! graphics/simulation for C¹ blending.
 //! Ensures forces → 0 smoothly at `r_cut` with no velocity discontinuity.
 //! Used by gravity wells and Coulomb fields to limit spatial range.
 

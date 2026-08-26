@@ -5,8 +5,9 @@
 use glam::Vec2;
 
 /// Fits the contact-interface separating plane through a labeled particle point cloud
-/// via logistic regression -- Nairn, "New Material Point Method Contact Algorithms for
-/// Improved Accuracy" (2020), the LR method, eq. 19-21 + Appendix eq. 53-57.
+/// via logistic regression -- Nairn, Hammerquist & Smith, "New Material Point Method
+/// Contact Algorithms for Improved Accuracy" (CMAME 2020), the LR method, eq. 19-21 +
+/// Appendix eq. 53-57.
 ///
 /// Replaces Bardenhagen's own original normal -- the spatial gradient of the grip
 /// field's grid mass -- which this paper's own Figure 3C independently identifies as
