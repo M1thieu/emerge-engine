@@ -172,8 +172,7 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let (mut sim, grid_reference_cell_mass) =
-            make_sim_data(Arc::new(device), Arc::new(queue));
+        let (mut sim, grid_reference_cell_mass) = make_sim_data(Arc::new(device), Arc::new(queue));
         // Real per-cell material tracking, needed by the grid-volume path to
         // pick each cell's dominant material (loose vs dense) -- see
         // grid_volume.wgsl's own doc.
