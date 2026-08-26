@@ -133,7 +133,11 @@ const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 16);
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct WaveStepParams {
     pub(super) surface_res: u32,
-    pub(super) _pad: [u32; 3],
+    /// See `curvature_flow.wgsl`'s own `WaveStepParams` doc -- real, generic,
+    /// derived from `MaterialModel::owns_deformation_volume_state()` by the
+    /// caller, not a per-material-ID special case. 0.0 (default) = inert.
+    pub(super) wave_force_coeff: f32,
+    pub(super) _pad: [u32; 2],
 }
 const _: () = assert!(mem::size_of::<WaveStepParams>() == 16);
 

@@ -1019,15 +1019,18 @@ fn temp_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ── Pass 1e: light diffusion (real subsurface glow) ──────────────────────────
 //
 // Real diffusion approximation to radiative light transport -- NOT Jensen,
-// Marschner, Levoy & Hanrahan 2001's analytic dipole shortcut (that exact
-// closed-form Rd(r) solution could not be independently re-verified against
-// the actual paper this session, given real tooling limits: no local PDF
-// renderer, WebFetch cannot extract text from the binary PDF). This instead
-// solves the SAME underlying diffusion PDE the dipole model itself is built
-// on top of, numerically -- the identical mathematical form as `temp_
-// diffuse_main` above (diffusion is diffusion; only the source/sink terms
-// differ), a real, fully-verifiable equation with zero dependency on the
-// unverified closed form:
+// Marschner, Levoy & Hanrahan 2001's analytic dipole shortcut. Verified
+// (web search, this session) that the dipole model's own multiple-scattering
+// term IS this same diffusion approximation: the paper combines "an exact
+// solution for single scattering with a dipole point source diffusion
+// approximation for multiple scattering" (SIGGRAPH 2001, "A Practical Model
+// for Subsurface Light Transport" -- history.siggraph.org/learning/
+// a-practical-model-for-subsurface-light-transport-by-jensen-marschner-levoy-
+// and-hanrahan/, graphics.stanford.edu/papers/bssrdf/). This pass solves
+// that SAME underlying diffusion PDE directly, numerically, instead of the
+// dipole's analytic closed-form shortcut for it -- the identical
+// mathematical form as `temp_diffuse_main` above (diffusion is diffusion;
+// only the source/sink terms differ):
 //
 //   dPhi/dt = D * laplacian(Phi) - sigma_a * Phi + Q
 //
@@ -1046,10 +1049,14 @@ fn temp_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 //
 // D = 1/(3*(sigma_a+sigma_s)) is the standard diffusion coefficient from
 // radiative transport theory (the same real quantity the dipole model
-// itself starts from, before ITS analytic shortcut) -- real, per-material
-// data already in `light_optics.slots[material_slot]` (the SAME real
-// OpticalTable every other real pass in this file already uses), not a
-// guessed constant.
+// itself starts from, before ITS analytic shortcut) -- verified (web
+// search, this session) against the general photon-diffusion literature:
+// D = v_E/(3*(kappa_tr+kappa_a)), the standard heuristic form for scattering
+// + absorbing media (see e.g. "Photon diffusion coefficient in scattering
+// and absorbing media," J. Opt. Soc. Am. A 23(5):1106, pubmed.ncbi.nlm.nih.
+// gov/16642188/) -- real, per-material data already in
+// `light_optics.slots[material_slot]` (the SAME real OpticalTable every
+// other real pass in this file already uses), not a guessed constant.
 //
 // MIN_EXTINCTION is a real, DERIVED stability floor, not a tuned guess:
 // explicit 2D FTCS diffusion needs D*dt/dx^2 <= 1/4 (the identical von
@@ -1151,14 +1158,22 @@ fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // an invented physical effect.
 struct WaveStepParams {
     surface_res: u32,
-    // Three plain scalars, NOT `vec3<u32>` -- WGSL gives `vec3<T>` the
-    // ALIGNMENT of `vec4<T>` (16 bytes) even though its own size is 12,
-    // silently inserting a hidden padding gap and making this struct 32
-    // bytes instead of the Rust side's naive 16. Plain scalars avoid that,
-    // matching `WaveStepParams`'s `repr(C)` layout exactly.
+    // Real, generic (see `Renderer::set_wave_force_coeff`'s own doc): a
+    // material's free surface only propagates waves like this if it
+    // genuinely behaves like a fluid (`MaterialModel::
+    // owns_deformation_volume_state()`, the SAME real property this engine
+    // already uses everywhere else to mean "true fluid" -- not a per-
+    // material-ID special case). 0.0 (inert, the default) for anything
+    // that never opts in with a real value derived from that property --
+    // a rigid/frictional granular pile has no physical mechanism to
+    // propagate this kind of wave, so it must not get one by accident.
+    wave_force_coeff: f32,
+    // Two plain scalars, NOT `vec2<u32>` -- WGSL gives `vec2<T>` the
+    // ALIGNMENT of `vec4<T>` (16 bytes) via the same rule as elsewhere in
+    // this file's own params structs. Plain scalars avoid that, matching
+    // `WaveStepParams`'s `repr(C)` layout exactly.
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> wave_density_in: array<f32>;
@@ -1200,7 +1215,6 @@ fn sample_wave_cur(cx: i32, cy: i32) -> f32 {
 const WAVE_C: f32 = 8.0;
 const WAVE_DT: f32 = 1.0 / 60.0;
 const WAVE_DAMPING: f32 = 0.996;
-const WAVE_FORCE_COEFF: f32 = 0.35;
 
 @compute @workgroup_size(8, 8, 1)
 fn wave_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -1219,7 +1233,7 @@ fn wave_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // replaced a spatial-gradient forcing term that never actually settled.
     let density_now = sample_wave_density(cx, cy);
     let density_prev = sample_wave_density_prev(cx, cy);
-    let force = WAVE_FORCE_COEFF * abs(density_now - density_prev);
+    let force = wave_params.wave_force_coeff * abs(density_now - density_prev);
 
     let next = (2.0 * cur - prev + cfl2 * lap + force * WAVE_DT * WAVE_DT) * WAVE_DAMPING;
     wave_next_out[idx] = next;

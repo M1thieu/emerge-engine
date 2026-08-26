@@ -3495,3 +3495,242 @@ fn screen_to_grid_is_exact_inverse_of_set_camera_at_any_aspect_ratio() {
          bottom={gy_bottom}"
     );
 }
+
+/// Real pore-fluid index-matching darkening (`Renderer::set_refractive_
+/// index`) must actually reduce scattering as a particle's own
+/// `scalar_field` saturates toward 1.0 -- the real, generic (not
+/// sand-specific) wet-material mechanism. Uses real quartz sand's
+/// refractive index (~1.5) and pushes saturation from bone-dry to fully
+/// saturated on the SAME material slot, checking color genuinely changes
+/// and that it's darkening (approaching the material's own absorption-only
+/// color), not brightening.
+#[test]
+fn wetness_darkens_by_physics_color_via_refractive_index() {
+    let (device, queue) = headless_device();
+    let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
+    r.set_color_mode(ColorMode::ByPhysics);
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]); // real sand absorption (Sherman & Waite 1985)
+    r.set_optical_scattering(&queue, 0, 8.0);
+    r.set_refractive_index(0, 1.5); // real quartz refractive index (Hecht, "Optics")
+
+    let mut dry = Particle::zeroed();
+    dry.material_id = 0;
+    dry.deformation_gradient = Mat2::IDENTITY;
+    dry.scalar_field = 0.0;
+    let mut wet = dry;
+    wet.scalar_field = 1.0;
+
+    let c_dry = r.particle_color(&dry);
+    let c_wet = r.particle_color(&wet);
+    assert_ne!(
+        c_dry, c_wet,
+        "saturation must actually change ByPhysics color once refractive_index is set"
+    );
+    let brightness = |c: [f32; 4]| c[0] + c[1] + c[2];
+    assert!(
+        brightness(c_wet) < brightness(c_dry),
+        "wet sand must render DARKER than dry (reduced scattering from \
+         pore-fluid index-matching), not brighter -- dry={c_dry:?} wet={c_wet:?}"
+    );
+}
+
+/// The default `refractive_index` (1.0, same as air) must be fully inert --
+/// a material that never calls `set_refractive_index` renders identically
+/// regardless of its particles' `scalar_field`, exactly as before this
+/// feature existed. Real safety property: this mechanism must never
+/// silently activate for materials that never opted in.
+#[test]
+fn wetness_darkening_is_inert_without_refractive_index_opt_in() {
+    let (device, queue) = headless_device();
+    let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
+    r.set_color_mode(ColorMode::ByPhysics);
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]);
+    r.set_optical_scattering(&queue, 0, 8.0);
+    // Deliberately NOT calling set_refractive_index -- default stays 1.0.
+
+    let mut dry = Particle::zeroed();
+    dry.material_id = 0;
+    dry.deformation_gradient = Mat2::IDENTITY;
+    dry.scalar_field = 0.0;
+    let mut wet = dry;
+    wet.scalar_field = 1.0;
+
+    assert_eq!(
+        r.particle_color(&dry),
+        r.particle_color(&wet),
+        "a material that never calls set_refractive_index must be byte-identical \
+         regardless of scalar_field -- this feature must be opt-in, not silently active"
+    );
+}
+
+/// DIAGNOSTIC: user reported real, live lag (24-27fps) after wiring
+/// `render_surface_reconstruction` into `basic_sand_grid_gpu.rs` for the
+/// first time (2026-08-26). Measures the REAL, isolated per-call GPU cost
+/// of each render path (Particles/GridVolume/Surface) on the exact same
+/// scene, device.poll-synced so the timing reflects real completed GPU
+/// work, not just submission -- answers "is this the technique's own
+/// already-known cost, or something specifically wrong with the sand
+/// wiring" with real numbers instead of guessing.
+#[test]
+fn diag_surface_reconstruction_real_cost_vs_grid_volume_and_particles() {
+    use crate::gpu::GpuSimulation;
+    use crate::{DruckerPragerMaterial, MaterialRegistry, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
+    const GRID: usize = 64;
+    let config = SimConfig::standard(GRID, 0.1, glam::Vec2::new(0.0, -0.3));
+    let particles = build_particles(
+        &config,
+        SpawnRegion::for_sim(&config)
+            .at(glam::Vec2::new(32.0, 20.0))
+            .disk(20.0)
+            .spacing(0.5)
+            .material(0)
+            .precompute_volumes(),
+    );
+    let registry =
+        MaterialRegistry::with_default(Box::new(DruckerPragerMaterial::new(100.0, 50.0)));
+    let sim =
+        GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+    let particle_count = sim.particle_count();
+
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, particle_count, fmt);
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]);
+    r.set_camera(&queue, GRID as u32, 800, 600, 0.6, true);
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("perf_test_target"),
+        size: wgpu::Extent3d {
+            width: 800,
+            height: 600,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    const WARMUP: usize = 3;
+    const TIMED: usize = 20;
+
+    macro_rules! measure {
+        ($label:expr, $call:expr) => {{
+            for _ in 0..WARMUP {
+                $call;
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            }
+            let start = Instant::now();
+            for _ in 0..TIMED {
+                $call;
+            }
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let elapsed = start.elapsed();
+            println!(
+                "{}: {:.3}ms/call ({} particles, {GRID}x{GRID} grid)",
+                $label,
+                elapsed.as_secs_f64() * 1000.0 / TIMED as f64,
+                particle_count
+            );
+        }};
+    }
+
+    measure!(
+        "render_gpu (Particles)",
+        r.render_gpu(
+            &device,
+            &queue,
+            sim.particle_buffer(),
+            particle_count,
+            &view,
+            true,
+        )
+    );
+    measure!(
+        "render_grid_volume",
+        r.render_grid_volume(
+            &device,
+            &queue,
+            GridVolumeSource {
+                grid: sim.grid_buffer(),
+                material_mass: sim.material_mass_buffer(),
+                material_mass_enabled: true,
+            },
+            &view,
+            true,
+        )
+    );
+    measure!(
+        "render_surface_reconstruction (default mult=6, iters=12)",
+        r.render_surface_reconstruction(
+            &device,
+            &queue,
+            SurfaceReconstructionSource {
+                particle_buf: sim.particle_buffer(),
+                particle_count,
+                grid_res: GRID as u32,
+                material_slot: 0,
+                material_mass_enabled: true,
+                dt: 0.1,
+            },
+            &view,
+            true,
+        )
+    );
+
+    // Real sweep: `surface_res_multiplier` is the documented "single biggest
+    // quality/cost dial" (cost scales with its SQUARE); `curvature_
+    // iterations` is van der Laan et al. 2009's own "several per frame,
+    // scene-dependent" knob. Both already real, public, sourced API --
+    // measuring real cost at each combination instead of guessing one.
+    for mult in [2u32, 3, 4] {
+        r.set_surface_res_multiplier(mult);
+        measure!(
+            format!("surface_res_multiplier={mult} (iters=12)"),
+            r.render_surface_reconstruction(
+                &device,
+                &queue,
+                SurfaceReconstructionSource {
+                    particle_buf: sim.particle_buffer(),
+                    particle_count,
+                    grid_res: GRID as u32,
+                    material_slot: 0,
+                    material_mass_enabled: true,
+                    dt: 0.1,
+                },
+                &view,
+                true,
+            )
+        );
+    }
+    r.set_surface_res_multiplier(6);
+    for iters in [4u32, 6, 8] {
+        r.set_curvature_iterations(iters);
+        measure!(
+            format!("curvature_iterations={iters} (mult=6)"),
+            r.render_surface_reconstruction(
+                &device,
+                &queue,
+                SurfaceReconstructionSource {
+                    particle_buf: sim.particle_buffer(),
+                    particle_count,
+                    grid_res: GRID as u32,
+                    material_slot: 0,
+                    material_mass_enabled: true,
+                    dt: 0.1,
+                },
+                &view,
+                true,
+            )
+        );
+    }
+}
