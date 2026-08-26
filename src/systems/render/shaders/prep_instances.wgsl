@@ -173,7 +173,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let with_specular = with_scattering + vec3(r0);
         //
         // Thermal emission: blackbody additive glow above ~300 K.
-        //   Normalized to 5000 K (solar surface) -- biological temps near zero.
+        //   Normalized to 5000 K -- a round practical ceiling for this sim's
+        //   temperature range (biological/geological, near-zero to molten/
+        //   combustion scale), NOT the real solar photosphere temperature
+        //   (that's ~5778 K -- Wikipedia "Sun", effective temperature; an
+        //   earlier version of this comment wrongly equated the two).
         let t_norm = clamp(p.temperature / 5000.0, 0.0, 1.0);
         let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
         //

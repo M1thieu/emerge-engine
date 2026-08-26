@@ -5,8 +5,11 @@
 //! Dependency is one-way: fields → core particle, never reverse.
 
 /// Fraction of `cutoff` at which the force-switch fade begins.
-/// 0.85 matches the GROMACS/LAMMPS force-switch convention: 15% taper range avoids
-/// energy discontinuities without wasting usable interaction radius.
+/// 0.85 is a practical engineering choice, not a fixed cross-tool standard --
+/// real switching-function taper ratios vary by force field/tool (commonly
+/// ~0.67-0.83 in MD packages), so this is honestly disclosed rather than
+/// mis-attributed: a 15% taper range avoids an abrupt cutoff without giving
+/// up much usable interaction radius.
 pub(crate) const FADE_ONSET_RATIO: f32 = 0.85;
 
 pub mod buoyancy;

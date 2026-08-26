@@ -211,8 +211,8 @@ impl Grid {
             let v_cm = total.momentum; // already normalized + gravity-applied
             let v_grip = grip_momentum / grip_mass + gravity * dt;
 
-            // Contact normal fitted through the actual particle point cloud (Nairn's LR
-            // method) rather than a grid mass gradient. `-` because the raw fit points
+            // Contact normal fitted through the actual particle point cloud (Nairn et
+            // al.'s LR method) rather than a grid mass gradient. `-` because the raw fit points
             // toward increasing grip-label density (grip=+1); negating matches this
             // function's "outward: away from grip" convention. `.filter(is_finite)`:
             // defense in depth -- `fit_contact_normal_lr` guards its own iteration against
@@ -251,8 +251,9 @@ impl Grid {
             }
 
             // Baumgarte stabilization (Baumgarte 1972, "Stabilization of Constraints and
-            // Integration of PDEs of Dynamical Systems"; the same ~0.1-0.3 factor is the
-            // well-known default in e.g. Box2D/Bullet's own velocity-constraint solvers).
+            // Integrals of Motion in Dynamical Systems", CMAME 1:1-16; the same ~0.1-0.3
+            // factor is the well-known default in e.g. Box2D/Bullet's own
+            // velocity-constraint solvers).
             // The kinematic-only approach test above only prevents FURTHER approach once
             // it fires -- it has no mechanism to correct overlap that already exists, which
             // matches Bardenhagen 2001's own disclosed caveat that this simpler test is
