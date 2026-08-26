@@ -5641,3 +5641,138 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
         "push_weights=7.0 produced an unstable/runaway max_speed={max_speed:.2} -- too strong for LMB push"
     );
 }
+
+/// Real root-cause check for the `sand_water_saturation.rs` crash found live
+/// tonight (2026-08-26/27): after ~104,737 frames of real interactive
+/// testing (heavy pouring, push/pull), the demo panicked with "strict
+/// WC-MPM fluid could not advance the full requested dt" -- a genuine CFL/
+/// retry instability in the adjacent WATER, not in the sand/mixture
+/// particles that actually transitioned.
+///
+/// Leading hypothesis: `Simulation::apply_phase_transition` (the shared,
+/// generic engine mechanism behind `phase_transition`/`add_phase_rule`)
+/// resets a transitioning particle's `deformation_gradient` to IDENTITY
+/// unconditionally. `GranularFluidMaterial::kirchhoff_stress` computes its
+/// EOS pressure from `det(deformation_gradient)` directly (not the stored
+/// `Particle::density` field), so at J=1 exactly, `ratio == 1.0` exactly,
+/// so EOS pressure is exactly ZERO the instant a particle arrives --
+/// regardless of how much real compressive load it was carrying the
+/// substep before, as sand, holding up the material above it. If real,
+/// this is a genuine, sudden stress-to-zero discontinuity at the moment of
+/// transition, not a gradual physical process -- exactly the kind of thing
+/// that could shock a strict-CFL fluid nearby through the shared grid.
+///
+/// This test isolates ONLY that mechanism: settle a real sand column under
+/// real self-weight (building real compressive load at the bottom), then
+/// force-transition the bottom (most-loaded) rows to `GranularFluidMaterial`
+/// in one shot (the same real API `add_phase_rule` uses under the hood),
+/// and measure whether the system-wide max particle speed spikes on the
+/// very next step compared to a matched control that never transitions.
+/// No water in this test at all -- if a speed spike shows up even without
+/// water present, the mechanism is confirmed at the source, independent of
+/// whether water specifically was the thing that ultimately panicked.
+#[test]
+fn diag_phase_transition_under_load_causes_stress_discontinuity() {
+    const LOCAL_GRID: usize = 64;
+    const MAT_SAND: u32 = 0;
+    const MAT_MIXTURE: u32 = 1;
+
+    fn build_settled_column() -> Simulation {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            ..SimConfig::standard(LOCAL_GRID, 0.01, Vec2::new(0.0, -9.81))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(10, 24),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, 20.0),
+            material_id: MAT_SAND,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        // Same real grid-unit scale as sand's own lambda/mu (from_young_modulus
+        // with the SAME E/nu) -- isolates the deformation-gradient-reset
+        // effect this test is checking for, not a confound from switching to
+        // a wildly different stiffness at the same time. rest_density MUST
+        // match the real particle-mass scale (`config.grid_density`, same
+        // convention `sand_water_saturation.rs`'s own `make_mixture` uses) --
+        // an arbitrary `1.0` here was a real test bug, not a fix bug: it
+        // made `true_initial_volume = mass/rest_density` wildly mismatched
+        // from the particle's own real volume, so the new fix's own j-clamp
+        // logic (correctly!) saw a huge fake compression ratio and produced
+        // a worse spike than the naive identity reset -- a fix built to
+        // trust `rest_density` cannot help if the caller feeds it a
+        // dimensionally wrong one.
+        let mixture = GranularFluidMaterial::new(
+            {
+                let (lambda, _mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+                lambda
+            },
+            {
+                let (_lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+                mu
+            },
+            config.grid_density,
+            200.0,
+            5.0,
+            0.4,
+        );
+        Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_material(MAT_MIXTURE, Box::new(mixture))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)))
+    }
+
+    fn max_speed(sim: &Simulation) -> f32 {
+        sim.particles()
+            .v
+            .iter()
+            .map(|v| v.length())
+            .fold(0.0_f32, f32::max)
+    }
+
+    // CONTROL: settle, then step once more with NO transition.
+    let mut control = build_settled_column();
+    control.step_n(4000);
+    let control_speed_before = max_speed(&control);
+    control.step_n(1);
+    let control_speed_after = max_speed(&control);
+
+    // TREATMENT: identical settle, then force-transition the bottom rows
+    // (the most heavily loaded particles -- real compressive stress from
+    // everything above them) to GranularFluidMaterial in one shot, exactly
+    // as a real wetting front reaching deep into a loaded pile would.
+    let mut treatment = build_settled_column();
+    treatment.step_n(4000);
+    let treatment_speed_before = max_speed(&treatment);
+    let ys: Vec<f32> = treatment.particles().x.iter().map(|x| x.y).collect();
+    let min_y = ys.iter().cloned().fold(f32::INFINITY, f32::min);
+    // Bottom ~3 physics cells' worth of particles -- deep, real load-bearing
+    // material, not just the very lowest single row.
+    let cutoff_y = min_y + 3.0;
+    treatment.phase_transition(
+        |p| p.material_id == MAT_SAND && p.x.y <= cutoff_y,
+        MAT_MIXTURE,
+    );
+    treatment.step_n(1);
+    let treatment_speed_after = max_speed(&treatment);
+
+    println!(
+        "control:   before={control_speed_before:.4}  after={control_speed_after:.4}  \
+         delta={:.4}",
+        control_speed_after - control_speed_before
+    );
+    println!(
+        "treatment: before={treatment_speed_before:.4}  after={treatment_speed_after:.4}  \
+         delta={:.4}",
+        treatment_speed_after - treatment_speed_before
+    );
+    println!(
+        "treatment_delta / control_delta ratio: {:.2}",
+        (treatment_speed_after - treatment_speed_before).abs()
+            / (control_speed_after - control_speed_before)
+                .abs()
+                .max(1.0e-6)
+    );
+}

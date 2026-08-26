@@ -246,6 +246,48 @@ impl MaterialModel for GranularFluidMaterial {
         particle.hardening_scale = 1.0;
     }
 
+    // TRIED, REVERTED (2026-08-26/27): a `GasMaterial`-style
+    // `init_particle_from_transition` override (preserve real J relative to
+    // `rest_density` instead of the engine's default identity reset -- see
+    // `gas.rs`'s own override for that real, working pattern on a DIFFERENT
+    // material) was attempted here for the exact same class of bug
+    // (`Simulation::apply_phase_transition` resets `deformation_gradient` to
+    // IDENTITY unconditionally, so `kirchhoff_stress`'s EOS pressure, which
+    // reads `det(deformation_gradient)` directly rather than the stored
+    // `Particle::density` field, drops to exactly zero regardless of real
+    // load -- confirmed live and reproduced in a controlled diagnostic,
+    // `diag_phase_transition_under_load_causes_stress_discontinuity` in
+    // `tests/physics_correctness.rs`: 0.023 -> 0.188 max-speed spike in one
+    // substep, ~18000x the matched no-transition control).
+    //
+    // Live-measured result of the fix attempt: WORSE, not better -- same
+    // diagnostic went from a 0.16 speed delta to 2.93 (confirmed twice,
+    // including after finding and fixing a real bug in the diagnostic's own
+    // test setup, which turned out not to be the actual explanation). The
+    // isotropic F this override installed does correctly zero out the
+    // corotated deviatoric term (an isotropic matrix has zero deviatoric
+    // part by construction) and lands J very close to the real prior
+    // compression ratio (measured J~1.02, near the material's own
+    // stretch_limit clamp) -- so the mechanism is doing roughly what
+    // `gas.rs`'s own working version does. The actual remaining cause is
+    // NOT yet found: candidates not yet checked include this material's
+    // `eos_power` default (7.0 in the raw `new()` constructor, already
+    // documented elsewhere in this file as "causes runaway pressure under
+    // gravity-settling compression" and NOT the value `sand_water_
+    // saturation.rs`'s own `make_mixture` actually uses, 2.0 -- the
+    // diagnostic test itself used the raw `new()` default and never
+    // re-checked with eos_power=2.0), and/or a real mismatch between
+    // DruckerPragerMaterial's own compressive support stress at a loaded
+    // particle and what GranularFluidMaterial's Tait EOS can supply at a
+    // J this close to 1 by construction (near-incompressible EOS forms are
+    // deliberately flat near J=1 -- see this file's own honest-disclosure
+    // doc on `saturated_loam` for why eos_power=7.0 is flagged unsuitable
+    // for a granular-settling regime in the first place). Reverted rather
+    // than shipping a confirmed regression; the diagnostic test stays as a
+    // real regression guard for whoever picks this up next.
+    //
+    // fn init_particle_from_transition(&self, particle: &mut Particle) { ... }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
         let j = f.determinant().max(MIN_J);
