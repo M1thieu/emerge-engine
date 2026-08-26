@@ -4598,7 +4598,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
             elastic_viscosity: *ev,
             ..DruckerPragerMaterial::new(lambda, mu)
         };
-        let mut sim = Simulation::new(config, spawn.clone())
+        let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(sand))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
         let mut total_substeps = 0usize;
@@ -4815,7 +4815,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
             elastic_viscosity: ev,
             ..DruckerPragerMaterial::new(lambda, mu)
         };
-        let mut sim = Simulation::new(config, spawn.clone())
+        let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(sand))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
         for _ in 0..300 {
@@ -4904,7 +4904,7 @@ fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
             min_volume_jacobian: min_j,
             ..DruckerPragerMaterial::new(lambda, mu)
         };
-        let mut sim = Simulation::new(config, spawn.clone())
+        let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(sand))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
 
@@ -4998,7 +4998,7 @@ fn diag_stress_test_all_real_interaction_scenarios() {
             .sum()
     };
     let run_scenario = |label: &str, apply: &dyn Fn(&mut Simulation, usize)| {
-        let mut sim = Simulation::new(config, spawn.clone())
+        let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(make_sand()))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
         for _ in 0..300 {
@@ -5511,7 +5511,7 @@ fn diag_push_weights_sweep_real_lift_within_ui_range() {
     };
 
     for push_weights in [3.0f32, 5.0, 7.0, 10.0] {
-        let mut sim = Simulation::new(config, spawn.clone())
+        let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(make_sand()))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
         for _ in 0..300 {
