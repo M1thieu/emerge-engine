@@ -27,6 +27,14 @@
 //! Examples that only need `cursor_to_grid` (not the full `Gfx` bootstrap)
 //! should point `#[path]` at `gui_common/coords.rs` instead of this file --
 //! see that submodule's own doc for why.
+//!
+//! `cursor_force` (push/pull interaction) is likewise NOT re-exported here,
+//! for the same reason: unlike `cursor_to_grid`, not every `Gfx`-using
+//! example needs it, and re-exporting it unconditionally would make every
+//! example that includes this file but doesn't use `CursorForce` fail
+//! `-D warnings` on dead code. Examples that need it point `#[path]` at
+//! `gui_common/cursor_force.rs` directly, alongside their own `gui_common`
+//! import -- see `sand_water_saturation.rs` for the pattern.
 
 use egui_wgpu::ScreenDescriptor;
 use std::sync::Arc;
@@ -34,9 +42,6 @@ use winit::window::Window;
 
 pub mod coords;
 pub use coords::cursor_to_grid;
-
-pub mod cursor_force;
-pub use cursor_force::CursorForce;
 
 /// The GPU + egui state every interactive example needs, identically
 /// constructed. Owns the surface/device/queue (real rendering) and the

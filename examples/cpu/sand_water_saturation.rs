@@ -1,7 +1,10 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../gui_common/cursor_force.rs"]
+mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+use cursor_force::CursorForce;
 
 /// Real, live demo of the moisture/cohesion coupling built this session:
 /// water poured onto a loose sand pile diffuses through the shared grid
@@ -232,13 +235,13 @@ struct State {
     rmb: bool,
     pouring: bool,
     poured_count: usize,
-    /// Real, shared cursor force -- see `gui_common::CursorForce`'s own doc
-    /// for why push/pull are separate strengths, not one shared value (the
-    /// real bug this scene originally shipped, then fixed, then extracted
-    /// so the other ~20 examples with the same hand-rolled pattern have a
+    /// Real, shared cursor force -- see `CursorForce`'s own doc for why
+    /// push/pull are separate strengths, not one shared value (the real
+    /// bug this scene originally shipped, then fixed, then extracted so
+    /// the other ~20 examples with the same hand-rolled pattern have a
     /// correct shared implementation to migrate onto instead of repeating
     /// the same mistake independently).
-    cursor_force: gui_common::CursorForce,
+    cursor_force: CursorForce,
     pour_seed: u32,
     // No gravity fudge field. This scene's materials come from real SI
     // through the dimensionally-correct conversion, so gravity stays at the
@@ -286,7 +289,7 @@ impl State {
             // LMB usage pattern, verified 2026-08-26), pull=7.0 (RMB needs
             // to overcome a packed pile's own confinement -- 3.0 gave 0.097
             // cells of real lift, nothing; 7.0 gives 5.94, clearly real).
-            cursor_force: gui_common::CursorForce::new(7.0, 3.0, 7.0),
+            cursor_force: CursorForce::new(7.0, 3.0, 7.0),
             pour_seed: 1000,
             frame: 0,
             fps_timer: std::time::Instant::now(),
