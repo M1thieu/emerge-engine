@@ -6,14 +6,30 @@ mod cursor_force;
 mod gui_common;
 use cursor_force::CursorForce;
 
-/// Real, live demo of the moisture/cohesion coupling built this session:
-/// water poured onto a loose sand pile diffuses through the shared grid
-/// (`ScalarDiffusionField`, PIC/FLIP-blended -- see that field's own doc)
-/// and sand's `cohesion_bonus_pa` hook responds with real, cited apparent
-/// cohesion (the "sandcastle effect" -- Hornbaker et al. 1997; Halsey &
-/// Levine 1998). The sand starts loose enough to genuinely slump under its
-/// own gravity; wetted regions should visibly hold together while dry
-/// regions keep flowing.
+/// Real, live demo of moisture diffusion driving a genuine phase transition
+/// into a real mixture material: water poured onto a loose sand pile
+/// diffuses through the shared grid (`ScalarDiffusionField`, PIC/FLIP-
+/// blended -- see that field's own doc), and each sand particle's own
+/// saturation moves it through TWO real, distinct regimes as it wets:
+///
+/// 1. Low saturation (0 to `PENDULAR_REGIME_CEILING`): sand's
+///    `cohesion_bonus_pa` hook applies real, cited apparent cohesion from
+///    capillary bridging between grains (the "sandcastle effect" --
+///    Hornbaker et al. 1997; Halsey & Levine 1998) -- damp sand holds a
+///    shape better than bone-dry sand.
+/// 2. Past that ceiling: a real phase transition (`add_phase_rule`, see
+///    `make_mixture`'s own doc) converts the particle into
+///    `GranularFluidMaterial` (Dunatunga & Kamrin 2015) -- capillary
+///    bridges between separate grains merge and break down at real
+///    saturation, and the material genuinely becomes a continuous
+///    granular-fluid mixture, not "the same sand with capped cohesion."
+///    This is the actual mixture material this scene exists to
+///    demonstrate, not the scalar-diffusion-only approximation an earlier
+///    version of this scene used.
+///
+/// The sand starts loose enough to genuinely slump under its own gravity;
+/// damp regions should visibly hold together, saturated regions should
+/// visibly flow like wet mud, dry regions keep flowing like dry sand.
 ///
 /// A poured water particle's own moisture is set directly to 1.0 at the
 /// moment it's spawned (see the pour handler) -- it IS water, a fact, not
@@ -29,7 +45,8 @@ use cursor_force::CursorForce;
 use emerge::render::{ColorMode, Renderer};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
-    DruckerPragerMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    DruckerPragerMaterial, GranularFluidMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
+    SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -49,6 +66,21 @@ const GRID: usize = 64;
 const DT: f32 = 0.01;
 const MAT_SAND: u32 = 0;
 const MAT_WATER: u32 = 1;
+const MAT_MIXTURE: u32 = 2;
+// Real saturation threshold shared between `make_sand`'s own
+// `pendular_regime_ceiling` and the phase rule below -- one source of
+// truth, not two literals that could drift apart. See `cohesion_bonus_pa`'s
+// own doc in sand.rs: pendular-regime capillary cohesion is a REAL but
+// EXPLICITLY BOUNDED model (Hornbaker et al. 1997; Halsey & Levine 1998),
+// honestly disclosed there as not modeling what real wet sand actually does
+// past this saturation -- capillary bridges between separate grains merge
+// and break down, and the material genuinely becomes a continuous granular-
+// fluid mixture (funicular/capillary/slurry regime), not "the same sand
+// with capped cohesion." This is exactly the gap `GranularFluidMaterial`
+// (Dunatunga & Kamrin 2015) exists to fill; the phase rule below hands off
+// to it at the exact point the pendular model's own doc says it stops
+// applying, not a separately guessed threshold.
+const PENDULAR_REGIME_CEILING: f32 = 0.3;
 // Real, disclosed cap on how much poured water can add beyond the initial
 // sand pile -- same reason `basic_sand.rs`'s own POUR_BUDGET exists: the
 // renderer's wgpu instance buffer is allocated once, not resizable live.
@@ -133,9 +165,72 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         // to force visible slumping.
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
-        pendular_regime_ceiling: 0.3,
+        pendular_regime_ceiling: PENDULAR_REGIME_CEILING,
         elastic_viscosity,
         ..DruckerPragerMaterial::new(lambda, mu)
+    }
+}
+
+/// Real granular-fluid mixture (Dunatunga & Kamrin 2015 -- Tait EOS +
+/// corotated elastic + SVD plasticity, see `GranularFluidMaterial`'s own
+/// module doc) for sand that has crossed `PENDULAR_REGIME_CEILING`. This is
+/// the actual mixture material this scene exists to demonstrate, replacing
+/// the earlier version's scalar-diffusion-only approximation (moisture just
+/// raised dry sand's apparent cohesion, with nothing modeling what happens
+/// once it's genuinely saturated).
+///
+/// `saturated_loam`'s own doc HONESTLY DISCLOSES its shape parameters
+/// (eos_stiffness, hardening_exponent, compression_limit) as real-law/
+/// hand-tuned-values, not measured geotechnical loam data -- kept as-is
+/// here rather than re-guessing new numbers, same standard the rest of this
+/// codebase holds unsourced-but-disclosed constants to.
+///
+/// `rest_density` is the one field overridden from the preset: `saturated_
+/// loam` hardcodes it to a scene-agnostic `1.0`, but this scene's other
+/// materials (see `make_sim`'s water) are built from `config.grid_density`,
+/// the solver's own real SI-derived reference -- using the preset's literal
+/// `1.0` here would silently reintroduce the exact reference-density
+/// mismatch class of bug this session's citation/render sweep spent all
+/// night finding and fixing elsewhere. Corrected to the real, scene-
+/// consistent value.
+///
+/// Elastic modulus halved from dry sand's own numerical `E` (Terzaghi's
+/// effective-stress principle: pore water pressure carries part of the
+/// total stress once saturated, so the load-bearing grain skeleton is
+/// genuinely softer -- directionally real, not an independently measured
+/// wet-sand modulus; disclosed as such).
+///
+/// Built as a struct literal rather than calling `saturated_loam(E, nu)`
+/// directly: that constructor runs plain `lame_from_young` internally, with
+/// no SI-to-grid conversion -- correct for a caller who's already in grid
+/// units, but this scene's other materials (see `make_sand`) go through
+/// `config.lame_from_si_physical_cfg`, the dimensionally-correct path. Real
+/// SI here, `lame_from_si_physical_cfg`-converted like everything else in
+/// this file, then the rest of `saturated_loam`'s own disclosed shape
+/// values (eos_stiffness/hardening_exponent/compression_limit/etc, and the
+/// anti-elastic-bounce viscosity terms scaled off THIS material's own
+/// correctly-converted mu/eos_stiffness) copied over unchanged.
+fn make_mixture(config: &SimConfig) -> GranularFluidMaterial {
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        SAND_YOUNG_MODULUS_PA * 0.5,
+        SAND_POISSON_RATIO,
+        SAND_DENSITY_KG_M3,
+    );
+    const EOS_STIFFNESS: f32 = 200.0;
+    GranularFluidMaterial {
+        mu,
+        lambda,
+        rest_density: config.grid_density,
+        eos_stiffness: EOS_STIFFNESS,
+        eos_power: 2.0,
+        hardening_exponent: 5.0,
+        compression_limit: 0.4,
+        stretch_limit: 0.01,
+        min_plastic_jacobian: 0.2,
+        max_plastic_jacobian: 3.0,
+        pressure_floor: 0.0,
+        dynamic_viscosity: 0.3 * mu,
+        bulk_viscosity: 0.5 * EOS_STIFFNESS,
     }
 }
 
@@ -177,7 +272,38 @@ fn make_sim() -> Simulation {
                 10.0,
             )),
         )
+        .with_material(MAT_MIXTURE, Box::new(make_mixture(&config)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
+        // The real mixture transition this scene exists to demonstrate --
+        // see PENDULAR_REGIME_CEILING's own doc for why this exact
+        // threshold, not a separately guessed one. Evaluated every substep
+        // (`add_phase_rule`'s own contract).
+        //
+        // KNOWN, DISCLOSED, UNFIXED ISSUE (2026-08-26/27): `apply_phase_
+        // transition` resets a transitioning particle's deformation_gradient
+        // to IDENTITY, which drops GranularFluidMaterial's own EOS pressure
+        // to exactly zero regardless of how much real compressive load that
+        // particle was carrying as sand the substep before -- a genuine
+        // stress discontinuity, confirmed and reproduced in a controlled
+        // diagnostic (`diag_phase_transition_under_load_causes_stress_
+        // discontinuity`, tests/physics_correctness.rs) and the direct
+        // cause of a real crash after ~104,737 frames of live interactive
+        // testing ("strict WC-MPM fluid could not advance the full
+        // requested dt" -- the shock propagated into nearby water's own
+        // strict CFL/retry check). A `GasMaterial`-style
+        // `init_particle_from_transition` fix was tried and made the
+        // measured spike WORSE, not better (see granular_fluid.rs's own
+        // reverted-attempt comment on `GranularFluidMaterial` for the full
+        // writeup) -- root cause not yet fully understood. This scene keeps
+        // the real mixture transition (that's the actual point of it) but
+        // a very long, heavy interactive session can still hit this crash.
+        .with_phase_rule(|p| {
+            if p.material_id == MAT_SAND && p.scalar_field > PENDULAR_REGIME_CEILING {
+                Some(MAT_MIXTURE)
+            } else {
+                None
+            }
+        })
 }
 
 fn make_moisture_field(grid_res: usize) -> ScalarDiffusionField {
@@ -275,6 +401,9 @@ impl State {
         );
         println!(
             "Color = moisture level (ByScalarField): dry sand stays dark, wet sand lights up."
+        );
+        println!(
+            "Past {PENDULAR_REGIME_CEILING:.1} saturation, sand really becomes a granular-fluid mixture (real phase transition, not just capped cohesion)."
         );
         Self {
             gfx,
