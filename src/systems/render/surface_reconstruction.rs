@@ -121,7 +121,8 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&WaveStepParams {
                 surface_res,
-                _pad: [0; 3],
+                wave_force_coeff: self.wave_force_coeff,
+                _pad: [0; 2],
             }),
         );
 
@@ -1215,7 +1216,8 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&WaveStepParams {
                 surface_res,
-                _pad: [0; 3],
+                wave_force_coeff: self.wave_force_coeff,
+                _pad: [0; 2],
             }),
         );
         queue.write_buffer(

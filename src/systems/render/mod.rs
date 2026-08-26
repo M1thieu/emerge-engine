@@ -275,6 +275,25 @@ pub struct Renderer {
     /// which is exactly why it should not be baked in.
     surface_res_multiplier: u32,
 
+    /// Propagating-wave excitation strength for the Surface path's Pass 2b
+    /// (real wave PDE, `∂²h/∂t² = c²∇²h`, CFL 1928-stable explicit scheme --
+    /// see `curvature_flow.wgsl`'s own doc). Defaults to `0.0` (inert): a
+    /// material's free surface only genuinely propagates waves like this if
+    /// it behaves like a real fluid, and that is a REAL, ALREADY-GENERIC
+    /// property this engine tracks (`MaterialModel::
+    /// owns_deformation_volume_state()`, the same test `sand_water_
+    /// saturation.rs`'s own moisture-source classification already uses) --
+    /// not a per-material-ID special case a caller has to remember to flip.
+    /// Real, correct use: derive this from that property at scene setup
+    /// (`registry.owns_deformation_volume_state(material_id)`), not a
+    /// hand-picked "is this demo about sand or water" guess. `0.35` is
+    /// this engine's own existing tuned value for real fluid scenes
+    /// (`basic_fluids.rs`) -- preserved exactly, now real opt-in instead
+    /// of an unconditional constant every material silently inherited,
+    /// including ones (a settled granular pile) with no physical
+    /// mechanism to support this kind of wave at all.
+    wave_force_coeff: f32,
+
     /// Width of ONE particle's surface splat, in physics-grid cells.
     /// Defaults to `1.0` = the full MPM quadratic B-spline support (1.5
     /// cells radius), which is exactly the previous behaviour.
@@ -522,6 +541,14 @@ pub struct Renderer {
     /// Specular Fresnel base reflectance R0 per material slot (see `OpticalTable`'s
     /// own doc for the real-but-bounded caveat).
     specular_r0: [f32; 16],
+    /// Real refractive index of the DRY solid/grain per material slot -- see
+    /// `set_refractive_index`'s own doc for the physical mechanism this
+    /// drives (pore-fluid index-matching darkening, generic across every
+    /// material and every scalar field, not sand-specific). `1.0` (air's own
+    /// index, the default) means "no solid contrast" -- `particle_color`
+    /// treats that as inert, byte-identical to before this field existed,
+    /// until a scene opts in with a real value.
+    refractive_index: [f32; 16],
 }
 
 impl Renderer {
@@ -644,6 +671,7 @@ impl Renderer {
             grid_reference_cell_mass: 1.0,
             curvature_iterations: CURVATURE_ITERATIONS,
             surface_res_multiplier: SURFACE_RES_MULTIPLIER,
+            wave_force_coeff: 0.0,
             splat_width_cells: 1.0,
             edge_reference_depth: DEFAULT_EDGE_REFERENCE_DEPTH,
             // Off by default: `> 0.0` is the sole gate on both the moments
@@ -745,6 +773,7 @@ impl Renderer {
             sigma_a: [[0.3f32; 3]; 16],
             sigma_s: [0.0f32; 16],
             specular_r0: [0.0f32; 16],
+            refractive_index: [1.0f32; 16],
         }
     }
 
@@ -851,6 +880,16 @@ impl Renderer {
     /// The surface-grid multiplier currently in use.
     pub fn surface_res_multiplier(&self) -> u32 {
         self.surface_res_multiplier
+    }
+
+    /// Set the Surface path's propagating-wave excitation strength -- see
+    /// `wave_force_coeff`'s own doc for the real mechanism and why this
+    /// should be DERIVED from `MaterialModel::owns_deformation_volume_
+    /// state()` at the call site, not hand-picked per scene. `0.0` (the
+    /// default) is inert; `0.35` is this engine's own real fluid-tuned
+    /// value (`basic_fluids.rs`).
+    pub fn set_wave_force_coeff(&mut self, coeff: f32) {
+        self.wave_force_coeff = coeff;
     }
 
     /// Set the per-particle surface splat width, in physics-grid cells
@@ -1009,6 +1048,37 @@ impl Renderer {
     pub fn set_specular_r0(&mut self, queue: &wgpu::Queue, slot: usize, r0: f32) {
         self.specular_r0[slot % 16] = r0;
         self.upload_optical_params(queue);
+    }
+
+    /// Real refractive index of `slot`'s DRY solid/grain (e.g. quartz sand
+    /// ~1.5, standard mineral optics) -- drives real pore-fluid index-
+    /// matching darkening in `ColorMode::ByPhysics`, generic across every
+    /// material and every scalar field a scene wires to `Particle::
+    /// scalar_field` (moisture, or any other saturating quantity), NOT a
+    /// sand-specific hardcoded effect.
+    ///
+    /// Real mechanism (2 independent sources, 2026-08-26): wet porous
+    /// materials darken because pore fluid's own refractive index (water:
+    /// 1.33, standard optics reference e.g. Hecht "Optics") sits closer to
+    /// the solid grain's index than air's (1.0) does, reducing the real
+    /// index MISMATCH that drives light scattering at each grain-fluid
+    /// interface -- "Measuring and Modeling the Effect of Surface Moisture
+    /// on the Spectral Reflectance of Coastal Beach Sand" (Sadeghi et al.,
+    /// PMC4226492) measures exactly this for real beach sand; Lagarde 2013
+    /// ("Water drop 3a: Physically based wet surfaces") is the standard
+    /// real-time-rendering treatment of the same mechanism. Scattering
+    /// power depends on the SQUARE of the index mismatch (standard optics
+    /// result), so the reduced-scattering ratio at full saturation is
+    /// `((n_solid - n_water) / (n_solid - n_air))^2` -- see `color.rs`'s
+    /// `particle_color` for where this is actually evaluated, interpolated
+    /// by the particle's own `scalar_field` in [0, 1].
+    ///
+    /// `1.0` (default, same as air) means zero contrast, i.e. inert: no
+    /// wetness-darkening for any material that never calls this. GPU render
+    /// path (`prep_instances.wgsl`) does not yet mirror this -- CPU-path
+    /// only for now, a real scoped follow-up, not silently half-done.
+    pub fn set_refractive_index(&mut self, slot: usize, n: f32) {
+        self.refractive_index[slot % 16] = n;
     }
 
     fn upload_optical_params(&self, queue: &wgpu::Queue) {

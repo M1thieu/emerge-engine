@@ -23,7 +23,29 @@ impl Renderer {
                 // approximation, Schlick Fresnel specular, blackbody emission).
                 let slot = p.material_id as usize % 16;
                 let sigma = self.sigma_a[slot];
-                let sigma_s = self.sigma_s[slot];
+                // Real pore-fluid index-matching darkening -- see
+                // `Renderer::set_refractive_index`'s own doc for the
+                // mechanism/citations. Generic: driven by whatever this
+                // particle's OWN `scalar_field` holds (moisture, or any
+                // other saturating quantity a scene wires up there), not a
+                // sand-specific special case. `refractive_index[slot]==1.0`
+                // (default) makes `contrast_dry==0`, guarded below to skip
+                // entirely -- byte-identical color for every material that
+                // never opts in.
+                let sigma_s = {
+                    let base = self.sigma_s[slot];
+                    let n_solid = self.refractive_index[slot];
+                    let contrast_dry = (n_solid - 1.0).abs();
+                    if contrast_dry > 1.0e-4 {
+                        const N_WATER: f32 = 1.33; // Hecht, "Optics" -- standard reference
+                        let saturation = p.scalar_field.clamp(0.0, 1.0);
+                        let n_fluid = 1.0 + saturation * (N_WATER - 1.0);
+                        let contrast_wet = (n_solid - n_fluid).abs();
+                        base * (contrast_wet / contrast_dry).powi(2)
+                    } else {
+                        base
+                    }
+                };
                 let j = det2(p.deformation_gradient).clamp(0.05, 4.0);
                 let od = 1.0 / j;
                 let transmitted = [

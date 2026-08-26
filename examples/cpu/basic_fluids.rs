@@ -26,6 +26,7 @@ use emerge::Particle;
 /// parameter.
 ///
 ///   cargo run --example basic_fluids --features render
+use emerge::materials::MaterialModel;
 use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
@@ -539,6 +540,17 @@ impl State {
         renderer.set_optical_params(&queue, MAT_WATER as usize, [0.85, 0.25, 0.07]);
         renderer.set_optical_scattering(&queue, MAT_WATER as usize, 0.03);
         renderer.set_specular_r0(&queue, MAT_WATER as usize, 0.02);
+        // Real, derived (not a per-scene guess): a material's free surface
+        // only genuinely propagates waves if it behaves like a real fluid --
+        // `owns_deformation_volume_state()` IS that real property (see
+        // `Renderer::set_wave_force_coeff`'s own doc), queried from the
+        // actual material TYPE (result is parameter-independent, so a cheap
+        // throwaway instance is a real, correct query, not a placeholder
+        // value standing in for anything). `0.35` is this engine's own
+        // tuned value for a real fluid's free-surface wave amplitude.
+        if NewtonianFluidMaterial::low_viscosity(1.0, 1.0).owns_deformation_volume_state() {
+            renderer.set_wave_force_coeff(0.35);
+        }
         // Mud + ice keep their own distinct look (both currently unspawned in
         // this water-only isolation, but registered, so their slots must not
         // silently inherit water's).
