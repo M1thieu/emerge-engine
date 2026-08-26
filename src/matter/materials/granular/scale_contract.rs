@@ -6,7 +6,7 @@
 //! for a material with microscale `d` (e.g. a grain diameter), real
 //! continuum mechanics requires `d << dx << L_macro`, where `L_macro` is the
 //! smallest macroscopic feature the scene needs to resolve (Wikipedia,
-//! "Representative elementary volume"; Kanatani & Chen, arXiv:cond-mat/0506385,
+//! "Representative elementary volume"; P. Evesque, arXiv:cond-mat/0506385,
 //! "Fluctuations, Correlation and Representative Elementary Volume in
 //! Granular Materials"). The real multiple of `d` needed for a valid REV is
 //! regime-dependent -- a few grain diameters at high inertial number (fast

@@ -194,6 +194,12 @@ impl ContactLawConfig {
         rolling_friction: f32,
     ) -> Self {
         let kn = young_modulus_pa * grain_radius_m;
+        // HONEST DISCLOSURE: unlike `kn` above (Cundall & Strack 1979), the 0.8 and
+        // 0.1 ratios below have no individual literature source -- a tangential/
+        // rolling stiffness genuinely below the normal stiffness is physically
+        // expected (shear/rolling contact compliance is always softer than direct
+        // normal compression), but these two specific ratios are a reasonable,
+        // undisclosed-until-now engineering choice, not a measured or cited value.
         let kt = 0.8 * kn;
         let kr = kn * grain_radius_m * grain_radius_m * 0.1;
         // Real ~60%-critical damping ratio, applied per-channel to each
