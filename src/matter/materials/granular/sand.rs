@@ -17,6 +17,90 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// window for this material -- see that module's own doc for the formula.
 pub const GRAIN_DIAMETER_M: f32 = 0.3e-3;
 
+/// Real surface tension of water at 20 C -- standard physical constant
+/// (CRC Handbook of Chemistry and Physics).
+pub const WATER_SURFACE_TENSION_N_M: f32 = 0.072;
+
+/// Real capillary cohesion stress (SI Pa) for wet sand, derived from
+/// grain-scale physics -- NOT a hand-picked magnitude. Replaces a flat
+/// `saturation_cohesion_coeff` constant with a formula: change the grain
+/// diameter or porosity and the cohesion recalculates correctly, instead of
+/// needing to be re-tuned by feel.
+///
+/// Two real, cited mechanisms, chained:
+/// 1. Capillary bridge FORCE between two grains in contact (Lian, Thornton
+///    & Adams 1993, "A theoretical study of the liquid bridge forces
+///    between two rigid spherical bodies," J. Colloid Interface Sci.
+///    161:138-147): `F_c = 2*pi*R*gamma*cos(theta)`.
+/// 2. Continuum tensile/cohesive stress from that grain-scale force (Rumpf
+///    1962): `sigma_T = (1-porosity)/porosity * F_c / (4*R^2)`, using
+///    Rumpf's own simplifying assumption `porosity * coordination_number
+///    ~= pi` -- eliminates needing an independently measured coordination
+///    number, standard in the granular-cohesion literature this file
+///    already cites (Hornbaker et al. 1997; Halsey & Levine 1998).
+///
+/// `porosity`: void fraction `e/(1+e)`, from the SAME cohesionless-soil
+/// void-ratio database `min_volume_jacobian` already uses -- 0.355 (dense,
+/// e_min=0.55) to 0.479 (loose, e_max=0.92). `contact_angle_deg`: water on
+/// clean quartz is close to 0 (fully wetting).
+///
+/// Returns real SI pascals. Convert with
+/// `SimConfig::stress_from_si_physical` before assigning to
+/// `saturation_cohesion_coeff` -- that field is in the SAME grid-stress
+/// units as `lambda`/`mu` (`cohesion_bonus_pa` divides it by `2*mu`
+/// directly, no conversion inside), not real pascals.
+pub fn capillary_cohesion_stress_pa(
+    grain_diameter_m: f32,
+    porosity: f32,
+    contact_angle_deg: f32,
+) -> f32 {
+    let r = grain_diameter_m * 0.5;
+    let f_c = 2.0
+        * std::f32::consts::PI
+        * r
+        * WATER_SURFACE_TENSION_N_M
+        * contact_angle_deg.to_radians().cos();
+    (1.0 - porosity) / porosity * f_c / (4.0 * r * r)
+}
+
+/// Real small-strain Kelvin-Voigt viscosity (SI Pa.s) for `elastic_viscosity`,
+/// derived from sand's own measured damping behavior -- NOT a hand-picked
+/// magnitude. Two independent sources bracket a small-strain damping ratio
+/// `zeta` of 0.5%-2% for clean sand (Seed & Idriss 1970, "Soil Moduli and
+/// Damping Factors for Dynamic Response Analyses"; Darendeli 2001 PhD
+/// dissertation modulus-reduction/damping curves, `D_min` for clean sand) --
+/// `damping_ratio` must be a value in that cited range, not an arbitrary
+/// tuning knob: measured live (2026-08-25) that this term's own viscous CFL
+/// bound (`DruckerPragerMaterial::timestep_bound`) roughly doubles substep
+/// count at the range's top (1%, 31->56 substeps/step on the
+/// `sand_water_saturation` scene) -- picking where in the cited range to
+/// sit is a real cost/damping tradeoff, not free, so left to the caller
+/// rather than baked in as a single constant.
+///
+/// Converted to an equivalent viscous damping coefficient via the standard
+/// geotechnical equivalent-linear relation `eta = 2*zeta*G/omega`, at the
+/// same 1 Hz reference frequency (`omega = 2*pi rad/s`) Seed & Idriss's own
+/// resonant-column tests used -- the standard reference frequency for this
+/// class of equivalent-viscous-damping conversion in soil dynamics.
+///
+/// `shear_modulus_pa`: real SI shear modulus (`E / (2*(1+nu))`), the SAME
+/// material's own elastic stiffness -- not an independent input, so a
+/// stiffer sand automatically gets proportionally more damping, matching
+/// how `zeta` is defined (relative to `G`) in the cited curves.
+///
+/// Returns real SI Pa.s. Convert with `SimConfig::visc_from_si_physical`
+/// before assigning to `elastic_viscosity` -- same convention as
+/// `capillary_cohesion_stress_pa`'s own doc for `saturation_cohesion_coeff`.
+pub fn small_strain_elastic_viscosity_pa_s(shear_modulus_pa: f32, damping_ratio: f32) -> f32 {
+    debug_assert!(
+        (0.005..=0.02).contains(&damping_ratio),
+        "damping_ratio {damping_ratio} outside the cited Seed & Idriss / Darendeli range for \
+         clean sand (0.5%-2%) -- not a real small-strain sand value"
+    );
+    const REFERENCE_OMEGA: f32 = 2.0 * std::f32::consts::PI;
+    2.0 * damping_ratio * shear_modulus_pa / REFERENCE_OMEGA
+}
+
 // Real, test-only diagnostic counters (2026-08-04): checking whether the NGF
 // rate-limiter cap (`project()`'s own `gamma.min(gamma_rate_limited)`)
 // actually BINDS in practice during a real collapse, and how severely, since
@@ -74,18 +158,34 @@ pub struct DruckerPragerMaterial {
     /// (shear) strain -- `project()`'s Case III preserves `trace(eps)` exactly. A
     /// near-hydrostatic impact (mostly compression, little shear) is judged "elastic"
     /// essentially always, regardless of how hard the impact is, because `gamma` stays
-    /// negative -- nothing in the published model caps pure volumetric compression, and
-    /// real sand cannot physically compact past its own void-ratio limit (~20-40%
-    /// volume change between loose and dense packing).
+    /// negative -- nothing in the published model caps pure volumetric compression.
+    /// The real closure for exactly this gap is a CAP surface (DiMaggio & Sandler
+    /// 1971, "Material Model for Granular Soils," J. Eng. Mech. Div. ASCE; formalized
+    /// in Resende & Martin 1985, "Formulation of Drucker-Prager Cap Model,"
+    /// J. Eng. Mech. 111(7)) -- a moving surface closing off the open end of the
+    /// Coulomb-Mohr cone at high confining pressure, so compression alone is also
+    /// bounded by the material's own packing limit.
     ///
     /// Same mechanism as `StomakhinMaterial`'s `min_plastic_jacobian`: a hard floor on
     /// the STORED singular values' product (the actual `deformation_gradient` written
     /// back), applied AFTER the shear-yield projection so friction/cohesion physics
     /// stay unaffected -- only engages when volumetric compression alone would exceed
-    /// sand's own packing limit. 0.6 matches Snow's default. The rescale itself floors
-    /// each axis individually first -- see `update_particle`'s own comment at the
-    /// point of use for why (a pure product-rescale can't recover an axis already at
-    /// zero under an extreme impact).
+    /// sand's own packing limit. `update_particle`'s own comment (at the point of use)
+    /// records that this already goes beyond a naive clamp: the excess velocity along
+    /// the compressed axis is zeroed too, a real inelastic (dissipative) event, not an
+    /// elastic rebound off the floor. A simplified, single-J-threshold stand-in for
+    /// DiMaggio-Sandler's full elliptical (p, q) cap, not a literal transcription --
+    /// disclosed as such, matching this file's own convention for the Cosserat term.
+    ///
+    /// 0.807 -- NOT 0.6 (Snow's default, previously copied over unsourced). Derived
+    /// from measured void-ratio limits for cohesionless soils: `(1+e_min)/(1+e_max)`
+    /// with the database mean `e_min=0.55, e_max=0.92` gives `1.55/1.92 = 0.8073`, a
+    /// ~19.3% maximum volumetric strain. At the old 0.6 (40% compression), an ordinary
+    /// push essentially never reached the floor, leaving compression purely elastic --
+    /// which is what read as sand "springing back" no matter how hard it's disturbed.
+    /// The rescale itself floors each axis individually first -- see
+    /// `update_particle`'s own comment at the point of use for why (a pure
+    /// product-rescale can't recover an axis already at zero under an extreme impact).
     pub min_volume_jacobian: f32,
     /// Compaction hardening: extra friction angle (radians) per unit of net
     /// volumetric COMPACTION at the moment of yielding (`project`'s own `trace`,
@@ -356,6 +456,26 @@ pub struct DruckerPragerMaterial {
     /// convention as `cosserat_length_scale_m`'s own doc. Irrelevant when
     /// `saturation_cohesion_coeff == 0.0`.
     pub pendular_regime_ceiling: f32,
+    /// Kelvin-Voigt viscous damping on the ELASTIC (sub-yield) response --
+    /// same mechanism `ViscoelasticMaterial::kirchhoff_stress` already
+    /// implements (Christensen 1982, "Theory of Viscoelasticity"; MPM
+    /// usage: Stomakhin et al. 2014 Sec.3). `tau_v = viscosity * D_dev`,
+    /// `D` the symmetric strain-rate from the APIC velocity gradient --
+    /// depends on STRAIN RATE, not velocity itself, so a rigid or
+    /// free-falling body (D=0, no internal deformation) is completely
+    /// unaffected. This is the structural reason it is safe where
+    /// grid-level Cundall damping (opposes velocity CHANGE, i.e. force,
+    /// including gravity's own) is not.
+    ///
+    /// Real, disclosed gap this closes: the Drucker-Prager cone (Klar
+    /// 2016) trims plastic strain only past yield -- below it, this
+    /// material has ZERO built-in dissipation, a perfect elastic spring.
+    /// Measured (2026-08-25): a firm push against a settled pile leaves
+    /// kinetic energy ringing for 500+ substeps with no built-in mechanism
+    /// to damp it, because most everyday disturbances never cross the
+    /// yield cone at all. 0.0 (default) = byte-identical to every existing
+    /// preset/scene.
+    pub elastic_viscosity: f32,
 }
 
 /// Bundled inputs for `DruckerPragerMaterial::project` -- grew past clippy's
@@ -391,7 +511,7 @@ impl DruckerPragerMaterial {
             volume_correction: 1.0,
             dilatancy_angle: 0.0,
             cohesion: 0.0,
-            min_volume_jacobian: 0.6,
+            min_volume_jacobian: 0.807,
             compaction_sensitivity: 0.0,
             ngf_enabled: false,
             static_friction_boost: 0.0,
@@ -403,6 +523,7 @@ impl DruckerPragerMaterial {
             cosserat_length_scale_m: GRAIN_DIAMETER_M,
             saturation_cohesion_coeff: 0.0,
             pendular_regime_ceiling: 0.3,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -750,9 +871,25 @@ impl MaterialModel for DruckerPragerMaterial {
     }
 
     /// Corotated elastic Kirchhoff stress: τ = 2µ(F−R)Fᵀ + λ(J−1)J·I
-    /// R is the rotation from 2D polar decomposition of F.
+    /// R is the rotation from 2D polar decomposition of F, plus a
+    /// Kelvin-Voigt viscous term on the deviatoric strain rate -- see
+    /// `elastic_viscosity`'s own doc. Zero cost, zero behavior change when
+    /// `elastic_viscosity == 0.0` (every existing preset/scene).
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
+        let elastic =
+            corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu);
+        if self.elastic_viscosity == 0.0 {
+            return elastic;
+        }
+        // Same formula as `ViscoelasticMaterial::kirchhoff_stress`'s own
+        // Kelvin-Voigt dashpot: tau_v = eta * D_dev, D the symmetric part
+        // of the APIC velocity gradient.
+        let c = particles.velocity_gradient[i];
+        let sym = c + c.transpose();
+        let d = sym * 0.5;
+        let trace = d.x_axis.x + d.y_axis.y;
+        let d_dev = d - Mat2::from_diagonal(Vec2::splat(trace * 0.5));
+        elastic + self.elastic_viscosity * d_dev
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -1065,9 +1202,9 @@ impl MaterialModel for DruckerPragerMaterial {
         _hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             self.lambda,
             self.mu,
             1.0,
@@ -1075,7 +1212,26 @@ impl MaterialModel for DruckerPragerMaterial {
             MIN_J,
             cell_width,
             material_cfl,
-        )
+        );
+        // Same explicit-viscous-diffusion stability bound
+        // `ViscoelasticMaterial::timestep_bound` already uses for its own
+        // Kelvin-Voigt term: without this, `elastic_viscosity` adds real
+        // stiffness the substep selector never sees, and the solver can
+        // pick a dt too large for it -- measured directly (2026-08-25):
+        // elastic_viscosity=1000 with no bound made peak speed jump from
+        // 12 to 365 instead of damping.
+        let viscous_dt = if self.elastic_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.elastic_viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 }
 
