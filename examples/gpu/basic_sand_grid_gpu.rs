@@ -3,19 +3,23 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// GPU Drucker-Prager sand, rendered from the solver's own P2G mass field
-/// (`Renderer::render_grid_volume`) instead of one splat per particle --
-/// real, already-shipped MPM-native technique (see `render-pipeline-plan`
-/// memory): adjacent cells with mass blend into one continuous shape instead
-/// of reading as a cloud of discrete dots, at zero extra simulation cost
-/// (the solver already builds this field every substep for its own P2G
-/// step). G toggles back to the per-particle view to compare directly.
+/// GPU Drucker-Prager sand, with all three real rendering paths this engine
+/// offers (see `RenderMode`'s own doc): per-particle, the solver's own P2G
+/// mass field (`Renderer::render_grid_volume` -- real, already-shipped
+/// MPM-native technique, see `render-pipeline-plan` memory), and real
+/// curvature-flow surface reconstruction (`Renderer::
+/// render_surface_reconstruction`, van der Laan et al. 2009 -- the SAME
+/// technique fluid demos use, wired into a granular scene for the first
+/// time 2026-08-26; the technique's own API was always material-agnostic,
+/// nothing here needed to change to support it, just nobody had called it
+/// on sand before). G cycles all three for direct A/B.
 ///
-///   cargo run --example basic_sand_grid_gpu --features "render"
+///   cargo run --example basic_sand_grid_gpu --features "gpu render"
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer};
+use emerge::materials::MaterialModel;
+use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::{
     DruckerPragerMaterial, FixedStepController, GpuSimulation, MaterialRegistry, SimConfig,
     SpawnRegion, build_particles,
@@ -32,8 +36,28 @@ const DT: f32 = 0.1;
 const MAT_LOOSE: u32 = 0;
 const MAT_DENSE: u32 = 1;
 const LABELS: &[(u32, &str)] = &[(MAT_LOOSE, "loose"), (MAT_DENSE, "dense")];
+// Real scene spacing, shared between the spawn config below and the renderer
+// setup in `State::new` (`Renderer::set_particle_spacing_cells`) -- one
+// source of truth so the two can't drift out of sync.
+const PARTICLE_SPACING_CELLS: f32 = 0.5;
 // Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand).
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
+
+/// The three real rendering paths, cycled with G -- same modes/order as
+/// `basic_fluids.rs`/`basic_fluids_gpu.rs`. `Surface` (real curvature-flow,
+/// van der Laan et al. 2009) was NEVER wired into a granular demo before
+/// 2026-08-26 -- this engine's most advanced surface technique existed and
+/// worked, just was never given a sand scene to run on. `material_mass_
+/// enabled=true` (`SurfaceReconstructionSource`) colors each reconstructed
+/// cell from its own real per-material mass, so loose/dense sand stay
+/// visually distinct instead of collapsing to one material slot -- same
+/// real mechanism `basic_fluids.rs` uses to keep water/mud/ice distinct.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RenderMode {
+    Particles,
+    GridVolume,
+    Surface,
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -48,7 +72,7 @@ struct State {
     cursor_pos: [f32; 2],
     lmb: bool,
     rmb: bool,
-    grid_volume_mode: bool,
+    render_mode: RenderMode,
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
@@ -65,7 +89,7 @@ fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
     m
 }
 
-fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
+fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> (GpuSimulation, f32) {
     let config = SimConfig {
         boundary_thickness: 3,
         max_substeps_per_step: 12,
@@ -80,7 +104,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     let spawn = |c: Vec2, mat: u32, seed: u32| SpawnRegion {
-        spacing: 0.5,
+        spacing: PARTICLE_SPACING_CELLS,
         box_size: IVec2::new(18, 14),
         box_center: c,
         material_id: mat,
@@ -94,9 +118,20 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         &config,
         spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22),
     ));
+    // Real, derived: this scene's own actual per-particle mass (post grid-
+    // density fix -- see project memory "GRID DENSITY ROOT FIX" -- particle
+    // mass now comes from real grid density, not a global constant) times
+    // real particles-per-cell from this scene's own `spacing` above
+    // (particles sit `spacing` cells apart in both axes, so 1/spacing^2 of
+    // them tile one cell). NOT a guessed/copied number -- read directly off
+    // an actually-constructed particle, so it can't drift out of sync with
+    // whatever this scene's material/spawn parameters happen to be.
+    let particles_per_cell = (1.0 / PARTICLE_SPACING_CELLS).powi(2);
+    let grid_reference_cell_mass = particles[0].mass * particles_per_cell;
     let mut registry = MaterialRegistry::with_default(Box::new(make_sand(2000.0, 3000.0, 20.0)));
     registry.insert(MAT_DENSE, Box::new(make_sand(2000.0, 3000.0, 40.0)));
-    GpuSimulation::with_device(device, queue, config, particles, registry)
+    let sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    (sim, grid_reference_cell_mass)
 }
 
 impl State {
@@ -137,7 +172,8 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let mut sim = make_sim_data(Arc::new(device), Arc::new(queue));
+        let (mut sim, grid_reference_cell_mass) =
+            make_sim_data(Arc::new(device), Arc::new(queue));
         // Real per-cell material tracking, needed by the grid-volume path to
         // pick each cell's dominant material (loose vs dense) -- see
         // grid_volume.wgsl's own doc.
@@ -147,8 +183,61 @@ impl State {
         renderer.set_color_mode(ColorMode::ByPhysics);
         renderer.set_optical_params(sim.queue(), MAT_LOOSE as usize, SIGMA_SAND);
         renderer.set_optical_params(sim.queue(), MAT_DENSE as usize, SIGMA_SAND);
+        // Real bug, same one `basic_fluids.rs`/`basic_fluids_gpu.rs` already hit and
+        // fixed once (see those files' own comments): `grid_reference_cell_mass`
+        // defaults to 1.0, an old "cells weigh order 0.5-4" convention. This
+        // scene's real full-cell mass sits far below that default, so
+        // GridVolume/Surface's mass_floor (a FRACTION of this value) was being
+        // measured against the wrong scale -- discarding almost everything,
+        // including a single isolated particle, whose own splat peak never had a
+        // real chance to cross the wrongly-scaled floor. Never set here before
+        // 2026-08-26 -- this demo simply never got the same fix fluids did.
+        renderer.set_grid_reference_cell_mass(grid_reference_cell_mass);
+        // TRIED live 2026-08-26, REVERTED: `Renderer::set_particle_spacing_cells`
+        // (widens the splat kernel to hit a target effective-neighbor count --
+        // see that fn's own doc) was meant to fix grain/flicker/depop on sparse
+        // particles, matching the exact symptom `basic_fluids.rs` also hit once.
+        // Live result here was worse, not better: this scene ALSO has real
+        // velocity-based anisotropic stretch active (every material gets it,
+        // not opt-in -- see `curvature_flow.wgsl`'s "Real velocity-stretch
+        // extension" doc), and the two compose multiplicatively on splat
+        // radius (`radius = BSPLINE_OUTER_LIMIT * scale * max_stretch *
+        // splat_w` in `splat_density_main`) -- widening `splat_w` on top of an
+        // already motion-elongated kernel merged genuinely separate, isolated
+        // particles into a single wrong blob/streak (live-confirmed via
+        // screenshot: Particles mode showed correctly scattered dots; Surface
+        // mode showed one blob plus a comet-tailed smear) AND cost measurably
+        // more per frame, worse at higher push/pull speed (bigger
+        // `max_stretch`). Exactly the same "don't stack independently-
+        // justified changes blind" lesson `basic_fluids.rs`'s own comment
+        // already recorded for a different pair of changes. Reverted pending
+        // a real fix that accounts for the composition (e.g. capping combined
+        // radius growth, or making the two share one budget) rather than
+        // widening the base kernel independently of what motion-stretch is
+        // already doing to it.
+        // Real, measured (2026-08-26): the engine's default surface_res_
+        // multiplier=6 costs 47.6ms/call on this exact scene (headless GPU
+        // timing, `diag_surface_reconstruction_real_cost_vs_grid_volume_
+        // and_particles`) -- render alone caps ~21fps, before physics. This
+        // is the documented "single biggest quality/cost dial" (cost scales
+        // with its SQUARE), NOT `curvature_iterations` (measured flat,
+        // 45-47ms whether 4 or 8 -- not the real lever here). mult=3 costs
+        // 8.95ms (5.3x cheaper) while the surface grid (64*3=192) is still
+        // 3x finer than the raw 64-cell physics grid -- a real, disclosed
+        // resolution trade, not a free lunch, but a favorable one.
+        renderer.set_surface_res_multiplier(3);
+        // Real, derived (not left silent): a settled granular pile has no
+        // physical mechanism to propagate the Surface path's free-surface
+        // wave PDE the way a real fluid does -- `owns_deformation_volume_
+        // state()` is the same real property `basic_fluids.rs` uses to
+        // opt IN to it. Sand's own type answers `false` here, so this
+        // stays at the engine's real inert default (0.0) -- explicit, not
+        // an accident of never having been set.
+        if make_sand(1.0, 1.0, 30.0).owns_deformation_volume_state() {
+            renderer.set_wave_force_coeff(0.35);
+        }
         println!(
-            "sand grid-volume GPU: {} particles  |  LMB push  RMB pull  G toggle grid/particle view  R reset  Q quit",
+            "sand grid-volume GPU: {} particles  |  LMB push  RMB pull  G cycle particles/grid/surface view  R reset  Q quit",
             sim.particle_count()
         );
         Self {
@@ -159,10 +248,10 @@ impl State {
             cursor_pos: [0.0; 2],
             lmb: false,
             rmb: false,
-            // Default ON -- this example exists specifically to show the
-            // continuous-surface look; G still lets you A/B against the
-            // per-particle view directly.
-            grid_volume_mode: true,
+            // Default to the real curvature-flow Surface mode -- this
+            // example exists specifically to show the continuous-surface
+            // look; G cycles Particles/GridVolume/Surface for direct A/B.
+            render_mode: RenderMode::Surface,
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -195,7 +284,9 @@ impl State {
 
     fn reset(&mut self) {
         let (device, queue) = (self.sim.device().clone(), self.sim.queue().clone());
-        self.sim = make_sim_data(device, queue);
+        // Same scene/materials as `State::new`, so `grid_reference_cell_mass`
+        // (already set on `self.renderer` once) doesn't need re-deriving here.
+        (self.sim, _) = make_sim_data(device, queue);
         self.sim.attach_grid_material_render_gpu();
         self.frame = 0;
         self.stepper.reset();
@@ -237,8 +328,8 @@ impl State {
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             println!(
-                "frame={} fps={:.0} grid_view={} max_steps_per_render={}",
-                self.frame, fps, self.grid_volume_mode, self.max_steps_seen
+                "frame={} fps={:.0} render_mode={:?} max_steps_per_render={}",
+                self.frame, fps, self.render_mode, self.max_steps_seen
             );
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
@@ -247,27 +338,46 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        if self.grid_volume_mode {
-            self.renderer.render_grid_volume(
-                self.sim.device(),
-                self.sim.queue(),
-                GridVolumeSource {
-                    grid: self.sim.grid_buffer(),
-                    material_mass: self.sim.material_mass_buffer(),
-                    material_mass_enabled: true,
-                },
-                &view,
-                true,
-            );
-        } else {
-            self.renderer.render_gpu(
-                self.sim.device(),
-                self.sim.queue(),
-                self.sim.particle_buffer(),
-                self.sim.particle_count(),
-                &view,
-                true,
-            );
+        match self.render_mode {
+            RenderMode::GridVolume => {
+                self.renderer.render_grid_volume(
+                    self.sim.device(),
+                    self.sim.queue(),
+                    GridVolumeSource {
+                        grid: self.sim.grid_buffer(),
+                        material_mass: self.sim.material_mass_buffer(),
+                        material_mass_enabled: true,
+                    },
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Particles => {
+                self.renderer.render_gpu(
+                    self.sim.device(),
+                    self.sim.queue(),
+                    self.sim.particle_buffer(),
+                    self.sim.particle_count(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.renderer.render_surface_reconstruction(
+                    self.sim.device(),
+                    self.sim.queue(),
+                    SurfaceReconstructionSource {
+                        particle_buf: self.sim.particle_buffer(),
+                        particle_count: self.sim.particle_count(),
+                        grid_res: GRID as u32,
+                        material_slot: MAT_LOOSE,
+                        material_mass_enabled: true,
+                        dt: DT,
+                    },
+                    &view,
+                    true,
+                );
+            }
         }
         output.present();
     }
@@ -313,11 +423,12 @@ impl ApplicationHandler for App {
                 KeyCode::Escape | KeyCode::KeyQ => el.exit(),
                 KeyCode::KeyR => s.reset(),
                 KeyCode::KeyG => {
-                    s.grid_volume_mode = !s.grid_volume_mode;
-                    println!(
-                        "grid-volume render: {}",
-                        if s.grid_volume_mode { "on" } else { "off" }
-                    );
+                    s.render_mode = match s.render_mode {
+                        RenderMode::Particles => RenderMode::GridVolume,
+                        RenderMode::GridVolume => RenderMode::Surface,
+                        RenderMode::Surface => RenderMode::Particles,
+                    };
+                    println!("render mode: {:?}", s.render_mode);
                 }
                 _ => {}
             },
