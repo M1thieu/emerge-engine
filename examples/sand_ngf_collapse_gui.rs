@@ -98,9 +98,16 @@ fn ngf_pressure_and_ratio(p: &Particle) -> (f32, f32) {
 }
 
 fn ngf_config() -> GranularFluidityConfig {
+    use emerge::materials::utils::lame_from_young;
     const EFFECTIVE_GRAIN_DIAMETER_M: f32 = 0.008;
     const GRAIN_DENSITY_KG_M3: f32 = 2583.0;
     let pressure_floor_pa = GRAIN_DENSITY_KG_M3 * 9.81 * EFFECTIVE_GRAIN_DIAMETER_M;
+    // Real bistable/hysteretic extension (2026-08-19, Mowlavi & Kamrin
+    // 2021) -- see `sand_ngf_tests.rs`'s own `ngf_config` for the full
+    // real citation/derivation of every value below; kept identical here
+    // so this live demo matches the headless-verified recipe exactly.
+    let mu_2 = (FRICTION_DEG + 12.0).to_radians().tan();
+    let (_, elastic_mu) = lame_from_young(YOUNG_MODULUS_PA, POISSON_RATIO);
     GranularFluidityConfig {
         mu_s: 0.70,
         grain_diameter_m: EFFECTIVE_GRAIN_DIAMETER_M,
@@ -109,6 +116,11 @@ fn ngf_config() -> GranularFluidityConfig {
         b: 0.278,
         t0_s: 1.0e-4,
         pressure_floor_pa,
+        mu_2,
+        hysteresis_amplitude: 0.08, // recalibrated to this engine's real measured mu range, not the paper's own DEM value -- see sand_ngf_tests.rs's own ngf_config
+        hysteresis_rate: 50.0,
+        hysteresis_stiffness_exponent: 0.25,
+        contact_stiffness_pa: elastic_mu,
     }
 }
 

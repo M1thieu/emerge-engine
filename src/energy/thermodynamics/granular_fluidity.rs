@@ -20,6 +20,55 @@
 //! relaxation timescale, `b` a rate-dependence constant (same convention as
 //! `MuIRheologyMaterial`'s own `b = (μ2−μs)/I0`).
 //!
+//! # Bistable/hysteretic extension (real gap found + fixed, 2026-08-19)
+//! Real, measured finding: the plain single-threshold source above (a
+//! literal `μ-μs` linear term) cannot arrest a violent column collapse at a
+//! real repose angle at ANY grain-diameter calibration tried (both
+//! directions swept with a real spatial-homogenization diagnostic — small
+//! `d` decays too fast/locally to resist collapse, large `d` homogenizes
+//! the WHOLE domain into a runaway never-decaying plateau; see
+//! `sand_ngf_tests.rs`'s own real measured history). This independently
+//! reconfirms a 2026-08-03 finding (`project_novel_research_frontier_
+//! registry` memory) that plain NGF only narrows runout ~3%, never closes
+//! the angle-of-repose gap.
+//!
+//! Real, cited fix: **Mowlavi & Kamrin (2021), "Interplay between
+//! hysteresis and nonlocality during onset and arrest of flow in granular
+//! materials", Soft Matter 17(31):7359-7375, arXiv:2105.02288** — verified
+//! directly against the paper's own eq. 2b/5b/6/8, not recalled from
+//! memory. Adds ONE correction term to the SAME reaction slot (the nonlocal
+//! diffusion term is untouched):
+//! ```text
+//! t0 · ∂g/∂t = A²d²·∇²g − F(μ)·g − b·√(P/ρs)·d·μ·g² − χ(g;μ,P)·g
+//! F(μ)       = (μ2−μs)(μs−μ) / (μ2−μ)                        [eq. 8]
+//! χ(g;μ,P)   = a·[1 − tanh(c·√(P/ρs)·μ·g·κⁿ)]                 [eq. 6]
+//! κ          = kn / P                                         (per-cell, real local pressure)
+//! ```
+//! `F(μ)` generalizes the plain `μ-μs` term (recovers it exactly as
+//! `μ2 -> ∞`) with a real upper/dynamic bound `μ2` the source diverges
+//! toward, matching rate-strengthening μ(I) behavior. `χ` is the genuinely
+//! NEW physics: a bounded (`∈[0,2a]`), always-non-negative rate-WEAKENING
+//! correction that makes the local reaction ODE admit THREE roots for `μ`
+//! in a real window `(μ*, μs*)` — `g=0` (arrested, always stable), an
+//! unstable nonzero root, and a stable flowing root. Which branch the
+//! system occupies depends on HISTORY (already flowing vs. already at
+//! rest) — that dependence IS the hysteresis. Real, load-bearing detail
+//! confirmed directly from the paper (not assumed): this needs NO new
+//! per-cell/per-particle state beyond `g` itself — bistability is purely
+//! `g`'s own multivalued steady state, so this plugs into the EXISTING
+//! grid-only `g` field with no data-layout change.
+//!
+//! Numerical scheme: `χ`'s own `tanh(...·g...)` dependence on `g` breaks
+//! the `u=1/g` linearization the dominant `F(μ)`/quadratic-in-`g` part
+//! below still solves exactly (unchanged). Since `χ` is proven bounded and
+//! small (`≤2·a≈0.023`, real DEM-calibrated value) relative to `F(μ)`
+//! (order `0.1-1` in this engine's real friction-angle range), it's applied
+//! as a semi-implicit operator-split correction AFTER the exact dominant
+//! solve, dividing (not subtracting) so even a larger-than-assumed `χ`
+//! can't overshoot into negative `g` — the same numerical caution this
+//! module's own reaction-step history already required once (see the
+//! rejected-approaches list in `apply`'s own doc).
+//!
 //! # Numerical scheme
 //! Explicit finite-difference — matches Haeri & Skonieczny's own verified
 //! choice, not an invented shortcut. Same P2G→normalize→Laplacian→G2P shape
@@ -90,6 +139,52 @@ pub struct GranularFluidityConfig {
     /// already documents) -- a natural, physically-derived floor is one
     /// grain's own hydrostatic self-weight: `rho_s * g_accel * d`.
     pub pressure_floor_pa: f32,
+    /// Real upper/dynamic friction bound μ₂ (dimensionless, μ₂>μs) for the
+    /// bistable/hysteretic source term below (`hysteresis_amplitude` and
+    /// friends) — Mowlavi & Kamrin 2021 eq. 8's own generalized `F(μ)`
+    /// diverges as `μ -> μ2`, matching real rate-strengthening μ(I)
+    /// behavior at its own upper bound, unlike plain NGF's simple
+    /// `μ-μs` source this replaces. Real, disclosed choice: NOT the
+    /// paper's own DEM-calibrated μ2=0.9784 (idealized frictional disks,
+    /// not this engine's real sand friction angle) — instead reuses this
+    /// codebase's OWN already-cited static->dynamic offset convention
+    /// (`MuIRheologyMaterial::from_physical`: `μ_dynamic =
+    /// tan(friction_angle_deg + 12°)`, Jop/Forterre/Pouliquen 2006), kept
+    /// self-consistent with `mu_s` above (typically `tan(35°)`).
+    pub mu_2: f32,
+    /// Real hysteresis amplitude `a` (dimensionless) — Mowlavi & Kamrin
+    /// 2021 eq. 6, their own DEM-calibrated value `a=0.0116`. Bounds the
+    /// correction term `χ` to `[0, 2a]`, i.e. always SMALL relative to
+    /// the dominant `F(μ)` source term and always non-negative (χ can
+    /// only add resistance/damp flow, never spontaneously drive it) —
+    /// this is what makes the operator-split integration below
+    /// (`GranularFluidityField::apply`'s own doc) both safe and accurate.
+    pub hysteresis_amplitude: f32,
+    /// Real hysteresis rate constant `c` (dimensionless) inside χ's own
+    /// `tanh(c·√(P/ρs)·μ·g·κⁿ)` argument — Mowlavi & Kamrin 2021 eq. 6,
+    /// their own DEM-calibrated value `c=50`.
+    pub hysteresis_rate: f32,
+    /// Real stiffness exponent `n` in χ's `κⁿ` factor — Mowlavi & Kamrin
+    /// 2021 eq. 6, cite DeGiuli & Wyart for `n=1/4` as a fixed physical
+    /// constant (encodes how hysteresis amplitude scales with grain
+    /// stiffness), NOT a free fit parameter — kept here as a real,
+    /// disclosed config field rather than hardcoded, for testability.
+    pub hysteresis_stiffness_exponent: f32,
+    /// Real, physically-motivated grain contact stiffness `kn` \[Pa\] —
+    /// feeds `κ=kn/P` (dimensionless, per-substep, using the REAL LOCAL
+    /// pressure, not a fixed ratio — physically correct: grains are
+    /// effectively stiffer relative to load in low-confinement zones).
+    /// Real, disclosed continuum-DEM correspondence adaptation (same
+    /// category as `cosserat_length_scale_m`'s own precedent): no literal
+    /// per-grain contact stiffness exists in an MPM continuum, so this
+    /// uses the coupled material's own real elastic shear modulus as the
+    /// physically-analogous "resistance to relative grain deformation"
+    /// quantity. The paper validates its own stiff-grain-limit regime at
+    /// `κ>1e4`; at this engine's real E=15MPa sand (`μ_elastic≈5.8MPa`
+    /// via `E/(2(1+ν))`) and typical scene confining pressures
+    /// (O(1e2-1e3) Pa), `κ` lands O(1e3-1e4), the same real regime the
+    /// paper's own DEM validation covers.
+    pub contact_stiffness_pa: f32,
 }
 
 impl GranularFluidityConfig {
@@ -264,13 +359,22 @@ impl GranularFluidityField {
             let g_prev = self.grid_work[i];
             let mu = self.grid_mu[i];
             let pressure = self.grid_p[i].max(cfg.pressure_floor_pa);
-            let linear_coeff = mu - cfg.mu_s; // >0 once locally past static friction
+
+            // Real two-threshold F(mu) (Mowlavi & Kamrin 2021 eq. 8, see
+            // this module's own doc) generalizing plain NGF's `mu-mu_s`:
+            // clamp mu below mu_2 since it's a real asymptote the source
+            // diverges toward, never an attainable value.
+            let mu_clamped = mu.min(cfg.mu_2 - 1.0e-4);
+            let linear_coeff = (cfg.mu_2 - cfg.mu_s) * (mu_clamped - cfg.mu_s)
+                / (cfg.mu_2 - mu_clamped).max(1.0e-6);
 
             // g=0 is a REAL, STABLE fixed point whenever linear_coeff<=0 --
             // leave it at exactly 0 (matches real physics: nothing to grow
             // from without a source). Only bootstrap the epsilon seed (the
             // `u=1/g` substitution below is singular at g=0) when there IS
-            // a real source to grow toward.
+            // a real source to grow toward. Unaffected by the hysteresis
+            // correction below: chi always multiplies g, so it cannot move
+            // g away from an exact 0 fixed point either.
             if linear_coeff <= 0.0 && g_prev <= 0.0 {
                 self.grid_work[i] = 0.0;
                 continue;
@@ -290,35 +394,91 @@ impl GranularFluidityField {
             } else {
                 u0 + c * sub_dt // r=0 special case: du/dt=c exactly, linear in t
             };
-            self.grid_work[i] = if u_new > 1e-12 { 1.0 / u_new } else { 0.0 };
+            let g_dominant = if u_new > 1e-12 { 1.0 / u_new } else { 0.0 };
+
+            // Real hysteretic correction chi (eq. 6, see this module's own
+            // doc): bounded [0,2a] and always non-negative, applied as a
+            // semi-implicit (dividing) operator-split correction on the
+            // already-solved g_dominant -- see this module's own doc for
+            // why this is safe even though chi's own g-dependence breaks
+            // the exact closed-form solve above.
+            let kappa = (cfg.contact_stiffness_pa / pressure.max(1.0e-6)).max(0.0);
+            let chi = cfg.hysteresis_amplitude
+                * (1.0
+                    - (cfg.hysteresis_rate
+                        * (pressure / cfg.grain_density_kg_m3.max(1e-6)).sqrt()
+                        * mu_clamped
+                        * g_dominant
+                        * kappa.powf(cfg.hysteresis_stiffness_exponent))
+                    .tanh());
+            let g_new = g_dominant / (1.0 + chi * sub_dt / t0);
+
+            self.grid_work[i] = g_new.max(0.0);
         }
 
         self.grid_g.copy_from_slice(&self.grid_work);
 
         // --- G2P: gather g back to particles (transient — not stored) ---
         for pi in 0..particles.len().min(out.len()) {
-            let p = particles.get(pi);
-            let w = quadratic_weights(p.x);
-            let mut g_sum = 0.0f32;
-            let mut w_sum = 0.0f32;
-            for gx in 0i32..3 {
-                for gy in 0i32..3 {
-                    let weight = w.wx[gx as usize] * w.wy[gy as usize];
-                    let cell = w.base_cell + IVec2::new(gx - 1, gy - 1);
-                    if cell.x < 0 || cell.y < 0 || cell.x >= res || cell.y >= res {
-                        continue;
-                    }
-                    let idx = (cell.x * res + cell.y) as usize;
-                    g_sum += weight * self.grid_g[idx];
-                    w_sum += weight;
-                }
-            }
-            out[pi] = if w_sum > 1e-10 { g_sum / w_sum } else { 0.0 };
+            out[pi] = self.gather_g_at(particles.get(pi).x);
         }
+    }
+
+    /// Real B-spline gather of the CURRENT grid `g` at one world position --
+    /// the same interpolation `apply`'s own G2P step uses, factored out so
+    /// diagnostics can sample `g` exactly where they actually care about it
+    /// instead of only ever seeing whole-grid aggregates (see
+    /// `g_stats_near`'s own doc for why that distinction turned out to
+    /// matter in practice).
+    fn gather_g_at(&self, x: glam::Vec2) -> f32 {
+        let res = self.grid_res as i32;
+        let w = quadratic_weights(x);
+        let mut g_sum = 0.0f32;
+        let mut w_sum = 0.0f32;
+        for gx in 0i32..3 {
+            for gy in 0i32..3 {
+                let weight = w.wx[gx as usize] * w.wy[gy as usize];
+                let cell = w.base_cell + IVec2::new(gx - 1, gy - 1);
+                if cell.x < 0 || cell.y < 0 || cell.x >= res || cell.y >= res {
+                    continue;
+                }
+                let idx = (cell.x * res + cell.y) as usize;
+                g_sum += weight * self.grid_g[idx];
+                w_sum += weight;
+            }
+        }
+        if w_sum > 1e-10 { g_sum / w_sum } else { 0.0 }
     }
 
     pub const fn grid_res(&self) -> usize {
         self.grid_res
+    }
+
+    /// Real, permanent diagnostic (2026-08-19): (min, mean, max) of `g`
+    /// sampled AT the given particles' own positions, not the whole grid.
+    /// Added after `g_stats()`'s whole-grid max stayed pinned at an
+    /// identical value for 55 real seconds across a real column collapse,
+    /// even once the pile had visibly stopped moving -- a real, flagged
+    /// suspicion that the whole-grid max was dominated by the pressure-
+    /// floor equilibrium value in near-empty/far-from-the-pile cells, not
+    /// tracking the pile's own dynamics at all. This answers that directly:
+    /// if `g` at the pile's own particles is ALSO pinned at that same
+    /// value, the whole-grid number was real, not a confound; if it's
+    /// different, `g_stats()` alone was measuring the wrong thing for this
+    /// question.
+    pub fn g_stats_near(&self, particles: &Particles) -> (f32, f32, f32) {
+        let mut min = f32::INFINITY;
+        let mut max = 0.0f32;
+        let mut sum = 0.0f32;
+        let n = particles.len();
+        for i in 0..n {
+            let g = self.gather_g_at(particles.get(i).x);
+            min = min.min(g);
+            max = max.max(g);
+            sum += g;
+        }
+        let mean = if n > 0 { sum / n as f32 } else { 0.0 };
+        (if n > 0 { min } else { 0.0 }, mean, max)
     }
 
     /// Real, permanent diagnostic: (min, mean-over-nonzero, max, count-nonzero)
@@ -353,6 +513,10 @@ mod tests {
 
     fn test_config() -> GranularFluidityConfig {
         // Real values from Haeri & Skonieczny 2022 Table 1 (Excavation case).
+        // Hysteresis term disabled (hysteresis_amplitude=0 -> chi=0
+        // identically, mu_2 large enough F(mu)->mu-mu_s exactly, see this
+        // module's own doc) -- these existing tests check the plain,
+        // pre-bistable source term's own closed-form math directly.
         GranularFluidityConfig {
             mu_s: 0.70,
             grain_diameter_m: 0.3e-3,
@@ -361,6 +525,11 @@ mod tests {
             b: 0.278,
             t0_s: 1.0e-4,
             pressure_floor_pa: 0.0, // these unit tests use large, non-degenerate pressures directly
+            mu_2: 1.0e6,
+            hysteresis_amplitude: 0.0,
+            hysteresis_rate: 50.0,
+            hysteresis_stiffness_exponent: 0.25,
+            contact_stiffness_pa: 1.0e7,
         }
     }
 
@@ -451,6 +620,62 @@ mod tests {
             relative_error < 0.2,
             "g={} should have converged near g_eq={g_eq} (rel. error {relative_error})",
             out[0]
+        );
+    }
+
+    /// Real, decisive test of the bistable/hysteretic extension (Mowlavi &
+    /// Kamrin 2021, see this module's own doc): at a SINGLE fixed stress
+    /// ratio mu just above mu_s (0.705, inside the real bistable window
+    /// this config's own mu_2/hysteresis_amplitude implies -- see the
+    /// worked derivation in this test's own commit), the SAME physics must
+    /// produce TWO different long-run outcomes depending purely on
+    /// history: starting from ~0 (material at rest) it must STAY arrested
+    /// (chi's extra resistance near g=0 wins over the weak plain driving
+    /// force); starting from an already-large g (material already
+    /// flowing) it must converge to a real, macroscopic nonzero steady
+    /// value (chi fades at large g, plain rate-strengthening dominates).
+    /// This is the literal, checkable definition of the hysteresis this
+    /// extension exists to provide -- not just "chi is nonzero somewhere."
+    #[test]
+    fn bistable_hysteresis_same_mu_two_stable_branches_by_history() {
+        let mu_2 = (35.0f32 + 12.0).to_radians().tan(); // same real +12deg offset as sand_ngf_tests.rs
+        let cfg = GranularFluidityConfig {
+            mu_2,
+            hysteresis_amplitude: 0.0116, // real DEM-calibrated a
+            hysteresis_rate: 50.0,        // real DEM-calibrated c
+            hysteresis_stiffness_exponent: 0.25,
+            contact_stiffness_pa: 1.0e7, // stiff-grain regime, same order as real sand E
+            ..test_config()
+        };
+        // pressure=1e5, mu=0.705 baked in as literal constants -- `new`
+        // requires a bare, non-capturing fn pointer (same real constraint
+        // this file's other tests already work around the same way).
+        fn run(cfg: GranularFluidityConfig, seed_g: f32) -> f32 {
+            let mut field = GranularFluidityField::new(cfg, |_p| (1.0e5, 0.705), 8);
+            field.grid_g.fill(seed_g); // real, direct history injection -- this IS the point of the test
+            let particles = Particles::from(vec![
+                test_particle_at(Vec2::new(4.0, 4.0)),
+                test_particle_at(Vec2::new(4.0, 4.0)),
+                test_particle_at(Vec2::new(4.0, 4.0)),
+                test_particle_at(Vec2::new(4.0, 4.0)),
+            ]);
+            let mut out = vec![0.0; 4];
+            for _ in 0..5000 {
+                field.apply(&particles, 1.0e-5, 0.01, &mut out);
+            }
+            out[0]
+        }
+
+        let g_from_rest = run(cfg, 0.0);
+        let g_from_flowing = run(cfg, 5.0);
+
+        assert!(
+            g_from_rest < 0.05,
+            "starting at rest, g should stay arrested (chi's near-g=0 resistance should win) -- got {g_from_rest}"
+        );
+        assert!(
+            g_from_flowing > 1.0,
+            "starting already-flowing, g should settle on a real nonzero branch (chi fades at large g) -- got {g_from_flowing}"
         );
     }
 }

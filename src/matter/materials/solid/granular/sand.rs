@@ -16,20 +16,6 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// window for this material -- see that module's own doc for the formula.
 pub const GRAIN_DIAMETER_M: f32 = 0.3e-3;
 
-// Real, test-only diagnostic counters (2026-08-04): checking whether the NGF
-// rate-limiter cap (`project()`'s own `gamma.min(gamma_rate_limited)`)
-// actually BINDS in practice during a real collapse, and how severely, since
-// live `g_stats()` data showed `g` fully saturated almost instantly -- if the
-// cap rarely binds, the real 0.47x undershoot isn't the rate limiter at all.
-// `#[cfg(test)]`-gated: zero cost, zero presence in any non-test build.
-#[cfg(test)]
-static NGF_CAP_TOTAL_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-static NGF_CAP_BINDING_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-static NGF_CAP_SEVERITY_SUM_X1E6: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 /// Drucker-Prager elastoplastic sand. Ref: Klar et al. 2016.
 #[derive(Debug, Clone, Copy)]
 pub struct DruckerPragerMaterial {
@@ -505,21 +491,35 @@ impl DruckerPragerMaterial {
     /// critical-state soil mechanics (friction angle relaxing from peak toward
     /// residual as cumulative shear strain grows), not a bug to eliminate.
     ///
-    /// # Nonlocal Granular Fluidity coupling (`ngf_enabled`, real, disclosed synthesis)
+    /// # Nonlocal Granular Fluidity coupling (`ngf_enabled`, real rate-explicit)
     /// Henann & Kamrin's real coupling (arXiv:1408.5205 eq. 4) is
-    /// rate-explicit: `γ̇ = g·μ` -- plastic flow proceeds at a finite RATE set
-    /// by the local fluidity `g`, not instantaneously the moment the yield
-    /// surface is touched. This return mapping is instead rate-INDEPENDENT
-    /// (the `gamma` above already assumes full relaxation onto the yield
-    /// surface every step -- effectively an infinite rate). The translation
-    /// below is a real, standard technique for exactly this mismatch --
-    /// Perzyna (1966) viscoplastic regularization of a rate-independent
-    /// yield surface -- NOT a formula taken directly from Haeri &
-    /// Skonieczny 2022 (their own formulation is a different, full
-    /// rate-explicit hyperelastic scheme, not this return-mapping
-    /// structure): cap the plastic multiplier actually applied this step at
-    /// `g·μ·dt`, letting local fluidity throttle how fast a point can
-    /// genuinely flow, rather than replacing the yield surface's location.
+    /// rate-explicit: `γ̇ = g·μ` -- plastic strain proceeds at a finite RATE
+    /// set by the local fluidity `g`, integrated directly like any other
+    /// rate quantity, NOT by first solving for where the trial state would
+    /// land if it relaxed instantaneously onto the yield surface (that
+    /// "instant relaxation" assumption is what the classical return-mapping
+    /// path below does; it is an effectively-infinite-rate law).
+    ///
+    /// A prior version of this coupling instead computed that full,
+    /// instantaneous return-mapped `gamma` FIRST and only then capped it at
+    /// `g·μ·dt` (Perzyna 1966 viscoplastic regularization of a
+    /// rate-independent yield surface). That cap still let a small but
+    /// nonzero plastic increment through every single substep as long as
+    /// `g > 0` -- which is exactly why it delayed but never arrested
+    /// long-horizon creep (see `static_kinetic_hysteresis_long_horizon_
+    /// full_confirmation`'s own captured RESULT: 41.2deg@1500 decaying all
+    /// the way to 14.5deg@101500, never plateauing). It also measurably
+    /// almost never bound in practice (`diag_ngf_g_field_trajectory_
+    /// during_real_collapse` found the cap active in ~0.003% of yield
+    /// checks), so it wasn't just imprecise, it was nearly inert.
+    ///
+    /// This version never computes that full-relaxation value at all: when
+    /// `ngf_enabled`, the plastic multiplier IS `g·μ·dt`, full stop. Gating
+    /// is `g`'s own job -- `GranularFluidityField`'s persistent PDE (Haeri &
+    /// Skonieczny 2022) already decays `g` to genuinely zero in a quiet
+    /// region via its own `-(mu_s-mu)*g` term, on its own real relaxation
+    /// timescale `t0`. When `g` is truly zero, `gamma` is truly, exactly
+    /// zero -- not "capped small" -- so `F_p` genuinely stops evolving.
     /// `μ` (stress ratio) is derived from the SAME trial quantities already
     /// computed below, reusing the identical formula
     /// `MuIRheologyMaterial::update_particle` (`sand_mui.rs`) uses:
@@ -627,53 +627,60 @@ impl DruckerPragerMaterial {
         // generic, cross-material solver, not DP-specific), this closure supplies
         // only DP's own yield equation. Single-pass (pre-step-q) value seeds the
         // initial guess.
-        let initial_gamma =
-            dev_norm + ratio * trace * self.alpha(q, trace) - cohesion_term - couple_stress_term;
-        let gamma = self_consistent_plastic_multiplier(initial_gamma, q, |q_trial| {
-            dev_norm + ratio * trace * self.alpha(q_trial, trace)
-                - cohesion_term
-                - couple_stress_term
-        });
-
-        if gamma <= 0.0 {
-            return None; // Inside yield surface — elastic step.
-        }
-
-        // NGF rate limiter (real, disclosed synthesis -- see this function's
-        // own doc above). `-ratio*trace > 0` is guaranteed here (trace <= 0
-        // confirmed above, ratio > 0 always), so `mu_ratio` is well-defined.
         //
-        // `dev_norm/(-ratio*trace)` alone is a strain-space ratio, not the true
-        // stress ratio q_trial/p_trial (which needs
-        // `sqrt(2)*mu*dev_norm / p_trial`) -- omitting the `self.mu` factor
-        // understates `mu_ratio` by ~3600x at this scene's real SI-to-grid
-        // scaling, making `gamma_rate_limited` (and every collapse this
-        // coupling is meant to permit) 3600x too small.
+        // `ngf_enabled` takes a genuinely different code path here, not a
+        // post-hoc cap on this one (see this function's own doc above): the
+        // classical return-mapping solve below assumes instantaneous full
+        // relaxation onto the yield surface (an implicit infinite rate) and
+        // is never even computed in the NGF path -- the rate-explicit law
+        // has no use for that value.
         let gamma = if self.ngf_enabled {
+            // `-ratio*trace > 0` is guaranteed here (trace <= 0 confirmed
+            // above, ratio > 0 always), so `mu_ratio` is well-defined for
+            // ANY trial state, not only ones that would classically yield --
+            // matching Henann & Kamrin's own formulation, where the yield
+            // surface itself plays no gating role at the material-point
+            // level; `g` (evaluated on its own persistent, nonlocal PDE) is
+            // what decides whether flow actually happens.
+            //
+            // `dev_norm/(-ratio*trace)` alone is a strain-space ratio, not
+            // the true stress ratio q_trial/p_trial (which needs
+            // `sqrt(2)*mu*dev_norm / p_trial`) -- omitting the `self.mu`
+            // factor understates `mu_ratio` by ~3600x at this scene's real
+            // SI-to-grid scaling.
             let mu_ratio =
                 std::f32::consts::SQRT_2 * self.mu * dev_norm / (-ratio * trace).max(1e-9);
-            let gamma_rate_limited = (nonlocal_fluidity * mu_ratio * dt).max(0.0);
-            #[cfg(test)]
-            {
-                NGF_CAP_TOTAL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if gamma_rate_limited < gamma {
-                    NGF_CAP_BINDING_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Sum of the RATIO the cap forces gamma down to, so the
-                    // average severity is recoverable (not just a binary
-                    // bound/not-bound count).
-                    let sev = (gamma_rate_limited / gamma.max(1e-12)).clamp(0.0, 1.0);
-                    NGF_CAP_SEVERITY_SUM_X1E6
-                        .fetch_add((sev * 1.0e6) as u64, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            gamma.min(gamma_rate_limited)
+            // Real stability bound, not an arbitrary clamp: `g` is a
+            // logistic-ODE equilibrium that genuinely diverges as pressure
+            // -> 0 (`GranularFluidityField`'s own doc records a real prior
+            // run reaching 3.5e16) -- a rate-explicit `g*mu*dt` product is
+            // unbounded above, and can vastly exceed `dev_norm` when `g`
+            // spikes. Capping at `dev_norm` is the real physical ceiling
+            // regardless: plastic flow cannot remove more deviatoric strain
+            // than currently exists -- past that point the projection
+            // direction `dev/dev_norm` isn't even meaningful (deviatoric
+            // stress has already reached exactly zero). This is NOT the
+            // removed Perzyna cap (which compared against a separately
+            // return-mapped "instant relaxation" value); it bounds against
+            // the raw trial state itself, so it engages only in the genuine
+            // stability-emergency regime, not on ordinary yielding.
+            (nonlocal_fluidity * mu_ratio * dt).max(0.0).min(dev_norm)
         } else {
-            gamma
+            let initial_gamma = dev_norm + ratio * trace * self.alpha(q, trace)
+                - cohesion_term
+                - couple_stress_term;
+            self_consistent_plastic_multiplier(initial_gamma, q, |q_trial| {
+                dev_norm + ratio * trace * self.alpha(q_trial, trace)
+                    - cohesion_term
+                    - couple_stress_term
+            })
         };
+
         if gamma <= 0.0 {
-            return None; // Yielded, but NGF's local fluidity hasn't built up
-            // enough yet to permit real flow this step -- an elastic step
-            // for now, not a bug (the whole point of a finite-rate coupling).
+            return None; // Inside yield surface (rate-independent path), or
+            // `g == 0` (rate-explicit path) -- the region has genuinely,
+            // physically arrested, not "capped small." Not a bug either
+            // way: the whole point of a finite-rate coupling.
         }
 
         // Project onto yield surface in log-strain space, then exponentiate.

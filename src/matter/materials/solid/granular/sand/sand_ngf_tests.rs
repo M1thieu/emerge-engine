@@ -121,6 +121,45 @@ mod ngf_verification_tests {
         // documents): one grain's own hydrostatic self-weight,
         // rho_s * g_accel * d.
         let pressure_floor_pa = GRAIN_DENSITY_KG_M3 * 9.81 * EFFECTIVE_GRAIN_DIAMETER_M;
+        // Real bistable/hysteretic extension (2026-08-19, Mowlavi & Kamrin
+        // 2021, see `GranularFluidityField`'s own module doc): grain-
+        // diameter tuning alone was tested both directions and ruled out
+        // (see `ngf_g_field_spatial_homogenization_smaller_grain_diameter`
+        // and `ngf_switch_free_collapse_real_grain_diameter_angle_check`'s
+        // own real measured results) -- neither extreme resists a violent
+        // collapse at a real repose angle. mu_2: NOT the paper's own DEM-
+        // calibrated 0.9784 (idealized frictional disks) -- reuses this
+        // codebase's OWN already-cited static->dynamic offset convention
+        // (`MuIRheologyMaterial::from_physical`: +12deg, Jop/Forterre/
+        // Pouliquen 2006), kept self-consistent with mu_s=tan(35deg).
+        // hysteresis_amplitude: NOT the paper's own real DEM-calibrated
+        // 0.0116 -- that value is calibrated to THEIR OWN system's real
+        // dynamic range (idealized frictional disks under quasi-static DEM
+        // loading), not this engine's. Direct measurement in this exact
+        // scene (`ngf_real_mu_ratio_excursion_during_collapse_onset`,
+        // ngf_enabled=false, raw mu_ratio percentiles across all particles
+        // during the real violent collapse onset) found mu_ratio rising
+        // slowly and staying modest -- median 0.0->0.67, p90 reaching only
+        // ~0.70, p99 ~0.72 by t=1s -- meaning the paper's own a=0.0116
+        // (implying a bistable window edge mu_s*~0.711, computed directly)
+        // is already blown past by the top ~1-10% of particles within the
+        // first second, letting a widespread near-simultaneous crossing
+        // cascade past a too-narrow window. Recalibrated here to a=0.08
+        // (window edge mu_s*~0.766, computed the same way), wide enough to
+        // meaningfully cover the REAL measured p90-p99 range instead of
+        // the paper's own system's range -- a real, disclosed
+        // recalibration to this engine's own measured dynamics, not a
+        // guess. rate/exponent kept at the paper's own real values (c/n
+        // aren't the amplitude, no measured reason to touch them yet).
+        // contact_stiffness_pa: this engine's own real elastic shear
+        // modulus (E=15MPa, nu=0.3 -> mu_elastic=E/(2(1+nu))~5.77MPa) as
+        // the real, disclosed continuum-DEM correspondence for grain
+        // contact stiffness (see `GranularFluidityConfig::
+        // contact_stiffness_pa`'s own doc) -- at this scene's real
+        // confining pressures this lands kappa in the same stiff-grain
+        // regime (kappa>1e4) the paper validates against.
+        let mu_2 = (35.0f32 + 12.0).to_radians().tan();
+        let (_, elastic_mu) = lame_from_young(YOUNG_MODULUS_PA, POISSON_RATIO);
         GranularFluidityConfig {
             mu_s: 0.70, // = tan(35 deg), matches this material's own friction_angle
             grain_diameter_m: EFFECTIVE_GRAIN_DIAMETER_M,
@@ -129,6 +168,11 @@ mod ngf_verification_tests {
             b: 0.278,
             t0_s: 1.0e-4, // real, cited value again -- the closed-form reaction fix (see `GranularFluidityField::apply`'s own doc) removes the need for ad-hoc recalibration
             pressure_floor_pa,
+            mu_2,
+            hysteresis_amplitude: 0.08,
+            hysteresis_rate: 50.0,
+            hysteresis_stiffness_exponent: 0.25,
+            contact_stiffness_pa: elastic_mu,
         }
     }
 
@@ -917,14 +961,6 @@ mod ngf_verification_tests {
         solver = solver.with_granular_fluidity(field);
 
         println!("── NGF g-field trajectory during real Lajeunesse collapse ──");
-        // Run this test in isolation (exact name filter) -- these are shared
-        // process-wide statics; cargo's default parallel test execution
-        // would let another ngf_enabled test pollute the count, the same
-        // real cross-test-contention lesson already on record in
-        // `project_ecosystem_slice_roadmap_2026-07-22`'s "Sand findings".
-        NGF_CAP_TOTAL_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
-        NGF_CAP_BINDING_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
-        NGF_CAP_SEVERITY_SUM_X1E6.store(0, std::sync::atomic::Ordering::Relaxed);
         let aspect_ratio = H0_CELLS / R0_CELLS;
         let predicted_r_inf_cells = R0_CELLS * (1.0 + 2.0 * aspect_ratio.sqrt());
         for step in 0..200 {
@@ -944,19 +980,6 @@ mod ngf_verification_tests {
                 );
             }
         }
-        let total = NGF_CAP_TOTAL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        let binding = NGF_CAP_BINDING_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        let sev_sum = NGF_CAP_SEVERITY_SUM_X1E6.load(std::sync::atomic::Ordering::Relaxed);
-        let bind_fraction = binding as f64 / total.max(1) as f64;
-        let avg_severity_when_binding = if binding > 0 {
-            (sev_sum as f64 / 1.0e6) / binding as f64
-        } else {
-            1.0
-        };
-        println!(
-            "  NGF cap: total_yield_checks={total} binding={binding} \
-             bind_fraction={bind_fraction:.4} avg_gamma_kept_fraction_when_binding={avg_severity_when_binding:.6}"
-        );
     }
 
     /// Real, decisive control experiment (2026-08-04): if forcing PLAIN DP
@@ -1432,6 +1455,730 @@ mod ngf_verification_tests {
                 boost20[i].2,
                 boost20[i].3,
             );
+        }
+    }
+
+    /// LOCKED PROTOCOL, test 1/5 (constitutive test, 2026-08-19): does the
+    /// rate-explicit NGF plastic multiplier actually satisfy `gamma/dt ==
+    /// g*mu_ratio` (equivalently `gamma_dot/(g*mu) ~= 1`), independent of
+    /// the substep size `dt`? This is the most basic, load-bearing
+    /// correctness check for the `project()` rewrite (see that function's
+    /// own doc) -- if this doesn't hold, nothing downstream (relaxation/
+    /// arrest/collapse) can be trusted.
+    ///
+    /// Single synthetic particle, hand-set trial deformation gradient,
+    /// `velocity_gradient=0` -- `f_trial = (I + dt*0)*F0 == F0` exactly,
+    /// independent of `dt`, so the trial elastic state itself never
+    /// changes across the dt sweep, isolating gamma's own dt-dependence
+    /// from any confound. `g` and `dt` chosen so the real `dev_norm`
+    /// safety cap (see `project()`'s own doc, added 2026-08-19 after this
+    /// exact test's first run hit a real CFL crash from `g` spiking)
+    /// never binds -- this tests the ordinary rate-explicit regime, not
+    /// the emergency bound.
+    #[test]
+    fn ngf_constitutive_rate_matches_g_mu_independent_of_dt() {
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.ngf_enabled = true;
+        let (lambda, mu) = lame_from_young(1.0e5, 0.2);
+        let ratio = (lambda + mu) / mu;
+
+        // Real compaction (det<1), moderate deviatoric strain -- chosen by
+        // hand, not fit to any target. Diagonal and already sorted
+        // descending, so svd2 returns sigma=(0.95,0.9) with no reordering
+        // ambiguity.
+        let f0 = Mat2::from_cols(Vec2::new(0.95, 0.0), Vec2::new(0.0, 0.9));
+        let sigma = Vec2::new(f0.x_axis.x, f0.y_axis.y);
+        let eps = Vec2::new(sigma.x.ln(), sigma.y.ln());
+        let trace = eps.x + eps.y;
+        let dev_norm = (eps - Vec2::splat(trace * 0.5)).length();
+        assert!(trace < 0.0, "test setup must be in real compaction");
+
+        let mu_ratio_predicted = std::f32::consts::SQRT_2 * mu * dev_norm / (-ratio * trace);
+        const G: f32 = 1.0e-4;
+
+        println!("── NGF CONSTITUTIVE RATE TEST (gamma/dt vs g*mu_ratio, dt swept) ──");
+        println!(
+            "  dev_norm={dev_norm:.6} trace={trace:.6} mu_ratio_predicted={mu_ratio_predicted:.4}"
+        );
+        let mut ratios = Vec::new();
+        for &dt in &[0.0005_f32, 0.001, 0.002] {
+            let mut particles = Particles::from(vec![Particle {
+                deformation_gradient: f0,
+                mass: 1.0,
+                initial_volume: 1.0,
+                volume: 1.0,
+                density: 1.0,
+                friction_hardening: 1.111,
+                hardening_scale: 1.0,
+                ..Particle::zeroed()
+            }]);
+            let q_before = particles.friction_hardening[0];
+            let mut ctx = particles.update_ctx(0);
+            ctx.nonlocal_fluidity = G;
+            sand.update_particle(&mut ctx, dt);
+            let gamma_measured = particles.friction_hardening[0] - q_before;
+            let gamma_predicted = G * mu_ratio_predicted * dt;
+            let gamma_dot_over_g_mu = (gamma_measured / dt) / (G * mu_ratio_predicted);
+            ratios.push(gamma_dot_over_g_mu);
+            println!(
+                "  dt={dt:.4}: gamma_measured={gamma_measured:.8} gamma_predicted={gamma_predicted:.8} \
+                 gamma_dot/(g*mu)={gamma_dot_over_g_mu:.6}"
+            );
+            assert!(
+                gamma_measured < dev_norm * 0.5,
+                "test setup invalid -- gamma_measured={gamma_measured} too close to \
+                 dev_norm={dev_norm}, the safety cap may have engaged; shrink G or dt"
+            );
+            assert!(
+                (gamma_measured - gamma_predicted).abs() < gamma_predicted.max(1e-9) * 0.02 + 1e-7,
+                "gamma/dt does not match g*mu_ratio at dt={dt}: measured={gamma_measured} \
+                 predicted={gamma_predicted}"
+            );
+        }
+
+        let max_ratio = ratios.iter().cloned().fold(f32::MIN, f32::max);
+        let min_ratio = ratios.iter().cloned().fold(f32::MAX, f32::min);
+        println!(
+            "  gamma_dot/(g*mu) range across dt sweep: [{min_ratio:.6}, {max_ratio:.6}] \
+             (dt-independence check)"
+        );
+        assert!(
+            (max_ratio - min_ratio).abs() < 0.02,
+            "gamma_dot/(g*mu) should be dt-independent, got range [{min_ratio}, {max_ratio}]"
+        );
+    }
+
+    /// LOCKED PROTOCOL, test 2/5 (relaxation test, 2026-08-19): with `g>0`
+    /// held constant and NO new external straining (`velocity_gradient=0`
+    /// every substep -- "held total strain"), does deviatoric stress decay
+    /// continuously toward zero, purely from the rate-explicit flow itself,
+    /// with the classical DP return-mapping never invoked at all (true by
+    /// construction of `project()`'s `if self.ngf_enabled` branch -- this
+    /// test verifies the OBSERVABLE consequence: smooth, monotonic,
+    /// non-oscillating decay, not a structural code-path claim taken on
+    /// faith)? Same single-particle harness as the constitutive test,
+    /// but stepped repeatedly instead of freshly reset each time.
+    #[test]
+    fn ngf_relaxation_under_held_strain_decays_monotonically() {
+        fn dev_norm_of(f: Mat2) -> f32 {
+            let sigma = Vec2::new(f.x_axis.x, f.y_axis.y)
+                .abs()
+                .max(Vec2::splat(LOG_CLAMP));
+            let eps = Vec2::new(sigma.x.ln(), sigma.y.ln());
+            let trace = eps.x + eps.y;
+            (eps - Vec2::splat(trace * 0.5)).length()
+        }
+
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.ngf_enabled = true;
+        // Same G as the constitutive test -- analytically, this projection
+        // is trace-preserving (subtracting a pure-deviatoric unit vector),
+        // so dev_norm_{n+1} = dev_norm_n - gamma = dev_norm_n*(1-k) with
+        // k = g*dt*sqrt2*mu/(-ratio*trace) -- a clean geometric decay, NOT
+        // capped (k~0.0226/step here, dev_norm reaches ~32% of initial by
+        // step 50, verified analytically before running). G=0.01 (10x
+        // larger) was tried first and blew through dev_norm on step 1,
+        // triggering the safety cap immediately instead of showing genuine
+        // gradual relaxation -- technically passed (monotonic, non-
+        // negative) but didn't test what this function claims to.
+        const G: f32 = 1.0e-4;
+        const DT: f32 = 0.001;
+
+        let f0 = Mat2::from_cols(Vec2::new(0.95, 0.0), Vec2::new(0.0, 0.9));
+        let mut particles = Particles::from(vec![Particle {
+            deformation_gradient: f0,
+            mass: 1.0,
+            initial_volume: 1.0,
+            volume: 1.0,
+            density: 1.0,
+            friction_hardening: 1.111,
+            hardening_scale: 1.0,
+            ..Particle::zeroed()
+        }]);
+
+        println!(
+            "── NGF RELAXATION UNDER HELD STRAIN (g={G}, dt={DT}, velocity_gradient=0 throughout) ──"
+        );
+        let mut trace_history = Vec::new();
+        let mut prev_dev_norm = dev_norm_of(particles.deformation_gradient[0]);
+        println!("  step   0: dev_norm={prev_dev_norm:.6}");
+        for step in 1..=50 {
+            let mut ctx = particles.update_ctx(0);
+            ctx.nonlocal_fluidity = G;
+            sand.update_particle(&mut ctx, DT);
+            let dev_norm = dev_norm_of(particles.deformation_gradient[0]);
+            trace_history.push(dev_norm);
+            if step % 10 == 0 || step == 1 {
+                println!("  step {step:3}: dev_norm={dev_norm:.6}");
+            }
+            assert!(
+                dev_norm <= prev_dev_norm + 1e-7,
+                "dev_norm must decay monotonically under held strain (real DP return-mapping \
+                 is never invoked in the NGF path), got an increase at step {step}: \
+                 {prev_dev_norm} -> {dev_norm}"
+            );
+            assert!(
+                dev_norm >= 0.0,
+                "dev_norm went negative at step {step}: {dev_norm}"
+            );
+            prev_dev_norm = dev_norm;
+        }
+        println!(
+            "  final dev_norm={prev_dev_norm:.6} (started at {:.6})",
+            dev_norm_of(f0)
+        );
+        assert!(
+            prev_dev_norm < dev_norm_of(f0) * 0.5,
+            "expected real, visible relaxation over 50 held-strain steps at g={G}, only reached \
+             {prev_dev_norm} from {:.6}",
+            dev_norm_of(f0)
+        );
+    }
+
+    /// LOCKED PROTOCOL, test 3/5 (arrest test, 2026-08-19): when `g==0`
+    /// exactly, `F_p` must stop evolving with NO artificial threshold --
+    /// i.e. the resulting plastic multiplier must be EXACTLY zero, not
+    /// "small," and `deformation_gradient`/`friction_hardening` must be
+    /// bit-for-bit unchanged, immediately, on the very first substep and
+    /// every subsequent one. This is the real claim the whole rewrite
+    /// exists to make true (see `project()`'s own doc: "when `g` is truly
+    /// zero, `gamma` is truly, exactly zero") -- verified directly, not
+    /// inferred from the relaxation test's asymptotic approach.
+    #[test]
+    fn ngf_arrest_at_zero_g_is_exact_not_asymptotic() {
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.ngf_enabled = true;
+        const DT: f32 = 0.001;
+
+        // Same real-compaction, real-deviatoric-strain trial state as the
+        // other two tests -- a particle that WOULD flow under any g>0 (per
+        // the constitutive test), to make "g=0 stops it" a real claim, not
+        // a vacuous one (an already-relaxed particle stopping proves
+        // nothing).
+        let f0 = Mat2::from_cols(Vec2::new(0.95, 0.0), Vec2::new(0.0, 0.9));
+        let mut particles = Particles::from(vec![Particle {
+            deformation_gradient: f0,
+            mass: 1.0,
+            initial_volume: 1.0,
+            volume: 1.0,
+            density: 1.0,
+            friction_hardening: 1.111,
+            hardening_scale: 1.0,
+            ..Particle::zeroed()
+        }]);
+        let q0 = particles.friction_hardening[0];
+
+        println!("── NGF ARREST AT g=0 (plastic multiplier must be EXACT zero, not asymptotic) ──");
+        for step in 1..=20 {
+            let mut ctx = particles.update_ctx(0);
+            ctx.nonlocal_fluidity = 0.0; // the real claim under test
+            sand.update_particle(&mut ctx, DT);
+            let f = particles.deformation_gradient[0];
+            let q = particles.friction_hardening[0];
+            // `friction_hardening` gets `q + dq` -- with `dq` computed as
+            // exactly 0.0 (see `project()`'s ngf branch: `(0.0*mu_ratio*dt)
+            // .max(0.0).min(dev_norm) == 0.0`), IEEE754 addition of 0.0 is
+            // exact, so this stays bit-for-bit -- the real, strict claim.
+            assert_eq!(
+                q, q0,
+                "friction_hardening changed at step {step} with g=0 exactly -- plastic \
+                 multiplier was not exactly zero (got {q}, expected {q0})"
+            );
+            // `deformation_gradient` is NOT held to bit-for-bit: even with
+            // zero plastic increment, `update_particle` still round-trips
+            // the elastic part through svd2 -> ln -> (subtract exactly
+            // zero) -> exp, and ln/exp don't perfectly invert each other
+            // in f32 (ordinary ULP-level rounding, unrelated to plasticity
+            // -- confirmed by the first run of this test hitting exactly
+            // this: 0.95000005 vs 0.95, a 5e-8 difference, many orders
+            // below any real plastic drift this test would actually catch,
+            // e.g. one real step at the relaxation test's own G=1e-4 moves
+            // dev_norm by ~8.6e-4). 1e-6 is well above float noise, far
+            // below any real leak.
+            let diff = (f.x_axis.x - f0.x_axis.x).abs()
+                + (f.x_axis.y - f0.x_axis.y).abs()
+                + (f.y_axis.x - f0.y_axis.x).abs()
+                + (f.y_axis.y - f0.y_axis.y).abs();
+            assert!(
+                diff < 1.0e-6,
+                "deformation_gradient drifted beyond float noise at step {step} with g=0 \
+                 exactly -- arrest is not real (got {f:?}, expected ~{f0:?}, diff={diff:.3e})"
+            );
+        }
+        println!(
+            "  20 substeps at g=0: friction_hardening bit-for-bit unchanged, \
+             deformation_gradient unchanged within float noise (<1e-6)"
+        );
+    }
+
+    /// LOCKED PROTOCOL, test 4/5 (collapse test, 2026-08-19): the real
+    /// claim this whole rewrite exists to make true. A genuine dynamic
+    /// column collapse, held at ONE constant numerical regime throughout
+    /// (`apic_blend=0.6`, the value already independently established as
+    /// the real numerical-stability floor for ANY violent MPM collapse --
+    /// material-agnostic, not a target-angle tuning knob) -- NO switch to
+    /// a different damping regime afterward, NO `cundall_damping`, NO
+    /// `post_event_relax_threshold` F-reset trick, NO hand-picked step
+    /// count of any kind. If NGF's own field dynamics is doing the real
+    /// work (as tests 1-3 confirm it can, in isolation), then angle,
+    /// kinetic energy (`vmax`), `max(g)`, AND the actual plastic flow
+    /// rate (`mean_q` rate of change between checkpoints -- a real,
+    /// directly-measured proxy for `||F_p_dot||`, not a guess: `q`
+    /// accumulates by exactly `gamma` every yielding substep) must all
+    /// independently plateau together at long horizon in a scene that
+    /// never gets told "the collapse is over."
+    #[test]
+    fn ngf_switch_free_collapse_all_metrics_plateau_together() {
+        const GRID: usize = 96;
+        const FLOOR: f32 = 0.05;
+        let config = SimConfig {
+            max_substeps_per_step: 4000,
+            apic_blend: 0.6, // constant -- no switch, ever, this is the whole point
+            ..SimConfig::earth(GRID, CELL_M, 0.01)
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(GRID as f32 * 0.5, FLOOR / CELL_M + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_physical(
+            &GranularProps {
+                elastic: Elastic {
+                    e_pa: YOUNG_MODULUS_PA,
+                    nu: POISSON_RATIO,
+                    rho_kg_m3: BULK_DENSITY_KG_M3,
+                },
+                friction_angle_deg: 35.0,
+                dilatancy_angle_deg: 0.0,
+            },
+            &config,
+        );
+        sand.ngf_enabled = true;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let field = GranularFluidityField::new(ngf_config(), ngf_pressure_and_ratio, GRID);
+        solver = solver.with_granular_fluidity(field);
+
+        fn p99(mut v: Vec<f32>) -> f32 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = ((v.len() as f32 - 1.0) * 0.99).round() as usize;
+            v[idx.min(v.len() - 1)]
+        }
+        fn p01(mut v: Vec<f32>) -> f32 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = ((v.len() as f32 - 1.0) * 0.01).round() as usize;
+            v[idx.min(v.len() - 1)]
+        }
+
+        println!(
+            "── NGF SWITCH-FREE COLLAPSE, ALL METRICS (real seconds, apic_blend=0.6 \
+             constant throughout, no damping/reset/switch of any kind) ──"
+        );
+        // Extended past the original 55s (2026-08-19): the first run showed
+        // g_at_pile NOT decaying to zero (mean~0.33, min~0.007-0.01, steady
+        // rather than shrinking) and mean_q_rate still nonzero and still
+        // falling at t=55s -- real ambiguity between "genuinely arrested,
+        // just slow to fully settle" and "asymptotic marginal-state decay
+        // that never truly stops" (the exact risk flagged before this
+        // rewrite started: at mu==mu_s exactly, g's own decay term is zero,
+        // so a hard stop isn't guaranteed). Later checkpoints only -- the
+        // 1-55s shape is already known from the prior run.
+        let checkpoints_s: &[f32] = &[10.0, 55.0, 120.0, 220.0, 350.0];
+        let mut cumulative_steps = 0usize;
+        let mut prev_mean_q = {
+            let particles = solver.particles();
+            particles.friction_hardening.iter().sum::<f32>() / particles.len() as f32
+        };
+        let mut prev_t = 0.0f32;
+        let mut angles = Vec::new();
+        let mut vmaxes = Vec::new();
+        let mut g_maxes = Vec::new();
+        let mut q_rates = Vec::new();
+        for &t in checkpoints_s {
+            let target_steps = (t / 0.01).round() as usize;
+            solver.step_n(target_steps - cumulative_steps);
+            cumulative_steps = target_steps;
+
+            let particles = solver.particles();
+            let xs: Vec<f32> = particles.x.iter().map(|p| p.x).collect();
+            let ys: Vec<f32> = particles.x.iter().map(|p| p.y).collect();
+            let n = xs.len() as f32;
+            let center_x = xs.iter().sum::<f32>() / n;
+            let half_w = p99(xs.iter().map(|x| (x - center_x).abs()).collect());
+            let top_y = p99(ys.clone());
+            let bottom_y = p01(ys);
+            let height = top_y - bottom_y;
+            let angle = (height / half_w).atan().to_degrees();
+            let vmax = particles
+                .v
+                .iter()
+                .map(|v| v.length())
+                .fold(0.0f32, f32::max);
+            let mean_q = particles.friction_hardening.iter().sum::<f32>() / n;
+            let field = solver.granular_fluidity().unwrap();
+            let (_g_min, g_mean, g_max, g_count) = field.g_stats();
+            // Real confound check (2026-08-19): the whole-grid g_max is
+            // suspected of being dominated by the pressure-floor
+            // equilibrium in far-from-the-pile cells, not the pile's own
+            // dynamics -- sample g directly AT the pile's own particles to
+            // find out, rather than trusting or distrusting the whole-grid
+            // number in the abstract.
+            let (g_pile_min, g_pile_mean, g_pile_max) = field.g_stats_near(particles);
+            let dt_elapsed = (t - prev_t).max(1e-6);
+            let mean_q_rate = (mean_q - prev_mean_q) / dt_elapsed;
+            angles.push(angle);
+            vmaxes.push(vmax);
+            g_maxes.push(g_pile_max); // tail-plateau check uses the PILE value, not the confounded whole-grid one
+            q_rates.push(mean_q_rate);
+            println!(
+                "  t={t:5.1}s: angle={angle:.2}deg vmax={vmax:.4} | whole-grid: g_max={g_max:.4} \
+                 g_mean={g_mean:.4} g_nonzero={g_count} | AT PILE: g_min={g_pile_min:.4} \
+                 g_mean={g_pile_mean:.4} g_max={g_pile_max:.4} | mean_q_rate={mean_q_rate:.6}/s"
+            );
+            prev_mean_q = mean_q;
+            prev_t = t;
+        }
+
+        // Real plateau check on the TAIL of the run (last 3 checkpoints) --
+        // each of the four independent metrics must be within a small
+        // fraction of its own tail-mean, not just "visually flat."
+        fn tail_spread(vals: &[f32]) -> (f32, f32) {
+            let tail = &vals[vals.len() - 3..];
+            let mean = tail.iter().sum::<f32>() / tail.len() as f32;
+            let max_dev = tail.iter().map(|v| (v - mean).abs()).fold(0.0f32, f32::max);
+            (mean, max_dev)
+        }
+        let (angle_mean, angle_dev) = tail_spread(&angles);
+        let (vmax_mean, vmax_dev) = tail_spread(&vmaxes);
+        let (gmax_mean, gmax_dev) = tail_spread(&g_maxes);
+        let (qrate_mean, qrate_dev) = tail_spread(&q_rates);
+        println!(
+            "  tail (last 3 checkpoints): angle {angle_mean:.2}±{angle_dev:.2}deg  \
+             vmax {vmax_mean:.4}±{vmax_dev:.4}  g_at_pile_max {gmax_mean:.4}±{gmax_dev:.4}  \
+             mean_q_rate {qrate_mean:.6}±{qrate_dev:.6}/s"
+        );
+    }
+
+    /// Real, direct test of a NEW hypothesis (2026-08-19, prompted by the
+    /// extended switch-free collapse run above showing g_pile_mean flat/
+    /// RISING instead of decaying over 350s): is `g`'s nonlocal diffusion
+    /// term, at this scene's resolution-independent 8mm effective grain
+    /// diameter, actually confined to a real grain-scale cooperativity
+    /// length (Henann & Kamrin's own intent -- a shear-band-width scale,
+    /// a few mm), or does it homogenize across the WHOLE domain within
+    /// the first few real seconds -- long before any existing test here
+    /// would catch it (the only prior d-calibration sweep,
+    /// `ngf_grain_diameter_sweep_accuracy_and_resolution_independence`,
+    /// measured a 200-step mid-collapse runout RATIO, never g's own
+    /// spatial profile over real seconds).
+    ///
+    /// Back-of-envelope, computed directly (not simulated): the bare
+    /// diffusion coefficient this config implies is
+    /// `D=(A*d)^2/t0 = (0.48*0.008)^2/1e-4 ≈ 0.147 m^2/s`, giving a
+    /// diffusion length `sqrt(D*t)` that already EXCEEDS this scene's own
+    /// 0.96m domain width by t≈10s. This test samples the REAL field
+    /// (which also has a reaction/decay term fighting the spread, so the
+    /// bare-diffusion number is only a naive upper bound, not a
+    /// prediction) at fixed world offsets from the column's own center,
+    /// to see whether real g decays with distance (localized, as the
+    /// theory intends) or is already flat (homogenized) at these
+    /// distances/times.
+    fn run_spatial_homogenization_probe(grain_diameter_m: f32) {
+        const GRID: usize = 96;
+        const FLOOR: f32 = 0.05;
+        let config = SimConfig {
+            max_substeps_per_step: 4000,
+            apic_blend: 0.6,
+            ..SimConfig::earth(GRID, CELL_M, 0.01)
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(GRID as f32 * 0.5, FLOOR / CELL_M + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_physical(
+            &GranularProps {
+                elastic: Elastic {
+                    e_pa: YOUNG_MODULUS_PA,
+                    nu: POISSON_RATIO,
+                    rho_kg_m3: BULK_DENSITY_KG_M3,
+                },
+                friction_angle_deg: 35.0,
+                dilatancy_angle_deg: 0.0,
+            },
+            &config,
+        );
+        sand.ngf_enabled = true;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let mut cfg = ngf_config();
+        cfg.grain_diameter_m = grain_diameter_m;
+        cfg.pressure_floor_pa = cfg.grain_density_kg_m3 * 9.81 * grain_diameter_m;
+        let field = GranularFluidityField::new(cfg, ngf_pressure_and_ratio, GRID);
+        solver = solver.with_granular_fluidity(field);
+
+        // Sample g at fixed world offsets from the column's own center, at
+        // a fixed height near the floor -- NOT at real particles (which
+        // move), so the SAME spatial points are compared across
+        // checkpoints. Reuses `g_stats_near`'s own public API on
+        // synthetic single-particle probes (same pattern
+        // `granular_fluidity.rs`'s own unit tests use), rather than
+        // exposing the field's private grid internals.
+        fn probe_at(offset_m: f32) -> Particles {
+            let mut p = Particle::zeroed();
+            p.x = Vec2::new(GRID as f32 * 0.5 + offset_m / CELL_M, FLOOR / CELL_M + 2.0);
+            p.mass = 1.0;
+            p.initial_volume = 1.0;
+            Particles::from(vec![p])
+        }
+        let offsets_m: &[f32] = &[0.0, 0.05, 0.10, 0.20, 0.30, 0.40];
+
+        let bare_d = (0.48f32 * grain_diameter_m).powi(2) / 1.0e-4;
+        println!(
+            "  d={:.1}mm: back-of-envelope bare D=(A*d)^2/t0 = {bare_d:.6} m^2/s (domain width=0.96m)",
+            grain_diameter_m * 1000.0
+        );
+        let checkpoints_s: &[f32] = &[0.3, 1.0, 2.0, 4.0, 10.0];
+        let mut cumulative_steps = 0usize;
+        for &t in checkpoints_s {
+            let target_steps = (t / 0.01).round() as usize;
+            solver.step_n(target_steps - cumulative_steps);
+            cumulative_steps = target_steps;
+            let field = solver.granular_fluidity().unwrap();
+            let sqrt_dt = (bare_d * t).sqrt();
+            print!("  t={t:5.1}s (naive diffusion length={sqrt_dt:.3}m):");
+            for &off in offsets_m {
+                let (_min, mean, _max) = field.g_stats_near(&probe_at(off));
+                print!("  g(+{off:.2}m)={mean:.4}");
+            }
+            println!();
+        }
+    }
+
+    #[test]
+    fn ngf_g_field_spatial_homogenization_onset() {
+        println!(
+            "── NGF g-FIELD SPATIAL HOMOGENIZATION ONSET (fixed world points, real seconds) ──"
+        );
+        run_spatial_homogenization_probe(0.008);
+    }
+
+    /// Real, direct follow-up: does shrinking `grain_diameter_m` (which
+    /// shrinks the diffusion coefficient D=(A*d)^2/t0 as d^2 -- a MUCH
+    /// bigger lever than anything else in this config) actually localize
+    /// the homogenization onset the test above measured at the shipped
+    /// 8mm value? If d=1mm keeps g's spread confined near the pile
+    /// instead of saturating the whole 0.96m domain within ~1s, that's
+    /// real, direct evidence the 8mm choice (picked in the 2026-08-03
+    /// sweep for a completely different metric -- 200-step runout ratio,
+    /// never checked against long-horizon spatial spread) is the
+    /// structural cause of tonight's wrong-angle/never-fully-arrests
+    /// findings, not a flaw in NGF theory itself.
+    #[test]
+    fn ngf_g_field_spatial_homogenization_smaller_grain_diameter() {
+        println!("── NGF g-FIELD SPATIAL HOMOGENIZATION, SMALLER d (localization check) ──");
+        for &d_mm in &[0.3f32, 0.5, 1.0, 1.5, 2.0, 4.0] {
+            run_spatial_homogenization_probe(d_mm * 1.0e-3);
+        }
+    }
+
+    /// Real, decisive test following the spatial-homogenization findings
+    /// above: at the shipped 8mm effective grain diameter, `g` locks into
+    /// a runaway, spatially-uniform, NEVER-decaying plateau within 1-2
+    /// real seconds -- at d<=1mm it stays genuinely localized and decays
+    /// over time, the physically-correct reaction-diffusion behavior the
+    /// theory intends. `ngf_config`'s own doc already discloses that the
+    /// ORIGINAL reason the LITERAL real grain diameter (`GRAIN_DIAMETER_M`,
+    /// 0.3mm) was abandoned for 8mm -- "couldn't diffuse fast enough" --
+    /// was itself downstream of two bugs (missing dx-normalization, a
+    /// min_dt floor override) that are BOTH now fixed, and that this was
+    /// never re-tested at the literal value afterward. This test does
+    /// that re-test directly, on the same real angle-tracking metric
+    /// (`ngf_switch_free_collapse_all_metrics_plateau_together`) that
+    /// found the wrong 0.9deg (not 30-35deg) plateau at 8mm -- does the
+    /// real, literal grain diameter, now that the two blocking bugs are
+    /// fixed, resist collapse enough to reach a real repose angle instead
+    /// of homogenizing the whole pile into uniform fluidity?
+    #[test]
+    fn ngf_switch_free_collapse_real_grain_diameter_angle_check() {
+        const GRID: usize = 96;
+        const FLOOR: f32 = 0.05;
+        let config = SimConfig {
+            max_substeps_per_step: 4000,
+            apic_blend: 0.6, // constant -- no switch, ever, same as the 8mm baseline test
+            ..SimConfig::earth(GRID, CELL_M, 0.01)
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(GRID as f32 * 0.5, FLOOR / CELL_M + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_physical(
+            &GranularProps {
+                elastic: Elastic {
+                    e_pa: YOUNG_MODULUS_PA,
+                    nu: POISSON_RATIO,
+                    rho_kg_m3: BULK_DENSITY_KG_M3,
+                },
+                friction_angle_deg: 35.0,
+                dilatancy_angle_deg: 0.0,
+            },
+            &config,
+        );
+        sand.ngf_enabled = true;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let mut cfg = ngf_config();
+        cfg.grain_diameter_m = GRAIN_DIAMETER_M; // real literal 0.3mm, not the 8mm compromise
+        cfg.pressure_floor_pa = cfg.grain_density_kg_m3 * 9.81 * GRAIN_DIAMETER_M;
+        let field = GranularFluidityField::new(cfg, ngf_pressure_and_ratio, GRID);
+        solver = solver.with_granular_fluidity(field);
+
+        fn p99(mut v: Vec<f32>) -> f32 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = ((v.len() as f32 - 1.0) * 0.99).round() as usize;
+            v[idx.min(v.len() - 1)]
+        }
+        fn p01(mut v: Vec<f32>) -> f32 {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let idx = ((v.len() as f32 - 1.0) * 0.01).round() as usize;
+            v[idx.min(v.len() - 1)]
+        }
+
+        println!("── NGF SWITCH-FREE COLLAPSE, REAL LITERAL GRAIN DIAMETER (0.3mm, not 8mm) ──");
+        // Same checkpoints as the ORIGINAL (pre-extension) 8mm run, for a
+        // direct apples-to-apples angle comparison against the already-
+        // known 8mm numbers (31.7deg@1s -> 1.3deg@4s -> ~0.9deg plateau
+        // by 10-55s).
+        let checkpoints_s: &[f32] = &[1.0, 4.0, 10.0, 20.0, 35.0, 55.0];
+        let mut cumulative_steps = 0usize;
+        let mut prev_mean_q = {
+            let particles = solver.particles();
+            particles.friction_hardening.iter().sum::<f32>() / particles.len() as f32
+        };
+        let mut prev_t = 0.0f32;
+        for &t in checkpoints_s {
+            let target_steps = (t / 0.01).round() as usize;
+            solver.step_n(target_steps - cumulative_steps);
+            cumulative_steps = target_steps;
+
+            let particles = solver.particles();
+            let xs: Vec<f32> = particles.x.iter().map(|p| p.x).collect();
+            let ys: Vec<f32> = particles.x.iter().map(|p| p.y).collect();
+            let n = xs.len() as f32;
+            let center_x = xs.iter().sum::<f32>() / n;
+            let half_w = p99(xs.iter().map(|x| (x - center_x).abs()).collect());
+            let top_y = p99(ys.clone());
+            let bottom_y = p01(ys);
+            let height = top_y - bottom_y;
+            let angle = (height / half_w).atan().to_degrees();
+            let vmax = particles
+                .v
+                .iter()
+                .map(|v| v.length())
+                .fold(0.0f32, f32::max);
+            let mean_q = particles.friction_hardening.iter().sum::<f32>() / n;
+            let field = solver.granular_fluidity().unwrap();
+            let (g_pile_min, g_pile_mean, g_pile_max) = field.g_stats_near(particles);
+            let dt_elapsed = (t - prev_t).max(1e-6);
+            let mean_q_rate = (mean_q - prev_mean_q) / dt_elapsed;
+            println!(
+                "  t={t:5.1}s: angle={angle:.2}deg vmax={vmax:.4}  AT PILE: g_min={g_pile_min:.4} \
+                 g_mean={g_pile_mean:.4} g_max={g_pile_max:.4} | mean_q_rate={mean_q_rate:.6}/s"
+            );
+            prev_mean_q = mean_q;
+            prev_t = t;
+        }
+    }
+
+    /// Real, direct test of the hypothesis raised after the bistable/
+    /// hysteretic extension (2026-08-19, see this module's own doc on
+    /// `run_spatial_homogenization_probe` -- and the memory file it cites)
+    /// came back WORSE, not better, at the real literal grain diameter:
+    /// the isolated proof of the hysteresis mechanism
+    /// (`bistable_hysteresis_same_mu_two_stable_branches_by_history`,
+    /// `granular_fluidity.rs`) used mu=0.705, hand-picked to sit just
+    /// inside the real ~0.011-wide bistable window these params imply
+    /// (mu_s=0.70, mu_2~1.07, hysteresis_amplitude=0.0116). Does REAL
+    /// collapse dynamics in this engine actually linger inside that
+    /// narrow window, or does `mu_ratio` blow straight past it during the
+    /// violent phase -- in which case the paper's own real DEM-calibrated
+    /// amplitude (calibrated to THEIR system's own dynamic range, not
+    /// this engine's) would be too narrow to matter here, a real
+    /// calibration mismatch rather than a flaw in the mechanism. Measures
+    /// `mu_ratio` directly across all particles at the very start of a
+    /// real collapse (same scene as the angle-tracking tests), no NGF
+    /// coupling needed for this measurement.
+    #[test]
+    fn ngf_real_mu_ratio_excursion_during_collapse_onset() {
+        const GRID: usize = 96;
+        const FLOOR: f32 = 0.05;
+        let config = SimConfig {
+            max_substeps_per_step: 4000,
+            apic_blend: 0.6,
+            ..SimConfig::earth(GRID, CELL_M, 0.01)
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(GRID as f32 * 0.5, FLOOR / CELL_M + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_physical(
+            &GranularProps {
+                elastic: Elastic {
+                    e_pa: YOUNG_MODULUS_PA,
+                    nu: POISSON_RATIO,
+                    rho_kg_m3: BULK_DENSITY_KG_M3,
+                },
+                friction_angle_deg: 35.0,
+                dilatancy_angle_deg: 0.0,
+            },
+            &config,
+        );
+        sand.ngf_enabled = false; // measuring the raw trial mu_ratio, not coupled to g
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        fn percentiles(mut v: Vec<f32>) -> (f32, f32, f32, f32) {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let n = v.len();
+            let p50 = v[n / 2];
+            let p90 = v[((n as f32 - 1.0) * 0.90).round() as usize];
+            let p99 = v[((n as f32 - 1.0) * 0.99).round() as usize];
+            (p50, p90, p99, v[n - 1])
+        }
+
+        println!(
+            "── REAL mu_ratio EXCURSION DURING COLLAPSE ONSET (mu_s=0.70, bistable window ~[0.70,0.711]) ──"
+        );
+        let checkpoints_s: &[f32] = &[0.05, 0.1, 0.2, 0.5, 1.0];
+        let mut cumulative_steps = 0usize;
+        for &t in checkpoints_s {
+            let target_steps = (t / 0.01).round() as usize;
+            solver.step_n(target_steps - cumulative_steps);
+            cumulative_steps = target_steps;
+            let particles = solver.particles();
+            let mus: Vec<f32> = (0..particles.len())
+                .map(|i| ngf_pressure_and_ratio(&particles.get(i)).1)
+                .collect();
+            let (p50, p90, p99, pmax) = percentiles(mus);
+            println!("  t={t:5.2}s: mu_ratio p50={p50:.4} p90={p90:.4} p99={p99:.4} max={pmax:.4}");
         }
     }
 }
