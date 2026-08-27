@@ -271,7 +271,16 @@ mod particle_mass_tests {
         SimConfig::earth(64, 0.01, 0.05)
     }
 
-    /// mass_from(&props) == props.particle_mass(spacing) called directly -- no duplication risk.
+    /// mass_from(&props) == props.particle_mass(spacing) converted through the
+    /// same SI-kg -> grid-unit factor `mass_from` itself applies -- no
+    /// duplication risk between the two `particle_mass` call sites.
+    ///
+    /// Real fix, 2026-08-27: `expected` used to compare directly against
+    /// `particle_mass`'s raw SI-kg return, which stopped matching once
+    /// `mass_from` (src/spacetime/solver/config/spawn.rs) started converting
+    /// that SI mass into grid units as part of the grid-density root fix
+    /// (85ee103) -- a units mismatch in the TEST, not an engine bug (same
+    /// family as the 6 tests already recalibrated for that fix in 9ad1dbd).
     #[test]
     fn mass_from_matches_direct_call() {
         let config = earth_config();
@@ -284,7 +293,9 @@ mod particle_mass_tests {
         let region = SpawnRegion::for_sim(&config)
             .spacing(spacing)
             .mass_from(&props, &config);
-        let expected = props.particle_mass(spacing, &config);
+        let si_kg = props.particle_mass(spacing, &config);
+        let to_grid = 1.0 / (config.reference_density_kg_m3 * config.dx_meters * config.dx_meters);
+        let expected = si_kg * to_grid;
         assert!(
             (region.mass_override.unwrap() - expected).abs() < 1e-9,
             "mass_from result {:.6e} != direct call {:.6e}",
