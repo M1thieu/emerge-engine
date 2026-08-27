@@ -1155,6 +1155,53 @@ mod gpu_tests {
         }
     }
 
+    /// Real, printed proof of issue #6's fix (2026-08-27), not just a pass/fail
+    /// assertion: many small sequential `spawn_region` calls should cost roughly
+    /// O(new particles) total, not O(total particle count) -- run this manually
+    /// (`cargo test --features gpu --test gpu diag_spawn_region -- --ignored
+    /// --nocapture`) before AND after the fix (`git stash`/`git stash pop` on
+    /// `src/systems/gpu/{buffers.rs,solver/mod.rs,solver/spawn.rs}`) to see the
+    /// real before/after wall-clock numbers, the same "measure before and after"
+    /// discipline [[perf-opportunities-survey]] uses throughout.
+    #[test]
+    #[ignore = "perf diagnostic, run manually with --ignored --nocapture"]
+    fn diag_spawn_region_incremental_cost_scales_with_new_particles_not_total() {
+        if !gpu_available() {
+            return;
+        }
+        let config = SimConfig::standard(96, 0.1, Vec2::new(0.0, -0.3));
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, Vec::new(), registry));
+
+        const BATCHES: usize = 40;
+        let start = std::time::Instant::now();
+        let mut total_particles = 0usize;
+        for i in 0..BATCHES {
+            let cx = 4.0 + (i % 8) as f32 * 5.0;
+            let cy = 4.0 + (i / 8) as f32 * 5.0;
+            let range = solver.spawn_region(SpawnRegion {
+                spacing: 0.5,
+                box_size: IVec2::new(3, 3),
+                box_center: Vec2::new(cx, cy),
+                material_id: 0,
+                ..SpawnRegion::for_sim(&config)
+            });
+            total_particles = range.end;
+        }
+        let elapsed = start.elapsed();
+
+        println!(
+            "diag_spawn_region_incremental_cost: {BATCHES} sequential spawn_region calls, \
+             {total_particles} total particles, wall time = {:.3} ms ({:.3} ms/call average)",
+            elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1000.0 / BATCHES as f64
+        );
+
+        solver.sync_particles_blocking();
+        assert_eq!(solver.particles().len(), total_particles);
+    }
+
     /// Real regression coverage for issue #6's fix (2026-08-27): `spawn_region`'s
     /// amortized-capacity fast path (sub-range `write_buffer`, no reallocation, no
     /// bind group rebuild) must produce identical particle data to the old
