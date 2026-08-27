@@ -185,18 +185,21 @@ impl Grid {
     /// "already in dirty this substep" from "occupied but stale," which can't safely
     /// live on `Cell` itself (`#[repr(C)]`, stable GPU buffer layout) without checking
     /// every GPU-side assumption first.
+    /// `accumulate` (and its two contact/mixture-cell equivalents) only ever pushes an
+    /// index to `dirty` the FIRST time that key becomes `Occupied` -- so `dirty` is always
+    /// exactly the current key set of `cells`, never a subset. That makes a real
+    /// per-key `remove()` loop here (N individual hashes + bucket probes, one per touched
+    /// cell) equivalent to just calling `HashMap::clear()` (one sweep of the backing
+    /// table's control bytes, no hashing at all, capacity kept for reuse -- the exact
+    /// guarantee `std`'s own `clear()` docs make). Same real "remove, don't zero-in-place"
+    /// requirement as this fn's own doc above -- `clear()` still empties every entry, it
+    /// just does it without re-deriving the key set `dirty` already gives us for free.
     pub fn clear(&mut self) {
-        for &idx in &self.dirty {
-            self.cells.remove(&idx);
-        }
+        self.cells.clear();
         self.dirty.clear();
-        for &idx in &self.contact_dirty {
-            self.contact_cells.remove(&idx);
-        }
+        self.contact_cells.clear();
         self.contact_dirty.clear();
-        for &idx in &self.mixture_dirty {
-            self.mixture_cells.remove(&idx);
-        }
+        self.mixture_cells.clear();
         self.mixture_dirty.clear();
     }
 
