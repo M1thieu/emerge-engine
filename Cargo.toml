@@ -297,6 +297,11 @@ name = "phase_states_headless"
 path = "examples/cpu/phase_states_headless.rs"
 
 [[example]]
+name = "basic_energy"
+path = "examples/cpu/basic_energy.rs"
+required-features = ["render", "experimental"]
+
+[[example]]
 name = "rod_blade_of_grass"
 path = "examples/cpu/rod_blade_of_grass.rs"
 

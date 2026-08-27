@@ -300,7 +300,7 @@ impl LcgRng {
         Self { state: seed }
     }
 
-    const fn next_u32(&mut self) -> u32 {
+    pub(crate) const fn next_u32(&mut self) -> u32 {
         self.state = self
             .state
             .wrapping_mul(1_664_525)
@@ -308,7 +308,7 @@ impl LcgRng {
         self.state
     }
 
-    fn next_f32(&mut self) -> f32 {
+    pub(crate) fn next_f32(&mut self) -> f32 {
         self.next_u32() as f32 / (u32::MAX as f32 + 1.0)
     }
 }
