@@ -51,6 +51,18 @@ pub struct GpuSimulation {
     /// Access via `particles()` / `particles_mut()`. Do not replace the Vec directly.
     particles: Vec<Particle>,
     particle_count: usize,
+    /// How many particles the per-particle GPU buffers (`buffers.particles`,
+    /// `sorted_particle_ids`, `readback_staging`) actually have room for --
+    /// always `>= particle_count`. `spawn_region` (spawn.rs) grows this with
+    /// Vec-style amortized doubling on the rare call that exceeds it, so the
+    /// common case (repeated small spawns under existing headroom) is a
+    /// sub-range `write_buffer` instead of a full realloc + reupload + bind
+    /// group rebuild every time. `remove_particles` (spawn.rs) resets this
+    /// back down to its own new exact-fit size when it reallocates smaller --
+    /// must stay in sync with the real buffer size everywhere buffers are
+    /// reallocated, or the fast path in `spawn_region` would write past the
+    /// buffer's actual end.
+    particle_capacity: usize,
     last_sub_dt: f32,
     last_substeps: usize,
     frame_index: u64,
@@ -343,6 +355,7 @@ impl GpuSimulation {
             registry,
             particles: initialized,
             particle_count,
+            particle_capacity: particle_count,
             last_sub_dt: config.dt,
             last_substeps: 0,
             frame_index: 0,

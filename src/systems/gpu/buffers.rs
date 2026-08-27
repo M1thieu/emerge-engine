@@ -591,6 +591,20 @@ impl GpuBuffers {
         queue.write_buffer(&self.particles, 0, Particle::slice_as_bytes(particles));
     }
 
+    /// Upload `particles` starting at particle index `offset` -- a sub-range write
+    /// into the existing buffer, no reallocation. Caller (`GpuSimulation::spawn_region`)
+    /// is responsible for ensuring `offset + particles.len()` is within the buffer's
+    /// real capacity; this function has no way to check that itself (`wgpu::Buffer`
+    /// doesn't expose its own size).
+    pub fn upload_particles_at(&self, queue: &wgpu::Queue, offset: usize, particles: &[Particle]) {
+        let byte_offset = (offset * mem::size_of::<Particle>()) as u64;
+        queue.write_buffer(
+            &self.particles,
+            byte_offset,
+            Particle::slice_as_bytes(particles),
+        );
+    }
+
     pub fn upload_materials(&self, queue: &wgpu::Queue, params: &[MaterialParams]) {
         queue.write_buffer(&self.materials, 0, bytemuck::cast_slice(params));
     }

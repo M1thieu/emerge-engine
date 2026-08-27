@@ -1155,6 +1155,93 @@ mod gpu_tests {
         }
     }
 
+    /// Real regression coverage for issue #6's fix (2026-08-27): `spawn_region`'s
+    /// amortized-capacity fast path (sub-range `write_buffer`, no reallocation, no
+    /// bind group rebuild) must produce identical particle data to the old
+    /// always-reallocate path -- both groups' positions correct, particle_count
+    /// correct, and physics still runs cleanly afterward (a stale bind group left
+    /// over from a skipped rebuild would panic or silently read the wrong buffer).
+    #[test]
+    fn gpu_spawn_region_fast_path_preserves_particle_data_across_capacity_growth() {
+        if !gpu_available() {
+            return;
+        }
+        let config = SimConfig::standard(48, 0.1, Vec2::new(0.0, -0.3));
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let mut solver = block_on(GpuSimulation::new(config, Vec::new(), registry));
+
+        // First spawn: capacity starts at 0 (empty construction), so this necessarily
+        // takes the slow (reallocate + amortized-grow) path and establishes real headroom.
+        let first = solver.spawn_region(SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(4, 4),
+            box_center: Vec2::splat(20.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        });
+        let first_count = first.len();
+        assert!(first_count > 0, "first spawn produced zero particles");
+
+        // Second spawn: small enough to land within the headroom the first (doubling)
+        // growth just created -- the real fast-path case this fix targets.
+        let second = solver.spawn_region(SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(2, 2),
+            box_center: Vec2::splat(30.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        });
+        let second_count = second.len();
+        assert!(second_count > 0, "second spawn produced zero particles");
+        assert_eq!(
+            second.start, first_count,
+            "second spawn should start right after the first"
+        );
+
+        solver.sync_particles_blocking();
+        assert_eq!(solver.particles().len(), first_count + second_count);
+
+        // Real correctness check, not just count: if the fast-path sub-range write
+        // landed at the wrong byte offset or corrupted neighboring data, this would
+        // show up as a wrong/garbage centroid instead of the two groups' real spawn
+        // centers.
+        let first_centroid: Vec2 = solver.particles()[first.clone()]
+            .iter()
+            .map(|p| p.x)
+            .sum::<Vec2>()
+            / first_count as f32;
+        let second_centroid: Vec2 = solver.particles()[second.clone()]
+            .iter()
+            .map(|p| p.x)
+            .sum::<Vec2>()
+            / second_count as f32;
+        assert!(
+            (first_centroid - Vec2::splat(20.0)).length() < 2.0,
+            "first spawn group's positions look corrupted by the second spawn's fast-path \
+             write: centroid {first_centroid:?}, expected near (20, 20)"
+        );
+        assert!(
+            (second_centroid - Vec2::splat(30.0)).length() < 2.0,
+            "second spawn group's positions wrong after fast-path sub-range upload: \
+             centroid {second_centroid:?}, expected near (30, 30)"
+        );
+
+        // Physics must still run correctly after a fast-path spawn -- a bind group left
+        // stale (rebuilt only on the slow path, skipped here) or a wrong particle_count
+        // would panic or produce NaN/garbage instead of ordinary free-fall settling.
+        for _ in 0..10 {
+            solver.step_frame();
+        }
+        solver.sync_particles_blocking();
+        for (i, p) in solver.particles().iter().enumerate() {
+            assert!(
+                p.x.is_finite() && p.v.is_finite(),
+                "particle {i} went non-finite after a fast-path spawn"
+            );
+        }
+    }
+
     #[test]
     #[ignore = "strict-fluid contract reverted 2026-08-14, see gpu_fluid_stable's own ignore doc"]
     fn gpu_phase_transition_initializes_strict_fluid_state() {

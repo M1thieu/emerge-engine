@@ -8,7 +8,7 @@
 use crate::grid::Grid;
 use crate::particle::Particle;
 use crate::solver::LcgRng;
-use crate::solver::density::estimate_particle_volumes;
+use crate::solver::density::estimate_particle_volumes_local;
 use crate::solver::initialize_particles;
 
 use super::GpuSimulation;
@@ -18,8 +18,19 @@ impl GpuSimulation {
     /// Append a new particle region to the simulation.
     ///
     /// Generates particles CPU-side, appends to the internal mirror, recomputes
-    /// initial volumes for all particles, then reallocates the GPU particle buffer
-    /// to fit the new total and uploads all particles.
+    /// initial volumes for just the new group (local-only, same technique CPU's
+    /// `Simulation::add_body` already uses -- see `estimate_particle_volumes_local`'s
+    /// own doc), then uploads the new particles.
+    ///
+    /// GPU buffer growth is amortized (Vec-style doubling), not exact-fit every call:
+    /// when the new total still fits within `particle_capacity`, this is a sub-range
+    /// `write_buffer` of just the new particles -- no reallocation, no bind group
+    /// rebuild. Only the rarer call that exceeds capacity pays the full
+    /// reallocate + reupload-everything + rebuild-bind-groups cost, and it grows
+    /// capacity generously (`max(new total, capacity * 2)`) so subsequent spawns
+    /// stay on the fast path. Was unconditionally full-cost every call before
+    /// 2026-08-27 (issue #6) -- LP calling this per creature/terrain-chunk spawn
+    /// paid O(total particle count) every time regardless of how many were new.
     ///
     /// Returns the index range the new particles occupy in the internal mirror.
     /// LP uses this as `creature_id → particle_range` for ownership tracking.
@@ -40,39 +51,55 @@ impl GpuSimulation {
         let mut rng = LcgRng::new(spawn.rng_seed);
         let new_particles = initialize_particles(&self.config, spawn, &mut rng);
         self.particles.extend(new_particles);
+        let n = self.particles.len();
 
-        // Recompute initial volumes for the combined particle set using a temporary grid.
+        // Local-only volume estimate for the new group -- only scatters/gathers near
+        // the new particles' own AABB, not the whole particle set (see import doc).
         let mut tmp_grid = Grid::new(self.config.grid_res);
         {
             let mut tmp_soa = crate::particle::Particles::from(std::mem::take(&mut self.particles));
-            let n = tmp_soa.len();
-            estimate_particle_volumes(&mut tmp_soa, &mut tmp_grid, None, n, true);
+            estimate_particle_volumes_local(&mut tmp_soa, &mut tmp_grid, None, n, start, true);
             self.particles = tmp_soa.to_vec();
         }
 
-        let n = self.particles.len();
-
-        // Reallocate all GPU buffers that are sized per-particle (including staging).
-        self.buffers.particles = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_particles"),
-            size: (n * core::mem::size_of::<Particle>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        self.buffers.sorted_particle_ids = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_sorted_particle_ids"),
-            size: (n * core::mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        self.buffers.readback_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("mpm_particle_staging"),
-            size: (n * core::mem::size_of::<Particle>()) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        if n <= self.particle_capacity {
+            // Fast path: existing buffers already have room, upload only the new slice.
+            self.buffers
+                .upload_particles_at(&self.queue, start, &self.particles[start..n]);
+        } else {
+            // Slow path: grow capacity with Vec-style amortized doubling so future
+            // spawns (the common LP pattern -- many creatures/chunks over a session)
+            // land on the fast path above instead of paying this every time.
+            let new_capacity = n.max(self.particle_capacity.max(1) * 2);
+            self.buffers.particles = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mpm_particles"),
+                size: (new_capacity * core::mem::size_of::<Particle>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.buffers.sorted_particle_ids = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mpm_sorted_particle_ids"),
+                size: (new_capacity * core::mem::size_of::<u32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            });
+            self.buffers.readback_staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mpm_particle_staging"),
+                size: (new_capacity * core::mem::size_of::<Particle>()) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.particle_capacity = new_capacity;
+            self.buffers.upload_particles(&self.queue, &self.particles);
+            // buffers.particles was just reallocated above -- cached bind groups
+            // reference the old buffer object and would be stale (or invalid) without
+            // this. Only needed on this slow path -- the fast path's sub-range write
+            // targets the SAME buffer object, so existing bind groups stay valid.
+            self.bind_group_pool =
+                build_bind_group_pool(&self.device, &self.pipelines, &self.buffers);
+        }
 
         self.particle_count = n;
         // Re-arm the sleep-warmup window (see `last_spawn_frame`'s own doc) so
@@ -81,10 +108,6 @@ impl GpuSimulation {
         // applying at v=0 on their very first substep.
         self.last_spawn_frame = self.frame_index;
         self.pending_readback = None; // old staging is gone
-        self.buffers.upload_particles(&self.queue, &self.particles);
-        // buffers.particles was just reallocated above -- cached bind groups reference
-        // the old buffer object and would be stale (or invalid) without this.
-        self.bind_group_pool = build_bind_group_pool(&self.device, &self.pipelines, &self.buffers);
         self.rebuild_spatial_hash();
         start..n
     }
@@ -153,6 +176,11 @@ impl GpuSimulation {
         });
 
         self.particle_count = n;
+        // This reallocation is exact-fit (shrinking), unlike spawn_region's amortized
+        // growth -- must reset particle_capacity to match the real new buffer size, or
+        // spawn_region's fast-path check (`n <= particle_capacity`) would believe there's
+        // headroom that doesn't exist any more and write past the buffer's real end.
+        self.particle_capacity = n;
         self.pending_readback = None; // old staging is gone
         self.buffers.upload_particles(&self.queue, &self.particles);
         // buffers.particles was just reallocated above -- cached bind groups reference
