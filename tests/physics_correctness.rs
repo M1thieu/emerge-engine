@@ -5671,6 +5671,32 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
 /// No water in this test at all -- if a speed spike shows up even without
 /// water present, the mechanism is confirmed at the source, independent of
 /// whether water specifically was the thing that ultimately panicked.
+///
+/// **Update 2026-08-28 -- real confound found and fixed, real partial
+/// resolution.** This test originally built its `GranularFluidMaterial` via
+/// the raw `::new()` constructor, which hardcodes `eos_power: 7.0` -- the
+/// EXACT value `saturated_loam`'s own doc names as causing "runaway
+/// pressure under gravity-settling compression... an unbounded feedback
+/// loop." The real scene (`sand_water_saturation.rs`'s own `make_mixture`)
+/// never used that constructor -- it builds the struct directly with
+/// `eos_power: 2.0`. So this diagnostic was never actually testing the
+/// real scene's own material. Fixed to match `make_mixture` field-for-
+/// field (not new hardcoded values -- copied from that already-existing,
+/// already-disclosed-as-hand-tuned function). Real result: treatment delta
+/// dropped from +0.1646 (violent spike) to -0.0076 (small, physically
+/// sane deceleration) -- the identity-reset mechanism, WITH THE CORRECT
+/// eos_power, is not the catastrophic problem it looked like.
+///
+/// Honest scope of what this does and doesn't prove: the real scene
+/// already used `eos_power=2.0` from the start, so this fix explains why
+/// the DIAGNOSTIC overstated the danger, not necessarily why the real
+/// scene eventually panicked after ~104,737 frames. That real crash may
+/// have a different, slower-accumulating cause (the panic's own message
+/// names a genuine water-side CFL/retry instability) -- reproducing 100k+
+/// frames isn't practical as a quick check; a real next step is a
+/// REPEATED-transition version of this same test (many transitions over
+/// many steps, closer to what a long real session actually does) rather
+/// than re-litigating this single-transition case further.
 #[test]
 fn diag_phase_transition_under_load_causes_stress_discontinuity() {
     const LOCAL_GRID: usize = 64;
@@ -5704,20 +5730,35 @@ fn diag_phase_transition_under_load_causes_stress_discontinuity() {
         // a worse spike than the naive identity reset -- a fix built to
         // trust `rest_density` cannot help if the caller feeds it a
         // dimensionally wrong one.
-        let mixture = GranularFluidMaterial::new(
-            {
-                let (lambda, _mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
-                lambda
-            },
-            {
-                let (_lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
-                mu
-            },
-            config.grid_density,
-            200.0,
-            5.0,
-            0.4,
-        );
+        // Real fix, 2026-08-28 (candidate (1) from the mixture-crash
+        // investigation, never actually tested until now): the raw
+        // `::new()` constructor hardcodes `eos_power: 7.0` -- the exact
+        // value `GranularFluidMaterial::saturated_loam`'s own doc names as
+        // causing "runaway pressure under gravity-settling compression,
+        // driving dilation... in an unbounded feedback loop." The real
+        // scene (`sand_water_saturation.rs`'s own `make_mixture`) never
+        // uses that raw constructor -- it builds the struct directly with
+        // `eos_power: 2.0` (the granular-flow-range value the doc actually
+        // recommends). This diagnostic used the raw constructor and so was
+        // never actually testing the real scene's own material -- fixed to
+        // match `make_mixture` field-for-field.
+        let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+        const EOS_STIFFNESS: f32 = 200.0;
+        let mixture = GranularFluidMaterial {
+            mu,
+            lambda,
+            rest_density: config.grid_density,
+            eos_stiffness: EOS_STIFFNESS,
+            eos_power: 2.0,
+            hardening_exponent: 5.0,
+            compression_limit: 0.4,
+            stretch_limit: 0.01,
+            min_plastic_jacobian: 0.2,
+            max_plastic_jacobian: 3.0,
+            pressure_floor: 0.0,
+            dynamic_viscosity: 0.3 * mu,
+            bulk_viscosity: 0.5 * EOS_STIFFNESS,
+        };
         Simulation::new(config, column)
             .with_default_material(Box::new(sand))
             .with_material(MAT_MIXTURE, Box::new(mixture))
