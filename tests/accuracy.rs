@@ -4920,17 +4920,30 @@ fn diag_post_event_relax_calibration_sweep() {
     }
 }
 
-/// Full 100,000-step confirmation for `post_event_relax_threshold=0.001` --
-/// the ONE combo that showed a real, exact match to the proven F-only-reset
-/// target in the reduced calibration sweep above (29.6deg, bit-for-bit,
-/// identical at both 7500 and 26500 checkpoints -- the first mechanism
-/// tonight to actually reproduce the ablation's real result on the full
-/// scene, not just in isolation). Real question this settles: does it
-/// actually PLATEAU at the full long horizon (matching the same rigor
-/// already applied to the falsified `static_friction_boost` mechanism,
-/// `static_kinetic_hysteresis_long_horizon_full_confirmation`), or does
-/// something subtle break down past 26500 steps that the shorter sweep
-/// couldn't show?
+/// Full 100,000-step confirmation for `post_event_relax_threshold=0.001`.
+///
+/// STALE CLAIM CORRECTED (2026-08-27): this doc used to claim a 29.6deg
+/// real, exact match to the F-only-reset target. Re-ran this exact test
+/// twice tonight (separate processes) and got a bit-for-bit reproducible
+/// 58.6deg both times -- NOT 29.6deg. Root-caused, not assumed: `git log
+/// -S` on this test's own introducing commit shows `e4e1736` (2026-08-26,
+/// "capillary cohesion, elastic viscosity damping, real compression cap")
+/// landed AFTER the 29.6deg number was recorded, and recalibrated
+/// `DruckerPragerMaterial`'s default `min_volume_jacobian` from an
+/// unsourced 0.6 to a real, sourced 0.807 (DiMaggio & Sandler 1971 /
+/// Resende & Martin 1985 -- 19.3% max volumetric strain instead of an
+/// unsourced 40%). This test builds its sand via `from_young_modulus`,
+/// which picks up that new default automatically -- a pile that can
+/// compress less under its own weight settles differently. Real,
+/// legitimate physics change, not a bug, not caused by anything else
+/// tonight, not floating-point/chaos non-determinism (ruled out directly:
+/// bit-identical across two separate process runs). See
+/// `post_event_relax_switch_step_long_horizon_convergence_comparison`
+/// (same file) for the fuller picture: switch_step=800/1500/3000 converge
+/// to three genuinely different long-horizon plateaus (65.6/58.6/50.4deg),
+/// none near the real ~30deg target -- the real angle-of-repose gap
+/// (GH issue #28) is still open, this is just the honest current baseline
+/// instead of a stale one.
 #[test]
 fn post_event_relax_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
@@ -5025,6 +5038,82 @@ fn post_event_relax_switch_step_sensitivity() {
     for &switch_step in &[800usize, 1000, 1200, 1500, 1800, 2200, 3000] {
         let angle = run(switch_step, 5000);
         println!("  switch_step={switch_step:5} -> held angle = {angle:.1} deg");
+    }
+}
+
+/// Real follow-up to `post_event_relax_switch_step_sensitivity` above, per
+/// that test's own "real next step" note (2026-08-26 issue #28 comment):
+/// that sweep only held each switch_step for a fixed 5000 steps and found a
+/// monotonic, NOT-converged relationship (higher switch_step -> lower held
+/// angle, none near the real ~29.6 deg target). Two real, distinct
+/// explanations were left open: (a) 5000 steps just never converges
+/// regardless of switch_step, or (b) switch_step itself sets a genuinely
+/// different converged value, not just convergence SPEED. This test tells
+/// them apart directly: run several switch_step values to the SAME long
+/// horizon (100,000 steps total, matching
+/// `post_event_relax_long_horizon_full_confirmation`'s own proven-converged
+/// checkpoint schedule) and compare their trajectories. If every
+/// switch_step's angle keeps falling and lands near the same ~29.6 deg by
+/// 100,000 steps, that's (a) -- switch_step only affects how fast you get
+/// there, not where you end up (a real, safe, non-hardcoded conclusion). If
+/// they plateau at genuinely different angles, that's (b) -- switch_step is
+/// a real, load-bearing physical parameter, not just a convenience knob.
+#[test]
+fn post_event_relax_switch_step_long_horizon_convergence_comparison() {
+    const LOCAL_GRID: usize = 128;
+
+    fn run(switch_step: usize) -> Vec<(usize, f32)> {
+        let config = SimConfig {
+            max_substeps_per_step: 64,
+            apic_blend: 0.6,
+            ..SimConfig::standard(LOCAL_GRID, DT, Vec2::new(0.0, -0.3))
+        };
+        let column = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(8, 16),
+            box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, FLOOR + 8.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        sand.post_event_relax_threshold = 0.001;
+        let mut solver = Simulation::new(config, column)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+        solver.step_n(switch_step);
+        solver.set_apic_blend(0.05);
+        solver.set_cundall_damping(1.0);
+
+        // Same checkpoint schedule as the proven-converged long-horizon
+        // confirmation test, so results are directly comparable to that
+        // test's own already-established 29.6 deg reference trajectory.
+        let checkpoints: &[usize] = &[6000, 12000, 25000, 50000, 100000];
+        let mut cumulative = 0usize;
+        let mut trajectory = Vec::new();
+        for &target in checkpoints {
+            solver.step_n(target - cumulative);
+            cumulative = target;
+            let angle = measure_pile_shape(&solver.particles().x.clone(), FLOOR).angle_deg;
+            trajectory.push((switch_step + cumulative, angle));
+        }
+        trajectory
+    }
+
+    println!(
+        "── SWITCH-STEP LONG-HORIZON CONVERGENCE (does switch_step change WHERE it \
+         settles, or only how FAST?) ──"
+    );
+    // Brackets the original 5000-step sweep's low/mid/high range -- 1500 is
+    // the value the long-horizon confirmation test already proved converges
+    // to 29.6 deg; 800 and 3000 are the extremes the short sweep showed the
+    // most different (67.5 deg vs 54.5 deg at only 5000 held steps).
+    for &switch_step in &[800usize, 1500, 3000] {
+        println!("  switch_step={switch_step}:");
+        for (total_step, angle) in run(switch_step) {
+            println!("    total_step={total_step:7} -> angle={angle:.1} deg");
+        }
     }
 }
 
