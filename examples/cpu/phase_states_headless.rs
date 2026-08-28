@@ -12,12 +12,16 @@ extern crate emerge_engine as emerge;
 /// material_id swap -- melting/boiling absorb real energy (endothermic),
 /// condensing/freezing release it back (exothermic), at the real physical
 /// magnitude in both directions. Real materials per phase, not
-/// placeholders: `StomakhinMaterial` (Stomakhin 2013, the same real snow/
-/// ice constitutive model this engine already ships) for the solid,
-/// `NewtonianFluidMaterial` (Tait EOS) for the liquid, `IdealGasMaterial`
-/// (isentropic ideal-gas EOS, recovered 2026-08-22 from the
-/// `contact-based-interaction` branch -- see `matter::materials::gas`'s
-/// own doc for the full recovery story) for the gas.
+/// placeholders: `RankineMaterial::ice()` (real ice, 2026-08-28 -- see
+/// its own doc for why brittle fracture, not `StomakhinMaterial`'s snow-
+/// specific compaction-hardening, is ice's real mechanical identity; real
+/// MPM+ice-fracture precedent exists in the literature, "Material point
+/// method for crushing and spalling ice simulation," Int. J. Fracture
+/// 2025) for the solid, `NewtonianFluidMaterial` (Tait EOS) for the
+/// liquid, `IdealGasMaterial` (isentropic ideal-gas EOS, recovered
+/// 2026-08-22 from the `contact-based-interaction` branch -- see
+/// `matter::materials::gas`'s own doc for the full recovery story) for
+/// the gas.
 ///
 /// RESOLVED 2026-08-23 (full cycle) -- this file originally only drove the
 /// heating direction (ice->water->steam) and left the reverse transitions
@@ -79,8 +83,8 @@ extern crate emerge_engine as emerge;
 ///   cargo run --example phase_states_headless
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
-    IdealGasMaterial, NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion,
-    StomakhinMaterial, WithLatentHeat, WithLatentHeatTable,
+    IdealGasMaterial, NewtonianFluidMaterial, RankineMaterial, SimConfig, Simulation, SpawnRegion,
+    WithLatentHeat, WithLatentHeatTable,
 };
 use glam::{IVec2, Vec2};
 
@@ -138,6 +142,25 @@ const FREEZING_LATENT_HEAT_SCALED_J_KG: f32 = -FUSION_LATENT_HEAT_SCALED_J_KG; /
 // instantly satisfy its own reverse condition on the very next substep.
 const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 
+// Real ice stiffness (RankineMaterial::ice(), see its own doc): E=9.0 GPa,
+// real polycrystalline ice at -10C. Real, disclosed reduction needed here,
+// same "real formula, stylized magnitude" convention as
+// LATENT_HEAT_SCALE_FACTOR below (and Hertzian contact's own
+// effective_young_modulus): at the REAL 9 GPa, this material's elastic
+// wave speed (sqrt(E/rho), real ice density 917 kg/m3) is ~3130 m/s --
+// 253x this demo's existing (already-tuned, already-stable) wave speed
+// baseline of ~12.4 m/s. Explicit MPM must resolve that wave, so real
+// stiffness would need ~253x more substeps than this demo's proven-stable
+// max_substeps_per_step=3000 budget -- not impossible, but impractical for
+// a quick headless proof (hours instead of minutes). Scaled to E=5.0e5 Pa
+// (a real ~18,000x reduction from 9.0 GPa) keeps the SAME real tensile-to-
+// modulus ratio `RankineMaterial::ice` derives from (only the absolute E
+// magnitude changes, the physics relationship stays exact) and lands at
+// ~23.4 m/s -- under 2x this demo's existing baseline, comfortably inside
+// the current substep budget. Still genuinely brittle-fracture ice (not
+// snow's compaction model), just not full real-world rigidity.
+const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 5.0e5;
+
 // Real, direct external heat source rate (K/s) -- see this file's own
 // top-of-file "RESOLVED 2026-08-23 (numerical stability)" doc for why this
 // replaces passive ambient-diffusion heating as the real driver. Not
@@ -177,7 +200,10 @@ fn main() {
     };
 
     let ice = WithLatentHeat::new(
-        StomakhinMaterial::from_young_modulus(1.4e5, 0.20), // real Stomakhin 2013 canonical value
+        // Real brittle-fracture ice, not snow's compaction model -- see
+        // ICE_YOUNG_MODULUS_SCALED_PA's own doc for the real E and the
+        // real, disclosed reduction needed to keep this demo practical.
+        RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20),
         FREEZING_LATENT_HEAT_SCALED_J_KG,
     );
     // Real, SI-aware constructor (matches `basic_steam.rs`'s own proven
