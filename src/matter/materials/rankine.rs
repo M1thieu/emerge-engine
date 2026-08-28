@@ -10,6 +10,66 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
+/// Real Kelvin-Voigt viscosity (SI Pa.s) for `RankineMaterial::elastic_viscosity`,
+/// derived from a material's own measured seismic/ultrasonic quality factor Q --
+/// the standard way solid-earth/ice-physics literature reports internal damping
+/// (distinct from soil's small-strain damping ratio convention,
+/// `granular::sand::small_strain_elastic_viscosity_pa_s`, but the same
+/// underlying equivalent-viscous-damping conversion).
+///
+/// `zeta = 1/(2*Q)` is the standard quality-factor/damping-ratio relation
+/// (Aki & Richards, "Quantitative Seismology," 2002) -- combined with the
+/// same `eta = 2*zeta*G/omega` equivalent-viscous relation
+/// `small_strain_elastic_viscosity_pa_s` already uses, this collapses to
+/// `eta = G / (Q * omega)`.
+///
+/// `reference_frequency_hz` must be the SAME frequency the cited Q
+/// measurement used -- Q is frequency-dependent in real polycrystalline
+/// solids (grain-boundary friction loss scales ~linearly with frequency,
+/// scattering loss ~quartically), so this conversion is only exact at that
+/// reference, same caveat `small_strain_elastic_viscosity_pa_s` carries for
+/// its own 1 Hz reference.
+///
+/// Returns real SI Pa.s. Convert with `SimConfig::visc_from_si_physical`
+/// before assigning to `elastic_viscosity`.
+pub fn q_factor_elastic_viscosity_pa_s(
+    shear_modulus_pa: f32,
+    quality_factor: f32,
+    reference_frequency_hz: f32,
+) -> f32 {
+    debug_assert!(
+        quality_factor > 0.0,
+        "quality factor {quality_factor} must be positive -- Q<=0 is not a real material"
+    );
+    let omega = 2.0 * std::f32::consts::PI * reference_frequency_hz;
+    shear_modulus_pa / (quality_factor * omega)
+}
+
+/// Real, cited P-wave quality factor for COLD polycrystalline ice (not
+/// temperate ice near 0C -- see this constant's own disclosed limitation
+/// below). Two independent real sources: Bentley & Kohnen (1976), "Seismic
+/// refraction measurements of internal friction in Antarctic ice," Journal
+/// of Geophysical Research 81(9):1519-1526, measured Q_P ~= 715 at 136 Hz,
+/// Byrd Station, ~-28C, 100-500m depth; Peters et al. (2012), "Seismic
+/// attenuation in glacial ice: A proxy for englacial temperature," JGR
+/// Earth Surface, independently cross-checks this with Q_P ~ 500-1700 for
+/// cold Antarctic ice at the same site. Representative pick near the
+/// lower/typical end of both, not the extreme.
+///
+/// Disclosed limitation: Q drops sharply toward the melting point (grain-
+/// boundary sliding/premelting become dominant loss mechanisms) -- the
+/// same Peters et al. 2012 review reports Q_P ~ 65 for TEMPERATE ice near
+/// 0C (Athabasca Glacier), an order of magnitude lower. This constant
+/// represents `RankineMaterial::ice()`'s own -10C reference point (cold,
+/// not temperate), so real ice very close to 0C would genuinely dissipate
+/// energy faster than this value implies.
+pub const ICE_QUALITY_FACTOR_Q: f32 = 700.0;
+
+/// The real measurement frequency Bentley & Kohnen (1976) used -- see
+/// `ICE_QUALITY_FACTOR_Q`'s own doc. Pair the two together, never `Q`
+/// alone, at a different reference frequency.
+pub const ICE_Q_REFERENCE_FREQUENCY_HZ: f32 = 136.0;
+
 /// Rankine (maximum principal stress) elastoplastic material -- brittle tensile failure.
 ///
 /// Elastic response: corotated linear elastic (same as DruckerPragerMaterial / VonMisesMaterial).
@@ -47,6 +107,24 @@ pub struct RankineMaterial {
     /// Positive values reduce σ_t as damage accumulates.
     /// Typical: 0.5–5.0 -- higher = more brittle (strength collapses fast after first crack).
     pub softening_rate: f32,
+    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
+    /// rate (SI Pa.s, convert via `SimConfig::visc_from_si_physical` before
+    /// assigning) -- same mechanism, same formula, as
+    /// `DruckerPragerMaterial::elastic_viscosity`. Zero cost, zero behavior
+    /// change at `0.0` (every preset's default, same convention as sand).
+    ///
+    /// Without this, a pure elastic-plus-brittle-fracture model has NO
+    /// energy dissipation at all below the fracture threshold -- real
+    /// solids are never purely elastic (internal friction from dislocation
+    /// motion and grain-boundary sliding measurably dissipates energy in
+    /// every real material, reported as a seismic/ultrasonic quality
+    /// factor Q -- see `q_factor_elastic_viscosity_pa_s`). Confirmed live
+    /// 2026-08-28: `ice()` with `elastic_viscosity=0.0` bounces near-
+    /// elastically off the ground on any sub-fracture impact, and a
+    /// borderline impact can look like a wrong bounce-then-partial-
+    /// fracture hybrid (some region locally exceeds the yield surface and
+    /// softens while the rest of the body stays perfectly elastic).
+    pub elastic_viscosity: f32,
 }
 
 impl RankineMaterial {
@@ -56,6 +134,7 @@ impl RankineMaterial {
             mu,
             tensile_strength,
             softening_rate,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -190,6 +269,22 @@ impl RankineMaterial {
     /// above (which also use real, unreduced GPa-scale stiffness) -- not
     /// reduced here either, for the same reason: this preset represents real
     /// ice, not a demo-scaled stand-in.
+    ///
+    /// Leaves `elastic_viscosity` at its default `0.0` -- this constructor
+    /// (like every preset above) is a unit-agnostic function of `young_modulus`
+    /// alone, with no `density`/`SimConfig` to perform the real SI->grid
+    /// conversion `elastic_viscosity` needs (same reason `DruckerPragerMaterial`'s
+    /// own presets never bake in `elastic_viscosity` either -- see
+    /// `granular::sand::small_strain_elastic_viscosity_pa_s`'s own doc and
+    /// `examples/cpu/sand_water_saturation.rs`'s real call site for the
+    /// established pattern). A caller that needs real damping (any scene
+    /// putting this preset under real gravity/impacts) should set it
+    /// explicitly via struct-update syntax:
+    /// ```ignore
+    /// let g = young_modulus / (2.0 * (1.0 + poisson_ratio));
+    /// let eta_pa_s = q_factor_elastic_viscosity_pa_s(g, ICE_QUALITY_FACTOR_Q, ICE_Q_REFERENCE_FREQUENCY_HZ);
+    /// RankineMaterial { elastic_viscosity: config.visc_from_si_physical(eta_pa_s, ice_density_kg_m3), ..RankineMaterial::ice(young_modulus, poisson_ratio) }
+    /// ```
     pub fn ice(young_modulus: f32, poisson_ratio: f32) -> Self {
         const ICE_TENSILE_TO_MODULUS_RATIO: f32 = 1.1e-4;
         Self::from_young_modulus(
@@ -245,8 +340,23 @@ impl MaterialModel for RankineMaterial {
         ConstitutiveModel::Rankine
     }
 
+    /// Corotated elastic Kirchhoff stress plus a Kelvin-Voigt viscous term
+    /// on the deviatoric strain rate -- see `elastic_viscosity`'s own doc.
+    /// Zero cost, zero behavior change when `elastic_viscosity == 0.0`
+    /// (every existing preset/scene before 2026-08-28). Same formula as
+    /// `DruckerPragerMaterial::kirchhoff_stress`'s own Kelvin-Voigt dashpot.
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
+        let elastic =
+            corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu);
+        if self.elastic_viscosity == 0.0 {
+            return elastic;
+        }
+        let c = particles.velocity_gradient[i];
+        let sym = c + c.transpose();
+        let d = sym * 0.5;
+        let trace = d.x_axis.x + d.y_axis.y;
+        let d_dev = d - Mat2::from_diagonal(Vec2::splat(trace * 0.5));
+        elastic + self.elastic_viscosity * d_dev
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -306,9 +416,9 @@ impl MaterialModel for RankineMaterial {
         _hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             self.lambda,
             self.mu,
             1.0,
@@ -316,7 +426,25 @@ impl MaterialModel for RankineMaterial {
             MIN_J,
             cell_width,
             material_cfl,
-        )
+        );
+        // Same explicit-viscous-diffusion stability bound
+        // `DruckerPragerMaterial::timestep_bound` already uses for its own
+        // Kelvin-Voigt term -- without this, `elastic_viscosity` adds real
+        // stiffness the substep selector never sees (measured directly for
+        // sand, 2026-08-25: an unbounded viscous term made peak speed jump
+        // instead of damping).
+        let viscous_dt = if self.elastic_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.elastic_viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 
     fn needs_cpu_update(&self) -> bool {
@@ -495,6 +623,101 @@ mod marginal_yield_tests {
         assert!(
             damage_after > damage,
             "damage must keep accumulating on repeated yielding"
+        );
+    }
+}
+
+#[cfg(test)]
+mod damping_tests {
+    use super::*;
+    use crate::Particle;
+
+    /// `q_factor_elastic_viscosity_pa_s` must return a real, finite,
+    /// positive SI viscosity for the cited real ice Q-factor -- basic
+    /// sanity floor before trusting the constant in a live scene.
+    #[test]
+    fn ice_quality_factor_viscosity_is_finite_and_positive() {
+        let shear_modulus_pa = 9.0e9 / (2.0 * (1.0 + 0.3));
+        let eta = q_factor_elastic_viscosity_pa_s(
+            shear_modulus_pa,
+            ICE_QUALITY_FACTOR_Q,
+            ICE_Q_REFERENCE_FREQUENCY_HZ,
+        );
+        assert!(
+            eta.is_finite() && eta > 0.0,
+            "real ice Q-factor must produce a finite, positive Pa.s viscosity, got {eta}"
+        );
+    }
+
+    /// A higher Q (less damping, real physical meaning: colder/purer ice)
+    /// must produce a LOWER viscosity -- the real inverse relationship
+    /// `eta = G/(Q*omega)`, not an accidental monotonic-the-wrong-way bug.
+    #[test]
+    fn higher_quality_factor_means_less_damping() {
+        let g = 4.0e9;
+        let low_q_eta = q_factor_elastic_viscosity_pa_s(g, 100.0, 136.0);
+        let high_q_eta = q_factor_elastic_viscosity_pa_s(g, 1700.0, 136.0);
+        assert!(
+            high_q_eta < low_q_eta,
+            "higher Q (less real damping) must give lower viscosity: \
+             Q=100 -> {low_q_eta}, Q=1700 -> {high_q_eta}"
+        );
+    }
+
+    /// The actual mechanism this was added for: `elastic_viscosity > 0.0`
+    /// must make `kirchhoff_stress` respond to the particle's velocity
+    /// gradient (viscous stress), not just its deformation gradient
+    /// (elastic stress) -- confirms the Kelvin-Voigt term actually engages,
+    /// not just that the field exists.
+    #[test]
+    fn nonzero_elastic_viscosity_adds_a_real_viscous_stress_term() {
+        let elastic_only = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
+        let mut damped = elastic_only;
+        damped.elastic_viscosity = 50.0;
+
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        // A pure shearing velocity gradient -- nonzero deviatoric strain
+        // rate, the exact quantity the Kelvin-Voigt term reacts to.
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0));
+        let particles = Particles::from(vec![p]);
+
+        let tau_elastic = elastic_only.kirchhoff_stress(&particles, 0);
+        let tau_damped = damped.kirchhoff_stress(&particles, 0);
+
+        let diff = tau_damped - tau_elastic;
+        let max_abs = diff
+            .x_axis
+            .abs()
+            .max_element()
+            .max(diff.y_axis.abs().max_element());
+        assert!(
+            max_abs > 1.0e-6,
+            "nonzero elastic_viscosity under a real velocity gradient must \
+             change the Kirchhoff stress: elastic={tau_elastic:?} damped={tau_damped:?}"
+        );
+    }
+
+    /// `elastic_viscosity == 0.0` (every preset's default) must reproduce
+    /// the exact pre-2026-08-28 pure-elastic stress -- a real regression
+    /// guard that adding the damping mechanism did not change default
+    /// behavior for any existing preset/scene.
+    #[test]
+    fn zero_elastic_viscosity_is_bit_identical_to_pure_elastic_stress() {
+        let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
+        assert_eq!(mat.elastic_viscosity, 0.0);
+
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(0.01, 0.97));
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.3, -0.1), Vec2::new(0.2, 0.4));
+        let particles = Particles::from(vec![p]);
+
+        let tau = mat.kirchhoff_stress(&particles, 0);
+        let expected =
+            corotated_elastic_stress(particles.deformation_gradient[0], mat.lambda, mat.mu);
+        assert_eq!(
+            tau, expected,
+            "elastic_viscosity=0.0 must be bit-identical to the pure elastic path"
         );
     }
 }
