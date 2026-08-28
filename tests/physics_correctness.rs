@@ -5817,3 +5817,127 @@ fn diag_phase_transition_under_load_causes_stress_discontinuity() {
                 .max(1.0e-6)
     );
 }
+
+/// Real follow-up to `diag_phase_transition_under_load_causes_stress_
+/// discontinuity` above -- its own doc records that a SINGLE transition
+/// event, with the correct `eos_power`, is small and physically sane. But
+/// the real live crash (`sand_water_saturation.rs`, ~104,737 frames of
+/// real interactive pouring) never does just one transition -- a real
+/// wetting front advances gradually, converting fresh bands of sand to
+/// `GranularFluidMaterial` repeatedly over a long session. This test
+/// checks the real, distinct question a single-event test can't answer:
+/// does REPEATING the transition, band by band, cause the system's max
+/// speed to drift/grow across events (a real cumulative instability), or
+/// does each event stay bounded and independent the way the single-event
+/// result suggests it should?
+///
+/// Same "no water" isolation convention as the test above, for the same
+/// reason: if a cumulative problem shows up here, it's in the transition
+/// mechanism itself, not water's own separately-known CFL/retry
+/// sensitivity (the actual panic's own message named water specifically --
+/// this test deliberately can't reproduce THAT failure mode, only rule
+/// the transition mechanism in or out as a contributing cause).
+///
+/// Real, disclosed scope: this does NOT attempt to reproduce the original
+/// ~104,737-frame crash exactly (infeasible to run here) -- it's a
+/// bounded, real stress test (8 successive band transitions advancing up
+/// the column, 500 steps between each) looking for a DIRECTIONAL signal
+/// (growing vs. bounded max speed across events), not a byte-for-byte
+/// reproduction.
+#[test]
+fn diag_repeated_phase_transitions_do_not_cause_cumulative_instability() {
+    const LOCAL_GRID: usize = 64;
+    const MAT_SAND: u32 = 0;
+    const MAT_MIXTURE: u32 = 1;
+    const BAND_THICKNESS: f32 = 1.0;
+    const CYCLES: usize = 8;
+    const STEPS_BETWEEN_CYCLES: usize = 500;
+
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        ..SimConfig::standard(LOCAL_GRID, 0.01, Vec2::new(0.0, -9.81))
+    };
+    let column = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(10, 24),
+        box_center: Vec2::new(LOCAL_GRID as f32 * 0.5, 20.0),
+        material_id: MAT_SAND,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    // Same real-scene-matching construction as the fixed test above (see
+    // that test's own 2026-08-28 update comment) -- eos_power=2.0, not the
+    // raw ::new() constructor's buggy default.
+    let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+    const EOS_STIFFNESS: f32 = 200.0;
+    let mixture = GranularFluidMaterial {
+        mu,
+        lambda,
+        rest_density: config.grid_density,
+        eos_stiffness: EOS_STIFFNESS,
+        eos_power: 2.0,
+        hardening_exponent: 5.0,
+        compression_limit: 0.4,
+        stretch_limit: 0.01,
+        min_plastic_jacobian: 0.2,
+        max_plastic_jacobian: 3.0,
+        pressure_floor: 0.0,
+        dynamic_viscosity: 0.3 * mu,
+        bulk_viscosity: 0.5 * EOS_STIFFNESS,
+    };
+    let mut sim = Simulation::new(config, column)
+        .with_default_material(Box::new(sand))
+        .with_material(MAT_MIXTURE, Box::new(mixture))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    fn max_speed(sim: &Simulation) -> f32 {
+        sim.particles()
+            .v
+            .iter()
+            .map(|v| v.length())
+            .fold(0.0_f32, f32::max)
+    }
+
+    sim.step_n(4000);
+    let min_y = sim
+        .particles()
+        .x
+        .iter()
+        .map(|x| x.y)
+        .fold(f32::INFINITY, f32::min);
+
+    println!("── REPEATED PHASE TRANSITIONS (real wetting-front advance, no water) ──");
+    let mut speeds = Vec::with_capacity(CYCLES);
+    for cycle in 0..CYCLES {
+        let cutoff_y = min_y + BAND_THICKNESS * (cycle + 1) as f32;
+        let lower_y = min_y + BAND_THICKNESS * cycle as f32;
+        sim.phase_transition(
+            |p| p.material_id == MAT_SAND && p.x.y > lower_y && p.x.y <= cutoff_y,
+            MAT_MIXTURE,
+        );
+        sim.step_n(STEPS_BETWEEN_CYCLES);
+        let speed = max_speed(&sim);
+        speeds.push(speed);
+        println!("  cycle {cycle}: band=({lower_y:.2}, {cutoff_y:.2}] -> max_speed={speed:.4}");
+    }
+
+    let peak = speeds.iter().cloned().fold(0.0f32, f32::max);
+    let last = *speeds.last().unwrap();
+    println!("peak max_speed across all cycles: {peak:.4}, final cycle: {last:.4}");
+
+    // Real, physically-motivated sanity bound, not a tuned-to-pass number:
+    // this column's own real free-fall speed under g=9.81 over its own
+    // ~12-unit height is sqrt(2*9.81*12) ~ 15.3 -- a genuinely unstable
+    // cumulative blow-up would produce speeds far past that, not a value
+    // near it. 50.0 gives real headroom above any physically plausible
+    // single-column dynamics while still catching an actual runaway.
+    for (cycle, &speed) in speeds.iter().enumerate() {
+        assert!(
+            speed.is_finite() && speed < 50.0,
+            "cycle {cycle}: max_speed={speed:.2} -- repeated phase transitions produced \
+             an unstable/runaway speed, a real cumulative instability in the transition \
+             mechanism itself (no water present in this test)"
+        );
+    }
+}
