@@ -428,6 +428,16 @@ impl Simulation {
                 let ln_j_change = (new_j / old_j).ln().abs();
                 worst_ln_j_change = worst_ln_j_change.max(ln_j_change);
                 worst_speed = worst_speed.max(self.particles.v[i].length());
+                // Tried tightening this to the material's own (usually
+                // stricter) `volume_ratio_min/max` on 2026-08-28 while
+                // debugging a real steam fps collapse -- reverted: `new_j`
+                // here is the POST-`update_particle` value, and that function
+                // already unconditionally clamps to those exact bounds before
+                // this ever runs, so a check against the SAME bounds can
+                // structurally never fire (confirmed live: zero effect on the
+                // actual collapse, just added a `.params()` call per particle
+                // per retry attempt for nothing). Real fix for that failure
+                // mode still open -- see project memory.
                 if new_j < self.config.j_min || new_j > self.config.j_max {
                     worst_j_out_of_bounds = true;
                 }

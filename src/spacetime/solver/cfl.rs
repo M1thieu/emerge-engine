@@ -151,6 +151,65 @@ pub(crate) fn choose_substep_dt(
                 if mdt.is_finite() && mdt > 0.0 {
                     min_mat_dt = min_mat_dt.min(mdt);
                 }
+                // Real, standard hydrocode stability correction for von
+                // Neumann-Richtmyer artificial (shock) viscosity (Wilkins 1980,
+                // "Calculation of Elastic-Plastic Flow," Methods in
+                // Computational Physics; Benson 1992, "Computational methods in
+                // Lagrangian and Eulerian hydrocodes," Comput. Methods Appl.
+                // Mech. Engrg. 99) -- found live 2026-08-28 debugging a real,
+                // severe steam fps collapse (`phase_states_gui.rs`): both
+                // `IdealGasMaterial` and `NewtonianFluidMaterial` feed
+                // `von_neumann_richtmyer_q`'s real, dimensionally-correct
+                // (fixed 2026-08-13, see that fix's own comment for the
+                // identical "J pinned at clamp, fps collapses" signature this
+                // closes the rest of) quadratic term
+                // (`c0_quadratic*h^2*div_v^2`) -- real added numerical
+                // stiffness that GROWS with the current compression rate. But
+                // `timestep_bound`'s own trait signature only carries
+                // density/hardening/cell_width, never live `div_v`, so this
+                // term was completely invisible to the CFL scan: nothing ever
+                // shrank dt in response to it, live-measured
+                // `|trace(velocity_gradient)|` climbing past 5000/s with no
+                // corresponding tightening. Standard practice augments the
+                // acoustic sound speed with the viscosity's own contribution,
+                // `c_eff = c_sound + 2*c0_quadratic*h*|div_v|`, then bounds dt
+                // the same way the plain acoustic term already does.
+                // `grad_norm` (Frobenius norm of the velocity gradient, already
+                // computed above for the deformation-rate bound) is a real,
+                // conservative proxy for `|div_v|` -- it upper-bounds any
+                // single directional derivative including the trace/
+                // divergence, so this errs toward MORE caution, never less.
+                // Gated to strict-fluid materials with a real acoustic term
+                // (`owns_deformation_volume_state` + `rest_acoustic_c2`) --
+                // the same real population `von_neumann_richtmyer_q` is ever
+                // invoked for; an elastic solid's own (shear-based) acoustic
+                // term has nothing to do with this mechanism and must not be
+                // tightened by it. `eos_power` doubles as
+                // `von_neumann_richtmyer_q`'s own `weak_shock_gamma` argument
+                // for BOTH materials that call it (confirmed: gas.rs passes
+                // `adiabatic_index`, fluid.rs passes its own Tait `eos_power`
+                // -- same convention, same field in `MaterialParams`).
+                if grad_norm.is_finite()
+                    && grad_norm > f32::EPSILON
+                    && materials.owns_deformation_volume_state(particles.material_id[i])
+                    && let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
+                    && c2_rest.is_finite()
+                    && c2_rest > f32::EPSILON
+                {
+                    let weak_shock_gamma =
+                        materials.get(particles.material_id[i]).params().eos_power;
+                    if weak_shock_gamma.is_finite() && weak_shock_gamma > 0.0 {
+                        let c0_quadratic = (weak_shock_gamma + 1.0) * 0.25;
+                        let c_eff =
+                            c2_rest.sqrt() + 2.0 * c0_quadratic * config.grid_cell_size * grad_norm;
+                        if c_eff.is_finite() && c_eff > f32::EPSILON {
+                            let shock_dt = material_cfl * config.grid_cell_size / c_eff;
+                            if shock_dt.is_finite() && shock_dt > 0.0 {
+                                min_mat_dt = min_mat_dt.min(shock_dt);
+                            }
+                        }
+                    }
+                }
                 // The deformation update is a local ODE in its own right.  Bound the
                 // dimensionless velocity-gradient increment even when affine velocity
                 // contribution is disabled for the advection CFL; otherwise an Euler
