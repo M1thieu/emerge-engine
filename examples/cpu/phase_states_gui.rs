@@ -97,6 +97,28 @@ const STEAM_RHO_KG_M3: f32 = WATER_RHO_KG_M3 / 6.0;
 const STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K: f32 = 101_325.0 / (STEAM_RHO_KG_M3 * BOILING_POINT_K);
 const ICE_RHO_KG_M3: f32 = 917.0;
 
+// Real, DERIVED water EOS stiffness (2026-08-29) -- found live tracing why
+// water was compressing to its own hard [0.5, 2.0] J clamp floor and then
+// violently releasing (measured: particle velocity reaching 48+ grid-units/s
+// from a near-standstill, at just 280K, nowhere near boiling -- ruling out
+// heat/steam as the cause). This is the EXACT same bug class already found
+// and fixed in `basic_fluids_gui.rs` on 2026-08-13 (see project memory,
+// `fluid_eos_stiffness_root_cause`): an under-derived reference sound speed
+// lets the fluid compress far past its real ~1% limit before the EOS
+// resists, and once it finally does, the "spring" has stored far more energy
+// than it should have. Standard weakly-compressible rule (Monaghan 1994;
+// Becker & Teschner 2007, both already cited in `NewtonianFluidMaterial::
+// weakly_compressible`'s own doc): `c_ref = 10 * v_max`, limiting density
+// variation to ~1%. `v_max` derived from Torricelli for THIS scene's real
+// geometry (free-fall from the ice column's own top, `box_center.y +
+// box_size.y*spacing*0.5` = 14.08+2.5 = 16.58m above the floor at y=0) --
+// NOT from the already-corrupted 48 units/s runaway measurement, which is
+// itself a symptom of the under-stiff EOS, not a real target to design for.
+// v_max = sqrt(2*9.81*16.58) = 18.0 m/s; c_ref = 10*18.0 = 180 m/s. The
+// previous value (5.0 m/s) implied the fluid would never exceed 0.5 m/s --
+// off by ~36x, the same order of magnitude as the 2026-08-13 case (~100x).
+const WATER_C_REF_M_S: f32 = 180.0;
+
 // Real, simple proportional heater/cooler -- see this file's own top doc
 // for why a target-temperature slider is more intuitive than a raw rate
 // dial. Clamped so the real per-substep instant latent-heat jump (see
@@ -181,7 +203,12 @@ fn make_sim() -> Simulation {
         FREEZING_LATENT_HEAT_SCALED_J_KG,
     );
     let water = WithLatentHeatTable::new(
-        NewtonianFluidMaterial::weakly_compressible(WATER_RHO_KG_M3, 1.0e-3, 5.0, &config),
+        NewtonianFluidMaterial::weakly_compressible(
+            WATER_RHO_KG_M3,
+            1.0e-3,
+            WATER_C_REF_M_S,
+            &config,
+        ),
         vec![
             (ICE_ID, FUSION_LATENT_HEAT_SCALED_J_KG),
             (STEAM_ID, -VAPORIZATION_LATENT_HEAT_SCALED_J_KG),
@@ -467,6 +494,29 @@ impl State {
         if let Ok(target) = std::env::var("PHASE_STATES_AUTO_HEAT") {
             self.target_temperature = target.parse().unwrap_or(400.0);
         }
+        // Real, temporary verification aid (2026-08-28): the auto-heat var
+        // above jumps the SLIDER TARGET instantly, which every past test
+        // tonight used -- but a real human dragging the slider takes real
+        // time to do that, and `MAX_HEAT_RATE_K_PER_S` alone doesn't capture
+        // that difference (an instant 150K target gap saturates the SAME
+        // 80K/s rate cap from frame one either way). This ramps the target
+        // itself at a deliberate-but-real human pace instead, to test
+        // whether the still-open compression cascade after the (now-fixed)
+        // melt-transition bug is a genuine engine issue or an artifact of
+        // instant, unrealistic heating.
+        if let Ok(rate) = std::env::var("PHASE_STATES_REALISTIC_HEAT_RATE_K_PER_S") {
+            if let Ok(ramp_rate) = rate.parse::<f32>() {
+                let ramp_target: f32 = std::env::var("PHASE_STATES_AUTO_HEAT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(400.0);
+                let dt = self.sim.config().dt;
+                if self.target_temperature < ramp_target {
+                    self.target_temperature =
+                        (self.target_temperature + ramp_rate * dt).min(ramp_target);
+                }
+            }
+        }
         let n_f = self.sim.particles().len().max(1) as f32;
         let current_avg: f32 = self
             .sim
@@ -620,6 +670,23 @@ impl State {
             // from, so its magnitude directly answers that without needing the
             // solver's internal per-substep dt.
             let mut steam_max_abs_c_trace = 0.0_f32;
+            // Real diagnostic (2026-08-29): direct user correction -- the
+            // deformation-gradient offdiag check above (proven zero all
+            // night) only rules out a particle's OWN shape twisting; it says
+            // nothing about the velocity FIELD genuinely swirling as a
+            // group, which is a real, distinct quantity (vorticity, the
+            // antisymmetric half of the velocity gradient -- divergence,
+            // tracked above via trace(C), is the symmetric half). A rising,
+            // expanding parcel creating real vorticity around itself is
+            // correct physics in reality too (a real bubble wake), so this
+            // is a genuine open question, not an assumed bug: is what looks
+            // like "rotation" at liftoff real fluid vorticity, or the visual
+            // signature of several particles being ejected in different
+            // directions from the same crowded spot at once (the real
+            // compression/ejection event already found tonight)?
+            // omega = (dvy/dx - dvx/dy)/2 = (C.x_axis.y - C.y_axis.x)/2.
+            let (mut water_max_abs_vorticity, mut steam_max_abs_vorticity) = (0.0_f32, 0.0_f32);
+            let mut water_max_abs_c_trace = 0.0_f32;
             for p in particles.iter() {
                 let slot = match p.material_id {
                     ICE_ID => 0,
@@ -641,6 +708,13 @@ impl State {
                     ice_damage_sum += p.friction_hardening;
                     ice_max_damage = ice_max_damage.max(p.friction_hardening);
                 }
+                if slot == 1 {
+                    let c = p.velocity_gradient;
+                    let vorticity = (c.x_axis.y - c.y_axis.x).abs() * 0.5;
+                    water_max_abs_vorticity = water_max_abs_vorticity.max(vorticity);
+                    let c_trace = (c.x_axis.x + c.y_axis.y).abs();
+                    water_max_abs_c_trace = water_max_abs_c_trace.max(c_trace);
+                }
                 if slot == 2 {
                     steam_temp_sum += p.temperature;
                     steam_n += 1;
@@ -648,6 +722,8 @@ impl State {
                     let c = p.velocity_gradient;
                     let c_trace = (c.x_axis.x + c.y_axis.y).abs();
                     steam_max_abs_c_trace = steam_max_abs_c_trace.max(c_trace);
+                    let vorticity = (c.x_axis.y - c.y_axis.x).abs() * 0.5;
+                    steam_max_abs_vorticity = steam_max_abs_vorticity.max(vorticity);
                 }
             }
             let steam_avg_temp = if steam_n > 0 {
@@ -671,7 +747,8 @@ impl State {
                  detF[min,max] ice=[{:.3},{:.3}] water=[{:.3},{:.3}] steam=[{:.3},{:.3}]  \
                  ice(n={:3}) speed[avg,max]=[{:.4},{:.4}] damage[avg,max]=[{:.4},{:.4}]  \
                  steam(n={:3}) temp[avg,max]=[{:.2},{:.2}] (ref=373.15)  \
-                 steam max|trace(C)|={:.3}",
+                 steam max|trace(C)|={:.3}  \
+                 vorticity[water,steam]=[{:.3},{:.3}]  divergence[water,steam]=[{:.3},{:.3}]",
                 self.frame,
                 self.last_fps,
                 self.sim.last_substeps(),
@@ -692,6 +769,10 @@ impl State {
                 steam_n,
                 steam_avg_temp,
                 steam_max_temp,
+                steam_max_abs_c_trace,
+                water_max_abs_vorticity,
+                steam_max_abs_vorticity,
+                water_max_abs_c_trace,
                 steam_max_abs_c_trace,
             );
             // TEMPORARY diagnostic (2026-08-28): direct instrumentation
