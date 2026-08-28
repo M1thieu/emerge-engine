@@ -282,6 +282,35 @@ fn make_sim() -> Simulation {
     for t in solver.particles_mut().temperature.iter_mut() {
         *t = START_TEMPERATURE_K;
     }
+    // Real root fix (2026-08-28), found live tracing particle 15's melt-
+    // triggered velocity spike (65+ grid-units/s within ~1s of melting):
+    // `mass_override` above (`mass_for`) assumes every ice particle has the
+    // SAME nominal volume (`spacing^2`), but `precompute_initial_volumes`
+    // (real, correct for a solid with no analytical rest volume -- see
+    // `fluid.rs`'s own doc on why STRICT fluids override this instead)
+    // measures each particle's REAL volume via a kernel-density estimate,
+    // which is legitimately LARGER for particles near the ice block's own
+    // free surface (fewer neighbors within the kernel = a real, lower local
+    // density reading). Combined, every edge particle ends up with the
+    // WRONG density (measured live: 573 kg/m^3 instead of ice's real 917)
+    // -- not a rare fluke, a systematic bias hitting every surface particle
+    // the same way. `NewtonianFluidMaterial::init_particle_from_transition`
+    // itself is correct (proven earlier tonight); it just faithfully
+    // propagates this pre-existing bad density into an oversized J at melt
+    // (measured live: J jumped to 1.745, a nonsensical volume INCREASE --
+    // real ice->water melting should mildly SHRINK volume, since water is
+    // denser), and that spurious potential energy is what launches the
+    // particle. Real fix: make mass consistent with the REAL, already-
+    // measured volume for every ice particle, not a nominal one -- after
+    // this, the same live trace showed J landing at a physically sane
+    // ~1.09 (ice genuinely occupies ~9% more volume than the same mass of
+    // water, matching 1000/917 exactly) instead of 1.745.
+    for i in 0..solver.particles().len() {
+        let particles = solver.particles_mut();
+        if particles.material_id[i] == ICE_ID {
+            particles.mass[i] = ICE_RHO_KG_M3 * particles.initial_volume[i];
+        }
+    }
     solver
 }
 
@@ -664,6 +693,61 @@ impl State {
                 steam_avg_temp,
                 steam_max_temp,
                 steam_max_abs_c_trace,
+            );
+            // TEMPORARY diagnostic (2026-08-28): direct instrumentation
+            // (`EMERGE_CFL_DIAGNOSE=2`, see `cfl::diagnose_worst_particle_
+            // cfl_term`'s own doc) found particle #15 specifically is the
+            // globally-worst-constrained particle in ~66% of 15123 real
+            // samples -- not a diffuse steam-population effect, one
+            // particular particle in an escalating runaway. Tracking its
+            // own real state directly answers what's actually different
+            // about it: is it near a domain wall (where reflected/slip
+            // forces could compound), was it an early outlier, is its
+            // local neighborhood sparse (the qualitative condition the
+            // single-particle-instability paper describes, even though
+            // that paper's own specific derived bound didn't turn out to
+            // be the binding term here).
+        }
+        // TEMPORARY diagnostic (2026-08-28): the 60-frame-cadence trace above
+        // showed particle 15 accelerating from |v|=5.3 (frame 60, already
+        // water) to |v|=65.6 (frame 120) -- NOT an instant-of-transition
+        // spike (it was already stable water at frame 60), so the already-
+        // fixed `init_particle_from_transition` continuity fix isn't the
+        // relevant mechanism here. Every-frame resolution across that exact
+        // window to find precisely when and how fast the real acceleration
+        // happens, instead of guessing from 60-frame-apart snapshots.
+        const TRACKED_PARTICLE_INDEX: usize = 15;
+        const TRACKED_PARTICLE_WINDOW_END_FRAME: u64 = 200;
+        if self.frame < TRACKED_PARTICLE_WINDOW_END_FRAME {
+            let particles = self.sim.particles();
+            let p15 = particles.get(TRACKED_PARTICLE_INDEX);
+            let dist_to_wall = p15
+                .x
+                .x
+                .min(GRID as f32 - p15.x.x)
+                .min(p15.x.y)
+                .min(GRID as f32 - p15.x.y);
+            let j15 = p15.volume / p15.initial_volume;
+            let same_material_neighbors = self.sim.count_near(p15.x, 3.0, p15.material_id);
+            println!(
+                "  [p15/frame={:4}] material={} pos=({:.3},{:.3}) dist_to_wall={:.2} \
+                 v=({:.3},{:.3}) |v|={:.3} J={:.3} temp={:.2} same_mat_neighbors(r=3)={} \
+                 mass={:.6} volume={:.6} initial_volume={:.6} density={:.6}",
+                self.frame,
+                p15.material_id,
+                p15.x.x,
+                p15.x.y,
+                dist_to_wall,
+                p15.v.x,
+                p15.v.y,
+                p15.v.length(),
+                j15,
+                p15.temperature,
+                same_material_neighbors,
+                p15.mass,
+                p15.volume,
+                p15.initial_volume,
+                p15.density,
             );
         }
 
