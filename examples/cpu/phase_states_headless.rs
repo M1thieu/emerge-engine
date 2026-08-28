@@ -1,5 +1,8 @@
 extern crate emerge_engine as emerge;
 
+use emerge::matter::materials::rankine::{
+    ICE_Q_REFERENCE_FREQUENCY_HZ, ICE_QUALITY_FACTOR_Q, q_factor_elastic_viscosity_pa_s,
+};
 /// Headless proof of the real, FULL, bidirectional solid <-> liquid <-> gas
 /// phase cycle (ice -> water -> steam -> water -> ice), all three states
 /// driven by ONE mechanism in BOTH directions -- real temperature crossing
@@ -203,7 +206,25 @@ fn main() {
         // Real brittle-fracture ice, not snow's compaction model -- see
         // ICE_YOUNG_MODULUS_SCALED_PA's own doc for the real E and the
         // real, disclosed reduction needed to keep this demo practical.
-        RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20),
+        // Real Kelvin-Voigt damping (Bentley & Kohnen 1976 / Peters et al.
+        // 2012 cited Q for cold ice -- see `elastic_viscosity`'s and
+        // `q_factor_elastic_viscosity_pa_s`'s own docs): without this,
+        // ice has NO energy dissipation below its fracture threshold and
+        // bounces near-elastically off the ground under real gravity,
+        // confirmed live 2026-08-28 in `phase_states_gui.rs`.
+        {
+            let ice_shear_modulus_pa = ICE_YOUNG_MODULUS_SCALED_PA / (2.0 * (1.0 + 0.20));
+            let elastic_viscosity_pa_s = q_factor_elastic_viscosity_pa_s(
+                ice_shear_modulus_pa,
+                ICE_QUALITY_FACTOR_Q,
+                ICE_Q_REFERENCE_FREQUENCY_HZ,
+            );
+            RankineMaterial {
+                elastic_viscosity: config
+                    .visc_from_si_physical(elastic_viscosity_pa_s, ICE_RHO_KG_M3),
+                ..RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20)
+            }
+        },
         FREEZING_LATENT_HEAT_SCALED_J_KG,
     );
     // Real, SI-aware constructor (matches `basic_steam.rs`'s own proven
@@ -232,14 +253,28 @@ fn main() {
         ],
     );
     let steam = WithLatentHeat::new(
-        IdealGasMaterial::from_physical(
-            STEAM_RHO_KG_M3,
-            STEAM_VISCOSITY_PA_S,
-            STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K,
-            STEAM_ADIABATIC_INDEX,
-            BOILING_POINT_K,
-            &config,
-        ),
+        {
+            // Real bulk viscosity (2026-08-28, see `IdealGasMaterial::
+            // bulk_viscosity`'s own doc, Cramer 2012) -- water vapor's real
+            // dilatational damping, applied here too for the same real
+            // physical reason even though this zero-gravity scene doesn't
+            // exercise the buoyancy-driven instability that surfaced the
+            // gap live in `phase_states_gui.rs`.
+            let bulk_viscosity = emerge::matter::materials::gas::water_vapor_bulk_viscosity_pa_s(
+                STEAM_VISCOSITY_PA_S,
+            );
+            IdealGasMaterial {
+                bulk_viscosity,
+                ..IdealGasMaterial::from_physical(
+                    STEAM_RHO_KG_M3,
+                    STEAM_VISCOSITY_PA_S,
+                    STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K,
+                    STEAM_ADIABATIC_INDEX,
+                    BOILING_POINT_K,
+                    &config,
+                )
+            }
+        },
         VAPORIZATION_LATENT_HEAT_SCALED_J_KG,
     );
 
@@ -367,6 +402,19 @@ fn main() {
             });
         if n == 0 { f32::NAN } else { sum / n as f32 }
     };
+    // Real, direct stability diagnostic (2026-08-28) -- catches the exact
+    // "gas cooling down explodes" symptom this run is meant to rule out: a
+    // fabricated overcompression at the condensation front reads as a huge
+    // Tait EOS pressure spike, which shows up here as a sudden max-speed
+    // jump BEFORE it would show up as a NaN/panic. Real max over EVERY
+    // particle, not per-material, since a spike at the phase boundary can
+    // kick neighboring particles of either material.
+    let max_speed_of = |sim: &Simulation| {
+        sim.particles()
+            .iter()
+            .map(|p| p.v.length())
+            .fold(0.0_f32, f32::max)
+    };
 
     let mut all_melted_at: Option<u64> = None;
     let mut all_boiled_at: Option<u64> = None;
@@ -405,11 +453,12 @@ fn main() {
             let steam_n = count_of(&solver, STEAM_ID);
             println!(
                 "step={step:4}  ice={ice_n:4}(T={:6.2})  water={water_n:4}(T={:6.2})  \
-                 steam={steam_n:4}(T={:6.2} avgJ={:5.2})",
+                 steam={steam_n:4}(T={:6.2} avgJ={:5.2})  max_speed={:6.3}",
                 avg_temp_of(&solver, ICE_ID),
                 avg_temp_of(&solver, WATER_ID),
                 avg_temp_of(&solver, STEAM_ID),
                 avg_det_f_of(&solver, STEAM_ID),
+                max_speed_of(&solver),
             );
             if all_melted_at.is_none() && ice_n == 0 && water_n + steam_n > 0 {
                 all_melted_at = Some(step);
