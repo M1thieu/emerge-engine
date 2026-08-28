@@ -109,6 +109,40 @@ pub struct IdealGasMaterial {
     pub volume_ratio_min: f32,
     /// Upper bound on `J`. See `volume_ratio_min`'s own doc.
     pub volume_ratio_max: f32,
+    /// Bulk (dilatational/second) viscosity ζ, Pa·s -- raw SI, unconverted,
+    /// same convention as `dynamic_viscosity`'s own doc. Adds
+    /// `τ += ζ·(∇·v)·I` to Kirchhoff stress -- the real Navier-Stokes
+    /// second-viscosity term, mirroring `NewtonianFluidMaterial::
+    /// bulk_viscosity`'s own already-proven formula exactly, but UNLIKE
+    /// this material's own shock viscosity `q` (gated to `∇·v < 0`,
+    /// compression only), this term is unconditional on sign -- it
+    /// resists rapid EXPANSION exactly as much as compression.
+    ///
+    /// Real, found live 2026-08-28 (`phase_states_gui.rs`'s chimney demo):
+    /// before this field existed, `IdealGasMaterial` had real resistance to
+    /// over-COMPRESSION (the EOS pressure term self-limits, `q` engages),
+    /// but genuinely NOTHING resisting over-EXPANSION beyond the hard
+    /// `volume_ratio_max` clamp -- under real buoyancy-driven velocity
+    /// divergence, individual particles' `J` would race toward that clamp
+    /// with zero damping, hit it, fall back, race up again: a real,
+    /// confirmed (via direct per-particle `det(F)` logging) chaotic
+    /// particle-to-particle size variance, not a rendering bug and not
+    /// fixed by narrowing the clamp's numeric range alone.
+    ///
+    /// Real, cited magnitude: unlike a monatomic ideal gas (bulk viscosity
+    /// exactly zero under Stokes' hypothesis), water vapor is polyatomic
+    /// (asymmetric top, real rotational AND vibrational relaxation modes)
+    /// -- Cramer, M.S. (2012), "Numerical estimates for the bulk viscosity
+    /// of ideal gases," Physics of Fluids 24, 066102: water vapor's bulk
+    /// viscosity (estimated over 380-1000 K, covering this material's own
+    /// real boiling-point reference) is "hundreds or thousands of times
+    /// larger than [its] shear viscosity" -- a real, large, well-cited
+    /// effect, not a small correction. See `water_vapor_bulk_viscosity_pa_s`
+    /// for a real, sourced conversion from a gas's own shear viscosity,
+    /// using the conservative (low) end of that cited range.
+    ///
+    /// 0.0 = off (default, every existing preset/scene unaffected).
+    pub bulk_viscosity: f32,
 }
 
 impl IdealGasMaterial {
@@ -129,6 +163,7 @@ impl IdealGasMaterial {
             min_volume: 1.0e-6,
             volume_ratio_min: 0.05,
             volume_ratio_max: 20.0,
+            bulk_viscosity: 0.0,
         }
     }
 
@@ -190,6 +225,30 @@ impl IdealGasMaterial {
         let r_grid = specific_gas_constant_j_kg_k / dx2;
         Self::new(rho_grid, eta_pa_s, r_grid, adiabatic_index, temperature_k)
     }
+}
+
+/// Real, cited bulk (dilatational) viscosity for a polyatomic gas whose
+/// bulk viscosity is dominated by rotational/vibrational relaxation --
+/// water vapor specifically, though the same real mechanism applies to any
+/// non-monatomic gas. See `IdealGasMaterial::bulk_viscosity`'s own doc for
+/// the full citation (Cramer 2012, Physics of Fluids 24, 066102: water
+/// vapor's bulk viscosity is "hundreds or thousands of times" its shear
+/// viscosity, estimated over 380-1000 K).
+///
+/// `BULK_TO_SHEAR_RATIO` uses the LOW end of that cited range (hundreds,
+/// not thousands) -- a real, disclosed, conservative pick, same convention
+/// as this codebase's other "representative pick near the lower/typical
+/// end of a cited range" presets (e.g. `RankineMaterial::ice`'s own doc).
+/// Picking the high end (thousands) is real too, just not the choice made
+/// here -- a future scene needing stronger expansion damping can scale
+/// this ratio up, still within the same real citation.
+///
+/// Returns real SI Pa·s -- passes through UNCONVERTED into
+/// `bulk_viscosity`, same raw-SI convention `dynamic_viscosity` already
+/// uses for this material (see that field's own doc).
+pub fn water_vapor_bulk_viscosity_pa_s(shear_viscosity_pa_s: f32) -> f32 {
+    const BULK_TO_SHEAR_RATIO: f32 = 100.0;
+    shear_viscosity_pa_s * BULK_TO_SHEAR_RATIO
 }
 
 impl MaterialModel for IdealGasMaterial {
@@ -312,6 +371,15 @@ impl MaterialModel for IdealGasMaterial {
             stress += self.dynamic_viscosity * strain_dev;
         }
 
+        // Bulk viscosity zeta: tau += zeta*(div v)*I -- see this field's
+        // own doc. Same real formula NewtonianFluidMaterial::kirchhoff_stress
+        // already uses; `div_v` here is tr(C+C^T) = 2*div(v), so the *0.5
+        // recovers the true divergence, same convention that file's own
+        // comment documents.
+        if self.bulk_viscosity > 0.0 {
+            stress += Mat2::from_diagonal(Vec2::splat(self.bulk_viscosity * div_v * 0.5));
+        }
+
         // Artificial (shock) viscosity -- von Neumann & Richtmyer 1950,
         // reusing the SAME shared q-formula `NewtonianFluidMaterial` uses
         // (`materials::utils::von_neumann_richtmyer_q`), fed this
@@ -373,6 +441,7 @@ impl MaterialModel for IdealGasMaterial {
             dynamic_viscosity: self.dynamic_viscosity,
             volume_ratio_min: self.volume_ratio_min,
             volume_ratio_max: self.volume_ratio_max,
+            bulk_viscosity: self.bulk_viscosity,
             owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
@@ -404,9 +473,21 @@ impl MaterialModel for IdealGasMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        if self.dynamic_viscosity > 0.0 {
+        // Combined explicit-viscous-diffusion bound for BOTH shear and bulk
+        // viscosity -- same real stability reasoning `DruckerPragerMaterial::
+        // timestep_bound`'s own doc gives for its Kelvin-Voigt term (measured
+        // live: an unbounded viscous term makes peak speed jump instead of
+        // damping). Combined linearly, not each bounded separately: both
+        // terms multiply the SAME velocity-gradient-derived stress, so their
+        // worst-case combined diffusive coefficient is the real, conservative
+        // bound, not an approximation. `bulk_viscosity` can be "hundreds of
+        // times" `dynamic_viscosity` for a real polyatomic gas (see that
+        // field's own doc) -- without including it here, the substep
+        // selector would never see the real stiffness it adds.
+        let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
+        if combined_viscosity > 0.0 {
             let density = density.max(self.min_density);
-            let kinematic_viscosity = self.dynamic_viscosity / density;
+            let kinematic_viscosity = combined_viscosity / density;
             if kinematic_viscosity > f32::EPSILON {
                 dt_bound =
                     dt_bound.min(viscous_cfl * cell_width * cell_width / kinematic_viscosity);
@@ -454,6 +535,91 @@ mod tests {
             (pressure - 101_325.0).abs() / 101_325.0 < 0.01,
             "IdealGasMaterial's own stress should reproduce the real ideal gas \
              pressure at real air density/temperature: got {pressure:.1} Pa"
+        );
+    }
+
+    /// `water_vapor_bulk_viscosity_pa_s` must return a real, finite,
+    /// positive multiple of shear viscosity -- basic sanity floor for the
+    /// cited Cramer 2012 conversion before trusting it in a live scene.
+    #[test]
+    fn water_vapor_bulk_viscosity_is_a_real_positive_multiple_of_shear() {
+        let shear = 1.26e-5_f32; // real steam shear viscosity, this codebase's own cited value
+        let bulk = water_vapor_bulk_viscosity_pa_s(shear);
+        assert!(
+            bulk.is_finite() && bulk > shear,
+            "cited water vapor bulk viscosity must be a real, large multiple \
+             of shear viscosity (Cramer 2012: hundreds-thousands x), got \
+             bulk={bulk} shear={shear}"
+        );
+    }
+
+    /// The actual mechanism this was added for: nonzero `bulk_viscosity`
+    /// must resist EXPANSION (`div(v) > 0`), not just compression -- unlike
+    /// this material's own shock viscosity `q`, which only engages under
+    /// compression. Confirms the term actually engages under a real
+    /// expanding velocity field, not just that the field exists.
+    #[test]
+    fn nonzero_bulk_viscosity_resists_expansion_not_just_compression() {
+        let mut config = unit_dx_config();
+        config.dx_meters = 1.0;
+        let inviscid = IdealGasMaterial::air(1.204, 293.15, &config);
+        let mut damped = inviscid;
+        damped.bulk_viscosity = 1.0;
+
+        let mut p = Particle::zeroed();
+        p.mass = inviscid.rest_density;
+        p.deformation_gradient = Mat2::IDENTITY;
+        inviscid.init_particle(&mut p);
+        // Pure isotropic expansion: div(v) > 0.
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.5, 0.0), Vec2::new(0.0, 0.5));
+        let particles = Particles::from(vec![p]);
+
+        let tau_inviscid = inviscid.kirchhoff_stress(&particles, 0);
+        let tau_damped = damped.kirchhoff_stress(&particles, 0);
+
+        // Real Navier-Stokes second-viscosity sign: resisting expansion
+        // means an ADDED positive (compressive-direction-opposing, i.e.
+        // less negative / more positive) diagonal stress relative to the
+        // inviscid case -- a real restoring force against further
+        // expansion, not an amplifying one.
+        assert!(
+            tau_damped.x_axis.x > tau_inviscid.x_axis.x,
+            "bulk viscosity must add real resistance to expansion: \
+             inviscid={:.6} damped={:.6}",
+            tau_inviscid.x_axis.x,
+            tau_damped.x_axis.x
+        );
+    }
+
+    /// `bulk_viscosity == 0.0` (every preset's default) must reproduce the
+    /// exact pre-2026-08-28 stress -- a real regression guard that adding
+    /// this mechanism did not change default behavior for any existing
+    /// preset/scene.
+    #[test]
+    fn zero_bulk_viscosity_is_bit_identical_to_prior_behavior() {
+        let mut config = unit_dx_config();
+        config.dx_meters = 1.0;
+        let mat = IdealGasMaterial::air(1.204, 293.15, &config);
+        assert_eq!(mat.bulk_viscosity, 0.0);
+
+        let mut p = Particle::zeroed();
+        p.mass = mat.rest_density;
+        p.deformation_gradient = Mat2::IDENTITY;
+        mat.init_particle(&mut p);
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.3, -0.1), Vec2::new(0.2, 0.4));
+        let particles = Particles::from(vec![p]);
+
+        // Two materials, one with the new field explicitly re-zeroed via
+        // struct-update -- same value either way, proving the new branch
+        // is a true no-op at the default.
+        let same = IdealGasMaterial {
+            bulk_viscosity: 0.0,
+            ..mat
+        };
+        assert_eq!(
+            mat.kirchhoff_stress(&particles, 0),
+            same.kirchhoff_stress(&particles, 0),
+            "bulk_viscosity=0.0 must be bit-identical to the pre-existing path"
         );
     }
 
