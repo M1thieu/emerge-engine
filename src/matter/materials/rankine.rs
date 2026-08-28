@@ -157,6 +157,49 @@ impl RankineMaterial {
         )
     }
 
+    /// Ice regime: same ratio-not-absolute pattern as the rock presets above --
+    /// the real, defining reason ice belongs HERE, not in `StomakhinMaterial`
+    /// (snow): snow's whole constitutive law is compaction-hardening (crushing
+    /// trapped air pockets between ice crystals, a real, distinct porous-media
+    /// mechanism), which solid, non-porous ice does not have -- real ice is
+    /// brittle, it cracks rather than crushes, the same failure MODE this
+    /// material already models for rock/bone. Real E for polycrystalline ice:
+    /// 9.0-11.2 GPa at -10C (randomly oriented polycrystals ~9.0 GPa at -5C;
+    /// granular polycrystalline ice 9.3 GPa at 263K) -- representative pick
+    /// E~9.0 GPa, the lower/typical end. Real tensile strength: 0.7-3.1 MPa
+    /// over -10C to -20C (Petrovic 2003, "Review: mechanical properties of ice
+    /// and snow," J. Materials Science 38), general engineering estimate ~1 MPa
+    /// -- ratio ~1.1e-4, the same order of magnitude as rock's 2.5e-4 (both
+    /// brittle crystalline solids, a real cross-check, not a coincidence).
+    /// softening_rate=2.0 matching rock/sandstone/shale's own "fails fast, no
+    /// separately-cited reason to differ" convention -- ice's own real fracture
+    /// propagation is brittle/abrupt like rock, not bone's tougher, slower mode.
+    ///
+    /// Real, disclosed engine limitation this preset inherits, not a new one:
+    /// explicit MPM must resolve the elastic wave speed `c = sqrt(E/rho)` --
+    /// at E=9 GPa and real ice density this is genuinely fast, ~3130 m/s (the
+    /// bar-wave speed from E alone). Real cross-check: this lands almost
+    /// exactly on ice's own directly-measured laboratory rod/bar longitudinal
+    /// speed, 3163 m/s (Northwood 1947, "Propagation of Elastic Waves in
+    /// Ice"), the same wave mode `sqrt(E/rho)` represents -- full-body deep-
+    /// ice P-wave measurements run somewhat higher (3410-3878 m/s, a
+    /// different wave mode that also depends on Poisson's ratio, not just
+    /// E). A scene using this preset needs a correspondingly fine substep
+    /// budget, same real stiffness-vs-explicit-timestep tradeoff already
+    /// documented for the `stiff_brittle`/`sandstone`/`shale` rock presets
+    /// above (which also use real, unreduced GPa-scale stiffness) -- not
+    /// reduced here either, for the same reason: this preset represents real
+    /// ice, not a demo-scaled stand-in.
+    pub fn ice(young_modulus: f32, poisson_ratio: f32) -> Self {
+        const ICE_TENSILE_TO_MODULUS_RATIO: f32 = 1.1e-4;
+        Self::from_young_modulus(
+            young_modulus,
+            poisson_ratio,
+            young_modulus * ICE_TENSILE_TO_MODULUS_RATIO,
+            2.0,
+        )
+    }
+
     /// Effective tensile strength after damage softening. Floored at a small
     /// residual fraction of virgin strength -- see `RANKINE_MIN_RESIDUAL_TENSILE_FRACTION`
     /// doc for why an unfloored exponential decay is an unbounded damage ratchet.
@@ -485,7 +528,7 @@ mod rock_preset_tests {
         );
     }
 
-    /// All 5 Rankine presets (bone/rock family) must produce finite, positive
+    /// All 6 Rankine presets (bone/rock/ice family) must produce finite, positive
     /// tensile strengths at a real representative modulus -- a basic sanity floor
     /// before trusting any of them in a live scene.
     #[test]
@@ -498,6 +541,7 @@ mod rock_preset_tests {
             ("sandstone", RankineMaterial::sandstone(e, nu)),
             ("limestone", RankineMaterial::limestone(e, nu)),
             ("shale", RankineMaterial::shale(e, nu)),
+            ("ice", RankineMaterial::ice(e, nu)),
         ] {
             assert!(
                 mat.tensile_strength.is_finite() && mat.tensile_strength > 0.0,
