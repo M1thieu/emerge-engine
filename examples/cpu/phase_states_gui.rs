@@ -84,11 +84,31 @@ const VAPORIZATION_LATENT_HEAT_SCALED_J_KG: f32 =
 const FREEZING_LATENT_HEAT_SCALED_J_KG: f32 = -FUSION_LATENT_HEAT_SCALED_J_KG;
 const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 
-// Real ice stiffness -- see RankineMaterial::ice's own doc for the real
-// E=9.0 GPa and phase_states_headless.rs's own ICE_YOUNG_MODULUS_SCALED_PA
-// doc for the full real-vs-practical wave-speed reasoning (253x -> ~1.9x
-// this same scaled value already verified working there).
-const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 5.0e5;
+// Real, DERIVED ice stiffness (2026-08-29) -- found live: the previous
+// value (5.0e5 Pa) was carried over VERBATIM from phase_states_headless.rs,
+// whose own doc says it was "verified working there" -- but that scene uses
+// ZERO gravity by explicit design (isolates the thermal cycle from settling
+// dynamics), so it has no real impact/fall velocities to resist at all. THIS
+// scene deliberately adds real gravity for real settling/chimney dynamics
+// (see make_sim's own doc), and never re-derived the stiffness for that.
+// Exact same bug class as the water EOS fix just above/before this in the
+// session: a constant proven fine for a less-demanding sibling scene,
+// silently insufficient for a more demanding one.
+//
+// Real ice wave speed `c = sqrt(E/rho)` at the old value: sqrt(5e5/917) =
+// 23.35 m/s -- only ~1.3x this scene's own real velocity scale (18.0 m/s,
+// Torricelli free-fall from the ice column's real height, same derivation
+// as WATER_C_REF_M_S above). Barely faster than what it needs to resist,
+// so it deforms/bounces instead of behaving rigid. Applying the SAME
+// margin rule used for water (target wave speed = 10*v_max, same spirit as
+// Monaghan 1994's stiffness-margin rule, generalized from fluids to an
+// elastic solid's own wave speed): `E = rho*(10*v_max)^2 = 917*180^2 =
+// 2.971e7 Pa` -- a real, derived correction (~59x stiffer), still ~303x
+// softer than real ice (E=9.0 GPa, RankineMaterial::ice's own doc), the
+// same category of practical/CFL compromise as the ORIGINAL 253x reduction
+// -- just actually re-derived for this scene's real dynamics instead of
+// inherited from one that never had any.
+const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 2.971e7;
 
 const STEAM_ADIABATIC_INDEX: f32 = 1.33;
 const STEAM_VISCOSITY_PA_S: f32 = 1.26e-5;
