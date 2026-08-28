@@ -251,6 +251,29 @@ impl Simulation {
             // `choose_substep_dt`'s own `last_max_speed` param doc.
             self.last_max_particle_speed = measured_max_speed;
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
+            // TEMPORARY diagnostic (2026-08-28), see `diagnose_worst_particle_
+            // cfl_term`'s own doc -- opt-in via env var so every existing scene
+            // pays nothing. `EMERGE_CFL_DIAGNOSE=all` scans every particle;
+            // `EMERGE_CFL_DIAGNOSE=<material_id>` filters to one material.
+            if let Ok(spec) = std::env::var("EMERGE_CFL_DIAGNOSE") {
+                let filter = if spec.eq_ignore_ascii_case("all") {
+                    None
+                } else {
+                    spec.parse::<u32>().ok()
+                };
+                if let Some((i, term, dt)) = crate::solver::cfl::diagnose_worst_particle_cfl_term(
+                    &self.config,
+                    &self.particles,
+                    self.active_count,
+                    &self.materials,
+                    filter,
+                ) {
+                    println!(
+                        "[cfl-diagnose] worst particle={i} material={} binding_term={term} dt={dt:.6} (chosen sub_dt={sub_dt:.6})",
+                        self.particles.material_id[i]
+                    );
+                }
+            }
             // Sticky fine-substep hold (`fluid_sticky_fine_dt`'s own doc) -- caps
             // the ordinary CFL result while a recent retry's hold is still active,
             // so a sustained near-wall compression event doesn't relax back to a

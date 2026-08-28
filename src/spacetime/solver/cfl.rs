@@ -419,6 +419,134 @@ pub(crate) fn choose_substep_dt(
     (cfl_bound(config, max_speed, min_mat_dt, max_dt), max_speed)
 }
 
+/// TEMPORARY diagnostic (2026-08-28): identifies which real CFL term is
+/// actually binding `min_mat_dt` for the single worst (most constraining)
+/// particle of a given material -- found needed live-debugging the
+/// still-open steam divergence, after three independent, correctly-
+/// implemented, sourced CFL tightenings (shock-viscosity augmentation,
+/// single-particle instability, a since-reverted retry-bound experiment)
+/// each showed ZERO measurable effect on the actual bug. Three real
+/// negative results in a row means the next step is answering directly
+/// which term is deciding, not guessing a fourth blind.
+///
+/// Deliberately sequential and separate from the production fold above,
+/// not a refactor of it: this is diagnostic-only, not performance-
+/// sensitive, and reuses the exact same formulas already proven correct in
+/// that fold (copied, not re-derived, so there's no risk of the two
+/// drifting apart) -- touching the hot, already-hardened, parallel path
+/// itself carries real regression risk this session can't afford to
+/// re-verify from scratch this late. Remove once the investigation
+/// concludes; see project memory for the full context.
+pub(crate) fn diagnose_worst_particle_cfl_term(
+    config: &SimConfig,
+    particles: &Particles,
+    active_count: usize,
+    materials: &MaterialRegistry,
+    material_filter: Option<u32>,
+) -> Option<(usize, &'static str, f32)> {
+    let mut worst_dt = f32::INFINITY;
+    let mut worst_i = None;
+    let mut worst_term = "none";
+    for i in 0..active_count {
+        if let Some(filter) = material_filter
+            && particles.material_id[i] != filter
+        {
+            continue;
+        }
+        let grad_norm = (particles.velocity_gradient[i].x_axis.length_squared()
+            + particles.velocity_gradient[i].y_axis.length_squared())
+        .sqrt();
+
+        let mdt = materials.timestep_bound(
+            particles.material_id[i],
+            particles.density[i],
+            particles.hardening_scale[i],
+            config.grid_cell_size,
+            config.material_cfl_coefficient,
+            config.viscous_timestep_coefficient,
+        );
+        if mdt.is_finite() && mdt > 0.0 && mdt < worst_dt {
+            worst_dt = mdt;
+            worst_i = Some(i);
+            worst_term = "material_timestep_bound(acoustic/viscous)";
+        }
+
+        if grad_norm.is_finite()
+            && grad_norm > f32::EPSILON
+            && materials.owns_deformation_volume_state(particles.material_id[i])
+            && let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
+            && c2_rest.is_finite()
+            && c2_rest > f32::EPSILON
+        {
+            let weak_shock_gamma = materials.get(particles.material_id[i]).params().eos_power;
+            if weak_shock_gamma.is_finite() && weak_shock_gamma > 0.0 {
+                let c0_quadratic = (weak_shock_gamma + 1.0) * 0.25;
+                let c_eff = c2_rest.sqrt() + 2.0 * c0_quadratic * config.grid_cell_size * grad_norm;
+                if c_eff.is_finite() && c_eff > f32::EPSILON {
+                    let shock_dt = config.material_cfl_coefficient * config.grid_cell_size / c_eff;
+                    if shock_dt.is_finite() && shock_dt > 0.0 && shock_dt < worst_dt {
+                        worst_dt = shock_dt;
+                        worst_i = Some(i);
+                        worst_term = "shock_viscosity_augmented_acoustic";
+                    }
+                }
+            }
+        }
+
+        if materials.owns_deformation_volume_state(particles.material_id[i]) {
+            let rest_density = materials
+                .get(particles.material_id[i])
+                .params()
+                .rest_density;
+            let j = particles.volume[i] / particles.initial_volume[i];
+            if rest_density.is_finite() && rest_density > 0.0 && j.is_finite() && j > 0.0 {
+                const QUADRATIC_SPLINE_K: f32 = 6.0;
+                const DIMENSION_D: f32 = 2.0;
+                let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
+                let single_particle_dt = if j <= 1.0 {
+                    (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd).sqrt()
+                } else {
+                    config.grid_cell_size * (rest_density * (j + 1.0) / (j * j * j * kd)).sqrt()
+                };
+                if single_particle_dt.is_finite()
+                    && single_particle_dt > 0.0
+                    && single_particle_dt < worst_dt
+                {
+                    worst_dt = single_particle_dt;
+                    worst_i = Some(i);
+                    worst_term = "single_particle_instability";
+                }
+            }
+        }
+
+        let deformation_coefficient = config.cfl_coefficient.min(0.5);
+        let deformation_dt = if grad_norm.is_finite() && grad_norm > f32::EPSILON {
+            deformation_coefficient / grad_norm
+        } else {
+            f32::INFINITY
+        };
+        if deformation_dt.is_finite() && deformation_dt > 0.0 && deformation_dt < worst_dt {
+            worst_dt = deformation_dt;
+            worst_i = Some(i);
+            worst_term = "deformation_gradient_rate";
+        }
+
+        let mut s = particles.v[i].length();
+        if config.cfl_include_affine_speed {
+            s += grad_norm * AFFINE_CFL_STENCIL_CORNER_DISTANCE * config.grid_cell_size;
+        }
+        if s > f32::EPSILON {
+            let velocity_dt = config.cfl_coefficient * config.grid_cell_size / s;
+            if velocity_dt.is_finite() && velocity_dt > 0.0 && velocity_dt < worst_dt {
+                worst_dt = velocity_dt;
+                worst_i = Some(i);
+                worst_term = "velocity_cfl(incl. affine)";
+            }
+        }
+    }
+    worst_i.map(|i| (i, worst_term, worst_dt))
+}
+
 /// Shared CFL formula: clamps dt to advection + material bounds.
 /// Called by both SoA and AoS scan paths after computing their respective max values.
 pub(crate) fn cfl_bound(config: &SimConfig, max_speed: f32, min_mat_dt: f32, max_dt: f32) -> f32 {
