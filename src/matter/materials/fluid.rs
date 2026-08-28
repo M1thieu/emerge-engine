@@ -235,6 +235,51 @@ impl MaterialModel for NewtonianFluidMaterial {
         particle.density = self.rest_density / j;
     }
 
+    /// Real fix, same mechanism as `IdealGasMaterial::init_particle_from_transition`'s
+    /// own doc (found live 2026-08-18, `examples/basic_steam.rs`, water
+    /// boiling into steam) -- but for the REVERSE direction, root-caused
+    /// live 2026-08-28 from a real "gas cooling down explodes the
+    /// particles" bug report. Without this override, condensing (e.g.
+    /// steam -> water) fell back to the default `init_particle_from_transition`
+    /// (delegates straight to `init_particle` above), which throws away
+    /// `Simulation::apply_phase_transition`'s own real, continuous
+    /// rebaseline (`initial_volume` = the particle's actual current volume
+    /// as steam, `density` = mass over that real volume) and replaces it
+    /// with water's rest-state formula at `deformation_gradient=IDENTITY`
+    /// (`j=1`, zero pressure) -- making the particle's claimed volume jump
+    /// instantly to `mass/rest_density(water)`, several times smaller than
+    /// its real physical footprint a substep earlier, while that real
+    /// footprint (position, spacing from still-gaseous neighbors) hasn't
+    /// changed at all in the same instant. A diffuse condensation front
+    /// then has freshly-condensed particles falsely claiming water's small
+    /// rest volume sitting right next to neighbors still occupying steam's
+    /// real, larger volume -- the Tait EOS reacts to that fabricated
+    /// overcompression with a violent repulsive pressure spike (particles
+    /// "exploding" apart), confirmed as the real cause, not assumed.
+    ///
+    /// Same fix as `IdealGasMaterial`'s: keep the reference volume TRUE
+    /// (`mass/rest_density`, matching what `kirchhoff_stress`/`update_particle`
+    /// already assume every substep), and instead set a STARTING
+    /// deformation gradient reflecting the real compression ratio between
+    /// the particle's actual prior volume (as whatever it transitioned
+    /// FROM) and this material's true rest volume -- clamped to the SAME
+    /// `[0.5, 2.0]` bound `update_particle` already enforces every
+    /// subsequent substep (see that method's own comment: empirically
+    /// verified load-bearing against a real drop test, min_j/max_j hit
+    /// exactly, not vestigial), so the starting state is consistent with
+    /// the ongoing dynamics from frame one, not a separate, inconsistent
+    /// value later dynamics silently overwrite.
+    fn init_particle_from_transition(&self, particle: &mut Particle) {
+        let true_initial_volume = particle.mass / self.rest_density;
+        let prior_volume = particle.volume.max(1.0e-9);
+        let j = (prior_volume / true_initial_volume).clamp(0.5, 2.0);
+        let s = j.sqrt();
+        particle.deformation_gradient = Mat2::from_cols(Vec2::new(s, 0.0), Vec2::new(0.0, s));
+        particle.initial_volume = true_initial_volume;
+        particle.volume = true_initial_volume * j;
+        particle.density = self.rest_density / j;
+    }
+
     /// Rest-state acoustic speed squared, `c^2 = B*gamma/rho0` (Tait EOS
     /// evaluated at `J = 1`).
     ///
@@ -513,5 +558,77 @@ impl MaterialModel for NewtonianFluidMaterial {
     /// second-largest cost in the whole solver, for zero effect on state.
     fn needs_density_recompute(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod transition_continuity_tests {
+    use super::*;
+
+    /// The real bug this override fixes: condensing from a much-LESS-dense
+    /// prior material (e.g. steam, same mass spread over a much larger real
+    /// volume) must NOT reset straight to `deformation_gradient=IDENTITY`
+    /// (`j=1`, the old default-`init_particle`-fallback behavior) -- it must
+    /// clamp to the SAME real `[0.5, 2.0]` bound `update_particle` already
+    /// enforces every substep, landing at the upper bound here since the
+    /// real ratio (6.0) is far outside it.
+    #[test]
+    fn condensing_from_a_much_larger_prior_volume_clamps_to_the_upper_compression_bound() {
+        let water = NewtonianFluidMaterial::new(1.0, 0.0, 5.0, 7.0);
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.volume = 6.0; // real prior (steam) volume: 6x this material's true rest volume
+        water.init_particle_from_transition(&mut p);
+
+        let true_initial_volume = p.mass / water.rest_density;
+        assert_eq!(p.initial_volume, true_initial_volume);
+        let j = p.deformation_gradient.determinant();
+        assert!(
+            (j - 2.0).abs() < 1.0e-4,
+            "ratio 6.0 is far outside [0.5, 2.0], must clamp to the upper bound 2.0, got {j}"
+        );
+        assert!(
+            (p.volume - true_initial_volume * 2.0).abs() < 1.0e-4,
+            "volume must be true_initial_volume * clamped j, not an instant jump to \
+             true_initial_volume alone: got {}",
+            p.volume
+        );
+    }
+
+    /// Same mechanism, opposite direction: transitioning from a much-MORE-
+    /// dense prior material clamps to the lower compression bound instead
+    /// of silently allowing an unbounded compression spike.
+    #[test]
+    fn transitioning_from_a_much_smaller_prior_volume_clamps_to_the_lower_compression_bound() {
+        let water = NewtonianFluidMaterial::new(1.0, 0.0, 5.0, 7.0);
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.volume = 0.1; // real prior volume: far denser than water's own rest state
+        water.init_particle_from_transition(&mut p);
+
+        let j = p.deformation_gradient.determinant();
+        assert!(
+            (j - 0.5).abs() < 1.0e-4,
+            "ratio 0.1 is far outside [0.5, 2.0], must clamp to the lower bound 0.5, got {j}"
+        );
+    }
+
+    /// Regression parity: a prior material with the SAME real rest density
+    /// (prior volume already equal to this material's true rest volume)
+    /// must land at j=1 exactly -- no artificial jump introduced where none
+    /// is physically warranted.
+    #[test]
+    fn transitioning_from_an_already_matching_volume_introduces_no_artificial_jump() {
+        let water = NewtonianFluidMaterial::new(1.0, 0.0, 5.0, 7.0);
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.volume = 1.0; // already equal to mass/rest_density
+        water.init_particle_from_transition(&mut p);
+
+        let j = p.deformation_gradient.determinant();
+        assert!(
+            (j - 1.0).abs() < 1.0e-5,
+            "no real density mismatch should mean no artificial jump: got j={j}"
+        );
     }
 }
