@@ -210,6 +210,52 @@ pub(crate) fn choose_substep_dt(
                         }
                     }
                 }
+                // Real, derived "single-particle instability" bound for strict-fluid
+                // materials (Sun, Shinar & Schroeder 2020, "Effective time step
+                // restrictions for explicit MPM simulation," SCA 2020, Section 4.5)
+                // -- found live 2026-08-28 chasing the still-open steam divergence
+                // (see project memory): when a particle becomes isolated (few or no
+                // neighbors sharing its local grid nodes -- exactly what a rising,
+                // buoyancy-driven steam particle does as it spreads into
+                // previously-empty upper cells), the grid velocity there is driven
+                // by that ONE particle's own pressure force, which feeds back into
+                // its own next-substep J -- a real fixed-point iteration on J that
+                // can diverge if the timestep doesn't respect it. The paper derives
+                // this bound assuming the WORST case (`tr(H)` at its own proven
+                // upper bound `K*d/dx^2`), so it's a valid universal restriction for
+                // every strict-fluid particle, not conditional on detecting
+                // isolation directly -- and it's the authors' own relaxed form
+                // (their stricter Eq. 6 forces J<=1 outright; this one instead
+                // allows overshoot but bounds it from diverging, "relaxed by up to
+                // a factor of 2 near Jp~=1," and is the version they report using
+                // for their own fluid results). `K=6` is the paper's own derived
+                // constant for quadratic B-splines (this engine's own kernel,
+                // `spacetime::grid::kernel::quadratic_weights`); `d=2` for this 2D
+                // engine. Continuous at J=1 from both sides by construction
+                // (verified by hand: both branches evaluate to
+                // `dx*sqrt(2*rest_density/(K*d))` there), a real internal-
+                // consistency check on the derivation, not just trust in the source.
+                if materials.owns_deformation_volume_state(particles.material_id[i]) {
+                    let rest_density = materials
+                        .get(particles.material_id[i])
+                        .params()
+                        .rest_density;
+                    let j = particles.volume[i] / particles.initial_volume[i];
+                    if rest_density.is_finite() && rest_density > 0.0 && j.is_finite() && j > 0.0 {
+                        const QUADRATIC_SPLINE_K: f32 = 6.0;
+                        const DIMENSION_D: f32 = 2.0;
+                        let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
+                        let single_particle_dt = if j <= 1.0 {
+                            (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd).sqrt()
+                        } else {
+                            config.grid_cell_size
+                                * (rest_density * (j + 1.0) / (j * j * j * kd)).sqrt()
+                        };
+                        if single_particle_dt.is_finite() && single_particle_dt > 0.0 {
+                            min_mat_dt = min_mat_dt.min(single_particle_dt);
+                        }
+                    }
+                }
                 // The deformation update is a local ODE in its own right.  Bound the
                 // dimensionless velocity-gradient increment even when affine velocity
                 // contribution is disabled for the advection CFL; otherwise an Euler
