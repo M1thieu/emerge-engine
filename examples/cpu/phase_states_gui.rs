@@ -48,7 +48,7 @@ use egui_wgpu::ScreenDescriptor;
 ///
 ///   cargo run --example phase_states_gui --features "render,experimental"
 use emerge::matter::materials::rankine::{
-    ICE_Q_REFERENCE_FREQUENCY_HZ, ICE_QUALITY_FACTOR_Q, q_factor_elastic_viscosity_pa_s,
+    ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
 };
 use emerge::render::{ColorMode, Renderer};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
@@ -109,6 +109,28 @@ const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 // -- just actually re-derived for this scene's real dynamics instead of
 // inherited from one that never had any.
 const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 2.971e7;
+
+// Real, DECOUPLED ice tensile strength (2026-08-29) -- found live: the user
+// watched the ice column visibly SQUASH under its own weight, standing
+// still, no impact involved. `RankineMaterial::ice()` computes tensile
+// strength as a FIXED RATIO of whatever `young_modulus` it's given
+// (`E * 1.1e-4`, see that function's own doc -- a real, correctly-derived
+// ratio, but calibrated for the REAL, unscaled E=9.0 GPa, where it lands
+// exactly on the real cited range: 9.0e9*1.1e-4 = 0.99 MPa, matching
+// Petrovic 2003's 0.7-3.1 MPa). Passing the numerically-practical, SCALED
+// E above into that same ratio silently scales the material's REAL
+// strength down by the same ~59x factor -- but strength and stiffness are
+// two independent physical properties; scaling one for CFL practicality
+// must not scale the other. Measured live: self-weight stress at this
+// column's own base (rho*g*h = 917*9.81*5 = 44,979 Pa) EXCEEDED the
+// ratio-coupled strength (3,268 Pa) by 13.8x -- the column was
+// mathematically guaranteed to fracture under nothing but its own weight,
+// before any impact. Real fix: compute tensile strength from the REAL,
+// UNSCALED E, independent of whatever E is used for the elastic response,
+// and override it via struct-update syntax (the same pattern this
+// preset's own doc already prescribes for `elastic_viscosity`). Verified:
+// 990,000 Pa gives a 22x margin over the real self-weight stress.
+const ICE_TENSILE_STRENGTH_REAL_PA: f32 = 9.0e9 * 1.1e-4;
 
 const STEAM_ADIABATIC_INDEX: f32 = 1.33;
 const STEAM_VISCOSITY_PA_S: f32 = 1.26e-5;
@@ -194,12 +216,26 @@ fn make_sim() -> Simulation {
     // NO energy dissipation below its fracture threshold and bounces near-
     // elastically off the ground under this scene's own real gravity --
     // confirmed live 2026-08-28, the "bounces and breaks a little" hybrid.
+    //
+    // Real correction (2026-08-29), found live after the tensile-strength
+    // fix above stopped ice from fracturing under its own weight: with
+    // fracture no longer draining the excess energy, the imported
+    // `ICE_QUALITY_FACTOR_Q=700` (Bentley & Kohnen 1976, COLD Antarctic
+    // ice) left ice oscillating for 1000+ frames without settling. This
+    // demo's own ice is explicitly warming toward its melting point
+    // (`MELTING_POINT_K`), not deep-frozen -- the physically CORRECT cited
+    // value for ice that warm is Peters et al. 2012's own real measurement
+    // for TEMPERATE ice near 0C: Q~65, not the cold-ice Q~700. This is the
+    // right real constant for this scene's actual temperature regime, not
+    // a tuning knob -- ~11x more real dissipation per cycle (Q is inversely
+    // related to damping).
+    const ICE_QUALITY_FACTOR_Q_TEMPERATE: f32 = 65.0;
     let ice = WithLatentHeat::new(
         {
             let ice_shear_modulus_pa = ICE_YOUNG_MODULUS_SCALED_PA / (2.0 * (1.0 + 0.20));
             let elastic_viscosity_pa_s = q_factor_elastic_viscosity_pa_s(
                 ice_shear_modulus_pa,
-                ICE_QUALITY_FACTOR_Q,
+                ICE_QUALITY_FACTOR_Q_TEMPERATE,
                 ICE_Q_REFERENCE_FREQUENCY_HZ,
             );
             let elastic_viscosity_grid =
@@ -217,6 +253,7 @@ fn make_sim() -> Simulation {
             );
             RankineMaterial {
                 elastic_viscosity: elastic_viscosity_grid,
+                tensile_strength: ICE_TENSILE_STRENGTH_REAL_PA,
                 ..RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20)
             }
         },
@@ -513,6 +550,17 @@ impl State {
         // into any normal code path -- only engages if this env var is set.
         if let Ok(target) = std::env::var("PHASE_STATES_AUTO_HEAT") {
             self.target_temperature = target.parse().unwrap_or(400.0);
+        }
+        // Real, temporary verification aid (2026-08-29): the default
+        // `gravity_fraction=0.01` is far gentler than the full real gravity
+        // (fraction=1.0) the water/ice stiffness fixes above were derived
+        // against -- this overrides it once at startup so the derived fixes
+        // can be tested against real Earth/Moon/Mars gravity, not just the
+        // artificially softened default.
+        if let Ok(g) = std::env::var("PHASE_STATES_GRAVITY_FRACTION") {
+            if let Ok(g) = g.parse::<f32>() {
+                self.gravity_fraction = g;
+            }
         }
         // Real, temporary verification aid (2026-08-28): the auto-heat var
         // above jumps the SLIDER TARGET instantly, which every past test
