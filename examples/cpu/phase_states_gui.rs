@@ -506,6 +506,24 @@ struct State {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     target_temperature: f32,
+    /// Real, disclosed fix (2026-08-31, external review): the heating
+    /// PLATE's own real state, separate from `target_temperature` (the
+    /// slider's own SETPOINT). The plate has real thermal inertia and
+    /// ramps toward the setpoint at a bounded rate (see the ramp logic
+    /// where this is updated) -- the real bug this replaces: the old
+    /// code computed one shared heat rate from the POPULATION's global
+    /// average temperature and applied it identically to every particle
+    /// on the plate regardless of that particle's own temperature, so an
+    /// already-overheated particle (confirmed live: 777K against a 450K
+    /// target) kept receiving positive heat indefinitely, since the
+    /// global average stayed below target long after that one particle
+    /// needed none. Real fix: each particle's own local flux is now
+    /// `HEAT_GAIN*(plate_temperature-particle_temperature)`, the standard
+    /// Newton's-law-of-cooling contact form -- self-limiting by
+    /// construction (a particle above `plate_temperature` gets COOLED
+    /// back toward it, exactly like real contact with a real, finite-
+    /// temperature heating element).
+    plate_temperature: f32,
     real_gravity: Vec2,
     gravity_fraction: f32,
     cursor_pos: [f32; 2],
@@ -608,6 +626,7 @@ impl State {
             egui_state,
             egui_renderer,
             target_temperature: 250.0,
+            plate_temperature: 250.0,
             real_gravity,
             // Real, precedented default -- the same 0.01 checkpoint already
             // validated as numerically stable for sand/snow/fluids at this
@@ -708,16 +727,26 @@ impl State {
             .map(|p| p.temperature)
             .sum::<f32>()
             / n_f;
-        let rate_k_per_s = (HEAT_GAIN * (self.target_temperature - current_avg))
-            .clamp(-MAX_HEAT_RATE_K_PER_S, MAX_HEAT_RATE_K_PER_S);
         let dt = self.sim.config().dt;
+        // Real, disclosed fix (2026-08-31, external review): the plate's
+        // own real state ramps toward the slider's SETPOINT
+        // (`target_temperature`) at a bounded rate -- real thermal
+        // inertia, same proportional-controller form as before, just
+        // driven off the plate's own state now instead of (wrongly) the
+        // population's global average. See `plate_temperature`'s own doc
+        // for the real bug this fixes (an already-overheated particle
+        // used to keep receiving positive heat as long as the GLOBAL
+        // average stayed under target).
+        let plate_rate = (HEAT_GAIN * (self.target_temperature - self.plate_temperature))
+            .clamp(-MAX_HEAT_RATE_K_PER_S, MAX_HEAT_RATE_K_PER_S);
+        self.plate_temperature += plate_rate * dt;
         // TEMPORARY diagnostic (2026-08-29): direct verification that the
         // enthalpy method produces a real plateau at each real transition
         // point, not just that it compiles.
         if self.frame.is_multiple_of(30) {
             println!(
-                "[enthalpy-check] frame={} avg_T={current_avg:.3}K",
-                self.frame
+                "[enthalpy-check] frame={} avg_T={current_avg:.3}K plate_T={:.3}K",
+                self.frame, self.plate_temperature
             );
         }
 
@@ -735,6 +764,17 @@ impl State {
         // temperature AND which real phase (or which real transition band)
         // this particle is actually in -- no more instant jump, no more
         // scaled-down latent heat, no more arbitrary hysteresis margin.
+        //
+        // Real, disclosed fix (2026-08-31, external review): the rate
+        // driving each particle's own `dH` is now a LOCAL contact flux
+        // (`HEAT_GAIN*(plate_temperature-particle_temperature)`, standard
+        // Newton's-law-of-cooling form), not one shared rate computed
+        // from the population's global average and applied identically
+        // to every particle on the plate -- see `plate_temperature`'s own
+        // doc for the real bug this fixes. Self-limiting by construction:
+        // a particle at or above `plate_temperature` gets zero or
+        // negative flux, exactly like real contact with a real heating
+        // element at a real, finite temperature.
         let phase_chain = water_phase_chain();
         {
             let particles = self.sim.particles_mut();
@@ -756,7 +796,10 @@ impl State {
                         WATER_ID => WATER_HEAT_CAPACITY_J_KG_K,
                         _ => STEAM_HEAT_CAPACITY_J_KG_K,
                     };
-                    self.enthalpy[i] += rate_k_per_s * cp * dt;
+                    let local_rate_k_per_s = (HEAT_GAIN
+                        * (self.plate_temperature - particles.temperature[i]))
+                        .clamp(-MAX_HEAT_RATE_K_PER_S, MAX_HEAT_RATE_K_PER_S);
+                    self.enthalpy[i] += local_rate_k_per_s * cp * dt;
                 }
                 let (new_t, _) = emerge::thermodynamics::chained_state_from_enthalpy(
                     &phase_chain,
@@ -1404,6 +1447,7 @@ impl State {
             self.steam_material = steam_material;
             self.sim = sim;
             self.target_temperature = 250.0;
+            self.plate_temperature = 250.0;
             self.frame = 0;
         }
 
@@ -1512,6 +1556,7 @@ impl ApplicationHandler for App {
                         s.steam_material = steam_material;
                         s.sim = sim;
                         s.target_temperature = 250.0;
+                        s.plate_temperature = 250.0;
                         s.frame = 0;
                         println!("reset");
                     }
