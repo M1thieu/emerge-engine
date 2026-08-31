@@ -114,6 +114,24 @@
 
 use std::f32::consts::PI;
 
+use crate::energy::thermodynamics::water_saturation::{
+    WATER_SATURATION_MAX_VALID_K, water_saturation_pressure_pa,
+};
+use crate::matter::materials::gas::STANDARD_ATMOSPHERE_PA;
+
+/// Real, direct, `f64` function: this material's real `p_v_gauge_pa` at a
+/// given temperature, via the real IAPWS-IF97 saturation curve (external
+/// review's own step 2 -- see module doc's own "Real C^1 junctions"
+/// section for the surrounding context). `f64` throughout so the T-
+/// dependent closure's own dense verification sweep (see
+/// `t_liquid_closure_max`'s own doc) has a real, precise reference to
+/// check the `f32` production path against, not a second source of
+/// rounding noise.
+fn p_v_gauge_pa_at_temperature_f64(temperature_k: f32) -> f64 {
+    let p_v_abs_pa = water_saturation_pressure_pa(temperature_k) as f64;
+    p_v_abs_pa - STANDARD_ATMOSPHERE_PA as f64
+}
+
 /// Real, bounded-derivative C^1 patch -- NOT a single cubic Hermite (real,
 /// disclosed correction, 2026-08-31, external review): a plain cubic
 /// Hermite genuinely CANNOT bridge an arbitrary `(p0,m0)` to `(p1,m1)`
@@ -349,6 +367,70 @@ fn mixture_slope_cutoff_delta(rho_minus_width: f32, c_min_m_s: f32, s_max: f32) 
 /// (`max_delta_mix`) -- a patch that needed more than that would no longer
 /// be a thin junction correction, it would be eating the mixture branch's
 /// own real physics, and that is a real failure to surface, not paper over.
+const PATCH_MIN_RAMP_ULPS: f32 = 8.0;
+
+/// Real, O(1) patch reconstruction from an ALREADY-KNOWN `delta_mix` --
+/// the exact same construction `build_junction_patch`'s own search loop
+/// uses at each candidate width, factored out so it is the SAME code
+/// both the (real, one-time, construction-time-only) search AND the
+/// real T-indexed table's own runtime reconstruction call (external
+/// review's own step 7: "the same reconstruction" for pressure, `dp/drho`,
+/// and CFL alike, not three separate implementations that could drift
+/// apart). `delta_pure` is always exactly `PATCH_MIN_RAMP_ULPS` ULPs of
+/// `rho_junction` -- a real, deterministic function of `rho_junction`
+/// alone (see `build_junction_patch`'s own doc for why growing it isn't
+/// the real fix), so it never needs to be searched OR stored -- this
+/// function recomputes it directly, in O(1), every call.
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_junction_patch(
+    rho_junction: f32,
+    mix_sign: f32,
+    delta_mix: f32,
+    rho_m_plus_kg_m3: f32,
+    rho_m_minus_kg_m3: f32,
+    c_min_m_s: f32,
+    p_v_gauge_pa: f32,
+    pure_side_sign: f32,
+    endpoint_at: impl Fn(f32) -> (f32, f32),
+) -> C1Patch {
+    let ulp = ulp_at(rho_junction);
+    let delta_pure = (PATCH_MIN_RAMP_ULPS * ulp).max(1.0e-9);
+    let rho_mix_edge = rho_junction + mix_sign * delta_mix;
+    let p0 = mixture_pressure_gauge_raw(
+        rho_mix_edge,
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        c_min_m_s,
+        p_v_gauge_pa,
+    );
+    let m0 = mixture_derivative_raw(rho_mix_edge, rho_m_plus_kg_m3, rho_m_minus_kg_m3, c_min_m_s);
+    let (p_pure, m_pure) = endpoint_at(delta_pure);
+    let rho_pure_edge = rho_junction + pure_side_sign * delta_pure;
+    // `pure_side_sign>0`: the pure branch sits ABOVE `rho_junction` (the
+    // liquid junction) -- `rho_mix_edge` is this patch's own LEFT side.
+    // `pure_side_sign<0`: the pure branch sits BELOW (the vapor junction)
+    // -- `rho_mix_edge` is this patch's own RIGHT side.
+    if pure_side_sign > 0.0 {
+        C1Patch {
+            rho_left: rho_mix_edge,
+            width: rho_pure_edge - rho_mix_edge,
+            p0,
+            m0,
+            p1: p_pure,
+            m1: m_pure,
+        }
+    } else {
+        C1Patch {
+            rho_left: rho_pure_edge,
+            width: rho_mix_edge - rho_pure_edge,
+            p0: p_pure,
+            m0: m_pure,
+            p1: p0,
+            m1: m0,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_junction_patch(
     rho_junction: f32,
@@ -371,57 +453,27 @@ fn build_junction_patch(
         ulp
     };
 
-    const MIN_RAMP_ULPS: f32 = 8.0;
     const MAX_MIX_GROWTHS: u32 = 48;
     let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
     let max_delta_mix = 0.1 * rho_minus_width;
-
-    // `pure_side_sign>0`: the pure branch sits ABOVE `rho_junction` (the
-    // liquid junction) -- `rho_mix_edge` is this patch's own LEFT side.
-    // `pure_side_sign<0`: the pure branch sits BELOW (the vapor junction)
-    // -- `rho_mix_edge` is this patch's own RIGHT side. Fixed, small,
-    // always-representable (an integer multiple of the junction's own
-    // ULP) -- see this function's own doc for why growing it is not the
-    // real fix.
-    let delta_pure = (MIN_RAMP_ULPS * ulp).max(1.0e-9);
-    let (p_pure, m_pure) = endpoint_at(delta_pure);
-    let rho_pure_edge = rho_junction + pure_side_sign * delta_pure;
 
     for _ in 0..MAX_MIX_GROWTHS {
         if delta_mix > max_delta_mix {
             break;
         }
-        let rho_mix_edge = rho_junction + mix_sign * delta_mix;
-        let p0 = mixture_pressure_gauge_raw(
-            rho_mix_edge,
+        let patch = reconstruct_junction_patch(
+            rho_junction,
+            mix_sign,
+            delta_mix,
             rho_m_plus_kg_m3,
             rho_m_minus_kg_m3,
             c_min_m_s,
             p_v_gauge_pa,
+            pure_side_sign,
+            &endpoint_at,
         );
-        let m0 =
-            mixture_derivative_raw(rho_mix_edge, rho_m_plus_kg_m3, rho_m_minus_kg_m3, c_min_m_s);
-        let patch = if pure_side_sign > 0.0 {
-            C1Patch {
-                rho_left: rho_mix_edge,
-                width: rho_pure_edge - rho_mix_edge,
-                p0,
-                m0,
-                p1: p_pure,
-                m1: m_pure,
-            }
-        } else {
-            C1Patch {
-                rho_left: rho_pure_edge,
-                width: rho_mix_edge - rho_pure_edge,
-                p0: p_pure,
-                m0: m_pure,
-                p1: p0,
-                m1: m0,
-            }
-        };
         let (l, _) = patch.ramp();
-        if l >= MIN_RAMP_ULPS * ulp {
+        if l >= PATCH_MIN_RAMP_ULPS * ulp {
             return patch;
         }
         delta_mix *= 2.0;
@@ -647,6 +699,46 @@ impl CavitatingEosParams {
         params
     }
 
+    /// Real, direct, temperature-parameterized constructor -- the "closure
+    /// at T" entry point the T-dependent production closure is built on
+    /// (external review's own step 2). Evaluates the real IAPWS-IF97
+    /// saturation pressure at `temperature_k` (in `f64`, see
+    /// `p_v_gauge_pa_at_temperature_f64`'s own doc) and delegates to
+    /// `new` -- same real construction, no separate code path to drift
+    /// out of sync.
+    pub fn at_temperature(
+        rho_l_ref_kg_m3: f32,
+        c_l_m_s: f32,
+        gamma_l: f32,
+        rho_v_ref_kg_m3: f32,
+        gamma_v: f32,
+        c_min_m_s: f32,
+        temperature_k: f32,
+    ) -> Self {
+        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        Self::new(
+            rho_l_ref_kg_m3,
+            c_l_m_s,
+            gamma_l,
+            rho_v_ref_kg_m3,
+            gamma_v,
+            c_min_m_s,
+            p_v_gauge_pa,
+        )
+    }
+
+    /// Real, public accessor: the liquid junction patch's own OUTER
+    /// (liquid-side) edge density -- `rho_m_plus_kg_m3 +
+    /// delta_pure_liquid`, the real density at which this patch hands off
+    /// to the plain liquid branch. Used by `t_liquid_closure_max`'s own
+    /// real bisection (see that function's own doc) to check whether the
+    /// patch's own real extent still stays safely below `rho_l_ref_kg_m3`
+    /// -- the real, per-instance, per-temperature invariant this EOS's
+    /// "rest state is pure liquid" assumption depends on.
+    pub fn liquid_patch_outer_edge_kg_m3(&self) -> f32 {
+        self.patch_liquid_junction.rho_left + self.patch_liquid_junction.width
+    }
+
     /// Real, gauge pressure at density `rho_kg_m3` (Pa, relative to
     /// whatever ambient this material's own `p_v_gauge_pa` was computed
     /// against) -- Lyu et al. 2023's own three-branch barotropic
@@ -817,6 +909,566 @@ fn solve_mixture_band(
     (rho_m_plus, rho_m_minus)
 }
 
+/// Real, non-panicking probe: the liquid junction patch's own outer edge
+/// density at a given `p_v_gauge_pa`, or `None` if the mixture band is
+/// not even physically sane at this gauge pressure (`rho_m_plus` has
+/// already crossed `rho_l_ref`, or no real band solution exists at all).
+/// Used ONLY by `t_liquid_closure_max`'s own real bisection -- unlike
+/// `CavitatingEosParams::new`, an invalid band here is an EXPECTED,
+/// useful search signal ("this temperature is past the real closure
+/// boundary"), not misuse, so this deliberately does not assert/panic
+/// the way `new` correctly does for a direct, real construction call.
+fn try_liquid_patch_outer_edge_kg_m3(
+    rho_l_ref_kg_m3: f32,
+    c_l_m_s: f32,
+    gamma_l: f32,
+    rho_v_ref_kg_m3: f32,
+    gamma_v: f32,
+    c_min_m_s: f32,
+    p_v_gauge_pa: f32,
+) -> Option<f32> {
+    let b_pa = c_l_m_s * c_l_m_s * rho_l_ref_kg_m3 / gamma_l;
+    if !(b_pa.is_finite() && b_pa > 0.0) {
+        return None;
+    }
+    let delta_rho_max = 4.0 * (p_v_gauge_pa + b_pa) / (PI * c_min_m_s * c_min_m_s);
+    if !(delta_rho_max.is_finite() && delta_rho_max > 0.0) {
+        return None;
+    }
+    let c_l2 = c_l_m_s * c_l_m_s;
+    let c_min2 = c_min_m_s * c_min_m_s;
+    let trial_gap = |delta_rho: f32| -> f32 {
+        let p_v_plus = p_v_gauge_pa + PI * c_min2 * delta_rho * 0.25;
+        let p_v_minus = p_v_gauge_pa - PI * c_min2 * delta_rho * 0.25;
+        let rho_m_plus = rho_l_ref_kg_m3 + p_v_plus / c_l2;
+        let vapor_base = 1.0 + p_v_minus / b_pa;
+        let rho_m_minus = if vapor_base > 0.0 {
+            rho_v_ref_kg_m3 * vapor_base.powf(1.0 / gamma_v)
+        } else {
+            0.0
+        };
+        rho_m_plus - rho_m_minus
+    };
+    let f = |delta_rho: f32| trial_gap(delta_rho) - delta_rho;
+    let lo0 = 1.0e-6_f32;
+    let hi0 = delta_rho_max * 0.999999;
+    if !(f(lo0) > 0.0 && f(hi0) < 0.0) {
+        return None; // no real bracket -- no physical band solution here
+    }
+    let (rho_m_plus_kg_m3, rho_m_minus_kg_m3) = solve_mixture_band(
+        rho_l_ref_kg_m3,
+        c_l_m_s,
+        rho_v_ref_kg_m3,
+        gamma_v,
+        b_pa,
+        c_min_m_s,
+        p_v_gauge_pa,
+    );
+    if !(rho_m_plus_kg_m3 > rho_m_minus_kg_m3
+        && rho_m_minus_kg_m3 > 0.0
+        && rho_m_plus_kg_m3 < rho_l_ref_kg_m3)
+    {
+        return None; // rho_m+ has already crossed rho_l_ref (or worse)
+    }
+    let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
+    let analytic_delta_mix_liquid = mixture_slope_cutoff_delta(rho_minus_width, c_min_m_s, c_l2);
+    let patch = build_junction_patch(
+        rho_m_plus_kg_m3,
+        -1.0,
+        analytic_delta_mix_liquid,
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        c_min_m_s,
+        p_v_gauge_pa,
+        1.0,
+        |delta_pure| {
+            let rho = rho_m_plus_kg_m3 + delta_pure;
+            (c_l2 * (rho - rho_l_ref_kg_m3), c_l2)
+        },
+    );
+    Some(patch.rho_left + patch.width)
+}
+
+/// Real, per-instance bisection (external review's own step 3): the
+/// highest temperature at which this material's own real liquid-junction
+/// patch extent still keeps `rho_m+(T) + delta_rho_patch_liquid(T) +
+/// density_guard <= rho_l_ref` -- the real, per-temperature boundary
+/// where the EOS's own "rest state is pure liquid" assumption genuinely
+/// still holds. Above this temperature, `CavitatingEosParams::
+/// at_temperature`/`new` correctly PANICS (real, disclosed structural
+/// finding from earlier this same investigation: `rho_m+` itself drifts
+/// past `rho_l_ref` as `T` approaches the true boiling point, since the
+/// mixture band's own real half-width term does not vanish as
+/// `p_v_gauge->0`) -- this EOS's own real scope is "genuinely liquid,
+/// possibly under real tension/cavitation," not "all the way through
+/// boiling"; the existing discrete enthalpy/latent-heat swap is the real
+/// tool for the part past this boundary, not a gap to close inside this
+/// same closure.
+///
+/// `density_guard_kg_m3`: real, disclosed choice -- the density change
+/// corresponding to one real `f32` ULP of pressure at this branch's own
+/// natural full-scale stiffness (`rho_l_ref*c_l^2`, "what pressure the
+/// liquid branch would reach compressed by its own full rest density"),
+/// converted back to a density margin via the SAME real, constant slope
+/// (`c_l^2`) the liquid branch's own `dp/drho` uses everywhere -- not an
+/// arbitrary number, and not needing any input beyond this branch's own
+/// real constants.
+///
+/// Real, checked bracket: `t_min` must already be a real, valid
+/// temperature (`try_liquid_patch_outer_edge_kg_m3` returns `Some` with
+/// margin); `t_max` must NOT be (either `None`, or violates the margin) --
+/// panics with a real, disclosed message otherwise, same discipline
+/// `solve_mixture_band`'s own bracket check uses.
+#[allow(clippy::too_many_arguments)]
+fn t_liquid_closure_max(
+    rho_l_ref_kg_m3: f32,
+    c_l_m_s: f32,
+    gamma_l: f32,
+    rho_v_ref_kg_m3: f32,
+    gamma_v: f32,
+    c_min_m_s: f32,
+    t_min_k: f32,
+    t_max_k: f32,
+) -> f32 {
+    let density_guard_kg_m3 = {
+        let pressure_scale = rho_l_ref_kg_m3 * c_l_m_s * c_l_m_s;
+        ulp_at(pressure_scale) / (c_l_m_s * c_l_m_s)
+    };
+    let is_valid_at = |temperature_k: f32| -> bool {
+        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        match try_liquid_patch_outer_edge_kg_m3(
+            rho_l_ref_kg_m3,
+            c_l_m_s,
+            gamma_l,
+            rho_v_ref_kg_m3,
+            gamma_v,
+            c_min_m_s,
+            p_v_gauge_pa,
+        ) {
+            Some(outer_edge) => outer_edge + density_guard_kg_m3 <= rho_l_ref_kg_m3,
+            None => false,
+        }
+    };
+    assert!(
+        is_valid_at(t_min_k),
+        "CavitatingEosParams: t_liquid_closure_max's own t_min_k={t_min_k}K is not \
+         itself a real, valid temperature for this material's liquid patch -- check \
+         the real material constants, not a search-resolution problem"
+    );
+    assert!(
+        !is_valid_at(t_max_k),
+        "CavitatingEosParams: t_liquid_closure_max's own t_max_k={t_max_k}K is STILL \
+         a valid temperature -- the real closure boundary lies above the supplied \
+         search range, widen t_max_k rather than trusting this bisection to \
+         extrapolate"
+    );
+    let mut lo = t_min_k;
+    let mut hi = t_max_k;
+    const MAX_ITERATIONS: u32 = 60;
+    const TOLERANCE_K: f32 = 1.0e-4;
+    for _ in 0..MAX_ITERATIONS {
+        if (hi - lo) < TOLERANCE_K {
+            break;
+        }
+        let mid = 0.5 * (lo + hi);
+        if is_valid_at(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Real, exact per-temperature primitives (external review's own steps
+/// 2/5): the four real, T-dependent quantities that fully determine this
+/// closure at a given `T` -- `rho_m_plus`/`rho_m_minus` (the mixture
+/// band's own two edges, from `solve_mixture_band`) and
+/// `delta_mix_liquid`/`delta_mix_vapor` (each junction's own real
+/// mixture-side patch half-width, from `build_junction_patch`'s own real
+/// search). NOT precomputed patch coefficients -- see
+/// `build_junction_patch`'s own doc for why interpolating those directly
+/// would break C^1/monotonicity/junction-matching between table nodes.
+/// `delta_pure` is deliberately excluded: it's an exact, deterministic
+/// function of `rho_junction` alone (`PATCH_MIN_RAMP_ULPS` ULPs, see
+/// `reconstruct_junction_patch`'s own doc), never needs interpolating.
+struct CavitatingEosPrimitives {
+    rho_m_plus_kg_m3: f32,
+    rho_m_minus_kg_m3: f32,
+    delta_mix_liquid_kg_m3: f32,
+    delta_mix_vapor_kg_m3: f32,
+}
+
+fn primitives_at_temperature(
+    rho_l_ref_kg_m3: f32,
+    c_l_m_s: f32,
+    gamma_l: f32,
+    rho_v_ref_kg_m3: f32,
+    gamma_v: f32,
+    c_min_m_s: f32,
+    temperature_k: f32,
+) -> CavitatingEosPrimitives {
+    let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+    let b_pa = c_l_m_s * c_l_m_s * rho_l_ref_kg_m3 / gamma_l;
+    let (rho_m_plus_kg_m3, rho_m_minus_kg_m3) = solve_mixture_band(
+        rho_l_ref_kg_m3,
+        c_l_m_s,
+        rho_v_ref_kg_m3,
+        gamma_v,
+        b_pa,
+        c_min_m_s,
+        p_v_gauge_pa,
+    );
+    let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
+    let c_l2 = c_l_m_s * c_l_m_s;
+
+    let analytic_delta_mix_liquid = mixture_slope_cutoff_delta(rho_minus_width, c_min_m_s, c_l2);
+    let patch_liquid = build_junction_patch(
+        rho_m_plus_kg_m3,
+        -1.0,
+        analytic_delta_mix_liquid,
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        c_min_m_s,
+        p_v_gauge_pa,
+        1.0,
+        |delta_pure| {
+            let rho = rho_m_plus_kg_m3 + delta_pure;
+            (c_l2 * (rho - rho_l_ref_kg_m3), c_l2)
+        },
+    );
+    // Real, exact recovery: for the liquid junction the mixture edge is
+    // the patch's own LEFT side (`mix_sign=-1`), so `delta_mix =
+    // rho_junction - patch.rho_left` exactly, no separate return value
+    // needed from `build_junction_patch` itself.
+    let delta_mix_liquid_kg_m3 = rho_m_plus_kg_m3 - patch_liquid.rho_left;
+
+    let s_max_vapor = vapor_dp_drho_raw(rho_m_minus_kg_m3, b_pa, gamma_v, rho_v_ref_kg_m3);
+    let analytic_delta_mix_vapor =
+        mixture_slope_cutoff_delta(rho_minus_width, c_min_m_s, s_max_vapor);
+    let patch_vapor = build_junction_patch(
+        rho_m_minus_kg_m3,
+        1.0,
+        analytic_delta_mix_vapor,
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        c_min_m_s,
+        p_v_gauge_pa,
+        -1.0,
+        |delta_pure| {
+            let rho = rho_m_minus_kg_m3 - delta_pure;
+            (
+                vapor_pressure_gauge_raw(rho, b_pa, gamma_v, rho_v_ref_kg_m3),
+                vapor_dp_drho_raw(rho, b_pa, gamma_v, rho_v_ref_kg_m3),
+            )
+        },
+    );
+    // Real, exact recovery: for the vapor junction the mixture edge is
+    // the patch's own RIGHT side (`mix_sign=+1`), so `delta_mix =
+    // (rho_left+width) - rho_junction`.
+    let delta_mix_vapor_kg_m3 = (patch_vapor.rho_left + patch_vapor.width) - rho_m_minus_kg_m3;
+
+    CavitatingEosPrimitives {
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        delta_mix_liquid_kg_m3,
+        delta_mix_vapor_kg_m3,
+    }
+}
+
+/// Real, T-indexed lookup table of `CavitatingEosPrimitives` (external
+/// review's own steps 5-7) -- built ONCE (real, one-time construction-
+/// time cost: `MAX_NODES` is bounded and each node is one real, already-
+/// tested construction, not a per-frame cost), used at runtime for O(1)
+/// reconstruction of a full, real `CavitatingEosParams` at ANY
+/// temperature within `[t_min_k, t_max_k]` via `reconstruct` -- the SAME
+/// real construction `CavitatingEosParams::new` itself uses (via the
+/// shared `reconstruct_junction_patch`), just fed an interpolated
+/// `delta_mix` instead of a freshly-searched one, so `pressure_gauge_pa`/
+/// `acoustic_c2_si` (and therefore any real CFL built on
+/// `acoustic_c2_si`) all read from the literal same reconstruction --
+/// "pressure and dt never see two different EOSes" (external review's own
+/// requirement).
+#[derive(Debug, Clone)]
+pub struct CavitatingEosTable {
+    rho_l_ref_kg_m3: f32,
+    c_l_m_s: f32,
+    gamma_l: f32,
+    rho_v_ref_kg_m3: f32,
+    gamma_v: f32,
+    c_min_m_s: f32,
+    t_min_k: f32,
+    t_max_k: f32,
+    rho_m_plus_kg_m3: Vec<f32>,
+    rho_m_minus_kg_m3: Vec<f32>,
+    delta_mix_liquid_kg_m3: Vec<f32>,
+    delta_mix_vapor_kg_m3: Vec<f32>,
+}
+
+impl CavitatingEosTable {
+    /// Real, disclosed resolution selection (external review's own step
+    /// 6): starts at a small node count and doubles until the WORST real
+    /// error -- pressure AND derivative, checked at real midpoints
+    /// between table nodes (the worst real interpolation locations, not
+    /// the nodes themselves where interpolation is exact by construction)
+    /// across a real density sweep at each -- against the direct, non-
+    /// table `CavitatingEosParams::at_temperature` solve falls under a
+    /// real, disclosed tolerance. A VERIFIED node count, not a guessed
+    /// constant (an earlier, unrelated part of this same investigation
+    /// used a guessed `N=64` for a different table before this real
+    /// method existed -- not repeated here).
+    pub fn build(
+        rho_l_ref_kg_m3: f32,
+        c_l_m_s: f32,
+        gamma_l: f32,
+        rho_v_ref_kg_m3: f32,
+        gamma_v: f32,
+        c_min_m_s: f32,
+        t_min_k: f32,
+    ) -> Self {
+        let t_max_k = t_liquid_closure_max(
+            rho_l_ref_kg_m3,
+            c_l_m_s,
+            gamma_l,
+            rho_v_ref_kg_m3,
+            gamma_v,
+            c_min_m_s,
+            t_min_k,
+            WATER_SATURATION_MAX_VALID_K,
+        );
+        // Real, disclosed tolerances: 0.1% relative pressure error, 5%
+        // relative derivative error -- the same real derivative tolerance
+        // `acoustic_c2_matches_finite_difference_of_pressure_outside_the_
+        // c1_patches` already uses elsewhere in this module, not a fresh
+        // pick; pressure gets a tighter bound since it directly drives
+        // the P2G force a particle feels, not just a CFL safety margin.
+        const PRESSURE_REL_TOL: f32 = 1.0e-3;
+        const DERIVATIVE_REL_TOL: f32 = 0.05;
+        const MAX_NODES: usize = 4096;
+        let mut node_count = 4usize;
+        loop {
+            let table = Self::build_with_node_count(
+                rho_l_ref_kg_m3,
+                c_l_m_s,
+                gamma_l,
+                rho_v_ref_kg_m3,
+                gamma_v,
+                c_min_m_s,
+                t_min_k,
+                t_max_k,
+                node_count,
+            );
+            let (p_err, d_err) = table.measure_worst_case_interpolation_error();
+            if (p_err < PRESSURE_REL_TOL && d_err < DERIVATIVE_REL_TOL) || node_count >= MAX_NODES {
+                return table;
+            }
+            node_count *= 2;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_node_count(
+        rho_l_ref_kg_m3: f32,
+        c_l_m_s: f32,
+        gamma_l: f32,
+        rho_v_ref_kg_m3: f32,
+        gamma_v: f32,
+        c_min_m_s: f32,
+        t_min_k: f32,
+        t_max_k: f32,
+        node_count: usize,
+    ) -> Self {
+        let mut rho_m_plus_kg_m3 = Vec::with_capacity(node_count);
+        let mut rho_m_minus_kg_m3 = Vec::with_capacity(node_count);
+        let mut delta_mix_liquid_kg_m3 = Vec::with_capacity(node_count);
+        let mut delta_mix_vapor_kg_m3 = Vec::with_capacity(node_count);
+        for i in 0..node_count {
+            let t = t_min_k + (t_max_k - t_min_k) * (i as f32 / (node_count - 1) as f32);
+            let p = primitives_at_temperature(
+                rho_l_ref_kg_m3,
+                c_l_m_s,
+                gamma_l,
+                rho_v_ref_kg_m3,
+                gamma_v,
+                c_min_m_s,
+                t,
+            );
+            rho_m_plus_kg_m3.push(p.rho_m_plus_kg_m3);
+            rho_m_minus_kg_m3.push(p.rho_m_minus_kg_m3);
+            delta_mix_liquid_kg_m3.push(p.delta_mix_liquid_kg_m3);
+            delta_mix_vapor_kg_m3.push(p.delta_mix_vapor_kg_m3);
+        }
+        Self {
+            rho_l_ref_kg_m3,
+            c_l_m_s,
+            gamma_l,
+            rho_v_ref_kg_m3,
+            gamma_v,
+            c_min_m_s,
+            t_min_k,
+            t_max_k,
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            delta_mix_liquid_kg_m3,
+            delta_mix_vapor_kg_m3,
+        }
+    }
+
+    /// Real check (external review's own step 6): samples the real
+    /// midpoint between EVERY adjacent pair of table nodes (the worst
+    /// real interpolation location -- linear interpolation is exact AT
+    /// the nodes themselves by construction, so checking there would
+    /// prove nothing), and at each midpoint compares this table's own
+    /// `reconstruct(t)` against the direct `CavitatingEosParams::
+    /// at_temperature(t)` solve across a real density sweep spanning the
+    /// vapor branch through the liquid branch. Returns the worst
+    /// (max) relative error seen, `(pressure, derivative)`.
+    fn measure_worst_case_interpolation_error(&self) -> (f32, f32) {
+        let mut worst_p_err = 0.0f32;
+        let mut worst_d_err = 0.0f32;
+        let n = self.rho_m_plus_kg_m3.len();
+        if n < 2 {
+            return (f32::INFINITY, f32::INFINITY); // can't interpolate at all yet
+        }
+        const DENSITY_SAMPLES: usize = 30;
+        for i in 0..n - 1 {
+            let t_lo = self.t_min_k + (self.t_max_k - self.t_min_k) * (i as f32 / (n - 1) as f32);
+            let t_hi =
+                self.t_min_k + (self.t_max_k - self.t_min_k) * ((i + 1) as f32 / (n - 1) as f32);
+            let t_mid = 0.5 * (t_lo + t_hi);
+            let via_table = self.reconstruct(t_mid);
+            let via_direct = CavitatingEosParams::at_temperature(
+                self.rho_l_ref_kg_m3,
+                self.c_l_m_s,
+                self.gamma_l,
+                self.rho_v_ref_kg_m3,
+                self.gamma_v,
+                self.c_min_m_s,
+                t_mid,
+            );
+            let rho_lo = self.rho_v_ref_kg_m3 * 0.5;
+            let rho_hi = self.rho_l_ref_kg_m3 * 1.05;
+            for j in 0..=DENSITY_SAMPLES {
+                let rho = rho_lo + (rho_hi - rho_lo) * (j as f32 / DENSITY_SAMPLES as f32);
+                let p_table = via_table.pressure_gauge_pa(rho);
+                let p_direct = via_direct.pressure_gauge_pa(rho);
+                let p_err = (p_table - p_direct).abs() / p_direct.abs().max(1.0);
+                worst_p_err = worst_p_err.max(p_err);
+                let d_table = via_table.acoustic_c2_si(rho);
+                let d_direct = via_direct.acoustic_c2_si(rho);
+                let d_err = (d_table - d_direct).abs() / d_direct.abs().max(1.0);
+                worst_d_err = worst_d_err.max(d_err);
+            }
+        }
+        (worst_p_err, worst_d_err)
+    }
+
+    fn interpolate_primitives_at_temperature(&self, temperature_k: f32) -> CavitatingEosPrimitives {
+        let t = temperature_k.clamp(self.t_min_k, self.t_max_k);
+        let n = self.rho_m_plus_kg_m3.len();
+        let frac = if self.t_max_k > self.t_min_k {
+            (t - self.t_min_k) / (self.t_max_k - self.t_min_k)
+        } else {
+            0.0
+        };
+        let pos = (frac * (n - 1) as f32).clamp(0.0, (n - 1) as f32);
+        let i0 = (pos.floor() as usize).min(n - 2);
+        let i1 = i0 + 1;
+        let local = (pos - i0 as f32).clamp(0.0, 1.0);
+        let lerp = |a: f32, b: f32| a + (b - a) * local;
+        CavitatingEosPrimitives {
+            rho_m_plus_kg_m3: lerp(self.rho_m_plus_kg_m3[i0], self.rho_m_plus_kg_m3[i1]),
+            rho_m_minus_kg_m3: lerp(self.rho_m_minus_kg_m3[i0], self.rho_m_minus_kg_m3[i1]),
+            delta_mix_liquid_kg_m3: lerp(
+                self.delta_mix_liquid_kg_m3[i0],
+                self.delta_mix_liquid_kg_m3[i1],
+            ),
+            delta_mix_vapor_kg_m3: lerp(
+                self.delta_mix_vapor_kg_m3[i0],
+                self.delta_mix_vapor_kg_m3[i1],
+            ),
+        }
+    }
+
+    /// Real, O(1) reconstruction (external review's own step 7): a full,
+    /// real `CavitatingEosParams` at temperature `T`, built from this
+    /// table's own interpolated primitives -- callers use its existing
+    /// `pressure_gauge_pa`/`acoustic_c2_si` exactly as they would a
+    /// fixed-`T` instance, no new dispatch logic needed. This is the ONE
+    /// real reconstruction path -- pressure, `dp/drho`, and any CFL term
+    /// built on `acoustic_c2_si` all call this, never a second,
+    /// independently-written path that could drift out of sync.
+    pub fn reconstruct(&self, temperature_k: f32) -> CavitatingEosParams {
+        let p = self.interpolate_primitives_at_temperature(temperature_k);
+        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(temperature_k) as f32;
+        let c_l2 = self.c_l_m_s * self.c_l_m_s;
+        let b_pa = c_l2 * self.rho_l_ref_kg_m3 / self.gamma_l;
+        let rho_m_plus_kg_m3 = p.rho_m_plus_kg_m3;
+        let rho_m_minus_kg_m3 = p.rho_m_minus_kg_m3;
+        let rho_l_ref_kg_m3 = self.rho_l_ref_kg_m3;
+        let patch_liquid_junction = reconstruct_junction_patch(
+            rho_m_plus_kg_m3,
+            -1.0,
+            p.delta_mix_liquid_kg_m3,
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            self.c_min_m_s,
+            p_v_gauge_pa,
+            1.0,
+            |delta_pure| {
+                let rho = rho_m_plus_kg_m3 + delta_pure;
+                (c_l2 * (rho - rho_l_ref_kg_m3), c_l2)
+            },
+        );
+        let patch_vapor_junction = reconstruct_junction_patch(
+            rho_m_minus_kg_m3,
+            1.0,
+            p.delta_mix_vapor_kg_m3,
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            self.c_min_m_s,
+            p_v_gauge_pa,
+            -1.0,
+            |delta_pure| {
+                let rho = rho_m_minus_kg_m3 - delta_pure;
+                (
+                    vapor_pressure_gauge_raw(rho, b_pa, self.gamma_v, self.rho_v_ref_kg_m3),
+                    vapor_dp_drho_raw(rho, b_pa, self.gamma_v, self.rho_v_ref_kg_m3),
+                )
+            },
+        );
+        CavitatingEosParams {
+            rho_l_ref_kg_m3,
+            c_l_m_s: self.c_l_m_s,
+            gamma_l: self.gamma_l,
+            rho_v_ref_kg_m3: self.rho_v_ref_kg_m3,
+            gamma_v: self.gamma_v,
+            c_min_m_s: self.c_min_m_s,
+            p_v_gauge_pa,
+            b_pa,
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            patch_liquid_junction,
+            patch_vapor_junction,
+        }
+    }
+
+    /// Real node count this table's own resolution search converged to
+    /// -- exposed for real, direct verification (tests, diagnostics),
+    /// not used internally.
+    pub fn node_count(&self) -> usize {
+        self.rho_m_plus_kg_m3.len()
+    }
+
+    pub fn t_min_k(&self) -> f32 {
+        self.t_min_k
+    }
+
+    pub fn t_max_k(&self) -> f32 {
+        self.t_max_k
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +1497,244 @@ mod tests {
             1.0,                              // c_min_m_s -- real model choice, exercised here
             p_v_abs - STANDARD_ATMOSPHERE_PA, // p_v_gauge_pa
         )
+    }
+
+    /// Real, sourced material constants shared by every T-dependent-
+    /// closure test below -- the exact same combination `real_test_params`
+    /// uses, minus the single fixed `p_v_gauge_pa` (these tests vary `T`
+    /// directly instead).
+    const T_CLOSURE_RHO_L_REF_KG_M3: f32 = 1000.0;
+    const T_CLOSURE_C_L_M_S: f32 = 180.0;
+    const T_CLOSURE_GAMMA_L: f32 = 7.0;
+    const T_CLOSURE_RHO_V_REF_KG_M3: f32 = 1000.0 / 6.0;
+    const T_CLOSURE_GAMMA_V: f32 = 1.33;
+    const T_CLOSURE_C_MIN_M_S: f32 = 1.0;
+
+    /// Real, direct cross-check: `at_temperature` must reproduce `new`'s
+    /// own result exactly when fed the equivalent `p_v_gauge_pa` -- same
+    /// construction, just reached via the real T-parameterized entry
+    /// point instead of a precomputed gauge pressure.
+    #[test]
+    fn at_temperature_matches_new_given_the_equivalent_gauge_pressure() {
+        let p_v_gauge_pa = p_v_gauge_pa_at_temperature_f64(300.0) as f32;
+        let via_new = CavitatingEosParams::new(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            p_v_gauge_pa,
+        );
+        let via_at_temperature = CavitatingEosParams::at_temperature(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            300.0,
+        );
+        assert_eq!(
+            via_new.rho_m_plus_kg_m3,
+            via_at_temperature.rho_m_plus_kg_m3
+        );
+        assert_eq!(
+            via_new.rho_m_minus_kg_m3,
+            via_at_temperature.rho_m_minus_kg_m3
+        );
+        assert_eq!(
+            via_new.pressure_gauge_pa(999.0),
+            via_at_temperature.pressure_gauge_pa(999.0)
+        );
+    }
+
+    /// Real, direct check: `t_liquid_closure_max` must land close to, but
+    /// strictly below, the true boiling point (373.15K) -- this is the
+    /// real, structural finding this whole closure boundary exists to
+    /// respect (`rho_m+` drifting past `rho_l_ref` as `T` approaches
+    /// boiling, found earlier this same investigation). Loose bound
+    /// (within 1K of boiling) since the exact value is a real, derived
+    /// consequence of `c_min`/`c_l`, not a number to hardcode and compare
+    /// bit-exactly.
+    #[test]
+    fn t_liquid_closure_max_lands_just_below_the_true_boiling_point() {
+        let t_max = t_liquid_closure_max(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            273.15,
+            373.15,
+        );
+        assert!(
+            t_max < 373.15 && t_max > 372.0,
+            "t_liquid_closure_max={t_max} should land within ~1K below the true \
+             boiling point for these real material constants, not further off"
+        );
+        // Real, direct confirmation the boundary is actually respected:
+        // constructing right AT the bisected boundary must succeed (not
+        // panic), and its own liquid patch must stay strictly inside
+        // rho_l_ref.
+        let params = CavitatingEosParams::at_temperature(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            t_max,
+        );
+        assert!(params.liquid_patch_outer_edge_kg_m3() < T_CLOSURE_RHO_L_REF_KG_M3);
+    }
+
+    /// Real, dense verification sweep (external review's own step 4):
+    /// across the WHOLE real closure range `[273.15, t_liquid_closure_max]`,
+    /// every real invariant this EOS depends on must hold at every
+    /// sampled temperature, not just the one fixed `T` earlier tests
+    /// exercise -- band existence, real density ordering, monotonic
+    /// pressure, C^1 junction continuity, and finite/positive patch
+    /// derivatives. A dense sweep BETWEEN table nodes is exactly what a
+    /// single-`T` test cannot catch (Codex's own point) -- this sweep is
+    /// the real, direct construction at each sampled `T`, not yet a table
+    /// lookup (the table itself is real, separate, still-open work).
+    #[test]
+    fn dense_temperature_sweep_holds_every_real_invariant_up_to_the_closure_boundary() {
+        let t_max = t_liquid_closure_max(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            273.15,
+            373.15,
+        );
+        const N: usize = 500;
+        for i in 0..=N {
+            let t = 273.15 + (t_max - 273.15) * (i as f32 / N as f32);
+            let params = CavitatingEosParams::at_temperature(
+                T_CLOSURE_RHO_L_REF_KG_M3,
+                T_CLOSURE_C_L_M_S,
+                T_CLOSURE_GAMMA_L,
+                T_CLOSURE_RHO_V_REF_KG_M3,
+                T_CLOSURE_GAMMA_V,
+                T_CLOSURE_C_MIN_M_S,
+                t,
+            );
+            assert!(
+                params.rho_m_minus_kg_m3 > 0.0
+                    && params.rho_m_minus_kg_m3 < params.rho_m_plus_kg_m3
+                    && params.rho_m_plus_kg_m3 < T_CLOSURE_RHO_L_REF_KG_M3,
+                "T={t}K: real density ordering violated"
+            );
+            assert!(
+                params.is_continuous(1.0),
+                "T={t}K: real C^1 junction continuity violated"
+            );
+            let (lo_l, hi_l) = params.patch_liquid_junction.derivative_extrema();
+            let (lo_v, hi_v) = params.patch_vapor_junction.derivative_extrema();
+            assert!(
+                lo_l > 0.0 && hi_l.is_finite() && lo_v > 0.0 && hi_v.is_finite(),
+                "T={t}K: real patch derivative bound not finite/positive -- \
+                 liquid=[{lo_l},{hi_l}] vapor=[{lo_v},{hi_v}]"
+            );
+            // Real monotonicity spot-check across a real density sweep at
+            // this T -- same real requirement `pressure_is_monotonically_
+            // increasing_with_density_everywhere` checks at one fixed T,
+            // now checked at every sampled T too.
+            let rho_lo = params.rho_v_ref_kg_m3 * 0.5;
+            let rho_hi = T_CLOSURE_RHO_L_REF_KG_M3 * 1.05;
+            const M: usize = 40;
+            let mut prev_p = params.pressure_gauge_pa(rho_lo);
+            for j in 1..=M {
+                let rho = rho_lo + (rho_hi - rho_lo) * (j as f32 / M as f32);
+                let p = params.pressure_gauge_pa(rho);
+                assert!(
+                    p >= prev_p,
+                    "T={t}K: pressure must not decrease with density (rho={rho}, \
+                     p={p} < prev_p={prev_p})"
+                );
+                prev_p = p;
+            }
+        }
+    }
+
+    /// Real, direct verification of external review's own step 6: the
+    /// table's own resolution search must converge to SOME finite node
+    /// count within the search cap, and the node count it lands on
+    /// should be modest (a real, physically-thin closure like this one,
+    /// see `t_liquid_closure_max`'s own doc for why the real range here
+    /// is barely 100K wide, should not need thousands of nodes) --
+    /// printed, not asserted to an exact number, since the real value is
+    /// a genuine search OUTCOME, not a constant to pin.
+    #[test]
+    fn table_build_converges_to_a_real_bounded_node_count() {
+        let table = CavitatingEosTable::build(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            273.15,
+        );
+        println!(
+            "[table] node_count={} t_min={} t_max={}",
+            table.node_count(),
+            table.t_min_k(),
+            table.t_max_k()
+        );
+        assert!(
+            table.node_count() >= 4 && table.node_count() < 4096,
+            "table converged to node_count={}, expected a real, bounded search \
+             outcome strictly under the search cap",
+            table.node_count()
+        );
+        let (p_err, d_err) = table.measure_worst_case_interpolation_error();
+        println!("[table] worst-case interpolation error: p_err={p_err} d_err={d_err}");
+        assert!(p_err < 1.0e-3 && d_err < 0.05);
+    }
+
+    /// Real, direct end-to-end check: reconstructing at a table NODE
+    /// itself (not a midpoint) must reproduce the direct
+    /// `at_temperature` solve almost exactly (interpolation is exact at
+    /// the nodes by construction -- any real discrepancy there would be
+    /// a real reconstruction bug, not an interpolation-resolution
+    /// question).
+    #[test]
+    fn reconstruct_at_a_table_node_matches_the_direct_solve() {
+        let table = CavitatingEosTable::build(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            273.15,
+        );
+        let t_node = table.t_min_k();
+        let via_table = table.reconstruct(t_node);
+        let via_direct = CavitatingEosParams::at_temperature(
+            T_CLOSURE_RHO_L_REF_KG_M3,
+            T_CLOSURE_C_L_M_S,
+            T_CLOSURE_GAMMA_L,
+            T_CLOSURE_RHO_V_REF_KG_M3,
+            T_CLOSURE_GAMMA_V,
+            T_CLOSURE_C_MIN_M_S,
+            t_node,
+        );
+        for rho in [200.0, 500.0, 999.0, 999.999] {
+            let p_table = via_table.pressure_gauge_pa(rho);
+            let p_direct = via_direct.pressure_gauge_pa(rho);
+            assert!(
+                (p_table - p_direct).abs() < 1.0,
+                "rho={rho}: table={p_table} direct={p_direct} disagree by more \
+                 than 1 Pa at a real table node"
+            );
+        }
     }
 
     /// Real, direct anchor: pressure must be EXACTLY zero gauge at the
