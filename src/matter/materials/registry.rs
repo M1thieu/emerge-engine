@@ -374,6 +374,18 @@ impl MaterialRegistry {
         self.get(material_id).rest_acoustic_c2()
     }
 
+    /// Same real dispatch shape as `rest_acoustic_c2` above, for the real,
+    /// live-temperature-aware sibling -- see `MaterialModel::
+    /// acoustic_c2_at_temperature`'s own doc.
+    pub(crate) fn acoustic_c2_at_temperature(
+        &self,
+        material_id: u32,
+        temperature_k: f32,
+    ) -> Option<f32> {
+        self.get(material_id)
+            .acoustic_c2_at_temperature(temperature_k)
+    }
+
     /// Returns the constitutive model for the given material ID.
     pub fn constitutive_model_of(&self, material_id: u32) -> ConstitutiveModel {
         self.get(material_id).constitutive_model()

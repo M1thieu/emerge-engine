@@ -241,19 +241,76 @@ pub(crate) fn choose_substep_dt(
                         .params()
                         .rest_density;
                     let j = particles.volume[i] / particles.initial_volume[i];
-                    if rest_density.is_finite() && rest_density > 0.0 && j.is_finite() && j > 0.0 {
+                    // Real constitutive stiffness lambda = rho0*c0^2 (the
+                    // Tait/ideal-gas EOS tangent bulk modulus at rest, J=1)
+                    // -- REQUIRED by Sun, Shinar & Schroeder's own derivation
+                    // (their own `lambda` term), missing entirely from this
+                    // bound since it was first added 2026-08-28: without it,
+                    // the formula reduces to sqrt(density) with no stiffness
+                    // anywhere, which is not dimensionally a time (confirmed
+                    // 2026-08-29 via independent deep research, then
+                    // verified directly by reading this exact code -- real
+                    // convergent finding from two independent sources, not
+                    // taken on faith from either).
+                    // Honest, disclosed limitation: this uses the REST-state
+                    // tangent stiffness (correct near J=1, confirmed by the
+                    // same cross-check), not a full nonlinear-Tait worst-case
+                    // bound over the whole admissible J range -- a real,
+                    // deliberately-scoped fix for the missing term, not a
+                    // silent claim of full generality.
+                    if let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
+                        && rest_density.is_finite()
+                        && rest_density > 0.0
+                        && j.is_finite()
+                        && j > 0.0
+                        && c2_rest.is_finite()
+                        && c2_rest > f32::EPSILON
+                    {
                         const QUADRATIC_SPLINE_K: f32 = 6.0;
                         const DIMENSION_D: f32 = 2.0;
                         let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
+                        let lambda = rest_density * c2_rest;
+                        let kd_lambda = kd * lambda;
                         let single_particle_dt = if j <= 1.0 {
-                            (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd).sqrt()
+                            (config.grid_cell_size / (2.0 - j))
+                                * (2.0 * rest_density / kd_lambda).sqrt()
                         } else {
                             config.grid_cell_size
-                                * (rest_density * (j + 1.0) / (j * j * j * kd)).sqrt()
+                                * (rest_density * (j + 1.0) / (j * j * j * kd_lambda)).sqrt()
                         };
                         if single_particle_dt.is_finite() && single_particle_dt > 0.0 {
                             min_mat_dt = min_mat_dt.min(single_particle_dt);
                         }
+                    }
+                }
+                // Real, live-temperature-aware acoustic term (2026-08-31,
+                // found live via a direct A/B on `phase_states_gui.rs`'s
+                // own sustained-heating steam scene: divergence escalating
+                // into the thousands, `last_substeps` climbing toward its
+                // own cap, fps collapsing) -- see `MaterialModel::
+                // acoustic_c2_at_temperature`'s own doc for the real,
+                // previously-disclosed-but-unclosed gap: `timestep_bound`
+                // alone can only ever see a material's fixed, construction-
+                // time acoustic stiffness (e.g. `IdealGasMaterial::
+                // reference_temperature_k`), never a particle's own LIVE
+                // temperature -- which climbs continuously under real
+                // active heating, growing the TRUE stiffness (`c^2` linear
+                // in `T` for an ideal gas) while the CFL bound stayed
+                // anchored to the old, softer reference value. Same
+                // established pattern as the shock-viscosity/single-
+                // particle-instability terms above: a real, separate CFL
+                // term, not a `timestep_bound` signature change (every
+                // other material's own `acoustic_c2_at_temperature`
+                // defaults to its existing `rest_acoustic_c2`, so this is
+                // a no-op for anything that isn't `IdealGasMaterial`).
+                if let Some(c2_live) = materials
+                    .acoustic_c2_at_temperature(particles.material_id[i], particles.temperature[i])
+                    && c2_live.is_finite()
+                    && c2_live > f32::EPSILON
+                {
+                    let live_temp_dt = material_cfl * config.grid_cell_size / c2_live.sqrt();
+                    if live_temp_dt.is_finite() && live_temp_dt > 0.0 {
+                        min_mat_dt = min_mat_dt.min(live_temp_dt);
                     }
                 }
                 // The deformation update is a local ODE in its own right.  Bound the
@@ -499,14 +556,32 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
                 .params()
                 .rest_density;
             let j = particles.volume[i] / particles.initial_volume[i];
-            if rest_density.is_finite() && rest_density > 0.0 && j.is_finite() && j > 0.0 {
+            // Same real constitutive-stiffness fix as `choose_substep_dt`'s
+            // own copy of this bound -- see that copy's own comment for the
+            // full story (missing `lambda=rho0*c0^2` term, found 2026-08-29).
+            // This diagnostic deliberately COPIES the production formula
+            // rather than sharing a helper (see this function's own
+            // top-level doc) -- so this copy must be kept in sync by hand
+            // whenever the production formula changes, exactly as it just
+            // was here.
+            if let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
+                && rest_density.is_finite()
+                && rest_density > 0.0
+                && j.is_finite()
+                && j > 0.0
+                && c2_rest.is_finite()
+                && c2_rest > f32::EPSILON
+            {
                 const QUADRATIC_SPLINE_K: f32 = 6.0;
                 const DIMENSION_D: f32 = 2.0;
                 let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
+                let lambda = rest_density * c2_rest;
+                let kd_lambda = kd * lambda;
                 let single_particle_dt = if j <= 1.0 {
-                    (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd).sqrt()
+                    (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd_lambda).sqrt()
                 } else {
-                    config.grid_cell_size * (rest_density * (j + 1.0) / (j * j * j * kd)).sqrt()
+                    config.grid_cell_size
+                        * (rest_density * (j + 1.0) / (j * j * j * kd_lambda)).sqrt()
                 };
                 if single_particle_dt.is_finite()
                     && single_particle_dt > 0.0
@@ -516,6 +591,24 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
                     worst_i = Some(i);
                     worst_term = "single_particle_instability";
                 }
+            }
+        }
+
+        // Real, live-temperature-aware acoustic term (2026-08-31) -- same
+        // production formula `choose_substep_dt`'s own copy adds, see that
+        // copy's own doc for the full account (this diagnostic must be
+        // kept in sync by hand, per this function's own top-level doc).
+        if let Some(c2_live) =
+            materials.acoustic_c2_at_temperature(particles.material_id[i], particles.temperature[i])
+            && c2_live.is_finite()
+            && c2_live > f32::EPSILON
+        {
+            let live_temp_dt =
+                config.material_cfl_coefficient * config.grid_cell_size / c2_live.sqrt();
+            if live_temp_dt.is_finite() && live_temp_dt > 0.0 && live_temp_dt < worst_dt {
+                worst_dt = live_temp_dt;
+                worst_i = Some(i);
+                worst_term = "live_temperature_acoustic";
             }
         }
 
@@ -777,6 +870,80 @@ mod tests {
             (dt_low_speed - dt_high_speed).abs() < 1.0e-6,
             "fallback path must be independent of last_max_speed: \
              dt_low_speed={dt_low_speed}, dt_high_speed={dt_high_speed}"
+        );
+    }
+
+    /// Real, closed-form check on the single-particle-instability bound's
+    /// missing constitutive-stiffness term (found 2026-08-29, both by
+    /// independent deep research and by reading this
+    /// formula directly -- before this fix the formula had no stiffness
+    /// term at all, so `sqrt(density)` alone is not dimensionally a time).
+    /// At J=1, K=6 (this engine's own quadratic-B-spline constant), d=2:
+    /// the `j<=1.0` branch's `(dx/(2-j))*sqrt(2*rho0/(kd*lambda))` reduces
+    /// to `dx*sqrt(2/(12*rho0*c0^2/rho0))` = `dx*sqrt(1/(6*c0^2))`
+    /// = `sqrt(1/6)*dx/c0` -- an exact, hand-derivable identity, not a
+    /// tuned/fitted expectation.
+    #[test]
+    fn single_particle_instability_bound_matches_closed_form_at_j_equals_one() {
+        let mut config = SimConfig::standard(16, 1.0, Vec2::ZERO);
+        config.grid_cell_size = 2.0; // dx=2.0, deliberately != 1.0 so the
+        // test can't pass by accident if dx were silently dropped from the
+        // formula.
+
+        let rest_density = 3.0;
+        let eos_stiffness = 50.0;
+        let eos_power = 7.0;
+        // c2_rest = eos_stiffness*eos_power/rest_density (real Tait
+        // rest-state acoustic speed squared, see `rest_acoustic_c2`'s own
+        // doc) -- this test's c0 is whatever that derivation gives, not an
+        // independently chosen value, so the check stays tied to the real
+        // material rather than a coincidence.
+        let material = NewtonianFluidMaterial::new(rest_density, 1.0e-3, eos_stiffness, eos_power);
+        let materials = MaterialRegistry::with_default(Box::new(material));
+        let c0 = (eos_stiffness * eos_power / rest_density).sqrt();
+
+        let mut particles = Particles::new();
+        particles.x.push(Vec2::new(8.0, 8.0)); // far from any wall
+        particles.v.push(Vec2::ZERO);
+        particles.velocity_gradient.push(Mat2::ZERO); // zero grad_norm -- keeps
+        // the shock-viscosity/deformation-gradient terms inert so only the
+        // single-particle-instability term can bind.
+        particles.deformation_gradient.push(Mat2::IDENTITY); // J=1.0 exactly
+        particles.mass.push(1.0);
+        particles.initial_volume.push(1.0);
+        particles.volume.push(1.0);
+        particles.density.push(rest_density);
+        particles.material_id.push(0);
+        particles.plastic_volume_ratio.push(1.0);
+        particles.hardening_scale.push(1.0);
+        particles.friction_hardening.push(0.0);
+        particles.log_volume_strain.push(0.0);
+        particles.temperature.push(0.0);
+        particles.user_tag.push(0);
+        particles.activation.push(0.0);
+        particles.activation_dir.push(Vec2::ZERO);
+        particles.muscle_group_id.push(0);
+        particles.contact_group.push(0);
+        particles.pinned.push(0);
+        particles.scalar_field.push(0.0);
+        particles.internal_pressure.push(0.0);
+        particles.sleeping.push(false);
+
+        let (idx, term, dt) =
+            super::diagnose_worst_particle_cfl_term(&config, &particles, 1, &materials, None)
+                .expect("a single strict-fluid particle at rest must report a binding term");
+
+        assert_eq!(idx, 0);
+        assert_eq!(
+            term, "single_particle_instability",
+            "at J=1 with zero velocity gradient, no other term should bind tighter"
+        );
+
+        let expected_dt = (1.0_f32 / 6.0).sqrt() * config.grid_cell_size / c0;
+        assert!(
+            (dt - expected_dt).abs() / expected_dt < 1.0e-4,
+            "single-particle-instability dt must match the closed-form \
+             sqrt(1/6)*dx/c0 at J=1: expected={expected_dt}, got={dt}"
         );
     }
 }

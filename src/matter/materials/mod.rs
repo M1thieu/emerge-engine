@@ -1,4 +1,6 @@
 pub mod bingham;
+pub mod cavitating_eos;
+pub mod cavitating_fluid;
 pub mod corotated;
 pub mod elastic;
 pub mod fluid;
@@ -25,6 +27,8 @@ pub use physical_props::{
 };
 
 pub use bingham::BinghamFluidMaterial;
+pub use cavitating_eos::CavitatingEosParams;
+pub use cavitating_fluid::IsothermalCavitatingFluidMaterial;
 pub use corotated::CorotatedMaterial;
 pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
@@ -221,6 +225,25 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// rule is built on the identical Ma²≈Δρ relation.
     fn rest_acoustic_c2(&self) -> Option<f32> {
         None
+    }
+
+    /// Real, live-temperature-aware acoustic c^2 -- default just returns
+    /// `rest_acoustic_c2()` (every existing material's own construction-
+    /// time value, unchanged behavior for every material that doesn't
+    /// override this). Exists for the one real class of material whose
+    /// own true stiffness genuinely tracks a particle's LIVE temperature,
+    /// not a fixed reference value baked in at construction --
+    /// `IdealGasMaterial`'s own override is the real, disclosed case this
+    /// closes (`c^2=gamma*R*T`, and `T` climbs continuously under active
+    /// heating in a real scene, e.g. `phase_states_gui.rs`'s boiling
+    /// steam). `cfl.rs`'s own dispatch site adds this as a SEPARATE CFL
+    /// term (not folded into `timestep_bound`) -- same established
+    /// pattern already used there for the shock-viscosity and single-
+    /// particle-instability terms, both added the same way rather than
+    /// extending `timestep_bound`'s own trait signature.
+    fn acoustic_c2_at_temperature(&self, temperature_k: f32) -> Option<f32> {
+        let _ = temperature_k;
+        self.rest_acoustic_c2()
     }
 
     /// Advances plastic/deformation state for one particle after G2P's velocity
