@@ -7,7 +7,6 @@
 //! - `scalar_field.rs` -- generic ∂φ/∂t = D·∇²φ − λ·φ + S (pheromone, nutrients, morphogen)
 //! - `stencil.rs`      -- shared Laplacian FD step used by both of the above
 //! - `transfer.rs`     -- scalar IRL primitives: conduction, Stefan-Boltzmann radiation, entropy/2nd law
-//! - `water_saturation.rs` -- IAPWS-IF97 water saturation (vapor) pressure vs. temperature
 
 pub mod cosserat_field;
 pub mod diffusion;
@@ -21,7 +20,11 @@ pub mod water_saturation;
 
 pub use cosserat_field::{CosseratConfig, CosseratField};
 pub use diffusion::{ThermalConfig, ThermalDiffusion};
-pub use enthalpy::{enthalpy_from_temperature, temperature_and_phase_fraction_from_enthalpy};
+pub use enthalpy::{
+    PhaseChainProperties, PhaseState, chained_enthalpy_from_temperature,
+    chained_state_from_enthalpy, enthalpy_from_temperature,
+    temperature_and_phase_fraction_from_enthalpy,
+};
 pub use granular_fluidity::{GranularFluidityConfig, GranularFluidityField};
 pub use scalar_field::{ScalarDiffusionConfig, ScalarDiffusionField};
 pub use transfer::{

@@ -283,28 +283,35 @@ pub(crate) fn choose_substep_dt(
                         }
                     }
                 }
-                // Real, live-temperature-aware acoustic term (2026-08-31,
-                // found live via a direct A/B on `phase_states_gui.rs`'s
+                // Real, live density-AND-temperature-aware acoustic term
+                // (found live via a direct A/B on `phase_states_gui.rs`'s
                 // own sustained-heating steam scene: divergence escalating
                 // into the thousands, `last_substeps` climbing toward its
                 // own cap, fps collapsing) -- see `MaterialModel::
-                // acoustic_c2_at_temperature`'s own doc for the real,
-                // previously-disclosed-but-unclosed gap: `timestep_bound`
-                // alone can only ever see a material's fixed, construction-
-                // time acoustic stiffness (e.g. `IdealGasMaterial::
-                // reference_temperature_k`), never a particle's own LIVE
-                // temperature -- which climbs continuously under real
-                // active heating, growing the TRUE stiffness (`c^2` linear
-                // in `T` for an ideal gas) while the CFL bound stayed
-                // anchored to the old, softer reference value. Same
-                // established pattern as the shock-viscosity/single-
-                // particle-instability terms above: a real, separate CFL
-                // term, not a `timestep_bound` signature change (every
-                // other material's own `acoustic_c2_at_temperature`
-                // defaults to its existing `rest_acoustic_c2`, so this is
-                // a no-op for anything that isn't `IdealGasMaterial`).
-                if let Some(c2_live) = materials
-                    .acoustic_c2_at_temperature(particles.material_id[i], particles.temperature[i])
+                // acoustic_c2_at`'s own doc for the real, previously-
+                // disclosed-but-unclosed gap: `timestep_bound` alone can
+                // only ever see a material's fixed, construction-time
+                // acoustic stiffness, never a particle's own LIVE state --
+                // which climbs continuously under real active heating
+                // (`IdealGasMaterial`'s own `c^2` linear in `T`), or shifts
+                // with BOTH density and temperature jointly (a real
+                // temperature-coupled cavitation EOS's own mixture band and
+                // C^1 patches, which `T` alone cannot resolve -- external
+                // review's own explicit point). Same established pattern as
+                // the shock-viscosity/single-particle-instability terms
+                // above: a real, separate CFL term, not a `timestep_bound`
+                // signature change (every other material's own
+                // `acoustic_c2_at` defaults down through `acoustic_c2_at_
+                // temperature`/`rest_acoustic_c2`, so this is a no-op for
+                // anything that doesn't override one of those). Calls the
+                // most general tier (`acoustic_c2_at_particle`, not
+                // `acoustic_c2_at` directly) so a material needing a real
+                // per-particle scalar beyond density/temperature (e.g.
+                // `BoilingMixtureMaterial`'s own mass quality) is reachable
+                // too -- every other material's own default just forwards
+                // straight through to `acoustic_c2_at`, unchanged.
+                if let Some(c2_live) =
+                    materials.acoustic_c2_at_particle(particles.material_id[i], particles, i)
                     && c2_live.is_finite()
                     && c2_live > f32::EPSILON
                 {
@@ -594,12 +601,12 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
             }
         }
 
-        // Real, live-temperature-aware acoustic term (2026-08-31) -- same
+        // Real, live density-AND-temperature-aware acoustic term -- same
         // production formula `choose_substep_dt`'s own copy adds, see that
         // copy's own doc for the full account (this diagnostic must be
         // kept in sync by hand, per this function's own top-level doc).
         if let Some(c2_live) =
-            materials.acoustic_c2_at_temperature(particles.material_id[i], particles.temperature[i])
+            materials.acoustic_c2_at_particle(particles.material_id[i], particles, i)
             && c2_live.is_finite()
             && c2_live > f32::EPSILON
         {

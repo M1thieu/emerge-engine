@@ -1,4 +1,5 @@
 pub mod bingham;
+pub mod boiling_mixture;
 pub mod cavitating_eos;
 pub mod cavitating_fluid;
 pub mod corotated;
@@ -27,8 +28,9 @@ pub use physical_props::{
 };
 
 pub use bingham::BinghamFluidMaterial;
-pub use cavitating_eos::CavitatingEosParams;
-pub use cavitating_fluid::IsothermalCavitatingFluidMaterial;
+pub use boiling_mixture::BoilingMixtureMaterial;
+pub use cavitating_eos::{CavitatingEosParams, CavitatingEosTable};
+pub use cavitating_fluid::{CavitatingFluidMaterial, IsothermalCavitatingFluidMaterial};
 pub use corotated::CorotatedMaterial;
 pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
@@ -244,6 +246,43 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     fn acoustic_c2_at_temperature(&self, temperature_k: f32) -> Option<f32> {
         let _ = temperature_k;
         self.rest_acoustic_c2()
+    }
+
+    /// Real, live density-AND-temperature-jointly-aware acoustic c^2 --
+    /// default falls back to `acoustic_c2_at_temperature(temperature_k)`
+    /// (which itself falls back to `rest_acoustic_c2()`), so every
+    /// existing material -- including `IdealGasMaterial`'s own real
+    /// `acoustic_c2_at_temperature` override -- keeps working unchanged
+    /// through this same chain, zero behavior change. Exists for the one
+    /// real class of material whose derivative depends on BOTH inputs
+    /// JOINTLY, not `T` alone: a genuinely temperature-coupled cavitation
+    /// EOS's own mixture band and C^1 patches shift with `T` (unlike an
+    /// ideal gas's `c^2=gamma*R*T`, which has no real density dependence
+    /// at all), so which real branch/patch a given `(density,T)` pair
+    /// lands in cannot be answered from `T` alone (external review's own
+    /// explicit point: `acoustic_c2_at_temperature(T)` alone is
+    /// insufficient here). See a real T-coupled cavitating material's own
+    /// override for the real case this closes.
+    fn acoustic_c2_at(&self, density: f32, temperature_k: f32) -> Option<f32> {
+        let _ = density;
+        self.acoustic_c2_at_temperature(temperature_k)
+    }
+
+    /// Real, most general tier of this same chain -- default just
+    /// forwards to `acoustic_c2_at(particles.density[i],
+    /// particles.temperature[i])`, so every existing material (including
+    /// every override above) keeps working unchanged. Exists for the one
+    /// real class of material whose derivative depends on a per-particle
+    /// SCALAR beyond density/temperature -- a real boiling liquid-vapor
+    /// mixture's own local stiffness depends on the particle's own mass
+    /// quality (`Particle::friction_hardening`, real, disclosed re-use of
+    /// that already-established per-material scratch field -- see
+    /// `BoilingMixtureMaterial`'s own doc for the real case this closes),
+    /// which neither `density` nor `temperature` alone can express.
+    /// `cfl.rs`'s own dispatch calls this tier directly (not `acoustic_c2_at`),
+    /// same established pattern as every earlier tier in this chain.
+    fn acoustic_c2_at_particle(&self, particles: &Particles, i: usize) -> Option<f32> {
+        self.acoustic_c2_at(particles.density[i], particles.temperature[i])
     }
 
     /// Advances plastic/deformation state for one particle after G2P's velocity

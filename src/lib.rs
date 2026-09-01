@@ -81,7 +81,8 @@ pub use solver::handle::{MaterialHandle, ParticleGroup};
 
 // Materials
 pub use materials::{
-    BinghamFluidMaterial, BrittleProps, CavitatingEosParams, ConstitutiveModel, CorotatedMaterial,
+    BinghamFluidMaterial, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
+    CavitatingEosTable, CavitatingFluidMaterial, ConstitutiveModel, CorotatedMaterial,
     DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
     GranularFluidMaterial, IdealGasMaterial, IsothermalCavitatingFluidMaterial, MAX_MATERIAL_SLOTS,
     MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,

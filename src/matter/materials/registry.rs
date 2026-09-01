@@ -6,6 +6,7 @@ use crate::materials::{
     NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial, RankineMaterial,
     StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial,
 };
+use crate::particle::Particles;
 
 /// Maximum number of material slots -- matches `MAX_MATERIALS` in WGSL shaders.
 /// The GPU uniform buffer holds exactly this many `MaterialParams` entries.
@@ -374,16 +375,23 @@ impl MaterialRegistry {
         self.get(material_id).rest_acoustic_c2()
     }
 
-    /// Same real dispatch shape as `rest_acoustic_c2` above, for the real,
-    /// live-temperature-aware sibling -- see `MaterialModel::
-    /// acoustic_c2_at_temperature`'s own doc.
-    pub(crate) fn acoustic_c2_at_temperature(
+    /// Same real dispatch shape as `rest_acoustic_c2` above, for the most
+    /// general tier of the same chain -- see
+    /// `MaterialModel::acoustic_c2_at_particle`'s own doc. `cfl.rs`'s own
+    /// dispatch calls THIS directly (its own `density`/`temperature`-only
+    /// siblings, `acoustic_c2_at`/`acoustic_c2_at_temperature`, are
+    /// reached through this same trait method's own default chain -- no
+    /// separate registry dispatch needed for either once nothing calls
+    /// them directly anymore). Any material needing a per-particle scalar
+    /// beyond density/temperature (e.g. `BoilingMixtureMaterial`'s own
+    /// mass quality) is reachable this way.
+    pub(crate) fn acoustic_c2_at_particle(
         &self,
         material_id: u32,
-        temperature_k: f32,
+        particles: &Particles,
+        i: usize,
     ) -> Option<f32> {
-        self.get(material_id)
-            .acoustic_c2_at_temperature(temperature_k)
+        self.get(material_id).acoustic_c2_at_particle(particles, i)
     }
 
     /// Returns the constitutive model for the given material ID.

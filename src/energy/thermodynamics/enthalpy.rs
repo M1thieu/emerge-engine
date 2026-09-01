@@ -66,6 +66,239 @@ pub fn temperature_and_phase_fraction_from_enthalpy(
     }
 }
 
+/// Real per-phase thermal properties for a chained solid<->liquid<->gas
+/// enthalpy relation (e.g. ice<->water<->steam) -- see
+/// `chained_state_from_enthalpy`'s own doc for the full picture. Real,
+/// disclosed first-increment scope, same as this module's single-
+/// transition functions above: one `cp` per PHASE (not per-temperature),
+/// the standard simplification this whole method already makes.
+#[derive(Debug, Clone, Copy)]
+pub struct PhaseChainProperties {
+    pub cp_solid: f32,
+    pub cp_liquid: f32,
+    pub cp_gas: f32,
+    pub melting_point_k: f32,
+    pub boiling_point_k: f32,
+    pub fusion_latent_heat_j_kg: f32,
+    pub vaporization_latent_heat_j_kg: f32,
+}
+
+/// Which real phase (or which of the two real latent-heat bands) a chained
+/// enthalpy value currently represents -- see `chained_state_from_enthalpy`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PhaseState {
+    Solid,
+    /// Mid-melt: `fraction` in `[0, 1]`, temperature pinned at
+    /// `melting_point_k`.
+    Melting {
+        fraction: f32,
+    },
+    Liquid,
+    /// Mid-boil: `fraction` in `[0, 1]`, temperature pinned at
+    /// `boiling_point_k`.
+    Boiling {
+        fraction: f32,
+    },
+    Gas,
+}
+
+/// Real, chained generalization of `temperature_and_phase_fraction_from_
+/// enthalpy` across TWO consecutive real latent-heat transitions (melting
+/// then boiling) instead of one -- the real ice<->water<->steam picture
+/// this module's own top-of-file doc flagged as "real further work, not
+/// implemented here" when it only handled a single transition. Same real
+/// method (Voller & Cross 1981), same monotonic-in-H structure, extended
+/// to 5 real regions instead of 3: solid, melting band, liquid, boiling
+/// band, gas. `H` is referenced to `T=0K` (`H=cp_solid*T` below melting),
+/// matching `enthalpy_from_temperature`'s own convention exactly, so a
+/// solid-region value from that simpler function is bit-identical to this
+/// one's.
+pub fn chained_state_from_enthalpy(props: &PhaseChainProperties, h: f32) -> (f32, PhaseState) {
+    debug_assert!(props.cp_solid > 0.0 && props.cp_liquid > 0.0 && props.cp_gas > 0.0);
+    debug_assert!(props.boiling_point_k > props.melting_point_k);
+    let h_solidus = props.cp_solid * props.melting_point_k;
+    let h_liquidus = h_solidus + props.fusion_latent_heat_j_kg;
+    let h_boil_start =
+        h_liquidus + props.cp_liquid * (props.boiling_point_k - props.melting_point_k);
+    let h_vapor_start = h_boil_start + props.vaporization_latent_heat_j_kg;
+
+    if h <= h_solidus {
+        (h / props.cp_solid, PhaseState::Solid)
+    } else if h < h_liquidus {
+        let fraction = (h - h_solidus) / props.fusion_latent_heat_j_kg.max(1.0e-12);
+        (props.melting_point_k, PhaseState::Melting { fraction })
+    } else if h < h_boil_start {
+        let t = props.melting_point_k + (h - h_liquidus) / props.cp_liquid;
+        (t, PhaseState::Liquid)
+    } else if h < h_vapor_start {
+        let fraction = (h - h_boil_start) / props.vaporization_latent_heat_j_kg.max(1.0e-12);
+        (props.boiling_point_k, PhaseState::Boiling { fraction })
+    } else {
+        let t = props.boiling_point_k + (h - h_vapor_start) / props.cp_gas;
+        (t, PhaseState::Gas)
+    }
+}
+
+/// Real inverse of `chained_state_from_enthalpy`, for a KNOWN single-phase
+/// state (mirrors `enthalpy_from_temperature`'s own "not for an ongoing
+/// melt" caveat -- a single `(temperature, PhaseState)` pair doesn't
+/// determine a unique H inside a mushy/boiling band on its own unless
+/// `fraction` is given explicitly). Used to seed H once, from a real
+/// starting temperature, not to track an ongoing transition.
+pub fn chained_enthalpy_from_temperature(
+    props: &PhaseChainProperties,
+    temperature: f32,
+    state: PhaseState,
+) -> f32 {
+    let h_solidus = props.cp_solid * props.melting_point_k;
+    let h_liquidus = h_solidus + props.fusion_latent_heat_j_kg;
+    let h_boil_start =
+        h_liquidus + props.cp_liquid * (props.boiling_point_k - props.melting_point_k);
+    let h_vapor_start = h_boil_start + props.vaporization_latent_heat_j_kg;
+    match state {
+        PhaseState::Solid => props.cp_solid * temperature,
+        PhaseState::Melting { fraction } => h_solidus + fraction * props.fusion_latent_heat_j_kg,
+        PhaseState::Liquid => h_liquidus + props.cp_liquid * (temperature - props.melting_point_k),
+        PhaseState::Boiling { fraction } => {
+            h_boil_start + fraction * props.vaporization_latent_heat_j_kg
+        }
+        PhaseState::Gas => h_vapor_start + props.cp_gas * (temperature - props.boiling_point_k),
+    }
+}
+
+#[cfg(test)]
+mod chained_enthalpy_tests {
+    use super::*;
+
+    // Real water/ice/steam values, same sourcing as `enthalpy_tests`'
+    // own constants plus the demo's own cited steam cp (NIST steam
+    // tables, saturated vapor near 100C, 1 atm).
+    fn water_chain() -> PhaseChainProperties {
+        PhaseChainProperties {
+            cp_solid: 2090.0,  // ice, J/(kg*K), CRC Handbook at 0C
+            cp_liquid: 4182.0, // water, J/(kg*K)
+            cp_gas: 2080.0,    // saturated steam, J/(kg*K), NIST near 100C
+            melting_point_k: 273.15,
+            boiling_point_k: 373.15,
+            fusion_latent_heat_j_kg: 334_000.0,
+            vaporization_latent_heat_j_kg: 2_257_000.0,
+        }
+    }
+
+    /// Real round-trip in each of the 3 single-phase regions.
+    #[test]
+    fn round_trips_in_each_single_phase_region() {
+        let props = water_chain();
+        for (t, state) in [
+            (250.0, PhaseState::Solid),
+            (300.0, PhaseState::Liquid),
+            (400.0, PhaseState::Gas),
+        ] {
+            let h = chained_enthalpy_from_temperature(&props, t, state);
+            let (t2, state2) = chained_state_from_enthalpy(&props, h);
+            assert!(
+                (t2 - t).abs() < 1.0e-2,
+                "region {state:?}: expected T={t}, got {t2}"
+            );
+            assert_eq!(
+                std::mem::discriminant(&state2),
+                std::mem::discriminant(&state),
+                "region mismatch: expected {state:?}, got {state2:?}"
+            );
+        }
+    }
+
+    /// Real continuity check at the melting-band boundary: entering the
+    /// liquid region must start EXACTLY at the melting point, no jump.
+    #[test]
+    fn liquid_region_starts_exactly_at_melting_point() {
+        let props = water_chain();
+        let h_liquidus = props.cp_solid * props.melting_point_k + props.fusion_latent_heat_j_kg;
+        let (t, state) = chained_state_from_enthalpy(&props, h_liquidus + 1.0);
+        assert!((t - props.melting_point_k).abs() < 1.0e-2, "got T={t}");
+        assert_eq!(state, PhaseState::Liquid);
+    }
+
+    /// Real continuity check at the boiling-band boundary: entering the
+    /// gas region must start EXACTLY at the boiling point, no jump.
+    #[test]
+    fn gas_region_starts_exactly_at_boiling_point() {
+        let props = water_chain();
+        let h_solidus = props.cp_solid * props.melting_point_k;
+        let h_liquidus = h_solidus + props.fusion_latent_heat_j_kg;
+        let h_boil_start =
+            h_liquidus + props.cp_liquid * (props.boiling_point_k - props.melting_point_k);
+        let h_vapor_start = h_boil_start + props.vaporization_latent_heat_j_kg;
+        let (t, state) = chained_state_from_enthalpy(&props, h_vapor_start + 1.0);
+        assert!((t - props.boiling_point_k).abs() < 1.0e-2, "got T={t}");
+        assert_eq!(state, PhaseState::Gas);
+    }
+
+    /// The real mushy/boiling-band property: mid-band, temperature must be
+    /// PINNED at the transition point, and fraction must read ~0.5 in
+    /// BOTH bands independently, not just the first one this module
+    /// originally supported.
+    #[test]
+    fn both_bands_pin_temperature_and_report_real_fractions() {
+        let props = water_chain();
+        let h_solidus = props.cp_solid * props.melting_point_k;
+        let h_liquidus = h_solidus + props.fusion_latent_heat_j_kg;
+        let (t_melt, state_melt) =
+            chained_state_from_enthalpy(&props, h_solidus + props.fusion_latent_heat_j_kg * 0.5);
+        assert!((t_melt - props.melting_point_k).abs() < 1.0e-2);
+        assert!(
+            matches!(state_melt, PhaseState::Melting { fraction } if (fraction - 0.5).abs() < 1.0e-4)
+        );
+
+        let h_boil_start =
+            h_liquidus + props.cp_liquid * (props.boiling_point_k - props.melting_point_k);
+        let (t_boil, state_boil) = chained_state_from_enthalpy(
+            &props,
+            h_boil_start + props.vaporization_latent_heat_j_kg * 0.5,
+        );
+        assert!((t_boil - props.boiling_point_k).abs() < 1.0e-2);
+        assert!(
+            matches!(state_boil, PhaseState::Boiling { fraction } if (fraction - 0.5).abs() < 1.0e-4)
+        );
+    }
+
+    /// Real monotonicity across the FULL 5-region chain -- the same
+    /// physical-state-not-arbitrary-lookup requirement
+    /// `temperature_and_phase_fraction_are_monotonic_in_enthalpy` checks
+    /// for the single-transition case, extended to the full real range.
+    #[test]
+    fn temperature_is_monotonic_non_decreasing_across_the_full_chain() {
+        let props = water_chain();
+        let mut prev_t = f32::MIN;
+        for i in 0..500 {
+            let h = -100_000.0 + i as f32 * 20_000.0; // sweeps well below solid to well above gas
+            let (t, _) = chained_state_from_enthalpy(&props, h);
+            assert!(
+                t >= prev_t - 1.0e-3,
+                "temperature must be monotonic non-decreasing in H: {t} < {prev_t} at h={h}"
+            );
+            prev_t = t;
+        }
+    }
+
+    /// Real energetic-consistency check: the total energy absorbed
+    /// crossing BOTH bands must equal the sum of the two real cited
+    /// latent heats exactly, by construction -- not silently scaled or
+    /// dropped anywhere in the chained derivation.
+    #[test]
+    fn crossing_both_bands_absorbs_exactly_the_sum_of_both_real_latent_heats() {
+        let props = water_chain();
+        let h_solidus = props.cp_solid * props.melting_point_k;
+        let h_liquidus = h_solidus + props.fusion_latent_heat_j_kg;
+        let h_boil_start =
+            h_liquidus + props.cp_liquid * (props.boiling_point_k - props.melting_point_k);
+        let h_vapor_start = h_boil_start + props.vaporization_latent_heat_j_kg;
+        let total_latent_absorbed = (h_liquidus - h_solidus) + (h_vapor_start - h_boil_start);
+        let expected = props.fusion_latent_heat_j_kg + props.vaporization_latent_heat_j_kg;
+        assert!((total_latent_absorbed - expected).abs() < 1.0e-3);
+    }
+}
+
 #[cfg(test)]
 mod enthalpy_tests {
     use super::*;

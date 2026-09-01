@@ -27,23 +27,36 @@ use egui_wgpu::ScreenDescriptor;
 /// Real materials: `RankineMaterial::ice()` (real brittle-fracture ice,
 /// scaled stiffness -- see that preset's own doc and
 /// `ICE_YOUNG_MODULUS_SCALED_PA` below for why) for the solid,
-/// `IsothermalCavitatingFluidMaterial` (Lyu, Sun, Colagrossi & Zhang 2023's
-/// real three-branch cavitation EOS -- see `cavitating_eos`'s own doc) for
-/// the liquid, `IdealGasMaterial` (isentropic ideal-gas EOS) for the gas.
+/// `CavitatingFluidMaterial` (Lyu, Sun, Colagrossi & Zhang 2023's real
+/// three-branch cavitation EOS, genuinely temperature-coupled -- see
+/// `cavitating_eos`'s own doc) for the liquid, `BoilingMixtureMaterial`
+/// (real Homogeneous Equilibrium Model mixture, driven directly by the
+/// enthalpy method's own `boiling_fraction` -- see that material's own
+/// doc) for a particle genuinely mid-boil, `IdealGasMaterial`
+/// (isentropic ideal-gas EOS) for the gas.
 ///
-/// Real, disclosed change (2026-08-31): this demo used
-/// `NewtonianFluidMaterial` (a flat `pressure_floor`) for water until now --
-/// the first real, visible use of the cavitation closure built this same
-/// session, replacing that floor's known category error (conflating a free
-/// surface with real bulk cavitation, see `cavitating_eos`'s own doc) with
-/// the real, per-density three-branch EOS. Still ISOTHERMAL (fixed
-/// reference temperature, `WATER_EOS_REFERENCE_TEMPERATURE_K` below, not
-/// yet coupled to the particle's own live `temperature` -- see
-/// `IsothermalCavitatingFluidMaterial`'s own doc) -- the real T-dependent
-/// closure (`p_sat(T_particle)`, a T-indexed lookup table, CFL receiving
-/// `T_particle`) is disclosed future work, not done here. `phase_states_
-/// headless.rs` still uses the older `NewtonianFluidMaterial`, not yet
-/// updated to match.
+/// Real, disclosed history: this demo used `NewtonianFluidMaterial` (a
+/// flat `pressure_floor`) for water, then `IsothermalCavitatingFluidMaterial`
+/// (fixed-reference-temperature cavitation), then the genuinely
+/// temperature-coupled `CavitatingFluidMaterial` for ALL of water
+/// (including the boiling plateau) -- water near freezing and water near
+/// boiling genuinely had different real cavitation onsets, not one fixed
+/// reference curve, but live-testing that version surfaced a real,
+/// quantitatively confirmed bug: a particle held at the real boiling
+/// latent-heat plateau let its own MECHANICAL vapor fraction run
+/// completely independent of the enthalpy method's own THERMAL vapor
+/// fraction (measured live: `J=5.988`, ~fully vaporized mechanically,
+/// while barely a third boiled thermally). `BoilingMixtureMaterial`
+/// (2026-09-01) closes that: `PhaseState::Boiling` now gets its own real
+/// material whose mechanical equilibrium is driven directly by the SAME
+/// `fraction` the enthalpy method already tracks -- see that material's
+/// own doc for the real citations (Collier & Thome's mixture density,
+/// Wallis's mixture sound speed). Real, disclosed remaining limitation,
+/// unchanged: the coupling is still one-directional (`x_H -> mechanical
+/// state`) -- a real mechanical deviation from equilibrium doesn't pay
+/// latent heat back into the enthalpy state. `phase_states_headless.rs`
+/// still uses the older `NewtonianFluidMaterial`, not yet updated to
+/// match.
 ///
 /// Real "chimney" geometry, added 2026-08-28 after live feedback that the
 /// original wide, zero-gravity, centered-square layout let material drift
@@ -62,15 +75,13 @@ use egui_wgpu::ScreenDescriptor;
 ///
 ///   cargo run --example phase_states_gui --features "render,experimental"
 use emerge::grid::kernel::quadratic_weights;
-use emerge::matter::materials::gas::STANDARD_ATMOSPHERE_PA;
 use emerge::matter::materials::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
 };
 use emerge::render::{ColorMode, Renderer};
-use emerge::thermodynamics::water_saturation::water_saturation_pressure_pa;
 use emerge::{
-    CavitatingEosParams, IdealGasMaterial, IsothermalCavitatingFluidMaterial, MaterialModel,
-    RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    BoilingMixtureMaterial, CavitatingEosTable, CavitatingFluidMaterial, IdealGasMaterial,
+    MaterialModel, RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Mat2, Vec2};
 use std::sync::Arc;
@@ -84,6 +95,14 @@ const GRID: usize = 64;
 const ICE_ID: u32 = 0;
 const WATER_ID: u32 = 1;
 const STEAM_ID: u32 = 2;
+/// Real, genuinely mid-boil material (2026-09-01, external review's own
+/// "minimum honest enthalpy->mechanical" fix) -- see
+/// `emerge::BoilingMixtureMaterial`'s own doc for the real bug this
+/// closes (mechanical vapor fraction running independent of the
+/// enthalpy method's own thermal vapor fraction) and
+/// `material_id_for_phase_state`'s own doc for how this replaces the old
+/// majority-vote `WATER_ID`/`STEAM_ID` split.
+const BOILING_ID: u32 = 3;
 
 // Real water phase-change constants -- identical to phase_states_headless.rs,
 // see that file's own doc for the full real-value sourcing.
@@ -130,21 +149,25 @@ fn water_phase_chain() -> emerge::thermodynamics::PhaseChainProperties {
     }
 }
 
-/// Real, disclosed simplification (2026-08-29): this engine can only give
-/// one particle ONE discrete `material_id` at a time -- a true mushy/
-/// boiling mixture doesn't exist yet (real progressive mechanical
-/// blending is separately scoped, Milestone 3 of the same plan). Until
-/// then, a particle mid-transition shows whichever real phase holds the
-/// MAJORITY of its own latent-heat band (`fraction < 0.5` keeps the
-/// colder identity, `>= 0.5` switches). Real, disclosed correction
-/// (2026-08-30): the RULE is symmetric and direction-
-/// agnostic, a genuine improvement over the arbitrary hysteresis margin
-/// it replaces -- but the 0.5 CUTOFF itself is still a real coarse-
-/// graining choice (a majority-vote closure over the true, unmodeled
-/// mushy/two-phase continuum this material_id swap approximates), not
-/// something uniquely derived from physics. Don't read "not arbitrary" as
-/// applying to the threshold value itself, only to the symmetry of the
-/// rule around it.
+/// Real, disclosed simplification, UNCHANGED for melting (2026-08-29): a
+/// particle mid-MELT still shows whichever real phase holds the MAJORITY
+/// of its own latent-heat band (`fraction < 0.5` keeps the colder
+/// identity, `>= 0.5` switches) -- a genuine mushy-solid mechanical model
+/// (partial-melt stiffness softening) is real, separate, still-unscoped
+/// future work, not attempted here. The 0.5 cutoff itself is still a real
+/// coarse-graining choice, not something uniquely derived from physics.
+///
+/// Real, disclosed IMPROVEMENT for boiling (2026-09-01, external review):
+/// the old majority-vote split here (`WATER_ID` below 0.5, `STEAM_ID`
+/// above) is GONE -- it let a particle's own mechanical vapor fraction
+/// (implicit in its density/`J` under whichever pure-phase material held
+/// it) drift completely independent of `fraction` itself, a real,
+/// quantitatively confirmed bug (see `BoilingMixtureMaterial`'s own doc).
+/// Every `PhaseState::Boiling` particle, regardless of `fraction`, now
+/// gets the real, genuinely mixture-aware `BOILING_ID` -- `fraction`
+/// itself still drives that material's own mechanical response directly
+/// (via `Particle::friction_hardening`, written every substep below), so
+/// there is no longer a discrete threshold to cross mid-band at all.
 fn material_id_for_phase_state(state: emerge::thermodynamics::PhaseState) -> u32 {
     use emerge::thermodynamics::PhaseState;
     match state {
@@ -157,13 +180,7 @@ fn material_id_for_phase_state(state: emerge::thermodynamics::PhaseState) -> u32
             }
         }
         PhaseState::Liquid => WATER_ID,
-        PhaseState::Boiling { fraction } => {
-            if fraction < 0.5 {
-                WATER_ID
-            } else {
-                STEAM_ID
-            }
-        }
+        PhaseState::Boiling { .. } => BOILING_ID,
         PhaseState::Gas => STEAM_ID,
     }
 }
@@ -245,13 +262,6 @@ const ICE_RHO_KG_M3: f32 = 917.0;
 // off by ~36x, the same order of magnitude as the 2026-08-13 case (~100x).
 const WATER_C_REF_M_S: f32 = 180.0;
 
-// Real, disclosed model choice (2026-08-31, see `IsothermalCavitatingFluidMaterial`'s
-// own doc for why a fixed T is still a real, useful first increment): the
-// single temperature this EOS's own `p_v_gauge_pa` is evaluated at.
-// 300K, not a scene-specific pick -- matches `cavitating_eos.rs`'s own
-// `real_test_params()`, the exact combination that module's whole test
-// suite already verifies (continuity, monotonicity, the real C^1 patches).
-const WATER_EOS_REFERENCE_TEMPERATURE_K: f32 = 300.0;
 // Real, disclosed model choice: the mixture band's own effective acoustic
 // speed -- see `cavitating_eos`'s own module doc ("parameter honesty")
 // for why this is NOT a fixed water property, just this demo's own choice
@@ -269,7 +279,8 @@ const MAX_HEAT_RATE_K_PER_S: f32 = 80.0;
 fn make_sim() -> (
     Simulation,
     RankineMaterial,
-    IsothermalCavitatingFluidMaterial,
+    CavitatingFluidMaterial,
+    BoilingMixtureMaterial,
     IdealGasMaterial,
 ) {
     // Real, disclosed change from phase_states_headless.rs's own gravity=ZERO
@@ -359,25 +370,45 @@ fn make_sim() -> (
         }
     };
     let water = {
-        let p_v_abs_pa = water_saturation_pressure_pa(WATER_EOS_REFERENCE_TEMPERATURE_K);
-        let eos = CavitatingEosParams::new(
+        // Real, disclosed upgrade (2026-08-31, external review's own 7-step
+        // production-closure order): water now genuinely responds to its
+        // OWN live temperature instead of one fixed reference -- the real
+        // point of tonight's whole T-dependent closure. `MELTING_POINT_K`
+        // is the real, natural `t_min_k`: the coldest real liquid-water
+        // state this demo ever has. `CavitatingEosTable::build` derives
+        // its own real `t_max_k` internally (`t_liquid_closure_max`, just
+        // below the true boiling point) and picks its own node count by
+        // real measured interpolation error -- see `CavitatingEosTable`'s
+        // own doc, nothing here to size by hand.
+        let table = CavitatingEosTable::build(
             WATER_RHO_KG_M3,
             WATER_C_REF_M_S,
             7.0, // gamma_l -- Cole 1948's real value for water
             STEAM_RHO_KG_M3,
             STEAM_ADIABATIC_INDEX,
             WATER_EOS_C_MIN_M_S,
-            p_v_abs_pa - STANDARD_ATMOSPHERE_PA,
+            MELTING_POINT_K,
         );
         // Real, disclosed choice (not an arbitrary flat number -- see
-        // `IsothermalCavitatingFluidMaterial::volume_ratio_max`'s own doc):
-        // full internal vaporization corresponds to
-        // `J~=rho_l_ref/rho_v_ref=6.0` for this scene's own reference
-        // densities; this demo's own discrete enthalpy-driven swap to
-        // `STEAM_ID` is expected to fire well before that, but the EOS
-        // itself stays real and well-defined with headroom past it.
-        IsothermalCavitatingFluidMaterial::new(eos, config.dx_meters, 1.0e-3, 0.5, 8.0)
+        // `CavitatingFluidMaterial::volume_ratio_max`'s own doc): full
+        // internal vaporization corresponds to `J~=rho_l_ref/rho_v_ref=6.0`
+        // for this scene's own reference densities; this demo's own
+        // discrete enthalpy-driven swap to `STEAM_ID` is expected to fire
+        // well before that, but the EOS itself stays real and well-defined
+        // with headroom past it.
+        CavitatingFluidMaterial::new(table, config.dx_meters, 1.0e-3, 0.5, 8.0)
     };
+    // Real, genuinely mid-boil mixture material (2026-09-01, external
+    // review's own "minimum honest enthalpy->mechanical" fix) -- built
+    // from `water`'s own table, so `BOILING_ID`'s liquid-side reference
+    // matches `WATER_ID`'s exactly (real, guaranteed continuity at the
+    // `x=0` handoff, not just intended -- see `BoilingMixtureMaterial::
+    // from_table`'s own doc). Same real `dx_meters`/`volume_ratio_max=8.0`
+    // as `water` -- full vaporization's own real equilibrium `J` is
+    // `rho_l_ref/rho_v_ref=6.0` (WATER_RHO_KG_M3/STEAM_RHO_KG_M3), so the
+    // same headroom already sized for `water` covers this material too.
+    let boiling =
+        BoilingMixtureMaterial::from_table(&water.table, config.dx_meters, 1.0e-3, 0.5, 8.0);
     let steam = {
         // Real fix (2026-08-28): `IdealGasMaterial` had zero resistance
         // to over-EXPANSION (only compression -- see that field's own
@@ -426,11 +457,16 @@ fn make_sim() -> (
 
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(ice))
-        .with_material(WATER_ID, Box::new(water))
+        .with_material(WATER_ID, Box::new(water.clone()))
         .with_material(STEAM_ID, Box::new(steam))
+        // Real, disclosed ordering requirement (found live): `MaterialRegistry`
+        // requires contiguous IDs registered IN NUMERIC ORDER (0,1,2,3,...),
+        // not just distinct values -- `BOILING_ID=3` must therefore be
+        // registered AFTER `STEAM_ID=2`, not before it.
+        .with_material(BOILING_ID, Box::new(boiling))
         // Real, required constraint, not a style choice: this scene has a
         // strict fluid (`owns_deformation_volume_state()==true`, both
-        // `NewtonianFluidMaterial` and `IsothermalCavitatingFluidMaterial`
+        // `NewtonianFluidMaterial` and `CavitatingFluidMaterial`
         // declare this), and only SlipBoundary declares itself compatible
         // with that -- FrictionBoundary's post-G2P particle mutation isn't
         // a declared fluid traction/no-penetration condition (see
@@ -479,7 +515,7 @@ fn make_sim() -> (
             particles.mass[i] = ICE_RHO_KG_M3 * particles.initial_volume[i];
         }
     }
-    (solver, ice, water, steam)
+    (solver, ice, water, boiling, steam)
 }
 
 /// Real starting enthalpy for every particle -- matches `make_sim`'s own
@@ -540,7 +576,8 @@ struct State {
     /// other way around.
     enthalpy: Vec<f32>,
     ice_material: RankineMaterial,
-    water_material: IsothermalCavitatingFluidMaterial,
+    water_material: CavitatingFluidMaterial,
+    boiling_material: BoilingMixtureMaterial,
     steam_material: IdealGasMaterial,
     /// TEMPORARY diagnostic (2026-08-30): which water particle held `detF`
     /// max last sample, to check whether the live drift is one persisting
@@ -586,7 +623,7 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        let (sim, ice_material, water_material, steam_material) = make_sim();
+        let (sim, ice_material, water_material, boiling_material, steam_material) = make_sim();
         let enthalpy = initial_enthalpy(sim.particles().len());
         let real_gravity = sim.config().gravity;
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
@@ -644,6 +681,7 @@ impl State {
             enthalpy,
             ice_material,
             water_material,
+            boiling_material,
             steam_material,
             water_jmax_prev_idx: None,
         }
@@ -691,10 +729,10 @@ impl State {
         // against -- this overrides it once at startup so the derived fixes
         // can be tested against real Earth/Moon/Mars gravity, not just the
         // artificially softened default.
-        if let Ok(g) = std::env::var("PHASE_STATES_GRAVITY_FRACTION") {
-            if let Ok(g) = g.parse::<f32>() {
-                self.gravity_fraction = g;
-            }
+        if let Ok(g) = std::env::var("PHASE_STATES_GRAVITY_FRACTION")
+            && let Ok(g) = g.parse::<f32>()
+        {
+            self.gravity_fraction = g;
         }
         // Real, temporary verification aid (2026-08-28): the auto-heat var
         // above jumps the SLIDER TARGET instantly, which every past test
@@ -706,17 +744,17 @@ impl State {
         // whether the still-open compression cascade after the (now-fixed)
         // melt-transition bug is a genuine engine issue or an artifact of
         // instant, unrealistic heating.
-        if let Ok(rate) = std::env::var("PHASE_STATES_REALISTIC_HEAT_RATE_K_PER_S") {
-            if let Ok(ramp_rate) = rate.parse::<f32>() {
-                let ramp_target: f32 = std::env::var("PHASE_STATES_AUTO_HEAT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(400.0);
-                let dt = self.sim.config().dt;
-                if self.target_temperature < ramp_target {
-                    self.target_temperature =
-                        (self.target_temperature + ramp_rate * dt).min(ramp_target);
-                }
+        if let Ok(rate) = std::env::var("PHASE_STATES_REALISTIC_HEAT_RATE_K_PER_S")
+            && let Ok(ramp_rate) = rate.parse::<f32>()
+        {
+            let ramp_target: f32 = std::env::var("PHASE_STATES_AUTO_HEAT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(400.0);
+            let dt = self.sim.config().dt;
+            if self.target_temperature < ramp_target {
+                self.target_temperature =
+                    (self.target_temperature + ramp_rate * dt).min(ramp_target);
             }
         }
         let n_f = self.sim.particles().len().max(1) as f32;
@@ -801,11 +839,24 @@ impl State {
                         .clamp(-MAX_HEAT_RATE_K_PER_S, MAX_HEAT_RATE_K_PER_S);
                     self.enthalpy[i] += local_rate_k_per_s * cp * dt;
                 }
-                let (new_t, _) = emerge::thermodynamics::chained_state_from_enthalpy(
+                let (new_t, state) = emerge::thermodynamics::chained_state_from_enthalpy(
                     &phase_chain,
                     self.enthalpy[i],
                 );
                 particles.temperature[i] = new_t;
+                // Real, disclosed fix (2026-09-01, external review): writes
+                // the SAME `fraction` that `material_id_for_phase_state`
+                // (below) uses to decide `BOILING_ID` directly into
+                // `Particle::friction_hardening` -- `BoilingMixtureMaterial`'s
+                // own real use of that reused scratch field (see its own
+                // doc). Every real frame, not just at the transition
+                // instant, since `fraction` keeps climbing continuously
+                // while `enthalpy` accumulates. Never touches this field
+                // for `PhaseState::Melting` (RankineMaterial's own real
+                // damage state lives there while a particle is ICE_ID).
+                if let emerge::thermodynamics::PhaseState::Boiling { fraction } = state {
+                    particles.friction_hardening[i] = fraction;
+                }
             }
         }
 
@@ -838,6 +889,7 @@ impl State {
             match target {
                 ICE_ID => self.ice_material.init_particle_from_transition(&mut p),
                 WATER_ID => self.water_material.init_particle_from_transition(&mut p),
+                BOILING_ID => self.boiling_material.init_particle_from_transition(&mut p),
                 _ => self.steam_material.init_particle_from_transition(&mut p),
             }
             particles.set(i, p);
@@ -875,6 +927,13 @@ impl State {
             // that isn't steam), same radius this file's own same-
             // material-neighbor diagnostics already use.
             const BUOYANCY_NEIGHBOR_RADIUS: f32 = 3.0;
+            // Real, disclosed fix (2026-09-01): counts BOILING_ID neighbors
+            // too, not just WATER_ID -- a steam particle rising directly out
+            // of a genuinely mid-boil mixture (real, common now that
+            // `BOILING_ID` exists) is still surrounded by a real condensed
+            // medium this gate's own Archimedes formula assumes; counting
+            // only pure liquid would undercount right at a real boiling
+            // interface and disable buoyancy too early there.
             let steam_water_neighbors: Vec<usize> = self
                 .sim
                 .particles()
@@ -882,6 +941,9 @@ impl State {
                 .map(|p| {
                     if p.material_id == STEAM_ID {
                         self.sim.count_near(p.x, BUOYANCY_NEIGHBOR_RADIUS, WATER_ID)
+                            + self
+                                .sim
+                                .count_near(p.x, BUOYANCY_NEIGHBOR_RADIUS, BOILING_ID)
                     } else {
                         0
                     }
@@ -1205,10 +1267,17 @@ impl State {
                 // `rho_grid/J = rest_density_grid/max_j`, and
                 // `rest_density_grid = rho_l_ref*dx^2`, so this real SI
                 // density is exactly `rho_l_ref/max_j` -- `dx` cancels,
-                // same derivation `IsothermalCavitatingFluidMaterial`'s own
-                // private `real_density_si` uses internally.
-                let density_si = self.water_material.eos.rho_l_ref_kg_m3 / max_j;
-                let pressure_gauge = self.water_material.eos.pressure_gauge_pa(density_si);
+                // same derivation `CavitatingFluidMaterial`'s own private
+                // `real_density_si` uses internally. Real, live-temperature
+                // reconstruction (2026-08-31): reads THIS particle's own
+                // `temperature`, not a fixed reference -- the whole real
+                // point of the T-dependent closure.
+                let density_si = self.water_material.table.rho_l_ref_kg_m3 / max_j;
+                let pressure_gauge = self
+                    .water_material
+                    .table
+                    .reconstruct(p.temperature)
+                    .pressure_gauge_pa(density_si);
                 let under_tension = pressure_gauge < 0.0;
                 let dist_to_wall =
                     p.x.x
@@ -1219,12 +1288,13 @@ impl State {
                 let same_as_last = self.water_jmax_prev_idx == Some(max_idx);
                 println!(
                     "  [water-jmax/frame={:5}] idx={:4} (same_as_last_sample={}) J={:.4} \
-                     pos=({:.2},{:.2}) dist_to_wall={:.2} same_mat_neighbors(r=3)={} \
+                     T={:.2}K pos=({:.2},{:.2}) dist_to_wall={:.2} same_mat_neighbors(r=3)={} \
                      pressure_gauge={:.2}Pa under_tension={}",
                     self.frame,
                     max_idx,
                     same_as_last,
                     max_j,
+                    p.temperature,
                     p.x.x,
                     p.x.y,
                     dist_to_wall,
@@ -1233,6 +1303,42 @@ impl State {
                     under_tension,
                 );
                 self.water_jmax_prev_idx = Some(max_idx);
+            }
+            // TEMPORARY diagnostic (2026-09-01): the real, direct check on
+            // `BoilingMixtureMaterial`'s own core claim -- a genuinely
+            // mid-boil particle's mechanical `J` should track the real
+            // mass-fraction equilibrium `J_eq(x)=1+(rho_l_ref/rho_v_ref-1)*x`
+            // this material's own doc derives, not run free the way the
+            // old bug let it (the live symptom this whole fix answers:
+            // `J=5.988` at `x_H<0.5`, i.e. `J` nearly at the FULL-vapor
+            // equilibrium while barely a third boiled). `J/J_eq->1` here is
+            // the real, direct confirmation the fix is doing its job.
+            if let Some((max_idx, max_j)) = particles
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.material_id == BOILING_ID)
+                .map(|(i, p)| (i, p.deformation_gradient.determinant()))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+            {
+                let p = particles.get(max_idx);
+                let x = p.friction_hardening.clamp(0.0, 1.0);
+                let ratio =
+                    self.boiling_material.rho_l_ref_kg_m3 / self.boiling_material.rho_v_ref_kg_m3;
+                let j_eq = 1.0 + (ratio - 1.0) * x;
+                let stress = self.boiling_material.kirchhoff_stress(particles, max_idx);
+                let pressure_gauge = -stress.x_axis.x;
+                println!(
+                    "  [boiling-jmax/frame={:5}] idx={:4} J={:.4} J_eq={:.4} J/J_eq={:.4} \
+                     x={:.4} T={:.2}K pressure_gauge={:.2}Pa",
+                    self.frame,
+                    max_idx,
+                    max_j,
+                    j_eq,
+                    max_j / j_eq,
+                    x,
+                    p.temperature,
+                    pressure_gauge,
+                );
             }
             // TEMPORARY diagnostic (2026-08-31, external review): the real
             // A/B this whole steam-runaway investigation needs, per that
@@ -1439,11 +1545,12 @@ impl State {
         self.gravity_fraction = gravity_fraction;
         self.push_strength = push_strength;
         if reset {
-            let (sim, ice_material, water_material, steam_material) = make_sim();
+            let (sim, ice_material, water_material, boiling_material, steam_material) = make_sim();
             self.real_gravity = sim.config().gravity;
             self.enthalpy = initial_enthalpy(sim.particles().len());
             self.ice_material = ice_material;
             self.water_material = water_material;
+            self.boiling_material = boiling_material;
             self.steam_material = steam_material;
             self.sim = sim;
             self.target_temperature = 250.0;
@@ -1548,11 +1655,13 @@ impl ApplicationHandler for App {
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyR if pressed => {
-                        let (sim, ice_material, water_material, steam_material) = make_sim();
+                        let (sim, ice_material, water_material, boiling_material, steam_material) =
+                            make_sim();
                         s.real_gravity = sim.config().gravity;
                         s.enthalpy = initial_enthalpy(sim.particles().len());
                         s.ice_material = ice_material;
                         s.water_material = water_material;
+                        s.boiling_material = boiling_material;
                         s.steam_material = steam_material;
                         s.sim = sim;
                         s.target_temperature = 250.0;

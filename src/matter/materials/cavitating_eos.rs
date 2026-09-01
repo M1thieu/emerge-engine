@@ -1191,12 +1191,23 @@ fn primitives_at_temperature(
 /// requirement).
 #[derive(Debug, Clone)]
 pub struct CavitatingEosTable {
-    rho_l_ref_kg_m3: f32,
-    c_l_m_s: f32,
-    gamma_l: f32,
-    rho_v_ref_kg_m3: f32,
-    gamma_v: f32,
-    c_min_m_s: f32,
+    /// Liquid branch reference density (kg/m^3) -- real rest density.
+    /// Public, same convention `CavitatingEosParams`'s own free inputs
+    /// use, since a `MaterialModel` built on this table needs it (e.g.
+    /// deriving its own grid-unit rest density) same as it would from a
+    /// fixed `CavitatingEosParams`.
+    pub rho_l_ref_kg_m3: f32,
+    /// Liquid branch sound speed (m/s).
+    pub c_l_m_s: f32,
+    /// Liquid branch's own Tait-like exponent -- see
+    /// `CavitatingEosParams::gamma_l`'s own doc.
+    pub gamma_l: f32,
+    /// Vapor branch reference density (kg/m^3).
+    pub rho_v_ref_kg_m3: f32,
+    /// Vapor branch polytropic exponent.
+    pub gamma_v: f32,
+    /// Mixture-region minimum sound speed (m/s).
+    pub c_min_m_s: f32,
     t_min_k: f32,
     t_max_k: f32,
     rho_m_plus_kg_m3: Vec<f32>,
