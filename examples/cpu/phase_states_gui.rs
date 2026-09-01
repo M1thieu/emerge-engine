@@ -1322,9 +1322,7 @@ impl State {
             {
                 let p = particles.get(max_idx);
                 let x = p.friction_hardening.clamp(0.0, 1.0);
-                let ratio =
-                    self.boiling_material.rho_l_ref_kg_m3 / self.boiling_material.rho_v_ref_kg_m3;
-                let j_eq = 1.0 + (ratio - 1.0) * x;
+                let j_eq = self.boiling_material.j_eq(x);
                 let stress = self.boiling_material.kirchhoff_stress(particles, max_idx);
                 let pressure_gauge = -stress.x_axis.x;
                 // Real, disclosed diagnostic (2026-09-01, external review's
@@ -1346,7 +1344,7 @@ impl State {
                     .map(|q| q.x.y)
                     .fold(f32::NEG_INFINITY, f32::max);
                 let depth_m = (y_surface - p.x.y).max(0.0) * self.sim.config().dx_meters;
-                let rho_eq_si = self.boiling_material.rho_l_ref_kg_m3 / j_eq;
+                let rho_eq_si = self.boiling_material.rho_eq_kg_m3(x);
                 let g_si = (self.real_gravity.y * self.gravity_fraction).abs()
                     * self.sim.config().dx_meters;
                 let p_hydro_pa = rho_eq_si * g_si * depth_m;
