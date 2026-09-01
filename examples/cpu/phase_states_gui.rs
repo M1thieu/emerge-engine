@@ -1327,9 +1327,32 @@ impl State {
                 let j_eq = 1.0 + (ratio - 1.0) * x;
                 let stress = self.boiling_material.kirchhoff_stress(particles, max_idx);
                 let pressure_gauge = -stress.x_axis.x;
+                // Real, disclosed diagnostic (2026-09-01, external review's
+                // own decisive test #1): `J/J_eq != 1` is not automatically
+                // a bug -- a column under real gravity needs real internal
+                // pressure to hold its own weight, and this material's own
+                // `p = c_mix2(x)*(rho-rho_eq(x))` computes exactly that.
+                // Converts the observed residual into a real Pa figure and
+                // compares it against a direct hydrostatic estimate
+                // (`p ~= rho*g*(y_surface-y)`) at this particle's own real
+                // depth -- if the orders of magnitude agree, the residual is
+                // real physics, not drift. `y_surface` is the real, live
+                // top of the condensed-phase column THIS frame (max y over
+                // ICE_ID/WATER_ID/BOILING_ID -- steam excluded, it's not
+                // part of the hydrostatic medium).
+                let y_surface = particles
+                    .iter()
+                    .filter(|q| matches!(q.material_id, ICE_ID | WATER_ID | BOILING_ID))
+                    .map(|q| q.x.y)
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let depth_m = (y_surface - p.x.y).max(0.0) * self.sim.config().dx_meters;
+                let rho_eq_si = self.boiling_material.rho_l_ref_kg_m3 / j_eq;
+                let g_si = (self.real_gravity.y * self.gravity_fraction).abs()
+                    * self.sim.config().dx_meters;
+                let p_hydro_pa = rho_eq_si * g_si * depth_m;
                 println!(
                     "  [boiling-jmax/frame={:5}] idx={:4} J={:.4} J_eq={:.4} J/J_eq={:.4} \
-                     x={:.4} T={:.2}K pressure_gauge={:.2}Pa",
+                     x={:.4} T={:.2}K pressure_gauge={:.2}Pa depth={:.3}m p_hydro={:.2}Pa",
                     self.frame,
                     max_idx,
                     max_j,
@@ -1338,6 +1361,8 @@ impl State {
                     x,
                     p.temperature,
                     pressure_gauge,
+                    depth_m,
+                    p_hydro_pa,
                 );
             }
             // TEMPORARY diagnostic (2026-08-31, external review): the real
