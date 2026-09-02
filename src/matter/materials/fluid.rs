@@ -443,7 +443,35 @@ impl MaterialModel for NewtonianFluidMaterial {
         // via `fluid_impact_shows_real_free_surface_splash_separation`
         // (`tests/physics_correctness.rs`): a hard floor impact showed max_j_seen
         // EXACTLY 1.0000 across 250 steps, not just close to it.
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Real, disclosed regression fixed 2026-08-30: `det(I + dt*C)` (the
+        // old `f_trial` this line used to build) is NOT rotation-invariant --
+        // for a pure rigid rotation `C=[[0,-w],[w,0]]` (div(v)=tr(C)=0, no
+        // real volume change should occur), `det(I+dt*C) = 1 + dt^2*w^2`, a
+        // strictly POSITIVE expansion every single substep from pure O(dt^2)
+        // discretization error, not real physics. Immediately baked in
+        // permanently by the very next line's isotropization (nothing ever
+        // reverses it), this is a real, measured, monotonic `detF`-max drift
+        // confirmed live over thousands of frames, dynamics-independent
+        // (kept climbing at an unchanged rate even after real convection/
+        // vorticity had fully died to near-zero). The exact fix is the
+        // continuity equation's own exponential solution for constant `C`
+        // over a substep, `J_{n+1} = J_n * exp(dt*div(v))` -- exactly 1.0
+        // for any rotation (div(v)=0 always, regardless of vorticity), and
+        // matching `det(I+dt*C)` to first order for genuine compression/
+        // expansion, so this is a strict correctness fix, not a behavior
+        // change for real divergent flow. This exact formula previously
+        // existed in a since-deleted `fluid_state.rs` module (added
+        // `cac544b` 2026-08-11, silently lost the very next day by the SAME
+        // wholesale revert, `57b83dc`, that also caused the
+        // `weakly_compressible` units regression found earlier this
+        // session) -- restored here, not reinvented.
+        // `old_j` recovers the fluid's own scalar state from its ALREADY-
+        // isotropic F (`s*I`, `det=s^2`) -- exactly this material's `j`
+        // from the previous substep, the same equivalence
+        // `assert_owned_deformation_state` already enforces elsewhere in
+        // this file (bit-equivalent to `volume/initial_volume` to 2e-4).
+        let old_j = ctx.deformation_gradient.determinant();
+        let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
         // Real, measured 2026-08-14: this clamp is NOT dead weight from a
         // stiffness-derivation era this engine has since outgrown -- earlier
         // memory recorded it as "dormant" after the real EOS-stiffness fix
@@ -454,7 +482,7 @@ impl MaterialModel for NewtonianFluidMaterial {
         // a rigid floor at eos_stiffness=50) hits BOTH bounds EXACTLY --
         // min_j_seen=0.5000, max_j_seen=2.0000 -- over 250 real steps. Under
         // a hard impact this clamp is load-bearing, not vestigial; keep it.
-        let j = f_trial.determinant().clamp(0.5, 2.0);
+        let j = (old_j * (dt * div_v).exp()).clamp(0.5, 2.0);
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
@@ -610,6 +638,88 @@ mod si_construction_tests {
         assert!((material.rest_density - 0.1).abs() < 1.0e-7);
         assert!((material.dynamic_viscosity - 1.0e-3).abs() < 1.0e-9);
         assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
+    }
+}
+
+#[cfg(test)]
+mod volume_integration_tests {
+    use super::*;
+    use crate::particle::{Particle, Particles};
+
+    fn particle_with_f(f: Mat2) -> Particles {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.volume = f.determinant();
+        p.density = 1.0;
+        Particles::from(vec![p])
+    }
+
+    /// Real regression guard (2026-08-30): a pure rigid rotation carries
+    /// zero divergence (`tr(C)=0`) and must leave `J=det(F)` EXACTLY
+    /// unchanged -- rotation alone never compresses or expands anything.
+    /// The bug this guards against: `update_particle` used to build
+    /// `f_trial=(I+dt*C)*F_old` and take `det(f_trial)` directly, which for
+    /// this exact `C` gives `det(f_trial) = 1 + dt^2*omega^2`, a strictly
+    /// POSITIVE expansion every substep from pure O(dt^2) discretization
+    /// error -- confirmed live over thousands of frames as a real, slow,
+    /// monotonic `detF`-max drift, dynamics-independent (kept climbing at
+    /// an unchanged rate even once real vorticity had fully died to near-
+    /// zero). Fixed with the exact exponential solution
+    /// `J_new=J_old*exp(dt*div(v))`, which is identically 1.0 for any
+    /// rotation regardless of `omega`. Same root cause, same fix, as the
+    /// `weakly_compressible` units regression -- both lost the same day
+    /// (`57b83dc`) from the same `fluid_state.rs` module `cac544b`
+    /// introduced (`log_j = old_j.ln() + dt*div_v; j = log_j.exp()`).
+    #[test]
+    fn rigid_rotation_leaves_j_exactly_unchanged() {
+        let mat = NewtonianFluidMaterial::new(1.0, 0.0, 100.0, 7.0);
+        let mut particles = particle_with_f(Mat2::IDENTITY);
+        let dt = 0.01;
+        let omega = 5.0_f32; // deliberately large -- the old bug scales as omega^2
+        {
+            let mut ctx = particles.update_ctx(0);
+            *ctx.velocity_gradient = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+            for _ in 0..500 {
+                mat.update_particle(&mut ctx, dt);
+            }
+        }
+        let j = particles.deformation_gradient[0].determinant();
+        assert!(
+            (j - 1.0).abs() < 1.0e-5,
+            "500 substeps of pure rotation (omega={omega}) must leave J exactly at 1.0, \
+             got {j} -- the old det(I+dt*C) bug would give a real, measurable expansion here"
+        );
+    }
+
+    /// Real regression guard (2026-08-30): a constant, uniform dilation
+    /// (`C = k*I`, `div(v) = 2k` in 2D) must integrate to EXACTLY the
+    /// continuity equation's own exponential solution,
+    /// `J_new = J_old * exp(N*dt*2k)`, for constant `C` held over `N`
+    /// substeps -- not the old `det(I+dt*C)`-per-step approximation, which
+    /// only agrees with this to first order and drifts at higher `dt*k`.
+    #[test]
+    fn constant_dilation_matches_exact_exponential_solution() {
+        let mat = NewtonianFluidMaterial::new(1.0, 0.0, 100.0, 7.0);
+        let mut particles = particle_with_f(Mat2::IDENTITY);
+        let dt = 0.001;
+        let k = 2.0_f32;
+        const N: i32 = 50;
+        {
+            let mut ctx = particles.update_ctx(0);
+            *ctx.velocity_gradient = Mat2::from_diagonal(Vec2::splat(k));
+            for _ in 0..N {
+                mat.update_particle(&mut ctx, dt);
+            }
+        }
+        let j = particles.deformation_gradient[0].determinant();
+        let expected = (N as f32 * dt * 2.0 * k).exp();
+        assert!(
+            (j - expected).abs() / expected < 1.0e-4,
+            "constant dilation over {N} substeps must match J_old*exp(N*dt*2k) exactly \
+             (continuity equation's own solution for constant C) -- got {j}, expected {expected}"
+        );
     }
 }
 

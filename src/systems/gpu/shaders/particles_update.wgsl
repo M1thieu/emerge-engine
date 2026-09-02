@@ -489,7 +489,21 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     const FLUID_J_MIN: f32 = 0.5; // below this, EOS pressure overwhelms timestep → clamp to prevent crushing
     if mat.model == 1u {
         let fluid_j_max = select(2.0, mat.volume_ratio_max, mat.volume_ratio_max > 1.0);
-        var J_fluid = det2(new_F);
+        // Real, disclosed regression fixed 2026-08-30 -- same fix, same
+        // root cause, as CPU's NewtonianFluidMaterial::update_particle (see
+        // that function's own doc for the full writeup): `new_F`'s own
+        // determinant (built above via `(I+dt*C)*F_old`) is NOT rotation-
+        // invariant -- a pure rigid rotation (div(v)=0) should leave J
+        // exactly unchanged, but that formula gives a strictly positive
+        // O(dt^2) expansion every substep, baked in permanently by this
+        // branch's own isotropic reset just below. Fixed with the
+        // continuity equation's own exact exponential solution,
+        // `J_new = J_old * exp(dt*div(v))`, computed from the OLD
+        // (pre-substep) `p.deformation_gradient`/`p.velocity_gradient`
+        // directly instead of trusting `new_F`'s determinant.
+        let old_J = det2(p.deformation_gradient);
+        let div_v = p.velocity_gradient[0].x + p.velocity_gradient[1].y;
+        var J_fluid = old_J * exp(dt * div_v);
         if !(J_fluid > 0.0) { J_fluid = 1.0; }
         J_fluid = clamp(J_fluid, FLUID_J_MIN, fluid_j_max);
         let sqrtJ = sqrt(J_fluid);

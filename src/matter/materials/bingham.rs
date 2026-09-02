@@ -269,8 +269,17 @@ impl MaterialModel for BinghamFluidMaterial {
         // that trips `assert_owned_deformation_state`
         // ("det(F)=0.9989268, V/V0=1"). This is the user's own live
         // observation exactly: water settles correctly, mud does not.
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
-        let j = f_trial.determinant().clamp(0.5, 2.0);
+        // Real, disclosed regression fixed 2026-08-30 -- same fix, same
+        // root cause, as `NewtonianFluidMaterial::update_particle`'s own
+        // doc: `det(I+dt*C)` is not rotation-invariant (a pure rigid
+        // rotation should leave J exactly unchanged but this formula gives
+        // a strictly positive O(dt^2) expansion every substep, baked in
+        // permanently by isotropization). Fixed with the continuity
+        // equation's own exact exponential solution, `J_{n+1}=J_n*exp(dt*
+        // div(v))` -- restores the pre-`57b83dc` `fluid_state.rs` behavior.
+        let old_j = ctx.deformation_gradient.determinant();
+        let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
+        let j = (old_j * (dt * div_v).exp()).clamp(0.5, 2.0);
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
@@ -417,6 +426,81 @@ mod analytical_validation_tests {
             eff_visc_fast < eff_visc_slow,
             "apparent viscosity must decrease as shear rate increases (shear-thinning): \
              slow={eff_visc_slow:.4} fast={eff_visc_fast:.4}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod volume_integration_tests {
+    use super::*;
+    use crate::particle::{Particle, Particles};
+
+    fn particle_with_f(f: Mat2) -> Particles {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.volume = f.determinant();
+        p.density = 1.0;
+        Particles::from(vec![p])
+    }
+
+    /// Same audit-closing regression guard `NewtonianFluidMaterial` already
+    /// carries for the identical mechanism (`rigid_rotation_leaves_j_
+    /// exactly_unchanged`, `fluid.rs`'s own `volume_integration_tests`) --
+    /// this file's own `update_particle` doc claims the SAME fix (the
+    /// continuity equation's exact exponential solution,
+    /// `J_new=J_old*exp(dt*div(v))`, replacing the non-rotation-invariant
+    /// `det(I+dt*C)`), so it needs the same direct proof, not just a
+    /// doc claim of parity with the sibling material.
+    #[test]
+    fn rigid_rotation_leaves_j_exactly_unchanged() {
+        let mat = BinghamFluidMaterial::new(1.0, 0.0, 100.0, 7.0, 0.0);
+        let mut particles = particle_with_f(Mat2::IDENTITY);
+        let dt = 0.01;
+        let omega = 5.0_f32; // deliberately large -- the old bug scales as omega^2
+        {
+            let mut ctx = particles.update_ctx(0);
+            *ctx.velocity_gradient = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+            for _ in 0..500 {
+                mat.update_particle(&mut ctx, dt);
+            }
+        }
+        let j = particles.deformation_gradient[0].determinant();
+        assert!(
+            (j - 1.0).abs() < 1.0e-5,
+            "500 substeps of pure rotation (omega={omega}) must leave J exactly at 1.0, \
+             got {j} -- the old det(I+dt*C) bug would give a real, measurable expansion here"
+        );
+    }
+
+    /// Same audit-closing regression guard as `NewtonianFluidMaterial`'s own
+    /// `constant_dilation_matches_exact_exponential_solution`: a constant,
+    /// uniform dilation (`C=k*I`, `div(v)=2k` in 2D) must integrate to
+    /// EXACTLY the continuity equation's own exponential solution,
+    /// `J_new=J_old*exp(N*dt*2k)`, not the old per-step `det(I+dt*C)`
+    /// approximation (which only agrees to first order and drifts at
+    /// higher `dt*k`).
+    #[test]
+    fn constant_dilation_matches_exact_exponential_solution() {
+        let mat = BinghamFluidMaterial::new(1.0, 0.0, 100.0, 7.0, 0.0);
+        let mut particles = particle_with_f(Mat2::IDENTITY);
+        let dt = 0.001;
+        let k = 2.0_f32;
+        const N: i32 = 50;
+        {
+            let mut ctx = particles.update_ctx(0);
+            *ctx.velocity_gradient = Mat2::from_diagonal(Vec2::splat(k));
+            for _ in 0..N {
+                mat.update_particle(&mut ctx, dt);
+            }
+        }
+        let j = particles.deformation_gradient[0].determinant();
+        let expected = (N as f32 * dt * 2.0 * k).exp();
+        assert!(
+            (j - expected).abs() / expected < 1.0e-4,
+            "constant dilation over {N} substeps must match J_old*exp(N*dt*2k) exactly \
+             (continuity equation's own solution for constant C) -- got {j}, expected {expected}"
         );
     }
 }
