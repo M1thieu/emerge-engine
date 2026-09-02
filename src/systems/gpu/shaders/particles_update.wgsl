@@ -343,7 +343,13 @@ fn vm_plasticity(f_trial: mat2x2<f32>, kappa: f32, mat: MaterialParams) -> VmRet
 
     let denom     = 2.0 * mat.mu + mat.hardening_modulus;
     let gamma     = select((elastic_dev - yield_s) / denom, 0.0, denom < NUM_FLOOR_TIGHT);
-    let eps_proj  = dev * (yield_s / elastic_dev) + vec2<f32>(tr * 0.5);
+    // Real, disclosed regression fix (2026-09-02, external review, same
+    // bug as the CPU path's own von_mises.rs -- see that file's own doc
+    // for the worked counterexample): must project onto the yield surface
+    // AFTER this step's own hardening increment, not the pre-hardening
+    // trial-state limit `yield_s`.
+    let new_yield_s = yield_s + mat.hardening_modulus * gamma;
+    let eps_proj  = dev * (new_yield_s / elastic_dev) + vec2<f32>(tr * 0.5);
     let sigma_new = exp(eps_proj);
     let diag      = mat2x2<f32>(vec2<f32>(sigma_new.x, 0.0), vec2<f32>(0.0, sigma_new.y));
     return VmReturn(svd.u * diag * transpose(svd.v), gamma);

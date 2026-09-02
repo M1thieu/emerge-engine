@@ -156,7 +156,21 @@ impl MaterialModel for VonMisesMaterial {
                 0.0
             };
             *ctx.friction_hardening = kappa + gamma;
-            let eps_proj = dev * (effective_yield / elastic_dev) + Vec2::splat(tr * 0.5);
+            // Real, disclosed regression fix (2026-09-02, external review):
+            // the radial-return consistency condition requires projecting
+            // onto the UPDATED yield surface (after this step's own
+            // hardening increment), not the trial-state limit computed
+            // BEFORE it -- Simo & Taylor's own associative J2 return
+            // mapping. The old code divided by `effective_yield` (pre-
+            // hardening), which silently reproduces the OLD surface every
+            // single step: worked counterexample (mu=3000, yield_stress=100,
+            // hardening_modulus=500, elastic_dev=150) gives gamma=0.007692,
+            // real post-hardening limit=103.846, but the old code returned
+            // exactly 100. `new_effective_yield = effective_yield +
+            // hardening_modulus*gamma` is the exact, real value the
+            // projected stress must land on.
+            let new_effective_yield = effective_yield + self.hardening_modulus * gamma;
+            let eps_proj = dev * (new_effective_yield / elastic_dev) + Vec2::splat(tr * 0.5);
             Vec2::new(eps_proj.x.exp(), eps_proj.y.exp())
         } else {
             sigma
@@ -335,6 +349,57 @@ mod marginal_yield_tests {
             "hardening should shrink the plastic strain increment for the same trial \
              state once kappa has already accumulated: gamma(kappa=0)={gamma_from_zero:.6} \
              gamma(kappa=1)={gamma_from_existing:.6}"
+        );
+    }
+
+    /// Real regression guard (2026-09-02, external review): the two tests
+    /// above cannot catch a real bug that shipped here -- neither checks
+    /// the projected stress against the real, ANALYTICAL post-hardening
+    /// yield surface with `hardening_modulus > 0`
+    /// (`marginal_state_beyond_yield_stress_projects_exactly_to_the_yield_
+    /// surface` uses `hardening_modulus=0`, where the bug is invisible;
+    /// `hardening_raises_the_effective_yield_surface` only checks
+    /// monotonicity of `kappa`, never the final stress value). The real
+    /// bug: `update_particle` computed `gamma` correctly and updated
+    /// `kappa_new = kappa + gamma` correctly, but then projected onto
+    /// `effective_yield` (the PRE-hardening limit) instead of
+    /// `effective_yield + hardening_modulus*gamma` (the real, consistent
+    /// POST-hardening limit) -- radial-return consistency requires the
+    /// latter (Simo & Taylor's own associative J2 return mapping).
+    ///
+    /// Exact worked case (independently hand-derived, not just re-deriving
+    /// what the code itself computes): mu=3000, yield_stress=100,
+    /// hardening_modulus=500, a trial state giving `elastic_dev=150` ->
+    /// `gamma=(150-100)/(6000+500)=0.0076923...`, real post-hardening
+    /// limit `=100+500*0.0076923=103.846...`. The pre-fix code returned
+    /// exactly 100 (the untouched pre-hardening limit) here.
+    #[test]
+    fn hardened_projection_lands_exactly_on_the_real_post_hardening_surface() {
+        let mat = VonMisesMaterial::with_hardening(2000.0, 3000.0, 100.0, 500.0);
+        let target_dev_norm = 150.0 / (2.0 * mat.mu); // elastic_dev = 150 exactly
+        let d = per_component_d_for_target_dev_norm(target_dev_norm);
+        let sigma = Vec2::new(d.exp(), (-d).exp());
+
+        let (sigma_after, kappa_after) = run_one_step(&mat, sigma, 0.0);
+
+        let gamma = kappa_after; // kappa started at 0.0
+        let expected_post_hardening_limit = mat.yield_stress + mat.hardening_modulus * gamma;
+        assert!(
+            (expected_post_hardening_limit - 103.846).abs() < 0.01,
+            "test setup sanity: hand-derived limit should match the real \
+             worked case (~103.846), got {expected_post_hardening_limit}"
+        );
+
+        let eps_after = crate::materials::utils::hencky_strains(sigma_after);
+        let tr_after = eps_after.x + eps_after.y;
+        let dev_after = (eps_after - Vec2::splat(tr_after * 0.5)).length();
+        let measured_limit = 2.0 * mat.mu * dev_after;
+        assert!(
+            (measured_limit - expected_post_hardening_limit).abs() < 1.0e-2,
+            "projected stress must land EXACTLY on the REAL post-hardening \
+             yield surface ({expected_post_hardening_limit:.3}), not the \
+             pre-hardening one (100.0, the real bug this guards against): \
+             got {measured_limit:.3}"
         );
     }
 }

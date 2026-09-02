@@ -360,7 +360,19 @@ impl MaterialModel for IdealGasMaterial {
         particle.initial_volume = true_initial_volume;
         particle.volume = true_initial_volume * j;
         particle.density = particle.mass / particle.volume.max(1.0e-9);
-        particle.temperature = self.reference_temperature_k;
+        // Real regression fix (external review): do NOT touch temperature
+        // here. `Simulation::apply_phase_transition` already debits it by
+        // `latent_heat / heat_capacity` immediately before calling this --
+        // overwriting it back to a fixed `reference_temperature_k` silently
+        // erased that debit every single time (water boiling into steam
+        // paid the latent-heat cost, then had it discarded a few lines
+        // later, always landing exactly at 373.15K regardless of how much
+        // energy actually crossed the threshold). Every sibling override
+        // (`NewtonianFluidMaterial`, `BoilingMixtureMaterial`,
+        // `CavitatingFluidMaterial`) already leaves `particle.temperature`
+        // untouched for the same reason -- this material was the one
+        // outlier. `init_particle` (fresh spawns, no real prior thermal
+        // history) is unaffected and still seeds `reference_temperature_k`.
     }
 
     /// `c² = γ·R·T` evaluated at the reference state (`J=1`,
@@ -649,6 +661,44 @@ mod tests {
             "real air at its own rest density/temperature, embedded in the \
              default standard atmosphere, must exert ~zero mechanical \
              (gauge) stress: got {pressure_gauge:.1} Pa"
+        );
+    }
+
+    /// Real regression guard (external review, P0 #5): `init_particle_
+    /// from_transition` must NOT touch `particle.temperature` --
+    /// `Simulation::apply_phase_transition` already debits it by
+    /// `latent_heat/heat_capacity` immediately before calling this, and
+    /// this material used to silently overwrite that debit back to a
+    /// fixed `reference_temperature_k`, discarding it completely (water
+    /// boiling into steam always landed at exactly 373.15K regardless of
+    /// how much energy actually crossed the threshold). Starts the
+    /// particle at a temperature that is deliberately NOT the reference
+    /// value -- the real post-debit state a genuine transition leaves
+    /// behind -- and confirms it survives untouched, matching every
+    /// sibling `init_particle_from_transition` override
+    /// (`NewtonianFluidMaterial`, `BoilingMixtureMaterial`,
+    /// `CavitatingFluidMaterial`) which never touched temperature at all.
+    #[test]
+    fn init_particle_from_transition_preserves_the_incoming_temperature() {
+        let config = unit_dx_config();
+        let mat = IdealGasMaterial::air(1.204, 373.15, &config);
+
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.volume = 1.0; // "prior volume" as whatever material it transitioned from
+        let post_latent_heat_debit_temperature = 350.0_f32; // != reference_temperature_k
+        p.temperature = post_latent_heat_debit_temperature;
+
+        mat.init_particle_from_transition(&mut p);
+
+        assert_eq!(
+            p.temperature, post_latent_heat_debit_temperature,
+            "init_particle_from_transition must leave an already-debited \
+             temperature exactly untouched, not reset it to reference_temperature_k \
+             ({}) -- pre-fix, this always landed at the reference value regardless \
+             of the real latent-heat debit",
+            mat.reference_temperature_k
         );
     }
 

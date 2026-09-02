@@ -861,6 +861,7 @@ mod damping_tests {
 #[cfg(test)]
 mod rock_preset_tests {
     use super::*;
+    use crate::Particle;
 
     /// Real, cited rock presets must be genuinely DIFFERENT materials, not the
     /// same numbers under different names -- checks the real distinguishing
@@ -908,5 +909,88 @@ mod rock_preset_tests {
                 mat.tensile_strength
             );
         }
+    }
+
+    /// Real Tier-0 closure (2026-09-02): the two tests above only compare
+    /// preset PARAMETERS (`tensile_strength` values/ratios) -- real, but
+    /// weaker evidence than watching the actual EMERGENT fracture behavior
+    /// `rock_fracture.rs`'s own live demo shows (repeated strikes, weaker
+    /// rock visibly damages, stiffer rock doesn't). This closes that gap
+    /// with a real, dynamic, automated check through `update_particle`'s
+    /// own return mapping, same technique `marginal_yield_tests::run_one_
+    /// step` (this file, sibling module) already uses for a single preset.
+    ///
+    /// `sandstone`/`limestone` both funnel through the SAME
+    /// `from_young_modulus` at the SAME (E, nu) here, so they share
+    /// IDENTICAL lambda/mu -- the only real difference is `tensile_strength`
+    /// (sandstone ratio 1.0e-3 vs limestone's real, cited, stronger-per-
+    /// modulus 3.1e-3, Xu 2016): at E=20 GPa, sandstone=20 MPa,
+    /// limestone=62 MPa. A single, IDENTICAL real tensile stress state
+    /// (35 MPa, strictly between the two) must therefore fracture
+    /// (damage-accumulate) sandstone while leaving limestone elastic --
+    /// the real, live comparative claim the example demonstrates
+    /// visually, now checked automatically.
+    #[test]
+    fn weaker_rock_fractures_under_a_load_stiffer_rock_survives() {
+        let e = 20.0e9;
+        let nu = 0.25;
+        let sandstone = RankineMaterial::sandstone(e, nu);
+        let limestone = RankineMaterial::limestone(e, nu);
+        assert!(
+            sandstone.tensile_strength < limestone.tensile_strength,
+            "test setup sanity: sandstone must be the weaker preset here"
+        );
+
+        let target_tau_x = 0.5 * (sandstone.tensile_strength + limestone.tensile_strength);
+        assert!(
+            target_tau_x > sandstone.tensile_strength && target_tau_x < limestone.tensile_strength,
+            "test setup sanity: target stress must sit strictly between the \
+             two real tensile strengths"
+        );
+
+        // Same real construction `run_one_step`/`eps_x_for_target_tau_x`
+        // (marginal_yield_tests, this file) use: eps.y=0, tau.x=a*eps.x
+        // with a=2*mu+lambda (IDENTICAL for both presets here).
+        let a = 2.0 * sandstone.mu + sandstone.lambda;
+        assert_eq!(
+            a,
+            2.0 * limestone.mu + limestone.lambda,
+            "sandstone and limestone must share identical lambda/mu at the \
+             same (E, nu) -- only tensile_strength should differ"
+        );
+        let eps_x = target_tau_x / a;
+        let sigma = Vec2::new(eps_x.exp(), 1.0);
+
+        let one_step = |mat: &RankineMaterial| -> (Vec2, f32) {
+            let mut p = Particle::zeroed();
+            p.deformation_gradient =
+                Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y));
+            p.mass = 1.0;
+            p.initial_volume = 1.0;
+            let mut particles = Particles::from(vec![p]);
+            mat.update_particle(&mut particles.update_ctx(0), 1.0);
+            let f = particles.deformation_gradient[0];
+            (
+                Vec2::new(f.x_axis.x, f.y_axis.y),
+                particles.friction_hardening[0],
+            )
+        };
+
+        let (sigma_sandstone, damage_sandstone) = one_step(&sandstone);
+        let (sigma_limestone, damage_limestone) = one_step(&limestone);
+
+        assert!(
+            (sigma_sandstone - sigma).length() > 1.0e-4 && damage_sandstone > 0.0,
+            "sandstone (weaker, tensile_strength={:.3e}) must fracture under \
+             {target_tau_x:.3e} Pa: sigma_after={sigma_sandstone:?} damage={damage_sandstone}",
+            sandstone.tensile_strength
+        );
+        assert!(
+            (sigma_limestone - sigma).length() < 1.0e-6 && damage_limestone == 0.0,
+            "limestone (stronger, tensile_strength={:.3e}) must stay ELASTIC \
+             under the SAME {target_tau_x:.3e} Pa: sigma_after={sigma_limestone:?} \
+             damage={damage_limestone}",
+            limestone.tensile_strength
+        );
     }
 }

@@ -459,6 +459,74 @@ fn granular_fluid_stress_symmetric() {
     );
 }
 
+/// Real Tier-0 stress-test closure (2026-09-02): `saturated_loam`'s own doc
+/// already discloses "empirically verified to stop a hard impact bouncing
+/// elastically" -- this preset was already tuned against real impact
+/// behavior, but no automated test ever exercised a genuinely hard fall,
+/// only calm settling scenes (`granular_fluid_mass_conserved` and
+/// siblings). Same real, minimal template as
+/// `fluid_impact_shows_real_free_surface_splash_separation` (Newtonian
+/// water's own hard-impact test): a compact block dropped a real 20 units
+/// onto a rigid floor, every real per-particle invariant (finite state,
+/// `J=V/V0`, `rho*V=m`) checked every step, not just "didn't crash."
+#[test]
+fn granular_fluid_survives_hard_impact() {
+    const GRID: usize = 64;
+    const FLOOR: f32 = 2.0;
+    let gravity = Vec2::new(0.0, -9.81);
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        ..SimConfig::standard(GRID, 0.02, gravity)
+    };
+
+    let side = 6i32;
+    let drop_height = 20.0;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(side, side),
+        box_center: Vec2::new(GRID as f32 * 0.5, FLOOR + drop_height),
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(GranularFluidMaterial::saturated_loam(1.0e5, 0.2)))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+
+    for _ in 0..250 {
+        solver.step_n(1);
+        for p in solver.particles().iter() {
+            assert!(
+                p.x.is_finite()
+                    && p.v.is_finite()
+                    && p.volume.is_finite()
+                    && p.volume > 0.0
+                    && p.density.is_finite()
+                    && p.density > 0.0,
+                "granular-fluid particle acquired an inadmissible state during \
+                 impact: x={:?} v={:?}",
+                p.x,
+                p.v
+            );
+            let j = p.deformation_gradient.determinant();
+            assert!(
+                j.is_finite() && j > 0.0,
+                "granular-fluid J={j} <= 0 during impact"
+            );
+            assert!(
+                ((p.volume / p.initial_volume - j) / j).abs() < 2.0e-4,
+                "granular-fluid J must be V/V0, got V/V0={} det(F)={j}",
+                p.volume / p.initial_volume
+            );
+            assert!(
+                ((p.density * p.volume - p.mass) / p.mass).abs() < 2.0e-4,
+                "granular-fluid mass relation rho*V=m was violated during impact"
+            );
+        }
+    }
+}
+
 #[test]
 fn sand_stress_symmetric() {
     let sand = DruckerPragerMaterial::cohesionless(5429.0, 0.357);
@@ -1395,6 +1463,78 @@ fn bingham_lava_stable() {
         assert!(p.x.is_finite() && p.v.is_finite(), "lava particle NaN");
         let j = p.deformation_gradient.determinant();
         assert!(j > 0.0, "lava J={j:.4} â‰¤ 0");
+    }
+}
+
+/// Real Tier-0 stress-test closure (2026-09-02): `bingham_lava_stable`
+/// above proves this exact preset survives a gentle gravity-settle, but
+/// never a genuinely violent impact -- the real gap this closes. Uses
+/// `viscous_high_yield(2700.0, 1.0e5)` specifically (not
+/// `high_yield(1500.0, 1.0e4)`, the preset+config pair
+/// `bingham_mud_stable_under_gravity`/`bingham_j_positive` show a real,
+/// separately-tracked, still-unresolved deep instability at -- see those
+/// tests' own `#[ignore]` doc) since THIS combination is already the one
+/// empirically proven stable in this file, escalating it to a real hard
+/// fall rather than gambling on unproven parameters. Same real, minimal
+/// template as `fluid_impact_shows_real_free_surface_splash_separation`.
+#[test]
+fn bingham_lava_survives_hard_impact() {
+    const GRID: usize = 64;
+    const FLOOR: f32 = 2.0;
+    let gravity = Vec2::new(0.0, -9.81);
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        fluid_step_retry_enabled: true,
+        ..SimConfig::standard(GRID, 0.02, gravity)
+    };
+
+    let side = 6i32;
+    let drop_height = 20.0;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(side, side),
+        box_center: Vec2::new(GRID as f32 * 0.5, FLOOR + drop_height),
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(BinghamFluidMaterial::viscous_high_yield(
+            2700.0, 1.0e5,
+        )))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+
+    for _ in 0..250 {
+        solver.step_n(1);
+        for p in solver.particles().iter() {
+            assert!(
+                p.x.is_finite()
+                    && p.v.is_finite()
+                    && p.volume.is_finite()
+                    && p.volume > 0.0
+                    && p.density.is_finite()
+                    && p.density > 0.0,
+                "Bingham lava particle acquired an inadmissible state during \
+                 impact: x={:?} v={:?}",
+                p.x,
+                p.v
+            );
+            let j = p.deformation_gradient.determinant();
+            assert!(
+                j.is_finite() && j > 0.0,
+                "Bingham lava J={j} <= 0 during impact"
+            );
+            assert!(
+                ((p.volume / p.initial_volume - j) / j).abs() < 2.0e-4,
+                "Bingham lava J must be V/V0, got V/V0={} det(F)={j}",
+                p.volume / p.initial_volume
+            );
+            assert!(
+                ((p.density * p.volume - p.mass) / p.mass).abs() < 2.0e-4,
+                "Bingham lava mass relation rho*V=m was violated during impact"
+            );
+        }
     }
 }
 

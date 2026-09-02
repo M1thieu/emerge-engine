@@ -577,9 +577,20 @@ impl MaterialModel for NewtonianFluidMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        // Viscous diffusion bound for explicit integration.
-        if self.dynamic_viscosity > 0.0 {
-            let kinematic_viscosity = self.dynamic_viscosity / density;
+        // Viscous diffusion bound for explicit integration -- combines
+        // dynamic_viscosity AND bulk_viscosity (real regression fix,
+        // external review: this used to bound only shear viscosity,
+        // leaving bulk viscosity's own explicit-damping term with no
+        // matching CFL bound, same real instability mechanism
+        // `GranularFluidMaterial::timestep_bound`'s own doc already fixed
+        // this for -- an explicit damping term whose dt*viscosity/mass
+        // ratio is too large INJECTS energy instead of removing it. Both
+        // terms multiply the same velocity-gradient-derived stress, so
+        // combining them linearly is the real, conservative bound, not an
+        // approximation.
+        let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
+        if combined_viscosity > 0.0 {
+            let kinematic_viscosity = combined_viscosity / density;
             if kinematic_viscosity > f32::EPSILON {
                 dt_bound =
                     dt_bound.min(viscous_cfl * cell_width * cell_width / kinematic_viscosity);

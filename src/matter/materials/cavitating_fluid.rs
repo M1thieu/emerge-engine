@@ -631,4 +631,95 @@ mod tests {
             "acoustic_c2_at must stay real, finite, and positive: cold={c2_cold} hot={c2_hot}"
         );
     }
+
+    /// Real Tier-0 stress-test closure (2026-09-02): every other test in
+    /// this module stays near rest density -- this is the real, distinctive
+    /// physical extreme this material's own three-branch closure exists
+    /// for, at the exact real bounds it self-declares
+    /// (`volume_ratio_min`/`volume_ratio_max`): extreme TENSION (J near
+    /// `volume_ratio_max`, deep in the real vapor branch -- the whole
+    /// reason this material exists over a naive linear EOS, which would
+    /// let gauge pressure diverge to `-infinity` under real tension) and
+    /// extreme COMPRESSION (J near `volume_ratio_min`). Both must stay
+    /// finite, and BOTH stress (`kirchhoff_stress`) and the live CFL bound
+    /// (`acoustic_c2_at`) must agree with each other on which branch a
+    /// state is in -- checked directly, not assumed.
+    #[test]
+    fn pressure_and_sound_speed_stay_real_and_bounded_at_the_material_own_extremes() {
+        let table = real_table();
+        let config = unit_dx_config();
+        let volume_ratio_min = 0.5;
+        let volume_ratio_max = 8.0;
+        let material = CavitatingFluidMaterial::new(
+            table,
+            config.dx_meters,
+            1.0e-3,
+            volume_ratio_min,
+            volume_ratio_max,
+        );
+        let temperature_k = 300.0;
+
+        let particle_at_j = |j: f32| -> Particle {
+            let mut p = Particle::zeroed();
+            p.mass = material.rest_density_grid;
+            p.deformation_gradient = Mat2::IDENTITY;
+            material.init_particle(&mut p);
+            p.deformation_gradient = Mat2::from_diagonal(Vec2::splat(j.sqrt()));
+            p.temperature = temperature_k;
+            p
+        };
+
+        // Extreme tension: deep in the real vapor branch, right at this
+        // material's own self-declared upper bound.
+        let p_tension = particle_at_j(volume_ratio_max * 0.99);
+        let particles_tension = Particles::from(vec![p_tension]);
+        let stress_tension = material.kirchhoff_stress(&particles_tension, 0);
+        let pressure_tension = -stress_tension.x_axis.x;
+        let density_tension = material.rest_density_grid / (volume_ratio_max * 0.99);
+        let c2_tension = material
+            .acoustic_c2_at(density_tension, temperature_k)
+            .unwrap();
+        assert!(
+            pressure_tension.is_finite(),
+            "gauge pressure must stay FINITE at extreme tension (J={:.3}, near \
+             volume_ratio_max={volume_ratio_max}) -- a naive linear EOS would \
+             diverge to -infinity here, the real reason this material's own \
+             vapor branch exists: got {pressure_tension} Pa",
+            volume_ratio_max * 0.99
+        );
+        assert!(
+            c2_tension.is_finite() && c2_tension > 0.0,
+            "acoustic_c2_at must stay real, finite, and positive even deep in \
+             the vapor branch: got {c2_tension}"
+        );
+
+        // Extreme compression: right at this material's own self-declared
+        // lower bound -- real, strong resistance expected, not a collapse.
+        let p_compression = particle_at_j(volume_ratio_min * 1.01);
+        let particles_compression = Particles::from(vec![p_compression]);
+        let stress_compression = material.kirchhoff_stress(&particles_compression, 0);
+        let pressure_compression = -stress_compression.x_axis.x;
+        let density_compression = material.rest_density_grid / (volume_ratio_min * 1.01);
+        let c2_compression = material
+            .acoustic_c2_at(density_compression, temperature_k)
+            .unwrap();
+        assert!(
+            pressure_compression.is_finite() && pressure_compression > 0.0,
+            "gauge pressure must stay finite and strongly POSITIVE under \
+             extreme compression (J={:.3}, near volume_ratio_min={volume_ratio_min}): \
+             got {pressure_compression} Pa",
+            volume_ratio_min * 1.01
+        );
+        assert!(
+            c2_compression.is_finite() && c2_compression > 0.0,
+            "acoustic_c2_at must stay real, finite, and positive under extreme \
+             compression: got {c2_compression}"
+        );
+        assert!(
+            pressure_compression > pressure_tension,
+            "extreme compression must give a genuinely higher real pressure \
+             than extreme tension: compression={pressure_compression} Pa \
+             tension={pressure_tension} Pa"
+        );
+    }
 }

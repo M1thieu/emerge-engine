@@ -207,8 +207,17 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
                 let dx = dev[0][0]; let dy = dev[1][1]; let dxy = dev[0][1];
                 let shear_rate = sqrt(max(0.5 * (dx*dx + dy*dy + 2.0*dxy*dxy), 0.0));
                 if shear_rate > 1e-4 {
+                    // Real, disclosed regression fix (external review): `dev`
+                    // here is `sym = C+C^T = 2*D`, i.e. already 2*D_dev, same
+                    // as the Newtonian branch below uses directly (`eff_visc *
+                    // dev`) -- the real tensorial Bingham law is
+                    // `2*eta_app*D_dev = eta_app*dev`, not `eta_app*dev*0.5`.
+                    // Pre-fix, this branch gave exactly HALF the real stress,
+                    // and (since the Newtonian branch was always correct)
+                    // produced a real discontinuity right at yield_s -> 0
+                    // instead of converging to it.
                     let eta_app = yield_s / shear_rate + eff_visc;
-                    t = t + dev * (eta_app * 0.5);
+                    t = t + dev * eta_app;
                 }
             } else {
                 t = t + eff_visc * dev;

@@ -145,7 +145,16 @@ impl BinghamFluidMaterial {
 
         // Apparent viscosity: Bingham formula η_app = τ₀/γ̇ + η
         let eta_app = self.yield_stress / shear_rate + self.dynamic_viscosity;
-        d_dev * eta_app
+        // Real, disclosed regression fix (external review): with D=(C+Cᵀ)/2
+        // (the symmetric strain rate built above), the real tensorial
+        // Bingham law is tau_dev = 2*eta_app*D_dev, not eta_app*D_dev --
+        // the codebase's own real, cited source (Balmforth, Frigaard &
+        // Ovarlez) writes the law in terms of the FULL shear-rate tensor
+        // Delta = grad(v)+grad(v)^T = 2*D, which is exactly the factor of 2
+        // missing here. Pre-fix, simple shear gave exactly HALF the real
+        // stress (tau_xy = (tau_y+eta*gamma_dot)/2 instead of
+        // tau_y+eta*gamma_dot).
+        2.0 * eta_app * d_dev
     }
 }
 
@@ -219,10 +228,23 @@ impl MaterialModel for BinghamFluidMaterial {
             Mat2::ZERO
         };
 
-        // Bulk viscosity: τ += ζ·div(v)·I -- see field's own doc.
+        // Bulk viscosity: τ += ζ·div(v)·I -- see field's own doc. Real,
+        // disclosed regression fix (external review): this used to read
+        // `div_v` from the RAW velocity gradient (`trace(C)`, already the
+        // real divergence with no extra factor), then multiplied by an
+        // extra `*0.5` on top -- a genuine 2x-too-small bulk viscosity
+        // here specifically. `NewtonianFluidMaterial`/`IdealGasMaterial`/
+        // `GranularFluidMaterial` all compute `div_v` from the SYMMETRIZED
+        // strain (`C+Cᵀ`, i.e. `2*trace(C)`) instead, where the same `*0.5`
+        // correctly recovers the real divergence -- matches the GPU
+        // shader's own convention (`p2g.wgsl`'s `tr_s*0.5`) exactly. Fixed
+        // by using the SAME symmetrized-strain convention here, not by
+        // dropping the `*0.5` (which would have been correct ONLY for this
+        // file's own now-removed raw-gradient basis, not the shared one).
         let bulk = if self.bulk_viscosity > 0.0 {
             let gradient = particles.velocity_gradient[i];
-            let div_v = gradient.x_axis.x + gradient.y_axis.y;
+            let sym_strain = gradient + gradient.transpose();
+            let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
             Mat2::from_diagonal(Vec2::splat(self.bulk_viscosity * div_v * 0.5))
         } else {
             Mat2::ZERO
@@ -337,9 +359,15 @@ impl MaterialModel for BinghamFluidMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        // Viscous diffusion bound -- apparent viscosity is at least dynamic_viscosity
-        if self.dynamic_viscosity > 0.0 {
-            let kinematic_viscosity = self.dynamic_viscosity / density;
+        // Viscous diffusion bound -- apparent viscosity is at least
+        // dynamic_viscosity, combined with bulk_viscosity (real regression
+        // fix, external review: same gap, same fix, as
+        // `NewtonianFluidMaterial::timestep_bound` -- see that file's own
+        // doc for the full explicit-integrator-instability reasoning this
+        // closes).
+        let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
+        if combined_viscosity > 0.0 {
+            let kinematic_viscosity = combined_viscosity / density;
             if kinematic_viscosity > f32::EPSILON {
                 dt_bound =
                     dt_bound.min(viscous_cfl * cell_width * cell_width / kinematic_viscosity);
@@ -394,14 +422,90 @@ mod analytical_validation_tests {
         let shear_rate = 2.0 * g;
         let eta_app = mat.yield_stress / shear_rate + mat.dynamic_viscosity;
         let d_dev = Mat2::from_cols(Vec2::new(0.0, g), Vec2::new(g, 0.0)); // D_dev = D here
-        let predicted = d_dev * eta_app;
+        // Real, disclosed fix: the real tensorial law is 2*eta_app*D_dev for
+        // this D=(C+C^T)/2 convention (Balmforth, Frigaard & Ovarlez) -- see
+        // `deviatoric_stress`'s own doc.
+        let predicted = 2.0 * eta_app * d_dev;
 
         let diff = tau - predicted;
         let err = (diff.x_axis.length_squared() + diff.y_axis.length_squared()).sqrt();
         assert!(
             err < 1.0e-3,
-            "above-yield deviatoric stress should match tau0/gamma_dot+eta exactly: \
+            "above-yield deviatoric stress should match 2*(tau0/gamma_dot+eta)*D_dev exactly: \
              predicted={predicted:?} actual={tau:?}"
+        );
+    }
+
+    /// Real regression guard (external review): as `yield_stress -> 0`,
+    /// Bingham's own law must converge EXACTLY to plain Newtonian viscous
+    /// stress (`2*eta*D_dev`) -- the same real tensorial form
+    /// `NewtonianFluidMaterial`'s own bulk/shear terms use. A real,
+    /// independent cross-check the factor-of-2 bug above could not have
+    /// passed: pre-fix, this limit was still off by 2x.
+    #[test]
+    fn zero_yield_stress_limit_matches_newtonian_viscous_stress_exactly() {
+        let eta = 0.5_f32;
+        let mat = BinghamFluidMaterial::new(1000.0, eta, 5000.0, 7.0, 0.0);
+        let g = 5.0_f32;
+        let c = Mat2::from_cols(Vec2::new(0.0, g), Vec2::new(g, 0.0));
+        let tau = mat.deviatoric_stress(c);
+
+        let d_dev = c; // already symmetric and traceless for this C
+        let predicted_newtonian = 2.0 * eta * d_dev;
+
+        let diff = tau - predicted_newtonian;
+        let err = (diff.x_axis.length_squared() + diff.y_axis.length_squared()).sqrt();
+        assert!(
+            err < 1.0e-3,
+            "yield_stress=0 must reduce exactly to Newtonian viscous stress \
+             2*eta*D_dev: predicted={predicted_newtonian:?} actual={tau:?}"
+        );
+    }
+
+    /// Real regression guard (external review, P0 #3): bulk viscosity's own
+    /// `div(v)` must be read from the SAME symmetrized-strain basis as
+    /// `NewtonianFluidMaterial`'s (`sym=C+Cᵀ`, `div_v=trace(sym)`, then the
+    /// `*0.5` in the stress formula recovers the true divergence) -- not
+    /// from the raw gradient directly, which already IS the divergence and
+    /// so must not be halved again. Isolated two ways at once: a
+    /// pure-dilation `C=k*I` makes `D_dev=0` exactly (no deviatoric term to
+    /// separate out), and `density=rest_density` makes the Tait EOS
+    /// pressure exactly zero (no hydrostatic term either) -- density=1200
+    /// was tried first and rejected: it gave a real but ~13000-magnitude
+    /// pressure that swamped the ~0.1-magnitude bulk signal, so recovering
+    /// it via subtraction hit f32's own ULP noise floor at that magnitude
+    /// (catastrophic cancellation, not a code bug). With both zeroed,
+    /// `kirchhoff_stress` reduces to the bulk term alone. Pre-fix, this
+    /// measured exactly HALF of `zeta*div(v)*I`.
+    #[test]
+    fn bulk_viscosity_matches_real_divergence_term_exactly() {
+        use crate::particle::{Particle, Particles};
+
+        let zeta = 3.0_f32;
+        let mut mat = BinghamFluidMaterial::new(1000.0, 0.5, 5000.0, 7.0, 100.0);
+        mat.bulk_viscosity = zeta;
+
+        let k = 0.02_f32; // pure dilation: C = k*I, D_dev = 0 (no shear)
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.volume = 1.0;
+        p.density = 1000.0; // == rest_density -- Tait pressure is exactly zero
+        p.velocity_gradient = Mat2::from_diagonal(Vec2::splat(k));
+        let particles = Particles::from(vec![p]);
+
+        let tau = mat.kirchhoff_stress(&particles, 0);
+
+        let div_v = 2.0 * k; // trace(C) in 2D -- the real divergence
+        let expected = Mat2::from_diagonal(Vec2::splat(zeta * div_v));
+
+        let diff = tau - expected;
+        let err = (diff.x_axis.length_squared() + diff.y_axis.length_squared()).sqrt();
+        assert!(
+            err < 1.0e-5,
+            "bulk-viscosity contribution must equal zeta*div(v)*I exactly: \
+             expected={expected:?} actual={tau:?}"
         );
     }
 
