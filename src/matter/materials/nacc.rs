@@ -79,6 +79,36 @@ pub struct NaccMaterial {
     /// post-impact bouncing on `RankineMaterial::ice()`, same class of
     /// missing dissipation, different material).
     pub elastic_viscosity: f32,
+    /// Real apparent cohesion (Pa) from soil suction at LOW saturation, via
+    /// the SAME generic `MaterialModel::cohesion_bonus_pa` engine-level hook
+    /// `DruckerPragerMaterial` (sand) already uses -- see that method's own
+    /// doc for the hook's own contract. This is the SECOND real material to
+    /// wire it (2026-09-02, closing the "extend to a 2nd material" item of
+    /// the 2026-08-23 dual-phase-coupling plan) -- deliberately a DIFFERENT
+    /// real mechanism from sand's, not a copy-paste: sand's capillary
+    /// bridging PEAKS at low-but-nonzero saturation and requires discrete
+    /// grain-scale menisci (Hornbaker et al. 1997), a coarse-granular
+    /// phenomenon. Fine-grained soil/clay's own real apparent cohesion comes
+    /// from MATRIC SUCTION instead (Fredlund & Rahardjo 1993, "Soil
+    /// Mechanics for Unsaturated Soils," extended Mohr-Coulomb: tau_f =
+    /// c' + (sigma-u_a)*tan(phi') + (u_a-u_w)*tan(phi^b) -- the suction term
+    /// (u_a-u_w)*tan(phi^b) IS an apparent-cohesion contribution), which is
+    /// HIGHEST at low saturation (dry clay: high suction, real, well-known
+    /// behavior -- e.g. desiccation-cracked clay holding together as hard
+    /// clods) and vanishes toward full saturation (zero suction, real
+    /// unconfined-strength-vs-water-content relations, Terzaghi & Peck) --
+    /// the OPPOSITE saturation trend from sand's own peak, a real,
+    /// mechanistically distinct effect, not the same formula reused.
+    ///
+    /// Real, disclosed simplification, same honesty standard as sand's own
+    /// `pendular_regime_ceiling` doc: a plain linear decrease from this
+    /// coefficient's own full value at `Sr=0` to `0.0` at `Sr=1`, not a
+    /// literal transcription of any cited paper's own suction/saturation
+    /// curve (the real soil-water characteristic curve, e.g. van Genuchten
+    /// 1980, is nonlinear) -- captures "drier clay is apparently stronger,"
+    /// not the full non-monotonic real curve. 0.0 (default) = byte-identical
+    /// to every existing preset/scene that doesn't opt in.
+    pub saturation_cohesion_coeff: f32,
 }
 
 impl NaccMaterial {
@@ -92,6 +122,7 @@ impl NaccMaterial {
             hardening_enabled: hardening_factor > 0.0,
             min_density: 1.0e-6,
             elastic_viscosity: 0.0,
+            saturation_cohesion_coeff: 0.0,
         }
     }
 
@@ -171,7 +202,15 @@ impl NaccMaterial {
     ///   B -- p_trial < −β·p₀:       pull past tensile limit → project to min tip
     ///   C -- yield surface exceeded: project onto ellipse
     ///   elastic: inside yield surface → no projection
-    fn project(&self, f: Mat2, mut alpha: f32) -> (Mat2, f32) {
+    ///
+    /// `cohesion_bonus_pa` (real, Pa, from `Self::cohesion_bonus_pa` -- see
+    /// that method's own doc) adds directly onto the ellipse's own `β·p₀`
+    /// shift term everywhere it appears below: both are real, additive,
+    /// Pa-valued contributions to the SAME "how far the ellipse's own
+    /// tension tip sits below p=0" quantity, so `cohesive_shift_pa = β·p₀ +
+    /// cohesion_bonus_pa` is the dimensionally exact generalization, not an
+    /// approximation -- 0.0 reproduces the original `β·p₀` bit-for-bit.
+    fn project(&self, f: Mat2, mut alpha: f32, cohesion_bonus_pa: f32) -> (Mat2, f32) {
         let xi = self.hardening_factor;
         let beta = self.cohesion;
         let m = self.friction;
@@ -184,6 +223,9 @@ impl NaccMaterial {
 
         // Current preconsolidation pressure.
         let p0 = self.kappa * (1.0e-5 + (xi * (-alpha).max(0.0)).sinh());
+        // See this function's own doc: generalizes every `beta*p0` below to
+        // include the real, separate saturation-cohesion contribution.
+        let cohesive_shift_pa = beta * p0 + cohesion_bonus_pa;
 
         // J = det(F) = product of singular values.
         let j_e_tr = (sv.x * sv.y).max(1.0e-6_f32);
@@ -208,8 +250,10 @@ impl NaccMaterial {
         }
 
         // Case B: past min tip (tensile failure).
-        if p_tr < -beta * p0 {
-            let j_n1 = (2.0 * beta * p0 / self.kappa + 1.0).max(1.0e-8_f32).sqrt();
+        if p_tr < -cohesive_shift_pa {
+            let j_n1 = (2.0 * cohesive_shift_pa / self.kappa + 1.0)
+                .max(1.0e-8_f32)
+                .sqrt();
             let sv_new = j_n1.powf(0.5);
             let sigma_new = Vec2::splat(sv_new);
             if self.hardening_enabled {
@@ -219,9 +263,10 @@ impl NaccMaterial {
         }
 
         // Yield function: y = (1+2β)·(6−2)/2·‖s_tr‖² + M²·(p_tr+β·p₀)·(p_tr−p₀)
-        // In 2D: d=2, factor = (6−d)/2 = 2.
+        // In 2D: d=2, factor = (6−d)/2 = 2. `β·p₀` generalized to
+        // `cohesive_shift_pa` -- see this function's own doc.
         let y0 = (1.0 + 2.0 * beta) * 2.0_f32; // (6-d)/2 with d=2
-        let y1 = m * m * (p_tr + beta * p0) * (p_tr - p0);
+        let y1 = m * m * (p_tr + cohesive_shift_pa) * (p_tr - p0);
         let s_norm_sq = s_tr.x * s_tr.x + s_tr.y * s_tr.y;
         let y = y0 * s_norm_sq + y1;
 
@@ -230,15 +275,19 @@ impl NaccMaterial {
             return (f, alpha);
         }
 
-        // Hardening: move p₀ to reduce y to zero.
-        if self.hardening_enabled && p0 > 1.0e-4 && p_tr < p0 - 1.0e-4 && p_tr > -beta * p0 + 1.0e-4
+        // Hardening: move p₀ to reduce y to zero. `β·p₀` generalized to
+        // `cohesive_shift_pa` throughout -- see this function's own doc.
+        if self.hardening_enabled
+            && p0 > 1.0e-4
+            && p_tr < p0 - 1.0e-4
+            && p_tr > -cohesive_shift_pa + 1.0e-4
         {
-            let p_c = (1.0 - beta) * p0 * 0.5;
+            let p_c = (p0 - cohesive_shift_pa) * 0.5;
             let q_tr = (2.0_f32).sqrt() * s_tr.length();
             let dir = Vec2::new(p_c - p_tr, -q_tr);
             let dir = dir.normalize_or_zero();
-            let c = m * m * (p_c + beta * p0) * (p_c - p0);
-            let b = m * m * dir.x * (2.0 * p_c - p0 + beta * p0);
+            let c = m * m * (p_c + cohesive_shift_pa) * (p_c - p0);
+            let b = m * m * dir.x * (2.0 * p_c - p0 + cohesive_shift_pa);
             let a = m * m * dir.x * dir.x + (1.0 + 2.0 * beta) * dir.y * dir.y;
             let discr = (b * b - 4.0 * a * c).max(0.0).sqrt();
             let l1 = (-b + discr) / (2.0 * a);
@@ -276,6 +325,18 @@ fn reconstruct(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
 impl MaterialModel for NaccMaterial {
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Nacc
+    }
+
+    /// Real apparent cohesion from soil suction -- see `saturation_cohesion_
+    /// coeff`'s own doc for the mechanism, citation, and why this is the
+    /// opposite saturation trend from `DruckerPragerMaterial`'s own capillary-
+    /// bridging override, not a copy of it.
+    fn cohesion_bonus_pa(&self, scalar_field: f32) -> f32 {
+        if self.saturation_cohesion_coeff == 0.0 {
+            return 0.0;
+        }
+        let saturation = scalar_field.clamp(0.0, 1.0);
+        self.saturation_cohesion_coeff * (1.0 - saturation)
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
@@ -318,7 +379,8 @@ impl MaterialModel for NaccMaterial {
         // a falling body collapsing to zero height under gravity.
         let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let alpha = *ctx.log_volume_strain;
-        let (new_f, new_alpha) = self.project(f_trial, alpha);
+        let (new_f, new_alpha) =
+            self.project(f_trial, alpha, self.cohesion_bonus_pa(ctx.scalar_field));
         *ctx.deformation_gradient = new_f;
         *ctx.log_volume_strain = new_alpha;
 
@@ -429,7 +491,7 @@ mod marginal_yield_tests {
             "test setup must genuinely be past the cap: p_trial={p_trial} p0={p0}"
         );
 
-        let (f_after, _alpha_after) = mat.project(f, alpha);
+        let (f_after, _alpha_after) = mat.project(f, alpha, 0.0);
         let j_after = f_after.determinant();
         let p_after = pressure_from_j(mat.kappa, j_after);
 
@@ -468,7 +530,7 @@ mod marginal_yield_tests {
         // this is the physically meaningful "small elastic strain" case: real
         // confining pressure present, not shear at zero pressure.
         let f = Mat2::from_diagonal(Vec2::new(0.99895, 0.99905));
-        let (f_after, alpha_after) = mat.project(f, alpha);
+        let (f_after, alpha_after) = mat.project(f, alpha, 0.0);
         assert!(
             (f_after - f).x_axis.length() < 1.0e-6 && (f_after - f).y_axis.length() < 1.0e-6,
             "small elastic strain (with real confining pressure) must not be projected: \
@@ -578,6 +640,96 @@ mod elastic_viscosity_tests {
         assert_eq!(
             tau_rest, tau_shearing,
             "elastic_viscosity=0.0 must be bit-identical regardless of velocity_gradient"
+        );
+    }
+}
+
+#[cfg(test)]
+mod saturation_cohesion_tests {
+    use super::*;
+
+    /// `saturation_cohesion_coeff == 0.0` (every existing preset/scene) must
+    /// keep `cohesion_bonus_pa` at exactly 0.0 for any saturation -- real
+    /// regression guard that this second real material (see
+    /// `saturation_cohesion_coeff`'s own doc) is genuinely inert by default,
+    /// same convention `DruckerPragerMaterial`'s own hook uses.
+    #[test]
+    fn zero_coefficient_is_inert_at_any_saturation() {
+        let mat = NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 0.0);
+        assert_eq!(mat.saturation_cohesion_coeff, 0.0);
+        for sr in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(mat.cohesion_bonus_pa(sr), 0.0);
+        }
+    }
+
+    /// Real shape check, and the real point of difference from
+    /// `DruckerPragerMaterial`'s own override (see `saturation_cohesion_
+    /// coeff`'s own doc for why): apparent cohesion here is MAXIMAL at
+    /// Sr=0 (dry, real suction) and EXACTLY zero at Sr=1 (saturated, zero
+    /// suction) -- the opposite saturation trend from sand's own pendular-
+    /// regime peak at low-but-nonzero saturation.
+    #[test]
+    fn cohesion_bonus_decreases_monotonically_with_saturation() {
+        let mat = NaccMaterial {
+            saturation_cohesion_coeff: 500.0,
+            ..NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 0.0)
+        };
+        assert_eq!(
+            mat.cohesion_bonus_pa(0.0),
+            500.0,
+            "must be maximal at Sr=0 (dry)"
+        );
+        assert_eq!(
+            mat.cohesion_bonus_pa(1.0),
+            0.0,
+            "must be exactly zero at Sr=1 (saturated)"
+        );
+        let mid = mat.cohesion_bonus_pa(0.5);
+        assert!(
+            mid > 0.0 && mid < 500.0,
+            "Sr=0.5 must land strictly between the two endpoints, got {mid}"
+        );
+        assert!(
+            mat.cohesion_bonus_pa(0.25) > mat.cohesion_bonus_pa(0.75),
+            "must decrease monotonically with saturation"
+        );
+    }
+
+    /// The real, load-bearing proof this mechanism was added for -- not just
+    /// that the formula looks plausible in isolation, but that it changes
+    /// actual yield-surface behavior end to end through `project()`, same
+    /// discipline `DruckerPragerMaterial`'s own wet/dry sand test uses. A
+    /// small isotropic TENSION state (F=s*I, s slightly >1, real negative
+    /// p_tr, zero shear) is right past the cohesionless (beta=0) material's
+    /// own tensile limit (`p_tr < -beta*p0 = 0` whenever beta=0 -- a
+    /// cohesionless material has genuinely zero tensile strength, real
+    /// critical-state soil mechanics) -- WITHOUT real apparent cohesion
+    /// (Sr=1, saturated) this must fail and get projected; WITH it (Sr=0,
+    /// dry) the exact same trial state must hold elastically, unprojected.
+    #[test]
+    fn dry_apparent_cohesion_holds_a_tension_state_wet_cannot() {
+        let mat = NaccMaterial {
+            saturation_cohesion_coeff: 500.0,
+            ..NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 0.0)
+        };
+        let alpha = 0.0;
+        let f = Mat2::from_diagonal(Vec2::splat(1.001)); // small isotropic tension
+
+        let wet_bonus = mat.cohesion_bonus_pa(1.0);
+        let dry_bonus = mat.cohesion_bonus_pa(0.0);
+        assert_eq!(wet_bonus, 0.0);
+        assert_eq!(dry_bonus, 500.0);
+
+        let (f_wet, _) = mat.project(f, alpha, wet_bonus);
+        let (f_dry, _) = mat.project(f, alpha, dry_bonus);
+
+        assert_ne!(
+            f_wet, f,
+            "wet (no real apparent cohesion) must fail this tension state and get projected"
+        );
+        assert_eq!(
+            f_dry, f,
+            "dry (real apparent cohesion from suction) must hold this same tension state elastically"
         );
     }
 }
