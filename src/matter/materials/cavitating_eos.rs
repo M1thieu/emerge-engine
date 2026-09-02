@@ -369,6 +369,23 @@ fn mixture_slope_cutoff_delta(rho_minus_width: f32, c_min_m_s: f32, s_max: f32) 
 /// own real physics, and that is a real failure to surface, not paper over.
 const PATCH_MIN_RAMP_ULPS: f32 = 8.0;
 
+/// Real parameter bundle (2026-09-02, bandage audit -- root-cause fix for
+/// the `#[allow(clippy::too_many_arguments)]` this file used to carry on
+/// `reconstruct_junction_patch`/`build_junction_patch`, same real pattern
+/// `grain_contact_law.rs`'s `ContactKinematics`/`cfl.rs`'s
+/// `SubstepScene`/`SubstepBounds` already use): the real mixture-band edge
+/// densities plus the two mixture-EOS constants (`c_min_m_s`,
+/// `p_v_gauge_pa`) that both junction-patch functions need together, pure
+/// argument bundling -- no behavior change, same values, same order of
+/// operations.
+#[derive(Debug, Clone, Copy)]
+struct MixtureJunctionEdges {
+    rho_m_plus_kg_m3: f32,
+    rho_m_minus_kg_m3: f32,
+    c_min_m_s: f32,
+    p_v_gauge_pa: f32,
+}
+
 /// Real, O(1) patch reconstruction from an ALREADY-KNOWN `delta_mix` --
 /// the exact same construction `build_junction_patch`'s own search loop
 /// uses at each candidate width, factored out so it is the SAME code
@@ -381,15 +398,11 @@ const PATCH_MIN_RAMP_ULPS: f32 = 8.0;
 /// alone (see `build_junction_patch`'s own doc for why growing it isn't
 /// the real fix), so it never needs to be searched OR stored -- this
 /// function recomputes it directly, in O(1), every call.
-#[allow(clippy::too_many_arguments)]
 fn reconstruct_junction_patch(
     rho_junction: f32,
     mix_sign: f32,
     delta_mix: f32,
-    rho_m_plus_kg_m3: f32,
-    rho_m_minus_kg_m3: f32,
-    c_min_m_s: f32,
-    p_v_gauge_pa: f32,
+    edges: MixtureJunctionEdges,
     pure_side_sign: f32,
     endpoint_at: impl Fn(f32) -> (f32, f32),
 ) -> C1Patch {
@@ -398,12 +411,17 @@ fn reconstruct_junction_patch(
     let rho_mix_edge = rho_junction + mix_sign * delta_mix;
     let p0 = mixture_pressure_gauge_raw(
         rho_mix_edge,
-        rho_m_plus_kg_m3,
-        rho_m_minus_kg_m3,
-        c_min_m_s,
-        p_v_gauge_pa,
+        edges.rho_m_plus_kg_m3,
+        edges.rho_m_minus_kg_m3,
+        edges.c_min_m_s,
+        edges.p_v_gauge_pa,
     );
-    let m0 = mixture_derivative_raw(rho_mix_edge, rho_m_plus_kg_m3, rho_m_minus_kg_m3, c_min_m_s);
+    let m0 = mixture_derivative_raw(
+        rho_mix_edge,
+        edges.rho_m_plus_kg_m3,
+        edges.rho_m_minus_kg_m3,
+        edges.c_min_m_s,
+    );
     let (p_pure, m_pure) = endpoint_at(delta_pure);
     let rho_pure_edge = rho_junction + pure_side_sign * delta_pure;
     // `pure_side_sign>0`: the pure branch sits ABOVE `rho_junction` (the
@@ -431,15 +449,11 @@ fn reconstruct_junction_patch(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_junction_patch(
     rho_junction: f32,
     mix_sign: f32,
     analytic_delta_mix: f64,
-    rho_m_plus_kg_m3: f32,
-    rho_m_minus_kg_m3: f32,
-    c_min_m_s: f32,
-    p_v_gauge_pa: f32,
+    edges: MixtureJunctionEdges,
     pure_side_sign: f32,
     endpoint_at: impl Fn(f32) -> (f32, f32),
 ) -> C1Patch {
@@ -454,7 +468,7 @@ fn build_junction_patch(
     };
 
     const MAX_MIX_GROWTHS: u32 = 48;
-    let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
+    let rho_minus_width = edges.rho_m_plus_kg_m3 - edges.rho_m_minus_kg_m3;
     let max_delta_mix = 0.1 * rho_minus_width;
 
     for _ in 0..MAX_MIX_GROWTHS {
@@ -465,10 +479,7 @@ fn build_junction_patch(
             rho_junction,
             mix_sign,
             delta_mix,
-            rho_m_plus_kg_m3,
-            rho_m_minus_kg_m3,
-            c_min_m_s,
-            p_v_gauge_pa,
+            edges,
             pure_side_sign,
             &endpoint_at,
         );
@@ -610,6 +621,12 @@ impl CavitatingEosParams {
         // ramp itself is numerically representable.
         let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
         let c_l2 = c_l_m_s * c_l_m_s;
+        let edges = MixtureJunctionEdges {
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            c_min_m_s,
+            p_v_gauge_pa,
+        };
 
         // Liquid junction (around rho_m_plus): pure branch is the liquid
         // EOS, above rho_m_plus, with its own constant slope c_l^2.
@@ -619,10 +636,7 @@ impl CavitatingEosParams {
             rho_m_plus_kg_m3,
             -1.0,
             analytic_delta_mix_liquid,
-            rho_m_plus_kg_m3,
-            rho_m_minus_kg_m3,
-            c_min_m_s,
-            p_v_gauge_pa,
+            edges,
             1.0,
             |delta_pure| {
                 let rho = rho_m_plus_kg_m3 + delta_pure;
@@ -640,10 +654,7 @@ impl CavitatingEosParams {
             rho_m_minus_kg_m3,
             1.0,
             analytic_delta_mix_vapor,
-            rho_m_plus_kg_m3,
-            rho_m_minus_kg_m3,
-            c_min_m_s,
-            p_v_gauge_pa,
+            edges,
             -1.0,
             |delta_pure| {
                 let rho = rho_m_minus_kg_m3 - delta_pure;
@@ -976,10 +987,12 @@ fn try_liquid_patch_outer_edge_kg_m3(
         rho_m_plus_kg_m3,
         -1.0,
         analytic_delta_mix_liquid,
-        rho_m_plus_kg_m3,
-        rho_m_minus_kg_m3,
-        c_min_m_s,
-        p_v_gauge_pa,
+        MixtureJunctionEdges {
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            c_min_m_s,
+            p_v_gauge_pa,
+        },
         1.0,
         |delta_pure| {
             let rho = rho_m_plus_kg_m3 + delta_pure;
@@ -1014,22 +1027,35 @@ fn try_liquid_patch_outer_edge_kg_m3(
 /// arbitrary number, and not needing any input beyond this branch's own
 /// real constants.
 ///
-/// Real, checked bracket: `t_min` must already be a real, valid
-/// temperature (`try_liquid_patch_outer_edge_kg_m3` returns `Some` with
-/// margin); `t_max` must NOT be (either `None`, or violates the margin) --
-/// panics with a real, disclosed message otherwise, same discipline
-/// `solve_mixture_band`'s own bracket check uses.
-#[allow(clippy::too_many_arguments)]
-fn t_liquid_closure_max(
+/// Real parameter bundle (2026-09-02, bandage audit -- root-cause fix for
+/// the `#[allow(clippy::too_many_arguments)]` this file used to carry on
+/// `t_liquid_closure_max`/`build_with_node_count`, same pattern as
+/// `MixtureJunctionEdges` above): the real, free branch inputs both
+/// functions need together -- pure argument bundling, no behavior change.
+#[derive(Debug, Clone, Copy)]
+struct EosBranchInputs {
     rho_l_ref_kg_m3: f32,
     c_l_m_s: f32,
     gamma_l: f32,
     rho_v_ref_kg_m3: f32,
     gamma_v: f32,
     c_min_m_s: f32,
-    t_min_k: f32,
-    t_max_k: f32,
-) -> f32 {
+}
+
+/// Real, checked bracket: `t_min` must already be a real, valid
+/// temperature (`try_liquid_patch_outer_edge_kg_m3` returns `Some` with
+/// margin); `t_max` must NOT be (either `None`, or violates the margin) --
+/// panics with a real, disclosed message otherwise, same discipline
+/// `solve_mixture_band`'s own bracket check uses.
+fn t_liquid_closure_max(inputs: EosBranchInputs, t_min_k: f32, t_max_k: f32) -> f32 {
+    let EosBranchInputs {
+        rho_l_ref_kg_m3,
+        c_l_m_s,
+        gamma_l,
+        rho_v_ref_kg_m3,
+        gamma_v,
+        c_min_m_s,
+    } = inputs;
     let density_guard_kg_m3 = {
         let pressure_scale = rho_l_ref_kg_m3 * c_l_m_s * c_l_m_s;
         ulp_at(pressure_scale) / (c_l_m_s * c_l_m_s)
@@ -1121,16 +1147,19 @@ fn primitives_at_temperature(
     );
     let rho_minus_width = rho_m_plus_kg_m3 - rho_m_minus_kg_m3;
     let c_l2 = c_l_m_s * c_l_m_s;
+    let edges = MixtureJunctionEdges {
+        rho_m_plus_kg_m3,
+        rho_m_minus_kg_m3,
+        c_min_m_s,
+        p_v_gauge_pa,
+    };
 
     let analytic_delta_mix_liquid = mixture_slope_cutoff_delta(rho_minus_width, c_min_m_s, c_l2);
     let patch_liquid = build_junction_patch(
         rho_m_plus_kg_m3,
         -1.0,
         analytic_delta_mix_liquid,
-        rho_m_plus_kg_m3,
-        rho_m_minus_kg_m3,
-        c_min_m_s,
-        p_v_gauge_pa,
+        edges,
         1.0,
         |delta_pure| {
             let rho = rho_m_plus_kg_m3 + delta_pure;
@@ -1150,10 +1179,7 @@ fn primitives_at_temperature(
         rho_m_minus_kg_m3,
         1.0,
         analytic_delta_mix_vapor,
-        rho_m_plus_kg_m3,
-        rho_m_minus_kg_m3,
-        c_min_m_s,
-        p_v_gauge_pa,
+        edges,
         -1.0,
         |delta_pure| {
             let rho = rho_m_minus_kg_m3 - delta_pure;
@@ -1237,16 +1263,15 @@ impl CavitatingEosTable {
         c_min_m_s: f32,
         t_min_k: f32,
     ) -> Self {
-        let t_max_k = t_liquid_closure_max(
+        let branch_inputs = EosBranchInputs {
             rho_l_ref_kg_m3,
             c_l_m_s,
             gamma_l,
             rho_v_ref_kg_m3,
             gamma_v,
             c_min_m_s,
-            t_min_k,
-            WATER_SATURATION_MAX_VALID_K,
-        );
+        };
+        let t_max_k = t_liquid_closure_max(branch_inputs, t_min_k, WATER_SATURATION_MAX_VALID_K);
         // Real, disclosed tolerances: 0.1% relative pressure error, 5%
         // relative derivative error -- the same real derivative tolerance
         // `acoustic_c2_matches_finite_difference_of_pressure_outside_the_
@@ -1258,17 +1283,7 @@ impl CavitatingEosTable {
         const MAX_NODES: usize = 4096;
         let mut node_count = 4usize;
         loop {
-            let table = Self::build_with_node_count(
-                rho_l_ref_kg_m3,
-                c_l_m_s,
-                gamma_l,
-                rho_v_ref_kg_m3,
-                gamma_v,
-                c_min_m_s,
-                t_min_k,
-                t_max_k,
-                node_count,
-            );
+            let table = Self::build_with_node_count(branch_inputs, t_min_k, t_max_k, node_count);
             let (p_err, d_err) = table.measure_worst_case_interpolation_error();
             if (p_err < PRESSURE_REL_TOL && d_err < DERIVATIVE_REL_TOL) || node_count >= MAX_NODES {
                 return table;
@@ -1277,18 +1292,20 @@ impl CavitatingEosTable {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build_with_node_count(
-        rho_l_ref_kg_m3: f32,
-        c_l_m_s: f32,
-        gamma_l: f32,
-        rho_v_ref_kg_m3: f32,
-        gamma_v: f32,
-        c_min_m_s: f32,
+        inputs: EosBranchInputs,
         t_min_k: f32,
         t_max_k: f32,
         node_count: usize,
     ) -> Self {
+        let EosBranchInputs {
+            rho_l_ref_kg_m3,
+            c_l_m_s,
+            gamma_l,
+            rho_v_ref_kg_m3,
+            gamma_v,
+            c_min_m_s,
+        } = inputs;
         let mut rho_m_plus_kg_m3 = Vec::with_capacity(node_count);
         let mut rho_m_minus_kg_m3 = Vec::with_capacity(node_count);
         let mut delta_mix_liquid_kg_m3 = Vec::with_capacity(node_count);
@@ -1417,14 +1434,17 @@ impl CavitatingEosTable {
         let rho_m_plus_kg_m3 = p.rho_m_plus_kg_m3;
         let rho_m_minus_kg_m3 = p.rho_m_minus_kg_m3;
         let rho_l_ref_kg_m3 = self.rho_l_ref_kg_m3;
+        let edges = MixtureJunctionEdges {
+            rho_m_plus_kg_m3,
+            rho_m_minus_kg_m3,
+            c_min_m_s: self.c_min_m_s,
+            p_v_gauge_pa,
+        };
         let patch_liquid_junction = reconstruct_junction_patch(
             rho_m_plus_kg_m3,
             -1.0,
             p.delta_mix_liquid_kg_m3,
-            rho_m_plus_kg_m3,
-            rho_m_minus_kg_m3,
-            self.c_min_m_s,
-            p_v_gauge_pa,
+            edges,
             1.0,
             |delta_pure| {
                 let rho = rho_m_plus_kg_m3 + delta_pure;
@@ -1435,10 +1455,7 @@ impl CavitatingEosTable {
             rho_m_minus_kg_m3,
             1.0,
             p.delta_mix_vapor_kg_m3,
-            rho_m_plus_kg_m3,
-            rho_m_minus_kg_m3,
-            self.c_min_m_s,
-            p_v_gauge_pa,
+            edges,
             -1.0,
             |delta_pure| {
                 let rho = rho_m_minus_kg_m3 - delta_pure;
@@ -1571,12 +1588,14 @@ mod tests {
     #[test]
     fn t_liquid_closure_max_lands_just_below_the_true_boiling_point() {
         let t_max = t_liquid_closure_max(
-            T_CLOSURE_RHO_L_REF_KG_M3,
-            T_CLOSURE_C_L_M_S,
-            T_CLOSURE_GAMMA_L,
-            T_CLOSURE_RHO_V_REF_KG_M3,
-            T_CLOSURE_GAMMA_V,
-            T_CLOSURE_C_MIN_M_S,
+            EosBranchInputs {
+                rho_l_ref_kg_m3: T_CLOSURE_RHO_L_REF_KG_M3,
+                c_l_m_s: T_CLOSURE_C_L_M_S,
+                gamma_l: T_CLOSURE_GAMMA_L,
+                rho_v_ref_kg_m3: T_CLOSURE_RHO_V_REF_KG_M3,
+                gamma_v: T_CLOSURE_GAMMA_V,
+                c_min_m_s: T_CLOSURE_C_MIN_M_S,
+            },
             273.15,
             373.15,
         );
@@ -1614,12 +1633,14 @@ mod tests {
     #[test]
     fn dense_temperature_sweep_holds_every_real_invariant_up_to_the_closure_boundary() {
         let t_max = t_liquid_closure_max(
-            T_CLOSURE_RHO_L_REF_KG_M3,
-            T_CLOSURE_C_L_M_S,
-            T_CLOSURE_GAMMA_L,
-            T_CLOSURE_RHO_V_REF_KG_M3,
-            T_CLOSURE_GAMMA_V,
-            T_CLOSURE_C_MIN_M_S,
+            EosBranchInputs {
+                rho_l_ref_kg_m3: T_CLOSURE_RHO_L_REF_KG_M3,
+                c_l_m_s: T_CLOSURE_C_L_M_S,
+                gamma_l: T_CLOSURE_GAMMA_L,
+                rho_v_ref_kg_m3: T_CLOSURE_RHO_V_REF_KG_M3,
+                gamma_v: T_CLOSURE_GAMMA_V,
+                c_min_m_s: T_CLOSURE_C_MIN_M_S,
+            },
             273.15,
             373.15,
         );
