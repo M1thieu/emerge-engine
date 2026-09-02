@@ -73,7 +73,29 @@ pub enum ConstitutiveModel {
     Rankine = 7,          // Tensile cutoff + exponential softening -- brittle rock, bone, ice
     DruckerPragerMuI = 8, // Rate-dependent DP -- µ(I) rheology, granular flow
     Viscoelastic = 9,     // Kelvin-Voigt: NeoHookean elastic + viscous dashpot in parallel
-    Nacc = 10,            // Non-Associated Cam-Clay -- wet soil, clay, bio tissue under compression
+    /// Non-Associated Cam-Clay -- wet soil, clay, bio tissue under
+    /// compression. Effectively CPU-only for real dynamics: `NaccMaterial::
+    /// params()` deliberately uploads `model: NeoHookean as u32` (2)
+    /// instead of this discriminant (see that method's own comment), so a
+    /// real `NaccMaterial` never reaches `p2g.wgsl`'s `default` arm at
+    /// all -- it silently runs `case 2u`'s NeoHookean stress (`kappa*ln(J)`
+    /// volumetric term) instead of NACC's own real law (`kappa/2*(J^2-1)`,
+    /// see `nacc.rs::kirchhoff_stress`). Issue #5's `needs_cpu_update`
+    /// fallback DOES correctly rerun `NaccMaterial::update_particle`'s
+    /// real Cam-Clay return-mapping on CPU every frame, keeping
+    /// `deformation_gradient`/plastic state on the real yield surface --
+    /// but the stress feeding that same substep's P2G grid transfer is
+    /// still NeoHookean's, not NACC's. A first attempt at documenting/
+    /// guarding this got the mechanism backwards (checked `params().model`
+    /// for `10` and concluded "zero stress" -- that check is unreachable
+    /// for a real `NaccMaterial`, since `params()` never emits `10`);
+    /// corrected after external review caught it. `GpuSimulation::
+    /// with_device` checks the real `constitutive_model()` value (not
+    /// `params()`) and panics if NACC is present -- use
+    /// `GranularFluidMaterial` (already fully GPU-native) for a
+    /// granular-fluid-like GPU scene instead. See issue #5 for the real
+    /// WGSL-port option, not pursued here.
+    Nacc = 10,
     GranularFluid = 11, // Granular-fluid mixture -- Tait EOS + corotated deviatoric + SVD plasticity
     NoCompression = 12, // Tension-only (no-compression) reversible elastic -- silk, tendons, membranes
     /// Ideal gas EOS (p=ρRT) -- CPU only. GPU shaders (`p2g.wgsl`,

@@ -296,6 +296,42 @@ impl GpuSimulation {
         particles: Vec<Particle>,
         registry: MaterialRegistry,
     ) -> Self {
+        // Real regression guard (corrected -- a first version of this check
+        // read `MaterialParams::model` from `all_params()` and looked for
+        // `10`, which is UNREACHABLE: `NaccMaterial::params()` deliberately
+        // emits `ConstitutiveModel::NeoHookean as u32` (2), not its own
+        // `constitutive_model()` value (10) -- see that method's own
+        // comment ("GPU uses NeoHookean stress... Plasticity runs CPU-only
+        // via needs_cpu_update=true"). So a real NaccMaterial's GPU stress
+        // is NOT zero -- it silently runs `case 2u`'s NeoHookean law
+        // (`kappa*ln(J)`) instead of NACC's own real volumetric law
+        // (`kappa/2*(J^2-1)`, see `nacc.rs::kirchhoff_stress`), which is
+        // the actual, original finding here (external review). Its
+        // `needs_cpu_update` fallback (issue #5) DOES correctly re-project
+        // `deformation_gradient` onto the real Cam-Clay yield surface every
+        // frame, but the STRESS feeding that substep's P2G grid transfer is
+        // still NeoHookean's, not NACC's. Must check the real trait method
+        // (`constitutive_model()`, via `constitutive_model_of`), not the
+        // GPU-upload params -- those are exactly the two things this bug
+        // conflates. See `ConstitutiveModel::Nacc`'s own doc for the full
+        // finding. Fail loudly here instead of silently running the wrong
+        // constitutive law -- use `GranularFluidMaterial` instead, already
+        // fully GPU-native.
+        for id in 0..registry.len() as u32 {
+            if registry.constitutive_model_of(id) == crate::materials::ConstitutiveModel::Nacc {
+                panic!(
+                    "NaccMaterial (material_id {id}) has no real GPU stress path -- its \
+                     params() deliberately uploads as NeoHookean (model 2), so p2g.wgsl \
+                     silently runs NeoHookean's kappa*ln(J) volumetric law instead of \
+                     NACC's own kappa/2*(J^2-1) (see ConstitutiveModel::Nacc's own doc). \
+                     Its CPU plasticity fallback (issue #5) keeps F on the right yield \
+                     surface, but the stress driving grid momentum transfer is still \
+                     wrong. Use GranularFluidMaterial instead for a GPU-native \
+                     granular-fluid scene."
+                );
+            }
+        }
+
         let material_params = registry.all_params();
 
         // Run init_particle before uploading. Mirrors Simulation::spawn_region().
