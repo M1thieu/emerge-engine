@@ -686,10 +686,43 @@ impl State {
             target_temperature: 250.0,
             plate_temperature: 250.0,
             real_gravity,
-            // Real, precedented default -- the same 0.01 checkpoint already
-            // validated as numerically stable for sand/snow/fluids at this
-            // engine's own grid-density scale (see basic_snow.rs's own doc),
-            // not a fresh guess for this new scene.
+            // Real, measured reason to KEEP this low, not a preventive
+            // guess (2026-09-02, external review's own proposed decisive
+            // experiment, run to completion): a one-way heat-up at real
+            // gravity=1.0 is fine (no explosion, no fps collapse, see
+            // [boiling-residual-stats] instrumentation this same session)
+            // -- but a real, 20-minute, repeated FULL heat/cool cycle
+            // (`PHASE_STATES_AUTO_CYCLE_PERIOD_S`) at gravity_fraction=1.0
+            // found a genuine, structural failure: `avg_T` climbed to
+            // 385.456K then froze there PERMANENTLY for the rest of the
+            // run (~60,000+ frames, multiple full plate_temperature
+            // oscillations from ~250K to ~418K and back) while
+            // `plate_temperature` kept cycling correctly the whole time --
+            // the particle population stopped responding to cooling
+            // entirely, not a transient lag. Root cause (confirmed by
+            // reading, not guessed): the per-particle heat-exchange loop
+            // below only applies to particles with `x.y <=
+            // HEATING_PLATE_TOP_Y` (2026-08-29's own real, disclosed fix
+            // for enabling convection -- a uniform, spatially-blind heat
+            // source gives zero vertical DeltaT, hence zero Rayleigh
+            // number, hence no real convection possible at all). At real
+            // gravity, buoyancy is strong enough to lift the WHOLE steam
+            // population permanently above that contact zone -- once
+            // there, a particle's own enthalpy (and thus temperature)
+            // simply stops updating, exactly like real gas that has
+            // convected away from a stove and lost all further thermal
+            // contact with it. This demo's own top doc claims a "real
+            // bidirectional ice<->water<->steam mechanism" -- that claim
+            // does NOT hold at gravity_fraction=1.0 once the population
+            // fully vents. Same root structural gap as
+            // `AMBIENT_AIR_RHO_KG_M3`'s own honest disclosure (no modeled
+            // ambient medium for a vented particle to keep exchanging
+            // momentum OR heat with) -- a real ambient-medium
+            // representation would fix both symptoms at once, not
+            // attempted here. Reverted to the original 0.01 default with
+            // this real, measured reason on record -- see
+            // `PHASE_STATES_AUTO_CYCLE_PERIOD_S`'s own doc for how to
+            // reproduce this finding directly.
             gravity_fraction: 0.01,
             cursor_pos: [0.0; 2],
             lmb: false,
@@ -777,6 +810,39 @@ impl State {
                 self.target_temperature =
                     (self.target_temperature + ramp_rate * dt).min(ramp_target);
             }
+        }
+        // Real, disclosed verification aid (2026-09-02, external review's
+        // own proposed decisive experiment). The other AUTO_HEAT variants
+        // above only ever heat -- this drives a real, repeating BIDIRECTIONAL
+        // triangle-wave target (heat to `PHASE_STATES_AUTO_HEAT` or 420K
+        // over the first half of `PHASE_STATES_AUTO_CYCLE_PERIOD_S` real sim
+        // seconds, cool back to 250K over the second half). Used to test
+        // whether `gravity_fraction=1.0` could become this demo's own
+        // default through repeated full phase cycles (ice<->water<->
+        // boiling<->steam, both directions) -- real, measured result: it
+        // FAILS at real gravity (see `gravity_fraction`'s own doc above for
+        // the exact mechanism found), so the default stayed at 0.01.
+        // Kept as a real reproduction tool for that finding (e.g. combined
+        // with `PHASE_STATES_GRAVITY_FRACTION=1.0` to see the freeze
+        // directly), not removed -- uses SIM time (`self.sim.config().dt *
+        // self.frame`), not wall-clock, so the period is deterministic
+        // regardless of real fps.
+        if let Ok(period_str) = std::env::var("PHASE_STATES_AUTO_CYCLE_PERIOD_S")
+            && let Ok(period_s) = period_str.parse::<f32>()
+            && period_s > 0.0
+        {
+            let cycle_max_k: f32 = std::env::var("PHASE_STATES_AUTO_HEAT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(420.0);
+            const CYCLE_MIN_K: f32 = 250.0; // matches this demo's own real starting point
+            let elapsed_s = self.sim.config().dt * self.frame as f32;
+            let phase = (elapsed_s / period_s) % 2.0;
+            self.target_temperature = if phase < 1.0 {
+                CYCLE_MIN_K + (cycle_max_k - CYCLE_MIN_K) * phase
+            } else {
+                cycle_max_k - (cycle_max_k - CYCLE_MIN_K) * (phase - 1.0)
+            };
         }
         let n_f = self.sim.particles().len().max(1) as f32;
         let current_avg: f32 = self
