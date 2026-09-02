@@ -36,6 +36,28 @@ pub struct CorotatedMaterial {
     /// the clamp removes the permanent-zero-stress trap, it doesn't give
     /// this model NeoHookean's stronger barrier.
     pub j_min: f32,
+    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
+    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
+    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
+    /// pairing rule and the real regression it documents) -- same
+    /// mechanism, same formula, as
+    /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
+    /// Zero cost, zero behavior change at `0.0` (default, matching every
+    /// other material using this same mechanism).
+    ///
+    /// Without this, a pure elastic solid has NO energy dissipation at all
+    /// -- real solids are never purely elastic (internal friction from
+    /// dislocation motion and grain-boundary sliding measurably dissipates
+    /// energy in every real material, reported as a seismic/ultrasonic
+    /// quality factor Q -- see `q_factor_elastic_viscosity_pa_s`). Confirmed
+    /// live 2026-08-29: this is a real, structural gap -- `CorotatedMaterial`
+    /// had NO damping mechanism of any kind before this field existed, so
+    /// any solid built from it rings elastically forever under repeated
+    /// impact (found while root-causing sustained post-impact bouncing on
+    /// `RankineMaterial::ice()`, which shares this same corotated elastic
+    /// base -- see `project_rankine_damping_and_fluid_condensation_
+    /// continuity_fixed`).
+    pub elastic_viscosity: f32,
 }
 
 impl CorotatedMaterial {
@@ -46,6 +68,7 @@ impl CorotatedMaterial {
             thermal_expansion: 0.0,
             active_stress_coeff: 0.0,
             j_min: 0.01,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -86,7 +109,20 @@ impl MaterialModel for CorotatedMaterial {
         let lambda_eff = self.lambda * h * t_scale;
 
         let f_t = f.transpose();
-        2.0 * mu_eff * (f - r) * f_t + lambda_eff * (j - 1.0) * j * Mat2::IDENTITY
+        let elastic = 2.0 * mu_eff * (f - r) * f_t + lambda_eff * (j - 1.0) * j * Mat2::IDENTITY;
+        if self.elastic_viscosity == 0.0 {
+            return elastic;
+        }
+        // Same Kelvin-Voigt dashpot formula as `RankineMaterial`/
+        // `DruckerPragerMaterial`/`ViscoelasticMaterial`: tau_v = eta*D_dev
+        // (NOT 2*eta*D_dev -- see `RankineMaterial::kirchhoff_stress`'s own
+        // doc for why), D the symmetric part of the APIC velocity gradient.
+        let c = particles.velocity_gradient[i];
+        let sym = c + c.transpose();
+        let d = sym * 0.5;
+        let trace = d.x_axis.x + d.y_axis.y;
+        let d_dev = d - Mat2::from_diagonal(glam::Vec2::splat(trace * 0.5));
+        elastic + self.elastic_viscosity * d_dev
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -132,9 +168,9 @@ impl MaterialModel for CorotatedMaterial {
         hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             self.lambda,
             self.mu,
             hardening_scale,
@@ -142,7 +178,23 @@ impl MaterialModel for CorotatedMaterial {
             MIN_J,
             cell_width,
             material_cfl,
-        )
+        );
+        // Same explicit-viscous-diffusion stability bound `RankineMaterial`/
+        // `DruckerPragerMaterial` already use for their own Kelvin-Voigt term --
+        // without this, `elastic_viscosity` adds real stiffness the substep
+        // selector never sees.
+        let viscous_dt = if self.elastic_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.elastic_viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 }
 
@@ -265,6 +317,123 @@ mod small_strain_linear_elasticity_tests {
             (r - Mat2::IDENTITY).x_axis.length() < 1.0e-6
                 && (r - Mat2::IDENTITY).y_axis.length() < 1.0e-6,
             "symmetric F must give EXACTLY R=I, got {r:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod elastic_viscosity_tests {
+    use super::*;
+    use glam::Vec2;
+
+    /// Same audit-closing test `RankineMaterial`/`VonMisesMaterial`/
+    /// `NaccMaterial` all carry for their own copy of this identical
+    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// must actually respond to the particle's velocity gradient when
+    /// `elastic_viscosity > 0.0`, not just carry the field.
+    #[test]
+    fn nonzero_elastic_viscosity_adds_a_real_viscous_stress_term() {
+        let elastic_only = CorotatedMaterial::new(2000.0, 3000.0);
+        let mut damped = elastic_only;
+        damped.elastic_viscosity = 50.0;
+
+        let mut particles = Particles::default();
+        particles.push(Particle {
+            x: Vec2::ZERO,
+            v: Vec2::ZERO,
+            velocity_gradient: Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0)),
+            deformation_gradient: Mat2::IDENTITY,
+            mass: 1.0,
+            initial_volume: 1.0,
+            volume: 1.0,
+            density: 1.0,
+            material_id: 0,
+            plastic_volume_ratio: 1.0,
+            hardening_scale: 1.0,
+            friction_hardening: 0.0,
+            log_volume_strain: 0.0,
+            temperature: 0.0,
+            scalar_field: 0.0,
+            user_tag: 0,
+            activation: 0.0,
+            activation_dir: Vec2::ZERO,
+            muscle_group_id: 0,
+            contact_group: 0,
+            sleeping: 0,
+            pinned: 0,
+            internal_pressure: 0.0,
+        });
+
+        let tau_elastic = elastic_only.kirchhoff_stress(&particles, 0);
+        let tau_damped = damped.kirchhoff_stress(&particles, 0);
+
+        let diff = tau_damped - tau_elastic;
+        let max_abs = diff
+            .x_axis
+            .abs()
+            .max_element()
+            .max(diff.y_axis.abs().max_element());
+        assert!(
+            max_abs > 1.0e-6,
+            "nonzero elastic_viscosity under a real velocity gradient must \
+             change the Kirchhoff stress: elastic={tau_elastic:?} damped={tau_damped:?}"
+        );
+    }
+
+    /// `elastic_viscosity == 0.0` (every preset's default) must leave
+    /// `kirchhoff_stress` completely blind to the velocity gradient -- a
+    /// real regression guard against the early-return branch getting
+    /// "simplified" away into an unconditional `elastic + 0.0*d_dev`,
+    /// which would silently propagate a NaN/Inf `d_dev` (e.g. from a
+    /// sleeping or freshly-spawned particle's own garbage velocity
+    /// gradient) into every material using this mechanism at its default.
+    #[test]
+    fn zero_elastic_viscosity_ignores_the_velocity_gradient() {
+        let mat = CorotatedMaterial::new(2000.0, 3000.0);
+        assert_eq!(mat.elastic_viscosity, 0.0);
+
+        fn particle_with(f: Mat2, c: Mat2) -> Particles {
+            let mut particles = Particles::default();
+            particles.push(Particle {
+                x: Vec2::ZERO,
+                v: Vec2::ZERO,
+                velocity_gradient: c,
+                deformation_gradient: f,
+                mass: 1.0,
+                initial_volume: 1.0,
+                volume: 1.0,
+                density: 1.0,
+                material_id: 0,
+                plastic_volume_ratio: 1.0,
+                hardening_scale: 1.0,
+                friction_hardening: 0.0,
+                log_volume_strain: 0.0,
+                temperature: 0.0,
+                scalar_field: 0.0,
+                user_tag: 0,
+                activation: 0.0,
+                activation_dir: Vec2::ZERO,
+                muscle_group_id: 0,
+                contact_group: 0,
+                sleeping: 0,
+                pinned: 0,
+                internal_pressure: 0.0,
+            });
+            particles
+        }
+
+        let f = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(0.01, 0.97));
+        let particles_at_rest = particle_with(f, Mat2::ZERO);
+        let particles_shearing = particle_with(
+            f,
+            Mat2::from_cols(Vec2::new(0.3, -0.1), Vec2::new(0.2, 0.4)),
+        );
+
+        let tau_rest = mat.kirchhoff_stress(&particles_at_rest, 0);
+        let tau_shearing = mat.kirchhoff_stress(&particles_shearing, 0);
+        assert_eq!(
+            tau_rest, tau_shearing,
+            "elastic_viscosity=0.0 must be bit-identical regardless of velocity_gradient"
         );
     }
 }

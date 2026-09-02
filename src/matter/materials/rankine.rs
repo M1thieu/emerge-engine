@@ -18,10 +18,21 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// underlying equivalent-viscous-damping conversion).
 ///
 /// `zeta = 1/(2*Q)` is the standard quality-factor/damping-ratio relation
-/// (Aki & Richards, "Quantitative Seismology," 2002) -- combined with the
-/// same `eta = 2*zeta*G/omega` equivalent-viscous relation
-/// `small_strain_elastic_viscosity_pa_s` already uses, this collapses to
-/// `eta = G / (Q * omega)`.
+/// (Aki & Richards, "Quantitative Seismology," 2002). Real, disclosed fix
+/// (2026-08-29): this engine's own `kirchhoff_stress` applies the viscous
+/// term as `eta*D_dev` (NOT `2*eta*D_dev` -- a deliberate, already-tested
+/// convention, see `ViscoelasticMaterial`'s own
+/// `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly` test),
+/// so under THIS convention the textbook `eta=2*zeta*G/omega` relation
+/// (which assumes the fully-matched `sigma=2G*eps+2*eta*D` tensor form)
+/// silently produces a measured Q exactly 2x the target -- confirmed both
+/// by hand derivation and a direct numeric cyclic-oscillation test
+/// (`measured_q_factor_matches_target_after_the_conversion_fix`, this
+/// file's own test module), found via independent deep research the same
+/// night. Real, corrected relation for THIS engine's
+/// `eta*D_dev` convention: `eta = 2*G/(Q*omega)` (double the naive
+/// `G/(Q*omega))` -- verified by that same test to reproduce the cited Q
+/// exactly, not just approximately.
 ///
 /// `reference_frequency_hz` must be the SAME frequency the cited Q
 /// measurement used -- Q is frequency-dependent in real polycrystalline
@@ -30,8 +41,36 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// reference, same caveat `small_strain_elastic_viscosity_pa_s` carries for
 /// its own 1 Hz reference.
 ///
-/// Returns real SI Pa.s. Convert with `SimConfig::visc_from_si_physical`
-/// before assigning to `elastic_viscosity`.
+/// Returns real SI Pa.s. Must be converted with the SAME convention the
+/// caller's own `lambda`/`mu` used, since `kirchhoff_stress` adds
+/// `elastic_viscosity * d_dev` directly into the same stress tensor those
+/// build: raw `lame_from_young`/`from_young_modulus` lambda/mu (density-
+/// agnostic) pairs with this value assigned RAW, unconverted; density-
+/// normalized `lame_from_si_physical`/`SimConfig::lame_from_si_physical_cfg`
+/// lambda/mu pairs with `SimConfig::visc_from_si_physical(eta, rho)`. Mixing
+/// the two is wrong either direction.
+///
+/// Real, disclosed regression found+fixed 2026-08-29: `RankineMaterial::ice`'s
+/// real call sites (`examples/cpu/phase_states_gui.rs`,
+/// `phase_states_headless.rs`) build `lambda`/`mu` via `ice()` ->
+/// `from_young_modulus` -> raw `lame_from_young`, but were WRONGLY paired
+/// with `SimConfig::visc_from_si_physical`, an ~917x-too-small division
+/// (ice's real density ~917 kg/m^3, dx=1 in that scene) that belongs only
+/// with the OTHER (density-normalized) lambda/mu family. Confirmed wrong
+/// three ways: (1) dimensionally inconsistent with `ice()`'s own raw,
+/// undivided lambda/mu; (2) this file's own
+/// `measured_q_factor_matches_target_after_the_conversion_fix` test assigns
+/// `elastic_viscosity: eta` raw alongside raw `lambda`/`mu` and empirically
+/// measures the correct real Q (that test doesn't discriminate between
+/// conventions on its own -- Q is scale-invariant if lambda/mu/eta all scale
+/// together -- but it does confirm raw+raw is internally self-consistent,
+/// which `ice()`'s own raw lambda/mu requires); (3) it silently explained an
+/// earlier same-night finding that doubling Q "had no visible effect" -- the
+/// damping was already ~917x too small before the 2x change. Fixed at
+/// those two real call sites only (assign this function's return value
+/// directly); the helper itself is correct and still needed by every call
+/// site that legitimately pairs it with density-normalized lambda/mu (e.g.
+/// `examples/cpu/sand_water_saturation.rs`).
 pub fn q_factor_elastic_viscosity_pa_s(
     shear_modulus_pa: f32,
     quality_factor: f32,
@@ -42,7 +81,7 @@ pub fn q_factor_elastic_viscosity_pa_s(
         "quality factor {quality_factor} must be positive -- Q<=0 is not a real material"
     );
     let omega = 2.0 * std::f32::consts::PI * reference_frequency_hz;
-    shear_modulus_pa / (quality_factor * omega)
+    2.0 * shear_modulus_pa / (quality_factor * omega)
 }
 
 /// Real, cited P-wave quality factor for COLD polycrystalline ice (not
@@ -108,8 +147,10 @@ pub struct RankineMaterial {
     /// Typical: 0.5–5.0 -- higher = more brittle (strength collapses fast after first crack).
     pub softening_rate: f32,
     /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
-    /// rate (SI Pa.s, convert via `SimConfig::visc_from_si_physical` before
-    /// assigning) -- same mechanism, same formula, as
+    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
+    /// -- raw if they came from `lame_from_young`, `SimConfig::visc_from_si_physical`
+    /// if from `lame_from_si_physical` -- see `q_factor_elastic_viscosity_pa_s`'s
+    /// own doc) -- same mechanism, same formula, as
     /// `DruckerPragerMaterial::elastic_viscosity`. Zero cost, zero behavior
     /// change at `0.0` (every preset's default, same convention as sand).
     ///
@@ -272,18 +313,19 @@ impl RankineMaterial {
     ///
     /// Leaves `elastic_viscosity` at its default `0.0` -- this constructor
     /// (like every preset above) is a unit-agnostic function of `young_modulus`
-    /// alone, with no `density`/`SimConfig` to perform the real SI->grid
-    /// conversion `elastic_viscosity` needs (same reason `DruckerPragerMaterial`'s
+    /// alone, with no real damping baked in (same reason `DruckerPragerMaterial`'s
     /// own presets never bake in `elastic_viscosity` either -- see
     /// `granular::sand::small_strain_elastic_viscosity_pa_s`'s own doc and
     /// `examples/cpu/sand_water_saturation.rs`'s real call site for the
     /// established pattern). A caller that needs real damping (any scene
     /// putting this preset under real gravity/impacts) should set it
-    /// explicitly via struct-update syntax:
+    /// explicitly via struct-update syntax -- assign the raw SI Pa.s value
+    /// directly, no `SimConfig` conversion (see
+    /// `q_factor_elastic_viscosity_pa_s`'s own doc for why):
     /// ```ignore
     /// let g = young_modulus / (2.0 * (1.0 + poisson_ratio));
     /// let eta_pa_s = q_factor_elastic_viscosity_pa_s(g, ICE_QUALITY_FACTOR_Q, ICE_Q_REFERENCE_FREQUENCY_HZ);
-    /// RankineMaterial { elastic_viscosity: config.visc_from_si_physical(eta_pa_s, ice_density_kg_m3), ..RankineMaterial::ice(young_modulus, poisson_ratio) }
+    /// RankineMaterial { elastic_viscosity: eta_pa_s, ..RankineMaterial::ice(young_modulus, poisson_ratio) }
     /// ```
     pub fn ice(young_modulus: f32, poisson_ratio: f32) -> Self {
         const ICE_TENSILE_TO_MODULUS_RATIO: f32 = 1.1e-4;
@@ -344,7 +386,18 @@ impl MaterialModel for RankineMaterial {
     /// on the deviatoric strain rate -- see `elastic_viscosity`'s own doc.
     /// Zero cost, zero behavior change when `elastic_viscosity == 0.0`
     /// (every existing preset/scene before 2026-08-28). Same formula as
-    /// `DruckerPragerMaterial::kirchhoff_stress`'s own Kelvin-Voigt dashpot.
+    /// `DruckerPragerMaterial::kirchhoff_stress`'s own Kelvin-Voigt dashpot,
+    /// and `ViscoelasticMaterial::kirchhoff_stress`'s own -- `tau_v =
+    /// eta*D_dev` (NOT `2*eta*D_dev`) is this engine's one, deliberate,
+    /// already-tested convention everywhere (see `ViscoelasticMaterial`'s
+    /// own `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`
+    /// test) -- do NOT add a factor of 2 here; a real Q-vs-target
+    /// discrepancy found 2026-08-29 (independent deep research +
+    /// independent hand derivation + a direct numeric cyclic-oscillation
+    /// test, `measured_q_factor_matches_target_after_the_conversion_fix`
+    /// below) was fixed at its actual source instead --
+    /// `q_factor_elastic_viscosity_pa_s`'s own conversion formula, not this
+    /// stress application -- see that function's own doc for why.
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let elastic =
             corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu);
@@ -661,6 +714,89 @@ mod damping_tests {
             high_q_eta < low_q_eta,
             "higher Q (less real damping) must give lower viscosity: \
              Q=100 -> {low_q_eta}, Q=1700 -> {high_q_eta}"
+        );
+    }
+
+    /// Real, direct empirical check of `elastic_viscosity`'s actual damping
+    /// against its CITED target Q -- not a sanity floor like the two tests
+    /// above, a genuine measurement. Forces one particle through a full
+    /// cycle of pure-shear oscillation (`F(t) = I + A*sin(wt)*E`, E
+    /// symmetric and traceless so the corotated rotation R=I EXACTLY --
+    /// same construction `CorotatedMaterial`'s own
+    /// `small_shear_strain_matches_hookes_law` test uses to stay in the
+    /// exact small-strain linear-elasticity limit), reads `kirchhoff_stress`
+    /// at many samples, and numerically integrates the real dissipated
+    /// energy per cycle via `tau:D` (the elastic term's own contribution to
+    /// this integral is exactly zero over a full cycle -- a standard
+    /// property of any conservative term, not assumed away). Standard
+    /// viscoelastic definition: `Q = 2*pi*E_max/delta_E_cycle`.
+    ///
+    /// Real regression guard (2026-08-29) against reintroducing the bug
+    /// this same test originally caught: `q_factor_elastic_viscosity_pa_s`'s
+    /// naive `G/(Q*omega)` (matching the textbook `eta=2*zeta*G/omega`
+    /// relation for a fully-matched `sigma=2G*eps+2*eta*D` tensor form) was
+    /// silently wrong for THIS engine's actual `eta*D_dev` (no factor of 2)
+    /// stress convention -- measured, via this exact test, to give a Q 2x
+    /// the cited target (half the intended damping). Found via
+    /// independent deep research, confirmed by hand
+    /// derivation, then fixed at the conversion function itself (now
+    /// `2*G/(Q*omega)`) rather than changing the stress formula, since
+    /// `ViscoelasticMaterial`'s own `eta*D_dev` convention is deliberate
+    /// and already locked by its own test
+    /// (`viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`).
+    #[test]
+    fn measured_q_factor_matches_target_after_the_conversion_fix() {
+        let mu = 4.0e9_f32;
+        let lambda = 4.0e9_f32;
+        let target_q = 65.0_f32;
+        let reference_freq_hz = 136.0_f32;
+        let omega = 2.0 * std::f32::consts::PI * reference_freq_hz;
+        let eta = q_factor_elastic_viscosity_pa_s(mu, target_q, reference_freq_hz);
+
+        let mat = RankineMaterial {
+            elastic_viscosity: eta,
+            ..RankineMaterial::new(lambda, mu, f32::MAX, 0.0)
+        };
+
+        let amplitude = 1.0e-4_f32; // small-strain regime
+        let e = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0)); // pure shear, traceless, R=I exactly
+
+        let n_samples = 2000_u32;
+        let period = 2.0 * std::f32::consts::PI / omega;
+        let dt = period / n_samples as f32;
+
+        let mut dissipated = 0.0_f64;
+        for k in 0..n_samples {
+            let t = k as f32 * dt;
+            let delta = amplitude * (omega * t).sin();
+            let delta_dot = amplitude * omega * (omega * t).cos();
+
+            let mut p = Particle::zeroed();
+            p.deformation_gradient = Mat2::IDENTITY + delta * e;
+            p.velocity_gradient = delta_dot * e;
+            p.mass = 1.0;
+            p.initial_volume = 1.0;
+            p.volume = 1.0;
+            p.density = 1.0;
+            let particles = Particles::from(vec![p]);
+
+            let tau = mat.kirchhoff_stress(&particles, 0);
+            let d = delta_dot * e; // already symmetric (E is symmetric)
+            let power = (tau.x_axis.x * d.x_axis.x
+                + tau.x_axis.y * d.x_axis.y
+                + tau.y_axis.x * d.y_axis.x
+                + tau.y_axis.y * d.y_axis.y) as f64;
+            dissipated += power * dt as f64;
+        }
+
+        let e_max = 2.0 * (mu as f64) * (amplitude as f64).powi(2); // peak elastic energy density, pure shear
+        let measured_q = 2.0 * std::f64::consts::PI * e_max / dissipated;
+
+        assert!(
+            (measured_q - target_q as f64).abs() / (target_q as f64) < 0.05,
+            "measured Q from actual kirchhoff_stress output must match the \
+             cited target Q to within numerical error: target_q={target_q}, \
+             got measured_q={measured_q:.3}"
         );
     }
 

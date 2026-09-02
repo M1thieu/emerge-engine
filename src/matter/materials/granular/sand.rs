@@ -44,11 +44,16 @@ pub const WATER_SURFACE_TENSION_N_M: f32 = 0.072;
 /// e_min=0.55) to 0.479 (loose, e_max=0.92). `contact_angle_deg`: water on
 /// clean quartz is close to 0 (fully wetting).
 ///
-/// Returns real SI pascals. Convert with
-/// `SimConfig::stress_from_si_physical` before assigning to
-/// `saturation_cohesion_coeff` -- that field is in the SAME grid-stress
-/// units as `lambda`/`mu` (`cohesion_bonus_pa` divides it by `2*mu`
-/// directly, no conversion inside), not real pascals.
+/// Returns real SI pascals. Must be converted with the SAME convention the
+/// caller's own `lambda`/`mu` used, since `cohesion_bonus_pa` adds this
+/// straight into the same stress space those occupy: raw `lame_from_young`
+/// lambda/mu pairs with this assigned RAW; density-normalized
+/// `SimConfig::lame_from_si_physical_cfg` lambda/mu pairs with
+/// `SimConfig::stress_from_si_physical`. `examples/cpu/sand_water_saturation.rs`'s
+/// real call site uses the density-normalized family throughout -- this is
+/// NOT a case needing the raw-passthrough fix; see
+/// `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for which real call
+/// sites actually had the mismatched-pairing bug (ice's, not sand's).
 pub fn capillary_cohesion_stress_pa(
     grain_diameter_m: f32,
     porosity: f32,
@@ -78,19 +83,34 @@ pub fn capillary_cohesion_stress_pa(
 /// rather than baked in as a single constant.
 ///
 /// Converted to an equivalent viscous damping coefficient via the standard
-/// geotechnical equivalent-linear relation `eta = 2*zeta*G/omega`, at the
-/// same 1 Hz reference frequency (`omega = 2*pi rad/s`) Seed & Idriss's own
-/// resonant-column tests used -- the standard reference frequency for this
-/// class of equivalent-viscous-damping conversion in soil dynamics.
+/// geotechnical equivalent-linear relation, at the same 1 Hz reference
+/// frequency (`omega = 2*pi rad/s`) Seed & Idriss's own resonant-column
+/// tests used -- the standard reference frequency for this class of
+/// equivalent-viscous-damping conversion in soil dynamics. Real, disclosed
+/// fix (2026-08-29, same story as `RankineMaterial::q_factor_elastic_
+/// viscosity_pa_s`'s own doc): the textbook `eta=2*zeta*G/omega` relation
+/// assumes a fully-matched `sigma=2G*eps+2*eta*D` tensor form, but this
+/// engine's own `kirchhoff_stress` applies the viscous term as `eta*D_dev`
+/// (no factor of 2 -- a deliberate, already-tested convention, see
+/// `ViscoelasticMaterial`'s own test) -- so the correct relation for THIS
+/// convention is `eta=4*zeta*G/omega` (double the naive textbook form),
+/// confirmed by the same hand derivation + numeric cyclic-oscillation test
+/// used to find and fix this for ice. Real, disclosed cost: since the real
+/// applied damping is now double what it was, the viscous CFL bound
+/// (`DruckerPragerMaterial::timestep_bound`) will bind roughly twice as
+/// hard too -- the 2026-08-25 measurement (1% damping ratio, 31->56
+/// substeps/step) was made against the UNDER-damped, pre-fix value; expect
+/// a further real increase now that the correct damping is actually
+/// applied.
 ///
 /// `shear_modulus_pa`: real SI shear modulus (`E / (2*(1+nu))`), the SAME
 /// material's own elastic stiffness -- not an independent input, so a
 /// stiffer sand automatically gets proportionally more damping, matching
 /// how `zeta` is defined (relative to `G`) in the cited curves.
 ///
-/// Returns real SI Pa.s. Convert with `SimConfig::visc_from_si_physical`
-/// before assigning to `elastic_viscosity` -- same convention as
-/// `capillary_cohesion_stress_pa`'s own doc for `saturation_cohesion_coeff`.
+/// Returns real SI Pa.s -- same pairing rule as `capillary_cohesion_stress_pa`'s
+/// own doc for `saturation_cohesion_coeff`: convert with whichever
+/// convention the caller's `lambda`/`mu` used.
 pub fn small_strain_elastic_viscosity_pa_s(shear_modulus_pa: f32, damping_ratio: f32) -> f32 {
     debug_assert!(
         (0.005..=0.02).contains(&damping_ratio),
@@ -98,7 +118,7 @@ pub fn small_strain_elastic_viscosity_pa_s(shear_modulus_pa: f32, damping_ratio:
          clean sand (0.5%-2%) -- not a real small-strain sand value"
     );
     const REFERENCE_OMEGA: f32 = 2.0 * std::f32::consts::PI;
-    2.0 * damping_ratio * shear_modulus_pa / REFERENCE_OMEGA
+    4.0 * damping_ratio * shear_modulus_pa / REFERENCE_OMEGA
 }
 
 // Real, test-only diagnostic counters (2026-08-04): checking whether the NGF

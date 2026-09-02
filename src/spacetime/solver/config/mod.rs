@@ -655,6 +655,16 @@ impl SimConfig {
     /// over [`Self::stress_from_si`] for any new scene; see
     /// [`crate::materials::lame_from_si_physical`] for why the older one's
     /// `dt^2` is wrong.
+    ///
+    /// Real, disclosed correction (2026-08-29): pair this ONLY with lambda/mu
+    /// that came from [`Self::lame_from_si_physical_cfg`] (the SAME `rho*dx^2`
+    /// division) -- a material whose lambda/mu instead came from the raw,
+    /// density-agnostic `lame_from_young`/`from_young_modulus` family must
+    /// get its cohesion/tensile-strength/viscosity assigned raw SI too, not
+    /// run through this. Mixing the two (raw lambda/mu + this conversion on
+    /// a term added into the SAME stress tensor) was exactly the bug found
+    /// and fixed in `RankineMaterial::ice`'s real call sites this session --
+    /// see `q_factor_elastic_viscosity_pa_s`'s own doc for the full writeup.
     pub fn stress_from_si_physical(&self, pa: f32, rho_kg_m3: f32) -> f32 {
         pa / (rho_kg_m3 * self.dx_meters * self.dx_meters)
     }
@@ -667,6 +677,11 @@ impl SimConfig {
     /// cells^2/s^2). The older [`Self::visc_from_si`] is
     /// `eta * rho * dx^2 / dt^3` -- it multiplies by `rho` and `dx^2` where
     /// it must divide, and carries a spurious `dt^3`.
+    ///
+    /// Real, disclosed correction (2026-08-29): same pairing rule as
+    /// [`Self::stress_from_si_physical`]'s own doc -- only pair this with
+    /// lambda/mu from [`Self::lame_from_si_physical_cfg`], never with the
+    /// raw `lame_from_young`/`from_young_modulus` family.
     pub fn visc_from_si_physical(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
         eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
     }

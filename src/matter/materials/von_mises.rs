@@ -35,6 +35,25 @@ pub struct VonMisesMaterial {
     /// Linear isotropic hardening modulus H.
     /// σ_Y(κ) = yield_stress + H·κ. Set 0.0 for perfect plasticity (default).
     pub hardening_modulus: f32,
+    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
+    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
+    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
+    /// pairing rule and the real regression it documents) -- same
+    /// mechanism, same formula, as
+    /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
+    /// Zero cost, zero behavior change at `0.0` (default, matching every
+    /// other material using this same mechanism).
+    ///
+    /// Only damps the ELASTIC response below yield -- real solids are never
+    /// purely elastic even before plastic flow begins (internal friction
+    /// measurably dissipates energy in every real material, reported as a
+    /// seismic/ultrasonic quality factor Q -- see
+    /// `q_factor_elastic_viscosity_pa_s`). Confirmed live 2026-08-29: this
+    /// is a real, structural gap -- `VonMisesMaterial` had NO damping
+    /// mechanism of any kind before this field existed (found while
+    /// root-causing sustained post-impact bouncing on `RankineMaterial::ice()`,
+    /// same class of missing dissipation, different material).
+    pub elastic_viscosity: f32,
 }
 
 impl VonMisesMaterial {
@@ -53,6 +72,7 @@ impl VonMisesMaterial {
             mu,
             yield_stress,
             hardening_modulus: 0.0,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -65,6 +85,7 @@ impl VonMisesMaterial {
             mu,
             yield_stress,
             hardening_modulus,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -93,7 +114,21 @@ impl MaterialModel for VonMisesMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
+        let elastic =
+            corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu);
+        if self.elastic_viscosity == 0.0 {
+            return elastic;
+        }
+        // Same Kelvin-Voigt dashpot formula as `RankineMaterial`/
+        // `DruckerPragerMaterial`/`ViscoelasticMaterial`: tau_v = eta*D_dev
+        // (NOT 2*eta*D_dev -- see `RankineMaterial::kirchhoff_stress`'s own
+        // doc for why), D the symmetric part of the APIC velocity gradient.
+        let c = particles.velocity_gradient[i];
+        let sym = c + c.transpose();
+        let d = sym * 0.5;
+        let trace = d.x_axis.x + d.y_axis.y;
+        let d_dev = d - Mat2::from_diagonal(Vec2::splat(trace * 0.5));
+        elastic + self.elastic_viscosity * d_dev
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -151,9 +186,9 @@ impl MaterialModel for VonMisesMaterial {
         _hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             self.lambda,
             self.mu,
             1.0,
@@ -161,7 +196,23 @@ impl MaterialModel for VonMisesMaterial {
             MIN_J,
             cell_width,
             material_cfl,
-        )
+        );
+        // Same explicit-viscous-diffusion stability bound `RankineMaterial`/
+        // `DruckerPragerMaterial` already use for their own Kelvin-Voigt term --
+        // without this, `elastic_viscosity` adds real stiffness the substep
+        // selector never sees.
+        let viscous_dt = if self.elastic_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.elastic_viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 }
 
@@ -284,6 +335,67 @@ mod marginal_yield_tests {
             "hardening should shrink the plastic strain increment for the same trial \
              state once kappa has already accumulated: gamma(kappa=0)={gamma_from_zero:.6} \
              gamma(kappa=1)={gamma_from_existing:.6}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod elastic_viscosity_tests {
+    use super::*;
+    use crate::Particle;
+
+    /// Same audit-closing test `RankineMaterial`/`CorotatedMaterial`/
+    /// `NaccMaterial` all carry for their own copy of this identical
+    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// must actually respond to the particle's velocity gradient when
+    /// `elastic_viscosity > 0.0`, not just carry the field.
+    #[test]
+    fn nonzero_elastic_viscosity_adds_a_real_viscous_stress_term() {
+        let elastic_only = VonMisesMaterial::new(2000.0, 3000.0, 100.0);
+        let mut damped = elastic_only;
+        damped.elastic_viscosity = 50.0;
+
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0));
+        let particles = Particles::from(vec![p]);
+
+        let tau_elastic = elastic_only.kirchhoff_stress(&particles, 0);
+        let tau_damped = damped.kirchhoff_stress(&particles, 0);
+
+        let diff = tau_damped - tau_elastic;
+        let max_abs = diff
+            .x_axis
+            .abs()
+            .max_element()
+            .max(diff.y_axis.abs().max_element());
+        assert!(
+            max_abs > 1.0e-6,
+            "nonzero elastic_viscosity under a real velocity gradient must \
+             change the Kirchhoff stress: elastic={tau_elastic:?} damped={tau_damped:?}"
+        );
+    }
+
+    /// `elastic_viscosity == 0.0` (every preset's default) must leave
+    /// `kirchhoff_stress` completely blind to the velocity gradient -- a
+    /// real regression guard against the early-return branch getting
+    /// "simplified" away into an unconditional `elastic + 0.0*d_dev`.
+    #[test]
+    fn zero_elastic_viscosity_ignores_the_velocity_gradient() {
+        let mat = VonMisesMaterial::new(2000.0, 3000.0, 100.0);
+        assert_eq!(mat.elastic_viscosity, 0.0);
+
+        let mut p_rest = Particle::zeroed();
+        p_rest.deformation_gradient = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(0.01, 0.97));
+        let mut p_shearing = p_rest;
+        p_shearing.velocity_gradient = Mat2::from_cols(Vec2::new(0.3, -0.1), Vec2::new(0.2, 0.4));
+        let particles = Particles::from(vec![p_rest, p_shearing]);
+
+        let tau_rest = mat.kirchhoff_stress(&particles, 0);
+        let tau_shearing = mat.kirchhoff_stress(&particles, 1);
+        assert_eq!(
+            tau_rest, tau_shearing,
+            "elastic_viscosity=0.0 must be bit-identical regardless of velocity_gradient"
         );
     }
 }

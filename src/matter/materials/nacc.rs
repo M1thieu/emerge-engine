@@ -56,6 +56,29 @@ pub struct NaccMaterial {
     /// Enable volumetric hardening. If false, p₀ stays fixed (perfect plasticity cap).
     pub hardening_enabled: bool,
     pub min_density: f32,
+    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
+    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
+    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
+    /// pairing rule and the real regression it documents) -- same
+    /// mechanism, same formula, as
+    /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
+    /// Zero cost, zero behavior change at `0.0` (default, matching every
+    /// other material using this same mechanism).
+    ///
+    /// Only damps the ELASTIC response below yield -- real soils/clays are
+    /// never purely elastic even before plastic flow begins (internal
+    /// friction measurably dissipates energy, reported for soils/clays as a
+    /// small-strain damping ratio -- Seed & Idriss 1970, "Soil Moduli and
+    /// Damping Factors for Dynamic Response Analyses"; Darendeli 2001 PhD
+    /// dissertation modulus-reduction/damping curves, same sources already
+    /// used for `DruckerPragerMaterial::elastic_viscosity`'s own sand
+    /// default, directly applicable here since both papers cover clay/soil
+    /// damping, not only sand). Confirmed live 2026-08-29: this is a real,
+    /// structural gap -- `NaccMaterial` had NO damping mechanism of any kind
+    /// before this field existed (found while root-causing sustained
+    /// post-impact bouncing on `RankineMaterial::ice()`, same class of
+    /// missing dissipation, different material).
+    pub elastic_viscosity: f32,
 }
 
 impl NaccMaterial {
@@ -68,6 +91,7 @@ impl NaccMaterial {
             hardening_factor,
             hardening_enabled: hardening_factor > 0.0,
             min_density: 1.0e-6,
+            elastic_viscosity: 0.0,
         }
     }
 
@@ -265,8 +289,21 @@ impl MaterialModel for NaccMaterial {
 
         let dev_stress = (self.mu / j) * dev_b;
         let vol_stress = (self.kappa * 0.5 * (j * j - 1.0)) * Mat2::IDENTITY;
+        let elastic = dev_stress + vol_stress;
 
-        dev_stress + vol_stress
+        if self.elastic_viscosity == 0.0 {
+            return elastic;
+        }
+        // Same Kelvin-Voigt dashpot formula as `RankineMaterial`/
+        // `DruckerPragerMaterial`/`ViscoelasticMaterial`: tau_v = eta*D_dev
+        // (NOT 2*eta*D_dev -- see `RankineMaterial::kirchhoff_stress`'s own
+        // doc for why), D the symmetric part of the APIC velocity gradient.
+        let c = particles.velocity_gradient[i];
+        let sym = c + c.transpose();
+        let d = sym * 0.5;
+        let d_trace = d.x_axis.x + d.y_axis.y;
+        let d_dev = d - Mat2::from_diagonal(Vec2::splat(d_trace * 0.5));
+        elastic + self.elastic_viscosity * d_dev
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -309,11 +346,11 @@ impl MaterialModel for NaccMaterial {
         hardening_scale: f32,
         cell_width: f32,
         material_cfl: f32,
-        _viscous_cfl: f32,
+        viscous_cfl: f32,
     ) -> f32 {
         // Inverse of the 2D plane-strain relation kappa = lambda + mu.
         let lambda = self.kappa - self.mu;
-        elastic_wave_dt(
+        let elastic_dt = elastic_wave_dt(
             lambda,
             self.mu,
             hardening_scale,
@@ -321,7 +358,23 @@ impl MaterialModel for NaccMaterial {
             self.min_density,
             cell_width,
             material_cfl,
-        )
+        );
+        // Same explicit-viscous-diffusion stability bound `RankineMaterial`/
+        // `DruckerPragerMaterial` already use for their own Kelvin-Voigt term --
+        // without this, `elastic_viscosity` adds real stiffness the substep
+        // selector never sees.
+        let viscous_dt = if self.elastic_viscosity > 0.0 {
+            let density = density.max(1.0e-6);
+            let kinematic = self.elastic_viscosity / density;
+            if kinematic > f32::EPSILON {
+                viscous_cfl * cell_width * cell_width / kinematic
+            } else {
+                f32::INFINITY
+            }
+        } else {
+            f32::INFINITY
+        };
+        elastic_dt.min(viscous_dt)
     }
 
     fn params(&self) -> MaterialParams {
@@ -464,6 +517,67 @@ mod marginal_yield_tests {
             "peat should have built up LESS compression-cap resistance than \
              wet_soil after identical prior compaction: peat_p0={peat_p0} \
              wet_soil_p0={wet_soil_p0}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod elastic_viscosity_tests {
+    use super::*;
+    use crate::Particle;
+
+    /// Same audit-closing test `RankineMaterial`/`CorotatedMaterial`/
+    /// `VonMisesMaterial` all carry for their own copy of this identical
+    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// must actually respond to the particle's velocity gradient when
+    /// `elastic_viscosity > 0.0`, not just carry the field.
+    #[test]
+    fn nonzero_elastic_viscosity_adds_a_real_viscous_stress_term() {
+        let elastic_only = NaccMaterial::new(3000.0, 5000.0, 0.5, 0.0, 0.0);
+        let mut damped = elastic_only;
+        damped.elastic_viscosity = 50.0;
+
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.velocity_gradient = Mat2::from_cols(Vec2::new(0.0, 1.0), Vec2::new(1.0, 0.0));
+        let particles = Particles::from(vec![p]);
+
+        let tau_elastic = elastic_only.kirchhoff_stress(&particles, 0);
+        let tau_damped = damped.kirchhoff_stress(&particles, 0);
+
+        let diff = tau_damped - tau_elastic;
+        let max_abs = diff
+            .x_axis
+            .abs()
+            .max_element()
+            .max(diff.y_axis.abs().max_element());
+        assert!(
+            max_abs > 1.0e-6,
+            "nonzero elastic_viscosity under a real velocity gradient must \
+             change the Kirchhoff stress: elastic={tau_elastic:?} damped={tau_damped:?}"
+        );
+    }
+
+    /// `elastic_viscosity == 0.0` (every preset's default) must leave
+    /// `kirchhoff_stress` completely blind to the velocity gradient -- a
+    /// real regression guard against the early-return branch getting
+    /// "simplified" away into an unconditional `elastic + 0.0*d_dev`.
+    #[test]
+    fn zero_elastic_viscosity_ignores_the_velocity_gradient() {
+        let mat = NaccMaterial::new(3000.0, 5000.0, 0.5, 0.0, 0.0);
+        assert_eq!(mat.elastic_viscosity, 0.0);
+
+        let mut p_rest = Particle::zeroed();
+        p_rest.deformation_gradient = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(0.01, 0.97));
+        let mut p_shearing = p_rest;
+        p_shearing.velocity_gradient = Mat2::from_cols(Vec2::new(0.3, -0.1), Vec2::new(0.2, 0.4));
+        let particles = Particles::from(vec![p_rest, p_shearing]);
+
+        let tau_rest = mat.kirchhoff_stress(&particles, 0);
+        let tau_shearing = mat.kirchhoff_stress(&particles, 1);
+        assert_eq!(
+            tau_rest, tau_shearing,
+            "elastic_viscosity=0.0 must be bit-identical regardless of velocity_gradient"
         );
     }
 }
