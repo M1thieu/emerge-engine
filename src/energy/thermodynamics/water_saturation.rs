@@ -101,6 +101,29 @@ pub const WATER_SATURATION_MIN_VALID_K: f32 = 273.15;
 /// (373.15K = water's real standard-pressure boiling point).
 pub const WATER_SATURATION_MAX_VALID_K: f32 = 373.15;
 
+/// Real IAPWS-IF97 critical point, 647.096K -- Region 4's own real upper
+/// limit (see module doc); the forward formula stays valid up to here even
+/// though `water_saturation_pressure_pa` clamps its INPUT well below it for
+/// this engine's own scene-relevant reasons.
+pub const WATER_CRITICAL_POINT_K: f32 = 647.096;
+
+/// The raw IAPWS-IF97 Region 4 forward relation, UNCLAMPED -- see module
+/// doc for the formula and its real, cross-checked source. Kept private:
+/// callers get either the scene-clamped forward form
+/// (`water_saturation_pressure_pa`) or the wider-range inverse
+/// (`water_saturation_temperature_from_pressure_k`), never the raw form
+/// directly, so the two clamp policies can't be bypassed by accident.
+fn iapws_if97_region4_p_sat_pa_unclamped(temperature_k: f64) -> f64 {
+    let t = temperature_k;
+    let theta = t + IAPWS_N[8] / (t - IAPWS_N[9]);
+    let a = theta * theta + IAPWS_N[0] * theta + IAPWS_N[1];
+    let b = IAPWS_N[2] * theta * theta + IAPWS_N[3] * theta + IAPWS_N[4];
+    let c = IAPWS_N[5] * theta * theta + IAPWS_N[6] * theta + IAPWS_N[7];
+    let inner = 2.0 * c / (-b + (b * b - 4.0 * a * c).sqrt());
+    let p_mpa = inner.powi(4);
+    p_mpa * 1.0e6
+}
+
 /// Real water saturation (vapor) pressure at `temperature_k`, in pascals
 /// (absolute), via the IAPWS-IF97 Region 4 saturation-pressure equation --
 /// see this module's own doc for the formula and its real, cross-checked
@@ -115,14 +138,53 @@ pub const WATER_SATURATION_MAX_VALID_K: f32 = 373.15;
 /// extrapolation.
 pub fn water_saturation_pressure_pa(temperature_k: f32) -> f32 {
     let t_k = temperature_k.clamp(WATER_SATURATION_MIN_VALID_K, WATER_SATURATION_MAX_VALID_K);
-    let t = t_k as f64;
-    let theta = t + IAPWS_N[8] / (t - IAPWS_N[9]);
-    let a = theta * theta + IAPWS_N[0] * theta + IAPWS_N[1];
-    let b = IAPWS_N[2] * theta * theta + IAPWS_N[3] * theta + IAPWS_N[4];
-    let c = IAPWS_N[5] * theta * theta + IAPWS_N[6] * theta + IAPWS_N[7];
-    let inner = 2.0 * c / (-b + (b * b - 4.0 * a * c).sqrt());
-    let p_mpa = inner.powi(4);
-    (p_mpa * 1.0e6) as f32
+    iapws_if97_region4_p_sat_pa_unclamped(t_k as f64) as f32
+}
+
+/// Real inverse of `water_saturation_pressure_pa`: what temperature has
+/// this saturation (vapor) pressure? Solved by bisection on the SAME real
+/// IAPWS-IF97 Region 4 forward relation the pressure form uses
+/// (`iapws_if97_region4_p_sat_pa_unclamped`), not the official IAPWS
+/// backward equation (Eq. 31 of R7-97(2012), a separate coefficient fit
+/// for the same curve) -- numerically inverting an already
+/// cross-verified, strictly monotonic relation converges to the exact
+/// inverse, so this makes no new physical claim beyond what the forward
+/// form already established (see this module's own tests for that
+/// verification); it is only a different way to evaluate the same real
+/// curve, chosen because a diagnostic call site doesn't need the backward
+/// equation's O(1) evaluation cost.
+///
+/// Deliberately valid across this equation's own FULL real range,
+/// `[WATER_SATURATION_MIN_VALID_K, WATER_CRITICAL_POINT_K]` (273.15K to
+/// the real critical point, 647.096K) -- wider than
+/// `water_saturation_pressure_pa`'s own 373.15K scene clamp, because this
+/// function exists to answer "what's the saturation temperature at THIS
+/// (possibly hydrostatically-elevated, above 1 atm) pressure" for
+/// diagnostic use on particles that can genuinely sit above 373.15K under
+/// real compression -- see `examples/cpu/phase_states_gui.rs`'s
+/// boiling-mixture instrumentation. An out-of-range input pressure clamps
+/// to the boundary temperature's own pressure, same disclosed-limitation
+/// convention as the forward form.
+pub fn water_saturation_temperature_from_pressure_k(pressure_pa: f32) -> f32 {
+    let p_min = iapws_if97_region4_p_sat_pa_unclamped(WATER_SATURATION_MIN_VALID_K as f64);
+    let p_max = iapws_if97_region4_p_sat_pa_unclamped(WATER_CRITICAL_POINT_K as f64);
+    let p_target = (pressure_pa as f64).clamp(p_min, p_max);
+
+    let mut lo = WATER_SATURATION_MIN_VALID_K as f64;
+    let mut hi = WATER_CRITICAL_POINT_K as f64;
+    // 60 bisection steps: the bracket starts ~374K wide and halves each
+    // step, so this converges to far tighter than f32 precision long
+    // before 60 -- real margin, still cheap since this runs once per
+    // diagnostic sample, not per substep.
+    for _ in 0..60 {
+        let mid = 0.5 * (lo + hi);
+        if iapws_if97_region4_p_sat_pa_unclamped(mid) < p_target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (0.5 * (lo + hi)) as f32
 }
 
 #[cfg(test)]
@@ -222,6 +284,50 @@ mod tests {
             (above - at_max).abs() < 1.0e-3,
             "above-range input must clamp to the max-valid-K value exactly, \
              got {above} vs {at_max}"
+        );
+    }
+
+    /// Real self-consistency check for the bisection-based inverse: for a
+    /// spread of temperatures spanning well past `water_saturation_pressure_pa`'s
+    /// own 373.15K scene clamp (up to 600K, still under the real critical
+    /// point 647.096K), round-tripping T -> p_sat(T) -> T_sat(p) must
+    /// recover the original T. This is the real verification for the
+    /// inverse (see its own doc): it only needs to agree with the SAME
+    /// forward relation the four tests above already cross-checked against
+    /// real reference values, not a fresh external anchor.
+    #[test]
+    fn temperature_from_pressure_round_trips_across_the_full_if97_region4_range() {
+        let temperatures_k = [
+            280.0, 300.0, 320.0, 350.0, 373.15, 400.0, 450.0, 500.0, 550.0, 600.0,
+        ];
+        for &t_k in &temperatures_k {
+            let p_pa = iapws_if97_region4_p_sat_pa_unclamped(t_k as f64) as f32;
+            let t_recovered_k = water_saturation_temperature_from_pressure_k(p_pa);
+            assert!(
+                (t_recovered_k - t_k).abs() < 1.0e-3,
+                "round trip must recover the original temperature: T={t_k}K -> \
+                 p={p_pa}Pa -> T_sat(p)={t_recovered_k}K"
+            );
+        }
+    }
+
+    /// Real, disclosed-limitation guard for the inverse's own wider range:
+    /// a pressure outside `[p_sat(MIN), p_sat(CRITICAL)]` clamps to the
+    /// boundary temperature instead of extrapolating, same convention as
+    /// the forward form's own guard above.
+    #[test]
+    fn temperature_from_pressure_clamps_outside_its_real_working_range() {
+        let t_min = water_saturation_temperature_from_pressure_k(1.0);
+        assert!(
+            (t_min - WATER_SATURATION_MIN_VALID_K).abs() < 1.0e-2,
+            "a pressure far below the triple point must clamp to \
+             WATER_SATURATION_MIN_VALID_K, got {t_min}K"
+        );
+        let t_max = water_saturation_temperature_from_pressure_k(50_000_000.0);
+        assert!(
+            (t_max - WATER_CRITICAL_POINT_K).abs() < 1.0e-2,
+            "a pressure far above the critical pressure must clamp to \
+             WATER_CRITICAL_POINT_K, got {t_max}K"
         );
     }
 }

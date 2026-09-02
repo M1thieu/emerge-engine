@@ -1444,6 +1444,138 @@ impl State {
             // that paper's own specific derived bound didn't turn out to
             // be the binding term here).
         }
+        // Real, decisive instrumentation (2026-09-02, external review's own
+        // recommended go/no-go gate before scoping any two-way mechanical/
+        // thermal closure for `BoilingMixtureMaterial`): the single-worst-
+        // particle `[boiling-jmax]` trace above answers "is there SOME live
+        // residual," not whether it's large, persistent, and depth-coherent
+        // enough to matter -- closing the pressure->phase loop before
+        // knowing that would risk converting P2G/boundary discretization
+        // noise into fake enthalpy/vapor-quality changes. This block covers
+        // the WHOLE `BOILING_ID` population instead of one outlier: for
+        // each particle, converts its own mechanical gauge pressure to
+        // absolute, inverts the real IAPWS-IF97 Region 4 saturation curve
+        // to get that pressure's own saturation temperature
+        // (`water_saturation_temperature_from_pressure_k`, see that
+        // function's own doc), and reports `delta_T_sat = T_sat(p_abs) -
+        // BOILING_POINT_K` as median/p10/p90 AND sign -- never just
+        // `max(J)` the way the single-particle trace does, per that
+        // review's own explicit instruction. Also bins by depth (shallow/
+        // mid/deep thirds of the live condensed-phase column) and reports
+        // the population's own average |div(v)| (via `trace(velocity_
+        // gradient)`, same convention `water_max_abs_c_trace` above uses)
+        // and |v|, since a residual significant ONLY during high velocity/
+        // divergence is a dynamic/numerical signal, not durable
+        // thermodynamic pressure (that review's own decision grid).
+        //
+        // Converts the pressure residual into the real decision metric
+        // that review specified: `epsilon_x_equiv = cp_liquid*|delta_T_sat|
+        // /vaporization_latent_heat` -- the vapor-quality change this
+        // pressure residual WOULD cause if mechanical and thermal states
+        // were coupled, without actually coupling them (this material
+        // stays one-directional; see its own module doc). With this
+        // engine's real constants (`WATER_HEAT_CAPACITY_J_KG_K=4182`,
+        // `VAPORIZATION_LATENT_HEAT_J_KG=2_257_000`), `epsilon_x_equiv
+        // ~= 0.00185/K` -- 1K of `delta_T_sat` is ~0.185% quality, 10K is
+        // ~1.85%.
+        if self.frame.is_multiple_of(300) {
+            const STANDARD_ATMOSPHERE_PA: f32 = 101_325.0;
+            let particles = self.sim.particles();
+            let y_surface = particles
+                .iter()
+                .filter(|q| matches!(q.material_id, ICE_ID | WATER_ID | BOILING_ID))
+                .map(|q| q.x.y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let dx_m = self.sim.config().dx_meters;
+
+            struct BoilingSample {
+                depth_m: f32,
+                delta_t_sat_k: f32,
+                abs_div_v: f32,
+                speed: f32,
+            }
+            let mut samples: Vec<BoilingSample> = Vec::new();
+            for (i, p) in particles.iter().enumerate() {
+                if p.material_id != BOILING_ID {
+                    continue;
+                }
+                let stress = self.boiling_material.kirchhoff_stress(particles, i);
+                let pressure_gauge = -stress.x_axis.x;
+                let pressure_absolute = pressure_gauge + STANDARD_ATMOSPHERE_PA;
+                let t_sat = emerge::thermodynamics::water_saturation::water_saturation_temperature_from_pressure_k(
+                    pressure_absolute,
+                );
+                let c = p.velocity_gradient;
+                samples.push(BoilingSample {
+                    depth_m: (y_surface - p.x.y).max(0.0) * dx_m,
+                    delta_t_sat_k: t_sat - BOILING_POINT_K,
+                    abs_div_v: (c.x_axis.x + c.y_axis.y).abs(),
+                    speed: p.v.length(),
+                });
+            }
+
+            if !samples.is_empty() {
+                samples.sort_by(|a, b| a.delta_t_sat_k.total_cmp(&b.delta_t_sat_k));
+                let n = samples.len();
+                let percentile = |q: f32| -> f32 {
+                    let idx = (((n - 1) as f32) * q).round() as usize;
+                    samples[idx].delta_t_sat_k
+                };
+                let (p10, median, p90) = (percentile(0.1), percentile(0.5), percentile(0.9));
+                let n_positive = samples.iter().filter(|s| s.delta_t_sat_k > 0.0).count();
+                let n_negative = samples.iter().filter(|s| s.delta_t_sat_k < 0.0).count();
+                let epsilon_x_equiv = |delta_t_k: f32| -> f32 {
+                    WATER_HEAT_CAPACITY_J_KG_K * delta_t_k.abs() / VAPORIZATION_LATENT_HEAT_J_KG
+                };
+
+                let max_depth_m = samples.iter().map(|s| s.depth_m).fold(0.0_f32, f32::max);
+                let band_of = |depth_m: f32| -> usize {
+                    if max_depth_m <= 0.0 {
+                        0
+                    } else {
+                        (((depth_m / max_depth_m) * 3.0) as usize).min(2)
+                    }
+                };
+                let mut band_sum = [0.0_f32; 3];
+                let mut band_n = [0usize; 3];
+                for s in &samples {
+                    let b = band_of(s.depth_m);
+                    band_sum[b] += s.delta_t_sat_k;
+                    band_n[b] += 1;
+                }
+                let band_avg = |b: usize| -> f32 {
+                    if band_n[b] > 0 {
+                        band_sum[b] / band_n[b] as f32
+                    } else {
+                        f32::NAN
+                    }
+                };
+                let avg_abs_div_v = samples.iter().map(|s| s.abs_div_v).sum::<f32>() / n as f32;
+                let avg_speed = samples.iter().map(|s| s.speed).sum::<f32>() / n as f32;
+
+                println!(
+                    "  [boiling-residual-stats/frame={:5}] n={:4} \
+                     delta_T_sat[p10,median,p90]=[{:+.3},{:+.3},{:+.3}]K sign(+/-)={}/{} \
+                     eps_x_equiv[median,p90]=[{:.5},{:.5}] \
+                     by_depth(shallow,mid,deep)=[{:+.3},{:+.3},{:+.3}]K \
+                     avg|div(v)|={:.4} avg|v|={:.4}",
+                    self.frame,
+                    n,
+                    p10,
+                    median,
+                    p90,
+                    n_positive,
+                    n_negative,
+                    epsilon_x_equiv(median),
+                    epsilon_x_equiv(p90),
+                    band_avg(0),
+                    band_avg(1),
+                    band_avg(2),
+                    avg_abs_div_v,
+                    avg_speed,
+                );
+            }
+        }
         // TEMPORARY diagnostic (2026-08-28): the 60-frame-cadence trace above
         // showed particle 15 accelerating from |v|=5.3 (frame 60, already
         // water) to |v|=65.6 (frame 120) -- NOT an instant-of-transition
@@ -1543,7 +1675,20 @@ impl State {
                     ui.label(format!(
                         "Target temperature (melt={MELTING_POINT_K:.0}K, boil={BOILING_POINT_K:.0}K):"
                     ));
-                    ui.add(egui::Slider::new(&mut target_temperature, 150.0..=450.0));
+                    // Real, disclosed ceiling (2026-09-02): 600K, not an
+                    // arbitrary round number -- comfortably under water's
+                    // real IAPWS-IF97 critical point (647.096K,
+                    // `water_saturation::WATER_CRITICAL_POINT_K`), past
+                    // which the liquid/vapor distinction this whole demo's
+                    // chained enthalpy/phase-state model relies on stops
+                    // meaning anything. Known, already-disclosed limitation
+                    // pushing toward this ceiling: `IdealGasMaterial`'s
+                    // acoustic CFL bound uses a FIXED `reference_temperature_k`,
+                    // not the particle's own live temperature (see
+                    // `project_gas_bulk_viscosity_shipped_steam_lag_
+                    // unresolved` memory) -- substep count can climb well
+                    // before 600K is reached, real cost, not a crash.
+                    ui.add(egui::Slider::new(&mut target_temperature, 150.0..=600.0));
                     ui.separator();
                     ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
                     ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=1.0));

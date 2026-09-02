@@ -142,17 +142,49 @@
 //! something a better test design can fix, and not itself evidence
 //! against the material.
 //!
-//! **What this still does NOT establish**, stated plainly rather than
-//! implied: that the analytical profile is quantitatively conserved is
-//! now real and proven (above) -- but whether the LIVE DEMO's own
-//! `phase_states_gui.rs` `J/J_eq` residual at real (`1x`) gravity is
-//! SPECIFICALLY hydrostatic, and whether it is free of gravity-triggered
-//! P2G/boundary discretization error, remain open. This controlled unit
-//! test (a simple confined column, no heating, no phase transitions, no
-//! buoyancy) cannot speak to that richer live scene directly -- closing
-//! that gap, if ever needed, means instrumenting the live demo itself the
-//! same way (depth-binned pressure vs `rho*g*depth`, quasi-static check),
-//! not inferring it from this unit test.
+//! Real, disclosed closure (2026-09-02): the gap the paragraph above used
+//! to leave open -- whether the LIVE DEMO's own `J/J_eq` residual at real
+//! gravity is specifically hydrostatic, not gravity-triggered P2G/boundary
+//! error -- is now answered, not by proving the residual IS hydrostatic
+//! (external review's own point: not even necessary), but by the more
+//! useful question: if converted thermodynamically, would it matter?
+//! `phase_states_gui.rs`'s `[boiling-residual-stats]` block (gated every
+//! 300 frames, covers the WHOLE `BOILING_ID` population, not one
+//! worst-case particle) converts each particle's own gauge pressure to
+//! `T_sat(p_absolute)` (`water_saturation::water_saturation_temperature_
+//! from_pressure_k`, a real bisection inverse of the IAPWS-IF97 Region 4
+//! curve, valid to the real critical point) and reports
+//! `epsilon_x_equiv = cp_liquid*|T_sat(p)-BOILING_POINT_K|/L_v` -- the
+//! vapor-quality change this residual WOULD cause if coupled.
+//!
+//! Real, live-measured result (240s headless run, `PHASE_STATES_AUTO_HEAT
+//! =420`, `PHASE_STATES_GRAVITY_FRACTION=1.0`, 11 samples before full
+//! vaporization): the large early residual (`delta_T_sat` p10/p90 as wide
+//! as [-31.9,+13.8]K) tracks high `|v|`/`|div(v)|` and decays as the
+//! column settles -- a real, dynamic/settling transient, not durable
+//! thermodynamic pressure. What survives once genuinely quasi-static
+//! (avg`|v|`<1.2, avg`|div(v)|`<0.03) is small AND depth-coherent (median
+//! `delta_T_sat` +0.6 to +0.8K, by-depth shallow~0K -> deep~+1.3-1.5K,
+//! monotonic -- real evidence a flash would have SOMETHING to correct) but
+//! its thermodynamic impact stays tiny: `epsilon_x_equiv` median
+//! ~0.13-0.15%, p90 ~0.6-0.75% of vapor quality, once settled.
+//!
+//! **Verdict (external review's own call, 2026-09-02)**: document this
+//! limitation and STOP -- do not build the two-way flash for this demo.
+//! Depth-coherence proves a flash would have something to correct; it does
+//! not prove that correction is worth the complexity, when it would move
+//! well under 1% of the phase fraction for the large majority of the
+//! population. Reopen criterion, stated concretely so this isn't a vague
+//! "revisit someday": a SUSTAINED quasi-static residual (not a transient
+//! spike) exceeding ~1% `epsilon_x_equiv` at the median, or several
+//! percent at p90, under some other real configuration (different
+//! gravity, heat rate, or scene scale) not yet tried. Until then this
+//! material's real, disclosed limitation stands as stated above: an exact
+//! enthalpy-driven transition at a fixed reference pressure, no local
+//! bidirectional flash rebalancing -- and the live buoyancy cutoff after
+//! full vaporization (a separate, already-disclosed gate needing an
+//! ambient-medium density reference, see `phase_states_gui.rs`'s own
+//! buoyancy-gate doc) is NOT a symptom this closure would fix either way.
 //!
 //! One real, genuine bug WAS found and fixed along the way, unrelated to
 //! any mistake above: `params()` never set `eos_power`, silently
