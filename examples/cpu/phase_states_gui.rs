@@ -239,6 +239,20 @@ const WATER_RHO_KG_M3: f32 = 1000.0;
 const STEAM_RHO_KG_M3: f32 = WATER_RHO_KG_M3 / 6.0;
 const STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K: f32 = 101_325.0 / (STEAM_RHO_KG_M3 * BOILING_POINT_K);
 const ICE_RHO_KG_M3: f32 = 917.0;
+/// Real, disclosed ambient-medium reference (2026-09-02) for steam buoyancy
+/// once no real water/boiling-mixture neighbor is left nearby -- see the
+/// buoyancy loop's own doc for why this exists. NOT a compressed re-scale
+/// of real ambient air's own absolute density (that would need matching
+/// this scene's own water:steam compression factor, an arbitrary derived
+/// number) -- instead preserves the real, well-known, directly-checkable
+/// RATIO between standard ambient air (~1.204 kg/m^3, sea level, ~20C) and
+/// real saturated steam at 100C (~0.598 kg/m^3): air is ~2.01x denser
+/// (standard atmospheric reference values, e.g. NIST/ISA) -- so
+/// `AMBIENT_AIR_RHO_KG_M3 = STEAM_RHO_KG_M3 * 2.0` keeps THIS demo's own
+/// compressed steam density correctly ordered against a plausible ambient
+/// medium, the same "compressed but physically ordered right" choice
+/// `STEAM_RHO_KG_M3` itself already makes relative to `WATER_RHO_KG_M3`.
+const AMBIENT_AIR_RHO_KG_M3: f32 = STEAM_RHO_KG_M3 * 2.0;
 
 // Real, DERIVED water EOS stiffness (2026-08-29) -- found live tracing why
 // water was compressing to its own hard [0.5, 2.0] J clamp floor and then
@@ -911,17 +925,32 @@ impl State {
         // solver's own plain gravity, exactly as a real solid/liquid does
         // until something actually needs to float through them.
         {
-            // Real, disclosed gate (2026-08-31, external review): the
-            // steam buoyancy formula below models rising THROUGH
-            // SURROUNDING WATER (submerged-body Archimedes) -- physically
-            // meaningless once a steam particle has no real water left
-            // nearby (a fully-vapor region has no modeled medium this
-            // formula's own physics assumes). Real, confirmed-live bug
-            // this fixes: unconditionally applied, it kept targeting a
-            // real, nonzero rise velocity (e.g. ~13.6 grid-units/s at
-            // 431K) regardless of local water fraction, continuing to
-            // drive dispersion/CFL cost even deep inside an all-steam
-            // region. Computed via an immutable pass BEFORE acquiring the
+            // Real, disclosed medium-selection (2026-08-31, external
+            // review; extended 2026-09-02): the steam buoyancy formula
+            // below models an Archimedes density contrast against
+            // whatever real medium actually surrounds a steam particle --
+            // submerged-body-in-water when real water/boiling-mixture
+            // neighbors are still nearby, ambient air once they're not.
+            // Confirmed-live bug this original gate fixed (2026-08-31):
+            // applying the WATER-relative formula unconditionally kept
+            // targeting a real, nonzero rise velocity (e.g. ~13.6
+            // grid-units/s at 431K) regardless of local water fraction,
+            // continuing to drive dispersion/CFL cost even deep inside an
+            // all-steam region. Real, disclosed follow-up bug (2026-09-02,
+            // found live): that first fix over-corrected -- cutting
+            // buoyancy to EXACTLY ZERO once no water/boiling neighbor
+            // remained means the WHOLE population loses lift simultaneously
+            // the instant it fully vaporizes (confirmed live: steam(n=240)
+            // at frame ~4200 in a real headless run, buoyancy gate cutting
+            // scene-wide from that frame on) -- real, structural, not a
+            // transient. Real fix: fall back to `AMBIENT_AIR_RHO_KG_M3`
+            // (see that constant's own doc) instead of skipping, so a
+            // fully-vaporized steam parcel still gets its own real, much
+            // weaker (air has far lower relative density than water) but
+            // genuinely nonzero thermal lift -- exactly how real steam
+            // keeps rising through open air once it leaves a kettle's own
+            // water surface, just far less dramatically than displacing a
+            // liquid. Computed via an immutable pass BEFORE acquiring the
             // mutable particle borrow below (`count_near` needs
             // `&Simulation`) -- one entry per particle (0 for anything
             // that isn't steam), same radius this file's own same-
@@ -1000,14 +1029,21 @@ impl State {
                 if particles.material_id[i] != STEAM_ID {
                     continue;
                 }
-                if water_neighbors == 0 {
-                    continue; // no real water left nearby -- no medium to be buoyant against
-                }
+                // Real medium selection -- see this block's own doc above:
+                // submerged-in-water Archimedes while real condensed-phase
+                // neighbors remain, ambient-air Archimedes once they don't.
+                // Never zero: a steam particle always has SOME real medium
+                // around it.
+                let reference_medium_rho_kg_m3 = if water_neighbors > 0 {
+                    WATER_RHO_KG_M3
+                } else {
+                    AMBIENT_AIR_RHO_KG_M3
+                };
                 let temperature = particles.temperature[i].max(1.0);
                 let rho = (STANDARD_ATMOSPHERE_PA
                     / (STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K * temperature))
                     .max(1.0e-4);
-                let buoyancy_accel = -live_gravity * (WATER_RHO_KG_M3 / rho);
+                let buoyancy_accel = -live_gravity * (reference_medium_rho_kg_m3 / rho);
                 let v_terminal = buoyancy_accel / STEAM_RISE_DRAG_COEFFICIENT;
                 let blend = (STEAM_RISE_DRAG_COEFFICIENT * dt).min(1.0);
                 let v_current = particles.v[i];
