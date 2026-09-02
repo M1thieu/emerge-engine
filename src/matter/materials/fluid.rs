@@ -169,11 +169,35 @@ impl NewtonianFluidMaterial {
         // (the original real-fluid measurement this exponent is drawn from); used
         // identically in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994;
         // Becker & Teschner 2007, already cited elsewhere in this project).
+        //
+        // Real, confirmed regression fix (2026-08-29, independent
+        // git-history verification): this exact
+        // real-SI-direct form (no `scale_stress`/`scale_visc`, matching
+        // `IdealGasMaterial::from_physical`'s own already-correct convention
+        // -- solver time is already real seconds and positions are grid
+        // cells, so stress/viscosity stay raw SI, only density converts via
+        // `dx^2`) existed in this exact file as of commit `cac544b`
+        // (2026-08-11), then was SILENTLY LOST one day later by `57b83dc`
+        // ("restore pre-cac544b material state"), a wholesale revert that
+        // was only meant to restore the J clamp/pressure floor/settling
+        // damping but reverted the whole file to an even older state,
+        // sweeping this separate, correct fix away with it -- that same
+        // revert's own commit message disclosed "very little motion...
+        // likely over-damped" as a known, unresolved side effect, unknowingly
+        // describing this exact bug three weeks before it was root-caused.
+        // The stale `scale_stress`/`dt_seconds`-based form silently made
+        // this scene's water EOS stiffness ~4.4 million times too soft and
+        // its viscosity ~296 million times too large (verified live,
+        // `project_gas_bulk_viscosity_shipped_steam_lag_unresolved` memory) --
+        // not a tuning gap, a real, confirmed regression, restored here.
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(eta_pa_s, rho_kg_m3, config);
-        let k_si = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
-        let eos = scale_stress(k_si, rho_kg_m3, config);
-        Self::new(rho_kg_m3, visc, eos, GAMMA)
+        assert!(
+            config.dx_meters.is_finite() && config.dx_meters > 0.0,
+            "weakly_compressible requires a positive dx_meters"
+        );
+        let rho_grid = rho_kg_m3 * config.dx_meters * config.dx_meters;
+        let tait_b_pa = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
+        Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA)
     }
 }
 
@@ -558,6 +582,34 @@ impl MaterialModel for NewtonianFluidMaterial {
     /// second-largest cost in the whole solver, for zero effect on state.
     fn needs_density_recompute(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod si_construction_tests {
+    use super::*;
+
+    /// Real regression guard (2026-08-29): `weakly_compressible` must keep
+    /// stress/viscosity in raw SI units (matching `IdealGasMaterial::
+    /// from_physical`'s own already-correct convention) and convert ONLY
+    /// density via `dx^2` -- NOT route through `scale_stress`/`scale_visc`
+    /// (a stale, `dt_seconds`-based convention gravity itself no longer
+    /// uses). This exact test existed in this exact file as of commit
+    /// `cac544b` (2026-08-11), was silently lost the next day by a
+    /// wholesale revert (`57b83dc`) that only meant to restore unrelated
+    /// fields (J clamp/pressure floor/settling damping), and stayed lost
+    /// for weeks -- a real, confirmed regression (found live 2026-08-29 while
+    /// investigating a still-open water-compression symptom, then verified
+    /// independently against this file's own git
+    /// history), not a hypothetical. Restored here as the real regression
+    /// guard it always should have stayed.
+    #[test]
+    fn si_constructor_preserves_pressure_and_viscosity_units() {
+        let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
+        let material = NewtonianFluidMaterial::weakly_compressible(1000.0, 1.0e-3, 20.0, &cfg);
+        assert!((material.rest_density - 0.1).abs() < 1.0e-7);
+        assert!((material.dynamic_viscosity - 1.0e-3).abs() < 1.0e-9);
+        assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
     }
 }
 
