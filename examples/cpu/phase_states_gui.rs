@@ -552,6 +552,92 @@ fn initial_enthalpy(count: usize) -> Vec<f32> {
     vec![h; count]
 }
 
+/// Real, blocking full-texture RGBA8 readback -- generalizes the same real,
+/// already-proven `readback_pixel`/`copy_texture_to_buffer` pattern
+/// `src/systems/render/tests.rs` uses for single-pixel test verification
+/// (staging buffer -> copy -> poll -> map_async -> poll -> read -> unmap),
+/// to the WHOLE frame instead of one pixel, stripping wgpu's own
+/// `COPY_BYTES_PER_ROW_ALIGNMENT` (256-byte) row padding down to a tight
+/// RGBA8 buffer `ffmpeg -f rawvideo` can consume directly.
+fn read_full_frame_rgba(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let unpadded_bytes_per_row = width * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gif_capture_readback_staging"),
+        size: (padded_bytes_per_row * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("gif_capture_readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let mapped = slice.get_mapped_range();
+    let mut tight = Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
+    for row in 0..height {
+        let start = (row * padded_bytes_per_row) as usize;
+        tight.extend_from_slice(&mapped[start..start + unpadded_bytes_per_row as usize]);
+    }
+    drop(mapped);
+    staging.unmap();
+    tight
+}
+
+/// Real, disclosed capture aid (2026-09-02): headless-friendly GIF/frame
+/// export for the funding dossiers, opt-in via `PHASE_STATES_CAPTURE_DIR`
+/// (see `State::new`'s own doc for the full env-var contract) -- zero cost,
+/// zero behavior change for every normal run. Renders into a SEPARATE,
+/// dedicated offscreen texture (not the live swapchain -- surface textures
+/// aren't guaranteed `COPY_SRC`-capable across backends) with real
+/// `COPY_SRC` usage, so it can be read back to CPU and appended as raw
+/// RGBA8 frames to ONE continuous stream file -- `ffmpeg -f rawvideo`
+/// (already a real, present tool on this machine, not bundled here) reads
+/// ONE concatenated stream, not a numbered image sequence (that's the
+/// `image2` demuxer's own convention, a real, disclosed distinction found
+/// live -- an earlier version of this wrote numbered per-frame files and
+/// `-f rawvideo` genuinely could not read them without a separate manual
+/// concatenation step first).
+struct CaptureState {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+    /// How many real sim frames between captured frames -- controls the
+    /// output GIF's own real frame rate without capturing every single
+    /// 60fps sim frame (which would make an oversized, sluggish GIF).
+    stride: u64,
+    target_frames: u32,
+    captured: u32,
+}
+
 struct State {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -604,6 +690,9 @@ struct State {
     /// max last sample, to check whether the live drift is one persisting
     /// particle or a rotating cast -- see the tracking block's own doc.
     water_jmax_prev_idx: Option<usize>,
+    /// Real, disclosed capture aid -- see `CaptureState`'s own doc. `None`
+    /// (default, every normal run) unless `PHASE_STATES_CAPTURE_DIR` is set.
+    capture: Option<CaptureState>,
 }
 
 impl State {
@@ -644,6 +733,71 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
+        // Real, disclosed capture aid (2026-09-02): opt-in via
+        // `PHASE_STATES_CAPTURE_DIR` (a real directory path -- created if it
+        // doesn't exist). `PHASE_STATES_CAPTURE_FRAMES` (default 150) sets
+        // how many frames to capture; `PHASE_STATES_CAPTURE_STRIDE`
+        // (default 3, i.e. one captured frame per 3 real 60fps sim frames
+        // -> a real 20fps GIF) sets the spacing. Process exits cleanly on
+        // its own once the target frame count is reached -- a fully
+        // self-terminating, non-interactive capture run, no manual
+        // intervention needed. Writes ONE continuous raw RGBA8 stream
+        // (`frames.raw`, matching `ffmpeg -f rawvideo`'s own real
+        // single-stream contract, see `CaptureState`'s own doc) plus one
+        // `format.txt` sidecar recording the real detected pixel
+        // format/size, since the swapchain's own format is picked
+        // dynamically (`fmt` above) and ffmpeg needs to be told the exact
+        // matching `-pixel_format`/`-video_size` to decode it correctly.
+        let capture = std::env::var("PHASE_STATES_CAPTURE_DIR")
+            .ok()
+            .map(|dir_str| {
+                let dir = std::path::PathBuf::from(dir_str);
+                std::fs::create_dir_all(&dir).expect("failed to create PHASE_STATES_CAPTURE_DIR");
+                let target_frames: u32 = std::env::var("PHASE_STATES_CAPTURE_FRAMES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(150);
+                let stride: u64 = std::env::var("PHASE_STATES_CAPTURE_STRIDE")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(3);
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("gif_capture_target"),
+                    size: wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: fmt,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                std::fs::write(
+                    dir.join("format.txt"),
+                    format!("{fmt:?} {} {}", size.width, size.height),
+                )
+                .expect("failed to write capture format.txt");
+                let path = dir.join("frames.raw");
+                let file = std::fs::File::create(&path).expect("failed to create frames.raw");
+                println!(
+                    "[capture] writing up to {target_frames} frames (stride={stride}, \
+                 format={fmt:?}, {}x{}) to {path:?}",
+                    size.width, size.height
+                );
+                CaptureState {
+                    file,
+                    path,
+                    texture,
+                    width: size.width,
+                    height: size.height,
+                    stride,
+                    target_frames,
+                    captured: 0,
+                }
+            });
         let (sim, ice_material, water_material, boiling_material, steam_material) = make_sim();
         let enthalpy = initial_enthalpy(sim.particles().len());
         let real_gravity = sim.config().gravity;
@@ -738,6 +892,7 @@ impl State {
             boiling_material,
             steam_material,
             water_jmax_prev_idx: None,
+            capture,
         }
     }
 
@@ -1747,6 +1902,54 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+
+        // Real, disclosed capture aid -- see `CaptureState`'s own doc.
+        // Renders a SECOND time into the dedicated offscreen capture
+        // texture (not the swapchain view above) so the readback below has
+        // a real `COPY_SRC`-capable source. Self-terminates once
+        // `target_frames` is reached -- a real, non-interactive, fully
+        // automatic capture run.
+        if let Some(cap) = &mut self.capture
+            && cap.captured < cap.target_frames
+            && self.frame.is_multiple_of(cap.stride)
+        {
+            let capture_view = cap
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            self.renderer.render(
+                &self.device,
+                &self.queue,
+                self.sim.particles(),
+                &capture_view,
+                true,
+            );
+            let raw = read_full_frame_rgba(
+                &self.device,
+                &self.queue,
+                &cap.texture,
+                cap.width,
+                cap.height,
+            );
+            use std::io::Write;
+            cap.file
+                .write_all(&raw)
+                .unwrap_or_else(|e| panic!("failed to append frame to {:?}: {e}", cap.path));
+            cap.captured += 1;
+            if cap.captured.is_multiple_of(30) || cap.captured == cap.target_frames {
+                println!(
+                    "[capture] {}/{} frames written",
+                    cap.captured, cap.target_frames
+                );
+            }
+            if cap.captured >= cap.target_frames {
+                cap.file.flush().ok();
+                println!(
+                    "[capture] done -- {} frames in {:?}",
+                    cap.captured, cap.path
+                );
+                std::process::exit(0);
+            }
+        }
 
         // --- egui panel ---
         let raw_input = self.egui_state.take_egui_input(window);
