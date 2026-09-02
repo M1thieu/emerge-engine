@@ -219,9 +219,12 @@ fn main() {
                 ICE_QUALITY_FACTOR_Q,
                 ICE_Q_REFERENCE_FREQUENCY_HZ,
             );
+            // Real, disclosed fix (2026-08-29): raw SI Pa.s assigned
+            // directly, no SimConfig conversion -- see
+            // `q_factor_elastic_viscosity_pa_s`'s own doc for why the old
+            // `visc_from_si_physical` wrapper here was ~917x too weak.
             RankineMaterial {
-                elastic_viscosity: config
-                    .visc_from_si_physical(elastic_viscosity_pa_s, ICE_RHO_KG_M3),
+                elastic_viscosity: elastic_viscosity_pa_s,
                 ..RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20)
             }
         },
