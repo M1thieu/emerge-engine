@@ -3,8 +3,8 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, corotated_elastic_stress, elastic_wave_dt, lame_from_young,
-    self_consistent_plastic_multiplier,
+    LOG_CLAMP, MIN_J, corotated_elastic_stress, deformation_increment_exp, elastic_wave_dt,
+    lame_from_young, self_consistent_plastic_multiplier,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -970,7 +970,11 @@ impl MaterialModel for DruckerPragerMaterial {
             *ctx.hardening_scale = 1.0 + strain_rate_norm;
         }
 
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Exact constant-C integration prevents forward Euler's O(dt^2)
+        // volume ratchet from being misclassified as permanent granular
+        // compaction by the Hencky return mapping and its history variables.
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         let (u, sigma, vt) = svd2(f_trial);
         let new_sigma = if let Some((proj_sigma, dq)) = self.project(ProjectInputs {

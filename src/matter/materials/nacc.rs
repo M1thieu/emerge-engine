@@ -1,7 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::svd::svd2;
-use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
+use crate::materials::utils::{MIN_J, deformation_increment_exp, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -377,7 +377,11 @@ impl MaterialModel for NaccMaterial {
         // strain from the velocity gradient BEFORE plastic projection, or F never
         // advances and the material exerts a frozen, non-evolving stress -- e.g.
         // a falling body collapsing to zero height under gravity.
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Exact constant-C integration prevents forward Euler's O(dt^2)
+        // volume drift from being mistaken for permanent Cam-Clay cap
+        // plasticity and accumulated preconsolidation history.
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let alpha = *ctx.log_volume_strain;
         let (new_f, new_alpha) =
             self.project(f_trial, alpha, self.cohesion_bonus_pa(ctx.scalar_field));
@@ -460,6 +464,25 @@ impl MaterialModel for NaccMaterial {
 mod marginal_yield_tests {
     use super::*;
 
+    fn rate_particle(f: Mat2, alpha: f32) -> Particles {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.log_volume_strain = alpha;
+        Particles::from(vec![p])
+    }
+
+    fn run_rate_step(mat: &NaccMaterial, particles: &mut Particles, rate: Mat2, dt: f32) {
+        let mut ctx = particles.update_ctx(0);
+        *ctx.velocity_gradient = rate;
+        mat.update_particle(&mut ctx, dt);
+    }
+
+    fn matrix_error(a: Mat2, b: Mat2) -> f32 {
+        (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
+    }
+
     /// Real pressure computed from a deformation gradient the SAME way
     /// `project`'s own trial-pressure formula does (`p = -kappa/2*(J-1/J)*J`),
     /// used to verify the projected state lands where the material's own
@@ -499,6 +522,67 @@ mod marginal_yield_tests {
             (p_after - p0).abs() < 1.0e-2,
             "compression-cap projection should land EXACTLY at p=p0={p0:.6}, got {p_after:.6}"
         );
+    }
+
+    #[test]
+    fn rigid_rotation_preserves_volume_and_cam_clay_history() {
+        let mat = NaccMaterial::soft_clay(5.0e4, 0.3);
+        let mut particles = rate_particle(Mat2::IDENTITY, 0.0);
+        let omega = 1.7;
+        let dt = 0.2;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+
+        run_rate_step(&mat, &mut particles, spin, dt);
+
+        let expected = Mat2::from_angle(omega * dt);
+        assert!(matrix_error(particles.deformation_gradient[0], expected) < 3.0e-6);
+        assert!((particles.deformation_gradient[0].determinant() - 1.0).abs() < 2.0e-6);
+        assert!(particles.log_volume_strain[0].abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn opposite_subcap_rates_are_reversible_without_alpha_ratchet() {
+        let mat = NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 2.0);
+        let alpha = -0.1;
+        let baseline = Mat2::from_diagonal(Vec2::splat(0.95));
+        let mut particles = rate_particle(baseline, alpha);
+        let rate = Mat2::from_diagonal(Vec2::new(0.001, -0.001));
+
+        run_rate_step(&mat, &mut particles, rate, 1.0);
+        assert!((particles.log_volume_strain[0] - alpha).abs() < 1.0e-6);
+        run_rate_step(&mat, &mut particles, -rate, 1.0);
+
+        assert!(matrix_error(particles.deformation_gradient[0], baseline) < 3.0e-6);
+        assert!((particles.log_volume_strain[0] - alpha).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn exponential_trial_respects_both_sides_of_compression_cap() {
+        let mat = NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 2.0);
+        let alpha = -0.1;
+        let p0 = mat.kappa * (1.0e-5 + (mat.hardening_factor * -alpha).sinh());
+        let j_cap = (1.0 - 2.0 * p0 / mat.kappa).sqrt();
+        let dt = 0.1;
+
+        let j_inside = j_cap + 1.0e-4;
+        let sigma_inside = j_inside.sqrt();
+        let mut inside = rate_particle(Mat2::IDENTITY, alpha);
+        let inside_rate = Mat2::from_diagonal(Vec2::splat(sigma_inside.ln() / dt));
+        run_rate_step(&mat, &mut inside, inside_rate, dt);
+        assert!((inside.deformation_gradient[0].determinant() - j_inside).abs() < 3.0e-6);
+        assert!((inside.log_volume_strain[0] - alpha).abs() < 1.0e-6);
+
+        let j_outside = j_cap - 1.0e-4;
+        let sigma_outside = j_outside.sqrt();
+        let mut outside = rate_particle(Mat2::IDENTITY, alpha);
+        let outside_rate = Mat2::from_diagonal(Vec2::splat(sigma_outside.ln() / dt));
+        run_rate_step(&mat, &mut outside, outside_rate, dt);
+        assert!(
+            (outside.deformation_gradient[0].determinant() - j_cap).abs() < 3.0e-6,
+            "trial beyond the cap must project to its analytical J: expected={j_cap}, got={}",
+            outside.deformation_gradient[0].determinant()
+        );
+        assert!(outside.log_volume_strain[0] < alpha);
     }
 
     /// A trial state comfortably INSIDE the yield ellipse (real confining

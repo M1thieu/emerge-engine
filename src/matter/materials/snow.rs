@@ -2,7 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, SnowProps, scale_lame};
 use crate::materials::svd::svd2;
-use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
+use crate::materials::utils::{MIN_J, deformation_increment_exp, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -139,7 +139,12 @@ impl MaterialModel for StomakhinMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Integrate Fdot = C F with the exact constant-C increment. Forward
+        // Euler introduces an O(dt^2) determinant ratchet under alternating
+        // rates/rotation; for snow that numerical volume error can be mistaken
+        // for real SVD-clamp plasticity and permanently alter Jp/hardening.
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         let (u, sigma, vt) = svd2(f_trial);
 
@@ -210,6 +215,21 @@ impl MaterialModel for StomakhinMaterial {
 #[cfg(test)]
 mod analytical_validation_tests {
     use super::*;
+
+    fn run_rate_step(
+        mat: &StomakhinMaterial,
+        particles: &mut Particles,
+        velocity_gradient: Mat2,
+        dt: f32,
+    ) {
+        let mut ctx = particles.update_ctx(0);
+        *ctx.velocity_gradient = velocity_gradient;
+        mat.update_particle(&mut ctx, dt);
+    }
+
+    fn matrix_error(a: Mat2, b: Mat2) -> f32 {
+        (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
+    }
 
     fn particle_with(f: Mat2, hardening_scale: f32, plastic_volume_ratio: f32) -> Particles {
         let mut p = Particle::zeroed();
@@ -309,6 +329,114 @@ mod analytical_validation_tests {
              {expected_jp}, got {}",
             particles.plastic_volume_ratio[0]
         );
+    }
+
+    /// A rigid spin has zero strain and must neither trigger the SVD clamp nor
+    /// fabricate permanent compaction/hardening. This exercises the complete
+    /// snow update, rather than only the shared matrix-exponential helper.
+    #[test]
+    fn rigid_rotation_preserves_volume_and_does_not_harden_snow() {
+        let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
+        let mut particles = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let omega = 3.7;
+        let dt = 0.1;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+
+        run_rate_step(&mat, &mut particles, spin, dt);
+
+        let expected = Mat2::from_angle(omega * dt);
+        assert!(
+            matrix_error(particles.deformation_gradient[0], expected) < 2.0e-6,
+            "snow rigid spin must remain a rotation: expected={expected:?}, got={:?}",
+            particles.deformation_gradient[0]
+        );
+        assert!((particles.deformation_gradient[0].determinant() - 1.0).abs() < 1.0e-6);
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+    }
+
+    /// Equal and opposite sub-clamp rates are exactly reversible under the
+    /// exponential kinematic update. Since neither trial state reaches a snow
+    /// plastic bound, Jp and h must remain unchanged rather than accumulate.
+    #[test]
+    fn opposite_subclamp_rates_are_reversible_without_false_plasticity() {
+        let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
+        let mut particles = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let rate = Mat2::from_diagonal(Vec2::new(-0.1, 0.05));
+        let dt = 0.1;
+
+        run_rate_step(&mat, &mut particles, rate, dt);
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+        run_rate_step(&mat, &mut particles, -rate, dt);
+
+        assert!(
+            matrix_error(particles.deformation_gradient[0], Mat2::IDENTITY) < 2.0e-6,
+            "sub-clamp rate reversal must recover identity, got {:?}",
+            particles.deformation_gradient[0]
+        );
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+    }
+
+    /// Constructs trial stretches through nonzero C, on either side of the
+    /// compression limit. This pins the important migration invariant: using
+    /// exp(dt*C) must not move a marginal elastic case onto the plastic branch,
+    /// while a genuinely over-limit trial must still clamp and update Jp.
+    #[test]
+    fn exponential_trial_respects_both_sides_of_compression_limit() {
+        let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
+        let dt = 0.1;
+        let floor = 1.0 - mat.compression_limit;
+
+        let inside_sigma = floor + 1.0e-4;
+        let mut inside = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let inside_rate = Mat2::from_diagonal(Vec2::new(inside_sigma.ln() / dt, 0.0));
+        run_rate_step(&mat, &mut inside, inside_rate, dt);
+        assert!((inside.deformation_gradient[0].x_axis.x - inside_sigma).abs() < 2.0e-6);
+        assert_eq!(inside.plastic_volume_ratio[0], 1.0);
+        assert_eq!(inside.hardening_scale[0], 1.0);
+
+        let outside_sigma = floor - 1.0e-4;
+        let mut outside = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let outside_rate = Mat2::from_diagonal(Vec2::new(outside_sigma.ln() / dt, 0.0));
+        run_rate_step(&mat, &mut outside, outside_rate, dt);
+        assert!((outside.deformation_gradient[0].x_axis.x - floor).abs() < 2.0e-6);
+        let expected_jp = outside_sigma / floor;
+        assert!((outside.plastic_volume_ratio[0] - expected_jp).abs() < 2.0e-6);
+        let expected_h = (mat.hardening_exponent * (1.0 - expected_jp)).exp();
+        assert!((outside.hardening_scale[0] - expected_h).abs() < 2.0e-6);
+    }
+
+    /// Plastic compaction is permanent, whereas an elastic unload must not
+    /// further alter Jp. A second compression only adds hardening once the
+    /// clamped elastic stretch is reached again.
+    #[test]
+    fn compression_unload_recompression_accumulates_only_when_clamp_binds() {
+        let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
+        let mut particles = particle_with(Mat2::IDENTITY, 1.0, 1.0);
+        let dt = 0.1;
+        let compression = Mat2::from_diagonal(Vec2::new(-0.5, 0.0));
+
+        run_rate_step(&mat, &mut particles, compression, dt);
+        let jp_after_first = particles.plastic_volume_ratio[0];
+        let h_after_first = particles.hardening_scale[0];
+        assert!(jp_after_first < 1.0 && h_after_first > 1.0);
+
+        // Small elastic unload: the singular value moves away from the lower
+        // clamp but remains below the stretch bound.
+        let unload = Mat2::from_diagonal(Vec2::new(0.1, 0.0));
+        run_rate_step(&mat, &mut particles, unload, dt);
+        assert!((particles.plastic_volume_ratio[0] - jp_after_first).abs() < 2.0e-6);
+        assert!((particles.hardening_scale[0] - h_after_first).abs() < 2.0e-6);
+
+        run_rate_step(&mat, &mut particles, compression, dt);
+        let jp_after_second = particles.plastic_volume_ratio[0];
+        let h_after_second = particles.hardening_scale[0];
+        assert!(jp_after_second < jp_after_first);
+        assert!(h_after_second > h_after_first);
+        let expected_h = (mat.hardening_exponent * (1.0 - jp_after_second)).exp();
+        assert!((h_after_second - expected_h).abs() < 2.0e-6);
     }
 
     /// **Cohesion must match its own documented formula exactly** -- pins the

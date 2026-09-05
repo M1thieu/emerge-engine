@@ -378,6 +378,33 @@ fn det2(m: mat2x2<f32>) -> f32 {
     return m[0][0] * m[1][1] - m[0][1] * m[1][0];
 }
 
+// Exact 2D exp(A), matching CPU `deformation_increment_exp`. Keep this
+// duplicate bit-identical to particles_update.wgsl: these are two separate
+// production G2P/update paths, not shared textual includes.
+fn deformation_increment_exp(a: mat2x2<f32>) -> mat2x2<f32> {
+    let identity = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
+    let half_trace = 0.5 * (a[0][0] + a[1][1]);
+    let half_difference = 0.5 * (a[0][0] - a[1][1]);
+    let delta_sq = half_difference * half_difference + a[1][0] * a[0][1];
+    var even_factor = 0.0;
+    var odd_factor = 0.0;
+    if abs(delta_sq) < 1e-8 {
+        let x2 = delta_sq * delta_sq;
+        even_factor = 1.0 + 0.5 * delta_sq + x2 / 24.0;
+        odd_factor = 1.0 + delta_sq / 6.0 + x2 / 120.0;
+    } else if delta_sq > 0.0 {
+        let delta = sqrt(delta_sq);
+        even_factor = cosh(delta);
+        odd_factor = sinh(delta) / delta;
+    } else {
+        let omega = sqrt(-delta_sq);
+        even_factor = cos(omega);
+        odd_factor = sin(omega) / omega;
+    }
+    let traceless = a - half_trace * identity;
+    return exp(half_trace) * (even_factor * identity + odd_factor * traceless);
+}
+
 // Workgroup size MUST match WG_PARTICLES (= 64) in src/gpu/mod.rs, same as g2p/particles_update.
 @compute @workgroup_size(64, 1, 1)
 fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -537,7 +564,17 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !(abs(p.friction_hardening) < 3.4e+38)  { p.friction_hardening = 0.0; }
     if !(abs(p.log_volume_strain)  < 3.4e+38)  { p.log_volume_strain  = 0.0; }
 
-    var new_F = (identity + dt * p.velocity_gradient) * p.deformation_gradient;
+    // NeoHookean (2)/Corotated (3)/Snow (4)/Drucker-Prager (5)/Von Mises (6)/Rankine (7)/
+    // Viscoelastic (9)/GranularFluid (11) are independently verified with the exact kinematic
+    // increment. Plastic models were migrated one family at a time with
+    // marginal-yield and CPU/GPU checks; see `deformation_increment_exp`.
+    // Remaining tensor-F model SandMuI (8) stays on the original path until
+    // their own plastic projections receive the same audit.
+    var f_increment = identity + dt * p.velocity_gradient;
+    if mat.model == 2u || mat.model == 3u || mat.model == 4u || mat.model == 5u || mat.model == 6u || mat.model == 7u || mat.model == 9u || mat.model == 11u {
+        f_increment = deformation_increment_exp(dt * p.velocity_gradient);
+    }
+    var new_F = f_increment * p.deformation_gradient;
 
     if mat.model == 4u && mat.compression_limit > 0.0 {
         let sr = snow_plasticity(new_F, p.plastic_volume_ratio, mat);

@@ -28,6 +28,52 @@ pub(crate) const LOG_CLAMP: f32 = 1e-10;
 /// update and reports an inadmissible state instead of clamping it.
 pub(crate) const MIN_J: f32 = 1e-6;
 
+/// Exact 2D deformation-gradient increment for a velocity gradient held
+/// constant over one substep.
+///
+/// Continuum kinematics gives `dF/dt = L F`.  The exact update for constant
+/// `L` is therefore `F(t+dt) = exp(dt L) F(t)`.  The commonly used forward-
+/// Euler approximation `(I + dt L) F` has a systematic ratchet: two equal
+/// and opposite diagonal rates multiply to `(1+a)(1-a)=1-a^2`, so a
+/// perfectly reversible oscillation loses volume every cycle.  That error is
+/// especially visible in a tension-only material because its slack direction
+/// has no constitutive restoring force.
+///
+/// This uses the closed-form exponential of a real 2x2 matrix obtained from
+/// Cayley-Hamilton.  The trigonometric branch covers complex-conjugate
+/// eigenvalues (including rigid rotation); the hyperbolic branch covers real
+/// eigenvalues.  Series expansions remove the removable singularity at zero.
+#[inline]
+pub(crate) fn deformation_increment_exp(dt_velocity_gradient: Mat2) -> Mat2 {
+    // glam is column-major: [[a,b],[c,d]] is stored as columns (a,c),(b,d).
+    let a = dt_velocity_gradient.x_axis.x;
+    let b = dt_velocity_gradient.y_axis.x;
+    let c = dt_velocity_gradient.x_axis.y;
+    let d = dt_velocity_gradient.y_axis.y;
+    let half_trace = 0.5 * (a + d);
+    let half_difference = 0.5 * (a - d);
+    let delta_sq = half_difference * half_difference + b * c;
+
+    let (even, odd) = if delta_sq.abs() < 1.0e-8 {
+        // cosh(sqrt(x)) and sinh(sqrt(x))/sqrt(x), continued analytically
+        // through x=0.  Retaining x^2 is ample at this threshold in f32.
+        let x2 = delta_sq * delta_sq;
+        (
+            1.0 + 0.5 * delta_sq + x2 / 24.0,
+            1.0 + delta_sq / 6.0 + x2 / 120.0,
+        )
+    } else if delta_sq > 0.0 {
+        let delta = delta_sq.sqrt();
+        (delta.cosh(), delta.sinh() / delta)
+    } else {
+        let omega = (-delta_sq).sqrt();
+        (omega.cos(), omega.sin() / omega)
+    };
+
+    let traceless = dt_velocity_gradient - Mat2::from_diagonal(Vec2::splat(half_trace));
+    half_trace.exp() * (Mat2::IDENTITY * even + traceless * odd)
+}
+
 /// Floor on Rankine's exponentially-softened effective tensile strength, as a
 /// fraction of the virgin `tensile_strength`. Without this floor, `t_eff` decays
 /// toward zero as damage grows, so ANY sustained cyclic stress eventually exceeds
@@ -525,5 +571,52 @@ mod rankine_damage_estimate_tests {
         let f_before = f;
         let _ = rankine_damage_estimate(f, 1000.0, 1000.0, 10.0, 1.0, 0.0);
         assert_eq!(f, f_before);
+    }
+}
+
+#[cfg(test)]
+mod deformation_increment_tests {
+    use super::*;
+
+    fn matrix_error(a: Mat2, b: Mat2) -> f32 {
+        (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
+    }
+
+    #[test]
+    fn opposite_rates_are_exactly_reversible_without_volume_ratchet() {
+        let a = Mat2::from_diagonal(Vec2::new(0.02, -0.01));
+        let forward = deformation_increment_exp(a);
+        let backward = deformation_increment_exp(-a);
+        let round_trip = backward * forward;
+        assert!(
+            matrix_error(round_trip, Mat2::IDENTITY) < 1.0e-6,
+            "exp(-A)exp(A) must be identity: {round_trip:?}"
+        );
+    }
+
+    #[test]
+    fn rigid_rotation_preserves_volume_and_matches_angle() {
+        let angle = 0.37;
+        let spin = Mat2::from_cols(Vec2::new(0.0, angle), Vec2::new(-angle, 0.0));
+        let increment = deformation_increment_exp(spin);
+        let expected = Mat2::from_angle(angle);
+        assert!(
+            matrix_error(increment, expected) < 1.0e-6,
+            "matrix exponential of planar spin must be the matching rotation: \
+             expected={expected:?} got={increment:?}"
+        );
+        assert!((increment.determinant() - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn determinant_obeys_exact_continuity_identity() {
+        let a = Mat2::from_cols(Vec2::new(0.11, -0.07), Vec2::new(0.13, -0.03));
+        let increment = deformation_increment_exp(a);
+        let expected_det = (a.x_axis.x + a.y_axis.y).exp();
+        assert!(
+            (increment.determinant() - expected_det).abs() < 2.0e-6,
+            "det(exp(A)) must equal exp(trace(A)): expected={expected_det} got={}",
+            increment.determinant()
+        );
     }
 }

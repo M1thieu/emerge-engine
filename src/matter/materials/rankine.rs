@@ -3,9 +3,9 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{BrittleProps, FromSI, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, RANKINE_MIN_RESIDUAL_TENSILE_FRACTION, corotated_elastic_stress, elastic_wave_dt,
-    hencky_strains, lame_from_young, rankine_damage_saturation_point, reconstruct_f,
-    stress_to_hencky,
+    MIN_J, RANKINE_MIN_RESIDUAL_TENSILE_FRACTION, corotated_elastic_stress,
+    deformation_increment_exp, elastic_wave_dt, hencky_strains, lame_from_young,
+    rankine_damage_saturation_point, reconstruct_f, stress_to_hencky,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
@@ -417,7 +417,8 @@ impl MaterialModel for RankineMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let (u, sigma, vt) = svd2(f_trial);
 
         let eps = hencky_strains(sigma);
@@ -528,6 +529,27 @@ mod marginal_yield_tests {
         let f = particles.deformation_gradient[0];
         (
             Vec2::new(f.x_axis.x, f.y_axis.y),
+            particles.friction_hardening[0],
+        )
+    }
+
+    fn run_rate_step(
+        mat: &RankineMaterial,
+        f: Mat2,
+        velocity_gradient: Mat2,
+        dt: f32,
+        damage: f32,
+    ) -> (Mat2, f32) {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.velocity_gradient = velocity_gradient;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.friction_hardening = damage;
+        let mut particles = Particles::from(vec![p]);
+        mat.update_particle(&mut particles.update_ctx(0), dt);
+        (
+            particles.deformation_gradient[0],
             particles.friction_hardening[0],
         )
     }
@@ -677,6 +699,70 @@ mod marginal_yield_tests {
             damage_after > damage,
             "damage must keep accumulating on repeated yielding"
         );
+    }
+
+    #[test]
+    fn exponential_trial_preserves_rigid_rotation_without_false_damage() {
+        let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
+        let dt = 0.25;
+        let omega = 0.8;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+        let (f_after, damage_after) = run_rate_step(&mat, Mat2::IDENTITY, spin, dt, 0.0);
+        let expected = Mat2::from_angle(omega * dt);
+        let error = (f_after.x_axis - expected.x_axis)
+            .abs()
+            .max_element()
+            .max((f_after.y_axis - expected.y_axis).abs().max_element());
+        assert!(
+            error < 1.0e-6,
+            "rigid spin must integrate to a rotation: {f_after:?}"
+        );
+        assert!((f_after.determinant() - 1.0).abs() < 1.0e-6);
+        assert_eq!(
+            damage_after, 0.0,
+            "rigid rotation must not create Rankine damage"
+        );
+    }
+
+    #[test]
+    fn opposite_subthreshold_rates_are_reversible_without_damage() {
+        let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
+        let eps_x = eps_x_for_target_tau_x(&mat, 0.5 * mat.tensile_strength);
+        let rate = Mat2::from_diagonal(Vec2::new(eps_x, 0.0));
+        let (f_loaded, damage_loaded) = run_rate_step(&mat, Mat2::IDENTITY, rate, 1.0, 0.0);
+        assert_eq!(damage_loaded, 0.0);
+        let (f_unloaded, damage_unloaded) =
+            run_rate_step(&mat, f_loaded, -rate, 1.0, damage_loaded);
+        let error = (f_unloaded.x_axis - Mat2::IDENTITY.x_axis)
+            .abs()
+            .max_element()
+            .max(
+                (f_unloaded.y_axis - Mat2::IDENTITY.y_axis)
+                    .abs()
+                    .max_element(),
+            );
+        assert!(
+            error < 1.0e-6,
+            "opposite rates must restore F exactly: {f_unloaded:?}"
+        );
+        assert_eq!(damage_unloaded, 0.0);
+    }
+
+    #[test]
+    fn nonzero_rate_trial_projects_to_rankine_surface_and_accumulates_damage() {
+        let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
+        let eps_x = eps_x_for_target_tau_x(&mat, 1.5 * mat.tensile_strength);
+        let rate = Mat2::from_diagonal(Vec2::new(eps_x, 0.0));
+        let (f_after, damage_after) = run_rate_step(&mat, Mat2::IDENTITY, rate, 1.0, 0.0);
+        let (_, sigma_after, _) = svd2(f_after);
+        let eps_after = hencky_strains(sigma_after);
+        let a = 2.0 * mat.mu + mat.lambda;
+        let tau_x_after = a * eps_after.x + mat.lambda * eps_after.y;
+        assert!(
+            (tau_x_after - mat.tensile_strength).abs() < 1.0e-3,
+            "rate-generated trial state must return to the tensile surface: {tau_x_after}"
+        );
+        assert!(damage_after > 0.0);
     }
 }
 

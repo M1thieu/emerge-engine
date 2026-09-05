@@ -3,8 +3,8 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{DuctileProps, FromSI, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, corotated_elastic_stress, elastic_wave_dt, hencky_strains, lame_from_young,
-    reconstruct_f,
+    LOG_CLAMP, MIN_J, corotated_elastic_stress, deformation_increment_exp, elastic_wave_dt,
+    hencky_strains, lame_from_young, reconstruct_f,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
@@ -136,7 +136,16 @@ impl MaterialModel for VonMisesMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // Controlled A/B experiment (external review, 2026-09-03): swapped
+        // from forward-Euler `(I+dt*C)*F` to the exact matrix exponential
+        // `exp(dt*C)*F` (see `deformation_increment_exp`'s own doc for the
+        // real O(dt^2) volumetric-ratchet mechanism this removes). Nothing
+        // else in this function changed -- the plastic return-mapping below
+        // still operates on whatever F_trial it's handed, so this isolates
+        // the kinematic integration as the ONLY variable, matching the
+        // basic_vonmises.rs live-drift investigation this is testing against.
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
         let (u, sigma, vt) = svd2(f_trial);
 
         let eps = hencky_strains(sigma);
@@ -253,6 +262,34 @@ mod marginal_yield_tests {
             Vec2::new(f.x_axis.x, f.y_axis.y),
             particles.friction_hardening[0],
         )
+    }
+
+    fn run_rate_step(
+        mat: &VonMisesMaterial,
+        f: Mat2,
+        velocity_gradient: Mat2,
+        dt: f32,
+        kappa: f32,
+    ) -> (Mat2, f32) {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.velocity_gradient = velocity_gradient;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.friction_hardening = kappa;
+        let mut particles = Particles::from(vec![p]);
+        mat.update_particle(&mut particles.update_ctx(0), dt);
+        (
+            particles.deformation_gradient[0],
+            particles.friction_hardening[0],
+        )
+    }
+
+    fn elastic_deviatoric_stress(mat: &VonMisesMaterial, f: Mat2) -> f32 {
+        let (_, sigma, _) = svd2(f);
+        let eps = hencky_strains(sigma);
+        let dev = eps - Vec2::splat((eps.x + eps.y) * 0.5);
+        2.0 * mat.mu * dev.length()
     }
 
     /// Maps a TARGET `dev_norm` (the code's own L2-norm convention,
@@ -400,6 +437,100 @@ mod marginal_yield_tests {
              yield surface ({expected_post_hardening_limit:.3}), not the \
              pre-hardening one (100.0, the real bug this guards against): \
              got {measured_limit:.3}"
+        );
+    }
+
+    #[test]
+    fn exponential_trial_preserves_rigid_rotation_without_false_yield() {
+        let mat = VonMisesMaterial::new(2000.0, 3000.0, 100.0);
+        let dt = 0.25;
+        let omega = 0.8;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+        let (f_after, kappa_after) = run_rate_step(&mat, Mat2::IDENTITY, spin, dt, 0.0);
+        let expected = Mat2::from_angle(omega * dt);
+
+        let error = (f_after.x_axis - expected.x_axis)
+            .abs()
+            .max_element()
+            .max((f_after.y_axis - expected.y_axis).abs().max_element());
+        assert!(
+            error < 1.0e-6,
+            "rigid spin must integrate to a rotation: {f_after:?}"
+        );
+        assert!((f_after.determinant() - 1.0).abs() < 1.0e-6);
+        assert_eq!(kappa_after, 0.0, "rigid rotation must not trigger J2 flow");
+    }
+
+    #[test]
+    fn opposite_subyield_rates_are_reversible_and_do_not_harden() {
+        let mat = VonMisesMaterial::new(2000.0, 3000.0, 100.0);
+        let dt = 0.5;
+        let rate = Mat2::from_diagonal(Vec2::new(0.01, -0.01));
+        let (f_loaded, kappa_loaded) = run_rate_step(&mat, Mat2::IDENTITY, rate, dt, 0.0);
+        assert!(elastic_deviatoric_stress(&mat, f_loaded) < mat.yield_stress);
+        assert_eq!(kappa_loaded, 0.0);
+
+        let (f_unloaded, kappa_unloaded) = run_rate_step(&mat, f_loaded, -rate, dt, kappa_loaded);
+        let error = (f_unloaded.x_axis - Mat2::IDENTITY.x_axis)
+            .abs()
+            .max_element()
+            .max(
+                (f_unloaded.y_axis - Mat2::IDENTITY.y_axis)
+                    .abs()
+                    .max_element(),
+            );
+        assert!(
+            error < 1.0e-6,
+            "opposite elastic rates must return F to identity: {f_unloaded:?}"
+        );
+        assert_eq!(kappa_unloaded, 0.0);
+    }
+
+    #[test]
+    fn nonzero_rate_hardening_projection_lands_on_updated_surface_and_preserves_volume() {
+        let mat = VonMisesMaterial::with_hardening(2000.0, 3000.0, 100.0, 500.0);
+        let target_dev_norm = 150.0 / (2.0 * mat.mu);
+        let d = per_component_d_for_target_dev_norm(target_dev_norm);
+        let trace = 0.2;
+        let log_increment = Mat2::from_diagonal(Vec2::new(trace * 0.5 + d, trace * 0.5 - d));
+        let trial_det = trace.exp();
+
+        let (f_after, kappa_after) = run_rate_step(&mat, Mat2::IDENTITY, log_increment, 1.0, 0.0);
+        let measured_limit = elastic_deviatoric_stress(&mat, f_after);
+        let expected_limit = mat.yield_stress + mat.hardening_modulus * kappa_after;
+        assert!((measured_limit - expected_limit).abs() < 1.0e-2);
+        assert!(
+            (f_after.determinant() - trial_det).abs() < 1.0e-5,
+            "isochoric J2 return must preserve the exponential trial volume"
+        );
+    }
+
+    #[test]
+    fn yield_unload_reload_keeps_kappa_monotone_and_elastic_during_unload() {
+        let mat = VonMisesMaterial::with_hardening(2000.0, 3000.0, 100.0, 500.0);
+        let load = Mat2::from_diagonal(Vec2::new(0.04, -0.04));
+        let (f_yielded, kappa_yielded) = run_rate_step(&mat, Mat2::IDENTITY, load, 1.0, 0.0);
+        assert!(kappa_yielded > 0.0);
+
+        let unload = Mat2::from_diagonal(Vec2::new(-0.01, 0.01));
+        let (f_unloaded, kappa_unloaded) =
+            run_rate_step(&mat, f_yielded, unload, 1.0, kappa_yielded);
+        assert_eq!(
+            kappa_unloaded, kappa_yielded,
+            "an elastic unloading step must not accumulate plastic strain"
+        );
+        assert!(
+            elastic_deviatoric_stress(&mat, f_unloaded)
+                <= mat.yield_stress + mat.hardening_modulus * kappa_unloaded + 1.0e-3
+        );
+
+        let (f_reloaded, kappa_reloaded) =
+            run_rate_step(&mat, f_unloaded, load, 1.0, kappa_unloaded);
+        assert!(kappa_reloaded >= kappa_unloaded, "kappa must be monotone");
+        let updated_surface = mat.yield_stress + mat.hardening_modulus * kappa_reloaded;
+        assert!(
+            (elastic_deviatoric_stress(&mat, f_reloaded) - updated_surface).abs() < 1.0e-2,
+            "reloaded state must return to the updated hardening surface"
         );
     }
 }

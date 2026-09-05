@@ -550,3 +550,79 @@ mod kirchhoff_stress_vjp_tests {
         );
     }
 }
+
+/// Real regression guard for the 2026-09 kinematic-integrator rollout
+/// (`deformation_increment_exp` replacing forward Euler across every
+/// tensor-F material -- see that function's own doc for the O(dt^2)
+/// volumetric-ratchet mechanism it removes, first found+fixed on
+/// `NoCompressionMaterial`/`VonMisesMaterial`). Tests the actual real
+/// call site (`update_particle`), not just the isolated helper (already
+/// covered by its own 3 tests in `utils.rs`) -- proves this material is
+/// really wired to the exponential integrator, not still silently on Euler.
+#[cfg(test)]
+mod kinematic_integrator_tests {
+    use super::*;
+    use crate::Particle;
+    use glam::Vec2;
+
+    fn particle_with_f(f: Mat2) -> Particle {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.volume = 1.0;
+        p.density = 1.0;
+        p
+    }
+
+    /// The real, direct test of the O(dt^2) ratchet Euler had: apply a
+    /// velocity gradient for one substep, then its exact opposite for the
+    /// same substep -- a perfectly reversible round trip. Under the OLD
+    /// Euler integration this would NOT return exactly to the starting F
+    /// (that was the whole bug); under the exact exponential it must,
+    /// to floating-point precision.
+    #[test]
+    fn opposite_velocity_gradients_cancel_exactly_no_volumetric_ratchet() {
+        let mat = NeoHookeanMaterial::new(1000.0, 800.0);
+        let p = particle_with_f(Mat2::IDENTITY);
+        let mut particles = Particles::from(vec![p]);
+        let dt = 0.05;
+        let c = Mat2::from_cols(Vec2::new(0.3, -0.15), Vec2::new(0.1, -0.3));
+
+        *particles.update_ctx(0).velocity_gradient = c;
+        mat.update_particle(&mut particles.update_ctx(0), dt);
+        *particles.update_ctx(0).velocity_gradient = -c;
+        mat.update_particle(&mut particles.update_ctx(0), dt);
+
+        let f_after = particles.deformation_gradient[0];
+        let err = (f_after.x_axis - Mat2::IDENTITY.x_axis).length()
+            + (f_after.y_axis - Mat2::IDENTITY.y_axis).length();
+        assert!(
+            err < 1.0e-5,
+            "a reversible round trip must return exactly to the starting F, \
+             not lose/gain volume: f_after={f_after:?} err={err}"
+        );
+    }
+
+    /// A pure rigid rotation (antisymmetric velocity_gradient) must leave J
+    /// exactly at 1.0 -- Euler's own failure mode was a spurious
+    /// O(omega^2*dt^2) dilation under exactly this kind of loading.
+    #[test]
+    fn rigid_rotation_preserves_volume_exactly() {
+        let mat = NeoHookeanMaterial::new(1000.0, 800.0);
+        let p = particle_with_f(Mat2::IDENTITY);
+        let mut particles = Particles::from(vec![p]);
+        let spin = Mat2::from_cols(Vec2::new(0.0, 0.4), Vec2::new(-0.4, 0.0));
+
+        *particles.update_ctx(0).velocity_gradient = spin;
+        for _ in 0..50 {
+            mat.update_particle(&mut particles.update_ctx(0), 0.02);
+        }
+
+        let j = particles.deformation_gradient[0].determinant();
+        assert!(
+            (j - 1.0).abs() < 1.0e-4,
+            "sustained rigid rotation must not drift volume: J={j}"
+        );
+    }
+}

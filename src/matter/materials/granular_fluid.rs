@@ -1,7 +1,9 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::svd::svd2;
-use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young, polar_decomposition_2d};
+use crate::materials::utils::{
+    MIN_J, deformation_increment_exp, elastic_wave_dt, lame_from_young, polar_decomposition_2d,
+};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -333,7 +335,12 @@ impl MaterialModel for GranularFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let f_trial = (Mat2::IDENTITY + dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        // This increment advances the single F read by both the EOS volume
+        // response and the corotated/SVD branch. Exact constant-C integration
+        // prevents Euler volume drift from becoming false EOS pressure or
+        // permanent Jp/hardening.
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         if self.compression_limit > 0.0 || self.stretch_limit > 0.0 {
             let (u, sigma, vt) = svd2(f_trial);
@@ -435,5 +442,95 @@ impl MaterialModel for GranularFluidMaterial {
 
     fn needs_density_recompute(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod kinematic_projection_tests {
+    use super::*;
+
+    fn particle() -> Particles {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.plastic_volume_ratio = 1.0;
+        p.hardening_scale = 1.0;
+        Particles::from(vec![p])
+    }
+
+    fn run_rate_step(mat: &GranularFluidMaterial, particles: &mut Particles, rate: Mat2, dt: f32) {
+        let mut ctx = particles.update_ctx(0);
+        *ctx.velocity_gradient = rate;
+        mat.update_particle(&mut ctx, dt);
+    }
+
+    fn matrix_error(a: Mat2, b: Mat2) -> f32 {
+        (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
+    }
+
+    #[test]
+    fn rigid_rotation_preserves_eos_volume_and_plastic_history() {
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 1.0, 100.0, 10.0, 0.025);
+        let mut particles = particle();
+        let omega = 2.1;
+        let dt = 0.2;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+
+        run_rate_step(&mat, &mut particles, spin, dt);
+
+        let expected = Mat2::from_angle(omega * dt);
+        assert!(matrix_error(particles.deformation_gradient[0], expected) < 3.0e-6);
+        assert!((particles.deformation_gradient[0].determinant() - 1.0).abs() < 2.0e-6);
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+    }
+
+    #[test]
+    fn opposite_subclamp_rates_are_reversible_without_false_hardening() {
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 1.0, 100.0, 10.0, 0.025);
+        let mut particles = particle();
+        let rate = Mat2::from_diagonal(Vec2::new(-0.01, 0.005));
+        let dt = 0.1;
+
+        run_rate_step(&mat, &mut particles, rate, dt);
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+        run_rate_step(&mat, &mut particles, -rate, dt);
+
+        assert!(matrix_error(particles.deformation_gradient[0], Mat2::IDENTITY) < 3.0e-6);
+        assert_eq!(particles.plastic_volume_ratio[0], 1.0);
+        assert_eq!(particles.hardening_scale[0], 1.0);
+    }
+
+    #[test]
+    fn exponential_trial_respects_both_sides_of_compression_clamp() {
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 1.0, 100.0, 10.0, 0.025);
+        let floor = 1.0 - mat.compression_limit;
+        let dt = 0.1;
+
+        let inside_sigma = floor + 1.0e-4;
+        let mut inside = particle();
+        run_rate_step(
+            &mat,
+            &mut inside,
+            Mat2::from_diagonal(Vec2::new(inside_sigma.ln() / dt, 0.0)),
+            dt,
+        );
+        assert!((inside.deformation_gradient[0].x_axis.x - inside_sigma).abs() < 2.0e-6);
+        assert_eq!(inside.plastic_volume_ratio[0], 1.0);
+
+        let outside_sigma = floor - 1.0e-4;
+        let mut outside = particle();
+        run_rate_step(
+            &mat,
+            &mut outside,
+            Mat2::from_diagonal(Vec2::new(outside_sigma.ln() / dt, 0.0)),
+            dt,
+        );
+        assert!((outside.deformation_gradient[0].x_axis.x - floor).abs() < 2.0e-6);
+        let expected_jp = outside_sigma / floor;
+        assert!((outside.plastic_volume_ratio[0] - expected_jp).abs() < 2.0e-6);
+        assert!(outside.hardening_scale[0] > 1.0);
     }
 }

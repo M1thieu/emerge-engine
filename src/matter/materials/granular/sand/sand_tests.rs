@@ -111,6 +111,84 @@ mod marginal_yield_tests {
         )
     }
 
+    fn run_rate_step(
+        sand: &DruckerPragerMaterial,
+        particles: &mut Particles,
+        velocity_gradient: Mat2,
+        dt: f32,
+    ) {
+        let mut ctx = particles.update_ctx(0);
+        *ctx.velocity_gradient = velocity_gradient;
+        sand.update_particle(&mut ctx, dt);
+    }
+
+    fn rate_particle(f: Mat2, sand: &DruckerPragerMaterial) -> Particles {
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = f;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.friction_hardening = sand.friction_residual / sand.hardening_peak;
+        Particles::from(vec![p])
+    }
+
+    fn matrix_error(a: Mat2, b: Mat2) -> f32 {
+        (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
+    }
+
+    #[test]
+    fn rigid_rotation_preserves_volume_and_plastic_history() {
+        let sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        let mut particles = rate_particle(Mat2::IDENTITY, &sand);
+        let q_before = particles.friction_hardening[0];
+        let omega = 2.3;
+        let dt = 0.2;
+        let spin = Mat2::from_cols(Vec2::new(0.0, omega), Vec2::new(-omega, 0.0));
+
+        run_rate_step(&sand, &mut particles, spin, dt);
+
+        let expected = Mat2::from_angle(omega * dt);
+        assert!(matrix_error(particles.deformation_gradient[0], expected) < 3.0e-6);
+        assert!((particles.deformation_gradient[0].determinant() - 1.0).abs() < 2.0e-6);
+        assert!((particles.friction_hardening[0] - q_before).abs() < 1.0e-6);
+        assert!(particles.log_volume_strain[0].abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn opposite_subyield_rates_are_reversible_without_history_ratchet() {
+        let sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        // Confinement gives the DP cone a finite elastic shear domain. The
+        // small isochoric rate stays comfortably inside that domain.
+        let baseline = Mat2::from_diagonal(Vec2::splat(0.99));
+        let mut particles = rate_particle(baseline, &sand);
+        let q_before = particles.friction_hardening[0];
+        let rate = Mat2::from_diagonal(Vec2::new(0.001, -0.001));
+
+        run_rate_step(&sand, &mut particles, rate, 1.0);
+        assert!((particles.friction_hardening[0] - q_before).abs() < 1.0e-6);
+        assert!(particles.log_volume_strain[0].abs() < 1.0e-6);
+        run_rate_step(&sand, &mut particles, -rate, 1.0);
+
+        assert!(matrix_error(particles.deformation_gradient[0], baseline) < 3.0e-6);
+        assert!((particles.friction_hardening[0] - q_before).abs() < 1.0e-6);
+        assert!(particles.log_volume_strain[0].abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn nonzero_rate_crossing_yield_updates_q_and_preserves_positive_volume() {
+        let sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        let baseline = Mat2::from_diagonal(Vec2::splat(0.99));
+        let mut particles = rate_particle(baseline, &sand);
+        let q_before = particles.friction_hardening[0];
+        let rate = Mat2::from_diagonal(Vec2::new(0.2, -0.2));
+
+        run_rate_step(&sand, &mut particles, rate, 1.0);
+
+        assert!(particles.friction_hardening[0] > q_before);
+        assert!(particles.deformation_gradient[0].determinant() > 0.0);
+        assert!(particles.deformation_gradient[0].is_finite());
+        assert!(particles.log_volume_strain[0].is_finite());
+    }
+
     #[test]
     fn marginal_30deg_state_does_not_yield_for_35deg_friction() {
         let sand = DruckerPragerMaterial::new(2000.0, 3000.0);

@@ -1,7 +1,7 @@
 use glam::Mat2;
 
 use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::utils::{MIN_J, elastic_wave_dt, lame_from_young};
+use crate::materials::utils::{MIN_J, deformation_increment_exp, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
@@ -245,7 +245,12 @@ impl MaterialModel for NeoHookeanMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        let fp_new = Mat2::IDENTITY + dt * *ctx.velocity_gradient;
+        // Exact matrix exponential, not forward Euler -- see
+        // `deformation_increment_exp`'s own doc for the real O(dt^2)
+        // volumetric ratchet this removes (found+fixed 2026-09,
+        // NoCompression/VonMises, now rolled out here on the same basis:
+        // every tensor-F material shares the identical exposure).
+        let fp_new = deformation_increment_exp(dt * *ctx.velocity_gradient);
         *ctx.deformation_gradient = fp_new * *ctx.deformation_gradient;
         let j = ctx.deformation_gradient.determinant().max(MIN_J);
         let v = (ctx.initial_volume * j).max(1.0e-6);

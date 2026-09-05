@@ -41,6 +41,22 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// matter/src/simulation/plasticity.cpp DPMui.
 /// Canonical parameters: µ₁=tan(20.9°), µ₂=tan(32.8°), I₀=0.279, d=1mm, ρₛ=2500 kg/m³
 /// → Q = 0.279 / (0.001 · √2500) ≈ 5.58.
+///
+/// Tier-0 status (2026-09, real decision, not silently deprioritized): kept
+/// out of the actively-supported Tier-0 set for now. This is a real,
+/// distinct, valid closure (a genuine local µ(I) rheology, cheap, with its
+/// own GPU path) -- NOT superseded by `granular::sand`'s own NGF (nonlocal
+/// granular fluidity) extension, which is a different closure entirely
+/// (diffuses a fluidity field rather than solving this material's own
+/// quadratic for the plastic multiplier) that happens to cover a related
+/// but distinct real physical regime (size effects, shear bands, slow
+/// zones near flow/no-flow boundaries where a strictly local rheology is
+/// known to fail). The honest reason this stays deprioritized: zero real
+/// interactive example and the existing accuracy test
+/// (`mu_i_rheology_column_collapse_natural_arrest_check`) has no assert,
+/// pure printout -- under-validated, not incorrect. Revisit if a real use
+/// case needs the cheap local closure specifically (no extra grid-field
+/// coupling to wire up) rather than NGF's own real cost.
 #[derive(Debug, Clone, Copy)]
 pub struct MuIRheologyMaterial {
     pub lambda: f32,
