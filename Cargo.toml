@@ -149,6 +149,16 @@ path = "examples/cpu/basic_sand.rs"
 required-features = ["render"]
 
 [[example]]
+name = "basic_membrane"
+path = "examples/cpu/basic_membrane.rs"
+required-features = ["render"]
+
+[[example]]
+name = "basic_vonmises"
+path = "examples/cpu/basic_vonmises.rs"
+required-features = ["render"]
+
+[[example]]
 name = "basic_creature"
 path = "examples/cpu/basic_creature.rs"
 required-features = ["render"]
