@@ -107,7 +107,18 @@ impl State {
         let config = SimConfig {
             gravity: Vec2::new(0.0, -0.3),
             apic_blend: 0.1,
-            max_substeps_per_step: 20,
+            // Real fix (2026-09-05): `.material(&config)` now routes through
+            // the dt-independent SI conversion instead of the old
+            // dt^2-polluted one (`physical_props.rs`'s own migration note).
+            // `stress_from_si_physical` = `stress_from_si` / dt^2, so this
+            // scene's bulk moduli are now exactly `1/dt^2` = 400x larger in
+            // grid units than before -- CFL's required substep count scales
+            // with the elastic wave speed, i.e. sqrt(stiffness), so ~20x
+            // more substeps are needed for the same stability margin. Raised
+            // accordingly; not yet re-tuned for real-time framerate at this
+            // value -- see this file's own follow-up note if it reads as
+            // sluggish interactively.
+            max_substeps_per_step: 400,
             ..SimConfig::earth(GRID, 0.01, DT)
         };
 

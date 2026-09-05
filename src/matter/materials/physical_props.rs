@@ -366,23 +366,44 @@ pub(super) struct BinghamProps {
 }
 
 // ── Scaling helpers (pub(super) -- used by material impls) ─────────────────────
+//
+// Real fix (2026-09-05): this module's own doc calls itself "the entry point
+// for all material construction," but these three helpers were still routed
+// through the `dt^2`-polluted `lame_from_si_cfg`/`stress_from_si`/
+// `visc_from_si` family (see `lame_from_si_physical`'s own doc for the
+// measured 200x dt-dependence this causes) -- confirmed live in LP's own
+// `materials.rs` comment (`CREATURE_ACTIVE_STRESS_FRACTION_OF_MU`'s doc):
+// "scaled through `lame_from_si`) overpowered the actual elastic stiffness
+// by orders of magnitude and blew up the simulation ... within ~15 steps."
+// Every one of `Elastic`/`Elastoplastic`/`Viscoelastic`/`Fluid`/
+// `FluidGranular`'s real material families went through this bug via
+// `.material(&config)`, not just the raw `lame_from_si_cfg` call sites
+// found and migrated one scene at a time elsewhere. Fixed at the actual
+// entry point instead: all three now route through the dt-independent
+// `_physical` conversions, which MUST move together, never mixed with the
+// old family -- `stress_from_si_physical`/`visc_from_si_physical`'s own doc
+// name the exact bug (RankineMaterial::ice, this session) that mixing them
+// causes.
 
-/// Scale SI stress (Pa) to grid units: `p_grid = p_SI · dt² / (ρ · dx²)`.
+/// Scale SI stress (Pa) to grid units: `p_grid = p_SI / (ρ · dx²)`, the
+/// dt-independent conversion (see this module's own migration note above).
 #[inline]
 pub(super) fn scale_stress(pa: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.stress_from_si(pa, rho)
+    config.stress_from_si_physical(pa, rho)
 }
 
-/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI · ρ · dx² / dt³`.
+/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI / (ρ · dx²)`, the
+/// dt-independent conversion (see this module's own migration note above).
 #[inline]
 pub(super) fn scale_visc(eta: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.visc_from_si(eta, rho)
+    config.visc_from_si_physical(eta, rho)
 }
 
-/// Scale SI Young's modulus to grid Lamé parameters.
+/// Scale SI Young's modulus to grid Lamé parameters, the dt-independent
+/// conversion (see this module's own migration note above).
 #[inline]
 pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si_cfg(e_pa, nu, rho)
+    config.lame_from_si_physical_cfg(e_pa, nu, rho)
 }
 
 // ── Reference SI values used in unit tests below ─────────────────────────────
