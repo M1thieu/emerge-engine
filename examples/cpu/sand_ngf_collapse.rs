@@ -122,12 +122,23 @@ fn make_sim(mode: Mode) -> Simulation {
         max_substeps_per_step: 4000,
         ..SimConfig::earth(GRID, CELL_M, DT_S)
     };
+    // Real fix (2026-09-05): mass was left on `config.grid_density`'s bare
+    // default (1.0), disconnected from the real `BULK_DENSITY_KG_M3` (1600)
+    // the stiffness above is scaled by -- mass/stiffness must share the same
+    // real density or the elastic wave speed is wrong even with correct
+    // lambda/mu. Computed via `ParticleMass::particle_mass`'s own documented
+    // formula directly, since `DruckerPragerMaterial::new` (raw constructor,
+    // needed here for the `ngf_enabled` field the property-struct API
+    // doesn't expose) bypasses `SpawnRegion::mass_from`.
+    const SPACING: f32 = 0.5;
+    let mass_grid = (BULK_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let column = SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(8, 16),
         box_center: Vec2::new(GRID as f32 * 0.5, FLOOR_CELLS + 8.0),
         material_id: 0,
         precompute_initial_volumes: true,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     // Real fix (2026-09-05): this used to call `config.lame_from_si_cfg`,

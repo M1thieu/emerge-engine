@@ -24,12 +24,21 @@ fn make_sim(max_substeps_per_step: usize, use_physical: bool) -> Simulation {
         max_substeps_per_step,
         ..SimConfig::earth(GRID, CELL_M, DT_S)
     };
+    // Real fix (2026-09-05): mass now shares BULK_DENSITY_KG_M3 with the
+    // stiffness conversion (was left on grid_density=1.0 default) --
+    // matches the same fix applied to the real example.
+    let mass_grid = if use_physical {
+        (BULK_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5
+    } else {
+        0.5 * 0.5
+    };
     let column = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(8, 16),
         box_center: Vec2::new(GRID as f32 * 0.5, FLOOR_CELLS + 8.0),
         material_id: 0,
         precompute_initial_volumes: true,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let (lambda, mu) = if use_physical {

@@ -37,7 +37,7 @@ const OLD_LAMBDA: f32 = 2000.0;
 const OLD_MU: f32 = 4000.0;
 const OLD_GRAVITY_FRACTION: f32 = 0.0002;
 
-fn make_sim(lambda: f32, mu: f32, max_substeps_per_step: usize) -> Simulation {
+fn make_sim(lambda: f32, mu: f32, max_substeps_per_step: usize, mass_override: f32) -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
         max_substeps_per_step,
@@ -51,12 +51,25 @@ fn make_sim(lambda: f32, mu: f32, max_substeps_per_step: usize) -> Simulation {
         box_center: Vec2::new(GRID as f32 * 0.5, GRID as f32 * 0.5),
         precompute_initial_volumes: true,
         initial_velocity_scale: 0.0,
+        mass_override: Some(mass_override),
         ..SpawnRegion::for_sim(&config)
     };
     Simulation::new(config, spawn)
         .with_default_material(Box::new(NoCompressionMaterial::new(lambda, mu)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
 }
+
+// Real fix (2026-09-05): mass must share the same real density the
+// stiffness above is scaled by (`ParticleMass::particle_mass`'s own
+// formula, `SPACING^2` at `reference_density_kg_m3=1000` default) -- was
+// left on the bare grid_density=1.0 default (spacing^2) before, silently
+// inconsistent with `MEMBRANE_DENSITY_KG_M3=1100`.
+const SPACING: f32 = 0.5;
+const NEW_MASS: f32 = (MEMBRANE_DENSITY_KG_M3 / 1000.0) * SPACING * SPACING;
+// The OLD scene's real mass (grid_density=1.0 default, never fixed) --
+// kept exactly as shipped so the baseline/isolation runs below still
+// reproduce the ORIGINAL behavior, not a retroactively-corrected one.
+const OLD_MASS: f32 = SPACING * SPACING;
 
 fn pin_top_particles(sim: &mut Simulation) -> usize {
     let max_y = sim
@@ -87,8 +100,9 @@ fn run_probe(
     gravity_fraction: f32,
     max_substeps_per_step: usize,
     seconds: f32,
+    mass_override: f32,
 ) {
-    let mut sim = make_sim(lambda, mu, max_substeps_per_step);
+    let mut sim = make_sim(lambda, mu, max_substeps_per_step, mass_override);
     let real_gravity = sim.config().gravity;
     let anchored = pin_top_particles(&mut sim);
     sim.set_gravity(real_gravity * gravity_fraction);
@@ -142,7 +156,15 @@ fn membrane_scene_at_full_gravity_fraction() {
         MEMBRANE_POISSON_RATIO,
         MEMBRANE_DENSITY_KG_M3,
     );
-    run_probe("new_stiffness+full_gravity", lambda, mu, 1.0, 256, 600.0);
+    run_probe(
+        "new_stiffness+full_gravity",
+        lambda,
+        mu,
+        1.0,
+        256,
+        600.0,
+        NEW_MASS,
+    );
 }
 
 /// Isolates the STIFFNESS change: new real SI stiffness, but at the OLD
@@ -165,6 +187,7 @@ fn membrane_scene_new_stiffness_old_gravity() {
         OLD_GRAVITY_FRACTION,
         256,
         120.0,
+        NEW_MASS,
     );
 }
 
@@ -182,6 +205,7 @@ fn membrane_scene_old_stiffness_full_gravity() {
         1.0,
         256,
         120.0,
+        OLD_MASS,
     );
 }
 
@@ -198,5 +222,6 @@ fn membrane_scene_old_stiffness_old_gravity_baseline() {
         OLD_GRAVITY_FRACTION,
         32,
         120.0,
+        OLD_MASS,
     );
 }

@@ -223,12 +223,26 @@ fn make_sim(lambda: f32, mu: f32) -> Simulation {
         cundall_damping: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    // Real fix (2026-09-05): particle mass was left on `config.grid_density`'s
+    // bare default (1.0) -- disconnected from the real
+    // `MEMBRANE_DENSITY_KG_M3` (1100) the stiffness above is scaled by. Mass
+    // and stiffness must share the same real density or the wave speed
+    // `c=sqrt((lambda+2mu)/rho)` is wrong even though lambda/mu themselves
+    // are correct. `ParticleMass::particle_mass`'s own documented formula
+    // (`rho_kg_m3 * (spacing*dx_meters)^2`, converted to grid units via
+    // `reference_density_kg_m3` exactly like `SpawnRegion::mass_from` does)
+    // computed directly here since `NoCompressionMaterial::new` (the raw
+    // constructor) bypasses the `ParticleMass`-implementing property-struct
+    // API `mass_from` requires.
+    const SPACING: f32 = 0.5;
+    let mass_grid = (MEMBRANE_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let spawn = SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(6, 6),
         box_center: Vec2::new(GRID as f32 * 0.5, GRID as f32 * 0.5),
         precompute_initial_volumes: true,
         initial_velocity_scale: 0.0,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     Simulation::new(config, spawn)

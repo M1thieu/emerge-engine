@@ -135,13 +135,24 @@ fn make_sim(p: &Params) -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= p.gravity_fraction;
+    // Real fix (2026-09-05): mass made an explicit function of
+    // `JELLY_DENSITY_KG_M3` rather than relying on `config.grid_density`'s
+    // bare default (1.0) happening to equal `reference_density_kg_m3`
+    // (also 1000 by default) -- that coincidence would silently break if
+    // either default ever changes. Same documented formula
+    // `ParticleMass::particle_mass`/`SpawnRegion::mass_from` use; computed
+    // directly since the raw `*Material::new` constructors below bypass the
+    // `ParticleMass`-implementing property-struct API.
+    const SPACING: f32 = 0.5;
+    let mass_grid = (JELLY_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let spawn = |c: Vec2, mat| SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(14, 14),
         box_center: c,
         material_id: mat,
         precompute_initial_volumes: true,
         initial_velocity_scale: 0.0,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     // Real fix (2026-09-05): drop height lowered 50 -> 15. The old height was
