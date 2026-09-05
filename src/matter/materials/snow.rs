@@ -65,6 +65,11 @@ impl StomakhinMaterial {
 
     /// Stomakhin 2013 canonical plasticity: ξ=10, θ_c=0.025, θ_s=0.0075.
     /// Canonical: E = 1.4e5, ν = 0.2 -- matches MPM2D reference and sparkl snow demos.
+    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
+    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
+    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
+    /// density. For a real, correctly SI-to-grid-converted material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)

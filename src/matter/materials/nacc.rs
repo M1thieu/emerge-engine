@@ -128,6 +128,14 @@ impl NaccMaterial {
 
     /// Construct from Young's modulus E and Poisson's ratio ν.
     /// Friction slope M and cohesion β set separately.
+    ///
+    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
+    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
+    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
+    /// density. Unlike most other materials, `NaccMaterial` has NO
+    /// `from_physical`/real-SI-conversion constructor at all yet -- this is
+    /// the only construction path, so there is currently no way to build a
+    /// dimensionally-correct SI `NaccMaterial`. A real gap, not fixed here.
     pub fn from_young_modulus(
         young_modulus: f32,
         poisson_ratio: f32,

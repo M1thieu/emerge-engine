@@ -87,6 +87,11 @@ impl MuIRheologyMaterial {
     }
 
     /// Construct from Young's modulus E and Poisson's ratio ν (same API as DruckerPragerMaterial).
+    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
+    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
+    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
+    /// density. For a real, correctly SI-to-grid-converted material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)

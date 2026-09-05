@@ -60,6 +60,11 @@ impl VonMisesMaterial {
     /// Construct from Young's modulus E, Poisson's ratio ν, and yield stress σ_Y.
     ///
     /// Typical values for lava/clay: E = 5e4–1e5, ν = 0.3–0.4, σ_Y = 1e2–1e3.
+    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
+    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
+    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
+    /// density. For a real, correctly SI-to-grid-converted material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32, yield_stress: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, yield_stress)

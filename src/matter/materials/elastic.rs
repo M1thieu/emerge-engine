@@ -66,9 +66,19 @@ impl NeoHookeanMaterial {
         }
     }
 
-    /// Construct from Young's modulus E and Poisson's ratio ν.
-    ///
-    /// Canonical values: E = 5e6, ν = 0.2 (wgsparkl elasticity2 -- stiff soft solid).
+    /// Construct from Young's modulus E and Poisson's ratio ν -- **grid units,
+    /// NOT real Pascals** (real disclosure added 2026-09-05, found migrating
+    /// `basic_jellies.rs`/`basic_membrane.rs`/`sand_ngf_collapse.rs` to real
+    /// SI): calls [`lame_from_young`] directly, which never touches
+    /// `dx_meters` or density -- `young_modulus` here is dimensionally
+    /// identical to a raw grid-unit `lambda`/`mu` guess despite the name, and
+    /// a value borrowed from another engine (e.g. wgsparkl) will NOT
+    /// reproduce that engine's real behavior here since neither side is
+    /// actually SI-scaled. For a real, correctly SI-to-grid-converted
+    /// material, use [`Self::from_physical`] (needs a `&SimConfig` and real
+    /// `rho_kg_m3`) or the `Elastic{..}.material(&config)` property API.
+    /// Canonical grid-unit values: E = 5e6, ν = 0.2 (wgsparkl elasticity2 --
+    /// stiff soft solid, same caveat applies to their own number).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
