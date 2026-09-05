@@ -24,7 +24,8 @@ pub(super) struct GridVolumeParams {
     pub(super) grid_res: u32,
     pub(super) mass_floor: f32,
     pub(super) material_mass_enabled: u32,
-    pub(super) _pad1: f32,
+    /// Full-cell mass used to form the dimensionless density ratio rho/rho0.
+    pub(super) reference_cell_mass: f32,
     pub(super) _pad2: [f32; 2],
 }
 const _: () = assert!(mem::size_of::<GridVolumeParams>() == 48);
@@ -72,6 +73,29 @@ pub(super) struct RenderConfig {
     pub(super) _pad: u32,
 }
 const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
+
+/// One physical-scale/radiance contract shared by all `ByPhysics` GPU paths.
+///
+/// Every vector is four-wide to make the Rust/WGSL uniform layout explicit.
+/// `spatial.z` is 1 only after a caller supplies a validated
+/// `PhysicalRenderContract`; zero means legacy, dimensionless rendering.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct PhysicalRenderParams {
+    /// x = dx [m], y = out-of-plane view thickness [m], z = enabled flag.
+    pub(super) spatial: [f32; 4],
+    /// Linear RGB spectral-band radiance [W / (m^2 sr)].
+    pub(super) incident_radiance: [f32; 4],
+    /// Linear RGB spectral-band radiance [W / (m^2 sr)].
+    pub(super) background_radiance: [f32; 4],
+    /// Radiance mapped to linear display value 1; strictly positive RGB.
+    pub(super) display_white_radiance: [f32; 4],
+    /// Normalized world-space direction; w is padding.
+    pub(super) camera_direction: [f32; 4],
+    /// Normalized world-space direction; w is padding.
+    pub(super) light_direction: [f32; 4],
+}
+const _: () = assert!(mem::size_of::<PhysicalRenderParams>() == 96);
 
 /// Mirrors `curvature_flow.wgsl`'s `SurfaceParams` -- shared by the clear,
 /// splat, convert, and iterate compute passes (all four only ever need

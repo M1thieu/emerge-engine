@@ -1,4 +1,5 @@
 pub mod body_state;
+mod boundary_diagnostics;
 mod cfl;
 pub mod config;
 pub mod density;
@@ -11,6 +12,10 @@ pub mod spatial_hash;
 mod step;
 
 pub use body_state::{BodyState, body_state_of, region_body_state_of};
+pub use boundary_diagnostics::{
+    AcceptedBoundaryImpulseLedger, BoundaryImpulseExperiment, BoundaryImpulseReport,
+    BoundaryNodeImpulseLedger,
+};
 pub use config::{SimConfig, SpawnRegion};
 pub use density::compute_density_grid;
 pub use handle::{MaterialHandle, ParticleGroup};
@@ -125,6 +130,22 @@ pub struct Simulation {
     /// active (every scene that never enables the feature stays here
     /// permanently, zero cost).
     fluid_sticky_fine_dt: Option<(f32, u32)>,
+    /// TEMPORARY diagnostic (2026-08-30), `EMERGE_TRACK_BOUNDARY_BIAS`, see
+    /// `transfer::diagnose_particle_divergence_decomposition`'s own doc.
+    /// Set by `do_substep` right after the real P2G scatter (using the
+    /// SAME `dt` that scatter used -- no separate/redundant reconstruction,
+    /// no possible retry-`dt` mismatch), filled in with the real final
+    /// `tr(C)` at the end of the same `do_substep` call, then read and
+    /// printed by `do_substep_with_retry` AFTER its retry loop exits --
+    /// naturally reflects the ACCEPTED attempt, since the loop only
+    /// continues past a rejected one. `None` (default) for every scene
+    /// that never sets the env var, zero cost. Fields: `(tracked_index,
+    /// trace_translation, trace_affine, trace_stress, trace_final,
+    /// dt_used)`.
+    pending_divergence_diagnostic: Option<(usize, f32, f32, f32, f32, f32)>,
+    /// TEMPORARY, opt-in structural wall-bounce impulse ledger. `None` is the
+    /// default and preserves the normal hot path exactly.
+    boundary_impulse_diagnostic: Option<boundary_diagnostics::BoundaryImpulseDiagnostic>,
     /// Real max particle speed measured by the PREVIOUS `choose_substep_dt`
     /// call -- one-substep-lagged, since a substep's own max speed isn't
     /// known until its CFL fold completes. Feeds the near-wall gate's

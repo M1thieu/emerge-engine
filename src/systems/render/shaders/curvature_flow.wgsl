@@ -205,6 +205,18 @@ struct OpticalTable {
     specular: array<vec4<f32>, 16>,
 }
 
+// One engine-wide SI/rendering contract shared by every physical rendering
+// path. `spatial.z` is the explicit enable flag so legacy callers remain
+// inert until they provide the required metric and radiometric quantities.
+struct PhysicalRenderParams {
+    spatial: vec4<f32>,
+    incident_radiance: vec4<f32>,
+    background_radiance: vec4<f32>,
+    display_white_radiance: vec4<f32>,
+    camera_direction: vec4<f32>,
+    light_direction: vec4<f32>,
+}
+
 // Number of flat depth/color bands `fs_main`, `shade_phase`, and
 // `band_hysteresis_step_main` all quantize optical depth into -- a tuned,
 // retunable real-time-shading choice (not a derived physical value), shared
@@ -1392,6 +1404,7 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // about `fs_main_dual_phase`'s OWN separate, tighter bind group, not this
 // one).
 @group(0) @binding(8) var<storage, read> surface_light_phi: array<f32>;
+@group(0) @binding(11) var<uniform> physical_render: PhysicalRenderParams;
 
 fn sample_light_phi_final(cx: i32, cy: i32) -> f32 {
     let res = i32(render_params.surface_res);
@@ -1801,6 +1814,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // (see the "hair"/aliasing doc above) instead of a hard per-cell
     // discard-only gate.
     let alpha = density_alpha * visibility_blend;
+    if physical_render.spatial.z > 0.5 {
+        let relative_density = max(mass / max(render_params.reference_cell_mass, 1.0e-12), 0.0);
+        let view_length_m = physical_render.spatial.y
+            / max(abs(physical_render.camera_direction.z), 1.0e-6);
+        let path_m = relative_density * view_length_m;
+        let slab_t = exp(-sigma_a * path_m);
+        let display_radiance = physical_render.background_radiance.rgb
+            * slab_t / physical_render.display_white_radiance.rgb;
+        return vec4<f32>(clamp(display_radiance, vec3(0.0), vec3(1.0)), alpha);
+    }
     return vec4<f32>(with_emission, alpha);
 }
 
@@ -1948,6 +1971,16 @@ fn shade_phase(
         lit = clamp(shaded + wave_highlight, vec3(0.0), vec3(1.0));
     }
 
+    if physical_render.spatial.z > 0.5 {
+        let relative_density = max(mass / max(p.reference_cell_mass, 1.0e-12), 0.0);
+        let view_length_m = physical_render.spatial.y
+            / max(abs(physical_render.camera_direction.z), 1.0e-6);
+        let path_m = relative_density * view_length_m;
+        let slab_t = exp(-sigma_a * path_m);
+        let display_radiance = physical_render.background_radiance.rgb
+            * slab_t / physical_render.display_white_radiance.rgb;
+        return vec4<f32>(clamp(display_radiance, vec3(0.0), vec3(1.0)), mass);
+    }
     return vec4<f32>(lit, mass);
 }
 

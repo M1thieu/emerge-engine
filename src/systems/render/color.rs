@@ -47,6 +47,22 @@ impl Renderer {
                     }
                 };
                 let j = det2(p.deformation_gradient).clamp(0.05, 4.0);
+                if let Some(contract) = self.physical_render_contract {
+                    let transmittance = super::beer_lambert_transmittance(
+                        sigma,
+                        1.0 / j,
+                        contract.view_thickness_meters()
+                            / contract.camera_direction().z.abs().max(1.0e-6),
+                    );
+                    let background = contract.background_radiance_w_m2_sr();
+                    let display_white = contract.display_white_radiance_w_m2_sr();
+                    return [
+                        (background[0] * transmittance[0] / display_white[0]).clamp(0.0, 1.0),
+                        (background[1] * transmittance[1] / display_white[1]).clamp(0.0, 1.0),
+                        (background[2] * transmittance[2] / display_white[2]).clamp(0.0, 1.0),
+                        1.0,
+                    ];
+                }
                 let od = 1.0 / j;
                 let transmitted = [
                     (-sigma[0] * od).exp(),

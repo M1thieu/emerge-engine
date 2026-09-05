@@ -160,6 +160,7 @@ pub(super) fn build_prep_pipeline(
             bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
         ],
     });
 
@@ -229,6 +230,7 @@ pub(super) fn build_grid_volume_pipeline(
             bgl_uniform(2, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(3, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(4, wgpu::ShaderStages::FRAGMENT),
+            bgl_uniform(5, wgpu::ShaderStages::FRAGMENT),
         ],
     });
 
@@ -705,6 +707,7 @@ pub(super) fn build_surface_render_pipeline(
             // Real diffused light fluence, single-phase only -- see
             // `surface_light_phi`'s own doc in the shader.
             bgl_storage_ro(8, wgpu::ShaderStages::FRAGMENT),
+            bgl_uniform(11, wgpu::ShaderStages::FRAGMENT),
         ],
     });
     let shader = build_curvature_flow_shader(device);
@@ -774,6 +777,7 @@ pub(super) fn build_surface_dual_render_pipeline(
             bgl_storage_ro(8, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(9, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(10, wgpu::ShaderStages::FRAGMENT),
+            bgl_uniform(11, wgpu::ShaderStages::FRAGMENT),
         ],
     });
     let shader = build_curvature_flow_shader(device);

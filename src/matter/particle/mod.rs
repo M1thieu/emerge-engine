@@ -90,12 +90,14 @@ pub struct Particle {
     pub sleeping: u32,
     /// Dirichlet/kinematic anchor flag: 0 (default) = ordinary free particle, identical to
     /// every material before this field existed. Nonzero = fixed-velocity boundary
-    /// condition -- G2P forces `v = 0` and `velocity_gradient = 0` for this particle every
-    /// substep instead of gathering from the grid, so it never moves and never
-    /// accumulates local strain from being dragged, while still scattering its own
-    /// mass/stress into P2G so other bodies feel it as a real, immovable anchor (the
-    /// standard technique for static/bedrock geometry in deformable-body sims -- a real
-    /// Dirichlet BC in continuum-mechanics terms, not a hack). Real motivating case: a
+    /// condition. On CPU, every grid node in this particle's nonzero interpolation
+    /// support is constrained to zero velocity after all grid forces and immediately
+    /// before G2P; G2P also forces this particle's own `v = 0` and
+    /// `velocity_gradient = 0`. The grid constraint is essential: resetting only the
+    /// particle discards its motion without transmitting the anchor reaction to nearby
+    /// continuum material, producing slow creep under constant load. The GPU path still
+    /// implements only the particle-local reset; full grid-node anchor parity remains
+    /// separate work. Real motivating case: a
     /// terrain slab with no pinned particles is an ordinary free body that slowly drifts
     /// under the accumulated reaction force of everything standing/walking on it (real,
     /// measured live -- terrain centroid crept y=3.8->7.1 over one foothold-seeking

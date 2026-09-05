@@ -9,6 +9,71 @@ use crate::solver::config::KERNEL_D_INVERSE;
 
 use super::{combined_kirchhoff_stress, combined_kirchhoff_stress_from};
 
+/// TEMPORARY investigation-only decomposition of one grid node's real P2G
+/// contribution. Built only when the structural-boundary impulse diagnostic is
+/// enabled; ordinary stepping never allocates this grid-sized buffer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GridNodeP2GComponents {
+    pub mass: f32,
+    pub translation_momentum: Vec2,
+    pub affine_momentum: Vec2,
+    pub stress_momentum: Vec2,
+    /// Volume-weighted lower-wall normal Kirchhoff stress numerator and
+    /// denominator. Their ratio estimates `n·tau·n` at the node; unlike the
+    /// stress *force* above, its sign is the contact-traction sign.
+    pub weighted_tau_yy: f32,
+    pub stress_volume_weight: f32,
+}
+
+/// Reconstruct the exact particle part of P2G, separated into translation,
+/// APIC-affine and stress impulses for every in-domain node.
+///
+/// This intentionally mirrors `scatter_one_into` term for term and is called
+/// from inside the real substep with that attempt's own `dt`. Rod/grain scatters
+/// are outside its scope; the controlled boundary experiment contains neither.
+/// Remove with the structural-bounce investigation instrumentation.
+pub fn diagnose_grid_p2g_components(
+    particles: &Particles,
+    materials: &MaterialRegistry,
+    dt: f32,
+    resolution: usize,
+    active_count: usize,
+) -> Vec<GridNodeP2GComponents> {
+    let mut out = vec![GridNodeP2GComponents::default(); resolution * resolution];
+    for i in 0..active_count {
+        let material_id = particles.material_id[i];
+        let x = particles.x[i];
+        let mass_i = particles.mass[i];
+        let v_i = particles.v[i];
+        let c_i = particles.velocity_gradient[i];
+        let passive_tau = materials.kirchhoff_stress(material_id, particles, i);
+        let material = materials.get(material_id);
+        let stress = combined_kirchhoff_stress_from(passive_tau, material, particles, i);
+        let stress_coeff =
+            -materials.stress_volume(material_id, particles, i) * KERNEL_D_INVERSE * dt;
+        let weights = quadratic_weights(x);
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let Some(idx) = flat_index(cell_pos, resolution) else {
+                    continue;
+                };
+                let weight = weights.wx[gx] * weights.wy[gy];
+                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                let node = &mut out[idx as usize];
+                node.mass += weight * mass_i;
+                node.translation_momentum += weight * mass_i * v_i;
+                node.affine_momentum += weight * mass_i * (c_i * cell_dist);
+                node.stress_momentum += weight * stress_coeff * (stress * cell_dist);
+                let stress_volume = materials.stress_volume(material_id, particles, i);
+                node.weighted_tau_yy += weight * stress_volume * stress.y_axis.y;
+                node.stress_volume_weight += weight * stress_volume;
+            }
+        }
+    }
+    out
+}
+
 /// Scatters ONE particle's mass/momentum contribution into a thread-local
 /// `CellMap` accumulator -- factored out of `scatter_particles_to_grid`'s
 /// fold closure so `scatter_particles_to_grid_sorted` (spatial-sort opt-in,
@@ -154,6 +219,22 @@ pub fn scatter_particles_to_grid(
     grid.merge_cells(local_map);
 
     for i in 0..active_count {
+        // Essential boundary conditions are constraints on grid DOFs, not a
+        // post-G2P particle reset. Mark every node receiving nonzero support
+        // from a pinned material point; the solver enforces these nodes after
+        // all grid forces and immediately before G2P.
+        if particles.pinned[i] != 0 {
+            let weights = quadratic_weights(particles.x[i]);
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    if weights.wx[gx] * weights.wy[gy] > 0.0 {
+                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        grid.mark_pinned_node(cell_pos);
+                    }
+                }
+            }
+        }
+
         let contact_group = particles.contact_group[i];
         let material = materials.get(particles.material_id[i]);
         let mixture_phase = material.mixture_phase();
@@ -259,6 +340,20 @@ pub fn scatter_particles_to_grid_sorted(
             a
         });
     grid.merge_cells(local_map);
+
+    for i in 0..active_count {
+        if particles.pinned[i] != 0 {
+            let weights = quadratic_weights(particles.x[i]);
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    if weights.wx[gx] * weights.wy[gy] > 0.0 {
+                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        grid.mark_pinned_node(cell_pos);
+                    }
+                }
+            }
+        }
+    }
 
     for i in 0..active_count {
         let contact_group = particles.contact_group[i];
@@ -498,4 +593,265 @@ pub fn scatter_particle_mass(particles: &Particles, grid: &mut Grid, active_coun
             }
         }
     }
+}
+
+/// One material's real contribution to one grid node's P2G mass/momentum --
+/// see `diagnose_particle_node_material_sources`'s own doc.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeMaterialSource {
+    pub material_id: u32,
+    pub mass: f32,
+    pub advective_momentum: Vec2,
+    pub stress_momentum: Vec2,
+}
+
+/// One of a tracked particle's 9 P2G/G2P support nodes, broken down by
+/// which material contributed what -- see `diagnose_particle_node_material_
+/// sources`'s own doc.
+#[derive(Debug, Clone)]
+pub struct TrackedNodeBreakdown {
+    pub cell_pos: IVec2,
+    /// This tracked particle's own G2P kernel weight for this node -- how
+    /// much this node's velocity counts toward the tracked particle's next
+    /// G2P gather.
+    pub tracked_particle_weight: f32,
+    /// Real, production-accurate normalized velocity at this node (from an
+    /// independent, full `scatter_particles_to_grid` call on a fresh grid --
+    /// see this function's own doc).
+    pub real_velocity: Vec2,
+    pub real_mass: f32,
+    /// Every material's contribution to this node, reproducing `scatter_
+    /// one_into`'s exact formula split by `material_id`.
+    pub sources: Vec<NodeMaterialSource>,
+}
+
+/// TEMPORARY diagnostic (2026-08-29): for one tracked particle's own 9 P2G/
+/// G2P support nodes, breaks down EVERY particle's mass/momentum
+/// contribution to those nodes by `material_id` -- built to test a real,
+/// concrete hypothesis (2026-08-29, on the
+/// still-open particle-15 pre-transition runaway found live in
+/// `phase_states_gui.rs`'s Moon-gravity run): a water particle's observed
+/// runaway acceleration -- BEFORE it crosses the boiling threshold, with no
+/// external forcing on itself -- might be inheriting momentum from an
+/// already-buoyant STEAM neighbor through the shared, unpartitioned MPM
+/// grid, not from any self-pressure/CFL effect (self-pressure impulses sum
+/// to zero under partition-of-unity, and APIC conserves linear momentum, so
+/// neither can explain a NET translational acceleration for one isolated
+/// particle -- a real, independently-checkable objection to the CFL-only
+/// explanation this session had been assuming).
+///
+/// Step 1 runs a real, independent, production-accurate `scatter_particles_
+/// to_grid` on a fresh `Grid` to get the actual merged mass/velocity at
+/// each node (the "ground truth" this diagnostic's own bucketed breakdown
+/// is checked against). Step 2 re-scans every particle, reproducing `scatter_
+/// one_into`'s exact per-particle formula (advective term + stress-impulse
+/// term separately, both broken out), but restricted
+/// to just the tracked particle's 9 nodes and bucketed by `material_id`
+/// instead of merged -- so summing a node's buckets must reproduce step 1's
+/// real mass/momentum for that node exactly (a genuine self-consistency
+/// check, not just a plausible-looking number).
+///
+/// O(active_count * 9) -- fine for an on-demand diagnostic, not meant for
+/// the hot per-substep path. Remove once the investigation concludes.
+pub fn diagnose_particle_node_material_sources(
+    particles: &Particles,
+    materials: &MaterialRegistry,
+    dt: f32,
+    resolution: usize,
+    active_count: usize,
+    tracked_index: usize,
+) -> Vec<TrackedNodeBreakdown> {
+    let mut ground_truth_grid = Grid::new(resolution);
+    scatter_particles_to_grid(
+        particles,
+        &mut ground_truth_grid,
+        materials,
+        dt,
+        active_count,
+    );
+    // `velocity_at` is only a real velocity AFTER normalization -- see its
+    // own doc ("valid after update_velocities()"). Pure momentum/mass here
+    // (no gravity/boundary), matching what P2G alone produces before the
+    // grid-update phase -- the right snapshot for this diagnostic.
+    ground_truth_grid.normalize_velocities();
+
+    let tracked_x = particles.x[tracked_index];
+    let tracked_weights = quadratic_weights(tracked_x);
+    let mut breakdowns: Vec<TrackedNodeBreakdown> = Vec::with_capacity(9);
+    for gx in 0..3 {
+        for gy in 0..3 {
+            let tracked_particle_weight = tracked_weights.wx[gx] * tracked_weights.wy[gy];
+            let cell_pos = tracked_weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+            breakdowns.push(TrackedNodeBreakdown {
+                cell_pos,
+                tracked_particle_weight,
+                real_velocity: ground_truth_grid.velocity_at(cell_pos),
+                real_mass: ground_truth_grid.mass_at(cell_pos),
+                sources: Vec::new(),
+            });
+        }
+    }
+
+    for i in 0..active_count {
+        let material_id = particles.material_id[i];
+        let x = particles.x[i];
+        let mass_i = particles.mass[i];
+        let v_i = particles.v[i];
+        let c_i = particles.velocity_gradient[i];
+
+        let passive_tau = materials.kirchhoff_stress(material_id, particles, i);
+        let material = materials.get(material_id);
+        let stress = combined_kirchhoff_stress_from(passive_tau, material, particles, i);
+        let stress_coeff =
+            -materials.stress_volume(material_id, particles, i) * KERNEL_D_INVERSE * dt;
+
+        let weights = quadratic_weights(x);
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let Some(target) = breakdowns.iter_mut().find(|b| b.cell_pos == cell_pos) else {
+                    continue;
+                };
+                let weight = weights.wx[gx] * weights.wy[gy];
+                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                let mass = weight * mass_i;
+                let advective_momentum = weight * mass_i * (v_i + c_i * cell_dist);
+                let stress_momentum = weight * stress_coeff * (stress * cell_dist);
+
+                if let Some(entry) = target
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.material_id == material_id)
+                {
+                    entry.mass += mass;
+                    entry.advective_momentum += advective_momentum;
+                    entry.stress_momentum += stress_momentum;
+                } else {
+                    target.sources.push(NodeMaterialSource {
+                        material_id,
+                        mass,
+                        advective_momentum,
+                        stress_momentum,
+                    });
+                }
+            }
+        }
+    }
+
+    breakdowns
+}
+
+/// Three-way decomposition of a tracked particle's own pre-grid-update
+/// `tr(C)`: translation (`w*m*v`), affine (`w*m*C*d`), stress
+/// (`w*stress_coeff*(tau*d)`) -- a real methodological fix (2026-08-30)
+/// over an earlier, removed diagnostic
+/// (`diagnose_particle_boundary_divergence_bias`), which reconstructed its
+/// "before" state from a SEPARATE, redundant `scatter_particles_to_grid`
+/// call fed whatever `dt` the caller happened to pass -- real risk of
+/// using the wrong `dt` when `SimConfig::fluid_step_retry_enabled` causes
+/// `do_substep_with_retry` to settle on an `actual_dt` different from the
+/// one first tried, AND unable to distinguish "this bias is the
+/// particle's own current EOS pressure pushing its neighbors"
+/// (`trace_stress`) from "this bias is inherited motion from earlier
+/// substeps" (`trace_translation`+`trace_affine`) -- both real, distinct
+/// gaps this version fixes.
+///
+/// Call this from WITHIN the real, currently-executing substep (right
+/// after the real P2G scatter, using the SAME `dt` that scatter used --
+/// see `Simulation::do_substep`'s own call site), not from outside the
+/// retry loop, so there is no possible `dt` mismatch: this recomputes the
+/// exact same per-particle formula `scatter_one_into` uses, just bucketed
+/// by contribution type instead of merged, for the tracked particle's own
+/// 9-node stencil only.
+///
+/// By construction (summing three per-node momentum buckets that all
+/// divide by the SAME real total nodal mass, then applying G2P's own
+/// linear reconstruction to each), `trace_translation + trace_affine +
+/// trace_stress` must equal the ordinary combined `trace(C)` to floating-
+/// point precision -- a real self-consistency check, not just a
+/// plausible-looking split. Returns
+/// `(trace_translation, trace_affine, trace_stress)`.
+///
+/// O(active_count) -- fine for an on-demand diagnostic, not the hot path.
+/// Remove once the investigation concludes.
+pub fn diagnose_particle_divergence_decomposition(
+    particles: &Particles,
+    materials: &MaterialRegistry,
+    dt: f32,
+    active_count: usize,
+    tracked_index: usize,
+    apic_blend: f32,
+) -> (f32, f32, f32) {
+    let tracked_x = particles.x[tracked_index];
+    let tracked_weights = quadratic_weights(tracked_x);
+    let mut node_cell_pos = [IVec2::ZERO; 9];
+    for gx in 0..3 {
+        for gy in 0..3 {
+            node_cell_pos[gx * 3 + gy] =
+                tracked_weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+        }
+    }
+    let mut node_mass = [0.0f32; 9];
+    let mut node_translation = [Vec2::ZERO; 9];
+    let mut node_affine = [Vec2::ZERO; 9];
+    let mut node_stress = [Vec2::ZERO; 9];
+
+    for i in 0..active_count {
+        let material_id = particles.material_id[i];
+        let x = particles.x[i];
+        let mass_i = particles.mass[i];
+        let v_i = particles.v[i];
+        let c_i = particles.velocity_gradient[i];
+
+        let passive_tau = materials.kirchhoff_stress(material_id, particles, i);
+        let material = materials.get(material_id);
+        let stress = combined_kirchhoff_stress_from(passive_tau, material, particles, i);
+        let stress_coeff = -materials.stress_volume(material_id, particles, i)
+            * crate::solver::config::KERNEL_D_INVERSE
+            * dt;
+
+        let weights = quadratic_weights(x);
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                let Some(node_idx) = node_cell_pos.iter().position(|&c| c == cell_pos) else {
+                    continue;
+                };
+                let weight = weights.wx[gx] * weights.wy[gy];
+                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                node_mass[node_idx] += weight * mass_i;
+                node_translation[node_idx] += weight * mass_i * v_i;
+                node_affine[node_idx] += weight * mass_i * (c_i * cell_dist);
+                node_stress[node_idx] += weight * stress_coeff * (stress * cell_dist);
+            }
+        }
+    }
+
+    let mut b_translation = Mat2::ZERO;
+    let mut b_affine = Mat2::ZERO;
+    let mut b_stress = Mat2::ZERO;
+    for gx in 0..3 {
+        for gy in 0..3 {
+            let idx = gx * 3 + gy;
+            let weight = tracked_weights.wx[gx] * tracked_weights.wy[gy];
+            let cell_pos = node_cell_pos[idx];
+            let dist = cell_pos.as_vec2() - tracked_x + Vec2::splat(0.5);
+            let mass = node_mass[idx].max(1.0e-12);
+            let v_translation = weight * (node_translation[idx] / mass);
+            let v_affine = weight * (node_affine[idx] / mass);
+            let v_stress = weight * (node_stress[idx] / mass);
+            b_translation += Mat2::from_cols(v_translation * dist.x, v_translation * dist.y);
+            b_affine += Mat2::from_cols(v_affine * dist.x, v_affine * dist.y);
+            b_stress += Mat2::from_cols(v_stress * dist.x, v_stress * dist.y);
+        }
+    }
+    let scale = crate::solver::config::KERNEL_D_INVERSE * apic_blend;
+    let c_translation = b_translation * scale;
+    let c_affine = b_affine * scale;
+    let c_stress = b_stress * scale;
+    (
+        c_translation.x_axis.x + c_translation.y_axis.y,
+        c_affine.x_axis.x + c_affine.y_axis.y,
+        c_stress.x_axis.x + c_stress.y_axis.y,
+    )
 }

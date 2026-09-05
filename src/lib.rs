@@ -75,9 +75,9 @@ pub mod prelude;
 // Solver core
 pub use grid::{Cell, DirectionalContactGrip, Grid};
 pub use particle::{Particle, Particles};
-pub use solver::Simulation;
 pub use solver::config::{SimConfig, SpawnRegion, SpawnShape};
 pub use solver::handle::{MaterialHandle, ParticleGroup};
+pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport, Simulation};
 
 // Materials
 pub use materials::{
@@ -201,4 +201,7 @@ pub use gpu::{GpuFieldEntry, GpuFieldsParams, GpuSimulation, MAX_FORCE_FIELDS, f
 
 // Render backend
 #[cfg(feature = "render")]
-pub use render::{ColorMode, GridVolumeSource, Renderer};
+pub use render::{
+    ColorMode, GridVolumeSource, OpticalCoefficientsError, OpticalCoefficientsSi,
+    PhysicalRenderContract, PhysicalRenderContractError, Renderer, beer_lambert_transmittance,
+};

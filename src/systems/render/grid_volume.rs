@@ -50,7 +50,7 @@ impl Renderer {
                 grid_res,
                 mass_floor,
                 material_mass_enabled: source.material_mass_enabled as u32,
-                _pad1: 0.0,
+                reference_cell_mass: self.grid_reference_cell_mass,
                 _pad2: [0.0, 0.0],
             }),
         );
@@ -120,6 +120,10 @@ impl Renderer {
                     binding: 4,
                     resource: self.grid_visibility_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.physical_render_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -136,12 +140,7 @@ impl Renderer {
             cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
         }
         let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.08,
-                a: 1.0,
-            })
+            wgpu::LoadOp::Clear(self.clear_color())
         } else {
             wgpu::LoadOp::Load
         };

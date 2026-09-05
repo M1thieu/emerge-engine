@@ -20,10 +20,10 @@ mod directional_grip;
 mod mixture;
 mod pressure;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
-use glam::{IVec2, Vec2};
+use glam::{DVec2, IVec2, Vec2};
 
 use contact::ContactCellMap;
 pub use directional_grip::DirectionalContactGrip;
@@ -135,6 +135,10 @@ pub struct Grid {
     /// `contact_cells` already has.
     mixture_cells: MixtureCellMap,
     mixture_dirty: Vec<u32>,
+    /// Grid nodes carrying an essential (Dirichlet) zero-velocity condition
+    /// from `Particle::pinned` support. Kept separately from `Cell` so the
+    /// latter's GPU-stable layout remains unchanged.
+    pinned_nodes: HashSet<u32, FxU32BuildHasher>,
 }
 
 impl Grid {
@@ -148,6 +152,7 @@ impl Grid {
             contact_dirty: Vec::new(),
             mixture_cells: MixtureCellMap::default(),
             mixture_dirty: Vec::new(),
+            pinned_nodes: HashSet::with_hasher(FxU32BuildHasher),
         }
     }
 
@@ -201,6 +206,7 @@ impl Grid {
         self.contact_dirty.clear();
         self.mixture_cells.clear();
         self.mixture_dirty.clear();
+        self.pinned_nodes.clear();
     }
 
     /// True if any mixture-phase particle touched the grid this substep. Gates
@@ -216,6 +222,27 @@ impl Grid {
             return;
         };
         self.accumulate(idx, mass, momentum);
+    }
+
+    /// Mark one active node as carrying a homogeneous Dirichlet constraint.
+    /// MPM essential boundary conditions belong on grid degrees of freedom:
+    /// merely zeroing a pinned particle after G2P discards its motion but does
+    /// not transmit the anchor reaction to neighbouring material points.
+    pub(crate) fn mark_pinned_node(&mut self, cell_pos: IVec2) {
+        if let Some(idx) = flat_index(cell_pos, self.resolution) {
+            self.pinned_nodes.insert(idx);
+        }
+    }
+
+    /// Enforce the grid velocity prescribed by particle anchors. This must be
+    /// the last operation before G2P (and before a pre-force snapshot when one
+    /// is requested), exactly like geometric Dirichlet boundary conditions.
+    pub(crate) fn apply_pinned_node_constraints(&mut self) {
+        for &idx in &self.pinned_nodes {
+            if let Some(cell) = self.cells.get_mut(&idx) {
+                cell.momentum = Vec2::ZERO;
+            }
+        }
     }
 
     /// Merges a thread-local `CellMap` (built by parallel P2G's rayon
@@ -504,6 +531,43 @@ impl Grid {
         self.dirty.iter().filter_map(move |idx| cells.get(idx))
     }
 
+    /// Sum raw P2G momentum before normalization. TEMPORARY structural-boundary
+    /// impulse-ledger helper; callers must use this only while `Cell::momentum`
+    /// still stores mass times velocity.
+    pub(crate) fn raw_momentum_sum(&self) -> Vec2 {
+        self.active_cells().map(|cell| cell.momentum).sum()
+    }
+
+    /// Deterministic f64 accumulation companion used only by the temporary
+    /// structural-boundary impulse ledger. Cell storage remains the real f32
+    /// solver state; this isolates global reduction/cancellation error from
+    /// transfer error without changing dynamics.
+    pub(crate) fn raw_momentum_sum_f64(&self) -> DVec2 {
+        (0..self.resolution * self.resolution).fold(DVec2::ZERO, |sum, index| {
+            self.cells
+                .get(&(index as u32))
+                .map_or(sum, |cell| sum + cell.momentum.as_dvec2())
+        })
+    }
+
+    /// Sum `m_i v_i` after grid normalization/force updates. TEMPORARY
+    /// structural-boundary impulse-ledger helper.
+    pub(crate) fn velocity_field_momentum_sum(&self) -> Vec2 {
+        self.active_cells()
+            .map(|cell| cell.mass * cell.momentum)
+            .sum()
+    }
+
+    /// Deterministic f64 global sum of the real f32 nodal state. See
+    /// `raw_momentum_sum_f64`; this is a diagnostic side channel only.
+    pub(crate) fn velocity_field_momentum_sum_f64(&self) -> DVec2 {
+        (0..self.resolution * self.resolution).fold(DVec2::ZERO, |sum, index| {
+            self.cells.get(&(index as u32)).map_or(sum, |cell| {
+                sum + f64::from(cell.mass) * cell.momentum.as_dvec2()
+            })
+        })
+    }
+
     /// Iterate active cells mutably.
     pub fn active_cells_mut(&mut self) -> impl Iterator<Item = &mut Cell> {
         let (dirty, cells) = (&self.dirty, &mut self.cells);
@@ -526,6 +590,18 @@ impl Grid {
             // SAFETY: same as active_cells_mut -- unique indices, no concurrent inserts.
             unsafe { (*ptr).get_mut(&idx).map(|cell| (idx as usize, cell)) }
         })
+    }
+
+    /// TEMPORARY structural-boundary diagnostic access by flat index.
+    pub(crate) fn cell_at_index_mut(&mut self, index: usize) -> Option<&mut Cell> {
+        self.cells.get_mut(&(index as u32))
+    }
+
+    /// TEMPORARY structural-boundary diagnostic velocity lookup by flat index.
+    pub(crate) fn velocity_at_index(&self, index: usize) -> Vec2 {
+        self.cells
+            .get(&(index as u32))
+            .map_or(Vec2::ZERO, |cell| cell.momentum)
     }
 
     /// Number of cells that received mass this frame.

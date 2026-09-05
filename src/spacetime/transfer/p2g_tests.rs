@@ -518,4 +518,87 @@ mod spatial_sort_tests {
             "total momentum diverged: unsorted={p_unsorted:?} sorted={p_sorted:?}"
         );
     }
+
+    /// A particle anchor is a grid constraint, so both production P2G paths
+    /// must mark the same quadratic-B-spline support. This also guards the
+    /// lifecycle requirement that `Grid::clear` removes last substep's
+    /// constraint instead of silently pinning a node forever.
+    #[test]
+    fn pinned_support_is_constrained_in_both_p2g_paths_and_cleared_next_step() {
+        let resolution = 24;
+        let mut particles = scattered_particles(2, resolution);
+        particles.x[0] = Vec2::new(7.25, 8.4);
+        particles.v[0] = Vec2::new(3.0, -2.0);
+        particles.pinned[0] = 1;
+        particles.x[1] = Vec2::new(16.25, 16.4);
+        particles.v[1] = Vec2::new(-1.0, 2.0);
+        particles.pinned[1] = 0;
+
+        let materials =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(900.0, 700.0)));
+        let mut ordinary = crate::grid::Grid::new(resolution);
+        scatter_particles_to_grid(&particles, &mut ordinary, &materials, 0.01, particles.len());
+        ordinary.normalize_velocities();
+        ordinary.apply_pinned_node_constraints();
+
+        let order = spatial_sort_order(&particles, particles.len(), resolution);
+        let mut sorted = crate::grid::Grid::new(resolution);
+        scatter_particles_to_grid_sorted(
+            &particles,
+            &mut sorted,
+            &materials,
+            0.01,
+            particles.len(),
+            &order,
+        );
+        sorted.normalize_velocities();
+        sorted.apply_pinned_node_constraints();
+
+        let pinned_weights = quadratic_weights(particles.x[0]);
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell = pinned_weights.base_cell + IVec2::new(gx - 1, gy - 1);
+                assert_eq!(
+                    ordinary.velocity_at(cell),
+                    Vec2::ZERO,
+                    "ordinary P2G left {cell:?} free"
+                );
+                assert_eq!(
+                    sorted.velocity_at(cell),
+                    Vec2::ZERO,
+                    "sorted P2G left {cell:?} free"
+                );
+            }
+        }
+
+        let free_weights = quadratic_weights(particles.x[1]);
+        let mut saw_free_motion = false;
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell = free_weights.base_cell + IVec2::new(gx - 1, gy - 1);
+                let ordinary_v = ordinary.velocity_at(cell);
+                let sorted_v = sorted.velocity_at(cell);
+                assert!(
+                    (ordinary_v - sorted_v).length() < 1.0e-6,
+                    "P2G paths disagree at free node {cell:?}: ordinary={ordinary_v:?} sorted={sorted_v:?}"
+                );
+                saw_free_motion |= ordinary_v.length() > 0.1;
+            }
+        }
+        assert!(
+            saw_free_motion,
+            "the distant unpinned particle was accidentally frozen"
+        );
+
+        ordinary.clear();
+        let old_pinned_cell = pinned_weights.base_cell;
+        ordinary.add_mass_momentum(old_pinned_cell, 2.0, Vec2::new(4.0, -6.0));
+        ordinary.normalize_velocities();
+        ordinary.apply_pinned_node_constraints();
+        assert_eq!(
+            ordinary.velocity_at(old_pinned_cell),
+            Vec2::new(2.0, -3.0),
+            "Grid::clear must remove stale pinned-node constraints"
+        );
+    }
 }

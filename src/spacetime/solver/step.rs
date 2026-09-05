@@ -274,6 +274,51 @@ impl Simulation {
                     );
                 }
             }
+            // TEMPORARY diagnostic (2026-08-29), see `transfer::diagnose_
+            // particle_node_material_sources`'s own doc -- opt-in via env
+            // var so every existing scene pays nothing. Built to test
+            // whether a tracked particle's runaway velocity (found live in
+            // `phase_states_gui.rs`'s Moon-gravity run, particle 15) comes
+            // from a neighboring particle of a DIFFERENT material sharing
+            // its P2G/G2P support nodes -- not visible from `same_material_
+            // neighbors`-style checks, which only ever count the tracked
+            // particle's own material.
+            if let Ok(spec) = std::env::var("EMERGE_TRACK_PARTICLE_NODES")
+                && let Ok(tracked_index) = spec.parse::<usize>()
+                && tracked_index < self.active_count
+            {
+                let breakdowns = crate::transfer::diagnose_particle_node_material_sources(
+                    &self.particles,
+                    &self.materials,
+                    sub_dt,
+                    self.config.grid_res,
+                    self.active_count,
+                    tracked_index,
+                );
+                for b in &breakdowns {
+                    let mut sources = String::new();
+                    for s in &b.sources {
+                        sources.push_str(&format!(
+                            " mat{}[mass={:.4} adv=({:.3},{:.3}) stress=({:.4},{:.4})]",
+                            s.material_id,
+                            s.mass,
+                            s.advective_momentum.x,
+                            s.advective_momentum.y,
+                            s.stress_momentum.x,
+                            s.stress_momentum.y
+                        ));
+                    }
+                    println!(
+                        "[node-track p={tracked_index}] cell=({},{}) w={:.4} real_v=({:.3},{:.3}) real_mass={:.4} |{sources}",
+                        b.cell_pos.x,
+                        b.cell_pos.y,
+                        b.tracked_particle_weight,
+                        b.real_velocity.x,
+                        b.real_velocity.y,
+                        b.real_mass,
+                    );
+                }
+            }
             // Sticky fine-substep hold (`fluid_sticky_fine_dt`'s own doc) -- caps
             // the ordinary CFL result while a recent retry's hold is still active,
             // so a sustained near-wall compression event doesn't relax back to a
@@ -288,9 +333,44 @@ impl Simulation {
                 "adaptive timestep cannot advance the requested simulation time; state requires a smaller representable timestep"
             );
             let actual_dt = self.do_substep_with_retry(sub_dt);
+            // The retry loop leaves only its final attempt in `pending`; fold
+            // it into the public diagnostic report here, after acceptance.
+            if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic {
+                diagnostic.accept_pending();
+            }
             remaining -= actual_dt;
             self.last_step_dt = actual_dt;
             substeps_taken += 1;
+            // TEMPORARY diagnostic (2026-08-30), see `transfer::diagnose_
+            // particle_divergence_decomposition`'s own doc and
+            // `pending_divergence_diagnostic`'s own doc for why this reads
+            // AFTER `do_substep_with_retry` returns: `do_substep` (called
+            // once per retry attempt, real dt each time) overwrites this
+            // field every call, so what's here now reflects only the LAST
+            // (i.e. ACCEPTED) attempt -- a real, disclosed fix for a real
+            // methodological gap in this diagnostic's first version
+            // (`diagnose_particle_boundary_divergence_bias`,
+            // removed): that one reconstructed its "before" state from a
+            // separate scatter fed whatever `dt` the OUTER caller happened
+            // to have, before `do_substep_with_retry` had a chance to
+            // settle on a different `actual_dt`.
+            if let Some((
+                tracked_index,
+                trace_translation,
+                trace_affine,
+                trace_stress,
+                trace_final,
+                dt_used,
+            )) = self.pending_divergence_diagnostic.take()
+            {
+                println!(
+                    "[divergence-decomp p={tracked_index}] tr(C) translation={trace_translation:.6} \
+                     affine={trace_affine:.6} stress={trace_stress:.6} pre_total={:.6} \
+                     final={trace_final:.6} delta_final_minus_pre={:.6} dt_used={dt_used:.6}",
+                    trace_translation + trace_affine + trace_stress,
+                    trace_final - (trace_translation + trace_affine + trace_stress),
+                );
+            }
             // Decay the hold by one substep, regardless of whether THIS substep
             // needed a fresh retry -- see the field's own doc for why persistence
             // across several substeps (not just the one that triggered it) is the
@@ -690,6 +770,54 @@ impl Simulation {
         }
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
+        // TEMPORARY structural-boundary diagnostic. Reconstructs the same
+        // particle P2G terms with this retry attempt's exact `sub_dt`; the
+        // outer loop accepts only the final attempt's pending ledger.
+        if self.boundary_impulse_diagnostic.is_some() {
+            let components = crate::transfer::diagnose_grid_p2g_components(
+                &self.particles,
+                &self.materials,
+                sub_dt,
+                self.config.grid_res,
+                self.active_count,
+            );
+            let ledger = super::boundary_diagnostics::begin_ledger(self, sub_dt, &components);
+            let Some(diagnostic) = &mut self.boundary_impulse_diagnostic else {
+                unreachable!("just checked is_some() above")
+            };
+            diagnostic.pending = Some(ledger);
+        }
+
+        // TEMPORARY diagnostic (2026-08-30), `EMERGE_TRACK_BOUNDARY_BIAS`,
+        // see `transfer::diagnose_particle_divergence_decomposition`'s own
+        // doc. Deliberately placed HERE, right after the real P2G scatter,
+        // using the SAME `sub_dt` that scatter just used -- no separate
+        // reconstruction, no possible retry-`dt` mismatch. Stores only the
+        // pre-grid-update decomposition for now; `trace_final`/`dt_used`
+        // get filled in after G2P runs, below.
+        if let Ok(spec) = std::env::var("EMERGE_TRACK_BOUNDARY_BIAS")
+            && let Ok(tracked_index) = spec.parse::<usize>()
+            && tracked_index < self.active_count
+        {
+            let (trace_translation, trace_affine, trace_stress) =
+                crate::transfer::diagnose_particle_divergence_decomposition(
+                    &self.particles,
+                    &self.materials,
+                    sub_dt,
+                    self.active_count,
+                    tracked_index,
+                    self.config.apic_blend,
+                );
+            self.pending_divergence_diagnostic = Some((
+                tracked_index,
+                trace_translation,
+                trace_affine,
+                trace_stress,
+                0.0,
+                sub_dt,
+            ));
+        }
+
         // Wake any sleeping particle whose kernel overlaps a MEANINGFULLY active
         // grid cell. This propagates activity from moving regions into
         // neighbouring sleeping ones without a separate O(N) scan -- we only
@@ -789,6 +917,11 @@ impl Simulation {
         let pre_force_snapshot =
             if self.config.asflip_blend > 0.0 || self.config.cundall_damping > 0.0 {
                 self.grid.normalize_velocities();
+                // A prescribed particle anchor is an essential boundary on
+                // the grid velocity field. Enforce it before the pre-force
+                // snapshot so FLIP/Cundall never treat forbidden anchor
+                // motion as a real previous velocity.
+                self.grid.apply_pinned_node_constraints();
                 let snapshot = self.grid.snapshot_velocities();
                 self.grid.apply_gravity(sub_dt, self.config.gravity);
                 Some(snapshot)
@@ -797,8 +930,30 @@ impl Simulation {
                 None
             };
         let grid_res = self.grid.resolution();
+        if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
+            && let Some(ledger) = &mut diagnostic.pending
+        {
+            super::boundary_diagnostics::capture_before_wall(&self.grid, ledger);
+        }
         for boundary in &self.boundaries {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
+        }
+        if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
+            && let Some(ledger) = &mut diagnostic.pending
+        {
+            super::boundary_diagnostics::apply_experimental_lower_wall(
+                &mut self.grid,
+                grid_res,
+                self.config.boundary_thickness,
+                diagnostic.mode,
+                ledger,
+            );
+            ledger.grid_momentum_after_wall = self.grid.velocity_field_momentum_sum();
+            ledger.wall_impulse =
+                ledger.grid_momentum_after_wall - ledger.grid_momentum_before_wall;
+            ledger.grid_momentum_after_wall_f64 = self.grid.velocity_field_momentum_sum_f64();
+            ledger.wall_impulse_f64 =
+                ledger.grid_momentum_after_wall_f64 - ledger.grid_momentum_before_wall_f64;
         }
         // Multi-field frictional contact (Bardenhagen 2001). It is rejected for
         // strict WC-MPM liquids above; ordinary solid/contact scenes retain this
@@ -810,6 +965,14 @@ impl Simulation {
             self.config.grid_cell_size,
             self.contact_grip.as_deref(),
         );
+        if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
+            && let Some(ledger) = &mut diagnostic.pending
+        {
+            let after_contact = self.grid.velocity_field_momentum_sum();
+            ledger.contact_impulse = after_contact - ledger.grid_momentum_after_wall;
+            let after_contact_f64 = self.grid.velocity_field_momentum_sum_f64();
+            ledger.contact_impulse_f64 = after_contact_f64 - ledger.grid_momentum_after_wall_f64;
+        }
         // Two-phase mixture coupling (Tampubolon et al. 2017). Strict WC-MPM
         // liquids reject this separate porous-medium model above. No-op when unused -- see
         // `Grid::resolve_mixture_coupling` doc.
@@ -881,6 +1044,31 @@ impl Simulation {
             self.grid
                 .apply_cundall_damping(snapshot, self.config.cundall_damping);
         }
+        // Last word before G2P: forces, contact, pressure projection and
+        // damping may all have modified these nodes since the first anchor
+        // application. Overwriting them here supplies the actual Dirichlet
+        // reaction that the old post-G2P-only particle reset could not.
+        self.grid.apply_pinned_node_constraints();
+        if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
+            && let Some(ledger) = &mut diagnostic.pending
+        {
+            let before_g2p = self.grid.velocity_field_momentum_sum();
+            ledger.other_grid_impulse =
+                before_g2p - ledger.grid_momentum_after_wall - ledger.contact_impulse;
+            ledger.grid_momentum_before_g2p_f64 = self.grid.velocity_field_momentum_sum_f64();
+            ledger.other_grid_impulse_f64 = ledger.grid_momentum_before_g2p_f64
+                - ledger.grid_momentum_after_wall_f64
+                - ledger.contact_impulse_f64;
+        }
+        if self.boundary_impulse_diagnostic.is_some() {
+            let mass_closure = super::boundary_diagnostics::measure_g2p_mass_closure(self);
+            let Some(diagnostic) = &mut self.boundary_impulse_diagnostic else {
+                unreachable!("just checked is_some() above")
+            };
+            if let Some(ledger) = &mut diagnostic.pending {
+                ledger.g2p_mass_closure = mass_closure;
+            }
+        }
         self.last_timing.grid_update_us += t1.elapsed().as_micros() as u64;
 
         // ── G2P ──────────────────────────────────────────────────────────────
@@ -921,6 +1109,52 @@ impl Simulation {
                 cosserat_curvature: &self.cosserat_curvature[..cosserat_len],
             },
         );
+        if self.boundary_impulse_diagnostic.is_some() {
+            let particle_momentum_end = super::boundary_diagnostics::particle_momentum(self);
+            let particle_momentum_end_f64 =
+                super::boundary_diagnostics::particle_momentum_f64(self);
+            let Some(diagnostic) = &mut self.boundary_impulse_diagnostic else {
+                unreachable!("just checked is_some() above")
+            };
+            if let Some(ledger) = &mut diagnostic.pending {
+                ledger.particle_momentum_end = particle_momentum_end;
+                ledger.residual = ledger.particle_momentum_end
+                    - ledger.particle_momentum_start
+                    - ledger.gravity_impulse
+                    - ledger.wall_impulse
+                    - ledger.contact_impulse
+                    - ledger.other_grid_impulse;
+                ledger.particle_momentum_end_f64 = particle_momentum_end_f64;
+                ledger.residual_f64 = ledger.particle_momentum_end_f64
+                    - ledger.particle_momentum_start_f64
+                    - ledger.gravity_impulse_f64
+                    - ledger.wall_impulse_f64
+                    - ledger.contact_impulse_f64
+                    - ledger.other_grid_impulse_f64;
+                ledger.g2p_transfer_residual_f64 =
+                    ledger.particle_momentum_end_f64 - ledger.grid_momentum_before_g2p_f64;
+                ledger.g2p_unexplained_residual_f64 =
+                    ledger.g2p_transfer_residual_f64 - ledger.g2p_mass_closure.delta_p_sum;
+            }
+        }
+        // TEMPORARY diagnostic (2026-08-30), see the P2G-side insertion
+        // above and `pending_divergence_diagnostic`'s own doc -- fills in
+        // the REAL, final `tr(C)` G2P just wrote onto the tracked
+        // particle, now that G2P has actually run this same substep.
+        if let Some((tracked_index, trace_translation, trace_affine, trace_stress, _, dt_used)) =
+            self.pending_divergence_diagnostic
+        {
+            let c_final = self.particles.velocity_gradient[tracked_index];
+            let trace_final = c_final.x_axis.x + c_final.y_axis.y;
+            self.pending_divergence_diagnostic = Some((
+                tracked_index,
+                trace_translation,
+                trace_affine,
+                trace_stress,
+                trace_final,
+                dt_used,
+            ));
+        }
         // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
         // already baked in via the shared grid-update step above) AND
         // advances `rod.points.x`, mirroring `gather_grid_to_particles`'s own

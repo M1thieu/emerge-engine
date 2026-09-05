@@ -19,8 +19,8 @@ use emerge::{
     ThermalStatsPlugin, collect_snapshot,
 };
 use emerge::{
-    BinghamFluidMaterial, BoilingMixtureMaterial, CavitatingEosParams, CavitatingEosTable,
-    CorotatedMaterial, DruckerPragerMaterial, GranularFluidMaterial,
+    BinghamFluidMaterial, BoilingMixtureMaterial, BoundaryImpulseExperiment, CavitatingEosParams,
+    CavitatingEosTable, CorotatedMaterial, DruckerPragerMaterial, GranularFluidMaterial,
     IsothermalCavitatingFluidMaterial, MaterialRegistry, MuIRheologyMaterial, NaccMaterial,
     NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial, SimConfig, Simulation,
     SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
@@ -2263,6 +2263,58 @@ fn hydrostatic_test_scene_unprestressed_full(
     )
 }
 
+/// Confined counterpart used by the structural-boundary ledger. Unlike the
+/// historical 20-cell-wide column, this body spans the domain between the two
+/// outer `SlipBoundary` side walls, so hydrostatic pressure has a lateral wall
+/// reaction instead of physically spreading through two free vertical faces.
+fn confined_hydrostatic_test_scene_unprestressed() -> (Simulation, f32, f32, f32, f32, f32) {
+    const REST_DENSITY: f32 = 4.0;
+    const EOS_POWER: f32 = 7.0;
+    const C0_SQUARED: f32 = 180.0 * 180.0;
+    const GRAVITY: f32 = 9.81;
+    const SPAWN_BOTTOM_Y: f32 = 2.0;
+    const BOTTOM_CONTACT_Y: f32 = 1.5;
+    let eos_stiffness = C0_SQUARED * REST_DENSITY / EOS_POWER;
+    let config = SimConfig {
+        max_substeps_per_step: 500,
+        ..SimConfig::standard(64, 0.02, Vec2::new(0.0, -GRAVITY))
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        // x in [2, 61.5]: both vertical free faces now overlap the real
+        // side-wall support instead of opening into an empty 20-cell gap.
+        box_size: IVec2::new(60, 12),
+        box_center: Vec2::new(32.0, SPAWN_BOTTOM_Y + 6.0),
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NewtonianFluidMaterial::new(
+            REST_DENSITY,
+            1.0e-3,
+            eos_stiffness,
+            EOS_POWER,
+        )))
+        .with_boundary(Box::new(SlipBoundary::new(2)));
+    for x in &mut solver.particles_mut().x {
+        x.y -= SPAWN_BOTTOM_Y - BOTTOM_CONTACT_Y;
+    }
+    let surface_y = solver
+        .particles()
+        .x
+        .iter()
+        .map(|x| x.y)
+        .fold(f32::MIN, f32::max);
+    (
+        solver,
+        REST_DENSITY,
+        eos_stiffness,
+        EOS_POWER,
+        GRAVITY,
+        surface_y,
+    )
+}
+
 /// `eos_power` is a real, explicit parameter (not hardcoded to 7.0) so the
 /// SAME scene geometry/rest_density/stiffness can build a real linear-EOS
 /// (`eos_power=1.0`) control -- see `fluid_geostatic_prestress_linear_eos_control_open_gap`.
@@ -3087,16 +3139,702 @@ fn fluid_geostatic_prestress_isothermal_cavitating_vs_newtonian_ab() {
     println!("[isothermal-ab] cavitating_300k:          {cavitating_line}");
 }
 
+/// TEMPORARY structural-boundary investigation: the literature-derived 2x2
+/// matrix from `tmp/structural_bounce_research_synthesis.md`, measured through
+/// the accepted-substep impulse ledger rather than visual motion. All four runs
+/// have identical particles, material, wall position, timestep and analytic
+/// geostatic initialization; only the diagnostic wall branch differs.
+#[test]
+#[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+fn fluid_geostatic_structural_boundary_impulse_ledger_2x2() {
+    const CHECKPOINTS: [usize; 11] = [0, 1, 2, 5, 10, 50, 100, 200, 400, 1_000, 5_000];
+    let modes = [
+        (
+            BoundaryImpulseExperiment::Baseline,
+            "A velocity/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareRelease,
+            "B traction/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::DeepQuadraticBand,
+            "C velocity/deep-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareDeepBand,
+            "D traction/deep-band",
+        ),
+    ];
+
+    for (mode, label) in modes {
+        let eos_power = 7.0;
+        let (mut solver, rest_density, eos_stiffness, eos_power, gravity, surface_y) =
+            hydrostatic_test_scene_unprestressed_full(eos_power, 1.5, 180.0 * 180.0);
+        apply_geostatic_prestress(
+            &mut solver,
+            rest_density,
+            eos_stiffness,
+            eos_power,
+            gravity,
+            surface_y,
+        );
+        solver.enable_boundary_impulse_diagnostic(mode);
+        let mut steps_done = 0;
+        for checkpoint in CHECKPOINTS {
+            solver.step_n(checkpoint - steps_done);
+            steps_done = checkpoint;
+            let report = solver.boundary_impulse_report().unwrap();
+            let err =
+                mean_hydrostatic_rel_err(&solver, rest_density, eos_stiffness, eos_power, gravity);
+            println!(
+                "[boundary-ledger analytic] {label} step={checkpoint} time={:.3} \
+                 v_com={:.6} err={err:.6} accepted={} R_rms=({:.3e},{:.3e}) \
+                 R_max=({:.3e},{:.3e}) I_g_y={:.6} I_wall_y={:.6} \
+                 I_other_y={:.3e} releases={} row_Iwall_y=[{:.6},{:.6},{:.6}]",
+                checkpoint as f32 * solver.config().dt,
+                mean_vertical_velocity(&solver),
+                report.accepted_substeps,
+                report.residual_rms.x,
+                report.residual_rms.y,
+                report.max_abs_residual.x,
+                report.max_abs_residual.y,
+                report.gravity_impulse_sum.y,
+                report.wall_impulse_sum.y,
+                report.other_grid_impulse_sum.y,
+                report.compressive_release_events,
+                report.row_wall_impulse_sum[0].y,
+                report.row_wall_impulse_sum[1].y,
+                report.row_wall_impulse_sum[2].y,
+            );
+            if checkpoint == 1 {
+                let first = report.first_accepted.as_ref().unwrap();
+                println!(
+                    "[boundary-ledger analytic-first] {label} dt={:.6} Pp0_y={:.6} \
+                     PgP2G_y={:.6} Ig_y={:.6} prewall_y={:.6} Iwall_y={:.6} \
+                     Pp1_y={:.6} R_y={:.3e}",
+                    first.dt,
+                    first.particle_momentum_start.y,
+                    first.grid_momentum_after_p2g.y,
+                    first.gravity_impulse.y,
+                    first.grid_momentum_before_wall.y,
+                    first.wall_impulse.y,
+                    first.particle_momentum_end.y,
+                    first.residual.y,
+                );
+                for node in &first.bottom_nodes {
+                    if (30..=34).contains(&node.x) {
+                        println!(
+                            "[boundary-node-analytic-first] {label} node=({},{}) m={:.6} \
+                             adv_y={:.6} affine_y={:.6} stress_y={:.6} traction={:.6} \
+                             v_pre_y={:.6} v_post_y={:.6} Iwall_y={:.6} \
+                             velocity_active={} compressive={} released_compressive={}",
+                            node.x,
+                            node.y,
+                            node.mass,
+                            node.translation_momentum.y,
+                            node.affine_momentum.y,
+                            node.stress_momentum.y,
+                            node.estimated_normal_traction,
+                            node.velocity_before_wall.y,
+                            node.velocity_after_wall.y,
+                            node.wall_impulse.y,
+                            node.velocity_condition_active,
+                            node.compressive_traction_active,
+                            node.released_while_compressive,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Solve the *discrete* vertical force equations represented by the exact
+/// quadratic P2G stencil, with the sourced deep wall band (`y<=2`) carrying
+/// the reaction and the top particle row fixed at zero gauge pressure. This
+/// is diagnostic initialization only, not a production solver.
+fn apply_discrete_vertical_geostatic_equilibrium(
+    solver: &mut Simulation,
+    _rest_density: f32,
+    eos_stiffness: f32,
+    eos_power: f32,
+) -> (usize, f64) {
+    const KERNEL_D_INVERSE: f64 = 4.0;
+    const FIRST_FREE_GRID_ROW: usize = 3;
+    let grid_res = solver.config().grid_res;
+    let gravity_y = solver.config().gravity.y as f64;
+    let particles = solver.particles_mut();
+    let mut row_y: Vec<f32> = particles.x.iter().map(|x| x.y).collect();
+    row_y.sort_by(f32::total_cmp);
+    row_y.dedup_by(|a, b| (*a - *b).abs() < 1.0e-6);
+    let unknown_rows = row_y.len().saturating_sub(1); // top row: p=0, J=1
+    let particle_row: Vec<usize> = particles
+        .x
+        .iter()
+        .map(|x| {
+            row_y
+                .iter()
+                .position(|y| (*y - x.y).abs() < 1.0e-6)
+                .unwrap()
+        })
+        .collect();
+    let mut row_j: Vec<f64> = (0..row_y.len())
+        .map(|r| {
+            particles.deformation_gradient[particle_row.iter().position(|&pr| pr == r).unwrap()]
+                .determinant() as f64
+        })
+        .collect();
+    *row_j.last_mut().unwrap() = 1.0;
+
+    let mut final_max_residual = f64::INFINITY;
+    let mut iterations = 0;
+    for iteration in 0..30 {
+        iterations = iteration + 1;
+        let node_count = grid_res * grid_res;
+        let mut node_mass = vec![0.0f64; node_count];
+        let mut node_force = vec![0.0f64; node_count];
+        let mut jacobian = vec![0.0f64; node_count * unknown_rows];
+        for (i, &row) in particle_row.iter().enumerate() {
+            let j = row_j[row];
+            let j_neg_gamma = j.powf(-(eos_power as f64));
+            let pressure = eos_stiffness as f64 * (j_neg_gamma - 1.0);
+            let volume0 = particles.initial_volume[i] as f64;
+            let volume_pressure = volume0 * j * pressure;
+            let d_volume_pressure_d_j =
+                volume0 * eos_stiffness as f64 * ((1.0 - eos_power as f64) * j_neg_gamma - 1.0);
+            let weights = emerge::spacetime::grid::kernel::quadratic_weights(particles.x[i]);
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    let cell = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                    if cell.x < 0
+                        || cell.y < 0
+                        || cell.x >= grid_res as i32
+                        || cell.y >= grid_res as i32
+                    {
+                        continue;
+                    }
+                    let idx = cell.x as usize * grid_res + cell.y as usize;
+                    let weight = (weights.wx[gx] * weights.wy[gy]) as f64;
+                    let distance_y = (cell.y as f32 - particles.x[i].y + 0.5) as f64;
+                    node_mass[idx] += weight * particles.mass[i] as f64;
+                    node_force[idx] += KERNEL_D_INVERSE * volume_pressure * weight * distance_y;
+                    if row < unknown_rows {
+                        jacobian[idx * unknown_rows + row] +=
+                            KERNEL_D_INVERSE * d_volume_pressure_d_j * weight * distance_y;
+                    }
+                }
+            }
+        }
+        for idx in 0..node_count {
+            node_force[idx] += node_mass[idx] * gravity_y;
+        }
+        let active_free_nodes: Vec<usize> = (0..node_count)
+            .filter(|&idx| idx % grid_res >= FIRST_FREE_GRID_ROW && node_mass[idx] > 1.0e-12)
+            .collect();
+        final_max_residual = active_free_nodes
+            .iter()
+            .map(|&idx| node_force[idx].abs())
+            .fold(0.0, f64::max);
+        if final_max_residual < 1.0e-8 {
+            break;
+        }
+
+        let mut normal = vec![vec![0.0f64; unknown_rows]; unknown_rows];
+        let mut rhs = vec![0.0f64; unknown_rows];
+        for &idx in &active_free_nodes {
+            for a in 0..unknown_rows {
+                let ja = jacobian[idx * unknown_rows + a];
+                rhs[a] -= ja * node_force[idx];
+                for b in 0..unknown_rows {
+                    normal[a][b] += ja * jacobian[idx * unknown_rows + b];
+                }
+            }
+        }
+        let max_diagonal = (0..unknown_rows).map(|i| normal[i][i]).fold(0.0, f64::max);
+        for (i, row) in normal.iter_mut().enumerate() {
+            row[i] += max_diagonal * 1.0e-10 + 1.0e-18;
+        }
+        let delta = solve_dense_linear_system(normal, rhs);
+
+        // Backtracking on the actual discrete force norm, with the material's
+        // own admissible J interval respected. The Newton system is local;
+        // this guard makes the diagnostic initialization deterministic.
+        let old_j = row_j.clone();
+        let old_norm: f64 = active_free_nodes
+            .iter()
+            .map(|&idx| node_force[idx] * node_force[idx])
+            .sum();
+        let mut alpha = 1.0;
+        let mut accepted = false;
+        while alpha >= 1.0 / 1024.0 {
+            for r in 0..unknown_rows {
+                row_j[r] = (old_j[r] + alpha * delta[r]).clamp(0.500_001, 1.999_999);
+            }
+            let trial_norm = discrete_vertical_force_norm(
+                particles,
+                &particle_row,
+                &row_j,
+                HydrostaticRowParams {
+                    grid_res,
+                    gravity_y,
+                    eos_stiffness: eos_stiffness as f64,
+                    eos_power: eos_power as f64,
+                    first_free_grid_row: FIRST_FREE_GRID_ROW,
+                },
+            );
+            if trial_norm < old_norm {
+                accepted = true;
+                break;
+            }
+            alpha *= 0.5;
+        }
+        if !accepted {
+            row_j = old_j;
+            break;
+        }
+    }
+
+    for i in 0..particles.len() {
+        let j = row_j[particle_row[i]] as f32;
+        particles.deformation_gradient[i] = Mat2::from_diagonal(Vec2::splat(j.sqrt()));
+        particles.volume[i] = particles.initial_volume[i] * j;
+        particles.density[i] = particles.mass[i] / particles.volume[i];
+        particles.v[i] = Vec2::ZERO;
+        particles.velocity_gradient[i] = Mat2::ZERO;
+    }
+    (iterations, final_max_residual)
+}
+
+/// Scene parameters that stay fixed across every trial evaluation in the
+/// backtracking line search -- bundled so `discrete_vertical_force_norm`
+/// needs no `#[allow(clippy::too_many_arguments)]`, same real fix (group
+/// arguments that always travel together into one struct) already used by
+/// `PhasePipelineBuffers` in `surface_reconstruction.rs`.
+struct HydrostaticRowParams {
+    grid_res: usize,
+    gravity_y: f64,
+    eos_stiffness: f64,
+    eos_power: f64,
+    first_free_grid_row: usize,
+}
+
+fn discrete_vertical_force_norm(
+    particles: &Particles,
+    particle_row: &[usize],
+    row_j: &[f64],
+    params: HydrostaticRowParams,
+) -> f64 {
+    let HydrostaticRowParams {
+        grid_res,
+        gravity_y,
+        eos_stiffness,
+        eos_power,
+        first_free_grid_row,
+    } = params;
+    let mut mass = vec![0.0f64; grid_res * grid_res];
+    let mut force = vec![0.0f64; grid_res * grid_res];
+    for (i, &row) in particle_row.iter().enumerate() {
+        let j = row_j[row];
+        let pressure = eos_stiffness * (j.powf(-eos_power) - 1.0);
+        let vp = particles.initial_volume[i] as f64 * j * pressure;
+        let weights = emerge::spacetime::grid::kernel::quadratic_weights(particles.x[i]);
+        for gx in 0..3 {
+            for gy in 0..3 {
+                let cell = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                if cell.x < 0
+                    || cell.y < 0
+                    || cell.x >= grid_res as i32
+                    || cell.y >= grid_res as i32
+                {
+                    continue;
+                }
+                let idx = cell.x as usize * grid_res + cell.y as usize;
+                let weight = (weights.wx[gx] * weights.wy[gy]) as f64;
+                let dy = (cell.y as f32 - particles.x[i].y + 0.5) as f64;
+                mass[idx] += weight * particles.mass[i] as f64;
+                force[idx] += 4.0 * vp * weight * dy;
+            }
+        }
+    }
+    (0..force.len())
+        .filter(|&idx| idx % grid_res >= first_free_grid_row && mass[idx] > 1.0e-12)
+        .map(|idx| {
+            let r = force[idx] + mass[idx] * gravity_y;
+            r * r
+        })
+        .sum()
+}
+
+fn solve_dense_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
+    let n = b.len();
+    for k in 0..n {
+        let pivot = (k..n)
+            .max_by(|&i, &j| a[i][k].abs().total_cmp(&a[j][k].abs()))
+            .unwrap();
+        a.swap(k, pivot);
+        b.swap(k, pivot);
+        let diagonal = a[k][k];
+        if diagonal.abs() < 1.0e-30 {
+            continue;
+        }
+        for i in (k + 1)..n {
+            let factor = a[i][k] / diagonal;
+            // `i > k` always holds here (loop starts at k+1), so splitting
+            // at `i` puts row `k` in the lower slice and row `i` as the
+            // first row of the upper slice -- two genuinely disjoint
+            // borrows, not aliasing the same row.
+            let (rows_below_i, rows_from_i) = a.split_at_mut(i);
+            let row_k = &rows_below_i[k];
+            let row_i = &mut rows_from_i[0];
+            for (aij, akj) in row_i.iter_mut().zip(row_k.iter()).skip(k) {
+                *aij -= factor * akj;
+            }
+            b[i] -= factor * b[k];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let rhs = b[i] - ((i + 1)..n).map(|j| a[i][j] * x[j]).sum::<f64>();
+        x[i] = if a[i][i].abs() > 1.0e-30 {
+            rhs / a[i][i]
+        } else {
+            0.0
+        };
+    }
+    x
+}
+
+#[test]
+#[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+fn fluid_geostatic_structural_boundary_impulse_ledger_discrete_equilibrium_2x2() {
+    const CHECKPOINTS: [usize; 9] = [0, 1, 2, 5, 10, 50, 100, 200, 1_000];
+    let modes = [
+        (
+            BoundaryImpulseExperiment::Baseline,
+            "A velocity/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareRelease,
+            "B traction/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::DeepQuadraticBand,
+            "C velocity/deep-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareDeepBand,
+            "D traction/deep-band",
+        ),
+    ];
+    for (mode, label) in modes {
+        let (mut solver, rest_density, eos_stiffness, eos_power, _gravity, _surface_y) =
+            hydrostatic_test_scene_unprestressed_full(7.0, 1.5, 180.0 * 180.0);
+        let (iterations, initial_force_residual) = apply_discrete_vertical_geostatic_equilibrium(
+            &mut solver,
+            rest_density,
+            eos_stiffness,
+            eos_power,
+        );
+        solver.enable_boundary_impulse_diagnostic(mode);
+        let mut steps_done = 0;
+        for checkpoint in CHECKPOINTS {
+            solver.step_n(checkpoint - steps_done);
+            steps_done = checkpoint;
+            let report = solver.boundary_impulse_report().unwrap();
+            println!(
+                "[boundary-ledger discrete] {label} init_iters={iterations} \
+                 init_force_residual={initial_force_residual:.3e} step={checkpoint} \
+                 time={:.3} v_com={:.6} accepted={} R_rms_y={:.3e} R_max_y={:.3e} \
+                 I_g_y={:.6} I_wall_y={:.6} releases={} row_Iwall_y=[{:.6},{:.6},{:.6}]",
+                checkpoint as f32 * solver.config().dt,
+                mean_vertical_velocity(&solver),
+                report.accepted_substeps,
+                report.residual_rms.y,
+                report.max_abs_residual.y,
+                report.gravity_impulse_sum.y,
+                report.wall_impulse_sum.y,
+                report.compressive_release_events,
+                report.row_wall_impulse_sum[0].y,
+                report.row_wall_impulse_sum[1].y,
+                report.row_wall_impulse_sum[2].y,
+            );
+            if checkpoint == 1 {
+                let first = report.first_accepted.as_ref().unwrap();
+                println!(
+                    "[boundary-ledger discrete-first] {label} dt={:.6} Pp0_y={:.6} \
+                     PgP2G_y={:.6} Ig_y={:.6} prewall_y={:.6} Iwall_y={:.6} \
+                     Pp1_y={:.6} R_y={:.3e}",
+                    first.dt,
+                    first.particle_momentum_start.y,
+                    first.grid_momentum_after_p2g.y,
+                    first.gravity_impulse.y,
+                    first.grid_momentum_before_wall.y,
+                    first.wall_impulse.y,
+                    first.particle_momentum_end.y,
+                    first.residual.y,
+                );
+            }
+        }
+    }
+}
+
+/// Same controlled matrix in a physically admissible hydrostatic geometry:
+/// lateral walls carry the pressure that made the historical narrow column
+/// spread and collapse. Runs both the continuum analytic profile and the
+/// exact discrete vertical-force initialization.
+#[test]
+#[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+fn fluid_geostatic_confined_boundary_impulse_ledger_2x2() {
+    const CHECKPOINTS: [usize; 9] = [0, 1, 2, 5, 10, 50, 100, 200, 1_000];
+    let modes = [
+        (
+            BoundaryImpulseExperiment::Baseline,
+            "A velocity/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareRelease,
+            "B traction/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::DeepQuadraticBand,
+            "C velocity/deep-band",
+        ),
+        (
+            BoundaryImpulseExperiment::TractionAwareDeepBand,
+            "D traction/deep-band",
+        ),
+    ];
+    for discrete in [false, true] {
+        for (mode, label) in modes {
+            let (mut solver, rho0, b, gamma, gravity, surface_y) =
+                confined_hydrostatic_test_scene_unprestressed();
+            let init_label;
+            let init_residual;
+            if discrete {
+                let (_, residual) =
+                    apply_discrete_vertical_geostatic_equilibrium(&mut solver, rho0, b, gamma);
+                init_label = "discrete";
+                init_residual = residual;
+            } else {
+                apply_geostatic_prestress(&mut solver, rho0, b, gamma, gravity, surface_y);
+                init_label = "analytic";
+                init_residual = f64::NAN;
+            }
+            solver.enable_boundary_impulse_diagnostic(mode);
+            let initial_x_span = {
+                let min = solver
+                    .particles()
+                    .x
+                    .iter()
+                    .map(|x| x.x)
+                    .fold(f32::MAX, f32::min);
+                let max = solver
+                    .particles()
+                    .x
+                    .iter()
+                    .map(|x| x.x)
+                    .fold(f32::MIN, f32::max);
+                max - min
+            };
+            let mut steps_done = 0;
+            for checkpoint in CHECKPOINTS {
+                solver.step_n(checkpoint - steps_done);
+                steps_done = checkpoint;
+                let report = solver.boundary_impulse_report().unwrap();
+                let current_x_span = {
+                    let min = solver
+                        .particles()
+                        .x
+                        .iter()
+                        .map(|x| x.x)
+                        .fold(f32::MAX, f32::min);
+                    let max = solver
+                        .particles()
+                        .x
+                        .iter()
+                        .map(|x| x.x)
+                        .fold(f32::MIN, f32::max);
+                    max - min
+                };
+                println!(
+                    "[boundary-ledger confined-{init_label}] {label} init_R={init_residual:.3e} \
+                     step={checkpoint} time={:.3} v_com={:.6} dx_span={:.6} accepted={} \
+                     R_rms_y={:.3e} R_max_y={:.3e} I_g_y={:.6} I_wall_y={:.6} releases={} \
+                     row_Iwall_y=[{:.6},{:.6},{:.6}] mls_n={} min_d_wall={:.6} \
+                     k_inf_mean={:.8} \
+                     k_inf_max={:.8} e_const={:.3e} e_lin_value={:.3e} e_lin_grad={:.3e} \
+                     e_wall_lin_value={:.3e} e_wall_lin_grad={:.3e} \
+                     corr=[k:{:.4},const:{:.4},lin_v:{:.4},lin_g:{:.4},wall_v:{:.4},wall_g:{:.4}]",
+                    checkpoint as f32 * solver.config().dt,
+                    mean_vertical_velocity(&solver),
+                    current_x_span - initial_x_span,
+                    report.accepted_substeps,
+                    report.residual_rms.y,
+                    report.max_abs_residual.y,
+                    report.gravity_impulse_sum.y,
+                    report.wall_impulse_sum.y,
+                    report.compressive_release_events,
+                    report.row_wall_impulse_sum[0].y,
+                    report.row_wall_impulse_sum[1].y,
+                    report.row_wall_impulse_sum[2].y,
+                    report.mls_particle_samples,
+                    report.mls_closest_clamp_plane_distance,
+                    report.mls_condition_inf_mean,
+                    report.mls_condition_inf_max,
+                    report.mls_constant_reproduction_rms,
+                    report.mls_linear_value_reproduction_rms,
+                    report.mls_linear_gradient_reproduction_rms,
+                    report.mls_projected_linear_value_reproduction_rms,
+                    report.mls_projected_linear_gradient_reproduction_rms,
+                    report.mls_condition_residual_correlation,
+                    report.mls_constant_residual_correlation,
+                    report.mls_linear_value_residual_correlation,
+                    report.mls_linear_gradient_residual_correlation,
+                    report.mls_projected_linear_value_residual_correlation,
+                    report.mls_projected_linear_gradient_residual_correlation,
+                );
+                let worst = report.worst_g2p_node.as_ref();
+                println!(
+                    "[boundary-ledger-f64 confined-{init_label}] {label} step={checkpoint} \
+                     R32_rms_y={:.3e} R64_rms_y={:.3e} R64_max_y={:.3e} \
+                     g2p_rms_y={:.3e} deltaP_rms_y={:.3e} unexplained_rms_y={:.3e} \
+                     unexplained_max_y={:.3e} max_dm={:.3e} max_node_deltaP={:.3e} \
+                     near_wall_l1_frac={:.4} worst_substep={} worst_node=({},{}) \
+                     worst_dm={:.3e} worst_deltaP=({:.3e},{:.3e})",
+                    report.residual_rms.y,
+                    report.residual_f64_rms.y,
+                    report.max_abs_residual_f64.y,
+                    report.g2p_transfer_residual_f64_rms.y,
+                    report.g2p_delta_p_sum_rms.y,
+                    report.g2p_unexplained_residual_f64_rms.y,
+                    report.max_abs_g2p_unexplained_residual_f64.y,
+                    report.max_abs_g2p_node_mass_gap,
+                    report.max_g2p_node_delta_p_norm,
+                    report.g2p_near_wall_delta_p_l1_fraction,
+                    report.worst_g2p_node_accepted_substep,
+                    worst.map_or(usize::MAX, |node| node.x),
+                    worst.map_or(usize::MAX, |node| node.y),
+                    worst.map_or(f64::NAN, |node| node.mass_gap),
+                    worst.map_or(f64::NAN, |node| node.delta_p.x),
+                    worst.map_or(f64::NAN, |node| node.delta_p.y),
+                );
+            }
+        }
+    }
+}
+
+/// Long-horizon follow-up to the complete 2x2 above. The 20-second matrix
+/// already showed that traction-aware release (B/D) is indistinguishable from
+/// its velocity-only counterpart, while the quadratic-support-depth change
+/// (C) is the only intervention with a measurable effect. Carry only that
+/// identified contrast to 200 simulated seconds, for both initializations;
+/// repeating the inactive traction factor for another 180 seconds would add
+/// runtime rather than information.
+#[test]
+#[ignore = "very long-running diagnostic experiment (four 200-second trajectories)"]
+fn fluid_geostatic_confined_boundary_impulse_ledger_long_horizon() {
+    const CHECKPOINTS: [usize; 7] = [0, 1, 10, 1_000, 2_500, 5_000, 10_000];
+    let modes = [
+        (
+            BoundaryImpulseExperiment::Baseline,
+            "A velocity/current-band",
+        ),
+        (
+            BoundaryImpulseExperiment::DeepQuadraticBand,
+            "C velocity/deep-band",
+        ),
+    ];
+
+    for discrete in [false, true] {
+        for (mode, label) in modes {
+            let (mut solver, rho0, b, gamma, gravity, surface_y) =
+                confined_hydrostatic_test_scene_unprestressed();
+            let (init_label, init_residual) = if discrete {
+                let (_, residual) =
+                    apply_discrete_vertical_geostatic_equilibrium(&mut solver, rho0, b, gamma);
+                ("discrete", residual)
+            } else {
+                apply_geostatic_prestress(&mut solver, rho0, b, gamma, gravity, surface_y);
+                ("analytic", f64::NAN)
+            };
+            solver.enable_boundary_impulse_diagnostic(mode);
+
+            let mut steps_done = 0;
+            for checkpoint in CHECKPOINTS {
+                solver.step_n(checkpoint - steps_done);
+                steps_done = checkpoint;
+                let report = solver.boundary_impulse_report().unwrap();
+                println!(
+                    "[boundary-ledger confined-long-{init_label}] {label} \
+                     init_R={init_residual:.3e} step={checkpoint} time={:.3} \
+                     v_com={:.6} accepted={} R_rms_y={:.3e} R_max_y={:.3e} \
+                     I_g_y={:.6} I_wall_y={:.6} releases={} mls_n={} min_d_wall={:.6} \
+                     k_inf_mean={:.8} k_inf_max={:.8} e_const={:.3e} \
+                     e_lin_value={:.3e} e_lin_grad={:.3e} e_wall_lin_value={:.3e} \
+                     e_wall_lin_grad={:.3e} \
+                     corr=[k:{:.4},const:{:.4},lin_v:{:.4},lin_g:{:.4},wall_v:{:.4},wall_g:{:.4}]",
+                    checkpoint as f32 * solver.config().dt,
+                    mean_vertical_velocity(&solver),
+                    report.accepted_substeps,
+                    report.residual_rms.y,
+                    report.max_abs_residual.y,
+                    report.gravity_impulse_sum.y,
+                    report.wall_impulse_sum.y,
+                    report.compressive_release_events,
+                    report.mls_particle_samples,
+                    report.mls_closest_clamp_plane_distance,
+                    report.mls_condition_inf_mean,
+                    report.mls_condition_inf_max,
+                    report.mls_constant_reproduction_rms,
+                    report.mls_linear_value_reproduction_rms,
+                    report.mls_linear_gradient_reproduction_rms,
+                    report.mls_projected_linear_value_reproduction_rms,
+                    report.mls_projected_linear_gradient_reproduction_rms,
+                    report.mls_condition_residual_correlation,
+                    report.mls_constant_residual_correlation,
+                    report.mls_linear_value_residual_correlation,
+                    report.mls_linear_gradient_residual_correlation,
+                    report.mls_projected_linear_value_residual_correlation,
+                    report.mls_projected_linear_gradient_residual_correlation,
+                );
+                let worst = report.worst_g2p_node.as_ref();
+                println!(
+                    "[boundary-ledger-f64 confined-long-{init_label}] {label} step={checkpoint} \
+                     R32_rms_y={:.3e} R64_rms_y={:.3e} R64_max_y={:.3e} \
+                     g2p_rms_y={:.3e} deltaP_rms_y={:.3e} unexplained_rms_y={:.3e} \
+                     unexplained_max_y={:.3e} max_dm={:.3e} max_node_deltaP={:.3e} \
+                     near_wall_l1_frac={:.4} worst_substep={} worst_node=({},{}) \
+                     worst_dm={:.3e} worst_deltaP=({:.3e},{:.3e})",
+                    report.residual_rms.y,
+                    report.residual_f64_rms.y,
+                    report.max_abs_residual_f64.y,
+                    report.g2p_transfer_residual_f64_rms.y,
+                    report.g2p_delta_p_sum_rms.y,
+                    report.g2p_unexplained_residual_f64_rms.y,
+                    report.max_abs_g2p_unexplained_residual_f64.y,
+                    report.max_abs_g2p_node_mass_gap,
+                    report.max_g2p_node_delta_p_norm,
+                    report.g2p_near_wall_delta_p_l1_fraction,
+                    report.worst_g2p_node_accepted_substep,
+                    worst.map_or(usize::MAX, |node| node.x),
+                    worst.map_or(usize::MAX, |node| node.y),
+                    worst.map_or(f64::NAN, |node| node.mass_gap),
+                    worst.map_or(f64::NAN, |node| node.delta_p.x),
+                    worst.map_or(f64::NAN, |node| node.delta_p.y),
+                );
+            }
+        }
+    }
+}
+
 /// Real, light qualitative pass for the other two Tait-EOS materials
-/// (`BinghamFluidMaterial`, `GranularFluidMaterial`): given the deep,
-/// disclosed force-balance gap above applies to the whole EOS family (not
-/// just `NewtonianFluidMaterial`), a tight quantitative match isn't
-/// realistic for these either -- attempting one would just re-discover the
-/// same open problem three more times. Instead: does pressure genuinely
-/// TREND upward with depth under real dynamic self-weight settling (no
-/// pre-stress init, plain gravity settle), the same qualitative bar
-/// `tests/accuracy.rs`'s own hydrostatic test already uses for this exact
-/// reason.
+/// (`BinghamFluidMaterial`, `GranularFluidMaterial`). This intentionally uses
+/// an unconfined settling column, so a tight static hydrostatic comparison
+/// would be physically invalid: positive pressure must spread its free sides.
+/// Instead, ask only whether pressure genuinely TRENDS upward with depth under
+/// dynamic self-weight settling (no pre-stress init, plain gravity), the same
+/// qualitative bar `tests/accuracy.rs` uses for this geometry.
 fn pressure_trends_upward_with_depth<M: MaterialModel + Clone + 'static>(material: M) {
     // Keep an identical clone for measurement -- `with_default_material`
     // takes ownership of the boxed original, same "reconstruct
@@ -3894,7 +4632,22 @@ fn ratchet_friction_produces_real_directed_locomotion() {
     const MUSCLE_GROUPS: usize = 8;
 
     let mut mat = NeoHookeanMaterial::new(5.0, 10.0);
-    mat.active_stress_coeff = 25.0;
+    // Real recalibration (2026-09, exponential-integrator rollout): this
+    // scene's own crawl distance dropped from a comfortable margin over the
+    // >10.0 threshold to 3.42 once NeoHookean's F-integration was fixed
+    // (Euler -> exact exponential, see `deformation_increment_exp`). Root
+    // cause understood, not just a coincidence: the old Euler ratchet's own
+    // volumetric drift was accidentally contributing extra net motion to
+    // this cyclic activation-vs-ratchet-friction mechanism -- direction
+    // stayed correct (+X) the whole time, only the magnitude was inflated
+    // by the bug. Measured (not guessed) via a real sweep of this exact
+    // scene at the corrected physics: 25->3.42, 35->7.86, 50->7.25 (real,
+    // non-monotonic -- a genuine resonance between the muscle activation
+    // cycle and the ratchet-friction release cycle, not measurement noise),
+    // 75->9.19, 100->10.34, 110->8.82, 120->13.14, 140->13.73. 120 chosen:
+    // first value with a real, comfortable margin past the threshold, not
+    // a bare pass.
+    mat.active_stress_coeff = 120.0;
     // Legacy raw-grid-unit scene: calibrated (before 2026-08-25) against the
     // OLD implicit particle_mass=1.0 default -- at spacing 0.5 that is
     // exactly grid_density=4.0. Preserving that PRE-EXISTING calibration

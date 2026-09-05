@@ -19,8 +19,8 @@ use wgpu::util::DeviceExt;
 
 use super::gpu_types::{
     BandHysteresisParams, CameraParams, GridVisibilityParams, GridVolumeParams, InstanceData,
-    LightDiffuseParams, OpticalTable, RenderConfig, SurfaceParams, SurfaceRenderParams,
-    VisibilityParams, WaveStepParams,
+    LightDiffuseParams, OpticalTable, PhysicalRenderParams, RenderConfig, SurfaceParams,
+    SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
 
 /// 4-byte lazy-growth storage placeholder -- real, standard convention used
@@ -66,6 +66,7 @@ pub(super) struct RenderBuffers {
     pub camera_buffer: wgpu::Buffer,
     pub render_config_buf: wgpu::Buffer,
     pub optical_table_buf: wgpu::Buffer,
+    pub physical_render_params_buf: wgpu::Buffer,
     pub grid_volume_params_buf: wgpu::Buffer,
     pub grid_visibility_buf: wgpu::Buffer,
     pub grid_visibility_params_buf: wgpu::Buffer,
@@ -161,6 +162,8 @@ impl RenderBuffers {
         let camera_buffer = uniform_buffer::<CameraParams>(device, "render_camera");
         let render_config_buf = uniform_buffer::<RenderConfig>(device, "render_config");
         let optical_table_buf = uniform_buffer::<OpticalTable>(device, "render_optics");
+        let physical_render_params_buf =
+            uniform_buffer::<PhysicalRenderParams>(device, "render_physical_contract");
         let grid_volume_params_buf =
             uniform_buffer::<GridVolumeParams>(device, "grid_volume_params");
 
@@ -324,6 +327,7 @@ impl RenderBuffers {
             camera_buffer,
             render_config_buf,
             optical_table_buf,
+            physical_render_params_buf,
             grid_volume_params_buf,
             grid_visibility_buf,
             grid_visibility_params_buf,

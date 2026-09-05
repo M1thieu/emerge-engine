@@ -76,10 +76,22 @@ struct OpticalTable {
     specular: array<vec4<f32>, 16>,
 }
 
+// Shared validated SI contract. `spatial.z == 0` means the caller has not
+// supplied physical scale yet and this path is still in legacy mode.
+struct PhysicalRenderParams {
+    spatial: vec4<f32>,
+    incident_radiance: vec4<f32>,
+    background_radiance: vec4<f32>,
+    display_white_radiance: vec4<f32>,
+    camera_direction: vec4<f32>,
+    light_direction: vec4<f32>,
+}
+
 @group(0) @binding(0) var<storage, read>       particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> instances: array<InstanceData>;
 @group(0) @binding(2) var<uniform>             config:    RenderConfig;
 @group(0) @binding(3) var<uniform>             optics:    OpticalTable;
+@group(0) @binding(4) var<uniform>             physical:  PhysicalRenderParams;
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
@@ -181,7 +193,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let t_norm = clamp(p.temperature / 5000.0, 0.0, 1.0);
         let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
         //
-        color = vec4(clamp(with_specular + emission, vec3(0.0), vec3(1.0)), 1.0);
+        if physical.spatial.z > 0.5 {
+            let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
+            let path_m = (1.0 / j) * view_length_m;
+            let slab_t = exp(-sigma_a * path_m);
+            let display_radiance = physical.background_radiance.rgb
+                * slab_t / physical.display_white_radiance.rgb;
+            color = vec4(clamp(display_radiance, vec3(0.0), vec3(1.0)), 1.0);
+        } else {
+            color = vec4(clamp(with_specular + emission, vec3(0.0), vec3(1.0)), 1.0);
+        }
     } else if config.mode == 4u {
         // ByThermal: blackbody emission only. Cold → black, warm → orange, hot → white.
         let t_norm = clamp(p.temperature / 1500.0, 0.0, 1.0);

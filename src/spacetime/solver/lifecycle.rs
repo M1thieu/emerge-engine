@@ -52,6 +52,10 @@ impl Simulation {
             cosserat_curvature: Vec::new(),
             frame_index: 0,
             fluid_sticky_fine_dt: None,
+            pending_divergence_diagnostic: None,
+            boundary_impulse_diagnostic:
+                super::boundary_diagnostics::BoundaryImpulseExperiment::from_env()
+                    .map(super::boundary_diagnostics::BoundaryImpulseDiagnostic::new),
             last_max_particle_speed: 0.0,
             last_step_dt: config.dt,
             last_substeps: 0,
@@ -115,6 +119,10 @@ impl Simulation {
             cosserat_curvature: Vec::new(),
             frame_index: 0,
             fluid_sticky_fine_dt: None,
+            pending_divergence_diagnostic: None,
+            boundary_impulse_diagnostic:
+                super::boundary_diagnostics::BoundaryImpulseExperiment::from_env()
+                    .map(super::boundary_diagnostics::BoundaryImpulseDiagnostic::new),
             last_max_particle_speed: 0.0,
             last_step_dt: config.dt,
             last_substeps: 0,

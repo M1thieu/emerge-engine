@@ -509,6 +509,10 @@ impl Renderer {
                     binding: 8,
                     resource: self.light_phi_bufs[light_next_idx].as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: self.physical_render_params_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -782,12 +786,7 @@ impl Renderer {
         }
 
         let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.08,
-                a: 1.0,
-            })
+            wgpu::LoadOp::Clear(self.clear_color())
         } else {
             wgpu::LoadOp::Load
         };
@@ -1543,16 +1542,15 @@ impl Renderer {
                     binding: 10,
                     resource: self.phase_b_band_state_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: self.physical_render_params_buf.as_entire_binding(),
+                },
             ],
         });
 
         let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.08,
-                a: 1.0,
-            })
+            wgpu::LoadOp::Clear(self.clear_color())
         } else {
             wgpu::LoadOp::Load
         };

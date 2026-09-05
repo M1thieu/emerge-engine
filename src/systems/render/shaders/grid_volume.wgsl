@@ -39,13 +39,22 @@ struct GridVolumeParams {
     grid_res: u32,
     mass_floor: f32,
     material_mass_enabled: u32,
-    _pad1: f32,
+    reference_cell_mass: f32,
     _pad2: vec2<f32>,
 }
 
 struct OpticalTable {
     slots: array<vec4<f32>, 16>,
     specular: array<vec4<f32>, 16>,
+}
+
+struct PhysicalRenderParams {
+    spatial: vec4<f32>,
+    incident_radiance: vec4<f32>,
+    background_radiance: vec4<f32>,
+    display_white_radiance: vec4<f32>,
+    camera_direction: vec4<f32>,
+    light_direction: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> grid_int: array<u32>;
@@ -55,6 +64,7 @@ struct OpticalTable {
 // `dominant_material`'s own doc for why.
 @group(0) @binding(3) var<storage, read> material_mass: array<i32>;
 @group(0) @binding(4) var<storage, read> grid_visibility_field: array<f32>;
+@group(0) @binding(5) var<uniform> physical: PhysicalRenderParams;
 
 // ── Hysteresis visibility state ──────────────────────────────────────────────
 //
@@ -462,5 +472,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let edge_margin = max(params.mass_floor * 1.5, 1.0e-4);
     let alpha = smoothstep(params.mass_floor, params.mass_floor + edge_margin, mass);
+    if physical.spatial.z > 0.5 {
+        let relative_density = max(mass / max(params.reference_cell_mass, 1.0e-12), 0.0);
+        let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
+        let path_m = relative_density * view_length_m;
+        let slab_t = exp(-sigma_a * path_m);
+        let display_radiance = physical.background_radiance.rgb
+            * slab_t / physical.display_white_radiance.rgb;
+        return vec4<f32>(clamp(display_radiance, vec3(0.0), vec3(1.0)), alpha);
+    }
     return vec4<f32>(with_emission, alpha);
 }

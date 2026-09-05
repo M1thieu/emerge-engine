@@ -17,9 +17,13 @@ use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion, saturating_uptake,
 };
+#[cfg(feature = "gpu")]
 use emerge::{
-    BinghamFluidMaterial, DruckerPragerMaterial, Elastic, Field, GripFrictionBoundary,
-    MixturePhase, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
+    BinghamFluidMaterial, CorotatedMaterial, GranularFluidMaterial, ViscoelasticMaterial,
+};
+use emerge::{
+    DruckerPragerMaterial, Elastic, Field, GripFrictionBoundary, MixturePhase, MuIRheologyMaterial,
+    NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial,
     RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
     VonMisesMaterial, WithLatentHeat, WithMixturePhase,
 };
@@ -99,6 +103,157 @@ fn jelly_stable_after_many_steps() {
             "particle {i}: deformation collapsed (J={j}) after jelly sim"
         );
     }
+}
+
+/// Long-window regression for the passive hanging-body failure found in the
+/// interactive no-compression example.  This deliberately uses the example's
+/// exact particle layout, anchor, gravity, boundary, damping and frame time.
+/// The original failure combined three independently real defects: pinned
+/// particles were reset only after G2P and therefore supplied no Dirichlet
+/// reaction to neighbouring grid DOFs; forward-Euler F integration ratcheted
+/// volume under alternating rates; and grid-local Cundall damping suppressed
+/// translation without preserving a compatible affine field. The no-
+/// compression zero-energy mode amplified those defects into collapse.
+#[test]
+fn no_compression_hanging_body_has_no_passive_volume_ratchet() {
+    const STEPS: usize = 12_000;
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 32,
+        material_cfl_coefficient: 0.7,
+        cundall_damping: 0.0,
+        ..SimConfig::earth(64, 0.01, 0.05)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(6, 6),
+        box_center: Vec2::splat(32.0),
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NoCompressionMaterial::new(2000.0, 4000.0)))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let max_y = sim
+        .particles()
+        .iter()
+        .map(|p| p.x.y)
+        .fold(f32::MIN, f32::max);
+    let particles = sim.particles_mut();
+    for i in 0..particles.len() {
+        if particles.x[i].y >= max_y - 0.4 {
+            particles.pinned[i] = 1;
+        }
+    }
+    sim.set_gravity(config.gravity * 0.0002);
+    sim.step_n(STEPS / 2);
+    let halfway_j_deviation = sim
+        .particles()
+        .iter()
+        .map(|p| (p.deformation_gradient.determinant() - 1.0).abs())
+        .fold(0.0_f32, f32::max);
+    sim.step_n(STEPS / 2);
+
+    let (worst_i, max_j_deviation) = sim
+        .particles()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, (p.deformation_gradient.determinant() - 1.0).abs()))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("spawn is nonempty");
+    let min_y = sim
+        .particles()
+        .iter()
+        .map(|p| p.x.y)
+        .fold(f32::MAX, f32::min);
+    let worst = sim.particles().get(worst_i);
+    println!(
+        "12,000-step anchored membrane: halfway_|J-1|={halfway_j_deviation:.6}, \
+         max_|J-1|={max_j_deviation:.6}, min_y={min_y:.6}, \
+         worst_i={worst_i}, x={:?}, v={:?}, C={:?}, F={:?}, pinned={}",
+        worst.x, worst.v, worst.velocity_gradient, worst.deformation_gradient, worst.pinned
+    );
+    assert!(
+        max_j_deviation < 0.01,
+        "a tiny constant load must approach a bounded hanging equilibrium, not \
+         accumulate irreversible volume loss: max_|J-1|={max_j_deviation}, min_y={min_y}"
+    );
+    assert!(
+        max_j_deviation - halfway_j_deviation < 0.002,
+        "the second 300-second window must remain close to the first rather than \
+         entering the old accelerating creep regime: halfway={halfway_j_deviation}, \
+         final={max_j_deviation}"
+    );
+    assert!(
+        min_y > 28.9,
+        "body must remain hanging well clear of the floor under the example's tiny load: min_y={min_y}"
+    );
+}
+
+/// Isolates the grid-Dirichlet part of the membrane fix from both the
+/// tension-only constitutive law and the exponential F integrator. The same
+/// hanging layout uses ordinary Neo-Hookean elasticity, zero Cundall damping,
+/// and a small sustained load. Merely resetting the tagged particles after
+/// G2P used to let the rest of this connected body leak downward because no
+/// anchor reaction reached its shared grid DOFs.
+#[test]
+fn pinned_grid_support_transmits_reaction_to_connected_elastic_body() {
+    let config = SimConfig {
+        boundary_thickness: 3,
+        max_substeps_per_step: 32,
+        material_cfl_coefficient: 0.7,
+        cundall_damping: 0.0,
+        ..SimConfig::earth(64, 0.01, 0.05)
+    };
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(6, 6),
+        box_center: Vec2::splat(32.0),
+        precompute_initial_volumes: true,
+        initial_velocity_scale: 0.0,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(2000.0, 4000.0)))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let max_y = sim
+        .particles()
+        .iter()
+        .map(|p| p.x.y)
+        .fold(f32::MIN, f32::max);
+    let mut pinned_start = Vec::new();
+    for i in 0..sim.particles().len() {
+        if sim.particles().x[i].y >= max_y - 0.4 {
+            pinned_start.push((i, sim.particles().x[i]));
+            sim.particles_mut().pinned[i] = 1;
+        }
+    }
+    assert!(!pinned_start.is_empty());
+
+    sim.set_gravity(config.gravity * 0.0002);
+    sim.step_n(3_000);
+
+    for &(i, start) in &pinned_start {
+        let p = sim.particles().get(i);
+        assert_eq!(p.x, start, "pinned particle {i} moved");
+        assert_eq!(p.v, Vec2::ZERO, "pinned particle {i} retained velocity");
+    }
+    let min_y = sim
+        .particles()
+        .iter()
+        .map(|p| p.x.y)
+        .fold(f32::MAX, f32::min);
+    let max_speed = sim
+        .particles()
+        .iter()
+        .map(|p| p.v.length())
+        .fold(0.0_f32, f32::max);
+    println!("3,000-step Neo-Hookean anchor control: min_y={min_y:.6}, vmax={max_speed:.6}");
+    assert!(
+        min_y > 28.5,
+        "the connected elastic body escaped its anchor support: min_y={min_y}"
+    );
 }
 
 #[test]
@@ -2154,6 +2309,18 @@ fn von_mises_gpu_cpu_single_substep_matches_with_imposed_shear() {
         .map(|p| p.friction_hardening)
         .sum::<f32>()
         / n;
+    let cpu_mean_j: f32 = cpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
+    let gpu_mean_j: f32 = gpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
 
     assert!(
         cpu_kappa > 1.0e-4,
@@ -2170,6 +2337,331 @@ fn von_mises_gpu_cpu_single_substep_matches_with_imposed_shear() {
          kernels from transfer differences (the soft-contact test below is \
          a separate, looser multi-step check): CPU={cpu_kappa:.6} \
          GPU={gpu_kappa:.6}"
+    );
+    assert!(
+        (cpu_mean_j - gpu_mean_j).abs() < 1.0e-4,
+        "the CPU/GPU exponential trial increments must preserve the same volume in the \
+         isolated single-substep case: CPU mean J={cpu_mean_j:.7}, GPU mean J={gpu_mean_j:.7}"
+    );
+}
+
+/// Rankine counterpart of the isolated Von Mises cross-backend check above:
+/// one non-contact, non-gravity substep generates a tensile trial state from
+/// nonzero C, then exercises both the exponential increment and brittle
+/// return mapping on CPU and GPU.
+#[cfg(feature = "gpu")]
+#[test]
+fn rankine_gpu_cpu_single_substep_matches_with_imposed_tension() {
+    use emerge::gpu::GpuSimulation;
+    use emerge::materials::MaterialRegistry;
+
+    let config = SimConfig {
+        grid_res: 32,
+        dt: 1.0e-4,
+        min_dt: 1.0e-6,
+        adaptive_timestep: true,
+        gravity: Vec2::ZERO,
+        ..SimConfig::default()
+    };
+    let material = RankineMaterial::new(500.0, 200.0, 1.0, 1.0);
+    let mut cpu =
+        Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(material));
+    for i in 0..cpu.particles().len() {
+        cpu.particles_mut().velocity_gradient[i] = Mat2::from_diagonal(Vec2::new(400.0, 0.0));
+    }
+    let mut gpu = pollster::block_on(GpuSimulation::new(
+        config,
+        cpu.particles().to_vec(),
+        MaterialRegistry::with_default(Box::new(material)),
+    ));
+
+    cpu.step();
+    gpu.step_frame();
+    gpu.sync_particles_blocking();
+    assert_eq!(cpu.last_substeps(), 1);
+    assert_eq!(gpu.last_substeps(), 1);
+
+    let n = cpu.particles().len() as f32;
+    let cpu_damage = cpu
+        .particles()
+        .iter()
+        .map(|p| p.friction_hardening)
+        .sum::<f32>()
+        / n;
+    let gpu_damage = gpu
+        .particles()
+        .iter()
+        .map(|p| p.friction_hardening)
+        .sum::<f32>()
+        / n;
+    assert!(
+        cpu_damage > 1.0e-4,
+        "imposed tension must genuinely exercise Rankine damage"
+    );
+    let damage_rel_diff = (cpu_damage - gpu_damage).abs() / cpu_damage.max(1.0e-6);
+    assert!(
+        damage_rel_diff < 0.05,
+        "Rankine damage differs across exponential CPU/GPU paths: CPU={cpu_damage:.7} GPU={gpu_damage:.7}"
+    );
+
+    let cpu_mean_j = cpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
+    let gpu_mean_j = gpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
+    assert!(
+        (cpu_mean_j - gpu_mean_j).abs() < 1.0e-4,
+        "Rankine projected volume differs across backends: CPU={cpu_mean_j:.7} GPU={gpu_mean_j:.7}"
+    );
+}
+
+/// Snow counterpart of the isolated Von Mises/Rankine checks: one
+/// non-contact, non-gravity substep drives the SVD compression clamp through
+/// a nonzero affine rate. This jointly exercises the exponential trial
+/// increment, Jp accumulation, and hardening update on CPU and GPU.
+#[cfg(feature = "gpu")]
+#[test]
+fn snow_gpu_cpu_single_substep_matches_with_imposed_compression() {
+    use emerge::gpu::GpuSimulation;
+    use emerge::materials::MaterialRegistry;
+
+    let config = SimConfig {
+        grid_res: 32,
+        dt: 1.0e-4,
+        min_dt: 1.0e-6,
+        adaptive_timestep: true,
+        gravity: Vec2::ZERO,
+        ..SimConfig::default()
+    };
+    let material = StomakhinMaterial::new(500.0, 200.0, 10.0, 0.025, 0.0075, 0.6, 20.0);
+    let mut cpu =
+        Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(material));
+    for i in 0..cpu.particles().len() {
+        cpu.particles_mut().velocity_gradient[i] = Mat2::from_diagonal(Vec2::new(-800.0, 0.0));
+    }
+    let mut gpu = pollster::block_on(GpuSimulation::new(
+        config,
+        cpu.particles().to_vec(),
+        MaterialRegistry::with_default(Box::new(material)),
+    ));
+
+    cpu.step();
+    gpu.step_frame();
+    gpu.sync_particles_blocking();
+    assert_eq!(cpu.last_substeps(), 1);
+    assert_eq!(gpu.last_substeps(), 1);
+
+    let n = cpu.particles().len() as f32;
+    let cpu_jp = cpu
+        .particles()
+        .iter()
+        .map(|p| p.plastic_volume_ratio)
+        .sum::<f32>()
+        / n;
+    let gpu_jp = gpu
+        .particles()
+        .iter()
+        .map(|p| p.plastic_volume_ratio)
+        .sum::<f32>()
+        / n;
+    let cpu_h = cpu
+        .particles()
+        .iter()
+        .map(|p| p.hardening_scale)
+        .sum::<f32>()
+        / n;
+    let gpu_h = gpu
+        .particles()
+        .iter()
+        .map(|p| p.hardening_scale)
+        .sum::<f32>()
+        / n;
+    let cpu_j = cpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
+    let gpu_j = gpu
+        .particles()
+        .iter()
+        .map(|p| p.deformation_gradient.determinant())
+        .sum::<f32>()
+        / n;
+
+    assert!(
+        cpu_jp < 0.999,
+        "imposed compression must genuinely exercise Snow's plastic clamp (mean Jp={cpu_jp})"
+    );
+    assert!(
+        cpu_h > 1.001,
+        "imposed plastic compaction must genuinely exercise Snow hardening (mean h={cpu_h})"
+    );
+    assert!(
+        (cpu_jp - gpu_jp).abs() < 1.0e-4,
+        "Snow Jp differs across exponential CPU/GPU paths: CPU={cpu_jp:.7} GPU={gpu_jp:.7}"
+    );
+    assert!(
+        (cpu_h - gpu_h).abs() < 1.0e-3,
+        "Snow hardening differs across exponential CPU/GPU paths: CPU={cpu_h:.7} GPU={gpu_h:.7}"
+    );
+    assert!(
+        (cpu_j - gpu_j).abs() < 1.0e-4,
+        "Snow projected volume differs across backends: CPU={cpu_j:.7} GPU={gpu_j:.7}"
+    );
+}
+
+/// Drucker-Prager counterpart: a net-compressive, strongly deviatoric affine
+/// rate crosses the friction cone without reaching the packing floor. This
+/// exercises the exponential trial increment and the ordinary DP history
+/// update on both backends while excluding NGF and optional CPU-only
+/// extensions from the comparison.
+#[cfg(feature = "gpu")]
+#[test]
+fn drucker_prager_gpu_cpu_single_substep_matches_with_imposed_shear() {
+    use emerge::gpu::GpuSimulation;
+    use emerge::materials::MaterialRegistry;
+
+    let config = SimConfig {
+        grid_res: 32,
+        dt: 1.0e-4,
+        min_dt: 1.0e-6,
+        adaptive_timestep: true,
+        gravity: Vec2::ZERO,
+        ..SimConfig::default()
+    };
+    let material = DruckerPragerMaterial::new(500.0, 200.0);
+    let mut cpu =
+        Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(material));
+    let q_initial = cpu.particles().friction_hardening[0];
+    for i in 0..cpu.particles().len() {
+        cpu.particles_mut().velocity_gradient[i] = Mat2::from_diagonal(Vec2::new(400.0, -1000.0));
+    }
+    let mut gpu = pollster::block_on(GpuSimulation::new(
+        config,
+        cpu.particles().to_vec(),
+        MaterialRegistry::with_default(Box::new(material)),
+    ));
+
+    cpu.step();
+    gpu.step_frame();
+    gpu.sync_particles_blocking();
+    assert_eq!(cpu.last_substeps(), 1);
+    assert_eq!(gpu.last_substeps(), 1);
+
+    let n = cpu.particles().len() as f32;
+    let aggregates = |particles: &[emerge::Particle]| {
+        let q = particles.iter().map(|p| p.friction_hardening).sum::<f32>() / n;
+        let log_v = particles.iter().map(|p| p.log_volume_strain).sum::<f32>() / n;
+        let j = particles
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .sum::<f32>()
+            / n;
+        (q, log_v, j)
+    };
+    let cpu_particles = cpu.particles().to_vec();
+    let (cpu_q, cpu_log_v, cpu_j) = aggregates(&cpu_particles);
+    let (gpu_q, gpu_log_v, gpu_j) = aggregates(gpu.particles());
+
+    assert!(
+        cpu_q > q_initial + 1.0e-4,
+        "imposed state must genuinely cross the DP yield cone: initial q={q_initial}, CPU mean q={cpu_q}"
+    );
+    assert!(
+        cpu_j > material.min_volume_jacobian + 0.05,
+        "test must exercise frictional return, not the packing floor: CPU mean J={cpu_j}"
+    );
+    let dq_scale = (cpu_q - q_initial).abs().max(1.0e-6);
+    assert!(
+        (cpu_q - gpu_q).abs() / dq_scale < 0.05,
+        "DP plastic increment differs across CPU/GPU paths: initial={q_initial:.7} CPU={cpu_q:.7} GPU={gpu_q:.7}"
+    );
+    assert!(
+        (cpu_log_v - gpu_log_v).abs() < 1.0e-4,
+        "DP volumetric history differs across CPU/GPU paths: CPU={cpu_log_v:.7} GPU={gpu_log_v:.7}"
+    );
+    assert!(
+        (cpu_j - gpu_j).abs() < 1.0e-4,
+        "DP projected volume differs across CPU/GPU paths: CPU={cpu_j:.7} GPU={gpu_j:.7}"
+    );
+}
+
+/// GranularFluid counterpart: a single compressive affine step crosses its
+/// snow-style SVD clamp, while its EOS and corotated stress remain active.
+/// The resulting Jp/h/J comparison verifies that the shared F used by all
+/// three mechanisms advances identically on CPU and GPU.
+#[cfg(feature = "gpu")]
+#[test]
+fn granular_fluid_gpu_cpu_single_substep_matches_with_imposed_compression() {
+    use emerge::gpu::GpuSimulation;
+    use emerge::materials::MaterialRegistry;
+
+    let config = SimConfig {
+        grid_res: 32,
+        dt: 1.0e-4,
+        min_dt: 1.0e-6,
+        adaptive_timestep: true,
+        gravity: Vec2::ZERO,
+        ..SimConfig::default()
+    };
+    let material = GranularFluidMaterial::new(500.0, 200.0, 1.0, 100.0, 10.0, 0.025);
+    let mut cpu =
+        Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(material));
+    for i in 0..cpu.particles().len() {
+        cpu.particles_mut().velocity_gradient[i] = Mat2::from_diagonal(Vec2::new(-800.0, 0.0));
+    }
+    let mut gpu = pollster::block_on(GpuSimulation::new(
+        config,
+        cpu.particles().to_vec(),
+        MaterialRegistry::with_default(Box::new(material)),
+    ));
+
+    cpu.step();
+    gpu.step_frame();
+    gpu.sync_particles_blocking();
+    assert_eq!(cpu.last_substeps(), 1);
+    assert_eq!(gpu.last_substeps(), 1);
+
+    let n = cpu.particles().len() as f32;
+    let aggregates = |particles: &[emerge::Particle]| {
+        let jp = particles
+            .iter()
+            .map(|p| p.plastic_volume_ratio)
+            .sum::<f32>()
+            / n;
+        let h = particles.iter().map(|p| p.hardening_scale).sum::<f32>() / n;
+        let j = particles
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .sum::<f32>()
+            / n;
+        (jp, h, j)
+    };
+    let cpu_particles = cpu.particles().to_vec();
+    let (cpu_jp, cpu_h, cpu_j) = aggregates(&cpu_particles);
+    let (gpu_jp, gpu_h, gpu_j) = aggregates(gpu.particles());
+
+    assert!(cpu_jp < 0.999, "test must genuinely alter Jp: {cpu_jp}");
+    assert!(cpu_h > 1.001, "test must genuinely harden: {cpu_h}");
+    assert!(
+        (cpu_jp - gpu_jp).abs() < 1.0e-4,
+        "Jp CPU={cpu_jp:.7} GPU={gpu_jp:.7}"
+    );
+    assert!(
+        (cpu_h - gpu_h).abs() < 1.0e-3,
+        "h CPU={cpu_h:.7} GPU={gpu_h:.7}"
+    );
+    assert!(
+        (cpu_j - gpu_j).abs() < 1.0e-4,
+        "J CPU={cpu_j:.7} GPU={gpu_j:.7}"
     );
 }
 
@@ -2308,6 +2800,99 @@ fn von_mises_gpu_cpu_bounded_agreement_under_soft_contact() {
          -- exactly what the pre-fix pre-hardening-limit projection bug would \
          have driven apart: CPU={cpu_kappa:.4} GPU={gpu_kappa:.4}"
     );
+}
+
+/// Real, generic cross-backend regression: NeoHookean (2)/Corotated (3)/
+/// Viscoelastic (9) all had their CPU `update_particle` switched from
+/// forward-Euler to `deformation_increment_exp` in the same 2026-09 rollout
+/// as Von Mises (see that material's own single-substep test above for the
+/// full rationale/caveats -- same discipline applies here: this excludes a
+/// real formula mismatch between the Rust CPU helper and its separately
+/// hand-duplicated WGSL twin, it does not isolate the constitutive kernel
+/// from P2G/G2P transfer-layer differences). None of these three have a
+/// plastic projection to interact with the new kinematic step -- lower risk
+/// than Von Mises by construction, but the exponential integrator itself
+/// was never before exercised through a real P2G->G2P round trip on GPU at
+/// all, only in isolated CPU-only unit tests, so this is still real,
+/// previously-missing coverage, not a formality.
+#[cfg(feature = "gpu")]
+#[test]
+fn elastic_family_gpu_cpu_single_substep_matches_under_combined_shear_and_spin() {
+    use emerge::gpu::GpuSimulation;
+    use emerge::materials::MaterialRegistry;
+
+    fn check<M: emerge::materials::MaterialModel + Copy + 'static>(material: M, label: &str) {
+        let config = SimConfig {
+            grid_res: 32,
+            dt: 1.0e-3,
+            min_dt: 1.0e-6,
+            adaptive_timestep: true,
+            gravity: Vec2::ZERO,
+            ..SimConfig::default()
+        };
+
+        let mut cpu = Simulation::new(config, small_spawn_config(16.0))
+            .with_default_material(Box::new(material));
+        {
+            let particles = cpu.particles_mut();
+            for i in 0..particles.len() {
+                // Combined shear + rigid spin, not pure shear -- the whole
+                // point of the exponential fix is handling rotation and
+                // strain together correctly (see `deformation_increment_exp`'s
+                // own rigid-rotation test); a pure-shear-only imposed C would
+                // not exercise that interaction at all.
+                particles.velocity_gradient[i] =
+                    Mat2::from_cols(Vec2::new(0.2, 0.6), Vec2::new(-0.6, -0.1));
+            }
+        }
+        let mut gpu = pollster::block_on(GpuSimulation::new(
+            config,
+            cpu.particles().to_vec(),
+            MaterialRegistry::with_default(Box::new(material)),
+        ));
+
+        cpu.step();
+        gpu.step_frame();
+        gpu.sync_particles_blocking();
+
+        assert_eq!(
+            cpu.last_substeps(),
+            1,
+            "{label}: test requires exactly one CPU substep -- got {}",
+            cpu.last_substeps()
+        );
+        assert_eq!(
+            gpu.last_substeps(),
+            1,
+            "{label}: test requires exactly one GPU substep -- got {}",
+            gpu.last_substeps()
+        );
+
+        let n = cpu.particles().len() as f32;
+        let cpu_mean_j: f32 = cpu
+            .particles()
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .sum::<f32>()
+            / n;
+        let gpu_mean_j: f32 = gpu
+            .particles()
+            .iter()
+            .map(|p| p.deformation_gradient.determinant())
+            .sum::<f32>()
+            / n;
+
+        assert!(
+            (cpu_mean_j - gpu_mean_j).abs() < 1.0e-4,
+            "{label}: CPU/GPU exponential trial increments must agree in the \
+             isolated single-substep case: CPU mean J={cpu_mean_j:.7}, \
+             GPU mean J={gpu_mean_j:.7}"
+        );
+    }
+
+    check(NeoHookeanMaterial::new(500.0, 200.0), "NeoHookean");
+    check(CorotatedMaterial::new(500.0, 200.0), "Corotated");
+    check(ViscoelasticMaterial::new(500.0, 200.0, 0.0), "Viscoelastic");
 }
 
 /// **Open diagnostic, not a regression gate** (external review): the same

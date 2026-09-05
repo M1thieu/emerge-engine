@@ -141,7 +141,7 @@ pub enum ColorMode {
 // GPU-side wire structs (InstanceData/CameraParams/RenderConfig/OpticalTable,
 // GridVolumeParams/GridVolumeSource) live in gpu_types.rs -- see that file's doc.
 mod gpu_types;
-use gpu_types::{CameraParams, InstanceData, OpticalTable, RenderConfig};
+use gpu_types::{CameraParams, InstanceData, OpticalTable, PhysicalRenderParams, RenderConfig};
 pub use gpu_types::{DualPhaseSurfaceSource, GridVolumeSource, SurfaceReconstructionSource};
 
 // GPU buffer allocation (the RenderBuffers struct + its own constructor)
@@ -152,6 +152,15 @@ use buffers::RenderBuffers;
 // Grid-native volumetric render path (`render_grid_volume`) lives in
 // grid_volume.rs -- see that file's doc.
 mod grid_volume;
+
+// Shared SI optical contract and analytic reference solutions.  Kept
+// independent of any particular GPU path so particle, grid-volume, and
+// reconstructed-surface rendering cannot silently choose different units.
+pub mod optics;
+pub use optics::{
+    OpticalCoefficientsError, OpticalCoefficientsSi, PhysicalRenderContract,
+    PhysicalRenderContractError, beer_lambert_transmittance,
+};
 
 // wgpu pipeline construction (the three build_*_pipeline functions + their
 // bind-group-layout helpers) lives in pipelines.rs -- see that file's doc.
@@ -196,6 +205,11 @@ pub struct Renderer {
     prep_bgl: wgpu::BindGroupLayout,
     render_config_buf: wgpu::Buffer,
     optical_table_buf: wgpu::Buffer,
+    /// Shared SI scale/radiance uniform. Zero-initialized means no validated
+    /// physical contract has been supplied; every physical GPU path binds the
+    /// same buffer rather than carrying path-specific unit assumptions.
+    physical_render_params_buf: wgpu::Buffer,
+    physical_render_contract: Option<PhysicalRenderContract>,
 
     grid_volume_pipeline: wgpu::RenderPipeline,
     grid_volume_bgl: wgpu::BindGroupLayout,
@@ -567,6 +581,7 @@ impl Renderer {
             camera_buffer,
             render_config_buf,
             optical_table_buf,
+            physical_render_params_buf,
             grid_volume_params_buf,
             grid_visibility_buf,
             grid_visibility_params_buf,
@@ -767,6 +782,8 @@ impl Renderer {
             surface_dual_render_pipeline,
             surface_dual_render_bgl,
             optical_table_buf,
+            physical_render_params_buf,
+            physical_render_contract: None,
             scratch: Vec::with_capacity(cap),
             color_mode: ColorMode::ByMaterial,
             vel_scale: 0.05,
@@ -1013,6 +1030,70 @@ impl Renderer {
         self.light_dir = (x, y);
     }
 
+    /// Installs the validated SI scale and radiance contract used by every
+    /// `ByPhysics` render path.
+    ///
+    /// This is intentionally separate from [`Renderer::new`]: the renderer
+    /// cannot infer a simulation's metres-per-cell or the real out-of-plane
+    /// thickness represented by a 2-D slice. Until this is called, the shared
+    /// GPU uniform remains disabled and existing dimensionless rendering is
+    /// explicitly legacy behavior.
+    pub fn set_physical_render_contract(
+        &mut self,
+        queue: &wgpu::Queue,
+        contract: PhysicalRenderContract,
+    ) {
+        let camera = contract.camera_direction();
+        let light = contract.light_direction();
+        let incident = contract.incident_radiance_w_m2_sr();
+        let background = contract.background_radiance_w_m2_sr();
+        let display_white = contract.display_white_radiance_w_m2_sr();
+        let params = PhysicalRenderParams {
+            spatial: [
+                contract.dx_meters(),
+                contract.view_thickness_meters(),
+                1.0,
+                0.0,
+            ],
+            incident_radiance: [incident[0], incident[1], incident[2], 0.0],
+            background_radiance: [background[0], background[1], background[2], 0.0],
+            display_white_radiance: [display_white[0], display_white[1], display_white[2], 0.0],
+            camera_direction: [camera.x, camera.y, camera.z, 0.0],
+            light_direction: [light.x, light.y, light.z, 0.0],
+        };
+        queue.write_buffer(
+            &self.physical_render_params_buf,
+            0,
+            bytemuck::bytes_of(&params),
+        );
+        self.physical_render_contract = Some(contract);
+    }
+
+    /// Returns the physical contract, or `None` while this renderer is still
+    /// using the legacy dimensionless optical convention.
+    pub fn physical_render_contract(&self) -> Option<PhysicalRenderContract> {
+        self.physical_render_contract
+    }
+
+    fn clear_color(&self) -> wgpu::Color {
+        if let Some(contract) = self.physical_render_contract {
+            let background = contract.background_radiance_w_m2_sr();
+            let display_white = contract.display_white_radiance_w_m2_sr();
+            return wgpu::Color {
+                r: (background[0] / display_white[0]).clamp(0.0, 1.0) as f64,
+                g: (background[1] / display_white[1]).clamp(0.0, 1.0) as f64,
+                b: (background[2] / display_white[2]).clamp(0.0, 1.0) as f64,
+                a: 1.0,
+            };
+        }
+        wgpu::Color {
+            r: 0.05,
+            g: 0.05,
+            b: 0.08,
+            a: 1.0,
+        }
+    }
+
     pub fn set_color_mode(&mut self, mode: ColorMode) {
         self.color_mode = mode;
     }
@@ -1020,6 +1101,13 @@ impl Renderer {
         self.vel_scale = s;
     }
 
+    /// Legacy dimensionless optical input.
+    ///
+    /// This setter predates the renderer's SI contract, and its values are
+    /// consumed without a guaranteed metre path length. New physical callers
+    /// must use [`Renderer::set_optical_coefficients_si`]. It remains during
+    /// staged migration so existing scenes do not silently change appearance.
+    ///
     /// Sets the Beer-Lambert absorption coefficient for `slot` AND uploads it to
     /// the GPU immediately, not just CPU-side state -- `render()`'s per-particle
     /// `particle_color()` path reads CPU state directly, but `render_grid_volume`'s
@@ -1029,6 +1117,24 @@ impl Renderer {
     /// row is negligible (scene-setup-time only, never a per-frame path).
     pub fn set_optical_params(&mut self, queue: &wgpu::Queue, slot: usize, sigma_a: [f32; 3]) {
         self.sigma_a[slot % 16] = sigma_a;
+        self.upload_optical_params(queue);
+    }
+
+    /// Stores real SI absorption and reduced-scattering coefficients without
+    /// scene-side multiplication by `dx_meters`, particle spacing, or any
+    /// renderer-specific depth surrogate.
+    ///
+    /// A validated [`PhysicalRenderContract`] is still required before these
+    /// coefficients can produce dimensionally meaningful optical depth.
+    pub fn set_optical_coefficients_si(
+        &mut self,
+        queue: &wgpu::Queue,
+        slot: usize,
+        coefficients: OpticalCoefficientsSi,
+    ) {
+        let slot = slot % 16;
+        self.sigma_a[slot] = coefficients.absorption_m_inv;
+        self.sigma_s[slot] = coefficients.reduced_scattering_m_inv;
         self.upload_optical_params(queue);
     }
 
@@ -1145,6 +1251,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.optical_table_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.physical_render_params_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1278,12 +1388,7 @@ impl Renderer {
         count: usize,
     ) {
         let load = if clear {
-            wgpu::LoadOp::Clear(wgpu::Color {
-                r: 0.05,
-                g: 0.05,
-                b: 0.08,
-                a: 1.0,
-            })
+            wgpu::LoadOp::Clear(self.clear_color())
         } else {
             wgpu::LoadOp::Load
         };

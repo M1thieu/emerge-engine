@@ -84,6 +84,122 @@ fn renderer_construction_and_optical_upload_survive_extended_table() {
     r.set_specular_r0(&queue, 0, 0.02);
 }
 
+#[test]
+fn physical_contract_drives_cpu_beer_lambert_in_si() {
+    let (device, queue) = headless_device();
+    let mut r = Renderer::new(&device, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
+    r.set_color_mode(ColorMode::ByPhysics);
+    r.set_optical_coefficients_si(
+        &queue,
+        0,
+        OpticalCoefficientsSi::new([2.0, 1.0, 0.5], 0.0).unwrap(),
+    );
+    r.set_physical_render_contract(
+        &queue,
+        PhysicalRenderContract::new(
+            0.01,
+            0.25,
+            [10.0; 3],
+            [10.0, 20.0, 30.0],
+            [10.0, 20.0, 30.0],
+            glam::Vec3::Z,
+            glam::Vec3::Y,
+        )
+        .unwrap(),
+    );
+    let mut p = Particle::zeroed();
+    p.deformation_gradient = Mat2::IDENTITY;
+    let got = r.particle_color(&p);
+    let expected = [(-0.5f32).exp(), (-0.25f32).exp(), (-0.125f32).exp()];
+    for (channel, want) in got[..3].iter().copied().zip(expected) {
+        assert!(
+            (channel - want).abs() < 1.0e-6,
+            "got {channel}, expected {want}"
+        );
+    }
+}
+
+/// The GPU particle path must consume the same SI slab contract as the CPU
+/// path. Read back the compute-generated instance directly, avoiding the
+/// unrelated tiny-quad rasterization limitation documented below.
+#[test]
+fn physical_contract_drives_gpu_particle_beer_lambert_in_si() {
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let config = SimConfig::standard(8, 0.01, glam::Vec2::ZERO);
+    let mut particle = Particle::zeroed();
+    particle.x = glam::Vec2::splat(4.0);
+    particle.mass = 1.0;
+    particle.volume = 1.0;
+    particle.deformation_gradient = Mat2::IDENTITY;
+    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+    let sim = GpuSimulation::with_device(
+        device.clone(),
+        queue.clone(),
+        config,
+        vec![particle],
+        registry,
+    );
+
+    let mut r = Renderer::new(&device, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
+    r.set_color_mode(ColorMode::ByPhysics);
+    r.set_optical_coefficients_si(
+        &queue,
+        0,
+        OpticalCoefficientsSi::new([2.0, 1.0, 0.5], 0.0).unwrap(),
+    );
+    r.set_physical_render_contract(
+        &queue,
+        PhysicalRenderContract::new(
+            0.01,
+            0.25,
+            [10.0; 3],
+            [10.0, 20.0, 30.0],
+            [10.0, 20.0, 30.0],
+            glam::Vec3::Z,
+            glam::Vec3::Y,
+        )
+        .unwrap(),
+    );
+    r.set_camera(&queue, 8, 32, 32, 1.0, true);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("physical_gpu_particle_target"),
+        size: wgpu::Extent3d {
+            width: 32,
+            height: 32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    r.render_gpu(
+        &device,
+        &queue,
+        sim.particle_buffer(),
+        1,
+        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        true,
+    );
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let raw = readback_f32_blocking(&device, &queue, &r.storage_instances, 12);
+    let expected = [(-0.5f32).exp(), (-0.25f32).exp(), (-0.125f32).exp()];
+    for (channel, want) in raw[8..11].iter().copied().zip(expected) {
+        assert!(
+            (channel - want).abs() < 1.0e-5,
+            "got {channel}, expected {want}"
+        );
+    }
+}
+
 /// End-to-end GPU path (the one LP actually uses, `render_gpu`): real
 /// particles on a real `GpuSimulation`, real compute dispatch through
 /// `prep_instances.wgsl` with the extended `OpticalTable`, real render pass to
@@ -549,7 +665,24 @@ fn render_surface_reconstruction_survives_end_to_end() {
 
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
-    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]);
+    r.set_optical_coefficients_si(
+        &queue,
+        0,
+        OpticalCoefficientsSi::new([0.18, 0.22, 0.55], 0.0).unwrap(),
+    );
+    r.set_physical_render_contract(
+        &queue,
+        PhysicalRenderContract::new(
+            0.1,
+            0.5,
+            [1.0; 3],
+            [1.0; 3],
+            [1.0; 3],
+            glam::Vec3::Z,
+            glam::Vec3::Y,
+        )
+        .unwrap(),
+    );
     r.set_camera(&queue, 32, 64, 64, 0.6, true);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1513,11 +1646,31 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
     sim.step_frame();
 
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
-    let render_with = |sigma_s: f32, r0: f32| -> [u8; 4] {
+    let render_with = |sigma_s: f32, r0: f32, physical_thickness: Option<f32>| -> [u8; 4] {
         let mut r = Renderer::new(&device, sim.particle_count(), fmt);
-        r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+        r.set_optical_coefficients_si(
+            &queue,
+            0,
+            OpticalCoefficientsSi::new([0.3, 0.3, 0.3], sigma_s).unwrap(),
+        );
         r.set_optical_scattering(&queue, 0, sigma_s);
         r.set_specular_r0(&queue, 0, r0);
+        if let Some(thickness) = physical_thickness {
+            r.set_grid_reference_cell_mass(1.0);
+            r.set_physical_render_contract(
+                &queue,
+                PhysicalRenderContract::new(
+                    0.1,
+                    thickness,
+                    [1.0; 3],
+                    [1.0; 3],
+                    [1.0; 3],
+                    glam::Vec3::Z,
+                    glam::Vec3::Y,
+                )
+                .unwrap(),
+            );
+        }
         r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1551,13 +1704,21 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
         readback_pixel(&device, &queue, &texture, 64, 64, 32, 32)
     };
 
-    let without_optics = render_with(0.0, 0.0);
-    let with_optics = render_with(8.0, 0.02); // real tissue-scale sigma_s, water-scale R0
+    let without_optics = render_with(0.0, 0.0, None);
+    let with_optics = render_with(8.0, 0.02, None); // real tissue-scale sigma_s, water-scale R0
     assert_ne!(
         without_optics, with_optics,
         "identical absorption but different scattering/specular must render a \
          different pixel color at the particle cluster's center: without={:?} with={:?}",
         without_optics, with_optics
+    );
+
+    let physical_absorption = render_with(0.0, 0.0, Some(1.0));
+    assert!(
+        physical_absorption[..3]
+            .iter()
+            .any(|channel| *channel < 250),
+        "an occupied SI slab must attenuate the white physical background: {physical_absorption:?}"
     );
 }
 
