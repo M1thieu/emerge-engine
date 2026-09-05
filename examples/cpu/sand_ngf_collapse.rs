@@ -130,12 +130,17 @@ fn make_sim(mode: Mode) -> Simulation {
         precompute_initial_volumes: true,
         ..SpawnRegion::for_sim(&config)
     };
-    // Same real SI -> grid-Lame conversion `DruckerPragerMaterial::from_physical`
-    // uses internally (`SimConfig::lame_from_si_cfg` is the public SI helper
-    // documented for exactly this -- the `GranularProps` bridging struct that
-    // wraps it is deliberately `pub(super)`, not part of the public property-
-    // system API, see `physical_props.rs`'s own doc).
-    let (lambda, mu) = config.lame_from_si_cfg(YOUNG_MODULUS_PA, POISSON_RATIO, BULK_DENSITY_KG_M3);
+    // Real fix (2026-09-05): this used to call `config.lame_from_si_cfg`,
+    // the OLD dt^2-polluted conversion -- confirmed elsewhere this session to
+    // make grid stiffness spuriously timestep-dependent (a real, measured
+    // 200x spread across dt=0.1/0.01/0.001 for the same physical setup) and
+    // already responsible for a real blow-up in LP's own creature material
+    // (`materials.rs`'s own comment names this exact function). Switched to
+    // `lame_from_si_physical_cfg`, the dt-independent sibling -- deliberately
+    // does NOT read `dt_seconds`, so this column's real E=15 MPa stiffness no
+    // longer silently depends on `DT_S`.
+    let (lambda, mu) =
+        config.lame_from_si_physical_cfg(YOUNG_MODULUS_PA, POISSON_RATIO, BULK_DENSITY_KG_M3);
     let sand = DruckerPragerMaterial {
         friction_angle: FRICTION_DEG.to_radians(),
         dilatancy_angle: 0.0,
