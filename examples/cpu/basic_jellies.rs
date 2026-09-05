@@ -50,17 +50,53 @@ struct Params {
     gravity_fraction: f32,
 }
 
-impl Default for Params {
-    fn default() -> Self {
+// Real, sourced soft elastic tissue -- the same E/nu/rho this engine's own
+// `physical_props.rs` module doc already uses as its canonical "Soft elastic
+// solid" example (`SOFT_ELASTIC` in that file's own unit tests). All three
+// materials share it deliberately: this demo compares CONSTITUTIVE LAWS
+// (NeoHookean/Corotated/Viscoelastic) at the same real stiffness, not three
+// different substances.
+const JELLY_YOUNG_MODULUS_PA: f32 = 500.0;
+const JELLY_POISSON_RATIO: f32 = 0.45;
+const JELLY_DENSITY_KG_M3: f32 = 1000.0;
+// Real water dynamic viscosity order of magnitude (~1e-3 Pa*s at 20C) reads
+// as inertia-dominated, not visibly damped, at this demo's scale -- glycerin
+// (~1 Pa*s, a real, commonly cited reference fluid) is the real substance
+// whose damping is actually visible on a human timescale for a body this
+// size, which is the whole point of showing a Viscoelastic material here.
+const JELLY_VISCOSITY_PA_S: f32 = 1.0;
+
+/// Real SI -> grid Lame conversion (`lame_from_si_physical_cfg`, no `dt^2`
+/// pollution -- see that function's own doc). Deliberately NOT
+/// `{Neo,Cor,Viscoelastic}Material::from_young_modulus`: that family calls
+/// `lame_from_young` directly, which never touches `dx_meters`/density at
+/// all -- its `young_modulus` parameter is not actually convertible back to
+/// real Pascals despite the name (a real, disclosed, separate gap in that
+/// API, found migrating this file -- not fixed here).
+fn jelly_lame(config: &SimConfig) -> (f32, f32) {
+    config.lame_from_si_physical_cfg(
+        JELLY_YOUNG_MODULUS_PA,
+        JELLY_POISSON_RATIO,
+        JELLY_DENSITY_KG_M3,
+    )
+}
+
+fn jelly_visc_grid(config: &SimConfig) -> f32 {
+    config.visc_from_si_physical(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3)
+}
+
+impl Params {
+    fn from_config(config: &SimConfig) -> Self {
+        let (lambda, mu) = jelly_lame(config);
         Self {
-            neo_lambda: 10.0,
-            neo_mu: 20.0,
-            cor_lambda: 30.0,
-            cor_mu: 60.0,
-            vis_lambda: 10.0,
-            vis_mu: 15.0,
-            vis_viscosity: 0.15,
-            gravity_fraction: 0.01,
+            neo_lambda: lambda,
+            neo_mu: mu,
+            cor_lambda: lambda,
+            cor_mu: mu,
+            vis_lambda: lambda,
+            vis_mu: mu,
+            vis_viscosity: jelly_visc_grid(config),
+            gravity_fraction: 1.0,
         }
     }
 }
@@ -90,7 +126,12 @@ struct State {
 fn make_sim(p: &Params) -> Simulation {
     let mut config = SimConfig {
         min_dt: 0.01,
-        max_substeps_per_step: 8,
+        // Real fix (2026-09-05): default stiffness migrated from a raw,
+        // unsourced grid-unit guess (lambda=10, mu=20) to a real SI
+        // material (see `jelly_lame`'s own doc) -- the corrected, much
+        // stiffer real value needs real substep headroom under CFL (measured
+        // directly, see this file's own migration note in project memory).
+        max_substeps_per_step: 20000,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= p.gravity_fraction;
@@ -103,7 +144,22 @@ fn make_sim(p: &Params) -> Simulation {
         initial_velocity_scale: 0.0,
         ..SpawnRegion::for_sim(&config)
     };
-    let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, 50.0), MAT_NEO))
+    // Real fix (2026-09-05): drop height lowered 50 -> 15. The old height was
+    // tuned against the unsourced grid-unit placeholder (lambda=10, mu=20);
+    // at the real SI stiffness above, it produced a ~3 m/s impact that
+    // inverted ~370 of 784 CorotatedMaterial particles (deformation gradient
+    // collapsing to the MIN_J clamp and staying there, not a transient
+    // spike) -- a real, known limitation of linearized corotational
+    // elasticity under large/fast deformation, not something this migration
+    // introduced (NeoHookean and Viscoelastic, both fully nonlinear
+    // hyperelastic, were unaffected at the same drop height). Swept
+    // empirically (`tests/scratch_basic_jellies_probe.rs`): height 25 still
+    // inverts 330+ particles, height 15 inverts zero while still showing
+    // real, substantial deformation (J ranges 0.001-1.3, not a trivial
+    // settle). CorotatedMaterial's own large-deformation robustness stays a
+    // real, separate, disclosed gap -- not fixed here.
+    const DROP_Y: f32 = 15.0;
+    let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, DROP_Y), MAT_NEO))
         .with_default_material(Box::new(NeoHookeanMaterial::new(p.neo_lambda, p.neo_mu)))
         .with_material(
             MAT_COR,
@@ -118,8 +174,8 @@ fn make_sim(p: &Params) -> Simulation {
             )),
         )
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn(Vec2::new(32.0, 50.0), MAT_COR));
-    let _ = solver.add_body(spawn(Vec2::new(50.0, 50.0), MAT_VIS));
+    let _ = solver.add_body(spawn(Vec2::new(32.0, DROP_Y), MAT_COR));
+    let _ = solver.add_body(spawn(Vec2::new(50.0, DROP_Y), MAT_VIS));
     solver
 }
 
@@ -162,7 +218,7 @@ impl State {
         };
         surface.configure(&device, &sc);
 
-        let p = Params::default();
+        let p = Params::from_config(&SimConfig::earth(GRID, 0.01, DT));
         let sim = make_sim(&p);
         let real_gravity = SimConfig::earth(GRID, 0.01, DT).gravity;
 
@@ -309,18 +365,24 @@ impl State {
                             .text("gravity (1.0 = real IRL)"),
                     );
                     ui.separator();
+                    // Real fix (2026-09-05): ranges widened by ~2 orders of
+                    // magnitude to actually cover the real SI-derived default
+                    // (see `jelly_lame`'s own doc) -- the old 1..=200/1..=400
+                    // ranges couldn't even represent the corrected value.
                     ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
-                    ui.add(egui::Slider::new(&mut p.neo_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.neo_mu, 1.0..=400.0).text("mu"));
+                    ui.add(egui::Slider::new(&mut p.neo_lambda, 100.0..=50_000.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.neo_mu, 100.0..=10_000.0).text("mu"));
                     ui.separator();
                     ui.colored_label(egui::Color32::from_rgb(64, 199, 166), "Corotated");
-                    ui.add(egui::Slider::new(&mut p.cor_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.cor_mu, 1.0..=400.0).text("mu"));
+                    ui.add(egui::Slider::new(&mut p.cor_lambda, 100.0..=50_000.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.cor_mu, 100.0..=10_000.0).text("mu"));
                     ui.separator();
                     ui.colored_label(egui::Color32::from_rgb(184, 102, 230), "Viscoelastic");
-                    ui.add(egui::Slider::new(&mut p.vis_lambda, 1.0..=200.0).text("lambda"));
-                    ui.add(egui::Slider::new(&mut p.vis_mu, 1.0..=400.0).text("mu"));
-                    ui.add(egui::Slider::new(&mut p.vis_viscosity, 0.0..=5.0).text("viscosity"));
+                    ui.add(egui::Slider::new(&mut p.vis_lambda, 100.0..=50_000.0).text("lambda"));
+                    ui.add(egui::Slider::new(&mut p.vis_mu, 100.0..=10_000.0).text("mu"));
+                    ui.add(
+                        egui::Slider::new(&mut p.vis_viscosity, 0.0..=2_000.0).text("viscosity"),
+                    );
                     ui.separator();
                     ui.label("LMB push  RMB pull  G colors  R reset");
                     if ui.button("Reset").clicked() {
