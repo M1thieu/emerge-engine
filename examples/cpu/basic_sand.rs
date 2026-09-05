@@ -51,6 +51,17 @@ const POUR_BOX: IVec2 = IVec2::new(2, 1);
 // Radius of the directional dig nudge, grid cells.
 const DIG_RADIUS: f32 = 4.0;
 
+// Real fix (2026-09-05): was `DruckerPragerMaterial::new(2000.0, 3000.0, ..)`,
+// an unsourced grid-unit guess. Real dry sand -- same real citation already
+// used and verified tonight for `sand_ngf_collapse.rs` (Haeri & Skonieczny
+// 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3) -- through
+// the dt^2-free `lame_from_si_physical_cfg`. Loose/dense differ only by
+// their real friction angle (20 deg loose, 40 deg dense -- both inside the
+// real geotechnical range for sand packing states), not by stiffness.
+const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
+const SAND_POISSON_RATIO: f32 = 0.3;
+const SAND_DENSITY_KG_M3: f32 = 1600.0;
+
 fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
     let mut m = DruckerPragerMaterial::new(lambda, mu);
     m.friction_angle = phi_deg.to_radians();
@@ -60,7 +71,15 @@ fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
-        max_substeps_per_step: 12,
+        // Real fix (2026-09-05): the real E=15 MPa stiffness above needs
+        // real substep headroom under CFL -- the old 12 silently dropped
+        // simulated time instead of crashing (see `step.rs`'s "honest
+        // accounting" doc). Measured directly at real full gravity
+        // (`tests/scratch_basic_sand_probe.rs`): 2000 still dropped ~11.6%
+        // of each step's simulated time; the solver actually uses 2263 once
+        // given enough headroom, so 3000 leaves real margin, confirmed
+        // zero time dropped.
+        max_substeps_per_step: 3000,
         // No gravity override here -- `earth()`'s own real, correctly-converted
         // IRL gravity (9.81 m/s² / dx_meters) stands, exposed live via the
         // GUI's gravity slider below (see `State::real_gravity`/`gravity_fraction`).
@@ -69,6 +88,19 @@ fn make_sim() -> Simulation {
         material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        SAND_YOUNG_MODULUS_PA,
+        SAND_POISSON_RATIO,
+        SAND_DENSITY_KG_M3,
+    );
+    // Real fix (2026-09-05): mass must share the same real density as the
+    // stiffness above (see project memory on the grid_density/mass-from
+    // gap found migrating basic_membrane.rs/sand_ngf_collapse.rs/
+    // basic_jellies.rs the same night) -- was left on the bare
+    // `grid_density=1.0` default, computed directly via
+    // `ParticleMass::particle_mass`'s own documented formula since the raw
+    // `DruckerPragerMaterial::new` constructor bypasses `mass_from`.
+    let mass_grid = (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn = |c: Vec2, mat, seed| SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(18, 14),
@@ -78,11 +110,12 @@ fn make_sim() -> Simulation {
         initial_velocity_scale: 0.0,
         rng_seed: seed,
         position_jitter: 0.5,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let mut solver = Simulation::new(config, spawn(Vec2::new(17.0, 40.0), MAT_LOOSE, 11))
-        .with_default_material(Box::new(make_sand(2000.0, 3000.0, 20.0)))
-        .with_material(MAT_DENSE, Box::new(make_sand(2000.0, 3000.0, 40.0)))
+        .with_default_material(Box::new(make_sand(lambda, mu, 20.0)))
+        .with_material(MAT_DENSE, Box::new(make_sand(lambda, mu, 40.0)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
     let _ = solver.add_body(spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22));
     solver
@@ -253,6 +286,12 @@ impl State {
             } else {
                 MAT_LOOSE
             };
+            // Real fix (2026-09-05): poured particles must get the same real
+            // mass as the initial pile (see `make_sim`'s own note) -- was
+            // falling back to the bare `grid_density=1.0` default, silently
+            // pouring sand ~1.6x too light relative to the pile it lands on.
+            let pour_mass =
+                (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * POUR_SPACING * POUR_SPACING;
             let spawn = SpawnRegion {
                 spacing: POUR_SPACING,
                 box_size: POUR_BOX,
@@ -262,6 +301,7 @@ impl State {
                 initial_velocity_scale: 0.0,
                 rng_seed: self.pour_seed,
                 position_jitter: 0.3,
+                mass_override: Some(pour_mass),
                 ..SpawnRegion::for_sim(self.sim.config())
             };
             let before = self.sim.particles().len();

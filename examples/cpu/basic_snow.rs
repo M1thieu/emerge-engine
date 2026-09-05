@@ -45,25 +45,65 @@ const SPEED: f32 = 15.0;
 // Radius of the directional dig nudge, grid cells -- matches basic_sand.rs.
 const DIG_RADIUS: f32 = 4.0;
 
+// Real fix (2026-09-05): was `StomakhinMaterial::new(1389.0, 2083.0, ..)`,
+// an unsourced grid-unit guess. Real snow -- `StomakhinMaterial::from_
+// young_modulus`'s own doc cites this exact E/nu as "Canonical... matches
+// MPM2D reference and sparkl snow demos" (Stomakhin et al. 2013 -- the same
+// value real-time MPM snow demos in other engines use, not just a textbook
+// number). Density: real fresh/settled snow order of magnitude (a real
+// packed-snow reference of 200 kg/m3 is also cited in this engine's own
+// `physical_props.rs` module doc). Loose/packed differ only in their real
+// Stomakhin plasticity parameters (hardening/compression/stretch limits),
+// not stiffness -- same real physical mechanism (packing changes how much
+// strain triggers plastic flow, not the elastic modulus itself).
+const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
+const SNOW_POISSON_RATIO: f32 = 0.2;
+const SNOW_DENSITY_KG_M3: f32 = 200.0;
+
 fn make_sim() -> Simulation {
     let config = SimConfig {
-        max_substeps_per_step: 20,
+        // Real fix (2026-09-05): the real stiffness above needs real
+        // substep headroom under CFL -- the old 20 silently dropped
+        // simulated time instead of crashing (see `step.rs`'s "honest
+        // accounting" doc). Measured directly during a real snowball
+        // collision (`tests/scratch_basic_snow_probe.rs`): 3000 still
+        // dropped ~54% of each step's simulated time; the solver actually
+        // settles around 6590-6600 once given enough headroom, so 8000
+        // leaves real margin, confirmed zero time dropped. Real, disclosed
+        // cost: this is a genuinely heavy substep count for an interactive
+        // demo -- whether E=1.4e5 is practical at this resolution for
+        // real-time framerate (vs. needing a coarser dx or an implicit
+        // solver) is an open question, not resolved here.
+        max_substeps_per_step: 8000,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        SNOW_YOUNG_MODULUS_PA,
+        SNOW_POISSON_RATIO,
+        SNOW_DENSITY_KG_M3,
+    );
+    // Real fix (2026-09-05): mass must share the same real density as the
+    // stiffness above (see project memory on the grid_density/mass-from
+    // gap found migrating this same night's other scenes) -- was left on
+    // the bare `grid_density=1.0` default, computed directly via
+    // `ParticleMass::particle_mass`'s own documented formula since the raw
+    // `StomakhinMaterial::new` constructor bypasses `mass_from`.
+    let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(58, 58),
         rng_seed: 7,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(StomakhinMaterial::new(
-            1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0,
+            lambda, mu, 7.0, 0.025, 0.0075, 0.6, 20.0,
         )))
         .with_material(
             MAT_PACKED,
             Box::new(
-                StomakhinMaterial::new(1389.0, 2083.0, 10.0, 0.012, 0.004, 0.6, 20.0)
+                StomakhinMaterial::new(lambda, mu, 10.0, 0.012, 0.004, 0.6, 20.0)
                     .with_cohesion(400.0),
             ),
         )
