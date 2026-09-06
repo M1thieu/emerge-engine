@@ -355,11 +355,15 @@ pub(super) struct SnowProps {
 /// Real fix (2026-09-05): `NaccMaterial` was the one real material family
 /// with NO `from_physical`/SI-conversion constructor at all -- its own
 /// `from_young_modulus` doc disclosed this as a genuine open gap. `pub`
-/// (not `pub(super)`, matching [`BrittleProps`]'s own precedent) since NACC
-/// is not wired into the [`Elastoplastic`]/[`PlasticityModel`] dispatch
-/// enum -- this is the only real, direct way to build a
-/// dimensionally-correct SI `NaccMaterial` for now, not something
-/// `.material(&config)` produces internally.
+/// (not `pub(super)`) because NACC is NOT wired into the
+/// [`Elastoplastic`]/[`PlasticityModel`] dispatch enum the way
+/// [`BrittleProps`] is (that one is reachable through a real
+/// `PlasticityModel::Brittle` match arm) -- this standalone
+/// `FromSI<NaccProps>` is the only way to build a dimensionally-correct SI
+/// `NaccMaterial` for now, not something `.material(&config)` produces
+/// internally. Wiring NACC into that dispatch enum is real follow-up work,
+/// not done here to avoid touching shared match-arm code used by every
+/// other material in the same pass.
 #[derive(Debug, Clone, Copy)]
 pub struct NaccProps {
     pub elastic: Elastic,
