@@ -350,6 +350,32 @@ pub(super) struct SnowProps {
     pub elastic: Elastic,
 }
 
+/// Real-unit properties for `NaccMaterial` (Non-Associated Cam-Clay).
+///
+/// Real fix (2026-09-05): `NaccMaterial` was the one real material family
+/// with NO `from_physical`/SI-conversion constructor at all -- its own
+/// `from_young_modulus` doc disclosed this as a genuine open gap. `pub`
+/// (not `pub(super)`, matching [`BrittleProps`]'s own precedent) since NACC
+/// is not wired into the [`Elastoplastic`]/[`PlasticityModel`] dispatch
+/// enum -- this is the only real, direct way to build a
+/// dimensionally-correct SI `NaccMaterial` for now, not something
+/// `.material(&config)` produces internally.
+#[derive(Debug, Clone, Copy)]
+pub struct NaccProps {
+    pub elastic: Elastic,
+    /// Friction slope M -- see `NaccMaterial::friction`'s own doc for the
+    /// real friction-angle relation. NOT an SI quantity, passed through
+    /// unconverted (matches `NaccMaterial::from_young_modulus`'s own
+    /// convention).
+    pub friction: f32,
+    /// Cohesion β (0.0 = no tensile strength). NOT an SI quantity, passed
+    /// through unconverted.
+    pub cohesion: f32,
+    /// Hardening factor ξ (0.0 = perfect plasticity, no hardening). NOT an
+    /// SI quantity, passed through unconverted.
+    pub hardening_factor: f32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NewtonianFluid {
     pub rho_kg_m3: f32,

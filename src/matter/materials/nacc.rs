@@ -1,5 +1,6 @@
 use glam::{Mat2, Vec2};
 
+use crate::materials::physical_props::{FromSI, NaccProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{MIN_J, deformation_increment_exp, elastic_wave_dt, lame_from_young};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
@@ -132,10 +133,10 @@ impl NaccMaterial {
     /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
     /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
     /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. Unlike most other materials, `NaccMaterial` has NO
-    /// `from_physical`/real-SI-conversion constructor at all yet -- this is
-    /// the only construction path, so there is currently no way to build a
-    /// dimensionally-correct SI `NaccMaterial`. A real gap, not fixed here.
+    /// density. Real, correctly SI-to-grid-converted construction is now
+    /// possible via [`Self::from_physical`] (`FromSI<NaccProps>`, added the
+    /// same night this gap was found) -- this raw constructor stays
+    /// grid-unit-only.
     pub fn from_young_modulus(
         young_modulus: f32,
         poisson_ratio: f32,
@@ -322,6 +323,35 @@ impl NaccMaterial {
 
         let sv_new = Vec2::new(b_n1.x.max(1.0e-8_f32).sqrt(), b_n1.y.max(1.0e-8_f32).sqrt());
         (reconstruct(u, sv_new, vt), alpha)
+    }
+}
+
+/// Real fix (2026-09-05): `NaccMaterial` previously had no dimensionally-
+/// correct SI-conversion path at all (see `from_young_modulus`'s own doc,
+/// which disclosed exactly this gap). `friction`/`cohesion`/
+/// `hardening_factor` are yield-surface shape parameters, not stress-like
+/// quantities -- passed through unconverted, matching `from_young_modulus`'s
+/// own existing convention for the same three fields.
+impl FromSI<NaccProps> for NaccMaterial {
+    fn from_physical(props: &NaccProps, config: &crate::SimConfig) -> Self {
+        let (lambda, mu) = scale_lame(
+            props.elastic.e_pa,
+            props.elastic.nu,
+            props.elastic.rho_kg_m3,
+            config,
+        );
+        // Same 2D plane-strain bulk modulus relation as every other
+        // constructor in this file (kappa = lambda + mu, NOT the 3D
+        // lambda + 2*mu/3) -- applied here to the now-correctly-SI-scaled
+        // lambda/mu, not the raw grid-unit ones `from_young_modulus` uses.
+        let kappa = lambda + mu;
+        Self::new(
+            mu,
+            kappa,
+            props.friction,
+            props.cohesion,
+            props.hardening_factor,
+        )
     }
 }
 
@@ -823,5 +853,69 @@ mod saturation_cohesion_tests {
             f_dry, f,
             "dry (real apparent cohesion from suction) must hold this same tension state elastically"
         );
+    }
+}
+
+#[cfg(test)]
+mod from_si_tests {
+    use super::*;
+    use crate::matter::materials::physical_props::Elastic;
+    use crate::solver::config::SimConfig;
+
+    /// Real, dt-independent SI conversion -- the same closed-form check
+    /// `lame_from_si_physical`'s own tests use: identical physical setup at
+    /// two different `dt_seconds` must produce byte-identical grid mu/kappa,
+    /// since a converted stiffness must never depend on the timestep.
+    #[test]
+    fn from_physical_is_dt_independent() {
+        let props = NaccProps {
+            elastic: Elastic {
+                e_pa: 5.0e6,
+                nu: 0.3,
+                rho_kg_m3: 1600.0,
+            },
+            friction: 1.0,
+            cohesion: 0.0,
+            hardening_factor: 2.0,
+        };
+        let config_a = SimConfig::earth(64, 0.01, 0.1);
+        let config_b = SimConfig::earth(64, 0.01, 0.001);
+        let mat_a = NaccMaterial::from_physical(&props, &config_a);
+        let mat_b = NaccMaterial::from_physical(&props, &config_b);
+        assert_eq!(mat_a.mu, mat_b.mu, "mu must not depend on dt_seconds");
+        assert_eq!(
+            mat_a.kappa, mat_b.kappa,
+            "kappa must not depend on dt_seconds"
+        );
+        assert_eq!(mat_a.friction, props.friction);
+        assert_eq!(mat_a.cohesion, props.cohesion);
+        assert_eq!(mat_a.hardening_factor, props.hardening_factor);
+    }
+
+    /// Real, direct check against the same `scale_lame` + plane-strain
+    /// `kappa=lambda+mu` relation this impl documents using -- not just an
+    /// opaque "it doesn't crash" test.
+    #[test]
+    fn from_physical_matches_scale_lame_plus_plane_strain_kappa() {
+        let props = NaccProps {
+            elastic: Elastic {
+                e_pa: 1.0e6,
+                nu: 0.25,
+                rho_kg_m3: 1000.0,
+            },
+            friction: 1.2,
+            cohesion: 0.0,
+            hardening_factor: 3.0,
+        };
+        let config = SimConfig::earth(64, 0.01, 0.05);
+        let mat = NaccMaterial::from_physical(&props, &config);
+        let (lambda, mu) = scale_lame(
+            props.elastic.e_pa,
+            props.elastic.nu,
+            props.elastic.rho_kg_m3,
+            &config,
+        );
+        assert_eq!(mat.mu, mu);
+        assert_eq!(mat.kappa, lambda + mu);
     }
 }
