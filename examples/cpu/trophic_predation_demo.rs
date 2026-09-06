@@ -33,6 +33,15 @@ const SENSE_RADIUS: f32 = 6.0;
 const MAX_CONSUMPTION_RATE: f32 = 8.0; // prey/s at saturating (high) local density
 const HALF_SATURATION_DENSITY: f32 = 0.15; // prey per unit area, test-calibrated
 
+// Real, sourced soft biological tissue -- the same E/nu/rho this engine's own
+// `physical_props.rs` module doc uses as its canonical "soft elastic solid"
+// example, also used by `basic_jellies.rs`. Prey/predator/eaten are all the
+// same substance (predation here only recolors `material_id` for the
+// saturating_uptake demo, it doesn't change what's being simulated).
+const BODY_YOUNG_MODULUS_PA: f32 = 500.0;
+const BODY_POISSON_RATIO: f32 = 0.45;
+const BODY_DENSITY_KG_M3: f32 = 1000.0;
+
 struct App {
     window: Option<Arc<Window>>,
     state: Option<State>,
@@ -52,28 +61,48 @@ struct State {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         gravity: Vec2::ZERO,
+        // Real fix (2026-09-06): body stiffness migrated off an unsourced
+        // grid-unit guess onto real SI (see BODY_YOUNG_MODULUS_PA above) --
+        // matches basic_jellies.rs's own empirically-measured need for a
+        // much higher cap once a real E=500Pa tissue is used, not the old
+        // placeholder's default of 64.
+        max_substeps_per_step: 20_000,
         ..SimConfig::standard(GRID, DT, Vec2::ZERO)
     };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        BODY_YOUNG_MODULUS_PA,
+        BODY_POISSON_RATIO,
+        BODY_DENSITY_KG_M3,
+    );
+    const SPACING: f32 = 0.6;
+    // Same density-consistency fix as basic_jellies.rs/basic_sand.rs: mass
+    // must use the same real BODY_DENSITY_KG_M3 the stiffness above uses,
+    // not `config.grid_density`'s unrelated bare default.
+    let mass_grid = (BODY_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let prey_spawn = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(40, 40),
         box_center: Vec2::new(32.0, 32.0),
         material_id: PREY_ID,
         initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let predator_spawn = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(4, 4),
         box_center: Vec2::new(32.0, 32.0),
         material_id: PREDATOR_ID,
         initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let mut sim = Simulation::new(config, prey_spawn)
-        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
-        .with_material(PREDATOR_ID, Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
-        .with_material(EATEN_ID, Box::new(NeoHookeanMaterial::new(10.0, 20.0)));
+        .with_default_material(Box::new(NeoHookeanMaterial::new(lambda, mu)))
+        .with_material(PREDATOR_ID, Box::new(NeoHookeanMaterial::new(lambda, mu)))
+        .with_material(EATEN_ID, Box::new(NeoHookeanMaterial::new(lambda, mu)));
     let _ = sim.add_body(predator_spawn);
     sim
 }
