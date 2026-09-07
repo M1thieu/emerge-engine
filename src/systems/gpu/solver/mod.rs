@@ -332,6 +332,30 @@ impl GpuSimulation {
             }
         }
 
+        // Real fix, issue #29: `NoCompressionMaterial` has no `p2g.wgsl`/
+        // `particles_update.wgsl` case at all (unlike NACC above, no
+        // compensating CPU fallback exists either) -- an unrecognised
+        // `mat.model` falls through to `default: { return mat2x2<f32>(); }`,
+        // exact zero stress every substep. A cable/membrane/tendon would
+        // silently free-fall with no tension resistance, contradicting the
+        // material's entire purpose. Fail loudly here instead, same pattern
+        // as NACC's own guard -- no real GPU stress path exists yet for
+        // this model, see issue #29 for the WGSL-port option, not pursued
+        // here.
+        for id in 0..registry.len() as u32 {
+            if registry.constitutive_model_of(id)
+                == crate::materials::ConstitutiveModel::NoCompression
+            {
+                panic!(
+                    "NoCompressionMaterial (material_id {id}) has no GPU stress path at all -- \
+                     p2g.wgsl/particles_update.wgsl have no case for this model and there is no \
+                     CPU fallback, so it would silently run with exact zero stress (see \
+                     ConstitutiveModel::NoCompression's own doc). Use this material on the CPU \
+                     Simulation backend instead until issue #29's real WGSL port lands."
+                );
+            }
+        }
+
         let material_params = registry.all_params();
 
         // Run init_particle before uploading. Mirrors Simulation::spawn_region().

@@ -97,7 +97,15 @@ pub enum ConstitutiveModel {
     /// WGSL-port option, not pursued here.
     Nacc = 10,
     GranularFluid = 11, // Granular-fluid mixture -- Tait EOS + corotated deviatoric + SVD plasticity
-    NoCompression = 12, // Tension-only (no-compression) reversible elastic -- silk, tendons, membranes
+    /// Tension-only (no-compression) reversible elastic -- silk, tendons,
+    /// membranes. GPU gap, issue #29: `p2g.wgsl`/`particles_update.wgsl`
+    /// have no case-12 branch, so an unrecognised `mat.model` falls through
+    /// their `default: { return mat2x2<f32>(); }` arm -- exact zero stress
+    /// on GPU, with no compensating CPU fallback the way NACC has (issue
+    /// #5). `GpuSimulation::with_device` panics if this model is present
+    /// (same real-guard pattern as NACC's own fix) rather than silently
+    /// running a cable/membrane/tendon with zero tension resistance.
+    NoCompression = 12,
     /// Ideal gas EOS (p=ρRT) -- CPU only. GPU shaders (`p2g.wgsl`,
     /// `particles_update.wgsl`) have no case-13 branch yet; an unrecognised
     /// `mat.model` falls through their `default: { return mat2x2<f32>(); }`

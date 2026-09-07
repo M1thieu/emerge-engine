@@ -10,8 +10,9 @@ mod gpu_tests {
     use emerge::gpu::GpuSimulation;
     use emerge::{
         BinghamFluidMaterial, DruckerPragerMaterial, MaterialRegistry, MuIRheologyMaterial,
-        NeoHookeanMaterial, NewtonianFluidMaterial, RankineMaterial, SimConfig, SpawnRegion,
-        StomakhinMaterial, ViscoelasticMaterial, WithLatentHeat, build_particles,
+        NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial, RankineMaterial,
+        SimConfig, SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, WithLatentHeat,
+        build_particles,
     };
     use glam::{IVec2, Mat2, Vec2};
     use pollster::block_on;
@@ -5739,6 +5740,36 @@ mod gpu_tests {
              delta={violent_com_delta}",
             off.violent_com_final,
             on.violent_com_final
+        );
+    }
+
+    /// Real regression for issue #29's fix: `NoCompressionMaterial` has no
+    /// GPU stress path at all (no `p2g.wgsl` case, no CPU fallback the way
+    /// NACC has) -- `GpuSimulation::with_device`/`new` must fail loudly at
+    /// construction rather than silently run a cable/membrane/tendon with
+    /// zero tension resistance. `std::panic::catch_unwind`, not
+    /// `#[should_panic]`, so this composes with the real `gpu_available()`
+    /// skip every other test in this file uses -- a `#[should_panic]` test
+    /// would panic for the WRONG reason ("no suitable GPU adapter found")
+    /// on a machine with no GPU, passing without ever reaching the real
+    /// guard.
+    #[test]
+    fn gpu_construction_rejects_no_compression_material() {
+        if !gpu_available() {
+            return;
+        }
+        let config = small_config();
+        let particles = spawn_disk(&config, Vec2::splat(10.0), 0);
+        let registry =
+            MaterialRegistry::with_default(Box::new(NoCompressionMaterial::new(100.0, 50.0)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            block_on(GpuSimulation::new(config, particles, registry))
+        }));
+        assert!(
+            result.is_err(),
+            "GpuSimulation::new must panic when a NoCompressionMaterial is registered -- \
+             it has no real GPU stress path and no CPU fallback, silently running with \
+             zero tension resistance otherwise"
         );
     }
 }
