@@ -31,6 +31,15 @@ const SAND_ID: u32 = 1;
 const FLUID_ID: u32 = 2;
 const SPACING: f32 = 0.7;
 
+// Real fix (2026-09-06): was `DruckerPragerMaterial::new(400.0, 200.0)`, an
+// unsourced grid-unit guess. Same real dry-sand citation already used and
+// verified for `basic_sand.rs`/`sand_ngf_collapse.rs` (Haeri & Skonieczny
+// 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through
+// the dt^2-free `lame_from_si_physical_cfg`.
+const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
+const SAND_POISSON_RATIO: f32 = 0.3;
+const SAND_DENSITY_KG_M3: f32 = 1600.0;
+
 struct App {
     window: Option<Arc<Window>>,
     state: Option<State>,
@@ -58,7 +67,12 @@ struct State {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 0.005,
-        max_substeps_per_step: 16,
+        // Real fix (2026-09-06): the real E=15 MPa sand above needs real
+        // substep headroom under CFL -- same value already empirically
+        // verified for the identical citation/grid/dx in basic_sand.rs
+        // (`tests/scratch_basic_sand_probe.rs`: confirmed zero dropped
+        // simulated time at this cap).
+        max_substeps_per_step: 3000,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -68,8 +82,20 @@ fn make_sim() -> Simulation {
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    // NOT migrated to real SI tonight, unlike `sand`/`fluid` below --
+    // deliberate, same reasoning as `basic_creature.rs`/`grass_field.rs`:
+    // this body is player-driven (arrow keys, see `update_and_render`),
+    // and a real E-Pa stiffness would genuinely change how it responds to
+    // the same drive-impulse magnitude. That needs live interactive
+    // verification (does it still feel controllable), not just a headless
+    // stability probe -- real follow-up work, not silently dropped.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let sand = DruckerPragerMaterial::new(400.0, 200.0);
+    let (sand_lambda, sand_mu) = config.lame_from_si_physical_cfg(
+        SAND_YOUNG_MODULUS_PA,
+        SAND_POISSON_RATIO,
+        SAND_DENSITY_KG_M3,
+    );
+    let sand = DruckerPragerMaterial::new(sand_lambda, sand_mu);
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
@@ -81,6 +107,10 @@ fn make_sim() -> Simulation {
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
     // basic_fluids.rs's own doc for the full derivation.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
+    // Same density-consistency fix as basic_sand.rs: mass must share the
+    // same real SAND_DENSITY_KG_M3 the stiffness above uses, not
+    // `config.grid_density`'s unrelated bare default.
+    let sand_mass = (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
 
     let mut solver = Simulation::empty(config)
         .with_default_material(Box::new(elastic))
@@ -94,6 +124,7 @@ fn make_sim() -> Simulation {
         box_center: Vec2::new(19.0, 9.0),
         material_id: SAND_ID,
         precompute_initial_volumes: true,
+        mass_override: Some(sand_mass),
         ..SpawnRegion::for_sim(&config)
     });
     let _ = solver.add_body(SpawnRegion {

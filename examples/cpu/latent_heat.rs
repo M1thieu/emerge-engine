@@ -66,6 +66,13 @@ fn main() {
         ..SpawnRegion::for_sim(&config)
     };
 
+    // Grid-native mechanical placeholder, not a real water/ice elastic
+    // modulus -- water has no meaningful shear modulus to cite, and this
+    // scene's real, physically-forced claims (module doc above) are entirely
+    // thermal (alpha, dx_meters, latent heat). NeoHookean exists here only
+    // so MPM particles have SOME cohesion; it isn't modeling real mechanics,
+    // and the module doc's own note that elastic CFL doesn't gate this
+    // scene's substep dt confirms the value is inert either way.
     let water = NeoHookeanMaterial::new(10.0, 20.0);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(10.0, 20.0), ICE_LATENT_HEAT);
 

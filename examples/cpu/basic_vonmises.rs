@@ -10,11 +10,19 @@ mod gui_common;
 /// `validate_materials.rs`'s headless sweeps and `rod_blade_and_root.rs`,
 /// no real interactive scene anywhere in the repo).
 ///
-/// Three blobs, same drop, same elastic stiffness (lambda=30, mu=60 --
-/// identical to `basic_jellies.rs`'s own `CorotatedMaterial` blob, since
-/// this material's elastic branch IS that same corotated formula), differing
-/// ONLY in yield_stress/hardening_modulus -- isolates what those two
-/// parameters actually do instead of bundling it with a stiffness change:
+/// Three blobs, same drop, same elastic stiffness (lambda=30, mu=60 -- grid-
+/// native, NOT migrated to real SI (2026-09-06): this was identical to
+/// `basic_jellies.rs`'s own `CorotatedMaterial` blob when written, but
+/// jellies has since moved to real E=500 Pa soft tissue, and every
+/// yield_stress/hardening_modulus below is expressed as a MU-relative ratio,
+/// tuned through several documented empirical passes against THIS elastic
+/// wave speed at THIS drop height/gravity -- rescaling mu would shift the
+/// impact-strain-vs-wave-speed relationship those passes calibrated against,
+/// not just the absolute numbers, so it needs the same real drop-height/
+/// gravity re-sweep basic_jellies.rs went through, not a direct substitution.
+/// Real, disclosed, deferred, not silently dropped), differing ONLY in
+/// yield_stress/hardening_modulus -- isolates what those two parameters
+/// actually do instead of bundling it with a stiffness change:
 ///
 ///   - LEFT   (soft, perfect plasticity): yield_stress=mu*0.05,
 ///     hardening_modulus=0 -- dents on impact and STAYS dented; hit it again

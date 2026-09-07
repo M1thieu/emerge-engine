@@ -40,6 +40,17 @@ const LABELS: &[(u32, &str)] = &[
     (MAT_SHATTER, "shatter"),
 ];
 
+// Real fix (2026-09-06): was `StomakhinMaterial::new(1389.0, 2083.0, ..)`,
+// an unsourced grid-unit guess shared by both loose and packed variants --
+// same citation as `basic_snow.rs`'s CPU twin (Stomakhin 2013 canonical
+// snow, E=1.4e5/nu=0.2, matching `StomakhinMaterial::from_young_modulus`'s
+// own doc; rho=200 kg/m3, matching `physical_props.rs`'s own module-doc
+// example). Loose/packed still differ only in real Stomakhin plasticity
+// parameters, not stiffness.
+const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
+const SNOW_POISSON_RATIO: f32 = 0.2;
+const SNOW_DENSITY_KG_M3: f32 = 200.0;
+
 struct App {
     window: Option<Arc<Window>>,
     state: Option<State>,
@@ -64,7 +75,13 @@ struct State {
 
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        max_substeps_per_step: 20,
+        // Real fix (2026-09-06): the real E=1.4e5 Pa snow above needs real
+        // substep headroom under CFL -- same value already empirically
+        // verified for the identical citation/grid/dx/collision geometry in
+        // basic_snow.rs's CPU twin (`tests/scratch_basic_snow_probe.rs`:
+        // 3000 still dropped ~54% of simulated time during the real
+        // snowball collision, 8000 confirmed zero time dropped).
+        max_substeps_per_step: 8000,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_snow.rs's
@@ -73,6 +90,15 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         gravity: Vec2::new(0.0, -0.08),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        SNOW_YOUNG_MODULUS_PA,
+        SNOW_POISSON_RATIO,
+        SNOW_DENSITY_KG_M3,
+    );
+    // Same density-consistency fix as basic_snow.rs: mass must share the
+    // same real SNOW_DENSITY_KG_M3 the stiffness above uses, not
+    // `config.grid_density`'s unrelated bare default.
+    let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn_ball = |center: Vec2, mat: u32, seed: u32| SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new((BALL_R * 2.0) as i32, (BALL_R * 2.0) as i32),
@@ -80,6 +106,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         material_id: mat,
         precompute_initial_volumes: true,
         rng_seed: seed,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let mut particles = build_particles(&config, spawn_ball(BALL_A, MAT_SOFT, 1));
@@ -93,13 +120,12 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     particles.extend(right);
 
     let mut registry = MaterialRegistry::with_default(Box::new(StomakhinMaterial::new(
-        1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0,
+        lambda, mu, 7.0, 0.025, 0.0075, 0.6, 20.0,
     )));
     registry.insert(
         MAT_PACKED,
         Box::new(
-            StomakhinMaterial::new(1389.0, 2083.0, 10.0, 0.012, 0.004, 0.6, 20.0)
-                .with_cohesion(400.0),
+            StomakhinMaterial::new(lambda, mu, 10.0, 0.012, 0.004, 0.6, 20.0).with_cohesion(400.0),
         ),
     );
     registry.insert(

@@ -36,6 +36,19 @@ const LABELS: &[(u32, &str)] = &[
     (MAT_VIS, "viscoelastic"),
 ];
 
+// Real fix (2026-09-06): was NeoHookean(10,20)/Corotated(30,60)/
+// Viscoelastic(10,15,0.15) -- three DIFFERENT unsourced grid-unit guesses,
+// which undermines the demo's own point of comparing constitutive LAWS at
+// equal stiffness. Same real, cited soft-tissue reference as
+// `basic_jellies.rs`'s CPU twin (E=500 Pa, nu=0.45, rho=1000 kg/m3 --
+// `physical_props.rs`'s own canonical example) for all three, plus real
+// glycerin viscosity (~1 Pa*s) for the Kelvin-Voigt dashpot -- see that
+// file's own doc for the full citation reasoning.
+const JELLY_YOUNG_MODULUS_PA: f32 = 500.0;
+const JELLY_POISSON_RATIO: f32 = 0.45;
+const JELLY_DENSITY_KG_M3: f32 = 1000.0;
+const JELLY_VISCOSITY_PA_S: f32 = 1.0;
+
 struct App {
     window: Option<Arc<Window>>,
     state: Option<State>,
@@ -85,7 +98,18 @@ enum RenderMode {
 
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        max_substeps_per_step: 12,
+        // Real fix (2026-09-06): the real E=500 Pa tissue above needs real
+        // substep headroom under CFL. Matched to basic_jellies.rs's CPU
+        // twin (raised 8->20000 there after direct measurement of a real
+        // drop impact) rather than independently verified here: this GPU
+        // scene has NO boundary condition at all (unlike the CPU twin's
+        // `SlipBoundary`) -- a real, pre-existing, separate gap found while
+        // probing this migration, not fixed here -- so a headless probe
+        // just free-falls forever and never reaches the actual worst-case
+        // impact this cap needs to survive. Matching the CPU-proven value
+        // is the honest choice until that boundary gap is addressed and a
+        // real GPU probe can actually test an impact.
+        max_substeps_per_step: 20_000,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_sand.rs's
@@ -94,6 +118,13 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
+    let (lambda, mu) = config.lame_from_si_physical_cfg(
+        JELLY_YOUNG_MODULUS_PA,
+        JELLY_POISSON_RATIO,
+        JELLY_DENSITY_KG_M3,
+    );
+    let visc = config.visc_from_si_physical(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
+    let mass_grid = (JELLY_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let blob = |cx: f32, mat: u32, seed: u32| SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(16, 16),
@@ -101,6 +132,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         material_id: mat,
         precompute_initial_volumes: true,
         rng_seed: seed,
+        mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
     let mut particles = build_particles(&config, blob(16.0, MAT_NEO, 1));
@@ -117,11 +149,11 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     particles.extend(build_particles(&config, blob(48.0, MAT_VIS, 3)));
 
     let mut registry =
-        MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(10.0, 20.0)));
-    registry.insert(MAT_COR, Box::new(CorotatedMaterial::new(30.0, 60.0)));
+        MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(lambda, mu)));
+    registry.insert(MAT_COR, Box::new(CorotatedMaterial::new(lambda, mu)));
     registry.insert(
         MAT_VIS,
-        Box::new(ViscoelasticMaterial::new(10.0, 15.0, 0.15)),
+        Box::new(ViscoelasticMaterial::new(lambda, mu, visc)),
     );
     GpuSimulation::with_device(device, queue, config, particles, registry)
 }

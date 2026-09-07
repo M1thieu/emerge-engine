@@ -191,6 +191,11 @@ fn make_sim(fuel_kind: FuelKind) -> Simulation {
     // on first landing; same grid-native stiffness tier as fire_spread.rs (real
     // GPa-scale stiffness is incompatible with this grid's CFL).
     let solid = ViscoelasticMaterial::new(100.0, 50.0, 100.0);
+    // Same grid-native tier as `solid` above -- this demo's real, cited
+    // constants (module doc) are the THERMAL properties driving spread; ash
+    // only needs to behave like loose granular debris post-combustion, not
+    // match a specific real ash bulk-density/angle-of-repose measurement.
+    // `low_friction`'s own doc discloses it's grid-unit-only, not real Pa.
     let ash = WithLatentHeat::new(
         DruckerPragerMaterial::low_friction(266.7, 0.333),
         fuel.combustion_enthalpy,
