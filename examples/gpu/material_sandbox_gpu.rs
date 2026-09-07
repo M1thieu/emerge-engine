@@ -171,7 +171,24 @@ const WATER_PAINT_TEMP_K: f32 = 293.15;
 // const CONDUCTIVITY: f32 = 0.6; // water/ice, W/(m*K)
 // const CELL_SIZE_M: f32 = 0.02; // 2cm/cell -- hand-sized snowball scale, see module doc
 
-fn make_registry() -> MaterialRegistry {
+// Real fix (2026-09-07): snow/tissue below had gone STALE -- this file's own
+// doc claimed they were "reused verbatim" from basic_snow_gpu.rs/
+// basic_jellies_gpu.rs, true when written but false after those two files'
+// own SI migration (same dx_meters=0.01, so the same citation/formula
+// applies directly here). Found by re-checking this campaign's own work for
+// exactly this kind of drift, the same bug already caught once in
+// basic_vonmises.rs. `jelly`'s own "basic_showcase_gpu" comment stays
+// accurate -- that file's elastic body was deliberately NOT migrated
+// (player-driven, needs live interactive verification).
+const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
+const SNOW_POISSON_RATIO: f32 = 0.2;
+const SNOW_DENSITY_KG_M3: f32 = 200.0;
+const TISSUE_YOUNG_MODULUS_PA: f32 = 500.0;
+const TISSUE_POISSON_RATIO: f32 = 0.45;
+const TISSUE_DENSITY_KG_M3: f32 = 1000.0;
+const TISSUE_VISCOSITY_PA_S: f32 = 1.0;
+
+fn make_registry(config: &SimConfig) -> MaterialRegistry {
     // Reused verbatim from already-shipped demos -- not new invented numbers.
     let jelly = NeoHookeanMaterial::new(40.0, 80.0); // basic_showcase_gpu
     // Cohesionless sand at this MPM resolution under-measures angle of repose (a
@@ -192,8 +209,23 @@ fn make_registry() -> MaterialRegistry {
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
     // basic_fluids.rs's own doc for the full derivation.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
-    let snow = StomakhinMaterial::new(1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
-    let tissue = ViscoelasticMaterial::new(10.0, 15.0, 0.15); // basic_jellies_gpu
+    // Real Stomakhin 2013 citation, same as basic_snow_gpu.rs -- was the
+    // stale raw 1389.0/2083.0 that file no longer uses.
+    let (snow_lambda, snow_mu) = config.lame_from_si_physical_cfg(
+        SNOW_YOUNG_MODULUS_PA,
+        SNOW_POISSON_RATIO,
+        SNOW_DENSITY_KG_M3,
+    );
+    let snow = StomakhinMaterial::new(snow_lambda, snow_mu, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
+    // Real soft-tissue citation, same as basic_jellies_gpu.rs -- was the
+    // stale raw 10.0/15.0/0.15 that file no longer uses.
+    let (tissue_lambda, tissue_mu) = config.lame_from_si_physical_cfg(
+        TISSUE_YOUNG_MODULUS_PA,
+        TISSUE_POISSON_RATIO,
+        TISSUE_DENSITY_KG_M3,
+    );
+    let tissue_visc = config.visc_from_si_physical(TISSUE_VISCOSITY_PA_S, TISSUE_DENSITY_KG_M3);
+    let tissue = ViscoelasticMaterial::new(tissue_lambda, tissue_mu, tissue_visc); // basic_jellies_gpu
     let mut reg = MaterialRegistry::with_default(Box::new(jelly));
     reg.insert(SAND_ID, Box::new(sand));
     // Positive = endothermic (melting into water absorbs energy, cools the particle).
@@ -214,7 +246,13 @@ fn make_registry() -> MaterialRegistry {
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         min_dt: 0.005,
-        max_substeps_per_step: 16,
+        // Real fix (2026-09-07): snow/tissue below are now real SI (see
+        // make_registry's own doc) -- matches basic_jellies_gpu.rs's own
+        // proven-necessary value for the same soft-tissue citation (that
+        // file's real impact test needed this; not independently re-probed
+        // for this scene's own painting/multi-material interaction, so
+        // treated as the same real, disclosed uncertainty that file has).
+        max_substeps_per_step: 20_000,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -246,7 +284,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         p.temperature = AMBIENT_K;
     }
 
-    let registry = make_registry();
+    let registry = make_registry(&config);
     // `attach_thermal_gpu` disabled entirely, not just COOLING_RATE zeroed --
     // heat CONDUCTION alone (independent of ambient cooling) still pulled heat
     // out of warm water into the cold sand it lands on, refreezing it
