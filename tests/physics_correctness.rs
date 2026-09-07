@@ -20,8 +20,9 @@ use emerge::{
 };
 use emerge::{
     BinghamFluidMaterial, BoilingMixtureMaterial, BoundaryImpulseExperiment, CavitatingEosParams,
-    CavitatingEosTable, CorotatedMaterial, DruckerPragerMaterial, GranularFluidMaterial,
-    IsothermalCavitatingFluidMaterial, MaterialRegistry, MuIRheologyMaterial, NaccMaterial,
+    CavitatingEosTable, CavitatingFluidMaterial, CorotatedMaterial, DruckerPragerMaterial,
+    GranularFluidMaterial, IsothermalCavitatingFluidMaterial, MaterialRegistry,
+    MuIRheologyMaterial, NaccMaterial,
     NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial, RankineMaterial, SimConfig,
     Simulation, SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial,
     WithPreStress,
@@ -8065,6 +8066,79 @@ fn cavitating_fluid_at_rest_against_a_wall_shows_no_spontaneous_self_excitation(
          J essentially at 1.0 -- max|J-1| over {STEPS} steps was \
          {max_abs_j_minus_one}, expected near-zero"
     );
+}
+
+/// Real Tier-0 extreme test for `CavitatingFluidMaterial` itself (the live,
+/// temperature-coupled successor `phase_states_gui.rs` actually uses --
+/// `IsothermalCavitatingFluidMaterial` above has substantial coverage but
+/// is no longer used by any real example, found while avoiding redundant
+/// test-writing rather than assumed). Same real citation set
+/// `cavitating_water_material` already establishes (water/steam density,
+/// Cole 1948 gamma=7.0, real melting point), same real hard-impact family
+/// `granular_fluid_survives_hard_impact`/`bingham_lava_survives_hard_impact`
+/// already use: a real drop height, real gravity, checking the particle
+/// state stays admissible (finite, positive J/density/volume, real mass-
+/// density consistency) through violent compression -- not just at rest.
+#[test]
+fn cavitating_fluid_survives_hard_impact() {
+    const GRID: usize = 32;
+    const FLOOR: f32 = 2.0;
+    let gravity = Vec2::new(0.0, -9.81);
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        boundary_thickness: 2,
+        ..SimConfig::standard(GRID, 0.02, gravity)
+    };
+    let table = CavitatingEosTable::build(1000.0, 180.0, 7.0, 1000.0 / 6.0, 1.33, 1.0, 273.15);
+    let material = CavitatingFluidMaterial::new(table, config.dx_meters, 1.0e-3, 0.5, 12.0);
+
+    let side = 6i32;
+    let drop_height = 15.0;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(side, side),
+        box_center: Vec2::new(GRID as f32 * 0.5, FLOOR + drop_height),
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(material))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+    // Real room-temperature water, not the zeroed default -- the whole
+    // point of this material over the isothermal one is reconstructing the
+    // EOS from the particle's own live temperature.
+    for t in solver.particles_mut().temperature.iter_mut() {
+        *t = 293.15;
+    }
+
+    for _ in 0..250 {
+        solver.step_n(1);
+        for p in solver.particles().iter() {
+            assert!(
+                p.x.is_finite()
+                    && p.v.is_finite()
+                    && p.volume.is_finite()
+                    && p.volume > 0.0
+                    && p.density.is_finite()
+                    && p.density > 0.0,
+                "cavitating-fluid particle acquired an inadmissible state during \
+                 impact: x={:?} v={:?}",
+                p.x,
+                p.v
+            );
+            let j = p.deformation_gradient.determinant();
+            assert!(
+                j.is_finite() && j > 0.0,
+                "cavitating-fluid J={j} <= 0 during impact"
+            );
+            assert!(
+                ((p.density * p.volume - p.mass) / p.mass).abs() < 2.0e-4,
+                "cavitating-fluid mass relation rho*V=m was violated during impact"
+            );
+        }
+    }
 }
 
 /// The real, decisive comparison against the bug this material replaces:
