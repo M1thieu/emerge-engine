@@ -101,14 +101,20 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // Real fix (2026-09-06): the real E=500 Pa tissue above needs real
         // substep headroom under CFL. Matched to basic_jellies.rs's CPU
         // twin (raised 8->20000 there after direct measurement of a real
-        // drop impact) rather than independently verified here: this GPU
-        // scene has NO boundary condition at all (unlike the CPU twin's
-        // `SlipBoundary`) -- a real, pre-existing, separate gap found while
-        // probing this migration, not fixed here -- so a headless probe
-        // just free-falls forever and never reaches the actual worst-case
-        // impact this cap needs to survive. Matching the CPU-proven value
-        // is the honest choice until that boundary gap is addressed and a
-        // real GPU probe can actually test an impact.
+        // drop impact).
+        //
+        // Correction (2026-09-07): an earlier version of this comment
+        // claimed this GPU scene had no boundary condition at all and that
+        // a headless probe therefore could never reach a real impact --
+        // both wrong. GPU always has a real slip boundary baked into
+        // `grid_update.wgsl` itself (`boundary_thickness`, default 2, not
+        // exposed via the same `.with_boundary()` builder CPU uses, which
+        // is why the first check missed it). Directly re-verified: the
+        // blob falls, hits the floor, and genuinely bounces
+        // (`tests/scratch_gpu_boundary_recheck.rs`, min_y 40 -> 2.49 -> 6.1
+        // -> 9.4 over 20s). The 20000 value itself still stands (matches
+        // the CPU twin's own proven-safe margin), just not for the reason
+        // previously written here.
         max_substeps_per_step: 20_000,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
