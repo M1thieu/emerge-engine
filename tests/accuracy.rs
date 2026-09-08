@@ -484,6 +484,20 @@ fn diag_pour_boundary_mu_fast_probe() {
 /// real, at the SAME long horizon the pre-shaped pile was trusted at, or
 /// whether a dynamically-collapsed pile (as opposed to one built already
 /// at rest) never truly stabilizes at all.
+///
+/// ANSWERED (real, disclosed negative result, found during the 2026-09-08
+/// sourcing audit): this test carried no assertion at all despite looking
+/// like a real regression guard -- it never truly stabilizes. Real
+/// trajectory: 29.6 deg at step 1500 -> 10.8 deg by step 101500, a
+/// monotonic drift with no plateau, cross-referenced by
+/// `diag_static_kinetic_hysteresis_calibration_sweep`'s own doc as the
+/// exact scene where this creep was first documented. Same open gap as
+/// `sand_angle_of_repose_is_physical` (GH issue #28) -- kept ignored
+/// rather than asserted against a wrong/moving target.
+#[ignore = "real, disclosed negative result: this dynamically-collapsed pile never \
+            plateaus, monotonic drift 29.6deg@1500 -> 10.8deg@101500 -- same open \
+            angle-of-repose gap as sand_angle_of_repose_is_physical (GH issue #28), \
+            not tuned to pass"]
 #[test]
 fn sand_collapse_relaxation_long_horizon_plateau_check() {
     const LOCAL_GRID: usize = 128;
@@ -623,6 +637,21 @@ fn diag_static_kinetic_hysteresis_calibration_sweep() {
 /// used (baseline: 29.6->25.6->24.9->22.1->19.1->10.8deg, never plateaus),
 /// or does it just delay the same flat ending? Same checkpoints, directly
 /// comparable to that test's own documented trajectory.
+///
+/// ANSWERED (measured 2026-09-08, during the sourcing audit -- this test
+/// carried no assertion at all despite posing a real, specific question):
+/// genuine partial win, not a false one -- real trajectory 74.5 -> 72.6 ->
+/// 58.2 -> 55.8 -> 53.8 -> 56.0deg (step 1500 through 101500) DOES plateau
+/// (unlike the baseline's monotonic decay to 10.8deg), landing well above
+/// baseline. But the plateau itself sits at ~54-56deg, not the real
+/// 30-35deg dry-sand target -- static_friction_boost/rest_rate_scale
+/// arrest the drift but don't fix the underlying angle-of-repose gap (GH
+/// issue #28). Ignored rather than asserted against a target it doesn't
+/// reach, same real reasoning as this file's other GH-#28-family tests.
+#[ignore = "real, disclosed partial result: genuinely plateaus (~54-56deg, unlike \
+            baseline's monotonic decay to 10.8deg) but still far from the real \
+            30-35deg dry-sand target -- same open angle-of-repose gap, GH issue #28, \
+            not tuned to pass"]
 #[test]
 fn static_kinetic_hysteresis_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
@@ -2778,6 +2807,23 @@ fn sand_pile_built_by_patient_pour_matching_real_creep_timescale() {
 /// cohesion=5.0 gives ratio=1.50x at this test's GRID=192, consistent with the
 /// GRID=384 calibration run. `cohesion` defaults to 0.0 (true cohesionless Klar
 /// 2016 behavior) -- every other DruckerPragerMaterial user/test is unaffected.
+///
+/// STALE CLAIM FOUND (2026-09-08, during the sourcing audit -- re-ran this
+/// exact test, did not just trust the doc above): the 1.50x calibration
+/// claim above no longer matches current behavior. Real, reproduced-twice
+/// measurement: ratio=0.19x (measured_r_inf=3.75 cells, barely past the
+/// column's own starting half-width r0=4.0 -- essentially no net spread).
+/// Likely cause, not independently re-confirmed via bisection this time
+/// (unlike `post_event_relax_long_horizon_full_confirmation`'s own stale-
+/// claim writeup, which DID bisect): the same real 2026-08-26
+/// `min_volume_jacobian` recalibration (0.6 -> 0.807, DiMaggio & Sandler
+/// 1971 / Resende & Martin 1985) that test's doc names as reshaping a
+/// near-identical DruckerPrager collapse scene -- a pile that can compress
+/// less under self-weight collapses and spreads differently. Not chased
+/// further tonight; this test's own tolerance (`ratio < 2.0`) still holds
+/// either way, so it stayed green through this drift without anyone
+/// noticing -- exactly the kind of gap a loose bound can hide, flagged
+/// here rather than silently left for the next person to rediscover.
 #[test]
 fn sand_column_collapse_runout_matches_lajeunesse_scaling() {
     const BIG_GRID: usize = 192;
@@ -4977,6 +5023,16 @@ fn diag_post_event_relax_calibration_sweep() {
 /// none near the real ~30deg target -- the real angle-of-repose gap
 /// (GH issue #28) is still open, this is just the honest current baseline
 /// instead of a stale one.
+///
+/// Found during the 2026-09-08 sourcing audit: this test carried no
+/// assertion at all despite the doc above stating a specific, reproducible
+/// number (58.6deg) -- never actually checked. Ignored rather than
+/// asserted against a wrong/moving target, same real open gap as
+/// `sand_angle_of_repose_is_physical` (GH issue #28).
+#[ignore = "real, disclosed negative result: reproducible 58.6deg (bit-for-bit \
+            across separate runs), far from the real 30-35deg dry-sand target -- \
+            same open angle-of-repose gap as sand_angle_of_repose_is_physical \
+            (GH issue #28), not tuned to pass"]
 #[test]
 fn post_event_relax_long_horizon_full_confirmation() {
     const LOCAL_GRID: usize = 128;
@@ -5035,6 +5091,22 @@ fn post_event_relax_long_horizon_full_confirmation() {
 /// principles") rather than assumed. If the held angle is only sane near
 /// 1500 and garbage elsewhere, that's a genuine cherry-picked-constant
 /// problem, not a robust fix.
+///
+/// SUPERSEDED (found during the 2026-09-08 sourcing audit): this test
+/// carried no assertion, and its own real finding -- a monotonic,
+/// NOT-converged relationship at this reduced 5000-step hold -- was already
+/// the exact motivation for writing
+/// `post_event_relax_switch_step_long_horizon_convergence_comparison`
+/// (see that test's own doc), which answers the real question this one
+/// only partially probed, at the full converged horizon. Kept as a real,
+/// disclosed intermediate diagnostic rather than asserted -- the reduced
+/// horizon here genuinely doesn't distinguish "hasn't converged yet" from
+/// "converges to a different value", which is exactly why the follow-up
+/// test exists.
+#[ignore = "intermediate diagnostic, superseded by \
+            post_event_relax_switch_step_long_horizon_convergence_comparison's own \
+            full-horizon answer -- real findings preserved in this test's own doc \
+            comment, not the pass/fail signal"]
 #[test]
 fn post_event_relax_switch_step_sensitivity() {
     const LOCAL_GRID: usize = 128;
@@ -5142,12 +5214,39 @@ fn post_event_relax_switch_step_long_horizon_convergence_comparison() {
     // the value the long-horizon confirmation test already proved converges
     // to 29.6 deg; 800 and 3000 are the extremes the short sweep showed the
     // most different (67.5 deg vs 54.5 deg at only 5000 held steps).
+    let mut final_angles = Vec::new();
     for &switch_step in &[800usize, 1500, 3000] {
         println!("  switch_step={switch_step}:");
-        for (total_step, angle) in run(switch_step) {
+        let trajectory = run(switch_step);
+        for &(total_step, angle) in &trajectory {
             println!("    total_step={total_step:7} -> angle={angle:.1} deg");
         }
+        final_angles.push(trajectory.last().unwrap().1);
     }
+
+    // Real, definitive answer to this test's own question (measured
+    // 2026-09-08, reproducible: 65.6/58.6/50.4 deg for switch_step=
+    // 800/1500/3000): the three switch_step values converge to three
+    // GENUINELY DIFFERENT long-horizon plateaus, not the same value at
+    // different speeds -- hypothesis (b) from this test's own doc,
+    // confirmed. `post_event_relax_threshold` firing at a different
+    // simulation time hands the material a genuinely different internal
+    // state (friction_hardening / log_volume_strain) to relax from, not
+    // just a time-shifted copy of the same trajectory. None of the three
+    // land near the real 30-35deg target (same open GH issue #28 gap as
+    // `post_event_relax_long_horizon_full_confirmation`) -- this assert
+    // guards the DIFFERENTIATION itself (a real, load-bearing parameter),
+    // not the absolute accuracy, which stays a disclosed open gap.
+    let max_angle = final_angles.iter().cloned().fold(f32::MIN, f32::max);
+    let min_angle = final_angles.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(
+        max_angle - min_angle > 10.0,
+        "expected switch_step=800/1500/3000 to converge to genuinely different \
+         long-horizon plateaus (measured: ~65.6/58.6/50.4 deg) -- got {final_angles:?} \
+         (spread {:.1} deg). If this collapsed to near-identical values, switch_step \
+         stopped being load-bearing -- investigate before loosening this bound",
+        max_angle - min_angle
+    );
 }
 
 /// Real alternative to a step-count trigger at all: does the SAME fix hold
@@ -5184,12 +5283,14 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
     let initial_shape = measure_pile_shape(&solver.particles().x.clone(), FLOOR);
+    let initial_angle_deg = initial_shape.angle_deg;
     println!("── CONSTANT DAMPING FROM t=0, NO SWITCH, NO MAGIC STEP COUNT ──");
     println!(
         "  step      0 (initial column) : height={:.2} half-w={:.2} angle={:.1} deg",
         initial_shape.height, initial_shape.base_half_width, initial_shape.angle_deg
     );
     let mut cumulative = 0usize;
+    let mut final_angle_deg = initial_angle_deg;
     for &target in &[1500usize, 6500, 20000] {
         solver.step_n(target - cumulative);
         cumulative = target;
@@ -5198,7 +5299,25 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
             "  step {:7}                : height={:.2} half-w={:.2} angle={:.1} deg",
             target, shape.height, shape.base_half_width, shape.angle_deg
         );
+        final_angle_deg = shape.angle_deg;
     }
+
+    // Real, measured, definitive answer to this test's own question
+    // (2026-09-08): constant cundall_damping=1.0 from t=0 freezes the
+    // column completely rigid at its initial 76.4 deg unstable shape --
+    // angle/height/half-width bit-identical from step 0 through step
+    // 20000, it never collapses at all. This is the "real, honest reason a
+    // switch is needed" branch this test's own doc named as the other
+    // possible outcome -- assert it directly instead of leaving the
+    // conclusion unverified.
+    assert!(
+        (final_angle_deg - initial_angle_deg).abs() < 1.0,
+        "expected constant damping from t=0 to freeze the column rigid (no switch \
+         means no real collapse) -- initial={initial_angle_deg:.1} deg, \
+         final={final_angle_deg:.1} deg, if this moved the damping formulation \
+         changed and the switch-based recipe elsewhere in this file may no longer \
+         be necessary"
+    );
 }
 
 /// Real, deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
