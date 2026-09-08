@@ -4278,6 +4278,26 @@ fn physical_props_produce_valid_params() {
         "brittle invalid"
     );
 
+    // Real, soft-clay-range values (NaccMaterial's own doc: "Saturated clay /
+    // soft sediment"), matching camclay_dispatch_matches_direct_nacc_from_physical's
+    // own reference values -- added 2026-09-08 alongside PlasticityModel::CamClay.
+    let camclay = Elastoplastic {
+        elastic: Elastic {
+            e_pa: 2.0e6,
+            nu: 0.3,
+            rho_kg_m3: 1800.0,
+        },
+        model: PlasticityModel::CamClay {
+            friction: 1.2,
+            cohesion: 0.1,
+            hardening_factor: 2.0,
+        },
+    };
+    assert!(
+        camclay.material(&config).params().lambda > 0.0,
+        "camclay invalid"
+    );
+
     // ── Fluid -- Newtonian ─────────────────────────────────────────────────────
     let newtonian = Fluid {
         rho_kg_m3: 1000.0,
