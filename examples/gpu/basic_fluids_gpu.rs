@@ -1,18 +1,17 @@
 extern crate emerge_engine as emerge;
 
-/// GPU viscoplastic fluids -- Newtonian water dam-break + Bingham mud blob, zero CPU readback.
+/// GPU Newtonian water dam-break, zero CPU readback.
 ///
 ///   Mat 0  Newtonian water (blue) -- Tait EOS + deviatoric viscosity
-///   Mat 1  Bingham mud    (gold)  -- viscoplastic with yield stress
 ///
 ///   cargo run --example basic_fluids_gpu --features "render"
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, DualPhaseSurfaceSource, GridVolumeSource, Renderer};
+use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::{
-    BinghamFluidMaterial, FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation,
-    MaterialRegistry, NewtonianFluidMaterial, Particle, SimConfig, SpawnRegion, build_particles,
+    FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation, MaterialRegistry,
+    NewtonianFluidMaterial, Particle, SimConfig, SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -50,8 +49,7 @@ const RENDER_FPS_TARGET: f32 = 60.0;
 // exactly the dt size this demo's materials/gravity were tuned against.
 const DT: f32 = PLAYBACK_SPEED / RENDER_FPS_TARGET;
 const MAT_WATER: u32 = 0;
-const MAT_MUD: u32 = 1;
-const LABELS: &[(u32, &str)] = &[(MAT_WATER, "water"), (MAT_MUD, "mud")];
+const LABELS: &[(u32, &str)] = &[(MAT_WATER, "water")];
 // Module scope (not local to `make_sim_data`, which only builds the sim, not
 // the renderer): `Renderer::set_grid_reference_cell_mass` needs this same
 // real SI value from `State::new`, a separate `impl` method -- see that call
@@ -161,7 +159,7 @@ fn make_sim_data(
         min_dt: 1.0e-4,
         // Raised from 8 alongside the eos_stiffness fix below (2026-08-07):
         // a correctly-stiff EOS needs real substep headroom (CPU's identical
-        // water+mud scene needed 22-63/frame at cfl=0.5) -- 8 would have
+        // water scene needed 22-63/frame at cfl=0.5) -- 8 would have
         // silently capped it and (with the honest-dropped-time fix already
         // shipped) reported most of each frame's time as unadvanced.
         max_substeps_per_step: 60,
@@ -245,42 +243,16 @@ fn make_sim_data(
     // rest_density=0.1 for water, NOT the old 4.0 -- real SI fix, 2026-08-08,
     // see basic_fluids.rs's own doc for the full derivation (`rho_grid =
     // rho_kg_m3*dx_meters^2 = 1000*0.01^2 = 0.1` for real water at this
-    // scene's scale). Mud's own `4.0` is intentionally unchanged (no
-    // equally solid SI citation established for mud density tonight).
+    // scene's scale).
     // 0.5 (2026-08-14) -- matches `basic_fluids.rs` exactly (4 PPC), was
     // 0.9 (~1.2 PPC) since a 45fps fix predating today's GPU solver revert.
     // Real, measured win: denser sampling gives the velocity-divergence
     // estimate less room to spuriously spike (sub=19 steady vs the sparse
     // case's climb into the hundreds).
     const SPACING: f32 = 0.5;
-    // Real densities in SI, converted by this engine's own documented rule
-    // `rho_grid = rho_kg_m3 * dx_meters^2` (see `NewtonianFluidMaterial::
-    // weakly_compressible`), at this scene's dx_meters=0.01:
-    //   water 1000 kg/m3 -> 1000 * 0.01^2 = 0.1
-    //   mud   1800 kg/m3 -> 1800 * 0.01^2 = 0.18
-    // 1800 is inside the real, standard geotechnical range for saturated
-    // mud/wet soil (~1600-2000 kg/m3), the same range `FluidGranular::
-    // saturated_loam_preset` already cites (rho_kg_m3: 1800).
-    //
-    // REAL ROOT-CAUSE FIX (2026-08-11) of the GPU fluid fps collapse: mud was
-    // `4.0` here, i.e. an implied **40,000 kg/m3** -- nearly 2x denser than
-    // osmium (22,590 kg/m3), the densest natural element. That was never a
-    // real density: it is a leftover from before the 2026-08-08 SI mass fix,
-    // which converted WATER only and explicitly deferred mud ("no equally
-    // solid, verified SI citation ... was established tonight", basic_fluids.rs).
-    // The result was a **40:1 mass ratio between two materials sharing one MPM
-    // grid**. In MPM a shared node's velocity is momentum-weighted, so the
-    // light material is effectively slaved to the heavy one: water particles
-    // touching mud gathered a velocity gradient dominated by mud's momentum,
-    // not their own physics, and their J drifted until it hit the real j_max
-    // safety bound -- which then triggered a full (and futile, since the
-    // condition is persistent rather than transient) retry ladder every batch.
-    // That retry storm IS the measured 55 -> 1 fps collapse.
     // WATER_RHO_GRID itself is module-scope now (renderer setup in `State::new`
     // needs the same real value) -- see its own doc.
-    const MUD_RHO_GRID: f32 = 0.18;
     const WATER_MASS: f32 = WATER_RHO_GRID * SPACING * SPACING;
-    const MUD_MASS: f32 = MUD_RHO_GRID * SPACING * SPACING;
     let water_region = |box_size: IVec2, box_center: Vec2| SpawnRegion {
         spacing: SPACING,
         box_size,
@@ -474,14 +446,6 @@ fn make_sim_data(
             p
         }
     };
-    // Mud material stays defined/registered below (Pattern::DamBreak's own
-    // scene used to spawn it too) but unused by either pattern's own spawn
-    // above -- TEMPORARY (2026-08-12): isolating both to water only, so the
-    // classic dam-break case (and now droplet impact) can be verified real/
-    // correct before mud's own separate, still-open Bingham-yield-stress
-    // instability is chased further.
-    let _ = MUD_MASS;
-
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     //
@@ -618,36 +582,7 @@ fn make_sim_data(
     // HARDER two-material scene than this one) -- this constant stays off,
     // pending whatever the rebuilt strict-fluid contract needs once that
     // work resumes.
-    // Mud gets the SAME real Mach criterion and the SAME gamma as water
-    // (2026-08-11): sizing only water correctly would leave mud as the
-    // material that drives the CFL minimum (the adaptive dt is a MINIMUM over
-    // ALL materials sharing the grid), so the substep count -- and the fps --
-    // would barely move.
-    //
-    // THIRD real bug in the previous version: `mud_eos_stiffness` was derived
-    // from `c_target_grid = c_ref_m_s/dx_meters` and `MUD_RHO_GRID` (0.18,
-    // grid-converted) -- but `weakly_compressible`'s own doc (`fluid.rs:58-
-    // 61`) is explicit that `eos_stiffness` stays in real SI Pascals; only
-    // density gets the dx^2 grid conversion. That put mud's acoustic term and
-    // water's in two DIFFERENT unit systems on the SAME shared-grid CFL
-    // minimum. Fixed by using the identical real formula as water, with mud's
-    // REAL density (1800 kg/m3, not the grid-converted MUD_RHO_GRID -- see
-    // that constant's own doc above for the citation).
-    const MUD_RHO_KG_M3: f32 = 1800.0;
-    const MUD_EOS_POWER: f32 = 3.0;
-    let mud_tait_b_pa = MUD_RHO_KG_M3 * c_ref_m_s * c_ref_m_s / MUD_EOS_POWER;
-    let mut mud = BinghamFluidMaterial::new(MUD_RHO_GRID, 8.0, mud_tait_b_pa, MUD_EOS_POWER, 4.0);
-    // Same real bulk-viscosity fix as water above, same ratio (~3x dynamic
-    // viscosity) applied to mud's own dynamic_viscosity=8.0 -- mud-specific
-    // bulk viscosity isn't a commonly published SI constant the way water's
-    // is, so this is a disclosed extrapolation of water's real, cited ratio,
-    // not a directly-measured mud citation. Left off would make mud the
-    // undamped material instead (same reasoning as the Mach-criterion doc
-    // above: this shared-grid CFL minimum is only as good as its weakest
-    // link).
-    mud.bulk_viscosity = 3.0 * 8.0;
-    let mut registry = MaterialRegistry::with_default(Box::new(water));
-    registry.insert(MAT_MUD, Box::new(mud));
+    let registry = MaterialRegistry::with_default(Box::new(water));
 
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);
     // Vortex's real drain + basin -- see that match arm's own doc for the
@@ -690,27 +625,20 @@ fn make_sim_data(
 }
 
 /// Shared diagnostic line for a single traced/outlier particle -- DRY
-/// extraction (2026-08-15): MIN_J_OUTLIER, OUTLIER, and MUD_OUTLIER below
-/// each printed this same field set independently before this. Only mud's
-/// own trace needs `friction_hardening` (its Bingham yield state); `None`
-/// omits that segment entirely rather than printing a meaningless 0.0 for
-/// water.
+/// extraction (2026-08-15): MIN_J_OUTLIER and OUTLIER below each printed
+/// this same field set independently before this.
 fn print_particle_trace(
     label: &str,
     idx: usize,
     p: &Particle,
     neighbors_tight: usize,
     neighbors_wide: usize,
-    friction_hardening: Option<f32>,
 ) {
     let j = p.deformation_gradient.determinant();
-    let fh = friction_hardening
-        .map(|v| format!(" friction_hardening={v:.4}"))
-        .unwrap_or_default();
     println!(
         "  {label} idx={idx} x=({:.3},{:.3}) v=({:.3},{:.3}) |v|={:.3} \
          F=[{:.3},{:.3};{:.3},{:.3}] J={j:.4} volume={:.6} initial_volume={:.6} \
-         density={:.4} mass={:.6}{fh} neighbors(r=1.5)={neighbors_tight} \
+         density={:.4} mass={:.6} neighbors(r=1.5)={neighbors_tight} \
          neighbors(r=3.0)={neighbors_wide}",
         p.x.x,
         p.x.y,
@@ -788,11 +716,9 @@ impl State {
         renderer.set_surface_res_multiplier(4);
         // Real Beer-Lambert optics for grid-volume mode's per-material coloring
         // (ByMaterial's palette above is separate/unrelated -- see
-        // material_sandbox_gpu.rs's own comment on this exact distinction). Water
-        // reuses the same aesthetic SIGMA_WATER other demos use; mud gets a real
-        // brownish estimate (not cited -- no real mud reflectance spectrum searched).
+        // material_sandbox_gpu.rs's own comment on this exact distinction).
+        // Water reuses the same aesthetic SIGMA_WATER other demos use.
         renderer.set_optical_params(sim.queue(), MAT_WATER as usize, [0.85, 0.25, 0.07]);
-        renderer.set_optical_params(sim.queue(), MAT_MUD as usize, [0.30, 0.20, 0.12]);
         // Real subsurface scattering + Fresnel specular -- these defaulted to
         // 0.0 (no visible effect at all in grid-volume/curvature-flow modes,
         // even after that shading math shipped) until wired here.
@@ -800,26 +726,21 @@ impl State {
         // n_water=1.33, n_air=1.0 -- a real, precisely derivable Schlick
         // (1994) base reflectance, not an estimate.
         //
-        // REVISED (2026-07-30): the first attempt used sigma_s=1.5 (water)
-        // / 6.0 (mud), borrowed from an unrelated tissue-scale test value,
-        // without checking it against these materials' OWN sigma_a. Real
-        // bug this caused, confirmed via screenshot: `albedo = sigma_s /
-        // (sigma_s + sigma_a)` (see grid_volume.wgsl/curvature_flow.wgsl's
-        // fs_main) -- water's sigma_a is already low (esp. blue at 0.07),
-        // so almost ANY sigma_s dominates that channel's albedo, pulling
-        // the whole color toward the cream-white scatter_glow instead of
-        // water's real blue (read as "foam"/washed-out, user's own word).
-        // Fixed by choosing sigma_s relative to each material's own
-        // smallest sigma_a channel, targeting a bounded albedo (~0.2-0.3)
-        // instead of an unrelated borrowed magnitude: water's min sigma_a
-        // is 0.07 (blue) -> sigma_s=0.03 keeps albedo_blue ~= 0.3; mud's
-        // min sigma_a is 0.12 -> sigma_s=0.08 keeps albedo_blue ~= 0.4 (mud
-        // is real turbid/particulate, tolerates a bit more per limnology,
-        // still bounded so it doesn't dominate).
+        // REVISED (2026-07-30): the first attempt used sigma_s=1.5, borrowed
+        // from an unrelated tissue-scale test value, without checking it
+        // against water's OWN sigma_a. Real bug this caused, confirmed via
+        // screenshot: `albedo = sigma_s / (sigma_s + sigma_a)` (see
+        // grid_volume.wgsl/curvature_flow.wgsl's fs_main) -- water's sigma_a
+        // is already low (esp. blue at 0.07), so almost ANY sigma_s
+        // dominates that channel's albedo, pulling the whole color toward
+        // the cream-white scatter_glow instead of water's real blue (read as
+        // "foam"/washed-out, user's own word). Fixed by choosing sigma_s
+        // relative to water's own smallest sigma_a channel, targeting a
+        // bounded albedo (~0.2-0.3) instead of an unrelated borrowed
+        // magnitude: water's min sigma_a is 0.07 (blue) -> sigma_s=0.03
+        // keeps albedo_blue ~= 0.3.
         renderer.set_optical_scattering(sim.queue(), MAT_WATER as usize, 0.03);
         renderer.set_specular_r0(sim.queue(), MAT_WATER as usize, 0.02);
-        renderer.set_optical_scattering(sim.queue(), MAT_MUD as usize, 0.08);
-        renderer.set_specular_r0(sim.queue(), MAT_MUD as usize, 0.005);
         // NOTE: `Renderer::set_light_dir` (real infrastructure, reuses
         // `SimConfig::light_dir`) exists but is deliberately NOT called here
         // yet -- this config's own `light_dir` is left at its default
@@ -1028,7 +949,6 @@ impl State {
                             p,
                             neighbors_tight,
                             neighbors_wide,
-                            None,
                         );
                     }
                 }
@@ -1043,14 +963,7 @@ impl State {
                     {
                         let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_WATER);
                         let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_WATER);
-                        print_particle_trace(
-                            "OUTLIER",
-                            idx,
-                            p,
-                            neighbors_tight,
-                            neighbors_wide,
-                            None,
-                        );
+                        print_particle_trace("OUTLIER", idx, p, neighbors_tight, neighbors_wide);
                         // TEMPORARY: dump the outlier's own 9-cell G2P gather
                         // stencil directly (same base/window g2p.wgsl uses:
                         // floor(p.x) +/- 1) to see which cell(s) actually
@@ -1081,30 +994,6 @@ impl State {
                                 );
                             }
                         }
-                    }
-                    // TEMPORARY: same trace, for mud specifically -- water's
-                    // own trace above showed water genuinely bounded after
-                    // the mass-trust-floor fix, but the aggregate mud v/J
-                    // range was still spiking (293/210) in the same run,
-                    // confirming this is now a mud-specific (Bingham
-                    // yield-stress material), not water-specific, remaining
-                    // problem.
-                    if let Some((idx, p)) = particles
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| p.material_id == MAT_MUD)
-                        .max_by(|(_, a), (_, b)| a.v.length().total_cmp(&b.v.length()))
-                    {
-                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_MUD);
-                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_MUD);
-                        print_particle_trace(
-                            "MUD_OUTLIER",
-                            idx,
-                            p,
-                            neighbors_tight,
-                            neighbors_wide,
-                            Some(p.friction_hardening),
-                        );
                     }
                 }
             }
@@ -1138,22 +1027,20 @@ impl State {
                 );
             }
             RenderMode::Surface => {
-                // Real two-phase reconstruction (shipped 2026-07-30, see
-                // `curvature_flow.wgsl`'s own "two-phase extension" doc):
-                // water and mud are two genuinely distinct materials in
-                // this scene, so each gets its OWN independently-smoothed
-                // surface instead of merging into one blob where they
-                // touch -- the whole real reason this demo exists (a real
-                // phase boundary, not a single-material scene).
-                self.renderer.render_surface_reconstruction_dual_phase(
+                // Single-material scene since the mud removal (this file's
+                // two-phase reconstruction call is gone with it) -- the
+                // plain single-phase path (curvature_flow.wgsl's base
+                // technique) is the correct one now, same as basic_fluids.rs's
+                // own CPU counterpart.
+                self.renderer.render_surface_reconstruction(
                     self.sim.device(),
                     self.sim.queue(),
-                    DualPhaseSurfaceSource {
+                    SurfaceReconstructionSource {
                         particle_buf: self.sim.particle_buffer(),
                         particle_count: self.sim.particle_count(),
                         grid_res: GRID as u32,
-                        material_id_a: MAT_WATER,
-                        material_id_b: MAT_MUD,
+                        material_slot: MAT_WATER,
+                        material_mass_enabled: false,
                         dt: DT,
                     },
                     &view,
@@ -1180,7 +1067,7 @@ impl ApplicationHandler for App {
         let w = Arc::new(
             el.create_window(
                 winit::window::WindowAttributes::default()
-                    .with_title("emerge -- Fluids GPU [Water / Bingham Mud]")
+                    .with_title("emerge -- Fluids GPU [Water]")
                     .with_inner_size(winit::dpi::LogicalSize::new(480u32, 480u32)),
             )
             .unwrap(),

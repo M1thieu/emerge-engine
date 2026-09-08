@@ -2,7 +2,7 @@ extern crate emerge_engine as emerge;
 
 use egui_wgpu::ScreenDescriptor;
 use emerge::Particle;
-/// `basic_fluids.rs` (Newtonian water dam-break + Bingham mud blob) with a real,
+/// `basic_fluids.rs` (Newtonian water dam-break) with a real,
 /// live egui panel -- same pattern as `basic_sand.rs`/`basic_snow.rs`:
 /// real gravity slider (1.0 = genuine IRL 9.81 m/s²), push/pull, and directional-
 /// drag digging (the SAME proven mechanism from `basic_sand.rs`: a per-particle
@@ -30,8 +30,8 @@ use emerge::materials::MaterialModel;
 use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
-    BinghamFluidMaterial, FixedStepConfig, FixedStepController, NeoHookeanMaterial,
-    NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, WithLatentHeat,
+    FixedStepConfig, FixedStepController, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
+    Simulation, SlipBoundary, SpawnRegion, WithLatentHeat,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -123,8 +123,7 @@ const SPACING: f32 = 0.5;
 /// changes.
 const PARTICLE_RENDER_DIAMETER: f32 = SPACING * std::f32::consts::FRAC_2_SQRT_PI;
 const MAT_WATER: u32 = 0;
-const MAT_MUD: u32 = 1;
-const MAT_ICE: u32 = 2;
+const MAT_ICE: u32 = 1;
 const FREEZING_POINT: f32 = 273.0;
 const ICE_LATENT_HEAT: f32 = -334_000.0; // exothermic: freezing releases energy (real water: 334 kJ/kg)
 const WARM_AMBIENT: f32 = 300.0;
@@ -166,15 +165,9 @@ fn make_sim() -> Simulation {
         // so it needs that file's cfl=0.1, not basic_fluids.rs's unchanged
         // default -- that reasoning still applies to `material_cfl_
         // coefficient` below, unaffected by this cap.
-        // TEMPORARY, explicitly disclosed (2026-08-13): was 12, tuned
-        // against a scene where mud's EOS pressure was silently dead (a
-        // real bug in `BinghamFluidMaterial::update_particle`, just fixed --
-        // see that method's own doc). With mud's pressure now genuinely
-        // alive, 12 panics ("could not advance... within
-        // max_substeps_per_step=12"). Raised to match `basic_fluids_gpu.rs`'s
-        // own value as a real, precedented starting point -- the entire
-        // 45fps-floor tuning ladder documented below this field needs a
-        // fresh re-pass now that mud's physics genuinely changed; not
+        // Raised from 12 to 150 (2026-08-13) to match `basic_fluids_gpu.rs`'s
+        // own value -- the entire 45fps-floor tuning ladder documented above
+        // this field needs a fresh re-pass on this water-only scene; not
         // re-done here, flagged as real follow-up work.
         max_substeps_per_step: 150,
         // `spatial_sort_enabled` real-measured 2026-08-10, NOT enabled here:
@@ -277,7 +270,6 @@ fn make_sim() -> Simulation {
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
     let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, water_tait_b_pa, WATER_EOS_POWER);
-    let mud = BinghamFluidMaterial::new(4.0, 8.0, 100.0, 3.0, 4.0);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {
@@ -302,7 +294,6 @@ fn make_sim() -> Simulation {
     // real, disclosed RESOLUTION tradeoff, not a physics-accuracy one --
     // material constants below are untouched.
     const WATER_MASS: f32 = 0.1 * SPACING * SPACING;
-    const MUD_MASS: f32 = 4.0 * SPACING * SPACING;
     let spawn_water = SpawnRegion {
         spacing: SPACING,
         box_size: IVec2::new(14, 52),
@@ -317,19 +308,8 @@ fn make_sim() -> Simulation {
         mass_override: Some(WATER_MASS),
         ..SpawnRegion::for_sim(&config)
     };
-    let spawn_mud = SpawnRegion {
-        spacing: SPACING,
-        box_size: IVec2::new(16, 18),
-        box_center: Vec2::new(50.0, 38.0),
-        material_id: MAT_MUD,
-        initial_velocity_scale: 0.0,
-        precompute_initial_volumes: true,
-        mass_override: Some(MUD_MASS),
-        ..SpawnRegion::for_sim(&config)
-    };
     let mut solver = Simulation::new(config, spawn_water)
         .with_default_material(Box::new(water))
-        .with_material(MAT_MUD, Box::new(mud))
         .with_material(MAT_ICE, Box::new(ice))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
         .with_thermal(thermal)
@@ -340,16 +320,6 @@ fn make_sim() -> Simulation {
                 None
             }
         });
-    // TEMPORARY (2026-08-13): mud spawn disabled -- isolating to water-only
-    // per direct instruction, since the reported "weird" behavior is
-    // specifically the water/mud INTERACTION, not either material alone.
-    // Material stays registered (`with_material` above) so mud can be
-    // re-enabled by uncommenting the line below once water-only is solid.
-    // `add_body` appends particles synchronously, so it must run BEFORE this
-    // temperature-init loop -- otherwise mud particles are left at
-    // `initialize_particles`'s default (effectively 0K), not WARM_AMBIENT.
-    let _ = &spawn_mud;
-    // let _ = solver.add_body(spawn_mud);
     for t in solver.particles_mut().temperature.iter_mut() {
         *t = WARM_AMBIENT;
     }
@@ -551,12 +521,8 @@ impl State {
         if NewtonianFluidMaterial::low_viscosity(1.0, 1.0).owns_deformation_volume_state() {
             renderer.set_wave_force_coeff(0.35);
         }
-        // Mud + ice keep their own distinct look (both currently unspawned in
-        // this water-only isolation, but registered, so their slots must not
-        // silently inherit water's).
-        renderer.set_optical_params(&queue, MAT_MUD as usize, [0.30, 0.20, 0.12]);
-        renderer.set_optical_scattering(&queue, MAT_MUD as usize, 0.08);
-        renderer.set_specular_r0(&queue, MAT_MUD as usize, 0.005);
+        // Ice keeps its own distinct look, so its slot doesn't silently
+        // inherit water's.
         // Ice: far less absorbing than liquid water (clear ice transmits
         // deeply) and much glossier -- r0 ~0.05 vs water's 0.02.
         renderer.set_optical_params(&queue, MAT_ICE as usize, [0.30, 0.12, 0.05]);
@@ -749,11 +715,11 @@ impl State {
     /// ice rendering visually IDENTICAL to water. Real fix: switched the
     /// caller to `render_surface_reconstruction`'s N-material path
     /// (`material_mass_enabled`), which colors every cell from its own real
-    /// per-material mass -- water/mud/ice all stay visually distinct, no
+    /// per-material mass -- water/ice all stay visually distinct, no
     /// remap needed here at all.
     fn upload_particle_bridge(&mut self) {
         // No ice->water remap: render_surface_reconstruction's material_mass_enabled
-        // path colors every real material_id (water/mud/ice) from its own per-cell
+        // path colors every real material_id (water/ice) from its own per-cell
         // mass, so all 3 stay visually distinct instead of collapsing to one slot.
         self.bridge_particles.clear();
         self.bridge_particles.extend(self.sim.particles().iter());
@@ -856,26 +822,13 @@ impl State {
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), j| {
                 (lo.min(j), hi.max(j))
             });
-        let mud_j = self
-            .sim
-            .particles()
-            .deformation_gradient
-            .iter()
-            .zip(self.sim.particles().material_id.iter())
-            .filter(|&(_, &m)| m == MAT_MUD)
-            .map(|(f, _)| f.determinant())
-            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), j| {
-                (lo.min(j), hi.max(j))
-            });
         eprintln!(
-            "frame={}  max_speed={:.3}  non_finite={}  water_j=[{:.3},{:.3}]  mud_j=[{:.3},{:.3}]  gravity_frac={:.3}",
+            "frame={}  max_speed={:.3}  non_finite={}  water_j=[{:.3},{:.3}]  gravity_frac={:.3}",
             self.frame,
             snap.max_particle_speed,
             snap.non_finite_particle_values,
             water_j.0,
             water_j.1,
-            mud_j.0,
-            mud_j.1,
             self.gravity_fraction,
         );
     }
@@ -1013,7 +966,7 @@ impl State {
                 // N-material per-cell coloring (`material_mass_enabled`),
                 // NOT dual-phase -- real, disclosed switch, 2026-08-10.
                 // Dual-phase caps at exactly 2 materials; this demo has 3
-                // (water/mud/ice), and the earlier fix (remapping ice's
+                // (water/ice), and the earlier fix (remapping ice's
                 // material_id to water's JUST for this render buffer) closed
                 // the "ice vanishes" bug but created a real, different
                 // problem the user caught live: ice became VISUALLY
@@ -1085,12 +1038,6 @@ impl State {
             .iter()
             .filter(|p| p.material_id == MAT_WATER)
             .count();
-        let mud_n = self
-            .sim
-            .particles()
-            .iter()
-            .filter(|p| p.material_id == MAT_MUD)
-            .count();
         let ice_n = self
             .sim
             .particles()
@@ -1112,7 +1059,7 @@ impl State {
                     ui.label(format!(
                         "fps={fps:.0}  worst_step={worst_step_ms:.1}ms  render={render_mode_label}"
                     ));
-                    ui.label(format!("water={water_n}  mud={mud_n}  ice={ice_n}"));
+                    ui.label(format!("water={water_n}  ice={ice_n}"));
                     ui.separator();
                     ui.label("Gravity (1.0 = real IRL 9.81 m/s², use --release above ~0.1):");
                     ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=2.0));
