@@ -110,6 +110,23 @@ pub enum PlasticityModel {
         /// Exponential softening rate. Higher = faster strength loss post-fracture.
         softening_rate: f32,
     },
+
+    /// Non-Associated Cam-Clay: elliptical yield surface with a compression
+    /// cap (preconsolidation), for wet soil/clay/soft tissue (Klar et al.
+    /// 2016; see `NaccMaterial`'s own doc for the full citation and natural
+    /// phenomena). CPU-only (GPU construction rejects it -- see
+    /// `GpuSimulation`'s own NACC guard). Wired in 2026-09-08, closing the
+    /// gap `NaccProps`'s own doc used to disclose.
+    /// → `NaccMaterial`
+    CamClay {
+        /// Friction slope M (tan-like, not a raw angle). Typical 0.8-1.8 --
+        /// see `NaccMaterial::friction`'s own doc for the exact relation.
+        friction: f32,
+        /// Cohesion β. 0.0 = no tensile strength (standard soil).
+        cohesion: f32,
+        /// Hardening factor ξ. 0.0 = perfect plasticity (no cap growth).
+        hardening_factor: f32,
+    },
 }
 
 /// Viscoelastic solid (Kelvin-Voigt): elastic spring + viscous dashpot in parallel.
@@ -355,15 +372,13 @@ pub(super) struct SnowProps {
 /// Real fix (2026-09-05): `NaccMaterial` was the one real material family
 /// with NO `from_physical`/SI-conversion constructor at all -- its own
 /// `from_young_modulus` doc disclosed this as a genuine open gap. `pub`
-/// (not `pub(super)`) because NACC is NOT wired into the
-/// [`Elastoplastic`]/[`PlasticityModel`] dispatch enum the way
-/// [`BrittleProps`] is (that one is reachable through a real
-/// `PlasticityModel::Brittle` match arm) -- this standalone
-/// `FromSI<NaccProps>` is the only way to build a dimensionally-correct SI
-/// `NaccMaterial` for now, not something `.material(&config)` produces
-/// internally. Wiring NACC into that dispatch enum is real follow-up work,
-/// not done here to avoid touching shared match-arm code used by every
-/// other material in the same pass.
+/// (not `pub(super)`) because this type is also constructed directly by
+/// callers of `Elastoplastic::material` via `PlasticityModel::CamClay` (see
+/// that variant's own doc) -- same visibility reason as `BrittleProps`/
+/// `GranularProps`/`DuctileProps`, all `pub` for the same match-arm-internal
+/// reason. Wired into the dispatch enum 2026-09-08 (was real, disclosed
+/// follow-up work before that -- see this doc's own prior revision in git
+/// history if the old rationale is needed).
 #[derive(Debug, Clone, Copy)]
 pub struct NaccProps {
     pub elastic: Elastic,

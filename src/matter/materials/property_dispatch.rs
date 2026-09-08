@@ -5,10 +5,12 @@
 //! -- dispatching each preset to its concrete `MaterialModel` constructor.
 //! Split out of `mod.rs` purely for LOC -- no behavior change.
 
-use super::physical_props::{BinghamProps, DuctileProps, GranularProps, NewtonianFluid, SnowProps};
+use super::physical_props::{
+    BinghamProps, DuctileProps, GranularProps, NaccProps, NewtonianFluid, SnowProps,
+};
 use super::{
     BinghamFluidMaterial, BrittleProps, DruckerPragerMaterial, Elastic, Elastoplastic, Fluid,
-    FluidGranular, FromSI, GranularFluidMaterial, MaterialModel, MuIRheologyMaterial,
+    FluidGranular, FromSI, GranularFluidMaterial, MaterialModel, MuIRheologyMaterial, NaccMaterial,
     NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression, NoCompressionMaterial, ParticleMass,
     PlasticityModel, Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic,
     ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
@@ -47,6 +49,8 @@ impl Elastoplastic {
     /// - `GranularRateDependent` → `MuIRheologyMaterial`
     /// - `Ductile`               → `VonMisesMaterial`
     /// - `Brittle`               → `RankineMaterial`
+    /// - `CamClay`               → `NaccMaterial` (CPU-only, see that
+    ///   material's own doc -- GPU construction rejects it)
     pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
         use PlasticityModel::*;
         match self.model {
@@ -93,6 +97,19 @@ impl Elastoplastic {
                     elastic: self.elastic,
                     tensile_strength_pa,
                     softening_rate,
+                },
+                config,
+            )),
+            CamClay {
+                friction,
+                cohesion,
+                hardening_factor,
+            } => Box::new(NaccMaterial::from_physical(
+                &NaccProps {
+                    elastic: self.elastic,
+                    friction,
+                    cohesion,
+                    hardening_factor,
                 },
                 config,
             )),
@@ -343,5 +360,67 @@ mod particle_mass_tests {
         assert!((from_ep - expected_elastic).abs() < 1e-9);
         assert!((from_ve - expected_elastic).abs() < 1e-9);
         assert!((from_fluid - expected_elastic).abs() < 1e-9);
+    }
+
+    /// `PlasticityModel::CamClay` dispatch (wired 2026-09-08, closing the gap
+    /// `NaccProps`'s own doc used to disclose) must produce the exact same
+    /// `NaccMaterial` as calling `NaccMaterial::from_physical` directly --
+    /// no double conversion, no dropped fields, same pattern this file's own
+    /// `Brittle`/`Ductile`/`Granular` arms already prove out.
+    #[test]
+    fn camclay_dispatch_matches_direct_nacc_from_physical() {
+        use crate::materials::NaccMaterial;
+
+        let config = earth_config();
+        let elastic = Elastic {
+            e_pa: 2.0e6,
+            nu: 0.3,
+            rho_kg_m3: 1800.0,
+        };
+        let (friction, cohesion, hardening_factor) = (1.2, 0.1, 2.0);
+
+        let via_dispatch = Elastoplastic {
+            elastic,
+            model: PlasticityModel::CamClay {
+                friction,
+                cohesion,
+                hardening_factor,
+            },
+        }
+        .material(&config);
+
+        let direct = NaccMaterial::from_physical(
+            &NaccProps {
+                elastic,
+                friction,
+                cohesion,
+                hardening_factor,
+            },
+            &config,
+        );
+
+        // `.material()` returns `Box<dyn MaterialModel>`; `MaterialModel:
+        // Debug` is a supertrait bound, so comparing the trait objects'
+        // Debug output directly (not just a `MaterialParams` projection)
+        // catches any field the dispatch path might drop or double-convert.
+        assert_eq!(
+            format!("{via_dispatch:?}"),
+            format!("{direct:?}"),
+            "CamClay dispatch produced a different NaccMaterial than the direct FromSI path"
+        );
+
+        // particle_mass for Elastoplastic must still route through the same
+        // elastic density, unaffected by which PlasticityModel variant is chosen.
+        let spacing = 0.5_f32;
+        let expected_mass = elastic.particle_mass(spacing, &config);
+        let ep = Elastoplastic {
+            elastic,
+            model: PlasticityModel::CamClay {
+                friction,
+                cohesion,
+                hardening_factor,
+            },
+        };
+        assert!((ep.particle_mass(spacing, &config) - expected_mass).abs() < 1e-9);
     }
 }
