@@ -37,6 +37,10 @@ pub struct StomakhinMaterial {
 }
 
 impl StomakhinMaterial {
+    /// Construct directly from grid-native Lame parameters and Stomakhin
+    /// 2013's own plasticity thresholds -- NOT SI Pascals (see
+    /// [`Self::from_young_modulus`] for the common gotcha and the real SI
+    /// conversion path).
     pub const fn new(
         lambda: f32,
         mu: f32,
@@ -68,8 +72,12 @@ impl StomakhinMaterial {
     /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
     /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
     /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material use
-    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
+    /// density. For a real, correctly SI-to-grid-converted material, build
+    /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
+    /// `model: PlasticityModel::Snow` and call its `.material(&config)`
+    /// (real dispatch, see that method's own doc) -- `Self::from_physical`
+    /// exists but its `SnowProps` input type is crate-internal, not
+    /// constructible from outside.
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)

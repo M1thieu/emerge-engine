@@ -61,6 +61,9 @@ pub struct CorotatedMaterial {
 }
 
 impl CorotatedMaterial {
+    /// Construct directly from grid-native Lame parameters -- NOT SI
+    /// Pascals (see [`Self::from_young_modulus`] for the common gotcha and
+    /// the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32) -> Self {
         Self {
             lambda,
@@ -99,6 +102,33 @@ impl MaterialModel for CorotatedMaterial {
     fn init_particle(&self, particle: &mut Particle) {
         particle.hardening_scale = 1.0;
         particle.plastic_volume_ratio = 1.0;
+    }
+
+    fn corotated_lame_params(&self) -> Option<(f32, f32)> {
+        // `hardening_scale`/`temperature` modifiers below fold into
+        // mu_eff/lambda_eff only when thermal_expansion != 0 or
+        // hardening_scale != 1 (never true for a passive Corotated particle
+        // -- `init_particle` sets it to 1.0 and nothing ever touches it
+        // again, no plastic return-mapping on this material). Real fix
+        // (2026-09-11): this used to say the SOLVER'S eligibility check
+        // also verified `hardening_scale == 1.0` per particle -- removed
+        // from there, it was a blanket, all-materials check based on an
+        // assumption that field means the same thing everywhere. It
+        // doesn't: `DruckerPragerMaterial` legitimately repurposes
+        // `hardening_scale` as strain-rate edge-detection memory (see its
+        // own `update_particle`), so a blanket `== 1.0` gate silently
+        // rejected the implicit solver for nearly every real, non-static
+        // sand particle. Correctness for THIS material still holds without
+        // that external gate -- `hardening_scale` genuinely never leaves
+        // 1.0 here, for the reason stated above.
+        if self.elastic_viscosity == 0.0
+            && self.thermal_expansion == 0.0
+            && self.active_stress_coeff == 0.0
+        {
+            Some((self.lambda, self.mu))
+        } else {
+            None
+        }
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {

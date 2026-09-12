@@ -30,15 +30,18 @@ pub use physical_props::{
 pub use bingham::BinghamFluidMaterial;
 pub use boiling_mixture::BoilingMixtureMaterial;
 pub use cavitating_eos::{CavitatingEosParams, CavitatingEosTable};
-pub use cavitating_fluid::{CavitatingFluidMaterial, IsothermalCavitatingFluidMaterial};
+pub use cavitating_fluid::{
+    CavitatingFluidMaterial, CavitatingFluidMaterialParams, IsothermalCavitatingFluidMaterial,
+    IsothermalCavitatingFluidMaterialParams,
+};
 pub use corotated::CorotatedMaterial;
 pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
-pub use gas::IdealGasMaterial;
+pub use gas::{IdealGasMaterial, IdealGasPhysicalParams};
 pub use granular::sand::DruckerPragerMaterial;
 pub use granular::sand_mui::MuIRheologyMaterial;
 pub use granular_fluid::GranularFluidMaterial;
-pub use nacc::NaccMaterial;
+pub use nacc::{NaccMaterial, NaccMaterialParams};
 pub use no_compression::NoCompressionMaterial;
 pub use params::MaterialParams;
 pub use rankine::RankineMaterial;
@@ -397,6 +400,27 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// participates in mixture coupling, the zero-cost-when-unused case that
     /// covers every material/scene that doesn't need this feature.
     fn mixture_phase(&self) -> Option<MixturePhase> {
+        None
+    }
+
+    /// `Some((lambda, mu))` when this material's `kirchhoff_stress` is
+    /// EXACTLY `corotated_elastic_stress(F, lambda, mu)` -- no rate term, no
+    /// thermal/activation modifier -- so `spacetime::solver::
+    /// implicit_corotated`'s Newton-CG (which evaluates that shared formula
+    /// and its JVP at arbitrary trial `F`, not just the particle's current
+    /// one) can stand in for this material's elastic response exactly.
+    /// `None` (default) opts a material out -- the implicit path falls back
+    /// to the normal explicit substep for any scene containing it, so this
+    /// is a real safety gate, not a performance hint.
+    ///
+    /// Verified equivalence for the five real materials that override this
+    /// (`tests/scratch_implicit_mpm_stage2_shared_elastic_branch_check.rs`,
+    /// 2026-09-10): DruckerPrager, VonMises, Rankine, and MuIRheology all
+    /// call `corotated_elastic_stress` directly with `elastic_viscosity ==
+    /// 0.0` required (nonzero adds a real Kelvin-Voigt rate term this branch
+    /// doesn't model); Corotated itself requires `thermal_expansion == 0.0`
+    /// and `active_stress_coeff == 0.0` for the same reason.
+    fn corotated_lame_params(&self) -> Option<(f32, f32)> {
         None
     }
 

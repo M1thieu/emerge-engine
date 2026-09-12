@@ -86,6 +86,14 @@ struct State {
     // each frame takes exactly `DT` of real time, which it doesn't, and
     // produces jitter.
     stepper: FixedStepController,
+    // Real render-interpolation state (2026-09-09, same fix as
+    // `basic_fluids.rs` -- see that file's own `prev_x` doc for the full
+    // rationale): a snapshot of every particle's position from before the
+    // most recent batch of physics steps, blended against the current
+    // position at render time so on-screen motion stays smooth even though
+    // this scene's own measured real fps (4-6fps) means several sim seconds
+    // can land in one rendered frame.
+    prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
 }
 
@@ -162,6 +170,7 @@ impl State {
         };
         surface.configure(&device, &sc);
         let (sim, snake_range, grip) = make_sim();
+        let prev_x = sim.particles().x.clone();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(
             &queue,
@@ -206,6 +215,7 @@ impl State {
             spawn_centroid,
             telemetry_log,
             stepper: FixedStepController::standard(scene::DT, 1.0 / scene::DT),
+            prev_x,
             last_instant: std::time::Instant::now(),
         }
     }
@@ -304,6 +314,11 @@ impl State {
         self.last_instant = now;
         if !self.paused {
             let steps = self.stepper.steps_for_frame(frame_delta);
+            // Snapshot BEFORE the batch -- see `prev_x`'s own doc. Skipped
+            // when `steps==0` (nothing moved, last snapshot stays valid).
+            if steps > 0 {
+                self.prev_x.clone_from(&self.sim.particles().x);
+            }
             for _ in 0..steps {
                 if self.steer != 0.0 {
                     let new_dir_sign = if self.steer >= 0.0 { 1.0 } else { -1.0 };
@@ -352,8 +367,24 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        // Real render-interpolation (see `prev_x`'s own doc) -- same
+        // contained swap-and-restore pattern as `basic_fluids.rs`.
+        let alpha = self.stepper.interpolation_alpha();
+        if alpha > 0.0 && self.prev_x.len() == self.sim.particles().len() {
+            let blended: Vec<Vec2> = self
+                .prev_x
+                .iter()
+                .zip(self.sim.particles().x.iter())
+                .map(|(&prev, &now)| prev.lerp(now, alpha))
+                .collect();
+            let live = std::mem::replace(&mut self.sim.particles_mut().x, blended);
+            self.renderer
+                .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+            self.sim.particles_mut().x = live;
+        } else {
+            self.renderer
+                .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        }
         output.present();
     }
 }
@@ -399,6 +430,7 @@ impl ApplicationHandler for App {
                             let n = range.len() as f32;
                             range.clone().map(|i| particles.x[i]).sum::<Vec2>() / n
                         };
+                        s.prev_x = sim.particles().x.clone();
                         s.sim = sim;
                         s.snake_range = range;
                         s.grip = grip;

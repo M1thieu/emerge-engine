@@ -74,13 +74,15 @@ enum RenderMode {
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-// Target render fps used ONLY to pick the `FixedStepController`'s
-// `simulation_speed` (see `State::new`'s stepper doc) so physics steps land
-// ~1-per-render-frame near this rate instead of true real-time (which would
-// under-step relative to this demo's ~45-60fps render rate at `DT=0.1` and
-// look choppy). Same value + same role as `basic_fluids_gpu.rs`'s own
-// `RENDER_FPS_TARGET` -- not an independently re-guessed number.
-const RENDER_FPS_TARGET: f32 = 60.0;
+// Requested fixed-physics-step rate for interactive playback.  This is a
+// playback setting, not an EOS/CFL/material parameter.  The release audit
+// measured only 35.7--38.0 rendered FPS at the old 60 Hz request; because
+// this demo intentionally permits at most one outer step per rendered frame,
+// 60 Hz made its simulated speed follow the fluctuating render rate.  30 Hz
+// stays below the measured sustained capacity while retaining 3x playback at
+// `DT=0.1`: the same A/B measured 49.8--60.0 FPS, with finite particles and
+// bounded water J, for the initial un-interacted scene.
+const PLAYBACK_STEP_RATE_HZ: f32 = 30.0;
 // Real, measured 45fps-debug-minimum fix (2026-08-09) -- see `make_sim`'s own
 // doc for the full derivation. Promoted to a top-level const (was local to
 // `make_sim`) so `State::new`/`resize`'s own `set_camera` calls can size
@@ -386,6 +388,18 @@ struct State {
     // per-frame physics cost dropped ~4.8x; a fresh sweep would be needed to
     // re-tune the cap, not attempted tonight.
     stepper: FixedStepController,
+    // Real render-interpolation state (2026-09-09, "Fix Your Timestep" --
+    // Gaffer 2004): a snapshot of every particle's position from BEFORE the
+    // most recent batch of physics steps, so `render_scene` can blend it
+    // against the CURRENT position using `stepper.interpolation_alpha()`.
+    // Purely a render-time read -- `self.sim`'s own particle state is never
+    // permanently altered by this, only briefly swapped out and restored
+    // around one `Renderer::render` call. Fixes a real, disclosed symptom
+    // (not a new physics change): whenever real per-step cost varies frame
+    // to frame, motion visibly speeds up/slows down because the renderer
+    // was always drawing whatever the LAST completed physics step produced,
+    // with no notion of "how far into the next step we already are."
+    prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
     render_mode: RenderMode,
     grid_bridge_buf: wgpu::Buffer,
@@ -444,6 +458,7 @@ impl State {
         surface.configure(&device, &sc);
         let sim = make_sim();
         let real_gravity = sim.config().gravity;
+        let prev_x = sim.particles().x.clone();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(
             &queue,
@@ -581,6 +596,7 @@ impl State {
             device,
             queue,
             sim,
+            prev_x,
             renderer,
             egui_ctx,
             egui_state,
@@ -604,44 +620,17 @@ impl State {
             worst_step_ms_this_window: 0.0,
             last_worst_step_ms: 0.0,
             fps_log_count: 0,
-            // simulation_speed = 6.0, NOT 1.0 (true real-time) -- 1.0 was
-            // tried first (real-time stepping fix), but analysis caught a
-            // real follow-on problem before shipping it as final: with
-            // `DT=0.1` (100ms/step), true real-time only steps ~10Hz while
-            // this demo renders at ~45-60fps, so positions would freeze for
-            // ~4-5 render frames then jump -- classic missing-render-
-            // interpolation artifact of decoupled fixed-timestep (matches
-            // the user's own separate, live "ca lag" report, though that
-            // report's timing versus this exact build was not confirmed).
-            // Real fix (not a bandaid): mirror
-            // `basic_fluids_gpu.rs`'s OWN already-shipped answer to the
-            // identical situation -- that demo uses the SAME `DT=0.1`
-            // (`PLAYBACK_SPEED=6.0 / RENDER_FPS_TARGET=60.0`) and picks
-            // `simulation_speed = RENDER_FPS_TARGET * DT = 6.0` specifically
-            // so 1 physics step lands on ~every render frame at its target
-            // fps -- not an arbitrary speedup, the same demo-family tuning
-            // this file's `gravity_fraction`/`material_cfl_coefficient`
-            // already cross-reference. `max_substeps_per_frame: 1`, matching
-            // the GPU demo's OWN value after all -- REAL CORRECTION
-            // (2026-08-10, same session): first shipped as `3` on the
-            // unverified assumption that "this demo's steps are cheap
-            // (`max_substeps_per_step: 12`, not the GPU demo's 150)". Real
-            // measurement (a stderr fps/worst_step log, see the `fps_
-            // log_count` field below) caught this wrong: `worst_step_ms` on
-            // this exact scene is 22-48ms typically, spiking to 127ms -- NOT
-            // cheap relative to a 60fps (16.6ms) frame budget. At `3`, a
-            // single render frame could cram up to 3 real `Simulation::
-            // step()` calls trying to catch up to the 6x-speed target,
-            // compounding into a measured ~8-12fps (worse than doing nothing
-            // -- a real, self-inflicted regression, not the user
-            // misperceiving an actual improvement). `1` restores the GPU
-            // demo's own "a slow frame becomes visible slow motion, never a
-            // compounding catch-up spiral" property, which turns out to
-            // apply here too -- the "steps are cheap here" premise was
-            // simply wrong, not measured before being written down.
+            // Each outer step is expensive enough that the old 60 Hz request
+            // saturated this one-step-per-render cap.  At an observed 36 FPS,
+            // that silently made playback 3.6x rather than the requested 6x,
+            // so motion changed speed whenever rendering did.  The measured
+            // 30 Hz request is sustainable on the initial scene; the cap of
+            // one still deliberately prevents a slow frame from becoming a
+            // burst of catch-up physics.  This changes playback only, never
+            // the material law, force, internal CFL, or solver timestep.
             stepper: FixedStepController::new(FixedStepConfig {
                 dt: DT,
-                simulation_speed: RENDER_FPS_TARGET * DT,
+                simulation_speed: PLAYBACK_STEP_RATE_HZ * DT,
                 max_substeps_per_frame: 1,
                 max_frame_delta: 1.0 / 15.0,
             }),
@@ -843,6 +832,15 @@ impl State {
         let frame_delta = (now - self.last_instant).as_secs_f32();
         self.last_instant = now;
         let steps = self.stepper.steps_for_frame(frame_delta);
+        // Snapshot the pre-step positions ONCE per batch (not zero -- most
+        // render frames at this demo's playback speed, see `steps_for_
+        // frame`'s own doc), so `render_scene` can interpolate against them.
+        // Deliberately skipped when `steps==0`: the last real snapshot stays
+        // valid (nothing moved since it was taken), and re-cloning every
+        // render frame regardless would add real, needless per-frame cost.
+        if steps > 0 {
+            self.prev_x.clone_from(&self.sim.particles().x);
+        }
         for _ in 0..steps {
             if let Some(dir) = dig_dir {
                 let particles = self.sim.particles_mut();
@@ -944,8 +942,44 @@ impl State {
     fn render_scene(&mut self, view: &wgpu::TextureView) {
         match self.render_mode {
             RenderMode::Particles => {
-                self.renderer
-                    .render(&self.device, &self.queue, self.sim.particles(), view, true);
+                // Real render-interpolation (see `prev_x`'s own doc): blend
+                // `prev_x` against the CURRENT position by how far real time
+                // has advanced past the last completed physics step, so
+                // motion stays visually smooth even when the real physics-
+                // step cadence itself varies. Swap the blended positions in
+                // for the one `render` call, then swap the true simulated
+                // positions straight back -- `self.sim`'s own state is never
+                // permanently altered by this. Scoped to `RenderMode::
+                // Particles` only for now (the other two modes build their
+                // own grid-density bridge buffers from `self.sim.particles()`
+                // independently -- interpolating those too is a real,
+                // disclosed follow-up, not done here).
+                let alpha = self.stepper.interpolation_alpha();
+                if alpha > 0.0 && self.prev_x.len() == self.sim.particles().len() {
+                    let blended: Vec<Vec2> = self
+                        .prev_x
+                        .iter()
+                        .zip(self.sim.particles().x.iter())
+                        .map(|(&prev, &now)| prev.lerp(now, alpha))
+                        .collect();
+                    let live = std::mem::replace(&mut self.sim.particles_mut().x, blended);
+                    self.renderer.render(
+                        &self.device,
+                        &self.queue,
+                        self.sim.particles(),
+                        view,
+                        true,
+                    );
+                    self.sim.particles_mut().x = live;
+                } else {
+                    self.renderer.render(
+                        &self.device,
+                        &self.queue,
+                        self.sim.particles(),
+                        view,
+                        true,
+                    );
+                }
             }
             RenderMode::GridVolume => {
                 self.upload_grid_volume_bridge();
@@ -1111,6 +1145,7 @@ impl State {
         if reset {
             let sim = make_sim();
             self.real_gravity = sim.config().gravity;
+            self.prev_x = sim.particles().x.clone();
             self.sim = sim;
             self.frame = 0;
             self.stepper.reset();
@@ -1224,6 +1259,7 @@ impl ApplicationHandler for App {
                     KeyCode::KeyR if pressed => {
                         let sim = make_sim();
                         s.real_gravity = sim.config().gravity;
+                        s.prev_x = sim.particles().x.clone();
                         s.sim = sim;
                         s.frame = 0;
                         // Real elapsed time since the LAST render frame (e.g. the

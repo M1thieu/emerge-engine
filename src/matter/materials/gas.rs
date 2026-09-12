@@ -185,6 +185,10 @@ pub struct IdealGasMaterial {
 }
 
 impl IdealGasMaterial {
+    /// Construct directly from grid-native parameters -- NOT SI units.
+    /// Prefer [`Self::air`] for a real-air preset, or [`Self::from_physical`]
+    /// for a real SI-to-grid conversion from measured density/viscosity/
+    /// gas-constant/temperature.
     pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,
@@ -265,6 +269,32 @@ impl IdealGasMaterial {
         let r_grid = specific_gas_constant_j_kg_k / dx2;
         Self::new(rho_grid, eta_pa_s, r_grid, adiabatic_index, temperature_k)
     }
+
+    /// Same as [`Self::from_physical`], named fields instead of 4 adjacent
+    /// positional `f32`s -- same real struct-bundling fix already used
+    /// elsewhere in this codebase (`PhysicalRenderContractParams`,
+    /// `NaccMaterialParams`) for a constructor where several same-typed
+    /// parameters make transposition a real, silent risk.
+    pub fn from_physical_params(params: IdealGasPhysicalParams, config: &crate::SimConfig) -> Self {
+        Self::from_physical(
+            params.rho_kg_m3,
+            params.eta_pa_s,
+            params.specific_gas_constant_j_kg_k,
+            params.adiabatic_index,
+            params.temperature_k,
+            config,
+        )
+    }
+}
+
+/// Named-field parameters for [`IdealGasMaterial::from_physical_params`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IdealGasPhysicalParams {
+    pub rho_kg_m3: f32,
+    pub eta_pa_s: f32,
+    pub specific_gas_constant_j_kg_k: f32,
+    pub adiabatic_index: f32,
+    pub temperature_k: f32,
 }
 
 /// Real, cited bulk (dilatational) viscosity for a polyatomic gas whose

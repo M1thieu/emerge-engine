@@ -64,7 +64,33 @@ pub struct IsothermalCavitatingFluidMaterial {
     pub volume_ratio_max: f32,
 }
 
+/// Named-field alternative to [`IsothermalCavitatingFluidMaterial::new`]'s
+/// positional arguments -- same real struct-bundling fix already used
+/// elsewhere in this codebase (`PhysicalRenderContractParams`,
+/// `NaccMaterialParams`) for a constructor with several same-typed adjacent
+/// `f32` parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct IsothermalCavitatingFluidMaterialParams {
+    pub eos: CavitatingEosParams,
+    pub dx_meters: f32,
+    pub dynamic_viscosity: f32,
+    pub volume_ratio_min: f32,
+    pub volume_ratio_max: f32,
+}
+
 impl IsothermalCavitatingFluidMaterial {
+    /// Same as [`Self::new`], named fields instead of positional args --
+    /// see [`IsothermalCavitatingFluidMaterialParams`]'s own doc for why.
+    pub fn from_params(params: IsothermalCavitatingFluidMaterialParams) -> Self {
+        Self::new(
+            params.eos,
+            params.dx_meters,
+            params.dynamic_viscosity,
+            params.volume_ratio_min,
+            params.volume_ratio_max,
+        )
+    }
+
     pub fn new(
         eos: CavitatingEosParams,
         dx_meters: f32,
@@ -332,7 +358,33 @@ pub struct CavitatingFluidMaterial {
     pub volume_ratio_max: f32,
 }
 
+/// Named-field alternative to [`CavitatingFluidMaterial::new`]'s positional
+/// arguments -- see [`IsothermalCavitatingFluidMaterialParams`]'s own doc
+/// for why. `Clone`-only, not `Copy`: `table` owns a real `Vec`-backed
+/// lookup table (see [`CavitatingEosTable`]'s own doc), same reason that
+/// type itself isn't `Copy`.
+#[derive(Clone, Debug)]
+pub struct CavitatingFluidMaterialParams {
+    pub table: CavitatingEosTable,
+    pub dx_meters: f32,
+    pub dynamic_viscosity: f32,
+    pub volume_ratio_min: f32,
+    pub volume_ratio_max: f32,
+}
+
 impl CavitatingFluidMaterial {
+    /// Same as [`Self::new`], named fields instead of positional args --
+    /// see [`CavitatingFluidMaterialParams`]'s own doc for why.
+    pub fn from_params(params: CavitatingFluidMaterialParams) -> Self {
+        Self::new(
+            params.table,
+            params.dx_meters,
+            params.dynamic_viscosity,
+            params.volume_ratio_min,
+            params.volume_ratio_max,
+        )
+    }
+
     pub fn new(
         table: CavitatingEosTable,
         dx_meters: f32,

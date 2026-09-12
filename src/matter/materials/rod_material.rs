@@ -35,6 +35,11 @@ pub struct RodMaterial {
 }
 
 impl RodMaterial {
+    /// Construct directly from real SI stiffness/damping values (`ea` in
+    /// Newtons, `ei` in N*m^2 -- see the struct's own field docs). Prefer
+    /// [`Self::from_young_modulus_rectangular`] when starting from a
+    /// material's Young's modulus and a rectangular cross-section instead
+    /// of pre-computed `EA`/`EI`.
     pub const fn new(ea: f32, ei: f32, axial_damping: f32, bending_damping: f32) -> Self {
         Self {
             ea,

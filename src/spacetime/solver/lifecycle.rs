@@ -73,6 +73,13 @@ impl Simulation {
         }
     }
 
+    /// Create a solver with an initial population of particles spawned
+    /// into `spawn`'s region, using `config`'s material at `spawn.
+    /// material_id` (register more materials afterward via
+    /// `with_material`/`with_default_material`). This is the normal entry
+    /// point every shipped example uses; use [`Simulation::empty`] instead
+    /// when the scene should start with zero particles (e.g. spawning
+    /// bodies later via [`Simulation::add_body`]).
     pub fn new(config: SimConfig, spawn: SpawnRegion) -> Self {
         config.validate();
         spawn.validate_for_sim(&config);
@@ -282,6 +289,15 @@ impl Simulation {
 
     pub const fn config(&self) -> &SimConfig {
         &self.config
+    }
+
+    /// Mutable access to the live config -- lets a caller retune solver
+    /// behavior (gravity, adaptive-timestep knobs, feature opt-ins like
+    /// `implicit_corotated_elastic`) mid-run without reconstructing the
+    /// whole `Simulation` (which would also discard all existing particle/
+    /// grid state).
+    pub const fn config_mut(&mut self) -> &mut SimConfig {
+        &mut self.config
     }
 
     pub const fn particles(&self) -> &Particles {

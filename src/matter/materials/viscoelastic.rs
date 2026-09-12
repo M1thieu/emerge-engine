@@ -50,6 +50,9 @@ pub struct ViscoelasticMaterial {
 }
 
 impl ViscoelasticMaterial {
+    /// Construct directly from grid-native Lame parameters and Kelvin-Voigt
+    /// viscosity -- NOT SI Pascals (see [`Self::from_young_modulus`] for
+    /// the common gotcha and the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32, viscosity: f32) -> Self {
         Self {
             lambda,

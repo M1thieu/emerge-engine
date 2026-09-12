@@ -159,7 +159,7 @@ mod grid_volume;
 pub mod optics;
 pub use optics::{
     OpticalCoefficientsError, OpticalCoefficientsSi, PhysicalRenderContract,
-    PhysicalRenderContractError, beer_lambert_transmittance,
+    PhysicalRenderContractError, PhysicalRenderContractParams, beer_lambert_transmittance,
 };
 
 // wgpu pipeline construction (the three build_*_pipeline functions + their

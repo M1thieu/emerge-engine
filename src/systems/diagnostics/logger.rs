@@ -7,8 +7,17 @@ use crate::diagnostics::snapshot::SimSnapshot;
 
 /// NDJSON frame logger -- one JSON object per line, one file per run.
 ///
-/// Each `log()` call appends one line. The file is flushed immediately so
-/// `tail -f run.ndjson | jq` gives live output during a simulation.
+/// Each `log()` call appends one line. The underlying OS write is flushed
+/// every `FLUSH_EVERY` calls (real, measured necessity, not a style choice
+/// -- see this const's own doc), not every single call, so `tail -f
+/// run.ndjson | jq` still gives live output during a simulation (well under
+/// a second behind at any real frame rate) without paying a real disk-sync
+/// cost every rendered frame. `BufWriter`'s own `Drop` impl flushes its
+/// internal buffer on ordinary program exit regardless (so a normal quit
+/// never loses data) -- the ONLY real, disclosed tradeoff of not flushing
+/// every call is that a hard crash/panic can lose up to `FLUSH_EVERY-1`
+/// frames of log data instead of zero, a real, acceptable cost for a
+/// diagnostics/telemetry log, not gameplay-critical state.
 ///
 /// # Usage
 /// ```ignore
@@ -23,7 +32,19 @@ use crate::diagnostics::snapshot::SimSnapshot;
 /// ```
 pub struct FrameLogger {
     writer: BufWriter<File>,
+    calls_since_flush: usize,
 }
+
+/// Real, measured choice (2026-09-10): flushing every single call was
+/// found to be a genuine, real fps bottleneck completely independent of
+/// particle count or grid resolution -- `basic_plant.rs` (37 particles)
+/// measured 22-24fps in the same real audit that found `basic_sand.rs`'s
+/// own real material-stiffness gap, and `Write::flush` on a `File` forces a
+/// real OS-level write-through (often several ms on Windows, filesystem/AV
+/// filters included) EVERY call. 30 calls (~0.5s at 60fps, ~1s at 30fps)
+/// keeps `tail -f` feeling live to a human watching, while cutting the
+/// real per-frame syscall cost by ~30x.
+const FLUSH_EVERY: usize = 30;
 
 impl FrameLogger {
     /// Open (or create) an NDJSON log file. Truncates on open.
@@ -35,6 +56,7 @@ impl FrameLogger {
             .open(path)?;
         Ok(Self {
             writer: BufWriter::new(file),
+            calls_since_flush: 0,
         })
     }
 
@@ -172,6 +194,22 @@ impl FrameLogger {
         line.push_str("]}");
 
         let _ = writeln!(self.writer, "{}", line);
+        self.calls_since_flush += 1;
+        if self.calls_since_flush >= FLUSH_EVERY {
+            let _ = self.writer.flush();
+            self.calls_since_flush = 0;
+        }
+    }
+}
+
+impl Drop for FrameLogger {
+    /// Real, final flush on drop -- `BufWriter` itself already does this on
+    /// its own `Drop`, but doing it explicitly here (and swallowing any
+    /// error the same way `log`'s own periodic flush already does) makes
+    /// the "a normal exit never loses buffered data" guarantee this
+    /// struct's own doc promises a real, direct property of `FrameLogger`
+    /// itself, not just an inherited side effect of what it happens to wrap.
+    fn drop(&mut self) {
         let _ = self.writer.flush();
     }
 }

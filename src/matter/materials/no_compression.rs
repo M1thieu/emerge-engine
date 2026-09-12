@@ -59,6 +59,9 @@ pub struct NoCompressionMaterial {
 }
 
 impl NoCompressionMaterial {
+    /// Construct directly from grid-native Lame parameters -- NOT SI
+    /// Pascals. Prefer the [`FromSI`] impl on this type (via `Elastic`
+    /// properties) for a real SI-to-grid conversion.
     pub const fn new(lambda: f32, mu: f32) -> Self {
         Self { lambda, mu }
     }

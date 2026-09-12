@@ -21,3 +21,10 @@ pub mod coupling;
 pub mod micro_rotation;
 pub mod oracle;
 pub mod population;
+
+// Flattened re-export of the types a caller actually needs to construct and
+// attach a grain population (`Simulation::with_grain_population` takes a
+// `GrainPopulation` by value) -- same convention `spacetime::rod` already
+// uses to make its own construction types reachable one level up instead of
+// requiring the full `emerge::grains::population::GrainPopulation` path.
+pub use population::{ContactModel, GrainPopulation};

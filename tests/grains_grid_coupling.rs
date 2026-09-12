@@ -3573,18 +3573,23 @@ fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
     }
 }
 
-/// Real, direct sweep of `contact_iterations` (2026-08-21) -- the actual,
-/// approved fix for the confirmed multi-body-chain bug above (see that
-/// test's own doc: stiffness alone, 1x-1000x, never converged). Same real
-/// two-ball-release scene, but stiffness is held FIXED at 1x (already shown
-/// to give the wrong physics at K=1) and `GrainPopulation::
-/// with_contact_iterations` is swept instead -- the real, falsifiable
-/// question this answers: does grain2's sustained speed converge toward 0
-/// and does the grain3/grain4 ratio converge toward 1.0 as K grows, the way
-/// it did NOT for the stiffness sweep? Reported honestly either way, per
-/// this project's own standing "verify via logs" rule -- see
+/// Real, direct sweep of `contact_iterations` (2026-08-21, re-measured
+/// 2026-09-09) -- proposed as the fix for the confirmed multi-body-chain bug
+/// above (see that test's own doc: stiffness alone, 1x-1000x, never
+/// converged). Same real two-ball-release scene, but stiffness is held
+/// FIXED at 1x (already shown to give the wrong physics at K=1) and
+/// `GrainPopulation::with_contact_iterations` is swept instead.
+///
+/// **Re-measured 2026-09-09, real result: this does NOT fix it either.**
+/// grain3/grain4 ratio is flat at 0.6515-0.6517 across K=1..32 -- no
+/// convergence trend at all, unlike what this doc originally hypothesized
+/// (written before the sweep was ever run, a real "verify via logs" lapse
+/// this project's own standing rule exists to catch). Jacobi-per-sweep
+/// relaxation genuinely helps a chain converge WITHIN one substep's own
+/// linearization, but doesn't touch whatever is actually causing grain2's
+/// nonzero sustained speed here -- root cause still open, see
 /// `GrainPopulation::resolve_contact_forces`'s own doc for the real
-/// Jacobi-per-sweep iterative-relaxation technique being measured here.
+/// technique this measured and ruled out as the fix.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_two_ball_release_contact_iterations_sweep() {

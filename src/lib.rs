@@ -82,15 +82,17 @@ pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport, Simulation};
 // Materials
 pub use materials::{
     BinghamFluidMaterial, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
-    CavitatingEosTable, CavitatingFluidMaterial, ConstitutiveModel, CorotatedMaterial,
-    DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
-    GranularFluidMaterial, IdealGasMaterial, IsothermalCavitatingFluidMaterial, MAX_MATERIAL_SLOTS,
+    CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
+    CorotatedMaterial, DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
+    GranularFluidMaterial, IdealGasMaterial, IdealGasPhysicalParams,
+    IsothermalCavitatingFluidMaterial, IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS,
     MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,
-    NaccMaterial, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression,
-    NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized, RankineMaterial,
-    StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat,
-    WithLatentHeatTable, WithMixturePhase, WithPreStress, gravity_to_grid, lame_from_si,
-    lame_from_si_physical, lame_from_young, rankine_damage_estimate, stokes_drag_rate_from_si,
+    NaccMaterial, NaccMaterialParams, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial,
+    NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
+    RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
+    WithLatentHeat, WithLatentHeatTable, WithMixturePhase, WithPreStress, gravity_to_grid,
+    lame_from_si, lame_from_si_physical, lame_from_young, rankine_damage_estimate,
+    stokes_drag_rate_from_si,
 };
 
 // Boundary conditions
@@ -203,5 +205,6 @@ pub use gpu::{GpuFieldEntry, GpuFieldsParams, GpuSimulation, MAX_FORCE_FIELDS, f
 #[cfg(feature = "render")]
 pub use render::{
     ColorMode, GridVolumeSource, OpticalCoefficientsError, OpticalCoefficientsSi,
-    PhysicalRenderContract, PhysicalRenderContractError, Renderer, beer_lambert_transmittance,
+    PhysicalRenderContract, PhysicalRenderContractError, PhysicalRenderContractParams, Renderer,
+    beer_lambert_transmittance,
 };

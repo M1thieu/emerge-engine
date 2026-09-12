@@ -4,6 +4,7 @@ mod cfl;
 pub mod config;
 pub mod density;
 pub mod handle;
+mod implicit_corotated;
 mod lifecycle;
 mod particles;
 mod projection;
@@ -43,6 +44,28 @@ use crate::{
 
 type PhaseRule = Box<dyn Fn(&Particle) -> Option<u32> + Send + Sync>;
 
+/// The CPU MLS-MPM solver -- the crate's central type. Owns every particle,
+/// the shared background grid, the material registry, boundary conditions,
+/// force fields, and optional rod/grain/thermal subsystems, and advances
+/// all of them together one frame at a time.
+///
+/// Construct with [`Simulation::new`] (a [`SimConfig`] plus an initial
+/// [`SpawnRegion`] of particles) or [`Simulation::empty`] (no initial
+/// particles, add bodies afterward via [`Simulation::add_body`]). Advance
+/// simulated time with [`Simulation::step`], which always advances exactly
+/// `config.dt` regardless of how many adaptive CFL substeps that requires
+/// internally. Read state back via [`Simulation::particles`]/
+/// `particles_mut`, [`Simulation::material_state`]/`region_state`, or
+/// [`Simulation::particles_near`].
+///
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// use emerge::{SimConfig, Simulation, SpawnRegion};
+///
+/// let config = SimConfig::standard(64, 0.05, glam::Vec2::new(0.0, -0.05));
+/// let mut sim = Simulation::new(config, SpawnRegion::for_sim(&config));
+/// sim.step();
+/// ```
 pub struct Simulation {
     config: SimConfig,
     particles: Particles,

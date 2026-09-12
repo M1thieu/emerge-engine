@@ -24,9 +24,13 @@ mod gui_common;
 /// gravity).
 ///
 ///   cargo run --example basic_sand --features render
+// `prelude::*` is the documented single-import entry point (covers
+// SimConfig/Simulation/SpawnRegion/every material/boundary, plus glam's
+// IVec2/Mat2/Vec2 so callers don't need a separate glam dependency) --
+// `render` types are the one deliberate exception (feature-gated, not part
+// of the prelude's own promise), so that's still its own explicit import.
+use emerge::prelude::*;
 use emerge::render::{ColorMode, Renderer};
-use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
-use glam::{IVec2, Vec2};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};

@@ -169,6 +169,9 @@ pub struct RankineMaterial {
 }
 
 impl RankineMaterial {
+    /// Construct directly from grid-native Lame parameters and tensile
+    /// strength -- NOT SI Pascals (see [`Self::from_young_modulus`] for the
+    /// common gotcha and the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32, tensile_strength: f32, softening_rate: f32) -> Self {
         Self {
             lambda,
@@ -403,6 +406,14 @@ impl MaterialModel for RankineMaterial {
     /// below) was fixed at its actual source instead --
     /// `q_factor_elastic_viscosity_pa_s`'s own conversion formula, not this
     /// stress application -- see that function's own doc for why.
+    fn corotated_lame_params(&self) -> Option<(f32, f32)> {
+        if self.elastic_viscosity == 0.0 {
+            Some((self.lambda, self.mu))
+        } else {
+            None
+        }
+    }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let elastic =
             corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu);

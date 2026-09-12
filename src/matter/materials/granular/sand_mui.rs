@@ -90,8 +90,12 @@ impl MuIRheologyMaterial {
     /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
     /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
     /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material use
-    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
+    /// density. For a real, correctly SI-to-grid-converted material, build
+    /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
+    /// `model: PlasticityModel::GranularRateDependent { friction_angle_deg, dilatancy_angle_deg }`
+    /// and call its `.material(&config)` (real dispatch, see that method's
+    /// own doc) -- `Self::from_physical` exists but its `GranularProps`
+    /// input type is crate-internal, not constructible from outside.
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
@@ -149,6 +153,10 @@ impl FromSI<GranularProps> for MuIRheologyMaterial {
 impl MaterialModel for MuIRheologyMaterial {
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::DruckerPragerMuI
+    }
+
+    fn corotated_lame_params(&self) -> Option<(f32, f32)> {
+        Some((self.lambda, self.mu))
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {

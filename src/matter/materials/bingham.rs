@@ -73,6 +73,9 @@ pub struct BinghamFluidMaterial {
 }
 
 impl BinghamFluidMaterial {
+    /// Construct directly from grid-native parameters -- NOT SI units.
+    /// Prefer [`Self::low_yield`]/[`Self::medium_yield`]/[`Self::high_yield`]
+    /// for a real mud/viscoplastic-fluid preset.
     pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,

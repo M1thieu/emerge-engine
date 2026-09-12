@@ -103,6 +103,21 @@ struct State {
 fn make_sim(wind_enabled: bool) -> Simulation {
     // max_substeps_per_step scales with stiffness under CFL (~ sqrt(stiffness/
     // density)) -- kept conservative rather than re-tuned down for headroom.
+    //
+    // Real, measured (2026-09-10): this demo's own real fps is 23-26, even
+    // with the stalk sitting at rest (Jmin=Jmax=1.0, max_v~0.0004) -- a live
+    // per-phase timing check confirmed the cost is `sim.step()` itself
+    // (~38ms/frame), NOT rendering (acquire+render+present together stay
+    // under 2ms). `min_dt=0.0007` against `DT=0.1` forces ~143 substeps
+    // EVERY frame regardless of how visually calm the scene is, because the
+    // real elastic stiffness (chosen for correct static-equilibrium physics,
+    // see `eta`'s own doc below) drives a genuinely small CFL-safe dt --
+    // the SAME real, disclosed stiffness-forces-many-substeps class already
+    // found for `basic_sand.rs`/`basic_showcase.rs` tonight, not a render/UI
+    // bug (an earlier hypothesis, now corrected). Real fix is the same
+    // Stage 3 implicit-MPM plasticity work those two need -- not chased
+    // further here; softening this material's own real stiffness would
+    // break the physics this demo exists to show.
     let config = SimConfig {
         min_dt: 0.0007,
         max_substeps_per_step: 290,

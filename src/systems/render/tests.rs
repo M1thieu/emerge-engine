@@ -96,15 +96,15 @@ fn physical_contract_drives_cpu_beer_lambert_in_si() {
     );
     r.set_physical_render_contract(
         &queue,
-        PhysicalRenderContract::new(
-            0.01,
-            0.25,
-            [10.0; 3],
-            [10.0, 20.0, 30.0],
-            [10.0, 20.0, 30.0],
-            glam::Vec3::Z,
-            glam::Vec3::Y,
-        )
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.01,
+            view_thickness_meters: 0.25,
+            incident_radiance_w_m2_sr: [10.0; 3],
+            background_radiance_w_m2_sr: [10.0, 20.0, 30.0],
+            display_white_radiance_w_m2_sr: [10.0, 20.0, 30.0],
+            camera_direction: glam::Vec3::Z,
+            light_direction: glam::Vec3::Y,
+        })
         .unwrap(),
     );
     let mut p = Particle::zeroed();
@@ -155,15 +155,15 @@ fn physical_contract_drives_gpu_particle_beer_lambert_in_si() {
     );
     r.set_physical_render_contract(
         &queue,
-        PhysicalRenderContract::new(
-            0.01,
-            0.25,
-            [10.0; 3],
-            [10.0, 20.0, 30.0],
-            [10.0, 20.0, 30.0],
-            glam::Vec3::Z,
-            glam::Vec3::Y,
-        )
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.01,
+            view_thickness_meters: 0.25,
+            incident_radiance_w_m2_sr: [10.0; 3],
+            background_radiance_w_m2_sr: [10.0, 20.0, 30.0],
+            display_white_radiance_w_m2_sr: [10.0, 20.0, 30.0],
+            camera_direction: glam::Vec3::Z,
+            light_direction: glam::Vec3::Y,
+        })
         .unwrap(),
     );
     r.set_camera(&queue, 8, 32, 32, 1.0, true);
@@ -672,15 +672,15 @@ fn render_surface_reconstruction_survives_end_to_end() {
     );
     r.set_physical_render_contract(
         &queue,
-        PhysicalRenderContract::new(
-            0.1,
-            0.5,
-            [1.0; 3],
-            [1.0; 3],
-            [1.0; 3],
-            glam::Vec3::Z,
-            glam::Vec3::Y,
-        )
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.1,
+            view_thickness_meters: 0.5,
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [1.0; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: glam::Vec3::Z,
+            light_direction: glam::Vec3::Y,
+        })
         .unwrap(),
     );
     r.set_camera(&queue, 32, 64, 64, 0.6, true);
@@ -1659,15 +1659,15 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
             r.set_grid_reference_cell_mass(1.0);
             r.set_physical_render_contract(
                 &queue,
-                PhysicalRenderContract::new(
-                    0.1,
-                    thickness,
-                    [1.0; 3],
-                    [1.0; 3],
-                    [1.0; 3],
-                    glam::Vec3::Z,
-                    glam::Vec3::Y,
-                )
+                PhysicalRenderContract::new(PhysicalRenderContractParams {
+                    dx_meters: 0.1,
+                    view_thickness_meters: thickness,
+                    incident_radiance_w_m2_sr: [1.0; 3],
+                    background_radiance_w_m2_sr: [1.0; 3],
+                    display_white_radiance_w_m2_sr: [1.0; 3],
+                    camera_direction: glam::Vec3::Z,
+                    light_direction: glam::Vec3::Y,
+                })
                 .unwrap(),
             );
         }

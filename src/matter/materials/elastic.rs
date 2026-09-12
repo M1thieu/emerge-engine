@@ -53,6 +53,9 @@ pub struct NeoHookeanMaterial {
 }
 
 impl NeoHookeanMaterial {
+    /// Construct directly from grid-native Lame parameters -- NOT SI
+    /// Pascals (see [`Self::from_young_modulus`] for the common gotcha and
+    /// the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32) -> Self {
         Self {
             lambda,

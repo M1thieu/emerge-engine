@@ -112,7 +112,30 @@ pub struct NaccMaterial {
     pub saturation_cohesion_coeff: f32,
 }
 
+/// Named-field alternative to [`NaccMaterial::new`]'s 5 positional `f32`
+/// arguments -- same real struct-bundling fix already used elsewhere in
+/// this codebase (`PhysicalRenderContractParams`, `ContactKinematics`,
+/// `SubstepScene`/`SubstepBounds`) for a constructor where several
+/// same-typed adjacent parameters make transposition a real, silent risk
+/// (swapping `friction`/`cohesion` compiles without a hint). Additive only,
+/// same "new sibling, don't rename in place" precedent as `lame_from_si`
+/// vs `lame_from_si_physical` -- `new` stays exactly as-is for every
+/// already-tuned call site.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NaccMaterialParams {
+    pub mu: f32,
+    pub kappa: f32,
+    pub friction: f32,
+    pub cohesion: f32,
+    pub hardening_factor: f32,
+}
+
 impl NaccMaterial {
+    /// Construct directly from grid-native shear/bulk moduli and Cam-Clay
+    /// parameters -- NOT SI Pascals (see [`Self::from_young_modulus`] for
+    /// the common gotcha and the real SI conversion path). Prefer
+    /// [`Self::from_params`] for new code -- same values, named fields, no
+    /// risk of transposing the two same-typed adjacent parameters.
     pub fn new(mu: f32, kappa: f32, friction: f32, cohesion: f32, hardening_factor: f32) -> Self {
         Self {
             mu,
@@ -125,6 +148,18 @@ impl NaccMaterial {
             elastic_viscosity: 0.0,
             saturation_cohesion_coeff: 0.0,
         }
+    }
+
+    /// Same as [`Self::new`], named fields instead of 5 positional `f32`s --
+    /// see [`NaccMaterialParams`]'s own doc for why.
+    pub fn from_params(params: NaccMaterialParams) -> Self {
+        Self::new(
+            params.mu,
+            params.kappa,
+            params.friction,
+            params.cohesion,
+            params.hardening_factor,
+        )
     }
 
     /// Construct from Young's modulus E and Poisson's ratio ν.

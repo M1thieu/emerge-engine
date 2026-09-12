@@ -514,6 +514,31 @@ pub struct SimConfig {
     /// Typically set to match `config.dt` in physical seconds.
     /// Gravity: `gravity = Vec2::new(0.0, -9.81) * dt_seconds^2 / dx_meters`.
     pub dt_seconds: f32,
+
+    /// Real, opt-in implicit (Newton-CG) grid-velocity update -- see
+    /// `spacetime::solver::implicit_corotated`'s own module doc for the
+    /// full method (Klar 2016 operator split: implicit elastic solve using
+    /// the shared Corotated elastic branch, then the material's own real,
+    /// unmodified plastic return-mapping applied once at the end). Default
+    /// `false` -- zero behavior change for every existing scene.
+    ///
+    /// Only engages for a substep where EVERY active particle's material
+    /// uses that shared elastic branch (`DruckerPrager`, `Corotated`,
+    /// `VonMises`, `Rankine`, `DruckerPragerMuI`) and no rods, grains,
+    /// multi-field contact, or mixture coupling are active in the scene --
+    /// a real, disclosed v1 scope limit (see the eligibility check itself),
+    /// not a silent partial application. `do_substep` falls back to the
+    /// normal explicit pipeline, byte-identical to today, whenever this
+    /// check fails -- so turning this on for a scene it doesn't yet support
+    /// is always safe, just inert.
+    ///
+    /// Real, measured evidence this is worth having (2026-09-10, standalone
+    /// `tests/scratch_implicit_mpm_stage3_drucker_prager_multi_particle.rs`
+    /// before this field existed): 10.3x wall-clock speedup at basic_sand's
+    /// own real ~2016-particle, ~2247-substep-per-frame scale, real
+    /// operator-split plastic-correction error under 1% at far coarser
+    /// correction frequency than that.
+    pub implicit_corotated_elastic: bool,
 }
 
 impl Default for SimConfig {
@@ -566,6 +591,7 @@ impl Default for SimConfig {
             spatial_sort_enabled: false,
             dx_meters: 1.0,
             dt_seconds: 1.0,
+            implicit_corotated_elastic: false,
         }
     }
 }

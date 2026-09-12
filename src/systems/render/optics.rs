@@ -29,17 +29,33 @@ pub struct PhysicalRenderContract {
     light_direction: Vec3,
 }
 
+/// Unvalidated inputs to [`PhysicalRenderContract::new`] -- same real
+/// struct-bundling fix already used elsewhere in this codebase
+/// (`ContactKinematics`, `SubstepScene`/`SubstepBounds`,
+/// `PhasePipelineBuffers`) for a constructor whose parameters are exactly
+/// its own output fields, not a workaround for the lint alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhysicalRenderContractParams {
+    pub dx_meters: f32,
+    pub view_thickness_meters: f32,
+    pub incident_radiance_w_m2_sr: [f32; 3],
+    pub background_radiance_w_m2_sr: [f32; 3],
+    pub display_white_radiance_w_m2_sr: [f32; 3],
+    pub camera_direction: Vec3,
+    pub light_direction: Vec3,
+}
+
 impl PhysicalRenderContract {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        dx_meters: f32,
-        view_thickness_meters: f32,
-        incident_radiance_w_m2_sr: [f32; 3],
-        background_radiance_w_m2_sr: [f32; 3],
-        display_white_radiance_w_m2_sr: [f32; 3],
-        camera_direction: Vec3,
-        light_direction: Vec3,
-    ) -> Result<Self, PhysicalRenderContractError> {
+    pub fn new(params: PhysicalRenderContractParams) -> Result<Self, PhysicalRenderContractError> {
+        let PhysicalRenderContractParams {
+            dx_meters,
+            view_thickness_meters,
+            incident_radiance_w_m2_sr,
+            background_radiance_w_m2_sr,
+            display_white_radiance_w_m2_sr,
+            camera_direction,
+            light_direction,
+        } = params;
         if !dx_meters.is_finite() || dx_meters <= 0.0 {
             return Err(PhysicalRenderContractError::NonPositiveDx);
         }
@@ -229,22 +245,29 @@ mod tests {
 
     #[test]
     fn contract_rejects_missing_physical_scale() {
-        let result =
-            PhysicalRenderContract::new(0.0, 0.01, [1.0; 3], [0.0; 3], [1.0; 3], Vec3::Z, Vec3::Y);
+        let result = PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.0,
+            view_thickness_meters: 0.01,
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [0.0; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: Vec3::Z,
+            light_direction: Vec3::Y,
+        });
         assert_eq!(result, Err(PhysicalRenderContractError::NonPositiveDx));
     }
 
     #[test]
     fn contract_normalizes_real_directions() {
-        let contract = PhysicalRenderContract::new(
-            0.01,
-            0.02,
-            [1.0; 3],
-            [0.0; 3],
-            [1.0; 3],
-            Vec3::new(0.0, 0.0, -4.0),
-            Vec3::new(3.0, 4.0, 0.0),
-        )
+        let contract = PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.01,
+            view_thickness_meters: 0.02,
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [0.0; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: Vec3::new(0.0, 0.0, -4.0),
+            light_direction: Vec3::new(3.0, 4.0, 0.0),
+        })
         .unwrap();
         assert!((contract.camera_direction().length() - 1.0).abs() < 1.0e-6);
         assert!((contract.light_direction().length() - 1.0).abs() < 1.0e-6);

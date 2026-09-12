@@ -224,6 +224,17 @@ impl Simulation {
                 apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
             }
         }
+        // Real, opt-in implicit big-step (see `implicit_corotated`'s own
+        // module doc): one Newton-CG solve at the FULL frame `dt` instead
+        // of the CFL-limited loop below. Only engages when the whole active
+        // scene qualifies AND the solve actually converges -- otherwise
+        // falls through to the exact same explicit loop every other scene
+        // already runs, byte-identical to before this existed.
+        if remaining > 0.0 && self.try_implicit_corotated_substep(remaining) {
+            substeps_taken = 1;
+            self.last_step_dt = remaining;
+            remaining = 0.0;
+        }
         while remaining > 0.0 && substeps_taken < self.config.max_substeps_per_step {
             // Cap sub-step at remaining time so we don't overshoot the configured frame dt.
             let t_cfl = std::time::Instant::now();

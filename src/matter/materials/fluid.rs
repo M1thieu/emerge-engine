@@ -126,6 +126,10 @@ pub struct NewtonianFluidMaterial {
 }
 
 impl NewtonianFluidMaterial {
+    /// Construct directly from grid-native parameters -- NOT SI units.
+    /// Prefer [`Self::low_viscosity`] for a real-water preset, or the
+    /// [`FromSI`] impl on this type (via `Fluid` properties) for a real
+    /// SI-to-grid conversion from measured density/viscosity/stiffness.
     pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,

@@ -278,7 +278,11 @@ impl State {
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
-            println!("frame={} fps={:.0}", self.frame, fps);
+            let substeps = self.sim.diagnostics_snapshot().substeps_last_step;
+            // Keep the low end visible during the release FPS audit: rounding
+            // to an integer turns a genuinely measured sub-1 fps result into
+            // an unhelpful bare `0`.
+            println!("frame={} fps={:.2} substeps={substeps}", self.frame, fps);
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
         }

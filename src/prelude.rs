@@ -11,14 +11,16 @@
 pub use crate::{
     AabbConfinementField,
     ActivationStatsPlugin,
-    // Materials -- all fourteen (*Material types only)
+    // Materials -- all seventeen (*Material types only)
     BinghamFluidMaterial,
     // Queries + density field export
     BodyState,
+    BoilingMixtureMaterial,
     // Boundary conditions
     BoundaryCondition,
     BrittleProps,
     BuoyancyField,
+    CavitatingFluidMaterial,
     ChemotaxisField,
     CorotatedMaterial,
     CoulombField,
@@ -50,6 +52,7 @@ pub use crate::{
     HeightmapBoundary,
 
     IdealGasMaterial,
+    IsothermalCavitatingFluidMaterial,
     // Creature locomotion controller
     Lnn,
     MaterialCountPlugin,
@@ -110,6 +113,11 @@ pub use crate::{
     gravity_to_grid,
 
     lame_from_si,
+    // Real, dt-independent SI->grid conversion -- prefer this over
+    // `lame_from_si` for any new scene (see its own doc for the measured
+    // dt^2 bug in the older sibling above, kept only for scenes already
+    // tuned against it).
+    lame_from_si_physical,
     lame_from_young,
     log_frame_full,
     log_frame_gpu,

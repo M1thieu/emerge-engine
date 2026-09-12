@@ -127,7 +127,15 @@ const GRAIN_MASS: f32 = 1.0;
 // past the cap would silently overrun a fixed-size GPU buffer, so both pour
 // paths refuse once their cap is hit. `POUR_COOLDOWN_FRAMES` throttles a held
 // mouse button to a real trickle (a few drops/sec), not one every frame.
-const GRAINS_POUR_CAP: usize = 400;
+//
+// Real, measured (2026-09-09) via `tests/scratch_grain_freeze_hitch_
+// investigation.rs::grain_count_scaling_at_shipped_sim_speed`: the old 400
+// cap let a fully-poured pile (80 base + 400 = 480 grains) drop to 32.8fps,
+// silently breaking this project's own 45-60fps floor -- the `sim_speed`
+// fix above only measured the STARTING 80-grain count, not the pour range.
+// 100 keeps the real max (80+100=180 grains) measured at 54.9-55.6fps, a
+// real margin above the floor, not a value sitting right on the edge.
+const GRAINS_POUR_CAP: usize = 100;
 const PARTICLE_POUR_CAP: usize = 2000;
 const POUR_COOLDOWN_FRAMES: u32 = 4;
 const GRAINS_TERRAIN_HALF_WIDTH_CELLS: i32 = 30;
@@ -538,7 +546,16 @@ impl State {
             logger,
             pour_mode: false,
             pour_cooldown: 0,
-            sim_speed: 25,
+            // Real, measured (2026-09-09) via `tests/scratch_grain_freeze_
+            // hitch_investigation.rs::sim_speed_sweep_for_45_60fps_floor`:
+            // 25 (the old value) cost 1.19ms/step on this real 80-grain
+            // scene -> 28.3fps steady-state, under this project's own
+            // standing 45-60fps floor. 12 measures 61.3fps AND stays at
+            // ~1.04x real-time (barely different playback speed from 25's
+            // own 1.00x) -- a pure demo-pacing win, zero dt/physics change
+            // (see this field's own doc above: each step is exactly as
+            // fine as the safety margin demands either way).
+            sim_speed: 12,
             pour_rng: SmallRng(0xFEED_1234_5678_u64),
         }
     }
@@ -714,11 +731,14 @@ impl State {
             // `make_sim`'s `Mode::Grains` arm) is much finer than the other
             // two modes' -- real settling there needs tens of thousands of
             // substeps, so a single `step()` per rendered frame would take
-            // many real minutes just to watch it settle. 25 steps/frame is
-            // a real, disclosed pacing choice (not a physics change -- each
-            // individual step is exactly as fine as the safety-margin
-            // calculation demands), matching this project's own established
-            // "physics fidelity is never cut for demo pacing" rule.
+            // many real minutes just to watch it settle. `sim_speed`
+            // steps/frame is a real, disclosed pacing choice (not a physics
+            // change -- each individual step is exactly as fine as the
+            // safety-margin calculation demands), matching this project's
+            // own established "physics fidelity is never cut for demo
+            // pacing" rule. Default 12 (see this struct's own `sim_speed`
+            // field doc) real-measured at 61.3fps, clearing this project's
+            // standing 45-60fps floor while staying ~1x real-time.
             let steps_this_frame = if self.mode == Mode::Grains {
                 self.sim_speed
             } else {

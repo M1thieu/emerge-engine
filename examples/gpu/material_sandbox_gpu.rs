@@ -487,7 +487,22 @@ impl State {
             near_cursor_max_temp: AMBIENT_K,
             real_water_optics: false,
             grid_volume_mode: false,
-            stepper: FixedStepController::standard(DT, 60.0),
+            // Real, measured (2026-09-10): `standard(DT, 60.0)` is a 6x
+            // playback multiplier (`simulation_speed = 60*DT = 6.0`). With
+            // 1120 real stiff-sand particles each `step_frame()` costs ~20
+            // CFL substeps (`min_dt=0.005` against `DT=0.1`), and at 6x the
+            // controller asks for ~15 `step_frame()` calls per rendered
+            // frame -- ~300 GPU substep dispatches/frame, measured 3-4fps,
+            // a real catch-up spiral (slower fps -> bigger frame_delta ->
+            // more steps asked -> slower still). Dropped to 1x playback
+            // (`standard(DT, 10.0)` -> `simulation_speed = 1.0`, true
+            // real-time): a demo you paint into and watch settle does not
+            // need faster-than-real-time, and this cuts the per-frame step
+            // count ~6x and breaks the spiral. Zero physics/dt/material
+            // change -- pure playback pacing, same class of fix as
+            // `sand_repose_angle.rs`'s own `sim_speed` and
+            // `basic_fluids.rs`'s own `PLAYBACK_STEP_RATE_HZ`.
+            stepper: FixedStepController::standard(DT, 10.0),
             last_instant: std::time::Instant::now(),
         }
     }
@@ -610,6 +625,7 @@ impl State {
         let frame_delta = (now - self.last_instant).as_secs_f32();
         self.last_instant = now;
         let steps = self.stepper.steps_for_frame(frame_delta);
+        let step_t0 = std::time::Instant::now();
         for _ in 0..steps {
             self.sim.step_frame();
             self.frame += 1;
@@ -644,13 +660,48 @@ impl State {
                 if evaporated > 0 {
                     println!("evaporated: {evaporated} particles vanished above {BOIL_POINT_K}K");
                 }
+                // DIAG (2026-09-10): real water-health check for the known
+                // "water visual bug" -- rides this block's own already-paid
+                // GPU sync, gated to once/second so it doesn't spam.
+                if self.frame.is_multiple_of(60) {
+                    let particles = self.sim.particles();
+                    let (mut wn, mut jmin, mut jmax, mut nf, mut vmax) =
+                        (0usize, f32::MAX, f32::MIN, 0usize, 0.0f32);
+                    for p in particles.iter().filter(|p| p.material_id == WATER_ID) {
+                        wn += 1;
+                        let j = p.deformation_gradient.determinant();
+                        jmin = jmin.min(j);
+                        jmax = jmax.max(j);
+                        vmax = vmax.max(p.v.length());
+                        if !p.x.is_finite() || !j.is_finite() || !p.v.is_finite() {
+                            nf += 1;
+                        }
+                    }
+                    if wn > 0 {
+                        println!(
+                            "DIAG water: n={wn}  J=[{jmin:.3},{jmax:.3}]  v_max={vmax:.3}  non_finite={nf}"
+                        );
+                    }
+                }
             }
         }
+        let step_loop_ms = step_t0.elapsed().as_secs_f64() * 1000.0;
         self.fps_frames += 1;
         if self.fps_timer.elapsed().as_secs_f32() >= 1.0 {
             self.last_fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
+            // DIAG (2026-09-10): the egui panel's own fps readout isn't
+            // reachable from a redirected console -- echo it (no GPU sync
+            // needed, `particle_count`/`last_fps` are already CPU-side).
+            // The water-health line rides the existing `is_multiple_of(15)`
+            // sync block above, so this adds no extra GPU stall.
+            println!(
+                "DIAG fps={:.0}  total_particles={}  steps_this_frame={steps}  last_substeps={}  step_loop_ms={step_loop_ms:.1}",
+                self.last_fps,
+                self.sim.particle_count(),
+                self.sim.last_substeps(),
+            );
         }
 
         let view = output
