@@ -68,7 +68,7 @@ jobs:
           - shard: accuracy
             args: "--test accuracy"
           - shard: physics
-            args: "--test physics_correctness --test solver"
+            args: "--test physics_correctness --test solver --test implicit_corotated_substep"
           - shard: grains
             args: "--test grains_grid_coupling --test grains_repose_angle"
           - shard: rods
