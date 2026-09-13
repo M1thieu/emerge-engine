@@ -318,6 +318,20 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
         self.acoustic_c2_at(particles.density[i], particles.temperature[i])
     }
 
+    /// Real, currently-computed internal friction ratio at this particle's
+    /// own state (`Some`), or `None` when this material has no such concept
+    /// (e.g. an elastic solid, or `GranularFluidMaterial`'s SVD-clamp
+    /// plasticity, which has no Drucker-Prager cone at all). Used by MIBF
+    /// (`FrictionBoundary`'s `use_material_friction`) to make wall friction
+    /// reflect the material's own real, spatially-varying state instead of
+    /// one fixed constant -- Blatny & Gaume 2025 (`tmp/ref_matter.md`
+    /// sec.19), which reports natural angle-of-repose emergence from
+    /// exactly this coupling. Default `None`, same "most materials opt
+    /// out" shape as `rest_acoustic_c2`/`corotated_lame_params` above.
+    fn current_friction_coefficient(&self, _particles: &Particles, _i: usize) -> Option<f32> {
+        None
+    }
+
     /// Advances plastic/deformation state for one particle after G2P's velocity
     /// gather. Takes a `ParticleUpdateCtx` (disjoint per-field borrows), not
     /// `&mut Particles, i` -- every real implementation only ever touches its
@@ -829,5 +843,38 @@ mod latent_heat_tests {
         );
         assert_eq!(water.latent_heat(STEAM_ID), 0.0);
         assert_eq!(water.latent_heat(999), 0.0);
+    }
+}
+
+/// Real sanity check for `current_friction_coefficient`'s "most materials
+/// opt out" default (MIBF, Blatny & Gaume 2025) -- confirms the trait's
+/// own `None` default isn't accidentally overridden anywhere it shouldn't
+/// be, across a real spread of material families (elastic, plastic-but-
+/// non-granular, and SVD-clamp-plasticity granular with no DP cone).
+#[cfg(test)]
+mod current_friction_coefficient_default_tests {
+    use super::*;
+    use crate::materials::{GranularFluidMaterial, NeoHookeanMaterial, VonMisesMaterial};
+    use crate::particle::Particle;
+
+    #[test]
+    fn non_friction_materials_return_none() {
+        let particles = Particles::from(vec![Particle::zeroed()]);
+        assert_eq!(
+            NeoHookeanMaterial::new(1.0e5, 0.2).current_friction_coefficient(&particles, 0),
+            None
+        );
+        assert_eq!(
+            VonMisesMaterial::from_young_modulus(1.0e5, 0.2, 1.0e4)
+                .current_friction_coefficient(&particles, 0),
+            None
+        );
+        assert_eq!(
+            GranularFluidMaterial::saturated_loam(1.0e5, 0.2)
+                .current_friction_coefficient(&particles, 0),
+            None,
+            "GranularFluidMaterial has SVD-clamp plasticity, no Drucker-Prager cone -- \
+             must not silently claim a friction coefficient it has no real concept of"
+        );
     }
 }

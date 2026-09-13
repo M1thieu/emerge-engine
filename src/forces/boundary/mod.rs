@@ -89,6 +89,26 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
         let _ = radius;
         self.clamp_particle_position(position, grid_res)
     }
+
+    /// Same as `apply_to_grid_velocity`, with an optional real, per-node
+    /// Material-Induced Boundary Friction coefficient (`Grid::
+    /// node_friction_at_index`, `None` when no friction-reporting particle
+    /// touched this node) available for boundaries that want it -- see
+    /// `MaterialModel::current_friction_coefficient`'s own doc for the real
+    /// citation (Blatny & Gaume 2025). Default: ignore `node_friction`
+    /// entirely and delegate to the ordinary method -- safe and backward
+    /// compatible, the same "default no-op" shape `grain_contact`/
+    /// `clamp_grain_position` already use above. Only `FrictionBoundary`
+    /// overrides this; every other boundary keeps this default untouched.
+    fn apply_to_grid_velocity_with_node_friction(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+        _node_friction: Option<f32>,
+    ) {
+        self.apply_to_grid_velocity(cell_index, grid_res, velocity);
+    }
 }
 
 /// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly --
@@ -119,6 +139,21 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
 
     fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
         (**self).clamp_grain_position(position, radius, grid_res)
+    }
+
+    fn apply_to_grid_velocity_with_node_friction(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+        node_friction: Option<f32>,
+    ) {
+        (**self).apply_to_grid_velocity_with_node_friction(
+            cell_index,
+            grid_res,
+            velocity,
+            node_friction,
+        );
     }
 }
 

@@ -394,6 +394,21 @@ impl MaterialRegistry {
         self.get(material_id).acoustic_c2_at_particle(particles, i)
     }
 
+    /// Same real dispatch shape as `rest_acoustic_c2`/`acoustic_c2_at_particle`
+    /// above -- see `MaterialModel::current_friction_coefficient`'s own doc.
+    /// Plain vtable passthrough, not routed through `MaterialDispatch`'s fast
+    /// path -- only called from the opt-in MIBF P2G scatter pass, not every
+    /// substep's hot loop.
+    pub(crate) fn current_friction_coefficient(
+        &self,
+        material_id: u32,
+        particles: &Particles,
+        i: usize,
+    ) -> Option<f32> {
+        self.get(material_id)
+            .current_friction_coefficient(particles, i)
+    }
+
     /// Returns the constitutive model for the given material ID.
     pub fn constitutive_model_of(&self, material_id: u32) -> ConstitutiveModel {
         self.get(material_id).constitutive_model()

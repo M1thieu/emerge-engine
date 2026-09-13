@@ -928,6 +928,7 @@ impl Simulation {
         let pre_force_snapshot =
             if self.config.asflip_blend > 0.0 || self.config.cundall_damping > 0.0 {
                 self.grid.normalize_velocities();
+                self.grid.normalize_friction();
                 // A prescribed particle anchor is an essential boundary on
                 // the grid velocity field. Enforce it before the pre-force
                 // snapshot so FLIP/Cundall never treat forbidden anchor

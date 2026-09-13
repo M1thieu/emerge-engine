@@ -391,3 +391,77 @@ mod saturation_cohesion_tests {
         );
     }
 }
+
+/// Real correctness checks for `MaterialModel::current_friction_
+/// coefficient` (Material-Induced Boundary Friction, Blatny & Gaume 2025)
+/// -- see that trait method's own doc and this material's own override.
+#[cfg(test)]
+mod current_friction_coefficient_tests {
+    use super::*;
+    use crate::materials::MaterialModel;
+
+    fn particle_with_q(q: f32) -> Particles {
+        let mut p = Particle::zeroed();
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        p.friction_hardening = q;
+        Particles::from(vec![p])
+    }
+
+    /// Real, direct check: at the default `compaction_sensitivity=0.0`,
+    /// `current_friction_coefficient` must match a hand-called
+    /// `tan(phi(q, 0.0, 0.0))` exactly -- NOT `alpha(q, 0.0)`, a real,
+    /// caught-before-shipping distinction (see the method's own doc):
+    /// `alpha` is the DP cone's own geometry-specific coefficient, a
+    /// different real number from the ordinary Coulomb wall convention
+    /// `FrictionBoundary` needs. Cross-checked against the real, known
+    /// identity `tan(35deg)~=0.700` (matching `FrictionBoundary`'s own
+    /// long-standing hand-picked default almost exactly) at `q=0.696`,
+    /// this material's own real neutral/rest hardening state
+    /// (`friction_residual/hardening_peak` for the `cohesionless` preset).
+    #[test]
+    fn matches_tan_phi_at_zero_compaction_sensitivity() {
+        let dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        assert_eq!(
+            dp.compaction_sensitivity, 0.0,
+            "test assumes the real default"
+        );
+        for q in [0.0, 0.3, 0.696, 1.5] {
+            let particles = particle_with_q(q);
+            let expected = dp.phi(q, 0.0, 0.0).tan();
+            let got = dp.current_friction_coefficient(&particles, 0);
+            assert_eq!(
+                got,
+                Some(expected),
+                "current_friction_coefficient must match tan(phi(q, 0.0, 0.0)) exactly at q={q}"
+            );
+        }
+        // Real, independent cross-check at this preset's own real neutral
+        // rest state: q = friction_residual/hardening_peak makes phi(q) =
+        // friction_angle EXACTLY (see `init_particle`'s own comment) --
+        // 35deg for `cohesionless`, so `tan(phi)` here must land near the
+        // real, known `tan(35deg)~=0.700` identity, not `alpha`'s own
+        // ~0.386 for the same angle.
+        let q_rest = dp.friction_residual / dp.hardening_peak;
+        let at_rest = dp
+            .current_friction_coefficient(&particle_with_q(q_rest), 0)
+            .unwrap();
+        assert!(
+            (at_rest - 0.700).abs() < 1.0e-3,
+            "at this preset's own real 35deg rest friction angle, tan(phi) must be ~0.700 \
+             (matching FrictionBoundary's own real tan(35deg) default), got {at_rest}"
+        );
+    }
+
+    /// Real, disclosed scope limit: once `compaction_sensitivity != 0.0`,
+    /// the real coefficient needs a `trace` this pass doesn't recompute --
+    /// must return `None` (fall back to the boundary's own fixed
+    /// coefficient), never a silently wrong value that ignores compaction.
+    #[test]
+    fn returns_none_when_compaction_sensitivity_is_nonzero() {
+        let mut dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
+        dp.compaction_sensitivity = 0.1;
+        let particles = particle_with_q(0.3);
+        assert_eq!(dp.current_friction_coefficient(&particles, 0), None);
+    }
+}

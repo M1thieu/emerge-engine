@@ -652,18 +652,27 @@ impl DruckerPragerMaterial {
         self.alpha_with_phi_delta(q, trace_ln_volume_ratio, 0.0)
     }
 
+    /// The real, current Mohr-Coulomb friction ANGLE phi(q) itself -- the
+    /// shared quantity `alpha_with_phi_delta` converts into the DP-cone
+    /// coefficient below, and `current_friction_coefficient` converts into
+    /// an ordinary Coulomb wall coefficient (`tan(phi)`, NOT `alpha`,
+    /// which is a different, DP-cone-specific number for the same angle --
+    /// see that method's own doc). Extracted so both conversions share one
+    /// real formula instead of drifting apart.
+    fn phi(&self, q: f32, trace_ln_volume_ratio: f32, phi_delta: f32) -> f32 {
+        let compaction_boost = self.compaction_sensitivity * (-trace_ln_volume_ratio).max(0.0);
+        self.friction_angle
+            + phi_delta
+            + compaction_boost
+            + (self.hardening_peak * q - self.friction_residual) * (-self.hardening_decay * q).exp()
+    }
+
     /// Same formula as `alpha`, with an extra additive friction-angle term
     /// (`phi_delta`) -- used by `project`'s static/kinetic onset check (see
     /// `static_friction_boost`'s own doc). `phi_delta=0.0` makes this
     /// byte-identical to `alpha`.
     fn alpha_with_phi_delta(&self, q: f32, trace_ln_volume_ratio: f32, phi_delta: f32) -> f32 {
-        let compaction_boost = self.compaction_sensitivity * (-trace_ln_volume_ratio).max(0.0);
-        let phi = self.friction_angle
-            + phi_delta
-            + compaction_boost
-            + (self.hardening_peak * q - self.friction_residual)
-                * (-self.hardening_decay * q).exp();
-        let s = phi.sin();
+        let s = self.phi(q, trace_ln_volume_ratio, phi_delta).sin();
         (2.0_f32 / 3.0).sqrt() * (2.0 * s) / (3.0 - s)
     }
 
@@ -905,6 +914,47 @@ impl MaterialModel for DruckerPragerMaterial {
         } else {
             None
         }
+    }
+
+    /// Real current ORDINARY Coulomb wall-friction coefficient `tan(phi(q,
+    /// trace))` -- see `MaterialModel::current_friction_coefficient`'s own
+    /// doc (MIBF, Blatny & Gaume 2025). Deliberately `tan(phi)`, NOT
+    /// `alpha(q, trace)`: `alpha` is the Drucker-Prager CONE's own
+    /// geometry-specific coefficient (`sqrt(2/3)*2*sin(phi)/(3-sin(phi))`),
+    /// a different real number from the ordinary Mohr-Coulomb wall
+    /// convention `apply_coulomb_wall` uses (`friction_impulse = mu *
+    /// normal_speed`, the textbook `mu=tan(phi)` relation) -- confirmed
+    /// numerically, not assumed: at `phi=35deg` (this material's own real
+    /// default), `alpha=0.386` but `tan(phi)=0.700`, matching
+    /// `FrictionBoundary`'s own long-standing hand-picked `0.7` default
+    /// almost exactly (real, independent evidence `0.7` was ALWAYS meant
+    /// as a real `tan(35deg)`, not an arbitrary constant). Passing `alpha`
+    /// here directly (an earlier draft of this method, caught before
+    /// shipping via a real measured comparison against the unmodified
+    /// baseline) would silently feed the wrong physical quantity into the
+    /// wall's own Coulomb law.
+    ///
+    /// `friction_hardening` already stores the raw accumulator `q`
+    /// (`init_particle`/`update_particle` above); `phi` itself also needs
+    /// `trace` (the net log-volume-strain at yield -- not stored per
+    /// particle, only ever a local value inside `project()`). Real,
+    /// disclosed simplification: `phi`'s own `compaction_boost` term is
+    /// `compaction_sensitivity * max(0, -trace)` -- EXACTLY zero
+    /// regardless of `trace` whenever `compaction_sensitivity == 0.0` (the
+    /// default for every current preset), so `self.phi(q, 0.0, 0.0).tan()`
+    /// is the real, exact coefficient with no approximation in that case.
+    /// When `compaction_sensitivity != 0.0` (opt-in, unused by any shipped
+    /// preset today), computing the real `trace` would need re-deriving it
+    /// from `deformation_gradient`'s own SVD -- a real per-particle cost
+    /// this first pass does not pay for a feature nothing currently uses;
+    /// returns `None` there instead (falls back to the boundary's own
+    /// fixed coefficient), a disclosed scope limit, not a silently wrong
+    /// answer.
+    fn current_friction_coefficient(&self, particles: &Particles, i: usize) -> Option<f32> {
+        if self.compaction_sensitivity != 0.0 {
+            return None;
+        }
+        Some(self.phi(particles.friction_hardening[i], 0.0, 0.0).tan())
     }
 
     /// Corotated elastic Kirchhoff stress: τ = 2µ(F−R)Fᵀ + λ(J−1)J·I

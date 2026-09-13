@@ -15,9 +15,14 @@ pub(super) fn apply_boundary_conditions_to_grid(
     grid_res: usize,
     boundary: &dyn BoundaryCondition,
 ) {
-    for (i, cell) in grid.active_cells_with_index_mut() {
+    for (i, cell, node_friction) in grid.active_cells_with_index_and_friction_mut() {
         if cell.mass > 0.0 {
-            boundary.apply_to_grid_velocity(i, grid_res, &mut cell.momentum);
+            boundary.apply_to_grid_velocity_with_node_friction(
+                i,
+                grid_res,
+                &mut cell.momentum,
+                node_friction,
+            );
         }
     }
 }

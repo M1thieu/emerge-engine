@@ -238,7 +238,9 @@ pub fn scatter_particles_to_grid(
         let contact_group = particles.contact_group[i];
         let material = materials.get(particles.material_id[i]);
         let mixture_phase = material.mixture_phase();
-        if contact_group == 0 && mixture_phase.is_none() {
+        let friction_coefficient =
+            materials.current_friction_coefficient(particles.material_id[i], particles, i);
+        if contact_group == 0 && mixture_phase.is_none() && friction_coefficient.is_none() {
             continue;
         }
 
@@ -273,6 +275,12 @@ pub fn scatter_particles_to_grid(
                 // et al. 2017) -- see `WithMixturePhase`/`MixturePhase` doc.
                 if let Some(phase) = mixture_phase {
                     grid.add_mixture_mass_momentum(cell_pos, phase, weight * mass_i, momentum);
+                }
+                // Additive second scatter for Material-Induced Boundary Friction
+                // (Blatny & Gaume 2025) -- see `MaterialModel::
+                // current_friction_coefficient`'s own doc.
+                if let Some(mu) = friction_coefficient {
+                    grid.add_friction_mass(cell_pos, weight * mass_i, mu);
                 }
             }
         }
@@ -359,7 +367,9 @@ pub fn scatter_particles_to_grid_sorted(
         let contact_group = particles.contact_group[i];
         let material = materials.get(particles.material_id[i]);
         let mixture_phase = material.mixture_phase();
-        if contact_group == 0 && mixture_phase.is_none() {
+        let friction_coefficient =
+            materials.current_friction_coefficient(particles.material_id[i], particles, i);
+        if contact_group == 0 && mixture_phase.is_none() && friction_coefficient.is_none() {
             continue;
         }
 
@@ -390,6 +400,9 @@ pub fn scatter_particles_to_grid_sorted(
                 }
                 if let Some(phase) = mixture_phase {
                     grid.add_mixture_mass_momentum(cell_pos, phase, weight * mass_i, momentum);
+                }
+                if let Some(mu) = friction_coefficient {
+                    grid.add_friction_mass(cell_pos, weight * mass_i, mu);
                 }
             }
         }

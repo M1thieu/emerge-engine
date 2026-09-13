@@ -17,6 +17,7 @@ mod contact;
 mod contact_normal;
 mod dct;
 mod directional_grip;
+mod friction;
 mod mixture;
 mod pressure;
 
@@ -27,6 +28,7 @@ use glam::{DVec2, IVec2, Vec2};
 
 use contact::ContactCellMap;
 pub use directional_grip::DirectionalContactGrip;
+use friction::FrictionCellMap;
 use mixture::MixtureCellMap;
 
 /// FxHash-style hasher for the grid's `u32` flat-index keys.
@@ -135,6 +137,12 @@ pub struct Grid {
     /// `contact_cells` already has.
     mixture_cells: MixtureCellMap,
     mixture_dirty: Vec<u32>,
+    /// Material-Induced Boundary Friction (MIBF) field -- see `friction::
+    /// FrictionCell` doc. Empty for every scene with no `current_friction_
+    /// coefficient`-reporting material active, the same zero-cost property
+    /// `contact_cells`/`mixture_cells` already have.
+    friction_cells: FrictionCellMap,
+    friction_dirty: Vec<u32>,
     /// Grid nodes carrying an essential (Dirichlet) zero-velocity condition
     /// from `Particle::pinned` support. Kept separately from `Cell` so the
     /// latter's GPU-stable layout remains unchanged.
@@ -152,6 +160,8 @@ impl Grid {
             contact_dirty: Vec::new(),
             mixture_cells: MixtureCellMap::default(),
             mixture_dirty: Vec::new(),
+            friction_cells: FrictionCellMap::default(),
+            friction_dirty: Vec::new(),
             pinned_nodes: HashSet::with_hasher(FxU32BuildHasher),
         }
     }
@@ -206,6 +216,8 @@ impl Grid {
         self.contact_dirty.clear();
         self.mixture_cells.clear();
         self.mixture_dirty.clear();
+        self.friction_cells.clear();
+        self.friction_dirty.clear();
         self.pinned_nodes.clear();
     }
 
@@ -400,6 +412,7 @@ impl Grid {
     /// this exact combined formula, so the split must never change its net effect).
     pub fn update_velocities(&mut self, dt: f32, gravity: Vec2) {
         self.normalize_velocities();
+        self.normalize_friction();
         self.apply_gravity(dt, gravity);
     }
 

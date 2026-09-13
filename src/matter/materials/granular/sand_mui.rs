@@ -159,6 +159,15 @@ impl MaterialModel for MuIRheologyMaterial {
         Some((self.lambda, self.mu))
     }
 
+    /// See `MaterialModel::current_friction_coefficient`'s own doc (MIBF,
+    /// Blatny & Gaume 2025). Unlike `DruckerPragerMaterial`, `friction_
+    /// hardening` already stores the ready-to-use current mu(I) ratio
+    /// directly (`init_particle`/`update_particle` below) -- no conversion
+    /// needed, this is the real, exact coefficient with zero extra cost.
+    fn current_friction_coefficient(&self, particles: &Particles, i: usize) -> Option<f32> {
+        Some(particles.friction_hardening[i])
+    }
+
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         corotated_elastic_stress(particles.deformation_gradient[i], self.lambda, self.mu)
     }
@@ -426,5 +435,29 @@ mod marginal_yield_tests {
              relative={:.2e}",
             residual.abs() / scale
         );
+    }
+}
+
+/// Real correctness check for `MaterialModel::current_friction_
+/// coefficient` (MIBF, Blatny & Gaume 2025) -- see that trait method's own
+/// doc and this material's own override.
+#[cfg(test)]
+mod current_friction_coefficient_tests {
+    use super::*;
+    use crate::materials::MaterialModel;
+
+    /// Unlike `DruckerPragerMaterial` (which stores a raw hardening
+    /// accumulator needing conversion), `friction_hardening` here already
+    /// IS the current mu(I) ratio -- this must return it verbatim, with no
+    /// transformation.
+    #[test]
+    fn returns_stored_friction_hardening_verbatim() {
+        let mat = MuIRheologyMaterial::new(2000.0, 3000.0);
+        for mu in [mat.mu_static, mat.mu_dynamic, 0.5] {
+            let mut p = Particle::zeroed();
+            p.friction_hardening = mu;
+            let particles = Particles::from(vec![p]);
+            assert_eq!(mat.current_friction_coefficient(&particles, 0), Some(mu));
+        }
     }
 }
