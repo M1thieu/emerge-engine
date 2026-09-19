@@ -271,7 +271,49 @@ fn make_sim() -> Simulation {
     let v_max_grid = (2.0 * DERATED_GRAVITY_FOR_ACOUSTIC_SIZING * COLUMN_HEIGHT_CELLS).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
-    let water = NewtonianFluidMaterial::new(0.1, 1.0e-3, water_tait_b_pa, WATER_EOS_POWER);
+    // REAL FIX (2026-09-17): `dynamic_viscosity` was assigned water's raw SI
+    // value (1.0e-3 Pa.s) directly, with NO SI-to-grid conversion -- the
+    // SAME bug pattern as `pressure_floor` below, just never caught until
+    // now. `fluid.rs`'s own stress law (`stress += eff_viscosity *
+    // strain_dev`, strain rate in 1/s grid-time) needs `eff_viscosity` in
+    // grid units, and this engine already has the dimensionally-correct
+    // conversion for exactly this (`SimConfig::visc_from_si_physical`,
+    // `eta_SI/(rho*dx^2)`, doc'd against this exact consumption pattern).
+    // Must pair with the SAME density-normalized family `pressure_floor`
+    // below already uses (`stress_from_si_physical`) -- mixing raw and
+    // density-normalized conventions in the same stress tensor is wrong
+    // (see `q_factor_elastic_viscosity_pa_s`'s own doc for a real, prior
+    // instance of exactly that mistake, ~917x error, a different material).
+    // Real effect here: raw 1.0e-3 was ~10x too weak (correct grid value
+    // 0.01) -- real, disclosed, but NOT the fix for the splash-disintegration
+    // instability (verified separately: even 10x more molecular viscosity is
+    // far too small to explain or damp the observed C-matrix growth rate).
+    const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
+    const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
+    let water_dynamic_viscosity =
+        config.visc_from_si_physical(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
+    let mut water = NewtonianFluidMaterial::new(
+        0.1,
+        water_dynamic_viscosity,
+        water_tait_b_pa,
+        WATER_EOS_POWER,
+    );
+    // REAL FIX (2026-09-16), ported from the GPU twin -- see
+    // `HANDOFF_fluid_gpu_thin_layer_bug.md`'s Tenth pass. `pressure_floor`
+    // (constructor default -0.1) was never run through this engine's own
+    // SI-to-grid conversion pipeline, unlike `water_tait_b_pa` just above.
+    // Real cavitation onset for water in practice (dissolved-gas nucleation)
+    // is ~-100,000 Pa gauge -- converted through the same `stress_from_si_
+    // physical` pipeline `eos_stiffness` itself uses, this lands orders of
+    // magnitude more negative than this demo's own derated `eos_stiffness`,
+    // matching that real water essentially never cavitates from ordinary
+    // splashing. Applied here too for consistency even though CPU never
+    // showed the GPU's thin-layer collapse -- the underlying unit gap is
+    // backend-independent.
+    const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
+    const WATER_RHO_SI_KG_M3: f32 = 1000.0;
+    water.pressure_floor =
+        config.stress_from_si_physical(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {

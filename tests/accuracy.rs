@@ -2254,6 +2254,113 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
     );
 }
 
+/// Real, direct test of `DruckerPragerMaterial::use_pradhana` (see that
+/// field's own doc/citation) against the EXACT real scenario the eighteenth
+/// finding above already documented as a real dead end: `surface_y` climbs
+/// by an almost perfectly constant ~2.25 cells EVERY pour (23.19, 25.45,
+/// 27.71, 29.96, ... measured live) regardless of pour-tuning. Identical
+/// config/geometry/step-counts to that test -- the ONLY change is
+/// `use_pradhana: true` on the sand material -- so any real difference in
+/// the per-pour growth rate is directly attributable to this mechanism, not
+/// a confound. See `sand_tests.rs::pradhana_correction_tests` for the
+/// isolated, synthetic verification this real, expensive scene test
+/// follows up on (which found the mechanism holds volumetric drift near
+/// zero under one continuous sustained load, but could not, in a
+/// single-particle synthetic setting, reproduce the real cross-pour
+/// compounding this test checks directly).
+#[test]
+#[ignore = "slow, real production validation -- run explicitly with --release --ignored --nocapture"]
+fn sand_pile_built_by_slow_pour_with_pradhana_correction() {
+    const POUR_GRID: usize = 128;
+    const POUR_DT: f32 = 0.016;
+    const POUR_FLOOR: f32 = 2.0;
+    const N_POURS: usize = 45;
+    const STEPS_BETWEEN_POURS: usize = 15;
+    const SETTLE_STEPS_AFTER: usize = 4000;
+    const DROP_GAP_CELLS: f32 = 2.0;
+
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.05,
+        cundall_damping: 0.0,
+        ..SimConfig::standard(POUR_GRID, POUR_DT, Vec2::new(0.0, -0.3))
+    };
+    let cx = POUR_GRID as f32 * 0.5;
+    let sand = DruckerPragerMaterial {
+        use_pradhana: true,
+        ..DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2)
+    };
+
+    let seed = SpawnRegion {
+        spacing: 0.25,
+        box_size: IVec2::new(4, 1),
+        box_center: Vec2::new(cx, POUR_FLOOR + 0.5),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, seed)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    let mut surface_ys = Vec::with_capacity(N_POURS);
+    for i in 0..N_POURS {
+        let xs_now = &solver.particles().x;
+        let surface_y = xs_now
+            .iter()
+            .filter(|p| (p.x - cx).abs() < 4.0)
+            .map(|p| p.y)
+            .fold(POUR_FLOOR, f32::max);
+        println!(
+            "pour {i}: n_particles={} surface_y={surface_y:.2}",
+            xs_now.len()
+        );
+        surface_ys.push(surface_y);
+        let batch = SpawnRegion {
+            spacing: 0.25,
+            box_size: IVec2::new(3, 1),
+            box_center: Vec2::new(cx, surface_y + DROP_GAP_CELLS),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            rng_seed: 200 + i as u32,
+            position_jitter: 0.15,
+            ..SpawnRegion::for_sim(solver.config())
+        };
+        let _ = solver.add_body(batch);
+        solver.step_n(STEPS_BETWEEN_POURS);
+    }
+    solver.set_cundall_damping(1.0);
+    solver.step_n(SETTLE_STEPS_AFTER);
+
+    let xs: Vec<Vec2> = solver.particles().x.clone();
+    let shape = measure_pile_shape(&xs, POUR_FLOOR);
+    // Real, direct per-pour growth rate comparison against the eighteenth
+    // finding's own documented baseline (~2.25 cells/pour, constant).
+    let n = surface_ys.len();
+    let mean_growth_per_pour = if n >= 2 {
+        (surface_ys[n - 1] - surface_ys[0]) / (n - 1) as f32
+    } else {
+        0.0
+    };
+    println!("── PILE BUILT BY SLOW POUR, use_pradhana=true ──");
+    println!("  {N_POURS} pours, {} particles total", xs.len());
+    println!(
+        "  mean surface growth per pour = {mean_growth_per_pour:.3} cells (baseline, no fix: ~2.25 cells/pour)"
+    );
+    println!("  final height      = {:.2} cells", shape.height);
+    println!("  final base half-w = {:.2} cells", shape.base_half_width);
+    println!(
+        "  -> final angle     = {:.1} deg  (real dry sand IRL: 30-35 deg)",
+        shape.angle_deg
+    );
+
+    assert!(
+        shape.angle_deg.is_finite() && shape.angle_deg > 0.0,
+        "non-physical angle from a slow pour: {:.1} deg",
+        shape.angle_deg
+    );
+}
+
 /// Direct instrumentation, not another macro-parameter guess: drop ONE
 /// small batch onto an already-settled flat bed of the SAME sand, and
 /// track that batch's own mean velocity and stress ratio frame-by-frame.
@@ -6211,4 +6318,93 @@ fn diag_post_event_relax_isolated_edge_detection_check() {
             );
         }
     }
+}
+
+/// Real, fast, targeted diagnostic -- NOT another full 45-pour run. The
+/// full `sand_pile_built_by_slow_pour_with_pradhana_correction` measured
+/// ZERO real difference from the unfixed baseline (2.266 vs ~2.25
+/// cells/pour), despite `use_pradhana`'s own isolated, hand-driven
+/// `update_particle` test showing a real, clean fix. Before concluding the
+/// MECHANISM itself is wrong, this checks the more basic, real
+/// possibility: is `eps_pl_vol_pradhana` even reaching nonzero values
+/// through the REAL G2P pipeline (rayon-parallel `MutFieldPtrs`/`ctx_at`
+/// hot path), which the isolated test bypasses entirely (it calls
+/// `update_particle` directly on a hand-built `Particles`)? A real, fast
+/// (few pours, no long settle) run, reporting how many particles have a
+/// nonzero flag and what fraction of a full population currently sits in
+/// tension-cutoff.
+#[test]
+#[ignore = "diagnostic, run explicitly with --release --ignored --nocapture"]
+fn diag_pradhana_flag_reaches_real_particles_through_g2p() {
+    const POUR_GRID: usize = 128;
+    const POUR_DT: f32 = 0.016;
+    const POUR_FLOOR: f32 = 2.0;
+    const N_POURS: usize = 10;
+    const STEPS_BETWEEN_POURS: usize = 15;
+
+    let config = SimConfig {
+        max_substeps_per_step: 64,
+        apic_blend: 0.05,
+        cundall_damping: 0.0,
+        ..SimConfig::standard(POUR_GRID, POUR_DT, Vec2::new(0.0, -0.3))
+    };
+    let cx = POUR_GRID as f32 * 0.5;
+    let sand = DruckerPragerMaterial {
+        use_pradhana: true,
+        ..DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2)
+    };
+
+    let seed = SpawnRegion {
+        spacing: 0.25,
+        box_size: IVec2::new(4, 1),
+        box_center: Vec2::new(cx, POUR_FLOOR + 0.5),
+        material_id: 0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, seed)
+        .with_default_material(Box::new(sand))
+        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+
+    for i in 0..N_POURS {
+        let xs_now = &solver.particles().x;
+        let surface_y = xs_now
+            .iter()
+            .filter(|p| (p.x - cx).abs() < 4.0)
+            .map(|p| p.y)
+            .fold(POUR_FLOOR, f32::max);
+        let batch = SpawnRegion {
+            spacing: 0.25,
+            box_size: IVec2::new(3, 1),
+            box_center: Vec2::new(cx, surface_y + 2.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            rng_seed: 200 + i as u32,
+            position_jitter: 0.15,
+            ..SpawnRegion::for_sim(solver.config())
+        };
+        let _ = solver.add_body(batch);
+        solver.step_n(STEPS_BETWEEN_POURS);
+
+        let flags = &solver.particles().eps_pl_vol_pradhana;
+        let n_total = flags.len();
+        let n_set = flags.iter().filter(|&&f| f > 0.0).count();
+        println!(
+            "pour {i}: n_particles={n_total} n_pradhana_flag_set={n_set} ({:.1}%)",
+            100.0 * n_set as f32 / n_total.max(1) as f32
+        );
+    }
+
+    let flags = &solver.particles().eps_pl_vol_pradhana;
+    let n_total = flags.len();
+    let n_set = flags.iter().filter(|&&f| f > 0.0).count();
+    assert!(n_total > 0, "test setup invalid: no particles present");
+    println!(
+        "\nFINAL: {n_set}/{n_total} particles have eps_pl_vol_pradhana > 0.0 \
+         ({:.1}%) -- if this is 0, the flag never reaches real particles through \
+         the G2P pipeline (a real wiring bug); if nonzero but the full pour test \
+         still shows no growth-rate change, the flag IS reaching particles but \
+         the mechanism itself doesn't address the real dominant drift source.",
+        100.0 * n_set as f32 / n_total.max(1) as f32
+    );
 }

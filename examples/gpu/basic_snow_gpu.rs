@@ -13,7 +13,7 @@ mod gui_common;
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, Renderer};
 use emerge::{
     DruckerPragerMaterial, FixedStepController, GpuSimulation, MaterialRegistry, SimConfig,
     SpawnRegion, StomakhinMaterial, build_particles,
@@ -293,10 +293,13 @@ impl State {
         self.renderer.render_gpu(
             self.sim.device(),
             self.sim.queue(),
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: self.sim.particle_buffer(),
+                particle_count: self.sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         );
         output.present();
     }

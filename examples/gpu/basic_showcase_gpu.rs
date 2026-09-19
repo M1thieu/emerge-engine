@@ -5,7 +5,7 @@ mod gui_common;
 
 use emerge::diagnostics::log_frame_gpu;
 use emerge::gpu::GpuSimulation;
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, Renderer};
 use emerge::{
     DruckerPragerMaterial, FixedStepController, MaterialRegistry, NeoHookeanMaterial,
     NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
@@ -35,10 +35,29 @@ const SPACING: f32 = 0.7;
 
 // Real fix (2026-09-06): was `DruckerPragerMaterial::new(400.0, 200.0)`, an
 // unsourced grid-unit guess -- same citation as `basic_showcase.rs`'s CPU
-// twin and `basic_sand.rs` (Haeri & Skonieczny 2022 Table 1, Excavation
-// case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through the dt^2-free
-// `lame_from_si_physical_cfg`.
-const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
+// twin and `basic_sand.rs` (Haeri & Skonieczny 2022, arXiv:2111.01523,
+// Table 2, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through the
+// dt^2-free `lame_from_si_physical_cfg`.
+//
+// Real fix (2026-09-17), root-caused this scene's own live ~0.5fps
+// (`tests/scratch_basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`:
+// sand alone needs 2623 of the ~2629 substeps this frame's dt demands,
+// versus 5 for the elastic body and 1 for the fluid -- sand is the entire
+// cost here). Not a guessed softening: the SAME paper this E already cites
+// publishes its own "relaxed Young's modulus" variant at E=0.15 MPa (100x
+// softer), Table 2's own footnote calling it done "for significant
+// computational efficiency yet acceptable accuracy," with a real, measured,
+// disclosed cost (15.8% mean error on excavation forward force, versus
+// -0.5% for the validated 15 MPa case) -- their own number, not derived
+// here. Confirmed via the same real `timestep_bound` function
+// (`tests/scratch_basic_showcase_probe.rs::basic_showcase_sand_substep_cost_at_published_relaxed_modulus`):
+// this drops sand's own need from 1777 to 178 substeps, a real ~10x
+// reduction matching `dt ~ 1/sqrt(E)`. This is a player-driven engine demo,
+// not a sand-accuracy validation scene (that stays on the full E=15MPa
+// citation in `basic_sand.rs`/`basic_sand_grid_gpu.rs`, untouched) -- the
+// real, published, disclosed accuracy cost is the right trade for THIS
+// scene's own purpose.
+const SAND_YOUNG_MODULUS_PA: f32 = 0.15e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
 const LABELS: &[(u32, &str)] = &[
@@ -80,13 +99,13 @@ struct State {
 fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         min_dt: 0.005,
-        // Real fix (2026-09-06): the real E=15 MPa sand above needs real
-        // substep headroom under CFL -- same value already empirically
-        // verified for the identical citation/grid/dx in basic_sand.rs and
-        // basic_showcase.rs's own CPU twin
-        // (`tests/scratch_basic_showcase_probe.rs`: confirmed zero dropped
-        // simulated time, non_finite=0, over a 30s run at this cap).
-        max_substeps_per_step: 3000,
+        // Real fix (2026-09-17): lowered from 3000 now that sand above uses
+        // the published relaxed E=0.15MPa (needs ~178 substeps, not ~1777)
+        // -- 500 keeps real margin over that measured baseline for live
+        // player-driven impulses (arrow keys, LMB/RMB) without paying for
+        // 3000's old, no-longer-needed headroom. See `SAND_YOUNG_MODULUS_PA`'s
+        // own doc for the full real citation and measurement.
+        max_substeps_per_step: 500,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -338,10 +357,13 @@ impl State {
         self.renderer.render_gpu(
             &self.device,
             &self.queue,
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: self.sim.particle_buffer(),
+                particle_count: self.sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         );
         output.present();
     }

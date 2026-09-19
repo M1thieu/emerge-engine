@@ -470,6 +470,54 @@ fn von_mises_yield_stays_finite() {
     }
 }
 
+/// Real regression/integration test, 2026-09-15: `MaterialRegistry::
+/// von_mises_stress_field` (the real, generic per-material stress computation
+/// `ColorMode::ByStress` reads from) was fully built and unit-tested against
+/// hand-computed stress tensors, but no caller outside this crate could ever
+/// reach it -- `Simulation` never exposed its `MaterialRegistry` at all. This
+/// checks the real, NOW-PUBLIC path end to end: a genuinely loaded (real
+/// gravity + real initial velocity, same scene shape as `von_mises_yield_
+/// stays_finite` above) `VonMisesMaterial` scene produces a real, finite,
+/// non-degenerate stress field via `sim.materials().von_mises_stress_field
+/// (sim.particles())` -- not just that the accessor compiles, but that it
+/// returns a real physical signal an example's renderer could actually use.
+#[test]
+fn von_mises_stress_field_is_reachable_and_nonzero_under_real_load() {
+    let vm = VonMisesMaterial::new(500.0, 200.0, 50.0);
+    let config = SimConfig {
+        gravity: Vec2::new(0.0, -9.81),
+        ..small_solver_config()
+    };
+    let spawn = SpawnRegion {
+        initial_velocity_scale: 10.0,
+        ..small_spawn_config(16.0)
+    };
+    let solver = Simulation::new(config, spawn).with_default_material(Box::new(vm));
+    let mut solver = solver;
+    solver.step_n(50);
+
+    let stress = solver
+        .materials()
+        .von_mises_stress_field(solver.particles());
+    assert_eq!(
+        stress.len(),
+        solver.particles().len(),
+        "stress field must have exactly one value per particle"
+    );
+    assert!(
+        stress.iter().all(|s| s.is_finite() && *s >= 0.0),
+        "von Mises equivalent stress is a norm -- every value must be finite and non-negative: {stress:?}"
+    );
+    let max_stress = stress.iter().copied().fold(0.0f32, f32::max);
+    assert!(
+        max_stress > 1.0e-6,
+        "a real, loaded VonMises scene after 50 steps of real gravity + initial velocity \
+         must show genuinely nonzero stress somewhere -- got a field that's effectively all \
+         zero (max={max_stress}), which would mean the wiring reaches a degenerate/unloaded \
+         state, not a real signal"
+    );
+}
+
 #[test]
 fn rankine_damage_stays_finite_and_j_positive() {
     // High tensile load: spawn with upward velocity so particles stretch.

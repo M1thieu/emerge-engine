@@ -9,7 +9,7 @@ extern crate emerge_engine as emerge;
 ///   cargo run --release --example stress_cfl_scan_50k --features "gpu render"
 use std::sync::Arc;
 
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, Renderer};
 use emerge::{
     DruckerPragerMaterial, GpuSimulation, MaterialRegistry, SimConfig, SpawnRegion, build_particles,
 };
@@ -168,10 +168,13 @@ impl State {
         self.renderer.render_gpu(
             self.sim.device(),
             self.sim.queue(),
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: self.sim.particle_buffer(),
+                particle_count: self.sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         );
         let render_ms = render_start.elapsed().as_secs_f64() * 1000.0;
         self.worst_render_ms = self.worst_render_ms.max(render_ms);

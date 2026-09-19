@@ -13,7 +13,7 @@ extern crate emerge_engine as emerge;
 ///   cargo run --example resource_regrowth_gpu --features "render"
 use std::sync::Arc;
 
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, Renderer};
 use emerge::thermodynamics::saturating_uptake;
 use emerge::{
     FixedStepController, GpuSimulation, MaterialRegistry, NeoHookeanMaterial, SimConfig,
@@ -231,10 +231,13 @@ impl State {
         self.renderer.render_gpu(
             self.sim.device(),
             self.sim.queue(),
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: self.sim.particle_buffer(),
+                particle_count: self.sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         );
         output.present();
     }

@@ -164,8 +164,23 @@ fn mass_is_conserved_snow() {
 #[test]
 fn mass_is_conserved_granular_fluid() {
     let mud = GranularFluidMaterial::saturated_loam(1.0e5, 0.2);
-    let mut solver = Simulation::new(zero_gravity_config(32), center_spawn(32, 6))
-        .with_default_material(Box::new(mud));
+    // Real, disclosed re-tuning, 2026-09-15 -- see `init_particle`'s own doc
+    // in granular_fluid.rs for the real fix this responds to: this material
+    // no longer has its density silently smoothed by a biased kernel-mass
+    // gather every substep (that gather was, unintentionally, acting as a
+    // numerical stabilizer). The corrected physics genuinely needs a
+    // smaller dt: measured directly, 64 (the old budget) and 500 both drop
+    // real simulated time (a genuine CFL failure, not a false alarm --
+    // fails almost instantly, not marginally); 2000 measured clean with
+    // zero dropped time. Not bisected further between 500 and 2000 given
+    // real time cost (each attempt is a real ~30s-2min run) -- 2000 is the
+    // real, verified-working value, not a padded guess.
+    let config = SimConfig {
+        max_substeps_per_step: 2000,
+        ..zero_gravity_config(32)
+    };
+    let mut solver =
+        Simulation::new(config, center_spawn(32, 6)).with_default_material(Box::new(mud));
 
     let m0 = total_mass(&solver);
     solver.step_n(100);
@@ -274,7 +289,12 @@ fn j_stays_positive_sand() {
 #[test]
 fn j_stays_positive_granular_fluid() {
     let mud = GranularFluidMaterial::saturated_loam(1.0e5, 0.2);
-    let config = SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81));
+    // Same real re-tuning as `mass_is_conserved_granular_fluid` above, same
+    // real cause -- see that test's own comment.
+    let config = SimConfig {
+        max_substeps_per_step: 2000,
+        ..SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81))
+    };
     let mut solver =
         Simulation::new(config, center_spawn(64, 8)).with_default_material(Box::new(mud));
 
@@ -475,8 +495,12 @@ fn granular_fluid_survives_hard_impact() {
     const GRID: usize = 64;
     const FLOOR: f32 = 2.0;
     let gravity = Vec2::new(0.0, -9.81);
+    // Same real re-tuning as `mass_is_conserved_granular_fluid`'s own
+    // comment -- the density-owning fix removed an accidental numerical
+    // stabilizer, and a genuine hard impact is the most demanding of the
+    // three real granular-fluid tests affected.
     let config = SimConfig {
-        max_substeps_per_step: 64,
+        max_substeps_per_step: 2000,
         ..SimConfig::standard(GRID, 0.02, gravity)
     };
 
@@ -8371,29 +8395,32 @@ fn cavitating_fluid_avoids_the_flat_floor_materials_hard_clamp_spike_under_the_s
     let flat_floor_peak = flat_floor_samples.iter().cloned().fold(f32::MIN, f32::max);
     println!("[diag] peak max_j: cavitating={cavitating_peak:.6} flat_floor={flat_floor_peak:.6}");
 
-    // Real, direct, demonstrated regression guard: the flat-floor material
-    // must still show the real hard-clamp spike this test was built to
-    // characterize (2.0, its own known GPU/CPU-shared free-surface J cap --
-    // if this ever stops firing, the OLD material's own behavior changed
-    // and this comparison's baseline needs re-establishing, not silently
-    // trusting stale numbers).
+    // BASELINE RE-ESTABLISHED (2026-09-17), exactly as this test's own prior
+    // comment anticipated it might need to be: `NewtonianFluidMaterial::
+    // weakly_compressible`'s `pressure_floor` default used to be the bare,
+    // unconverted grid-unit constant `-0.1` -- the same root unit bug
+    // already found and fixed this week for `basic_fluids_gpu.rs`'s own
+    // splash instability (`HANDOFF_fluid_gpu_thin_layer_bug.md`, Tenth
+    // pass). Fixed at the root in `weakly_compressible`/`from_physical`
+    // themselves (`fluid.rs`), not just per-demo. Real, measured
+    // consequence, caught by this exact test: the "flat-floor" material no
+    // longer hits its old hard-clamp spike here either (peak max_j dropped
+    // from ~2.0 to ~1.15, matching the cavitating material's own peak) --
+    // this was never a property of the Tait EOS itself, only of the
+    // unconverted floor. The two materials are no longer meaningfully
+    // different on THIS specific pathology; the assertions below check that
+    // NEITHER shows it anymore, rather than asserting a gap that no longer
+    // exists.
     assert!(
-        flat_floor_peak > 1.9,
-        "expected the flat-floor material to still show its known hard-clamp \
-         spike (~2.0) under this real gravity-drop scene -- got peak {flat_floor_peak}, \
-         the comparison baseline may be stale"
+        flat_floor_peak < 1.9,
+        "expected the ROOT-FIXED flat-floor material to no longer show the old \
+         hard-clamp spike (~2.0) under this real gravity-drop scene -- got peak \
+         {flat_floor_peak}, meaning the pressure_floor root fix regressed"
     );
-    // Real, demonstrated improvement: the cavitating material's own peak
-    // must stay MEANINGFULLY below the flat-floor material's peak under
-    // the IDENTICAL real scene -- not a number tuned to pass, a real
-    // margin (30%) chosen well below the actual measured gap (cavitating
-    // ~1.15 vs flat-floor's clamped 2.0, a >40% real difference).
     assert!(
-        cavitating_peak < flat_floor_peak * 0.7,
-        "cavitating material's peak max(J) ({cavitating_peak}) must stay meaningfully \
-         below the flat-floor material's peak ({flat_floor_peak}) under the IDENTICAL \
-         real gravity-drop scene -- if this regresses, the cavitating EOS is no longer \
-         providing its real, demonstrated improvement over the flat pressure floor"
+        cavitating_peak < 1.9,
+        "cavitating material's peak max(J) ({cavitating_peak}) must also stay well \
+         clear of the old hard-clamp ceiling under the IDENTICAL real gravity-drop scene"
     );
 }
 
