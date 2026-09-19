@@ -199,6 +199,37 @@ fluid in the same violently-loaded scene. The exact combination Fang et
 al. named as future work in 2018, still not shown as of the 2026 Daviet
 paper.
 
+**What it costs today, scene by scene** (measured 2026-09-19 on a Radeon
+610M, AC power). The rule behind all three numbers is the same: an explicit
+step cannot exceed about `dx / c`, where `c = sqrt(E/rho)` is the material's
+own speed of sound. Stiffer material or finer grid, more substeps. Nothing
+in the code changes that; it is the equation.
+
+| scene | sound speed | substeps per frame | measured |
+|---|---|---|---|
+| water (dam break, droplet, vortex) | 1.75 m/s, set by the WCSPH rule `c >= 10*v_max` | 52 | 50-56 fps |
+| sand, jellies | relaxed published stiffness (see above) | low tens | 60 fps |
+| multi-material showcase | sand-dominated | ~264, x4 sim steps per rendered frame | ~10-12 fps |
+| snow | 26.5 m/s (`E = 1.4e5 Pa`, `rho = 200`, Stomakhin 2013) | ~880, x4 per rendered frame | 1-2 fps |
+
+Snow is the honest worst case: its real, cited stiffness is fifteen times
+water's effective sound speed here, so it needs roughly fifteen times the
+substeps, and the demo runs four simulation steps per rendered frame on top.
+Making each substep faster does not rescue it: at 3500 substeps per rendered
+frame, even halving the per-substep cost leaves it around 3 fps.
+
+What would actually move these two scenes, in order of honesty:
+- a coarser grid (`dt` scales with `dx`, and the same region needs fewer
+  particles), which costs visual resolution, not correctness;
+- slower playback (fewer simulation steps per rendered frame), which costs
+  apparent speed, not correctness;
+- a published relaxed stiffness for that material, as was already done for
+  sand with its own paper's figure -- only where such a figure exists;
+- the unresolved research above.
+
+Softening a material without a source, or damping the motion to hide the
+instability, is not on this list and is not acceptable here.
+
 ---
 
 ## Resolved
