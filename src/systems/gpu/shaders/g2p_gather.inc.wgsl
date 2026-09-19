@@ -181,7 +181,7 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
             // Free-surface velocity extrapolation for untouched nodes -- see
             // `extrapolated_boundary_velocity`'s own doc for the full account.
             let extrap_v = extrapolated_boundary_velocity(
-                p.v, cx, cy, i32(res), step_params.gravity, step_params.dt,
+                p.v, cx, cy, i32(res), step_params.gravity, substep_dt(),
                 step_params.boundary_thickness,
             );
             let is_touched = cell.mass > NUM_FLOOR;
@@ -226,8 +226,8 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     // Velocity clamp: !(spd <= limit) also catches NaN (NaN <= x = false).
     // Inf guard: if spd=Inf, inv=0, then Inf×0=NaN -- zero out via select.
     let spd = length(new_v);
-    if !(spd <= step_params.vel_limit) {
-        let inv = step_params.vel_limit / spd;
+    if !(spd <= substep_vel_limit(substep_dt())) {
+        let inv = substep_vel_limit(substep_dt()) / spd;
         new_v = select(new_v * inv, vec2<f32>(0.0), !(inv > 0.0));
     }
 

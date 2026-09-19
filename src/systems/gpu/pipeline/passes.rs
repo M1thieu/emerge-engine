@@ -264,6 +264,23 @@ pub(super) fn build_g2p_update_pipeline(
     )
 }
 
+/// The GPU's own per-substep CFL: turns the minimum bound the particles folded into
+/// `adaptive_dt[2]` this substep into the next substep's timestep. See adaptive_cfl.wgsl.
+pub(super) fn build_cfl_commit_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+) -> wgpu::ComputePipeline {
+    make_pipeline(
+        device,
+        layout,
+        shaders::ADAPTIVE_CFL,
+        "cfl_commit_main",
+        "cfl_commit",
+        &[],
+        false,
+    )
+}
+
 /// Standalone force fields + sleep/wake, used only after the ASFLIP fused G2P (which
 /// replaces `g2p_update`'s gather+update but not its force-field stage).
 pub(super) fn build_force_fields_pipeline(

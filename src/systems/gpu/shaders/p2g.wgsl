@@ -71,9 +71,9 @@ struct StepParams {
     boundary_thickness: u32,
     vel_limit:          f32,
     sleep_threshold:    f32,
-    _pad0:              u32,
-    _pad1:              u32,
-    _pad2:              u32,
+    contact_friction:              f32,
+    grid_cell_size:              f32,
+    contact_active:              u32,
 }
 
 const MAX_MATERIALS:        u32 = {{MAX_MATERIALS}}u;
@@ -161,6 +161,27 @@ override NUM_CONTACT_BLOCKS_PER_DIM: u32;
 @group(0) @binding(1) var<storage, read_write> grid_atomic:         array<atomic<i32>>;
 @group(0) @binding(2) var<uniform>             materials:           array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params:         StepParams;
+
+// This substep's timestep and velocity cap, decided on the GPU at the end of the previous
+// substep -- see `adaptive_cfl.wgsl`. `substep_dt()`/`vel_limit` are the CPU's
+// frame-start values and are NOT authoritative any more (the GPU may only tighten them).
+@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 4>;
+
+// Cached per invocation: this is an atomic storage load, and reading it at every use
+// site cost ~40% of a substep (measured: 0.29 -> 0.41ms per substep on the dam break).
+var<private> substep_dt_cache: f32 = -1.0;
+
+fn substep_dt() -> f32 {
+    if substep_dt_cache < 0.0 {
+        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
+    }
+    return substep_dt_cache;
+}
+
+fn substep_vel_limit(dt: f32) -> f32 {
+    return step_params.grid_cell_size / max(dt, 1.0e-12);
+}
+
 @group(0) @binding(5) var<storage, read_write> sorted_particle_ids: array<u32>;
 // Multi-field contact (GPU port, first slice) -- see buffers.rs doc. binding 12 is the
 // SAME underlying buffer as grid_clear.wgsl's `grip_grid: array<Cell>` binding, viewed
@@ -618,7 +639,9 @@ fn p2g_main(
     let p_idx = sorted_particle_ids[min(gid.x, step_params.particle_count - 1u)];
     let p = particles[p_idx];
     // NaN position would corrupt the grid sums -- skip silently.
-    let valid = in_range && dot(p.x, p.x) >= 0.0;
+    // Spare encoded substeps (the frame's time is already advanced) skip the scatter.
+    // Not an early return: the barriers below must be reached by every invocation.
+    let valid = in_range && dot(p.x, p.x) >= 0.0 && substep_dt() > 0.0;
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
     workgroupBarrier();
     if valid {
@@ -632,6 +655,9 @@ fn p2g_main(
     }
     workgroupBarrier();
     let res = step_params.grid_res;
+    if substep_dt() <= 0.0 {
+        return;
+    }
     for (var k = lid; k < TILE_NODES; k += 64u) {
         let mass_bits = atomicLoad(&tile_acc[k * 3u + 2u]);
         if mass_bits == 0 { continue; }
@@ -646,7 +672,7 @@ fn p2g_main(
 
 fn scatter_particle(p: Particle, base: vec2<i32>, origin: vec2<i32>) {
     let res = step_params.grid_res;
-    let dt  = step_params.dt;
+    let dt  = substep_dt();
     let mat = materials[p.material_id];
 
     // Sleeping particles still scatter normally -- their mass+stress is exactly what

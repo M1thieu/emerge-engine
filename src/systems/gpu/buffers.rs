@@ -63,6 +63,13 @@ pub struct GpuBuffers {
     /// Particle data -- STORAGE | COPY_DST | COPY_SRC.
     pub particles: wgpu::Buffer,
     /// Grid cells, zeroed each substep by grid_clear pass -- STORAGE
+    /// The GPU's own adaptive substep timestep, 4 x u32 (f32 bit patterns):
+    /// `[0]` this substep's dt (0 = the frame's time is spent, every pass skips),
+    /// `[1]` frame time still to advance, `[2]` running min of the next substep's CFL
+    /// bound (atomicMin over particles, positive floats compare as their bit patterns),
+    /// `[3]` frame time advanced so far. Written by `adaptive_cfl.wgsl::cfl_commit_main`
+    /// at the end of every substep and seeded by the CPU at the start of each frame.
+    pub adaptive_dt: wgpu::Buffer,
     pub grid: wgpu::Buffer,
     /// One MaterialParams per registered material slot -- UNIFORM | COPY_DST
     pub materials: wgpu::Buffer,
@@ -456,6 +463,12 @@ impl GpuBuffers {
             mem::size_of::<GpuThermalParams>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
+        let adaptive_dt = make_buffer(
+            device,
+            "mpm_adaptive_dt",
+            4 * mem::size_of::<u32>() as u64,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
         let thermal_scalar_bytes = (grid_res * grid_res * mem::size_of::<f32>()) as u64;
         let thermal_mass = make_buffer(
             device,
@@ -570,6 +583,7 @@ impl GpuBuffers {
 
         Self {
             particles,
+            adaptive_dt,
             grid,
             materials,
             step_params_pool,
@@ -673,6 +687,19 @@ impl GpuBuffers {
     }
 
     /// Upload step params into pool slot `index`. Panics if index >= pool size.
+    /// Seeds this frame's adaptive substep state: the CPU's own frame-start substep size
+    /// (`dt0`, also the cap the GPU may only go below) and the frame time left after it.
+    /// See the `adaptive_dt` field's doc for the slot layout.
+    pub fn upload_adaptive_dt(&self, queue: &wgpu::Queue, dt0: f32, frame_dt: f32) {
+        let state: [u32; 4] = [
+            dt0.to_bits(),
+            (frame_dt - dt0).max(0.0).to_bits(),
+            f32::MAX.to_bits(),
+            dt0.to_bits(),
+        ];
+        queue.write_buffer(&self.adaptive_dt, 0, bytemuck::bytes_of(&state));
+    }
+
     pub fn upload_step_params_at(&self, queue: &wgpu::Queue, index: usize, params: &GpuStepParams) {
         queue.write_buffer(&self.step_params_pool[index], 0, bytemuck::bytes_of(params));
     }

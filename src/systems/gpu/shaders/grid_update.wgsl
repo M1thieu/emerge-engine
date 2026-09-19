@@ -17,8 +17,8 @@ struct StepParams {
     boundary_thickness: u32,
     vel_limit:          f32,
     sleep_threshold:    f32,
-    _pad0:              u32,
-    _pad1:              u32,
+    contact_friction:              f32,
+    grid_cell_size:              f32,
     contact_active:              u32,
 }
 
@@ -69,6 +69,27 @@ override BLOCK_THREADS_PER_DIM: u32 = 16u;
 
 @group(0) @binding(1)  var<storage, read_write> grid_int:               array<i32>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
+
+// This substep's timestep and velocity cap, decided on the GPU at the end of the previous
+// substep -- see `adaptive_cfl.wgsl`. `substep_dt()`/`vel_limit` are the CPU's
+// frame-start values and are NOT authoritative any more (the GPU may only tighten them).
+@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 4>;
+
+// Cached per invocation: this is an atomic storage load, and reading it at every use
+// site cost ~40% of a substep (measured: 0.29 -> 0.41ms per substep on the dam break).
+var<private> substep_dt_cache: f32 = -1.0;
+
+fn substep_dt() -> f32 {
+    if substep_dt_cache < 0.0 {
+        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
+    }
+    return substep_dt_cache;
+}
+
+fn substep_vel_limit(dt: f32) -> f32 {
+    return step_params.grid_cell_size / max(dt, 1.0e-12);
+}
+
 @group(0) @binding(4)  var<uniform>             force_fields:            ForceFieldsParams;
 // Raw per-block particle histogram for THIS substep (written by particle_sort_count
 // right before this substep's compact; nothing in between rewrites it).
@@ -132,7 +153,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
         if asflip_params.enabled != 0u {
             asflip_snapshot[cy * res + cx] = vec2<f32>(0.0);
         }
-        var grav_vel = step_params.gravity * step_params.dt;
+        var grav_vel = step_params.gravity * substep_dt();
         let bt2 = step_params.boundary_thickness;
         if cx < bt2          && grav_vel.x < 0.0 { grav_vel.x = 0.0; }
         if cx >= res - bt2   && grav_vel.x > 0.0 { grav_vel.x = 0.0; }
@@ -156,7 +177,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
         asflip_snapshot[cy * res + cx] = vel;
     }
 
-    vel += step_params.gravity * step_params.dt;
+    vel += step_params.gravity * substep_dt();
 
     // Apply cursor force fields in grid space (same substep as position advance -- no lag).
     if force_fields.count > 0u {
@@ -178,7 +199,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
                     if r3 >= FF_NUM_FLOOR {
                         var acc = -(gm / r3) * r;
                         if cutoff > 0.0 { acc *= force_switch(r_len, cutoff, sw_on); }
-                        vel += acc * step_params.dt;
+                        vel += acc * substep_dt();
                     }
                 }
             } else if entry.field_type == FIELD_COULOMB {
@@ -196,7 +217,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
                     if r3 >= FF_NUM_FLOOR {
                         var acc = (charge_factor / r3) * r;
                         if cutoff > 0.0 { acc *= force_switch(r_len, cutoff, sw_on); }
-                        vel += acc * step_params.dt;
+                        vel += acc * substep_dt();
                     }
                 }
             }
@@ -212,7 +233,7 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
 
     // CFL clamp before G2P -- bounds both particle velocity AND affine matrix C at the source.
     let spd = length(vel);
-    if spd > step_params.vel_limit { vel *= step_params.vel_limit / spd; }
+    if spd > substep_vel_limit(substep_dt()) { vel *= substep_vel_limit(substep_dt()) / spd; }
 
     // Write velocity as bitcast<i32>(f32) so g2p can read the same buffer as array<Cell>.
     grid_int[base4 + 0u] = bitcast<i32>(vel.x);
@@ -251,6 +272,9 @@ fn grid_update_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
+    // The frame's time is already fully advanced -- this encoded substep is spare
+    // capacity the CPU could not size exactly in advance (see adaptive_cfl.wgsl).
+    if substep_dt() <= 0.0 { return; }
     var block: u32;
     if wg_id.x < NUM_BLOCKS {
         if wg_id.x >= atomicLoad(&active_block_count) { return; }

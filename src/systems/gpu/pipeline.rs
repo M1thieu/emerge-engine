@@ -100,10 +100,10 @@ use layouts::{
 // See passes.rs's own doc.
 mod passes;
 use passes::{
-    build_asflip_pipeline, build_contact_resolve_pipelines, build_fluid_pressure_pipelines,
-    build_force_fields_pipeline, build_g2p_update_pipeline, build_impulse_pipeline,
-    build_p2g_and_grid_pipelines, build_resource_pipelines, build_sort_pipelines,
-    build_thermal_pipelines,
+    build_asflip_pipeline, build_cfl_commit_pipeline, build_contact_resolve_pipelines,
+    build_fluid_pressure_pipelines, build_force_fields_pipeline, build_g2p_update_pipeline,
+    build_impulse_pipeline, build_p2g_and_grid_pipelines, build_resource_pipelines,
+    build_sort_pipelines, build_thermal_pipelines,
 };
 
 /// All compiled compute pipelines for one GpuSimulation instance.
@@ -138,6 +138,9 @@ pub struct SimPipelines {
     g2p_update_models: u32,
     /// Kept to rebuild `g2p_update` when the scene's material models change.
     pipeline_layout: wgpu::PipelineLayout,
+    /// Decides the next substep's timestep on the GPU -- one thread, end of every
+    /// substep. See `adaptive_cfl.wgsl`.
+    pub cfl_commit: wgpu::ComputePipeline,
     /// Standalone force fields + sleep/wake -- only after `g2p_asflip_fused`, which
     /// replaces `g2p_update`'s gather+update but not its force-field stage.
     pub force_fields: wgpu::ComputePipeline,
@@ -300,6 +303,7 @@ impl SimPipelines {
         // Generic (every model compiled in) until `specialize_g2p_update` narrows it.
         let g2p_update = build_g2p_update_pipeline(device, &pipeline_layout, ff_consts, u32::MAX);
         let force_fields = build_force_fields_pipeline(device, &pipeline_layout, ff_consts);
+        let cfl_commit = build_cfl_commit_pipeline(device, &pipeline_layout);
 
         // ASFLIP (GPU port) -- replaces g2p+particles_update for a substep, only when
         // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's own doc for why this
@@ -341,6 +345,7 @@ impl SimPipelines {
             gather_contact_points,
             grid_update,
             g2p_update,
+            cfl_commit,
             g2p_update_models: u32::MAX,
             pipeline_layout: pipeline_layout.clone(),
             force_fields,

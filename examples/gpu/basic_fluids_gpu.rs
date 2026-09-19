@@ -211,7 +211,20 @@ fn make_sim_data(
         // demo's own comment for the full reasoning: 0.1 was 3x more
         // conservative than any cited solver, and the failure it was
         // protecting against traced to a too-soft EOS, not to C.
-        material_cfl_coefficient: 0.3,
+        // 0.4, not 0.3 (2026-09-19). Two sources for the number: Becker & Teschner
+        // 2007's WCSPH time step (eq. 18, after Monaghan 1992) is `0.4*h/c_s`, and Bai
+        // & Schroeder 2022 ("Stability analysis of explicit MPM", CGF 41) put the Von
+        // Neumann stability limit of THIS scheme -- APIC with quadratic B-splines -- at
+        // `dt <= 1.0*dx/c` (their Figure 4: analytic f = 1.0000, measured 1.0007 in 2D),
+        // so 0.4 keeps a 2.5x margin on the proven bound, with boundary/isolated
+        // particles covered by the separate Sun/Shinar/Schroeder 2020 bound the CFL scan
+        // already applies. It only became safe once the GPU picked its timestep per
+        // substep (`adaptive_cfl.wgsl`): with the old frame-frozen dt, 0.4 spiked the
+        // vortex's J to 1.28 where the CPU, same scene and coefficient, stayed at 1.025.
+        // With the adaptive timestep the GPU measures 1.024 -- the CPU's own value.
+        // Costs ~52 substeps/frame instead of ~69. 0.5 was tested too and rejected: the
+        // vortex's J goes to 1.43.
+        material_cfl_coefficient: 0.4,
         // Real, root-caused fix (2026-08-06, caught live by the user): the
         // old `Vec2::new(0.0, -0.3)` (~3270x weaker than real IRL gravity,
         // g_grid~=981 via SimConfig::earth) left too little real driving

@@ -240,7 +240,22 @@ impl GpuSimulation {
                 remaining -= sub_dt;
             }
         }
-        self.last_substeps = sub_dts.len();
+        // The GPU re-picks each substep's dt from the post-update particle state and can
+        // only go BELOW `sub_dt_cfl` (see `adaptive_cfl.wgsl`), so the frame may need
+        // more substeps than this estimate. Encode a margin: substeps beyond the frame's
+        // time return immediately, at the cost of their (tiny) dispatch. A frame violent
+        // enough to exhaust even the margin advances less than `config.dt` -- the same
+        // honest dropped time the CPU loop reports when it hits `max_substeps_per_step`.
+        const ADAPTIVE_SUBSTEP_MARGIN: f32 = 1.15;
+        let encoded_substeps = (((sub_dts.len() as f32) * ADAPTIVE_SUBSTEP_MARGIN).ceil() as usize)
+            .clamp(sub_dts.len(), self.config.max_substeps_per_step)
+            .max(1);
+        self.buffers.upload_adaptive_dt(
+            &self.queue,
+            sub_dts[0].min(self.config.dt),
+            self.config.dt,
+        );
+        self.last_substeps = encoded_substeps;
         self.last_sub_dt = sub_dts.last().copied().unwrap_or(self.config.dt);
         self.frame_index += 1;
         let cfl_scan_ns = cfl_scan_start.elapsed().as_secs_f32() * 1.0e9;
@@ -363,10 +378,19 @@ impl GpuSimulation {
         // once in `bind_group_pool` (see that field's doc comment) instead of recreated
         // here every substep every frame -- doing so at LP's ~5-6k-substep-per-frame scale
         // exhausted the GPU's descriptor allocator within seconds.
-        for (i, &sub_dt) in sub_dts.iter().enumerate() {
-            let params =
-                GpuStepParams::new(&step_config, sub_dt, self.particle_count, contact_active);
-            self.buffers.upload_step_params_at(&self.queue, i, &params);
+        {
+            // Every encoded substep gets the same params: `dt`/`vel_limit` are no longer
+            // read by the shaders (they take those from `adaptive_dt`), but `dt_cap` is --
+            // it is the CPU's frame-start CFL choice, the ceiling the GPU may not exceed.
+            let params = GpuStepParams::new(
+                &step_config,
+                sub_dt_cfl,
+                self.particle_count,
+                contact_active,
+            );
+            for i in 0..encoded_substeps {
+                self.buffers.upload_step_params_at(&self.queue, i, &params);
+            }
         }
         let bind_groups = &self.bind_group_pool;
 
@@ -474,7 +498,7 @@ impl GpuSimulation {
         // per-backend/driver ceiling, not from any GPU spec). Typical scenes (under 64
         // substeps/frame) never block.
         const SUBSTEP_BLOCK_EVERY: usize = 64;
-        let mut chunks = bind_groups[..sub_dts.len()]
+        let mut chunks = bind_groups[..encoded_substeps]
             .chunks(SUBSTEP_SUBMIT_BATCH)
             .peekable();
         // Split pure CPU command-building time from GPU-completion wait time --
@@ -530,8 +554,10 @@ impl GpuSimulation {
                     let refresh_active_blocks =
                         substep_counter % active_block_refresh_interval == 0;
                     substep_counter += 1;
+                    // Profile a substep from the middle of the frame: the last encoded
+                    // ones are the adaptive-timestep margin and usually do nothing.
                     self.profile_this_substep
-                        .set(substep_counter == sub_dts.len());
+                        .set(substep_counter == encoded_substeps / 2);
                     self.encode_substep(
                         &mut pass,
                         bg,

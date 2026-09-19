@@ -91,6 +91,10 @@ struct StepParams {
     contact_friction:   f32,
     grid_cell_size:     f32,
     contact_active:     u32,
+    cfl_coefficient:    f32,
+    material_cfl_coefficient: f32,
+    min_dt:             f32,
+    dt_cap:             f32,
 }
 
 const MAX_MATERIALS:    u32 = {{MAX_MATERIALS}}u;
@@ -110,6 +114,27 @@ fn has_model(model: u32, m: u32) -> bool {
 @group(0) @binding(0) var<storage, read_write> particles:            array<Particle>;
 @group(0) @binding(2) var<uniform>             materials:            array<MaterialParams, MAX_MATERIALS>;
 @group(0) @binding(3) var<uniform>             step_params:          StepParams;
+
+// This substep's timestep and velocity cap, decided on the GPU at the end of the previous
+// substep -- see `adaptive_cfl.wgsl`. `substep_dt()`/`vel_limit` are the CPU's
+// frame-start values and are NOT authoritative any more (the GPU may only tighten them).
+@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 4>;
+
+// Cached per invocation: this is an atomic storage load, and reading it at every use
+// site cost ~40% of a substep (measured: 0.29 -> 0.41ms per substep on the dam break).
+var<private> substep_dt_cache: f32 = -1.0;
+
+fn substep_dt() -> f32 {
+    if substep_dt_cache < 0.0 {
+        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
+    }
+    return substep_dt_cache;
+}
+
+fn substep_vel_limit(dt: f32) -> f32 {
+    return step_params.grid_cell_size / max(dt, 1.0e-12);
+}
+
 @group(0) @binding(5) var<storage, read_write> sorted_particle_ids:  array<u32>;
 
 // ── 2D SVD ────────────────────────────────────────────────────────────────────
@@ -420,10 +445,36 @@ fn deformation_increment_exp(a: mat2x2<f32>) -> mat2x2<f32> {
 
 // Workgroup size MUST match WG_PARTICLES (= 64) in src/gpu/mod.rs.
 @compute @workgroup_size(64, 1, 1)
-fn g2p_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= step_params.particle_count { return; }
-    let p_idx = sorted_particle_ids[gid.x]; // sorted: cache-coherent grid gather
+fn g2p_update_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) lid: u32,
+) {
+    // Per-workgroup minimum of the next substep's CFL bound, flushed to the global one
+    // by a single thread: 2912 particles all doing `atomicMin` on the same global slot
+    // serialise on it (measured: +36us per substep, over half of this pass's own cost).
+    if lid == 0u {
+        atomicStore(&wg_cfl_min, F32_MAX_BITS);
+    }
+    workgroupBarrier();
+    // No early return before the closing barrier below; spare substeps (dt == 0, see
+    // adaptive_cfl.wgsl) and out-of-range invocations just do nothing.
+    let runs = gid.x < step_params.particle_count && substep_dt() > 0.0;
+    if runs {
+        g2p_update_particle(sorted_particle_ids[gid.x]);
+    }
+    workgroupBarrier();
+    if lid == 0u {
+        let m = atomicLoad(&wg_cfl_min);
+        if m != F32_MAX_BITS {
+            atomicMin(&adaptive_dt[2], m);
+        }
+    }
+}
 
+const F32_MAX_BITS: u32 = 0x7F7FFFFFu;
+var<workgroup> wg_cfl_min: atomic<u32>;
+
+fn g2p_update_particle(p_idx: u32) {
     var p = particles[p_idx];
     g2p_gather(p_idx, &p);
     // Still-sleeping particles (didn't wake in the gather) are frozen -- skip state
@@ -441,6 +492,88 @@ fn g2p_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         particles[p_idx].v = p.v;
         particles[p_idx].sleeping = p.sleeping;
     }
+    if p.sleeping == 0u {
+        accumulate_cfl_bound(p, materials[p.material_id]);
+    }
+}
+
+// This particle's own CFL bound for the NEXT substep, folded into the shared minimum
+// (`adaptive_cfl.wgsl` turns it into the next dt). Mirrors the terms of CPU's
+// `choose_substep_dt` that actually CHANGE within a frame -- particle speed, the
+// deformation-gradient ODE bound, and, for a material that owns its volume state (a
+// strict fluid), its compression-dependent acoustic bound, the shock-viscosity
+// correction and the Sun/Shinar/Schroeder 2020 single-particle bound. Terms not ported
+// here simply leave the CPU's frame-start cap in charge, which is what the GPU used for
+// all of them before; nothing here can raise dt above that cap.
+// Exponentiation by squaring for a whole-numbered exponent -- same reason (and same
+// shape) as p2g.wgsl's `fast_pow`: WGSL's `pow` always goes through exp2/log2, which is
+// both slower and less precise near 1.0. Falls back for non-integer exponents.
+fn cfl_fast_pow(x: f32, e: f32) -> f32 {
+    if abs(fract(e)) > 1.0e-6 || abs(e) >= 32.0 {
+        return pow(x, e);
+    }
+    var exp_i = i32(round(abs(e)));
+    var base = x;
+    var result = 1.0;
+    while exp_i > 0 {
+        if (exp_i & 1) == 1 {
+            result = result * base;
+        }
+        base = base * base;
+        exp_i = exp_i >> 1;
+    }
+    if e < 0.0 {
+        return 1.0 / result;
+    }
+    return result;
+}
+
+fn accumulate_cfl_bound(p: Particle, mat: MaterialParams) {
+    let dx = step_params.grid_cell_size;
+    var bound = 3.4e38;
+
+    let speed = length(p.v);
+    if speed > NUM_FLOOR {
+        bound = min(bound, step_params.cfl_coefficient * dx / speed);
+    }
+    let grad_norm = sqrt(frob2_sq(p.velocity_gradient));
+    if grad_norm > NUM_FLOOR {
+        bound = min(bound, min(step_params.cfl_coefficient, 0.5) / grad_norm);
+    }
+
+    if mat.owns_deformation_volume_state == 1u && mat.eos_stiffness > 0.0 {
+        let rho0 = max(mat.rest_density, NUM_FLOOR);
+        let j = max(det2(p.deformation_gradient), NUM_FLOOR);
+        let c2_rest = mat.eos_stiffness * mat.eos_power / rho0;
+        // Acoustic bound at THIS particle's own compression (c grows as it compresses).
+        let c2 = c2_rest * cfl_fast_pow(1.0 / j, mat.eos_power - 1.0);
+        if c2 > NUM_FLOOR_TIGHT {
+            bound = min(bound, step_params.material_cfl_coefficient * dx / sqrt(c2));
+        }
+        // Von Neumann-Richtmyer shock viscosity (Bate et al. 1995 combined c_eff).
+        if grad_norm > NUM_FLOOR && c2_rest > NUM_FLOOR_TIGHT {
+            let c0_quadratic = (mat.eos_power + 1.0) * 0.25;
+            let c_eff = sqrt(c2_rest) + 2.0 * c0_quadratic * dx * grad_norm;
+            if c_eff > NUM_FLOOR_TIGHT {
+                bound = min(bound, step_params.material_cfl_coefficient * dx / c_eff);
+            }
+        }
+        // Single-particle instability (Sun, Shinar & Schroeder 2020), quadratic spline.
+        if c2_rest > NUM_FLOOR_TIGHT {
+            let kd_lambda = 6.0 * 2.0 * rho0 * c2_rest;
+            var single = dx * sqrt(rho0 * (j + 1.0) / (j * j * j * kd_lambda));
+            if j <= 1.0 {
+                single = (dx / (2.0 - j)) * sqrt(2.0 * rho0 / kd_lambda);
+            }
+            if single > 0.0 {
+                bound = min(bound, single);
+            }
+        }
+    }
+
+    if bound > 0.0 && bound < 3.4e38 {
+        atomicMin(&wg_cfl_min, bitcast<u32>(bound));
+    }
 }
 
 // F update, plasticity, state projection and position advance for one awake
@@ -449,7 +582,7 @@ fn g2p_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
     var p = *pp;
     let mat = materials[p.material_id];
-    let dt  = step_params.dt;
+    let dt  = substep_dt();
     let res = step_params.grid_res;
     let bt  = f32(step_params.boundary_thickness);
 

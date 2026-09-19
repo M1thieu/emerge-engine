@@ -141,6 +141,10 @@ pub(super) fn build_thermal_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
             // 23: thermal_work -- dual-use: P2G scatter accumulator, then post-
             // Laplacian T_new.
             storage_entry(23),
+            // adaptive_dt -- the GPU's own per-substep timestep state (see buffers.rs).
+            // Lives in this group purely for bind-group economy: group 0's storage slots
+            // are full and this one has room, same reason ASFLIP shares group 3.
+            storage_entry(37),
         ],
     })
 }

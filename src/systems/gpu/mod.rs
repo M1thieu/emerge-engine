@@ -40,6 +40,7 @@ pub mod shaders {
     pub const RESOURCE_FIELD: &str = include_str!("shaders/resource_field.wgsl");
     pub const G2P_ASFLIP_FUSED: &str = include_str!("shaders/g2p_asflip_fused.wgsl");
     pub const FLUID_PRESSURE: &str = include_str!("shaders/fluid_pressure.wgsl");
+    pub const ADAPTIVE_CFL: &str = include_str!("shaders/adaptive_cfl.wgsl");
 }
 
 #[cfg(feature = "gpu")]

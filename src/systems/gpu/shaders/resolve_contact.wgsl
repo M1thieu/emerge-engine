@@ -72,6 +72,27 @@ const MIN_MASS_FRACTION: f32 = 1.0e-6;
 
 @group(0) @binding(1)  var<storage, read_write> grid:                    array<Cell>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
+
+// This substep's timestep and velocity cap, decided on the GPU at the end of the previous
+// substep -- see `adaptive_cfl.wgsl`. `substep_dt()`/`vel_limit` are the CPU's
+// frame-start values and are NOT authoritative any more (the GPU may only tighten them).
+@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 4>;
+
+// Cached per invocation: this is an atomic storage load, and reading it at every use
+// site cost ~40% of a substep (measured: 0.29 -> 0.41ms per substep on the dam break).
+var<private> substep_dt_cache: f32 = -1.0;
+
+fn substep_dt() -> f32 {
+    if substep_dt_cache < 0.0 {
+        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
+    }
+    return substep_dt_cache;
+}
+
+fn substep_vel_limit(dt: f32) -> f32 {
+    return step_params.grid_cell_size / max(dt, 1.0e-12);
+}
+
 // Raw per-block particle histogram for THIS substep -- see grid_update.wgsl's binding.
 @group(0) @binding(6)  var<storage, read_write> block_counts:            array<atomic<u32>, NUM_BLOCKS>;
 @group(0) @binding(8)  var<storage, read_write> active_block_ids:        array<u32, NUM_BLOCKS>;
@@ -394,7 +415,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     }
 
     let v_cm = total.momentum;
-    let v_grip = clamp_speed(grip.momentum / grip_mass + step_params.gravity * step_params.dt, step_params.vel_limit);
+    let v_grip = clamp_speed(grip.momentum / grip_mass + step_params.gravity * substep_dt(), substep_vel_limit(substep_dt()));
 
     let node_pos = vec2<f32>(f32(cx), f32(cy));
     var local_points: array<vec4<f32>, 128>;
@@ -412,7 +433,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         // resolve nothing at this node (matches CPU's own "no confident normal"
         // branch: both fields keep their own velocities, total-momentum-consistent).
         resolved_grip_v[idx] = v_grip;
-        resolved_rest_v[idx] = clamp_speed((v_cm * total.mass - v_grip * grip_mass) / rest_mass, step_params.vel_limit);
+        resolved_rest_v[idx] = clamp_speed((v_cm * total.mass - v_grip * grip_mass) / rest_mass, substep_vel_limit(substep_dt()));
         return;
     }
 
@@ -449,9 +470,9 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         }
     }
 
-    let v_grip_new = clamp_speed(v_cm + v_rel, step_params.vel_limit);
+    let v_grip_new = clamp_speed(v_cm + v_rel, substep_vel_limit(substep_dt()));
     let total_momentum = v_cm * total.mass;
-    let v_rest_new = clamp_speed((total_momentum - v_grip_new * grip_mass) / rest_mass, step_params.vel_limit);
+    let v_rest_new = clamp_speed((total_momentum - v_grip_new * grip_mass) / rest_mass, substep_vel_limit(substep_dt()));
 
     resolved_grip_v[idx] = v_grip_new;
     resolved_rest_v[idx] = v_rest_new;
@@ -481,6 +502,9 @@ fn resolve_contact_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
+    // The frame's time is already fully advanced -- this encoded substep is spare
+    // capacity the CPU could not size exactly in advance (see adaptive_cfl.wgsl).
+    if substep_dt() <= 0.0 { return; }
     var block: u32;
     if wg_id.x < NUM_BLOCKS {
         if wg_id.x >= atomicLoad(&active_block_count) { return; }

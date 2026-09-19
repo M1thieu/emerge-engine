@@ -215,7 +215,7 @@ const PROFILE_PASS_LABELS: &[&str] = &[
     "grid_update",
     "resolve_contact",
     "g2p_update (gather+update+forces) / g2p_asflip_fused",
-    "force_fields (ASFLIP only)",
+    "force_fields (ASFLIP only) / cfl_commit",
 ];
 
 struct GpuProfiling {

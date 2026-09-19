@@ -5,13 +5,13 @@ use crate::solver::config::SimConfig;
 
 /// Per-substep solver constants uploaded to the GPU uniform buffer before each substep.
 ///
-/// 48 bytes, 16-byte aligned -- satisfies WGSL uniform binding requirements.
+/// 64 bytes, 16-byte aligned -- satisfies WGSL uniform binding requirements.
 /// Fields mirror `struct StepParams` in every WGSL shader exactly (same offsets, same types).
 ///
 /// All values come from `SimConfig` or are computed from it -- no hardcoded physics here.
 /// Uniform data uploaded once per GPU substep.
 ///
-/// Layout (48 bytes, 16-byte aligned -- WGSL uniform binding requirement):
+/// Layout (64 bytes, 16-byte aligned -- WGSL uniform binding requirement):
 ///   offset  0: grid_res       u32
 ///   offset  4: particle_count u32
 ///   offset  8: dt             f32
@@ -34,7 +34,9 @@ use crate::solver::config::SimConfig;
 ///                             grid velocity, and lets `resolve_contact`/`gather_contact_
 ///                             points` be skipped entirely, for every scene that never
 ///                             uses multi-field contact.
-///                             = 48 bytes, 16-byte aligned ✓
+///                             + cfl_coefficient/material_cfl_coefficient/min_dt/dt_cap
+///                             (the GPU's own per-substep CFL, see adaptive_cfl.wgsl)
+///                             = 64 bytes, 16-byte aligned ✓
 ///
 /// `gravity: Vec2` replaces the old `gravity: f32` + `_pad1: u32` pair --
 /// same byte count, no layout change for other fields.
@@ -62,6 +64,17 @@ pub struct GpuStepParams {
     /// True (nonzero) iff any particle anywhere has `contact_group != 0` this frame --
     /// see this field's doc in the layout comment above.
     pub contact_active: u32,
+    /// `SimConfig::cfl_coefficient` -- the GPU re-derives each substep's own CFL bound
+    /// from the post-update particle state (see `adaptive_cfl.wgsl`), so it needs the
+    /// same coefficients the CPU scan uses.
+    pub cfl_coefficient: f32,
+    /// `SimConfig::material_cfl_coefficient` -- see `cfl_coefficient`.
+    pub material_cfl_coefficient: f32,
+    /// `SimConfig::min_dt` -- floor on the adaptive substep.
+    pub min_dt: f32,
+    /// The CPU scan's own frame-start substep size: the adaptive substep never goes
+    /// ABOVE it, only below, so the GPU can only tighten what the CPU already approved.
+    pub dt_cap: f32,
 }
 
 impl GpuStepParams {
@@ -83,8 +96,12 @@ impl GpuStepParams {
             contact_friction: config.contact_friction,
             grid_cell_size: config.grid_cell_size,
             contact_active: contact_active as u32,
+            cfl_coefficient: config.cfl_coefficient,
+            material_cfl_coefficient: config.material_cfl_coefficient,
+            min_dt: config.min_dt,
+            dt_cap: sub_dt,
         }
     }
 }
 
-const _: () = assert!(core::mem::size_of::<GpuStepParams>() == 48);
+const _: () = assert!(core::mem::size_of::<GpuStepParams>() == 64);

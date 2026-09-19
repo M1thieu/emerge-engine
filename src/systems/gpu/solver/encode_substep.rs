@@ -287,5 +287,17 @@ impl GpuSimulation {
                 pass.dispatch_workgroups(particle_wg, 1, 1);
             }
         }
+        // The GPU's own CFL, LAST in the substep: it folds the particles' post-update
+        // bounds (accumulated by `g2p_update`) into the NEXT substep's timestep, so every
+        // pass that consumes this substep's dt -- thermal diffusion and resource regrowth
+        // included -- must already have run. (Dispatching it earlier silently gave those
+        // two the next substep's dt, and zero on the frame's last substep: the thermal
+        // cooling test measured 95.5 where the analytical answer is 68.5.)
+        {
+            self.profile_stamp(pass, 8, false);
+            pass.set_pipeline(&self.pipelines.cfl_commit);
+            pass.dispatch_workgroups(1, 1, 1);
+            self.profile_stamp(pass, 8, true);
+        }
     }
 }

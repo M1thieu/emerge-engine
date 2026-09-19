@@ -123,7 +123,7 @@ fn apply_force_fields(pp: ptr<function, Particle>) -> bool {
     // loop (CPU).
     if p.pinned != 0u { return false; }
 
-    let dt = step_params.dt;
+    let dt = substep_dt();
 
     // force_fields.count == 0u is handled by the loop condition below (i < count
     // is immediately false) -- no need for an early return, since the velocity
@@ -293,8 +293,8 @@ fn apply_force_fields(pp: ptr<function, Particle>) -> bool {
 
     // Clamp velocity magnitude (same limit applied in g2p).
     let v_len = length(p.v);
-    if v_len > step_params.vel_limit && v_len > FF_NUM_FLOOR {
-        p.v = p.v * (step_params.vel_limit / v_len);
+    if v_len > substep_vel_limit(substep_dt()) && v_len > FF_NUM_FLOOR {
+        p.v = p.v * (substep_vel_limit(substep_dt()) / v_len);
     }
 
     // Sleep scoring -- mirrors src/solver/mod.rs (~lines 855-870) exactly, including the

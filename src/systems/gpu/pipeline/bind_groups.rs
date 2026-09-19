@@ -185,6 +185,10 @@ impl SimPipelines {
                     binding: 23,
                     resource: buffers.thermal_work.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 37,
+                    resource: buffers.adaptive_dt.as_entire_binding(),
+                },
             ],
         })
     }

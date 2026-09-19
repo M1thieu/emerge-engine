@@ -47,6 +47,20 @@ override BLOCK_THREADS_PER_DIM: u32 = 16u;
 
 @group(0) @binding(1)  var<storage, read_write> grid:                    array<Cell>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
+
+// This substep's timestep, decided on the GPU (see adaptive_cfl.wgsl). Zero means this
+// encoded substep is spare capacity and must do nothing.
+@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 4>;
+
+var<private> substep_dt_cache: f32 = -1.0;
+
+fn substep_dt() -> f32 {
+    if substep_dt_cache < 0.0 {
+        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
+    }
+    return substep_dt_cache;
+}
+
 @group(0) @binding(8)  var<storage, read_write> active_block_ids:        array<u32, NUM_BLOCKS>;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
@@ -83,6 +97,11 @@ fn grid_clear_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
+    // Spare encoded substeps (the frame's time is already advanced, see adaptive_cfl.wgsl)
+    // must leave the grid ALONE: p2g no longer scatters into it, so clearing here would
+    // hand the renderer -- and anything else reading `grid_buffer()` after the frame, like
+    // ColorMode::GridVolume -- an all-zero grid.
+    if substep_dt() <= 0.0 { return; }
     var block: u32;
     if wg_id.x < NUM_BLOCKS {
         if wg_id.x >= atomicLoad(&active_block_count) { return; }
