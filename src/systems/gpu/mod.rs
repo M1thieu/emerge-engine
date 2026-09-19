@@ -30,14 +30,16 @@ pub mod shaders {
     pub const GRID_CLEAR: &str = include_str!("shaders/grid_clear.wgsl");
     pub const P2G: &str = include_str!("shaders/p2g.wgsl");
     pub const GRID_UPDATE: &str = include_str!("shaders/grid_update.wgsl");
-    pub const G2P: &str = include_str!("shaders/g2p.wgsl");
     pub const PARTICLES_UPDATE: &str = include_str!("shaders/particles_update.wgsl");
+    pub const G2P_GATHER_INC: &str = include_str!("shaders/g2p_gather.inc.wgsl");
     pub const FORCE_FIELDS: &str = include_str!("shaders/force_fields.wgsl");
+    pub const FORCE_FIELDS_APPLY_INC: &str = include_str!("shaders/force_fields_apply.inc.wgsl");
     pub const APPLY_IMPULSES: &str = include_str!("shaders/apply_impulses.wgsl");
     pub const RESOLVE_CONTACT: &str = include_str!("shaders/resolve_contact.wgsl");
     pub const THERMAL: &str = include_str!("shaders/thermal.wgsl");
     pub const RESOURCE_FIELD: &str = include_str!("shaders/resource_field.wgsl");
     pub const G2P_ASFLIP_FUSED: &str = include_str!("shaders/g2p_asflip_fused.wgsl");
+    pub const FLUID_PRESSURE: &str = include_str!("shaders/fluid_pressure.wgsl");
 }
 
 #[cfg(feature = "gpu")]

@@ -68,10 +68,10 @@ pub(super) fn build_core_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
             // 9: active_block_count -- 1 atomic<u32>. Same pair as binding 8.
             storage_entry(9),
             // 10: active_block_ids_prev -- 256 u32. Snapshot of last substep's
-            // active_block_ids -- the one-substep grace period, see active_block_swap_main.
+            // active_block_ids -- the one-substep grace period, see active_block_swap_and_clear_main.
             storage_entry(10),
             // 11: active_block_count_prev -- 1 plain u32, not atomic (only ever written by
-            // active_block_swap_main's single lid.x==0u thread). Companion to binding 10.
+            // active_block_swap_and_clear_main's single lid.x==0u thread). Companion to binding 10.
             storage_entry(11),
         ],
     })
@@ -172,6 +172,20 @@ pub(super) fn build_resource_bind_group_layout(device: &wgpu::Device) -> wgpu::B
             // 29: asflip_snapshot -- grid_res² vec2<f32> pre-force velocity
             // snapshot, written by grid_update.wgsl, read by g2p_asflip_fused.wgsl.
             storage_entry(29),
+            // 32-36: real GPU port of the CPU-proven Chorin-style fluid
+            // incompressibility pressure projection (`fluid_pressure.wgsl`,
+            // see its own module doc for the full real algorithm and
+            // citations). Shares this group for the same bind-group-count
+            // economy reason as ASFLIP/resource regrowth above -- nothing
+            // thematically related, group 3 is simply the one with real
+            // storage-slot headroom (4 free of 8 before this addition,
+            // exactly used up by this feature). 31 is already taken by
+            // group 1's `material_mass_params`, so this starts at 32.
+            uniform_entry(32), // fluid_pressure_params
+            storage_entry(33), // fp_divergence
+            storage_entry(34), // fp_pressure_a
+            storage_entry(35), // fp_pressure_b
+            storage_entry(36), // fp_is_surface
         ],
     })
 }

@@ -30,7 +30,7 @@ struct StepParams {
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
-    _pad2:              u32, // 48 bytes -- 16-byte aligned for uniform binding ✓
+    contact_active:              u32, // 48 bytes -- 16-byte aligned for uniform binding ✓
 }
 
 // override, not a hardcoded literal -- must match particle_sort.wgsl's NUM_BLOCKS_PER_DIM
@@ -39,7 +39,11 @@ override NUM_BLOCKS_PER_DIM: u32;
 const NUM_BLOCKS: u32 = 256u; // NUM_BLOCKS_PER_DIM² -- array sizes can't be override-derived
 // Thread-grid covering one block, per workgroup -- see the grid-stride loop below for why a
 // fixed-size workgroup still correctly covers a block whose real cell range is larger.
-const BLOCK_THREADS_PER_DIM: u32 = 16u;
+// Threads per workgroup side -- set at pipeline creation to min(16, cells per block
+// side): at grid_res=64 a block is 4x4 cells, and a 16x16 workgroup left 240 of its
+// 256 threads idle on every one of up to 512 dispatched workgroups. The grid-stride
+// loops below still cover blocks larger than this.
+override BLOCK_THREADS_PER_DIM: u32 = 16u;
 
 @group(0) @binding(1)  var<storage, read_write> grid:                    array<Cell>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
@@ -72,7 +76,7 @@ const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
 // 0..NUM_BLOCKS index THIS substep's active_block_ids; slots NUM_BLOCKS..2*NUM_BLOCKS index
 // active_block_ids_prev (LAST substep's list, offset by NUM_BLOCKS) -- the one-substep grace
 // period that guarantees a block which just stopped being active still gets cleared one more
-// time. See active_block_swap_main in particle_sort.wgsl for why this exists. Most slots
+// time. See active_block_swap_and_clear_main in particle_sort.wgsl for why this exists. Most slots
 // beyond their list's real count do nothing at all.
 @compute @workgroup_size(BLOCK_THREADS_PER_DIM, BLOCK_THREADS_PER_DIM, 1)
 fn grid_clear_main(
@@ -114,9 +118,15 @@ fn grid_clear_main(
             grid[idx].momentum = vec2<f32>(0.0, 0.0);
             grid[idx].mass     = 0.0;
             grid[idx]._pad     = 0.0;
-            grip_grid[idx].momentum = vec2<f32>(0.0, 0.0);
-            grip_grid[idx].mass     = 0.0;
-            grip_grid[idx]._pad     = 0.0;
+            // The grip grid (multi-field contact) is only scattered into, decoded and
+            // read while some particle has contact_group != 0 (`contact_active`); outside
+            // that it is left untouched, and the active blocks get cleared here again
+            // before any scatter the substep contact turns back on.
+            if step_params.contact_active != 0u {
+                grip_grid[idx].momentum = vec2<f32>(0.0, 0.0);
+                grip_grid[idx].mass     = 0.0;
+                grip_grid[idx]._pad     = 0.0;
+            }
             if material_mass_params.enabled != 0u {
                 let mm_base = idx * MAX_RENDER_MATERIAL_SLOTS;
                 for (var s: u32 = 0u; s < MAX_RENDER_MATERIAL_SLOTS; s++) {

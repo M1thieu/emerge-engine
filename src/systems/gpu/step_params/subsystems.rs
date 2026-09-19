@@ -138,4 +138,23 @@ impl GpuMaterialMassParams {
     }
 }
 
+/// GPU mirror of `fluid_pressure.wgsl`'s own `FluidPressureParams` struct --
+/// field order and types must match exactly (WGSL uniform buffers use the
+/// same std140-style layout rules bytemuck's `Pod` derive already assumes
+/// elsewhere in this file). Real GPU port of the CPU-proven Chorin-style
+/// incompressibility pressure projection, see that shader's own module doc.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuFluidPressureParams {
+    /// Real reference fluid cell mass (`rest_density * spacing^2`, this
+    /// material's own grid units) -- Rust already knows this exactly from
+    /// the material/spawn setup, avoiding a GPU-side reduction pass purely
+    /// to recover what the CPU equivalent (`pressure.rs`'s own `mass_avg`)
+    /// computes analytically. Used only for the free-surface classification
+    /// threshold (`reference_cell_mass * 0.3`, matching CPU's own
+    /// `mass_avg * 0.3` convention).
+    pub reference_cell_mass: f32,
+    pub _pad: [f32; 3],
+}
+
 const _: () = assert!(core::mem::size_of::<GpuMaterialMassParams>() == 16);

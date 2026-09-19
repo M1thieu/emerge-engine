@@ -65,6 +65,11 @@ pub struct GpuSimulation {
     particle_capacity: usize,
     last_sub_dt: f32,
     last_substeps: usize,
+    /// One-frame-lagged max particle speed -- mirrors CPU's own
+    /// `Simulation::last_max_particle_speed` exactly (same convention, same
+    /// consumer: `SimConfig::fluid_near_wall_compression_mach_margin`'s
+    /// predictive near-wall CFL tightening, see `step_frame`'s own scan).
+    last_max_particle_speed: f32,
     frame_index: u64,
     /// `frame_index` at the most recent `spawn_region` call (0 = only the initial
     /// construction batch exists). Tracked so `step_frame`'s sleep-warmup window
@@ -117,6 +122,9 @@ pub struct GpuSimulation {
     /// Per-pass GPU timestamp profiling -- see `enable_profiling()`. None unless explicitly
     /// turned on; zero cost to every other code path when not in use.
     profiling: Option<GpuProfiling>,
+    /// Whether `profile_stamp` records the substep currently being encoded -- only the
+    /// frame's last one, so the per-stage timestamps are one coherent substep.
+    profile_this_substep: std::cell::Cell<bool>,
     /// One bind group per `step_params_pool` slot, built once and reused by every
     /// `step_frame()` call instead of being recreated per-substep-per-frame. At high
     /// substep counts, recreating thousands of bind groups every frame exhausts the
@@ -206,9 +214,8 @@ const PROFILE_PASS_LABELS: &[&str] = &[
     "gather_contact_points",
     "grid_update",
     "resolve_contact",
-    "g2p",
-    "particles_update",
-    "force_fields",
+    "g2p_update (gather+update+forces) / g2p_asflip_fused",
+    "force_fields (ASFLIP only)",
 ];
 
 struct GpuProfiling {
@@ -262,7 +269,8 @@ impl GpuSimulation {
         // it) so `enable_profiling()` can work later without requiring it everywhere --
         // hardware/backends that lack it fall back to empty, identical to before this line
         // existed.
-        let features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+        let features = adapter.features()
+            & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("emerge_gpu"),
@@ -378,7 +386,8 @@ impl GpuSimulation {
         buffers.upload_particles(&queue, &initialized);
         buffers.upload_materials(&queue, &material_params);
 
-        let pipelines = SimPipelines::new(&device);
+        let mut pipelines = SimPipelines::new(&device, config.grid_res);
+        pipelines.specialize_g2p_update(&device, registry.model_mask());
         // A zero-sized particle buffer (no initial particles -- e.g. LP constructs
         // empty, then adds terrain/water/creature via spawn_region) fails bind group
         // creation outright ("binding size is zero"). spawn_region already rebuilds
@@ -418,6 +427,7 @@ impl GpuSimulation {
             particle_capacity: particle_count,
             last_sub_dt: config.dt,
             last_substeps: 0,
+            last_max_particle_speed: 0.0,
             frame_index: 0,
             last_spawn_frame: 0,
             force_field_entries: Vec::new(),
@@ -431,6 +441,7 @@ impl GpuSimulation {
             readback_error_count: 0,
             device_lost: std::sync::Arc::new(std::sync::Mutex::new(None)),
             profiling: None,
+            profile_this_substep: std::cell::Cell::new(true),
             last_cpu_timings: (0.0, 0.0, 0.0, 0.0, 0.0),
             bind_group_pool,
             contact_bind_group,

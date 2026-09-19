@@ -21,9 +21,9 @@ use std::mem;
 
 use super::step_params::{
     ContactDebugParams, GpuAsflipParams, GpuDirectionalGripParams, GpuFieldsParams,
-    GpuImpulseParams, GpuMaterialMassParams, GpuResourceParams, GpuSleepWakeParams, GpuStepParams,
-    GpuThermalParams, MAX_CONTACT_POINTS_PER_BLOCK, MAX_RENDER_MATERIAL_SLOTS, NUM_BLOCKS,
-    NUM_CONTACT_BLOCKS,
+    GpuFluidPressureParams, GpuImpulseParams, GpuMaterialMassParams, GpuResourceParams,
+    GpuSleepWakeParams, GpuStepParams, GpuThermalParams, MAX_CONTACT_POINTS_PER_BLOCK,
+    MAX_RENDER_MATERIAL_SLOTS, NUM_BLOCKS, NUM_CONTACT_BLOCKS,
 };
 use crate::materials::MaterialParams;
 use crate::particle::Particle;
@@ -107,12 +107,12 @@ pub struct GpuBuffers {
     /// substep -- NUM_BLOCKS × u32, STORAGE. Without this, a block that stops being active
     /// never gets cleared again, since grid_clear only ever clears CURRENTLY active blocks --
     /// its last P2G contribution would sit there permanently until a particle wandered back
-    /// near it (see `active_block_swap_main`'s doc comment in `particle_sort.wgsl`).
+    /// near it (see `active_block_swap_and_clear_main`'s doc comment in `particle_sort.wgsl`).
     /// grid_clear processes the union of `active_block_ids` and this buffer, giving every
     /// block a one-substep grace period before being left alone.
     pub active_block_ids_prev: wgpu::Buffer,
     /// Companion to `active_block_ids_prev` -- 1 × u32, STORAGE. NOT atomic (only ever written
-    /// by the single-threaded `lid.x == 0u` branch of `active_block_swap_main`, read by
+    /// by the single-threaded `lid.x == 0u` branch of `active_block_swap_and_clear_main`, read by
     /// `grid_clear`), unlike `active_block_count` which needs atomics for concurrent
     /// `atomicAdd` from `particle_sort_compact_main`.
     pub active_block_count_prev: wgpu::Buffer,
@@ -236,6 +236,25 @@ pub struct GpuBuffers {
     /// `true` once `material_mass` has been grown to its real size -- mirrors
     /// `asflip_snapshot_grown`.
     pub material_mass_grown: bool,
+    /// Real GPU port of the CPU-proven fluid incompressibility pressure
+    /// projection (`fluid_pressure.wgsl`) -- `reference_cell_mass` for the
+    /// free-surface classification threshold. Always allocated (negligible
+    /// real size, see `fp_divergence`'s own doc), unlike ASFLIP/material_mass.
+    pub fluid_pressure_params: wgpu::Buffer,
+    /// Dense `grid_res²` divergence RHS, real size `grid_res² * 4` bytes --
+    /// same order of magnitude as `thermal_mass`, always allocated rather
+    /// than lazily grown (unlike `asflip_snapshot`, whose real concern was a
+    /// MAX_RENDER_MATERIAL_SLOTS-multiplied buffer, not applicable here).
+    pub fp_divergence: wgpu::Buffer,
+    /// Jacobi pressure iterate, buffer A of the ping-pong pair (see
+    /// `fluid_pressure.wgsl`'s own doc for why two entry points instead of a
+    /// runtime buffer-select flag).
+    pub fp_pressure_a: wgpu::Buffer,
+    /// Jacobi pressure iterate, buffer B of the ping-pong pair.
+    pub fp_pressure_b: wgpu::Buffer,
+    /// Dense `grid_res²` free-surface classification flag (`u32`, WGSL storage
+    /// buffers have no native `bool` array).
+    pub fp_is_surface: wgpu::Buffer,
 }
 
 /// `asflip_snapshot`'s pre-attach size -- large enough to satisfy wgpu's nonzero-buffer
@@ -483,6 +502,45 @@ impl GpuBuffers {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
 
+        // Fluid incompressibility pressure projection (GPU port, real
+        // Chorin-style Jacobi solve, see `fluid_pressure.wgsl`'s own doc).
+        // Same "always allocate at real grid_res² size, no lazy growth"
+        // pattern as thermal/resource above, not ASFLIP/material_mass's
+        // lazy-growth pattern -- these are ordinary single-scalar-per-cell
+        // fields (same order of magnitude as `thermal_mass`), not a
+        // MAX_RENDER_MATERIAL_SLOTS-multiplied buffer, so the real memory
+        // cost is negligible even for a scene that never enables this.
+        let fluid_pressure_params = make_buffer(
+            device,
+            "mpm_fluid_pressure_params",
+            mem::size_of::<GpuFluidPressureParams>() as u64,
+            wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        );
+        let fp_divergence = make_buffer(
+            device,
+            "mpm_fp_divergence",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let fp_pressure_a = make_buffer(
+            device,
+            "mpm_fp_pressure_a",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let fp_pressure_b = make_buffer(
+            device,
+            "mpm_fp_pressure_b",
+            thermal_scalar_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let fp_is_surface = make_buffer(
+            device,
+            "mpm_fp_is_surface",
+            thermal_scalar_bytes, // u32 and f32 are both 4 bytes -- same size
+            wgpu::BufferUsages::STORAGE,
+        );
+
         // ASFLIP (GPU port) -- own separate group/buffer, see field docs above.
         let asflip_params = make_buffer(
             device,
@@ -547,6 +605,11 @@ impl GpuBuffers {
             material_mass_params,
             material_mass,
             material_mass_grown: false,
+            fluid_pressure_params,
+            fp_divergence,
+            fp_pressure_a,
+            fp_pressure_b,
+            fp_is_surface,
         }
     }
 
@@ -651,6 +714,14 @@ impl GpuBuffers {
 
     pub fn upload_material_mass_params(&self, queue: &wgpu::Queue, params: &GpuMaterialMassParams) {
         queue.write_buffer(&self.material_mass_params, 0, bytemuck::bytes_of(params));
+    }
+
+    pub fn upload_fluid_pressure_params(
+        &self,
+        queue: &wgpu::Queue,
+        params: &GpuFluidPressureParams,
+    ) {
+        queue.write_buffer(&self.fluid_pressure_params, 0, bytemuck::bytes_of(params));
     }
 }
 

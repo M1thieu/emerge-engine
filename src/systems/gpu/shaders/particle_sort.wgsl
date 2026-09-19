@@ -58,7 +58,7 @@ struct StepParams {
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
-    _pad2:              u32,
+    contact_active:              u32,
 }
 
 // override, not a hardcoded literal -- single Rust-side source of truth in
@@ -102,7 +102,8 @@ fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
 }
 
 // ── Pass 0: swap (GPU sparse grid Phase 1 -- one-substep grace period) ────────
-// One workgroup, NUM_BLOCKS threads -- dispatched FIRST, before clear/count/compact. Copies
+// Done by `active_block_swap_and_clear_main` below, dispatched FIRST each substep, before
+// count/compact. Copies
 // THIS substep's about-to-be-stale active list into active_block_ids_prev/count_prev (the
 // snapshot grid_clear will also clear, in addition to whatever's freshly compacted below),
 // then resets active_block_count to 0 so compact starts from a clean slate.
@@ -114,30 +115,46 @@ fn block_index(pos: vec2<f32>, grid_res: u32) -> u32 {
 // buffers (this substep's list and last substep's), not one buffer reset in the same substep
 // it's used in -- a same-substep reset gives zero actual grace period, since the "previous"
 // state would already be gone by the time the NEXT substep's compact runs.
-@compute @workgroup_size(256, 1, 1)
-fn active_block_swap_main(@builtin(local_invocation_id) lid: vec3<u32>) {
-    active_block_ids_prev[lid.x] = active_block_ids[lid.x];
-    if lid.x == 0u {
-        active_block_count_prev = atomicLoad(&active_block_count);
-        atomicStore(&active_block_count, 0u);
-    }
-}
-
 // ── Pass 1: clear ─────────────────────────────────────────────────────────────
 // One workgroup, NUM_BLOCKS threads -- zeroes the per-block occupancy histogram before
 // counting. active_block_ids/count themselves were already handled by the swap pass above.
 @compute @workgroup_size(256, 1, 1)
 fn particle_sort_clear_main(@builtin(local_invocation_id) lid: vec3<u32>) {
-    atomicStore(&block_counts[lid.x], 0u);
-    // Multi-field contact (GPU port) -- see contact_point_counts binding doc. Grid-stride
-    // loop: NUM_CONTACT_BLOCKS (4096) is 16x this pass's own 256-thread workgroup, since
-    // the contact partition is dedicated/finer than this file's own NUM_BLOCKS.
+    clear_histograms(lid.x);
+}
+
+fn clear_histograms(t: u32) {
+    atomicStore(&block_counts[t], 0u);
+}
+
+// Multi-field contact (GPU port) -- see contact_point_counts' binding doc. Its own
+// dispatch, and its own entry point, because it must run EVERY substep (gather_contact_
+// points refills it every substep, and resolve_contact reads it), while the active-block
+// re-detection around it may be reused for several substeps. Only dispatched when some
+// particle actually has contact_group != 0. Grid-stride loop: NUM_CONTACT_BLOCKS (4096)
+// is 16x this workgroup, the contact partition being finer than this file's NUM_BLOCKS.
+@compute @workgroup_size(256, 1, 1)
+fn contact_counts_clear_main(@builtin(local_invocation_id) lid: vec3<u32>) {
     var i = lid.x;
     loop {
         if i >= NUM_CONTACT_BLOCKS { break; }
         atomicStore(&contact_point_counts[i], 0u);
         i += 256u;
     }
+}
+
+// ── Per-substep pass 0+1: swap + clear in one dispatch ───────────────────────
+// The per-substep sequence runs swap then clear back to back; they touch disjoint
+// buffers, so one single-workgroup dispatch does both (one fewer dispatch per substep --
+// on a small integrated GPU each dispatch has a fixed cost of several microseconds).
+@compute @workgroup_size(256, 1, 1)
+fn active_block_swap_and_clear_main(@builtin(local_invocation_id) lid: vec3<u32>) {
+    active_block_ids_prev[lid.x] = active_block_ids[lid.x];
+    if lid.x == 0u {
+        active_block_count_prev = atomicLoad(&active_block_count);
+        atomicStore(&active_block_count, 0u);
+    }
+    clear_histograms(lid.x);
 }
 
 // ── Pass 2: count ─────────────────────────────────────────────────────────────
@@ -167,11 +184,11 @@ fn particle_sort_count_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // own 3×3 reach at block granularity instead of cell granularity -- correct at any
 // grid_res/NUM_BLOCKS_PER_DIM ratio, not just ones where block_size happens to exceed 3.
 //
-// Starts from a clean slate every substep (active_block_swap_main already reset
+// Starts from a clean slate every substep (active_block_swap_and_clear_main already reset
 // active_block_count to 0 and preserved the old list in active_block_ids_prev) -- no
 // deduplication needed here, this pass only ever describes THIS substep's occupancy.
 // grid_clear separately processes active_block_ids_prev too, covering the one-substep grace
-// period -- see active_block_swap_main's doc comment for the full reasoning.
+// period -- see the swap pass's doc comment above for the full reasoning.
 @compute @workgroup_size(256, 1, 1)
 fn particle_sort_compact_main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let b = lid.x;

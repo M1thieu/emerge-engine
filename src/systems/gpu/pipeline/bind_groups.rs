@@ -228,6 +228,26 @@ impl SimPipelines {
                     binding: 29,
                     resource: buffers.asflip_snapshot.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 32,
+                    resource: buffers.fluid_pressure_params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 33,
+                    resource: buffers.fp_divergence.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 34,
+                    resource: buffers.fp_pressure_a.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 35,
+                    resource: buffers.fp_pressure_b.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 36,
+                    resource: buffers.fp_is_surface.as_entire_binding(),
+                },
             ],
         })
     }

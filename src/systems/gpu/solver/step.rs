@@ -7,14 +7,17 @@
 //! comments below).
 
 use super::super::step_params::{
-    GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams,
+    GpuFieldsParams, GpuImpulseParams, GpuSleepWakeParams, GpuStepParams, NUM_BLOCKS_PER_DIM,
 };
 use super::encode_substep::SubstepGates;
 use super::{GpuSimulation, WG_PARTICLES};
 
 use crate::particle::Particles;
 use crate::solver::config::SimConfig;
-use crate::solver::{affine_cfl_speed_contribution, cfl_bound};
+use crate::solver::{
+    affine_cfl_speed_contribution, cfl_bound, deformation_gradient_ode_dt_bound, is_near_wall,
+    shock_viscosity_dt_bound, single_particle_instability_dt_bound,
+};
 
 impl GpuSimulation {
     /// Advance one frame of simulation time (`config.dt`) using the GPU.
@@ -31,6 +34,11 @@ impl GpuSimulation {
         let total_start = std::time::Instant::now();
         let cfl_scan_start = total_start;
         let any_cpu = self.registry.any_needs_cpu_update();
+        // Materials can be registered/replaced after construction; keep the per-particle
+        // update pipeline specialized to the models actually present (no-op unless the
+        // set of models changed -- see `SimPipelines::specialize_g2p_update`).
+        self.pipelines
+            .specialize_g2p_update(&self.device, self.registry.model_mask());
 
         // Upload CPU → GPU only when positions/materials actually changed.
         // Impulses are now applied by a dedicated GPU compute pass (apply_impulses) that
@@ -65,28 +73,144 @@ impl GpuSimulation {
         // direct pass without building any SoA wrapper.
         let mut max_speed = 0.0f32;
         let mut min_mat_dt = self.config.dt;
+        let mut near_wall_gravity_scale = 1.0f32;
         let mut awake_count = 0usize;
-        for p in self.particles.iter() {
-            if p.sleeping != 0 {
-                continue;
+        // Real CPU/GPU parity fix (2026-09-16): CPU's own `choose_substep_dt`
+        // returns immediately when `adaptive_timestep` is off (exactly `config.dt`,
+        // one substep, zero scan cost) -- this GPU scan never had that early
+        // return at all, so `adaptive_timestep: false` was silently a no-op here.
+        // Found via a real regression: `gpu_and_cpu_shock_viscosity_match_under_
+        // forced_compression` (tests/gpu.rs) sets this flag specifically to force
+        // one identical substep on both backends for a controlled comparison --
+        // GPU was only ever "passing" by coincidentally landing on 1 substep from
+        // its OLD, incomplete CFL scan; once the real terms below were added, GPU
+        // correctly started recommending 2 substeps for that scene's forced
+        // compression, breaking the coincidence. Gating the whole scan here
+        // restores the real, intended parity: non-adaptive means exactly one
+        // substep of `config.dt`, unconditionally, matching CPU exactly.
+        if self.config.adaptive_timestep {
+            for p in self.particles.iter() {
+                if p.sleeping != 0 {
+                    continue;
+                }
+                awake_count += 1;
+                let grad_norm = (p.velocity_gradient.x_axis.length_squared()
+                    + p.velocity_gradient.y_axis.length_squared())
+                .sqrt();
+                let mut s = p.v.length();
+                if self.config.cfl_include_affine_speed {
+                    s += affine_cfl_speed_contribution(
+                        &p.velocity_gradient,
+                        self.config.grid_cell_size,
+                    );
+                }
+                max_speed = max_speed.max(s);
+
+                // Real, engine-wide CFL parity fix (2026-09-16): CPU's own
+                // `choose_substep_dt` (spacetime/solver/cfl.rs) has several real, cited
+                // per-particle stability terms this GPU scan never computed -- it only
+                // ever saw raw particle speed plus a material's REST-state acoustic
+                // bound. Confirmed live: a GPU-only fluid scene (byte-identical scene
+                // geometry/EOS to a CPU twin that stays stable) explodes on violent
+                // impact while `sub`/`cfl` both looked nominal -- these missing terms
+                // are exactly what CPU had that GPU didn't. Ported via the SAME shared
+                // functions CPU now also calls (single source of truth, no duplicated
+                // formula to drift) -- see each function's own doc for citations.
+                let owns_state = self.registry.owns_deformation_volume_state(p.material_id);
+                // Real, PREDICTIVE (not reactive) near-wall tightening for a strict
+                // fluid (`SimConfig::fluid_near_wall_cfl_scale`) -- mirrors CPU's own
+                // `is_near_wall` gate exactly, including its Mach-number-based
+                // compression-margin check (`fluid_near_wall_compression_mach_margin`)
+                // using this same one-frame-lagged `last_max_particle_speed` CPU uses.
+                let near_wall = self.config.fluid_near_wall_cfl_scale != 1.0
+                    && owns_state
+                    && is_near_wall(p.x, self.config.grid_res, self.config.boundary_thickness);
+                let material_cfl = if near_wall && {
+                    let j = p.volume / p.initial_volume;
+                    let threshold = match self.registry.rest_acoustic_c2(p.material_id) {
+                        Some(c2_rest) if c2_rest > f32::EPSILON => {
+                            let mach = self.last_max_particle_speed / c2_rest.sqrt();
+                            (mach * mach) * self.config.fluid_near_wall_compression_mach_margin
+                        }
+                        _ => self.config.fluid_near_wall_compression_threshold,
+                    };
+                    (j - 1.0).abs() > threshold
+                } {
+                    self.config.material_cfl_coefficient / self.config.fluid_near_wall_cfl_scale
+                } else {
+                    self.config.material_cfl_coefficient
+                };
+                if near_wall {
+                    near_wall_gravity_scale =
+                        near_wall_gravity_scale.max(self.config.fluid_near_wall_cfl_scale);
+                }
+
+                let mdt = self.registry.get(p.material_id).timestep_bound(
+                    p.density,
+                    p.hardening_scale,
+                    self.config.grid_cell_size,
+                    material_cfl,
+                    self.config.viscous_timestep_coefficient,
+                );
+                if mdt.is_finite() && mdt > 0.0 {
+                    min_mat_dt = min_mat_dt.min(mdt);
+                }
+
+                // Deformation-gradient ODE stability -- unconditional on material type,
+                // see the function's own doc.
+                let deformation_dt =
+                    deformation_gradient_ode_dt_bound(grad_norm, self.config.cfl_coefficient);
+                if deformation_dt.is_finite() && deformation_dt > 0.0 {
+                    min_mat_dt = min_mat_dt.min(deformation_dt);
+                }
+
+                // Von Neumann-Richtmyer shock-viscosity stability correction -- tightens
+                // dt on live compression rate, not just accumulated J drift.
+                if let Some(shock_dt) = shock_viscosity_dt_bound(
+                    grad_norm,
+                    owns_state,
+                    self.registry.rest_acoustic_c2(p.material_id),
+                    self.registry.get(p.material_id).params().eos_power,
+                    self.config.grid_cell_size,
+                    material_cfl,
+                ) {
+                    min_mat_dt = min_mat_dt.min(shock_dt);
+                }
+
+                // Sun, Shinar & Schroeder 2020 single-particle instability bound -- the
+                // exact isolated-particle feedback mechanism this scene's own runaway
+                // "hot potato" outliers (1 grid neighbor, |v| into the hundreds) match.
+                if owns_state {
+                    let rest_density = self.registry.get(p.material_id).params().rest_density;
+                    let j = p.volume / p.initial_volume;
+                    if let Some(single_particle_dt) = single_particle_instability_dt_bound(
+                        true,
+                        rest_density,
+                        j,
+                        self.registry.rest_acoustic_c2(p.material_id),
+                        self.config.grid_cell_size,
+                    ) {
+                        min_mat_dt = min_mat_dt.min(single_particle_dt);
+                    }
+                }
             }
-            awake_count += 1;
-            let mut s = p.v.length();
-            if self.config.cfl_include_affine_speed {
-                s +=
-                    affine_cfl_speed_contribution(&p.velocity_gradient, self.config.grid_cell_size);
+            self.last_max_particle_speed = max_speed;
+            // Real, standard "additional stability condition" for explicit integration
+            // under a body force (Bridson, "Fluid Simulation for Computer Graphics" ch.
+            // 3; Foster & Fedkiw 2001) -- see CPU's own `choose_substep_dt` tail for the
+            // full derivation. Ported here (was previously CPU-only): GPU fluids sit
+            // under the exact same gravity and the same at-rest gap this term closes.
+            let g = self.config.gravity.length();
+            if g > f32::EPSILON {
+                let gravity_dt = (self.config.cfl_coefficient * self.config.grid_cell_size
+                    / (g * near_wall_gravity_scale))
+                    .sqrt();
+                if gravity_dt.is_finite() && gravity_dt > 0.0 {
+                    min_mat_dt = min_mat_dt.min(gravity_dt);
+                }
             }
-            max_speed = max_speed.max(s);
-            let mdt = self.registry.get(p.material_id).timestep_bound(
-                p.density,
-                p.hardening_scale,
-                self.config.grid_cell_size,
-                self.config.material_cfl_coefficient,
-                self.config.viscous_timestep_coefficient,
-            );
-            if mdt.is_finite() && mdt > 0.0 {
-                min_mat_dt = min_mat_dt.min(mdt);
-            }
+        } else {
+            self.last_max_particle_speed = 0.0;
         }
         // If every particle is asleep AND something could actually disturb them this
         // frame, there's no awake velocity to base an estimate on -- choose_substep_dt
@@ -100,12 +224,13 @@ impl GpuSimulation {
         // otherwise a fully-settled scene would pay maximum substep cost forever, which
         // defeats sleep/wake's entire purpose.
         let might_wake_this_frame = !self.pending_impulses.is_empty();
-        let sub_dt_cfl =
-            if awake_count == 0 && self.config.sleep_threshold > 0.0 && might_wake_this_frame {
-                self.config.dt / self.config.max_substeps_per_step.max(1) as f32
-            } else {
-                cfl_bound(&self.config, max_speed, min_mat_dt, self.config.dt)
-            };
+        let sub_dt_cfl = if !self.config.adaptive_timestep {
+            self.config.dt
+        } else if awake_count == 0 && self.config.sleep_threshold > 0.0 && might_wake_this_frame {
+            self.config.dt / self.config.max_substeps_per_step.max(1) as f32
+        } else {
+            cfl_bound(&self.config, max_speed, min_mat_dt, self.config.dt)
+        };
         let mut sub_dts: Vec<f32> = Vec::with_capacity(self.config.max_substeps_per_step);
         {
             let mut remaining = self.config.dt;
@@ -335,26 +460,51 @@ impl GpuSimulation {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Substeps are batched into multiple command buffers/submits instead of one --
-        // stiff-terrain scenes routinely need several hundred substeps in a single frame,
-        // and encoding them all into one command buffer exhausts this GPU backend's
-        // descriptor allocator. 200 substeps in one submit reliably OOMs, 64 is stable
-        // (matches `max_substeps_per_step`'s doc) -- a per-submit resource ceiling on the
-        // backend/driver actually exercised, not derived from any GPU spec, so a
-        // different backend may need a different number. Blocking between chunks is
-        // required too -- unblocked back-to-back submits queue up faster than the GPU
-        // drains them and hit the same OOM even with batching. Only blocks BETWEEN
-        // chunks, never after the last one -- typical scenes (well under 64
-        // substeps/frame) produce exactly one chunk and pay zero extra sync cost.
-        const SUBSTEP_BATCH_SIZE: usize = 64;
+        // Substeps are submitted in small batches as soon as they are encoded, so the
+        // GPU starts on the first ones while the CPU is still encoding the rest.
+        // Measured (dam break, 61 substeps, one batch per frame): the GPU sat idle for
+        // the whole ~23ms encode, and the first substeps after that idle gap ran far
+        // slower than the last ones (last 1-4 substeps at their profiled ~0.7ms each,
+        // the frame as a whole at ~1.2ms/substep) -- an integrated GPU drops its clock
+        // while idle and ramps back up only under sustained load.
+        const SUBSTEP_SUBMIT_BATCH: usize = 8;
+        // Blocking every `SUBSTEP_BLOCK_EVERY` substeps is still required: encoding a
+        // few hundred substeps without letting the GPU drain exhausts this backend's
+        // descriptor allocator (200 in one submit reliably OOMs, 64 is stable -- a
+        // per-backend/driver ceiling, not from any GPU spec). Typical scenes (under 64
+        // substeps/frame) never block.
+        const SUBSTEP_BLOCK_EVERY: usize = 64;
         let mut chunks = bind_groups[..sub_dts.len()]
-            .chunks(SUBSTEP_BATCH_SIZE)
+            .chunks(SUBSTEP_SUBMIT_BATCH)
             .peekable();
         // Split pure CPU command-building time from GPU-completion wait time --
         // "encode_ns" previously bundled both under one name, hiding whether a slow
         // step_frame() was a CPU-side encoding problem or genuinely GPU-execution-bound.
+        // How often the per-substep active-block re-detection has to run. A block is
+        // marked active when it OR ANY of its 8 neighbours holds particles
+        // (`particle_sort_compact_main`), so a particle's 3x3 scatter stencil stays inside
+        // the marked region until it has travelled about a block minus the stencil reach.
+        // Per substep a particle moves at most `max_speed * sub_dt` (and never more than
+        // one cell, since `g2p` clamps to `vel_limit = grid_cell_size / sub_dt`), so the
+        // list can safely be reused for that many substeps. The acoustic CFL makes this a
+        // large margin for a stiff fluid -- 0.03 cells per substep on the dam break, where
+        // re-detecting every substep cost ~20us of a ~170us substep -- but a slow, coarse
+        // scene gets 1 and behaves exactly as before.
+        let block_size_cells = self.config.grid_res.div_ceil(NUM_BLOCKS_PER_DIM) as f32;
+        let margin_cells = (block_size_cells - 1.5).max(0.5);
+        // 4x headroom on the frame-start max speed for anything that accelerates mid-frame
+        // (impacts); the per-substep displacement is capped at one cell regardless.
+        const SPEED_HEADROOM: f32 = 4.0;
+        let per_substep_travel = (max_speed * SPEED_HEADROOM * sub_dt_cfl)
+            .clamp(f32::MIN_POSITIVE, self.config.grid_cell_size);
+        let active_block_refresh_interval =
+            ((margin_cells / per_substep_travel) as usize).clamp(1, SUBSTEP_SUBMIT_BATCH);
+
         let mut pure_encode_ns = 0.0f32;
         let mut wait_ns = 0.0f32;
+        let mut first_chunk = true;
+        let mut since_block = 0usize;
+        let mut substep_counter = 0usize;
         while let Some(chunk) = chunks.next() {
             let chunk_encode_start = std::time::Instant::now();
             let mut sub_encoder =
@@ -362,26 +512,60 @@ impl GpuSimulation {
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("mpm_substep_batch"),
                     });
-            for bg in chunk {
-                self.encode_substep(
-                    &mut sub_encoder,
-                    bg,
-                    particle_wg,
-                    SubstepGates {
-                        force_fields_needed,
-                        contact_active,
-                        thermal_active,
-                        resource_active,
-                        asflip_active,
-                    },
-                );
+            if first_chunk {
+                self.profile_frame_marker(&mut sub_encoder, false);
+                first_chunk = false;
+            }
+            {
+                let mut pass = sub_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("mpm_substeps"),
+                    timestamp_writes: None,
+                });
+                // Groups 1-3 never change between substeps; group 0 (the substep's
+                // `StepParams` slot) is set by `encode_substep`.
+                pass.set_bind_group(1, &self.contact_bind_group, &[]);
+                pass.set_bind_group(2, &self.thermal_bind_group, &[]);
+                pass.set_bind_group(3, &self.resource_bind_group, &[]);
+                for bg in chunk {
+                    let refresh_active_blocks =
+                        substep_counter % active_block_refresh_interval == 0;
+                    substep_counter += 1;
+                    self.profile_this_substep
+                        .set(substep_counter == sub_dts.len());
+                    self.encode_substep(
+                        &mut pass,
+                        bg,
+                        particle_wg,
+                        SubstepGates {
+                            force_fields_needed,
+                            contact_active,
+                            thermal_active,
+                            resource_active,
+                            asflip_active,
+                            // Reuses the SAME `SimConfig` field CPU's own
+                            // `step.rs` already gates on -- real, automatic
+                            // parity, not a separate GPU-only flag. Default 0
+                            // (every existing scene, CPU or GPU) is a true no-op
+                            // (see `fluid_pressure_iterations > 0` gate in
+                            // `encode_substep.rs`).
+                            fluid_pressure_iterations: self.config.fluid_pressure_iterations,
+                            refresh_active_blocks,
+                        },
+                    );
+                }
+            }
+            let last_chunk = chunks.peek().is_none();
+            if last_chunk {
+                self.profile_frame_marker(&mut sub_encoder, true);
             }
             self.queue.submit(std::iter::once(sub_encoder.finish()));
             pure_encode_ns += chunk_encode_start.elapsed().as_secs_f32() * 1.0e9;
-            if chunks.peek().is_some() {
+            since_block += chunk.len();
+            if !last_chunk && since_block >= SUBSTEP_BLOCK_EVERY {
                 let wait_start = std::time::Instant::now();
                 self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
                 wait_ns += wait_start.elapsed().as_secs_f32() * 1.0e9;
+                since_block = 0;
             }
         }
         let encode_ns = pure_encode_ns;

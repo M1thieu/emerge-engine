@@ -64,11 +64,16 @@ const MAX_LOCAL_POINTS:     u32 = 128u;
 override NUM_CONTACT_BLOCKS_PER_DIM: u32;
 override NUM_BLOCKS_PER_DIM: u32;
 const NUM_BLOCKS: u32 = 256u;
-const BLOCK_THREADS_PER_DIM: u32 = 16u;
+// Set at pipeline creation to min(16, cells per block side) -- same sizing as
+// grid_update.wgsl's BLOCK_THREADS_PER_DIM (see its doc); the grid-stride loops below
+// cover larger blocks.
+override BLOCK_THREADS_PER_DIM: u32 = 16u;
 const MIN_MASS_FRACTION: f32 = 1.0e-6;
 
 @group(0) @binding(1)  var<storage, read_write> grid:                    array<Cell>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
+// Raw per-block particle histogram for THIS substep -- see grid_update.wgsl's binding.
+@group(0) @binding(6)  var<storage, read_write> block_counts:            array<atomic<u32>, NUM_BLOCKS>;
 @group(0) @binding(8)  var<storage, read_write> active_block_ids:        array<u32, NUM_BLOCKS>;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
@@ -289,7 +294,24 @@ fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, 
                 if n >= MAX_LOCAL_POINTS { return n; }
                 let pt = contact_points[base + i];
                 let rel = pt.xy - node_pos;
-                if abs(rel.x) < 1.5 && abs(rel.y) < 1.5 {
+                // Real, confirmed-via-derivation fix (2026-09-15): CPU's exact
+                // port (`Grid::add_contact_point`, via `gather_contact_point_
+                // cloud`) includes a particle at every one of the 3x3 cells
+                // `base_cell + {-1,0,1}`, where `base_cell = floor(position)`
+                // -- so a particle's real distance from an included query node
+                // can approach (not reach) 2.0 grid units (e.g. position at
+                // `base_cell + 0.999`, node at `base_cell - 1`). The former
+                // `< 1.5` bound here was TIGHTER than that true reach and,
+                // for a regular particle lattice (this bug's own repro used
+                // `spacing=0.5`), excluded points in a spatially CONSISTENT
+                // (not random-noise) pattern -- a real, measured cause of the
+                // tilted contact-normal fit behind
+                // `gpu_multi_field_contact_produces_real_coulomb_slip_and_stick`'s
+                // failure (mean v_x went NEGATIVE at friction=0, not just
+                // "stuck"). `< 2.0` matches CPU's true worst-case reach
+                // exactly (a continuous position can approach but never equal
+                // 2.0 here).
+                if abs(rel.x) < 2.0 && abs(rel.y) < 2.0 {
                     (*out_points)[n] = pt;
                     n++;
                 }
@@ -435,6 +457,25 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     resolved_rest_v[idx] = v_rest_new;
 }
 
+// Same occupancy rule as particle_sort_compact_main, which built this substep's
+// active_block_ids from these exact counts.
+fn in_current_active_list(block: u32) -> bool {
+    let bx = i32(block % NUM_BLOCKS_PER_DIM);
+    let by = i32(block / NUM_BLOCKS_PER_DIM);
+    for (var dy: i32 = -1; dy <= 1; dy++) {
+        let ny = by + dy;
+        if ny < 0 || ny >= i32(NUM_BLOCKS_PER_DIM) { continue; }
+        for (var dx: i32 = -1; dx <= 1; dx++) {
+            let nx = bx + dx;
+            if nx < 0 || nx >= i32(NUM_BLOCKS_PER_DIM) { continue; }
+            if atomicLoad(&block_counts[u32(ny) * NUM_BLOCKS_PER_DIM + u32(nx)]) > 0u {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 @compute @workgroup_size(BLOCK_THREADS_PER_DIM, BLOCK_THREADS_PER_DIM, 1)
 fn resolve_contact_main(
     @builtin(workgroup_id) wg_id: vec3<u32>,
@@ -448,10 +489,9 @@ fn resolve_contact_main(
         let slot = wg_id.x - NUM_BLOCKS;
         if slot >= active_block_count_prev { return; }
         block = active_block_ids_prev[slot];
-        let current_count = atomicLoad(&active_block_count);
-        for (var i: u32 = 0u; i < current_count; i++) {
-            if active_block_ids[i] == block { return; }
-        }
+        // Skip blocks also in the current list (its own workgroup handles them) --
+        // O(9) occupancy check, see grid_update.wgsl's `in_current_active_list`.
+        if in_current_active_list(block) { return; }
     }
     let res = step_params.grid_res;
 

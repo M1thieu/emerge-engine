@@ -5,12 +5,44 @@
 //! `step.rs` per that file's own "highest-risk, done last and alone" doc.
 
 use super::super::step_params::{
-    GpuAsflipParams, GpuFieldEntry, GpuMaterialMassParams, GpuResourceParams, GpuThermalParams,
-    MAX_FORCE_FIELDS,
+    GpuAsflipParams, GpuFieldEntry, GpuFluidPressureParams, GpuMaterialMassParams,
+    GpuResourceParams, GpuThermalParams, MAX_FORCE_FIELDS,
 };
 use super::GpuSimulation;
 
 impl GpuSimulation {
+    /// Real GPU port of the CPU-proven fluid incompressibility pressure
+    /// projection (`fluid_pressure.wgsl`) -- sets the reference fluid cell
+    /// mass its free-surface classification threshold uses
+    /// (`reference_cell_mass * 0.3`, matching CPU's own `mass_avg * 0.3`).
+    ///
+    /// Real, disclosed approximation vs. CPU: CPU measures `mass_avg` LIVE
+    /// every call (a real reduction over the actual scattered grid state,
+    /// `pressure.rs`'s own `self.dirty` average). Recovering that exactly on
+    /// GPU would need an extra reduction pass this feature doesn't otherwise
+    /// require. Using the fluid material's own real `rest_density` directly
+    /// instead (pass `water.rest_density` here, the same value already
+    /// known at scene-construction time) is a reasonable, disclosed stand-in
+    /// for the SAME purpose (distinguishing "real fluid" from "empty/noise"
+    /// cells) -- both are the same real quantity at a cell fully inside a
+    /// uniform-density fluid body (`dx=1` in this engine's grid-unit
+    /// convention, so a rest cell's mass IS `rest_density`), and the
+    /// classification only needs the right ORDER of magnitude, not an exact
+    /// live average.
+    ///
+    /// This does nothing by itself -- dispatch only happens when
+    /// `SimConfig::fluid_pressure_iterations > 0` (see
+    /// `SubstepGates::fluid_pressure_iterations` in `encode_substep.rs`).
+    /// Call this BEFORE the first `step_frame()` that has iterations > 0.
+    pub fn set_fluid_pressure_reference_mass(&mut self, reference_cell_mass: f32) {
+        let params = GpuFluidPressureParams {
+            reference_cell_mass,
+            _pad: [0.0; 3],
+        };
+        self.buffers
+            .upload_fluid_pressure_params(&self.queue, &params);
+    }
+
     /// Add a non-uniform body force field for the GPU path.
     /// Entries are uploaded and dispatched every substep until cleared.
     /// Panics if `MAX_FORCE_FIELDS` is exceeded.

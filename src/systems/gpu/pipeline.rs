@@ -67,6 +67,16 @@
 ///   binding 28: asflip_params  -- uniform (GpuAsflipParams, 16 bytes)
 ///   binding 29: asflip_snapshot -- storage read_write (grid_res² vec2<f32> pre-force
 ///                                velocity snapshot, see buffers.rs doc)
+///   binding 32: fluid_pressure_params -- uniform (FluidPressureParams, 16 bytes,
+///                                GPU port of the CPU-proven incompressibility
+///                                pressure projection, `fluid_pressure.wgsl`)
+///   binding 33: fp_divergence   -- storage read_write (grid_res² f32)
+///   binding 34: fp_pressure_a   -- storage read_write (grid_res² f32, Jacobi ping-pong)
+///   binding 35: fp_pressure_b   -- storage read_write (grid_res² f32, Jacobi ping-pong)
+///   binding 36: fp_is_surface   -- storage read_write (grid_res² u32, free-surface flag)
+///
+/// (binding 30/31 already used by group 1's `material_mass`/`material_mass_params`
+/// spillover -- this starts at 32, group 3 now at 8/8 storage slots, zero headroom left.)
 ///
 /// Passes that don't use a binding still share the same layout -- avoids rebinding.
 use super::buffers::GpuBuffers;
@@ -90,9 +100,10 @@ use layouts::{
 // See passes.rs's own doc.
 mod passes;
 use passes::{
-    build_asflip_pipeline, build_contact_resolve_pipelines, build_g2p_and_update_pipelines,
-    build_impulse_pipeline, build_p2g_and_grid_pipelines, build_resource_pipelines,
-    build_sort_pipelines, build_thermal_pipelines,
+    build_asflip_pipeline, build_contact_resolve_pipelines, build_fluid_pressure_pipelines,
+    build_force_fields_pipeline, build_g2p_update_pipeline, build_impulse_pipeline,
+    build_p2g_and_grid_pipelines, build_resource_pipelines, build_sort_pipelines,
+    build_thermal_pipelines,
 };
 
 /// All compiled compute pipelines for one GpuSimulation instance.
@@ -107,8 +118,10 @@ pub struct SimPipelines {
     pub particle_sort_scatter: wgpu::ComputePipeline,
     /// One-substep grace-period swap (snapshots active_block_ids/count into _prev, resets
     /// the current count to 0), dispatched FIRST each substep, before clear/count/compact --
-    /// see active_block_swap_main's doc comment in particle_sort.wgsl for why.
-    pub active_block_swap: wgpu::ComputePipeline,
+    /// see active_block_swap_and_clear_main's doc comment in particle_sort.wgsl for why.
+    pub active_block_swap_and_clear: wgpu::ComputePipeline,
+    /// Zeroes the per-block contact-point counters -- every substep, contact scenes only.
+    pub contact_counts_clear: wgpu::ComputePipeline,
     pub grid_clear: wgpu::ComputePipeline,
     pub p2g: wgpu::ComputePipeline,
     /// Multi-field contact (GPU port, first slice) -- populates `contact_points` from
@@ -117,11 +130,16 @@ pub struct SimPipelines {
     /// `gather_contact_points_main` doc for the full rationale.
     pub gather_contact_points: wgpu::ComputePipeline,
     pub grid_update: wgpu::ComputePipeline,
-    /// Gather-only: writes v + velocity_gradient. No F update or plasticity.
-    pub g2p: wgpu::ComputePipeline,
-    /// F update + all plasticity + volume/density + position + boundary (sorted access).
-    pub particles_update: wgpu::ComputePipeline,
-    /// Post-particles_update: applies non-uniform body forces (gravity wells, Coulomb, etc.).
+    /// Fused per-particle substep tail (sorted access): G2P gather, F update + all
+    /// plasticity + volume/density + position + boundary, then force fields and sleep/wake.
+    pub g2p_update: wgpu::ComputePipeline,
+    /// `MaterialRegistry::model_mask` `g2p_update` was specialized for (`u32::MAX` =
+    /// generic) -- see `specialize_g2p_update`.
+    g2p_update_models: u32,
+    /// Kept to rebuild `g2p_update` when the scene's material models change.
+    pipeline_layout: wgpu::PipelineLayout,
+    /// Standalone force fields + sleep/wake -- only after `g2p_asflip_fused`, which
+    /// replaces `g2p_update`'s gather+update but not its force-field stage.
     pub force_fields: wgpu::ComputePipeline,
     /// Apply velocity impulses directly on GPU particle buffer -- no CPU upload needed.
     pub apply_impulses: wgpu::ComputePipeline,
@@ -156,6 +174,16 @@ pub struct SimPipelines {
     /// survive from the gather stage to the position-write stage, and `Particle` has no
     /// spare capacity for a second stored velocity).
     pub g2p_asflip_fused: wgpu::ComputePipeline,
+    /// Real GPU port of the CPU-proven Chorin-style fluid incompressibility
+    /// pressure projection -- see `fluid_pressure.wgsl`'s own module doc.
+    /// ONLY dispatched once real contact-based switching logic invokes it
+    /// (not yet wired into `encode_substep.rs` as of this writing -- see the
+    /// real-time fluid pressure-projection plan's "REVISED PLAN" section for
+    /// the real remaining work).
+    pub fluid_pressure_setup: wgpu::ComputePipeline,
+    pub fluid_pressure_jacobi_a_to_b: wgpu::ComputePipeline,
+    pub fluid_pressure_jacobi_b_to_a: wgpu::ComputePipeline,
+    pub fluid_pressure_correct: wgpu::ComputePipeline,
     pub bind_group_layout: wgpu::BindGroupLayout,
     /// Group 1 -- contact subsystem, see the module doc comment above for why this is a
     /// second layout rather than more entries in `bind_group_layout`.
@@ -170,8 +198,27 @@ pub struct SimPipelines {
     pub impulse_bind_group_layout: wgpu::BindGroupLayout,
 }
 
+/// MAX_FORCE_FIELDS / MAX_SLEEP_WAKE_TAGS: loop-bound constants -- uses WGSL `override`
+/// (proper pipeline specialization), not a hardcoded literal in the shader.
+const FF_CONSTS: [(&str, f64); 2] = [
+    ("MAX_FORCE_FIELDS", MAX_FORCE_FIELDS as f64),
+    ("MAX_SLEEP_WAKE_TAGS", MAX_SLEEP_WAKE_TAGS as f64),
+];
+
 impl SimPipelines {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// Rebuilds `g2p_update` specialized to exactly the material models in `models`
+    /// (`MaterialRegistry::model_mask`). No-op when already built for that mask; the
+    /// rebuild (one shader compile) only happens when the registry gains or loses a model.
+    pub fn specialize_g2p_update(&mut self, device: &wgpu::Device, models: u32) {
+        if models == self.g2p_update_models {
+            return;
+        }
+        self.g2p_update =
+            build_g2p_update_pipeline(device, &self.pipeline_layout, &FF_CONSTS, models);
+        self.g2p_update_models = models;
+    }
+
+    pub fn new(device: &wgpu::Device, grid_res: usize) -> Self {
         let bind_group_layout = build_core_bind_group_layout(device);
         let contact_bind_group_layout = build_contact_bind_group_layout(device);
         let thermal_bind_group_layout = build_thermal_bind_group_layout(device);
@@ -188,12 +235,7 @@ impl SimPipelines {
             push_constant_ranges: &[],
         });
 
-        // MAX_FORCE_FIELDS / MAX_SLEEP_WAKE_TAGS: loop-bound constants -- uses WGSL
-        // `override` (proper pipeline specialization), not a hardcoded literal in the shader.
-        let ff_consts: &[(&str, f64)] = &[
-            ("MAX_FORCE_FIELDS", MAX_FORCE_FIELDS as f64),
-            ("MAX_SLEEP_WAKE_TAGS", MAX_SLEEP_WAKE_TAGS as f64),
-        ];
+        let ff_consts: &[(&str, f64)] = &FF_CONSTS;
 
         // NUM_BLOCKS_PER_DIM: GPU sparse grid Phase 1/2 -- single Rust-side source of truth,
         // shared by particle_sort's compaction pass and grid_clear/grid_update's block-guarded
@@ -208,7 +250,15 @@ impl SimPipelines {
             "NUM_CONTACT_BLOCKS_PER_DIM",
             NUM_CONTACT_BLOCKS_PER_DIM as f64,
         )];
-        // resolve_contact.wgsl declares BOTH overrides (its own NUM_BLOCKS_PER_DIM for
+        // grid_clear/grid_update/resolve_contact workgroup side: one thread per cell of a
+        // block, capped at 16 (their grid-stride loops cover bigger blocks) -- see
+        // BLOCK_THREADS_PER_DIM's doc in grid_update.wgsl.
+        let block_threads = grid_res.div_ceil(NUM_BLOCKS_PER_DIM).clamp(1, 16) as f64;
+        let grid_clear_consts: &[(&str, f64)] = &[
+            ("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64),
+            ("BLOCK_THREADS_PER_DIM", block_threads),
+        ];
+        // resolve_contact.wgsl declares BOTH block overrides (its own NUM_BLOCKS_PER_DIM for
         // resolve_contact_main's active-block iteration, plus NUM_CONTACT_BLOCKS_PER_DIM
         // for gather_local_points' contact-block scan) -- every pipeline built from that
         // module needs both supplied.
@@ -218,6 +268,7 @@ impl SimPipelines {
                 "NUM_CONTACT_BLOCKS_PER_DIM",
                 NUM_CONTACT_BLOCKS_PER_DIM as f64,
             ),
+            ("BLOCK_THREADS_PER_DIM", block_threads),
         ];
         // grid_update needs BOTH the force-field loop bound AND the block-dispatch constant
         // (Phase 2 -- see grid_update.wgsl doc comment).
@@ -225,13 +276,15 @@ impl SimPipelines {
             ("MAX_FORCE_FIELDS", MAX_FORCE_FIELDS as f64),
             ("MAX_SLEEP_WAKE_TAGS", MAX_SLEEP_WAKE_TAGS as f64),
             ("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64),
+            ("BLOCK_THREADS_PER_DIM", block_threads),
         ];
 
         let (
             particle_sort_clear,
             particle_sort_count,
             particle_sort_compact,
-            active_block_swap,
+            active_block_swap_and_clear,
+            contact_counts_clear,
             particle_sort_scan,
             particle_sort_scatter,
         ) = build_sort_pipelines(device, &pipeline_layout, block_consts);
@@ -239,13 +292,14 @@ impl SimPipelines {
         let (grid_clear, p2g, gather_contact_points, grid_update) = build_p2g_and_grid_pipelines(
             device,
             &pipeline_layout,
-            block_consts,
+            grid_clear_consts,
             contact_block_consts,
             grid_update_consts,
         );
 
-        let (g2p, particles_update, force_fields) =
-            build_g2p_and_update_pipelines(device, &pipeline_layout, ff_consts);
+        // Generic (every model compiled in) until `specialize_g2p_update` narrows it.
+        let g2p_update = build_g2p_update_pipeline(device, &pipeline_layout, ff_consts, u32::MAX);
+        let force_fields = build_force_fields_pipeline(device, &pipeline_layout, ff_consts);
 
         // ASFLIP (GPU port) -- replaces g2p+particles_update for a substep, only when
         // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's own doc for why this
@@ -266,19 +320,29 @@ impl SimPipelines {
         let (resource_clear, resource_p2g, resource_normalize_laplacian, resource_g2p) =
             build_resource_pipelines(device, &pipeline_layout);
 
+        // Fluid incompressibility pressure projection (GPU port) -- see field docs.
+        let (
+            fluid_pressure_setup,
+            fluid_pressure_jacobi_a_to_b,
+            fluid_pressure_jacobi_b_to_a,
+            fluid_pressure_correct,
+        ) = build_fluid_pressure_pipelines(device, &pipeline_layout);
+
         Self {
             particle_sort_clear,
             particle_sort_count,
             particle_sort_compact,
             particle_sort_scan,
             particle_sort_scatter,
-            active_block_swap,
+            active_block_swap_and_clear,
+            contact_counts_clear,
             grid_clear,
             p2g,
             gather_contact_points,
             grid_update,
-            g2p,
-            particles_update,
+            g2p_update,
+            g2p_update_models: u32::MAX,
+            pipeline_layout: pipeline_layout.clone(),
             force_fields,
             apply_impulses,
             debug_fit_normal,
@@ -292,6 +356,10 @@ impl SimPipelines {
             resource_normalize_laplacian,
             resource_g2p,
             g2p_asflip_fused,
+            fluid_pressure_setup,
+            fluid_pressure_jacobi_a_to_b,
+            fluid_pressure_jacobi_b_to_a,
+            fluid_pressure_correct,
             bind_group_layout,
             contact_bind_group_layout,
             thermal_bind_group_layout,
