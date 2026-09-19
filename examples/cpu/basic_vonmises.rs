@@ -45,7 +45,7 @@ mod gui_common;
 /// and MIDDLE blobs settling while the RIGHT one keeps bouncing IS the demo:
 /// plasticity as real, physical, mechanical damping, not a numerical crutch.
 ///
-///   LMB push  RMB pull  R reset  Q quit
+///   LMB push  RMB pull  V toggle real stress field  R reset  Q quit
 ///   cargo run --example basic_vonmises --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{SimConfig, Simulation, SlipBoundary, SpawnRegion, VonMisesMaterial};
@@ -251,6 +251,14 @@ struct State {
     fps_frames: u64,
     last_fps: f32,
     capture: Option<CaptureState>,
+    // Real per-material von Mises equivalent stress field (`ColorMode::
+    // ByStress`, wired here 2026-09-15 -- see `MaterialRegistry::
+    // von_mises_stress_field`'s own doc for the formula). Toggled with V:
+    // this is the ideal place to show it, since the whole point of this
+    // scene IS watching where/when a material actually crosses its own
+    // yield surface -- the raw stress field makes that mechanism visible
+    // directly instead of only inferring it from shape change afterward.
+    show_stress: bool,
 }
 
 impl State {
@@ -329,7 +337,7 @@ impl State {
         });
 
         println!(
-            "basic_vonmises: {} particles (3 blobs: soft/hardening/stiff)  |  LMB push  RMB pull  R reset  Q quit",
+            "basic_vonmises: {} particles (3 blobs: soft/hardening/stiff)  |  LMB push  RMB pull  V toggle real stress field  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -346,6 +354,7 @@ impl State {
             fps_frames: 0,
             last_fps: 0.0,
             capture,
+            show_stress: false,
         }
     }
 
@@ -469,6 +478,23 @@ impl State {
             self.fps_frames = 0;
         }
 
+        if self.show_stress {
+            // Real, generic per-material von Mises equivalent stress (von
+            // Mises 1913) -- computed fresh every frame from each
+            // particle's OWN material's `kirchhoff_stress`, not a cached or
+            // approximated value. Scale is real, not guessed: 1/yield_stress
+            // of the shared soft/hardening blobs (MU*0.01, the two that
+            // actually visibly yield in this scene), so the heat colormap
+            // naturally saturates right around real yield onset -- the
+            // exact threshold this material's own plasticity model uses.
+            let stress = self
+                .sim
+                .materials()
+                .von_mises_stress_field(self.sim.particles());
+            self.renderer.set_stress_field(stress);
+            self.renderer.set_stress_scale(1.0 / (MU * 0.01));
+        }
+
         let output = match self.gfx.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => return,
@@ -554,7 +580,7 @@ impl State {
                     ui.label("Right = stiff/near-elastic, keeps bouncing");
                     ui.label("Color = ByVolume: cool = compressed, warm = stretched");
                     ui.separator();
-                    ui.label("LMB push  RMB pull  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  V toggle real stress field  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -625,6 +651,15 @@ impl ApplicationHandler for App {
                     KeyCode::KeyR if pressed => {
                         s.reset();
                         println!("reset");
+                    }
+                    KeyCode::KeyV if pressed => {
+                        s.show_stress = !s.show_stress;
+                        s.renderer.set_color_mode(if s.show_stress {
+                            ColorMode::ByStress
+                        } else {
+                            ColorMode::ByPhysics
+                        });
+                        println!("stress field {}", if s.show_stress { "ON" } else { "off" });
                     }
                     _ => {}
                 }

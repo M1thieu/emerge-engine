@@ -30,6 +30,21 @@ pub(super) struct GridVolumeParams {
 }
 const _: () = assert!(mem::size_of::<GridVolumeParams>() == 48);
 
+/// Bundles `render_gpu`'s own args -- same real precedent as `GridVolumeSource`
+/// below and `spacetime::transfer::P2GParticleState` (a struct instead of a
+/// suppressed argument-count lint). `interp_alpha` was the 8th argument that
+/// tripped `clippy::too_many_arguments`; grouping it with the other
+/// already-together-traveling per-call params fixes the root cause instead of
+/// `#[allow]`ing it.
+pub struct GpuRenderParams<'a> {
+    pub particle_buf: &'a wgpu::Buffer,
+    pub particle_count: usize,
+    pub output_view: &'a wgpu::TextureView,
+    pub clear: bool,
+    /// See `RenderConfig::interp_alpha`'s own doc.
+    pub interp_alpha: f32,
+}
+
 /// Bundles `render_grid_volume`'s buffer args -- same real precedent as
 /// `spacetime::transfer::P2GParticleState` (a struct instead of a suppressed
 /// argument-count lint).
@@ -70,9 +85,40 @@ pub(super) struct RenderConfig {
     pub(super) mode: u32,
     pub(super) particle_count: u32,
     pub(super) vel_scale: f32,
-    pub(super) _pad: u32,
+    /// Render-time position blend factor for the "Fix Your Timestep" (Gaffer
+    /// 2004) GPU interpolation path -- `mix(prev_positions[id], p.x,
+    /// interp_alpha)` in `prep_instances.wgsl`. `1.0` (the CPU-path
+    /// `basic_fluids.rs`/`snake_on_terrain.rs` convention when no snapshot has
+    /// been taken) means "use the current position unblended," byte-identical
+    /// to this field's former role as unused padding. Real fix for the
+    /// "sudden acceleration" symptom root-caused 2026-09-15: every GPU demo
+    /// already runs `FixedStepController` real-time-decoupled stepping but
+    /// none interpolated the leftover fractional step, so uneven real
+    /// per-step cost showed up as uneven position jumps on screen.
+    pub(super) interp_alpha: f32,
 }
 const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
+
+/// `snapshot_positions.wgsl`'s own uniform -- just the active particle count,
+/// so the extraction pass can bounds-check the same way `prep_instances.wgsl`
+/// already does via `RenderConfig::particle_count` (a separate small uniform
+/// rather than reusing that buffer: the snapshot runs BEFORE `render_gpu`
+/// writes `RenderConfig` for the frame, so sharing it would create a fragile
+/// ordering dependency for no real benefit -- 16 bytes is the standard
+/// minimum-uniform-size convention already used by every buffer in this file).
+/// `_pad` MUST stay three plain `u32`s, not `[u32; 3]` mirrored as WGSL
+/// `vec3<u32>` -- confirmed via a real runtime wgpu validation panic ("size 16
+/// where the shader expects 32"): `vec3` has a 16-byte alignment in WGSL's
+/// uniform address space, silently inflating the true GPU-side struct size
+/// past this exactly-16-byte Rust layout. See `snapshot_positions.wgsl`'s own
+/// matching comment.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct SnapshotConfig {
+    pub(super) particle_count: u32,
+    pub(super) _pad: [u32; 3],
+}
+const _: () = assert!(mem::size_of::<SnapshotConfig>() == 16);
 
 /// One physical-scale/radiance contract shared by all `ByPhysics` GPU paths.
 ///

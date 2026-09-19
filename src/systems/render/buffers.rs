@@ -19,8 +19,8 @@ use wgpu::util::DeviceExt;
 
 use super::gpu_types::{
     BandHysteresisParams, CameraParams, GridVisibilityParams, GridVolumeParams, InstanceData,
-    LightDiffuseParams, OpticalTable, PhysicalRenderParams, RenderConfig, SurfaceParams,
-    SurfaceRenderParams, VisibilityParams, WaveStepParams,
+    LightDiffuseParams, OpticalTable, PhysicalRenderParams, RenderConfig, SnapshotConfig,
+    SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
 
 /// 4-byte lazy-growth storage placeholder -- real, standard convention used
@@ -61,6 +61,8 @@ fn uniform_buffer<T>(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
 pub(super) struct RenderBuffers {
     pub instance_buffer: wgpu::Buffer,
     pub storage_instances: wgpu::Buffer,
+    pub prev_positions_buf: wgpu::Buffer,
+    pub snapshot_config_buf: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub camera_buffer: wgpu::Buffer,
@@ -158,6 +160,21 @@ impl RenderBuffers {
             contents: bytemuck::cast_slice::<u16, u8>(&[0u16, 1, 2, 0, 2, 3]),
             usage: wgpu::BufferUsages::INDEX,
         });
+
+        // Pre-step position snapshot for GPU render interpolation (see
+        // `Renderer::snapshot_particle_positions`'s own doc) -- tightly-packed
+        // `vec2<f32>` per particle, distinct from `storage_instances` (that one
+        // holds full `InstanceData`, this one only ever needs a position).
+        // read_write: `snapshot_positions.wgsl` writes it, `prep_instances.wgsl`
+        // only ever reads it (separate bind groups, so no usage-tracker conflict).
+        let prev_positions_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("render_prev_positions"),
+            size: (cap * mem::size_of::<[f32; 2]>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let snapshot_config_buf =
+            uniform_buffer::<SnapshotConfig>(device, "render_snapshot_config");
 
         let camera_buffer = uniform_buffer::<CameraParams>(device, "render_camera");
         let render_config_buf = uniform_buffer::<RenderConfig>(device, "render_config");
@@ -322,6 +339,8 @@ impl RenderBuffers {
         Self {
             instance_buffer,
             storage_instances,
+            prev_positions_buf,
+            snapshot_config_buf,
             vertex_buffer,
             index_buffer,
             camera_buffer,

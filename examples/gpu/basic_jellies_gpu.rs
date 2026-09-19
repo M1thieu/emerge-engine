@@ -13,7 +13,9 @@ mod gui_common;
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
+use emerge::render::{
+    ColorMode, GpuRenderParams, GridVolumeSource, Renderer, SurfaceReconstructionSource,
+};
 use emerge::{
     CorotatedMaterial, FixedStepController, GpuSimulation, MaterialRegistry, NeoHookeanMaterial,
     SimConfig, SpawnRegion, ViscoelasticMaterial, build_particles,
@@ -418,10 +420,13 @@ impl State {
                 self.renderer.render_gpu(
                     self.sim.device(),
                     self.sim.queue(),
-                    self.sim.particle_buffer(),
-                    self.sim.particle_count(),
-                    &view,
-                    true,
+                    GpuRenderParams {
+                        particle_buf: self.sim.particle_buffer(),
+                        particle_count: self.sim.particle_count(),
+                        output_view: &view,
+                        clear: true,
+                        interp_alpha: 1.0,
+                    },
                 );
             }
         }

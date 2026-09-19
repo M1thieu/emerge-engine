@@ -7,7 +7,7 @@
 use std::mem;
 
 use super::gpu_types::InstanceData;
-use super::{CURVATURE_FLOW_SHADER, PREP_SHADER, RENDER_SHADER};
+use super::{CURVATURE_FLOW_SHADER, PREP_SHADER, RENDER_SHADER, SNAPSHOT_SHADER};
 
 pub(super) fn bgl_storage_ro(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -161,6 +161,7 @@ pub(super) fn build_prep_pipeline(
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_ro(5, wgpu::ShaderStages::COMPUTE),
         ],
     });
 
@@ -185,6 +186,46 @@ pub(super) fn build_prep_pipeline(
     });
 
     (prep_pipeline, prep_bgl)
+}
+
+/// `snapshot_positions.wgsl` compute pipeline -- extracts the current
+/// particle positions into a tightly-packed buffer `prep_instances.wgsl`
+/// later interpolates against. See `Renderer::snapshot_particle_positions`'s
+/// own doc for the real "Fix Your Timestep" (Gaffer 2004) render-smoothing
+/// this exists for.
+pub(super) fn build_snapshot_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+    let snapshot_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("snapshot_bgl"),
+        entries: &[
+            bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
+        ],
+    });
+
+    let snapshot_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("snapshot_positions"),
+        source: wgpu::ShaderSource::Wgsl(SNAPSHOT_SHADER.into()),
+    });
+
+    let snapshot_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("snapshot_positions_pipeline"),
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[&snapshot_bgl],
+                push_constant_ranges: &[],
+            }),
+        ),
+        module: &snapshot_shader,
+        entry_point: Some("main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    (snapshot_pipeline, snapshot_bgl)
 }
 
 /// `grid_volume.wgsl` pipeline -- samples the solver's own P2G mass field

@@ -55,7 +55,10 @@ struct RenderConfig {
     mode:           u32,
     particle_count: u32,
     vel_scale:      f32,
-    _pad:                 u32,
+    // Render-time position blend factor, "Fix Your Timestep" (Gaffer 2004) --
+    // see the Rust-side `RenderConfig::interp_alpha` doc for the real
+    // "sudden acceleration" symptom this closes.
+    interp_alpha:   f32,
 }
 
 // Per-material optical absorption: σ_a [r, g, b, σ_s] × 16 slots.
@@ -92,6 +95,11 @@ struct PhysicalRenderParams {
 @group(0) @binding(2) var<uniform>             config:    RenderConfig;
 @group(0) @binding(3) var<uniform>             optics:    OpticalTable;
 @group(0) @binding(4) var<uniform>             physical:  PhysicalRenderParams;
+// Pre-step position snapshot from `snapshot_positions.wgsl`, taken once per
+// render-frame's physics-step batch (mirrors the CPU `prev_x` convention in
+// `basic_fluids.rs`). Blended against the current `p.x` by `config.interp_alpha`
+// below -- zero-readback, GPU-resident the whole way, no `sync_particles_blocking`.
+@group(0) @binding(5) var<storage, read>       prev_positions: array<vec2<f32>>;
 
 // ── Color helpers ─────────────────────────────────────────────────────────────
 
@@ -220,10 +228,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         color = heat(clamp(p.activation, 0.0, 1.0) * 0.8);
     }
 
+    // mix(prev, current, alpha): alpha=1.0 (no snapshot taken yet, or the
+    // caller passed the "unblended" default) reduces to p.x exactly.
+    let render_pos = mix(prev_positions[id], p.x, config.interp_alpha);
+
     instances[id] = InstanceData(
         f[0],        // deform_col0 -- F's x-axis
         f[1],        // deform_col1 -- F's y-axis
-        p.x,         // position in grid coords
+        render_pos,  // interpolated position in grid coords
         vec2(0.0),   // _pad
         color,
     );

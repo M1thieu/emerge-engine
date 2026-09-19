@@ -61,7 +61,7 @@ use std::sync::Arc;
 
 use egui_wgpu::ScreenDescriptor;
 use emerge::gpu::GpuSimulation;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, GridVolumeSource, Renderer};
 use emerge::{
     DruckerPragerMaterial, FixedStepController, MaterialRegistry, NeoHookeanMaterial,
     NewtonianFluidMaterial, SimConfig, SpawnRegion, StomakhinMaterial, ViscoelasticMaterial,
@@ -723,10 +723,13 @@ impl State {
             self.renderer.render_gpu(
                 &self.device,
                 &self.queue,
-                self.sim.particle_buffer(),
-                self.sim.particle_count(),
-                &view,
-                true,
+                GpuRenderParams {
+                    particle_buf: self.sim.particle_buffer(),
+                    particle_count: self.sim.particle_count(),
+                    output_view: &view,
+                    clear: true,
+                    interp_alpha: 1.0,
+                },
             );
         }
 

@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-#[path = "../snake_on_terrain_scene/mod.rs"]
+#[path = "../scenes/snake_on_terrain.rs"]
 mod scene;
 
 use emerge::render::{ColorMode, Renderer};

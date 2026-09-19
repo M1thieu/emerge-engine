@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
 use emerge::gpu::GpuSimulation;
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, GpuRenderParams, Renderer};
 use emerge::{Fluid, MaterialRegistry, SimConfig, SpawnRegion, build_particles};
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -266,10 +266,13 @@ impl State {
         self.renderer.render_gpu(
             &self.device,
             &self.queue,
-            self.sim.particle_buffer(),
-            self.sim.particle_count(),
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: self.sim.particle_buffer(),
+                particle_count: self.sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         );
         output.present();
     }

@@ -37,8 +37,8 @@ fn scattering_changes_by_physics_color() {
     let mut p1 = p0;
     p1.material_id = 1;
 
-    let c0 = r.particle_color(&p0);
-    let c1 = r.particle_color(&p1);
+    let c0 = r.particle_color(&p0, 0);
+    let c1 = r.particle_color(&p1, 0);
     assert_ne!(
         c0, c1,
         "identical absorption but different sigma_s must render differently"
@@ -62,8 +62,8 @@ fn specular_r0_changes_by_physics_color() {
     let mut p1 = p0;
     p1.material_id = 1;
 
-    let c0 = r.particle_color(&p0);
-    let c1 = r.particle_color(&p1);
+    let c0 = r.particle_color(&p0, 0);
+    let c1 = r.particle_color(&p1, 0);
     assert_ne!(
         c0, c1,
         "identical absorption but different specular R0 must render differently"
@@ -109,7 +109,7 @@ fn physical_contract_drives_cpu_beer_lambert_in_si() {
     );
     let mut p = Particle::zeroed();
     p.deformation_gradient = Mat2::IDENTITY;
-    let got = r.particle_color(&p);
+    let got = r.particle_color(&p, 0);
     let expected = [(-0.5f32).exp(), (-0.25f32).exp(), (-0.125f32).exp()];
     for (channel, want) in got[..3].iter().copied().zip(expected) {
         assert!(
@@ -184,10 +184,13 @@ fn physical_contract_drives_gpu_particle_beer_lambert_in_si() {
     r.render_gpu(
         &device,
         &queue,
-        sim.particle_buffer(),
-        1,
-        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
-        true,
+        GpuRenderParams {
+            particle_buf: sim.particle_buffer(),
+            particle_count: 1,
+            output_view: &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            clear: true,
+            interp_alpha: 1.0,
+        },
     );
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
     let raw = readback_f32_blocking(&device, &queue, &r.storage_instances, 12);
@@ -256,10 +259,13 @@ fn render_gpu_survives_scattering_and_specular_end_to_end() {
     r.render_gpu(
         &device,
         &queue,
-        sim.particle_buffer(),
-        sim.particle_count(),
-        &view,
-        true,
+        GpuRenderParams {
+            particle_buf: sim.particle_buffer(),
+            particle_count: sim.particle_count(),
+            output_view: &view,
+            clear: true,
+            interp_alpha: 1.0,
+        },
     );
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 }
@@ -342,10 +348,13 @@ fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     r.render_gpu(
         &device,
         &queue,
-        sim.particle_buffer(),
-        sim.particle_count(),
-        &view,
-        true,
+        GpuRenderParams {
+            particle_buf: sim.particle_buffer(),
+            particle_count: sim.particle_count(),
+            output_view: &view,
+            clear: true,
+            interp_alpha: 1.0,
+        },
     );
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 
@@ -2887,7 +2896,10 @@ fn curvature_flow_mass_growth_scales_with_iteration_count() {
 #[test]
 fn wave_field_is_excited_by_real_density_and_stays_bounded() {
     use crate::gpu::GpuSimulation;
-    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use crate::matter::materials::MaterialModel;
+    use crate::{
+        MaterialRegistry, NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
+    };
     use std::sync::Arc;
 
     let (device, queue) = headless_device();
@@ -2905,13 +2917,32 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
             .material(0)
             .precompute_volumes(),
     );
-    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+    // Real fix: the wave field only ever excites for materials that
+    // genuinely behave like a fluid (`owns_deformation_volume_state()`,
+    // see `Renderer::set_wave_force_coeff`'s own doc) -- `NeoHookeanMaterial`
+    // (an elastic SOLID) correctly returns `false` for that, so the
+    // original version of this test was asserting a real physics feature
+    // fires for a material class it structurally never applies to. Real
+    // production scenes (`examples/cpu/basic_fluids.rs`,
+    // `examples/gpu/basic_sand_grid_gpu.rs`) both gate this the same way,
+    // with the same real coefficient (0.35) -- matched here, not invented.
+    let material = NewtonianFluidMaterial::low_viscosity(1.0, 1.0);
+    let registry = MaterialRegistry::with_default(Box::new(material));
     let sim =
         GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
 
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+    // Real, deliberate opt-in (see `WaveStepParams::wave_force_coeff`'s own
+    // doc in `curvature_flow.wgsl`) -- defaults to inert (0.0), must be set
+    // explicitly by whoever owns the scene, exactly as real production
+    // examples already do for this same material class.
+    assert!(
+        material.owns_deformation_volume_state(),
+        "test material must actually be a real fluid, or this whole test proves nothing"
+    );
+    r.set_wave_force_coeff(0.35);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wave_field_test_target"),
@@ -2984,7 +3015,10 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
 #[test]
 fn curvature_flow_wave_field_decays_once_density_stops_changing() {
     use crate::gpu::GpuSimulation;
-    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use crate::matter::materials::MaterialModel;
+    use crate::{
+        MaterialRegistry, NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
+    };
     use std::sync::Arc;
 
     let (device, queue) = headless_device();
@@ -3002,13 +3036,23 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
             .material(0)
             .precompute_volumes(),
     );
-    let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+    // Real fix -- same root cause as `wave_field_is_excited_by_real_
+    // density_and_stays_bounded`'s own doc: a real fluid material, plus the
+    // real, deliberate `set_wave_force_coeff` opt-in below, matching real
+    // production usage (`basic_fluids.rs`/`basic_sand_grid_gpu.rs`).
+    let material = NewtonianFluidMaterial::low_viscosity(1.0, 1.0);
+    let registry = MaterialRegistry::with_default(Box::new(material));
     let sim =
         GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
 
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+    assert!(
+        material.owns_deformation_volume_state(),
+        "test material must actually be a real fluid, or this whole test proves nothing"
+    );
+    r.set_wave_force_coeff(0.35);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wave_decay_test_target"),
@@ -3657,6 +3701,105 @@ fn screen_to_grid_is_exact_inverse_of_set_camera_at_any_aspect_ratio() {
     );
 }
 
+/// Real regression test for a live-reported bug (2026-09-15): an example
+/// drew a screen-space overlay marker using its OWN hand-derived copy of
+/// this exact projection, which silently drifted from what `set_camera`
+/// actually uploaded. `grid_to_screen`/`grid_distance_to_pixels` are the
+/// real fix (a single source of truth for BOTH directions) -- checked here
+/// as an exact round-trip against `screen_to_grid` at several aspect
+/// ratios, not re-derived independently (which would just duplicate a bug
+/// into its own test, same discipline as the sibling test above).
+#[test]
+fn grid_to_screen_is_exact_inverse_of_screen_to_grid_at_any_aspect_ratio() {
+    let (device, queue) = headless_device();
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, 1, fmt);
+    let grid_res = 32u32;
+
+    for (w, h) in [(100u32, 100u32), (300, 100), (100, 300), (37, 211)] {
+        r.set_camera(&queue, grid_res, w, h, 0.6, true);
+        for (sx, sy) in [
+            (0.0, 0.0),
+            (w as f32, h as f32),
+            (w as f32 * 0.5, h as f32 * 0.5),
+            (w as f32 * 0.25, h as f32 * 0.75),
+        ] {
+            let (gx, gy) = r.screen_to_grid(sx, sy, w, h);
+            let (rx, ry) = r.grid_to_screen(gx, gy, w, h);
+            assert!(
+                (rx - sx).abs() < 1.0e-2 && (ry - sy).abs() < 1.0e-2,
+                "grid_to_screen must exactly invert screen_to_grid at w={w} h={h} \
+                 -- screen ({sx},{sy}) -> grid ({gx},{gy}) -> screen ({rx},{ry})"
+            );
+        }
+    }
+
+    // A real, independently-checkable invariant for the radius conversion:
+    // the camera is isotropic (grid cells always render as true squares, see
+    // `set_camera`'s own doc), so a distance measured along the Y axis via
+    // `screen_to_grid` must match `grid_distance_to_pixels`'s own conversion
+    // of that same real grid distance, exactly.
+    r.set_camera(&queue, grid_res, 300, 100, 0.6, true);
+    let (_, gy_top) = r.screen_to_grid(0.0, 0.0, 300, 100);
+    let (_, gy_mid) = r.screen_to_grid(0.0, 50.0, 300, 100);
+    let grid_distance = gy_top - gy_mid;
+    let pixel_distance = r.grid_distance_to_pixels(grid_distance, 100);
+    assert!(
+        (pixel_distance - 50.0).abs() < 1.0e-2,
+        "grid_distance_to_pixels must agree with screen_to_grid's own real \
+         scale -- expected 50.0 pixels, got {pixel_distance}"
+    );
+}
+
+/// Real regression test for the live-reported DPI bug (2026-09-15, "still
+/// misaligned after the projection fix" on a 125%-scaled Windows display):
+/// a UI overlay fed PHYSICAL pixels into a toolkit (egui) that draws in
+/// LOGICAL points is off by exactly the display's own scale factor.
+/// `grid_to_screen_points`/`grid_distance_to_points` are the real, versatile
+/// -by-design fix -- checked here at several real scale factors (100%, the
+/// 125% that actually exposed the bug, and 200%), not just the one that
+/// happened to be on hand at debug time.
+#[test]
+fn grid_to_screen_points_divides_out_the_real_dpi_scale_factor() {
+    let (device, queue) = headless_device();
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, 1, fmt);
+    let grid_res = 32u32;
+    r.set_camera(&queue, grid_res, 300, 200, 0.6, true);
+
+    let (px_x, px_y) = r.grid_to_screen(16.0, 16.0, 300, 200);
+    let px_radius = r.grid_distance_to_pixels(2.0, 200);
+
+    for ppp in [1.0_f32, 1.25, 1.5, 2.0] {
+        let (pt_x, pt_y) = r.grid_to_screen_points(16.0, 16.0, 300, 200, ppp);
+        let pt_radius = r.grid_distance_to_points(2.0, 200, ppp);
+        assert!(
+            (pt_x - px_x / ppp).abs() < 1.0e-3 && (pt_y - px_y / ppp).abs() < 1.0e-3,
+            "grid_to_screen_points at ppp={ppp} must be exactly the physical \
+             result divided by the real scale factor -- got ({pt_x},{pt_y}), \
+             expected ({},{})",
+            px_x / ppp,
+            px_y / ppp
+        );
+        assert!(
+            (pt_radius - px_radius / ppp).abs() < 1.0e-3,
+            "grid_distance_to_points at ppp={ppp} must match physical/ppp -- \
+             got {pt_radius}, expected {}",
+            px_radius / ppp
+        );
+    }
+
+    // At the real 100% (no scaling) case specifically, points and pixels
+    // must be numerically IDENTICAL -- this is the case that silently looked
+    // "correct" during development on a 100%-scaled display while actually
+    // being wrong at every other real scale factor.
+    let (pt_x, pt_y) = r.grid_to_screen_points(16.0, 16.0, 300, 200, 1.0);
+    assert!(
+        (pt_x - px_x).abs() < 1.0e-6 && (pt_y - px_y).abs() < 1.0e-6,
+        "at 100% scaling, points and physical pixels must be identical"
+    );
+}
+
 /// Real pore-fluid index-matching darkening (`Renderer::set_refractive_
 /// index`) must actually reduce scattering as a particle's own
 /// `scalar_field` saturates toward 1.0 -- the real, generic (not
@@ -3681,8 +3824,8 @@ fn wetness_darkens_by_physics_color_via_refractive_index() {
     let mut wet = dry;
     wet.scalar_field = 1.0;
 
-    let c_dry = r.particle_color(&dry);
-    let c_wet = r.particle_color(&wet);
+    let c_dry = r.particle_color(&dry, 0);
+    let c_wet = r.particle_color(&wet, 0);
     assert_ne!(
         c_dry, c_wet,
         "saturation must actually change ByPhysics color once refractive_index is set"
@@ -3717,8 +3860,8 @@ fn wetness_darkening_is_inert_without_refractive_index_opt_in() {
     wet.scalar_field = 1.0;
 
     assert_eq!(
-        r.particle_color(&dry),
-        r.particle_color(&wet),
+        r.particle_color(&dry, 0),
+        r.particle_color(&wet, 0),
         "a material that never calls set_refractive_index must be byte-identical \
          regardless of scalar_field -- this feature must be opt-in, not silently active"
     );
@@ -3810,10 +3953,13 @@ fn diag_surface_reconstruction_real_cost_vs_grid_volume_and_particles() {
         r.render_gpu(
             &device,
             &queue,
-            sim.particle_buffer(),
-            particle_count,
-            &view,
-            true,
+            GpuRenderParams {
+                particle_buf: sim.particle_buffer(),
+                particle_count,
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
         )
     );
     measure!(

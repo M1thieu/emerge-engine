@@ -16,6 +16,7 @@ use crate::systems::gpu::MAX_RENDER_MATERIAL_SLOTS;
 
 const RENDER_SHADER: &str = include_str!("shaders/render_particles.wgsl");
 const PREP_SHADER: &str = include_str!("shaders/prep_instances.wgsl");
+const SNAPSHOT_SHADER: &str = include_str!("shaders/snapshot_positions.wgsl");
 const GRID_VOLUME_SHADER: &str = include_str!("shaders/grid_volume.wgsl");
 const CURVATURE_FLOW_SHADER: &str = include_str!("shaders/curvature_flow.wgsl");
 const PREP_WG: u32 = 64;
@@ -136,13 +137,27 @@ pub enum ColorMode {
     /// unused slot after ByActivation's implicit WGSL else-branch) so the GPU shader's
     /// existing fallback `else` can keep meaning ByActivation without renumbering it.
     ByScalarField = 6,
+    /// Real per-particle von Mises equivalent stress (see
+    /// `MaterialRegistry::von_mises_stress_field`'s own doc) -- universal
+    /// across every material (every `MaterialModel` already computes a real
+    /// Kirchhoff stress tensor; this just visualizes its own real magnitude),
+    /// unlike `ByVolume` (purely volumetric, det(F)) which misses shear
+    /// activity entirely. CPU render path only for now (`Renderer::render`,
+    /// which owns the real `&Particles`/`MaterialRegistry` needed to compute
+    /// it) -- see `Renderer::set_stress_field`'s own doc for the real,
+    /// disclosed reason the GPU shader path doesn't have this yet.
+    ByStress = 7,
 }
 
 // GPU-side wire structs (InstanceData/CameraParams/RenderConfig/OpticalTable,
 // GridVolumeParams/GridVolumeSource) live in gpu_types.rs -- see that file's doc.
 mod gpu_types;
-use gpu_types::{CameraParams, InstanceData, OpticalTable, PhysicalRenderParams, RenderConfig};
-pub use gpu_types::{DualPhaseSurfaceSource, GridVolumeSource, SurfaceReconstructionSource};
+use gpu_types::{
+    CameraParams, InstanceData, OpticalTable, PhysicalRenderParams, RenderConfig, SnapshotConfig,
+};
+pub use gpu_types::{
+    DualPhaseSurfaceSource, GpuRenderParams, GridVolumeSource, SurfaceReconstructionSource,
+};
 
 // GPU buffer allocation (the RenderBuffers struct + its own constructor)
 // lives in buffers.rs -- see that file's doc.
@@ -182,11 +197,12 @@ use gpu_types::{
 use pipelines::{
     build_band_hysteresis_step_pipeline, build_grid_visibility_step_pipeline,
     build_grid_volume_pipeline, build_light_diffuse_pipeline, build_particle_pipeline,
-    build_post_total_reduce_pipeline, build_prep_pipeline, build_surface_clear_pipeline,
-    build_surface_convert_pipeline, build_surface_dual_render_pipeline,
-    build_surface_iterate_pipeline, build_surface_moments_pipeline, build_surface_render_pipeline,
-    build_surface_splat_pipeline, build_temp_avg_pipeline, build_temp_diffuse_pipeline,
-    build_visibility_step_pipeline, build_volume_correct_pipeline, build_wave_step_pipeline,
+    build_post_total_reduce_pipeline, build_prep_pipeline, build_snapshot_pipeline,
+    build_surface_clear_pipeline, build_surface_convert_pipeline,
+    build_surface_dual_render_pipeline, build_surface_iterate_pipeline,
+    build_surface_moments_pipeline, build_surface_render_pipeline, build_surface_splat_pipeline,
+    build_temp_avg_pipeline, build_temp_diffuse_pipeline, build_visibility_step_pipeline,
+    build_volume_correct_pipeline, build_wave_step_pipeline,
 };
 
 // ── Renderer ──────────────────────────────────────────────────────────────────
@@ -196,6 +212,12 @@ pub struct Renderer {
     render_bind_group: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer, // VERTEX | COPY_DST -- drawn as per-instance attributes
     storage_instances: wgpu::Buffer, // STORAGE | COPY_SRC -- compute write target (GPU path)
+    /// Pre-step position snapshot for GPU render interpolation -- see
+    /// `snapshot_particle_positions`'s own doc.
+    prev_positions_buf: wgpu::Buffer,
+    snapshot_pipeline: wgpu::ComputePipeline,
+    snapshot_bgl: wgpu::BindGroupLayout,
+    snapshot_config_buf: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     camera_buffer: wgpu::Buffer,
@@ -548,6 +570,24 @@ pub struct Renderer {
     scratch: Vec<InstanceData>,
     color_mode: ColorMode,
     vel_scale: f32,
+    /// Real per-particle von Mises equivalent stress, computed ONCE per
+    /// frame by the caller (`MaterialRegistry::von_mises_stress_field`,
+    /// which owns both the real `&Particles` and the material dispatch
+    /// `Renderer` deliberately does not depend on) and handed in via
+    /// `set_stress_field` -- the SAME real "caller precomputes real
+    /// material-derived data, Renderer just visualizes it" pattern already
+    /// established by `sigma_a`/`sigma_s`/`specular_r0` below for
+    /// `ColorMode::ByPhysics`. Indexed by particle position in the SAME
+    /// iteration order `render`'s own loop uses -- stale/empty (falls back
+    /// to 0.0 per particle) if the caller never opts in, matching every
+    /// other real, disclosed "inert unless explicitly set" convention this
+    /// renderer already uses (e.g. `wave_force_coeff`).
+    stress_field: Vec<f32>,
+    /// Real display scale for `ColorMode::ByStress` -- stress magnitudes
+    /// vary by orders of magnitude across materials' own real stiffness
+    /// scales, so this is caller-set (mirrors `vel_scale`'s own role for
+    /// `ByVelocity`), not a fixed physical constant.
+    stress_scale: f32,
     sigma_a: [[f32; 3]; 16],
     /// Reduced scattering coefficient per material slot (single scalar -- see
     /// `OpticalTable`'s own doc for why this isn't per-channel).
@@ -576,6 +616,8 @@ impl Renderer {
         let RenderBuffers {
             instance_buffer,
             storage_instances,
+            prev_positions_buf,
+            snapshot_config_buf,
             vertex_buffer,
             index_buffer,
             camera_buffer,
@@ -633,6 +675,7 @@ impl Renderer {
             }],
         });
         let (prep_pipeline, prep_bgl) = build_prep_pipeline(device);
+        let (snapshot_pipeline, snapshot_bgl) = build_snapshot_pipeline(device);
         let (grid_volume_pipeline, grid_volume_bgl) =
             build_grid_volume_pipeline(device, output_format);
         let (grid_visibility_step_pipeline, grid_visibility_step_bgl) =
@@ -665,6 +708,10 @@ impl Renderer {
             render_bind_group,
             instance_buffer,
             storage_instances,
+            prev_positions_buf,
+            snapshot_pipeline,
+            snapshot_bgl,
+            snapshot_config_buf,
             vertex_buffer,
             index_buffer,
             camera_buffer,
@@ -787,6 +834,8 @@ impl Renderer {
             scratch: Vec::with_capacity(cap),
             color_mode: ColorMode::ByMaterial,
             vel_scale: 0.05,
+            stress_field: Vec::new(),
+            stress_scale: 1.0,
             sigma_a: [[0.3f32; 3]; 16],
             sigma_s: [0.0f32; 16],
             specular_r0: [0.0f32; 16],
@@ -848,6 +897,76 @@ impl Renderer {
         let ndc_y = 1.0 - (screen_y / height.max(1) as f32) * 2.0;
         let (sx, tx, sy, ty) = self.cached_ortho;
         ((ndc_x - tx) / sx, (ndc_y - ty) / sy)
+    }
+
+    /// Exact inverse of `screen_to_grid` -- grid coordinate -> screen pixel
+    /// position, from the SAME cached projection `set_camera` last uploaded.
+    /// For a caller drawing a screen-space overlay (a UI marker for a
+    /// non-`Particle` object, say) at a world/grid position: use this
+    /// instead of re-deriving the ortho formula independently, which can
+    /// silently drift out of sync with what `set_camera` actually did (real
+    /// bug this fixes, 2026-09-15: an example's own hand-rolled duplicate
+    /// projection put its obstacle marker at the wrong screen position).
+    /// `width`/`height` must match whatever was last passed to
+    /// `set_camera`.
+    pub fn grid_to_screen(&self, grid_x: f32, grid_y: f32, width: u32, height: u32) -> (f32, f32) {
+        let (sx, tx, sy, ty) = self.cached_ortho;
+        let ndc_x = grid_x * sx + tx;
+        let ndc_y = grid_y * sy + ty;
+        let screen_x = (ndc_x + 1.0) * 0.5 * width.max(1) as f32;
+        let screen_y = (1.0 - ndc_y) * 0.5 * height.max(1) as f32;
+        (screen_x, screen_y)
+    }
+
+    /// A world/grid-space distance (e.g. an object's radius) -> screen
+    /// pixels, from the same cached projection. `set_camera` always keeps
+    /// grid cells isotropic (a circle in grid space renders as a circle,
+    /// never an ellipse, regardless of window aspect), so the y-axis scale
+    /// alone gives the real, correct pixels-per-grid-unit conversion for
+    /// any direction.
+    pub fn grid_distance_to_pixels(&self, distance: f32, height: u32) -> f32 {
+        let (_, _, sy, _) = self.cached_ortho;
+        distance * sy.abs() * 0.5 * height.max(1) as f32
+    }
+
+    /// `grid_to_screen`, converted into UI/LOGICAL points instead of
+    /// physical pixels -- the units a UI toolkit (egui and friends) actually
+    /// draws in. `width`/`height` are still the PHYSICAL size last passed to
+    /// `set_camera` (that projection genuinely operates in physical space);
+    /// `pixels_per_point` is the display's own real DPI scale factor (egui:
+    /// `Context::pixels_per_point()`, 1.0 at 100% OS scaling, 1.25 at 125%,
+    /// etc.).
+    ///
+    /// Real, disclosed reason this exists as its own method rather than
+    /// leaving `caller_result / pixels_per_point` as a one-line convention:
+    /// a live-reported bug (2026-09-15) came from exactly that omission in
+    /// one example, on a machine running 125% Windows scaling -- correct at
+    /// 100% scaling, silently wrong everywhere else. "Versatile by design"
+    /// means the DPI-correct path is the one with the obvious name, not a
+    /// step every future UI-overlay caller has to remember on their own.
+    pub fn grid_to_screen_points(
+        &self,
+        grid_x: f32,
+        grid_y: f32,
+        width: u32,
+        height: u32,
+        pixels_per_point: f32,
+    ) -> (f32, f32) {
+        let (px, py) = self.grid_to_screen(grid_x, grid_y, width, height);
+        let ppp = pixels_per_point.max(1.0e-6);
+        (px / ppp, py / ppp)
+    }
+
+    /// `grid_distance_to_pixels`, converted into UI/LOGICAL points -- see
+    /// `grid_to_screen_points`'s own doc for the real DPI reasoning this
+    /// shares.
+    pub fn grid_distance_to_points(
+        &self,
+        distance: f32,
+        height: u32,
+        pixels_per_point: f32,
+    ) -> f32 {
+        self.grid_distance_to_pixels(distance, height) / pixels_per_point.max(1.0e-6)
     }
 
     /// Real light direction for `render_grid_volume`/surface-reconstruction
@@ -1101,6 +1220,24 @@ impl Renderer {
         self.vel_scale = s;
     }
 
+    /// Real per-particle von Mises stress data for `ColorMode::ByStress`
+    /// (see `stress_field`'s own doc for the full mechanism/citation) --
+    /// caller computes this once per frame via
+    /// `MaterialRegistry::von_mises_stress_field(&particles)` and hands it
+    /// in here BEFORE calling `render`, same real "precompute, then
+    /// visualize" convention `write_optical_table` already established for
+    /// `ByPhysics`. A length mismatch against the real particle count is
+    /// NOT an error here (the field is read by index, out-of-range reads
+    /// fall back to 0.0 in `particle_color`) -- callers that resize their
+    /// particle set without recomputing the field just see stale/inert
+    /// coloring for the newly-added particles, not a panic.
+    pub fn set_stress_field(&mut self, values: Vec<f32>) {
+        self.stress_field = values;
+    }
+    pub fn set_stress_scale(&mut self, s: f32) {
+        self.stress_scale = s;
+    }
+
     /// Legacy dimensionless optical input.
     ///
     /// This setter predates the renderer's SI contract, and its values are
@@ -1197,18 +1334,95 @@ impl Renderer {
         );
     }
 
-    // ── GPU compute render path ────────────────────────────────────────────────
-
-    /// Zero-readback GPU render. No `sync_particles_blocking()` needed.
-    pub fn render_gpu(
+    /// Snapshots the current GPU-resident particle positions for the render-
+    /// interpolation path -- call once per render-frame's physics-step batch,
+    /// BEFORE stepping (mirrors the CPU `basic_fluids.rs` `prev_x` convention:
+    /// skip when `steps==0`, the last real snapshot stays valid since nothing
+    /// moved). Pass the resulting `FixedStepController::interpolation_alpha()`
+    /// to `render_gpu`'s own `alpha` param afterward.
+    ///
+    /// Real fix for the "sudden acceleration" symptom root-caused 2026-09-15
+    /// (see `RenderConfig::interp_alpha`'s own doc): every GPU demo already
+    /// runs `FixedStepController` real-time-decoupled stepping, but until this
+    /// existed, none interpolated the leftover fractional step -- uneven real
+    /// per-step cost showed up directly as uneven position jumps on screen.
+    /// Zero CPU readback (matches `render_gpu`'s own "zero-readback" contract):
+    /// a tiny compute pass extracts `Particle::x` into a tightly-packed
+    /// GPU-resident buffer, `prep_instances.wgsl` blends against it later.
+    pub fn snapshot_particle_positions(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         particle_buf: &wgpu::Buffer,
         particle_count: usize,
-        output_view: &wgpu::TextureView,
-        clear: bool,
     ) {
+        if particle_count == 0 {
+            return;
+        }
+        self.ensure_capacity(device, particle_count);
+        queue.write_buffer(
+            &self.snapshot_config_buf,
+            0,
+            bytemuck::bytes_of(&SnapshotConfig {
+                particle_count: particle_count as u32,
+                _pad: [0; 3],
+            }),
+        );
+        let snapshot_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("snapshot_bg"),
+            layout: &self.snapshot_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: particle_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.prev_positions_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.snapshot_config_buf.as_entire_binding(),
+                },
+            ],
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("snapshot_positions"),
+        });
+        {
+            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("snapshot_positions"),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(&self.snapshot_pipeline);
+            cp.set_bind_group(0, &snapshot_bg, &[]);
+            cp.dispatch_workgroups((particle_count as u32).div_ceil(PREP_WG), 1, 1);
+        }
+        queue.submit(std::iter::once(enc.finish()));
+    }
+
+    // ── GPU compute render path ────────────────────────────────────────────────
+
+    /// Zero-readback GPU render. No `sync_particles_blocking()` needed.
+    ///
+    /// `params.interp_alpha`: pass `1.0` for the old, unblended behavior
+    /// (render exactly the current GPU particle state), or a real
+    /// `FixedStepController::interpolation_alpha()` reading -- combined with a
+    /// prior same-frame `snapshot_particle_positions` call -- to smooth motion
+    /// between fixed physics steps. See that method's own doc.
+    pub fn render_gpu(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: GpuRenderParams<'_>,
+    ) {
+        let GpuRenderParams {
+            particle_buf,
+            particle_count,
+            output_view,
+            clear,
+            interp_alpha,
+        } = params;
         if particle_count == 0 {
             return;
         }
@@ -1221,7 +1435,7 @@ impl Renderer {
                 mode: self.color_mode as u32,
                 particle_count: particle_count as u32,
                 vel_scale: self.vel_scale,
-                _pad: 0,
+                interp_alpha,
             }),
         );
         write_optical_table(
@@ -1255,6 +1469,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: self.physical_render_params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.prev_positions_buf.as_entire_binding(),
                 },
             ],
         });
@@ -1300,13 +1518,13 @@ impl Renderer {
         self.ensure_capacity(device, count);
 
         self.scratch.clear();
-        for p in particles.iter() {
+        for (i, p) in particles.iter().enumerate() {
             self.scratch.push(InstanceData {
                 deform_col0: p.deformation_gradient.x_axis.to_array(),
                 deform_col1: p.deformation_gradient.y_axis.to_array(),
                 position: p.x.to_array(),
                 _pad: [0.0; 2],
-                color: self.particle_color(&p),
+                color: self.particle_color(&p, i),
             });
         }
         queue.write_buffer(
@@ -1337,13 +1555,13 @@ impl Renderer {
         self.ensure_capacity(device, count);
 
         self.scratch.clear();
-        for p in particles {
+        for (i, p) in particles.iter().enumerate() {
             self.scratch.push(InstanceData {
                 deform_col0: p.deformation_gradient.x_axis.to_array(),
                 deform_col1: p.deformation_gradient.y_axis.to_array(),
                 position: p.x.to_array(),
                 _pad: [0.0; 2],
-                color: self.particle_color(p),
+                color: self.particle_color(p, i),
             });
         }
         queue.write_buffer(
@@ -1374,6 +1592,12 @@ impl Renderer {
                 label: Some("render_instances_storage"),
                 size,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            self.prev_positions_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("render_prev_positions"),
+                size: (count * mem::size_of::<[f32; 2]>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
             self.max_particles = count;

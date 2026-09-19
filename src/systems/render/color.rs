@@ -11,7 +11,7 @@ use super::{ColorMode, OpticalTable, Renderer};
 use crate::particle::Particle;
 
 impl Renderer {
-    pub(super) fn particle_color(&self, p: &Particle) -> [f32; 4] {
+    pub(super) fn particle_color(&self, p: &Particle, i: usize) -> [f32; 4] {
         match self.color_mode {
             ColorMode::ByMaterial => material_palette(p.material_id),
             ColorMode::ByVelocity => heat(p.v.length() * self.vel_scale),
@@ -100,6 +100,10 @@ impl Renderer {
             }
             ColorMode::ByActivation => heat(p.activation.clamp(0.0, 1.0) * 0.8),
             ColorMode::ByScalarField => heat(p.scalar_field.clamp(0.0, 1.0)),
+            ColorMode::ByStress => {
+                let sigma_vm = self.stress_field.get(i).copied().unwrap_or(0.0);
+                heat(sigma_vm * self.stress_scale)
+            }
         }
     }
 }
