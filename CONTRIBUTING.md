@@ -202,6 +202,39 @@ Reports go to `target/criterion/<group>/report/index.html`.
 
 ---
 
+## Commits
+
+The history is part of what this repository publishes: someone reading
+`git log --oneline` should understand what happened without opening a diff.
+
+**Subject** -- `type(scope): imperative summary`, following
+[Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/):
+
+- At most **7 words after the prefix** (`type(scope):` itself does not count).
+- Whole line near 50 characters, imperative mood, no trailing period.
+- Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`, `ci`, `style`.
+- Scopes are areas: `gpu`, `render`, `engine`, `materials`, `solver`, `grains`, `diag`.
+
+**Body** -- write one only when the commit carries what a diff cannot show: a
+root cause, a measurement, or an alternative that was tried and rejected. A
+one-line fix needs none. Wrap at 72 columns (Git's own convention, Pro Git
+ch. 5.2).
+
+- Put real numbers in, with what they were measured on: `336 -> 72us, dam
+  break, 2912 particles`, not "significantly faster".
+- Cite the source for anything taken from the literature.
+- Record what was tried and did NOT work when it cost real time; that is what
+  stops the next person repeating it.
+- Short bullets over prose paragraphs.
+
+Avoid restating the diff, self-justification, filler adjectives ("robust",
+"comprehensive"), em-dashes, and `Co-Authored-By` trailers.
+
+**Splitting** -- one commit per logical unit, including under deadline
+pressure: a root-cause fix, a performance pass and a new feature are three
+commits. When one file legitimately carries two of them, say so in the body
+rather than merging the commits.
+
 ## Pull requests
 
 - One logical change per PR.
