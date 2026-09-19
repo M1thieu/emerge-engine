@@ -378,6 +378,15 @@ fn det2(m: mat2x2<f32>) -> f32 {
     return m[0][0] * m[1][1] - m[0][1] * m[1][0];
 }
 
+// Squared Frobenius norm, matrix taken BY VALUE -- same reason as `trace2`
+// (particles_update.wgsl): indexing a column straight out of a mat2x2 member
+// of a function-local struct copy lost the column index on the AMD Vulkan
+// target, so `p.velocity_gradient[1]` silently re-read column 0 and this
+// NaN guard never saw column 1.
+fn frob2_sq(m: mat2x2<f32>) -> f32 {
+    return dot(m[0], m[0]) + dot(m[1], m[1]);
+}
+
 // Exact 2D exp(A), matching CPU `deformation_increment_exp`. Keep this
 // duplicate bit-identical to particles_update.wgsl: these are two separate
 // production G2P/update paths, not shared textual includes.
@@ -451,12 +460,22 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         let is_grip = p.contact_group != 0u;
         let contact_active = step_params.contact_active != 0u;
+        // Real, second fix to the same free-surface mechanism (2026-09-16) --
+        // see g2p.wgsl's g2p_main and CPU's `Grid::is_extrapolated` for the
+        // full derivation. A wall (out-of-bounds) cell is real directional
+        // information, so it counts as included, matching CPU exactly.
+        var included_di = array<bool, 3>(false, false, false);
+        var included_dj = array<bool, 3>(false, false, false);
 
         for (var di: i32 = -1; di <= 1; di++) {
             for (var dj: i32 = -1; dj <= 1; dj++) {
                 let cx = base.x + di;
                 let cy = base.y + dj;
-                if cx < 0 || cy < 0 || cx >= i32(res) || cy >= i32(res) { continue; }
+                if cx < 0 || cy < 0 || cx >= i32(res) || cy >= i32(res) {
+                    included_di[di + 1] = true;
+                    included_dj[dj + 1] = true;
+                    continue;
+                }
 
                 let cell_dist = vec2<f32>(f32(cx), f32(cy)) + vec2<f32>(CELL_CENTER_OFFSET) - p.x;
                 let w = bspline_w(cell_dist.x) * bspline_w(cell_dist.y);
@@ -474,13 +493,31 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     p.v, cx, cy, i32(res), step_params.gravity, step_params.dt,
                     step_params.boundary_thickness,
                 );
-                let cell_v = select(extrap_v, touched_v, cell.mass > NUM_FLOOR);
+                let is_touched = cell.mass > NUM_FLOOR;
+                let cell_v = select(extrap_v, touched_v, is_touched);
+
+                // Free-surface velocity-gradient bias fix (2026-09-16) -- see g2p.wgsl's
+                // g2p_main (non-ASFLIP twin) and CPU's `Grid::is_extrapolated` for the
+                // full derivation. An extrapolated node contributes to new_v but not to
+                // the affine gradient (b_col0/b_col1); scoped to the plain (non-contact)
+                // path only, matching CPU and g2p_main exactly.
+                let excluded_from_gradient = !is_touched && !contact_active;
 
                 new_v       += w * cell_v;
-                b_col0      += w * cell_v * cell_dist.x;
-                b_col1      += w * cell_v * cell_dist.y;
+                if !excluded_from_gradient {
+                    included_di[di + 1] = true;
+                    included_dj[dj + 1] = true;
+                    b_col0 += w * cell_v * cell_dist.x;
+                    b_col1 += w * cell_v * cell_dist.y;
+                }
                 new_density += w * cell.mass;
             }
+        }
+        if (i32(included_di[0]) + i32(included_di[1]) + i32(included_di[2])) < 2 {
+            b_col0 = vec2<f32>(0.0);
+        }
+        if (i32(included_dj[0]) + i32(included_dj[1]) + i32(included_dj[2])) < 2 {
+            b_col1 = vec2<f32>(0.0);
         }
     }
 
@@ -555,8 +592,7 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !(p.x.x >= 0.0 && p.x.x < fres) { p.x.x = half; }
     if !(p.x.y >= 0.0 && p.x.y < fres) { p.x.y = half; }
     if !(dot(p.v, p.v) >= 0.0) { p.v = vec2<f32>(0.0); }
-    let cg = dot(p.velocity_gradient[0], p.velocity_gradient[0])
-           + dot(p.velocity_gradient[1], p.velocity_gradient[1]);
+    let cg = frob2_sq(p.velocity_gradient);
     if !(cg >= 0.0) { p.velocity_gradient = mat2x2<f32>(); }
     if !(det2(p.deformation_gradient) > 0.0) { p.deformation_gradient = identity; }
     if !(p.plastic_volume_ratio > 0.0)         { p.plastic_volume_ratio = 1.0; }

@@ -19,7 +19,7 @@ struct StepParams {
     sleep_threshold:    f32,
     _pad0:              u32,
     _pad1:              u32,
-    _pad2:              u32,
+    contact_active:              u32,
 }
 
 struct ForceFieldEntry {
@@ -61,11 +61,18 @@ const FF_NUM_FLOOR:       f32 = 1e-10;
 // convention as grid_clear.wgsl.
 override NUM_BLOCKS_PER_DIM: u32;
 const NUM_BLOCKS: u32 = 256u; // NUM_BLOCKS_PER_DIM² -- array sizes can't be override-derived
-const BLOCK_THREADS_PER_DIM: u32 = 16u;
+// Threads per workgroup side -- set at pipeline creation to min(16, cells per block
+// side): at grid_res=64 a block is 4x4 cells, and a 16x16 workgroup left 240 of its
+// 256 threads idle on every one of up to 512 dispatched workgroups. The grid-stride
+// loops below still cover blocks larger than this.
+override BLOCK_THREADS_PER_DIM: u32 = 16u;
 
 @group(0) @binding(1)  var<storage, read_write> grid_int:               array<i32>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
 @group(0) @binding(4)  var<uniform>             force_fields:            ForceFieldsParams;
+// Raw per-block particle histogram for THIS substep (written by particle_sort_count
+// right before this substep's compact; nothing in between rewrites it).
+@group(0) @binding(6)  var<storage, read_write> block_counts:            array<atomic<u32>, NUM_BLOCKS>;
 @group(0) @binding(8)  var<storage, read_write> active_block_ids:        array<u32, NUM_BLOCKS>;
 @group(0) @binding(9)  var<storage, read_write> active_block_count:      atomic<u32>;
 @group(0) @binding(10) var<storage, read_write> active_block_ids_prev:   array<u32, NUM_BLOCKS>;
@@ -92,10 +99,11 @@ fn force_switch(dist: f32, cutoff: f32, switch_on: f32) -> f32 {
 // gravity, force fields, boundary enforcement, and CFL clamp. Only the CALLER (which cells
 // get visited) changed.
 fn update_cell(cx: u32, cy: u32, res: u32) {
-    // Decode fixed-point i32 → float mass. Write it back as bitcast so g2p reads it as f32.
+    // Main-grid mass/momentum are summed as real f32 bit patterns by p2g's
+    // `atomic_add_f32_grid` (exact, no fixed-point quantum -- see that
+    // function's own doc), so reading them is a plain bitcast.
     let base4 = (cy * res + cx) * 4u;
-    let mass  = f32(grid_int[base4 + 2u]) / MASS_ATOMIC_SCALE;
-    grid_int[base4 + 2u] = bitcast<i32>(mass);
+    let mass  = bitcast<f32>(grid_int[base4 + 2u]);
 
     // Multi-field contact (GPU port, first slice) -- same fixed-point decode for the
     // grip field, but WITHOUT gravity/boundary/CFL (those apply to the resolved grip
@@ -104,12 +112,15 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     // there, not baked into the raw scattered momentum here). This is just the decode
     // step CPU never needs (its `ContactCell` fields are already real f32, never
     // fixed-point) but GPU's atomic scatter requires.
-    let grip_mass = f32(grip_grid_int[base4 + 2u]) / MASS_ATOMIC_SCALE;
-    let grip_mom_x = f32(grip_grid_int[base4 + 0u]) / MOM_ATOMIC_SCALE;
-    let grip_mom_y = f32(grip_grid_int[base4 + 1u]) / MOM_ATOMIC_SCALE;
-    grip_grid_int[base4 + 2u] = bitcast<i32>(grip_mass);
-    grip_grid_int[base4 + 0u] = bitcast<i32>(grip_mom_x);
-    grip_grid_int[base4 + 1u] = bitcast<i32>(grip_mom_y);
+    // Only while contact is active -- see grid_clear.wgsl's matching gate.
+    if step_params.contact_active != 0u {
+        let grip_mass = f32(grip_grid_int[base4 + 2u]) / MASS_ATOMIC_SCALE;
+        let grip_mom_x = f32(grip_grid_int[base4 + 0u]) / MOM_ATOMIC_SCALE;
+        let grip_mom_y = f32(grip_grid_int[base4 + 1u]) / MOM_ATOMIC_SCALE;
+        grip_grid_int[base4 + 2u] = bitcast<i32>(grip_mass);
+        grip_grid_int[base4 + 0u] = bitcast<i32>(grip_mom_x);
+        grip_grid_int[base4 + 1u] = bitcast<i32>(grip_mom_y);
+    }
 
     // Empty cells: gravity for stray particles, but enforce boundary slip so floor/wall
     // cells don't feed downward velocity into the G2P gather and over-compress blobs.
@@ -132,8 +143,8 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
         return;
     }
 
-    let mom_x = f32(grid_int[base4 + 0u]) / MOM_ATOMIC_SCALE;
-    let mom_y = f32(grid_int[base4 + 1u]) / MOM_ATOMIC_SCALE;
+    let mom_x = bitcast<f32>(grid_int[base4 + 0u]);
+    let mom_y = bitcast<f32>(grid_int[base4 + 1u]);
     var vel   = vec2<f32>(mom_x, mom_y) / mass;
 
     // ASFLIP: snapshot the pre-force velocity right after momentum normalization,
@@ -208,6 +219,25 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
     grid_int[base4 + 1u] = bitcast<i32>(vel.y);
 }
 
+// Same occupancy rule as particle_sort_compact_main, which built this substep's
+// active_block_ids from these exact counts.
+fn in_current_active_list(block: u32) -> bool {
+    let bx = i32(block % NUM_BLOCKS_PER_DIM);
+    let by = i32(block / NUM_BLOCKS_PER_DIM);
+    for (var dy: i32 = -1; dy <= 1; dy++) {
+        let ny = by + dy;
+        if ny < 0 || ny >= i32(NUM_BLOCKS_PER_DIM) { continue; }
+        for (var dx: i32 = -1; dx <= 1; dx++) {
+            let nx = bx + dx;
+            if nx < 0 || nx >= i32(NUM_BLOCKS_PER_DIM) { continue; }
+            if atomicLoad(&block_counts[u32(ny) * NUM_BLOCKS_PER_DIM + u32(nx)]) > 0u {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Dispatch: (2 * NUM_BLOCKS, 1, 1) workgroups, every frame, fixed -- identical convention to
 // grid_clear_main. workgroup_id.x is a SLOT: slots 0..NUM_BLOCKS index THIS substep's
 // active_block_ids, slots NUM_BLOCKS..2*NUM_BLOCKS index active_block_ids_prev (last
@@ -237,10 +267,13 @@ fn grid_update_main(
         // already in the CURRENT list -- its own current-list workgroup already handles it;
         // only a block PURELY in the grace-period list (deactivated this substep) needs
         // this branch.
-        let current_count = atomicLoad(&active_block_count);
-        for (var i: u32 = 0u; i < current_count; i++) {
-            if active_block_ids[i] == block { return; }
-        }
+        //
+        // Membership in the current list is decided by particle_sort_compact_main's own
+        // rule (the block or any of its 8 neighbours holds particles), re-evaluated from
+        // the same histogram: 9 loads, where the previous linear search over the whole
+        // current list cost O(active blocks) serial loads per grace workgroup --
+        // measured at ~330us per substep on the 10k-particle vortex (~156 active blocks).
+        if in_current_active_list(block) { return; }
     }
     let res = step_params.grid_res;
 

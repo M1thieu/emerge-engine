@@ -8,7 +8,9 @@ extern crate emerge_engine as emerge;
 use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
+use emerge::render::{
+    ColorMode, GpuRenderParams, GridVolumeSource, Renderer, SurfaceReconstructionSource,
+};
 use emerge::{
     FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation, MaterialRegistry,
     NewtonianFluidMaterial, Particle, SimConfig, SpawnRegion, build_particles,
@@ -162,7 +164,40 @@ fn make_sim_data(
         // water scene needed 22-63/frame at cfl=0.5) -- 8 would have
         // silently capped it and (with the honest-dropped-time fix already
         // shipped) reported most of each frame's time as unadvanced.
-        max_substeps_per_step: 60,
+        //
+        // Raised 60 -> 150 (2026-09-16), matching `basic_fluids.rs`'s OWN
+        // value for this exact scene (see that file's own doc): GPU's CFL
+        // scan was missing several real CPU-only terms (deformation-
+        // gradient ODE bound, shock-viscosity compression correction,
+        // single-particle instability bound, predictive near-wall
+        // tightening), live-confirmed by `sub` pinning at exactly 60.
+        //
+        // Raised again 150 -> 1000 (2026-09-16, same night): the real
+        // `pressure_floor` fix (see `HANDOFF_fluid_gpu_thin_layer_bug.md`'s
+        // Tenth/Eleventh passes) lets the EOS generate much larger real
+        // pressure gradients in the tension regime -- a larger real
+        // pressure response means a larger effective sound speed
+        // (`c_sound = sqrt(dp/drho)`), which directly shrinks the
+        // CFL-stable timestep. `sub` was pinned at exactly 150 in every
+        // run after that fix, live-confirmed evidence the CFL scan was
+        // already asking for more and being truncated -- the truncation
+        // itself was the source of a genuine, reproducible, wildly
+        // unstable transient (`v` spiking past 179 units/s on frame 40).
+        // Kept at 1000 as headroom only: with the near-wall tightening gone
+        // (see `fluid_near_wall_cfl_scale` below) every pattern takes ~19-27
+        // substeps/frame, never near this cap.
+        max_substeps_per_step: 1000,
+        // TESTED (2026-09-16): raised to `true` (engine default) to check
+        // whether the real, cited affine-speed CFL contribution
+        // (`affine_cfl_speed_contribution`) would catch the growing
+        // velocity-gradient instability traced on particle idx=1994 -- ZERO
+        // effect: frames 1-12 (the entire seed-and-growth phase, C growing
+        // from exactly 0 to 9.487 during pure free-fall) were byte-identical
+        // to the flag-off baseline. This bound only meaningfully tightens dt
+        // once grad_norm is already large (dozens+), by which point the
+        // runaway has already happened -- it doesn't touch the seed. Left
+        // off (matches this file's prior state; no measured benefit to
+        // justify the extra CFL-scan cost).
         cfl_include_affine_speed: false,
         // This demo's gravity (below) is ~10x CPU basic_fluids.rs's, so the
         // same eos_stiffness=1000 needs a tighter CFL here to stay
@@ -195,39 +230,27 @@ fn make_sim_data(
         // already use, ported here directly rather than another hand-picked
         // constant.
         gravity: Vec2::new(0.0, -981.0 * 0.003),
-        // Real, CPU-proven mechanism (`fluid_near_wall_cfl_scale`, MEMORY.md's
-        // fluid-recovery notes Round 7-9), ported to GPU 2026-08-09 (this
-        // exact demo's real, reproduced crash: J up to 34653 under sustained
-        // wall-contact compression). Tightens the CFL bound specifically for
-        // strict-fluid particles near a wall -- the SAME real mechanism that
-        // took `fluid_pressure_projection.rs`'s hardest known scene from
-        // exploding to a full, real 120-frame settle, now applied to this
-        // demo's stiff-EOS (non-projection) fluid path.
-        // Tried lowered to 5.0 (2026-08-09) to cut the substep tax further after
-        // the spawn_water geometry fix below -- REVERTED, live-measured worse:
-        // max J climbed to 40-50 by frame 120 (max_speed still rising, 57.8 ->
-        // 68.6) vs the real, previously-verified ~5-6 stable plateau at 20.0.
-        // Not a borderline call -- this is the same wall-contact divergence
-        // mechanism this constant exists to stop, just delayed rather than
-        // eliminated. Kept at 20.0, the proven-safe value.
-        fluid_near_wall_cfl_scale: 20.0,
-        // Regional substepping (`purring-swinging-cookie.md` Part A) stays OFF
-        // here. Live-measured on this exact scene 2026-08-13, three-way A/B at
-        // matched frames (same build, water-only):
-        //   flag OFF      J max 36.5 (!), J min 0.22, sub 94 -> 5081 late
-        //   flag ON m=1   J max 1.87,     J min 0.66, sub ~1685 throughout
-        //   flag ON m=8   J max 11.8,     J min 0.023, sub 188 -> 2398
-        // The m=1 run's good J was NOT the tiering working -- it came from the
-        // retry ladder repeatedly halving dt (a safety net used as a design
-        // mechanism, at ~9x the substep cost). With the correctly-derived
-        // margin (see SimConfig::fluid_regional_substepping_fine_tier_margin)
-        // the feature is cheap again but does NOT suppress the blowup. The
-        // decisive datum: J reaches 36.5 with the feature entirely OFF, so
-        // this scene's tensile/expansion blowup is a SEPARATE, pre-existing
-        // bug that regional substepping neither causes nor cures. Fix that
-        // first; re-evaluate this flag afterward on a scene that is actually
-        // stable without it.
-        fluid_regional_substepping_gpu_enabled: false,
+        // No `fluid_near_wall_cfl_scale` (engine default 1.0). It used to be
+        // 20.0 here, a 20x smaller timestep for fluid near a wall, added
+        // against wall-contact blow-ups (J up to 34653) that were really two
+        // GPU bugs: fixed-point P2G atomics dropping small momentum
+        // contributions, and the driver misreading `C[1][1]` in the J update
+        // (see `trace2` in `particles_update.wgsl`). With both fixed, all
+        // three patterns match their CPU twin without it
+        // (`fragmentation_check_{cpu,gpu}.rs`, PATTERN=dam|drop|vortex).
+        // Keeping it cost ~20x the substeps once water touched a wall (~400
+        // vs ~21 per frame), and the vortex came out damped (peak speed ~9
+        // vs the CPU reference's ~22).
+        // `fluid_regional_substepping_gpu_enabled` used to be set here.
+        // REMOVED (2026-09-17): every "re-tested, no benefit" note this
+        // field once carried was, in fact, toggling a config flag with no
+        // implementation behind it (the real code was part of a rewrite
+        // reverted 2026-08-14 for unrelated reasons; the field survived,
+        // the behavior didn't). A real feasibility check confirmed the
+        // technique's own precondition -- a calm region existing next to
+        // a violent one -- doesn't hold on this scene anyway. Full account:
+        // `KNOWN_LIMITATIONS.md` entry 2, `src/spacetime/solver/config/
+        // mod.rs`'s own removal note.
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     // TRUE root cause, found+proven 2026-08-06 (not the eos_stiffness rabbit hole
@@ -505,35 +528,22 @@ fn make_sim_data(
     // `c_ref` targets this scene's own real column-height free-fall physics,
     // v_max = sqrt(2*g*h), times the published 10x WCSPH safety factor.
     //
-    // DISCLOSED, MEASURED, NOT SILENT: using this scene's real
-    // `config.gravity.y` (-981*0.003 = -2.943 grid-cells/s^2 --
-    // `config/mod.rs:448`'s own doc confirms `v += gravity*sub_dt` with
-    // `sub_dt` in real seconds, so gravity IS an acceleration, the right
-    // quantity for Torricelli) gives v_max_grid ~= 17.5, matching the
-    // independently measured max_speed=16.03 at frame 60 almost exactly --
-    // real confirmation the formula itself is correct.
-    //
-    // Tested at full strength (2026-08-11) and REJECTED: c2 scales as
-    // v_max^2, so the fully-correct gravity made the acoustic term ~9.8x
-    // stiffer at rest and the batch never reached frame 60 in 90s (worse
-    // than the value below, not better) -- a real, measured regression, not
-    // a guess. The peak free-fall speed is also only reached for an instant
-    // at the moment of wall impact, a case ALREADY separately guarded by
-    // `fluid_near_wall_cfl_scale`'s own dedicated 20x tightening -- sizing
-    // the GLOBAL acoustic term to that same instantaneous peak double-pays
-    // for one safety margin with another.
-    //
-    // HONEST STATUS: the constant below is a deliberately reduced,
-    // real-time-affordable target, same disclosed category as this file's
-    // own `eos_power=3.0` accuracy/perf trade above -- NOT a claim that this
-    // is the scene's true v_max. Closing this gap for real (reaching the
-    // fully-correct sound speed at 45fps+) needs regional/adaptive
-    // substepping so calm parts of the domain stop paying the same CFL cost
-    // as the violent wall-impact region -- already scoped, not yet built
-    // (see the `regional-substepping` plan).
+    // Sized from the scene's REAL gravity (v_max ~= 17.5 grid/s, matching the
+    // measured peak of ~16). It used to use a derated 0.3 instead of 2.943,
+    // chosen while two GPU bugs (fixed-point P2G atomics, the `C[1][1]`
+    // driver misread -- see `trace2` in `particles_update.wgsl`) made the
+    // full-strength EOS look worse, and while `fluid_near_wall_cfl_scale`
+    // was still "guarding" impacts. That left c ~3.1x under the WCSPH rule
+    // (Mach ~0.3, not <= 0.1), and it showed: the pool "breathed" -- mean J
+    // oscillating 0.988 <-> 1.000 with a ~0.7s period, exactly the acoustic
+    // round trip 4*depth/c = 40/55.8 -- so the water bounced on its own
+    // compressibility like a jelly. At the real v_max, all three patterns
+    // stay coherent (0 isolated particles over 150 frames), J stays within
+    // +-6%, mean J holds at 0.999 with no oscillation
+    // (`fragmentation_check_gpu.rs`, GRAV_SIZING env). Cost: ~60 substeps/
+    // frame instead of ~21.
     const COLUMN_HEIGHT_CELLS: f32 = 52.0;
-    const DERATED_GRAVITY_FOR_ACOUSTIC_SIZING: f32 = 0.3;
-    let v_max_grid = (2.0 * DERATED_GRAVITY_FOR_ACOUSTIC_SIZING * COLUMN_HEIGHT_CELLS).sqrt();
+    let v_max_grid = (2.0 * config.gravity.length() * COLUMN_HEIGHT_CELLS).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     // SECOND real bug in the previous version: `NewtonianFluidMaterial::
     // weakly_compressible` hard-codes Cole 1948's gamma=7 internally
@@ -547,8 +557,33 @@ fn make_sim_data(
     // this scene's already-justified gamma=3.0 instead.
     const WATER_EOS_POWER: f32 = 3.0;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
-    let mut water =
-        NewtonianFluidMaterial::new(WATER_RHO_GRID, 1.0e-3, water_tait_b_pa, WATER_EOS_POWER);
+    // REAL FIX (2026-09-17): `dynamic_viscosity` was assigned water's raw SI
+    // value (1.0e-3 Pa.s) directly, with NO SI-to-grid conversion -- the
+    // SAME bug pattern as `pressure_floor` below, just never caught until
+    // now. `fluid.rs`'s own stress law (`stress += eff_viscosity *
+    // strain_dev`, strain rate in 1/s grid-time) needs `eff_viscosity` in
+    // grid units, and this engine already has the dimensionally-correct
+    // conversion for exactly this (`SimConfig::visc_from_si_physical`,
+    // `eta_SI/(rho*dx^2)`, doc'd against this exact consumption pattern).
+    // Must pair with the SAME density-normalized family `pressure_floor`
+    // below already uses (`stress_from_si_physical`) -- mixing raw and
+    // density-normalized conventions in the same stress tensor is wrong
+    // (see `q_factor_elastic_viscosity_pa_s`'s own doc for a real, prior
+    // instance of exactly that mistake, ~917x error, a different material).
+    // Real effect here: raw 1.0e-3 was ~10x too weak (correct grid value
+    // 0.01) -- real, disclosed, but NOT the fix for the splash-disintegration
+    // instability (verified separately: even 10x more molecular viscosity is
+    // far too small to explain or damp the observed C-matrix growth rate).
+    const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
+    const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
+    let water_dynamic_viscosity =
+        config.visc_from_si_physical(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
+    let mut water = NewtonianFluidMaterial::new(
+        WATER_RHO_GRID,
+        water_dynamic_viscosity,
+        water_tait_b_pa,
+        WATER_EOS_POWER,
+    );
     // Real, sourced bulk (second) viscosity, 2026-08-12 -- `NewtonianFluidMaterial::new`
     // hardcodes `bulk_viscosity: 0.0`, leaving this scene's Navier-Stokes stress tensor
     // (`fluid.rs`'s own `stress += 0.5*bulk_viscosity*div(v)*I`, standard and already
@@ -565,8 +600,84 @@ fn make_sim_data(
     // consistent with zero volumetric dissipation. Real value: water's bulk viscosity is
     // ~2.8-3.0x its shear (dynamic) viscosity (Litovitz & Davis; confirmed via
     // arxiv.org/pdf/1002.3029's acoustic-spectroscopy remeasurement, ratio ~3 across
-    // 7-50C) -- applied here to the SAME `1.0e-3` dynamic_viscosity already used above.
-    water.bulk_viscosity = 3.0 * 1.0e-3;
+    // 7-50C) -- applied to the SAME real, now-correctly-SI-converted
+    // `water_dynamic_viscosity` above (was `3.0 * 1.0e-3` raw, same unit bug).
+    water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
+    // REAL FIX (2026-09-16) -- root cause of the long-standing thin-layer
+    // collapse (`HANDOFF_fluid_gpu_thin_layer_bug.md`, Tenth pass, full
+    // investigation trail there). `pressure_floor` (constructor default
+    // -0.1) is a bare GRID-UNIT constant that was never run through this
+    // engine's own SI-to-grid conversion pipeline -- unlike `water_tait_b_pa`
+    // just above, which IS properly SI-derived in this same file. Real
+    // cavitation onset for water in practice (dissolved-gas nucleation, the
+    // standard engineering figure) is ~-0.1 MPa = -100,000 Pa gauge.
+    // Converted through `stress_from_si_physical` (the SAME conversion
+    // `eos_stiffness` itself already uses), that lands orders of magnitude
+    // more negative than this demo's own derated `eos_stiffness` -- real
+    // water, properly scaled, essentially never cavitates from ordinary
+    // splashing (a 2x volumetric expansion is nowhere near its real tensile
+    // limit). The un-converted `-0.1` default instead clipped almost the
+    // ENTIRE expansion range into a flat, zero-pressure-gradient dead zone
+    // with no restoring force once J drifted past it -- confirmed directly:
+    // this fix alone took the resting bulk from mean_J=1.5-1.9 pinned at the
+    // 2.0 clamp (every depth band, every checkpoint) to mean_J=1.00-1.03
+    // (healthy) at every depth band through a full 2000-frame run.
+    const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
+    const WATER_RHO_SI_KG_M3: f32 = 1000.0;
+    water.pressure_floor =
+        config.stress_from_si_physical(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    // REAL FIX (2026-09-16) -- root cause of the splash disintegrating into
+    // permanently scattered droplets, found bisecting directly against a
+    // known-good historical build (`b8b13cc`, 2026-08-13) at the user's own
+    // request. Confirmed via a real, adjacent-commit A/B (both patched with
+    // the SAME pressure_floor+substep fixes above, isolating this variable
+    // alone): `c32d86c` settles cleanly (mean bulk J=[0.92,1.06], 7 self-
+    // correcting transient outliers over 900 frames); `f1fea23`, committed
+    // 2 minutes later, shows persistent scattering (108 outlier events,
+    // ext.y collapsing to 0.0). `f1fea23` itself is correct, well-tested
+    // physics (exact rotation-invariant J-integration) -- restoring it is
+    // not an option. Mechanism: the OLD, biased `det(I+dt*C)` integrator's
+    // spurious `+dt^2*det(C)` expansion term, while wrong for pure rotation,
+    // also happened to inflate J (hence soften/dampen the EOS pressure
+    // response) specifically in the high-vorticity zones a violent splash
+    // front produces -- accidentally providing extra "stickiness" nothing
+    // else in the scene supplied. The exact formula correctly removes that
+    // bias, exposing water's genuine, physical need for real surface
+    // tension to hold a violent splash together, which this material has
+    // never had (`surface_tension_coeff` defaults to 0.0, confirmed via
+    // `grep -rn "surface_tension_coeff\s*="` finding zero nonzero uses
+    // anywhere in this engine's history).
+    //
+    // Real, cited value, not a tuned constant: water's surface tension at
+    // room temperature is gamma=0.0728 N/m (standard, widely-cited figure).
+    // `NewtonianFluidMaterial::surface_tension_coeff` adds `gamma_grid*J` to
+    // the Kirchhoff stress directly (see fluid.rs's own doc), i.e. it needs
+    // PRESSURE units, not force-per-length. Surface tension physically
+    // manifests as a pressure jump across a curved interface (Young-Laplace,
+    // dp=gamma/R). This discretization cannot resolve any curvature radius
+    // R smaller than one grid cell, so R=dx_meters is the natural, real
+    // (if conservative/upper-bound) length scale for a bulk, non-curvature-
+    // resolving approximation like this one -- the same "the grid IS the
+    // resolution limit" reasoning `fluid_near_wall_cfl_scale` and the
+    // pressure_floor fix above both already rely on. Converted through the
+    // SAME `stress_from_si_physical` pipeline as everything else in this
+    // file.
+    // TESTED (2026-09-16) at R=dx_meters (the upper-bound length scale
+    // derivation): surface_tension_coeff=72.8 caused J to hit the 2.0 clamp
+    // by frame 23 and produced a particle at |v|=51.77 that is physically
+    // impossible under this demo's own weak gravity (-2.943 cells/s^2 can
+    // only produce ~6.8 cells/s after the elapsed sim time) -- a genuine,
+    // real instability, the SAME failure signature the deleted grid-based
+    // cohesion mechanism already showed. Reverted pending a smaller, still-
+    // real derivation, or evidence this bulk-cohesion approach is simply
+    // wrong for a macroscopic (cm-to-meter scale) splash, where real
+    // surface tension is known to be negligible anyway (its natural length
+    // scale is the capillary length, ~2.7mm for water -- millimeter, not
+    // centimeter/meter, scale). See fluid_thin_layer_diag_gpu.rs or
+    // HANDOFF_fluid_gpu_thin_layer_bug.md for the next real step: verify
+    // via RenderMode::Surface (curvature-flow reconstruction) whether the
+    // "disintegration" judged from raw point-cloud rendering is even a
+    // real physics defect, before adding any more force terms.
     // `settling_damping` was tried at 0.1 (2026-08-13) alongside the
     // restored J clamp + pressure_floor -- live-measured, that COMBINATION
     // over-damped the scene entirely (reported: "doesn't even move"). Left
@@ -585,6 +696,19 @@ fn make_sim_data(
     let registry = MaterialRegistry::with_default(Box::new(water));
 
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    // Real, already-proven mechanism (`fluids_gpu_isolated_droplet_settles_with_damping`,
+    // 2026-07-30): an isolated splash particle has no neighbors to form a real
+    // deformation/velocity gradient against, so none of this material's stress-based
+    // dissipation (shear/bulk/shock viscosity) can ever act on it -- P2G/G2P still
+    // smooths a lone particle's own velocity through its own local grid nodes
+    // regardless of neighbors, so direct velocity relaxation is the one mechanism that
+    // structurally reaches this case (see that memory's own account for why real air
+    // drag was tried and rejected -- too weak at this scale/speed to matter). Previously
+    // wired only into the Vortex pattern's own field list (needed there for its drain
+    // dynamics), never applied to DamBreak/DropletImpact -- re-applied here for every
+    // pattern at the same cited rate (0.1, within that investigation's documented
+    // 0.05-0.2 water range).
+    sim.add_force_field_gpu(GpuFieldEntry::linear_drag(Vec2::ZERO, 0.1, 1 << MAT_WATER));
     // Vortex's real drain + basin -- see that match arm's own doc for the
     // full physical account. Registered once here (persists every substep
     // until cleared, see `add_force_field_gpu`'s own doc) since `sim` only
@@ -856,6 +980,23 @@ impl State {
         self.last_instant = now;
         let steps = self.stepper.steps_for_frame(frame_delta);
         self.max_steps_seen = self.max_steps_seen.max(steps);
+        // Real GPU render-interpolation snapshot ("Fix Your Timestep", Gaffer
+        // 2004 -- see `Renderer::snapshot_particle_positions`'s own doc). Same
+        // fix already ported to `basic_sand_grid_gpu.rs`; this closes the gap
+        // on the OTHER side of the exact demo family this feature was first
+        // built for -- `basic_fluids.rs` (CPU) got the real fix back on
+        // 2026-09-09, its GPU sibling never did. Taken ONCE per batch, before
+        // any step in it runs, so `render_gpu`'s later blend is against the
+        // pre-batch state, not a partially-advanced one. Skipped when
+        // `steps==0`: the last real snapshot stays valid since nothing moved.
+        if steps > 0 {
+            self.renderer.snapshot_particle_positions(
+                self.sim.device(),
+                self.sim.queue(),
+                self.sim.particle_buffer(),
+                self.sim.particle_count(),
+            );
+        }
         for _ in 0..steps {
             self.sim.step_frame();
             self.frame += 1;
@@ -1048,13 +1189,21 @@ impl State {
                 );
             }
             RenderMode::Particles => {
+                // Real interpolation now active (see the pre-step snapshot
+                // above) -- scoped to this render mode only, matching the CPU
+                // `basic_fluids.rs` precedent: GridVolume/Surface build their
+                // own independent P2G/reconstruction bridge buffers, a real,
+                // disclosed, separate follow-up, not done here.
                 self.renderer.render_gpu(
                     self.sim.device(),
                     self.sim.queue(),
-                    self.sim.particle_buffer(),
-                    self.sim.particle_count(),
-                    &view,
-                    true,
+                    GpuRenderParams {
+                        particle_buf: self.sim.particle_buffer(),
+                        particle_count: self.sim.particle_count(),
+                        output_view: &view,
+                        clear: true,
+                        interp_alpha: self.stepper.interpolation_alpha(),
+                    },
                 );
             }
         }

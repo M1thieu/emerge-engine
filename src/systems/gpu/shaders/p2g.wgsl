@@ -83,6 +83,53 @@ const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 const NUM_FLOOR:            f32 = 1e-6;
+
+// Real, restored 2026-09-15 (see the fluid-branch shock-viscosity comment
+// below for the full story): a real, simple magnitude-based finiteness
+// check -- `abs(NaN) <= X` is false under IEEE754 comparison rules, so this
+// correctly rejects NaN too, not just +-inf.
+fn finite_scalar(value: f32) -> bool {
+    return abs(value) <= 3.4e38;
+}
+
+// Mirrors `utils::fast_pow` (Rust, CPU) exactly: for a WHOLE-numbered
+// exponent, exponentiation by squaring (repeated multiplication) instead of
+// WGSL's built-in `pow()`, which always evaluates as `exp2(e*log2(x))` even
+// for integer exponents -- measurably LESS precise than direct
+// multiplication for x near 1.0, a real, confirmed (not theoretical) GPU
+// numerics gap found 2026-09-15 by a real CPU/GPU parity test: at
+// eos_power=4.0 (shock-viscosity term needs eos_power-1.0=3.0), plain
+// `pow()` gave a velocity mismatch of 0.042 against a 2e-3 tolerance, an
+// order of magnitude over -- no prior test had ever checked tight CPU/GPU
+// numeric agreement under real compression before this one (the one that
+// would have, `gpu_and_cpu_strict_fluid_match_one_substep`, was already
+// `#[ignore]`d for an unrelated reason). Falls back to `pow()` for
+// non-integer or very large exponents, matching the CPU function's own
+// real fallback rule exactly.
+fn fast_pow(x: f32, e: f32) -> f32 {
+    if abs(fract(e)) > 1.0e-6 || abs(e) >= 32.0 {
+        return pow(x, e);
+    }
+    var exp_i = i32(round(e));
+    let neg = exp_i < 0;
+    if neg {
+        exp_i = -exp_i;
+    }
+    var base = x;
+    var result = 1.0;
+    var n = exp_i;
+    while n > 0 {
+        if (n & 1) == 1 {
+            result = result * base;
+        }
+        base = base * base;
+        n = n >> 1;
+    }
+    if neg {
+        return 1.0 / result;
+    }
+    return result;
+}
 // Fixed-point scales: mass and momentum use different scales to avoid i32 overflow.
 // With 9 particles per cell: mass × 1e6 ≤ 9e6 (safe). Momentum at vel_limit=1000: 9×1000×1e5=9e8 (safe).
 // MOM_ATOMIC_SCALE=1e5 gives 1e-5 precision -- 100× better than 1e3, avoids overflow at min_dt=0.001.
@@ -187,7 +234,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // EOS consistent with the F-tracked volume ratio.
             let rho   = clamp(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR, mat.rest_density * 2.0);
             let ratio = rho / max(mat.rest_density, NUM_FLOOR);
-            let press = max(mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
+            let press = max(mat.eos_stiffness * (fast_pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
             var t     = -press * I;
 
             let sym  = p.velocity_gradient + transpose(p.velocity_gradient);
@@ -195,6 +242,26 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let dev  = sym - (tr_s * 0.5) * I;
 
             // Arrhenius thermal thinning: µ_eff = µ₀·exp(−k·T)
+            //
+            // TESTED AND REVERTED (2026-09-16): a Smagorinsky (1963) sub-grid
+            // eddy-viscosity addition here (real citation, Lilly 1967's
+            // Cs~0.17-0.2) was tried as a fix for the free-fall velocity-
+            // gradient runaway traced on idx=1994. At the real Cs=0.17 it had
+            // negligible effect (byte-near-identical trajectory). Escalated
+            // diagnostically to Cs=2.0 (real damping effect, still visually
+            // fragmented) then Cs=8.0 -- which caused a SECOND, much worse,
+            // unrelated catastrophic explosion (|v| in the tens of thousands)
+            // even after adding a matching viscous-CFL bound
+            // (`smagorinsky_viscous_dt_bound`, since removed along with this
+            // term -- both were real, correctly-derived code, just didn't
+            // fix the problem): GPU's
+            // CFL scan runs once per FRAME batch (hundreds of substeps share
+            // one dt), so a periodic re-check cannot react fast enough if the
+            // underlying growth compounds within a single batch -- the same
+            // structural latency this whole investigation's growth pattern
+            // exhibits. Real lesson: any fix here needs to act every
+            // substep directly, not depend on a periodic CFL re-scan. See
+            // HANDOFF_fluid_gpu_thin_layer_bug.md's Twelfth pass.
             let eff_visc = select(mat.dynamic_viscosity,
                 mat.dynamic_viscosity * exp(-mat.thermal_viscosity_coeff * p.temperature),
                 mat.thermal_viscosity_coeff > 0.0);
@@ -226,6 +293,47 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // Bulk viscosity damps compression waves.
             if mat.bulk_viscosity > 0.0 {
                 t = t + mat.bulk_viscosity * (tr_s * 0.5) * I;
+            }
+
+            // Real, sourced (von Neumann & Richtmyer 1950 + Landshoff)
+            // shock-capturing viscosity -- RESTORED 2026-09-15. This branch
+            // had it once (weak-shock form, see `finite_scalar`'s own doc
+            // above), but it was silently deleted in commit `7c7991f`
+            // ("consolidate GPU/render backlog") alongside ~480 unrelated
+            // line changes to this same file, never disclosed there or
+            // restored since -- every GPU-run fluid scene had zero shock-
+            // capturing viscosity despite `fluid.rs::kirchhoff_stress`'s own
+            // doc still claiming CPU/GPU parity. Ported from the CURRENT,
+            // authoritative CPU formula (`fluid.rs::artificial_bulk_
+            // viscosity` / `utils::von_neumann_richtmyer_q`), NOT the stale
+            // pre-deletion GPU snapshot -- that snapshot still used the
+            // strong-shock Kurapatenko coefficient `(gamma+1)/2`, which the
+            // CPU side has since moved away from after finding it made a
+            // real crash worse (see `fluid.rs`'s own doc: the quadratic
+            // term's contribution must feed into the CFL bound before a
+            // stronger coefficient is safe, real disclosed future work).
+            // Gated to compression (div_v<0) only -- real shocks only form
+            // under compression. Uses its OWN `rho = rest_density/J`
+            // (floor-clamped only via `J`'s own definition above), NOT the
+            // ceiling-clamped `rho` this branch's pressure term uses --
+            // matches `von_neumann_richtmyer_q`'s own separate computation
+            // exactly, not an approximation.
+            let div_v_true = tr_s * 0.5; // sym = C+Cᵀ = 2D, so div(v) = tr(sym)/2
+            if div_v_true < 0.0 {
+                let density_ratio = 1.0 / J;
+                let c2 = mat.eos_stiffness * mat.eos_power
+                    * fast_pow(max(density_ratio, 1.0e-8), mat.eos_power - 1.0)
+                    / max(mat.rest_density, NUM_FLOOR);
+                let c_sound = sqrt(max(c2, 0.0));
+                let c0_quadratic = (mat.eos_power + 1.0) * 0.25; // Kurapatenko 1967, weak-shock
+                let h = 1.0; // grid_cell_size -- same disclosed scope limit as the CPU side
+                let quadratic = c0_quadratic * h * h * div_v_true * div_v_true;
+                let linear = h * c_sound * div_v_true; // Landshoff, c1=1.0
+                let rho_shock = mat.rest_density / J;
+                let q = rho_shock * (quadratic - linear);
+                if finite_scalar(q) {
+                    t = t - q * I;
+                }
             }
 
             // Surface tension: τ += γ·J·I
@@ -319,7 +427,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // EOS pressure: −k·((ρ/ρ₀)^γ − 1)·I
             let rho   = clamp(mat.rest_density / max(J, NUM_FLOOR), NUM_FLOOR, mat.rest_density * 4.0);
             let ratio = rho / max(mat.rest_density, NUM_FLOOR);
-            let press = max(mat.eos_stiffness * (pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
+            let press = max(mat.eos_stiffness * (fast_pow(ratio, mat.eos_power) - 1.0), mat.pressure_floor);
             // Corotated elastic deviatoric: 2µ·h·dev[(F−R)·Fᵀ]
             let h      = p.hardening_scale;
             let R      = polar_r(F);
@@ -331,6 +439,29 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             let lam_e  = mat.lambda * h;
             let lam_vol = lam_e * (J - 1.0) * J * I;
             tau = -press * I + dev_c + lam_vol;
+
+            // Real viscous dissipation -- RESTORED 2026-09-15. Identical
+            // form to `NewtonianFluidMaterial`'s own (τ += η·dev(D) +
+            // ζ·(∇·v)·I), matching `GranularFluidMaterial::kirchhoff_
+            // stress`'s current CPU formula exactly (real, disclosed
+            // 2026-08-06 addition -- see `dynamic_viscosity`'s own Rust doc:
+            // a real fix for a "superball bounce" hard-impact failure mode).
+            // Silently deleted from this branch in the same `7c7991f`
+            // consolidation that removed the fluid branch's shock viscosity
+            // above -- every GPU-run granular-fluid (mud) scene has been
+            // missing exactly the damping mechanism added to prevent hard-
+            // impact bouncing, with no disclosure anywhere that it was gone.
+            if mat.dynamic_viscosity > 0.0 || mat.bulk_viscosity > 0.0 {
+                let sym_v = p.velocity_gradient + transpose(p.velocity_gradient);
+                let tr_v  = sym_v[0][0] + sym_v[1][1];
+                if mat.dynamic_viscosity > 0.0 {
+                    let dev_v = sym_v - (tr_v * 0.5) * I;
+                    tau = tau + mat.dynamic_viscosity * dev_v;
+                }
+                if mat.bulk_viscosity > 0.0 {
+                    tau = tau + mat.bulk_viscosity * (tr_v * 0.5) * I;
+                }
+            }
         }
         case 9u: { // Viscoelastic (Kelvin-Voigt) -- elastic NeoHookean + viscous dashpot
             let j_min   = max(mat.volume_ratio_min, NUM_FLOOR);
@@ -402,11 +533,29 @@ fn sv(p: Particle, mat: MaterialParams) -> f32 {
     }
 }
 
-fn atomic_addf_mass(idx: u32, val: f32) {
-    atomicAdd(&grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
-}
-fn atomic_addf_mom(idx: u32, val: f32) {
-    atomicAdd(&grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
+// Exact f32 atomic add on the main grid (mass + momentum), via a
+// compare-and-swap loop on the value's bit pattern -- WGSL has no float
+// atomics. Replaces a fixed-point encoding (`round(val * SCALE)` into i32)
+// that silently deleted every contribution smaller than half a quantum:
+// measured, a GPU fluid left alone at dt=1e-4 could not even fall under
+// gravity (per-substep momentum ~4e-6 < the 1e-5 quantum, rounded to 0),
+// while the CPU twin, summing real floats, fell and stayed stable through
+// impact. No single fixed scale can work: an i32 holds ~9 significant
+// digits, but resolving a small-dt increment (~1e-8) while holding a heavy
+// fast node's momentum (~300, e.g. mud at impact) needs ~4e10. Summing real
+// floats gives the GPU the same arithmetic as the CPU path.
+// `grid_clear` zeroes the buffer; integer 0 is also the bit pattern of 0.0.
+fn atomic_add_f32_grid(idx: u32, val: f32) {
+    var old = atomicLoad(&grid_atomic[idx]);
+    loop {
+        let swapped = atomicCompareExchangeWeak(
+            &grid_atomic[idx],
+            old,
+            bitcast<i32>(bitcast<f32>(old) + val),
+        );
+        if swapped.exchanged { break; }
+        old = swapped.old_value;
+    }
 }
 fn grip_atomic_addf_mass(idx: u32, val: f32) {
     atomicAdd(&grip_grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
@@ -418,12 +567,84 @@ fn grip_atomic_addf_mom(idx: u32, val: f32) {
     atomicAdd(&grip_grid_atomic[idx], i32(round(val * MOM_ATOMIC_SCALE)));
 }
 
-@compute @workgroup_size(64, 1, 1)
-fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if gid.x >= step_params.particle_count { return; }
-    let p_idx = sorted_particle_ids[gid.x];
+// Workgroup-local accumulation tile for the main-grid scatter (Gao et al.
+// 2018, "GPU Optimization of Material Point Methods", SIGGRAPH Asia: sorted
+// particles, shared-memory reduction before global atomics; `tmp/pbmpm`'s
+// g2p2g does the same). Particles arrive block-sorted, so one workgroup's 64
+// particles touch a small patch of nodes: summing there first (float CAS on
+// shared memory, cheap) and flushing each touched node to the global grid
+// ONCE per workgroup replaces ~27 contended global CAS loops per particle.
+// Measured: the per-particle global CAS scatter took p2g from 111us
+// (fixed-point atomicAdd) to 336us on the demo's 2912-particle dam break.
+// Exactness is unchanged -- still real f32 sums, only the summation order
+// differs (as with any atomic scatter). Nodes outside the tile (a workgroup
+// straddling two distant blocks) fall back to the direct global add.
+const TILE_DIM: i32 = 16;
+const TILE_NODES: u32 = 256u; // TILE_DIM * TILE_DIM
+// Measured and NOT kept (2026-09-19): splitting this into two banks by lane parity, to
+// halve how many lanes CAS the same slot at once, changed nothing (168-184us vs
+// 171-188us). The cost is the CAS round trips themselves, not the contention.
+var<workgroup> tile_acc: array<atomic<i32>, 768>; // TILE_NODES * (mom.x, mom.y, mass)
+var<workgroup> tile_origin: array<atomic<i32>, 2>;
 
-    let p   = particles[p_idx];
+fn tile_add(slot: u32, val: f32) {
+    var old = atomicLoad(&tile_acc[slot]);
+    loop {
+        let swapped = atomicCompareExchangeWeak(
+            &tile_acc[slot],
+            old,
+            bitcast<i32>(bitcast<f32>(old) + val),
+        );
+        if swapped.exchanged { break; }
+        old = swapped.old_value;
+    }
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn p2g_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) lid: u32,
+) {
+    // No early return before the barriers below (they must be reached by every
+    // invocation): out-of-range / NaN-position threads just skip the scatter.
+    if lid == 0u {
+        atomicStore(&tile_origin[0], 2147483647);
+        atomicStore(&tile_origin[1], 2147483647);
+    }
+    for (var k = lid; k < TILE_NODES * 3u; k += 64u) {
+        atomicStore(&tile_acc[k], 0);
+    }
+    let in_range = gid.x < step_params.particle_count;
+    let p_idx = sorted_particle_ids[min(gid.x, step_params.particle_count - 1u)];
+    let p = particles[p_idx];
+    // NaN position would corrupt the grid sums -- skip silently.
+    let valid = in_range && dot(p.x, p.x) >= 0.0;
+    let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
+    workgroupBarrier();
+    if valid {
+        atomicMin(&tile_origin[0], base.x - 1);
+        atomicMin(&tile_origin[1], base.y - 1);
+    }
+    workgroupBarrier();
+    let origin = vec2<i32>(atomicLoad(&tile_origin[0]), atomicLoad(&tile_origin[1]));
+    if valid {
+        scatter_particle(p, base, origin);
+    }
+    workgroupBarrier();
+    let res = step_params.grid_res;
+    for (var k = lid; k < TILE_NODES; k += 64u) {
+        let mass_bits = atomicLoad(&tile_acc[k * 3u + 2u]);
+        if mass_bits == 0 { continue; }
+        let cx = origin.x + i32(k % u32(TILE_DIM));
+        let cy = origin.y + i32(k / u32(TILE_DIM));
+        let base4 = (u32(cy) * res + u32(cx)) * 4u;
+        atomic_add_f32_grid(base4 + 0u, bitcast<f32>(atomicLoad(&tile_acc[k * 3u + 0u])));
+        atomic_add_f32_grid(base4 + 1u, bitcast<f32>(atomicLoad(&tile_acc[k * 3u + 1u])));
+        atomic_add_f32_grid(base4 + 2u, bitcast<f32>(mass_bits));
+    }
+}
+
+fn scatter_particle(p: Particle, base: vec2<i32>, origin: vec2<i32>) {
     let res = step_params.grid_res;
     let dt  = step_params.dt;
     let mat = materials[p.material_id];
@@ -439,14 +660,9 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // force_fields, which skip recomputing things that provably don't change for a
     // particle whose state is frozen -- not in skipping the scatter itself.
 
-    // NaN position would corrupt the i32 atomics -- skip silently.
-    if !(dot(p.x, p.x) >= 0.0) { return; }
-
     let tau   = kirchhoff(p, mat);
     let vol   = sv(p, mat);
     let scale = -vol * step_params.kernel_d_inverse * dt;
-
-    let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
     // Separable quadratic B-spline: only 3 distinct x-offsets and 3 distinct y-offsets
     // occur across the 9-cell neighborhood (di, dj each range over {-1,0,1}), so the
@@ -483,9 +699,17 @@ fn p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let stress_mom = (scale * w) * (tau * cell_dist);
 
             let base4 = (u32(cy) * res + u32(cx)) * 4u;
-            atomic_addf_mom(base4 + 0u, apic_mom.x + stress_mom.x);
-            atomic_addf_mom(base4 + 1u, apic_mom.y + stress_mom.y);
-            atomic_addf_mass(base4 + 2u, mass_w);
+            let local = vec2<i32>(cx, cy) - origin;
+            if all(local >= vec2<i32>(0)) && all(local < vec2<i32>(TILE_DIM)) {
+                let slot = u32(local.y * TILE_DIM + local.x) * 3u;
+                tile_add(slot + 0u, apic_mom.x + stress_mom.x);
+                tile_add(slot + 1u, apic_mom.y + stress_mom.y);
+                tile_add(slot + 2u, mass_w);
+            } else {
+                atomic_add_f32_grid(base4 + 0u, apic_mom.x + stress_mom.x);
+                atomic_add_f32_grid(base4 + 1u, apic_mom.y + stress_mom.y);
+                atomic_add_f32_grid(base4 + 2u, mass_w);
+            }
 
             // Multi-field contact (GPU port, first slice): additive second scatter for
             // the "grip" field (contact_group != 0), exactly mirroring the total-field

@@ -1,23 +1,22 @@
-// particles_update -- per-particle F update, plasticity, volume/density, position, boundary.
-// MLS-MPM, Hu et al. 2018 SIGGRAPH §4.
+// g2p_update -- fused per-particle substep tail: G2P gather, then F update,
+// plasticity, volume/density, position, boundary, then force fields and
+// sleep/wake scoring. MLS-MPM, Hu et al. 2018 SIGGRAPH §4.
 //
-// One thread per particle (sorted access via sorted_particle_ids).
-// Reads v and velocity_gradient (C matrix) written by the preceding g2p pass,
-// then runs all remaining per-particle state updates.
+// One thread per particle (sorted access via sorted_particle_ids). The gather
+// (`g2p_gather.inc.wgsl`) and force-field (`force_fields_apply.inc.wgsl`) code is
+// appended to this source at pipeline creation. These used to be three separate
+// dispatches (g2p -> particles_update -> force_fields), each loading and storing
+// the full 128-byte particle; on a small integrated GPU the fixed cost per
+// dispatch alone was ~15-20us, a large share of a ~0.35ms substep.
 //
-// Steps (mirrors the second half of the old fused g2p pass):
-//   1. F = (I + dt·C) · F_old          (C = velocity_gradient from g2p)
+// Update steps (in `update_particle`):
+//   1. F = (I + dt·C) · F_old          (C = velocity_gradient from the gather)
 //   2. Snow plasticity (model 4): 2D SVD → clamp σ → update Jp/h → reconstruct F_e
 //   3. DP plasticity  (model 5): 2D SVD → log-strain return mapping → update q/log_volume_strain
 //   4. Von Mises      (model 6): 2D SVD → J2 yield check → deviatoric return mapping
 //   5. J = det(F), volume = initial_volume × J, density = mass / volume
 //   6. Position: x = x + v · dt
 //   7. Boundary clamp: slip -- clamp x within [bt, grid_res−bt)
-//
-// Sorted particle access: reads particles[sorted_particle_ids[gid.x]] for
-// cache-coherent scatter in p2g (same permutation used there).
-// CPU sort in step_frame() provides per-frame spatial ordering; particle_sort
-// seeds the identity permutation at the start of each frame.
 
 struct Particle {
     x:                    vec2<f32>,
@@ -89,14 +88,24 @@ struct StepParams {
     boundary_thickness: u32,
     vel_limit:          f32,
     sleep_threshold:    f32,
-    _pad0:              u32,
-    _pad1:              u32,
-    _pad2:              u32,
+    contact_friction:   f32,
+    grid_cell_size:     f32,
+    contact_active:     u32,
 }
 
 const MAX_MATERIALS:    u32 = {{MAX_MATERIALS}}u;
 const NUM_FLOOR:        f32 = 1e-6;
 const NUM_FLOOR_TIGHT:  f32 = 1e-10;
+
+// Bit m set = material model m (`MaterialParams::model`) is in this scene's registry
+// (`MaterialRegistry::model_mask`), fixed at pipeline creation and re-specialized when the
+// registry gains a new model. Branches for absent models compile away: measured on the
+// fluid-only dam break, the never-taken plasticity/SVD code cost ~20us of a ~70us
+// g2p_update dispatch (its register footprint lowers occupancy even when unused).
+override MODELS_PRESENT: u32 = 0xFFFFFFFFu;
+fn has_model(model: u32, m: u32) -> bool {
+    return (MODELS_PRESENT & (1u << m)) != 0u && model == m;
+}
 
 @group(0) @binding(0) var<storage, read_write> particles:            array<Particle>;
 @group(0) @binding(2) var<uniform>             materials:            array<MaterialParams, MAX_MATERIALS>;
@@ -361,6 +370,27 @@ fn det2(m: mat2x2<f32>) -> f32 {
     return m[0][0] * m[1][1] - m[0][1] * m[1][0];
 }
 
+// Trace of a 2x2 matrix, taking the matrix BY VALUE -- deliberately the same
+// shape as `det2` above. Measured on this project's AMD Vulkan target
+// (driver 25.10.2): indexing an element straight out of a mat2x2 member of a
+// function-local struct copy (`p.velocity_gradient[1][1]`, and equally
+// `[1].y`) returned the element of COLUMN 0 (`[0][1]`) -- the column index was
+// lost. Passing the whole matrix into a function first, as `det2` always
+// has, reads correctly. Confirmed by writing the shader's own computed value
+// back to the particle and comparing it against the read-back matrix.
+fn trace2(m: mat2x2<f32>) -> f32 {
+    return m[0][0] + m[1][1];
+}
+
+// Squared Frobenius norm, matrix taken BY VALUE -- same reason as `trace2`
+// (particles_update.wgsl): indexing a column straight out of a mat2x2 member
+// of a function-local struct copy lost the column index on the AMD Vulkan
+// target, so `p.velocity_gradient[1]` silently re-read column 0 and this
+// NaN guard never saw column 1.
+fn frob2_sq(m: mat2x2<f32>) -> f32 {
+    return dot(m[0], m[0]) + dot(m[1], m[1]);
+}
+
 // Exact 2D exp(A), matching CPU `deformation_increment_exp`. Restricted at
 // the call site to models explicitly migrated from forward Euler so plastic
 // projections can be validated one family at a time.
@@ -390,19 +420,34 @@ fn deformation_increment_exp(a: mat2x2<f32>) -> mat2x2<f32> {
 
 // Workgroup size MUST match WG_PARTICLES (= 64) in src/gpu/mod.rs.
 @compute @workgroup_size(64, 1, 1)
-fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn g2p_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if gid.x >= step_params.particle_count { return; }
-    let p_idx = sorted_particle_ids[gid.x]; // sorted for cache-coherent p2g scatter
+    let p_idx = sorted_particle_ids[gid.x]; // sorted: cache-coherent grid gather
 
-    var p   = particles[p_idx];
+    var p = particles[p_idx];
+    g2p_gather(p_idx, &p);
+    // Still-sleeping particles (didn't wake in the gather) are frozen -- skip state
+    // projection, F update, every plasticity branch, and position integration
+    // entirely. Particles that woke have sleeping=0u by this point and get the full
+    // update, same as CPU (a newly-woken particle gets a real update the same substep
+    // it wakes).
+    if p.sleeping == 0u {
+        update_particle(p_idx, &p);
+    }
+    // Force fields see the advanced position and the updated velocity, exactly as
+    // the former standalone pass did when it ran after this one. Only `v` and
+    // `sleeping` can change there, so only those are written back.
+    if apply_force_fields(&p) {
+        particles[p_idx].v = p.v;
+        particles[p_idx].sleeping = p.sleeping;
+    }
+}
 
-    // Still-sleeping particles (didn't wake in g2p this substep) are frozen -- skip
-    // state projection, F update, every plasticity branch, and position integration
-    // entirely. Particles that woke in g2p have sleeping=0u by this point and get the
-    // full update below, same as CPU (a newly-woken particle gets a real update the
-    // same substep it wakes).
-    if p.sleeping != 0u { return; }
-
+// F update, plasticity, state projection and position advance for one awake
+// particle whose gathered v/C are already in `*pp`. Writes its results to
+// `particles[p_idx]` and mirrors the advanced position and velocity into `*pp`.
+fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
+    var p = *pp;
     let mat = materials[p.material_id];
     let dt  = step_params.dt;
     let res = step_params.grid_res;
@@ -423,8 +468,7 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Velocity: NaN v makes new_x = NaN → position never recovers (clamp(NaN) = NaN on AMD).
     if !(dot(p.v, p.v) >= 0.0) { p.v = vec2<f32>(0.0); }
     // velocity_gradient: NaN C makes new_F = NaN → F never recovers.
-    let cg = dot(p.velocity_gradient[0], p.velocity_gradient[0])
-           + dot(p.velocity_gradient[1], p.velocity_gradient[1]);
+    let cg = frob2_sq(p.velocity_gradient);
     if !(cg >= 0.0) { p.velocity_gradient = mat2x2<f32>(); }
     // deformation_gradient: NaN or det ≤ 0 → identity (J-projection below also covers post-update).
     if !(det2(p.deformation_gradient) > 0.0) { p.deformation_gradient = I; }
@@ -445,19 +489,21 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Remaining tensor-F model SandMuI (8) stays on the original path until
     // their own plastic projections receive the same audit.
     var f_increment = I + dt * p.velocity_gradient;
-    if mat.model == 2u || mat.model == 3u || mat.model == 4u || mat.model == 5u || mat.model == 6u || mat.model == 7u || mat.model == 9u || mat.model == 11u {
+    if has_model(mat.model, 2u) || has_model(mat.model, 3u) || has_model(mat.model, 4u)
+        || has_model(mat.model, 5u) || has_model(mat.model, 6u) || has_model(mat.model, 7u)
+        || has_model(mat.model, 9u) || has_model(mat.model, 11u) {
         f_increment = deformation_increment_exp(dt * p.velocity_gradient);
     }
     var new_F = f_increment * p.deformation_gradient;
 
     // Plasticity -- all three models via 2D analytical SVD.
-    if mat.model == 4u && mat.compression_limit > 0.0 {
+    if has_model(mat.model, 4u) && mat.compression_limit > 0.0 {
         // Snow: clamp singular values to elastic range; accumulate Jp and hardening h.
         let sr          = snow_plasticity(new_F, p.plastic_volume_ratio, mat);
         new_F           = sr.f_e;
         p.plastic_volume_ratio = sr.jp;
         p.hardening_scale      = sr.h;
-    } else if mat.model == 5u {
+    } else if has_model(mat.model, 5u) {
         // Drucker-Prager (sand): log-strain return mapping + friction-angle hardening.
         let svd    = svd2(new_F);
         let dp_res = dp_plasticity(svd.s, p.log_volume_strain, p.friction_hardening, mat);
@@ -492,22 +538,22 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let q_max = 5.0 / max(mat.dp_h2, NUM_FLOOR_TIGHT);
         p.friction_hardening = min(p.friction_hardening + dp_res.dq, q_max);
         p.log_volume_strain  += dp_res.log_vol_delta;
-    } else if mat.model == 6u {
+    } else if has_model(mat.model, 6u) {
         // Von Mises: J2 plasticity with optional linear isotropic hardening.
         let vm_res           = vm_plasticity(new_F, p.friction_hardening, mat);
         new_F                = vm_res.f_e;
         p.friction_hardening += vm_res.dkappa;
-    } else if mat.model == 7u {
+    } else if has_model(mat.model, 7u) {
         // Rankine: tensile cutoff with exponential damage softening.
         let rk_res           = rankine_plasticity(new_F, p.friction_hardening, mat);
         new_F                = rk_res.f_e;
         p.friction_hardening += rk_res.damage_delta;
-    } else if mat.model == 8u {
+    } else if has_model(mat.model, 8u) {
         // SandMuI: µ(I)-rheology rate-dependent Drucker-Prager.
         let mi_res           = sand_mui_plasticity(new_F, p.friction_hardening, mat, dt);
         new_F                = mi_res.f_e;
         p.friction_hardening = mi_res.mu_i;
-    } else if mat.model == 11u && mat.compression_limit > 0.0 {
+    } else if has_model(mat.model, 11u) && mat.compression_limit > 0.0 {
         // GranularFluid: snow-style SVD plasticity -- clamp singular values, accumulate Jp and h.
         let sr               = snow_plasticity(new_F, p.plastic_volume_ratio, mat);
         new_F                = sr.f_e;
@@ -544,8 +590,28 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // `J_new = J_old * exp(dt*div(v))`, computed from the OLD
         // (pre-substep) `p.deformation_gradient`/`p.velocity_gradient`
         // directly instead of trusting `new_F`'s determinant.
+        // TESTED (2026-09-16): a GPU-native per-substep rate clamp on
+        // `dt*div_v` (reusing `SimConfig::fluid_step_retry_threshold`'s real,
+        // already-disclosed 0.5 bound, since that CPU-only rollback-and-retry
+        // mechanism has zero GPU implementation) was tried here and found
+        // INERT, not merely ineffective: byte-identical results to the
+        // unclamped baseline (v=10.963 at frame 40, exact match). Real
+        // reason, confirmed by arithmetic: at this scene's ~650-700
+        // substeps/frame (needed by the Eleventh pass's `max_substeps_per_
+        // step=1000` fix), each sub_dt is ~1.5e-4, so hitting the 0.5 bound
+        // would need `div_v~=3250` -- implausible given max observed speed is
+        // only 10-18 over ~1 grid-unit spacing. The finer substeps that fixed
+        // the earlier CFL-truncation explosion also make a per-substep RATE
+        // bound structurally unable to bind here. Not a lever for this
+        // scene's disintegration bug; see HANDOFF_fluid_gpu_thin_layer_bug.md
+        // Twelfth pass for the other 3 real fixes already ruled out.
         let old_J = det2(p.deformation_gradient);
-        let div_v = p.velocity_gradient[0].x + p.velocity_gradient[1].y;
+        // `trace2`, not `p.velocity_gradient[0].x + p.velocity_gradient[1].y`:
+        // see `trace2`'s own doc -- the direct-index form silently computed
+        // C[0][0] + C[0][1] on the AMD Vulkan target, the real root cause of
+        // the GPU fluid impact explosion (and of the per-substep shear damping
+        // once added to mask it).
+        let div_v = trace2(p.velocity_gradient);
         var J_fluid = old_J * exp(dt * div_v);
         if !(J_fluid > 0.0) { J_fluid = 1.0; }
         J_fluid = clamp(J_fluid, FLUID_J_MIN, fluid_j_max);
@@ -581,7 +647,8 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if mat.model == 1u {
             // Should not reach here after the fluid reset above, but guard defensively.
             new_F = I;
-        } else {
+        } else if (MODELS_PRESENT & ~(1u << 1u)) != 0u {
+            // (Unreachable, and compiled away, when the scene holds fluids only.)
             // Flip sign of smallest singular value to restore det > 0.
             let svd_r = svd2(new_F);
             let sc    = vec2<f32>(svd_r.s.x, abs(svd_r.s.y) + NUM_FLOOR);
@@ -647,4 +714,6 @@ fn particles_update_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     particles[p_idx].hardening_scale      = p.hardening_scale;
     particles[p_idx].friction_hardening   = p.friction_hardening;
     particles[p_idx].log_volume_strain    = p.log_volume_strain;
+    (*pp).x = new_x;
+    (*pp).v = p.v;
 }

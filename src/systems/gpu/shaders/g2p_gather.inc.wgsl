@@ -1,31 +1,13 @@
-// G2P -- gather grid velocity/momentum into particle velocity and APIC affine matrix C.
-// One thread per particle. F update, plasticity, position advance: particles_update.wgsl.
-
-struct Particle {
-    x:                    vec2<f32>,
-    v:                    vec2<f32>,
-    velocity_gradient:    mat2x2<f32>,
-    deformation_gradient: mat2x2<f32>,
-    mass:                 f32,
-    initial_volume:       f32,
-    volume:               f32,
-    density:              f32,
-    material_id:          u32,
-    plastic_volume_ratio: f32,
-    hardening_scale:      f32,
-    friction_hardening:   f32,
-    log_volume_strain:    f32,
-    temperature:          f32,
-    user_tag:             u32,
-    activation:           f32,
-    activation_dir:       vec2<f32>,
-    muscle_group_id:      u32,
-    contact_group:        u32,
-    sleeping:             u32,
-    pinned:               u32,
-    scalar_field:         f32,
-    internal_pressure:    f32,
-}
+// G2P -- gather grid velocity into particle velocity and APIC affine matrix C,
+// as a function the fused `g2p_update_main` (particles_update.wgsl) calls before
+// the F update / plasticity / position advance and the force fields, all in one
+// dispatch per particle. Formerly its own pass (`g2p.wgsl`); fusing the three
+// per-particle passes saves two dispatches and two full particle load/stores
+// per substep.
+//
+// Host module must declare `Particle`, `StepParams` (with `contact_active`),
+// `MaterialParams`, `NUM_FLOOR`, and the `particles`/`materials`/`step_params`
+// bindings.
 
 struct Cell {
     momentum: vec2<f32>, // after grid_update this holds velocity, not momentum
@@ -33,74 +15,13 @@ struct Cell {
     _pad:     f32,
 }
 
-struct StepParams {
-    grid_res:           u32,
-    particle_count:     u32,
-    dt:                 f32,
-    kernel_d_inverse:   f32,
-    gravity:            vec2<f32>,
-    boundary_thickness: u32,
-    vel_limit:          f32,
-    sleep_threshold:    f32,
-    _pad0:              u32,
-    _pad1:              u32,
-    // True (nonzero) iff any particle anywhere has contact_group != 0 this frame --
-    // repurposes the third pad slot, see GpuStepParams::contact_active's Rust doc. When
-    // false, resolve_contact/gather_contact_points never ran this frame (skipped as
-    // provable dead work), so resolved_grip_v/resolved_rest_v are NOT safe to read --
-    // read the plain grid velocity directly instead, mirroring CPU's
-    // Grid::has_contact_activity() gate in transfer.rs exactly.
-    contact_active:     u32,
-}
-
-// GPU/CPU parity fix (2026-08-15) -- see Rust `MaterialParams`'s own doc.
-// Byte-exact mirror of the same struct in p2g.wgsl/particles_update.wgsl
-// (must all agree, they share one uniform buffer). Only
-// `owns_deformation_volume_state` is actually read here -- every other
-// field exists purely for layout parity.
-struct MaterialParams {
-    model:                   u32,
-    lambda:                  f32,
-    mu:                      f32,
-    hardening_exponent:      f32,
-    compression_limit:       f32,
-    stretch_limit:           f32,
-    rest_density:            f32,
-    eos_stiffness:           f32,
-    eos_power:               f32,
-    dynamic_viscosity:       f32,
-    volume_ratio_min:        f32,
-    volume_ratio_max:        f32,
-    dp_h0:                   f32,
-    dp_h1:                   f32,
-    dp_h2:                   f32,
-    dp_h3:                   f32,
-    active_stress_coeff:     f32,
-    hardening_modulus:       f32,
-    thermal_viscosity_coeff: f32,
-    thermal_expansion:       f32,
-    pressure_floor:          f32,
-    bulk_viscosity:          f32,
-    surface_tension_coeff:   f32,
-    cohesion_coeff:          f32,
-    owns_deformation_volume_state: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-}
-
-const MAX_MATERIALS:        u32 = {{MAX_MATERIALS}}u;
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
 const BSPLINE_OUTER_LIMIT:  f32 = 1.5;
 const BSPLINE_CENTER_COEFF: f32 = 0.75;
 const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
-const NUM_FLOOR:            f32 = 1e-6;
 
-@group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;
 @group(0) @binding(1) var<storage, read_write> grid:        array<Cell>;
-@group(0) @binding(2) var<uniform>             materials:   array<MaterialParams, MAX_MATERIALS>;
-@group(0) @binding(3) var<uniform>             step_params: StepParams;
 // Multi-field contact (GPU port) -- resolved velocities from resolve_contact_main, one
 // per grid node, ALREADY defaulted to the ordinary total velocity everywhere a real
 // contact-active field wasn't found (see resolve_contact.wgsl's resolve_cell doc) --
@@ -144,12 +65,17 @@ fn extrapolated_boundary_velocity(
     return v;
 }
 
-@compute @workgroup_size(64, 1, 1)
-fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let p_idx = gid.x;
-    if p_idx >= step_params.particle_count { return; }
+// Measured and NOT kept (2026-09-19): a workgroup-local copy of this workgroup's grid
+// patch (loaded once cooperatively, read from shared memory by its 64 particles) made no
+// difference -- 112-120us without vs 115-125us with, on the dam break. The whole grid is
+// 64KB at grid_res=64 and already sits in the GPU's L2; the extra barriers and the
+// cooperative load cost as much as the saved global reads.
 
-    let p   = particles[p_idx];
+// Gathers into `*pp` (and writes the same fields to `particles[p_idx]`, exactly as
+// the standalone pass did). Leaves both untouched for a sleeping particle that
+// does not wake this substep.
+fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
+    let p   = *pp;
     let res = step_params.grid_res;
     let base = vec2<i32>(i32(p.x.x), i32(p.x.y));
 
@@ -182,6 +108,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         if !should_wake { return; }
         particles[p_idx].sleeping = 0u;
+        (*pp).sleeping = 0u;
     }
 
     // Dirichlet/kinematic anchor (`Particle::pinned`): force v=0 and
@@ -193,6 +120,8 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if p.pinned != 0u {
         particles[p_idx].v                 = vec2<f32>(0.0);
         particles[p_idx].velocity_gradient = mat2x2<f32>(vec2<f32>(0.0), vec2<f32>(0.0));
+        (*pp).v                 = vec2<f32>(0.0);
+        (*pp).velocity_gradient = mat2x2<f32>(vec2<f32>(0.0), vec2<f32>(0.0));
         return;
     }
 
@@ -216,12 +145,28 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // never populated -- reading them here would be reading stale/garbage data, not just an
     // unnecessary read. Falls back to the plain grid velocity in that case, same as CPU.
     let contact_active = step_params.contact_active != 0u;
+    // Real, second fix to the same free-surface mechanism (2026-09-16, CPU
+    // mirror: see `spacetime/transfer/g2p.rs`'s own doc for the full
+    // derivation, found chasing a razor-thin-layer collapse where EVERY
+    // depth band read as expanded, not just the free surface). An axis
+    // needs >=2 distinct sampled offsets to yield a real derivative; a wall
+    // (out-of-bounds) cell is REAL directional information (a genuine
+    // physical boundary value, unlike an assumed-uniform extrapolated
+    // node) so it counts as included here, matching CPU's own
+    // `is_extrapolated` (which returns `false`, i.e. "not extrapolated",
+    // for out-of-bounds cells) exactly.
+    var included_di = array<bool, 3>(false, false, false);
+    var included_dj = array<bool, 3>(false, false, false);
 
     for (var di: i32 = -1; di <= 1; di++) {
         for (var dj: i32 = -1; dj <= 1; dj++) {
             let cx = base.x + di;
             let cy = base.y + dj;
-            if cx < 0 || cy < 0 || cx >= i32(res) || cy >= i32(res) { continue; }
+            if cx < 0 || cy < 0 || cx >= i32(res) || cy >= i32(res) {
+                included_di[di + 1] = true;
+                included_dj[dj + 1] = true;
+                continue;
+            }
 
             let cell_dist = vec2<f32>(f32(cx), f32(cy)) + vec2<f32>(CELL_CENTER_OFFSET) - p.x;
             let w = bspline_w(cell_dist.x) * bspline_w(cell_dist.y);
@@ -239,13 +184,43 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 p.v, cx, cy, i32(res), step_params.gravity, step_params.dt,
                 step_params.boundary_thickness,
             );
-            let cell_v = select(extrap_v, touched_v, cell.mass > NUM_FLOOR);
+            let is_touched = cell.mass > NUM_FLOOR;
+            let cell_v = select(extrap_v, touched_v, is_touched);
+
+            // Free-surface velocity-gradient bias fix (2026-09-16, CPU mirror:
+            // `Grid::is_extrapolated` in spacetime/grid/mod.rs). An extrapolated node's
+            // value is an assumed, spatially-uniform stand-in ("this neighbourhood is in
+            // unopposed free fall") -- correct only in true free fall, where the kernel's
+            // own zero-first-moment identity makes a uniform value contribute exactly
+            // zero to B anyway. The instant a particle is resting/settling instead
+            // (gravity balanced by contact/pressure, real touched neighbours near zero)
+            // while only part of its stencil is extrapolated, this same assumed value
+            // keeps growing every substep while real neighbours correctly stay near
+            // zero -- a synthetic difference across the stencil that reads as spurious
+            // divergence. A constant field has zero gradient by construction, so this
+            // node still counts toward `new_v` (a real velocity value is still needed to
+            // advect the particle) but is excluded from B (the gradient accumulation).
+            // Scoped to the plain path only, matching CPU exactly: a contact-active
+            // node's `touched_v` is already defaulted to the ordinary total velocity by
+            // resolve_contact.wgsl wherever no real contact field exists there -- a
+            // different, already-safe fallback this fix must not also touch.
+            let excluded_from_gradient = !is_touched && !contact_active;
 
             new_v       += w * cell_v;
-            B_col0      += w * cell_v * cell_dist.x;
-            B_col1      += w * cell_v * cell_dist.y;
+            if !excluded_from_gradient {
+                included_di[di + 1] = true;
+                included_dj[dj + 1] = true;
+                B_col0 += w * cell_v * cell_dist.x;
+                B_col1 += w * cell_v * cell_dist.y;
+            }
             new_density += w * cell.mass;
         }
+    }
+    if (i32(included_di[0]) + i32(included_di[1]) + i32(included_di[2])) < 2 {
+        B_col0 = vec2<f32>(0.0);
+    }
+    if (i32(included_dj[0]) + i32(included_dj[1]) + i32(included_dj[2])) < 2 {
+        B_col1 = vec2<f32>(0.0);
     }
 
     // Velocity clamp: !(spd <= limit) also catches NaN (NaN <= x = false).
@@ -256,14 +231,24 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         new_v = select(new_v * inv, vec2<f32>(0.0), !(inv > 0.0));
     }
 
-    // C = B · D_inverse (APIC affine velocity gradient)
-    // No C-clamp: CPU gather_grid_to_particles has none. Clamping C at 0.5*vel_limit
-    // fires at natural impact velocities (C ~ 6v) and under-deforms F, killing elastic bounce.
-    // The velocity clamp above already bounds the energy; CFL bounds the timestep.
+    // C = B · D_inverse (APIC affine velocity gradient). No clamp and no
+    // relaxation, matching CPU `gather_grid_to_particles` exactly.
+    //
+    // A per-substep deviatoric "shear relaxation" of C used to live here for
+    // strict fluids (2026-09-16 to 2026-09-18). It was masking a GPU bug, not
+    // an APIC stability limit: `particles_update.wgsl` computed the fluid's
+    // div(v) as C[0][0] + C[0][1] instead of the trace (see `trace2` there),
+    // so J swung with shear instead of real compression and the fluid blew
+    // apart on impact. With that fixed, the CPU twin of the exact scene and
+    // the GPU agree to within a few percent with no relaxation at all, and
+    // the relaxation's own side effect -- compounding over hundreds of
+    // near-wall substeps and freezing the fluid on landing -- is gone with it.
     let C = mat2x2<f32>(B_col0, B_col1) * step_params.kernel_d_inverse;
 
     particles[p_idx].v                 = new_v;
     particles[p_idx].velocity_gradient = C;
+    (*pp).v                 = new_v;
+    (*pp).velocity_gradient = C;
 
     // GPU/CPU parity fix (2026-08-15): materials that own their own
     // deformation-derived volume state (today: strict fluids) skip this
@@ -279,5 +264,7 @@ fn g2p_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let density = max(new_density, NUM_FLOOR);
         particles[p_idx].density = density;
         particles[p_idx].volume  = p.mass / density;
+        (*pp).density = density;
+        (*pp).volume  = p.mass / density;
     }
 }
