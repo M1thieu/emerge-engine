@@ -200,12 +200,45 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
         let pressure_gauge = self.eos.pressure_gauge_pa(density_si);
         let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure_gauge));
 
+        let c = particles.velocity_gradient[i];
+        let sym_strain = c + c.transpose();
+        let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
+
         if self.dynamic_viscosity > 0.0 {
-            let c = particles.velocity_gradient[i];
-            let sym_strain = c + c.transpose();
-            let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
             let strain_dev = sym_strain - Mat2::from_diagonal(Vec2::splat(div_v * 0.5));
             stress += self.dynamic_viscosity * strain_dev;
+        }
+
+        // Artificial (shock) viscosity -- a real PDE term this material had
+        // NONE of, despite cavitation being inherently a violent,
+        // discontinuous pressure phenomenon (arguably needing shock
+        // capturing MORE than a plain liquid, not less). Same real, cited
+        // von Neumann & Richtmyer 1950 (LA-671) quadratic + Landshoff linear
+        // term `NewtonianFluidMaterial::kirchhoff_stress` uses (see that
+        // material's own doc for the full citation/derivation) -- reused via
+        // the shared, EOS-agnostic `von_neumann_richtmyer_q` primitive, not
+        // reinvented. `c_sound` comes from this material's own real REST
+        // acoustic speed (`rest_acoustic_c2`, already computed elsewhere in
+        // this file for the CFL bound) -- a disclosed rest-state stand-in,
+        // not the exact per-density value (this isothermal variant exposes
+        // no live density-dependent sound speed; see `CavitatingFluidMaterial`'s
+        // own `acoustic_c2_at` for that more precise version).
+        // `weak_shock_gamma = self.eos.gamma_l` is the SAME real liquid-
+        // branch exponent this file's own `params()` already feeds through
+        // for the identical CFL-safety mechanism, not a new value invented
+        // here. `grid_cell_size=1.0`: same disclosed exact (not approximate)
+        // convention `NewtonianFluidMaterial`'s own call site uses.
+        if let Some(c2_rest) = self.rest_acoustic_c2() {
+            let c_sound = c2_rest.max(0.0).sqrt();
+            let q = crate::materials::utils::von_neumann_richtmyer_q(
+                self.rest_density_grid,
+                j,
+                0.5 * div_v,
+                1.0,
+                c_sound,
+                self.eos.gamma_l,
+            );
+            stress -= Mat2::from_diagonal(Vec2::splat(q));
         }
         stress
     }
@@ -491,12 +524,35 @@ impl MaterialModel for CavitatingFluidMaterial {
         let pressure_gauge = eos_at_t.pressure_gauge_pa(density_si);
         let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure_gauge));
 
+        let c = particles.velocity_gradient[i];
+        let sym_strain = c + c.transpose();
+        let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
+
         if self.dynamic_viscosity > 0.0 {
-            let c = particles.velocity_gradient[i];
-            let sym_strain = c + c.transpose();
-            let div_v = sym_strain.x_axis.x + sym_strain.y_axis.y;
             let strain_dev = sym_strain - Mat2::from_diagonal(Vec2::splat(div_v * 0.5));
             stress += self.dynamic_viscosity * strain_dev;
+        }
+
+        // Artificial (shock) viscosity -- same real PDE term/citation as
+        // `IsothermalCavitatingFluidMaterial::kirchhoff_stress`'s own doc
+        // explains in full; this temperature-coupled variant uses the MORE
+        // precise live density-AND-temperature-aware sound speed
+        // (`acoustic_c2_at`, already built for this material's own
+        // `timestep_bound`) rather than a rest-state stand-in.
+        // `self.table.gamma_l` is the SAME real liquid-branch exponent this
+        // file's own `params()` already feeds through for the identical
+        // CFL-safety mechanism.
+        if let Some(c2_local) = self.acoustic_c2_at(density_grid, particles.temperature[i]) {
+            let c_sound = c2_local.max(0.0).sqrt();
+            let q = crate::materials::utils::von_neumann_richtmyer_q(
+                self.rest_density_grid,
+                j,
+                0.5 * div_v,
+                1.0,
+                c_sound,
+                self.table.gamma_l,
+            );
+            stress -= Mat2::from_diagonal(Vec2::splat(q));
         }
         stress
     }
@@ -772,6 +828,110 @@ mod tests {
             "extreme compression must give a genuinely higher real pressure \
              than extreme tension: compression={pressure_compression} Pa \
              tension={pressure_tension} Pa"
+        );
+    }
+
+    /// Real, direct anchor for the artificial (shock) viscosity term added
+    /// 2026-09-15 (see `kirchhoff_stress`'s own doc for the full citation):
+    /// von Neumann & Richtmyer's term must be IDENTICALLY ZERO under
+    /// expansion/no-motion (`div(v) >= 0`) and genuinely NONZERO, adding
+    /// real extra compressive stress, under compression (`div(v) < 0`) --
+    /// the textbook compression gate this citation requires, not assumed.
+    #[test]
+    fn isothermal_shock_viscosity_activates_only_under_compression() {
+        let table = real_table();
+        let temperature_k = 300.0;
+        let eos = table.reconstruct(temperature_k);
+        let material = IsothermalCavitatingFluidMaterial::new(eos, 1.0, 1.0e-3, 0.5, 8.0);
+
+        let base_particle = || -> Particle {
+            let mut p = Particle::zeroed();
+            p.mass = material.rest_density_grid;
+            p.deformation_gradient = Mat2::IDENTITY;
+            material.init_particle(&mut p);
+            // Slightly compressed so a real, nonzero pressure/density exists
+            // for the shock term's own density-dependent sound speed to act
+            // against -- exactly at rest density the EOS itself is 0 gauge.
+            p.deformation_gradient = Mat2::from_diagonal(Vec2::splat(0.98f32.sqrt()));
+            p
+        };
+
+        let mut p_rest = base_particle();
+        p_rest.velocity_gradient = Mat2::ZERO;
+        let stress_rest = material.kirchhoff_stress(&Particles::from(vec![p_rest]), 0);
+
+        let mut p_expanding = base_particle();
+        p_expanding.velocity_gradient = Mat2::from_diagonal(Vec2::splat(0.5)); // div(v) = +1.0
+        let stress_expanding = material.kirchhoff_stress(&Particles::from(vec![p_expanding]), 0);
+
+        let mut p_compressing = base_particle();
+        p_compressing.velocity_gradient = Mat2::from_diagonal(Vec2::splat(-0.5)); // div(v) = -1.0
+        let stress_compressing =
+            material.kirchhoff_stress(&Particles::from(vec![p_compressing]), 0);
+
+        assert!(
+            (stress_expanding.x_axis.x - stress_rest.x_axis.x).abs() < 1.0e-6,
+            "shock viscosity must be exactly gated OFF under expansion (div(v)>0): \
+             rest={:?} expanding={:?}",
+            stress_rest.x_axis.x,
+            stress_expanding.x_axis.x
+        );
+        assert!(
+            stress_compressing.x_axis.x < stress_rest.x_axis.x - 1.0e-6,
+            "shock viscosity must add genuine EXTRA compressive stress under \
+             compression (div(v)<0), more negative than the rest-state baseline: \
+             rest={:?} compressing={:?}",
+            stress_rest.x_axis.x,
+            stress_compressing.x_axis.x
+        );
+    }
+
+    /// Same real anchor as `isothermal_shock_viscosity_activates_only_under_compression`,
+    /// for the temperature-coupled material -- both cavitation materials had
+    /// this term missing before 2026-09-15, not just one.
+    #[test]
+    fn temperature_coupled_shock_viscosity_activates_only_under_compression() {
+        let table = real_table();
+        let material = CavitatingFluidMaterial::new(table, 1.0, 1.0e-3, 0.5, 8.0);
+        let temperature_k = 300.0;
+
+        let base_particle = || -> Particle {
+            let mut p = Particle::zeroed();
+            p.mass = material.rest_density_grid;
+            p.deformation_gradient = Mat2::IDENTITY;
+            material.init_particle(&mut p);
+            p.deformation_gradient = Mat2::from_diagonal(Vec2::splat(0.98f32.sqrt()));
+            p.temperature = temperature_k;
+            p
+        };
+
+        let mut p_rest = base_particle();
+        p_rest.velocity_gradient = Mat2::ZERO;
+        let stress_rest = material.kirchhoff_stress(&Particles::from(vec![p_rest]), 0);
+
+        let mut p_expanding = base_particle();
+        p_expanding.velocity_gradient = Mat2::from_diagonal(Vec2::splat(0.5));
+        let stress_expanding = material.kirchhoff_stress(&Particles::from(vec![p_expanding]), 0);
+
+        let mut p_compressing = base_particle();
+        p_compressing.velocity_gradient = Mat2::from_diagonal(Vec2::splat(-0.5));
+        let stress_compressing =
+            material.kirchhoff_stress(&Particles::from(vec![p_compressing]), 0);
+
+        assert!(
+            (stress_expanding.x_axis.x - stress_rest.x_axis.x).abs() < 1.0e-6,
+            "shock viscosity must be exactly gated OFF under expansion (div(v)>0): \
+             rest={:?} expanding={:?}",
+            stress_rest.x_axis.x,
+            stress_expanding.x_axis.x
+        );
+        assert!(
+            stress_compressing.x_axis.x < stress_rest.x_axis.x - 1.0e-6,
+            "shock viscosity must add genuine EXTRA compressive stress under \
+             compression (div(v)<0), more negative than the rest-state baseline: \
+             rest={:?} compressing={:?}",
+            stress_rest.x_axis.x,
+            stress_compressing.x_axis.x
         );
     }
 }

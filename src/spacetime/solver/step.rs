@@ -1282,7 +1282,7 @@ impl Simulation {
         // shared grid-update step) -- see
         // `grains::coupling::apply_grain_contact_forces`'s own doc.
         for population in &mut self.grain_populations {
-            apply_grain_contact_forces(population, sub_dt, &self.boundaries, grid_res);
+            apply_grain_contact_forces(population, sub_dt, &self.boundaries, grid_res, &self.grid);
         }
         // Real, bounded grid-mediated rotational coupling between nearby
         // grains -- see `grains::micro_rotation`'s own doc for the full

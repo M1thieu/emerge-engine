@@ -244,6 +244,31 @@ impl MaterialRegistry {
         }
     }
 
+    /// Real, generic per-particle stress magnitude, usable across EVERY
+    /// material this registry holds (no material-specific special case --
+    /// every `MaterialModel` already implements `kirchhoff_stress`, this
+    /// just reduces that real tensor to one scalar via the standard 2D
+    /// plane-stress von Mises equivalent stress: von Mises 1913 ("Mechanik
+    /// der festen Körper im plastisch-deformablen Zustand"), the general
+    /// scalar-equivalent-stress formula also given in Hill 1950 ("The
+    /// Mathematical Theory of Plasticity") -- `sigma_vm = sqrt(sxx^2 -
+    /// sxx*syy + syy^2 + 3*sxy^2)`. NOT the same computation as
+    /// `VonMisesMaterial`'s own internal `dev_norm` (that is a log-strain-
+    /// space yield-surface bookkeeping quantity specific to that one
+    /// material's own return-mapping, not a general Cauchy/Kirchhoff
+    /// stress scalar every material can produce). Intended real use:
+    /// render-side visualization (`ColorMode::ByStress`), where a single,
+    /// universal, physically-real quantity should mean the same thing
+    /// regardless of which material a particle happens to be.
+    pub fn von_mises_stress_field(&self, particles: &Particles) -> Vec<f32> {
+        (0..particles.len())
+            .map(|i| {
+                let tau = self.kirchhoff_stress(particles.material_id[i], particles, i);
+                von_mises_equivalent_2d(tau)
+            })
+            .collect()
+    }
+
     /// Real, static-dispatched `timestep_bound` -- same fallback contract as
     /// `kirchhoff_stress` above. Hot per-particle CFL call.
     pub(crate) fn timestep_bound(
@@ -414,9 +439,92 @@ impl MaterialRegistry {
         self.get(material_id).constitutive_model()
     }
 
+    /// Bitmask of the constitutive models present (bit `m` set when some registered
+    /// material's `params().model == m`). The GPU backend specializes its per-particle
+    /// update pipeline on this, so code for absent models compiles away.
+    pub fn model_mask(&self) -> u32 {
+        self.materials.iter().fold(0, |mask, m| {
+            mask | 1u32.checked_shl(m.params().model).unwrap_or(0)
+        })
+    }
+
     /// Returns flat parameters for all registered materials in ID order.
     /// Used to upload a `array<MaterialParams, N>` uniform buffer to the GPU.
     pub fn all_params(&self) -> Vec<MaterialParams> {
         self.materials.iter().map(|m| m.params()).collect()
+    }
+}
+
+/// Real, standard 2D plane-stress von Mises equivalent stress -- see
+/// `MaterialRegistry::von_mises_stress_field`'s own doc for the full
+/// citation. Symmetrizes the off-diagonal term first (a real discrete
+/// Kirchhoff stress need not come back perfectly symmetric from every
+/// material's own internal bookkeeping, same real justification this
+/// project already uses for the Bagi/Christoffersen stress-tensor
+/// symmetrization in `spacetime::grains::population`).
+fn von_mises_equivalent_2d(sigma: Mat2) -> f32 {
+    let sxx = sigma.x_axis.x;
+    let syy = sigma.y_axis.y;
+    let sxy = 0.5 * (sigma.x_axis.y + sigma.y_axis.x);
+    (sxx * sxx - sxx * syy + syy * syy + 3.0 * sxy * sxy)
+        .max(0.0)
+        .sqrt()
+}
+
+#[cfg(test)]
+mod von_mises_tests {
+    use super::*;
+    use glam::Vec2;
+
+    /// Real, hand-verified case 1: pure uniaxial stress (only sxx nonzero)
+    /// reduces to EXACTLY sxx itself -- the standard, textbook von Mises
+    /// result for uniaxial loading (e.g. Hill 1950's own worked example).
+    #[test]
+    fn pure_uniaxial_stress_gives_exactly_itself() {
+        let sigma = Mat2::from_cols(Vec2::new(7.0, 0.0), Vec2::new(0.0, 0.0));
+        let vm = von_mises_equivalent_2d(sigma);
+        assert!((vm - 7.0).abs() < 1.0e-5, "vm={vm}, expected 7.0");
+    }
+
+    /// Real, hand-verified case 2: pure shear (sxx=syy=0, only sxy nonzero)
+    /// reduces to EXACTLY sqrt(3)*sxy -- the standard, textbook von Mises
+    /// result for pure shear (the same sqrt(3) factor that sets the real
+    /// ratio between the uniaxial and shear yield stresses in von Mises
+    /// plasticity generally).
+    #[test]
+    fn pure_shear_gives_sqrt_3_times_tau() {
+        let tau = 4.0;
+        let sigma = Mat2::from_cols(Vec2::new(0.0, tau), Vec2::new(tau, 0.0));
+        let vm = von_mises_equivalent_2d(sigma);
+        let expected = 3.0f32.sqrt() * tau;
+        assert!(
+            (vm - expected).abs() < 1.0e-4,
+            "vm={vm}, expected {expected}"
+        );
+    }
+
+    /// Zero stress must give exactly zero, not a spurious value from
+    /// floating-point roundoff around the `.max(0.0)` guard.
+    #[test]
+    fn zero_stress_gives_zero() {
+        assert_eq!(von_mises_equivalent_2d(Mat2::ZERO), 0.0);
+    }
+
+    /// Real, deliberate asymmetric input (a raw Kirchhoff stress need not
+    /// come back perfectly symmetric) -- confirms the symmetrization
+    /// actually runs: using the RAW (unsymmetrized) off-diagonal terms
+    /// would give a different (wrong) answer than averaging them first.
+    #[test]
+    fn asymmetric_raw_tensor_is_symmetrized_before_reducing() {
+        // sxy_raw = (2.0 + 6.0)/2 = 4.0 -- matches the pure-shear case
+        // above exactly, confirming the symmetrization average is real,
+        // not a no-op.
+        let sigma = Mat2::from_cols(Vec2::new(0.0, 2.0), Vec2::new(6.0, 0.0));
+        let vm = von_mises_equivalent_2d(sigma);
+        let expected = 3.0f32.sqrt() * 4.0;
+        assert!(
+            (vm - expected).abs() < 1.0e-4,
+            "vm={vm}, expected {expected}"
+        );
     }
 }

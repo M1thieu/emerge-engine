@@ -17,12 +17,26 @@ pub(super) fn apply_boundary_conditions_to_grid(
 ) {
     for (i, cell, node_friction) in grid.active_cells_with_index_and_friction_mut() {
         if cell.mass > 0.0 {
+            let before = cell.momentum;
             boundary.apply_to_grid_velocity_with_node_friction(
                 i,
                 grid_res,
                 &mut cell.momentum,
                 node_friction,
             );
+            let delta_v = cell.momentum - before;
+            // Real Newton's-third-law reaction: whatever velocity this
+            // correction removed from the grid at this cell, a real,
+            // externally-driven obstacle boundary gains as momentum (sign-
+            // flipped, mass-weighted) -- see `BoundaryCondition::
+            // on_grid_correction`'s own doc. A no-op for every boundary
+            // that doesn't override the hook (default is empty), so this
+            // costs nothing beyond one subtraction + one vector compare for
+            // every scene that never uses it.
+            if delta_v != Vec2::ZERO {
+                let cell_pos = Vec2::new((i / grid_res) as f32, (i % grid_res) as f32);
+                boundary.on_grid_correction(cell_pos, -delta_v * cell.mass);
+            }
         }
     }
 }
@@ -242,5 +256,69 @@ fn assert_owned_deformation_state_impl(
             config.j_min,
             config.j_max
         );
+    }
+}
+
+#[cfg(test)]
+mod grid_correction_tests {
+    use super::*;
+    use crate::boundary::KinematicCircleBoundary;
+    use glam::IVec2;
+
+    /// Real, hand-computed check of the `on_grid_correction` wiring itself
+    /// (the physics of `KinematicCircleBoundary`'s own contact projection
+    /// was already extensively validated elsewhere -- this isolates the
+    /// NEW glue: does `apply_boundary_conditions_to_grid` actually compute
+    /// and deliver the real Newton's-third-law reaction impulse?).
+    ///
+    /// Setup: one grid cell at (8,8), mass=2.0, velocity=(5,0) (moving in
+    /// +x). Obstacle centered at (9,8), radius=2.0, friction=0.0 -- the
+    /// cell sits exactly 1 unit from the center along -x, so its outward
+    /// normal is (-1,0) and its velocity (+x) points directly INTO the
+    /// obstacle. With friction=0, Coulomb projection zeroes the full
+    /// velocity (normal component removed, zero tangential component to
+    /// begin with) -- `delta_v = (0,0)-(5,0) = (-5,0)`, so the real
+    /// expected reaction impulse is `-delta_v*mass = (10.0, 0.0)`, and
+    /// since the impulse is exactly anti-parallel to `r = cell_pos -
+    /// center = (-1,0)`, the real expected torque is exactly 0.0.
+    #[test]
+    fn stationary_obstacle_receives_the_real_hand_computed_reaction_impulse() {
+        let grid_res = 16;
+        let mut grid = Grid::new(grid_res);
+        let cell = IVec2::new(8, 8);
+        let mass = 2.0;
+        grid.add_mass_momentum(cell, mass, Vec2::new(5.0, 0.0));
+
+        let obstacle = KinematicCircleBoundary::new(Vec2::new(9.0, 8.0), 2.0, 0.0);
+        apply_boundary_conditions_to_grid(&mut grid, grid_res, &obstacle);
+
+        let impulse = obstacle.take_reaction_impulse();
+        assert!(
+            (impulse - Vec2::new(10.0, 0.0)).length() < 1.0e-4,
+            "expected reaction impulse (10.0, 0.0), got {impulse:?}"
+        );
+        let torque = obstacle.take_torque();
+        assert!(
+            torque.abs() < 1.0e-4,
+            "expected exactly zero torque (impulse anti-parallel to r), got {torque}"
+        );
+    }
+
+    /// A boundary that never actually touches any cell (obstacle far away)
+    /// must leave the reaction impulse at exactly zero -- confirms the
+    /// `delta_v != Vec2::ZERO` gate correctly skips cells nothing corrected,
+    /// not just that SOME correction produces SOME nonzero result.
+    #[test]
+    fn untouched_obstacle_accumulates_zero_reaction_impulse() {
+        let grid_res = 16;
+        let mut grid = Grid::new(grid_res);
+        grid.add_mass_momentum(IVec2::new(8, 8), 2.0, Vec2::new(5.0, 0.0));
+
+        // Far away -- never within its own radius of the populated cell.
+        let obstacle = KinematicCircleBoundary::new(Vec2::new(0.0, 0.0), 1.0, 0.0);
+        apply_boundary_conditions_to_grid(&mut grid, grid_res, &obstacle);
+
+        assert_eq!(obstacle.take_reaction_impulse(), Vec2::ZERO);
+        assert_eq!(obstacle.take_torque(), 0.0);
     }
 }

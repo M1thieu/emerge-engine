@@ -36,6 +36,30 @@ pub struct Particles {
     pub hardening_scale: Vec<f32>,
     pub friction_hardening: Vec<f32>,
     pub log_volume_strain: Vec<f32>,
+    /// Real, signed Pradhana volumetric-plastic-strain correction accumulator
+    /// (Pradhana, co-author of Klar, Gast, Pradhana, Fu, Teran, Jiang & Museth
+    /// 2016 "A Drucker-Prager Elastoplasticity Theory for Sand Simulation";
+    /// mechanism per Blatny & Gaume 2025, `tmp/matter/src/simulation/
+    /// plasticity.cpp`'s own `eps_pl_vol_pradhana`/`use_pradhana`) -- tracks how
+    /// much volumetric correction `DruckerPragerMaterial::project`'s own
+    /// tension-cutoff branch (full-expansion return mapping -- NOT the
+    /// branch that file's own comments call "Case III", which is the
+    /// ordinary shear-yield cone projection instead) has ALREADY applied to
+    /// this particle since it was last genuinely elastic, so the NEXT
+    /// tension-cutoff evaluation can account for debt already paid instead of re-adding
+    /// volume from scratch every firing -- the real, cited fix for
+    /// `dp_volumetric_floor_terrain_failure`'s own sibling bug, "volume gain on
+    /// expansion" (Tampubolon et al. 2017). SoA-only: no AoS `Particle`
+    /// counterpart exists (unlike `log_volume_strain` above) -- there is no
+    /// spare byte on the 128-byte GPU-uploadable `Particle` view (see its own
+    /// module doc, "Append-only past this point"), and this correction is
+    /// CPU-only real physics, not yet GPU-shader-side (matches this project's
+    /// own standing "CPU correctness first, GPU port second" rule -- a real,
+    /// disclosed CPU/GPU parity gap, not a hidden one, same category as the
+    /// already-known snow GPU cohesion gap). 0.0 (no correction owed) for
+    /// every particle of every material that isn't `DruckerPragerMaterial`
+    /// with `use_pradhana=true` -- provably inert there, not a tuning default.
+    pub eps_pl_vol_pradhana: Vec<f32>,
 
     // ── Extended -- cold ───────────────────────────────────────────────────────
     pub temperature: Vec<f32>,
@@ -80,6 +104,8 @@ pub struct ParticleUpdateCtx<'a> {
     pub plastic_volume_ratio: &'a mut f32,
     pub log_volume_strain: &'a mut f32,
     pub friction_hardening: &'a mut f32,
+    /// See `Particles::eps_pl_vol_pradhana`'s own doc.
+    pub eps_pl_vol_pradhana: &'a mut f32,
     pub mass: f32,
     pub temperature: f32,
     pub initial_volume: f32,
@@ -128,6 +154,7 @@ impl Particles {
             plastic_volume_ratio: &mut self.plastic_volume_ratio[i],
             log_volume_strain: &mut self.log_volume_strain[i],
             friction_hardening: &mut self.friction_hardening[i],
+            eps_pl_vol_pradhana: &mut self.eps_pl_vol_pradhana[i],
             mass: self.mass[i],
             temperature: self.temperature[i],
             initial_volume: self.initial_volume[i],
@@ -155,6 +182,7 @@ impl Particles {
             hardening_scale: Vec::new(),
             friction_hardening: Vec::new(),
             log_volume_strain: Vec::new(),
+            eps_pl_vol_pradhana: Vec::new(),
             temperature: Vec::new(),
             user_tag: Vec::new(),
             activation: Vec::new(),
@@ -184,6 +212,7 @@ impl Particles {
             hardening_scale: Vec::with_capacity(cap),
             friction_hardening: Vec::with_capacity(cap),
             log_volume_strain: Vec::with_capacity(cap),
+            eps_pl_vol_pradhana: Vec::with_capacity(cap),
             temperature: Vec::with_capacity(cap),
             user_tag: Vec::with_capacity(cap),
             activation: Vec::with_capacity(cap),
@@ -282,6 +311,10 @@ impl Particles {
         self.hardening_scale.push(p.hardening_scale);
         self.friction_hardening.push(p.friction_hardening);
         self.log_volume_strain.push(p.log_volume_strain);
+        // Not part of the AoS `Particle` view (see `eps_pl_vol_pradhana`'s own
+        // doc) -- a freshly-pushed particle always starts owing zero
+        // correction, the real physically-correct initial condition.
+        self.eps_pl_vol_pradhana.push(0.0);
         self.temperature.push(p.temperature);
         self.user_tag.push(p.user_tag);
         self.activation.push(p.activation);
@@ -317,6 +350,7 @@ impl Particles {
         self.hardening_scale.swap(a, b);
         self.friction_hardening.swap(a, b);
         self.log_volume_strain.swap(a, b);
+        self.eps_pl_vol_pradhana.swap(a, b);
         self.temperature.swap(a, b);
         self.user_tag.swap(a, b);
         self.activation.swap(a, b);
@@ -371,8 +405,10 @@ impl Particles {
             if pred(&p) {
                 if write != read {
                     self.set(write, p);
-                    // sleeping is not part of the AoS Particle view -- copy explicitly.
+                    // sleeping/eps_pl_vol_pradhana are not part of the AoS
+                    // Particle view -- copy explicitly.
                     self.sleeping[write] = self.sleeping[read];
+                    self.eps_pl_vol_pradhana[write] = self.eps_pl_vol_pradhana[read];
                 }
                 write += 1;
             }
@@ -390,6 +426,7 @@ impl Particles {
         self.hardening_scale.truncate(write);
         self.friction_hardening.truncate(write);
         self.log_volume_strain.truncate(write);
+        self.eps_pl_vol_pradhana.truncate(write);
         self.temperature.truncate(write);
         self.user_tag.truncate(write);
         self.activation.truncate(write);

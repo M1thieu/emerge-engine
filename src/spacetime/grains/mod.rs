@@ -18,9 +18,11 @@
 //! scaffolding.
 
 pub mod coupling;
+pub mod implicit;
 pub mod micro_rotation;
 pub mod oracle;
 pub mod population;
+pub mod terrain_contact;
 
 // Flattened re-export of the types a caller actually needs to construct and
 // attach a grain population (`Simulation::with_grain_population` takes a

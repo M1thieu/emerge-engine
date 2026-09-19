@@ -23,7 +23,7 @@
 //! count) -- revisit only if a real profiling number shows it's the
 //! bottleneck, per this project's own "measure before optimizing" rule.
 
-use glam::Vec2;
+use glam::{Mat2, Vec2};
 
 use crate::forces::boundary::BoundaryCondition;
 use crate::forces::fields::GrainField;
@@ -71,6 +71,13 @@ pub struct GrainPopulation {
     /// sync at every push site -- indices beyond the current length are
     /// just treated as a fresh (zeroed) spring the first time they're used.
     wall_springs: Vec<ContactSpring>,
+    /// Persistent per-grain terrain-contact spring state -- same real
+    /// role as `wall_springs` above, but for the real, dynamic MPM
+    /// terrain surface estimated by `terrain_contact::terrain_grain_
+    /// contact` instead of a static `BoundaryCondition`. See
+    /// `resolve_terrain_contact_forces`'s own doc for why this exists as
+    /// a genuinely separate mechanism.
+    terrain_springs: Vec<ContactSpring>,
     pub config: ContactModel,
     /// Real, opt-in sweep count for `resolve_contact_forces`'s own
     /// iterative relaxation -- see that function's doc for the real
@@ -89,6 +96,52 @@ pub struct GrainPopulation {
     /// function per demo -- see `GrainField`'s own doc for why it's a
     /// separate trait from `Field` instead of reusing it directly.
     pub grain_fields: Vec<Box<dyn GrainField>>,
+    /// Real, opt-in running accumulator for the discrete-to-continuum
+    /// stress mapping (Christoffersen, Mehrabadi & Nemat-Nasser 1981 /
+    /// Bagi 1996: `sigma_ij = (1/A) * sum_contacts f_i^c * l_j^c`, branch
+    /// vector `l` taken center-to-center between the two contacting
+    /// grains). Updated inside `resolve_contact_forces`'s own existing
+    /// per-pair loop (the force this population already computes there,
+    /// just also summed here) -- zero cost/behaviour change for every
+    /// scene that never reads `effective_friction_angle_deg`. Reset via
+    /// `reset_stress_accum` to start a fresh averaging window (e.g. once a
+    /// population has settled and its prior transient/impact contacts
+    /// should not pollute a "current state" reading).
+    stress_accum: Mat2,
+    /// Real, cumulative count of active-pair contributions folded into
+    /// `stress_accum` since the last reset -- a per-substep, per-contact
+    /// count (not a distinct-pair count), used only as a "have we sampled
+    /// enough real contact data yet" gate for `effective_friction_angle_deg`.
+    stress_accum_samples: usize,
+    /// Real, opt-in terrain-contact configuration -- `None` (the default
+    /// via `new`/`new_hertzian`, zero cost/behavior change) means this
+    /// population never attempts real terrain contact at all. `Some((
+    /// reference_mass_per_cell, surface_threshold))` opts in explicitly,
+    /// via `with_terrain_contact` -- both real values the CALLER derives
+    /// from its own actual scene (the terrain's own real per-particle
+    /// mass; the packing-fraction cutoff, same real, scene-tunable
+    /// convention `grains::oracle::needs_discrete_treatment` already
+    /// uses), never guessed or hardcoded by this struct itself. See
+    /// `resolve_terrain_contact_forces`'s own doc for the real mechanism
+    /// this unlocks.
+    terrain_contact_config: Option<(f32, f32)>,
+}
+
+/// Real outer product `a (x) b` as a 2x2 matrix (`M*v = a*(b.dot(v))` for
+/// any `v`) -- the per-contact term Bagi's/Christoffersen's discrete
+/// stress formula sums over all active contacts.
+fn outer_product(a: Vec2, b: Vec2) -> Mat2 {
+    Mat2::from_cols(a * b.x, a * b.y)
+}
+
+/// Real closed-form eigenvalues of a symmetric 2x2 matrix `[[a,b],[b,d]]`,
+/// returned as `(largest, smallest)`. Standard formula (trace/2 +/-
+/// sqrt(((a-d)/2)^2 + b^2)) -- not an iterative solver, exact for 2x2.
+fn symmetric_2x2_eigenvalues(a: f32, b: f32, d: f32) -> (f32, f32) {
+    let mean = (a + d) * 0.5;
+    let half_diff = (a - d) * 0.5;
+    let radius = (half_diff * half_diff + b * b).sqrt();
+    (mean + radius, mean - radius)
 }
 
 impl GrainPopulation {
@@ -97,9 +150,13 @@ impl GrainPopulation {
             grains,
             contacts: Vec::new(),
             wall_springs: Vec::new(),
+            terrain_springs: Vec::new(),
             config: ContactModel::Linear(config),
             contact_iterations: 1,
             grain_fields: Vec::new(),
+            stress_accum: Mat2::ZERO,
+            stress_accum_samples: 0,
+            terrain_contact_config: None,
         }
     }
 
@@ -110,9 +167,13 @@ impl GrainPopulation {
             grains,
             contacts: Vec::new(),
             wall_springs: Vec::new(),
+            terrain_springs: Vec::new(),
             config: ContactModel::Hertzian(config),
             contact_iterations: 1,
             grain_fields: Vec::new(),
+            stress_accum: Mat2::ZERO,
+            stress_accum_samples: 0,
+            terrain_contact_config: None,
         }
     }
 
@@ -121,6 +182,25 @@ impl GrainPopulation {
     /// `k=1` (the default) is a no-op (bit-identical to not calling this).
     pub fn with_contact_iterations(mut self, contact_iterations: usize) -> Self {
         self.contact_iterations = contact_iterations;
+        self
+    }
+
+    /// Real, explicit opt-in for grain-vs-CONTINUUM-terrain contact (see
+    /// `resolve_terrain_contact_forces`'s own doc for the full mechanism
+    /// and why it's a genuinely separate concern from grain-vs-boundary
+    /// contact). Both arguments are real values the CALLER must derive
+    /// from its own actual scene -- `reference_mass_per_cell` from the
+    /// terrain's own real per-particle mass (`grains::oracle::
+    /// reference_mass_per_cell`), `surface_threshold` from the same real,
+    /// scene-tunable packing-fraction cutoff `grains::oracle::
+    /// needs_discrete_treatment` already exposes as a caller parameter --
+    /// this method never picks a default value on the caller's behalf.
+    pub fn with_terrain_contact(
+        mut self,
+        reference_mass_per_cell: f32,
+        surface_threshold: f32,
+    ) -> Self {
+        self.terrain_contact_config = Some((reference_mass_per_cell, surface_threshold));
         self
     }
 
@@ -135,6 +215,94 @@ impl GrainPopulation {
     /// Real number of currently-resolved contacts -- diagnostic/test use.
     pub const fn active_contact_count(&self) -> usize {
         self.contacts.len()
+    }
+
+    /// Real, cumulative active-pair-contribution count folded into the
+    /// stress accumulator since the last `reset_stress_accum` -- exposed so
+    /// callers (and tests) can tell a fresh/near-empty accumulator from one
+    /// with enough real contact data to trust, without duplicating the
+    /// threshold `effective_friction_angle_deg` itself uses.
+    pub const fn stress_accum_sample_count(&self) -> usize {
+        self.stress_accum_samples
+    }
+
+    /// Clears the running stress accumulator (Bagi/Christoffersen contact
+    /// sum + sample count) to start a fresh averaging window -- e.g. once a
+    /// population has visibly settled and older, pre-settling transient
+    /// contact data should not pollute a "current state" reading.
+    pub fn reset_stress_accum(&mut self) {
+        self.stress_accum = Mat2::ZERO;
+        self.stress_accum_samples = 0;
+    }
+
+    /// Real discrete-to-continuum effective internal friction angle
+    /// (degrees), derived from THIS population's own actual accumulated
+    /// contact forces -- Christoffersen, Mehrabadi & Nemat-Nasser 1981 /
+    /// Bagi 1996's area-averaged discrete stress
+    /// (`sigma_ij = (1/A) * sum_contacts f_i^c * l_j^c`, `stress_accum`'s
+    /// own running sum divided here by this population's own total grain
+    /// area x sample count -- a real, disclosed proxy for the true
+    /// representative area, matching this codebase's existing
+    /// `Particle::volume`-as-2D-footprint convention used elsewhere, e.g.
+    /// `Simulation::enrich_region_into_grain`), symmetrized (real discrete
+    /// contact sums need not be exactly symmetric per contact even though
+    /// the true averaged Cauchy stress is, by angular-momentum balance --
+    /// standard practice, Bagi's own paper addresses this the same way),
+    /// then closed-form 2x2 eigen-decomposed into principal stresses and
+    /// converted via the standard Mohr-Coulomb relation
+    /// `sin(phi) = (sigma1-sigma3)/(sigma1+sigma3)` (compression-positive
+    /// convention: contact normal forces are purely repulsive/outward along
+    /// the branch vector, so this accumulator is already compression-
+    /// positive by construction, matching soil-mechanics convention).
+    ///
+    /// `None` when too few real contacts have been sampled yet (an
+    /// arbitrary but disclosed floor, not zero -- a near-empty accumulator
+    /// is noise, not a measurement) or when the resulting stress state
+    /// isn't genuinely compressive (`sigma1 + sigma3 <= 0`, e.g. a
+    /// population that never actually loaded any contacts).
+    pub fn effective_friction_angle_deg(&self) -> Option<f32> {
+        let (sigma1, sigma3) = self.principal_stresses()?;
+        let denom = sigma1 + sigma3;
+        if denom <= 0.0 {
+            return None;
+        }
+        let sin_phi = ((sigma1 - sigma3) / denom).clamp(-1.0, 1.0);
+        Some(sin_phi.asin().to_degrees())
+    }
+
+    /// Real diagnostic entry point, exposing the RAW (major, minor)
+    /// principal stresses `effective_friction_angle_deg` derives its
+    /// Mohr-Coulomb angle from -- pre-clamp, pre-`asin`. Added 2026-09-14
+    /// specifically to distinguish a genuine physical plateau from a
+    /// numerical-clamp artifact: `effective_friction_angle_deg` reporting a
+    /// suspiciously exact 90deg (`sin_phi` saturating its `[-1,1]` clamp)
+    /// could mean a real, degenerate (near-uniaxial) stress state, OR it
+    /// could mean the raw ratio is silently overshooting past 1.0 (e.g.
+    /// `sigma3` slightly negative from real discrete-sum noise) and the
+    /// clamp is masking that distinction -- this method lets a caller see
+    /// which. `None` under the exact same conditions
+    /// `effective_friction_angle_deg` returns `None` (too few samples, zero
+    /// total area).
+    pub fn principal_stresses(&self) -> Option<(f32, f32)> {
+        const MIN_SAMPLES: usize = 20;
+        if self.stress_accum_samples < MIN_SAMPLES {
+            return None;
+        }
+        let total_area: f32 = self
+            .grains
+            .iter()
+            .map(|g| std::f32::consts::PI * g.radius * g.radius)
+            .sum();
+        if total_area <= 0.0 {
+            return None;
+        }
+        let norm = total_area * self.stress_accum_samples as f32;
+        let sigma = self.stress_accum * (1.0 / norm);
+        // Symmetrize: (sigma + sigma^T) / 2.
+        let a = sigma.x_axis.x;
+        let d = sigma.y_axis.y;
+        let b = 0.5 * (sigma.x_axis.y + sigma.y_axis.x);
+        Some(symmetric_2x2_eigenvalues(a, b, d))
     }
 
     /// Per-grain active contact count this substep -- the real
@@ -244,6 +412,14 @@ impl GrainPopulation {
                 if let Some(resolution) = resolution {
                     let force_on_j = resolution.normal_force * (gj.x - gi.x).normalize()
                         + resolution.tangential_force;
+                    // Real Bagi (1996) / Christoffersen et al. (1981)
+                    // discrete-to-continuum stress term for this contact --
+                    // branch vector center-to-center, force this contact
+                    // actually exerts (already computed above for the
+                    // velocity update, not recomputed). See `stress_accum`'s
+                    // own doc for the full formula/citation.
+                    self.stress_accum += outer_product(force_on_j, gj.x - gi.x);
+                    self.stress_accum_samples += 1;
                     dv[pair.j] += force_on_j / gj.mass * sub_dt;
                     dv[pair.i] -= force_on_j / gi.mass * sub_dt;
                     // Rolling moment: real action-reaction pair on spin.
@@ -428,6 +604,86 @@ impl GrainPopulation {
         (forces, torques)
     }
 
+    /// Real grain-vs-CONTINUUM-terrain contact -- closes the real,
+    /// root-caused structural gap `resolve_wall_contact_forces` above
+    /// cannot: that method only ever fires against a real
+    /// `BoundaryCondition` (static geometry), so a grain resting on a
+    /// real, dynamic MPM terrain material (sharing the same grid via
+    /// ordinary P2G/G2P, not a boundary) got ZERO rolling resistance from
+    /// that contact -- exactly the base layer that sets a poured pile's
+    /// own footprint. See `terrain_contact`'s own module doc for the full
+    /// real diagnosis and the discrete-to-implicit-surface technique used
+    /// to estimate a normal/overlap from the terrain's own real packing-
+    /// fraction field.
+    ///
+    /// Same real, deliberate choice as `resolve_wall_contact_forces`
+    /// above: applies ONLY the tangential friction force and its
+    /// resulting torque, NOT the estimated contact's own normal
+    /// component -- the shared grid's ordinary P2G/G2P momentum exchange
+    /// with the terrain ALREADY provides real normal repulsion (the
+    /// terrain's own elastic-plastic incompressibility resists overlap);
+    /// adding a second, independent normal spring on top would double-
+    /// count it, the same real failure mode that method's own doc
+    /// disclosed and avoided.
+    pub fn resolve_terrain_contact_forces(
+        &mut self,
+        grid: &crate::grid::Grid,
+        dt: f32,
+    ) -> (Vec<Vec2>, Vec<f32>) {
+        let n = self.grains.len();
+        let mut forces = vec![Vec2::ZERO; n];
+        let mut torques = vec![0.0f32; n];
+        // Real, disclosed opt-in gate -- see `terrain_contact_config`'s
+        // own doc. Zero cost, zero behavior change for every population
+        // that never calls `with_terrain_contact`.
+        let Some((reference_mass_per_cell, surface_threshold)) = self.terrain_contact_config else {
+            return (forces, torques);
+        };
+        if self.terrain_springs.len() < n {
+            self.terrain_springs.resize(n, ContactSpring::default());
+        }
+
+        for i in 0..n {
+            let grain = self.grains[i];
+            let gi: GrainContactState = grain.contact_state();
+            let Some((normal, overlap)) = super::terrain_contact::terrain_grain_contact(
+                grid,
+                reference_mass_per_cell,
+                surface_threshold,
+                gi.x,
+                gi.radius,
+            ) else {
+                self.terrain_springs[i] = ContactSpring::default();
+                continue;
+            };
+            let resolution = match &self.config {
+                ContactModel::Linear(cfg) => resolve_wall_contact(
+                    &gi,
+                    normal,
+                    overlap,
+                    &mut self.terrain_springs[i],
+                    cfg,
+                    dt,
+                ),
+                ContactModel::Hertzian(cfg) => resolve_wall_contact_hertzian(
+                    &gi,
+                    normal,
+                    overlap,
+                    &mut self.terrain_springs[i],
+                    cfg,
+                    dt,
+                ),
+            };
+            if let Some(resolution) = resolution {
+                forces[i] += resolution.tangential_force;
+                torques[i] += resolution.rolling_moment + resolution.friction_torque_on_j;
+            } else {
+                self.terrain_springs[i] = ContactSpring::default();
+            }
+        }
+        (forces, torques)
+    }
+
     /// One real, standalone semi-implicit Euler substep (gravity + contact
     /// forces + any `grain_fields` integrated directly into velocity/spin,
     /// then position integrated from the new velocity) -- for a
@@ -490,6 +746,103 @@ mod tests {
         assert_eq!(pop.active_contact_count(), 0);
     }
 
+    /// Real, hand-verified check of `effective_friction_angle_deg`'s own
+    /// math (eigen-decomposition + Mohr-Coulomb), independent of the DEM
+    /// dynamics that normally populate `stress_accum` -- directly injects a
+    /// known accumulator value (same-module private-field access, this test
+    /// is a child of `population`'s own module) and checks the closed-form
+    /// answer against a hand-computed expectation, not the contact-force
+    /// pipeline. A deliberately ASYMMETRIC raw accumulator (`x_axis.y=2`,
+    /// `y_axis.x=0` -- real discrete contact sums need not be symmetric per
+    /// contact, see `effective_friction_angle_deg`'s own doc) that
+    /// symmetrizes to `[[2,1],[1,2]]`: eigenvalues 3 and 1 (mean=2,
+    /// half_diff=0, radius=sqrt(0^2+1^2)=1), `sin(phi)=(3-1)/(3+1)=0.5` ->
+    /// `phi=30deg` exactly. Using the RAW (unsymmetrized) matrix instead
+    /// would give eigenvalues (2,2) -> `phi=0deg` -- this test's chosen
+    /// asymmetry is deliberate, so a broken/missing symmetrization step
+    /// would fail this test, not silently pass it.
+    #[test]
+    fn effective_friction_angle_matches_hand_computed_mohr_coulomb_value() {
+        let mut pop = GrainPopulation::new(
+            vec![
+                Grain::new(Vec2::ZERO, 1.0, 1.0),
+                Grain::new(Vec2::new(3.0, 0.0), 1.0, 1.0),
+            ],
+            config(),
+        );
+        let total_area = 2.0 * std::f32::consts::PI * 1.0 * 1.0; // two r=1 grains
+        let samples = 20usize;
+        let norm = total_area * samples as f32;
+        // Raw sigma (pre-symmetrize) = [[2,0],[2,2]] (x_axis=(2,2), y_axis=(0,2)).
+        pop.stress_accum = Mat2::from_cols(Vec2::new(2.0, 2.0), Vec2::new(0.0, 2.0)) * norm;
+        pop.stress_accum_samples = samples;
+
+        let phi = pop.effective_friction_angle_deg().expect(
+            "20 samples at MIN_SAMPLES=20 and a genuinely compressive state must yield Some",
+        );
+        assert!((phi - 30.0).abs() < 1.0e-2, "phi={phi}, expected 30.0deg");
+
+        let (sigma1, sigma3) = pop
+            .principal_stresses()
+            .expect("same gate as effective_friction_angle_deg -- must also yield Some here");
+        assert!(
+            (sigma1 - 3.0).abs() < 1.0e-3,
+            "sigma1={sigma1}, expected 3.0"
+        );
+        assert!(
+            (sigma3 - 1.0).abs() < 1.0e-3,
+            "sigma3={sigma3}, expected 1.0"
+        );
+    }
+
+    #[test]
+    fn effective_friction_angle_is_none_below_the_minimum_sample_floor() {
+        let mut pop = GrainPopulation::new(
+            vec![
+                Grain::new(Vec2::ZERO, 1.0, 1.0),
+                Grain::new(Vec2::new(3.0, 0.0), 1.0, 1.0),
+            ],
+            config(),
+        );
+        pop.stress_accum = Mat2::from_cols(Vec2::new(100.0, 0.0), Vec2::new(0.0, 100.0));
+        pop.stress_accum_samples = 19; // one below MIN_SAMPLES=20
+        assert_eq!(pop.effective_friction_angle_deg(), None);
+    }
+
+    #[test]
+    fn effective_friction_angle_is_none_for_a_non_compressive_state() {
+        let mut pop = GrainPopulation::new(
+            vec![
+                Grain::new(Vec2::ZERO, 1.0, 1.0),
+                Grain::new(Vec2::new(3.0, 0.0), 1.0, 1.0),
+            ],
+            config(),
+        );
+        // sigma1+sigma3 <= 0 -- e.g. a population that never actually
+        // loaded any real compressive contact, only recorded tension/noise.
+        pop.stress_accum = Mat2::from_cols(Vec2::new(-1.0, 0.0), Vec2::new(0.0, -1.0));
+        pop.stress_accum_samples = 20;
+        assert_eq!(pop.effective_friction_angle_deg(), None);
+    }
+
+    #[test]
+    fn effective_friction_angle_is_none_for_zero_total_area() {
+        let mut pop = GrainPopulation::new(vec![], config());
+        pop.stress_accum = Mat2::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+        pop.stress_accum_samples = 20;
+        assert_eq!(pop.effective_friction_angle_deg(), None);
+    }
+
+    #[test]
+    fn reset_stress_accum_zeroes_both_the_tensor_and_the_sample_count() {
+        let mut pop = GrainPopulation::new(vec![Grain::new(Vec2::ZERO, 1.0, 1.0)], config());
+        pop.stress_accum = Mat2::from_cols(Vec2::new(5.0, 0.0), Vec2::new(0.0, 5.0));
+        pop.stress_accum_samples = 42;
+        pop.reset_stress_accum();
+        assert_eq!(pop.stress_accum, Mat2::ZERO);
+        assert_eq!(pop.stress_accum_sample_count(), 0);
+    }
+
     #[test]
     fn light_grain_resting_on_a_pinned_floor_reaches_the_real_predicted_equilibrium_overlap() {
         // Two real mistakes fixed here from an earlier version of this test:
@@ -546,6 +899,65 @@ mod tests {
         assert!(
             (overlap - expected_overlap).abs() < expected_overlap * 0.5,
             "expected overlap near {expected_overlap} (kn*overlap=m*g), got {overlap}"
+        );
+    }
+
+    /// Real end-to-end wiring check (as opposed to
+    /// `effective_friction_angle_matches_hand_computed_mohr_coulomb_value`'s
+    /// isolated math check): does `resolve_contact_forces`'s own real
+    /// per-substep loop -- exercised by real settling dynamics, not a
+    /// hand-injected accumulator -- actually populate `stress_accum` with
+    /// sane data? Same settling scenario as the equilibrium-overlap test
+    /// above (a light grain compressing onto a pinned floor grain under
+    /// gravity). Doesn't assert an exact angle (that depends on the full
+    /// nonlinear settling trajectory, not a closed form) -- just that a
+    /// real reading exists and falls in a physically sane range once the
+    /// grain has settled into sustained contact.
+    #[test]
+    fn effective_friction_angle_reads_real_nonzero_data_after_real_settling_contact() {
+        let cfg = config();
+        let m = 1.0;
+        let g = 9.8;
+        let floor_anchor = Vec2::new(0.0, -1.0);
+        let mut pop = GrainPopulation::new(
+            vec![
+                Grain::new(Vec2::new(0.0, 0.5), 0.5, m),
+                Grain::new(floor_anchor, 0.5, 1.0e6),
+            ],
+            cfg,
+        );
+        let gravity = Vec2::new(0.0, -g);
+        let dt = 0.0002;
+        for _ in 0..20_000 {
+            pop.step(gravity, dt);
+            pop.grains[1].x = floor_anchor;
+            pop.grains[1].v = Vec2::ZERO;
+            pop.grains[1].spin = 0.0;
+        }
+        assert!(
+            pop.stress_accum_sample_count() > 0,
+            "real settling contact never accumulated any stress samples -- wiring gap"
+        );
+        let phi = pop
+            .effective_friction_angle_deg()
+            .expect("a real, sustained compressive contact must yield Some");
+        // Real, honest finding from running this test, not assumed: a
+        // single two-grain vertical contact with no sliding is a
+        // DEGENERATE case for Mohr-Coulomb -- the contact force is purely
+        // normal (parallel to the branch vector), so `outer(f, l)` is
+        // rank-1 (one nonzero eigenvalue, one exactly zero -- zero real
+        // lateral/confining stress). `sin(phi) = (sigma1-0)/(sigma1+0) = 1`
+        // -> exactly 90deg. Mathematically correct, but physically
+        // uninformative: no real granular assembly has zero lateral
+        // confinement. This is why the REAL Phase-0 gate (comparing
+        // against the 23.87deg pure-DEM baseline) must use a genuine
+        // multi-grain pile with contacts in multiple directions, not a
+        // single vertical pair -- this test only confirms the WIRING
+        // (a real, sane, non-NaN value in [0,90]) reaches this point, not
+        // that a two-grain pair is a meaningful friction-angle measurement.
+        assert!(
+            (0.0..=90.0).contains(&phi),
+            "phi={phi}deg is outside any physically sane range"
         );
     }
 

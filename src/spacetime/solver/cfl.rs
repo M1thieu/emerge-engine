@@ -189,26 +189,15 @@ pub(crate) fn choose_substep_dt(
                 // for BOTH materials that call it (confirmed: gas.rs passes
                 // `adiabatic_index`, fluid.rs passes its own Tait `eos_power`
                 // -- same convention, same field in `MaterialParams`).
-                if grad_norm.is_finite()
-                    && grad_norm > f32::EPSILON
-                    && materials.owns_deformation_volume_state(particles.material_id[i])
-                    && let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
-                    && c2_rest.is_finite()
-                    && c2_rest > f32::EPSILON
-                {
-                    let weak_shock_gamma =
-                        materials.get(particles.material_id[i]).params().eos_power;
-                    if weak_shock_gamma.is_finite() && weak_shock_gamma > 0.0 {
-                        let c0_quadratic = (weak_shock_gamma + 1.0) * 0.25;
-                        let c_eff =
-                            c2_rest.sqrt() + 2.0 * c0_quadratic * config.grid_cell_size * grad_norm;
-                        if c_eff.is_finite() && c_eff > f32::EPSILON {
-                            let shock_dt = material_cfl * config.grid_cell_size / c_eff;
-                            if shock_dt.is_finite() && shock_dt > 0.0 {
-                                min_mat_dt = min_mat_dt.min(shock_dt);
-                            }
-                        }
-                    }
+                if let Some(shock_dt) = shock_viscosity_dt_bound(
+                    grad_norm,
+                    materials.owns_deformation_volume_state(particles.material_id[i]),
+                    materials.rest_acoustic_c2(particles.material_id[i]),
+                    materials.get(particles.material_id[i]).params().eos_power,
+                    config.grid_cell_size,
+                    material_cfl,
+                ) {
+                    min_mat_dt = min_mat_dt.min(shock_dt);
                 }
                 // Real, derived "single-particle instability" bound for strict-fluid
                 // materials (Sun, Shinar & Schroeder 2020, "Effective time step
@@ -235,52 +224,28 @@ pub(crate) fn choose_substep_dt(
                 // (verified by hand: both branches evaluate to
                 // `dx*sqrt(2*rest_density/(K*d))` there), a real internal-
                 // consistency check on the derivation, not just trust in the source.
+                // Real constitutive stiffness lambda = rho0*c0^2 (the Tait/
+                // ideal-gas EOS tangent bulk modulus at rest, J=1) -- REQUIRED
+                // by Sun, Shinar & Schroeder's own derivation (their own
+                // `lambda` term); see `single_particle_instability_dt_bound`'s
+                // own doc for the full citation. Honest, disclosed limitation:
+                // this uses the REST-state tangent stiffness (correct near
+                // J=1), not a full nonlinear-Tait worst-case bound over the
+                // whole admissible J range.
                 if materials.owns_deformation_volume_state(particles.material_id[i]) {
                     let rest_density = materials
                         .get(particles.material_id[i])
                         .params()
                         .rest_density;
                     let j = particles.volume[i] / particles.initial_volume[i];
-                    // Real constitutive stiffness lambda = rho0*c0^2 (the
-                    // Tait/ideal-gas EOS tangent bulk modulus at rest, J=1)
-                    // -- REQUIRED by Sun, Shinar & Schroeder's own derivation
-                    // (their own `lambda` term), missing entirely from this
-                    // bound since it was first added 2026-08-28: without it,
-                    // the formula reduces to sqrt(density) with no stiffness
-                    // anywhere, which is not dimensionally a time (confirmed
-                    // 2026-08-29 via independent deep research, then
-                    // verified directly by reading this exact code -- real
-                    // convergent finding from two independent sources, not
-                    // taken on faith from either).
-                    // Honest, disclosed limitation: this uses the REST-state
-                    // tangent stiffness (correct near J=1, confirmed by the
-                    // same cross-check), not a full nonlinear-Tait worst-case
-                    // bound over the whole admissible J range -- a real,
-                    // deliberately-scoped fix for the missing term, not a
-                    // silent claim of full generality.
-                    if let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
-                        && rest_density.is_finite()
-                        && rest_density > 0.0
-                        && j.is_finite()
-                        && j > 0.0
-                        && c2_rest.is_finite()
-                        && c2_rest > f32::EPSILON
-                    {
-                        const QUADRATIC_SPLINE_K: f32 = 6.0;
-                        const DIMENSION_D: f32 = 2.0;
-                        let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
-                        let lambda = rest_density * c2_rest;
-                        let kd_lambda = kd * lambda;
-                        let single_particle_dt = if j <= 1.0 {
-                            (config.grid_cell_size / (2.0 - j))
-                                * (2.0 * rest_density / kd_lambda).sqrt()
-                        } else {
-                            config.grid_cell_size
-                                * (rest_density * (j + 1.0) / (j * j * j * kd_lambda)).sqrt()
-                        };
-                        if single_particle_dt.is_finite() && single_particle_dt > 0.0 {
-                            min_mat_dt = min_mat_dt.min(single_particle_dt);
-                        }
+                    if let Some(single_particle_dt) = single_particle_instability_dt_bound(
+                        true,
+                        rest_density,
+                        j,
+                        materials.rest_acoustic_c2(particles.material_id[i]),
+                        config.grid_cell_size,
+                    ) {
+                        min_mat_dt = min_mat_dt.min(single_particle_dt);
                     }
                 }
                 // Real, live density-AND-temperature-aware acoustic term
@@ -328,12 +293,8 @@ pub(crate) fn choose_substep_dt(
                 // `deformation_gradient_cfl_bound` (which would recompute the
                 // identical norm) -- same formula as that function's own body,
                 // bit-identical result.
-                let deformation_coefficient = config.cfl_coefficient.min(0.5);
-                let deformation_dt = if grad_norm.is_finite() && grad_norm > f32::EPSILON {
-                    deformation_coefficient / grad_norm
-                } else {
-                    f32::INFINITY
-                };
+                let deformation_dt =
+                    deformation_gradient_ode_dt_bound(grad_norm, config.cfl_coefficient);
                 if deformation_dt.is_finite() && deformation_dt > 0.0 {
                     min_mat_dt = min_mat_dt.min(deformation_dt);
                 }
@@ -674,7 +635,7 @@ pub(crate) fn cfl_bound(config: &SimConfig, max_speed: f32, min_mat_dt: f32, max
 /// Whether `x` sits within `boundary_thickness` cells of any wall -- the SAME
 /// zone `apply_slip_wall_velocity` already treats specially, not a new margin.
 /// Used by `SimConfig::fluid_near_wall_cfl_scale`'s proactive tightening.
-fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) -> bool {
+pub(crate) fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) -> bool {
     let t = boundary_thickness as f32;
     let hi = grid_res as f32 - t;
     x.x < t || x.x > hi || x.y < t || x.y > hi
@@ -700,6 +661,108 @@ pub(crate) const AFFINE_CFL_STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::const
 pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
     let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
     grad_norm * AFFINE_CFL_STENCIL_CORNER_DISTANCE * cell_width
+}
+
+/// The F/J update is a local ODE in its own right (`dF/dt = C*F`); a large
+/// velocity gradient can invert F within a nominally velocity-safe substep
+/// even when the affine speed contribution above is disabled for the
+/// advection CFL. `grad_norm` is the Frobenius norm of the particle's own
+/// `velocity_gradient` -- a caller that already computed it for another CFL
+/// term (advection speed, shock viscosity) should pass that same value
+/// rather than recomputing it. Real, standard practice (bounds the
+/// dimensionless per-substep velocity-gradient increment, `cfl_coefficient`
+/// capped at 0.5 as the safety margin), unconditional on material type --
+/// every particle integrates its own F this way.
+pub(crate) fn deformation_gradient_ode_dt_bound(grad_norm: f32, cfl_coefficient: f32) -> f32 {
+    if grad_norm.is_finite() && grad_norm > f32::EPSILON {
+        cfl_coefficient.min(0.5) / grad_norm
+    } else {
+        f32::INFINITY
+    }
+}
+
+/// Real, standard hydrocode stability correction for von Neumann-Richtmyer
+/// artificial (shock) viscosity (Wilkins 1980, "Calculation of Elastic-
+/// Plastic Flow," Methods in Computational Physics; Benson 1992,
+/// "Computational methods in Lagrangian and Eulerian hydrocodes," Comput.
+/// Methods Appl. Mech. Engrg. 99): augments the acoustic sound speed with
+/// the shock-viscosity's own contribution, `c_eff = c_sound +
+/// 2*c0_quadratic*h*|div_v|`, so a violent local compression event tightens
+/// dt even before it has driven J far from 1. `grad_norm` (Frobenius norm of
+/// the velocity gradient) is a real, conservative proxy for `|div_v|` -- it
+/// upper-bounds any single directional derivative including the trace/
+/// divergence, so this errs toward MORE caution, never less. `None` when
+/// the material has no real acoustic term (not a strict fluid) or an input
+/// is degenerate -- the same population `von_neumann_richtmyer_q` is ever
+/// invoked for.
+pub(crate) fn shock_viscosity_dt_bound(
+    grad_norm: f32,
+    owns_deformation_volume_state: bool,
+    rest_acoustic_c2: Option<f32>,
+    eos_power: f32,
+    grid_cell_size: f32,
+    material_cfl: f32,
+) -> Option<f32> {
+    if !(grad_norm.is_finite() && grad_norm > f32::EPSILON && owns_deformation_volume_state) {
+        return None;
+    }
+    let c2_rest = rest_acoustic_c2?;
+    if !(c2_rest.is_finite() && c2_rest > f32::EPSILON && eos_power.is_finite() && eos_power > 0.0)
+    {
+        return None;
+    }
+    let c0_quadratic = (eos_power + 1.0) * 0.25;
+    let c_eff = c2_rest.sqrt() + 2.0 * c0_quadratic * grid_cell_size * grad_norm;
+    if !(c_eff.is_finite() && c_eff > f32::EPSILON) {
+        return None;
+    }
+    let shock_dt = material_cfl * grid_cell_size / c_eff;
+    (shock_dt.is_finite() && shock_dt > 0.0).then_some(shock_dt)
+}
+
+/// Real, derived "single-particle instability" bound (Sun, Shinar &
+/// Schroeder 2020, "Effective time step restrictions for explicit MPM
+/// simulation," SCA 2020, Section 4.5): when a particle becomes isolated,
+/// the grid velocity there is driven by that ONE particle's own pressure
+/// force, which feeds back into its own next-substep J -- a fixed-point
+/// iteration on J that can diverge if the timestep doesn't respect it. Valid
+/// for every strict-fluid particle unconditionally (the paper derives it
+/// from `tr(H)`'s own proven worst-case upper bound, not from detecting
+/// isolation directly) -- the authors' own relaxed form (their stricter Eq.
+/// 6 forces J<=1 outright; this one instead allows overshoot but bounds it
+/// from diverging). `K=6` is the paper's own derived constant for quadratic
+/// B-splines (this engine's own kernel); `d=2` for this 2D engine.
+/// Continuous at J=1 from both sides by construction. `None` when the
+/// material has no real acoustic term or an input is degenerate.
+pub(crate) fn single_particle_instability_dt_bound(
+    owns_deformation_volume_state: bool,
+    rest_density: f32,
+    j: f32,
+    rest_acoustic_c2: Option<f32>,
+    grid_cell_size: f32,
+) -> Option<f32> {
+    if !owns_deformation_volume_state {
+        return None;
+    }
+    let c2_rest = rest_acoustic_c2?;
+    if !(rest_density.is_finite()
+        && rest_density > 0.0
+        && j.is_finite()
+        && j > 0.0
+        && c2_rest.is_finite()
+        && c2_rest > f32::EPSILON)
+    {
+        return None;
+    }
+    const QUADRATIC_SPLINE_K: f32 = 6.0;
+    const DIMENSION_D: f32 = 2.0;
+    let kd_lambda = QUADRATIC_SPLINE_K * DIMENSION_D * rest_density * c2_rest;
+    let dt = if j <= 1.0 {
+        (grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd_lambda).sqrt()
+    } else {
+        grid_cell_size * (rest_density * (j + 1.0) / (j * j * j * kd_lambda)).sqrt()
+    };
+    (dt.is_finite() && dt > 0.0).then_some(dt)
 }
 
 #[cfg(test)]

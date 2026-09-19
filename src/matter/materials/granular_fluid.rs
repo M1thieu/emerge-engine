@@ -87,10 +87,21 @@ impl GranularFluidMaterial {
     /// in this crate (`sand.rs`/`fluid.rs`/`snow.rs`/etc. all have a `::new()`
     /// -- this was the sole exception). Takes the physically-meaningful
     /// parameters directly; the remaining numerical-stability fields default
-    /// to the same values the `saturated_loam` preset already uses (eos_power
-    /// 7.0 = standard near-incompressible Tait EOS, pressure_floor 0.0 = no
-    /// tensile granular-contact traction). For a ready-made preset, prefer `saturated_loam`/
-    /// `consolidated_clay`/`cytoplasmic` instead.
+    /// to the same values EVERY real preset below (`saturated_loam`/
+    /// `consolidated_clay`/`cytoplasmic`) actually uses.
+    ///
+    /// Real bug fixed 2026-09-15 (found via audit, not live-reported): this
+    /// used to default `eos_power` to 7.0 while its OWN doc comment claimed
+    /// that matched `saturated_loam` -- it doesn't; that preset (and both
+    /// others) uses 2.0. Worse, `saturated_loam`'s own doc, right below,
+    /// explicitly states 7.0 "causes runaway pressure under gravity-settling
+    /// compression... an unbounded feedback loop" for this material's real
+    /// granular-flow regime -- so the general-purpose constructor was
+    /// shipping a default this very file calls unsuitable. 2.0 is not a
+    /// guess: it's the one value every real preset already independently
+    /// converged on, and the one the field's own doc says granular flow
+    /// requires (1-3 range). `pressure_floor: 0.0` = no tensile granular-
+    /// contact traction (this part was already correct).
     pub const fn new(
         lambda: f32,
         mu: f32,
@@ -104,7 +115,7 @@ impl GranularFluidMaterial {
             lambda,
             rest_density,
             eos_stiffness,
-            eos_power: 7.0,
+            eos_power: 2.0,
             hardening_exponent,
             compression_limit,
             stretch_limit: 0.01,
@@ -243,9 +254,34 @@ impl MaterialModel for GranularFluidMaterial {
         ConstitutiveModel::GranularFluid
     }
 
+    // Real bug fixed 2026-09-15 (found via audit, not live-reported): unlike
+    // every sibling EOS-pressure material in this crate
+    // (`NewtonianFluidMaterial`, `BinghamFluidMaterial`, `IdealGasMaterial`,
+    // `CavitatingFluidMaterial`, `BoilingMixtureMaterial` -- see each one's
+    // own `init_particle`), this never seeded `initial_volume`/`volume`/
+    // `density` from the real conserved quantity `mass/rest_density`, and
+    // never overrode `owns_deformation_volume_state()` (stays at the trait
+    // default `false`). Combined, this left density/volume entirely to
+    // `SpawnRegion`'s kernel-mass-density gather at spawn -- the exact
+    // free-surface-biased measurement `NewtonianFluidMaterial::init_particle`
+    // exists specifically to avoid (see that function's own doc) -- and, on
+    // the GPU backend, `g2p.wgsl` OVERWRITES density/volume from that same
+    // biased gather every substep for any material with
+    // `owns_deformation_volume_state==0`, not just at spawn. `update_particle`
+    // below already correctly derives `volume = initial_volume * j` and
+    // `density = mass / volume` every substep -- it only ever needed a
+    // correct `initial_volume` to start from.
     fn init_particle(&self, particle: &mut Particle) {
         particle.plastic_volume_ratio = 1.0;
         particle.hardening_scale = 1.0;
+        let j = particle.deformation_gradient.determinant().max(MIN_J);
+        particle.initial_volume = particle.mass / self.rest_density.max(1.0e-6);
+        particle.volume = particle.initial_volume * j;
+        particle.density = self.rest_density / j;
+    }
+
+    fn owns_deformation_volume_state(&self) -> bool {
+        true
     }
 
     // TRIED, REVERTED (2026-08-26/27): a `GasMaterial`-style
@@ -271,9 +307,30 @@ impl MaterialModel for GranularFluidMaterial {
     // part by construction) and lands J very close to the real prior
     // compression ratio (measured J~1.02, near the material's own
     // stretch_limit clamp) -- so the mechanism is doing roughly what
-    // `gas.rs`'s own working version does. The actual remaining cause is
-    // NOT yet found: candidates not yet checked include this material's
-    // `eos_power` default (7.0 in the raw `new()` constructor, already
+    // `gas.rs`'s own working version does.
+    //
+    // RESOLVED, mostly (2026-08-28, see `tests/physics_correctness.rs`'s own
+    // doc on `diag_phase_transition_under_load_causes_stress_discontinuity`):
+    // the `eos_power` candidate below WAS checked -- the diagnostic's own
+    // material had been built via the raw `::new()` constructor, which
+    // hardcoded 7.0 (the value flagged above as unsuitable), while the real
+    // scene (`sand_water_saturation.rs`'s `make_mixture`) already used 2.0
+    // directly and was never actually exposed to the danger. Rebuilding the
+    // diagnostic to match `make_mixture` field-for-field dropped the
+    // measured spike from +0.1646 to -0.0076 -- the identity-reset
+    // mechanism, with the CORRECT eos_power, is not the catastrophic problem
+    // it looked like. `new()`'s own default was fixed separately (2026-09-15,
+    // see that constructor's own doc) so future callers can't reintroduce
+    // this by using the raw constructor instead of a preset. Honest residual
+    // scope, per that test's own doc: this explains why the diagnostic
+    // OVERSTATED the danger, not necessarily the real scene's own eventual
+    // 104,737-frame crash, which may have a slower, separate cause (a real
+    // water-side CFL/retry instability per that crash's own panic message)
+    // -- a repeated-transition version of the diagnostic remains the real
+    // next step there, not more single-transition analysis.
+    //
+    // Original "not yet checked" note, kept for the historical record: this
+    // material's `eos_power` default (7.0 in the raw `new()` constructor, already
     // documented elsewhere in this file as "causes runaway pressure under
     // gravity-settling compression" and NOT the value `sand_water_
     // saturation.rs`'s own `make_mixture` actually uses, 2.0 -- the
@@ -393,6 +450,14 @@ impl MaterialModel for GranularFluidMaterial {
             pressure_floor: self.pressure_floor,
             dynamic_viscosity: self.dynamic_viscosity,
             bulk_viscosity: self.bulk_viscosity,
+            // Real bug fixed 2026-09-15, second half of the fix on
+            // `init_particle`'s own doc: `MaterialParams::
+            // owns_deformation_volume_state` is NOT auto-derived from the
+            // trait method -- each material's `params()` must forward it
+            // explicitly (see that field's own doc), and this one never did,
+            // so `..Default::default()` below silently left it at 0/false on
+            // GPU even once the trait method itself returned `true`.
+            owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
     }
@@ -532,5 +597,91 @@ mod kinematic_projection_tests {
         let expected_jp = outside_sigma / floor;
         assert!((outside.plastic_volume_ratio[0] - expected_jp).abs() < 2.0e-6);
         assert!(outside.hardening_scale[0] > 1.0);
+    }
+}
+
+/// Real regression tests, 2026-09-15, for the spawn-state/GPU-density bug
+/// found by audit (see `init_particle`'s own doc for the full account): a
+/// freshly-spawned particle must get its real, conserved volume/density
+/// from `mass/rest_density`, matching every sibling EOS-pressure material,
+/// and the material must correctly declare that it owns that state (both
+/// the trait method AND its own separate forwarding into `MaterialParams`
+/// for the GPU path -- these are NOT automatically linked, a real, second
+/// bug this test also catches).
+#[cfg(test)]
+mod spawn_state_tests {
+    use super::*;
+
+    #[test]
+    fn init_particle_seeds_real_conserved_volume_and_density() {
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 4.0, 100.0, 10.0, 0.025);
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.mass = 2.0;
+        mat.init_particle(&mut p);
+
+        let expected_volume = p.mass / mat.rest_density; // = 0.5
+        assert!(
+            (p.initial_volume - expected_volume).abs() < 1.0e-6,
+            "initial_volume must be the real conserved mass/rest_density, \
+             got {} expected {expected_volume}",
+            p.initial_volume
+        );
+        assert!(
+            (p.volume - expected_volume).abs() < 1.0e-6,
+            "volume at spawn (J=1) must equal initial_volume exactly, got {} expected {expected_volume}",
+            p.volume
+        );
+        assert!(
+            (p.density - mat.rest_density).abs() < 1.0e-6,
+            "density at spawn (J=1) must equal rest_density exactly, got {} expected {}",
+            p.density,
+            mat.rest_density
+        );
+    }
+
+    #[test]
+    fn init_particle_respects_real_prior_compression() {
+        // A particle spawned with F already compressed (J=0.8, e.g. seeded
+        // mid-scene by some other mechanism) must get a volume/density
+        // consistent with THAT real J, not silently reset to J=1 -- matches
+        // `NewtonianFluidMaterial::init_particle`'s own real contract.
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 4.0, 100.0, 10.0, 0.025);
+        let mut p = Particle::zeroed();
+        let s = 0.8_f32.sqrt();
+        p.deformation_gradient = Mat2::from_diagonal(Vec2::splat(s));
+        p.mass = 2.0;
+        mat.init_particle(&mut p);
+
+        let j = p.deformation_gradient.determinant();
+        assert!(
+            (j - 0.8).abs() < 1.0e-5,
+            "test setup sanity: J should be 0.8, got {j}"
+        );
+        let expected_initial_volume = p.mass / mat.rest_density;
+        assert!((p.initial_volume - expected_initial_volume).abs() < 1.0e-6);
+        assert!((p.volume - expected_initial_volume * j).abs() < 1.0e-6);
+        assert!((p.density - mat.rest_density / j).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn owns_deformation_volume_state_is_true_and_reaches_gpu_params() {
+        let mat = GranularFluidMaterial::new(500.0, 200.0, 4.0, 100.0, 10.0, 0.025);
+        assert!(
+            MaterialModel::owns_deformation_volume_state(&mat),
+            "GranularFluidMaterial must own its volume/density state -- it \
+             derives both from its own EOS+deformation-gradient, not a \
+             kernel-mass gather"
+        );
+        // Real, separate check: the trait method alone does NOT reach the
+        // GPU -- `params()` must forward it explicitly (see that function's
+        // own doc). This would have stayed silently 0/false even with the
+        // trait method fixed, if only the trait override existed.
+        assert_eq!(
+            mat.params().owns_deformation_volume_state,
+            1,
+            "MaterialParams::owns_deformation_volume_state must be forwarded \
+             from the trait method, not left at Default::default()'s 0"
+        );
     }
 }

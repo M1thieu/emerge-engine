@@ -22,6 +22,7 @@ struct MutFieldPtrs {
     plastic_volume_ratio: *mut f32,
     log_volume_strain: *mut f32,
     friction_hardening: *mut f32,
+    eps_pl_vol_pradhana: *mut f32,
 }
 // SAFETY: raw pointers aren't Send/Sync by default, but this type is only ever
 // used to derive disjoint per-index references (see the SAFETY comment where
@@ -71,6 +72,7 @@ impl MutFieldPtrs {
                 plastic_volume_ratio: &mut *self.plastic_volume_ratio.add(i),
                 log_volume_strain: &mut *self.log_volume_strain.add(i),
                 friction_hardening: &mut *self.friction_hardening.add(i),
+                eps_pl_vol_pradhana: &mut *self.eps_pl_vol_pradhana.add(i),
                 mass: s.mass,
                 temperature: s.temperature,
                 initial_volume: s.initial_volume,
@@ -307,6 +309,7 @@ pub fn gather_grid_to_particles(
         plastic_volume_ratio: particles.plastic_volume_ratio.as_mut_ptr(),
         log_volume_strain: particles.log_volume_strain.as_mut_ptr(),
         friction_hardening: particles.friction_hardening.as_mut_ptr(),
+        eps_pl_vol_pradhana: particles.eps_pl_vol_pradhana.as_mut_ptr(),
     };
     // Gate once, not per particle: when no grip particle ever touched the grid this
     // substep (every scene that doesn't use `Particle::contact_group`), this is false
@@ -380,6 +383,25 @@ pub fn gather_grid_to_particles(
                 let weights = quadratic_weights(*ctx.x);
                 let mut new_v = Vec2::ZERO;
                 let mut b = Mat2::ZERO;
+                // Real, second fix to the same free-surface mechanism (2026-09-16,
+                // found chasing a razor-thin-layer collapse where EVERY depth band
+                // read as expanded, not just the free surface): excluding a single
+                // extrapolated node from `b` (above) is correct when the OTHER rows/
+                // columns still span real spatial variation -- but when an entire row
+                // (both cells above AND below, e.g. a layer thinner than the kernel's
+                // own support radius) is excluded, only one row of real data survives,
+                // and every surviving cell then shares the SAME dist.y. A derivative
+                // needs at least two distinct sample positions along an axis; summing
+                // `w*v*dist.y` over cells that all share one dist.y is not a gradient,
+                // it's a spurious `velocity * constant-offset` cross term that gets
+                // fed into `C`'s corresponding column as if it were real -- this reads
+                // as a permanent, non-physical divergence bias, matching the observed
+                // "every band reads expanded, never compressed" signature exactly.
+                // Tracked per-axis: an axis needs >=2 distinct included (non-
+                // extrapolated) offsets to be trusted; otherwise that whole column of
+                // `b` is discarded rather than kept as a numerical artifact.
+                let mut included_gx = [false; 3];
+                let mut included_gy = [false; 3];
 
                 for gx in 0..3 {
                     for gy in 0..3 {
@@ -392,6 +414,13 @@ pub fn gather_grid_to_particles(
                         // this substep. Both helpers fall back to the ordinary total
                         // velocity where no contact exists at that node, so this is exact
                         // everywhere, not just near contact.
+                        // Set only on the plain free-surface path below -- an assumed,
+                        // spatially-uniform stand-in carries no real spatial-derivative
+                        // information (a constant field has zero gradient), so it must
+                        // still count toward `new_v` but is excluded from `b`. See
+                        // `Grid::is_extrapolated`'s own doc for the full derivation and
+                        // the settling-bias measurement that motivated this.
+                        let mut extrapolated = false;
                         let node_v = if contact_active {
                             if contact_group != 0 {
                                 grid.grip_velocity_at(cell_pos)
@@ -410,6 +439,7 @@ pub fn gather_grid_to_particles(
                             // take THIS particle's own velocity, not ~zero --
                             // see `velocity_at_or_extrapolated`'s own doc for
                             // the measurement and the citation.
+                            extrapolated = grid.is_extrapolated(cell_pos);
                             grid.velocity_at_or_extrapolated(
                                 cell_pos,
                                 *ctx.v,
@@ -419,11 +449,23 @@ pub fn gather_grid_to_particles(
                             )
                         };
                         let weighted_velocity = node_v * weight;
-                        let term =
-                            Mat2::from_cols(weighted_velocity * dist.x, weighted_velocity * dist.y);
-                        b += term;
                         new_v += weighted_velocity;
+                        if !extrapolated {
+                            included_gx[gx] = true;
+                            included_gy[gy] = true;
+                            let term = Mat2::from_cols(
+                                weighted_velocity * dist.x,
+                                weighted_velocity * dist.y,
+                            );
+                            b += term;
+                        }
                     }
+                }
+                if included_gx.iter().filter(|&&c| c).count() < 2 {
+                    b.x_axis = Vec2::ZERO;
+                }
+                if included_gy.iter().filter(|&&c| c).count() < 2 {
+                    b.y_axis = Vec2::ZERO;
                 }
 
                 // ASFLIP (Fei, Guo, Wu, Huang, Gao 2021, "Revisiting Integration in the

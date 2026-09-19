@@ -71,6 +71,67 @@ codegen-units = 1
 name = "headless"
 path = "examples/cpu/headless.rs"
 
+[[example]]
+name = "fluid_thin_layer_diag"
+path = "examples/cpu/fluid_thin_layer_diag.rs"
+
+[[example]]
+name = "fluid_thin_layer_diag_gpu"
+path = "examples/gpu/fluid_thin_layer_diag_gpu.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "cfl_staleness_experiment_gpu"
+path = "examples/gpu/cfl_staleness_experiment_gpu.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "regional_substep_feasibility_check"
+path = "examples/gpu/regional_substep_feasibility_check.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "fragmentation_check_gpu"
+path = "examples/gpu/fragmentation_check_gpu.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "cpu_gpu_single_step_kernel_diff"
+path = "examples/gpu/cpu_gpu_single_step_kernel_diff.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "fragmentation_check_cpu"
+path = "examples/cpu/fragmentation_check_cpu.rs"
+
+[[example]]
+name = "cfl_refresh_rate_check_gpu"
+path = "examples/gpu/cfl_refresh_rate_check_gpu.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "fluid_pressure_projection_gpu_check"
+path = "examples/gpu/fluid_pressure_projection_gpu_check.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "fluid_pressure_projection_parity_check"
+path = "examples/cpu/fluid_pressure_projection_parity_check.rs"
+
+[[example]]
+name = "fluid_pressure_projection_droplet_landing_check"
+path = "examples/cpu/fluid_pressure_projection_droplet_landing_check.rs"
+
+[[example]]
+name = "atomic_scatter_contention_test"
+path = "examples/gpu/atomic_scatter_contention_test.rs"
+required-features = ["gpu"]
+
+[[example]]
+name = "cpu_gpu_lockstep_divergence_finder"
+path = "examples/gpu/cpu_gpu_lockstep_divergence_finder.rs"
+required-features = ["gpu"]
+
 # --- GPU examples: current focus ---
 [[example]]
 name = "basic_jellies_gpu"
@@ -176,6 +237,11 @@ required-features = ["render"]
 [[example]]
 name = "channel_flow"
 path = "examples/cpu/channel_flow.rs"
+required-features = ["render"]
+
+[[example]]
+name = "kinematic_obstacle_in_water"
+path = "examples/cpu/kinematic_obstacle_in_water.rs"
 required-features = ["render"]
 
 [[example]]

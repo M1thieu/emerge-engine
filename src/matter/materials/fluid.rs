@@ -201,7 +201,17 @@ impl NewtonianFluidMaterial {
         );
         let rho_grid = rho_kg_m3 * config.dx_meters * config.dx_meters;
         let tait_b_pa = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
-        Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA)
+        let mut material = Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA);
+        // REAL FIX (2026-09-17): same root bug as `FromSI::from_physical`'s
+        // own fix just above -- `Self::new`'s `pressure_floor: -0.1` default
+        // is a bare, unconverted grid-unit constant. This constructor's own
+        // convention keeps stress/viscosity RAW SI (see this function's own
+        // doc above -- no `scale_stress` here, unlike `from_physical`), so
+        // the fix must match: the real cavitation pressure stays raw SI Pa
+        // too, not run through `scale_stress` (which would double-convert
+        // and be wrong for this specific constructor's units).
+        material.pressure_floor = -100_000.0; // real dissolved-gas cavitation onset, Pa gauge
+        material
     }
 }
 
@@ -227,7 +237,24 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // Those pin a real fluid's EOS pressure at its floor regardless of
         // actual depth or compression -- see `SimConfig::grid_density`.
         let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
-        Self::new(rho_grid, visc, eos, GAMMA)
+        let mut material = Self::new(rho_grid, visc, eos, GAMMA);
+        // REAL FIX (2026-09-17): `Self::new`'s own `pressure_floor: -0.1`
+        // default is a bare grid-unit constant, never SI-converted -- the
+        // exact bug already found and patched per-demo in
+        // `basic_fluids_gpu.rs`/`basic_fluids.rs` this week
+        // (`HANDOFF_fluid_gpu_thin_layer_bug.md`, Tenth pass). Fixing it
+        // only in those two call sites left this, the actually-documented
+        // "real SI" construction path, still silently broken for any other
+        // caller. Real cavitation onset for water in practice
+        // (dissolved-gas nucleation, the standard engineering figure, not
+        // the much higher pure-degassed lab value) is ~-100,000 Pa gauge --
+        // converted through the SAME `scale_stress`/`stress_from_si_physical`
+        // pipeline `eos` itself just used above, at THIS material's own
+        // real `props.rho_kg_m3`, not assumed water.
+        const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
+        material.pressure_floor =
+            scale_stress(REAL_CAVITATION_PRESSURE_PA, props.rho_kg_m3, config);
+        material
     }
 }
 
@@ -403,8 +430,24 @@ impl MaterialModel for NewtonianFluidMaterial {
         //
         // Restored here 2026-08-13: it had existed in `fluid_state.rs`, which
         // a wholesale revert to this file's pre-`cac544b` form deleted, so the
-        // CPU fluid path silently lost it while `p2g.wgsl` kept its own copy
-        // -- a real CPU/GPU physics divergence, now closed.
+        // CPU fluid path silently lost it while `p2g.wgsl` kept its own copy.
+        //
+        // CORRECTION (2026-09-15, audit-found): the claim above ("now
+        // closed") stopped being true on 2026-08-15 -- commit `7c7991f`
+        // ("consolidate GPU/render backlog") silently deleted THIS SAME term
+        // from `p2g.wgsl`'s fluid branch (and the granular-fluid branch's own
+        // Kelvin-Voigt damping) alongside ~480 unrelated line changes, with
+        // no disclosure that it had gone. Every GPU-run fluid/mud scene had
+        // zero shock-capturing viscosity for a month with this doc still
+        // claiming parity. Both restored 2026-09-15, ported from THIS
+        // function's current form (not the stale pre-deletion GPU snapshot,
+        // which still used the strong-shock coefficient this function has
+        // since moved away from) -- see `p2g.wgsl`'s own comment at the
+        // restoration site for the full account. Real, disclosed lesson: a
+        // "closed" cross-language parity claim needs its own regression
+        // test, not just a comment, to actually stay closed -- none existed
+        // here, which is exactly how a large consolidation commit could
+        // delete it without any test failing.
         // Reuses `j` (this function's own `det(F)`, computed above) rather
         // than recomputing `volume/initial_volume`. They are the SAME
         // quantity for a strict fluid -- `assert_owned_deformation_state`
@@ -653,6 +696,49 @@ mod si_construction_tests {
         assert!((material.rest_density - 0.1).abs() < 1.0e-7);
         assert!((material.dynamic_viscosity - 1.0e-3).abs() < 1.0e-9);
         assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
+    }
+
+    /// Real regression guard (2026-09-17): `Self::new`'s own `pressure_floor:
+    /// -0.1` default is a bare, unconverted grid-unit constant -- the exact
+    /// bug already found and manually patched per-demo in
+    /// `basic_fluids_gpu.rs`/`basic_fluids.rs` (`HANDOFF_fluid_gpu_thin_
+    /// layer_bug.md`, Tenth pass). Both real SI construction paths must
+    /// carry a properly-converted, real cavitation pressure (~-100,000 Pa
+    /// gauge, dissolved-gas nucleation onset) by default, not leave it to
+    /// every caller to remember to override manually -- each in ITS OWN
+    /// constructor's real unit convention (`weakly_compressible` keeps
+    /// stress raw SI; `from_physical` routes through `scale_stress`, same
+    /// as its own `eos_stiffness`).
+    #[test]
+    fn si_constructors_convert_pressure_floor_not_just_stiffness() {
+        let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
+
+        let wc = NewtonianFluidMaterial::weakly_compressible(1000.0, 1.0e-3, 20.0, &cfg);
+        assert!(
+            (wc.pressure_floor - (-100_000.0)).abs() < 1.0e-3,
+            "weakly_compressible: pressure_floor={} -- expected raw SI -100000.0 Pa, \
+             not the unconverted default -0.1",
+            wc.pressure_floor
+        );
+
+        let props = NewtonianFluid {
+            rho_kg_m3: 1000.0,
+            eta_pa_s: 1.0e-3,
+            bulk_modulus_pa: 1000.0 * 20.0 * 20.0,
+        };
+        let si = NewtonianFluidMaterial::from_physical(&props, &cfg);
+        let expected = cfg.stress_from_si_physical(-100_000.0, props.rho_kg_m3);
+        assert!(
+            (si.pressure_floor - expected).abs() < 1.0e-6,
+            "from_physical: pressure_floor={} -- expected {expected} (real cavitation \
+             pressure through the same scale_stress conversion eos_stiffness uses), not \
+             the unconverted default -0.1",
+            si.pressure_floor
+        );
+        assert_ne!(
+            si.pressure_floor, -0.1,
+            "from_physical must not silently keep Self::new's raw grid-unit default"
+        );
     }
 }
 

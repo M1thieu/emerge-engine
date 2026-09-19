@@ -264,48 +264,23 @@ pub struct SimConfig {
     /// `eos_stiffness`'s own tuning -- this is disclosed as measured, not derived from a
     /// closed-form bound, precisely because no such closed form caught the real failure.
     pub fluid_step_retry_threshold: f32,
-    /// GPU strict-fluid regional/adaptive substepping (2026-08-12,
-    /// `purring-swinging-cookie.md` Part A) -- lets a calm region of the
-    /// shared grid skip the expensive full G2P gather + `particles_update`
-    /// integrate on substeps its OWN local CFL bound doesn't need, while
-    /// still depositing its steady-state P2G contribution every substep
-    /// (unconditional, same real precedent as the existing sleeping-particle
-    /// mechanism). Default `false` -- every existing scene takes the exact
-    /// same path it always has; this changes NOTHING until explicitly
-    /// enabled. Milestone 1 only reuses the already-existing 256-block
-    /// partition (`particle_sort`'s own occupancy blocks) for classification
-    /// -- no new spatial structure.
-    pub fluid_regional_substepping_gpu_enabled: bool,
-    /// Tier-admission margin for `fluid_regional_substepping_gpu_enabled`: a
-    /// block is Fine iff `dt_b[block] <= dt_fine * this margin`, else
-    /// Coarse. No literature exists for this exact technique (checked:
-    /// zero GPU/WGSL regional-MPM precedent in any reference repo audited
-    /// for this plan), so this cannot be a cited physical constant --
-    /// disclosed as a real engineering default instead.
-    ///
-    /// Default is `8.0`, matching `STRICT_FLUID_SUBSTEP_BATCH_SIZE`, and it
-    /// is DERIVED, not tuned. A Coarse block does not integrate with
-    /// `dt_fine` -- it skips the batch's substeps and then integrates ONCE
-    /// with the batch's whole accumulated dt (~`batch_len * dt_fine`, see
-    /// `step.rs`'s coarse-resync planning). So a block may only be demoted
-    /// to Coarse if its OWN CFL bound can survive that full accumulated
-    /// step: `dt_b[block] >= batch_len * dt_fine`. Equivalently, it must
-    /// stay Fine while `dt_b[block] < batch_len * dt_fine` -- which is
-    /// exactly this margin at `batch_len`.
-    ///
-    /// This corrects a real, measured bug (2026-08-13): the original `1.0`
-    /// default reasoned only from "`dt_fine` is the domain minimum, so
-    /// `<= 1.0*dt_fine` means provably-the-bottleneck with no added slack."
-    /// That ignored the accumulated resync step above, so a block whose own
-    /// bound was merely 1% laxer than `dt_fine` was demoted to Coarse and
-    /// then integrated ~8x beyond its own stability limit -- which failed
-    /// admissibility, drove the retry ladder, and halved dt repeatedly.
-    /// Live-measured on `basic_fluids_gpu.rs`: substeps/frame went UP
-    /// (~1685 vs the flag-off ~68-258), the exact opposite of this
-    /// feature's purpose. Values above `batch_len` are a legitimate
-    /// scene-specific trade (more preemptive fine headroom, less coarse
-    /// win); values BELOW it are unsafe by the derivation above.
-    pub fluid_regional_substepping_fine_tier_margin: f32,
+    // REMOVED (2026-09-17): `fluid_regional_substepping_gpu_enabled` and
+    // `fluid_regional_substepping_fine_tier_margin` used to live here. The
+    // real implementation behind them was part of the strict-fluid/DCT-
+    // pressure/retry rewrite (`57b83dc`, 2026-08-13) that was wholesale
+    // reverted the next day (`gpu_fluid_stable`'s own ignore doc, 2026-08-14)
+    // for unrelated reasons -- the config fields survived that revert with
+    // no code left to read them, becoming an inert switch that looked like
+    // a feature but did nothing. A real feasibility check
+    // (`examples/gpu/regional_substep_feasibility_check.rs`, 2026-09-17)
+    // also confirmed the technique's own precondition -- a genuinely calm
+    // region existing next to a violent one -- does not hold on this
+    // engine's real fluid scenes anyway (0% of populated blocks classified
+    // "calm" through the whole violent window on both DamBreak and
+    // DropletImpact). See `KNOWN_LIMITATIONS.md` entry 2. If this is
+    // rebuilt for real, base it on Fang, Hu, Hu & Jiang, "A Temporally
+    // Adaptive Material Point Method with Regional Time Stepping," SCA
+    // 2018, on a scene where the precondition actually holds.
     /// APIC affine-matrix blend [0, 1].
     /// 1.0 = full APIC (angular-momentum-conserving, taichi default).
     /// 0.0 = pure PIC (maximum numerical dissipation, fastest settling).
@@ -572,8 +547,6 @@ impl Default for SimConfig {
             fluid_step_retry_enabled: false,
             phase_rules_once_per_step: false,
             fluid_step_retry_threshold: 0.5,
-            fluid_regional_substepping_gpu_enabled: false,
-            fluid_regional_substepping_fine_tier_margin: 8.0,
             fluid_near_wall_cfl_scale: 1.0,
             fluid_near_wall_compression_threshold: 0.01,
             fluid_near_wall_compression_mach_margin: 2.0,

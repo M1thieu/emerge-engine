@@ -496,6 +496,55 @@ pub struct DruckerPragerMaterial {
     /// yield cone at all. 0.0 (default) = byte-identical to every existing
     /// preset/scene.
     pub elastic_viscosity: f32,
+    /// Real, opt-in volumetric-correction limiter (Tampubolon, Gast, Klar,
+    /// Fu, Teran, Jiang & Museth 2017, SIGGRAPH/ACM TOG 36:4, "Multi-species
+    /// simulation of porous sand and water mixtures" -- the paper's own
+    /// first author, Andre PRADHANA Tampubolon, is who this flag is named
+    /// after; mechanism re-derived against Blatny & Gaume 2025's own real
+    /// adaptation, `tmp/matter/src/simulation/plasticity.cpp`, since
+    /// Tampubolon's own original targets an IMPLICIT solve this material
+    /// does not use). `false` (default) = byte-identical to every existing
+    /// preset/scene.
+    ///
+    /// Targets a DIFFERENT, sibling bug from `min_volume_jacobian`'s own cap
+    /// surface: `project`'s own tension-cutoff branch (`dev_norm == 0.0 ||
+    /// trace > 0.0`, NOT the branch this file calls "Case III" -- that name
+    /// refers to the ordinary shear-yield cone projection instead, see its
+    /// own comment) projects a particle's full deformation back to
+    /// `sigma=(1,1)` -- a real, correct, textbook Drucker-Prager cone-apex
+    /// return (confirmed byte-for-byte identical to `sparkl`'s own real,
+    /// published reference, `tmp/sparkl/src_core/dynamics/models/
+    /// plasticity_drucker_prager.rs`, NOT a bug unique to this engine) --
+    /// EVERY time it fires, with no memory of having already done so once
+    /// this compaction cycle. Repeated firings (e.g. successive poured
+    /// batches each briefly overshooting into net expansion on impact) each
+    /// bake in a small one-way volume gain with nothing to cancel it out
+    /// over the long run -- root-caused against this exact symptom in a
+    /// poured pile (`sand_pile_built_by_slow_pour_tracking_real_surface_
+    /// height`'s own real dead end: ~2.25 cells of height added per pour
+    /// batch, regardless of real physical settling).
+    ///
+    /// Real, disclosed mechanism (NOT a 1:1 port of Blatny's own richer
+    /// four-branch model, which an earlier version of this field's own doc
+    /// attempted and found does not translate cleanly to this material's
+    /// simpler two-branch structure -- see project memory
+    /// `project_pradhana_correction_built_and_found_not_working_2026-09-13`
+    /// for that real, disclosed negative result): a real, bounded "one real
+    /// give-back per compaction cycle" limiter. The FIRST time this branch
+    /// fires since the particle was last genuinely non-yielding (`project`
+    /// returned `None` or took the shear-yield branch), the correction
+    /// applies exactly as before (full apex return). Every SUBSEQUENT
+    /// firing, until a real non-yielding step resets the flag, is a real
+    /// no-op (`ProjectedBranch::DebtBlocked`, trial state passed through
+    /// unchanged, no volume/hardening update) instead of repeatedly
+    /// re-injecting volume -- the real, targeted fix for the confirmed
+    /// mechanism (log_volume_strain tracking `ln(prev_det)` on every
+    /// firing, with a real, physically-plausible systematic bias toward
+    /// expansion-leaning trial states from pour impacts, per this
+    /// investigation's own direct tracing of the update_particle code).
+    /// See `Particles::eps_pl_vol_pradhana`'s own doc for the persistent
+    /// per-particle flag this needs.
+    pub use_pradhana: bool,
 }
 
 /// Bundled inputs for `DruckerPragerMaterial::project` -- grew past clippy's
@@ -514,6 +563,30 @@ struct ProjectInputs {
     /// Real apparent cohesion (Pa-equivalent) from `cohesion_bonus_pa` --
     /// see that method's own doc. 0.0 when `saturation_cohesion_coeff == 0.0`.
     cohesion_bonus_pa: f32,
+    /// See `Particles::eps_pl_vol_pradhana`'s own doc. 0.0 when
+    /// `use_pradhana == false` (every existing preset/scene).
+    eps_pl_vol_pradhana: f32,
+}
+
+/// Real outcome of one `DruckerPragerMaterial::project` call -- needed by
+/// `update_particle` to drive `eps_pl_vol_pradhana`'s own "one real
+/// give-back per compaction cycle" flag (see that field's doc):
+/// `TensionCutoff` sets the flag (a real correction was just applied);
+/// `DebtBlocked` LEAVES the flag set (the correction was suppressed this
+/// time, still "used up" -- not yet a real non-yielding step); an elastic
+/// step OR the ordinary shear-yield branch ("Case III" in this file's own
+/// established naming, see its doc) both CLEAR the flag (real, genuine
+/// non-tension-cutoff behavior -- the compaction cycle is considered done,
+/// a future tension-cutoff firing gets a fresh real correction again).
+enum ProjectedBranch {
+    TensionCutoff,
+    /// The tension-cutoff condition fired again, but `eps_pl_vol_pradhana`
+    /// was already set from an earlier firing this same compaction cycle --
+    /// no correction applied (`update_particle` receives the trial `sigma`
+    /// unchanged, `dq=0.0`, a real, verified no-op on `log_volume_strain`/
+    /// `friction_hardening`, see this branch's own construction site).
+    DebtBlocked,
+    ShearYield,
 }
 
 impl DruckerPragerMaterial {
@@ -544,6 +617,7 @@ impl DruckerPragerMaterial {
             saturation_cohesion_coeff: 0.0,
             pendular_regime_ceiling: 0.3,
             elastic_viscosity: 0.0,
+            use_pradhana: false,
         }
     }
 
@@ -718,7 +792,7 @@ impl DruckerPragerMaterial {
     /// `MuIRheologyMaterial::update_particle` (`sand_mui.rs`) uses:
     /// `p_trial = -(lambda+mu)*trace`, `q_trial = sqrt(2)*mu*dev_norm`,
     /// `μ = q_trial/p_trial = sqrt(2)*dev_norm/(-ratio*trace)`.
-    fn project(&self, inputs: ProjectInputs) -> Option<(Vec2, f32)> {
+    fn project(&self, inputs: ProjectInputs) -> Option<(Vec2, f32, ProjectedBranch)> {
         let ProjectInputs {
             sigma,
             log_volume_strain,
@@ -728,6 +802,7 @@ impl DruckerPragerMaterial {
             strain_rate_norm,
             cosserat_curvature,
             cohesion_bonus_pa,
+            eps_pl_vol_pradhana,
         } = inputs;
         let sigma = sigma.abs().max(Vec2::splat(LOG_CLAMP));
         // Hencky (logarithmic) strain, shifted by the accumulated volumetric offset.
@@ -742,9 +817,25 @@ impl DruckerPragerMaterial {
         // Tension cutoff or purely volumetric deformation: project to identity (σ = 1).
         // dq = dev_norm only -- friction hardening is driven by shear, not volumetric expansion.
         // Using eps.length() here would include the log_volume_strain offset and cause
-        // unbounded q growth in static/settled sand.
+        // unbounded q growth in static/settled sand. Real, confirmed CORRECT Drucker-
+        // Prager cone-apex return (byte-identical structure to `sparkl`'s own real,
+        // published reference) -- not the bug itself, see `use_pradhana`'s own doc for
+        // the real, disclosed mechanism this becomes a problem through (repeated,
+        // memory-less firings, not this projection's own math).
         if dev_norm == 0.0 || trace > 0.0 {
-            return Some((Vec2::ONE, dev_norm));
+            // Real, opt-in Pradhana limiter (`use_pradhana`, see that field's
+            // own doc/citation): a second (or later) firing within the SAME
+            // real compaction cycle (`eps_pl_vol_pradhana` already set from
+            // an earlier firing, not yet cleared by a genuine non-yielding
+            // step) gets NO further correction -- the trial state passes
+            // through unchanged, a real, verified no-op on `log_volume_
+            // strain`/`friction_hardening` (see `update_particle`'s own
+            // handling of `DebtBlocked`), instead of re-injecting more
+            // volume on top of what this cycle already gave back once.
+            if self.use_pradhana && eps_pl_vol_pradhana > 0.0 {
+                return Some((sigma, 0.0, ProjectedBranch::DebtBlocked));
+            }
+            return Some((Vec2::ONE, dev_norm, ProjectedBranch::TensionCutoff));
         }
 
         // Yield function: γ = |dev_ε| + ratio · tr · α − cohesion/(2µ).
@@ -883,7 +974,11 @@ impl DruckerPragerMaterial {
 
         // Project onto yield surface in log-strain space, then exponentiate.
         let h = eps - gamma * (dev / dev_norm);
-        Some((Vec2::new(h.x.exp(), h.y.exp()), gamma))
+        Some((
+            Vec2::new(h.x.exp(), h.y.exp()),
+            gamma,
+            ProjectedBranch::ShearYield,
+        ))
     }
 }
 
@@ -1044,7 +1139,7 @@ impl MaterialModel for DruckerPragerMaterial {
             deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
 
         let (u, sigma, vt) = svd2(f_trial);
-        let new_sigma = if let Some((proj_sigma, dq)) = self.project(ProjectInputs {
+        let projected = self.project(ProjectInputs {
             sigma,
             log_volume_strain: *ctx.log_volume_strain,
             q: *ctx.friction_hardening,
@@ -1053,7 +1148,33 @@ impl MaterialModel for DruckerPragerMaterial {
             strain_rate_norm,
             cosserat_curvature: ctx.cosserat_curvature,
             cohesion_bonus_pa: self.cohesion_bonus_pa(ctx.scalar_field),
-        }) {
+            eps_pl_vol_pradhana: if self.use_pradhana {
+                *ctx.eps_pl_vol_pradhana
+            } else {
+                0.0
+            },
+        });
+        if self.use_pradhana {
+            // Real "one give-back per compaction cycle" flag -- see
+            // `use_pradhana`'s own doc for the full mechanism/citation.
+            // `TensionCutoff` just USED the flag (set it, so the NEXT
+            // firing this same cycle is blocked); `DebtBlocked` means it
+            // was already used and stays used (real, deliberate: a
+            // suppressed firing is not a real non-yielding step, so it
+            // must NOT clear the flag, or every OTHER step would get a
+            // fresh free correction, halving but not fixing the ratchet);
+            // an elastic step OR ordinary shear-yield ("Case III" in this
+            // file's own naming) both mean the particle is genuinely not
+            // stuck in deep tension right now -- real forgiveness, clear
+            // the flag so a FUTURE tension-cutoff firing gets one real
+            // correction again.
+            *ctx.eps_pl_vol_pradhana = match &projected {
+                Some((_, _, ProjectedBranch::TensionCutoff)) => 1.0,
+                Some((_, _, ProjectedBranch::DebtBlocked)) => *ctx.eps_pl_vol_pradhana,
+                Some((_, _, ProjectedBranch::ShearYield)) | None => 0.0,
+            };
+        }
+        let new_sigma = if let Some((proj_sigma, dq, _)) = projected {
             let sigma_abs = sigma.abs().max(Vec2::splat(LOG_CLAMP));
             let prev_det = sigma_abs.x * sigma_abs.y;
             let new_det = proj_sigma.x * proj_sigma.y;
@@ -1065,6 +1186,33 @@ impl MaterialModel for DruckerPragerMaterial {
             };
 
             *ctx.log_volume_strain += prev_det.ln() - corrected_det.ln();
+            // Real, root-caused Pradhana cap (see `use_pradhana`'s own doc
+            // for the full derivation): a single tension-cutoff firing can
+            // otherwise bake a NET POSITIVE `log_volume_strain` contribution
+            // that a LATER, ordinary shear-yield event then permanently
+            // realizes into the stored deformation gradient (hand-derived
+            // identity: shear-yield's own `new_det = prev_det *
+            // exp(log_volume_strain)` exactly, at this material's own
+            // default `volume_correction=1.0` -- shear-yield doesn't
+            // dissipate a positive `log_volume_strain`, it PHYSICALLY
+            // REALIZES it into real, permanent volume, then resets the
+            // bookkeeping variable because the debt has been paid into
+            // reality, not forgiven). For every non-dilatant preset
+            // (`dilatancy_angle == 0.0`, true for every current preset this
+            // material ships), there is no LEGITIMATE mechanism that should
+            // ever push net historical volumetric strain positive -- real,
+            // targeted fix: cap tension-cutoff's own contribution so it can
+            // partially cancel existing real compaction history but never
+            // leave the particle net MORE expanded than its original
+            // reference configuration. Applied BEFORE dilatancy's own real,
+            // legitimate (and separately, deliberately unclamped) positive
+            // contribution below, so a genuinely dilatant preset keeps its
+            // real physics unaffected.
+            if self.use_pradhana
+                && let Some((_, _, ProjectedBranch::TensionCutoff)) = &projected
+            {
+                *ctx.log_volume_strain = ctx.log_volume_strain.min(0.0);
+            }
             let q_max = 5.0 / self.hardening_decay.max(1e-6);
             *ctx.friction_hardening = (*ctx.friction_hardening + dq).min(q_max);
             if self.dilatancy_angle > 0.0 {

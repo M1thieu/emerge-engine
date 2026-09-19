@@ -184,6 +184,7 @@ pub fn apply_grain_contact_forces(
     dt: f32,
     boundaries: &[Box<dyn BoundaryCondition>],
     grid_res: usize,
+    grid: &crate::grid::Grid,
 ) {
     // Real, clean per-grain normal correction BEFORE any contact resolution
     // -- see `GrainPopulation::clean_wall_normal_velocity`'s own doc for why
@@ -198,9 +199,17 @@ pub fn apply_grain_contact_forces(
     // resting on the ground has no mechanism to ever start rolling from
     // rest (found live 2026-08-21).
     let (wall_forces, wall_torques) = grains.resolve_wall_contact_forces(boundaries, grid_res, dt);
+    // Real grain-vs-CONTINUUM-terrain contact -- see `GrainPopulation::
+    // resolve_terrain_contact_forces`'s own doc: closes the real,
+    // root-caused gap where a grain resting on a real MPM terrain
+    // material (not a `BoundaryCondition`) got zero rolling resistance.
+    // Real, disclosed opt-in (`with_terrain_contact`) -- zero cost for
+    // every population that never calls it, same convention as the wall
+    // contact call above.
+    let (terrain_forces, terrain_torques) = grains.resolve_terrain_contact_forces(grid, dt);
     for i in 0..forces.len() {
-        forces[i] += wall_forces[i];
-        torques[i] += wall_torques[i];
+        forces[i] += wall_forces[i] + terrain_forces[i];
+        torques[i] += wall_torques[i] + terrain_torques[i];
     }
     for (idx, grain) in grains.grains.iter_mut().enumerate() {
         grain.v += (forces[idx] / grain.mass) * dt;
@@ -393,7 +402,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
             let speed = pop.grains[0].v.length();
             max_speed = max_speed.max(speed);
             if step < 5 || speed > 50.0 {
@@ -448,7 +457,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 1.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
             if step % 2000 == 0 {
                 println!(
                     "step={step} x={:?} v={:?} |v|={:.6}",
@@ -508,7 +517,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
             let speed = pop
                 .grains
                 .iter()
@@ -606,7 +615,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
             let speed = pop
                 .grains
                 .iter()
@@ -759,7 +768,7 @@ mod tests {
             scatter_grains_to_grid(&coupled, &mut grid);
             grid.update_velocities(dt, Vec2::ZERO);
             gather_grid_to_grains(&mut coupled, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut coupled, dt, &[], 64);
+            apply_grain_contact_forces(&mut coupled, dt, &[], 64, &grid);
             let ke_after = total_ke(&coupled);
             if spike_step.is_none() && ke_after > ke_before * 10.0 && ke_after > 100.0 {
                 spike_step = Some(step);

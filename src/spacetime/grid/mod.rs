@@ -389,6 +389,38 @@ impl Grid {
         v
     }
 
+    /// True only for an in-bounds cell that received no real P2G scatter this substep --
+    /// i.e. exactly the case where `velocity_at_or_extrapolated` falls back to its
+    /// assumed (`extrapolated_v + gravity*dt`) value instead of real grid data. False for
+    /// both a genuinely touched cell (real, measured data) and an out-of-bounds cell (a
+    /// physical wall boundary, zero by construction, not a stand-in guess).
+    ///
+    /// Free-surface velocity-gradient bias fix (2026-09-16): `gather_grid_to_particles`
+    /// used to feed this same assumed value into the affine velocity-gradient (`b`
+    /// matrix) accumulation identically to real touched-cell data. The assumption
+    /// (`extrapolated_v + gravity*dt`, i.e. "this neighbourhood is in unopposed free
+    /// fall") is only correct in actual free fall -- confirmed exact there via the
+    /// kernel's own zero-first-moment identity (`sum_i w_i*dist_i = 0`, standard for a
+    /// normalized quadratic B-spline), which makes a uniform value contribute exactly
+    /// zero to `b` when EVERY node in the stencil is extrapolated. But the instant a
+    /// particle is resting/settling (gravity balanced by contact/pressure, real
+    /// touched-cell velocities near zero) while only PART of its stencil is extrapolated,
+    /// this same assumed value keeps growing every substep (unopposed gravity) while real
+    /// neighbours correctly stay near zero -- a synthetic velocity difference across the
+    /// stencil that reads as spurious divergence, biasing `J` to drift upward even at
+    /// rest. An assumed, spatially-uniform stand-in carries no real spatial-derivative
+    /// information by construction (a constant field has zero gradient) -- callers use
+    /// this flag to exclude such nodes from the gradient accumulation while still
+    /// including them in the plain velocity gather (`new_v`), where a reasonable
+    /// velocity value -- not a derivative -- is genuinely needed to keep the particle
+    /// advecting sensibly at the free surface.
+    pub fn is_extrapolated(&self, cell_pos: IVec2) -> bool {
+        let Some(idx) = flat_index(cell_pos, self.resolution) else {
+            return false;
+        };
+        !self.cells.contains_key(&idx)
+    }
+
     pub fn mass_at(&self, cell_pos: IVec2) -> f32 {
         if cell_pos.x < 0 || cell_pos.y < 0 {
             return 0.0;

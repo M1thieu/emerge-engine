@@ -177,6 +177,24 @@ impl Grid {
         // but not truly touched read `velocity_at`'s own real zero fallback,
         // so their divergence is naturally zero; harmless, no special-casing
         // needed (same property the old full-domain version relied on).
+        //
+        // TRIED AND REVERTED (2026-09-17): swapping this for
+        // `velocity_at_or_extrapolated` (matching the real, precedented fix
+        // already used for the ordinary G2P gather stencil, `grid/mod.rs`'s
+        // own 2026-08-13 doc) was a real, reasoned attempt at the
+        // wall-free-pool instability (see `tests/scratch_falling_droplet_pressure_projection_check.rs`'s
+        // own doc for the full falling-droplet gate this was meant to
+        // close). Measured, not assumed: it did NOT fix the falling-droplet
+        // case (`J` still hit the [0.5,2.0] clamp on step 1, `max_speed`
+        // got WORSE, 100->198) AND it broke the one scene this solver was
+        // already proven to work on (`tests/scratch_wall_contact_regression_check_after_divergence_fix.rs`:
+        // a hard panic, "adaptive timestep cannot advance," within the very
+        // first step). A clean net negative on both fronts -- reverted
+        // here. The wall-free-pool instability's real root cause stays
+        // open; this specific mechanism (empty-neighbor zero-fallback in
+        // the divergence RHS) was a real, tested, and REJECTED hypothesis,
+        // not merely an untested guess -- worth recording so a future
+        // session doesn't re-try the identical idea from scratch.
         let mut rhs = vec![0.0f32; nx * ny];
         for lx in 0..nx {
             for ly in 0..ny {

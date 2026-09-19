@@ -62,7 +62,13 @@ use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
 /// is numerically singular (no pivot found above a real tolerance) --
 /// callers should fall back to an explicit substep in that case, same
 /// spirit as any real implicit solver needing a graceful degradation path.
-fn solve_dense(mut a: Vec<f32>, mut b: Vec<f32>, n: usize) -> Option<Vec<f32>> {
+///
+/// `pub(crate)`: also reused by `spacetime::grains::implicit` for the exact
+/// same real reason it exists here (a small, general dense Newton solve for
+/// a stiff mass-spring-damper system) -- not duplicating a correctness-
+/// critical elimination routine for a second stiff-spring solver in the
+/// same codebase.
+pub(crate) fn solve_dense(mut a: Vec<f32>, mut b: Vec<f32>, n: usize) -> Option<Vec<f32>> {
     debug_assert_eq!(a.len(), n * n);
     debug_assert_eq!(b.len(), n);
 

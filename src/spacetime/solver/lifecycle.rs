@@ -320,6 +320,18 @@ impl Simulation {
         &self.grid
     }
 
+    /// Direct read-only access to the material registry -- real, necessary
+    /// gap closed 2026-09-15: `MaterialRegistry::von_mises_stress_field`
+    /// (the real, generic per-material stress computation `ColorMode::
+    /// ByStress` reads from) takes `&MaterialRegistry`, but no caller
+    /// outside this crate could ever obtain one from a `Simulation` before
+    /// this existed -- the field itself is, and stays, private. A real,
+    /// working feature was otherwise unusable from any example or game
+    /// code, not just unused by convention.
+    pub const fn materials(&self) -> &MaterialRegistry {
+        &self.materials
+    }
+
     /// Direct mutable access to all particles.
     ///
     /// **State warning:** velocity changes made here are used exactly. The

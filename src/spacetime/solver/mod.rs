@@ -23,7 +23,10 @@ pub use handle::{MaterialHandle, ParticleGroup};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]
-pub(crate) use cfl::{affine_cfl_speed_contribution, cfl_bound};
+pub(crate) use cfl::{
+    affine_cfl_speed_contribution, cfl_bound, deformation_gradient_ode_dt_bound, is_near_wall,
+    shock_viscosity_dt_bound, single_particle_instability_dt_bound,
+};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

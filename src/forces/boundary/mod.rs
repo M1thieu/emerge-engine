@@ -13,10 +13,12 @@ use crate::particle::ParticleUpdateCtx;
 
 mod friction;
 mod heightmap;
+mod kinematic_obstacle;
 mod slip;
 
 pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
+pub use kinematic_obstacle::KinematicCircleBoundary;
 pub use slip::SlipBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
@@ -109,6 +111,19 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     ) {
         self.apply_to_grid_velocity(cell_index, grid_res, velocity);
     }
+
+    /// Real Newton's-third-law reaction hook: called once per grid cell
+    /// this boundary's own `apply_to_grid_velocity[_with_node_friction]`
+    /// actually corrected, with the real mass-weighted impulse the GRID
+    /// lost at that cell (`-mass * (v_after - v_before)`) -- what the grid
+    /// lost, a kinematically-driven obstacle boundary gains, letting it
+    /// genuinely feel the fluid/solid it's pushing instead of having
+    /// effectively infinite mass. Default: no-op (zero cost for every
+    /// existing boundary -- `SlipBoundary`/`FrictionBoundary`/etc. are
+    /// static geometry with nothing to accumulate into). Only a boundary
+    /// that represents a real, externally-driven moving body (e.g. a
+    /// kinematic obstacle) overrides this.
+    fn on_grid_correction(&self, _cell_pos: Vec2, _reaction_impulse: Vec2) {}
 }
 
 /// Delegating impl so an `Arc<T>` can be boxed as a `BoundaryCondition` directly --
@@ -154,6 +169,10 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
             velocity,
             node_friction,
         );
+    }
+
+    fn on_grid_correction(&self, cell_pos: Vec2, reaction_impulse: Vec2) {
+        (**self).on_grid_correction(cell_pos, reaction_impulse);
     }
 }
 

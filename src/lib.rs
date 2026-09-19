@@ -98,7 +98,7 @@ pub use materials::{
 // Boundary conditions
 pub use boundary::{
     BoundaryCondition, FrictionBoundary, GripFrictionBoundary, HeightmapBoundary,
-    RatchetFrictionBoundary, SlipBoundary,
+    KinematicCircleBoundary, RatchetFrictionBoundary, SlipBoundary,
 };
 
 // Force fields
