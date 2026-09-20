@@ -552,7 +552,7 @@ impl GpuSimulation {
                 pass.set_bind_group(3, &self.resource_bind_group, &[]);
                 for bg in chunk {
                     let refresh_active_blocks =
-                        substep_counter % active_block_refresh_interval == 0;
+                        substep_counter.is_multiple_of(active_block_refresh_interval);
                     substep_counter += 1;
                     // Profile a substep from the middle of the frame: the last encoded
                     // ones are the adaptive-timestep margin and usually do nothing.

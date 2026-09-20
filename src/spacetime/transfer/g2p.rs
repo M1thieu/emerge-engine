@@ -403,9 +403,13 @@ pub fn gather_grid_to_particles(
                 let mut included_gx = [false; 3];
                 let mut included_gy = [false; 3];
 
-                for gx in 0..3 {
-                    for gy in 0..3 {
-                        let weight = weights.wx[gx] * weights.wy[gy];
+                // Iterating the weight arrays rather than `0..3` keeps the loop
+                // honest about what it walks -- the quadratic B-spline stencil --
+                // and keeps the per-axis inclusion arrays indexed by the same
+                // enumerated position.
+                for (gx, &wx) in weights.wx.iter().enumerate() {
+                    for (gy, &wy) in weights.wy.iter().enumerate() {
+                        let weight = wx * wy;
                         let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
                         let dist = cell_pos.as_vec2() - *ctx.x + Vec2::splat(0.5);
                         // Multi-field contact routing (Bardenhagen 2001): a grip particle
