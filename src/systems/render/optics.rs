@@ -1,11 +1,16 @@
-//! Physical optical inputs shared by every renderer path.
+//! The camera's side of the optics: scale, exposure, and viewing geometry.
 //!
-//! The simulation is two-dimensional, while optical attenuation needs a
-//! three-dimensional path length.  [`PhysicalRenderContract`] makes that
-//! missing modelling choice explicit: one grid cell has a stated SI size and
-//! the 2-D slice represents a slab with a stated out-of-plane thickness.
-//! Nothing in this module silently assumes that a cell or particle is one
-//! metre deep.
+//! What this module owns is genuinely a rendering choice, not physics. The
+//! simulation is two-dimensional, while optical attenuation needs a
+//! three-dimensional path length, so [`PhysicalRenderContract`] makes that
+//! modelling decision explicit: one grid cell has a stated SI size and the
+//! 2-D slice represents a slab with a stated out-of-plane thickness. Nothing
+//! here silently assumes that a cell or particle is one metre deep.
+//!
+//! The physics itself lives elsewhere, by domain: the attenuation law and
+//! the coefficient type in `energy::radiation::attenuation`, emission in
+//! `energy::radiation::blackbody`, and each substance's own measured
+//! constants in `matter::materials::optical`.
 
 use std::{error::Error, fmt};
 
@@ -117,52 +122,6 @@ impl PhysicalRenderContract {
     }
 }
 
-/// Per-material absorption/scattering coefficients in inverse metres.
-///
-/// Reduced scattering remains one visible-band scalar for compatibility with
-/// the current renderer.  The unit is explicit; a later spectral transport
-/// upgrade can widen it without changing the absorption contract.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OpticalCoefficientsSi {
-    pub absorption_m_inv: [f32; 3],
-    pub reduced_scattering_m_inv: f32,
-}
-
-impl OpticalCoefficientsSi {
-    pub fn new(
-        absorption_m_inv: [f32; 3],
-        reduced_scattering_m_inv: f32,
-    ) -> Result<Self, OpticalCoefficientsError> {
-        if absorption_m_inv
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-        {
-            return Err(OpticalCoefficientsError::InvalidAbsorption);
-        }
-        if !reduced_scattering_m_inv.is_finite() || reduced_scattering_m_inv < 0.0 {
-            return Err(OpticalCoefficientsError::InvalidReducedScattering);
-        }
-        Ok(Self {
-            absorption_m_inv,
-            reduced_scattering_m_inv,
-        })
-    }
-}
-
-/// Exact absorption-only solution for a homogeneous slab.
-///
-/// `relative_density` is `rho/rho_ref`, so the exponent is dimensionless:
-/// `(m^-1) * 1 * m`.  This is the reference used by CPU and GPU validation;
-/// it does not include scattering, reflection, or emission.
-pub fn beer_lambert_transmittance(
-    absorption_m_inv: [f32; 3],
-    relative_density: f32,
-    path_length_meters: f32,
-) -> [f32; 3] {
-    let column_length = relative_density.max(0.0) * path_length_meters.max(0.0);
-    absorption_m_inv.map(|sigma| (-sigma.max(0.0) * column_length).exp())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicalRenderContractError {
     NonPositiveDx,
@@ -190,24 +149,6 @@ impl fmt::Display for PhysicalRenderContractError {
 }
 
 impl Error for PhysicalRenderContractError {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OpticalCoefficientsError {
-    InvalidAbsorption,
-    InvalidReducedScattering,
-}
-
-impl fmt::Display for OpticalCoefficientsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::InvalidAbsorption => "absorption coefficients must be finite and non-negative",
-            Self::InvalidReducedScattering => "reduced scattering must be finite and non-negative",
-        };
-        f.write_str(message)
-    }
-}
-
-impl Error for OpticalCoefficientsError {}
 
 fn validate_radiance(radiance: [f32; 3]) -> Result<(), PhysicalRenderContractError> {
     if radiance
@@ -271,33 +212,5 @@ mod tests {
         .unwrap();
         assert!((contract.camera_direction().length() - 1.0).abs() < 1.0e-6);
         assert!((contract.light_direction().length() - 1.0).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn beer_lambert_matches_known_homogeneous_slab() {
-        let transmittance = beer_lambert_transmittance([2.0, 1.0, 0.5], 1.0, 0.25);
-        let expected = [(-0.5f32).exp(), (-0.25f32).exp(), (-0.125f32).exp()];
-        for (got, want) in transmittance.into_iter().zip(expected) {
-            assert!((got - want).abs() < 1.0e-6, "got {got}, expected {want}");
-        }
-    }
-
-    #[test]
-    fn beer_lambert_is_invariant_to_spatial_discretization() {
-        let sigma = [0.35, 0.033, 0.011];
-        let physical_length = 2.0;
-        let analytic = beer_lambert_transmittance(sigma, 1.0, physical_length);
-
-        for cells in [2usize, 20, 200, 2_000] {
-            let dx = physical_length / cells as f32;
-            let accumulated_tau = sigma.map(|s| (0..cells).map(|_| s * dx).sum::<f32>());
-            let discrete = accumulated_tau.map(|tau| (-tau).exp());
-            for (got, want) in discrete.into_iter().zip(analytic) {
-                assert!(
-                    (got - want).abs() < 5.0e-5,
-                    "{cells} cells changed transmittance: got {got}, expected {want}"
-                );
-            }
-        }
     }
 }

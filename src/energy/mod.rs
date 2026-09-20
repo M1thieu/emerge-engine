@@ -1,7 +1,10 @@
 //! Energy domain: how it flows and transforms.
 //!
 //! `thermodynamics` -- `ThermalDiffusion` (Fourier heat), `ScalarDiffusionField`
-//! (generic reaction-diffusion: pheromone, nutrients, morphogen). `acoustics`
+//! (generic reaction-diffusion: pheromone, nutrients, morphogen). `radiation`
+//! -- Planck's law and Wien's displacement law, the spectral half of the
+//! Stefan-Boltzmann exchange `thermodynamics::transfer` already integrates.
+//! `acoustics`
 //! [feature = "experimental"] -- `WaveEquation2D`, pressure-wave propagation.
 //! `electromagnetics` [feature = "experimental"] -- `ElectromagneticWave`,
 //! optical `MaterialProperties` (refractive index, permittivity/permeability);
@@ -25,4 +28,5 @@ pub mod acoustics;
 pub mod electromagnetics;
 #[cfg(feature = "experimental")]
 pub mod orbital;
+pub mod radiation;
 pub mod thermodynamics;
