@@ -276,6 +276,13 @@ mod ngf_verification_tests {
     /// `ngf_config`'s own doc already found once (2-6mm gave tighter-looking
     /// numbers at a single resolution but 1.1-2.6x swings).
     #[test]
+    // Exploratory: prints a sweep, asserts nothing. Runs 20 column
+    // collapses (10 diameters x 2 resolutions, 200 steps each) and does
+    // not finish in a bounded time even in release -- this was the last
+    // test keeping `cargo test` from ever returning. Kept as the
+    // reproducible record of the sweep; run it deliberately with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn ngf_grain_diameter_sweep_accuracy_and_resolution_independence() {
         println!("── NGF GRAIN-DIAMETER SWEEP (accuracy vs resolution-independence) ──");
         for &d_mm in &[4.0f32, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 16.0, 20.0] {
@@ -468,6 +475,11 @@ mod ngf_verification_tests {
     /// merely happened to be the first thing to trigger, not a Cosserat-
     /// specific defect.
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_high_cohesion_reproduces_same_instability_no_cosserat() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -528,6 +540,11 @@ mod ngf_verification_tests {
     /// gradient component the whole coupling is driven by) is present
     /// during this collapse at all.
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_macro_spin_magnitude_during_collapse() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -601,6 +618,11 @@ mod ngf_verification_tests {
     /// a genuine degenerate bug. Watch it happen frame by frame to find
     /// where it starts.
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_cosserat_high_alpha_collapse_trace() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -666,6 +688,11 @@ mod ngf_verification_tests {
     }
 
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_cosserat_high_alpha_health_check() {
         let (_, _, _) = run_column_collapse_cosserat(true, 100.0, 200);
         // Re-run with direct access to check health, since the helper only
@@ -777,6 +804,13 @@ mod ngf_verification_tests {
     /// unlike every rate-based mechanism, produces genuine long-horizon
     /// arrest.
     #[test]
+    // Exploratory: prints a measurement, asserts nothing -- a research
+    // log kept as a reproducible record, not a regression guard. Runs 30 000 solver steps on a 96-cell sand column
+    // in debug, which is hours, so it must not sit in the default suite
+    // (this is what made a plain `cargo test` never finish). Run it with
+    // `cargo test --release -- --ignored --nocapture` when the question
+    // it answers comes up again.
+    #[ignore]
     fn contact_group_split_long_horizon_arrest_check() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -842,6 +876,13 @@ mod ngf_verification_tests {
     }
 
     #[test]
+    // Exploratory: prints a measurement, asserts nothing -- a research
+    // log kept as a reproducible record, not a regression guard. Runs 30 000 solver steps on a 96-cell sand column
+    // in debug, which is hours, so it must not sit in the default suite
+    // (this is what made a plain `cargo test` never finish). Run it with
+    // `cargo test --release -- --ignored --nocapture` when the question
+    // it answers comes up again.
+    #[ignore]
     fn cosserat_long_horizon_arrest_check() {
         // Real, calibrated value from `cosserat_lajeunesse_runout_alpha_
         // sweep`'s own fine-grained sweep: alpha=5*mu landed at ratio=1.01x
@@ -973,6 +1014,11 @@ mod ngf_verification_tests {
     /// smaller) -- scaling the coefficient by that same ~25.5x forces a
     /// comparable dt/substep-count WITHOUT touching NGF at all.
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_forced_small_substeps_baseline_reproduces_ngf_undershoot() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -1056,6 +1102,11 @@ mod ngf_verification_tests {
     /// numerical integration itself, independent of the yield-cap mechanism.
     /// Direct A/B on total substep count for the identical real collapse.
     #[test]
+    // Diagnostic: runs full sand column collapses to print a measurement.
+    // Minutes to hours even in release, which is why it does not belong in
+    // the default suite. Kept as the reproducible record; run it with
+    // `cargo test --release -- --ignored --nocapture`.
+    #[ignore]
     fn diag_ngf_substep_count_vs_baseline() {
         const GRID: usize = 96;
         const FLOOR: f32 = 0.05;
@@ -1190,6 +1241,13 @@ mod ngf_verification_tests {
     /// this real-SI scene until now -- the diagnostic/resolution-
     /// independence tests above only ever ran 200 steps).
     #[test]
+    // Exploratory: prints a measurement, asserts nothing -- a research
+    // log kept as a reproducible record, not a regression guard. Runs 3 000 solver steps
+    // in debug, which is hours, so it must not sit in the default suite
+    // (this is what made a plain `cargo test` never finish). Run it with
+    // `cargo test --release -- --ignored --nocapture` when the question
+    // it answers comes up again.
+    #[ignore]
     fn ngf_lajeunesse_runout_long_duration_creep_check() {
         for &steps in &[200usize, 800, 2000] {
             let (baseline_r, predicted) = run_column_collapse(false, 1, steps);
@@ -1226,6 +1284,13 @@ mod ngf_verification_tests {
     /// for a granular pile whose actual dynamic collapse takes well under
     /// 1 real second.
     #[test]
+    // Exploratory: prints a measurement, asserts nothing -- a research
+    // log kept as a reproducible record, not a regression guard. Runs 3 000 solver steps
+    // in debug, which is hours, so it must not sit in the default suite
+    // (this is what made a plain `cargo test` never finish). Run it with
+    // `cargo test --release -- --ignored --nocapture` when the question
+    // it answers comes up again.
+    #[ignore]
     fn ngf_long_horizon_hold_arrests_creep_vs_baseline() {
         fn run(ngf_enabled: bool) -> Vec<(f32, f32, f32, f32)> {
             let grid: usize = 96;
@@ -1339,6 +1404,13 @@ mod ngf_verification_tests {
     /// knobs -- this sweeps a few real values rather than trusting a single
     /// guess.
     #[test]
+    // Exploratory: prints a measurement, asserts nothing -- a research
+    // log kept as a reproducible record, not a regression guard. Runs 3 000 solver steps
+    // in debug, which is hours, so it must not sit in the default suite
+    // (this is what made a plain `cargo test` never finish). Run it with
+    // `cargo test --release -- --ignored --nocapture` when the question
+    // it answers comes up again.
+    #[ignore]
     fn static_kinetic_hysteresis_long_horizon_hold_arrests_creep() {
         fn p99(mut v: Vec<f32>) -> f32 {
             v.sort_by(|a, b| a.partial_cmp(b).unwrap());
