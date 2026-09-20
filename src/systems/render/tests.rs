@@ -270,6 +270,365 @@ fn render_gpu_survives_scattering_and_specular_end_to_end() {
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 }
 
+/// `blackbody.inc.wgsl` claims to be a mirror of `energy::radiation`. This is
+/// what makes that claim checkable on real hardware rather than by reading
+/// both and hoping.
+///
+/// A scene is rendered in `ByThermal` (emission and nothing else) with the
+/// exposure anchored at the scene's own temperature, so the expected pixel is
+/// exactly the blackbody colour -- no exposure factor, no lighting, no
+/// absorption in the way. The readback is sRGB-encoded, so it is decoded back
+/// to linear before comparison against the CPU's own Planck integration.
+///
+/// Tolerance 0.06 per channel covers three stacked approximations that are
+/// each documented where they live: the Kim 2002 locus fit against real
+/// Planck (tested separately at 0.03), 8-bit quantization, and the shader's
+/// f32 arithmetic against the CPU's f64.
+#[test]
+fn gpu_blackbody_emission_matches_planck_on_the_cpu() {
+    use crate::energy::radiation::blackbody_linear_srgb;
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    let srgb_to_linear = |encoded: u8| -> f32 {
+        let value = f32::from(encoded) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+
+    for temperature in [2000.0f32, 3500.0, 6000.0] {
+        let config = SimConfig::standard(32, 0.1, glam::Vec2::new(0.0, -0.3));
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(glam::Vec2::splat(16.0))
+                .disk(6.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        for p in particles.iter_mut() {
+            p.temperature = temperature;
+        }
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let sim =
+            GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_color_mode(ColorMode::ByThermal);
+        r.set_camera(&queue, 32, 256, 256, 0.6, true);
+        // Exposure anchored at the scene's own temperature: (T/T_ref)^4 = 1.
+        r.set_emission_reference_temperature(&queue, temperature);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("blackbody_parity_target"),
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        r.render_gpu(
+            &device,
+            &queue,
+            GpuRenderParams {
+                particle_buf: sim.particle_buffer(),
+                particle_count: sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+
+        let pixel = readback_brightest_pixel(&device, &queue, &texture, 256, 256);
+        let rendered = [
+            srgb_to_linear(pixel[0]),
+            srgb_to_linear(pixel[1]),
+            srgb_to_linear(pixel[2]),
+        ];
+        let expected = blackbody_linear_srgb(temperature);
+        for channel in 0..3 {
+            assert!(
+                (rendered[channel] - expected[channel]).abs() < 0.06,
+                "{temperature}K channel {channel}: GPU rendered {rendered:?} \
+                 (raw {pixel:?}) but Planck through the CIE observer says {expected:?}"
+            );
+        }
+    }
+}
+
+/// Under a real SI contract the render must still carry scattering and
+/// Fresnel, not absorption alone.
+///
+/// This guards a gap that was real until this was written: the contract
+/// branch computed `background * exp(-sigma_a * path)` and nothing else, so
+/// turning on measured SI optics silently cost a scene its subsurface glow
+/// and its specular. Two materials identical except for `sigma_s`, and two
+/// identical except for `R0`, must each render differently.
+#[test]
+fn si_contract_path_keeps_scattering_and_fresnel() {
+    use crate::render::{PhysicalRenderContract, PhysicalRenderContractParams};
+
+    let (device, queue) = headless_device();
+    let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
+    r.set_color_mode(ColorMode::ByPhysics);
+    r.set_physical_render_contract(
+        &queue,
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: 0.01,
+            view_thickness_meters: 1.0,
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [0.5; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: glam::Vec3::new(0.0, 0.0, -1.0),
+            light_direction: glam::Vec3::new(0.0, 1.0, -1.0),
+        })
+        .unwrap(),
+    );
+    r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+    r.set_optical_params(&queue, 1, [0.3, 0.3, 0.3]);
+    r.set_optical_params(&queue, 2, [0.3, 0.3, 0.3]);
+    r.set_optical_scattering(&queue, 1, 5.0);
+    r.set_specular_r0(&queue, 2, 0.2);
+
+    let mut plain = Particle::zeroed();
+    plain.material_id = 0;
+    plain.deformation_gradient = Mat2::IDENTITY;
+    let mut scattering = plain;
+    scattering.material_id = 1;
+    let mut reflective = plain;
+    reflective.material_id = 2;
+
+    let base = r.particle_color(&plain, 0);
+    assert_ne!(
+        base,
+        r.particle_color(&scattering, 0),
+        "sigma_s must change the SI-contract color, not be dropped with the rest          of the scattering term"
+    );
+    assert_ne!(
+        base,
+        r.particle_color(&reflective, 0),
+        "Fresnel R0 must change the SI-contract color"
+    );
+}
+
+/// Luminescence: matter that glows WITHOUT being hot must actually light
+/// the scene, through the same photon-diffusion solver thermal emitters
+/// already feed.
+///
+/// A firefly is not hot. Before this, the only way to emit light was to be
+/// at a few thousand kelvin, so a cold glowing thing was impossible to
+/// express. The declared source enters `S` in
+/// `(1/c) dphi/dt = D grad^2 phi - mu_a phi + S`, weighted by how much
+/// emitting matter the cell holds.
+///
+/// Same cold scene twice, at ambient temperature throughout, differing only
+/// by whether the material declares a luminous emission.
+#[test]
+fn luminescent_material_lights_the_scene_without_being_hot() {
+    use crate::gpu::GpuSimulation;
+    use crate::materials::registry::MaterialRegistry;
+    use crate::{NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    /// A cold material that glows, the way a firefly or a luminous fungus
+    /// does. 2000 W/m^3 is a stated scene value, not a measurement of any
+    /// particular organism.
+    #[derive(Debug)]
+    struct Luminescent(NeoHookeanMaterial);
+
+    impl crate::materials::MaterialModel for Luminescent {
+        fn constitutive_model(&self) -> crate::materials::ConstitutiveModel {
+            self.0.constitutive_model()
+        }
+        fn kirchhoff_stress(&self, particles: &crate::particle::Particles, i: usize) -> glam::Mat2 {
+            self.0.kirchhoff_stress(particles, i)
+        }
+        fn stress_volume(&self, particles: &crate::particle::Particles, i: usize) -> f32 {
+            self.0.stress_volume(particles, i)
+        }
+        fn params(&self) -> crate::materials::MaterialParams {
+            self.0.params()
+        }
+        fn luminous_emission_w_m3(&self) -> f32 {
+            2000.0
+        }
+    }
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let grid_res = 32u32;
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    let render_glow = |luminous: bool| -> u32 {
+        let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(glam::Vec2::splat(16.0))
+                .disk(4.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        // Cold throughout: nothing here may glow by being hot.
+        for p in particles.iter_mut() {
+            p.temperature = 293.0;
+        }
+        let base = NeoHookeanMaterial::new(100.0, 50.0);
+        let registry: MaterialRegistry = if luminous {
+            MaterialRegistry::with_default(Box::new(Luminescent(base)))
+        } else {
+            MaterialRegistry::with_default(Box::new(base))
+        };
+        let sim =
+            GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_optical_params(&queue, 0, [0.3, 0.3, 0.3]);
+        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+        r.adopt_material_optics(&queue, sim.registry());
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luminescence_target"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // The fluence field is persistent, so it needs a few frames to build.
+        for _ in 0..30 {
+            r.render_surface_reconstruction(
+                &device,
+                &queue,
+                SurfaceReconstructionSource {
+                    particle_buf: sim.particle_buffer(),
+                    particle_count: sim.particle_count(),
+                    grid_res,
+                    material_slot: 0,
+                    material_mass_enabled: false,
+                    dt: 0.1,
+                },
+                &view,
+                true,
+            );
+            device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        }
+        let p = readback_pixel(&device, &queue, &texture, 64, 64, 32, 32);
+        u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+    };
+
+    let dark = render_glow(false);
+    let glowing = render_glow(true);
+    assert!(
+        glowing > dark,
+        "a material declaring a luminous source must light the scene even at          293 K: glowing={glowing} vs non-glowing={dark}"
+    );
+}
+
+/// The physical fact the previous hand-drawn ramp inverted, checked through
+/// the real GPU pipeline rather than in isolation: a hotter body renders
+/// bluer, not redder.
+#[test]
+fn gpu_thermal_emission_gets_bluer_with_temperature() {
+    use crate::gpu::GpuSimulation;
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use std::sync::Arc;
+
+    let (device, queue) = headless_device();
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+    let render_at = |temperature: f32| -> [u8; 4] {
+        let config = SimConfig::standard(32, 0.1, glam::Vec2::new(0.0, -0.3));
+        let mut particles = build_particles(
+            &config,
+            SpawnRegion::for_sim(&config)
+                .at(glam::Vec2::splat(16.0))
+                .disk(6.0)
+                .spacing(0.5)
+                .material(0)
+                .precompute_volumes(),
+        );
+        for p in particles.iter_mut() {
+            p.temperature = temperature;
+        }
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        let sim =
+            GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
+        let mut r = Renderer::new(&device, sim.particle_count(), fmt);
+        r.set_color_mode(ColorMode::ByThermal);
+        r.set_camera(&queue, 32, 256, 256, 0.6, true);
+        r.set_emission_reference_temperature(&queue, temperature);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("blackbody_hue_target"),
+            size: wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        r.render_gpu(
+            &device,
+            &queue,
+            GpuRenderParams {
+                particle_buf: sim.particle_buffer(),
+                particle_count: sim.particle_count(),
+                output_view: &view,
+                clear: true,
+                interp_alpha: 1.0,
+            },
+        );
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        readback_brightest_pixel(&device, &queue, &texture, 256, 256)
+    };
+
+    let ember = render_at(1800.0);
+    let hot = render_at(9000.0);
+    assert!(
+        ember[2] < 80 && hot[2] > 200,
+        "1800K must render as a deep red with little blue and 9000K as blue-white: \
+         ember={ember:?} hot={hot:?}"
+    );
+}
+
 /// `render_gpu`'s own compute-shader instance prep (`prep_instances.wgsl`)
 /// must actually produce visible particle pixels, not just "not panic" --
 /// the test above only proved the pipeline survives, never read back a
@@ -327,7 +686,7 @@ fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_color_mode(ColorMode::ByMaterial);
-    r.set_camera(&queue, 32, 64, 64, 0.6, true);
+    r.set_camera(&queue, 32, 256, 256, 0.6, true);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_gpu_pixel_test_target"),
@@ -440,7 +799,7 @@ fn render_cpu_produces_visible_particle_pixels_control() {
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, particles.len(), fmt);
     r.set_color_mode(ColorMode::ByMaterial);
-    r.set_camera(&queue, 32, 64, 64, 0.6, true);
+    r.set_camera(&queue, 32, 256, 256, 0.6, true);
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_cpu_pixel_test_target"),
@@ -541,6 +900,73 @@ fn readback_pixel(
     drop(mapped);
     staging.unmap();
     pixel
+}
+
+/// Blocking readback of the single brightest pixel in the target -- test-only,
+/// same staging pattern as `readback_pixel` above.
+///
+/// For a test that renders emitters on a dark background, this is the right
+/// sample: a partially-covered pixel is blended toward the background and so
+/// is always dimmer than a fully-covered one, which makes the maximum the
+/// pixel that carries the emitter's own colour. Sampling a fixed coordinate
+/// instead would depend on exactly where the particle lattice happens to
+/// land relative to the pixel grid.
+fn readback_brightest_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> [u8; 4] {
+    let unpadded_bytes_per_row = width * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("brightest_pixel_staging"),
+        size: (padded_bytes_per_row * height) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("brightest_pixel_readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let mapped = slice.get_mapped_range();
+    let mut best = ([0u8; 4], -1i32);
+    for y in 0..height {
+        let row = (y * padded_bytes_per_row) as usize;
+        for x in 0..width {
+            let at = row + (x * 4) as usize;
+            let pixel = [mapped[at], mapped[at + 1], mapped[at + 2], mapped[at + 3]];
+            let sum = i32::from(pixel[0]) + i32::from(pixel[1]) + i32::from(pixel[2]);
+            if sum > best.1 {
+                best = (pixel, sum);
+            }
+        }
+    }
+    drop(mapped);
+    staging.unmap();
+    best.0
 }
 
 /// Blocking readback of a SAMPLED GRID of pixel luminances (every
@@ -2358,9 +2784,10 @@ fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
 /// A COLD (ambient) scene must show only a SMALL FRACTION of that drift --
 /// rules out unrelated frame-to-frame noise (float accumulation, wave-field
 /// residue) as the explanation. Not literally zero: `light_diffuse_main`'s
-/// own emission-strength term is `(T/5000)^2`, so 293K genuinely emits a
-/// real, tiny, always-on amount (~0.0034 vs 3000K's ~0.36, about 105x
-/// weaker) -- an ambient body still radiates, it just radiates far less.
+/// own emission strength is Stefan-Boltzmann's `(T/T_ref)^4`, so 293K
+/// genuinely emits a real, tiny, always-on amount -- about 11000x weaker
+/// than 3000K at the default 3000K exposure anchor. An ambient body still
+/// radiates, it just radiates far less, and `T^4` says how much less.
 #[test]
 fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
     use crate::gpu::GpuSimulation;
@@ -2456,7 +2883,7 @@ fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
     assert!(
         cold_drift * 5 <= hot_drift,
         "an ambient (cold) scene emits real light too (`light_diffuse_main`'s own \
-         (T/5000)^2 term is never exactly zero), but ~105x weaker than the hot scene \
+         (T/T_ref)^4 term is never exactly zero), but ~11000x weaker than the hot scene \
          at 293K vs 3000K -- its frame1->frame30 drift must stay a small fraction of \
          the hot scene's, not comparable to it (rules out unrelated per-frame noise \
          as the explanation): hot drift={hot_drift} (frame1={hot_frame1:?} \
