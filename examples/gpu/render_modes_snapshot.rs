@@ -109,17 +109,17 @@ fn main() {
     renderer.set_color_mode(ColorMode::ByMaterial);
     renderer.set_grid_reference_cell_mass(WATER_RHO_GRID);
     renderer.set_surface_res_multiplier(env_or("SURF_MULT", 4.0) as u32);
-    if let Ok(v) = std::env::var("CURV_ITERS") {
-        if let Ok(n) = v.parse::<u32>() {
-            renderer.set_curvature_iterations(n);
-        }
+    if let Ok(v) = std::env::var("CURV_ITERS")
+        && let Ok(n) = v.parse::<u32>()
+    {
+        renderer.set_curvature_iterations(n);
     }
     if std::env::var("SPLAT_FROM_SPACING").is_ok() {
         renderer.set_particle_spacing_cells(SPACING);
-    } else if let Ok(v) = std::env::var("SPLAT_CELLS") {
-        if let Ok(w) = v.parse::<f32>() {
-            renderer.set_splat_width_cells(w);
-        }
+    } else if let Ok(v) = std::env::var("SPLAT_CELLS")
+        && let Ok(w) = v.parse::<f32>()
+    {
+        renderer.set_splat_width_cells(w);
     }
     // PHYS=1 switches from the legacy dimensionless optical numbers to real
     // measured ones: pure water's own absorption spectrum (Pope & Fry 1997)
@@ -143,10 +143,10 @@ fn main() {
         // suspended particles -- that is a property of the mixture, not of
         // water, so it is stated by the scene rather than baked into the
         // substance.
-        if let Ok(v) = std::env::var("SCATTER_M_INV") {
-            if let Ok(sigma_s) = v.parse::<f32>() {
-                water.reduced_scattering_m_inv = sigma_s;
-            }
+        if let Ok(v) = std::env::var("SCATTER_M_INV")
+            && let Ok(sigma_s) = v.parse::<f32>()
+        {
+            water.reduced_scattering_m_inv = sigma_s;
         }
         renderer.set_optical_coefficients_si(&queue, MAT_WATER as usize, water);
         renderer.set_physical_render_contract(
@@ -202,7 +202,7 @@ fn main() {
         if !only.is_empty() && only != mode {
             continue;
         }
-        render_mode(mode, &device, &queue, &mut renderer, &sim, &view, dt as f32);
+        render_mode(mode, &device, &queue, &mut renderer, &sim, &view, dt);
         // RENDER_REPEAT=N: time N more renders of this mode (relative cost only --
         // any other GPU load on the machine penalises every variant equally).
         let repeat = env_or("RENDER_REPEAT", 0.0) as u32;
@@ -210,7 +210,7 @@ fn main() {
             device.poll(wgpu::PollType::wait_indefinitely()).ok();
             let t0 = std::time::Instant::now();
             for _ in 0..repeat {
-                render_mode(mode, &device, &queue, &mut renderer, &sim, &view, dt as f32);
+                render_mode(mode, &device, &queue, &mut renderer, &sim, &view, dt);
             }
             device.poll(wgpu::PollType::wait_indefinitely()).ok();
             println!(

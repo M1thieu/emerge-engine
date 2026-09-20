@@ -33,8 +33,8 @@
 //! at untouched neighbor cells, and ported the exact fix already proven
 //! for the same class of bug in the ordinary G2P gather stencil
 //! (`velocity_at_or_extrapolated`, `grid/mod.rs`, 2026-08-13). Measured,
-//! not assumed: it did NOT fix this gate (`J` still hit the clamp on step
-//! 1) and, in an EARLIER, methodologically-flawed regression check using
+//! not assumed: it did NOT fix this gate (`J` still hit the clamp on
+//! step 1) and, in an EARLIER, methodologically-flawed regression check using
 //! the wrong (full, undreated) gravity, appeared to also break the
 //! validated wall-contact scene -- that specific claim was later corrected
 //! (`fluid_pressure_projection.rs`'s own GUI actually validates at

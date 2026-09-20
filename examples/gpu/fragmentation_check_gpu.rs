@@ -200,8 +200,11 @@ fn main() {
         let step_ms = t0.elapsed().as_secs_f64() * 1e3;
         device.poll(wgpu::PollType::wait_indefinitely()).ok();
         let gpu_done_ms = t0.elapsed().as_secs_f64() * 1e3;
-        if profile && step % 10 == 0 {
-            if let Some(timeline) = sim.last_pass_timeline_ns() {
+        if profile
+            && step % 10 == 0
+            && let Some(timeline) = sim.last_pass_timeline_ns()
+        {
+            {
                 let busy: f32 = timeline.iter().map(|(_, b, e)| e - b).sum();
                 let span = timeline.iter().map(|(_, _, e)| *e).fold(0.0f32, f32::max);
                 let parts: Vec<String> = timeline
@@ -279,10 +282,11 @@ fn main() {
         }
         let jmean = jsum / particles.len() as f32;
         let com_vy = vysum / particles.len() as f32;
-        if let Ok(frames) = std::env::var("DUMP_FRAMES") {
-            if frames
+        if let Ok(frames) = std::env::var("DUMP_FRAMES")
+            && frames
                 .split(',')
                 .any(|f| f.trim().parse::<u64>().ok() == Some(step))
+        {
             {
                 let dir = std::env::var("DUMP_DIR").unwrap_or_else(|_| ".".into());
                 let tag = std::env::var("DUMP_TAG").unwrap_or_else(|_| "run".into());

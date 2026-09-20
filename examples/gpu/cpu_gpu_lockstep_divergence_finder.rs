@@ -95,7 +95,7 @@ fn main() {
 
     // Canonical, single source of truth for initial particle state -- both
     // backends get bit-identical starting conditions.
-    let canonical_particles = build_particles(&config, spawn.clone());
+    let canonical_particles = build_particles(&config, spawn);
     println!("n_particles={}", canonical_particles.len());
 
     // CPU sim: constructed normally. `Simulation::new` and `build_particles`
@@ -157,9 +157,9 @@ fn main() {
         let mut max_div_diff = 0f32;
         let mut max_diff_idx = 0usize;
         let mut max_pos_diff = 0f32;
-        for i in 0..cpu_particles.x.len() {
+        for (i, gpu) in gpu_particles.iter().enumerate() {
             let cpu_c = cpu_particles.velocity_gradient[i];
-            let gpu_c = gpu_particles[i].velocity_gradient;
+            let gpu_c = gpu.velocity_gradient;
             let cpu_div = cpu_c.x_axis.x + cpu_c.y_axis.y;
             let gpu_div = gpu_c.x_axis.x + gpu_c.y_axis.y;
             let diff = (cpu_div - gpu_div).abs();
@@ -167,7 +167,7 @@ fn main() {
                 max_div_diff = diff;
                 max_diff_idx = i;
             }
-            max_pos_diff = max_pos_diff.max((cpu_particles.x[i] - gpu_particles[i].x).length());
+            max_pos_diff = max_pos_diff.max((cpu_particles.x[i] - gpu.x).length());
         }
 
         if step % 20 == 0 || step == N_STEPS {

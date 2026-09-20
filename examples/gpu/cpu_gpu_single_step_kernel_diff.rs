@@ -219,9 +219,9 @@ fn main() {
         let g = gpu.particles();
         let (mut worst_rel_v, mut worst_i) = (0.0f32, 0usize);
         let (mut max_dv, mut max_dc, mut max_dj, mut max_v) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        for i in 0..n {
-            let dv = (c.v[i] - g[i].v).length();
-            let dc = (c.velocity_gradient[i] - g[i].velocity_gradient)
+        for (i, gp) in g.iter().enumerate().take(n) {
+            let dv = (c.v[i] - gp.v).length();
+            let dc = (c.velocity_gradient[i] - gp.velocity_gradient)
                 .abs()
                 .to_cols_array()
                 .into_iter()
@@ -247,9 +247,9 @@ fn main() {
         // continuity update J_in * exp(dt * tr(C)).
         if !no_resync && !dumped_j {
             let (mut worst_dj, mut wi) = (0.0f32, 0usize);
-            for i in 0..n {
+            for (i, gp) in g.iter().enumerate().take(n) {
                 let dj = (c.deformation_gradient[i].determinant()
-                    - g[i].deformation_gradient.determinant())
+                    - gp.deformation_gradient.determinant())
                 .abs();
                 if dj > worst_dj {
                     worst_dj = dj;
