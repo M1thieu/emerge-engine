@@ -111,6 +111,10 @@ impl Renderer {
             bytemuck::bytes_of(&LightDiffuseParams {
                 surface_res,
                 material_slot,
+                emission_reference_k: self.emission_reference_k,
+                display_white_mean: self.display_white_mean(),
+                luminous_emission_w_m3: self.luminous_emission[material_slot as usize % 16],
+                reference_cell_mass: self.grid_reference_cell_mass,
                 _pad0: 0,
                 _pad1: 0,
             }),
@@ -375,6 +379,10 @@ impl Renderer {
                     binding: 4,
                     resource: self.optical_table_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.surface_a_buf.as_entire_binding(),
+                },
             ],
         });
         // Real, persistent (across frames) wave field -- see `curvature_
@@ -576,8 +584,9 @@ impl Renderer {
         // does not, and the recovered "temperature" blows up far past any real
         // value.
         //
-        // Visible symptom that traced back to here: `fs_main`'s blackbody term
-        // is `heat(0.5 + t_norm*0.5) * t_norm^2 * 2` with
+        // Visible symptom that traced back to here, under the hand-drawn
+        // emission ramp `blackbody.inc.wgsl` has since replaced: that ramp
+        // was `heat(0.5 + t_norm*0.5) * t_norm^2 * 2` with
         // `t_norm = clamp(avg_temp/5000, 0, 1)`, and `heat(1.0)` is PURE RED.
         // So rim/thin cells of 300 K water rendered as saturated red-pink
         // added on top of the correct body colour -- measured as body

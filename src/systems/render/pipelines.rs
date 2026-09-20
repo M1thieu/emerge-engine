@@ -624,6 +624,7 @@ pub(super) fn build_light_diffuse_pipeline(
             bgl_storage_ro(2, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_ro(5, wgpu::ShaderStages::COMPUTE),
         ],
     });
     let shader = build_curvature_flow_shader(device);

@@ -215,6 +215,9 @@ struct PhysicalRenderParams {
     display_white_radiance: vec4<f32>,
     camera_direction: vec4<f32>,
     light_direction: vec4<f32>,
+    // x = thermal-emission exposure anchor in kelvin, 0 = unset. See
+    // `Renderer::set_emission_reference_temperature`. y/z/w reserved.
+    emission: vec4<f32>,
 }
 
 // Number of flat depth/color bands `fs_main`, `shade_phase`, and
@@ -225,6 +228,13 @@ struct PhysicalRenderParams {
 // stay equal to `mod.rs`'s own `DEPTH_BANDS` (Rust can't share this WGSL
 // const directly) and `grid_volume.wgsl`'s own copy (a separate shader
 // module, same constraint).
+// Implicit out-of-plane bulge of the reconstructed surface, used to build
+// a 3-D normal from a 2-D density gradient. A real, tuned stand-in (no true
+// 3-D surface exists here), not a measured quantity -- see `fs_main`'s own
+// Fresnel block for the full reasoning. Module scope because both the
+// legacy shading path and the SI radiative-transfer branch need it.
+const FRESNEL_HEIGHT_SCALE: f32 = 2.0;
+
 const DEPTH_BANDS: f32 = 4.0;
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
 const BSPLINE_OUTER_LIMIT:  f32 = 1.5;
@@ -1089,6 +1099,14 @@ const MIN_EXTINCTION: f32 = 0.1333;
 struct LightDiffuseParams {
     surface_res: u32,
     material_slot: u32,
+    // This pass's bind group has no `PhysicalRenderParams`, so the two
+    // numbers `blackbody.inc.wgsl` needs arrive here. See that file.
+    emission_reference_k: f32,
+    display_white_mean: f32,
+    // Volumetric luminous source S, W/m^3 -- light this material emits
+    // without being hot. See `MaterialModel::luminous_emission_w_m3`.
+    luminous_emission_w_m3: f32,
+    reference_cell_mass: f32,
     _pad0: u32,
     _pad1: u32,
 }
@@ -1098,6 +1116,10 @@ struct LightDiffuseParams {
 @group(0) @binding(2) var<storage, read> light_temp_in: array<f32>;
 @group(0) @binding(3) var<uniform> light_diffuse_params: LightDiffuseParams;
 @group(0) @binding(4) var<uniform> light_optics: OpticalTable;
+// The settled density field, so a luminous source is weighted by how much
+// emitting matter a cell actually holds. Without it the source term would
+// be added uniformly, and empty space would glow.
+@group(0) @binding(5) var<storage, read> light_density_in: array<f32>;
 
 fn sample_light_phi(cx: i32, cy: i32) -> f32 {
     let res = i32(light_diffuse_params.surface_res);
@@ -1127,11 +1149,40 @@ fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let extinction = max(sigma_a_mean + sigma_s, MIN_EXTINCTION);
     let diffusion_d = 1.0 / (3.0 * extinction);
 
-    // Real blackbody emission STRENGTH, same real quantity fs_main's own
-    // emission term uses before the heat() color mapping (see this pass's
-    // own top doc).
-    let t_norm = clamp(light_temp_in[idx] / 5000.0, 0.0, 1.0);
-    let source = t_norm * t_norm;
+    // Blackbody emission STRENGTH -- the same Stefan-Boltzmann exposure
+    // `fs_main` multiplies Planck's colour by, taken here without the colour
+    // (see this pass's own top doc for why this field is one channel).
+    let thermal_source = blackbody_exposure_scalar(
+        light_temp_in[idx],
+        light_diffuse_params.display_white_mean,
+        light_diffuse_params.emission_reference_k,
+    );
+
+    // Luminescence: light emitted without being hot -- a firefly, a glowing
+    // fungus. This is `S` in the photon diffusion equation this pass
+    // integrates,
+    //
+    //   (1/c) dphi/dt = D grad^2 phi - mu_a phi + S
+    //
+    // (Wikipedia, "Radiative transfer equation and diffusion theory for
+    // photon transport in biological tissue", which states the steady form
+    // div j = -mu_a phi + S). The approximation requires the source to be
+    // ISOTROPIC, which is why this models luminous matter and must not be
+    // used for a beam.
+    //
+    // Weighted by the fraction of a full cell the emitting matter occupies,
+    // so the source is a real volumetric density and not a glow in vacuum.
+    // Normalised against display white exactly as the thermal term is, so
+    // the two are in the same units and simply add.
+    let occupancy = clamp(
+        light_density_in[idx] / max(light_diffuse_params.reference_cell_mass, 1.0e-12),
+        0.0,
+        1.0,
+    );
+    let white = max(light_diffuse_params.display_white_mean, 1.0);
+    let luminous_source = light_diffuse_params.luminous_emission_w_m3 * occupancy / white;
+
+    let source = thermal_source + luminous_source;
 
     let next = center
         + LIGHT_DIFFUSE_DT * (diffusion_d * laplacian - sigma_a_mean * center + source);
@@ -1457,10 +1508,8 @@ fn sample_visibility(cx: i32, cy: i32) -> f32 {
     return visibility_field[u32(cy) * render_params.surface_res + u32(cx)];
 }
 
-// Same blackbody-emission formula `grid_volume.wgsl`'s own `fs_main` uses
-// (Planckian-locus RGB approximation via `heat()`, weighted by `t_norm^2`
-// for a physically-motivated ramp-up toward incandescence), reused
-// verbatim.
+// Thermal emission comes from the shared `blackbody.inc.wgsl`, the same one
+// `grid_volume.wgsl` and `prep_instances.wgsl` call.
 //
 // N-material extension (see module doc): compare raw i32 `material_mass`,
 // not bit-reinterpreted f32 -- see `grid_volume.wgsl`'s identical
@@ -1745,7 +1794,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // reflection); a flat/calm region (near-zero gradient) keeps
         // cos_theta near 1, mostly R0 -- the real "look straight down, see
         // through; look near the edge, see a mirror" effect.
-        const FRESNEL_HEIGHT_SCALE: f32 = 2.0;
         let normal3 = normalize(vec3<f32>(-grad, FRESNEL_HEIGHT_SCALE));
         let cos_theta = clamp(normal3.z, 0.0, 1.0);
         let r0 = optics.specular[render_params.material_slot % 16u].x;
@@ -1777,13 +1825,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         lit = clamp(with_fresnel + wave_highlight, vec3(0.0), vec3(1.0));
     }
 
-    // Blackbody thermal emission -- real, exact same formula `grid_
-    // volume.wgsl`'s own fs_main already uses (see that shader's own doc
-    // for the full real citation/derivation): normalized to a 5000K
-    // ceiling, additive on top of the (possibly cel-shaded) lit color so
-    // near-ignition material reads as genuinely glowing.
-    let t_norm = clamp(avg_temp / 5000.0, 0.0, 1.0);
-    let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
+    // Blackbody thermal emission -- the shared `blackbody.inc.wgsl` every
+    // render path calls. Additive on top of the (possibly cel-shaded) lit
+    // colour, because an emitter's own light adds to what it reflects.
+    let emission = blackbody_emission(
+        avg_temp,
+        physical_render.spatial.z,
+        physical_render.display_white_radiance.rgb,
+        physical_render.emission.x,
+    );
 
     // Real diffused subsurface glow (Pass 1e, `light_diffuse_main`) --
     // DISTINCT from the local `emission` term just above: emission is the
@@ -1793,15 +1843,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // to an ember should show real bleed-in glow, not a hard cutoff at the
     // ember's own silhouette). Bilinear-sampled across the SAME 4 corners
     // `mass`/`avg_temp` already use above, same real anti-blockiness
-    // reasoning. Same `heat()` color mapping as direct emission -- this is
-    // the same real light, just spread, not a differently-colored effect.
+    // reasoning.
+    //
+    // Colour comes from the blackbody that emitted this light, not from the
+    // fluence: `phi` is a radiant fluence, and treating its magnitude as if
+    // it were a temperature is what the previous `heat(0.5 + phi*0.5)` did.
+    // That also made the glow non-monotonic -- as `phi` grew, the ramp moved
+    // toward red and the green channel FELL, so a steadily brightening scene
+    // could render dimmer. The emitter's temperature here is the diffused
+    // temperature field (Pass 1d), which is what the surrounding matter is
+    // actually at. Disclosed simplification, unchanged: `phi` is one channel,
+    // so this spreads a single intensity rather than diffusing each
+    // wavelength at its own rate.
     let lp00 = sample_light_phi_final(bx, by);
     let lp10 = sample_light_phi_final(bx + 1, by);
     let lp01 = sample_light_phi_final(bx, by + 1);
     let lp11 = sample_light_phi_final(bx + 1, by + 1);
     let phi = mix(mix(lp00, lp10, frac.x), mix(lp01, lp11, frac.x), frac.y);
     let phi_norm = clamp(phi, 0.0, 1.0);
-    let diffused_glow = heat(0.5 + phi_norm * 0.5).rgb * phi_norm * 1.0;
+    let diffused_glow = blackbody_srgb(avg_temp) * phi_norm;
 
     let with_emission = clamp(lit + emission + diffused_glow, vec3(0.0), vec3(1.0));
 
@@ -1815,13 +1875,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // discard-only gate.
     let alpha = density_alpha * visibility_blend;
     if physical_render.spatial.z > 0.5 {
+        // Real SI radiative transfer -- absorption, single scattering and
+        // Fresnel together (`radiative_transfer.inc.wgsl`), not transmission
+        // alone. This path has a genuine surface normal from the density
+        // gradient, so Fresnel is view-angle dependent here: look straight
+        // down and the water is clear, look along it and it is a mirror.
+        // Emission and the diffused subsurface glow stay additive on top,
+        // since both are light the matter itself supplies.
         let relative_density = max(mass / max(render_params.reference_cell_mass, 1.0e-12), 0.0);
         let view_length_m = physical_render.spatial.y
             / max(abs(physical_render.camera_direction.z), 1.0e-6);
         let path_m = relative_density * view_length_m;
-        let slab_t = exp(-sigma_a * path_m);
-        let display_radiance = physical_render.background_radiance.rgb
-            * slab_t / physical_render.display_white_radiance.rgb;
+        let normal3 = normalize(vec3<f32>(-grad, FRESNEL_HEIGHT_SCALE));
+        let radiance = slab_radiance(
+            physical_render.background_radiance.rgb,
+            physical_render.incident_radiance.rgb,
+            sigma_a,
+            sigma_s,
+            path_m,
+            optics.specular[render_params.material_slot % 16u].x,
+            clamp(normal3.z, 0.0, 1.0),
+        );
+        let display_radiance = radiance / physical_render.display_white_radiance.rgb
+            + emission + diffused_glow;
         return vec4<f32>(clamp(display_radiance, vec3(0.0), vec3(1.0)), alpha);
     }
     return vec4<f32>(with_emission, alpha);
