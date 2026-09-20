@@ -15,7 +15,116 @@ use crate::particle::Particle;
 use crate::solver::density::estimate_particle_volumes;
 use crate::thermodynamics::ScalarDiffusionField;
 
+/// The equilibrium state of one particle at `depth` below its own free
+/// surface: deformation gradient, volume and density, all three consistent.
+///
+/// Shared by the CPU and GPU paths so the physics exists once. They differ
+/// only in how particles are stored, never in what equilibrium means.
+///
+/// `None` when the material has no equation of state to invert, or when the
+/// particle is at the surface and already in equilibrium.
+pub fn hydrostatic_state(
+    material: &dyn crate::materials::MaterialModel,
+    gravity_magnitude: f32,
+    depth: f32,
+    initial_volume: f32,
+    mass: f32,
+) -> Option<HydrostaticState> {
+    if depth <= 0.0 || gravity_magnitude <= 0.0 {
+        return None;
+    }
+    // Rest density is the right weight here: the correction is small by
+    // construction, so iterating it would buy nothing.
+    let pressure = material.params().rest_density * gravity_magnitude * depth;
+    let j = material.hydrostatic_volume_ratio(pressure)?;
+    let volume = initial_volume * j;
+    Some(HydrostaticState {
+        // det(s*I) = s^2 in 2D, so the isotropic compression with
+        // det(F) = J is F = sqrt(J)*I.
+        deformation_gradient: Mat2::from_diagonal(Vec2::splat(j.sqrt())),
+        volume,
+        // Volume and density are not independent of J -- V = V0*J and
+        // rho = m/V. Leaving them behind puts the particle in a state the
+        // solver's own strict-material consistency check rejects.
+        density: if volume > 0.0 { mass / volume } else { 0.0 },
+    })
+}
+
+/// One particle's hydrostatic equilibrium, as the three fields that must
+/// change together. See [`hydrostatic_state`].
+#[derive(Clone, Copy, Debug)]
+pub struct HydrostaticState {
+    pub deformation_gradient: Mat2,
+    pub volume: f32,
+    pub density: f32,
+}
+
 impl Simulation {
+    /// Puts every particle into hydrostatic equilibrium under the current
+    /// gravity, so a body spawned "at rest" genuinely starts at rest.
+    ///
+    /// Particles are created at uniform density, which is not an
+    /// equilibrium state: a real column of fluid is held up by the pressure
+    /// gradient its own weight creates, `p = rho*g*h`. Spawned uniform, a
+    /// pool has no internal pressure anywhere, collapses under its own
+    /// weight, and rings -- visible as a "resting" pool twitching for its
+    /// first frames before anything touches it. That is the solver being
+    /// correct about a starting state that was never physical.
+    ///
+    /// This asks each material for the volume ratio that balances the
+    /// pressure at each particle's own depth (`MaterialModel::
+    /// hydrostatic_volume_ratio`), and writes it into the deformation
+    /// gradient. Materials with no equation of state to invert are left
+    /// untouched, so calling this on a scene of solids does nothing.
+    ///
+    /// Depth is measured per column against the highest particle of the
+    /// same material in that column, so it handles a sloped or stepped free
+    /// surface, not just a flat pool.
+    ///
+    /// Call it after spawning and before the first step.
+    pub fn settle_hydrostatic(&mut self) {
+        let gravity_magnitude = self.config.gravity.length();
+        if gravity_magnitude <= 0.0 {
+            return;
+        }
+        // Free surface per (material, column): the top of the matter whose
+        // weight presses on everything below it in that column.
+        let mut surface: HashMap<(u32, i32), f32> = HashMap::new();
+        for i in 0..self.particles.len() {
+            let key = (
+                self.particles.material_id[i],
+                self.particles.x[i].x.floor() as i32,
+            );
+            let top = surface.entry(key).or_insert(f32::NEG_INFINITY);
+            *top = top.max(self.particles.x[i].y);
+        }
+
+        for i in 0..self.particles.len() {
+            let material_id = self.particles.material_id[i];
+            let material = self.materials.get(material_id);
+            let key = (material_id, self.particles.x[i].x.floor() as i32);
+            let Some(&top) = surface.get(&key) else {
+                continue;
+            };
+            let depth = top - self.particles.x[i].y;
+            if depth <= 0.0 {
+                continue;
+            }
+            let Some(state) = hydrostatic_state(
+                material,
+                gravity_magnitude,
+                depth,
+                self.particles.initial_volume[i],
+                self.particles.mass[i],
+            ) else {
+                continue;
+            };
+            self.particles.deformation_gradient[i] = state.deformation_gradient;
+            self.particles.volume[i] = state.volume;
+            self.particles.density[i] = state.density;
+        }
+    }
+
     /// Real, shared phase-transition logic -- the single place both
     /// `phase_transition` (this file) and the per-substep `add_phase_rule`
     /// evaluation (`solver::step`) apply a material change, so the two
@@ -643,5 +752,98 @@ impl Simulation {
     pub fn with_scalar_field(mut self, field: ScalarDiffusionField) -> Self {
         self.attach_scalar_field(field);
         self
+    }
+}
+
+#[cfg(test)]
+mod hydrostatic_tests {
+    use crate::{NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion};
+    use glam::{IVec2, Vec2};
+
+    fn resting_pool(settle: bool) -> Simulation {
+        let config = SimConfig {
+            // A properly stiff fluid has a high sound speed and needs the
+            // substeps to match; the cap is generous so the test measures
+            // the initial condition, not the substep budget.
+            max_substeps_per_step: 4000,
+            ..SimConfig::earth(64, 0.01, 0.01)
+        };
+        let spacing = 0.5;
+        let rest_density = 0.1;
+        let pool = SpawnRegion {
+            spacing,
+            box_size: IVec2::new(40, 12),
+            box_center: Vec2::new(32.0, 9.0),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            mass_override: Some(rest_density * spacing * spacing),
+            ..SpawnRegion::for_sim(&config)
+        };
+        // Stiffness sized so the pool is genuinely weakly compressible at this
+        // depth: too soft and the "equilibrium" is a 37% squash, which is not
+        // what the Tait equation is for.
+        let water = NewtonianFluidMaterial::new(rest_density, 0.001, 1.0e5, 7.0);
+        let mut sim = Simulation::new(config, pool).with_default_material(Box::new(water));
+        if settle {
+            sim.settle_hydrostatic();
+        }
+        sim
+    }
+
+    /// A pool spawned at uniform density is not at rest: it has no internal
+    /// pressure to hold itself up, so it collapses and rings. Settled
+    /// hydrostatically it starts in equilibrium and stays far quieter.
+    ///
+    /// This is the difference a viewer sees as a "resting" pool twitching
+    /// before anything touches it.
+    #[test]
+    fn settling_hydrostatically_makes_a_resting_pool_actually_rest() {
+        let mut uniform = resting_pool(false);
+        let mut settled = resting_pool(true);
+        for _ in 0..12 {
+            uniform.step();
+            settled.step();
+        }
+        let peak = |sim: &Simulation| {
+            sim.particles()
+                .v
+                .iter()
+                .fold(0.0f32, |acc, v| acc.max(v.length()))
+        };
+        let (noisy, quiet) = (peak(&uniform), peak(&settled));
+        assert!(
+            quiet < noisy,
+            "a hydrostatically settled pool must be quieter than one spawned \
+             at uniform density: settled peak {quiet:.4} vs uniform {noisy:.4}"
+        );
+    }
+
+    /// The equilibrium is a real gradient, not a uniform offset: deeper
+    /// matter is more compressed, because it carries more weight.
+    #[test]
+    fn settled_pool_is_more_compressed_with_depth() {
+        let sim = resting_pool(true);
+        let det = |m: glam::Mat2| m.x_axis.x * m.y_axis.y - m.x_axis.y * m.y_axis.x;
+        let particles = sim.particles();
+        let (mut lowest, mut highest) = ((f32::MAX, 1.0f32), (f32::MIN, 1.0f32));
+        for i in 0..particles.len() {
+            let (y, j) = (particles.x[i].y, det(particles.deformation_gradient[i]));
+            if y < lowest.0 {
+                lowest = (y, j);
+            }
+            if y > highest.0 {
+                highest = (y, j);
+            }
+        }
+        assert!(
+            lowest.1 < highest.1,
+            "the bottom must be compressed more than the top: J={:.6} at y={:.2} \
+             vs J={:.6} at y={:.2}",
+            lowest.1,
+            lowest.0,
+            highest.1,
+            highest.0
+        );
+        assert!(highest.1 <= 1.0, "the free surface must not be stretched");
     }
 }

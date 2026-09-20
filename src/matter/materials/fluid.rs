@@ -599,6 +599,22 @@ impl MaterialModel for NewtonianFluidMaterial {
         self.specific_heat_j_kg_k
     }
 
+    /// Tait inverted. The state equation is
+    /// `p = k * ((rho/rho_0)^gamma - 1)`, so the density in equilibrium at
+    /// pressure `p` is `rho = rho_0 * (1 + p/k)^(1/gamma)`, and since MPM
+    /// carries density as `rho = rho_0 / J`, the volume ratio is
+    /// `J = (1 + p/k)^(-1/gamma)`.
+    ///
+    /// Returns `None` for a non-positive pressure: a free surface is
+    /// already at `J = 1` and needs no correction, and a negative pressure
+    /// here would mean tension, which this state equation does not model.
+    fn hydrostatic_volume_ratio(&self, pressure: f32) -> Option<f32> {
+        if !pressure.is_finite() || pressure <= 0.0 || self.eos_stiffness <= 0.0 {
+            return None;
+        }
+        Some((1.0 + pressure / self.eos_stiffness).powf(-1.0 / self.eos_power))
+    }
+
     /// Declared when this fluid is water, which is what `optical_water`
     /// records. Left `None` otherwise: a Newtonian fluid is not necessarily
     /// water, and inventing an absorption spectrum for an unspecified liquid

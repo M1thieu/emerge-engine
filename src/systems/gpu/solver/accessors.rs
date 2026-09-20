@@ -105,6 +105,51 @@ impl GpuSimulation {
     /// **CFL WARNING:** velocity changes bypass the solver's CFL clamp.
     /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
     /// After modifying, call `mark_particles_dirty()` so the GPU sees the changes.
+    /// Puts every particle into hydrostatic equilibrium under the current
+    /// gravity, so a body spawned "at rest" genuinely starts at rest.
+    ///
+    /// The GPU mirror of `Simulation::settle_hydrostatic`; both call the
+    /// same `hydrostatic_state`, so equilibrium means the same thing on
+    /// either path. See that method for why a pool spawned at uniform
+    /// density is not at rest.
+    ///
+    /// Call it after spawning and before the first step. Marks the particle
+    /// buffer dirty so the corrected state reaches the GPU.
+    pub fn settle_hydrostatic(&mut self) {
+        let gravity_magnitude = self.config.gravity.length();
+        if gravity_magnitude <= 0.0 {
+            return;
+        }
+        let mut surface: std::collections::HashMap<(u32, i32), f32> =
+            std::collections::HashMap::new();
+        for p in &self.particles {
+            let top = surface
+                .entry((p.material_id, p.x.x.floor() as i32))
+                .or_insert(f32::NEG_INFINITY);
+            *top = top.max(p.x.y);
+        }
+        for i in 0..self.particles.len() {
+            let p = self.particles[i];
+            let Some(&top) = surface.get(&(p.material_id, p.x.x.floor() as i32)) else {
+                continue;
+            };
+            let Some(state) = crate::spacetime::solver::hydrostatic_state(
+                self.registry.get(p.material_id),
+                gravity_magnitude,
+                top - p.x.y,
+                p.initial_volume,
+                p.mass,
+            ) else {
+                continue;
+            };
+            let p = &mut self.particles[i];
+            p.deformation_gradient = state.deformation_gradient;
+            p.volume = state.volume;
+            p.density = state.density;
+        }
+        self.mark_particles_dirty();
+    }
+
     pub fn particles_mut(&mut self) -> &mut Vec<Particle> {
         &mut self.particles
     }

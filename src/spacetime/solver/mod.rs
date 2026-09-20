@@ -20,6 +20,7 @@ pub use boundary_diagnostics::{
 pub use config::{SimConfig, SpawnRegion};
 pub use density::compute_density_grid;
 pub use handle::{MaterialHandle, ParticleGroup};
+pub use particles::{HydrostaticState, hydrostatic_state};
 // Only consumed by systems::gpu's own CFL scan -- unused (and correctly
 // warned about) in a build without that feature.
 #[cfg(feature = "gpu")]

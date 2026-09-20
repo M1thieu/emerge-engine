@@ -755,6 +755,13 @@ fn make_sim_data(
     let registry = MaterialRegistry::with_default(Box::new(water));
 
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);
+    // A body spawned at uniform density has no internal pressure and
+    // collapses under its own weight before anything touches it -- a
+    // resting pool that visibly twitches on its first frames. This puts it
+    // in hydrostatic equilibrium so "at rest" means at rest. Called on
+    // every spawn, which is every reset, so restarting really does restart
+    // from a resting state.
+    sim.settle_hydrostatic();
     // Real, already-proven mechanism (`fluids_gpu_isolated_droplet_settles_with_damping`,
     // 2026-07-30): an isolated splash particle has no neighbors to form a real
     // deformation/velocity gradient against, so none of this material's stress-based

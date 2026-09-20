@@ -471,6 +471,24 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
 
     /// Returns this material's parameters as a flat, GPU-uploadable struct.
     /// Default returns zeroed params (Fallback model).
+    /// Volume ratio `J` at which this material is in equilibrium under a
+    /// given pressure, or `None` if it has no equation of state to invert.
+    ///
+    /// Matter at rest under gravity is not at uniform density: the pressure
+    /// rises with depth, and for a compressible material that pressure IS a
+    /// density change. Spawning a pool at uniform density therefore creates
+    /// a body with no internal pressure at all, which then collapses under
+    /// its own weight until the gradient builds -- a real elastic wave, and
+    /// exactly what you see when a "resting" pool twitches on its first
+    /// frames.
+    ///
+    /// Answering this lets a caller spawn the body already in equilibrium.
+    /// Only the material knows how, because only it knows its own equation
+    /// of state.
+    fn hydrostatic_volume_ratio(&self, _pressure: f32) -> Option<f32> {
+        None
+    }
+
     /// Light this material emits WITHOUT being hot, as a volumetric source
     /// in `W/m^3`. 0 means it does not glow.
     ///
