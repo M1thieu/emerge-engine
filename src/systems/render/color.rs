@@ -8,9 +8,37 @@
 use glam::Mat2;
 
 use super::{ColorMode, OpticalTable, Renderer};
+use crate::energy::radiation::{
+    blackbody_linear_srgb_locus_fit, blackbody_radiance_w_m2_sr, slab_radiance,
+};
 use crate::particle::Particle;
 
+/// Mirrors `blackbody.inc.wgsl`'s `BLACKBODY_MAX_EXPOSURE`; the two must stay
+/// equal or CPU and GPU emission diverge above the ceiling.
+const BLACKBODY_MAX_EXPOSURE: f32 = 16.0;
+
 impl Renderer {
+    /// Thermal emission: Planck's colour (`energy::radiation`) weighted by
+    /// Stefan-Boltzmann's `T^4` exposure. The CPU mirror of
+    /// `blackbody.inc.wgsl`'s `blackbody_emission`, including its exposure
+    /// ceiling, so both paths saturate at the same place.
+    pub(super) fn blackbody_emission(&self, temperature_k: f32) -> [f32; 3] {
+        if !temperature_k.is_finite() || temperature_k <= 0.0 {
+            return [0.0; 3];
+        }
+        let exposure = match self.physical_render_contract {
+            Some(_) => {
+                blackbody_radiance_w_m2_sr(temperature_k) / self.display_white_mean().max(1.0e-12)
+            }
+            None => {
+                let ratio = temperature_k / self.emission_reference_temperature().max(1.0);
+                ratio * ratio * ratio * ratio
+            }
+        }
+        .min(BLACKBODY_MAX_EXPOSURE);
+        blackbody_linear_srgb_locus_fit(temperature_k).map(|channel| channel * exposure)
+    }
+
     pub(super) fn particle_color(&self, p: &Particle, i: usize) -> [f32; 4] {
         match self.color_mode {
             ColorMode::ByMaterial => material_palette(p.material_id),
@@ -48,18 +76,27 @@ impl Renderer {
                 };
                 let j = det2(p.deformation_gradient).clamp(0.05, 4.0);
                 if let Some(contract) = self.physical_render_contract {
-                    let transmittance = super::beer_lambert_transmittance(
+                    // Full SI radiative transfer, the same law
+                    // `radiative_transfer.inc.wgsl` runs on the GPU. A
+                    // particle carries no surface normal, so Fresnel is
+                    // evaluated at normal incidence (`cos_view = 1`).
+                    let path_m = (1.0 / j) * contract.view_thickness_meters()
+                        / contract.camera_direction().z.abs().max(1.0e-6);
+                    let radiance = slab_radiance(
+                        contract.background_radiance_w_m2_sr(),
+                        contract.incident_radiance_w_m2_sr(),
                         sigma,
-                        1.0 / j,
-                        contract.view_thickness_meters()
-                            / contract.camera_direction().z.abs().max(1.0e-6),
+                        sigma_s,
+                        path_m,
+                        self.specular_r0[slot],
+                        1.0,
                     );
-                    let background = contract.background_radiance_w_m2_sr();
                     let display_white = contract.display_white_radiance_w_m2_sr();
+                    let emission = self.blackbody_emission(p.temperature);
                     return [
-                        (background[0] * transmittance[0] / display_white[0]).clamp(0.0, 1.0),
-                        (background[1] * transmittance[1] / display_white[1]).clamp(0.0, 1.0),
-                        (background[2] * transmittance[2] / display_white[2]).clamp(0.0, 1.0),
+                        (radiance[0] / display_white[0] + emission[0]).clamp(0.0, 1.0),
+                        (radiance[1] / display_white[1] + emission[1]).clamp(0.0, 1.0),
+                        (radiance[2] / display_white[2] + emission[2]).clamp(0.0, 1.0),
                         1.0,
                     ];
                 }
@@ -78,25 +115,17 @@ impl Renderer {
                     })
                     .collect();
                 let r0 = self.specular_r0[slot];
-                let t = (p.temperature / 5000.0).clamp(0.0, 1.0);
-                let glow = t * t * 2.0;
-                let [er, eg, eb, _] = heat(0.5 + t * 0.5);
+                let emission = self.blackbody_emission(p.temperature);
                 [
-                    (with_scattering[0] + r0 + er * glow).min(1.0),
-                    (with_scattering[1] + r0 + eg * glow).min(1.0),
-                    (with_scattering[2] + r0 + eb * glow).min(1.0),
+                    (with_scattering[0] + r0 + emission[0]).min(1.0),
+                    (with_scattering[1] + r0 + emission[1]).min(1.0),
+                    (with_scattering[2] + r0 + emission[2]).min(1.0),
                     1.0,
                 ]
             }
             ColorMode::ByThermal => {
-                let t = (p.temperature / 1500.0).clamp(0.0, 1.0);
-                let [r, g, b, _] = heat(t);
-                [
-                    r * (0.1 + t * 0.9),
-                    g * (0.1 + t * 0.9),
-                    b * (0.1 + t * 0.9),
-                    1.0,
-                ]
+                let [r, g, b] = self.blackbody_emission(p.temperature);
+                [r.min(1.0), g.min(1.0), b.min(1.0), 1.0]
             }
             ColorMode::ByActivation => heat(p.activation.clamp(0.0, 1.0) * 0.8),
             ColorMode::ByScalarField => heat(p.scalar_field.clamp(0.0, 1.0)),

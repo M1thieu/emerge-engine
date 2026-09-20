@@ -140,8 +140,15 @@ pub(super) struct PhysicalRenderParams {
     pub(super) camera_direction: [f32; 4],
     /// Normalized world-space direction; w is padding.
     pub(super) light_direction: [f32; 4],
+    /// x = thermal-emission exposure anchor [K]: the temperature that renders
+    /// at full brightness when no radiance contract is in force (see
+    /// `Renderer::set_emission_reference_temperature`). 0 means unset, and
+    /// `blackbody.inc.wgsl` substitutes its own documented default -- the
+    /// zeroed buffer this struct starts as is therefore valid, not a bug.
+    /// y/z/w reserved.
+    pub(super) emission: [f32; 4],
 }
-const _: () = assert!(mem::size_of::<PhysicalRenderParams>() == 96);
+const _: () = assert!(mem::size_of::<PhysicalRenderParams>() == 112);
 
 /// Mirrors `curvature_flow.wgsl`'s `SurfaceParams` -- shared by the clear,
 /// splat, convert, and iterate compute passes (all four only ever need
@@ -189,10 +196,25 @@ const _: () = assert!(mem::size_of::<SurfaceParams>() == 32);
 pub(super) struct LightDiffuseParams {
     pub(super) surface_res: u32,
     pub(super) material_slot: u32,
+    /// Thermal-emission exposure anchor [K]. This pass's bind group does not
+    /// carry the shared `PhysicalRenderParams`, so the two numbers
+    /// `blackbody.inc.wgsl` needs travel here instead. Was `_pad0`.
+    pub(super) emission_reference_k: f32,
+    /// Mean display-white radiance [W/(m^2 sr)], or 0 when no
+    /// `PhysicalRenderContract` is in force. Was `_pad1`.
+    pub(super) display_white_mean: f32,
+    /// Volumetric luminous source `S` for the rendered material, `W/m^3` --
+    /// see `MaterialModel::luminous_emission_w_m3`. 0 for anything that does
+    /// not glow on its own, which is almost everything.
+    pub(super) luminous_emission_w_m3: f32,
+    /// Mass of one fully-occupied cell, so the source can be weighted by how
+    /// much emitting matter a cell actually holds instead of glowing in
+    /// empty space.
+    pub(super) reference_cell_mass: f32,
     pub(super) _pad0: u32,
     pub(super) _pad1: u32,
 }
-const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 16);
+const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 32);
 
 /// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the real, persistent
 /// (across frames) 2D wave-equation pass's own uniform. See that shader's

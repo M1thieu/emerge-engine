@@ -15,10 +15,37 @@ use crate::particle::{Particle, Particles};
 use crate::systems::gpu::MAX_RENDER_MATERIAL_SLOTS;
 
 const RENDER_SHADER: &str = include_str!("shaders/render_particles.wgsl");
-const PREP_SHADER: &str = include_str!("shaders/prep_instances.wgsl");
 const SNAPSHOT_SHADER: &str = include_str!("shaders/snapshot_positions.wgsl");
-const GRID_VOLUME_SHADER: &str = include_str!("shaders/grid_volume.wgsl");
-const CURVATURE_FLOW_SHADER: &str = include_str!("shaders/curvature_flow.wgsl");
+
+// `blackbody.inc.wgsl` is prepended to every shader that renders thermal
+// emission, so the particle, grid and surface paths share one implementation
+// of `energy::radiation`'s colour instead of three drifting copies.
+// `concat!` over `include_str!` keeps these `const`, with no runtime string
+// work -- the same shared-source idea as the compute side's `.inc.wgsl`
+// files, which concatenate at pipeline build time instead.
+const PREP_SHADER: &str = concat!(
+    include_str!("shaders/blackbody.inc.wgsl"),
+    include_str!("shaders/radiative_transfer.inc.wgsl"),
+    include_str!("shaders/prep_instances.wgsl")
+);
+const GRID_VOLUME_SHADER: &str = concat!(
+    include_str!("shaders/blackbody.inc.wgsl"),
+    include_str!("shaders/radiative_transfer.inc.wgsl"),
+    include_str!("shaders/grid_volume.wgsl")
+);
+const CURVATURE_FLOW_SHADER: &str = concat!(
+    include_str!("shaders/blackbody.inc.wgsl"),
+    include_str!("shaders/radiative_transfer.inc.wgsl"),
+    include_str!("shaders/curvature_flow.wgsl")
+);
+/// Default thermal-emission exposure anchor, in kelvin -- the temperature
+/// that renders at full brightness until a scene states its own (see
+/// `Renderer::set_emission_reference_temperature`). 3000 K is roughly an
+/// incandescent filament and the hot core of an open flame, so the engine's
+/// existing fire/lava scenes land mid-range rather than black or blown out.
+/// `blackbody.inc.wgsl` repeats this value for the zero-initialized-uniform
+/// case; the two must stay equal.
+const DEFAULT_EMISSION_REFERENCE_K: f32 = 3000.0;
 const PREP_WG: u32 = 64;
 const SURFACE_CLEAR_WG: u32 = 64;
 const SURFACE_SPLAT_WG: u32 = 64;
@@ -173,9 +200,20 @@ mod grid_volume;
 // reconstructed-surface rendering cannot silently choose different units.
 pub mod optics;
 pub use optics::{
-    OpticalCoefficientsError, OpticalCoefficientsSi, PhysicalRenderContract,
-    PhysicalRenderContractError, PhysicalRenderContractParams, beer_lambert_transmittance,
+    PhysicalRenderContract, PhysicalRenderContractError, PhysicalRenderContractParams,
 };
+// Attenuation is an energy law, not a rendering one; the renderer applies it
+// but does not own it. Re-exported here so `render::` stays one import for a
+// caller wiring up optics.
+pub use crate::energy::radiation::{
+    OpticalCoefficientsError, OpticalCoefficientsSi, beer_lambert_transmittance,
+};
+
+// The colour of hot matter is physics, not rendering: it comes from
+// `energy::radiation` (Planck's law through the CIE 1931 observer), used by
+// `color.rs` on the CPU path, and mirrored on the GPU by
+// `shaders/blackbody.inc.wgsl`. Nothing in this module derives an emission
+// colour of its own.
 
 // wgpu pipeline construction (the three build_*_pipeline functions + their
 // bind-group-layout helpers) lives in pipelines.rs -- see that file's doc.
@@ -232,6 +270,11 @@ pub struct Renderer {
     /// same buffer rather than carrying path-specific unit assumptions.
     physical_render_params_buf: wgpu::Buffer,
     physical_render_contract: Option<PhysicalRenderContract>,
+    /// See `set_emission_reference_temperature`. The default matches
+    /// `blackbody.inc.wgsl`'s own `BLACKBODY_DEFAULT_REFERENCE_K`, so the
+    /// zero-initialized uniform above and this field agree before any scene
+    /// states its own exposure.
+    emission_reference_k: f32,
 
     grid_volume_pipeline: wgpu::RenderPipeline,
     grid_volume_bgl: wgpu::BindGroupLayout,
@@ -603,6 +646,11 @@ pub struct Renderer {
     /// treats that as inert, byte-identical to before this field existed,
     /// until a scene opts in with a real value.
     refractive_index: [f32; 16],
+    /// Per-material volumetric luminous source, `W/m^3` -- see
+    /// `MaterialModel::luminous_emission_w_m3`. Zero everywhere until a
+    /// material declares it, which is the normal case: almost nothing
+    /// glows on its own.
+    luminous_emission: [f32; 16],
 }
 
 impl Renderer {
@@ -831,6 +879,7 @@ impl Renderer {
             optical_table_buf,
             physical_render_params_buf,
             physical_render_contract: None,
+            emission_reference_k: DEFAULT_EMISSION_REFERENCE_K,
             scratch: Vec::with_capacity(cap),
             color_mode: ColorMode::ByMaterial,
             vel_scale: 0.05,
@@ -840,6 +889,7 @@ impl Renderer {
             sigma_s: [0.0f32; 16],
             specular_r0: [0.0f32; 16],
             refractive_index: [1.0f32; 16],
+            luminous_emission: [0.0f32; 16],
         }
     }
 
@@ -1179,6 +1229,7 @@ impl Renderer {
             display_white_radiance: [display_white[0], display_white[1], display_white[2], 0.0],
             camera_direction: [camera.x, camera.y, camera.z, 0.0],
             light_direction: [light.x, light.y, light.z, 0.0],
+            emission: [self.emission_reference_k, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(
             &self.physical_render_params_buf,
@@ -1186,6 +1237,112 @@ impl Renderer {
             bytemuck::bytes_of(&params),
         );
         self.physical_render_contract = Some(contract);
+    }
+
+    /// Pulls every material's own declared optical constants into the
+    /// renderer, so a scene never types absorption coefficients by hand.
+    ///
+    /// This is the mechanism that replaces the painted palette: a material
+    /// that declares measured constants (`MaterialModel::optical_properties`)
+    /// gets its colour computed from them, and nothing about the renderer
+    /// changes when a new material is added -- it simply works. A material
+    /// that declares nothing is left untouched, keeping whatever the caller
+    /// set, and falls back to the placeholder palette in `ByMaterial`.
+    ///
+    /// Returns how many materials declared optics, so a caller can see at a
+    /// glance how much of its scene is physically coloured and how much is
+    /// still standing on a placeholder.
+    pub fn adopt_material_optics(
+        &mut self,
+        queue: &wgpu::Queue,
+        registry: &crate::materials::registry::MaterialRegistry,
+    ) -> usize {
+        let mut declared = 0;
+        for slot in 0..MAX_RENDER_MATERIAL_SLOTS as usize {
+            let material = registry.get(slot as u32);
+            self.luminous_emission[slot] = material.luminous_emission_w_m3();
+            if let Some(optics) = material.optical_properties() {
+                self.sigma_a[slot] = optics.absorption_m_inv;
+                self.sigma_s[slot] = optics.reduced_scattering_m_inv;
+                declared += 1;
+            }
+        }
+        self.upload_optical_params(queue);
+        declared
+    }
+
+    /// Removes the SI contract, returning every physical path to the legacy
+    /// dimensionless convention.
+    ///
+    /// Exists so a caller can compare the two side by side at runtime --
+    /// `examples/gpu/basic_fluids_gpu.rs` cycles them with the O key. The
+    /// per-material optical coefficients are NOT reset: they are expressed
+    /// in `m^-1` for the contract path and in dimensionless units for the
+    /// legacy one, so a caller switching back has to set the ones it wants.
+    pub fn clear_physical_render_contract(&mut self, queue: &wgpu::Queue) {
+        self.physical_render_contract = None;
+        let params = PhysicalRenderParams {
+            emission: [self.emission_reference_k, 0.0, 0.0, 0.0],
+            ..bytemuck::Zeroable::zeroed()
+        };
+        queue.write_buffer(
+            &self.physical_render_params_buf,
+            0,
+            bytemuck::bytes_of(&params),
+        );
+    }
+
+    /// Sets the exposure anchor for thermal emission: the temperature whose
+    /// blackbody renders at full brightness.
+    ///
+    /// Emission itself is not tunable -- its colour is Planck's law through
+    /// the CIE observer (`energy::radiation`) and its brightness is
+    /// Stefan-Boltzmann's `T^4`. What a scene still has to state is its
+    /// exposure, exactly as a photographer does: a 1200 K ember and a 5772 K
+    /// photosphere differ by a factor of 500 in radiance, and no single
+    /// setting shows both. Pick the temperature the scene is "shot" for.
+    ///
+    /// A full [`PhysicalRenderContract`] makes this redundant: with a real
+    /// display-white radiance in `W/(m^2 sr)`, the exposure is measured
+    /// rather than chosen, and the shaders use that instead.
+    pub fn set_emission_reference_temperature(&mut self, queue: &wgpu::Queue, kelvin: f32) {
+        if !kelvin.is_finite() || kelvin <= 0.0 {
+            return;
+        }
+        self.emission_reference_k = kelvin;
+        match self.physical_render_contract {
+            Some(contract) => self.set_physical_render_contract(queue, contract),
+            None => {
+                let params = PhysicalRenderParams {
+                    emission: [kelvin, 0.0, 0.0, 0.0],
+                    ..bytemuck::Zeroable::zeroed()
+                };
+                queue.write_buffer(
+                    &self.physical_render_params_buf,
+                    0,
+                    bytemuck::bytes_of(&params),
+                );
+            }
+        }
+    }
+
+    /// The thermal-emission exposure anchor currently in use, in kelvin.
+    pub fn emission_reference_temperature(&self) -> f32 {
+        self.emission_reference_k
+    }
+
+    /// Mean display-white radiance in `W/(m^2 sr)`, or 0 when no contract is
+    /// in force. Render passes whose bind group carries the shared physical
+    /// uniform read it there; the light-diffusion sweep's does not, so it
+    /// receives this scalar instead (see `LightDiffuseParams`).
+    pub(super) fn display_white_mean(&self) -> f32 {
+        match self.physical_render_contract {
+            Some(contract) => {
+                let white = contract.display_white_radiance_w_m2_sr();
+                (white[0] + white[1] + white[2]) / 3.0
+            }
+            None => 0.0,
+        }
     }
 
     /// Returns the physical contract, or `None` while this renderer is still

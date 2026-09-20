@@ -88,6 +88,9 @@ struct PhysicalRenderParams {
     display_white_radiance: vec4<f32>,
     camera_direction: vec4<f32>,
     light_direction: vec4<f32>,
+    // x = thermal-emission exposure anchor in kelvin, 0 = unset. See
+    // `Renderer::set_emission_reference_temperature`. y/z/w reserved.
+    emission: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read>       particles: array<Particle>;
@@ -192,29 +195,51 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let r0 = optics.specular[slot].x;
         let with_specular = with_scattering + vec3(r0);
         //
-        // Thermal emission: blackbody additive glow above ~300 K.
-        //   Normalized to 5000 K -- a round practical ceiling for this sim's
-        //   temperature range (biological/geological, near-zero to molten/
-        //   combustion scale), NOT the real solar photosphere temperature
-        //   (that's ~5778 K -- Wikipedia "Sun", effective temperature; an
-        //   earlier version of this comment wrongly equated the two).
-        let t_norm = clamp(p.temperature / 5000.0, 0.0, 1.0);
-        let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
+        // Thermal emission: real blackbody, Planck's colour weighted by
+        // Stefan-Boltzmann's T^4 -- see `blackbody.inc.wgsl`, and
+        // `energy::radiation` for the physics it mirrors. Additive, because
+        // an emitter's own light adds to whatever it transmits.
+        let emission = blackbody_emission(
+            p.temperature,
+            physical.spatial.z,
+            physical.display_white_radiance.rgb,
+            physical.emission.x,
+        );
         //
         if physical.spatial.z > 0.5 {
+            // Real SI radiative transfer: absorption, single scattering and
+            // Fresnel together (`radiative_transfer.inc.wgsl`). A particle
+            // has no surface normal, so reflection is evaluated at normal
+            // incidence -- the same disclosed limitation `OpticalTable`'s
+            // own doc already states for this path, now at least anchored
+            // to a real R0 instead of added flat.
             let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
             let path_m = (1.0 / j) * view_length_m;
-            let slab_t = exp(-sigma_a * path_m);
-            let display_radiance = physical.background_radiance.rgb
-                * slab_t / physical.display_white_radiance.rgb;
-            color = vec4(clamp(display_radiance, vec3(0.0), vec3(1.0)), 1.0);
+            let radiance = slab_radiance(
+                physical.background_radiance.rgb,
+                physical.incident_radiance.rgb,
+                sigma_a,
+                sigma_s,
+                path_m,
+                r0,
+                1.0,
+            );
+            let display_radiance = radiance / physical.display_white_radiance.rgb;
+            color = vec4(clamp(display_radiance + emission, vec3(0.0), vec3(1.0)), 1.0);
         } else {
             color = vec4(clamp(with_specular + emission, vec3(0.0), vec3(1.0)), 1.0);
         }
     } else if config.mode == 4u {
-        // ByThermal: blackbody emission only. Cold → black, warm → orange, hot → white.
-        let t_norm = clamp(p.temperature / 1500.0, 0.0, 1.0);
-        color = vec4(heat(t_norm).rgb * (0.1 + t_norm * 0.9), 1.0);
+        // ByThermal: emission alone, nothing else. Cold is black, an ember is
+        // deep red, a flame orange, incandescence white, hotter still blue --
+        // the real Planckian sequence, not a colour ramp.
+        let thermal = blackbody_emission(
+            p.temperature,
+            physical.spatial.z,
+            physical.display_white_radiance.rgb,
+            physical.emission.x,
+        );
+        color = vec4(clamp(thermal, vec3(0.0), vec3(1.0)), 1.0);
     } else if config.mode == 6u {
         // ByScalarField: generic second carrier (resource/grass level, pheromone,
         // nutrients -- see Particle::scalar_field's own doc). Unlike temperature,

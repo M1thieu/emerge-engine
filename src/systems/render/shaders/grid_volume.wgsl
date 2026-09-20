@@ -55,6 +55,9 @@ struct PhysicalRenderParams {
     display_white_radiance: vec4<f32>,
     camera_direction: vec4<f32>,
     light_direction: vec4<f32>,
+    // x = thermal-emission exposure anchor in kelvin, 0 = unset. See
+    // `Renderer::set_emission_reference_temperature`. y/z/w reserved.
+    emission: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> grid_int: array<u32>;
@@ -228,6 +231,10 @@ fn sample_weighted_temp(cx: i32, cy: i32) -> f32 {
 // well-behaved way `mass` already handles a sparse neighbor.
 struct MaterialAccum {
     accum: vec4<f32>,
+    // Mass-weighted Fresnel R0, blended the same way absorption is: a cell
+    // holding sand and water reflects like the mixture, not like whichever
+    // of the two happens to weigh more.
+    specular_accum: f32,
     total_mass: f32,
 }
 
@@ -236,12 +243,14 @@ fn material_accum_at(cx: i32, cy: i32) -> MaterialAccum {
     let base = idx * MAX_RENDER_MATERIAL_SLOTS;
     var total_mass: f32 = 0.0;
     var accum: vec4<f32> = vec4<f32>(0.0);
+    var specular_accum: f32 = 0.0;
     for (var s: u32 = 0u; s < MAX_RENDER_MATERIAL_SLOTS; s++) {
         let m = f32(max(material_mass[base + s], 0));
         total_mass += m;
         accum += m * optics.slots[s];
+        specular_accum += m * optics.specular[s].x;
     }
-    return MaterialAccum(accum, total_mass);
+    return MaterialAccum(accum, specular_accum, total_mass);
 }
 
 @fragment
@@ -314,6 +323,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // to slot 0 only when ALL 4 corners are genuinely empty (matches the
     // v1 behavior when material tracking isn't attached at all).
     var optical_slot: vec4<f32> = optics.slots[0];
+    var specular_r0: f32 = optics.specular[0].x;
     if params.material_mass_enabled != 0u {
         let ma00 = material_accum_at(bx, by);
         let ma10 = material_accum_at(bx + 1, by);
@@ -329,8 +339,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mix(ma01.total_mass, ma11.total_mass, frac.x),
             frac.y,
         );
+        let specular_blend = mix(
+            mix(ma00.specular_accum, ma10.specular_accum, frac.x),
+            mix(ma01.specular_accum, ma11.specular_accum, frac.x),
+            frac.y,
+        );
         if mass_blend > 0.0 {
             optical_slot = accum_blend / mass_blend;
+            specular_r0 = specular_blend / mass_blend;
         }
     }
 
@@ -404,15 +420,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let scatter_glow = vec3(1.0, 0.95, 0.9) * (1.0 - exp(-sigma_s * optical_depth));
     let with_scattering = mix(transmitted, scatter_glow, clamp(albedo, vec3(0.0), vec3(1.0)));
 
-    // Blackbody thermal emission: real, exact SAME formula
-    // `prep_instances.wgsl`'s ByPhysics mode already uses per-particle
-    // (normalized to 5000K, solar surface). Was previously NOT ported here --
-    // this buffer only ever scattered mass, never temperature, a real,
-    // disclosed gap found via a side-by-side comparison against ByPhysics on
-    // the same fire scene -- fixed by adding `sample_weighted_temp` above,
-    // not a new mechanism.
-    let t_norm = clamp(avg_temp / 5000.0, 0.0, 1.0);
-    let emission = heat(0.5 + t_norm * 0.5).rgb * (t_norm * t_norm) * 2.0;
+    // Blackbody thermal emission -- the same shared `blackbody.inc.wgsl`
+    // every render path now calls, so a hot cell and a hot particle are the
+    // same colour by construction rather than by keeping two copies in sync.
+    // This path needs `sample_weighted_temp` above to have a temperature at
+    // all: the buffer only ever scattered mass until that was added.
+    let emission = blackbody_emission(
+        avg_temp,
+        physical.spatial.z,
+        physical.display_white_radiance.rgb,
+        physical.emission.x,
+    );
 
     // Thin anti-aliased edge: the nearest-cell discard above fixes WHERE the shape
     // ends exactly, this just softens the last couple pixels via alpha blending
@@ -473,12 +491,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let edge_margin = max(params.mass_floor * 1.5, 1.0e-4);
     let alpha = smoothstep(params.mass_floor, params.mass_floor + edge_margin, mass);
     if physical.spatial.z > 0.5 {
+        // Real SI radiative transfer -- absorption, single scattering and
+        // Fresnel together (see `radiative_transfer.inc.wgsl`), not
+        // transmission alone. `cos_view` comes from the same density
+        // gradient the shading above already treats as a surface normal, so
+        // a steep gradient reflects and a flat one transmits.
         let relative_density = max(mass / max(params.reference_cell_mass, 1.0e-12), 0.0);
         let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
         let path_m = relative_density * view_length_m;
-        let slab_t = exp(-sigma_a * path_m);
-        let display_radiance = physical.background_radiance.rgb
-            * slab_t / physical.display_white_radiance.rgb;
+        let cos_view = 1.0 / sqrt(1.0 + dot(grad, grad));
+        let radiance = slab_radiance(
+            physical.background_radiance.rgb,
+            physical.incident_radiance.rgb,
+            sigma_a,
+            sigma_s,
+            path_m,
+            specular_r0,
+            cos_view,
+        );
+        let display_radiance = radiance / physical.display_white_radiance.rgb + emission;
         return vec4<f32>(clamp(display_radiance, vec3(0.0), vec3(1.0)), alpha);
     }
     return vec4<f32>(with_emission, alpha);
