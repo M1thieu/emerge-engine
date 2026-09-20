@@ -15,15 +15,22 @@ pub(super) fn apply_boundary_conditions_to_grid(
     grid_res: usize,
     boundary: &dyn BoundaryCondition,
 ) {
+    let mut dissipated: Vec<(usize, f32)> = Vec::new();
     for (i, cell, node_friction) in grid.active_cells_with_index_and_friction_mut() {
         if cell.mass > 0.0 {
             let before = cell.momentum;
-            boundary.apply_to_grid_velocity_with_node_friction(
+            let friction_heat = boundary.apply_to_grid_velocity_with_node_friction(
                 i,
                 grid_res,
                 &mut cell.momentum,
                 node_friction,
             );
+            // Collected rather than written straight back: the loop holds a
+            // mutable borrow of the cells. Empty for every frictionless
+            // scene, so this allocates nothing there.
+            if friction_heat > 0.0 {
+                dissipated.push((i, friction_heat));
+            }
             let delta_v = cell.momentum - before;
             // Real Newton's-third-law reaction: whatever velocity this
             // correction removed from the grid at this cell, a real,
@@ -38,6 +45,9 @@ pub(super) fn apply_boundary_conditions_to_grid(
                 boundary.on_grid_correction(cell_pos, -delta_v * cell.mass);
             }
         }
+    }
+    for (i, specific_energy) in dissipated {
+        grid.add_friction_heat(i, specific_energy);
     }
 }
 

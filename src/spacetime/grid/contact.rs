@@ -183,6 +183,10 @@ impl Grid {
         // the "no confident normal" branch below instead, which does correct,
         // uncontaminated per-field separation without a Coulomb correction.
         const MIN_MASS_FRACTION: f32 = 1.0e-6;
+        // Frictional dissipation found here is collected and written after the
+        // loop: the loop already borrows `contact_dirty` and `contact_cells`.
+        // Empty whenever nothing rubs, so a contact-free scene allocates nothing.
+        let mut dissipated: Vec<(usize, f32)> = Vec::new();
         for &idx in &self.contact_dirty {
             let node_pos = Vec2::new(
                 (idx as usize / self.resolution) as f32,
@@ -247,7 +251,34 @@ impl Grid {
 
             match directional_grip {
                 Some(grip) => grip.resolve(&mut v_rel, n),
-                None => crate::boundary::apply_coulomb_wall(&mut v_rel, n, friction),
+                // Multi-field contact between two bodies dissipates too, but
+                // it is not routed into the frictional-heating ledger yet:
+                // that ledger is keyed by grid node and this resolves in a
+                // per-contact-pair relative frame. Disclosed gap, not an
+                // oversight -- see `energy::thermodynamics::frictional_heating`.
+                None => {
+                    // Two bodies rubbing dissipate exactly as a body rubbing a
+                    // wall does, so this feeds the same ledger and becomes heat
+                    // through the same path (`energy::thermodynamics::
+                    // frictional_heating`). One conversion is needed first.
+                    //
+                    // `apply_coulomb_wall` reports energy per unit mass of the
+                    // body it moved, and here it moved the RELATIVE velocity of
+                    // two fields -- so its result is per unit REDUCED mass,
+                    // `mu = m_grip * m_rest / m_total`, the standard two-body
+                    // result. The ledger is per unit node mass, hence the second
+                    // division by `m_total`:
+                    //
+                    //   E = returned * mu,  e_node = E / m_total
+                    //                             = returned * m_grip * m_rest / m_total^2
+                    let per_reduced_mass =
+                        crate::boundary::apply_coulomb_wall(&mut v_rel, n, friction);
+                    if per_reduced_mass > 0.0 && total.mass > 0.0 {
+                        let reduced_mass = grip_mass * rest_mass / total.mass;
+                        dissipated
+                            .push((idx as usize, per_reduced_mass * reduced_mass / total.mass));
+                    }
+                }
             }
 
             // Baumgarte stabilization (Baumgarte 1972, "Stabilization of Constraints and
@@ -321,6 +352,9 @@ impl Grid {
             let cell = self.contact_cells.get_mut(&idx).unwrap();
             cell.resolved_grip_v = v_grip_new;
             cell.resolved_rest_v = v_rest_new;
+        }
+        for (idx, specific_energy) in dissipated {
+            self.add_friction_heat(idx, specific_energy);
         }
     }
 }

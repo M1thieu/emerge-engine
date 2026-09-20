@@ -950,6 +950,19 @@ impl Simulation {
         for boundary in &self.boundaries {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
         }
+        // First law at a rubbing wall: the kinetic energy Coulomb friction
+        // just removed becomes heat in the matter that rubbed, instead of
+        // vanishing. Gated on a node having actually dissipated something,
+        // so a frictionless scene pays one boolean.
+        if self.grid.has_friction_heat() {
+            crate::spacetime::transfer::gather_friction_heat_to_particles(
+                &self.grid,
+                &mut self.particles,
+                &self.materials,
+                self.config.dx_meters,
+                &mut self.friction_heat_debt,
+            );
+        }
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
             && let Some(ledger) = &mut diagnostic.pending
         {

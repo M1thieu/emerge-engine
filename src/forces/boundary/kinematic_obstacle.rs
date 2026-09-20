@@ -241,7 +241,12 @@ impl KinematicCircleBoundary {
 }
 
 impl BoundaryCondition for KinematicCircleBoundary {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
         let cell_pos = Vec2::new(
             (cell_index / grid_res) as f32,
             (cell_index % grid_res) as f32,
@@ -252,7 +257,7 @@ impl BoundaryCondition for KinematicCircleBoundary {
         // most of the grid, every substep this obstacle isn't nearby. Cheap
         // early return, same "zero-cost when unused" shape as contact_group.
         if dist >= self.radius() || dist <= f32::EPSILON {
-            return;
+            return 0.0;
         }
         let outward_normal = d / dist;
         // Real rigid-body surface velocity at this contact point, not just
@@ -269,8 +274,13 @@ impl BoundaryCondition for KinematicCircleBoundary {
         // Reused unchanged: `apply_coulomb_wall` already no-ops when
         // `v_rel` isn't approaching along `outward_normal`, so no separate
         // approach test is needed here.
-        apply_coulomb_wall(&mut v_rel, outward_normal, self.active_friction());
+        // Dissipation is computed in the obstacle's own frame, which is the
+        // correct one: frictional work depends on RELATIVE sliding, not on
+        // the grid's absolute velocity. A node moving exactly with a moving
+        // obstacle rubs against nothing and heats nothing.
+        let dissipated = apply_coulomb_wall(&mut v_rel, outward_normal, self.active_friction());
         *velocity = v_rel + rigid_v;
+        dissipated
     }
 
     fn clamp_particle_position(&self, position: Vec2, _grid_res: usize) -> Vec2 {

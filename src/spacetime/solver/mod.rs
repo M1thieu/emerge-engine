@@ -82,6 +82,11 @@ pub struct Simulation {
     next_tag: u32,
     grid: Grid,
     materials: MaterialRegistry,
+    /// Per-particle banked frictional heating, kelvin -- see
+    /// `spacetime::transfer::friction_heat` for why a rise this small has to
+    /// be accumulated before it can be added to an `f32` temperature.
+    /// Empty and untouched in every scene where nothing rubs.
+    friction_heat_debt: Vec<f32>,
     boundaries: Vec<Box<dyn BoundaryCondition>>,
     /// True while `boundaries` still holds only the auto-inserted default
     /// `SlipBoundary` from construction (see `empty`/`new`). The FIRST real

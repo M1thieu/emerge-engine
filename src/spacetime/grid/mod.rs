@@ -147,6 +147,18 @@ pub struct Grid {
     /// from `Particle::pinned` support. Kept separately from `Cell` so the
     /// latter's GPU-stable layout remains unchanged.
     pinned_nodes: HashSet<u32, FxU32BuildHasher>,
+    /// Specific kinetic energy each node lost to Coulomb friction this
+    /// substep, in the grid's own velocity-squared units.
+    ///
+    /// Without this the energy a frictional contact removes simply vanishes,
+    /// which is a first-law violation the engine used to commit at every
+    /// rubbing wall. Recording it here is what lets
+    /// `energy::thermodynamics::frictional_heating` turn it into a real
+    /// temperature rise on the matter that did the rubbing.
+    ///
+    /// Empty for every frictionless scene -- the same zero-cost property
+    /// `contact_cells`/`mixture_cells`/`friction_cells` already have.
+    friction_heat: HashMap<u32, f32, FxU32BuildHasher>,
 }
 
 impl Grid {
@@ -163,6 +175,7 @@ impl Grid {
             friction_cells: FrictionCellMap::default(),
             friction_dirty: Vec::new(),
             pinned_nodes: HashSet::with_hasher(FxU32BuildHasher),
+            friction_heat: HashMap::with_hasher(FxU32BuildHasher),
         }
     }
 
@@ -219,6 +232,39 @@ impl Grid {
         self.friction_cells.clear();
         self.friction_dirty.clear();
         self.pinned_nodes.clear();
+        self.friction_heat.clear();
+    }
+
+    /// Record the specific kinetic energy a boundary just dissipated as
+    /// friction at node `cell_index`. Ignores non-positive values, so a
+    /// frictionless correction never allocates.
+    pub(crate) fn add_friction_heat(&mut self, cell_index: usize, specific_energy: f32) {
+        if !specific_energy.is_finite() || specific_energy <= 0.0 {
+            return;
+        }
+        *self.friction_heat.entry(cell_index as u32).or_insert(0.0) += specific_energy;
+    }
+
+    /// True if any node dissipated friction this substep. Gates the heating
+    /// pass entirely -- same zero-cost convention as `has_contact_activity`.
+    pub fn has_friction_heat(&self) -> bool {
+        !self.friction_heat.is_empty()
+    }
+
+    /// Specific energy dissipated as friction at `cell_pos` this substep,
+    /// 0 where nothing rubbed. Grid velocity-squared units; multiply by
+    /// `dx_meters^2` for J/kg.
+    pub fn friction_heat_at(&self, cell_pos: IVec2) -> f32 {
+        flat_index(cell_pos, self.resolution)
+            .and_then(|idx| self.friction_heat.get(&idx).copied())
+            .unwrap_or(0.0)
+    }
+
+    /// Total specific energy dissipated as friction this substep, summed over
+    /// every node. The quantity an energy audit compares against the kinetic
+    /// energy the boundary removed.
+    pub fn total_friction_heat(&self) -> f32 {
+        self.friction_heat.values().sum()
     }
 
     /// True if any mixture-phase particle touched the grid this substep. Gates

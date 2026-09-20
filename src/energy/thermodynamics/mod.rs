@@ -11,6 +11,7 @@
 pub mod cosserat_field;
 pub mod diffusion;
 pub mod enthalpy;
+pub mod frictional_heating;
 pub mod granular_fluidity;
 pub mod ideal_gas;
 pub mod scalar_field;
@@ -25,6 +26,7 @@ pub use enthalpy::{
     chained_state_from_enthalpy, enthalpy_from_temperature,
     temperature_and_phase_fraction_from_enthalpy,
 };
+pub use frictional_heating::{specific_energy_grid_to_si, temperature_rise_from_dissipation};
 pub use granular_fluidity::{GranularFluidityConfig, GranularFluidityField};
 pub use scalar_field::{ScalarDiffusionConfig, ScalarDiffusionField};
 pub use transfer::{

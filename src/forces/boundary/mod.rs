@@ -22,7 +22,21 @@ pub use kinematic_obstacle::KinematicCircleBoundary;
 pub use slip::SlipBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2);
+    /// Correct one grid node's velocity, returning the specific kinetic
+    /// energy this correction DISSIPATED as friction (grid velocity-squared
+    /// units; multiply by `dx_meters^2` for J/kg).
+    ///
+    /// Returning it rather than discarding it is what lets the solver
+    /// account for the energy instead of destroying it -- a frictional
+    /// contact that silently removes kinetic energy violates the first law.
+    /// A frictionless boundary returns 0, which is the honest answer and
+    /// also the cheapest.
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32;
     /// Clamp particle position to the valid domain after G2P.
     /// Not a physical force -- last-resort domain enforcement so particles never escape the grid.
     /// Proper no-penetration physics lives in `apply_to_grid_velocity`.
@@ -108,8 +122,8 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
         grid_res: usize,
         velocity: &mut Vec2,
         _node_friction: Option<f32>,
-    ) {
-        self.apply_to_grid_velocity(cell_index, grid_res, velocity);
+    ) -> f32 {
+        self.apply_to_grid_velocity(cell_index, grid_res, velocity)
     }
 
     /// Real Newton's-third-law reaction hook: called once per grid cell
@@ -132,8 +146,13 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
 /// underlying instance is also installed on the solver, sharing state instead of
 /// copying it.
 impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
-        (**self).apply_to_grid_velocity(cell_index, grid_res, velocity);
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
+        (**self).apply_to_grid_velocity(cell_index, grid_res, velocity)
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {
@@ -162,13 +181,13 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
         grid_res: usize,
         velocity: &mut Vec2,
         node_friction: Option<f32>,
-    ) {
+    ) -> f32 {
         (**self).apply_to_grid_velocity_with_node_friction(
             cell_index,
             grid_res,
             velocity,
             node_friction,
-        );
+        )
     }
 
     fn on_grid_correction(&self, cell_pos: Vec2, reaction_impulse: Vec2) {
@@ -181,22 +200,39 @@ impl<T: BoundaryCondition + ?Sized> BoundaryCondition for std::sync::Arc<T> {
 /// `outward_normal`: unit vector pointing away from the wall into the domain.
 /// When the velocity has a component moving INTO the wall (v · outward_normal < 0),
 /// zero the normal component and damp the tangential component by µ × |v_normal|.
-pub(crate) fn apply_coulomb_wall(velocity: &mut Vec2, outward_normal: Vec2, mu: f32) {
+/// Returns the specific kinetic energy this Coulomb contact DISSIPATED,
+/// `0.5 * (|v_t|^2 - |v_t_after|^2)`, in the grid's own velocity-squared
+/// units (multiply by `dx_meters^2` for J/kg).
+///
+/// Only the TANGENTIAL part is reported, and that is deliberate. Sliding
+/// friction doing work against a surface is unambiguously dissipation and
+/// becomes heat, and Coulomb's own law says how much. The normal component
+/// this function also removes is a no-penetration constraint against an
+/// idealised rigid wall; where that energy goes in reality (wall
+/// deformation, sound, heat on both sides) is a modelling choice this
+/// engine does not make, so it is not reported as frictional heat.
+///
+/// Callers that do not care may ignore the value. Recording it is what
+/// lets `energy::thermodynamics::frictional_heating` close the first law
+/// instead of letting the energy vanish.
+pub(crate) fn apply_coulomb_wall(velocity: &mut Vec2, outward_normal: Vec2, mu: f32) -> f32 {
     let v_n_scalar = velocity.dot(outward_normal);
     // Only act when moving into the wall.
     if v_n_scalar >= 0.0 {
-        return;
+        return 0.0;
     }
     let normal_speed = v_n_scalar.abs();
     let v_t = *velocity - v_n_scalar * outward_normal;
     let v_t_len = v_t.length();
     let friction_impulse = mu * normal_speed;
-    // Tangential speed after friction: max(|v_t| − µ|v_n|, 0), direction preserved.
+    // Tangential speed after friction: max(|v_t| - mu|v_n|, 0), direction kept.
+    let v_t_after = (v_t_len - friction_impulse).max(0.0);
     *velocity = if v_t_len > friction_impulse {
-        v_t * ((v_t_len - friction_impulse) / v_t_len)
+        v_t * (v_t_after / v_t_len)
     } else {
         Vec2::ZERO
     };
+    0.5 * (v_t_len * v_t_len - v_t_after * v_t_after)
 }
 
 pub(crate) const fn apply_slip_wall_velocity(

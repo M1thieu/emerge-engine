@@ -60,9 +60,14 @@ impl GripFrictionBoundary {
 }
 
 impl BoundaryCondition for GripFrictionBoundary {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
         self.inner
-            .apply_to_grid_velocity(cell_index, grid_res, velocity);
+            .apply_to_grid_velocity(cell_index, grid_res, velocity)
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {

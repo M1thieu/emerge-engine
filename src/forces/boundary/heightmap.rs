@@ -135,7 +135,12 @@ impl HeightmapBoundary {
 }
 
 impl BoundaryCondition for HeightmapBoundary {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
         let x = cell_index / grid_res;
         let y = cell_index % grid_res;
         let t = self.wall_thickness;
@@ -168,14 +173,20 @@ impl BoundaryCondition for HeightmapBoundary {
                 if self.friction > 0.0 {
                     let friction_impulse = self.friction * v_n.abs();
                     let v_t = velocity.length();
+                    let v_t_after = (v_t - friction_impulse).max(0.0);
                     *velocity = if v_t > friction_impulse {
-                        *velocity * (1.0 - friction_impulse / v_t)
+                        *velocity * (v_t_after / v_t)
                     } else {
                         Vec2::ZERO
                     };
+                    // Same tangential-only accounting as `apply_coulomb_wall`
+                    // -- see that function's doc for why the normal part of
+                    // the correction is deliberately not reported as heat.
+                    return 0.5 * (v_t * v_t - v_t_after * v_t_after);
                 }
             }
         }
+        0.0
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {

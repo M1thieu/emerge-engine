@@ -113,7 +113,13 @@ impl RatchetFrictionBoundary {
 }
 
 impl BoundaryCondition for RatchetFrictionBoundary {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
+        let mut dissipated = 0.0;
         let t = self.thickness;
         let hi = grid_res.saturating_sub(t + 1);
         let x = cell_index / grid_res;
@@ -124,13 +130,13 @@ impl BoundaryCondition for RatchetFrictionBoundary {
         // resting/crawling body actually spends its contact time.
         let mu_side = 0.5 * (self.mu_easy() + self.mu_resist());
         if x < t {
-            apply_coulomb_wall(velocity, Vec2::X, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::X, mu_side);
         }
         if x > hi {
-            apply_coulomb_wall(velocity, Vec2::NEG_X, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_X, mu_side);
         }
         if y > hi {
-            apply_coulomb_wall(velocity, Vec2::NEG_Y, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_Y, mu_side);
         }
 
         // Floor: directional friction. Tangential (horizontal) motion aligned
@@ -146,9 +152,10 @@ impl BoundaryCondition for RatchetFrictionBoundary {
                 } else {
                     self.mu_resist()
                 };
-                apply_coulomb_wall(velocity, Vec2::Y, mu);
+                dissipated += apply_coulomb_wall(velocity, Vec2::Y, mu);
             }
         }
+        dissipated
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {

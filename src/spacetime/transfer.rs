@@ -14,9 +14,11 @@ use crate::solver::config::KERNEL_D_INVERSE;
 #[cfg(test)]
 use glam::IVec2;
 
+mod friction_heat;
 mod g2p;
 mod p2g;
 
+pub use friction_heat::{gather_friction_heat_to_particles, grid_kinetic_energy};
 pub use g2p::{
     G2PParams, f_update_vjp, g2p_affine_vjp, g2p_velocity_vjp, gather_grid_to_particles,
 };

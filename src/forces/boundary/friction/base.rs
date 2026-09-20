@@ -49,8 +49,13 @@ impl FrictionBoundary {
 }
 
 impl BoundaryCondition for FrictionBoundary {
-    fn apply_to_grid_velocity(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2) {
-        self.apply_with_mu(cell_index, grid_res, velocity, self.friction_coefficient);
+    fn apply_to_grid_velocity(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+    ) -> f32 {
+        self.apply_with_mu(cell_index, grid_res, velocity, self.friction_coefficient)
     }
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {
@@ -63,34 +68,45 @@ impl BoundaryCondition for FrictionBoundary {
         grid_res: usize,
         velocity: &mut Vec2,
         node_friction: Option<f32>,
-    ) {
+    ) -> f32 {
         let mu = if self.use_material_friction {
             node_friction.unwrap_or(self.friction_coefficient)
         } else {
             self.friction_coefficient
         };
-        self.apply_with_mu(cell_index, grid_res, velocity, mu);
+        self.apply_with_mu(cell_index, grid_res, velocity, mu)
     }
 }
 
 impl FrictionBoundary {
-    fn apply_with_mu(&self, cell_index: usize, grid_res: usize, velocity: &mut Vec2, mu: f32) {
+    /// Returns the total specific energy dissipated across every wall face
+    /// this node touches -- a corner node genuinely rubs on two walls, and
+    /// both do work.
+    fn apply_with_mu(
+        &self,
+        cell_index: usize,
+        grid_res: usize,
+        velocity: &mut Vec2,
+        mu: f32,
+    ) -> f32 {
         let t = self.thickness;
         let hi = grid_res.saturating_sub(t + 1);
         let x = cell_index / grid_res;
         let y = cell_index % grid_res;
+        let mut dissipated = 0.0;
 
         if x < t {
-            apply_coulomb_wall(velocity, Vec2::X, mu);
+            dissipated += apply_coulomb_wall(velocity, Vec2::X, mu);
         }
         if x > hi {
-            apply_coulomb_wall(velocity, Vec2::NEG_X, mu);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_X, mu);
         }
         if y < t {
-            apply_coulomb_wall(velocity, Vec2::Y, mu);
+            dissipated += apply_coulomb_wall(velocity, Vec2::Y, mu);
         }
         if y > hi {
-            apply_coulomb_wall(velocity, Vec2::NEG_Y, mu);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_Y, mu);
         }
+        dissipated
     }
 }
