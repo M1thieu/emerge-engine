@@ -67,6 +67,18 @@ opt-level = 3  # Full optimization for dependencies
 lto = "thin"
 codegen-units = 1
 
+# Release-speed code without release-speed BUILD cost, for the development
+# loop and for CI. `codegen-units = 1` serialises code generation onto one
+# thread and thin LTO adds a whole-program pass; both earn their keep in a
+# shipped binary and cost minutes in a loop where the run is seconds.
+#
+# Same opt-level, so measurements taken under it are representative. Use
+# `--release` for numbers that go in a report.
+[profile.quick]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [[example]]
 name = "headless"
 path = "examples/cpu/headless.rs"
