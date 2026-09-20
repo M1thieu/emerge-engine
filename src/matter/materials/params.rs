@@ -123,10 +123,23 @@ pub struct MaterialParams {
     /// check, so any future material overriding that trait method gets
     /// correct GPU behavior automatically.
     pub owns_deformation_volume_state: u32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 means the material has not
+    /// declared one.
+    ///
+    /// A property of the matter, so it belongs here rather than in whichever
+    /// solver happens to want it. `ThermalDiffusion` carries its own
+    /// scene-wide `heat_capacity` for the diffusion stencil; this is the
+    /// per-material value, and it is what lets dissipated work become a real
+    /// temperature rise on the particle that absorbed it
+    /// (`energy::thermodynamics::frictional_heating`).
+    ///
+    /// Was one of three reserved `_pad` words -- same offset, same size, the
+    /// struct stays 112 bytes and every GPU upload is unchanged.
+    pub specific_heat_j_kg_k: f32,
     /// Explicit, always-zeroed reserved space -- keeps the struct's real
     /// size at the next 16-byte-aligned boundary (112, up from 96) with
     /// genuine headroom for future flags, same convention as `Particle::_pad`.
-    pub _pad: [u32; 3],
+    pub _pad: [u32; 2],
 }
 
 const _: () = assert!(core::mem::size_of::<MaterialParams>() == 112);

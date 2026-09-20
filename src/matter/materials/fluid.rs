@@ -94,6 +94,15 @@ pub struct NewtonianFluidMaterial {
     /// GPU/CPU parity work in `basic_fluids_gpu_blank_render_unconfirmed`
     /// memory, 2026-08-15, for the separate mechanism that still needs).
     pub pressure_floor: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`. Liquid water
+    /// is 4182 at 25 C (CRC Handbook); set it the same way `bulk_viscosity`
+    /// and `pressure_floor` are set, after construction.
+    pub specific_heat_j_kg_k: f32,
+    /// Set when this fluid IS water, so the renderer can use water's real
+    /// measured absorption spectrum (Pope & Fry 1997) instead of a palette
+    /// entry. Off by default: a Newtonian fluid is a model, not a substance.
+    pub optical_water: bool,
     pub min_density: f32,
     pub min_volume: f32,
     /// Thermal thinning: µ_eff = dynamic_viscosity · exp(−thermal_viscosity_coeff · T).
@@ -142,6 +151,8 @@ impl NewtonianFluidMaterial {
             eos_stiffness,
             eos_power,
             pressure_floor: -0.1,
+            specific_heat_j_kg_k: 0.0,
+            optical_water: false,
             min_density: 1.0e-6,
             min_volume: 1.0e-6,
             thermal_viscosity_coeff: 0.0,
@@ -584,6 +595,19 @@ impl MaterialModel for NewtonianFluidMaterial {
         true
     }
 
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
+    /// Declared when this fluid is water, which is what `optical_water`
+    /// records. Left `None` otherwise: a Newtonian fluid is not necessarily
+    /// water, and inventing an absorption spectrum for an unspecified liquid
+    /// would be exactly the painting this exists to remove.
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        self.optical_water
+            .then(crate::matter::materials::optical::pure_water)
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Fluid as u32,
@@ -596,6 +620,7 @@ impl MaterialModel for NewtonianFluidMaterial {
             // 2.0 = realistic free-surface density (half rest_density with no restoring EOS force).
             volume_ratio_max: 2.0,
             pressure_floor: self.pressure_floor,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             bulk_viscosity: self.bulk_viscosity,
             dp_h0: self.settling_damping, // fluid repurposes dp_h0 for settling damping (DP unused)
             owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,

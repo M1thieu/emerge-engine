@@ -10,6 +10,7 @@ pub mod granular;
 pub mod granular_fluid;
 pub mod nacc;
 pub mod no_compression;
+pub mod optical;
 pub mod params;
 pub mod physical_props;
 mod property_dispatch;
@@ -470,6 +471,56 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
 
     /// Returns this material's parameters as a flat, GPU-uploadable struct.
     /// Default returns zeroed params (Fallback model).
+    /// Light this material emits WITHOUT being hot, as a volumetric source
+    /// in `W/m^3`. 0 means it does not glow.
+    ///
+    /// This is luminescence -- a firefly, a glowing fungus, a chemical
+    /// light stick. Thermal emission is a separate, already-handled
+    /// mechanism (`energy::radiation::blackbody`): matter that glows because
+    /// it is hot needs nothing declared here, its temperature is enough.
+    ///
+    /// It feeds `S` in the photon diffusion equation
+    /// `(1/c) dphi/dt = D grad^2 phi - mu_a phi + S`, which is why the unit
+    /// is a power per unit volume and why it must be ISOTROPIC: the
+    /// diffusion approximation is only valid for a source radiating equally
+    /// in all directions. That holds for a luminous organ or a glowing
+    /// mineral; it would not hold for a laser or a directed beam, and those
+    /// must not be modelled through this.
+    fn luminous_emission_w_m3(&self) -> f32 {
+        0.0
+    }
+
+    /// Measured optical constants of this substance: absorption per colour
+    /// band and reduced scattering, both in `m^-1`. `None` means this
+    /// material has not declared any.
+    ///
+    /// Declaring them is what lets the renderer compute this material's
+    /// colour from physics instead of reading a painted palette entry. The
+    /// values belong to the substance, so they live with the material and
+    /// with `matter::materials::optical`'s measured tables, never in the
+    /// renderer.
+    ///
+    /// Like `specific_heat_j_kg_k`, this is per instance rather than per
+    /// constitutive model: a Neo-Hookean solid can be jade or muscle, and
+    /// they absorb light very differently.
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        None
+    }
+
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 means this material has not
+    /// declared one.
+    ///
+    /// Per instance rather than per constitutive model, because the model
+    /// does not determine it: a Neo-Hookean solid can be rubber or muscle,
+    /// and they store heat very differently. A scene that wants dissipated
+    /// work to become a real temperature (see
+    /// `energy::thermodynamics::frictional_heating`) declares it on the
+    /// material it built; a scene that does not gets no temperature change
+    /// rather than an invented one.
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        0.0
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams::default()
     }
