@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
 use emerge::render::{
-    ColorMode, GpuRenderParams, GridVolumeSource, Renderer, SurfaceReconstructionSource,
+    ColorMode, GpuRenderParams, GridVolumeSource, PhysicalRenderContract,
+    PhysicalRenderContractParams, Renderer, SurfaceReconstructionSource,
 };
 use emerge::{
     FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation, MaterialRegistry,
@@ -57,6 +58,45 @@ const LABELS: &[(u32, &str)] = &[(MAT_WATER, "water")];
 // real SI value from `State::new`, a separate `impl` method -- see that call
 // site's own comment.
 const WATER_RHO_GRID: f32 = 0.1;
+
+/// Installs the scene's real optical description. There is one path, not a
+/// choice of looks: the material declares its own measured constants and the
+/// scene declares its own physical scale and lighting. Nothing here selects
+/// an appearance.
+fn apply_optics(
+    renderer: &mut Renderer,
+    queue: &wgpu::Queue,
+    registry: &emerge::MaterialRegistry,
+    dx_meters: f32,
+) {
+    // Measured constants come from the materials themselves. Adding a
+    // material with declared optics needs no change here at all.
+    renderer.adopt_material_optics(queue, registry);
+    renderer.set_physical_render_contract(
+        queue,
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters,
+            // What this 2-D slice stands for out of plane. The domain is 64
+            // cells of 1 cm, so the tank it represents is about this deep.
+            // It is a statement about the scene, not a dial for how blue the
+            // water should look -- water this shallow is nearly colourless,
+            // and that is what a 30 cm tank looks like.
+            view_thickness_meters: 0.3,
+            // Declared lighting: an overcast sky above, a darker backdrop
+            // behind. Equal values would make reflection and scattering
+            // cancel out of view.
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [0.25; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: glam::Vec3::new(0.0, 0.0, -1.0),
+            light_direction: glam::Vec3::new(0.0, 1.0, -1.0),
+        })
+        .expect("physical render contract"),
+    );
+    // Fresnel base reflectance from water's real refractive index:
+    // R0 = ((1.333 - 1) / (1.333 + 1))^2.
+    renderer.set_specular_r0(queue, MAT_WATER as usize, 0.0204);
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -616,6 +656,12 @@ fn make_sim_data(
     // 7-50C) -- applied to the SAME real, now-correctly-SI-converted
     // `water_dynamic_viscosity` above (was `3.0 * 1.0e-3` raw, same unit bug).
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
+    // This fluid IS water, so it declares water's own measured optical
+    // constants. The renderer adopts them; no colour is chosen anywhere.
+    water.optical_water = true;
+    // Liquid water at 25 C, CRC Handbook. Lets frictional dissipation become
+    // a real temperature rise rather than only being accounted for.
+    water.specific_heat_j_kg_k = 4182.0;
     // REAL FIX (2026-09-16) -- root cause of the long-standing thin-layer
     // collapse (`HANDOFF_fluid_gpu_thin_layer_bug.md`, Tenth pass, full
     // investigation trail there). `pressure_floor` (constructor default
@@ -851,33 +897,8 @@ impl State {
         // density noise as speckle (live-reported: bumpy, mottled Surface
         // mode). 4x gives each cell a real sample, at 0.44x the cost.
         renderer.set_surface_res_multiplier(4);
-        // Real Beer-Lambert optics for grid-volume mode's per-material coloring
-        // (ByMaterial's palette above is separate/unrelated -- see
-        // material_sandbox_gpu.rs's own comment on this exact distinction).
-        // Water reuses the same aesthetic SIGMA_WATER other demos use.
-        renderer.set_optical_params(sim.queue(), MAT_WATER as usize, [0.85, 0.25, 0.07]);
-        // Real subsurface scattering + Fresnel specular -- these defaulted to
-        // 0.0 (no visible effect at all in grid-volume/curvature-flow modes,
-        // even after that shading math shipped) until wired here.
-        // Water R0 = ((n_water - n_air) / (n_water + n_air))^2 with
-        // n_water=1.33, n_air=1.0 -- a real, precisely derivable Schlick
-        // (1994) base reflectance, not an estimate.
-        //
-        // REVISED (2026-07-30): the first attempt used sigma_s=1.5, borrowed
-        // from an unrelated tissue-scale test value, without checking it
-        // against water's OWN sigma_a. Real bug this caused, confirmed via
-        // screenshot: `albedo = sigma_s / (sigma_s + sigma_a)` (see
-        // grid_volume.wgsl/curvature_flow.wgsl's fs_main) -- water's sigma_a
-        // is already low (esp. blue at 0.07), so almost ANY sigma_s
-        // dominates that channel's albedo, pulling the whole color toward
-        // the cream-white scatter_glow instead of water's real blue (read as
-        // "foam"/washed-out, user's own word). Fixed by choosing sigma_s
-        // relative to water's own smallest sigma_a channel, targeting a
-        // bounded albedo (~0.2-0.3) instead of an unrelated borrowed
-        // magnitude: water's min sigma_a is 0.07 (blue) -> sigma_s=0.03
-        // keeps albedo_blue ~= 0.3.
-        renderer.set_optical_scattering(sim.queue(), MAT_WATER as usize, 0.03);
-        renderer.set_specular_r0(sim.queue(), MAT_WATER as usize, 0.02);
+        let dx = sim.config().dx_meters;
+        apply_optics(&mut renderer, sim.queue(), sim.registry(), dx);
         // NOTE: `Renderer::set_light_dir` (real infrastructure, reuses
         // `SimConfig::light_dir`) exists but is deliberately NOT called here
         // yet -- this config's own `light_dir` is left at its default

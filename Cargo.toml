@@ -91,6 +91,11 @@ path = "examples/gpu/regional_substep_feasibility_check.rs"
 required-features = ["gpu"]
 
 [[example]]
+name = "render_modes_snapshot"
+path = "examples/gpu/render_modes_snapshot.rs"
+required-features = ["render"]
+
+[[example]]
 name = "fragmentation_check_gpu"
 path = "examples/gpu/fragmentation_check_gpu.rs"
 required-features = ["gpu"]
