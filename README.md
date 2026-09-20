@@ -4,9 +4,85 @@
 [![docs.rs](https://docs.rs/emerge-engine/badge.svg)](https://docs.rs/emerge-engine)
 [![license](https://img.shields.io/crates/l/emerge-engine.svg)](LICENSE-MIT)
 
-An MLS-MPM continuum solver (Hu et al. 2018). Fluids, sand, snow, elastic and plastic solids -- one particle-grid transfer for all of them. No rigid bodies, no separate fluid/cloth/soft-body systems bolted together. Pure Rust on the CPU path; an optional wgpu backend runs the whole pipeline on GPU.
+**A physics engine for matter that flows, piles up, bends and breaks.**
 
-Not a game engine -- no ECS, no game loop, no asset pipeline. It steps particles forward and answers queries about regions of space; everything else is up to the caller. Originally built to power [Life's Progress](https://github.com/erematorg/LP), but standalone and usable for anything else that needs the same real-time continuum solver.
+Water, sand, snow, mud, rubber, clay, gas. Not objects bouncing off each
+other -- actual material, simulated as a continuum, the way a laboratory
+would model it.
+
+## What that means, concretely
+
+Most game physics engines treat the world as rigid boxes and spheres that
+collide. That works for a crate sliding down a ramp; it cannot give you a
+wave breaking, a sandpile collapsing at its natural angle, or snow
+compacting underfoot.
+
+emerge takes the other approach. Matter is represented by particles carrying
+mass, temperature and deformation, which exchange momentum through a
+background grid every step. One single mechanism handles all of it -- there
+is no separate fluid system, cloth system and soft-body system bolted
+together. Water and sand differ only by which equation describes their
+internal stress.
+
+The method is the Material Point Method, specifically MLS-MPM (Hu et al.
+2018), the same family of solver used in visual effects and in computational
+geomechanics.
+
+## Why it is built this way
+
+**The physics is meant to be real, not merely convincing.** Every material
+model comes from published literature and names its source in the code. Snow
+follows Stomakhin et al. 2013, sand follows Drucker-Prager as formulated by
+Klar et al. 2016, dense granular flow follows the mu(I) rheology of Jop,
+Forterre and Pouliquen 2006.
+
+**Constants are measured, not chosen to look nice.** Water's colour comes
+from its real absorption spectrum -- 140 laboratory measurements from Pope &
+Fry 1997 -- which is why it is nearly clear in a glass and deep blue at
+thirty metres, without anyone tuning a colour. Thermal emission comes from
+Planck's law read through the CIE 1931 standard observer, so a hot body goes
+red, then orange, then white, as real hot bodies do.
+
+**Claims are checked against numbers the project did not pick.** The engine
+reproduces CIE standard illuminant A's chromaticity, Fresnel reflectance for
+water and glass, and recovers Stefan-Boltzmann's law from an independent
+integration of Planck's. Where something is approximated, it is written down
+in [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) with its measurement.
+
+The aim is a simulation faithful enough to be useful outside entertainment --
+in research, in a museum, in a classroom -- not only inside a game.
+
+## What it is not
+
+Not a game engine. No entity system, no game loop, no asset pipeline, no
+renderer beyond a debug view. It advances particles and answers questions
+about regions of space; everything else belongs to the caller. It was built
+to power [Life's Progress](https://github.com/erematorg/LP) and is usable
+standalone by anything needing the same solver.
+
+Pure Rust on the CPU path. An optional wgpu backend runs the entire pipeline
+on the GPU.
+
+## How the code is organised
+
+Each top-level folder is a domain of physics, not a layer of software. You
+can read any one of them without knowing the others; each has its own README.
+
+| Folder | What lives there |
+|---|---|
+| [`matter/`](src/matter) | What things are made of -- the particle, and 17 material models with their measured constants |
+| [`spacetime/`](src/spacetime) | How matter moves -- the solver itself: particle-to-grid transfer, grid update, grid-to-particle, plus a separate solver for slender bodies |
+| [`forces/`](src/forces) | What pushes on matter -- gravity, drag, buoyancy, walls and friction |
+| [`energy/`](src/energy) | Heat and light -- conduction, diffusion, radiation, and the optics that turn a spectrum into a colour |
+| [`information/`](src/information) | Control and measurement -- a neural locomotion controller, information-theoretic measures |
+| [`systems/`](src/systems) | The machinery, not the physics -- GPU compute, rendering, diagnostics |
+| [`runtime/`](src/runtime) | Fixed-timestep stepping |
+
+The rule the tree follows: a piece of code lives where its *concept* belongs,
+never where it happens to be used. Beer-Lambert absorption is a law of energy
+transport, so it sits in `energy/` even though only the renderer calls it.
+Water's absorption spectrum is a property of water, so it sits in `matter/`.
+`systems/` consumes physics and never owns any.
 
 ```toml
 [dependencies]

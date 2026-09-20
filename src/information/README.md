@@ -1,5 +1,13 @@
 # Information
 
+**What senses, decides and remembers inside the simulated world.**
+
+A creature's nervous system is part of the world; a logger watching the
+simulation from outside is not. That is the line this folder draws. A
+locomotion controller that reads the world and drives muscles belongs here.
+A tool that records frames to a file belongs in `systems`, even though both
+could loosely be called "information".
+
 What senses, decides, and remembers **in** the simulated world -- not tooling that observes it from outside (see `systems::diagnostics` for that).
 
 ## Core API

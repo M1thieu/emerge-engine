@@ -1,5 +1,15 @@
 # Runtime
 
+**When to step the simulation.**
+
+A screen refreshes at whatever rate it likes; physics needs a fixed, steady
+timestep or it stops being reliable. This folder holds the accumulator that
+keeps the two apart, so a simulation behaves identically on a 60 Hz and a
+144 Hz display.
+
+Only *when*, never *how much*: how finely a step is subdivided is the solver's
+own CFL decision, in `spacetime`.
+
 How the simulation is driven over real wall-clock time -- a genuinely distinct concern from the physics itself, small enough to stay a single module.
 
 ## Core API
