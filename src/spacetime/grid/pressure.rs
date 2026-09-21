@@ -118,6 +118,23 @@ impl Grid {
         let h = cell_width.max(1.0e-6);
         let res = self.resolution as i32;
 
+        // AUDIT TOGGLES (archive branch only). Each removes one suspected
+        // defect so they can be tested one at a time; all off = variant C.
+        let flag = |name: &str| std::env::var(name).is_ok_and(|v| v == "1");
+        // S1: backward-difference divergence + forward-difference gradient,
+        // whose composition is exactly the compact Laplacian the DCT inverts.
+        let compact_pair = flag("EMERGE_P_COMPACT");
+        // S2: free surface inside the solve: air cells are Dirichlet p = 0,
+        // fluid cells are unknowns, Gauss-Seidel iterated to convergence.
+        let surface_in_solve = flag("EMERGE_P_SURFACE_IN_SOLVE");
+        // S3: apply the full correction instead of 20 %.
+        let relax_one = flag("EMERGE_P_RELAX1");
+        // S4: no spectral filter.
+        let no_filter = flag("EMERGE_P_NO_FILTER");
+        // S5: the same alpha (the DCT's uniform one) in Gauss-Seidel and in
+        // the velocity correction.
+        let const_alpha = flag("EMERGE_P_CONST_ALPHA");
+
         // Real, disclosed simplification (see module doc): one representative
         // mass for the DCT solve specifically -- that part is unavoidably
         // constant-coefficient (the DCT eigenbasis only diagonalizes a
@@ -212,11 +229,16 @@ impl Grid {
                         own
                     }
                 };
-                let v_r = read(pos + IVec2::new(1, 0)).x;
-                let v_l = read(pos - IVec2::new(1, 0)).x;
-                let v_u = read(pos + IVec2::new(0, 1)).y;
-                let v_d = read(pos - IVec2::new(0, 1)).y;
-                let div_v = (v_r - v_l) / (2.0 * h) + (v_u - v_d) / (2.0 * h);
+                let div_v = if compact_pair {
+                    (own.x - read(pos - IVec2::new(1, 0)).x) / h
+                        + (own.y - read(pos - IVec2::new(0, 1)).y) / h
+                } else {
+                    let v_r = read(pos + IVec2::new(1, 0)).x;
+                    let v_l = read(pos - IVec2::new(1, 0)).x;
+                    let v_u = read(pos + IVec2::new(0, 1)).y;
+                    let v_d = read(pos - IVec2::new(0, 1)).y;
+                    (v_r - v_l) / (2.0 * h) + (v_u - v_d) / (2.0 * h)
+                };
                 rhs[lx * ny + ly] = div_v;
             }
         }
@@ -281,6 +303,9 @@ impl Grid {
         const FILTER_ALPHA: f32 = 36.0;
         const FILTER_ORDER: i32 = 2;
         for kx in 0..nx {
+            if no_filter {
+                break;
+            }
             let eta_x = if nx > 1 {
                 kx as f32 / (nx - 1) as f32
             } else {
@@ -356,6 +381,13 @@ impl Grid {
         for lx in 0..nx {
             for ly in 0..ny {
                 let local_idx = lx * ny + ly;
+                if surface_in_solve {
+                    if local_mass[local_idx] <= surface_mass_threshold {
+                        is_surface[local_idx] = true;
+                        pressure[local_idx] = 0.0;
+                    }
+                    continue;
+                }
                 if local_mass[local_idx] <= surface_mass_threshold {
                     continue;
                 }
@@ -452,7 +484,14 @@ impl Grid {
                 Some(p[px as usize * ny + py as usize])
             }
         };
-        for _ in 0..GS_CORRECTION_SWEEPS {
+        let sweeps = if surface_in_solve {
+            20_000
+        } else {
+            GS_CORRECTION_SWEEPS
+        };
+        for _ in 0..sweeps {
+            let mut max_change = 0.0f32;
+            let mut max_p = 0.0f32;
             for lx in 0..nx {
                 for ly in 0..ny {
                     let local_idx = lx * ny + ly;
@@ -500,15 +539,22 @@ impl Grid {
                         // near-zero mass would blow up `1/mass`, a real
                         // instability the surface classification above
                         // doesn't already guard against for these cells.
-                        let cell_alpha = if local_mass[local_idx] > MIN_ABSOLUTE_MASS_FOR_CORRECTION
+                        let cell_alpha = if !const_alpha
+                            && local_mass[local_idx] > MIN_ABSOLUTE_MASS_FOR_CORRECTION
                         {
                             1.0 / local_mass[local_idx]
                         } else {
                             alpha_const
                         };
-                        pressure[local_idx] = (sum - h * h * r / cell_alpha) / count;
+                        let new_p = (sum - h * h * r / cell_alpha) / count;
+                        max_change = max_change.max((new_p - pressure[local_idx]).abs());
+                        max_p = max_p.max(new_p.abs());
+                        pressure[local_idx] = new_p;
                     }
                 }
+            }
+            if surface_in_solve && max_change <= 1.0e-6 * max_p.max(1.0e-12) {
+                break;
             }
         }
 
@@ -547,7 +593,12 @@ impl Grid {
             let p_l = p_at(lx - 1, ly);
             let p_u = p_at(lx, ly + 1);
             let p_d = p_at(lx, ly - 1);
-            let grad_p = Vec2::new((p_r - p_l) / (2.0 * h), (p_u - p_d) / (2.0 * h));
+            let grad_p = if compact_pair {
+                let p_c = p_at(lx, ly);
+                Vec2::new((p_r - p_c) / h, (p_u - p_c) / h)
+            } else {
+                Vec2::new((p_r - p_l) / (2.0 * h), (p_u - p_d) / (2.0 * h))
+            };
             // Under-relaxation kept as a real safety margin even with an
             // EXACT solve -- the Poisson solve is exact for THIS substep's
             // instantaneous divergence, but the constant-density
@@ -581,7 +632,7 @@ impl Grid {
             // stale description -- re-verify old numbers under current
             // conditions before trusting them, don't just read and apply.
             const RELAXATION: f32 = 0.2;
-            let grad_p = grad_p * RELAXATION;
+            let grad_p = grad_p * if relax_one { 1.0 } else { RELAXATION };
             // Real per-cell mass (2026-08-15), not the global `alpha_const`
             // this line used unconditionally before -- Newton's second law
             // for a pressure-gradient force is a = -grad_p / mass, LOCAL to
@@ -594,7 +645,7 @@ impl Grid {
             // mixed-density scene (water/mud, 40x apart) measurably broke
             // under the old shared-global-average correction -- see
             // fluid_solver_perf_reality_check memory.
-            let cell_alpha = 1.0 / mass;
+            let cell_alpha = if const_alpha { alpha_const } else { 1.0 / mass };
             if let Some(cell) = self.cells.get_mut(&idx) {
                 cell.momentum -= cell_alpha * grad_p;
             }

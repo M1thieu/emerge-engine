@@ -1,0 +1,65 @@
+=== [variant C only]
+toggles: variant C only (gate measured with the central 2h divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 0.5876 -> 0.5501 -> 0.5362 (x0.936, x0.975) | interior: 0.5508 -> 0.5155 -> 0.4937 (x0.936, x0.958)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 0.5502 -> 0.5220 -> 0.5448 (x0.949, x1.044) | interior: 0.5534 -> 0.5140 -> 0.4912 (x0.929, x0.956)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [0.9987, 1.0009]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 31 | clamp at 37 | wall contact at never | last J [0.7532, 2.0000]
+ wall column, 0.003 g frames 9 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 9 | wall contact at 9 | last J [0.5000, 2.0000]
+=== [EMERGE_P_COMPACT]
+toggles: EMERGE_P_COMPACT (gate measured with the compact divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.9955 -> 0.9466 (x0.905, x0.951) | interior: 1.1537 -> 1.0124 -> 0.9657 (x0.877, x0.954)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.9473 -> 0.8084 (x0.824, x0.853) | interior: 1.1501 -> 0.9260 -> 0.7545 (x0.805, x0.815)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [0.9944, 1.0045]
+ droplet, 0.003 g frames 36 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 28 | clamp at 35 | wall contact at never | last J [0.5000, 2.0000]
+ wall column, 0.003 g frames 9 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 9 | wall contact at 9 | last J [0.5174, 2.0000]
+=== [EMERGE_P_SURFACE_IN_SOLVE]
+toggles: EMERGE_P_SURFACE_IN_SOLVE (gate measured with the central 2h divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 0.5876 -> 0.5545 -> 0.5318 (x0.944, x0.959) | interior: 0.5508 -> 0.4967 -> 0.4589 (x0.902, x0.924)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 0.5502 -> 0.5077 -> 0.4717 (x0.923, x0.929) | interior: 0.5534 -> 0.5055 -> 0.4644 (x0.914, x0.919)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 120 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 13 | wall contact at 9 | last J [0.5000, 2.0000]
+=== [EMERGE_P_RELAX1]
+toggles: EMERGE_P_RELAX1 (gate measured with the central 2h divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 0.5876 -> 0.6019 -> 1.0293 (x1.024, x1.710) | interior: 0.5508 -> 0.4740 -> 0.9430 (x0.861, x1.989)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 0.5502 -> 0.5171 -> 3.1972 (x0.940, x6.183) | interior: 0.5534 -> 0.4129 -> 1.6616 (x0.746, x4.024)
+injected divergence grew (worst ratio x1.024) under EMERGE_P_RELAX1
+ droplet, 1 g frames 1 PANIC | frame 1: J [1.0000, 1.0000], speed 98.103 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 16 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 12 | clamp at 16 | wall contact at never | last J [0.5000, 2.0000]
+ wall column, 0.003 g frames 8 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 6 | clamp at 8 | wall contact at never | last J [0.5000, 2.0000]
+=== [EMERGE_P_NO_FILTER]
+toggles: EMERGE_P_NO_FILTER (gate measured with the central 2h divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 0.5876 -> 0.5502 -> 0.5366 (x0.936, x0.975) | interior: 0.5508 -> 0.5155 -> 0.4939 (x0.936, x0.958)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 0.5502 -> 0.5220 -> 0.5447 (x0.949, x1.044) | interior: 0.5534 -> 0.5140 -> 0.4911 (x0.929, x0.955)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [0.9987, 1.0009]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 31 | clamp at 37 | wall contact at never | last J [0.7567, 2.0000]
+ wall column, 0.003 g frames 9 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 9 | wall contact at 9 | last J [0.5000, 2.0000]
+=== [EMERGE_P_CONST_ALPHA]
+toggles: EMERGE_P_CONST_ALPHA (gate measured with the central 2h divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 0.5876 -> 0.5590 -> 0.5342 (x0.951, x0.956) | interior: 0.5508 -> 0.5187 -> 0.4914 (x0.942, x0.948)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 0.5502 -> 0.5159 -> 0.4872 (x0.938, x0.944) | interior: 0.5534 -> 0.5142 -> 0.4809 (x0.929, x0.935)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 12 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 11 | wall contact at 9 | last J [0.5000, 2.0000]
+=== [ALL]
+toggles: EMERGE_P_COMPACT+EMERGE_P_SURFACE_IN_SOLVE+EMERGE_P_RELAX1+EMERGE_P_NO_FILTER+EMERGE_P_CONST_ALPHA (gate measured with the compact divergence)
+ droplet 7x7 node mass: average 0.0518, min 0.00000 (average/min x57612.3), 36 nodes under 0.3 x average
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.5521 -> 0.5521 (x0.502, x1.000) | interior: 1.1537 -> 0.0000 -> 0.0000 (x0.000, x0.026)
+ block 20x20 node mass: average 0.0860, min 0.00416 (average/min x20.7), 44 nodes under 0.3 x average
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.4171 -> 0.4047 (x0.363, x0.970) | interior: 1.1501 -> 0.0000 -> 0.0000 (x0.000, x0.208)
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 120 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 14 | wall contact at 9 | last J [0.5000, 2.0000]
+DONE
