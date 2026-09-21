@@ -24,8 +24,9 @@ pub mod viscoelastic;
 pub mod von_mises;
 
 pub use physical_props::{
-    BinghamProps, BrittleProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI, NaccProps,
-    NoCompression, ParticleMass, PlasticityModel, Pressurized, Viscoelastic,
+    BinghamProps, BrittleProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
+    GranularProps, NaccProps, NoCompression, ParticleMass, PlasticityModel, Pressurized,
+    Viscoelastic,
 };
 
 pub use bingham::BinghamFluidMaterial;

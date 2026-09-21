@@ -84,7 +84,7 @@ pub use materials::{
     BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
     CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
     CorotatedMaterial, DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
-    GranularFluidMaterial, IdealGasMaterial, IdealGasPhysicalParams,
+    GranularFluidMaterial, GranularProps, IdealGasMaterial, IdealGasPhysicalParams,
     IsothermalCavitatingFluidMaterial, IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS,
     MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,
     NaccMaterial, NaccMaterialParams, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial,

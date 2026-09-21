@@ -336,8 +336,15 @@ pub trait ParticleMass {
 // These carry the exact parameters that each material impl's `from_physical` needs.
 // They are constructed inside `.material()` dispatch -- callers never see them.
 
+/// Real-unit properties for `DruckerPragerMaterial`/`MuIRheologyMaterial`.
+///
+/// `pub` for the same reason as `BrittleProps`/`BinghamProps`: the dispatch
+/// enum (`Elastoplastic::material`) returns a type-erased `Box<dyn
+/// MaterialModel>`, so a caller that needs the concrete type back --
+/// `MuIRheologyMaterial`'s own `inertial_q` has no dispatch field yet, see
+/// that struct's own doc -- has to build it directly.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct GranularProps {
+pub struct GranularProps {
     pub elastic: Elastic,
     pub friction_angle_deg: f32,
     pub dilatancy_angle_deg: f32,

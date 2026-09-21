@@ -46,6 +46,7 @@ pub use crate::{
     FrictionBoundary,
     FromSI,
     GranularFluidMaterial,
+    GranularProps,
     GravityWellField,
     // Directional/phase-gated grip boundaries (shipped with the ratchet
     // locomotion work).

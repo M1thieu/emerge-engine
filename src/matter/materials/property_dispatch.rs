@@ -257,6 +257,15 @@ impl Fluid {
     }
 }
 
+impl GranularProps {
+    /// See `Elastic::particle_mass`. Delegates to the shared elastic
+    /// density -- `DruckerPragerMaterial`/`MuIRheologyMaterial` add no
+    /// separate mass concept of their own on top of it.
+    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
+        self.elastic.particle_mass(spacing, config)
+    }
+}
+
 impl BinghamProps {
     /// See `Elastic::particle_mass`. Present for the same reason as every
     /// other family's: a caller building this material directly (rather
@@ -292,6 +301,7 @@ forward_particle_mass!(
     FluidGranular,
     Fluid,
     BinghamProps,
+    GranularProps,
 );
 
 #[cfg(test)]
