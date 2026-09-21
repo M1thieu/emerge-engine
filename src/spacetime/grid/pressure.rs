@@ -134,6 +134,21 @@ impl Grid {
         // S5: the same alpha (the DCT's uniform one) in Gauss-Seidel and in
         // the velocity correction.
         let const_alpha = flag("EMERGE_P_CONST_ALPHA");
+        // S6: the slip wall inside the solve. EMERGE_P_WALL_IN_SOLVE=<thickness>
+        // marks the nodes the wall owns (same test as `apply_slip_wall_velocity`)
+        // as solid: neither unknowns nor free surface. A fluid cell next to one
+        // reads the wall node's velocity for its divergence and gets a
+        // zero-flux face in the Laplacian; the correction leaves wall nodes to
+        // the boundary condition. Faithful for the low walls (left, floor)
+        // only: with the compact pair, a node's velocity sits on its upper
+        // face, so a high wall would need the face shifted by one.
+        let wall_thickness: Option<i32> = std::env::var("EMERGE_P_WALL_IN_SOLVE")
+            .ok()
+            .and_then(|v| v.parse().ok());
+        let in_wall = |q: IVec2| {
+            wall_thickness
+                .is_some_and(|t| q.x < t || q.y < t || q.x > res - 1 - t || q.y > res - 1 - t)
+        };
 
         // Real, disclosed simplification (see module doc): one representative
         // mass for the DCT solve specifically -- that part is unavoidably
@@ -218,12 +233,18 @@ impl Grid {
                 let pos = IVec2::new(ox + lx as i32, oy + ly as i32);
                 // AUDIT EXPERIMENT (variant C): divergence only where there is
                 // fluid; a massless neighbour reads the centre's own velocity.
-                if self.mass_at(pos) <= 0.0 {
+                if self.mass_at(pos) <= 0.0 || in_wall(pos) {
                     continue;
                 }
                 let own = self.velocity_at(pos);
                 let read = |q: IVec2| {
-                    if self.mass_at(q) > 0.0 {
+                    if in_wall(q) {
+                        if self.mass_at(q) > 0.0 {
+                            self.velocity_at(q)
+                        } else {
+                            Vec2::ZERO
+                        }
+                    } else if self.mass_at(q) > 0.0 {
                         self.velocity_at(q)
                     } else {
                         own
@@ -376,11 +397,21 @@ impl Grid {
         // jump after many otherwise-healthy substeps, not proven but a
         // genuinely different hypothesis than the magnitude/relaxation
         // tuning already tried and found insufficient.
-        let surface_mass_threshold = (mass_avg * 0.3).max(MIN_ABSOLUTE_MASS_FOR_CORRECTION);
+        // S7: EMERGE_P_AIR_FRACTION overrides the 0.3 "lighter than this = air"
+        // fraction (0 = only near-empty nodes count as air).
+        let air_fraction = std::env::var("EMERGE_P_AIR_FRACTION")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.3);
+        let surface_mass_threshold =
+            (mass_avg * air_fraction).max(MIN_ABSOLUTE_MASS_FOR_CORRECTION);
         let mut is_surface = vec![false; nx * ny];
         for lx in 0..nx {
             for ly in 0..ny {
                 let local_idx = lx * ny + ly;
+                if in_wall(IVec2::new(ox + lx as i32, oy + ly as i32)) {
+                    continue;
+                }
                 if surface_in_solve {
                     if local_mass[local_idx] <= surface_mass_threshold {
                         is_surface[local_idx] = true;
@@ -497,13 +528,17 @@ impl Grid {
                     let local_idx = lx * ny + ly;
                     // Dirichlet-pinned free-surface cell: never updated, its
                     // fixed p=0 still gets read normally by neighbors below.
-                    if is_surface[local_idx] {
+                    if is_surface[local_idx] || in_wall(IVec2::new(ox + lx as i32, oy + ly as i32))
+                    {
                         continue;
                     }
                     let r = rhs[local_idx];
                     let mut sum = 0.0f32;
                     let mut count = 0.0f32;
                     for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                        if in_wall(IVec2::new(ox + lx as i32 + dx, oy + ly as i32 + dy)) {
+                            continue;
+                        }
                         if let Some(v) = p_or_none(&pressure, lx as i32 + dx, ly as i32 + dy) {
                             sum += v;
                             count += 1.0;
@@ -581,6 +616,9 @@ impl Grid {
                 continue;
             }
             let pos = self.idx_to_pos(idx);
+            if in_wall(pos) {
+                continue;
+            }
             let (lx, ly) = (pos.x - ox, pos.y - oy);
             let p_at = |px: i32, py: i32| -> f32 {
                 if px < 0 || py < 0 || px as usize >= nx || py as usize >= ny {

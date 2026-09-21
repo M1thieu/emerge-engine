@@ -6,7 +6,8 @@
 //!       --test diag_pressure_projection_amplification -- --ignored --nocapture --test-threads=1
 //!
 //! Toggles: EMERGE_P_COMPACT (S1), EMERGE_P_SURFACE_IN_SOLVE (S2),
-//! EMERGE_P_RELAX1 (S3), EMERGE_P_NO_FILTER (S4), EMERGE_P_CONST_ALPHA (S5).
+//! EMERGE_P_RELAX1 (S3), EMERGE_P_NO_FILTER (S4), EMERGE_P_CONST_ALPHA (S5),
+//! EMERGE_P_WALL_IN_SOLVE=<boundary thickness> (S6).
 extern crate emerge_engine as emerge;
 
 use emerge::{Grid, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
@@ -26,10 +27,13 @@ fn toggles() -> String {
         "EMERGE_P_NO_FILTER",
         "EMERGE_P_CONST_ALPHA",
     ];
-    let on: Vec<&str> = names
+    let mut on: Vec<&str> = names
         .into_iter()
         .filter(|n| std::env::var(n).is_ok_and(|v| v == "1"))
         .collect();
+    if std::env::var("EMERGE_P_WALL_IN_SOLVE").is_ok() {
+        on.push("EMERGE_P_WALL_IN_SOLVE");
+    }
     if on.is_empty() {
         "variant C only".into()
     } else {
@@ -308,4 +312,142 @@ fn scenes_under_current_toggles() {
         f32::MIN,
     );
     print_scene("wall column, 0.003 g", 981.0 * 0.003 * DT, &r);
+}
+
+/// Where does J leave 1 when the wall column meets the floor? Frame by frame
+/// around the first contact: which particles drift, how the wall-band nodes
+/// are classified by the solve (the air rule pins nodes under 0.3 x the
+/// average mass to p = 0), and how the grid divergence left after the step
+/// is spread with the distance to the floor.
+#[test]
+#[ignore = "core-audit diagnostic, prints measurements"]
+fn wall_contact_where_j_leaves_one() {
+    let compact = std::env::var("EMERGE_P_COMPACT").is_ok_and(|v| v == "1");
+    println!("toggles: {}", toggles());
+    let mut sim = water_sim(config(0.003, 1), IVec2::new(14, 52), Vec2::new(11.0, 30.0));
+    let band = sim.config().boundary_thickness as i32;
+    let last = GRID as i32 - 1;
+    let in_band = |p: IVec2| p.x < band || p.y < band || p.x > last - band || p.y > last - band;
+    for frame in 1..=16u32 {
+        let stepped = catch_unwind(AssertUnwindSafe(|| sim.step()));
+        if stepped.is_err() {
+            println!("  frame {frame}: PANIC");
+            break;
+        }
+        if frame < 7 {
+            continue;
+        }
+        let parts = sim.particles();
+        let mut off = Vec::new();
+        let (mut worst, mut worst_at) = (1.0f32, Vec2::ZERO);
+        for i in 0..parts.len() {
+            let j = parts.deformation_gradient[i].determinant();
+            if (j - 1.0).abs() > 0.01 {
+                off.push(parts.x[i]);
+            }
+            if (j - 1.0).abs() > (worst - 1.0).abs() {
+                worst = j;
+                worst_at = parts.x[i];
+            }
+        }
+        let lowest = parts.x.iter().map(|x| x.y).fold(f32::MAX, f32::min);
+        let off_y_max = off.iter().map(|x| x.y).fold(f32::MIN, f32::max);
+        let off_x_max = off.iter().map(|x| x.x).fold(f32::MIN, f32::max);
+
+        let grid = sim.grid();
+        let (mut sum, mut n) = (0.0f32, 0usize);
+        let mut band_nodes = (0usize, 0usize); // (light: pinned as air under S2, heavy)
+        let mut band_masses = Vec::new();
+        for x in 0..GRID as i32 {
+            for y in 0..GRID as i32 {
+                let p = IVec2::new(x, y);
+                if grid.is_extrapolated(p) {
+                    continue;
+                }
+                sum += grid.mass_at(p);
+                n += 1;
+                if in_band(p) && grid.mass_at(p) > 0.0 {
+                    band_masses.push(grid.mass_at(p));
+                }
+            }
+        }
+        let avg = sum / n.max(1) as f32;
+        for &m in &band_masses {
+            if m <= 0.3 * avg {
+                band_nodes.0 += 1;
+            } else {
+                band_nodes.1 += 1;
+            }
+        }
+        // RMS divergence of the post-step grid, by distance to the floor band,
+        // split into nodes the S2 solve keeps as unknowns (heavy) and nodes
+        // its air rule pins to p = 0 (light, <= 0.3 x average mass).
+        let wall_rule = std::env::var("EMERGE_P_WALL_IN_SOLVE").is_ok();
+        let mut rows = [(0.0f64, 0usize); 4]; // y = band, band + 1, band + 2..3, farther
+        let mut split = [[(0.0f64, 0usize); 2]; 2]; // [row band, band + 1][heavy, light]
+        for x in 0..GRID as i32 {
+            for y in 0..GRID as i32 {
+                let p = IVec2::new(x, y);
+                if in_band(p) || grid.mass_at(p) <= 0.0 {
+                    continue;
+                }
+                let d = if wall_rule {
+                    let own = grid.velocity_at(p);
+                    let read = |q: IVec2| {
+                        if in_band(q) {
+                            if grid.mass_at(q) > 0.0 {
+                                grid.velocity_at(q)
+                            } else {
+                                Vec2::ZERO
+                            }
+                        } else if grid.mass_at(q) > 0.0 {
+                            grid.velocity_at(q)
+                        } else {
+                            own
+                        }
+                    };
+                    (own.x - read(p - IVec2::X).x) + (own.y - read(p - IVec2::Y).y)
+                } else {
+                    divergence(grid, p, compact)
+                } as f64;
+                let k = match y - band {
+                    0 => 0,
+                    1 => 1,
+                    2 | 3 => 2,
+                    _ => 3,
+                };
+                rows[k].0 += d * d;
+                rows[k].1 += 1;
+                if k < 2 {
+                    let light = usize::from(grid.mass_at(p) <= 0.3 * avg);
+                    split[k][light].0 += d * d;
+                    split[k][light].1 += 1;
+                }
+            }
+        }
+        let rms = |r: (f64, usize)| (r.0 / r.1.max(1) as f64).sqrt();
+        println!(
+            "      first fluid row above the wall: {} heavy (RMS div {:.2e}), {} light (RMS div {:.2e}) | second row: {} heavy ({:.2e}), {} light ({:.2e})",
+            split[0][0].1,
+            rms(split[0][0]),
+            split[0][1].1,
+            rms(split[0][1]),
+            split[1][0].1,
+            rms(split[1][0]),
+            split[1][1].1,
+            rms(split[1][1]),
+        );
+        println!(
+            "  frame {frame:2}: lowest particle y {lowest:.3} | {} particles |J-1| > 1% (y <= {off_y_max:.2}, x <= {off_x_max:.2}), worst J {worst:.4} at ({:.2}, {:.2}) | wall-band nodes with mass: {} light (<= 0.3 avg, pinned as air by S2), {} heavy | RMS div by floor distance: {:.2e} {:.2e} {:.2e} {:.2e}",
+            off.len(),
+            worst_at.x,
+            worst_at.y,
+            band_nodes.0,
+            band_nodes.1,
+            rms(rows[0]),
+            rms(rows[1]),
+            rms(rows[2]),
+            rms(rows[3]),
+        );
+    }
 }

@@ -1,0 +1,36 @@
+=== five + []
+ frame 9: lowest particle y 2.683 | 21 particles |J-1| > 1% (y <= 10.48, x <= 17.87), worst J 0.8947 at (17.87, 2.70) | wall-band nodes with mass: 16 light (<= 0.3 avg, pinned as air by S2), 0 heavy |
+ frame 12: lowest particle y 2.031 | 113 particles |J-1| > 1% (y <= 20.31, x <= 18.52), worst J 0.6713 at (18.52, 2.08) | wall-band nodes with mass: 18 light (<= 0.3 avg, pinned as air by S2), 0 heavy
+ frame 16: lowest particle y 1.689 | 248 particles |J-1| > 1% (y <= 27.00, x <= 20.24), worst J 0.5000 at (2.28, 1.71) | wall-band nodes with mass: 25 light (<= 0.3 avg, pinned as air by S2), 18 heavy
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 120 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 14 | wall contact at 9 | last J [0.5000, 2.0000]
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.5521 -> 0.5521 (x0.502, x1.000) | interior: 1.1537 -> 0.0000 -> 0.0000 (x0.000, x0.026)
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.4171 -> 0.4047 (x0.363, x0.970) | interior: 1.1501 -> 0.0000 -> 0.0000 (x0.000, x0.208)
+=== five + [EMERGE_P_WALL_IN_SOLVE=2]
+ frame 9: lowest particle y 2.672 | 54 particles |J-1| > 1% (y <= 18.88, x <= 18.06), worst J 0.6903 at (18.06, 2.75) | wall-band nodes with mass: 16 light (<= 0.3 avg, pinned as air by S2), 0 heavy |
+ frame 12: lowest particle y 2.139 | 180 particles |J-1| > 1% (y <= 26.31, x <= 19.69), worst J 0.6590 at (19.13, 3.18) | wall-band nodes with mass: 22 light (<= 0.3 avg, pinned as air by S2), 0 heavy
+ frame 16: lowest particle y 1.820 | 313 particles |J-1| > 1% (y <= 31.80, x <= 22.66), worst J 0.5146 at (22.66, 1.82) | wall-band nodes with mass: 32 light (<= 0.3 avg, pinned as air by S2), 1 heavy
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 50 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 17 | wall contact at 9 | last J [0.5000, 1.7601]
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.5521 -> 0.5521 (x0.502, x1.000) | interior: 1.1537 -> 0.0000 -> 0.0000 (x0.000, x0.026)
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.4171 -> 0.4047 (x0.363, x0.970) | interior: 1.1501 -> 0.0000 -> 0.0000 (x0.000, x0.208)
+=== five + [EMERGE_P_AIR_FRACTION=0]
+ frame 9: lowest particle y 2.705 | 2 particles |J-1| > 1% (y <= 3.31, x <= 17.87), worst J 1.0297 at (17.87, 2.72) | wall-band nodes with mass: 16 light (<= 0.3 avg, pinned as air by S2), 0 heavy | R
+ frame 12: lowest particle y 2.185 | 61 particles |J-1| > 1% (y <= 4.88, x <= 18.57), worst J 0.7790 at (10.61, 2.20) | wall-band nodes with mass: 18 light (<= 0.3 avg, pinned as air by S2), 0 heavy |
+ frame 16: lowest particle y 1.765 | 173 particles |J-1| > 1% (y <= 10.36, x <= 20.30), worst J 0.5000 at (2.51, 1.80) | wall-band nodes with mass: 25 light (<= 0.3 avg, pinned as air by S2), 18 heavy
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 120 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 9 | clamp at 16 | wall contact at 9 | last J [0.5000, 1.7615]
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.4475 -> 0.4332 (x0.407, x0.968) | interior: 1.1537 -> 0.0000 -> 0.0000 (x0.000, x0.202)
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.1156 -> 0.0516 (x0.101, x0.447) | interior: 1.1501 -> 0.0000 -> 0.0000 (x0.000, x0.227)
+=== five + [EMERGE_P_WALL_IN_SOLVE=2 EMERGE_P_AIR_FRACTION=0]
+ frame 9: lowest particle y 3.068 | 59 particles |J-1| > 1% (y <= 13.60, x <= 19.09), worst J 0.9328 at (3.71, 11.90) | wall-band nodes with mass: 0 light (<= 0.3 avg, pinned as air by S2), 0 heavy | 
+ frame 12: lowest particle y 2.665 | 134 particles |J-1| > 1% (y <= 21.58, x <= 20.77), worst J 1.1112 at (19.82, 2.82) | wall-band nodes with mass: 4 light (<= 0.3 avg, pinned as air by S2), 0 heavy 
+ frame 16: lowest particle y 2.254 | 259 particles |J-1| > 1% (y <= 27.73, x <= 23.98), worst J 1.1739 at (22.58, 2.42) | wall-band nodes with mass: 9 light (<= 0.3 avg, pinned as air by S2), 0 heavy 
+ droplet, 1 g frames 2 | frame 1: J [1.0000, 1.0000], speed 98.100 (g t = 98.100) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ droplet, 0.003 g frames 37 | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at never | clamp at never | wall contact at never | last J [1.0000, 1.0000]
+ wall column, 0.003 g frames 50 PANIC | frame 1: J [1.0000, 1.0000], speed 0.294 (g t = 0.294) | |J-1| > 1% at 5 | clamp at 49 | wall contact at 11 | last J [0.5000, 1.0948]
+ droplet 7x7 100 nodes | RMS div all: 1.0997 -> 0.4475 -> 0.4332 (x0.407, x0.968) | interior: 1.1537 -> 0.0000 -> 0.0000 (x0.000, x0.202)
+ block 20x20 484 nodes | RMS div all: 1.1489 -> 0.1156 -> 0.0516 (x0.101, x0.447) | interior: 1.1501 -> 0.0000 -> 0.0000 (x0.000, x0.227)
