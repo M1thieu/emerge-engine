@@ -254,6 +254,15 @@ path = "examples/cpu/basic_corotated.rs"
 required-features = ["render"]
 
 [[example]]
+name = "viscoelastic_cost_probe"
+path = "examples/cpu/viscoelastic_cost_probe.rs"
+
+[[example]]
+name = "basic_viscoelastic"
+path = "examples/cpu/basic_viscoelastic.rs"
+required-features = ["render"]
+
+[[example]]
 name = "basic_bingham"
 path = "examples/cpu/basic_bingham.rs"
 required-features = ["render"]
