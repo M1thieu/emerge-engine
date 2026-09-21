@@ -232,6 +232,15 @@ path = "examples/cpu/basic_membrane.rs"
 required-features = ["render"]
 
 [[example]]
+name = "bingham_cost_probe"
+path = "examples/cpu/bingham_cost_probe.rs"
+
+[[example]]
+name = "basic_bingham"
+path = "examples/cpu/basic_bingham.rs"
+required-features = ["render"]
+
+[[example]]
 name = "basic_vonmises"
 path = "examples/cpu/basic_vonmises.rs"
 required-features = ["render"]
