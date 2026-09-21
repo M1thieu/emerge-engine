@@ -18,9 +18,11 @@ Measured with variant C (quick profile, CPU):
 | Wall column, 0.003 g | no NaN, but J at the clamp frames 20-120 | exact until frame 9 (first wall contact), panics at frame 9 |
 
 `wall_scene_variant_c_rhs_trace.txt`: `EMERGE_DEBUG_PRESSURE=1` output of the
-wall column run. The RHS is zero for 6 substeps, then a 1e-6 roundoff seed grows
-about 8 to 10 times per substep up to 6.5e7: the projection amplifies
-divergence instead of removing it. Variant C is necessary, not sufficient.
+wall column run (one substep per frame until contact). The RHS is zero for
+frames 1 to 5, a roundoff seed of 1e-6 to 8e-6 appears at frames 6 to 8, then
+at the first wall contact (frame 9) a real divergence of 1.3 appears and is
+amplified about 8 to 10 times per substep, up to 6.5e7 within that frame.
+Variant C is necessary, not sufficient.
 
 ## Suspects removed one at a time (`toggle_matrix.txt`)
 
