@@ -1,6 +1,10 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{BinghamProps, FromSI, scale_stress, scale_visc};
+use crate::materials::svd::svd2;
+use crate::materials::utils::{
+    LOG_CLAMP, MIN_J, deformation_increment_exp, elastic_wave_dt, hencky_strains, reconstruct_f,
+};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
@@ -70,6 +74,37 @@ pub struct BinghamFluidMaterial {
     /// (2026-08-12, acoustic/volumetric oscillation damping), not a
     /// guard-rail bandaid, and dropping it would lose real value.
     pub bulk_viscosity: f32,
+    /// Elastic shear modulus G, the storage modulus a real yield-stress
+    /// fluid has BELOW its yield point. `0.0` (the default) selects the
+    /// classical purely-viscous Bingham fluid; any positive value selects
+    /// the elastoviscoplastic form (Saramito 2007). See this type's own
+    /// doc for what each branch can and cannot reproduce.
+    ///
+    /// This is a measurable quantity, not a numerical knob: oscillatory
+    /// rheometry reports it as G' for exactly these materials (order 10^2
+    /// Pa for sauces, 10^4 Pa for toothpaste-stiff pastes and fresh
+    /// concrete). The yield strain it implies, tau_0/G, lands in the 1-10%
+    /// band real yield-stress fluids are measured to have.
+    pub shear_modulus: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`. Same field,
+    /// same convention and same post-construction assignment as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k`.
+    pub specific_heat_j_kg_k: f32,
+    /// Measured optical coefficients for this material, or `None` when the
+    /// caller has not supplied any.
+    ///
+    /// Deliberately NOT a substance flag. A material model never decides
+    /// that it "is water" because its numbers happen to look like water's;
+    /// it carries whatever measured absorption and scattering the caller
+    /// declares, and a name for the result is a label applied on top, never
+    /// a branch inside the physics. `matter::materials::optical` holds the
+    /// measured datasets to fill this with (`pure_water`, `dry_quartz_sand`,
+    /// ...); anything else measured is equally valid here.
+    ///
+    /// `None` is the honest default: no spectrum was measured, so the
+    /// renderer is told nothing rather than being handed an invented one.
+    pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
 }
 
 impl BinghamFluidMaterial {
@@ -96,6 +131,9 @@ impl BinghamFluidMaterial {
             surface_tension_coeff: 0.0,
             settling_damping: 0.0,
             bulk_viscosity: 0.0,
+            shear_modulus: 0.0,
+            specific_heat_j_kg_k: 0.0,
+            optics: None,
         }
     }
 
@@ -126,6 +164,35 @@ impl BinghamFluidMaterial {
     /// must not respond to pure volumetric expansion/compression, which isn't shear)
     /// Below yield: returns zero matrix (plug flow).
     /// Above yield: returns (τ₀/γ̇ + η)·D_dev.
+    /// Deviatoric Kirchhoff stress of the elastic branch, from the stored
+    /// elastic strain rather than from the current rate.
+    ///
+    /// Hencky (logarithmic) elasticity: `tau_dev = U diag(2 G dev(eps)) U^T`
+    /// with `eps = log(sigma)` the principal log-strains of `F`. Written in
+    /// the same principal basis the return mapping uses, so the yield check
+    /// and the stress it limits are the same quantity expressed once.
+    fn hencky_deviatoric_stress(&self, f: Mat2) -> Mat2 {
+        if self.shear_modulus <= 0.0 {
+            return Mat2::ZERO;
+        }
+        let (u, sigma, _) = svd2(f);
+        let eps = hencky_strains(sigma);
+        let dev = eps - Vec2::splat((eps.x + eps.y) * 0.5);
+        u * Mat2::from_diagonal(2.0 * self.shear_modulus * dev) * u.transpose()
+    }
+
+    /// Equivalent deviatoric stress the yield criterion is written against,
+    /// in the Frobenius measure this file's return mapping works in.
+    ///
+    /// Rheology states the Bingham criterion on the second invariant,
+    /// `sqrt(tau_dev : tau_dev / 2) > tau_0`, while the principal-strain
+    /// return mapping below works with `||tau_dev||`. The two differ by
+    /// exactly `sqrt(2)`, so `yield_stress` keeps its plain rheological
+    /// meaning and the conversion lives here, once.
+    fn yield_in_frobenius_measure(&self) -> f32 {
+        std::f32::consts::SQRT_2 * self.yield_stress
+    }
+
     fn deviatoric_stress(&self, c: Mat2) -> Mat2 {
         // Symmetric strain rate D = (C + Cᵀ) / 2
         let sym = c + c.transpose();
@@ -142,12 +209,26 @@ impl BinghamFluidMaterial {
         let d_sq = d_xx * d_xx + d_yy * d_yy + 2.0 * d_xy * d_xy;
         let shear_rate = (2.0 * d_sq).sqrt();
 
-        if shear_rate < self.critical_shear_rate {
-            return Mat2::ZERO;
-        }
+        // Bi-viscosity regularization (O'Donovan & Tanner 1984; Beverly &
+        // Tanner 1989): below the critical rate the apparent viscosity
+        // SATURATES at tau_0/gamma_dot_c. This used to `return Mat2::ZERO`
+        // instead, which is a different and wrong statement -- it discards
+        // the yield stress at exactly the rates where a yield stress is the
+        // only thing holding the material up, so a slow or resting body
+        // reverted to an inviscid liquid. Confirmed against the same model
+        // in `tmp/GeoTaichi/.../Bingham.py`, whose own cutoff is 1e-8, four
+        // orders finer than the 1e-4 default here, and which gates on the
+        // stress invariant rather than nulling the stress outright.
+        //
+        // Real, disclosed cost, not hidden: the saturated viscosity is what
+        // `timestep_bound` must now respect, and for a large tau_0 that is
+        // genuinely expensive. That cost is the reason the elastoviscoplastic
+        // branch (`shear_modulus > 0`) exists and is the recommended route
+        // for a material meant to hold its shape at rest.
+        let regularized_rate = shear_rate.max(self.critical_shear_rate);
 
         // Apparent viscosity: Bingham formula η_app = τ₀/γ̇ + η
-        let eta_app = self.yield_stress / shear_rate + self.dynamic_viscosity;
+        let eta_app = self.yield_stress / regularized_rate + self.dynamic_viscosity;
         // Real, disclosed regression fix (external review): with D=(C+Cᵀ)/2
         // (the symmetric strain rate built above), the real tensorial
         // Bingham law is tau_dev = 2*eta_app*D_dev, not eta_app*D_dev --
@@ -170,11 +251,103 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         const GAMMA: f32 = 7.0;
         let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
         let tau0 = scale_stress(props.yield_stress_pa, props.rho_kg_m3, config);
+        // Same conversion as `tau0`, and that is not a stylistic choice:
+        // the return mapping compares `2 G |dev|` against `tau_0` directly,
+        // so a modulus converted through a different family would compare
+        // two different units and silently move the yield point.
+        let shear_modulus = scale_stress(props.shear_modulus_pa, props.rho_kg_m3, config);
         let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
-        // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
-        let rho_grid = props.rho_kg_m3 * config.dx_meters * config.dx_meters;
-        Self::new(rho_grid, visc, eos, GAMMA, tau0)
+        // Real bug fix: this was `rho_kg_m3 * dx^2`, precisely the extra
+        // `dx_meters^2` factor `NewtonianFluidMaterial::from_physical`'s own
+        // doc says in as many words not to reintroduce. Both `scale_visc`
+        // and `scale_stress` already divide by `rho * dx^2` (they return a
+        // kinematic viscosity and a squared wave speed, both in cells), so
+        // dividing by this density a second time inside `timestep_bound`
+        // scaled the acoustic and viscous CFL bounds by `1/(rho * dx^2)`.
+        // At 2 mm cells that is 250x, which is why a millimetre-scale
+        // Bingham scene could not advance a 5 ms step inside 64 substeps.
+        // The density the solver actually measures is a RATIO against the
+        // scene reference density -- 1.0 for a fluid at that reference --
+        // exactly as the Newtonian twin computes it.
+        let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
+        let mut material = Self::new(rho_grid, visc, eos, GAMMA, tau0);
+        material.shear_modulus = shear_modulus;
+        material
+    }
+}
+
+impl BinghamFluidMaterial {
+    /// Elastoviscoplastic update: elastic below the yield stress, Bingham
+    /// flow above it (Saramito, *A new constitutive equation for
+    /// elastoviscoplastic fluid flows*, J. Non-Newtonian Fluid Mech. 145,
+    /// 2007), discretised as a von Mises radial return with a Perzyna
+    /// viscous overstress (Perzyna 1966) -- structurally the same return
+    /// mapping `VonMisesMaterial::update_particle` already uses and tests,
+    /// with the hardening term replaced by the viscous one.
+    ///
+    /// Why this branch exists at all: a purely viscous Bingham fluid
+    /// computes its deviatoric stress from the CURRENT rate of strain, so
+    /// at rest it has none and cannot hold a slope, a pile or a ridge. That
+    /// is a property of the model, not of this implementation -- the same
+    /// limitation is visible in the reference implementation vendored at
+    /// `tmp/GeoTaichi`. Holding a shape requires storing elastic shear
+    /// energy, which is exactly what the elastic branch adds.
+    ///
+    /// The plastic multiplier comes from requiring the returned stress to
+    /// sit on the Bingham line rather than on the dry yield surface:
+    ///
+    /// ```text
+    ///   ||s_trial|| - 2 G dgamma = sqrt(2) tau_0 + 2 eta dgamma / dt
+    ///   dgamma = (||s_trial|| - sqrt(2) tau_0) / (2 G + 2 eta / dt)
+    /// ```
+    ///
+    /// `eta = 0` recovers perfect plasticity at exactly `tau_0`; a large
+    /// `eta` recovers a purely elastic solid; steady simple shear recovers
+    /// `tau = tau_0 + eta * gamma_dot`. Because `dt` appears in the
+    /// denominator the viscous term is integrated implicitly, so unlike the
+    /// purely viscous branch it imposes no viscous timestep restriction of
+    /// its own.
+    fn update_elastoviscoplastic(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
+        let f_trial =
+            deformation_increment_exp(dt * *ctx.velocity_gradient) * *ctx.deformation_gradient;
+        let (u, sigma, vt) = svd2(f_trial);
+
+        let eps = hencky_strains(sigma);
+        let tr = eps.x + eps.y;
+        let dev = eps - Vec2::splat(tr * 0.5);
+        let dev_norm = dev.length();
+
+        let trial_stress = 2.0 * self.shear_modulus * dev_norm;
+        let yield_frobenius = self.yield_in_frobenius_measure();
+
+        let sigma_new = if trial_stress > yield_frobenius && dev_norm > LOG_CLAMP {
+            // `MIN_RETURN_DT` guards the division only; it is a floor on
+            // time, so it must not borrow `LOG_CLAMP`, which is a floor on
+            // strain. A substep this short never occurs in practice -- the
+            // config's own `min_dt` is orders above it.
+            const MIN_RETURN_DT: f32 = 1.0e-12;
+            let denom =
+                2.0 * self.shear_modulus + 2.0 * self.dynamic_viscosity / dt.max(MIN_RETURN_DT);
+            let dgamma = (trial_stress - yield_frobenius) / denom;
+            // Never relax past the yield surface: with a finite viscosity
+            // the returned stress stays above `tau_0`, so a plastic step
+            // that overshot it would mean the increment, not the material,
+            // drove the sign.
+            let relaxed = (trial_stress - 2.0 * self.shear_modulus * dgamma).max(yield_frobenius);
+            let eps_projected = dev * (relaxed / trial_stress) + Vec2::splat(tr * 0.5);
+            Vec2::new(eps_projected.x.exp(), eps_projected.y.exp())
+        } else {
+            sigma
+        };
+
+        *ctx.deformation_gradient = reconstruct_f(u, sigma_new, vt);
+        if self.settling_damping > 0.0 {
+            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
+        }
+        let j = ctx.deformation_gradient.determinant().max(MIN_J);
+        let volume = (ctx.initial_volume * j).max(1.0e-9);
+        *ctx.volume = volume;
+        *ctx.density = ctx.mass / volume;
     }
 }
 
@@ -220,7 +393,17 @@ impl MaterialModel for BinghamFluidMaterial {
             .max(self.pressure_floor);
 
         let hydrostatic = Mat2::from_diagonal(Vec2::splat(-pressure));
-        let deviatoric = self.deviatoric_stress(particles.velocity_gradient[i]);
+        let deviatoric = if self.shear_modulus > 0.0 {
+            // Elastoviscoplastic branch: the deviatoric stress comes from
+            // STORED elastic strain, so it survives when the material stops
+            // moving -- which is the whole point of a yield stress. The
+            // viscous part lives inside the return mapping in
+            // `update_particle`; adding it again here would count the same
+            // dissipation twice.
+            self.hencky_deviatoric_stress(particles.deformation_gradient[i])
+        } else {
+            self.deviatoric_stress(particles.velocity_gradient[i])
+        };
 
         // Surface tension: τ += γ·J·I
         let surface = if self.surface_tension_coeff != 0.0 {
@@ -302,6 +485,10 @@ impl MaterialModel for BinghamFluidMaterial {
         // permanently by isotropization). Fixed with the continuity
         // equation's own exact exponential solution, `J_{n+1}=J_n*exp(dt*
         // div(v))` -- restores the pre-`57b83dc` `fluid_state.rs` behavior.
+        if self.shear_modulus > 0.0 {
+            self.update_elastoviscoplastic(ctx, dt);
+            return;
+        }
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
         let j = (old_j * (dt * div_v).exp()).clamp(0.5, 2.0);
@@ -321,8 +508,38 @@ impl MaterialModel for BinghamFluidMaterial {
     // Restored 2026-08-13; PERMANENT and required -- same
     // reasoning as `NewtonianFluidMaterial::owns_deformation_volume_state`,
     // see that method's own doc for the full live-confirmed root cause.
+    /// True only for the purely viscous branch. The elastoviscoplastic
+    /// branch keeps a real deviatoric elastic strain in `F`, so it is not a
+    /// strict WC-MPM liquid any more and must not claim to be one: that
+    /// claim is what `Simulation::assert_strict_fluid_mode_is_supported`
+    /// keys off, and it is also the licence this material used to take to
+    /// isotropise `F` every substep -- which is precisely what destroyed
+    /// the stored shear strain a yield stress needs.
     fn owns_deformation_volume_state(&self) -> bool {
-        true
+        self.shear_modulus <= 0.0
+    }
+
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
+    /// Whatever the caller measured, verbatim. See the `optics` field: this
+    /// model reports coefficients, it does not identify a substance.
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        self.optics
+    }
+
+    /// The elastoviscoplastic branch has no WGSL counterpart: `params()`
+    /// uploads `ConstitutiveModel::Fluid`, and `p2g.wgsl`'s fluid arm reads
+    /// the rate of strain, not the stored elastic strain this branch keeps
+    /// in `F`. Asking for the CPU update at least keeps `F` and the plastic
+    /// state on the real yield surface every substep, exactly the
+    /// arrangement already documented for `NaccMaterial`; the stress
+    /// feeding that same substep's transfer is still the fluid one. Stated
+    /// plainly rather than left to be discovered: this branch is CPU-only
+    /// until the shader gains a matching arm.
+    fn needs_cpu_update(&self) -> bool {
+        self.shear_modulus > 0.0
     }
 
     fn params(&self) -> MaterialParams {
@@ -337,6 +554,8 @@ impl MaterialModel for BinghamFluidMaterial {
             pressure_floor: self.pressure_floor,
             dp_h0: self.settling_damping,
             bulk_viscosity: self.bulk_viscosity,
+            mu: self.shear_modulus,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
@@ -362,13 +581,52 @@ impl MaterialModel for BinghamFluidMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
+        // Elastic shear-wave bound, elastoviscoplastic branch only. Cheap
+        // next to the acoustic term for any realistic storage modulus
+        // (water-based pastes sit near G = 1e2..1e4 Pa against a derated
+        // bulk modulus orders above that), which is what makes holding a
+        // shape affordable here and not in the purely viscous branch.
+        if self.shear_modulus > 0.0 {
+            dt_bound = dt_bound.min(elastic_wave_dt(
+                0.0,
+                self.shear_modulus,
+                1.0,
+                density,
+                self.min_density,
+                cell_width,
+                material_cfl,
+            ));
+        }
+
         // Viscous diffusion bound -- apparent viscosity is at least
         // dynamic_viscosity, combined with bulk_viscosity (real regression
         // fix, external review: same gap, same fix, as
         // `NewtonianFluidMaterial::timestep_bound` -- see that file's own
         // doc for the full explicit-integrator-instability reasoning this
         // closes).
-        let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
+        //
+        // Real gap closed with the regularization fix in
+        // `deviatoric_stress`: the purely viscous branch's apparent
+        // viscosity SATURATES at `tau_0/gamma_dot_c + eta`, which can be
+        // orders above `eta` alone, and this bound ignored it completely --
+        // so the explicit step was never actually CFL-safe for the yield
+        // term it was integrating. The elastoviscoplastic branch is exempt
+        // because there the viscous term is solved implicitly inside the
+        // return mapping, so it cannot destabilise the step.
+        // `dynamic_viscosity` is dropped here for the elastoviscoplastic
+        // branch, and that is not an oversight: there it appears ONLY in
+        // the return mapping's denominator, i.e. integrated implicitly, so
+        // it cannot destabilise an explicit step and must not be allowed to
+        // shrink one. `bulk_viscosity` stays in either branch -- it is
+        // applied explicitly in `kirchhoff_stress` regardless.
+        let explicit_shear_viscosity = if self.shear_modulus > 0.0 {
+            0.0
+        } else if self.critical_shear_rate > 0.0 {
+            self.dynamic_viscosity + self.yield_stress.max(0.0) / self.critical_shear_rate
+        } else {
+            self.dynamic_viscosity
+        };
+        let combined_viscosity = explicit_shear_viscosity + self.bulk_viscosity.max(0.0);
         if combined_viscosity > 0.0 {
             let kinematic_viscosity = combined_viscosity / density;
             if kinematic_viscosity > f32::EPSILON {
@@ -400,15 +658,31 @@ mod analytical_validation_tests {
     /// zero test comparing its deviatoric response to this analytical formula
     /// directly (only whole-simulation stability checks existed).
     #[test]
-    fn below_critical_shear_rate_gives_zero_deviatoric_stress() {
+    fn below_critical_shear_rate_saturates_instead_of_discarding_the_yield_stress() {
         let mat = BinghamFluidMaterial::new(1000.0, 0.5, 5000.0, 7.0, 100.0);
         // A tiny, sub-critical shear rate: pure shear C with a small magnitude.
-        let c = Mat2::from_cols(Vec2::new(0.0, 1.0e-6), Vec2::new(1.0e-6, 0.0));
+        let rate = 1.0e-6;
+        let c = Mat2::from_cols(Vec2::new(0.0, rate), Vec2::new(rate, 0.0));
         let tau = mat.deviatoric_stress(c);
-        assert_eq!(
-            tau,
-            Mat2::ZERO,
-            "sub-critical shear rate must give exactly zero deviatoric stress (rigid plug)"
+
+        // This used to assert exactly `Mat2::ZERO`, encoding the very
+        // shortcut that made a resting Bingham fluid behave like an
+        // inviscid liquid. The regularized law saturates the apparent
+        // viscosity at `tau_0/gamma_dot_c + eta` instead, so the stress
+        // stays proportional to the rate with that capped coefficient --
+        // small, but present and pointing the right way.
+        let expected_eta = mat.yield_stress / mat.critical_shear_rate + mat.dynamic_viscosity;
+        // tau = 2 * eta_app * D_dev, and for this C the deviatoric strain
+        // rate has off-diagonal `rate` and zero trace.
+        let expected_xy = 2.0 * expected_eta * rate;
+        assert!(
+            (tau.x_axis.y - expected_xy).abs() < 1.0e-4 * expected_xy.abs().max(1.0),
+            "sub-critical stress must follow the saturated viscosity: got {} expected {expected_xy}",
+            tau.x_axis.y
+        );
+        assert!(
+            tau.x_axis.y > 0.0,
+            "a yield-stress fluid must still resist at a sub-critical rate"
         );
     }
 
@@ -608,6 +882,125 @@ mod volume_integration_tests {
             (j - expected).abs() / expected < 1.0e-4,
             "constant dilation over {N} substeps must match J_old*exp(N*dt*2k) exactly \
              (continuity equation's own solution for constant C) -- got {j}, expected {expected}"
+        );
+    }
+}
+
+/// Does the elastoviscoplastic branch actually reproduce the Bingham line,
+/// `tau = tau_0 + eta * gamma_dot`, rather than merely looking viscoplastic?
+/// Driven directly through `update_particle` at a fixed shear rate until the
+/// elastic strain stops growing, then read off the stress the material
+/// really carries.
+#[cfg(test)]
+mod elastoviscoplastic_tests {
+    use super::*;
+    use crate::particle::Particles;
+
+    fn material(yield_stress: f32, viscosity: f32, shear_modulus: f32) -> BinghamFluidMaterial {
+        let mut m = BinghamFluidMaterial::new(1.0, viscosity, 1000.0, 7.0, yield_stress);
+        m.shear_modulus = shear_modulus;
+        m
+    }
+
+    /// Shear at a constant rate for long enough that the elastic strain
+    /// saturates, and report the equivalent deviatoric stress in the plain
+    /// rheological (second-invariant) measure the yield stress is stated in.
+    fn steady_shear_stress(mat: &BinghamFluidMaterial, shear_rate: f32, dt: f32) -> f32 {
+        // Simple shear: gamma_dot = sqrt(2 D_dev : D_dev) with
+        // D = (C + C^T)/2, so C = [[0, gamma_dot], [0, 0]] gives exactly
+        // this scalar rate.
+        let c = Mat2::from_cols(Vec2::new(0.0, 0.0), Vec2::new(shear_rate, 0.0));
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.velocity_gradient = c;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        let mut particles = Particles::from(vec![p]);
+        for _ in 0..20_000 {
+            particles.velocity_gradient[0] = c;
+            mat.update_particle(&mut particles.update_ctx(0), dt);
+        }
+        let tau_dev = mat.hencky_deviatoric_stress(particles.deformation_gradient[0]);
+        // Second invariant: sqrt(tau_dev : tau_dev / 2).
+        let frobenius_sq = tau_dev.x_axis.length_squared() + tau_dev.y_axis.length_squared();
+        (0.5 * frobenius_sq).sqrt()
+    }
+
+    #[test]
+    fn steady_simple_shear_lands_on_the_bingham_line() {
+        let (tau0, eta) = (100.0, 2.0);
+        let mat = material(tau0, eta, 5000.0);
+        for shear_rate in [0.5f32, 2.0, 8.0] {
+            let measured = steady_shear_stress(&mat, shear_rate, 1.0e-4);
+            let predicted = tau0 + eta * shear_rate;
+            let error = (measured - predicted).abs() / predicted;
+            println!(
+                "gamma_dot={shear_rate:>4}  measured={measured:8.3} Pa  bingham_line={predicted:8.3} Pa  err={:.2}%",
+                error * 100.0
+            );
+            assert!(
+                error < 0.05,
+                "gamma_dot={shear_rate}: measured {measured:.3} Pa vs Bingham line {predicted:.3} Pa ({:.1}% off)",
+                error * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn zero_viscosity_recovers_perfect_plasticity_at_the_yield_stress() {
+        let mat = material(100.0, 0.0, 5000.0);
+        let measured = steady_shear_stress(&mat, 4.0, 1.0e-4);
+        assert!(
+            (measured - 100.0).abs() < 1.0,
+            "with no viscosity the stress must sit on tau_0 itself, measured {measured:.3} Pa"
+        );
+    }
+
+    /// The property the purely viscous branch structurally cannot have: a
+    /// deviatoric stress that survives after the motion stops.
+    #[test]
+    fn stored_shear_stress_survives_when_the_motion_stops() {
+        let mat = material(100.0, 2.0, 5000.0);
+        let c = Mat2::from_cols(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0));
+        let mut p = Particle::zeroed();
+        p.deformation_gradient = Mat2::IDENTITY;
+        p.mass = 1.0;
+        p.initial_volume = 1.0;
+        let mut particles = Particles::from(vec![p]);
+        for _ in 0..2_000 {
+            particles.velocity_gradient[0] = c;
+            mat.update_particle(&mut particles.update_ctx(0), 1.0e-4);
+        }
+        // Now stop dead and keep stepping: a rate-based law drops to zero
+        // stress immediately, a stored-strain law does not.
+        for _ in 0..2_000 {
+            particles.velocity_gradient[0] = Mat2::ZERO;
+            mat.update_particle(&mut particles.update_ctx(0), 1.0e-4);
+        }
+        let tau_dev = mat.hencky_deviatoric_stress(particles.deformation_gradient[0]);
+        let frobenius_sq = tau_dev.x_axis.length_squared() + tau_dev.y_axis.length_squared();
+        let held = (0.5 * frobenius_sq).sqrt();
+        assert!(
+            held > 90.0,
+            "at rest the material must still carry close to its yield stress, held {held:.3} Pa"
+        );
+    }
+
+    /// The purely viscous branch, for contrast: same yield stress, no
+    /// storage modulus, and nothing left once the motion stops. Kept as a
+    /// test rather than prose so the limitation stays measured.
+    #[test]
+    fn purely_viscous_branch_carries_nothing_at_rest() {
+        let mat = material(100.0, 2.0, 0.0);
+        let at_rest = mat.deviatoric_stress(Mat2::ZERO);
+        assert_eq!(
+            at_rest,
+            Mat2::ZERO,
+            "a rate-based Bingham fluid has no stress at zero rate; this is the model's own limit"
+        );
+        assert!(
+            mat.owns_deformation_volume_state(),
+            "the purely viscous branch stays a strict WC-MPM liquid"
         );
     }
 }

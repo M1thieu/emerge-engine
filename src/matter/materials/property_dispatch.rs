@@ -240,6 +240,11 @@ impl Fluid {
                     eta_pa_s: self.eta_pa_s,
                     bulk_modulus_pa: self.bulk_modulus_pa,
                     yield_stress_pa: tau0,
+                    // `Fluid` describes a liquid, and a liquid has no
+                    // storage modulus. Reaching the elastoviscoplastic
+                    // branch is a deliberate act via `BinghamProps`, not
+                    // something the liquid route turns on behind the caller.
+                    shear_modulus_pa: 0.0,
                 },
                 config,
             )),
@@ -247,6 +252,15 @@ impl Fluid {
     }
 
     /// See `Elastic::particle_mass`.
+    pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
+        self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
+    }
+}
+
+impl BinghamProps {
+    /// See `Elastic::particle_mass`. Present for the same reason as every
+    /// other family's: a caller building this material directly (rather
+    /// than through `Fluid::material`) still needs its real particle mass.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
     }
@@ -277,6 +291,7 @@ forward_particle_mass!(
     NoCompression,
     FluidGranular,
     Fluid,
+    BinghamProps,
 );
 
 #[cfg(test)]

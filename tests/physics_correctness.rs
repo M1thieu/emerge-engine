@@ -19,12 +19,12 @@ use emerge::{
     ThermalStatsPlugin, collect_snapshot,
 };
 use emerge::{
-    BinghamFluidMaterial, BoilingMixtureMaterial, BoundaryImpulseExperiment, CavitatingEosParams,
-    CavitatingEosTable, CavitatingFluidMaterial, CorotatedMaterial, DruckerPragerMaterial,
-    GranularFluidMaterial, IsothermalCavitatingFluidMaterial, MaterialRegistry,
-    MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
-    NoCompressionMaterial, RankineMaterial, SimConfig, Simulation, SpawnRegion, StomakhinMaterial,
-    ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
+    BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BoundaryImpulseExperiment,
+    CavitatingEosParams, CavitatingEosTable, CavitatingFluidMaterial, CorotatedMaterial,
+    DruckerPragerMaterial, FromSI, GranularFluidMaterial, IsothermalCavitatingFluidMaterial,
+    MaterialRegistry, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial,
+    NewtonianFluidMaterial, NoCompressionMaterial, RankineMaterial, SimConfig, Simulation,
+    SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
 };
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
@@ -1549,82 +1549,128 @@ fn sand_mui_friction_stays_in_range() {
 
 // â”€â”€â”€ Bingham fluid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-/// Bingham mud stays above floor without collapsing (yield stress holds shape under gravity).
+/// Builds a yield-stress material from real units for the scenes below.
 ///
-/// Real, honest status (2026-08-10): this scene genuinely blows up under
-/// full real gravity (J into the billions), only caught once `check_j_range`
-/// started asserting on strict fluids. THREE real, principled fixes tried,
-/// ALL insufficient: `fluid_step_retry_enabled` alone still hits an even
-/// more extreme secondary blowup (log J > 100, a DIFFERENT assertion in
-/// `fluid_state.rs`); adding `fluid_pressure_iterations` (real, exact DCT
-/// pressure projection) made it WORSE (more panics, negative log J too);
-/// raising `max_substeps_per_step` from 64 to 2000 changed NOTHING --
-/// identical panic, identical log J values (104.5668 / 99.837585) down to
-/// the last digit, real proof the solver never even tried to use more
-/// substeps than it already was, so this was never a substep-budget
-/// problem at all.
+/// Closes the gap `bingham_mud_stable_under_gravity`'s own doc identified
+/// and left open: those scenes passed SI-looking numbers straight in as
+/// grid units under a `SimConfig::standard` whose `dx_meters` and
+/// `dt_seconds` are both 1.0, so a 100 Pa yield stress silently became 100
+/// grid units and no amount of substep budget could integrate it. The doc
+/// called for "a real SI-conversion pass for this exact test"; this is it.
 ///
-/// Real, most-likely root cause found while investigating (not yet
-/// confirmed by a fix, but a genuine, specific lead, not a shrug):
-/// `SimConfig::standard(64, 0.05, ...)` never sets `dx_meters`/`dt_seconds`
-/// (both default to 1.0), so `BinghamFluidMaterial::high_yield`'s real-
-/// looking SI numbers (rest_density=1500 kg/m^3, eos_stiffness=1.0e4 Pa,
-/// yield_stress=100 Pa via `Self::new`) are used DIRECTLY as raw grid units,
-/// never passed through `stress_from_si`/`gravity_to_grid` -- the EXACT
-/// same class of unit-consistency gap `diag_wcsph_unit_consistency_sweep_
-/// under_full_real_gravity` (this same file) exists to audit for other
-/// materials. This scene was very possibly never correctly calibrated,
-/// not destabilized by anything recent -- a real SI-conversion pass for
-/// this exact test, mirroring that sweep test's own method, is the
-/// concrete next step, not another config-flag guess.
-#[ignore = "real, deep instability under full gravity -- 3 real fixes tried (retry, retry+real pressure, higher substep cap), all insufficient/no-effect; likely root cause found (raw grid-unit params never SI-converted, same class of gap the WCSPH sweep test audits) but not yet fixed -- needs a real SI-conversion pass, not another guess"]
-#[test]
-fn bingham_mud_stable_under_gravity() {
-    let config = SimConfig {
-        fluid_step_retry_enabled: true,
-        ..SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81))
+/// The storage modulus comes from a 5% yield strain, the band real
+/// yield-stress fluids measure in, and it is what lets these scenes hold a
+/// shape at all -- see `BinghamFluidMaterial::shear_modulus`.
+fn si_bingham(
+    config: &SimConfig,
+    rho_kg_m3: f32,
+    eta_pa_s: f32,
+    yield_stress_pa: f32,
+    fall_height_m: f32,
+) -> (BinghamProps, BinghamFluidMaterial) {
+    // Weakly-compressible sound-speed derating (Monaghan 1994), taken from
+    // the scene's own fastest attainable speed rather than a tuned number.
+    let v_max = (2.0 * 9.81 * fall_height_m).sqrt();
+    let props = BinghamProps {
+        rho_kg_m3,
+        eta_pa_s,
+        bulk_modulus_pa: rho_kg_m3 * (10.0 * v_max).powi(2),
+        yield_stress_pa,
+        shear_modulus_pa: yield_stress_pa / 0.05,
     };
-    let mut solver = Simulation::new(config, center_spawn(64, 8))
-        .with_default_material(Box::new(BinghamFluidMaterial::high_yield(1500.0, 1.0e4)));
-    solver.step_n(60);
+    let material = BinghamFluidMaterial::from_physical(&props, config);
+    (props, material)
+}
+
+/// A yield stress is what keeps mud from spreading into a puddle: a block
+/// of it resting under full real gravity must keep its own thickness
+/// instead of flowing out flat, and the thickness it keeps must be the one
+/// its yield stress predicts.
+///
+/// Previously `#[ignore]`d for a "real, deep instability under full
+/// gravity" after three fixes failed. The instability was neither deep nor
+/// mysterious: the scene was never in real units at all (see `si_bingham`),
+/// and separately this material's timestep bound ignored the yield term
+/// entirely, so the step it took was never CFL-safe for the stress it was
+/// integrating. Both are fixed at the source; the scene now runs.
+#[test]
+fn bingham_mud_stays_standing_under_gravity() {
+    const GRID: usize = 64;
+    const DX_M: f32 = 0.002;
+    const FLOOR: f32 = 2.0;
+    const SIDE: i32 = 8;
+    // Wet mud, upper end of the 50-500 Pa band this material's own doc
+    // lists. A deposit stops spreading near tau_0 / (rho g) = 34 mm, which
+    // is more than this 16 mm block is tall, so a real yield stress of this
+    // size must hold the block essentially intact.
+    let config = SimConfig::earth(GRID, DX_M, 0.005);
+    let (props, material) = si_bingham(&config, 1500.0, 0.5, 500.0, 0.02);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(SIDE, SIDE),
+        box_center: Vec2::new(GRID as f32 * 0.5, FLOOR + SIDE as f32 * 0.5),
+        initial_velocity_scale: 0.0,
+        precompute_initial_volumes: true,
+        ..SpawnRegion::for_sim(&config)
+    }
+    .mass_from(&props, &config);
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(material))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+    let width = |s: &Simulation| {
+        let xs = s.particles().iter().map(|p| p.x.x);
+        let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        hi - lo
+    };
+    let initial_width = width(&solver);
+    solver.step_n(200);
+
     for p in solver.particles() {
+        assert!(p.x.is_finite() && p.v.is_finite(), "mud particle NaN");
         assert!(
             p.x.y > 1.0,
             "mud particle fell through floor: y={:.3}",
             p.x.y
         );
-        assert!(p.x.is_finite(), "mud particle position NaN");
-        assert!(p.v.is_finite(), "mud particle velocity NaN");
-    }
-}
-
-/// Bingham J > 0 invariant.
-///
-/// Same real, unresolved instability as `bingham_mud_stable_under_gravity`
-/// above (identical scene) -- see that test's own doc for the full story.
-#[ignore = "same real, deep instability as bingham_mud_stable_under_gravity -- see that test's own doc"]
-#[test]
-fn bingham_j_positive() {
-    let config = SimConfig {
-        fluid_step_retry_enabled: true,
-        ..SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81))
-    };
-    let mut solver = Simulation::new(config, center_spawn(64, 8))
-        .with_default_material(Box::new(BinghamFluidMaterial::high_yield(1500.0, 1.0e4)));
-    solver.step_n(60);
-    for p in solver.particles() {
         let j = p.deformation_gradient.determinant();
-        assert!(j > 0.0, "Bingham J={j:.4} â‰¤ 0 â€” volume collapsed");
+        assert!(j > 0.0, "mud J={j:.4} <= 0, volume collapsed");
     }
+
+    let top = solver
+        .particles()
+        .iter()
+        .map(|p| p.x.y)
+        .fold(f32::MIN, f32::max);
+    let height_mm = (top - FLOOR) * DX_M * 1000.0;
+    let final_width = width(&solver);
+    println!(
+        "mud tau_0=500 Pa: {height_mm:.2} mm tall, spread {:.2} -> {:.2} cells",
+        initial_width, final_width
+    );
+    assert!(
+        height_mm > 0.6 * SIDE as f32 * DX_M * 1000.0,
+        "a 500 Pa yield stress must hold the block up, kept {height_mm:.2} of {:.2} mm",
+        SIDE as f32 * DX_M * 1000.0
+    );
+    assert!(
+        final_width < 1.5 * initial_width,
+        "and must stop it spreading, {initial_width:.2} -> {final_width:.2} cells"
+    );
 }
 
 /// Bingham lava: higher yield/viscosity than mud, still stable.
 #[test]
 fn bingham_lava_stable() {
-    let config = SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81));
-    let mut solver = Simulation::new(config, center_spawn(64, 6)).with_default_material(Box::new(
-        BinghamFluidMaterial::viscous_high_yield(2700.0, 1.0e5),
-    ));
+    const GRID: usize = 64;
+    let config = SimConfig::earth(GRID, 0.01, 0.005);
+    // Basaltic lava in real units: 2700 kg/m3, tau_0 = 1000 Pa, eta = 500
+    // Pa.s, all inside the bands `BinghamFluidMaterial`'s own doc lists.
+    let (props, material) = si_bingham(&config, 2700.0, 500.0, 1000.0, 0.3);
+    let spawn = center_spawn(GRID, 6).mass_from(&props, &config);
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(material))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
     solver.step_n(40);
     for p in solver.particles() {
         assert!(p.x.is_finite() && p.v.is_finite(), "lava particle NaN");
@@ -1650,10 +1696,11 @@ fn bingham_lava_survives_hard_impact() {
     const FLOOR: f32 = 2.0;
     let gravity = Vec2::new(0.0, -9.81);
     let config = SimConfig {
-        max_substeps_per_step: 64,
+        max_substeps_per_step: 128,
         fluid_step_retry_enabled: true,
-        ..SimConfig::standard(GRID, 0.02, gravity)
+        ..SimConfig::earth(GRID, 0.02, 0.005)
     };
+    let _ = gravity;
 
     let side = 6i32;
     let drop_height = 20.0;
@@ -1666,10 +1713,9 @@ fn bingham_lava_survives_hard_impact() {
         ..SpawnRegion::for_sim(&config)
     };
 
+    let (_, material) = si_bingham(&config, 2700.0, 500.0, 1000.0, drop_height * 0.02);
     let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(BinghamFluidMaterial::viscous_high_yield(
-            2700.0, 1.0e5,
-        )))
+        .with_default_material(Box::new(material))
         .with_boundary(Box::new(SlipBoundary::new(2)));
 
     for _ in 0..250 {
@@ -4076,7 +4122,15 @@ fn pressure_trends_upward_with_depth<M: MaterialModel + Clone + 'static>(materia
 /// documented preset range, not an arbitrary fudge to force a pass.
 #[test]
 fn bingham_pressure_trends_upward_with_depth() {
-    pressure_trends_upward_with_depth(BinghamFluidMaterial::new(4.0, 1.0e-3, 200.0, 7.0, 1.0));
+    // Grid-native on purpose: this shared helper builds its own
+    // `SimConfig::standard`, so these are already grid units and must not
+    // be read as pascals. The storage modulus is what keeps the scene
+    // integrable -- without it the yield term's own regularized viscosity
+    // sets the timestep, which is the real cost this material's
+    // `timestep_bound` now reports instead of hiding.
+    let mut material = BinghamFluidMaterial::new(4.0, 1.0e-3, 200.0, 7.0, 1.0);
+    material.shear_modulus = 20.0;
+    pressure_trends_upward_with_depth(material);
 }
 
 #[test]
@@ -9847,5 +9901,121 @@ fn boiling_mixture_confined_column_spatial_convergence() {
         e_coarse.e_rho,
         e_mid.e_rho,
         e_fine.e_rho,
+    );
+}
+
+/// A yield-stress fluid's defining macroscopic behaviour: released from
+/// rest, a column collapses only until its own weight can no longer shear
+/// it, and a larger yield stress stops it sooner. This is the slump test
+/// (ASTM C143 in its concrete form), and it is the scene-level counterpart
+/// to the constitutive check in `bingham.rs`'s own test module.
+///
+/// The bar is deliberately ordinal rather than a single absolute height:
+/// the closed-form deposit relation `h^2 = 2 (tau_0 / rho g) L` (Liu & Mei,
+/// J. Fluid Mech. 207, 1989) assumes a thin, wide deposit, which the
+/// stiffest column is specifically designed not to be. What must hold for
+/// any yield stress at all to be present is that the deposits order by
+/// tau_0 and that the stiffest one genuinely stays standing.
+#[test]
+fn yield_stress_columns_slump_in_order_of_their_yield_stress() {
+    use emerge::{
+        BinghamFluidMaterial, BinghamProps, FromSI, SimConfig, SlipBoundary, SpawnRegion,
+    };
+    use glam::{IVec2, Vec2};
+
+    const GRID: usize = 64;
+    const DX_M: f32 = 0.002;
+    const DT_S: f32 = 0.002;
+    const RHO: f32 = 1000.0;
+    const ETA: f32 = 0.5;
+    const FLOOR: f32 = 2.0;
+    const COLUMN: IVec2 = IVec2::new(4, 20);
+    // Yield strain tau_0/G, the one material-class constant tied across all
+    // three columns. Real yield-stress fluids measure in the 1-10% band, so
+    // 5% is inside it and stated rather than fitted.
+    const YIELD_STRAIN: f32 = 0.05;
+    let yields = [2.0f32, 60.0, 400.0];
+
+    let mut config = SimConfig {
+        min_dt: 1.0e-5,
+        max_substeps_per_step: 256,
+        ..SimConfig::earth(GRID, DX_M, DT_S)
+    };
+    config.grid_res = GRID;
+
+    // Weakly-compressible derating (Monaghan 1994) from the scene's own
+    // fastest attainable speed, not a tuned constant.
+    let v_max = (2.0 * 9.81 * COLUMN.y as f32 * DX_M).sqrt();
+    let bulk_modulus = RHO * (10.0 * v_max).powi(2);
+
+    let mut heights = Vec::new();
+    for (slot, tau0) in yields.iter().enumerate() {
+        let props = BinghamProps {
+            rho_kg_m3: RHO,
+            eta_pa_s: ETA,
+            bulk_modulus_pa: bulk_modulus,
+            yield_stress_pa: *tau0,
+            shear_modulus_pa: tau0 / YIELD_STRAIN,
+        };
+        let material = BinghamFluidMaterial::from_physical(&props, &config);
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: COLUMN,
+            box_center: Vec2::new(32.0, FLOOR + COLUMN.y as f32 * 0.5),
+            material_id: 0,
+            precompute_initial_volumes: true,
+            initial_velocity_scale: 0.0,
+            ..SpawnRegion::for_sim(&config)
+        }
+        .mass_from(&props, &config);
+
+        let mut sim = Simulation::new(config, spawn)
+            .with_default_material(Box::new(material))
+            .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+
+        for _ in 0..500 {
+            sim.step();
+        }
+
+        let top = sim
+            .particles()
+            .iter()
+            .map(|p| p.x.y)
+            .fold(f32::MIN, f32::max);
+        let height_mm = (top - FLOOR).max(0.0) * DX_M * 1000.0;
+        let (lo, hi) = sim
+            .particles()
+            .iter()
+            .map(|p| p.x.x)
+            .fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+        let half_width_mm = (hi - lo) * 0.5 * DX_M * 1000.0;
+        // Roussel & Coussot's inversion: read the yield stress back out of
+        // the pile it produced.
+        let tau_measured =
+            RHO * 9.81 * (height_mm * 1.0e-3).powi(2) / (2.0 * (half_width_mm * 1.0e-3).max(1e-9));
+        let finite = sim.particles().iter().all(|p| p.x.is_finite());
+        assert!(finite, "tau_0={tau0} Pa produced non-finite positions");
+        println!(
+            "tau_0={tau0:>5} Pa  G={:>7.0} Pa  h={height_mm:6.2} mm  L={half_width_mm:6.2} mm  inverted tau_0={tau_measured:7.1} Pa",
+            tau0 / YIELD_STRAIN
+        );
+        heights.push(height_mm);
+        let _ = slot;
+    }
+
+    assert!(
+        heights[1] > heights[0] && heights[2] > heights[1],
+        "deposit height must increase with yield stress, measured {heights:?} mm"
+    );
+    let initial_mm = COLUMN.y as f32 * DX_M * 1000.0;
+    assert!(
+        heights[2] > 0.5 * initial_mm,
+        "the stiffest column must still be standing, kept {:.2} of {initial_mm:.2} mm",
+        heights[2]
+    );
+    assert!(
+        heights[0] < 0.25 * initial_mm,
+        "the weakest column must genuinely collapse, kept {:.2} of {initial_mm:.2} mm",
+        heights[0]
     );
 }

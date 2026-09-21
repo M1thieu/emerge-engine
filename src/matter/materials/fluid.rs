@@ -99,10 +99,20 @@ pub struct NewtonianFluidMaterial {
     /// is 4182 at 25 C (CRC Handbook); set it the same way `bulk_viscosity`
     /// and `pressure_floor` are set, after construction.
     pub specific_heat_j_kg_k: f32,
-    /// Set when this fluid IS water, so the renderer can use water's real
-    /// measured absorption spectrum (Pope & Fry 1997) instead of a palette
-    /// entry. Off by default: a Newtonian fluid is a model, not a substance.
-    pub optical_water: bool,
+    /// Measured optical coefficients for this material, or `None` when the
+    /// caller has not supplied any.
+    ///
+    /// Deliberately NOT a substance flag. A material model never decides
+    /// that it "is water" because its numbers happen to look like water's;
+    /// it carries whatever measured absorption and scattering the caller
+    /// declares, and a name for the result is a label applied on top, never
+    /// a branch inside the physics. `matter::materials::optical` holds the
+    /// measured datasets to fill this with (`pure_water`, `dry_quartz_sand`,
+    /// ...); anything else measured is equally valid here.
+    ///
+    /// `None` is the honest default: no spectrum was measured, so the
+    /// renderer is told nothing rather than being handed an invented one.
+    pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
     pub min_density: f32,
     pub min_volume: f32,
     /// Thermal thinning: µ_eff = dynamic_viscosity · exp(−thermal_viscosity_coeff · T).
@@ -152,7 +162,7 @@ impl NewtonianFluidMaterial {
             eos_power,
             pressure_floor: -0.1,
             specific_heat_j_kg_k: 0.0,
-            optical_water: false,
+            optics: None,
             min_density: 1.0e-6,
             min_volume: 1.0e-6,
             thermal_viscosity_coeff: 0.0,
@@ -615,13 +625,10 @@ impl MaterialModel for NewtonianFluidMaterial {
         Some((1.0 + pressure / self.eos_stiffness).powf(-1.0 / self.eos_power))
     }
 
-    /// Declared when this fluid is water, which is what `optical_water`
-    /// records. Left `None` otherwise: a Newtonian fluid is not necessarily
-    /// water, and inventing an absorption spectrum for an unspecified liquid
-    /// would be exactly the painting this exists to remove.
+    /// Whatever the caller measured, verbatim. See the `optics` field: this
+    /// model reports coefficients, it does not identify a substance.
     fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
-        self.optical_water
-            .then(crate::matter::materials::optical::pure_water)
+        self.optics
     }
 
     fn params(&self) -> MaterialParams {

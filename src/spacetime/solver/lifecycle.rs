@@ -538,6 +538,29 @@ impl Simulation {
         self.config.gravity = gravity;
     }
 
+    /// Live-tunable duration of one `step()` call, in seconds -- same
+    /// precedent as [`Self::set_gravity`].
+    ///
+    /// This is a frame-budget control, not a physics one. Adaptive
+    /// substepping already fixes how much simulated time one CFL-safe
+    /// substep may advance, so halving this halves both the substeps a
+    /// frame costs and the simulated time it shows, at identical
+    /// per-substep fidelity. It buys frame rate and slower motion, not
+    /// accuracy in either direction. Total work for a given simulated
+    /// duration is unchanged.
+    ///
+    /// `dt_seconds` moves with it so the legacy, timestep-dependent SI
+    /// conversions stay self-consistent. A material built through the
+    /// `*_from_si_physical` family is unaffected either way: that family
+    /// deliberately does not read `dt_seconds`. A material built through
+    /// the older `*_from_si` family was scaled once at construction and
+    /// will NOT rescale, so change this before building such a material,
+    /// or rebuild it afterwards.
+    pub const fn set_step_duration(&mut self, dt_seconds: f32) {
+        self.config.dt = dt_seconds;
+        self.config.dt_seconds = dt_seconds;
+    }
+
     /// Live-tunable Cundall (1982) non-viscous damping coefficient, same
     /// precedent as `set_gravity` -- lets a caller phase-gate it (e.g. off
     /// while material is actively falling/impacting, on once it should

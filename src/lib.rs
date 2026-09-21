@@ -81,7 +81,7 @@ pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport, Simulation};
 
 // Materials
 pub use materials::{
-    BinghamFluidMaterial, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
+    BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
     CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
     CorotatedMaterial, DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
     GranularFluidMaterial, IdealGasMaterial, IdealGasPhysicalParams,

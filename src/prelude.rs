@@ -13,6 +13,7 @@ pub use crate::{
     ActivationStatsPlugin,
     // Materials -- all seventeen (*Material types only)
     BinghamFluidMaterial,
+    BinghamProps,
     // Queries + density field export
     BodyState,
     BoilingMixtureMaterial,

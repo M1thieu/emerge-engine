@@ -658,7 +658,7 @@ fn make_sim_data(
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
     // This fluid IS water, so it declares water's own measured optical
     // constants. The renderer adopts them; no colour is chosen anywhere.
-    water.optical_water = true;
+    water.optics = Some(emerge::materials::optical::pure_water());
     // Liquid water at 25 C, CRC Handbook. Lets frictional dissipation become
     // a real temperature rise rather than only being accounted for.
     water.specific_heat_j_kg_k = 4182.0;

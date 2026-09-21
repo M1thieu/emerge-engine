@@ -402,12 +402,26 @@ pub(super) struct NewtonianFluid {
     pub bulk_modulus_pa: f32,
 }
 
+/// Real-unit properties for `BinghamFluidMaterial`.
+///
+/// `pub` for the same reason as `BrittleProps`: `Fluid::material` returns a
+/// `Box<dyn MaterialModel>`, so a caller that needs to set a field the SI
+/// family does not carry (`optics`, `specific_heat_j_kg_k`, surface
+/// tension) has no way to reach the concrete material through that route.
+/// Building it directly -- `BinghamFluidMaterial::from_physical(&props,
+/// &config)` -- keeps every rheological parameter in real pascals and still
+/// hands back the concrete type.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct BinghamProps {
+pub struct BinghamProps {
     pub rho_kg_m3: f32,
     pub eta_pa_s: f32,
     pub bulk_modulus_pa: f32,
     pub yield_stress_pa: f32,
+    /// Storage modulus G' `[Pa]` below the yield point. `0.0` keeps the
+    /// classical purely-viscous Bingham fluid, which cannot hold a shape at
+    /// rest; a positive value selects the elastoviscoplastic form that can.
+    /// See `BinghamFluidMaterial::shear_modulus`.
+    pub shear_modulus_pa: f32,
 }
 
 // ── Scaling helpers (pub(super) -- used by material impls) ─────────────────────
