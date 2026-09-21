@@ -1,0 +1,50 @@
+
+running 1 test
+test wall_touching_column_stays_stable_after_divergence_fix ... PRESSURE_DEBUG box=(23x61) mass_avg=0.087000 alpha_const=11.494265 rhs=[0.000000,0.000000]
+PRESSURE_DEBUG solved pressure=[0.000000,0.000000] surface_cells=131/1403
+step   1: non_finite=0 oob=0 max_speed=   0.294 J=[1.0000,1.0000]
+PRESSURE_DEBUG box=(23x61) mass_avg=0.085418 alpha_const=11.707111 rhs=[-0.000000,0.000000]
+PRESSURE_DEBUG solved pressure=[-0.000000,0.000000] surface_cells=131/1403
+PRESSURE_DEBUG box=(23x61) mass_avg=0.085418 alpha_const=11.707105 rhs=[-0.000000,0.000000]
+PRESSURE_DEBUG solved pressure=[-0.000000,0.000000] surface_cells=130/1403
+PRESSURE_DEBUG box=(23x61) mass_avg=0.085418 alpha_const=11.707141 rhs=[-0.000000,0.000000]
+PRESSURE_DEBUG solved pressure=[-0.000000,0.000000] surface_cells=130/1403
+PRESSURE_DEBUG box=(23x61) mass_avg=0.085418 alpha_const=11.707127 rhs=[-0.000000,0.000000]
+PRESSURE_DEBUG solved pressure=[-0.000000,0.000000] surface_cells=130/1403
+PRESSURE_DEBUG box=(23x61) mass_avg=0.085418 alpha_const=11.707124 rhs=[-0.000000,0.000001]
+PRESSURE_DEBUG solved pressure=[-0.000001,0.000000] surface_cells=130/1403
+PRESSURE_DEBUG box=(23x60) mass_avg=0.087000 alpha_const=11.494243 rhs=[-0.000001,0.000002]
+PRESSURE_DEBUG solved pressure=[-0.000002,0.000001] surface_cells=131/1380
+PRESSURE_DEBUG box=(23x60) mass_avg=0.086699 alpha_const=11.534163 rhs=[-0.000007,0.000008]
+PRESSURE_DEBUG solved pressure=[-0.000010,0.000010] surface_cells=130/1380
+PRESSURE_DEBUG box=(23x60) mass_avg=0.083058 alpha_const=12.039711 rhs=[-1.324376,0.000065]
+PRESSURE_DEBUG solved pressure=[-1.355000,1.960987] surface_cells=131/1380
+PRESSURE_DEBUG box=(24x60) mass_avg=0.082602 alpha_const=12.106226 rhs=[-3.261358,11.724574]
+PRESSURE_DEBUG solved pressure=[-10.498055,6.527927] surface_cells=131/1440
+PRESSURE_DEBUG box=(25x62) mass_avg=0.079881 alpha_const=12.518637 rhs=[-9.330799,93.267365]
+PRESSURE_DEBUG solved pressure=[-96.966331,65.460709] surface_cells=130/1550
+PRESSURE_DEBUG box=(26x64) mass_avg=0.077413 alpha_const=12.917732 rhs=[-708.015259,944.920837]
+PRESSURE_DEBUG solved pressure=[-531.859985,446.453552] surface_cells=140/1664
+PRESSURE_DEBUG box=(26x64) mass_avg=0.076780 alpha_const=13.024167 rhs=[-3922.752197,3198.032227]
+PRESSURE_DEBUG solved pressure=[-3586.113525,2763.721924] surface_cells=137/1664
+PRESSURE_DEBUG box=(27x64) mass_avg=0.075546 alpha_const=13.237016 rhs=[-68701.382812,81565.945312]
+PRESSURE_DEBUG solved pressure=[-20256.767578,17199.775391] surface_cells=140/1728
+PRESSURE_DEBUG box=(28x64) mass_avg=0.074350 alpha_const=13.449875 rhs=[-402597.406250,1302536.500000]
+PRESSURE_DEBUG solved pressure=[-305699.437500,200406.812500] surface_cells=140/1792
+PRESSURE_DEBUG box=(28x64) mass_avg=0.072767 alpha_const=13.742550 rhs=[-1356509.125000,2687567.000000]
+PRESSURE_DEBUG solved pressure=[-2278505.500000,1649643.750000] surface_cells=144/1792
+PRESSURE_DEBUG box=(30x64) mass_avg=0.071317 alpha_const=14.021916 rhs=[-41941680.000000,65389640.000000]
+PRESSURE_DEBUG solved pressure=[-33883204.000000,21008522.000000] surface_cells=138/1920
+
+thread 'wall_touching_column_stays_stable_after_divergence_fix' (77028) panicked at src\spacetime\solver\step.rs:342:13:
+adaptive timestep cannot advance the requested simulation time; state requires a smaller representable timestep
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    wall_touching_column_stays_stable_after_divergence_fix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

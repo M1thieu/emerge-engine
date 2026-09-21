@@ -199,10 +199,23 @@ impl Grid {
         for lx in 0..nx {
             for ly in 0..ny {
                 let pos = IVec2::new(ox + lx as i32, oy + ly as i32);
-                let v_r = self.velocity_at(pos + IVec2::new(1, 0)).x;
-                let v_l = self.velocity_at(pos - IVec2::new(1, 0)).x;
-                let v_u = self.velocity_at(pos + IVec2::new(0, 1)).y;
-                let v_d = self.velocity_at(pos - IVec2::new(0, 1)).y;
+                // AUDIT EXPERIMENT (variant C): divergence only where there is
+                // fluid; a massless neighbour reads the centre's own velocity.
+                if self.mass_at(pos) <= 0.0 {
+                    continue;
+                }
+                let own = self.velocity_at(pos);
+                let read = |q: IVec2| {
+                    if self.mass_at(q) > 0.0 {
+                        self.velocity_at(q)
+                    } else {
+                        own
+                    }
+                };
+                let v_r = read(pos + IVec2::new(1, 0)).x;
+                let v_l = read(pos - IVec2::new(1, 0)).x;
+                let v_u = read(pos + IVec2::new(0, 1)).y;
+                let v_d = read(pos - IVec2::new(0, 1)).y;
                 let div_v = (v_r - v_l) / (2.0 * h) + (v_u - v_d) / (2.0 * h);
                 rhs[lx * ny + ly] = div_v;
             }
