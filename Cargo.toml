@@ -245,6 +245,15 @@ path = "examples/cpu/basic_mui_rheology.rs"
 required-features = ["render"]
 
 [[example]]
+name = "corotated_cost_probe"
+path = "examples/cpu/corotated_cost_probe.rs"
+
+[[example]]
+name = "basic_corotated"
+path = "examples/cpu/basic_corotated.rs"
+required-features = ["render"]
+
+[[example]]
 name = "basic_bingham"
 path = "examples/cpu/basic_bingham.rs"
 required-features = ["render"]
