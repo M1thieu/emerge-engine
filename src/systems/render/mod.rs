@@ -1258,7 +1258,15 @@ impl Renderer {
         registry: &crate::materials::registry::MaterialRegistry,
     ) -> usize {
         let mut declared = 0;
-        for slot in 0..MAX_RENDER_MATERIAL_SLOTS as usize {
+        // Only the slots the registry actually has. Walking all
+        // `MAX_RENDER_MATERIAL_SLOTS` asked it for material ids that were
+        // never registered, which `MaterialRegistry::get`'s own
+        // `debug_assert` exists to catch: every debug-build scene with
+        // fewer than sixteen materials panicked here, and every release
+        // build silently read material 0's optics into the empty slots and
+        // counted them as declared.
+        let registered = (registry.len()).min(MAX_RENDER_MATERIAL_SLOTS as usize);
+        for slot in 0..registered {
             let material = registry.get(slot as u32);
             self.luminous_emission[slot] = material.luminous_emission_w_m3();
             if let Some(optics) = material.optical_properties() {

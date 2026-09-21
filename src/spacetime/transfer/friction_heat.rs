@@ -85,8 +85,14 @@ pub fn gather_friction_heat_to_particles(
         return 0.0;
     }
     heat_debt.resize(particles.len(), 0.0);
+    // Only the slots that exist. Filling the whole array unconditionally
+    // asked the registry for material ids it had never been given, and
+    // `MaterialRegistry::get`'s own `debug_assert` is there precisely to
+    // catch that -- so every debug-build scene that produced any friction
+    // heat panicked before it could deliver it.
     let mut specific_heat = [0.0f32; MAX_LOOKED_UP_MATERIALS];
-    for (id, slot) in specific_heat.iter_mut().enumerate() {
+    let registered = registry.len().min(MAX_LOOKED_UP_MATERIALS);
+    for (id, slot) in specific_heat.iter_mut().enumerate().take(registered) {
         *slot = registry.get(id as u32).specific_heat_j_kg_k();
     }
     let mut delivered_j = 0.0;
