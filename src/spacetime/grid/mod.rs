@@ -12,6 +12,8 @@
 //! struct definition can name their map types.
 
 pub mod kernel;
+#[cfg(feature = "experimental")]
+pub mod mac;
 
 mod contact;
 mod contact_normal;

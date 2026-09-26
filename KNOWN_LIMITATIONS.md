@@ -260,13 +260,53 @@ its own to explain or calm that particular runaway.
   instead of geometry. Consequence: the wall-contact column survives 120
   frames only with J at the [0.5, 2.0] safety clamp from about frame 20, so
   the frame rates quoted for it (about 30 to 90 fps on CPU, 188 fps on GPU)
-  measure cost, not a valid run. The fix is a rebuild on the standard
-  formulation: a liquid level set from the particles, solid fractions at the
-  wall's real position, a ghost-fluid free surface, consistent discrete
-  operators and a conjugate-gradient solve (Bridson, *Fluid Simulation for
-  Computer Graphics*; Batty, Bertails and Bridson 2007; Gibou et al. 2002;
-  `apic2d` as a reference implementation). The experiments and their
-  toggles live on the fork branch `archive/pressure-rhs-audit-2026-09-21`.
+  measure cost, not a valid run. The experiments and their toggles live on
+  the fork branch `archive/pressure-rhs-audit-2026-09-21`.
+
+  **The rebuild on the standard formulation is experimental and has not
+  passed its gates yet.** `grid::mac` (feature `experimental`) holds it,
+  apart from the step, which does not call it: a staggered grid, a liquid
+  level set from the particles, solid face weights, a ghost-fluid free
+  surface and a MIC(0) conjugate gradient (Bridson and Muller-Fischer 2007
+  course notes; Batty, Bertails and Bridson 2007; Zhu and Bridson; `apic2d`
+  as the reference code). Its stop criteria, in `grid/mac/gates.rs`, were
+  committed before its code and allowed two failed runs; both runs failed,
+  so the attempt stopped there. The four gate scenes and the four probes
+  that counted why are ignored tests in that file
+  (`cargo test --features experimental --lib grid::mac::gates -- --ignored
+  --nocapture`).
+
+  | scene | first run | second run |
+  | --- | --- | --- |
+  | column at rest, 0.38, 1, 2.5 g | pass | pass |
+  | droplet in free fall, 0.38, 1, 2.5 g | pass | pass |
+  | dam break | fail | fail |
+  | drop into a pool | fail | fail |
+
+  The column holds hydrostatic pressure within 0.046 cell of head, and the
+  error halves at 0.5 cm cells; the falling droplet keeps zero pressure and
+  J within 1e-5 of 1. Between the runs, two things were fixed, both derived
+  here from the conditions the solve enforces, not taken from a source. The
+  gather is quadratic along each velocity component and linear across it,
+  so the divergence a particle reads is the grid's own: deep in the liquid
+  it went from 1000 to 3000 times the grid's to equal to it, and J there now
+  stays within 2e-4 of 1 over 2 s. And a wall's closed faces hold the mirror
+  image of the flow, so the normal velocity read at a flat wall is zero:
+  crossings fell from 474 to 107 and the pool keeps every particle.
+
+  Still failing, counted by the probes in `grid/mac/gates.rs`:
+
+  - Particles that come near the free surface drift in volume, their mean
+    J between 0.96 and 1.03 over 2 s, because the velocity extrapolated
+    into the air is not divergence free and the gather reads it. The dam break
+    ends 6.7 percent off, the pool 3.4.
+  - The 107 remaining crossings are at the tank's corners, where one
+    wall's mirror is not the image across both, at up to 3.4 m/s.
+
+  Energy never rose in any run. The track goes on: after phase 7, a new
+  bounded attempt with new criteria written first, aimed at these two
+  points. Once the new projection passes, the old one (`grid/pressure.rs`)
+  is removed.
 - **Time convergence and energy lost per substep.** With APIC, a free
   elastic block keeps 0.69, 0.51 and 0.37 of its energy after the same
   physical time at 256, 1024 and 4096 steps (the exact answer is 1.0):
