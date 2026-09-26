@@ -7,6 +7,25 @@
 //! Newton-cooling-to-ambient) is real, not accidental duplication -- see
 //! each module's own docs. Only the stencil itself was hand-copied.
 
+/// Largest `D dt / dx^2` one explicit step of the 5-point scheme stays
+/// stable at. A Fourier mode of wavenumbers `(kx, ky)` is multiplied each
+/// step by `g = 1 - 4 r (sin^2(kx dx / 2) + sin^2(ky dx / 2))`, `r = D dt /
+/// dx^2`, which ranges over `[1 - 8 r, 1]`; `|g| <= 1` for every mode exactly
+/// when `r <= 1/4`. Derived from the scheme, not quoted.
+pub(crate) const FIVE_POINT_STABILITY_LIMIT: f32 = 0.25;
+
+/// How many equal explicit steps `diffusivity_dt` (`D dt` in cells
+/// squared) takes so that each stays at `fraction` of the scheme's
+/// stability limit (`FIVE_POINT_STABILITY_LIMIT`); at least one.
+pub(crate) fn stable_sub_steps(diffusivity_dt: f32, fraction: f32) -> u32 {
+    let per_step = fraction * FIVE_POINT_STABILITY_LIMIT;
+    if diffusivity_dt > 0.0 && per_step > 0.0 {
+        (diffusivity_dt / per_step).ceil().max(1.0) as u32
+    } else {
+        1
+    }
+}
+
 /// Applies one explicit-Euler diffusion step: `grid_out[c] = grid_in[c] +
 /// diffusivity_dt * laplacian(grid_in, c)`.
 ///

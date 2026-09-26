@@ -2,28 +2,35 @@
 //!
 //! Implements ∂T/∂t = α·∇²T (Fourier's law) where α = k / (ρ·c_p).
 //!
-//! # Algorithm (per substep)
+//! # Algorithm (per call)
 //! 1. **P2G** -- scatter particle temperatures (mass-weighted) to a temporary grid
 //! 2. **Normalize** -- grid_temp = grid_heat / grid_mass (mass-weighted average)
-//! 3. **Laplacian** -- explicit Euler FD: T_new = T + α·dt·∇²T
+//! 3. **Laplacian** -- explicit Euler FD, T_new = T + α·dt·∇²T; a call
+//!    longer than `stability_fraction` of the stable step runs 1 to 4 in
+//!    several equal passes
 //! 4. **G2P** -- gather temperature delta back to particles
 //!
 //! Uses the same quadratic B-spline kernel as MPM transfer for consistency.
 //!
-//! # CFL note
-//! Thermal CFL limit: dt_thermal ≤ dx² / (4α), exposed as
-//! [`ThermalConfig::stability_dt`] and folded into `choose_substep_dt`
-//! whenever a `ThermalDiffusion` is attached. For typical materials (water
-//! α≈1.4e-7 m²/s, dx=0.1m) this is ~18000s -- orders of magnitude larger
-//! than MPM's wave-speed CFL (~0.002s), so it's normally a no-op. It only
-//! bites on a real misconfiguration (e.g. passing `grid_cell_size` instead
-//! of `dx_meters`, see that field's own doc) -- enforcing it turns that from
-//! a silent runaway into an automatically clamped, still-correct substep.
+//! # Stable step
+//! The explicit step stays stable up to dt ≤ dx² / (4α)
+//! ([`ThermalConfig::stability_dt`]). `apply` splits whatever time it is
+//! given into passes within `stability_fraction` of it, so it never
+//! depends on the mechanics substep and never clamps it. For water at 1 cm
+//! the limit is minutes and `apply` takes one pass; a misconfiguration
+//! (`grid_cell_size` passed where `dx_meters` belongs, see that field's own
+//! doc) now costs passes instead of a runaway. `Simulation` applies heat
+//! once per `step()` with the time the step advanced; that one update used
+//! to run past its limit, which folding the limit into the mechanics
+//! substep did not prevent.
 
 use glam::IVec2;
 
 use super::transfer::heat_radiation;
-use crate::{grid::kernel::quadratic_weights, particle::Particles};
+use crate::{
+    grid::kernel::quadratic_weights, particle::Particles,
+    solver::config::DEFAULT_MATERIAL_CFL_COEFFICIENT,
+};
 
 /// Configuration for grid-based thermal diffusion.
 ///
@@ -121,8 +128,8 @@ impl ThermalConfig {
 
     /// Explicit-diffusion stability bound `dt ≤ dx²/(4α)`, in terms of the
     /// already-dx²-folded `alpha_grid()` (so `dt ≤ 1/(4·alpha_grid())`, no
-    /// separate `dx` argument needed). See this module's own `# CFL note`
-    /// for why this is normally a no-op and when it actually bites.
+    /// separate `dx` argument needed): `stencil::FIVE_POINT_STABILITY_LIMIT`
+    /// over the diffusivity. See this module's own `# Stable step`.
     #[inline]
     pub fn stability_dt(&self) -> f32 {
         1.0 / (4.0 * self.alpha_grid())
@@ -132,9 +139,13 @@ impl ThermalConfig {
 /// Grid-based Fourier heat diffusion.
 ///
 /// Add to `Simulation` via `solver.with_thermal(ThermalDiffusion::new(config, grid_res))`.
-/// Applied once per MPM substep, after force fields, before state projection.
+/// Applied once per `step()`, with the time the step advanced.
 pub struct ThermalDiffusion {
     pub config: ThermalConfig,
+    /// Fraction of the explicit step's stability limit each pass of `apply`
+    /// uses: the definition of `SimConfig::material_cfl_coefficient`, which
+    /// `Simulation` sets before each application.
+    pub stability_fraction: f32,
     grid_res: usize,
     // Preallocated scratch buffers -- no per-substep heap allocation.
     grid_work: Vec<f32>, // dual-use: P2G scatter (Σ w·m·T), then Laplacian output (T_new)
@@ -147,6 +158,7 @@ impl ThermalDiffusion {
         let n = grid_res * grid_res;
         Self {
             config,
+            stability_fraction: DEFAULT_MATERIAL_CFL_COEFFICIENT,
             grid_res,
             grid_work: vec![0.0; n],
             grid_mass: vec![0.0; n],
@@ -154,10 +166,29 @@ impl ThermalDiffusion {
         }
     }
 
-    /// Apply one thermal substep. Call from `Simulation::do_substep` after force fields.
-    ///
-    /// `sub_dt`: substep duration in seconds.
-    pub fn apply(&mut self, particles: &mut Particles, sub_dt: f32) {
+    /// Longest time one explicit step stays stable
+    /// ([`ThermalConfig::stability_dt`]); `None` without conduction.
+    pub fn stable_step_limit(&self) -> Option<f32> {
+        (self.config.alpha_grid() > 0.0).then(|| self.config.stability_dt())
+    }
+
+    /// Advances heat by `dt` seconds, of any length, in as many equal
+    /// passes as keep each conduction step at `stability_fraction` of its
+    /// stable step, each pass the whole way from particles to grid and
+    /// back (same reason as `ScalarDiffusionField::apply`); Newton cooling
+    /// is exact.
+    pub fn apply(&mut self, particles: &mut Particles, dt: f32) {
+        let passes = super::stencil::stable_sub_steps(
+            self.config.alpha_grid() * dt,
+            self.stability_fraction,
+        );
+        let pass_dt = dt / passes as f32;
+        for _ in 0..passes {
+            self.apply_pass(particles, pass_dt);
+        }
+    }
+
+    fn apply_pass(&mut self, particles: &mut Particles, sub_dt: f32) {
         let n = self.grid_res * self.grid_res;
         let res = self.grid_res as i32;
 
@@ -199,13 +230,13 @@ impl ThermalDiffusion {
         }
 
         // --- Laplacian: explicit Euler FD, output into grid_work ---
-        // grid_temp = T_old (read-only). grid_work = T_new (write).
-        let alpha_dt = self.config.alpha_grid() * sub_dt;
+        // grid_temp = T_old (read-only). grid_work = T_new (write). `apply`
+        // keeps `sub_dt` within the stable step.
         super::stencil::laplacian_step(
             &self.grid_temp,
             &mut self.grid_work,
             self.grid_res,
-            alpha_dt,
+            self.config.alpha_grid() * sub_dt,
             self.config.ambient,
         );
 
@@ -236,14 +267,14 @@ impl ThermalDiffusion {
             }
         }
 
-        // Newton cooling: dT/dt = −k_c·(T − T_ambient).
-        // Explicit Euler: T_new = T + sub_dt·(−k_c)·(T − ambient)
-        //               = T·(1 − k_c·sub_dt) + k_c·sub_dt·ambient
+        // Newton cooling: dT/dt = −k_c·(T − T_ambient), by its exact
+        // solution T − ambient ← (T − ambient)·exp(−k_c·dt). The explicit
+        // Euler form it replaces overshot ambient past k_c·dt = 1.
         if self.config.cooling_rate > 0.0 {
-            let decay = self.config.cooling_rate * sub_dt;
+            let kept = (-self.config.cooling_rate * sub_dt).exp();
             let ambient = self.config.ambient;
             for pi in 0..particles.len() {
-                particles.temperature[pi] += decay * (ambient - particles.temperature[pi]);
+                particles.temperature[pi] = ambient + (particles.temperature[pi] - ambient) * kept;
             }
         }
 

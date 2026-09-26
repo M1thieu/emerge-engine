@@ -1610,9 +1610,11 @@ fn thermal_stability_dt_matches_the_cited_formula() {
 /// stability bound smaller than the scene's own `dt` -- exactly the
 /// disclosed footgun `ThermalConfig::grid_cell_size`'s own doc describes
 /// (passing the wrong cell-size convention inflates `alpha_grid()` and used
-/// to blow explicit Euler into runaway temperatures). Now that
-/// `ThermalConfig::stability_dt()` is folded into the adaptive substep
-/// chooser, the same misconfiguration must stay finite and bounded instead.
+/// to blow explicit Euler into runaway temperatures). Heat now splits the
+/// time it is given into passes within its own stable step, so the same
+/// misconfiguration must stay finite and bounded. (It used to rely on the
+/// bound being folded into the mechanics substep, which did not bound the
+/// once-per-step heat update: `tests/subsystem_time_steps.rs`, gate 1.)
 #[test]
 fn thermal_misconfigured_grid_cell_size_stays_finite_under_adaptive_substep() {
     let config = SimConfig {

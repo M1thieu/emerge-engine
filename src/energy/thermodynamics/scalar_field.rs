@@ -3,12 +3,14 @@
 //! Implements ∂φ/∂t = D·∇²φ − λ·φ + S  (diffusion + first-order decay + sources)
 //! where φ is any per-particle scalar, read/written via function pointers.
 //!
-//! # Algorithm (per substep) -- identical to ThermalDiffusion
+//! # Algorithm (per call) -- identical to ThermalDiffusion
 //! 1. **Source** -- optional: inject S(p)·dt into each particle before scattering
 //! 2. **P2G** -- scatter mass-weighted φ to the grid
 //! 3. **Normalize** -- grid_φ = Σ(w·m·φ) / Σ(w·m); empty cells = ambient
-//! 4. **Laplacian FD** -- explicit Euler: φ_new = φ + dt·D·∇²φ
-//! 5. **Decay** -- φ_new *= exp(−λ·dt)  (or equivalently φ_new += −λ·φ·dt for small λ·dt)
+//! 4. **Laplacian FD** -- explicit Euler, φ_new = φ + dt·D·∇²φ; a call
+//!    longer than `stability_fraction` of the stable step runs 1 to 6 in
+//!    several equal passes
+//! 5. **Decay** -- φ_new *= exp(−λ·dt), the exact solution
 //! 6. **G2P** -- gather Δφ back to particles
 //!
 //! # Use cases
@@ -29,6 +31,7 @@ use crate::{
     grid::kernel::quadratic_weights,
     materials::{MaterialModel, registry::MaterialRegistry},
     particle::{Particle, Particles},
+    solver::config::DEFAULT_MATERIAL_CFL_COEFFICIENT,
 };
 
 /// A diffusing, decaying scalar field grid-coupled to MPM particles.
@@ -102,6 +105,12 @@ pub struct ScalarDiffusionField {
     /// participant actually needs.
     pub blend: f32,
 
+    /// Fraction of the explicit diffusion step's stability limit each pass
+    /// of `apply` uses: the definition of
+    /// `SimConfig::material_cfl_coefficient`, which `Simulation` sets before
+    /// each application.
+    pub stability_fraction: f32,
+
     grid_res: usize,
     grid_mass: Vec<f32>, // Σ(w · mass)          -- cleared each step
     grid_norm: Vec<f32>, // φ_grid (pre-Laplacian) -- needed for G2P delta
@@ -156,6 +165,7 @@ impl ScalarDiffusionField {
             set,
             source: None,
             blend: 1.0,
+            stability_fraction: DEFAULT_MATERIAL_CFL_COEFFICIENT,
             grid_res,
             grid_mass: vec![0.0; n],
             grid_norm: vec![0.0; n],
@@ -188,10 +198,34 @@ impl ScalarDiffusionField {
         self.grid_res
     }
 
-    /// Apply one substep of diffusion to the particle set.
-    ///
-    /// Call once per MPM substep, after force fields.
-    pub fn apply(&mut self, particles: &mut Particles, sub_dt: f32, materials: &MaterialRegistry) {
+    /// Longest time one explicit diffusion step stays stable,
+    /// `dx^2 / (4 D)` with `dx` one grid cell (`stencil::FIVE_POINT_
+    /// STABILITY_LIMIT`); `None` without diffusion. The decay has no limit:
+    /// it is applied by its exact solution.
+    pub fn stable_step_limit(&self) -> Option<f32> {
+        (self.config.diffusivity > 0.0)
+            .then(|| super::stencil::FIVE_POINT_STABILITY_LIMIT / self.config.diffusivity)
+    }
+
+    /// Advances the field by `dt`, of any length, in as many equal passes
+    /// as keep each diffusion step at `stability_fraction` of its stable
+    /// step; each pass goes the whole way, particles to grid, one step,
+    /// grid to particles. Splitting only the grid step, with one transfer
+    /// back for the whole time, smoothed the whole change through the
+    /// transfer kernels at once, so the result depended on how long `dt`
+    /// was (`tests/subsystem_time_steps.rs`, gate 1). `Simulation` calls it
+    /// once per `step()` with the time the step advanced; with an ordinary
+    /// diffusivity that is one pass.
+    pub fn apply(&mut self, particles: &mut Particles, dt: f32, materials: &MaterialRegistry) {
+        let passes =
+            super::stencil::stable_sub_steps(self.config.diffusivity * dt, self.stability_fraction);
+        let pass_dt = dt / passes as f32;
+        for _ in 0..passes {
+            self.apply_pass(particles, pass_dt, materials);
+        }
+    }
+
+    fn apply_pass(&mut self, particles: &mut Particles, sub_dt: f32, materials: &MaterialRegistry) {
         let n = self.grid_res * self.grid_res;
         let res = self.grid_res as i32;
 
@@ -245,17 +279,21 @@ impl ScalarDiffusionField {
 
         // --- Laplacian FD + decay: explicit Euler, output into grid_work ---
         // grid_norm = φ_old (read-only from here). grid_work = φ_new (write).
-        let d_dt = self.config.diffusivity * sub_dt;
+        // `apply` keeps `sub_dt` within the stable step; one update past it
+        // turned the profile to noise while keeping its variance and total
+        // exact (`tests/subsystem_time_steps.rs`, gate 1).
         super::stencil::laplacian_step(
             &self.grid_norm,
             &mut self.grid_work,
             self.grid_res,
-            d_dt,
+            self.config.diffusivity * sub_dt,
             self.config.ambient,
         );
         // Decay pulls toward zero (not ambient -- a real, deliberate
-        // difference from ThermalDiffusion's Newton cooling, see module doc).
-        let decay_factor = 1.0 - self.config.decay_rate * sub_dt;
+        // difference from ThermalDiffusion's Newton cooling, see module doc),
+        // by the exact solution of `dphi/dt = -lambda phi`. The linear form
+        // `1 - lambda dt` it replaces went negative past `lambda dt = 1`.
+        let decay_factor = (-self.config.decay_rate * sub_dt).exp();
         if decay_factor != 1.0 {
             for v in self.grid_work.iter_mut() {
                 *v *= decay_factor;

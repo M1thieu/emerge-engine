@@ -4,6 +4,12 @@ use glam::Vec2;
 /// Not a tunable parameter -- hardcoded from Hu 2018 Table 1.
 pub(crate) const KERNEL_D_INVERSE: f32 = 4.0;
 
+/// Default of `SimConfig::material_cfl_coefficient`: the fraction of an
+/// explicit scheme's stability limit a step may use. Also what a diffusing
+/// operator created on its own (not yet attached to a `Simulation`)
+/// sub-cycles at.
+pub const DEFAULT_MATERIAL_CFL_COEFFICIENT: f32 = 0.5;
+
 /// Parameters that control the physics solver and its runtime behavior.
 #[derive(Clone, Copy, Debug)]
 pub struct SimConfig {
@@ -537,7 +543,7 @@ impl Default for SimConfig {
             adaptive_timestep: true,
             cfl_include_affine_speed: true,
             cfl_coefficient: 0.9,
-            material_cfl_coefficient: 0.5,
+            material_cfl_coefficient: DEFAULT_MATERIAL_CFL_COEFFICIENT,
             viscous_timestep_coefficient: 0.5,
             rod_cfl_coefficient: 0.4,
             min_dt: 1.0e-3,

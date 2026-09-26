@@ -253,7 +253,6 @@ impl Simulation {
                         .granular_fluidity
                         .as_ref()
                         .map(|f| f.config.stability_dt(self.config.dx_meters)),
-                    thermal_dt_bound: self.thermal.as_ref().map(|t| t.config.stability_dt()),
                     last_max_speed: self.last_max_particle_speed,
                 },
             );
@@ -441,10 +440,16 @@ impl Simulation {
         let t_diff = std::time::Instant::now();
         let diffusion_dt = std::mem::take(&mut self.pending_diffusion_dt);
         if diffusion_dt > 0.0 {
+            // Each operator sub-cycles to this fraction of its own stable
+            // step (`material_cfl_coefficient`'s definition), whatever time
+            // it is handed.
+            let fraction = self.config.material_cfl_coefficient;
             if let Some(thermal) = &mut self.thermal {
+                thermal.stability_fraction = fraction;
                 thermal.apply(&mut self.particles, diffusion_dt);
             }
             for field in &mut self.scalar_fields {
+                field.stability_fraction = fraction;
                 field.apply(&mut self.particles, diffusion_dt, &self.materials);
             }
         }
@@ -1427,11 +1432,11 @@ impl Simulation {
         // ── Thermal / scalar diffusion ────────────────────────────────────────
         let t4 = std::time::Instant::now();
         // Thermal / scalar diffusion are SEPARATE operators from the momentum
-        // solve, with their own -- far laxer -- explicit stability limit, so
-        // they are accumulated here and applied ONCE per `step()` with the
-        // total advanced time (see `flush_diffusion_operators`). This is
-        // ordinary operator splitting at each operator's own stable rate, not
-        // an approximation introduced for speed.
+        // solve, so they are accumulated here and applied ONCE per `step()`
+        // with the total advanced time (see `flush_diffusion_operators`),
+        // each sub-cycling to its own stable step. This is ordinary operator
+        // splitting at each operator's own stable rate, not an approximation
+        // introduced for speed.
         //
         // Quantified for this engine's own water config (`conductivity 0.6`,
         // `rho 1000`, `c_p 4182`, `dx 0.01`): `alpha_grid = 0.0014 1/s`, so
@@ -1442,9 +1447,10 @@ impl Simulation {
         // cost of that waste: `thermal_us` was ~7500 us of a ~34000 us step
         // (22%, the second-largest phase).
         //
-        // `stability_dt` is still folded into `choose_substep_dt`, so a scene
-        // whose diffusion genuinely IS the bottleneck still clamps the whole
-        // substep and this stays correct for it too.
+        // Their stable steps are no longer folded into `choose_substep_dt`:
+        // the mechanics substep never bounded this once-per-step update, so
+        // the fold slowed the mechanics and protected nothing
+        // (`tests/subsystem_time_steps.rs`, gate 1).
         self.pending_diffusion_dt += sub_dt;
         self.substep_index_in_frame = self.substep_index_in_frame.saturating_add(1);
         // Nonlocal Granular Fluidity (see `energy::thermodynamics::

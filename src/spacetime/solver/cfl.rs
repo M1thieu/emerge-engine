@@ -39,7 +39,6 @@ pub(crate) struct SubstepBounds {
     /// Remaining frame time -- the hard upper bound on the returned dt.
     pub max_dt: f32,
     pub granular_fluidity_dt_bound: Option<f32>,
-    pub thermal_dt_bound: Option<f32>,
     // Real max particle speed from the PREVIOUS call to this function
     // (one-substep-lagged -- see `Simulation::last_max_particle_speed`'s own
     // doc). Used ONLY by the near-wall gate's Mach-relative compression
@@ -66,7 +65,6 @@ pub(crate) fn choose_substep_dt(
     let SubstepBounds {
         max_dt,
         granular_fluidity_dt_bound,
-        thermal_dt_bound,
         last_max_speed,
     } = bounds;
     if !config.adaptive_timestep {
@@ -386,20 +384,6 @@ pub(crate) fn choose_substep_dt(
     // 2022). `None` (every scene without a configured `GranularFluidityField`)
     // leaves this exactly as it always was.
     if let Some(bound) = granular_fluidity_dt_bound
-        && bound.is_finite()
-        && bound > 0.0
-    {
-        min_mat_dt = min_mat_dt.min(bound);
-    }
-    // `ThermalDiffusion`'s own explicit-diffusion stability bound
-    // (`ThermalConfig::stability_dt`) -- normally many orders of magnitude
-    // larger than MPM's own CFL (real thermal diffusivity is tiny), so this
-    // is a no-op for any correctly-configured scene. It only bites on a
-    // real, already-reproduced misconfiguration (passing `grid_cell_size`
-    // instead of `dx_meters`, see that field's own doc) -- folding it in
-    // turns that from a silent runaway into an automatically clamped,
-    // still-correct substep, same precedent as NGF above.
-    if let Some(bound) = thermal_dt_bound
         && bound.is_finite()
         && bound > 0.0
     {
@@ -854,7 +838,6 @@ mod tests {
             SubstepBounds {
                 max_dt: 1.0,
                 granular_fluidity_dt_bound: None,
-                thermal_dt_bound: None,
                 last_max_speed: 1.0,
             },
         );
@@ -876,7 +859,6 @@ mod tests {
             SubstepBounds {
                 max_dt: 1.0,
                 granular_fluidity_dt_bound: None,
-                thermal_dt_bound: None,
                 last_max_speed: 20.0,
             },
         );
@@ -910,7 +892,6 @@ mod tests {
             SubstepBounds {
                 max_dt: 1.0,
                 granular_fluidity_dt_bound: None,
-                thermal_dt_bound: None,
                 last_max_speed: 1.0,
             },
         );
@@ -926,7 +907,6 @@ mod tests {
             SubstepBounds {
                 max_dt: 1.0,
                 granular_fluidity_dt_bound: None,
-                thermal_dt_bound: None,
                 last_max_speed: 500.0,
             },
         );
