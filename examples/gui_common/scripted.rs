@@ -7,8 +7,9 @@
 //! holds the cursor and the button). Every physics step goes to a
 //! `FrameLogger` line, with a text picture of the scene (`scene_map`) every
 //! `EMERGE_SCRIPT_MAP_EVERY` steps (10 by default), and the demo quits when
-//! the script ends. Frames are a fixed 1/60 s instead of the wall clock, so
-//! a run does not depend on how fast the machine is.
+//! the script ends. A demo that paces its physics by the wall clock should
+//! pace it by a fixed frame while scripted, so a run does not depend on how
+//! fast the machine is (`basic_fluids` uses 1/60 s).
 //!
 //! Also read from the environment: `EMERGE_SCRIPT_STEPS` (the length, in
 //! physics steps) and `EMERGE_SCRIPT_GRAVITY` (a gravity fraction to start
@@ -70,11 +71,6 @@ impl Script {
             .iter()
             .find(|p| (p.from..p.to).contains(&step))
             .map(|p| (p.at, p.pull))
-    }
-
-    /// The wall-clock time a scripted frame stands for: a fixed 1/60 s.
-    pub fn frame_seconds(&self) -> f32 {
-        1.0 / 60.0
     }
 
     /// Logs one physics step: the frame statistics with `extra` and whether

@@ -24,17 +24,24 @@ pub struct SimConfig {
     /// bounds use a tighter 0.5 instead -- same convention
     /// `rod_cfl_coefficient` documents for the rod solver's own bound).
     pub cfl_coefficient: f32,
-    /// Safety factor on the MATERIAL (elastic wave speed) CFL bound,
-    /// `elastic_wave_dt`: `dt <= material_cfl_coefficient * cell_width /
-    /// c_p` where `c_p = sqrt((lambda+2*mu)/rho)` is the longitudinal
-    /// elastic wave speed. Kept tighter (0.5) than the plain advective
-    /// `cfl_coefficient` (0.9): a stiffness-driven instability from
-    /// under-resolving the acoustic/elastic wave speed tends to blow up
-    /// hard and immediately, unlike a mild velocity-CFL overshoot, so a
-    /// stricter margin is the standard conservative choice (matches common
-    /// explicit-MPM/FEM practice, not a value derived from one specific
-    /// formula -- like any CFL number, it's a stability margin, not a
-    /// measured material property).
+    /// The fraction of the acoustic stability limit a substep may use:
+    /// `dt <= material_cfl_coefficient * cell_width / c_p`, with
+    /// `c_p = sqrt((lambda + 2 mu) / rho)` evaluated per particle from its
+    /// own density and each material's own `timestep_bound`, the smallest
+    /// winning.
+    ///
+    /// The limit is the coefficient at which an explicit step stops being
+    /// stable, measured near 1.0 (`examples/cpu/cfl_impact_probe.rs`): an
+    /// elastic block dropped onto a floor from 10 to 30 cm, flat and on a
+    /// corner, holds at 0.90 and breaks at 1.00 when every particle's volume
+    /// is the lattice's, and breaks at 1.14, 1.10 and 1.05 for Poisson
+    /// ratios 0.3, 0.45 and 0.49 with the volume estimated at spawn. The
+    /// default, 0.5, uses half of it: a margin of 2.0 to 2.3 over those
+    /// cases, chosen for that margin rather than tuned to a scene. Fluids,
+    /// granular materials and stiffer solids have not been measured against
+    /// it. A scene should not lower its cost by raising this; a material
+    /// validated at a larger fraction is the place to say so, with its
+    /// measurement.
     pub material_cfl_coefficient: f32,
     /// Safety factor on the VISCOUS (diffusive) timestep bound for
     /// viscosity-bearing fluid materials (Newtonian/Bingham) -- a diffusion-

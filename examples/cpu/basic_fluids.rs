@@ -920,9 +920,12 @@ impl State {
     /// never more than `max_frame_delta` allows.
     fn step_physics(&mut self, cursor: Vec2, dig_dir: Option<Vec2>) {
         let now = std::time::Instant::now();
-        let frame_delta = match &self.script {
-            Some(script) => script.frame_seconds(),
-            None => (now - self.last_instant).as_secs_f32(),
+        // A scripted run paces by a fixed 1/60 s frame, not the wall clock,
+        // so it does not depend on how fast the machine is.
+        let frame_delta = if self.script.is_some() {
+            1.0 / 60.0
+        } else {
+            (now - self.last_instant).as_secs_f32()
         };
         self.last_instant = now;
         let steps = self.stepper.steps_for_frame(frame_delta);

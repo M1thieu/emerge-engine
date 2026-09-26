@@ -2,6 +2,8 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
+#[path = "../gui_common/scripted.rs"]
+mod scripted;
 
 use egui_wgpu::ScreenDescriptor;
 
@@ -74,6 +76,14 @@ use egui_wgpu::ScreenDescriptor;
 /// room above for steam to actually rise into.
 ///
 ///   cargo run --example phase_states_gui --features "render,experimental"
+///
+/// `EMERGE_SCRIPT_LOG=<file>` runs a scripted hand instead of the mouse and
+/// logs every frame (`gui_common/scripted.rs`): the strongest push into the
+/// ice column, then just below it, then a pull. Measured that
+/// way, the water and ice stiffness here is sized for 18 m/s, the free fall
+/// at real gravity, while the scene runs at 0.01 of it: left alone the ice
+/// moves at 0.09 m/s, and the strongest push throws it at 75.7 m/s, Mach
+/// 0.42 against the sized 0.1.
 use emerge::grid::kernel::quadratic_weights;
 use emerge::matter::materials::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
@@ -92,6 +102,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
+/// The push slider's top, which a scripted run presses at.
+const PUSH_STRENGTH_MAX: f32 = 30.0;
 const ICE_ID: u32 = 0;
 const WATER_ID: u32 = 1;
 const STEAM_ID: u32 = 2;
@@ -674,6 +686,10 @@ struct State {
     rmb: bool,
     push_strength: f32,
     frame: u64,
+    /// `EMERGE_SCRIPT_LOG`: a scripted run, read from its log (see
+    /// `gui_common/scripted.rs`), and where its hand is this frame.
+    script: Option<scripted::Script>,
+    scripted_at: Option<Vec2>,
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
@@ -827,6 +843,33 @@ impl State {
             "phase_states_gui: {} particles  |  drag Target temperature to heat/cool  |  LMB push  RMB pull  |  R reset  Q quit",
             sim.particles().len()
         );
+        // A scripted run (see `gui_common/scripted.rs`): the hand pushes into
+        // the ice column, then just below it, then pulls beside it, forty
+        // frames each, with the scene left alone in between.
+        let script = scripted::Script::from_env(
+            vec![
+                scripted::Press {
+                    at: Vec2::new(32.0, 14.0),
+                    from: 60,
+                    to: 100,
+                    pull: false,
+                },
+                scripted::Press {
+                    at: Vec2::new(32.0, 6.0),
+                    from: 160,
+                    to: 200,
+                    pull: false,
+                },
+                scripted::Press {
+                    at: Vec2::new(38.0, 6.0),
+                    from: 260,
+                    to: 300,
+                    pull: true,
+                },
+            ],
+            360,
+            (Vec2::ZERO, Vec2::splat(GRID as f32)),
+        );
         Self {
             surface,
             surface_config: sc,
@@ -877,12 +920,14 @@ impl State {
             // this real, measured reason on record -- see
             // `PHASE_STATES_AUTO_CYCLE_PERIOD_S`'s own doc for how to
             // reproduce this finding directly.
-            gravity_fraction: 0.01,
+            gravity_fraction: script.as_ref().map_or(0.01, |s| s.gravity(0.01)),
             cursor_pos: [0.0; 2],
             lmb: false,
             rmb: false,
             push_strength: 10.0,
             frame: 0,
+            script,
+            scripted_at: None,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             last_fps: 0.0,
@@ -897,6 +942,9 @@ impl State {
     }
 
     fn cursor_grid(&self) -> Vec2 {
+        if let Some(at) = self.scripted_at {
+            return at;
+        }
         gui_common::cursor_to_grid(
             self.cursor_pos,
             self.surface_config.width,
@@ -1334,6 +1382,15 @@ impl State {
         // impulse, not restricted by any of the strict-WC-MPM-fluid checks
         // above -- those only gate pinning/contact/mixture/sleep/boundary/
         // apic_blend, never impulses or force fields).
+        if let Some(script) = &self.script {
+            // The hand holds the cursor and the button; the push itself is
+            // this demo's own, at its strongest setting.
+            let hand = script.hand(self.frame);
+            self.lmb = hand.is_some_and(|(_, pull)| !pull);
+            self.rmb = hand.is_some_and(|(_, pull)| pull);
+            self.scripted_at = hand.map(|(at, _)| at);
+            self.push_strength = PUSH_STRENGTH_MAX;
+        }
         if self.lmb || self.rmb {
             let mag = if self.lmb {
                 self.push_strength
@@ -1344,6 +1401,27 @@ impl State {
         }
 
         self.sim.step();
+
+        if let Some(script) = &mut self.script {
+            let done = script.record(
+                self.frame,
+                self.sim.config().dt,
+                &self.sim,
+                &[
+                    (ICE_ID, "ice"),
+                    (WATER_ID, "water"),
+                    (STEAM_ID, "steam"),
+                    (BOILING_ID, "boiling"),
+                ],
+                &[
+                    ("gravity", self.gravity_fraction),
+                    ("push", self.push_strength),
+                ],
+            );
+            if done {
+                std::process::exit(0);
+            }
+        }
 
         // Real, temporary diagnostic (2026-08-28) -- checking a live "sizes
         // don't hold / everything rotates" report against the actual per-
@@ -2008,7 +2086,7 @@ impl State {
                     ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=1.0));
                     ui.separator();
                     ui.label("Push/pull strength:");
-                    ui.add(egui::Slider::new(&mut push_strength, 0.0..=30.0));
+                    ui.add(egui::Slider::new(&mut push_strength, 0.0..=PUSH_STRENGTH_MAX));
                     ui.separator();
                     ui.label(
                         "Real bidirectional phase transitions: drag Target temperature up to \
