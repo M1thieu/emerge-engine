@@ -53,6 +53,13 @@
 //!   decay at `lambda * frame = 3`, the total follows `exp(-lambda t)`
 //!   within 0.5 percent (for heat, the excess over ambient under Newton
 //!   cooling).
+//! - Added before any result, because the two above cannot see an unstable
+//!   step: the discrete Laplacian's second moment is exactly `2 D dt` times
+//!   the total whatever `dt`, so an update far past its limit still gets the
+//!   variance and the total right while its profile turns to noise. Also at
+//!   both frames: the largest value follows the analytic peak
+//!   `phi0 sigma0^2 / sigma(t)^2` within 5 percent, and no value falls
+//!   below minus 1 percent of the initial peak.
 //!
 //! # Gate 2: two stiff grains on soft sand invent no energy
 //!
