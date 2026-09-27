@@ -95,6 +95,17 @@
 //!   last 10 s of 20: the rod rings around its equilibrium, and a single
 //!   instant read 3 and 7 percent where the means agree within 0.2
 //!   (clarified after the first measurement, on review).
+//!
+//!   Why it rings (a note added after the measurement, not a criterion):
+//!   the scene damps with `RodMaterial::critical_damping`, critical per
+//!   element and proportional to the stiffness, so its first-mode damping
+//!   ratio falls as `l0^2`, 9.7e-3 at 21 points and 5.6e-4 at 81.
+//!   `probe_cantilever_reference_absorption` measures a decay of 0.756 over
+//!   10 s against 0.753 predicted. The gate measures static bending, not
+//!   damping, so the scene keeps this as a declared numerical reference.
+//!   `modal_critical_damping` is no way out: its ratio is 1.07, 0.51 and
+//!   0.25 at 21, 41 and 81 points, and it takes the explicit stable
+//!   sub-step to 8e-10 s at 81.
 //! - A stiff explicit rod touching nothing, sub-cycled, leaves the scene's
 //!   largest substeps per frame unchanged.
 //! - The switch between the two regimes (touching, free) makes no jump: a
