@@ -461,11 +461,16 @@ pub fn gather_contact_point_cloud(particles: &Particles, grid: &mut Grid, active
         } else {
             -1.0
         };
+        // Where the particle's deformed edge sits (Nairn, Hammerquist and Smith
+        // 2020, eq. 25): its undeformed half size, from the area it was given,
+        // and the inverse of its deformation gradient.
+        let inverse_deformation = particles.deformation_gradient[i].inverse();
+        let half_size = 0.5 * particles.initial_volume[i].max(0.0).sqrt();
         let weights = quadratic_weights(x);
         for gx in 0i32..3 {
             for gy in 0i32..3 {
                 let cell_pos = weights.base_cell + IVec2::new(gx - 1, gy - 1);
-                grid.add_contact_point(cell_pos, x, label);
+                grid.add_contact_point(cell_pos, x, label, inverse_deformation, half_size);
             }
         }
     }

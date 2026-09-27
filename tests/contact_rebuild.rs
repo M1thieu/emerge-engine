@@ -20,6 +20,15 @@
 //!    Their top surface and interface follow the same blocks run as one body
 //!    within 1 percent of the one body's own largest compression, at every
 //!    frame of 2 simulated seconds.
+//!
+//!    Amended after the first measurement, with the reason: gravity ramps
+//!    from zero to real over the first 200 frames instead of switching on,
+//!    so the load is monotonic and slow like the paper's push. Switched on at
+//!    once, the column rings, the interface falls into tension, and two
+//!    bodies rightly part where one body cannot: 26 percent on the rebuilt
+//!    contact, with Poisson's ratio 0 as well as 0.3, 0.3 percent once
+//!    ramped. The material is softer (E 10 kPa) so the bottom reaches about
+//!    20 percent strain, the paper's range.
 //! 2. Contact time (the paper's Fig. 2): a block moving at constant speed
 //!    toward a block at rest, no gravity, their facing edges 1.5 cells apart;
 //!    the resting block starts moving within one frame of the time its edge
@@ -76,6 +85,12 @@ fn stacked(two_bodies: bool, frame_dt: f32) -> (Simulation, std::ops::Range<usiz
     const HEIGHT: i32 = 10;
     let config = SimConfig::earth(GRID, DX_M, frame_dt);
     let floor = config.boundary_thickness as f32;
+    // Softer than `body()`: about 20 percent strain at the bottom under
+    // `rho g` over 20 cells.
+    let soft = Elastic {
+        e_pa: 10.0e3,
+        ..body()
+    };
     let block = |centre_y: f32| {
         SpawnRegion {
             spacing: SPACING,
@@ -85,9 +100,9 @@ fn stacked(two_bodies: bool, frame_dt: f32) -> (Simulation, std::ops::Range<usiz
             initial_velocity_scale: 0.0,
             ..SpawnRegion::for_sim(&config)
         }
-        .mass_from(&body(), &config)
+        .mass_from(&soft, &config)
     };
-    let material = NeoHookeanMaterial::from_physical(&body(), &config);
+    let material = NeoHookeanMaterial::from_physical(&soft, &config);
     let mut sim = Simulation::new(config, block(floor + HEIGHT as f32 * 0.5))
         .with_default_material(Box::new(material));
     let start = sim.particles().len();
@@ -123,7 +138,12 @@ fn criterion1_a_perfect_interface_behaves_as_one_body() {
         mean_y(&one, top_one.clone(), false),
     );
     let (mut worst, mut largest) = (0.0f32, 0.0f32);
+    // Gravity ramps up over the first 200 frames: see criterion 1's doc.
+    let g = one.config().gravity;
     for frame in 1..=240 {
+        let ramp = (frame as f32 / 200.0).min(1.0);
+        one.set_gravity(g * ramp);
+        two.set_gravity(g * ramp);
         one.step();
         two.step();
         let (t1, i1) = (

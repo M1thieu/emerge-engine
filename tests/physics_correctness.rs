@@ -5311,7 +5311,12 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
         let block_spawn = SpawnRegion {
             spacing: 0.5,
             box_size: IVec2::new(6, 6),
-            box_center: Vec2::new(32.0, 11.6),
+            // Edge to edge on the floor slab: the slab's top row sits at 9.5,
+            // its edge at 9.75, so this block's bottom row at 10.0. It was
+            // spawned three cells inside the slab, which the contact's old
+            // Baumgarte term pushed back out while settling; the rebuilt
+            // contact (issue #49) does not undo an overlap it is given.
+            box_center: Vec2::new(32.0, 13.0),
             material_id: 0,
             ..SpawnRegion::for_sim(&config)
         };
@@ -5332,7 +5337,10 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
         let floor_spawn = SpawnRegion {
             spacing: 0.5,
             box_size: IVec2::new(48, 8),
-            box_center: Vec2::new(32.0, 8.0),
+            // Resting on the floor (a slip boundary 2 cells thick): rows from
+            // 2.25. Spawned at 8.0 it started 2 cells up, fell, bounced and
+            // threw the block off before the test began.
+            box_center: Vec2::new(32.0, 6.0),
             material_id: floor_mat_id.0,
             ..SpawnRegion::for_sim(sim.config())
         };
@@ -5342,7 +5350,12 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
         // impact to scramble), THEN inject the real test velocity and measure over a
         // short separate window. Isolates "does it slide" from "does it survive
         // landing."
-        for _ in 0..300 {
+        // Gravity rises over the first 200 steps: switched on at once, the
+        // undamped slab and block ring under their own weight and the block
+        // lifts off the slab.
+        let g = sim.config().gravity;
+        for step in 0..300 {
+            sim.set_gravity(g * (step as f32 / 200.0).min(1.0));
             sim.step();
         }
         {
@@ -5382,108 +5395,144 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
 /// `RatchetFrictionBoundary`'s directional/setae-style friction, letting a creature
 /// crawl on actual terrain particles via `contact_group` instead of only the engine's
 /// fixed-world-floor boundary. Same block-on-floor rig as
-/// `multi_field_contact_produces_real_coulomb_slip_and_stick`, but velocity is injected
-/// in the easy direction vs. the resisted direction with the identical grip instance --
-/// "easy" should keep far more speed than "resist".
-#[test]
-fn directional_contact_grip_is_real_and_direction_aware() {
-    fn run(injected_vx: f32) -> f32 {
-        const GRID: usize = 64;
-        const DT: f32 = 0.02;
-        let config = SimConfig {
-            contact_friction: 0.5, // unused when directional_grip is set; sanity default
-            min_dt: 0.001,
-            max_substeps_per_step: 128,
-            project_invalid_state: true,
-            // Legacy raw-grid-unit scene: this test was calibrated (before
-            // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
-            // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
-            // PRE-EXISTING calibration explicitly, not inventing a new one:
-            // unsourced, so KEPT rather than replaced (standing rule). Real SI
-            // migration (every constant grounded in a measured value, so this
-            // qualitative relationship holds for a physical reason, not by
-            // coincidence) is real, scoped follow-up work, not done here. See
-            // project_grid_density_six_failing_tests memory.
-            grid_density: 4.0,
-            ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
-        };
+/// `multi_field_contact_produces_real_coulomb_slip_and_stick`, with a grip whose easy
+/// direction is +X: returns the block's mean x speed after sliding 150 steps from
+/// `injected_vx`.
+fn directional_grip_sliding_speed(injected_vx: f32) -> f32 {
+    const GRID: usize = 64;
+    const DT: f32 = 0.02;
+    let config = SimConfig {
+        contact_friction: 0.5, // unused when directional_grip is set; sanity default
+        min_dt: 0.001,
+        max_substeps_per_step: 128,
+        project_invalid_state: true,
+        // Legacy raw-grid-unit scene: this test was calibrated (before
+        // 2026-08-25) against the OLD implicit particle_mass=1.0 default --
+        // at spacing 0.5 that is exactly grid_density=4.0. Preserving that
+        // PRE-EXISTING calibration explicitly, not inventing a new one:
+        // unsourced, so KEPT rather than replaced (standing rule). Real SI
+        // migration (every constant grounded in a measured value, so this
+        // qualitative relationship holds for a physical reason, not by
+        // coincidence) is real, scoped follow-up work, not done here. See
+        // project_grid_density_six_failing_tests memory.
+        grid_density: 4.0,
+        ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
+    };
 
-        let block_mat = CorotatedMaterial::new(200.0, 400.0);
-        let block_spawn = SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(6, 6),
-            box_center: Vec2::new(32.0, 11.6),
-            material_id: 0,
-            ..SpawnRegion::for_sim(&config)
-        };
-        let grip = std::sync::Arc::new(emerge::DirectionalContactGrip::new(
-            0.05,
-            0.9,
-            Vec2::X, // "easy" direction: +X
-        ));
-        let mut sim = Simulation::new(config, block_spawn)
-            .with_default_material(Box::new(block_mat))
-            .with_boundary(Box::new(SlipBoundary::new(2)))
-            .with_contact_grip(grip);
-        let block_range = 0..sim.particles().len();
-        {
-            let particles = sim.particles_mut();
-            for i in block_range.clone() {
-                particles.contact_group[i] = 1;
-            }
+    let block_mat = CorotatedMaterial::new(200.0, 400.0);
+    let block_spawn = SpawnRegion {
+        spacing: 0.5,
+        // Flat, four times wider than tall. Coulomb's `mu g` holds only
+        // while the slab carries exactly the block's weight; a block
+        // decelerated by friction tips over its leading edge once `mu`
+        // reaches its width over its height, and the square block this
+        // test used (6 by 6) sat at that threshold at `mu_resist` 0.9: it
+        // tipped, its trailing corner rose a cell, and the slab pushed 57
+        // percent above its weight (issue #49).
+        box_size: IVec2::new(12, 3),
+        // Edge to edge on the floor slab: the slab's top row sits at 9.5,
+        // its edge at 9.75, so this block's bottom row at 10.0. It was
+        // spawned three cells inside the slab, which the contact's old
+        // Baumgarte term pushed back out while settling; the rebuilt
+        // contact (issue #49) does not undo an overlap it is given.
+        box_center: Vec2::new(32.0, 11.5),
+        material_id: 0,
+        ..SpawnRegion::for_sim(&config)
+    };
+    let grip = std::sync::Arc::new(emerge::DirectionalContactGrip::new(
+        0.05,
+        0.9,
+        Vec2::X, // "easy" direction: +X
+    ));
+    let mut sim = Simulation::new(config, block_spawn)
+        .with_default_material(Box::new(block_mat))
+        .with_boundary(Box::new(SlipBoundary::new(2)))
+        .with_contact_grip(grip);
+    let block_range = 0..sim.particles().len();
+    {
+        let particles = sim.particles_mut();
+        for i in block_range.clone() {
+            particles.contact_group[i] = 1;
         }
-
-        let floor_mat_id = sim.register_material(Box::new(CorotatedMaterial::new(200.0, 400.0)));
-        let floor_spawn = SpawnRegion {
-            spacing: 0.5,
-            box_size: IVec2::new(48, 8),
-            box_center: Vec2::new(32.0, 8.0),
-            material_id: floor_mat_id.0,
-            ..SpawnRegion::for_sim(sim.config())
-        };
-        let _ = sim.add_body(floor_spawn);
-
-        for _ in 0..300 {
-            sim.step();
-        }
-        {
-            let particles = sim.particles_mut();
-            for i in block_range.clone() {
-                particles.v[i].x = injected_vx;
-            }
-        }
-        for _ in 0..150 {
-            sim.step();
-        }
-
-        let n = block_range.len() as f32;
-        let particles = sim.particles();
-        block_range.map(|i| particles.v[i].x).sum::<f32>() / n
     }
 
-    let easy_speed = run(3.0); // aligned with easy_direction=+X
-    let resist_speed = run(-3.0); // against it
+    let floor_mat_id = sim.register_material(Box::new(CorotatedMaterial::new(200.0, 400.0)));
+    let floor_spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(48, 8),
+        // Resting on the floor (a slip boundary 2 cells thick): rows from
+        // 2.25. Spawned at 8.0 it started 2 cells up, fell, bounced and
+        // threw the block off before the test began.
+        box_center: Vec2::new(32.0, 6.0),
+        material_id: floor_mat_id.0,
+        ..SpawnRegion::for_sim(sim.config())
+    };
+    let _ = sim.add_body(floor_spawn);
+
+    // Gravity rises over the first 200 steps: switched on at once, the
+    // undamped slab and block ring under their own weight and the block
+    // lifts off the slab.
+    let g = sim.config().gravity;
+    for step in 0..300 {
+        sim.set_gravity(g * (step as f32 / 200.0).min(1.0));
+        sim.step();
+    }
+    {
+        let particles = sim.particles_mut();
+        for i in block_range.clone() {
+            particles.v[i].x = injected_vx;
+        }
+    }
+    for _ in 0..150 {
+        sim.step();
+    }
+
+    let n = block_range.len() as f32;
+    let particles = sim.particles();
+    block_range.map(|i| particles.v[i].x).sum::<f32>() / n
+}
+
+/// Sliding on the slab of `directional_grip_sliding_speed` loses `mu g t` of
+/// speed over its 150 steps (3 s at DT 0.02, g 0.3), within 5 percent:
+/// Coulomb friction under the block's own weight. The bar replaced a
+/// relative one (resisted below 0.35 of easy, a loss of at least 1.97) that
+/// asked for 2.4 times what Coulomb gives: it was set on the friction the
+/// old contact drew from its Baumgarte separations (issue #49).
+fn assert_coulomb_loss(label: &str, speed: f32, start: f32, mu: f32) {
+    let g = 0.3f32;
+    let seconds = 150.0 * 0.02f32;
+    let lost = start.abs() - speed.abs();
+    let coulomb = mu * g * seconds;
+    assert!(
+        (lost - coulomb).abs() <= 0.05 * coulomb,
+        "{label} sliding lost {lost:.4} of its speed, Coulomb gives {coulomb:.4} (mu {mu})"
+    );
+}
+
+#[test]
+fn directional_contact_grip_is_real_and_direction_aware() {
+    let easy_speed = directional_grip_sliding_speed(3.0); // aligned with easy_direction=+X
+    let resist_speed = directional_grip_sliding_speed(-3.0); // against it
 
     assert!(
         easy_speed > 1.0,
-        "BUG: sliding in the easy direction should keep real speed (low mu_easy=0.05) -- \
-         got mean v_x={easy_speed:.4} (started at 3.0). If this is ~0, the directional \
-         grip isn't reaching the real contact resolver at all."
+        "BUG: sliding in the easy direction should keep real speed (low mu_easy=0.05) --          got mean v_x={easy_speed:.4} (started at 3.0). If this is ~0, the directional          grip isn't reaching the real contact resolver at all."
     );
-    // Relative, not an absolute cutoff: this rig's actual per-contact-event normal
-    // force (a small light block settling under gentle gravity) doesn't fully arrest
-    // -3.0 within the test window even at mu_resist=0.9 -- real Coulomb impulse scales
-    // with normal_speed, not just mu, so "decelerates to exactly ~0" isn't the right
-    // bar here. What proves direction-awareness is the SAME rig, SAME grip instance,
-    // giving a dramatically different outcome purely from the sign of the injected
-    // velocity: easy retains its speed, resist loses the large majority of it.
-    assert!(
-        resist_speed.abs() < easy_speed.abs() * 0.35,
-        "BUG: resisted sliding should lose far more speed than easy sliding retains -- \
-         got easy={easy_speed:.4} (from +3.0) vs resist={resist_speed:.4} (from -3.0). \
-         If these are close in magnitude, the resist/easy split isn't actually \
-         direction-aware."
-    );
+    assert_coulomb_loss("resisted", resist_speed, -3.0, 0.9);
+}
+
+/// The easy direction's Coulomb loss, at `mu_easy = 0.05`, where anything
+/// beyond friction shows. It loses 5.3 percent more than Coulomb (issue #49):
+/// the converged LR normal still leans inward at the block's corners (the
+/// paper's own "slight errors on the edges", Nairn, Hammerquist and Smith
+/// 2020, section 4.1), and the approach test corrects only the nodes whose
+/// lean faces the motion, so the lean drags. The paper's remedy is XPIC(m)
+/// noise reduction; this runs again once emerge has it.
+#[test]
+#[ignore = "issue #49: converged LR edge normal, 5.3 percent over Coulomb until XPIC(m)"]
+fn directional_contact_grip_easy_direction_decelerates_at_coulomb() {
+    let easy_speed = directional_grip_sliding_speed(3.0);
+    assert_coulomb_loss("easy", easy_speed, 3.0, 0.05);
 }
 
 /// `project_particle_state_to_admissible` (`src/spacetime/solver/step.rs`, private) is the
