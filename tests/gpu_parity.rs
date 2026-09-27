@@ -87,6 +87,16 @@ mod parity {
     /// hand-kept exclusion list does. Found this way on the first run:
     /// NoCompression is refused too (issue #29), which a guessed list
     /// had missed.
+    /// The elastic rows' `lambda = 2000`, `mu = 4000`, as the Young's modulus
+    /// and Poisson's ratio the granular and Rankine constructors take.
+    fn same_stiffness() -> (f32, f32) {
+        let (lambda, mu) = (2000.0, 4000.0);
+        (
+            mu * (3.0 * lambda + 2.0 * mu) / (lambda + mu),
+            lambda / (2.0 * (lambda + mu)),
+        )
+    }
+
     fn laws() -> Vec<Law> {
         vec![
             Law {
@@ -119,11 +129,17 @@ mod parity {
             },
             Law {
                 name: "DruckerPrager",
-                make: || Box::new(DruckerPragerMaterial::cohesionless(2000.0, 4000.0)),
+                make: || {
+                    let (young, poisson) = same_stiffness();
+                    Box::new(DruckerPragerMaterial::cohesionless(young, poisson))
+                },
             },
             Law {
                 name: "SandMuI",
-                make: || Box::new(MuIRheologyMaterial::small_grain(2000.0, 4000.0)),
+                make: || {
+                    let (young, poisson) = same_stiffness();
+                    Box::new(MuIRheologyMaterial::small_grain(young, poisson))
+                },
             },
             Law {
                 name: "VonMises",
@@ -131,7 +147,10 @@ mod parity {
             },
             Law {
                 name: "Rankine",
-                make: || Box::new(RankineMaterial::stiff_brittle(2000.0, 4000.0)),
+                make: || {
+                    let (young, poisson) = same_stiffness();
+                    Box::new(RankineMaterial::stiff_brittle(young, poisson))
+                },
             },
         ]
     }
