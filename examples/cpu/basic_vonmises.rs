@@ -4,53 +4,37 @@ extern crate emerge_engine as emerge;
 mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "vonmises_clay_scene.rs"]
+mod vonmises_clay_scene;
+use vonmises_clay_scene::*;
 
 use emerge::diagnostics::{HEAT_BANDS, OCCUPANCY_BANDS, SimSnapshot, scene_map};
 use emerge::particle::Particle;
-/// `VonMisesMaterial` interactive showcase -- closes the last real Tier-0
-/// gap for this material (previously only incidental mentions in
-/// `validate_materials.rs`'s headless sweeps and `rod_blade_and_root.rs`,
-/// no real interactive scene anywhere in the repo).
+/// `VonMisesMaterial` interactive showcase: three blobs of real saturated
+/// clay at three consistencies, dropped under real gravity at 1 cm cells.
 ///
-/// Three blobs, same drop. LEFT and MIDDLE share one elastic stiffness
-/// (lambda=30, mu=60 -- grid-native, NOT migrated to real SI: this was
-/// identical to `basic_jellies.rs`'s own `CorotatedMaterial` blob when
-/// written, but jellies has since moved to real E=500 Pa soft tissue, and
-/// every yield_stress/hardening_modulus below is expressed as a MU-relative
-/// ratio, tuned through several documented empirical passes against THIS
-/// elastic wave speed at THIS drop height/gravity -- rescaling mu would
-/// shift the impact-strain-vs-wave-speed relationship those passes
-/// calibrated against, not just the absolute numbers, so it needs the same
-/// real drop-height/gravity re-sweep basic_jellies.rs went through, not a
-/// direct substitution. Real, disclosed, deferred, not silently dropped).
-/// RIGHT is five times stiffer; `make_sim` says why a higher yield alone
-/// could not make it resist the impact:
+/// Saturated clay loaded faster than it drains is the standard case of
+/// von Mises (Tresca) plasticity in soil mechanics: its undrained strength
+/// is the threshold, its undrained modulus the stiffness. Constants, read
+/// on the documents (`CLAYS` below for each value's source):
 ///
-///   - LEFT   (soft, perfect plasticity): yield_stress=mu*0.01,
-///     hardening_modulus=0 -- dents on impact and STAYS dented; hit it again
-///     and it dents by roughly the same amount each time (no memory of prior
-///     yielding).
-///   - MIDDLE (soft, hardening):          yield_stress=mu*0.01,
-///     hardening_modulus=mu*0.03 -- dents a lot on the FIRST hit, then
-///     visibly resists more on each subsequent hit as its own yield surface
-///     grows (kappa printed live below makes this literal, not just visual).
-///   - RIGHT  (stiff): lambda and mu five times LEFT's, yield_stress=0.05 of
-///     its own mu. Meant to stay close to a bare elastic solid, but measured
-///     headless it does not: on landing every particle is past 0.01 of
-///     accumulated plastic strain and the median is 0.88
-///     (`tests/scratch_stress_view_before_after.rs`). Rebuilding the three
-///     blobs from real metals is issue #46.
+///   - LEFT   very soft clay: unconfined strength 20 kPa, E 3 MPa
+///   - MIDDLE soft clay:      37.5 kPa, E 5.6 MPa
+///   - RIGHT  medium clay:    75 kPa, E 11 MPa
 ///
-/// That last point was the intent, not what the scene is measured to do, and
-/// whether the RIGHT blob still keeps bouncing has not been re-measured
-/// since. The intent: unlike `basic_jellies.rs`'s NeoHookean/Corotated blobs
-/// (which have NO damping of any kind and bounce indefinitely, a real,
-/// disclosed, accepted property of that demo), a VonMises blob that actually
-/// yields dissipates real energy irreversibly through plastic flow and
-/// settles ON ITS OWN -- no Cundall damping or other numerical relaxation is
-/// enabled in this scene. The LEFT and MIDDLE blobs settling while the RIGHT
-/// one keeps bouncing was meant to be the demo: plasticity as real, physical,
-/// mechanical damping, not a numerical crutch.
+/// Each holds its own weight (`make_sim` checks it before the scene starts,
+/// 10 to 38 times over at this size). Measured headless on this scene
+/// (`tests/scratch_vonmises_clay.rs`), after a 10 cm drop at 1.4 m/s: the
+/// three spread to 17.8, 16.1 and 14.9 cells wide from 13.5, with largest
+/// accumulated plastic strains of 0.50, 0.31 and 0.19, keep their volume,
+/// and come to rest without bouncing, none left at yield. No damping of any
+/// kind is enabled; the energy goes into plastic flow.
+///
+/// Slow by physics, not by choice: undrained clay is nearly
+/// incompressible, so its pressure waves run at 80 to 160 m/s and an
+/// explicit step at 1 cm must stay near 1/40 000 s, about 650 substeps a
+/// frame. Measured: simulated time runs at 0.027 of real time in the dev
+/// profile. The panel shows the live ratio.
 ///
 ///   LMB push  RMB pull  V toggle own-yield view  R reset  Q quit
 ///   cargo run --example basic_vonmises --features render
@@ -68,10 +52,10 @@ use emerge::particle::Particle;
 /// `VONMISES_STRESS_TEST=1` scripts the pushes.
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    DiagnosticsPlugin, DiagnosticsRegistry, FrameLogger, SimConfig, Simulation, SlipBoundary,
-    SpawnRegion, VonMisesMaterial, per_material_stats,
+    DiagnosticsPlugin, DiagnosticsRegistry, FrameLogger, SimConfig, Simulation, VonMisesMaterial,
+    per_material_stats,
 };
-use glam::{IVec2, Vec2};
+use glam::Vec2;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -143,15 +127,6 @@ struct CaptureState {
     captured: u32,
 }
 
-const GRID: usize = 64;
-const DT: f32 = 0.1;
-const LAMBDA: f32 = 30.0;
-const MU: f32 = 60.0;
-
-const MAT_SOFT: u32 = 0;
-const MAT_HARD: u32 = 1;
-const MAT_STIFF: u32 = 2;
-
 /// The own-yield view in numbers, as a diagnostics plugin: per blob, the
 /// share of its particles at yield (`yield_ratio` at least 0.99), its mean
 /// ratio, and how many fell back from at least 0.99 to under 0.9 since the
@@ -176,7 +151,7 @@ impl DiagnosticsPlugin for OwnYieldPlugin {
             })
             .collect();
         let mut out = Vec::with_capacity(9);
-        for (slot, blob) in ["soft", "hard", "stiff"].iter().enumerate() {
+        for (slot, blob) in ["very_soft", "soft", "medium"].iter().enumerate() {
             let (mut n, mut at, mut sum, mut fell) = (0usize, 0usize, 0.0f32, 0usize);
             for (i, (p, &r)) in particles.iter().zip(&ratio).enumerate() {
                 if p.material_id != slot as u32 {
@@ -205,73 +180,11 @@ fn own_yield_diagnostics(materials: [VonMisesMaterial; 3]) -> DiagnosticsRegistr
     }))
 }
 
-/// The scene, and its three materials in slot order: the stress view reads
-/// each particle against its own material's yield surface.
-fn make_sim(gravity_fraction: f32) -> (Simulation, [VonMisesMaterial; 3]) {
-    let mut config = SimConfig {
-        min_dt: 0.01,
-        max_substeps_per_step: 8,
-        ..SimConfig::earth(GRID, 0.01, DT)
-    };
-    config.gravity *= gravity_fraction;
-
-    let spawn = |c: Vec2, mat| SpawnRegion {
-        spacing: 0.5,
-        box_size: IVec2::new(14, 14),
-        box_center: c,
-        material_id: mat,
-        initial_velocity_scale: 0.0,
-        ..SpawnRegion::for_sim(&config)
-    };
-
-    // Real regression fix (calibration, not correctness), second pass: the
-    // first attempt (real yield/mu ratios, same modulus for all three, just
-    // a shorter drop) still wasn't enough -- measured live, "stiff" kept
-    // yielding almost as much as "soft" (kappa 18.6 vs 20.1 at frame 240).
-    // Root cause: peak contact strain under ANY real, visible impact scales
-    // with impact velocity over the material's OWN elastic wave speed
-    // (c = sqrt((lambda+2mu)/rho)) -- picking a bigger YIELD NUMBER on the
-    // same soft base modulus can't make a material behave stiffer under
-    // impact, because c never changed. Real materials that resist impact
-    // without yielding are stiffer in absolute modulus, not just in yield
-    // threshold (steel vs. clay differ in E, not only in sigma_Y/E) -- so
-    // "stiff" now gets a genuinely higher lambda/mu (5x), which raises its
-    // own c and lowers its impact-induced strain directly, on top of the
-    // same real yield/mu ratio range `VonMisesMaterial`'s own cited lava/clay
-    // values use (~0.3%-5%). Gravity also cut further for a gentler, resolvable
-    // impact rather than another shock.
-    let soft = VonMisesMaterial::new(LAMBDA, MU, MU * 0.01);
-    // Real regression fix (calibration, found by the scripted stress test):
-    // hardening_modulus=mu*0.15 made hard's effective yield surface
-    // (yield_stress + hardening_modulus*kappa) rocket past anything the
-    // scripted pushes could reach after just the initial drop impact --
-    // measured live, kappa froze at EXACTLY 5.5215 across all 3 subsequent
-    // hits, zero further increment. That's "resists completely," not the
-    // doc's own claimed "resists progressively" -- a real, honest gap this
-    // stress test's own kappa-per-hit tracking exists to catch. Lowered so
-    // later hits still add real, visible, shrinking increments instead of
-    // saturating after one impact.
-    let hard = VonMisesMaterial::with_hardening(LAMBDA, MU, MU * 0.01, MU * 0.03);
-    let stiff_lambda = LAMBDA * 5.0;
-    let stiff_mu = MU * 5.0;
-    let stiff = VonMisesMaterial::new(stiff_lambda, stiff_mu, stiff_mu * 0.05);
-
-    let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, 20.0), MAT_SOFT))
-        .with_default_material(Box::new(soft))
-        .with_material(MAT_HARD, Box::new(hard))
-        .with_material(MAT_STIFF, Box::new(stiff))
-        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
-    let _ = solver.add_body(spawn(Vec2::new(32.0, 20.0), MAT_HARD));
-    let _ = solver.add_body(spawn(Vec2::new(50.0, 20.0), MAT_STIFF));
-    (solver, [soft, hard, stiff])
-}
-
 /// Per-material worst-case readout -- `friction_hardening` IS kappa
 /// (accumulated equivalent plastic strain) for this material, per
 /// `von_mises.rs`'s own doc ("kappa is accumulated into
-/// `Particle::friction_hardening` each substep"). Real, literal evidence
-/// that MAT_HARD's yield surface is actually growing over repeated hits,
-/// not just a visual impression.
+/// `Particle::friction_hardening` each substep"): how far each clay has
+/// flowed, not just how it looks.
 fn print_diagnostic(sim: &Simulation, frame: u64) {
     let mut kappa_max = [0.0f32; 3];
     let mut j_dev_max = [0.0f32; 3];
@@ -297,7 +210,7 @@ fn print_diagnostic(sim: &Simulation, frame: u64) {
         }
     };
     println!(
-        "LIVE frame={frame} soft(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5}) hard(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5}) stiff(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5})",
+        "LIVE frame={frame} very_soft(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5}) soft(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5}) medium(kappa={:.3} |J-1|={:.3} vmax={:.4} vcom={:.5})",
         kappa_max[0],
         j_dev_max[0],
         speed_max[0],
@@ -346,7 +259,7 @@ impl State {
     async fn new(window: Arc<Window>) -> Self {
         let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
-        let gravity_fraction = 0.003;
+        let gravity_fraction = 1.0;
         let (sim, materials) = make_sim(gravity_fraction);
 
         let mut renderer = Renderer::new(&gfx.device, sim.particles().len(), gfx.format);
@@ -371,7 +284,7 @@ impl State {
             let log = FrameLogger::open(path).expect("failed to open VONMISES_LOG");
             (log, own_yield_diagnostics(materials))
         });
-        for slot in [MAT_SOFT, MAT_HARD, MAT_STIFF] {
+        for slot in [MAT_VERY_SOFT, MAT_SOFT, MAT_MEDIUM] {
             renderer.set_optical_params(&gfx.queue, slot as usize, SOIL_SIGMA_A);
             renderer.set_optical_scattering(&gfx.queue, slot as usize, 0.02);
             renderer.set_specular_r0(&gfx.queue, slot as usize, 0.02);
@@ -427,7 +340,7 @@ impl State {
         });
 
         println!(
-            "basic_vonmises: {} particles (3 blobs: soft/hardening/stiff)  |  LMB push  RMB pull  V toggle own-yield view  R reset  Q quit",
+            "basic_vonmises: {} particles (3 blobs of clay: very soft/soft/medium)  |  LMB push  RMB pull  V toggle own-yield view  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -496,7 +409,7 @@ impl State {
             const HITS_PER_BLOB: u64 = 3;
             const CYCLE: u64 = HIT + REST;
             let blob_x = [14.0f32, 32.0, 50.0];
-            let blob_names = ["soft", "hard", "stiff"];
+            let blob_names = ["very_soft", "soft", "medium"];
             if self.frame >= SETTLE {
                 let t = self.frame - SETTLE;
                 let phase = (t / (CYCLE * HITS_PER_BLOB)).min(2) as usize;
@@ -548,7 +461,11 @@ impl State {
                 DT,
                 &per_material_stats(self.sim.particles()),
                 &snapshot,
-                &[(MAT_SOFT, "soft"), (MAT_HARD, "hard"), (MAT_STIFF, "stiff")],
+                &[
+                    (MAT_VERY_SOFT, "very_soft"),
+                    (MAT_SOFT, "soft"),
+                    (MAT_MEDIUM, "medium"),
+                ],
                 &extra,
             );
             // What the screen shows, as text: the camera frames the whole
@@ -608,9 +525,8 @@ impl State {
             // material's return mapping runs: below 1 elastic, 1 on the
             // surface, which is where a particle flowing plastically sits
             // whether it has just reached yield or flowed a long way.
-            // One scale for all three blobs cannot say that: the hardening
-            // blob's yield grows with kappa and the stiff blob's is 25 times
-            // the soft one's (`tests/scratch_stress_view_before_after.rs`).
+            // One scale for all three blobs cannot say that: the medium clay's
+            // yield is 3.75 times the very soft one's.
             let p = self.sim.particles();
             let ratio: Vec<f32> = (0..p.len())
                 .map(|i| self.materials[p.material_id[i] as usize].yield_ratio(p, i))
@@ -689,7 +605,9 @@ impl State {
                 .default_width(280.0)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("fps={fps:.0}  particles={n_particles}"));
+                    ui.label(format!("fps={fps:.1}  particles={n_particles}"));
+                    // Each frame advances DT of simulated time, whatever it costs.
+                    ui.label(format!("simulated time runs at {:.3}x real time", fps * DT));
                     ui.separator();
                     ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
                     ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=1.0));
@@ -699,9 +617,10 @@ impl State {
                     ui.label("Pull strength:");
                     ui.add(egui::Slider::new(&mut pull_strength, 0.0..=15.0));
                     ui.separator();
-                    ui.label("Left = soft/perfect plasticity");
-                    ui.label("Middle = soft, hardens as it yields");
-                    ui.label("Right = 5x stiffer, yields on landing too (issue #46)");
+                    ui.label("Real saturated clay, undrained (FHWA, NAVFAC):");
+                    ui.label("Left = very soft, 20 kPa, E 3 MPa");
+                    ui.label("Middle = soft, 37.5 kPa, E 5.6 MPa");
+                    ui.label("Right = medium, 75 kPa, E 11 MPa");
                     ui.label("Color = soil optics; V = each particle against its own yield:");
                     ui.label("  red = at or beyond yield (not how far), blue = well inside");
                     ui.separator();

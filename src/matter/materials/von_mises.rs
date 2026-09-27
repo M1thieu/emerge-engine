@@ -68,9 +68,8 @@ impl VonMisesMaterial {
     /// density. For a real, correctly SI-to-grid-converted material, build
     /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
     /// `model: PlasticityModel::Ductile { yield_stress_pa }` and call its
-    /// `.material(&config)` (real dispatch, see that method's own doc) --
-    /// `Self::from_physical` exists but its `DuctileProps` input type is
-    /// crate-internal, not constructible from outside.
+    /// `.material(&config)` (real dispatch, see that method's own doc), or
+    /// call `Self::from_physical` with a `DuctileProps` for the concrete type.
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32, yield_stress: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, yield_stress)

@@ -83,16 +83,16 @@ pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport, Simulation};
 pub use materials::{
     BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
     CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
-    CorotatedMaterial, DruckerPragerMaterial, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
-    GranularFluidMaterial, GranularProps, IdealGasMaterial, IdealGasPhysicalParams,
-    IsothermalCavitatingFluidMaterial, IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS,
-    MaterialModel, MaterialParams, MaterialRegistry, MixturePhase, MuIRheologyMaterial,
-    NaccMaterial, NaccMaterialParams, NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial,
-    NoCompression, NoCompressionMaterial, ParticleMass, PlasticityModel, Pressurized,
-    RankineMaterial, StomakhinMaterial, Viscoelastic, ViscoelasticMaterial, VonMisesMaterial,
-    WithLatentHeat, WithLatentHeatTable, WithMixturePhase, WithPreStress, gravity_to_grid,
-    lame_from_si, lame_from_si_physical, lame_from_young, rankine_damage_estimate,
-    stokes_drag_rate_from_si,
+    CorotatedMaterial, DruckerPragerMaterial, DuctileProps, Elastic, Elastoplastic, Fluid,
+    FluidGranular, FromSI, GranularFluidMaterial, GranularProps, IdealGasMaterial,
+    IdealGasPhysicalParams, IsothermalCavitatingFluidMaterial,
+    IsothermalCavitatingFluidMaterialParams, MAX_MATERIAL_SLOTS, MaterialModel, MaterialParams,
+    MaterialRegistry, MixturePhase, MuIRheologyMaterial, NaccMaterial, NaccMaterialParams,
+    NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression, NoCompressionMaterial,
+    ParticleMass, PlasticityModel, Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic,
+    ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase,
+    WithPreStress, gravity_to_grid, lame_from_si, lame_from_si_physical, lame_from_young,
+    rankine_damage_estimate, stokes_drag_rate_from_si,
 };
 
 // Boundary conditions

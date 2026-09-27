@@ -356,8 +356,16 @@ pub struct GranularProps {
     pub dilatancy_angle_deg: f32,
 }
 
+/// Real-unit properties for `VonMisesMaterial`: elastic constants and the
+/// uniaxial yield stress tables give (converted in `from_physical`).
+///
+/// `pub` for the same reason as `BrittleProps`/`BinghamProps`: the dispatch
+/// route returns a `Box<dyn MaterialModel>`, and a scene that reads each
+/// particle against its own yield surface (`VonMisesMaterial::yield_ratio`)
+/// needs the concrete material: `VonMisesMaterial::from_physical(&props,
+/// &config)`.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct DuctileProps {
+pub struct DuctileProps {
     pub elastic: Elastic,
     pub yield_stress_pa: f32,
 }

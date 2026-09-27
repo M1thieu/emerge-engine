@@ -6,8 +6,10 @@
 //! The fix takes `sqrt(3 J2)` of the in-plane deviator alone. The only demo
 //! that draws this field is `basic_vonmises`, which scales it by the soft
 //! blobs' yield stress and says the colour saturates at yield onset. This
-//! rebuilds that demo's scene headless (same constants as its `make_sim`)
-//! and, while the blobs fall and land, compares three numbers per particle:
+//! rebuilds that demo's scene as it was before issue #46's rebuild into real
+//! clay (grid-unit constants at 0.003 of earth's gravity; the scene today is
+//! `examples/cpu/vonmises_clay_scene.rs`) and, while the blobs fall and land,
+//! compares three numbers per particle:
 //!
 //! - the old colour value, plane-stress von Mises of the full stress over
 //!   the soft yield, as the demo computed it;
