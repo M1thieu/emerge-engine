@@ -995,6 +995,7 @@ impl Simulation {
             self.config.gravity,
             self.config.contact_friction,
             self.config.grid_cell_size,
+            self.config.material_cfl_coefficient,
             self.contact_grip.as_deref(),
         );
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic

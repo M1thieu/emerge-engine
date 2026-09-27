@@ -33,7 +33,11 @@ struct StepParams {
     sleep_threshold:    f32,
     contact_friction:   f32, // repurposes the first of GpuStepParams' 3 pad slots
     grid_cell_size:     f32, // repurposes the second pad slot -- SimConfig::grid_cell_size
-    _pad1:              u32,
+    contact_active:     u32,
+    cfl_coefficient:    f32,
+    material_cfl_coefficient: f32, // the small-nodal-mass bound's fraction, see resolve_cell
+    min_dt:             f32,
+    dt_cap:             f32,
 }
 
 // Field order matches ContactDebugParams (Rust, step_params.rs) exactly -- node_pos
@@ -87,10 +91,6 @@ fn substep_dt() -> f32 {
         substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
     }
     return substep_dt_cache;
-}
-
-fn substep_vel_limit(dt: f32) -> f32 {
-    return step_params.grid_cell_size / max(dt, 1.0e-12);
 }
 
 // Raw per-block particle histogram for THIS substep -- see grid_update.wgsl's binding.
@@ -358,14 +358,6 @@ fn debug_fit_normal_main() {
     contact_debug_output[2] = result.z;
 }
 
-fn clamp_speed(v: vec2<f32>, vel_limit: f32) -> vec2<f32> {
-    let spd = length(v);
-    if spd > vel_limit {
-        return v * (vel_limit / spd);
-    }
-    return v;
-}
-
 // Exact port of DirectionalContactGrip::resolve (src/spacetime/grid/mod.rs) --
 // `mu_easy == mu_resist` (the uninvolved default) makes `mu` always that same value
 // regardless of `aligned`, reducing exactly to plain symmetric Coulomb -- so this ONE
@@ -415,7 +407,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     }
 
     let v_cm = total.momentum;
-    let v_grip = clamp_speed(grip.momentum / grip_mass + step_params.gravity * substep_dt(), substep_vel_limit(substep_dt()));
+    let v_grip = grip.momentum / grip_mass + step_params.gravity * substep_dt();
 
     let node_pos = vec2<f32>(f32(cx), f32(cy));
     var local_points: array<vec4<f32>, 128>;
@@ -433,15 +425,15 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         // resolve nothing at this node (matches CPU's own "no confident normal"
         // branch: both fields keep their own velocities, total-momentum-consistent).
         resolved_grip_v[idx] = v_grip;
-        resolved_rest_v[idx] = clamp_speed((v_cm * total.mass - v_grip * grip_mass) / rest_mass, substep_vel_limit(substep_dt()));
+        resolved_rest_v[idx] = (v_cm * total.mass - v_grip * grip_mass) / rest_mass;
         return;
     }
 
     // `-` because the raw fit points toward increasing grip-label density; negating
     // matches CPU's "outward: away from grip" convention.
     let n = -fit.xy;
-    var v_rel = v_grip - v_cm;
-    v_rel = resolve_direction_aware(v_rel, n);
+    let v_rel_before = v_grip - v_cm;
+    var v_rel = resolve_direction_aware(v_rel_before, n);
 
     // Baumgarte position correction (velocity-floor form) --
     // reuses the SAME local point cloud already gathered for the fit.
@@ -470,9 +462,22 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
         }
     }
 
-    let v_grip_new = clamp_speed(v_cm + v_rel, substep_vel_limit(substep_dt()));
+    // Small nodal mass (Bardenhagen et al. 2001, eq. 17-22), exactly as CPU's
+    // Grid::resolve_contact: the rest field's change is the grip field's times
+    // -grip_mass / rest_mass, so both are scaled together when either would strain
+    // a cell by more than material_cfl_coefficient in one substep. This replaces a
+    // clamp of each field to one cell per substep, which discarded momentum.
+    let grip_change = v_rel - v_rel_before;
+    let rest_change = grip_change * (-grip_mass / rest_mass);
+    let largest_change = max(max(abs(grip_change.x), abs(grip_change.y)),
+                             max(abs(rest_change.x), abs(rest_change.y)));
+    let strain_increment = largest_change * substep_dt() / step_params.grid_cell_size;
+    var v_grip_new = v_cm + v_rel;
+    if strain_increment > step_params.material_cfl_coefficient {
+        v_grip_new = v_grip + grip_change * (step_params.material_cfl_coefficient / strain_increment);
+    }
     let total_momentum = v_cm * total.mass;
-    let v_rest_new = clamp_speed((total_momentum - v_grip_new * grip_mass) / rest_mass, substep_vel_limit(substep_dt()));
+    let v_rest_new = (total_momentum - v_grip_new * grip_mass) / rest_mass;
 
     resolved_grip_v[idx] = v_grip_new;
     resolved_rest_v[idx] = v_rest_new;

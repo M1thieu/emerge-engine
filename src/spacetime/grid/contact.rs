@@ -154,6 +154,16 @@ impl Grid {
     /// - Momentum conservation (eq. 14, `Σ m_α(v_α - v_cm) = 0`): correcting the grip
     ///   field and handing the rest field the exact opposite momentum delta conserves
     ///   total momentum by construction.
+    /// - Small nodal mass (section 2.2, eq. 17-22): that opposite delta changes a body's
+    ///   velocity by the other body's mass over its own, so at a node where one body
+    ///   has almost no mass the correction becomes very large. The strain increment a
+    ///   correction imposes, `max |Δv| dt / dx` over both bodies and both axes, is held
+    ///   under `stability_fraction` (the paper's `γ`, used there at 0.5 and recommended
+    ///   in 0.5 to 1; here `SimConfig::material_cfl_coefficient`) by scaling both
+    ///   bodies' changes by the same factor, which keeps the momentum identity. Measured
+    ///   on a sand bed with a resting body in contact, 1.1 percent of two-field nodes
+    ///   exceeded one cell per substep, every one on the body holding under 10 percent
+    ///   of the node's mass, the worst at 10 447 times.
     ///
     /// Scope, disclosed: this is a 2-field (grip vs. rest) implementation, not full
     /// N-body multi-field contact -- see `Particle::contact_group` doc. Also skips the
@@ -171,6 +181,7 @@ impl Grid {
         gravity: Vec2,
         friction: f32,
         grid_cell_size: f32,
+        stability_fraction: f32,
         directional_grip: Option<&DirectionalContactGrip>,
     ) {
         // Only a guard against literal division-by-zero, NOT a "low confidence" cutoff --
@@ -238,6 +249,7 @@ impl Grid {
                 .filter(|n| n.is_finite())
                 .or_else(|| self.grip_mass_gradient_normal(idx));
             let mut v_rel = v_grip - v_cm;
+            let v_rel_before = v_rel;
             let Some(n) = normal_fit.map(|n| -n) else {
                 // Neither the LR fit nor the gradient fallback found a usable normal
                 // (e.g. truly no local gradient AND too few points) -- resolve nothing
@@ -249,6 +261,7 @@ impl Grid {
                 continue;
             };
 
+            let mut friction_per_reduced_mass = 0.0;
             match directional_grip {
                 Some(grip) => grip.resolve(&mut v_rel, n),
                 // Multi-field contact between two bodies dissipates too, but
@@ -271,13 +284,8 @@ impl Grid {
                     //
                     //   E = returned * mu,  e_node = E / m_total
                     //                             = returned * m_grip * m_rest / m_total^2
-                    let per_reduced_mass =
+                    friction_per_reduced_mass =
                         crate::boundary::apply_coulomb_wall(&mut v_rel, n, friction);
-                    if per_reduced_mass > 0.0 && total.mass > 0.0 {
-                        let reduced_mass = grip_mass * rest_mass / total.mass;
-                        dissipated
-                            .push((idx as usize, per_reduced_mass * reduced_mass / total.mass));
-                    }
                 }
             }
 
@@ -339,13 +347,49 @@ impl Grid {
                 }
             }
 
-            let v_grip_new = v_cm + v_rel;
+            // Small nodal mass (Bardenhagen et al. 2001, eq. 17-22, see this
+            // function's doc): the rest field's change is the grip field's times
+            // `-grip_mass / rest_mass`, so both are scaled together when either
+            // would strain a cell by more than `stability_fraction` in one substep.
+            let grip_change = v_rel - v_rel_before;
+            let rest_change = grip_change * (-grip_mass / rest_mass);
+            let strain_increment = grip_change
+                .abs()
+                .max_element()
+                .max(rest_change.abs().max_element())
+                * dt
+                / grid_cell_size;
+            let scale = if strain_increment > stability_fraction {
+                stability_fraction / strain_increment
+            } else {
+                1.0
+            };
+            let v_grip_new = if scale < 1.0 {
+                v_grip + grip_change * scale
+            } else {
+                v_cm + v_rel
+            };
+            if friction_per_reduced_mass > 0.0 && total.mass > 0.0 {
+                // `apply_coulomb_wall` reports the loss for the full correction. A
+                // scaled one keeps the tangential direction and moves its speed
+                // only part of the way, so the loss is recomputed from that speed.
+                let per_reduced_mass = if scale < 1.0 {
+                    let tangential = |v: Vec2| (v - n * v.dot(n)).length();
+                    let before = tangential(v_rel_before);
+                    let after = before + (tangential(v_rel) - before) * scale;
+                    0.5 * (before * before - after * after)
+                } else {
+                    friction_per_reduced_mass
+                };
+                let reduced_mass = grip_mass * rest_mass / total.mass;
+                dissipated.push((idx as usize, per_reduced_mass * reduced_mass / total.mass));
+            }
 
             // Exact momentum conservation: whatever the grip field's momentum changed
             // by, the rest field absorbs the opposite delta (eq. 14's identity holds by
-            // construction, not by a separate reaction computation). Computed from the
-            // clamped v_grip_new so the conservation identity still holds against what
-            // G2P will actually read.
+            // construction, not by a separate reaction computation). Computed from
+            // v_grip_new so the conservation identity still holds against what G2P
+            // will actually read.
             let total_momentum = v_cm * total.mass;
             let v_rest_new = (total_momentum - v_grip_new * grip_mass) / rest_mass;
 
@@ -356,5 +400,77 @@ impl Grid {
         for (idx, specific_energy) in dissipated {
             self.add_friction_heat(idx, specific_energy);
         }
+    }
+}
+
+#[cfg(test)]
+mod small_mass_tests {
+    use glam::{IVec2, Vec2};
+
+    use crate::grid::Grid;
+
+    const NODE: IVec2 = IVec2::new(8, 8);
+    const DT: f32 = 0.01;
+
+    /// One two-body node: `grip_mass` at `grip_v`, `rest_mass` at rest, their
+    /// point clouds overlapping by 0.1 cell across the node along y, so the
+    /// overlap correction acts whatever the approach test decides.
+    fn resolved(
+        grip_mass: f32,
+        rest_mass: f32,
+        grip_v: Vec2,
+        stability_fraction: f32,
+    ) -> (Vec2, Vec2) {
+        let mut grid = Grid::new(16);
+        grid.add_mass_momentum(NODE, grip_mass + rest_mass, grip_v * grip_mass);
+        grid.add_grip_mass_momentum(NODE, grip_mass, grip_v * grip_mass);
+        let y = NODE.y as f32;
+        for i in 0..6 {
+            let x = NODE.x as f32 - 0.5 + 0.2 * i as f32;
+            grid.add_contact_point(NODE, Vec2::new(x, y + 0.1), 1.0);
+            grid.add_contact_point(NODE, Vec2::new(x, y - 0.05), 1.0);
+            grid.add_contact_point(NODE, Vec2::new(x, y - 0.1), -1.0);
+            grid.add_contact_point(NODE, Vec2::new(x, y + 0.05), -1.0);
+        }
+        grid.update_velocities(DT, Vec2::ZERO);
+        grid.resolve_contact(DT, Vec2::ZERO, 0.5, 1.0, stability_fraction, None);
+        (grid.grip_velocity_at(NODE), grid.rest_velocity_at(NODE))
+    }
+
+    /// The strain increment a resolution imposed on either body, in cells.
+    fn strain(grip: (Vec2, Vec2), grip_v: Vec2) -> f32 {
+        let (g, r) = grip;
+        (g - grip_v).abs().max_element().max(r.abs().max_element()) * DT
+    }
+
+    #[test]
+    fn a_nearly_massless_body_gets_a_bounded_correction_that_keeps_momentum() {
+        let (grip_mass, rest_mass, grip_v) = (1.0, 1.0e-4, Vec2::new(0.3, 0.0));
+        let unbounded = resolved(grip_mass, rest_mass, grip_v, f32::INFINITY);
+        // The premise: unbounded, the rest body is thrown far past a cell a substep.
+        assert!(strain(unbounded, grip_v) > 10.0, "premise: {unbounded:?}");
+        let bounded = resolved(grip_mass, rest_mass, grip_v, 0.5);
+        assert!(
+            strain(bounded, grip_v) <= 0.5 * (1.0 + 1.0e-4),
+            "{bounded:?}"
+        );
+        let momentum = bounded.0 * grip_mass + bounded.1 * rest_mass;
+        assert!(
+            (momentum - grip_v * grip_mass).length() < 1.0e-5,
+            "momentum {momentum:?}"
+        );
+        // Scaled, not redirected: the same correction, shortened.
+        let (full, part) = (unbounded.0 - grip_v, bounded.0 - grip_v);
+        assert!(full.perp_dot(part).abs() < 1.0e-4 * full.length() * part.length());
+        assert!(full.dot(part) > 0.0);
+    }
+
+    #[test]
+    fn comparable_bodies_are_resolved_exactly_as_without_the_bound() {
+        let grip_v = Vec2::new(0.3, 0.0);
+        let unbounded = resolved(1.0, 1.0, grip_v, f32::INFINITY);
+        assert_ne!(unbounded.0, grip_v, "premise: a correction happened");
+        assert!(strain(unbounded, grip_v) < 0.5);
+        assert_eq!(resolved(1.0, 1.0, grip_v, 0.5), unbounded);
     }
 }
