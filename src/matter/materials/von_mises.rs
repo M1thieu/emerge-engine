@@ -29,8 +29,10 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 pub struct VonMisesMaterial {
     pub lambda: f32,
     pub mu: f32,
-    /// Initial yield stress σ_Y₀ in simulation stress units (same scale as λ/µ).
-    /// Flow begins when 2µ|dev(ε)| > σ_Y₀ + H·κ.
+    /// Initial yield stress σ_Y₀ in simulation stress units (same scale as λ/µ),
+    /// in the Frobenius measure of the in-plane deviatoric stress: flow begins
+    /// when 2µ|dev(ε)| > σ_Y₀ + H·κ. A table's uniaxial yield stress is
+    /// `sqrt(3/2)` times larger; `from_physical` converts it.
     pub yield_stress: f32,
     /// Linear isotropic hardening modulus H.
     /// σ_Y(κ) = yield_stress + H·κ. Set 0.0 for perfect plasticity (default).
@@ -150,7 +152,14 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
             props.elastic.rho_kg_m3,
             config,
         );
-        let yield_stress = scale_stress(props.yield_stress_pa, props.elastic.rho_kg_m3, config);
+        // Tables give the uniaxial yield stress. J2 flow yields where
+        // sqrt(3 J2) reaches it, J2 = s:s / 2, so |s|_F = sqrt(2/3) sigma_Y. In
+        // plane strain with incompressible plastic flow the out-of-plane
+        // deviator is zero, so that is the in-plane Frobenius norm this
+        // material tests. Fed in as is, a table value set the threshold
+        // sqrt(3/2), about 1.22, times too high.
+        let yield_frobenius = (2.0f32 / 3.0).sqrt() * props.yield_stress_pa;
+        let yield_stress = scale_stress(yield_frobenius, props.elastic.rho_kg_m3, config);
         Self::new(lambda, mu, yield_stress)
     }
 }
@@ -291,6 +300,36 @@ impl MaterialModel for VonMisesMaterial {
             f32::INFINITY
         };
         elastic_dt.min(viscous_dt)
+    }
+}
+
+#[cfg(test)]
+mod uniaxial_yield_tests {
+    use super::*;
+    use crate::materials::physical_props::{DuctileProps, Elastic};
+
+    /// A plane-strain, volume-preserving stretch whose von Mises equivalent
+    /// stress `sqrt(3 J2)` equals the uniaxial yield stress given to the SI
+    /// route sits exactly on the yield surface.
+    #[test]
+    fn a_table_yield_stress_is_reached_at_its_von_mises_equivalent() {
+        let config = crate::SimConfig::earth(64, 0.01, 1.0 / 60.0);
+        let props = DuctileProps {
+            elastic: Elastic {
+                e_pa: 1.0e6,
+                nu: 0.3,
+                rho_kg_m3: 1800.0,
+            },
+            yield_stress_pa: 30_000.0,
+        };
+        let mat = VonMisesMaterial::from_physical(&props, &config);
+        let sigma_y = scale_stress(props.yield_stress_pa, props.elastic.rho_kg_m3, &config);
+        // Hencky strains (a, -a, 0): deviator 2 mu (a, -a, 0), so J2 = 4 mu^2 a^2
+        // and sqrt(3 J2) = 2 sqrt(3) mu a.
+        let a = sigma_y / (2.0 * 3.0f32.sqrt() * mat.mu);
+        let f = Mat2::from_diagonal(Vec2::new(a.exp(), (-a).exp()));
+        let ratio = mat.yield_ratio_of(f, 0.0);
+        assert!((ratio - 1.0).abs() < 1.0e-3, "yield ratio {ratio}");
     }
 }
 

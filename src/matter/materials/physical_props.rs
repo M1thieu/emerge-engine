@@ -97,7 +97,9 @@ pub enum PlasticityModel {
     /// J2 ductile plastic flow (von Mises), linear isotropic hardening.
     /// → `VonMisesMaterial`
     Ductile {
-        /// Yield stress `[Pa]`. Flow begins above this deviatoric stress.
+        /// Uniaxial yield stress `[Pa]`, the value tables give. Converted to
+        /// the Frobenius measure `VonMisesMaterial` tests, see its
+        /// `from_physical`.
         yield_stress_pa: f32,
     },
 
