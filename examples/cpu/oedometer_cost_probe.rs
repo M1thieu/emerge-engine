@@ -59,6 +59,30 @@ fn props(preconsolidation_pa: f32) -> NaccProps {
     }
 }
 
+/// With `OEDO_PROBE_RESOLUTION` set: what f32 rounding does to the
+/// particles' increments over the frame's mean substep (see
+/// `emerge::diagnostics::PositionResolution` for each share).
+fn print_position_resolution(label: &str, sim: &Simulation) {
+    if std::env::var("OEDO_PROBE_RESOLUTION").is_err() {
+        return;
+    }
+    let r = emerge::diagnostics::position_resolution(
+        sim.particles().x.iter().copied(),
+        sim.particles().v.iter().copied(),
+        sim.config().dt / sim.last_substeps().max(1) as f32,
+    );
+    println!(
+        "  f32 position resolution {label}: {} moving of {}, frozen {:.4}, displacement lost {:.4}, lost {:.4}, coarse {:.4}, substep {:.3e} s",
+        r.moving,
+        sim.particles().len(),
+        r.frozen,
+        r.displacement_lost,
+        r.lost,
+        r.coarse,
+        sim.config().dt / sim.last_substeps().max(1) as f32
+    );
+}
+
 fn main() {
     let dt: f32 = std::env::var("OEDO_PROBE_DT")
         .ok()
@@ -110,6 +134,7 @@ fn main() {
         worst = worst.max(s.substeps_last_step);
     }
     let settle_ms = wall.elapsed().as_secs_f64() * 1000.0 / settle_frames as f64;
+    print_position_resolution("after settling", &sim);
     let before: Vec<f32> = (0..3).map(|slot| top_of(&sim, slot)).collect();
     for slot in 0..3usize {
         let settled = before[slot] - FLOOR;
@@ -160,9 +185,11 @@ fn main() {
             }
         }
         let sunk = before[slot as usize] - top_of(&sim, slot);
+        print_position_resolution(&format!("sample {slot} pressed"), &sim);
         for _ in 0..press_frames {
             sim.step();
         }
+        print_position_resolution(&format!("sample {slot} released"), &sim);
         let kept = before[slot as usize] - top_of(&sim, slot);
         let p0_mean = sim
             .particles()

@@ -396,3 +396,35 @@ fn the_stripes_on_each_floor() {
         println!();
     }
 }
+
+/// How much of the particles' motion f32 rounds away while the columns
+/// slump and the deposits settle, at real gravity, over the frame's mean
+/// substep (see `PositionResolution` for each share). A probe.
+#[test]
+#[ignore = "probe: run with --ignored --nocapture"]
+fn probe_bingham_deposit_position_resolution() {
+    let dt = 0.005;
+    let (mut sim, _) = make_sim(1.0, 1.0, dt);
+    let frames = (4.0 / dt) as usize;
+    for frame in 1..=frames {
+        sim.step();
+        if frame % (frames / 8) == 0 {
+            let r = emerge::diagnostics::position_resolution(
+                sim.particles().x.iter().copied(),
+                sim.particles().v.iter().copied(),
+                sim.config().dt / sim.last_substeps().max(1) as f32,
+            );
+            println!(
+                "bingham t={:.2}s: {} moving of {}, frozen {:.4}, displacement lost {:.4}, lost {:.4}, coarse {:.4}, substep {:.3e} s",
+                frame as f32 * dt,
+                r.moving,
+                sim.particles().len(),
+                r.frozen,
+                r.displacement_lost,
+                r.lost,
+                r.coarse,
+                sim.config().dt / sim.last_substeps().max(1) as f32
+            );
+        }
+    }
+}
