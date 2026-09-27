@@ -57,8 +57,25 @@ pub fn step_rod(
         if rod.pinned[i] != 0 {
             continue;
         }
-        rod.x[i] += rod.v[i] * dt;
+        advance_position(
+            &mut rod.x[i],
+            &mut rod.position_compensation[i],
+            rod.v[i] * dt,
+        );
     }
+}
+
+/// `x += step` with compensated (Kahan 1965) summation: `compensation`
+/// carries the part of each step f32 rounded away and adds it back on the
+/// next. A rod's stable step makes each increment small next to `x`'s grid
+/// coordinate: a 81-point cantilever at 1 cm cells, advanced plainly,
+/// froze every point within 5 s while its first mode still rang at 5 mm
+/// (`tests/subsystem_time_steps.rs`, `probe_cantilever_reference_absorption`).
+pub(crate) fn advance_position(x: &mut Vec2, compensation: &mut Vec2, step: Vec2) {
+    let y = step - *compensation;
+    let t = *x + y;
+    *compensation = (t - *x) - y;
+    *x = t;
 }
 
 /// Longest step the rod's own explicit integrator (`step_rod`: symplectic
@@ -172,5 +189,160 @@ pub fn apply_mass_scaling_for_target_dt(
         let (k, c) = point_stability_sums(rod, material, i);
         let m_required = (k * tau * tau + 2.0 * c * tau) / 4.0;
         rod.mass[i] = rod.mass[i].max(m_required);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::Vec2;
+
+    use super::{advance_position, rod_cfl_dt, step_rod};
+    use crate::rod::{
+        RodForceParams, RodImplicitStepParams, RodMaterial, RodPoints, YBranchSpec, advance_rod,
+        build_straight_rod, build_y_branch, step_network, step_rod_implicit,
+    };
+
+    /// Half the spacing of f32 values around 40, where these tests sit.
+    fn half_ulp_at_40() -> f32 {
+        0.5 * (40.0f32.next_up() - 40.0)
+    }
+
+    #[test]
+    fn increments_below_half_an_ulp_add_up_when_compensated() {
+        let start = Vec2::splat(40.0);
+        let step = Vec2::splat(0.2 * half_ulp_at_40());
+        let (mut plain, mut compensated, mut residual) = (start, start, Vec2::ZERO);
+        let count = 100_000;
+        for _ in 0..count {
+            plain += step;
+            advance_position(&mut compensated, &mut residual, step);
+        }
+        // The premise: plain f32 addition never moves.
+        assert_eq!(plain, start);
+        let expected = count as f32 * step.x;
+        let moved = compensated - start;
+        assert!(
+            (moved.x - expected).abs() < 1.0e-3 * expected
+                && (moved.y - expected).abs() < 1.0e-3 * expected,
+            "moved {moved:?}, expected {expected} on each axis"
+        );
+    }
+
+    /// A straight three-point rod near x = y = 40 cells at rest length,
+    /// translating as a whole at `speed` cells/s: no internal force acts,
+    /// so every stepper must carry it `speed * seconds`.
+    fn translating_rod(speed: f32) -> (RodPoints, RodMaterial) {
+        let dx = 0.01;
+        let mut rod = build_straight_rod(Vec2::new(40.0, 40.0), Vec2::new(42.0, 40.0), 3, 0.1, dx);
+        rod.v.iter_mut().for_each(|v| *v = Vec2::new(0.0, speed));
+        let (axial, bending) = RodMaterial::critical_damping(dx, 0.1 * dx, 1000.0, 0.5);
+        (rod, RodMaterial::new(1000.0, 0.5, axial, bending))
+    }
+
+    /// Each point's increment is `speed * h`; the tests pick `speed` so that
+    /// it is well under half an ulp, and check the rod still covers the
+    /// distance.
+    fn assert_covered(rod: &RodPoints, start_y: f32, distance: f32, stepper: &str) {
+        for (i, x) in rod.x.iter().enumerate() {
+            let moved = x.y - start_y;
+            assert!(
+                (moved - distance).abs() < 0.01 * distance,
+                "{stepper}: point {i} moved {moved:e}, expected {distance:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn step_rod_keeps_motion_below_half_an_ulp() {
+        let speed = 1.0e-3;
+        let (mut rod, material) = translating_rod(speed);
+        let h = rod_cfl_dt(&rod, &material, 0.5);
+        assert!(speed * h < 0.1 * half_ulp_at_40(), "premise: h {h:e}");
+        let steps = (1.0 / h).ceil() as usize;
+        for _ in 0..steps {
+            step_rod(&mut rod, &material, Vec2::ZERO, Vec2::ZERO, 0.0, 0.01, h);
+        }
+        assert_covered(&rod, 40.0, speed * h * steps as f32, "step_rod");
+    }
+
+    #[test]
+    fn advance_rod_keeps_motion_below_half_an_ulp() {
+        let speed = 1.0e-3;
+        let (mut rod, material) = translating_rod(speed);
+        let h = rod_cfl_dt(&rod, &material, 0.5);
+        assert!(speed * h < 0.1 * half_ulp_at_40(), "premise: h {h:e}");
+        let frame = 0.01;
+        let external = vec![Vec2::ZERO; rod.len()];
+        for _ in 0..100 {
+            let params = RodForceParams {
+                wind_velocity: Vec2::ZERO,
+                wind_drag_coeff: 0.0,
+                push_center: None,
+                push_strength: 0.0,
+                push_radius: 0.0,
+                dx_meters: 0.01,
+                dt: frame,
+                stability_fraction: 0.5,
+            };
+            advance_rod(&mut rod, &material, params, &external);
+        }
+        assert_covered(&rod, 40.0, speed * frame * 100.0, "advance_rod");
+    }
+
+    #[test]
+    fn step_rod_implicit_keeps_motion_below_half_an_ulp() {
+        let speed = 1.0e-3;
+        let (mut rod, material) = translating_rod(speed);
+        let h = 1.0e-4;
+        assert!(speed * h < 0.1 * half_ulp_at_40(), "premise: h {h:e}");
+        for _ in 0..10_000 {
+            let params = RodImplicitStepParams {
+                gravity: Vec2::ZERO,
+                wind_velocity: Vec2::ZERO,
+                wind_drag_coeff: 0.0,
+                push_center: None,
+                push_strength: 0.0,
+                push_radius: 0.0,
+                dx_meters: 0.01,
+                dt: h,
+            };
+            step_rod_implicit(&mut rod, &material, params);
+        }
+        assert_covered(&rod, 40.0, speed * h * 10_000.0, "step_rod_implicit");
+    }
+
+    #[test]
+    fn step_network_keeps_motion_below_half_an_ulp() {
+        let speed = 1.0e-3;
+        let mut net = build_y_branch(YBranchSpec {
+            trunk_start: Vec2::new(40.0, 40.0),
+            junction: Vec2::new(40.0, 42.0),
+            branch_end: Vec2::new(42.0, 43.0),
+            n_trunk_points: 3,
+            n_branch_points: 3,
+            linear_density_kg_per_m: 0.1,
+            dx_meters: 0.01,
+            // No stiffness: nothing but the translation acts.
+            ea: 0.0,
+            ei: 0.0,
+            axial_damping: 0.0,
+            bending_damping: 0.0,
+        });
+        net.pinned.iter_mut().for_each(|p| *p = 0);
+        net.v.iter_mut().for_each(|v| *v = Vec2::new(speed, 0.0));
+        let start: Vec<Vec2> = net.x.clone();
+        let h = 1.0e-4;
+        assert!(speed * h < 0.1 * half_ulp_at_40(), "premise: h {h:e}");
+        for _ in 0..10_000 {
+            step_network(&mut net, Vec2::ZERO, 0.01, h);
+        }
+        let distance = speed * h * 10_000.0;
+        for (i, (x, x0)) in net.x.iter().zip(&start).enumerate() {
+            let moved = x.x - x0.x;
+            assert!(
+                (moved - distance).abs() < 0.01 * distance,
+                "step_network: point {i} moved {moved:e}, expected {distance:e}"
+            );
+        }
     }
 }

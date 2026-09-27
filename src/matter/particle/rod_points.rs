@@ -49,7 +49,8 @@ pub struct RodPoints {
     /// `Rod::new`).
     pub ei: Vec<f32>,
     /// Kahan (compensated) summation residual for `x`'s position integration
-    /// in `coupling::advance_rod`. Needed because a rod's own
+    /// (`rod::integrator::advance_position`, used by every rod stepper).
+    /// Needed because a rod's own
     /// CFL-bound `dt` is extremely small (~1e-6s, set by its axial stiffness)
     /// while `x` sits at an ordinary grid-coordinate magnitude (e.g. 32.0,
     /// offset from the domain origin). Each individual `x[i] += v*dt`

@@ -14,6 +14,7 @@ use glam::Vec2;
 use crate::grid::Grid;
 use crate::grid::kernel::quadratic_weights;
 
+use super::integrator::advance_position;
 use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces, rod_cfl_dt};
 
 /// Kernel support radius for `quadratic_weights` is 1.5 grid cells -- two
@@ -263,9 +264,7 @@ pub(crate) fn push_acceleration(
 /// moving the points, so a stiff rod neither needs a tiny mechanics substep
 /// nor leaves the grid. Returns the number of sub-steps.
 ///
-/// Positions use compensated (Kahan) summation: the stable step of a stiff
-/// rod can make each increment fall below f32's resolution at the point's
-/// own grid-coordinate magnitude.
+/// Positions use compensated summation (`integrator::advance_position`).
 ///
 /// Bundles this function's own scalar/optional parameters -- the real fix
 /// for clippy::too_many_arguments rather than suppressing the lint.
@@ -305,10 +304,11 @@ pub fn advance_rod(
                 continue;
             }
             rod.v[i] += acceleration * h;
-            let y = rod.v[i] * h - rod.position_compensation[i];
-            let t = rod.x[i] + y;
-            rod.position_compensation[i] = (t - rod.x[i]) - y;
-            rod.x[i] = t;
+            advance_position(
+                &mut rod.x[i],
+                &mut rod.position_compensation[i],
+                rod.v[i] * h,
+            );
         }
     }
     sub_steps

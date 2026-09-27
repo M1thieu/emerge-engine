@@ -55,6 +55,7 @@ use super::coupling::push_acceleration;
 use super::forces::{
     axial_force_and_jacobian, bending_jacobian_gauss_newton, discrete_curvature_gradient,
 };
+use super::integrator::advance_position;
 use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
 
 /// Solve `A x = b` via Gaussian elimination with partial pivoting.
@@ -397,7 +398,11 @@ pub fn step_rod_implicit(
                 rod.v[pi] += a * dt;
             }
             for &pi in &free {
-                rod.x[pi] += rod.v[pi] * dt;
+                advance_position(
+                    &mut rod.x[pi],
+                    &mut rod.position_compensation[pi],
+                    rod.v[pi] * dt,
+                );
             }
             return;
         }
@@ -408,7 +413,11 @@ pub fn step_rod_implicit(
         rod.v[pi].y += dv[row * 2 + 1];
     }
     for &pi in &free {
-        rod.x[pi] += rod.v[pi] * dt;
+        advance_position(
+            &mut rod.x[pi],
+            &mut rod.position_compensation[pi],
+            rod.v[pi] * dt,
+        );
     }
 }
 

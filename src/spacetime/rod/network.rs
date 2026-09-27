@@ -26,6 +26,7 @@
 use glam::Vec2;
 
 use super::forces::{discrete_curvature, discrete_curvature_gradient};
+use super::integrator::advance_position;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkEdge {
@@ -362,7 +363,11 @@ pub fn step_network(net: &mut RodNetwork, gravity: Vec2, dx_meters: f32, dt: f32
         if net.pinned[i] != 0 {
             continue;
         }
-        net.x[i] += net.v[i] * dt;
+        advance_position(
+            &mut net.x[i],
+            &mut net.position_compensation[i],
+            net.v[i] * dt,
+        );
     }
 }
 

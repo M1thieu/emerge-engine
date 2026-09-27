@@ -115,8 +115,12 @@
 
 extern crate emerge_engine as emerge;
 
+use emerge::particle::RodPoints;
 use emerge::particle::{Particle, Particles};
-use emerge::rod::{Rod, RodMaterial, build_straight_rod, rod_cfl_dt, step_rod};
+use emerge::rod::forces::discrete_curvature;
+use emerge::rod::{
+    Rod, RodForceParams, RodMaterial, advance_rod, build_straight_rod, rod_cfl_dt, step_rod,
+};
 use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion,
 };
@@ -720,6 +724,283 @@ fn probe_cantilever_time_average() {
             analytic(length - l0) * 1000.0,
             analytic(length) * 1000.0,
             lines.join("; ")
+        );
+    }
+}
+
+/// A rod's energy in joules, from the terms `forces::compute_internal_forces`
+/// derives its forces from: each edge `EA / (2 l0) (l - l0)^2`, each interior
+/// vertex `EI / (2 L_v) (kappa - kappa_rest)^2`, plus `m v^2 / 2` and the
+/// potential of `gravity` (cells/s^2). Returns (kinetic, elastic, total).
+fn rod_energy(
+    points: &RodPoints,
+    material: &RodMaterial,
+    gravity: Vec2,
+    dx: f32,
+) -> (f64, f64, f64) {
+    let n = points.len();
+    let ea = |k: usize| {
+        if points.ea.is_empty() {
+            material.ea
+        } else {
+            points.ea[k]
+        }
+    };
+    let ei = |k: usize| {
+        if points.ei.is_empty() {
+            material.ei
+        } else {
+            points.ei[k]
+        }
+    };
+    let (mut kinetic, mut elastic, mut potential) = (0.0f64, 0.0f64, 0.0f64);
+    for i in 0..n {
+        let m = points.mass[i] as f64;
+        kinetic += 0.5 * m * ((points.v[i] * dx).length_squared() as f64);
+        potential -= m * ((gravity * dx).dot(points.x[i] * dx) as f64);
+    }
+    for k in 0..n - 1 {
+        let l = ((points.x[k + 1] - points.x[k]) * dx).length() as f64;
+        let l0 = points.rest_edge_length[k] as f64;
+        elastic += 0.5 * ea(k) as f64 / l0 * (l - l0).powi(2);
+    }
+    for i in 1..n - 1 {
+        let kappa =
+            discrete_curvature(points.x[i - 1] * dx, points.x[i] * dx, points.x[i + 1] * dx) as f64;
+        let voronoi = 0.5 * (points.rest_edge_length[i - 1] + points.rest_edge_length[i]) as f64;
+        let bend = kappa - points.rest_curvature[i - 1] as f64;
+        elastic += 0.5 * ei(i - 1) as f64 / voronoi * bend * bend;
+    }
+    (kinetic, elastic, kinetic + elastic + potential)
+}
+
+/// Where the coupled explicit rod's ringing gets its energy. Each frame,
+/// the rod's state before `Simulation::step` is copied and advanced alone
+/// over the same frame (`step_rod`, the same sub-step count and gravity),
+/// so the difference of the two end energies is what the grid did beyond
+/// gravity. Summed over the last 10 s of 20, beside the ringing's size.
+/// Frames the solver split into several substeps are left out and counted.
+/// Run while `step_rod` still advanced its positions without compensation,
+/// it read a steady gain on the rod's own side: that was the replay freezing
+/// (`probe_cantilever_reference_absorption`), not energy. A probe.
+#[test]
+#[ignore = "diagnostic probe for gate 3: run with --ignored --nocapture"]
+fn probe_cantilever_energy_balance() {
+    for (points_count, frame_dt) in [(21usize, 1.0 / 60.0), (81, 1.0 / 60.0), (81, 1.0 / 240.0)] {
+        let started = std::time::Instant::now();
+        let config = SimConfig::earth(64, CELL_M, frame_dt);
+        let y = 40.0;
+        let l0 = ROD_LENGTH_CELLS * CELL_M / (points_count - 1) as f32;
+        let mut points = build_straight_rod(
+            Vec2::new(ROD_START_CELLS, y),
+            Vec2::new(ROD_START_CELLS + ROD_LENGTH_CELLS, y),
+            points_count,
+            LINEAR_DENSITY,
+            CELL_M,
+        );
+        points.pinned[0] = 1;
+        points.pinned[1] = 1;
+        let (axial_damping, bending_damping) =
+            RodMaterial::critical_damping(l0, LINEAR_DENSITY * l0, ROD_EA, ROD_EI);
+        let material = RodMaterial::new(ROD_EA, ROD_EI, axial_damping, bending_damping);
+        let mut sim = Simulation::empty(config).with_rod(Rod::new(points, material));
+        let frames = (20.0 / frame_dt).round() as usize;
+        let tip = points_count - 1;
+        let (mut grid_work, mut grid_work_abs, mut own_change) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut positive, mut counted, mut split) = (0usize, 0usize, 0usize);
+        let (mut kinetic_sum, mut lo, mut hi) = (0.0f64, f32::INFINITY, f32::NEG_INFINITY);
+        let (mut tip_sum, mut tip_samples) = (0.0f64, Vec::new());
+        for frame in 0..frames {
+            let before = sim.rods()[0].points.clone();
+            sim.step();
+            if frame < frames / 2 {
+                continue;
+            }
+            let after = &sim.rods()[0].points;
+            let deflection = (y - after.x[tip].y) * CELL_M * 1000.0;
+            lo = lo.min(deflection);
+            hi = hi.max(deflection);
+            tip_sum += deflection as f64;
+            tip_samples.push(deflection);
+            let (kinetic, _, coupled_end) = rod_energy(after, &material, config.gravity, CELL_M);
+            kinetic_sum += kinetic;
+            if sim.last_substeps() != 1 {
+                split += 1;
+                continue;
+            }
+            let (_, _, start) = rod_energy(&before, &material, config.gravity, CELL_M);
+            let mut alone = before;
+            let stable = rod_cfl_dt(&alone, &material, config.material_cfl_coefficient);
+            let sub_steps = (frame_dt / stable).ceil().max(1.0) as usize;
+            let h = frame_dt / sub_steps as f32;
+            for _ in 0..sub_steps {
+                step_rod(
+                    &mut alone,
+                    &material,
+                    config.gravity,
+                    Vec2::ZERO,
+                    0.0,
+                    CELL_M,
+                    h,
+                );
+            }
+            let (_, _, alone_end) = rod_energy(&alone, &material, config.gravity, CELL_M);
+            let work = coupled_end - alone_end;
+            grid_work += work;
+            grid_work_abs += work.abs();
+            own_change += alone_end - start;
+            positive += usize::from(work > 0.0);
+            counted += 1;
+        }
+        let late = (frames - frames / 2) as f64;
+        let mean_tip = tip_sum / late;
+        let crossings = tip_samples
+            .windows(2)
+            .filter(|w| ((w[0] as f64 - mean_tip) * (w[1] as f64 - mean_tip)) < 0.0)
+            .count();
+        println!(
+            "{points_count} points, frame {:.4} s: tip mean {mean_tip:.3} mm, range {lo:.3} to {hi:.3}, mean kinetic {:.3e} J, mean-crossing rate {:.2} Hz; over {counted} one-substep frames ({split} split): grid work beyond gravity {grid_work:.3e} J (sum of |.| {grid_work_abs:.3e}, positive in {positive}), the rod's own change alone {own_change:.3e} J; {:.0} s",
+            frame_dt,
+            kinetic_sum / late,
+            crossings as f64 / (2.0 * 10.0),
+            started.elapsed().as_secs_f32()
+        );
+    }
+}
+
+/// Whether the "rod alone" reference settles because of its damping or
+/// because f32 froze it. Three runs of the same cantilever for 20 s: through
+/// `Simulation` (whose `advance_rod` sums positions with compensation),
+/// alone through `advance_rod` with gravity as the only external
+/// acceleration, and alone through `step_rod`. Before `step_rod` summed its
+/// positions with compensation (`integrator::advance_position`), its run
+/// froze every point within 5 s while the first mode still rang at 5 mm;
+/// now it matches the compensated run. For each,
+/// the tip's half-range over 5 to 10 s and over 15 to 20 s, beside the
+/// decay the declared damping predicts for the first mode: `critical_damping`
+/// sets `c_b` per vertex, a stiffness-proportional `beta = c_b l0 / EI`, so
+/// `zeta_1 = beta omega_1 / 2` with `omega_1 = 1.8751^2 sqrt(EI / (mu L^4))`.
+/// The coupled run also repeats the energy balance against the compensated
+/// replay. A probe.
+#[test]
+#[ignore = "diagnostic probe for gate 3: run with --ignored --nocapture"]
+fn probe_cantilever_reference_absorption() {
+    for points_count in [21usize, 81] {
+        let started = std::time::Instant::now();
+        let frame_dt = 1.0 / 60.0;
+        let config = SimConfig::earth(64, CELL_M, frame_dt);
+        let y = 40.0;
+        let l0 = ROD_LENGTH_CELLS * CELL_M / (points_count - 1) as f32;
+        let (axial_damping, bending_damping) =
+            RodMaterial::critical_damping(l0, LINEAR_DENSITY * l0, ROD_EA, ROD_EI);
+        let material = RodMaterial::new(ROD_EA, ROD_EI, axial_damping, bending_damping);
+        let build = || {
+            let mut points = build_straight_rod(
+                Vec2::new(ROD_START_CELLS, y),
+                Vec2::new(ROD_START_CELLS + ROD_LENGTH_CELLS, y),
+                points_count,
+                LINEAR_DENSITY,
+                CELL_M,
+            );
+            points.pinned[0] = 1;
+            points.pinned[1] = 1;
+            points
+        };
+        let beam = ROD_LENGTH_CELLS * CELL_M - l0;
+        let omega_1 = 1.8751f32.powi(2) * (ROD_EI / (LINEAR_DENSITY * beam.powi(4))).sqrt();
+        let zeta_1 = bending_damping * l0 / ROD_EI * omega_1 / 2.0;
+        let predicted = (-zeta_1 * omega_1 * 10.0).exp();
+        let frames = (20.0 / frame_dt).round() as usize;
+        let tip = points_count - 1;
+        let windows = |samples: &[f32]| {
+            let half_range = |w: &[f32]| {
+                let lo = w.iter().copied().fold(f32::INFINITY, f32::min);
+                let hi = w.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                0.5 * (hi - lo)
+            };
+            let q = samples.len() / 4;
+            let (early, late) = (
+                half_range(&samples[q..2 * q]),
+                half_range(&samples[3 * q..]),
+            );
+            format!(
+                "half-range {early:.4} then {late:.4} mm (ratio {:.3})",
+                late / early.max(f32::MIN_POSITIVE)
+            )
+        };
+        let deflection = |p: &RodPoints| (y - p.x[tip].y) * CELL_M * 1000.0;
+        let gravity_only = vec![config.gravity; points_count];
+        let params = || RodForceParams {
+            wind_velocity: Vec2::ZERO,
+            wind_drag_coeff: 0.0,
+            push_center: None,
+            push_strength: 0.0,
+            push_radius: 0.0,
+            dx_meters: CELL_M,
+            dt: frame_dt,
+            stability_fraction: config.material_cfl_coefficient,
+        };
+
+        let mut sim = Simulation::empty(config).with_rod(Rod::new(build(), material));
+        let (mut coupled, mut grid_work, mut own_change, mut positive) =
+            (Vec::new(), 0.0f64, 0.0f64, 0usize);
+        for frame in 0..frames {
+            let before = sim.rods()[0].points.clone();
+            sim.step();
+            let after = &sim.rods()[0].points;
+            coupled.push(deflection(after));
+            if frame >= frames / 2 && sim.last_substeps() == 1 {
+                let (_, _, start) = rod_energy(&before, &material, config.gravity, CELL_M);
+                let mut replay = before;
+                advance_rod(&mut replay, &material, params(), &gravity_only);
+                let (_, _, replay_end) = rod_energy(&replay, &material, config.gravity, CELL_M);
+                let (_, _, coupled_end) = rod_energy(after, &material, config.gravity, CELL_M);
+                grid_work += coupled_end - replay_end;
+                own_change += replay_end - start;
+                positive += usize::from(coupled_end > replay_end);
+            }
+        }
+
+        let mut compensated = build();
+        let mut compensated_tip = Vec::new();
+        for _ in 0..frames {
+            advance_rod(&mut compensated, &material, params(), &gravity_only);
+            compensated_tip.push(deflection(&compensated));
+        }
+
+        let mut plain = build();
+        let stable = rod_cfl_dt(&plain, &material, config.material_cfl_coefficient);
+        let sub_steps = (frame_dt / stable).ceil().max(1.0) as usize;
+        let h = frame_dt / sub_steps as f32;
+        let mut plain_tip = Vec::new();
+        for _ in 0..frames {
+            for _ in 0..sub_steps {
+                step_rod(
+                    &mut plain,
+                    &material,
+                    config.gravity,
+                    Vec2::ZERO,
+                    0.0,
+                    CELL_M,
+                    h,
+                );
+            }
+            plain_tip.push(deflection(&plain));
+        }
+        let frozen = emerge::diagnostics::position_resolution(
+            plain.x.iter().copied(),
+            plain.v.iter().copied(),
+            h,
+        );
+
+        println!(
+            "{points_count} points: declared zeta_1 {zeta_1:.2e}, omega_1 {omega_1:.1} rad/s, predicted ratio over 10 s {predicted:.3}\n  coupled: {}; energy over the last 10 s, grid beyond gravity {grid_work:.3e} J (positive in {positive} frames), the compensated replay's own change {own_change:.3e} J\n  alone, compensated: {}\n  alone, step_rod: {} (at the end {} moving, {:.3} of them with every increment under half an ulp, which only compensation keeps; sub-step {h:.2e} s)\n  {:.0} s",
+            windows(&coupled),
+            windows(&compensated_tip),
+            windows(&plain_tip),
+            frozen.moving,
+            frozen.frozen,
+            started.elapsed().as_secs_f32()
         );
     }
 }
