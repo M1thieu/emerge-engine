@@ -1,6 +1,7 @@
 pub mod logger;
 pub mod per_material;
 pub mod plugin;
+pub mod position_resolution;
 pub mod rules;
 pub mod scene_map;
 pub mod snapshot;
@@ -13,6 +14,7 @@ pub use plugin::{
     ActivationStatsPlugin, DiagnosticsFrame, DiagnosticsPlugin, DiagnosticsRegistry,
     MaterialCountPlugin, RollingPlugin, ThermalStatsPlugin,
 };
+pub use position_resolution::{PositionResolution, PositionResolutionPlugin, position_resolution};
 pub use rules::{StabilityStatus, StabilityThresholds, evaluate_stability};
 pub use scene_map::{HEAT_BANDS, OCCUPANCY_BANDS, scene_map};
 pub use snapshot::{
