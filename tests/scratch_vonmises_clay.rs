@@ -69,3 +69,47 @@ fn the_clay_blobs_at_real_gravity() {
         1.0 / wall
     );
 }
+
+/// Frame by frame around the first landing: each blob's mean vertical
+/// speed and bottom, largest kappa, fastest particle, mean and smallest J,
+/// and the time dropped at the substep cap. A probe.
+#[test]
+#[ignore = "probe: run with --ignored --nocapture"]
+fn the_landing_frame_by_frame() {
+    let (mut sim, _) = make_sim(1.0);
+    for frame in 1..=40 {
+        sim.step();
+        if frame < 8 {
+            continue;
+        }
+        let dropped = sim.diagnostics_snapshot().sim_time_dropped;
+        let p = sim.particles();
+        let mut line = format!(
+            "frame {frame:>2} substeps {:>4} dropped {dropped:.1e}:",
+            sim.last_substeps()
+        );
+        for (slot, (name, _)) in CLAYS.iter().enumerate() {
+            let (mut vy, mut bottom, mut kappa, mut vmax, mut j, mut jmin, mut n) =
+                (0.0f32, f32::MAX, 0.0f32, 0.0f32, 0.0f32, f32::MAX, 0.0f32);
+            for i in 0..p.len() {
+                if p.material_id[i] != slot as u32 {
+                    continue;
+                }
+                vy += p.v[i].y;
+                bottom = bottom.min(p.x[i].y);
+                kappa = kappa.max(p.friction_hardening[i]);
+                vmax = vmax.max(p.v[i].length());
+                let det = p.deformation_gradient[i].determinant();
+                j += det;
+                jmin = jmin.min(det);
+                n += 1.0;
+            }
+            line += &format!(
+                "  {name}: v_y {:.2} bottom {bottom:.3} kappa {kappa:.3} vmax {vmax:.1} J {:.4}/{jmin:.4}",
+                vy / n,
+                j / n
+            );
+        }
+        println!("{line}");
+    }
+}
