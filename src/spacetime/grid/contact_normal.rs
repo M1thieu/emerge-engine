@@ -138,8 +138,17 @@ pub(super) fn fit_contact_normal_lr(
 
 /// Solves a general 3x3 linear system via Cramer's rule -- closed-form is simpler and
 /// faster than a general decomposition for this fixed, tiny size (one call per NLLS
-/// iteration in `fit_contact_normal_lr`). Returns `None` if singular (determinant ~0);
-/// the caller's Tikhonov-style penalty term keeps this from happening in practice.
+/// iteration in `fit_contact_normal_lr`). Returns `None` if singular.
+///
+/// Singular is judged relative to the matrix's own scale: the NLLS matrix
+/// `J^T W J + Gamma` is symmetric positive definite, so its determinant is at
+/// most the product of its diagonal (Hadamard's inequality), and their ratio
+/// says how close to singular it is whatever its size. An absolute bound
+/// (`det <= f32::EPSILON`) stopped the fit early: on two separable point
+/// clouds the logistic saturates as the plane sharpens, every entry shrinks,
+/// and the determinant crossed that bound at the fifth or sixth iteration,
+/// long before the convergence criterion, leaving a body corner's normal
+/// twice as tilted as the converged one (issue #49).
 fn solve3x3(m: [[f32; 3]; 3], rhs: [f32; 3]) -> Option<[f32; 3]> {
     let det3 = |a: [[f32; 3]; 3]| -> f32 {
         a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
@@ -147,7 +156,8 @@ fn solve3x3(m: [[f32; 3]; 3], rhs: [f32; 3]) -> Option<[f32; 3]> {
             + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
     };
     let det = det3(m);
-    if det.abs() <= f32::EPSILON {
+    let diagonal = (m[0][0] * m[1][1] * m[2][2]).abs();
+    if det.abs() <= f32::EPSILON * diagonal || !det.is_normal() {
         return None;
     }
     let solve_col = |col: usize| -> f32 {
@@ -221,5 +231,95 @@ mod fit_contact_normal_lr_tests {
             n.x.abs() < 0.1,
             "expected near-vertical normal for a clean flat interface, got {n:?}"
         );
+    }
+
+    /// The same NLLS iteration as `fit_contact_normal_lr`, with the paper's
+    /// own stopping rule (`1 - n.n' < 1e-5`, at most 15 iterations), in f64
+    /// and with no singularity cut: the plane the paper's method defines.
+    fn converged_reference(points: &[(Vec2, f32)], node_pos: Vec2) -> Vec2 {
+        let mut beta = [0.0f64; 3];
+        let mut previous: Option<(f64, f64)> = None;
+        for _ in 0..15 {
+            let mut m = [[0.0f64; 3]; 3];
+            let mut rhs = [0.0f64; 3];
+            for &(pos, c) in points {
+                let rel = pos - node_pos;
+                let xp = [rel.x as f64, rel.y as f64, 1.0];
+                let z = (xp[0] * beta[0] + xp[1] * beta[1] + xp[2] * beta[2]).clamp(-40.0, 40.0);
+                let ez = (-z).exp();
+                let denom = 1.0 + ez;
+                let f = 2.0 / denom - 1.0;
+                let sigma = 2.0 * ez / (denom * denom);
+                for k in 0..3 {
+                    for l in 0..3 {
+                        m[k][l] += sigma * sigma * xp[k] * xp[l];
+                    }
+                    rhs[k] += sigma * (c as f64 - f) * xp[k];
+                }
+            }
+            for k in 0..2 {
+                m[k][k] += 1.0e-7;
+                rhs[k] -= 1.0e-7 * beta[k];
+            }
+            let det3 = |a: [[f64; 3]; 3]| {
+                a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+                    - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+                    + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+            };
+            let det = det3(m);
+            for col in 0..3 {
+                let mut mm = m;
+                for row in 0..3 {
+                    mm[row][col] = rhs[row];
+                }
+                beta[col] += det3(mm) / det;
+            }
+            let length = (beta[0] * beta[0] + beta[1] * beta[1]).sqrt();
+            let n = (beta[0] / length, beta[1] / length);
+            let settled = previous.is_some_and(|p| 1.0 - (n.0 * p.0 + n.1 * p.1) < 1.0e-5);
+            previous = Some(n);
+            if settled {
+                break;
+            }
+        }
+        let n = Vec2::new(beta[0] as f32, beta[1] as f32).normalize();
+        if n.y < 0.0 { -n } else { n }
+    }
+
+    #[test]
+    fn a_body_corner_gets_the_papers_converged_normal() {
+        // A block (grip) 12 cells wide resting on a wider slab (rest), both
+        // on the spawn lattice, their facing rows 0.42 apart; nodes along the
+        // interface from inside the block to a cell past its corner, where
+        // the grip cloud is only the block's last column. The fit must reach
+        // the plane the paper's iteration converges to, within the paper's
+        // own tolerance (Nairn, Hammerquist and Smith 2020, appendix eq. 57:
+        // 1e-5 on `1 - n.n'`, 0.0044 rad). An absolute singularity bound
+        // stopped it at the fifth or sixth iteration (issue #49).
+        let mut points = Vec::new();
+        for i in 0..40 {
+            let x = 20.25 + i as f32 * 0.5;
+            for j in 0..4 {
+                if (26.0..38.0).contains(&x) {
+                    points.push((Vec2::new(x, 9.91 + j as f32 * 0.5), 1.0));
+                }
+                points.push((Vec2::new(x, 9.49 - j as f32 * 0.5), -1.0));
+            }
+        }
+        for node_x in [32.0f32, 37.0, 38.0, 39.0] {
+            let node_pos = Vec2::new(node_x, 10.0);
+            let near: Vec<(Vec2, f32)> = points
+                .iter()
+                .copied()
+                .filter(|(p, _)| (p.x - node_pos.x).abs() < 1.5 && (p.y - node_pos.y).abs() < 1.5)
+                .collect();
+            let n = fit_contact_normal_lr(&near, node_pos, 1.0).expect("both bodies present");
+            let reference = converged_reference(&near, node_pos);
+            let angle = n.angle_to(reference).abs();
+            assert!(
+                angle <= 0.0044,
+                "node {node_x}: fit {n:?}, converged {reference:?}, {angle:.4} rad apart"
+            );
+        }
     }
 }
