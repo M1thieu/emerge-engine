@@ -61,37 +61,53 @@ pub fn step_rod(
     }
 }
 
-/// CFL-safe `dt` bound for the rod's own explicit integrator, covering BOTH
-/// stiffness (axial + bending natural frequencies, `dt < 2/omega`) AND
-/// damping (axial + bending dashpots, `dt < 2*m/c` -- its own, independent
-/// explicit-Euler stability limit) -- the rod's own direct analog of
-/// `materials::utils::elastic_wave_dt` PLUS `ViscoelasticMaterial::
-/// timestep_bound`'s separate `viscous_dt` term. No `dx_meters` parameter
-/// needed -- `mass`/`rest_edge_length` are already real SI (kg/meters), so
-/// every bound here comes out in real seconds directly.
+/// Longest step the rod's own explicit integrator (`step_rod`: symplectic
+/// Euler, damping from the step's starting velocity) stays stable at, per
+/// point, then the smallest; `fraction` of it is returned. The fraction is
+/// `SimConfig::material_cfl_coefficient`'s definition.
 ///
-/// Computed per-point rather than per-edge/vertex: an interior point is
-/// coupled to 2 axial edges AND up to 3 overlapping bending vertices
-/// simultaneously, so this sums every stiffness/damping term touching each
-/// point -- a real Gershgorin circle row-sum bound (for `x''=-M^-1 K x`, the
-/// spectral radius of `M^-1 K` is bounded by `max_i(sum_j |K_ij|)/m_i`, the
-/// standard way to localize eigenvalues without a full eigendecomposition)
-/// -- then takes the min across points. Endpoints see fewer coupled terms
-/// and correctly get a larger safe dt than an interior point.
-/// Point `i`'s own `(omega_sq, damping_rate)` Gershgorin row-sum, shared by
-/// `rod_cfl_dt` and `apply_mass_scaling_for_target_dt` so both work from the
-/// exact same real stiffness/damping aggregation -- not two hand-kept-in-
-/// sync copies of the same math.
-fn point_stability_terms(rod: &RodPoints, material: &RodMaterial, i: usize) -> (f32, f32) {
+/// Derived from the scheme. A mode `x'' = -omega^2 x - b x'` stepped this
+/// way is stable exactly while `dt <= 4 / (b + sqrt(b^2 + 4 omega^2))`
+/// (the Jury conditions on its 2x2 update; `2 / omega` without damping).
+/// `omega^2` and `b` are bounded by Gershgorin row sums of the linearised
+/// stiffness and damping over the point's mass (`point_stability_sums`).
+///
+/// It replaces a per-point sum that counted each edge's axial stiffness once
+/// and each bending vertex once with weight one, 2 and 16/3 times too little,
+/// with an empirical 0.4 in front: a cantilever at 1 cm cells under real
+/// gravity blew up at step 32 at that step (`tests/subsystem_time_steps.rs`,
+/// `probe_cantilever_coupling_cut`).
+pub fn rod_cfl_dt(rod: &RodPoints, material: &RodMaterial, fraction: f32) -> f32 {
+    let mut min_dt = f32::INFINITY;
+    for i in 0..rod.len() {
+        if rod.pinned[i] != 0 {
+            continue;
+        }
+        let m = rod.mass[i].max(1.0e-9);
+        let (k, c) = point_stability_sums(rod, material, i);
+        let (omega_sq, b) = (k / m, c / m);
+        if omega_sq > 0.0 || b > 0.0 {
+            min_dt = min_dt.min(4.0 / (b + (b * b + 4.0 * omega_sq).sqrt()));
+        }
+    }
+    fraction * min_dt
+}
+
+/// Point `i`'s Gershgorin row sums of the linearised stiffness `K` (N/m) and
+/// damping `C` (N s/m), about the straight rest state, shared by
+/// `rod_cfl_dt` and `apply_mass_scaling_for_target_dt`.
+///
+/// Axial: each edge is a spring `EA / l0` and a dashpot `c_a` along it, a
+/// 2x2 block `[[1, -1], [-1, 1]]`, so each adjacent edge adds twice its
+/// value to the row. Bending (`forces::compute_internal_forces`): vertex
+/// `k` stores `EI / (2 L_v) kappa^2`, and for a straight rod
+/// `kappa = (w2 - w1) / l_n - (w1 - w0) / l_p` in the lateral displacements,
+/// so its gradient is `g = (1/l_p, -(1/l_p + 1/l_n), 1/l_n)`, its stiffness
+/// `(EI / L_v) g g^T` and its damping `c_b g g^T`; point `i` at position `j`
+/// in the vertex adds `|g_j| * sum|g|` times each. An interior point on
+/// equal edges gets `4 EA / l0` and `16 EI / l0^3`.
+fn point_stability_sums(rod: &RodPoints, material: &RodMaterial, i: usize) -> (f32, f32) {
     let n = rod.len();
-    let m = rod.mass[i].max(1.0e-9);
-    let mut omega_sq = 0.0f32;
-    let mut damping_rate = 0.0f32;
-    // Per-vertex stiffness with a uniform-material fallback -- same
-    // convention `forces::compute_internal_forces` uses, needed so this
-    // CFL bound stays correct (and doesn't panic on an empty slice) for
-    // both a uniform rod (built via `Rod::new`, `rod.ea`/`ei` empty until
-    // filled) and a genuinely non-uniform one.
     let ea_at = |k: usize| {
         if rod.ea.is_empty() {
             material.ea
@@ -106,96 +122,55 @@ fn point_stability_terms(rod: &RodPoints, material: &RodMaterial, i: usize) -> (
             rod.ei[k]
         }
     };
-
-    if i > 0 {
-        let l0 = rod.rest_edge_length[i - 1].max(1.0e-9);
-        omega_sq += ea_at(i - 1) / (m * l0);
-        damping_rate += material.axial_damping;
+    let (mut k_sum, mut c_sum) = (0.0f32, 0.0f32);
+    for edge in [i.checked_sub(1), (i + 1 < n).then_some(i)]
+        .into_iter()
+        .flatten()
+    {
+        let l0 = rod.rest_edge_length[edge].max(1.0e-9);
+        k_sum += 2.0 * ea_at(edge) / l0;
+        c_sum += 2.0 * material.axial_damping;
     }
-    if i + 1 < n {
-        let l0 = rod.rest_edge_length[i].max(1.0e-9);
-        omega_sq += ea_at(i) / (m * l0);
-        damping_rate += material.axial_damping;
-    }
-
-    if material.ei > 0.0 || material.bending_damping > 0.0 {
-        for k in [i.checked_sub(2), i.checked_sub(1), Some(i)]
-            .into_iter()
-            .flatten()
-        {
-            if k + 2 >= n {
-                continue;
-            }
-            let l0_prev = rod.rest_edge_length[k].max(1.0e-9);
-            let l0_next = rod.rest_edge_length[k + 1].max(1.0e-9);
-            let voronoi_length = 0.5 * (l0_prev + l0_next);
-            let ei_k = ei_at(k);
-            if ei_k > 0.0 {
-                omega_sq += ei_k / (m * voronoi_length.powi(3));
-            }
-            if material.bending_damping > 0.0 {
-                damping_rate += material.bending_damping / voronoi_length.powi(2);
-            }
+    for vertex in [i.checked_sub(2), i.checked_sub(1), Some(i)]
+        .into_iter()
+        .flatten()
+    {
+        if vertex + 2 >= n {
+            continue;
         }
+        let l_p = rod.rest_edge_length[vertex].max(1.0e-9);
+        let l_n = rod.rest_edge_length[vertex + 1].max(1.0e-9);
+        let voronoi_length = 0.5 * (l_p + l_n);
+        let g = [1.0 / l_p, 1.0 / l_p + 1.0 / l_n, 1.0 / l_n];
+        let row = g[i - vertex] * (g[0] + g[1] + g[2]);
+        k_sum += ei_at(vertex) / voronoi_length * row;
+        c_sum += material.bending_damping * row;
     }
-
-    (omega_sq, damping_rate)
+    (k_sum, c_sum)
 }
 
-pub fn rod_cfl_dt(rod: &RodPoints, material: &RodMaterial, safety: f32) -> f32 {
-    let n = rod.len();
-    let mut min_dt = f32::INFINITY;
-
-    for i in 0..n {
-        let m = rod.mass[i].max(1.0e-9);
-        let (omega_sq, damping_rate) = point_stability_terms(rod, material, i);
-
-        if omega_sq > f32::EPSILON {
-            min_dt = min_dt.min(safety * 2.0 / omega_sq.sqrt());
-        }
-        if damping_rate > f32::EPSILON {
-            min_dt = min_dt.min(safety * 2.0 * m / damping_rate);
-        }
-    }
-
-    min_dt
-}
-
-/// Real, general mass scaling (Gershgorin CFL row-sum, same math `rod_cfl_dt`
-/// already uses -- see `point_stability_terms`) -- a standard, established
-/// explicit-FEM stability technique (selective/target mass scaling, e.g.
-/// LS-DYNA's own `*CONTROL_TIMESTEP` mass-scaling option): raise a point's
-/// OWN inertia just enough that its stiffness-driven CFL bound alone
-/// reaches `target_dt`, rather than tuning per-scene multipliers by hand.
-/// Real, disclosed tradeoff: this genuinely makes the point heavier (it
-/// changes real dynamics -- gravity/wind/push response, not just a CFL-
-/// check fudge), so it should only raise mass, never lower it, and should
-/// be applied deliberately (an opt-in call), not silently baked into
-/// construction. Generalizes to ANY rod/material combination -- not tuned
-/// to one scene's own stiffness, the formula derives the exact minimum
-/// mass increase needed from each point's own real stiffness terms.
+/// Mass scaling (a standard explicit-dynamics technique, e.g. LS-DYNA's own
+/// `*CONTROL_TIMESTEP` option): raise a point's own inertia just enough
+/// that `rod_cfl_dt` reaches `target_dt` at `fraction`. Only ever raises
+/// mass, and changes real dynamics (gravity, wind, push response), so it is
+/// an opt-in call, never applied silently.
 ///
-/// Does NOT touch the damping-rate CFL term (unaffected by mass scaling in
-/// the same way -- `dt < 2*m/damping_rate` already grows linearly with the
-/// same added mass, so raising mass to fix the STIFFNESS term also loosens
-/// the damping term for free, not fought against).
+/// From `rod_cfl_dt`: with `tau = target_dt / fraction`, `omega^2 = K / m`
+/// and `b = C / m`, `4 / (b + sqrt(b^2 + 4 omega^2)) >= tau` exactly when
+/// `m >= (K tau^2 + 2 C tau) / 4`.
 pub fn apply_mass_scaling_for_target_dt(
     rod: &mut RodPoints,
     material: &RodMaterial,
-    safety: f32,
+    fraction: f32,
     target_dt: f32,
 ) {
-    let n = rod.len();
-    for i in 0..n {
-        let (omega_sq, _damping_rate) = point_stability_terms(rod, material, i);
-        if omega_sq <= f32::EPSILON {
+    let tau = target_dt / fraction;
+    for i in 0..rod.len() {
+        if rod.pinned[i] != 0 {
             continue;
         }
-        let m_old = rod.mass[i].max(1.0e-9);
-        // omega_sq_old = stiffness_sum / m_old, so stiffness_sum = omega_sq_old * m_old.
-        // Solve m_new from: target_dt = safety * 2 / sqrt(stiffness_sum / m_new).
-        let stiffness_sum = omega_sq * m_old;
-        let m_required = stiffness_sum * (target_dt / (2.0 * safety)).powi(2);
-        rod.mass[i] = m_old.max(m_required);
+        let (k, c) = point_stability_sums(rod, material, i);
+        let m_required = (k * tau * tau + 2.0 * c * tau) / 4.0;
+        rod.mass[i] = rod.mass[i].max(m_required);
     }
 }

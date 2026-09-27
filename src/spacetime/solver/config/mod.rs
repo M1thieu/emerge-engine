@@ -27,8 +27,8 @@ pub struct SimConfig {
     /// theoretical stability limit (Courant number <= 1.0), and 0.9 is a
     /// standard, common choice for the mild advective bound specifically
     /// (see `material_cfl_coefficient` below for why the material/viscous
-    /// bounds use a tighter 0.5 instead -- same convention
-    /// `rod_cfl_coefficient` documents for the rod solver's own bound).
+    /// bounds use a tighter 0.5 instead, the fraction the rod solver's
+    /// own bound also takes).
     pub cfl_coefficient: f32,
     /// The fraction of the acoustic stability limit a substep may use:
     /// `dt <= material_cfl_coefficient * cell_width / c_p`, with
@@ -57,15 +57,6 @@ pub struct SimConfig {
     /// (viscous diffusion instability is likewise an immediate blowup, not
     /// a mild overshoot).
     pub viscous_timestep_coefficient: f32,
-    /// Safety factor for `rod::rod_cfl_dt`'s own bound, folded into
-    /// `choose_substep_dt` alongside `material_cfl_coefficient`. Not the same
-    /// 0.5 as `material_cfl_coefficient`: `rod_cfl_dt` sums every stiffness/
-    /// damping term touching each point (a Gershgorin row-sum bound), which
-    /// is real but LOOSE for the rod's geometrically nonlinear dynamics -- 0.5
-    /// diverges for a long/stiff-EI cantilever at N=30/40; 0.4 is the
-    /// bisected, long-horizon-verified safe value across that regime and a
-    /// short/soft blade-of-grass regime.
-    pub rod_cfl_coefficient: f32,
     /// Legacy timestep-granularity hint retained for API compatibility.
     ///
     /// It is deliberately not a lower bound: no solver may raise an
@@ -545,7 +536,6 @@ impl Default for SimConfig {
             cfl_coefficient: 0.9,
             material_cfl_coefficient: DEFAULT_MATERIAL_CFL_COEFFICIENT,
             viscous_timestep_coefficient: 0.5,
-            rod_cfl_coefficient: 0.4,
             min_dt: 1.0e-3,
             project_invalid_state: true,
             projection_min_density: 1.0e-6,
@@ -730,10 +720,6 @@ impl SimConfig {
         assert!(
             self.material_cfl_coefficient > 0.0,
             "material_cfl_coefficient must be positive"
-        );
-        assert!(
-            self.rod_cfl_coefficient > 0.0,
-            "rod_cfl_coefficient must be positive"
         );
         assert!(
             self.viscous_timestep_coefficient > 0.0,

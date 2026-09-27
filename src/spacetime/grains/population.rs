@@ -327,8 +327,9 @@ impl GrainPopulation {
     /// force/moment, returning per-grain net contact force and torque.
     /// Pure computation, no integration -- separated from `step` so grid
     /// coupling (`grains::coupling`) can apply these forces AFTER a
-    /// grid-gathered velocity, exactly mirroring how `rod::coupling`'s own
-    /// internal forces apply after `gather_grid_to_rod`, not instead of it.
+    /// grid-gathered velocity, exactly mirroring how `rod::advance_rod`
+    /// applies a rod's internal forces after `gather_grid_to_rod`, not
+    /// instead of it.
     pub fn resolve_contact_forces(&mut self, dt: f32) -> (Vec<Vec2>, Vec<f32>) {
         let n = self.grains.len();
         let k = self.contact_iterations.max(1);

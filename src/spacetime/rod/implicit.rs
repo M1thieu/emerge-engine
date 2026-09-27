@@ -361,7 +361,7 @@ pub fn step_rod_implicit(
         // rod's OWN internal elastic/damping forces are stiff enough to
         // need implicit treatment; wind drag and push are comparatively
         // soft, real forces, safe to treat this way (same real convention
-        // `apply_rod_internal_and_wind_forces` already uses for the
+        // `advance_rod` already uses for the
         // explicit path, converted to real Newtons via the same
         // `mass*dx_meters` factor internal forces already use).
         let a_wind = wind_drag_coeff * (wind_velocity - rod.v[pi]);

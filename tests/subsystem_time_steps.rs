@@ -23,17 +23,25 @@
 //! - The step a subsystem takes is `material_cfl_coefficient` times its
 //!   limit: the definition the materials already use, the fraction of the
 //!   stability limit, and no new free number.
-//! - Explicit rods, advanced inside the mechanics substep: the substep
-//!   takes the minimum, as `timestep_bound` does for the materials.
+//! - Explicit rods sub-cycle their own forces inside the mechanics substep
+//!   to their own step and stay coupled to the grid; a free rod no longer
+//!   bounds the substep. A rod touching other matter still does, a declared
+//!   approximation: the grid exchanges momentum once per substep, and a
+//!   loaded cantilever sub-cycled under a large substep let the particles on
+//!   it fall through (measured, `rod_deflects_and_mpm_particles_feel_
+//!   reaction`). Rewritten before gate 3 passed, from "the substep takes the
+//!   minimum", once sub-cycling was chosen (next point).
 //! - Grains: their contacts are sub-cycled inside the mechanics substep to
 //!   their own step, rather than clamping the substep; with a real
 //!   mineral's stiffness a minimum would collapse the whole scene's step.
 //!   The cost is measured and reported.
 //! - Heat and scalar fields, advanced once per frame on their own clock:
 //!   they sub-cycle to their own step and no longer clamp the mechanics.
-//! - A rod goes implicit by itself when its explicit step would fall below
-//!   the rest of the scene's; no flag set by hand. An override remains, so a
-//!   test can compare the two integrations.
+//! - Rewritten before gate 3 passed: "a rod goes implicit by itself when its
+//!   explicit step would fall below the rest of the scene's" is dropped. The
+//!   implicit rod is not coupled to the grid (its own doc), so switching a
+//!   stiff rod to it would have silently cut it off from the scene;
+//!   sub-cycling keeps the coupling. The implicit flag stays, set by hand.
 //! - A scene with none of these subsystems gives bit-identical results.
 //!
 //! # Gate 1: the diffusion of a peak matches the analytic
@@ -83,9 +91,17 @@
 //!
 //! - Settled tip deflection, explicit and implicit, within 1 percent of each
 //!   other, and within 5 percent of the Euler-Bernoulli value
-//!   `q L^4 / (8 E I)`, derived in the test.
-//! - A stiff rod, whose explicit step is below the scene's, goes implicit by
-//!   itself: adding it leaves the scene's substeps per frame unchanged.
+//!   `q L^4 / (8 E I)`, derived in the test. Settled means the mean over the
+//!   last 10 s of 20: the rod rings around its equilibrium, and a single
+//!   instant read 3 and 7 percent where the means agree within 0.2
+//!   (clarified after the first measurement, on review).
+//! - A stiff explicit rod touching nothing, sub-cycled, leaves the scene's
+//!   largest substeps per frame unchanged.
+//! - The switch between the two regimes (touching, free) makes no jump: a
+//!   particle body falling past the tip of a cantilever, touching it and
+//!   leaving it, moves the tip along the same path, within 5 percent of the
+//!   tip's largest excursion, as a reference run whose every step is within
+//!   the rod's own stable step.
 //!
 //! # Gate 4: nothing else moves
 //!
@@ -100,7 +116,7 @@
 extern crate emerge_engine as emerge;
 
 use emerge::particle::{Particle, Particles};
-use emerge::rod::{Rod, RodMaterial, build_straight_rod};
+use emerge::rod::{Rod, RodMaterial, build_straight_rod, rod_cfl_dt, step_rod};
 use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion,
 };
@@ -361,7 +377,10 @@ fn gate1_the_diffusion_of_a_peak_matches_the_analytic() {
 
 /// Cantilever from x = 12 to 52 cells at 1 cm, clamped by pinning its first
 /// two points; the beam runs from point 1 to the tip.
-const ROD_POINTS: usize = 21;
+/// 81 points: the discrete rod's equilibrium converges to the analytic as
+/// 10.8, 5.2 and 2.5 percent at 21, 41 and 81 points
+/// (`probe_cantilever_time_average`).
+const ROD_POINTS: usize = 81;
 const ROD_START_CELLS: f32 = 12.0;
 const ROD_LENGTH_CELLS: f32 = 40.0;
 const CELL_M: f32 = 0.01;
@@ -369,9 +388,10 @@ const LINEAR_DENSITY: f32 = 0.1; // kg/m
 const ROD_EA: f32 = 1000.0; // N
 const ROD_EI: f32 = 0.5; // N m^2
 
-/// Settles the cantilever under real gravity through `Simulation`, explicit
-/// or implicit, and returns the tip deflection in metres and the substeps
-/// the last frame took.
+/// Runs the cantilever 20 s under real gravity through `Simulation`,
+/// explicit or implicit, and returns the tip deflection in metres averaged
+/// over the last 10 s (the rod rings around its equilibrium) and the largest
+/// number of substeps a frame took.
 fn settled_tip_deflection(implicit: bool) -> (f32, usize) {
     let config = SimConfig::earth(64, CELL_M, 1.0 / 60.0);
     let y = 40.0;
@@ -394,23 +414,16 @@ fn settled_tip_deflection(implicit: bool) -> (f32, usize) {
     rod.use_implicit_integration = implicit;
     let mut sim = Simulation::empty(config).with_rod(rod);
     let tip = ROD_POINTS - 1;
-    let mut last = f32::NAN;
-    let mut substeps = 0;
-    for frame in 0..600 {
+    let (mut sum, mut count, mut substeps) = (0.0f32, 0u32, 0usize);
+    for frame in 0..1200 {
         sim.step();
-        substeps = sim.last_substeps();
-        // Settled: the tip moved less than 1e-6 of the length over the last
-        // second.
-        if frame % 60 == 59 {
-            let now = sim.rods()[0].points.x[tip].y;
-            if (now - last).abs() < 1.0e-6 * ROD_LENGTH_CELLS {
-                break;
-            }
-            last = now;
+        substeps = substeps.max(sim.last_substeps());
+        if frame >= 600 {
+            sum += (y - sim.rods()[0].points.x[tip].y) * CELL_M;
+            count += 1;
         }
     }
-    let deflection = (y - sim.rods()[0].points.x[tip].y) * CELL_M;
-    (deflection, substeps)
+    (sum / count as f32, substeps)
 }
 
 /// Gate 3, first part: the same cantilever settles to the same deflection
@@ -421,7 +434,7 @@ fn settled_tip_deflection(implicit: bool) -> (f32, usize) {
 /// `w(x) = q x^2 (6 L^2 - 4 L x + x^2) / (24 E I)`, so
 /// `w(L) = q L^4 / (8 E I)`. `L` runs from the clamp (point 1) to the tip.
 #[test]
-#[ignore = "gate 3 fails before any change: the explicit rod explodes in its first             frame at 1 cm cells and real gravity (probe_cantilever_cost), cause not             yet counted; long, run with --ignored --nocapture"]
+#[ignore = "gate 3: long (81-point rods, 20 s each); run with --ignored --nocapture"]
 fn gate3_a_rod_bends_the_same_explicit_and_implicit() {
     let q = LINEAR_DENSITY * 9.81;
     let l0 = ROD_LENGTH_CELLS * CELL_M / (ROD_POINTS - 1) as f32;
@@ -501,5 +514,212 @@ fn probe_cantilever_cost() {
                 start.elapsed().as_secs_f32() * 1000.0
             );
         }
+    }
+}
+
+/// The explicit cantilever with the grid coupling cut: the rod's own
+/// integrator (`step_rod`) at the step `Simulation` gives it, gravity
+/// applied directly. If this explodes too, the step is not stable for the
+/// rod itself and the coupling is not the cause. A probe.
+#[test]
+#[ignore = "diagnostic probe for gate 3: run with --ignored --nocapture"]
+fn probe_cantilever_coupling_cut() {
+    let config = SimConfig::earth(64, CELL_M, 1.0 / 60.0);
+    let y = 40.0;
+    let mut points = build_straight_rod(
+        Vec2::new(ROD_START_CELLS, y),
+        Vec2::new(ROD_START_CELLS + ROD_LENGTH_CELLS, y),
+        ROD_POINTS,
+        LINEAR_DENSITY,
+        CELL_M,
+    );
+    points.pinned[0] = 1;
+    points.pinned[1] = 1;
+    let l0 = ROD_LENGTH_CELLS * CELL_M / (ROD_POINTS - 1) as f32;
+    let (axial_damping, bending_damping) =
+        RodMaterial::critical_damping(l0, LINEAR_DENSITY * l0, ROD_EA, ROD_EI);
+    let material = RodMaterial::new(ROD_EA, ROD_EI, axial_damping, bending_damping);
+    let rod = Rod::new(points, material);
+    let mut points = rod.points.clone();
+    for coefficient in [config.material_cfl_coefficient, 1.0, 1.25] {
+        points.x.clone_from(&rod.points.x);
+        points.v.iter_mut().for_each(|v| *v = Vec2::ZERO);
+        let dt = rod_cfl_dt(&points, &material, coefficient);
+        let mut first_blow = None;
+        let mut fastest = 0.0f32;
+        for step in 0..20_000 {
+            step_rod(
+                &mut points,
+                &material,
+                config.gravity,
+                Vec2::ZERO,
+                0.0,
+                CELL_M,
+                dt,
+            );
+            fastest = points.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
+            if first_blow.is_none() && (fastest >= 1.0e3 || !fastest.is_finite()) {
+                first_blow = Some(step);
+            }
+        }
+        println!(
+            "coupling cut, rod coefficient {coefficient}: dt {dt:.3e} s, first step above 1e3 \
+             cells/s {first_blow:?}, fastest after 20000 steps {fastest:.3e}, tip y {:.5}",
+            points.x[ROD_POINTS - 1].y
+        );
+    }
+}
+
+/// The tip over time, explicit and implicit through `Simulation` and the
+/// rod on its own (`step_rod`, the discrete model's own equilibrium), at
+/// several point counts: whether the runs settle, and where the discrete
+/// model settles against the analytic. A probe.
+#[test]
+#[ignore = "diagnostic probe for gate 3: run with --ignored --nocapture"]
+fn probe_cantilever_settling_and_resolution() {
+    let analytic = |beam: f32| LINEAR_DENSITY * 9.81 * beam.powi(4) / (8.0 * ROD_EI);
+    let length = ROD_LENGTH_CELLS * CELL_M;
+    for points_count in [21usize, 41, 81] {
+        let config = SimConfig::earth(64, CELL_M, 1.0 / 60.0);
+        let y = 40.0;
+        let build = || {
+            let mut points = build_straight_rod(
+                Vec2::new(ROD_START_CELLS, y),
+                Vec2::new(ROD_START_CELLS + ROD_LENGTH_CELLS, y),
+                points_count,
+                LINEAR_DENSITY,
+                CELL_M,
+            );
+            points.pinned[0] = 1;
+            points.pinned[1] = 1;
+            let l0 = length / (points_count - 1) as f32;
+            let (axial_damping, bending_damping) =
+                RodMaterial::critical_damping(l0, LINEAR_DENSITY * l0, ROD_EA, ROD_EI);
+            Rod::new(
+                points,
+                RodMaterial::new(ROD_EA, ROD_EI, axial_damping, bending_damping),
+            )
+        };
+        let l0 = length / (points_count - 1) as f32;
+        let tip = points_count - 1;
+        // The rod on its own, at its stable step, 8 s.
+        let rod = build();
+        let mut alone = rod.points.clone();
+        let dt = rod_cfl_dt(&alone, &rod.material, 0.5);
+        for _ in 0..(8.0 / dt) as usize {
+            step_rod(
+                &mut alone,
+                &rod.material,
+                config.gravity,
+                Vec2::ZERO,
+                0.0,
+                CELL_M,
+                dt,
+            );
+        }
+        let alone_mm = (y - alone.x[tip].y) * CELL_M * 1000.0;
+        let mut series = Vec::new();
+        for implicit in [false, true] {
+            let mut rod = build();
+            rod.use_implicit_integration = implicit;
+            let mut sim = Simulation::empty(config).with_rod(rod);
+            let mut samples = Vec::new();
+            for frame in 1..=1200 {
+                sim.step();
+                if frame % 240 == 0 {
+                    samples.push((y - sim.rods()[0].points.x[tip].y) * CELL_M * 1000.0);
+                }
+            }
+            series.push(samples);
+        }
+        println!(
+            "{points_count} points: analytic {:.3} mm clamped at point 1, {:.3} mm at point 0; \
+             rod alone {alone_mm:.3} mm; explicit every 4 s {:?}; implicit every 4 s {:?}",
+            analytic(length - l0) * 1000.0,
+            analytic(length) * 1000.0,
+            series[0],
+            series[1]
+        );
+    }
+}
+
+/// Ringing or not: the tip every frame for 20 s, explicit and implicit
+/// through `Simulation`, and the rod on its own; mean, lowest and highest
+/// deflection over the last 10 s. A probe.
+#[test]
+#[ignore = "diagnostic probe for gate 3: run with --ignored --nocapture"]
+fn probe_cantilever_time_average() {
+    let length = ROD_LENGTH_CELLS * CELL_M;
+    let analytic = |beam: f32| LINEAR_DENSITY * 9.81 * beam.powi(4) / (8.0 * ROD_EI);
+    let summary = |samples: &[f32]| {
+        let late = &samples[samples.len() / 2..];
+        let mean = late.iter().sum::<f32>() / late.len() as f32;
+        let lo = late.iter().copied().fold(f32::INFINITY, f32::min);
+        let hi = late.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        format!("mean {mean:.3} mm, range {lo:.3} to {hi:.3}")
+    };
+    for points_count in [21usize, 41, 81] {
+        let config = SimConfig::earth(64, CELL_M, 1.0 / 60.0);
+        let y = 40.0;
+        let l0 = length / (points_count - 1) as f32;
+        let build = || {
+            let mut points = build_straight_rod(
+                Vec2::new(ROD_START_CELLS, y),
+                Vec2::new(ROD_START_CELLS + ROD_LENGTH_CELLS, y),
+                points_count,
+                LINEAR_DENSITY,
+                CELL_M,
+            );
+            points.pinned[0] = 1;
+            points.pinned[1] = 1;
+            let (axial_damping, bending_damping) =
+                RodMaterial::critical_damping(l0, LINEAR_DENSITY * l0, ROD_EA, ROD_EI);
+            Rod::new(
+                points,
+                RodMaterial::new(ROD_EA, ROD_EI, axial_damping, bending_damping),
+            )
+        };
+        let tip = points_count - 1;
+        let deflection_mm = |x: Vec2| (y - x.y) * CELL_M * 1000.0;
+        // The rod on its own, sampled every 1/60 s for 20 s.
+        let rod = build();
+        let mut alone = rod.points.clone();
+        let dt = rod_cfl_dt(&alone, &rod.material, 0.5);
+        let per_frame = ((1.0 / 60.0) / dt).ceil() as usize;
+        let dt = (1.0 / 60.0) / per_frame as f32;
+        let mut alone_samples = Vec::new();
+        for _ in 0..1200 {
+            for _ in 0..per_frame {
+                step_rod(
+                    &mut alone,
+                    &rod.material,
+                    config.gravity,
+                    Vec2::ZERO,
+                    0.0,
+                    CELL_M,
+                    dt,
+                );
+            }
+            alone_samples.push(deflection_mm(alone.x[tip]));
+        }
+        let mut lines = vec![format!("rod alone {}", summary(&alone_samples))];
+        for implicit in [false, true] {
+            let mut rod = build();
+            rod.use_implicit_integration = implicit;
+            let mut sim = Simulation::empty(config).with_rod(rod);
+            let mut samples = Vec::new();
+            for _ in 0..1200 {
+                sim.step();
+                samples.push(deflection_mm(sim.rods()[0].points.x[tip]));
+            }
+            let name = if implicit { "implicit" } else { "explicit" };
+            lines.push(format!("{name} {}", summary(&samples)));
+        }
+        println!(
+            "{points_count} points (analytic {:.3} mm at point 1, {:.3} at point 0): {}",
+            analytic(length - l0) * 1000.0,
+            analytic(length) * 1000.0,
+            lines.join("; ")
+        );
     }
 }

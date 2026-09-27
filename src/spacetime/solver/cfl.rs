@@ -353,30 +353,26 @@ pub(crate) fn choose_substep_dt(
             max_speed = max_speed.max(s);
         }
     }
-    // Rods aren't scanned by the particle loop above (separate SoA) -- fold
-    // in their own CFL bound the same way a stiff material would clamp
-    // min_mat_dt, so a rod going unstable can never silently escape the
-    // adaptive substep logic (the exact bug class this whole rod effort
-    // started from: something CFL never knew about). Skipped for sleeping
-    // rods -- this is the real cost fix for many simultaneous rods (a grass
-    // field): `rod_cfl_dt` is a per-point Gershgorin sum over every stiffness
-    // term touching it, paid EVERY substep for EVERY rod before this; a
-    // settled rod contributing nothing to the min anyway (its own dt bound
-    // stays constant while frozen) has no reason to keep paying for it.
+    // Rods aren't scanned by the particle loop above (separate SoA). An
+    // explicit rod sub-cycles its own forces within its own stable step
+    // inside the substep (`rod::advance_rod`), so a free rod's stiffness no
+    // longer bounds the substep; only its speed does, the same way the
+    // grains' speed does above. A rod touching other matter still bounds
+    // it with its own stable step, as the grid exchanges momentum only once
+    // per substep (`Rod::touching_other_matter`). Sleeping and implicit rods
+    // (advanced once per `step()`, outside this loop) contribute nothing.
     for rod in rods {
-        // An implicit-integration rod is advanced ONCE per `step()` call, entirely
-        // outside this substep loop (see `Simulation::step`'s own implicit-rod
-        // pass) -- its stability no longer depends on this shared adaptive dt at
-        // all (the whole point of implicit integration: unconditionally stable
-        // regardless of the rod's own stiffness), so it correctly contributes
-        // nothing here, same spirit as a sleeping rod contributing nothing while
-        // frozen.
         if rod.sleeping || rod.use_implicit_integration {
             continue;
         }
-        let rod_dt = rod_cfl_dt(&rod.points, &rod.material, config.rod_cfl_coefficient);
-        if rod_dt.is_finite() && rod_dt > 0.0 {
-            min_mat_dt = min_mat_dt.min(rod_dt);
+        for v in &rod.points.v {
+            max_speed = max_speed.max(v.length());
+        }
+        if rod.touching_other_matter {
+            let rod_dt = rod_cfl_dt(&rod.points, &rod.material, config.material_cfl_coefficient);
+            if rod_dt.is_finite() && rod_dt > 0.0 {
+                min_mat_dt = min_mat_dt.min(rod_dt);
+            }
         }
     }
     // Nonlocal Granular Fluidity's own real, quoted Von Neumann stability

@@ -14,7 +14,7 @@ use glam::Vec2;
 use crate::grid::Grid;
 use crate::grid::kernel::quadratic_weights;
 
-use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
+use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces, rod_cfl_dt};
 
 /// Kernel support radius for `quadratic_weights` is 1.5 grid cells -- two
 /// scatter locations spaced up to this far apart still have overlapping
@@ -133,24 +133,55 @@ pub fn scatter_rod_to_grid(rod: &RodPoints, grid: &mut Grid) {
     }
 }
 
-/// Grid -> rod gather. Pure PIC (no APIC/`C`-matrix -- a rod point has no
+/// Whether any grid node the rod would scatter to already carries mass
+/// (particles, grains, another rod): checked before the rod scatters. Its
+/// points and every coverage sample between them count, with the same
+/// quadratic stencil as the scatter.
+pub fn rod_touches_grid_mass(rod: &RodPoints, grid: &Grid) -> bool {
+    let touches = |pos: Vec2| {
+        let weights = quadratic_weights(pos);
+        (0..3).any(|gx| {
+            (0..3).any(|gy| {
+                let cell = weights.base_cell + glam::IVec2::new(gx - 1, gy - 1);
+                grid.mass_at(cell) > 0.0
+            })
+        })
+    };
+    (0..rod.len()).any(|i| {
+        if touches(rod.x[i]) {
+            return true;
+        }
+        let Some(j) = Some(i + 1).filter(|&j| j < rod.len()) else {
+            return false;
+        };
+        let edge = rod.x[j] - rod.x[i];
+        let len = edge.length();
+        let samples = (len / COVERAGE_SPACING).floor() as usize;
+        (1..=samples).any(|k| touches(rod.x[i] + edge * (k as f32 * COVERAGE_SPACING / len)))
+    })
+}
+
+/// Grid -> rod gather: what the grid did to each point's velocity over
+/// the substep `dt` (gravity, the exchange with particles, and the pure-PIC
+/// averaging with its neighbours), returned as a constant acceleration
+/// `(v_grid - v) / dt` for `advance_rod` to apply over the substep. Pinned
+/// points get zero. Pure PIC (no APIC/`C`-matrix -- a rod point has no
 /// deformation gradient; its own "F" is already fully tracked via edge
-/// lengths + curvature). Disclosed as slightly more dissipative than the
-/// APIC particles sharing its grid -- doesn't affect momentum conservation
-/// (exact through the grid either way), just settles marginally faster.
-/// Pinned points held at `v=0`/position untouched, mirroring G2P's own
-/// pinned branch exactly (`transfer::g2p`'s `v_position`/`new_pos` logic) --
-/// including ADVANCING POSITION HERE, in the gather step, not in the force
-/// step below: real MPM integrates `x += v*dt` as part of G2P using the
-/// grid-gathered velocity, then force fields afterward only nudge velocity
-/// for the NEXT substep's advection (`step.rs`'s own force-fields loop never
-/// touches `particles.x`). The rod follows the identical convention so its
-/// coupling matches, not diverges from, the pattern already proven correct
-/// for ordinary particles.
-pub fn gather_grid_to_rod(rod: &mut RodPoints, grid: &Grid, dt: f32) {
-    for i in 0..rod.len() {
+/// lengths + curvature), disclosed as slightly more dissipative than the
+/// APIC particles sharing its grid; momentum is conserved through the grid
+/// either way.
+///
+/// Why an acceleration and not the grid velocity itself: a stiff rod
+/// advances in sub-steps far shorter than `dt`. Taking the grid velocity
+/// at the start meant gravity arrived as one kick of `g dt` that the rod
+/// then worked off within the substep, so it hung about `g dt^2 / 2` too low
+/// on average, 0.14 cell at 1/60 s and 1 cm cells, as large as a cantilever's
+/// whole deflection (`tests/subsystem_time_steps.rs`, gate 3). Spread over
+/// the substep, a rod at rest balances `g` exactly.
+pub fn gather_grid_to_rod(rod: &RodPoints, grid: &Grid, dt: f32) -> Vec<Vec2> {
+    let mut external = vec![Vec2::ZERO; rod.len()];
+    for (i, out) in external.iter_mut().enumerate() {
         if rod.pinned[i] != 0 {
-            rod.v[i] = Vec2::ZERO;
             continue;
         }
         let contact_group = rod.contact_group[i];
@@ -175,17 +206,9 @@ pub fn gather_grid_to_rod(rod: &mut RodPoints, grid: &Grid, dt: f32) {
                 v += weight * node_v;
             }
         }
-        rod.v[i] = v;
-        // Kahan (compensated) summation: a naive `x[i] += v*dt` loses every
-        // substep's contribution here, since the rod's CFL-bound dt (~1e-6s)
-        // makes each increment (~1e-8) fall below f32's representable
-        // precision at x's own grid-coordinate magnitude. This tracks the
-        // rounding error each addition drops and feeds it back in next time.
-        let y = v * dt - rod.position_compensation[i];
-        let t = rod.x[i] + y;
-        rod.position_compensation[i] = (t - rod.x[i]) - y;
-        rod.x[i] = t;
+        *out = (v - rod.v[i]) / dt.max(f32::MIN_POSITIVE);
     }
+    external
 }
 
 /// Lateral push-cursor acceleration, shared by the explicit force pass below
@@ -231,19 +254,23 @@ pub(crate) fn push_acceleration(
     }
 }
 
-/// Applies the rod's own internal (stretch+bend+damping) forces plus wind
-/// drag directly to `rod.v` -- called AFTER `gather_grid_to_rod`, mirroring
-/// where MPM's own force fields run (after G2P, before the next P2G).
-/// Deliberately does NOT re-apply gravity: the grid-update step already
-/// applied gravity to every cell the rod scattered into (step 8 in the
-/// substep order -- see `mod.rs`'s own doc), so the rod already received
-/// gravity through the shared mechanism ordinary particles use.
+/// Advances the rod over one mechanics substep. `external` is what the grid
+/// did to it (`gather_grid_to_rod`): gravity and every exchange with the
+/// particles around it, so gravity is not applied again here. That and the
+/// rod's own internal (stretch, bend, damping) forces, wind drag and push
+/// are integrated in as many equal sub-steps as keep each within
+/// `stability_fraction` of the rod's own stable step (`rod_cfl_dt`), each
+/// moving the points, so a stiff rod neither needs a tiny mechanics substep
+/// nor leaves the grid. Returns the number of sub-steps.
+///
+/// Positions use compensated (Kahan) summation: the stable step of a stiff
+/// rod can make each increment fall below f32's resolution at the point's
+/// own grid-coordinate magnitude.
 ///
 /// Bundles this function's own scalar/optional parameters -- the real fix
-/// for clippy::too_many_arguments (was 7 loose params after `rod`/
-/// `material`) rather than suppressing the lint. Deliberately does NOT
-/// include `gravity` (unlike `implicit::RodImplicitStepParams`): see this
-/// function's own doc above for why the explicit path never re-applies it.
+/// for clippy::too_many_arguments rather than suppressing the lint.
+/// Deliberately does NOT include `gravity` (unlike
+/// `implicit::RodImplicitStepParams`): see above.
 pub struct RodForceParams {
     pub wind_velocity: Vec2,
     pub wind_drag_coeff: f32,
@@ -252,13 +279,43 @@ pub struct RodForceParams {
     pub push_radius: f32,
     pub dx_meters: f32,
     pub dt: f32,
+    /// `SimConfig::material_cfl_coefficient`: the fraction of the stable step
+    /// each sub-step uses.
+    pub stability_fraction: f32,
 }
 
-pub fn apply_rod_internal_and_wind_forces(
+pub fn advance_rod(
     rod: &mut RodPoints,
     material: &RodMaterial,
     params: RodForceParams,
-) {
+    external: &[Vec2],
+) -> u32 {
+    let stable = rod_cfl_dt(rod, material, params.stability_fraction);
+    let sub_steps = if stable.is_finite() && stable > 0.0 {
+        (params.dt / stable).ceil().max(1.0) as u32
+    } else {
+        1
+    };
+    let h = params.dt / sub_steps as f32;
+    for _ in 0..sub_steps {
+        apply_forces(rod, material, &params, h);
+        for (i, &acceleration) in external.iter().enumerate() {
+            if rod.pinned[i] != 0 {
+                rod.v[i] = Vec2::ZERO;
+                continue;
+            }
+            rod.v[i] += acceleration * h;
+            let y = rod.v[i] * h - rod.position_compensation[i];
+            let t = rod.x[i] + y;
+            rod.position_compensation[i] = (t - rod.x[i]) - y;
+            rod.x[i] = t;
+        }
+    }
+    sub_steps
+}
+
+/// One sub-step's worth of internal, wind and push acceleration on `rod.v`.
+fn apply_forces(rod: &mut RodPoints, material: &RodMaterial, params: &RodForceParams, dt: f32) {
     let RodForceParams {
         wind_velocity,
         wind_drag_coeff,
@@ -266,8 +323,8 @@ pub fn apply_rod_internal_and_wind_forces(
         push_strength,
         push_radius,
         dx_meters,
-        dt,
-    } = params;
+        ..
+    } = *params;
     let internal = compute_internal_forces(
         &rod.x,
         &rod.v,

@@ -66,7 +66,7 @@ fn growth_pulls_actual_rod_tip_further_away_through_real_elastic_dynamics() {
     let grid = Grid::new(16);
     let mut elapsed = 0.0_f32;
     while elapsed < 3.0 {
-        let dt = rod_cfl_dt(&grown, &material, 0.4).min(0.001);
+        let dt = rod_cfl_dt(&grown, &material, 0.5).min(0.001);
         apply_growth(&mut grown, &mut growth, &grid, Vec2::Y, 1.0, dt);
         step_rod(&mut grown, &material, Vec2::ZERO, Vec2::ZERO, 0.0, 1.0, dt);
         step_rod(

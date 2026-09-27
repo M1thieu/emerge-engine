@@ -10,7 +10,7 @@
 //! with the surrounding continuum come through the shared grid (scatter ->
 //! grid_update -> gather); a grain's OWN inter-grain contact forces
 //! (`contact_law`) are applied AFTER the gather, as a velocity/spin
-//! correction -- mirrors `apply_rod_internal_and_wind_forces`'s own
+//! correction -- mirrors `rod::advance_rod`'s own
 //! documented reason for not re-applying gravity a second time.
 
 use glam::{Mat2, Vec2};
@@ -96,10 +96,10 @@ pub fn scatter_grains_to_grid(grains: &GrainPopulation, grid: &mut Grid) {
 /// advance to `apply_grain_contact_forces` below, so there is only one
 /// velocity to correct, not a separate "position-advance velocity."
 ///
-/// Velocity ONLY -- does NOT advance position. `gather_grid_to_rod` advances
-/// position here and lets its own force correction only affect the NEXT
-/// substep's advection, but that convention is real-measured WRONG for
-/// grains specifically: the proven, 2,000,000-step-verified standalone
+/// Velocity ONLY -- does NOT advance position (`gather_grid_to_rod` does
+/// the same now; rods advance in their own sub-steps). Advancing position
+/// in the gather and letting the force correction only affect the NEXT
+/// substep's advection is real-measured WRONG for grains: the proven, 2,000,000-step-verified standalone
 /// `GrainPopulation::step` resolves contact forces FIRST, applies them to
 /// `v`, THEN integrates `x += v*dt` -- position is never advanced on
 /// stale, pre-contact velocity. Grid-coupled grains used to do the

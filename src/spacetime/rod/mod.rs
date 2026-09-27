@@ -70,7 +70,7 @@ use glam::Vec2;
 pub use crate::matter::materials::RodMaterial;
 pub use crate::matter::particle::RodPoints;
 pub use coupling::{
-    RodForceParams, apply_rod_internal_and_wind_forces, gather_grid_to_rod, scatter_rod_to_grid,
+    RodForceParams, advance_rod, gather_grid_to_rod, rod_touches_grid_mass, scatter_rod_to_grid,
 };
 pub use forces::{
     RodRestState, compute_internal_forces, discrete_curvature, discrete_curvature_gradient,
@@ -180,6 +180,15 @@ pub struct Rod {
     /// at the full frame `dt`, zero change for any rod that doesn't opt in.
     /// Only meaningful when `use_implicit_integration` is `true`.
     pub implicit_substeps: u32,
+    /// Set by the solver each substep, before this rod scatters: whether it
+    /// shares grid nodes with other matter (particles, grains, another rod).
+    /// A touching explicit rod bounds the mechanics substep with its own
+    /// stable step, because the grid exchanges momentum only once per
+    /// substep: sub-cycled on its own under a large substep, a loaded
+    /// cantilever let the particles on it fall through
+    /// (`tests/rod_grid_coupling.rs`, `rod_deflects_and_mpm_particles_feel_
+    /// reaction`). A free rod (grass in air) sub-cycles and bounds nothing.
+    pub touching_other_matter: bool,
 }
 
 impl Rod {
@@ -217,6 +226,7 @@ impl Rod {
             plasticity: None,
             use_implicit_integration: false,
             implicit_substeps: 1,
+            touching_other_matter: false,
         }
     }
 
@@ -671,10 +681,10 @@ mod per_vertex_stiffness_tests {
         let mut uniform = make_rod(None);
         let mut soft_base = make_rod(Some(soft_ei));
 
-        let dt = rod_cfl_dt(&uniform.points, &uniform.material, 0.4).min(rod_cfl_dt(
+        let dt = rod_cfl_dt(&uniform.points, &uniform.material, 0.5).min(rod_cfl_dt(
             &soft_base.points,
             &soft_base.material,
-            0.4,
+            0.5,
         ));
         assert!(dt.is_finite() && dt > 0.0);
 

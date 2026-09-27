@@ -4518,16 +4518,13 @@ mod rod_cantilever_tests {
         let (axial_damping, bending_damping) =
             RodMaterial::critical_damping(l0, point_mass, ea, ei);
         let material = RodMaterial::new(ea, ei, axial_damping, bending_damping);
-        // `rod_cfl_dt` sums every stiffness/damping term touching each point
-        // (a real Gershgorin row-sum bound, 2026-07-21 fix -- an interior
-        // point is coupled to TWO axial edges and up to THREE bending
-        // vertices at once, so summing their contributions per point is what
-        // actually bounds the coupled system's spectral radius) -- 0.4 is
-        // the real, bisected-and-long-horizon-verified safety factor for
-        // THIS exact tip-loaded regime (0.5 diverges at N=30/40 here; see
-        // `SimConfig::rod_cfl_coefficient`'s own doc for the cross-regime
-        // bisection), an ~8x recovery from the old 0.05 empirical fudge.
-        let safe_dt = rod_cfl_dt(&rod, &material, 0.4);
+        // `rod_cfl_dt` is the explicit scheme's own stability limit from
+        // Gershgorin row sums of the linearised stiffness and damping (see
+        // its doc); 0.5 of it is `SimConfig::material_cfl_coefficient`'s
+        // default fraction. The earlier per-point sum was 2 to 16/3 times too
+        // small, which is why 0.5 of it diverged here and 0.4 had been
+        // bisected.
+        let safe_dt = rod_cfl_dt(&rod, &material, 0.5);
         assert!(
             safe_dt.is_finite() && safe_dt > 0.0,
             "CFL bound must be finite/positive"

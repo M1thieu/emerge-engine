@@ -24,9 +24,9 @@ use crate::grains::coupling::{
 };
 use crate::grains::micro_rotation::{GrainMicroRotationConfig, couple_grain_spin_to_local_average};
 use crate::rod::{
-    RodForceParams, RodImplicitStepParams, apply_bending_plasticity, apply_gravitropism,
-    apply_growth, apply_phototropism, apply_rod_internal_and_wind_forces, apply_secondary_growth,
-    gather_grid_to_rod, scatter_rod_to_grid, step_rod_implicit,
+    RodForceParams, RodImplicitStepParams, advance_rod, apply_bending_plasticity,
+    apply_gravitropism, apply_growth, apply_phototropism, apply_secondary_growth,
+    gather_grid_to_rod, rod_touches_grid_mass, scatter_rod_to_grid, step_rod_implicit,
 };
 use crate::solver::density::estimate_particle_volumes;
 use crate::transfer::{
@@ -773,16 +773,18 @@ impl Simulation {
         // neither scatter mass/momentum nor self-trigger their own wake check
         // below; they're woken only by genuinely external activity.
         //
-        for rod in &self.rods {
-            if !rod.sleeping && !rod.use_implicit_integration {
-                scatter_rod_to_grid(&rod.points, &mut self.grid);
-            }
-        }
         // Grain -> grid scatter, same shared `Grid`, same convention as rods
-        // above -- see `grains::coupling`'s own doc. No-op for every scene
-        // that never calls `add_grain_population`.
+        // below -- see `grains::coupling`'s own doc. No-op for every scene
+        // that never calls `add_grain_population`. Before the rods, so each
+        // rod can tell whether it touches other matter.
         for population in &self.grain_populations {
             scatter_grains_to_grid(population, &mut self.grid);
+        }
+        for rod in &mut self.rods {
+            if !rod.sleeping && !rod.use_implicit_integration {
+                rod.touching_other_matter = rod_touches_grid_mass(&rod.points, &self.grid);
+                scatter_rod_to_grid(&rod.points, &mut self.grid);
+            }
         }
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
@@ -1185,15 +1187,31 @@ impl Simulation {
                 dt_used,
             ));
         }
-        // Grid -> rod gather (this rod's own G2P): pulls velocity (gravity
-        // already baked in via the shared grid-update step above) AND
-        // advances `rod.points.x`, mirroring `gather_grid_to_particles`'s own
-        // position-advection contract exactly (see `coupling::gather_grid_to_rod`'s
-        // doc) so rod force integration below only ever touches velocity,
-        // matching how particle force fields never touch `particles.x` either.
+        // Grid -> rod gather (this rod's own G2P) and the rod's motion over
+        // the substep: what the grid did to the rod (gravity, the exchange
+        // with particles) is spread over the substep, and the rod advances
+        // in its own sub-steps within its own stable step, with its own
+        // internal, wind and push forces (`coupling::advance_rod`). Gravity is
+        // not applied again. A stiff rod stays coupled without shrinking the
+        // substep.
         for rod in &mut self.rods {
             if !rod.sleeping && !rod.use_implicit_integration {
-                gather_grid_to_rod(&mut rod.points, &self.grid, sub_dt);
+                let external = gather_grid_to_rod(&rod.points, &self.grid, sub_dt);
+                advance_rod(
+                    &mut rod.points,
+                    &rod.material,
+                    RodForceParams {
+                        wind_velocity: rod.wind_velocity,
+                        wind_drag_coeff: rod.wind_drag_coeff,
+                        push_center: rod.push_center,
+                        push_strength: rod.push_strength,
+                        push_radius: rod.push_radius,
+                        dx_meters: self.config.dx_meters,
+                        dt: sub_dt,
+                        stability_fraction: self.config.material_cfl_coefficient,
+                    },
+                    &external,
+                );
             }
         }
         // Grid -> grain gather -- velocity only, does NOT advance position
@@ -1338,31 +1356,14 @@ impl Simulation {
             );
         }
 
-        // ── Rod internal + wind forces ──────────────────────────────────────────
-        // Runs where particle force fields just ran, on the SAME real convention:
-        // velocity-only (position already advanced in the gather above), so a
-        // rod's own stretch/bend/damping + wind drag land exactly like an
-        // ordinary force field would. Gravity is NOT reapplied here -- the rod
-        // already received it via the shared grid-update step, same mechanism
-        // ordinary particles use. No-op for every scene with no rods.
+        // ── Rod tropisms, growth and plasticity ─────────────────────────────────
+        // The explicit rod already moved with its forces at the gather above.
+        // No-op for every scene with no rods.
         //
         for rod in &mut self.rods {
             if rod.sleeping || rod.use_implicit_integration {
                 continue;
             }
-            apply_rod_internal_and_wind_forces(
-                &mut rod.points,
-                &rod.material,
-                RodForceParams {
-                    wind_velocity: rod.wind_velocity,
-                    wind_drag_coeff: rod.wind_drag_coeff,
-                    push_center: rod.push_center,
-                    push_strength: rod.push_strength,
-                    push_radius: rod.push_radius,
-                    dx_meters: self.config.dx_meters,
-                    dt: sub_dt,
-                },
-            );
             // Real root gravitropism (Porat, Rivière, Meroz 2024 -- see
             // `rod::gravitropism` module doc): evolves the tip's own
             // rest_curvature toward gravity-alignment. No-op for every rod

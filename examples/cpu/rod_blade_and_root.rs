@@ -12,7 +12,7 @@ use egui_wgpu::ScreenDescriptor;
 ///
 /// Cursor push is real and hover-only (no click needed): the cursor position
 /// sets `rod.push_center` every frame, `push_strength` comes from the egui
-/// slider (0 = off), both read fresh by `apply_rod_internal_and_wind_forces`
+/// slider (0 = off), both read fresh by `advance_rod`
 /// on EVERY substep -- same persistent-forcing contract wind already had
 /// (see `Rod::push_center`'s own doc for the real one-shot-impulse bug this
 /// replaced).
@@ -613,7 +613,7 @@ impl State {
         }
 
         // Real, PERSISTENT push state -- read fresh every substep inside
-        // apply_rod_internal_and_wind_forces (see Rod::push_center's doc).
+        // advance_rod (see Rod::push_center's doc).
         // Hover-only (no click needed): the slider itself is the on/off --
         // at 0 strength, hovering does nothing, sidestepping any risk of
         // egui eating the mouse-down event before it reaches the window.
