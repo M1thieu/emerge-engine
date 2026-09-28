@@ -73,8 +73,20 @@
 //!
 //! A bed of soft sand at real gravity settles alone for 1 s. Two grains are
 //! placed on it, one on the other, at rest, and the scene runs 3 s. Their
-//! contact stiffness comes from the existing physical preset with the Young's
-//! modulus of quartz, read from two sources, never softened to pass.
+//! contact is the 2D grain contract (`Grain::from_si`,
+//! `GrainPopulation::new_disc`), with quartz's constants read from two
+//! sources, never softened to pass: natural quartz, E 99.45 GPa, nu 0.060,
+//! rho 2646.6 kg/m3 (Heyliger, Ledbetter and Kim 2003, Table II, Voigt-Reuss-
+//! Hill); E 95.6 GPa from K 37.8 and G 44.3 GPa, rho 2648 kg/m3 (Bass 1995,
+//! Table 3).
+//!
+//! Rewritten before gate 2 was measured, with the reason: it said "the
+//! existing physical preset", which takes a sphere's `E r` stiffness, and a
+//! 2D grain is a disc of unit depth in line contact (see `disc_contact`).
+//! Noted before any measurement: under its own weight a 1 mm quartz grain
+//! overlaps by about 1e-9 cells, far below the spacing of f32 positions at
+//! the bed's height (about 2e-6 cells), so its contact carries the load in
+//! steps of one f32 spacing (#47).
 //!
 //! - The energy counted is the whole system, sand and grains, kinetic,
 //!   rotational and gravitational, because energy passes between them. The
@@ -83,6 +95,14 @@
 //!   the grains' own `m g R`.
 //! - Reported: grain contact sub-steps per mechanics substep, and the wall
 //!   time with and without the grains.
+//!
+//!   Measured (a note, not a criterion): with contacts integrated at the
+//!   mechanics substep, a hundred times their stable step, the grains
+//!   invented 1265 times their `m g R` and the upper one was thrown to the
+//!   domain's top. Sub-cycled to their own step, the largest rise is
+//!   -0.0021 of `m g R` (the energy only falls, as the grains sink 0.15
+//!   cells into the soft bed over 3 s), with up to 84 contact sub-steps per
+//!   mechanics substep and 7 percent more wall time than the bed alone.
 //!
 //! # Gate 3: a rod bends the same explicit and implicit
 //!
@@ -126,6 +146,9 @@
 
 extern crate emerge_engine as emerge;
 
+use emerge::grains::population::GrainPopulation;
+use emerge::materials::granular::disc_contact::{DiscContactConfig, DiscElastic};
+use emerge::particle::Grain;
 use emerge::particle::RodPoints;
 use emerge::particle::{Particle, Particles};
 use emerge::rod::forces::discrete_curvature;
@@ -135,8 +158,11 @@ use emerge::rod::{
 use emerge::thermodynamics::{
     ScalarDiffusionConfig, ScalarDiffusionField, ThermalConfig, ThermalDiffusion,
 };
-use emerge::{MaterialRegistry, NeoHookeanMaterial, SimConfig, Simulation};
-use glam::Vec2;
+use emerge::{
+    DruckerPragerMaterial, Elastic, FromSI, GranularProps, MaterialRegistry, NeoHookeanMaterial,
+    SimConfig, Simulation, SpawnRegion,
+};
+use glam::{IVec2, Vec2};
 
 // ── Gate 1: diffusion ─────────────────────────────────────────────────────
 
@@ -402,6 +428,160 @@ const CELL_M: f32 = 0.01;
 const LINEAR_DENSITY: f32 = 0.1; // kg/m
 const ROD_EA: f32 = 1000.0; // N
 const ROD_EI: f32 = 0.5; // N m^2
+
+/// Natural quartz, Heyliger, Ledbetter and Kim 2003, Table II (see gate 2).
+fn quartz() -> Elastic {
+    Elastic {
+        e_pa: 99.45e9,
+        nu: 0.060,
+        rho_kg_m3: 2646.6,
+    }
+}
+
+/// Gate 2's bed: soft sand (a scene choice, not a measured claim: 1 MPa,
+/// nu 0.3, 1600 kg/m3, 35 degrees of friction) 48 by 12 cells at 1 mm cells,
+/// resting on the floor, at real gravity.
+fn soft_sand_bed(frame_dt: f32) -> Simulation {
+    let config = SimConfig::earth(64, 1.0e-3, frame_dt);
+    let props = GranularProps {
+        elastic: Elastic {
+            e_pa: 1.0e6,
+            nu: 0.3,
+            rho_kg_m3: 1600.0,
+        },
+        friction_angle_deg: 35.0,
+        dilatancy_angle_deg: 0.0,
+    };
+    let floor = config.boundary_thickness as f32;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(48, 12),
+        box_center: Vec2::new(32.0, floor + 6.0),
+        material_id: 0,
+        initial_velocity_scale: 0.0,
+        ..SpawnRegion::for_sim(&config)
+    }
+    .mass_from(&props.elastic, &config);
+    let sand = DruckerPragerMaterial::from_physical(&props, &config);
+    Simulation::new(config, spawn).with_default_material(Box::new(sand))
+}
+
+/// Kinetic, rotational and gravitational energy of the whole scene, sand
+/// and grains, in f64: the bed's gravitational energy is about 1e7 in the
+/// engine's units and gate 2 looks for 1 percent of `m g R`, about 80.
+fn system_energy(sim: &Simulation) -> f64 {
+    let g = f64::from(sim.config().gravity.y.abs());
+    let p = sim.particles();
+    let mut energy = 0.0f64;
+    for i in 0..p.len() {
+        let m = f64::from(p.mass[i]);
+        energy += 0.5 * m * f64::from(p.v[i].length_squared()) + m * g * f64::from(p.x[i].y);
+    }
+    for population in sim.grain_populations() {
+        for grain in &population.grains {
+            let m = f64::from(grain.mass);
+            energy += 0.5 * m * f64::from(grain.v.length_squared())
+                + 0.5 * f64::from(grain.moment_of_inertia()) * f64::from(grain.spin).powi(2)
+                + m * g * f64::from(grain.x.y);
+        }
+    }
+    energy
+}
+
+/// Gate 2.
+#[test]
+#[ignore = "gate 2: run with --ignored --nocapture"]
+fn gate2_two_stiff_grains_on_soft_sand_invent_no_energy() {
+    let frame_dt = 1.0 / 120.0;
+    const SETTLE: usize = 120;
+    const RUN: usize = 360;
+    let mut alone = soft_sand_bed(frame_dt);
+    let mut with = soft_sand_bed(frame_dt);
+    for _ in 0..SETTLE {
+        alone.step();
+        with.step();
+    }
+    // Two 1 mm quartz grains, one on the other, edge to edge on the bed's
+    // top under them, at rest. Restitution 1, no rolling resistance: no
+    // damping to hide invented energy.
+    let config = *with.config();
+    let radius_m = 1.0e-3;
+    let probe = Grain::from_si(Vec2::ZERO, radius_m, &quartz(), &config);
+    let centre_x = 32.0;
+    let p = with.particles();
+    let surface = (0..p.len())
+        .filter(|&i| (p.x[i].x - centre_x).abs() < probe.radius)
+        .map(|i| p.x[i].y)
+        .fold(f32::MIN, f32::max)
+        + 0.25;
+    let lower = Grain::from_si(
+        Vec2::new(centre_x, surface + probe.radius),
+        radius_m,
+        &quartz(),
+        &config,
+    );
+    let upper = Grain::from_si(
+        Vec2::new(centre_x, surface + 3.0 * probe.radius),
+        radius_m,
+        &quartz(),
+        &config,
+    );
+    let contact = DiscContactConfig::new(
+        DiscElastic::from_si(&quartz(), &config),
+        1.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+    );
+    with.add_grain_population(GrainPopulation::new_disc(vec![lower, upper], contact));
+    let g = config.gravity.y.abs();
+    let mgr = f64::from(probe.mass * g * probe.radius);
+
+    let (start_with, start_alone) = (system_energy(&with), system_energy(&alone));
+    let (mut worst_rise, mut worst_frame) = (f64::MIN, 0);
+    let (mut substeps_with, mut substeps_alone) = (0usize, 0usize);
+    let (mut wall_with, mut wall_alone) = (0.0f64, 0.0f64);
+    let mut contact_substeps = 0usize;
+    for frame in 1..=RUN {
+        let t = std::time::Instant::now();
+        with.step();
+        wall_with += t.elapsed().as_secs_f64();
+        let t = std::time::Instant::now();
+        alone.step();
+        wall_alone += t.elapsed().as_secs_f64();
+        substeps_with += with.last_substeps();
+        substeps_alone += alone.last_substeps();
+        contact_substeps =
+            contact_substeps.max(with.grain_populations()[0].last_contact_substeps());
+        let rise = (system_energy(&with) - start_with) - (system_energy(&alone) - start_alone);
+        if rise > worst_rise || rise.is_nan() {
+            worst_rise = rise;
+            worst_frame = frame;
+        }
+        if frame % 30 == 0 {
+            let grains = &with.grain_populations()[0].grains;
+            println!(
+                "frame {frame}: energy rise above the bed alone {rise:+.3e} ({:+.4} of m g R), grains at y {:.4}, {:.4}",
+                rise / mgr,
+                grains[0].x.y,
+                grains[1].x.y
+            );
+        }
+    }
+    println!(
+        "largest rise {worst_rise:+.3e} at frame {worst_frame}, {:+.4} of m g R ({mgr:.3e}); \
+         mechanics substeps {substeps_with} with the grains, {substeps_alone} alone; up to \
+         {contact_substeps} grain contact sub-steps per mechanics substep; wall time \
+         {wall_with:.1} s with, {wall_alone:.1} s alone",
+        worst_rise / mgr
+    );
+    assert!(
+        worst_rise <= 0.01 * mgr,
+        "the grains invented {:.4} of their m g R",
+        worst_rise / mgr
+    );
+}
 
 /// Runs the cantilever 20 s under real gravity through `Simulation`,
 /// explicit or implicit, and returns the tip deflection in metres averaged
