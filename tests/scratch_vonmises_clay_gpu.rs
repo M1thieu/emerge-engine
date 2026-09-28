@@ -7,15 +7,20 @@
 #[cfg(feature = "gpu")]
 extern crate emerge_engine as emerge;
 
+// At the crate root, not inside `gpu_clay`: a `#[path]` in an inline module
+// resolves from `tests/gpu_clay/`, a directory that does not exist, which
+// Windows forgives and Linux does not.
+#[cfg(feature = "gpu")]
+#[path = "../examples/cpu/vonmises_clay_scene.rs"]
+mod vonmises_clay_scene;
+
 #[cfg(feature = "gpu")]
 mod gpu_clay {
-    #[path = "../../examples/cpu/vonmises_clay_scene.rs"]
-    mod vonmises_clay_scene;
     use crate::emerge::MaterialRegistry;
     use crate::emerge::gpu::GpuSimulation;
     use crate::emerge::particle::Particle;
+    use crate::vonmises_clay_scene::*;
     use pollster::block_on;
-    use vonmises_clay_scene::*;
 
     fn blobs(particles: &[Particle]) -> String {
         let mut out = String::new();
