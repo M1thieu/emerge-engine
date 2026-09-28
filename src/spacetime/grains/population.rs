@@ -24,10 +24,11 @@ use glam::{Mat2, Vec2};
 
 use crate::forces::boundary::BoundaryCondition;
 use crate::forces::fields::GrainField;
+use crate::matter::materials::granular::disc_contact::DiscContactConfig;
 use crate::matter::materials::granular::grain_contact_law::{
     ContactLawConfig, ContactSpring, GrainContactState, HertzianContactConfig,
-    resolve_contact_pair, resolve_contact_pair_hertzian, resolve_wall_contact,
-    resolve_wall_contact_hertzian,
+    resolve_contact_pair, resolve_contact_pair_disc, resolve_contact_pair_hertzian,
+    resolve_wall_contact, resolve_wall_contact_disc, resolve_wall_contact_hertzian,
 };
 use crate::matter::particle::Grain;
 
@@ -44,6 +45,9 @@ use crate::matter::particle::Grain;
 pub enum ContactModel {
     Linear(ContactLawConfig),
     Hertzian(HertzianContactConfig),
+    /// The 2D grain contract: discs of unit depth in line contact (see
+    /// `disc_contact`), for grains built with `Grain::from_si`.
+    Disc2D(DiscContactConfig),
 }
 
 /// One currently-active contact pair, with its own persistent elastic
@@ -166,6 +170,23 @@ impl GrainPopulation {
             wall_springs: Vec::new(),
             terrain_springs: Vec::new(),
             config: ContactModel::Hertzian(config),
+            contact_iterations: 1,
+            grain_fields: Vec::new(),
+            stress_accum: Mat2::ZERO,
+            stress_accum_samples: 0,
+            terrain_contact_config: None,
+        }
+    }
+
+    /// The 2D grain contract's entry point: grains from `Grain::from_si`,
+    /// contacts through `DiscContactConfig`'s line contact.
+    pub const fn new_disc(grains: Vec<Grain>, config: DiscContactConfig) -> Self {
+        Self {
+            grains,
+            contacts: Vec::new(),
+            wall_springs: Vec::new(),
+            terrain_springs: Vec::new(),
+            config: ContactModel::Disc2D(config),
             contact_iterations: 1,
             grain_fields: Vec::new(),
             stress_accum: Mat2::ZERO,
@@ -405,6 +426,9 @@ impl GrainPopulation {
                     ContactModel::Hertzian(cfg) => {
                         resolve_contact_pair_hertzian(&gi, &gj, &mut pair.spring, cfg, sub_dt)
                     }
+                    ContactModel::Disc2D(cfg) => {
+                        resolve_contact_pair_disc(&gi, &gj, &mut pair.spring, cfg, sub_dt)
+                    }
                 };
                 pair.active = resolution.is_some();
                 if let Some(resolution) = resolution {
@@ -573,6 +597,14 @@ impl GrainPopulation {
                         cfg,
                         dt,
                     ),
+                    ContactModel::Disc2D(cfg) => resolve_wall_contact_disc(
+                        &gi,
+                        normal,
+                        overlap,
+                        &mut self.wall_springs[i],
+                        cfg,
+                        dt,
+                    ),
                 };
                 if let Some(resolution) = resolution {
                     // Real, load-bearing choice (found the hard way, see this
@@ -664,6 +696,14 @@ impl GrainPopulation {
                     dt,
                 ),
                 ContactModel::Hertzian(cfg) => resolve_wall_contact_hertzian(
+                    &gi,
+                    normal,
+                    overlap,
+                    &mut self.terrain_springs[i],
+                    cfg,
+                    dt,
+                ),
+                ContactModel::Disc2D(cfg) => resolve_wall_contact_disc(
                     &gi,
                     normal,
                     overlap,
@@ -1284,5 +1324,141 @@ mod tests {
             pop2.grains[0].orientation,
             independent_integral
         );
+    }
+
+    /// Discs of the 2D grain contract at 1 mm cells, 1 mm radius, of a soft
+    /// solid (100 kPa, nu 0.45, 1100 kg/m3): soft enough that its contact
+    /// overlaps, a few 1e-4 cells, are resolved by f32 positions near the
+    /// origin. Quartz under its own weight overlaps by 1.3e-9 cells, below
+    /// the spacing of f32 values anywhere past a hundredth of a cell (#47).
+    fn soft_disc_contract(restitution: f32) -> (Grain, DiscContactConfig) {
+        use crate::matter::materials::granular::disc_contact::DiscElastic;
+        let soft = crate::Elastic {
+            e_pa: 1.0e5,
+            nu: 0.45,
+            rho_kg_m3: 1100.0,
+        };
+        let sim = crate::SimConfig::earth(64, 1.0e-3, 1.0e-3);
+        let grain = Grain::from_si(Vec2::ZERO, 1.0e-3, &soft, &sim);
+        let config = DiscContactConfig::new(
+            DiscElastic::from_si(&soft, &sim),
+            restitution,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+        );
+        (grain, config)
+    }
+
+    /// A disc resting on a pinned disc under gravity settles where the line
+    /// contact carries its weight: at `approach(m g)` of two discs (the
+    /// pinned one compresses too), within 1 percent.
+    #[test]
+    fn a_disc_contract_grain_rests_at_the_line_contacts_overlap() {
+        use crate::matter::materials::granular::disc_contact::{self, ContactSide};
+        let (grain, config) = soft_disc_contract(0.1);
+        let g = 981.0; // 9.81 m/s^2 at 1 mm cells
+        let bottom = Grain {
+            x: Vec2::new(0.0, -grain.radius),
+            ..grain
+        };
+        let top = Grain {
+            x: Vec2::new(0.0, grain.radius),
+            ..grain
+        };
+        let mut pop = GrainPopulation::new_disc(vec![bottom, top], config);
+        let side = ContactSide::Disc {
+            radius: grain.radius,
+            elastic: config.elastic,
+        };
+        let expected = disc_contact::approach(grain.mass * g, side, side);
+        let (_, stiffness) = disc_contact::force_and_stiffness(expected, side, side);
+        let dt = 0.1 * disc_contact::critical_step(stiffness, grain.mass, config.damping_ratio);
+        for _ in 0..20_000 {
+            pop.step(Vec2::new(0.0, -g), dt);
+            pop.grains[0].x = bottom.x;
+            pop.grains[0].v = Vec2::ZERO;
+        }
+        let overlap = 2.0 * grain.radius - (pop.grains[1].x.y - bottom.x.y);
+        assert!(
+            ((overlap - expected) / expected).abs() < 0.01,
+            "overlap {overlap:e} cells against the line contact's {expected:e}"
+        );
+    }
+
+    /// The restitution two equal discs part with, from `v0` cells/s, for a
+    /// configured `e`; and their momentum ratio.
+    fn disc_contract_collision(e: f32, v0: f32) -> (f32, f32) {
+        use crate::matter::materials::granular::disc_contact::{self, ContactSide};
+        let (grain, config) = soft_disc_contract(e);
+        let side = ContactSide::Disc {
+            radius: grain.radius,
+            elastic: config.elastic,
+        };
+        let m_eff = 0.5 * grain.mass;
+        // The kinetic energy bounds the deepest overlap and its stiffness.
+        let (_, stiffness) = disc_contact::force_and_stiffness(0.1, side, side);
+        let dt = 0.02 * disc_contact::critical_step(stiffness, m_eff, config.damping_ratio);
+        let gap = 1.0e-3;
+        let left = Grain {
+            x: Vec2::new(-grain.radius - 0.5 * gap, 0.0),
+            v: Vec2::new(v0, 0.0),
+            ..grain
+        };
+        let right = Grain {
+            x: Vec2::new(grain.radius + 0.5 * gap, 0.0),
+            ..grain
+        };
+        let mut pop = GrainPopulation::new_disc(vec![left, right], config);
+        let mut touched = false;
+        for _ in 0..10_000_000 {
+            pop.step(Vec2::ZERO, dt);
+            let gap = pop.grains[1].x.x - pop.grains[0].x.x - 2.0 * grain.radius;
+            touched |= gap < 0.0;
+            if touched && gap > 0.0 {
+                break;
+            }
+        }
+        assert!(touched, "the discs never met");
+        let (a, b) = (pop.grains[0].v.x, pop.grains[1].v.x);
+        ((b - a) / v0, (a + b) / v0)
+    }
+
+    /// Two equal discs meeting head on keep momentum exactly and part with
+    /// the restitution they were given within 5 percent, at 1 cm/s. The
+    /// damping inverts Schwager and Poschel's eq. 21, exact for a linear
+    /// spring; what is left is the line contact's logarithm. Measured
+    /// (`disc_contract_restitution_table`, at 1, 10 and 100 cells/s): e 0.1
+    /// gives 0.097, 0.096, 0.094; 0.3 gives 0.294, 0.292, 0.288; 0.5 gives
+    /// 0.491, 0.492, 0.489; 0.9 gives 0.899, 0.898, 0.896.
+    #[test]
+    fn a_disc_contract_collision_keeps_momentum_and_restitution() {
+        for e in [0.1f32, 0.3, 0.5, 0.9] {
+            let (restitution, momentum) = disc_contract_collision(e, 10.0);
+            assert!((momentum - 1.0).abs() < 1.0e-4, "momentum ratio {momentum}");
+            assert!(
+                (restitution - e).abs() < 0.05 * e,
+                "restitution {restitution} for {e}"
+            );
+        }
+    }
+
+    /// Diagnostic: the restitution the line contact's damping gives, over
+    /// configured values and impact speeds.
+    #[test]
+    #[ignore = "diagnostic: run with --ignored --nocapture"]
+    fn disc_contract_restitution_table() {
+        for e in [0.1f32, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99] {
+            let row: Vec<String> = [1.0f32, 10.0, 100.0]
+                .iter()
+                .map(|&v0| {
+                    let (restitution, momentum) = disc_contract_collision(e, v0);
+                    assert!((momentum - 1.0).abs() < 1.0e-4, "momentum ratio {momentum}");
+                    format!("{restitution:.4}")
+                })
+                .collect();
+            println!("e {e}: at 1, 10, 100 cells/s {}", row.join(", "));
+        }
     }
 }

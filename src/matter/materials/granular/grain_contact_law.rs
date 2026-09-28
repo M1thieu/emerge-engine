@@ -47,6 +47,8 @@
 
 use glam::Vec2;
 
+use super::disc_contact::{self, ContactSide, DiscContactConfig};
+
 /// Per-contact-pair persistent elastic memory -- the actual mechanism that
 /// lets this model hold a genuine STATIC moment/force at zero relative
 /// motion (unlike every rate-only mechanism already tried). Reset to zero
@@ -897,6 +899,181 @@ pub fn resolve_wall_contact_hertzian(
         rolling_moment,
         friction_torque_on_i: 0.0,
         friction_torque_on_j: friction_torque,
+    })
+}
+
+/// The 2D grain contract's contact core (`DiscContactConfig`): the line
+/// contact's force and tangent stiffness `k` at this overlap, a dashpot
+/// `2 zeta sqrt(k m)` on the normal and tangential channels, a tangential
+/// spring of stiffness `k` times `tangential_ratio` capped by Coulomb, and
+/// the shared rolling spring. Same outputs as the other cores.
+fn resolve_contact_core_disc(
+    kin: ContactKinematics,
+    sides: (ContactSide, ContactSide),
+    m_eff: f32,
+    spring: &mut ContactSpring,
+    config: &DiscContactConfig,
+    dt: f32,
+) -> (f32, Vec2, f32, f32) {
+    let ContactKinematics {
+        overlap,
+        n,
+        t,
+        v_n,
+        v_t,
+        omega_rel,
+        r_eff,
+    } = kin;
+    let (load, kn) = disc_contact::force_and_stiffness(overlap, sides.0, sides.1);
+    let zeta = config.damping_ratio;
+    let normal_force = (load - 2.0 * zeta * (kn * m_eff).sqrt() * v_n).max(0.0);
+
+    let ks = kn * config.tangential_ratio();
+    spring.tangential -= n * spring.tangential.dot(n);
+    spring.tangential += v_t * t * dt;
+    let trial_ft_vec = -ks * spring.tangential - 2.0 * zeta * (ks * m_eff).sqrt() * v_t * t;
+    let max_ft = config.friction * normal_force;
+    let trial_ft_mag = trial_ft_vec.length();
+    let tangential_force_vec = if trial_ft_mag > max_ft {
+        let clamped = trial_ft_vec * (max_ft / trial_ft_mag.max(1.0e-12));
+        spring.tangential = -clamped / ks.max(1.0e-6);
+        clamped
+    } else {
+        trial_ft_vec
+    };
+    let ft_scalar = tangential_force_vec.dot(t);
+
+    let rolling_moment = resolve_rolling_spring(
+        spring,
+        omega_rel,
+        dt,
+        RollingParams {
+            stiffness: config.rolling_stiffness,
+            damping: config.rolling_damping,
+            friction: config.rolling_friction,
+        },
+        r_eff,
+        normal_force,
+    );
+
+    (
+        normal_force,
+        tangential_force_vec,
+        rolling_moment,
+        ft_scalar,
+    )
+}
+
+/// The 2D grain contract's counterpart to `resolve_contact_pair`: two discs
+/// of the population's material, each compressing by its own term of the
+/// line contact (see `disc_contact`).
+pub fn resolve_contact_pair_disc(
+    i: &GrainContactState,
+    j: &GrainContactState,
+    spring: &mut ContactSpring,
+    config: &DiscContactConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    let d = j.x - i.x;
+    let dist = d.length();
+    if dist <= 1e-12 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let overlap = i.radius + j.radius - dist;
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = d / dist;
+    let t = Vec2::new(-n.y, n.x);
+    let r_eff = (i.radius * j.radius) / (i.radius + j.radius);
+    let m_eff = (i.mass * j.mass) / (i.mass + j.mass);
+    let v_rel = j.v - i.v;
+    let v_n = v_rel.dot(n);
+    let v_t = v_rel.dot(t) - (i.radius * i.spin + j.radius * j.spin);
+    let omega_rel = i.spin - j.spin;
+    let side = |radius: f32| ContactSide::Disc {
+        radius,
+        elastic: config.elastic,
+    };
+
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) = resolve_contact_core_disc(
+        ContactKinematics {
+            overlap,
+            n,
+            t,
+            v_n,
+            v_t,
+            omega_rel,
+            r_eff,
+        },
+        (side(i.radius), side(j.radius)),
+        m_eff,
+        spring,
+        config,
+        dt,
+    );
+
+    Some(ContactResolution {
+        normal_force,
+        tangential_force: tangential_force_vec,
+        rolling_moment,
+        friction_torque_on_i: -i.radius * ft_scalar,
+        friction_torque_on_j: -j.radius * ft_scalar,
+    })
+}
+
+/// The 2D grain contract's counterpart to `resolve_wall_contact`: a disc
+/// against a rigid flat wall, which compresses by nothing (see
+/// `disc_contact`). Wall mass and radius at their infinite limits, as in
+/// `resolve_wall_contact_hertzian`.
+pub fn resolve_wall_contact_disc(
+    grain: &GrainContactState,
+    normal: Vec2,
+    overlap: f32,
+    spring: &mut ContactSpring,
+    config: &DiscContactConfig,
+    dt: f32,
+) -> Option<ContactResolution> {
+    if overlap <= 0.0 {
+        *spring = ContactSpring::default();
+        return None;
+    }
+    let n = normal;
+    let t = Vec2::new(-n.y, n.x);
+    let v_n = grain.v.dot(n);
+    let v_t = grain.v.dot(t) - grain.radius * grain.spin;
+
+    let (normal_force, tangential_force_vec, rolling_moment, ft_scalar) = resolve_contact_core_disc(
+        ContactKinematics {
+            overlap,
+            n,
+            t,
+            v_n,
+            v_t,
+            omega_rel: -grain.spin,
+            r_eff: grain.radius,
+        },
+        (
+            ContactSide::Disc {
+                radius: grain.radius,
+                elastic: config.elastic,
+            },
+            ContactSide::RigidWall,
+        ),
+        grain.mass,
+        spring,
+        config,
+        dt,
+    );
+
+    Some(ContactResolution {
+        normal_force,
+        tangential_force: tangential_force_vec,
+        rolling_moment,
+        friction_torque_on_i: 0.0,
+        friction_torque_on_j: -grain.radius * ft_scalar,
     })
 }
 

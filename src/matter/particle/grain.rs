@@ -72,6 +72,26 @@ impl Grain {
     /// same convention `CosseratConfig::micro_inertia`'s own doc already
     /// used this session (`I = 0.5 * m * r^2` for a solid disc/sphere's
     /// mass-specific polar moment in 2D).
+    /// A disc of `radius_m` metres and unit depth made of `elastic`, at
+    /// `x` in cells: the 2D grain contract. Its mass per unit depth is
+    /// `rho pi r^2` in the particles' own mass unit, `(rho / rho_ref) pi
+    /// r_cells^2` as `SpawnRegion::mass_from` gives a particle
+    /// `(rho / rho_ref) spacing^2`, so grains and particles exchange momentum
+    /// in one unit. Its contact is `disc_contact`'s line contact.
+    pub fn from_si(
+        x: Vec2,
+        radius_m: f32,
+        elastic: &crate::Elastic,
+        config: &crate::SimConfig,
+    ) -> Self {
+        let radius = radius_m / config.dx_meters;
+        let mass = elastic.rho_kg_m3 / config.reference_density_kg_m3
+            * std::f32::consts::PI
+            * radius
+            * radius;
+        Self::new(x, radius, mass)
+    }
+
     pub fn moment_of_inertia(&self) -> f32 {
         0.5 * self.mass * self.radius * self.radius
     }

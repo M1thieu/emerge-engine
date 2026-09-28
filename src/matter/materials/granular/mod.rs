@@ -16,6 +16,7 @@
 //! not just what a thing formally IS.
 
 pub mod cosserat;
+pub mod disc_contact;
 pub mod grain_contact_law;
 pub mod sand;
 pub mod sand_mui;
