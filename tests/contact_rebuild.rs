@@ -81,16 +81,39 @@
 //!    `multi_field_contact_produces_real_coulomb_slip_and_stick`,
 //!    `directional_contact_grip_is_real_and_direction_aware`, and
 //!    `grip_friction_locomotion_sweep`, each rechecked with its numbers.
+//!
+//!    Rechecked, all passing: the elastic control's rest body now keeps a
+//!    smallest J of 0.9154 (largest speed 0.465 to 0.349); the plastic rest
+//!    and grip bodies' largest speeds fall from 0.567 to 0.063 and from
+//!    1.622 to 0.134; over the long passive settle the snake body keeps J
+//!    0.8643 where it used to invert (-1.07). Under active locomotion at the
+//!    larger scale it no longer inverts either (-1.24 before) but still
+//!    compresses to J 0.0111, which stays open.
 //! 8. Unit tests: an approaching pair stops closing and rubs, a separating
 //!    pair is left free (`src/spacetime/grid/contact.rs`).
 //! 9. CPU/GPU parity on 1 to 6, and no constant beyond the paper's.
+//!
+//!    Written as the `gpu_criterion*` twins below, which step the very
+//!    scene the CPU criterion builds, copied particle for particle, against
+//!    the same bars; and for 6 as `gpu_directional_grip_is_direction_aware`
+//!    in `tests/gpu.rs`, on the CPU rig. The GPU meets every bar: 1 at 0.2
+//!    percent, 2 at frame 101, 3 at 0.027 cells and 100.33 percent carried,
+//!    4 at 0.102 cells deep, 5 at +1.82 and +0.70 percent, 6 resisted at
+//!    -0.4 percent (easy +3.3 percent, as the CPU waits for XPIC(m)). The
+//!    Baumgarte term's correction rate (2) and speed cap (half a cell) were
+//!    the constants from neither Nairn et al. 2020 nor Bardenhagen et al.
+//!    2001, and they are gone; what remains beside the papers' own is a
+//!    division guard (1e-6 of a node's mass) and the GPU's fixed point
+//!    capacities. The GPU has no frictional heating at all, a separate gap.
 //!
 //! Criteria 1 and 2 come first, CPU only, measured on the current code
 //! before anything changes.
 
 extern crate emerge_engine as emerge;
 
-use emerge::{Elastic, FromSI, NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
+use std::ops::Range;
+
+use emerge::{Elastic, FromSI, NeoHookeanMaterial, Particle, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
 
 const GRID: usize = 64;
@@ -108,11 +131,104 @@ fn body() -> Elastic {
     }
 }
 
+/// A criterion's scene, stepped on the CPU, or on the GPU from a copy of the
+/// CPU scene it was built as, particle for particle (criterion 9).
+enum Run {
+    Cpu(Box<Simulation>),
+    #[cfg(feature = "gpu")]
+    Gpu(Box<emerge::gpu::GpuSimulation>),
+}
+
+impl Run {
+    /// `sim` itself, or on the GPU its particles and config with `material`
+    /// (every criterion scene is made of one material).
+    fn new(sim: Simulation, material: NeoHookeanMaterial, on_gpu: bool) -> Self {
+        if !on_gpu {
+            return Run::Cpu(Box::new(sim));
+        }
+        #[cfg(feature = "gpu")]
+        {
+            let particles: Vec<Particle> = sim.particles().iter().collect();
+            let registry = emerge::MaterialRegistry::with_default(Box::new(material));
+            Run::Gpu(Box::new(pollster::block_on(
+                emerge::gpu::GpuSimulation::new(*sim.config(), particles, registry),
+            )))
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = material;
+            panic!("the GPU criteria need the gpu feature")
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Run::Cpu(_) => "CPU",
+            #[cfg(feature = "gpu")]
+            Run::Gpu(_) => "GPU",
+        }
+    }
+
+    fn step(&mut self) {
+        match self {
+            Run::Cpu(sim) => sim.step(),
+            #[cfg(feature = "gpu")]
+            Run::Gpu(sim) => sim.step_frame(),
+        }
+    }
+
+    fn gravity(&self) -> Vec2 {
+        match self {
+            Run::Cpu(sim) => sim.config().gravity,
+            #[cfg(feature = "gpu")]
+            Run::Gpu(sim) => sim.config().gravity,
+        }
+    }
+
+    fn set_gravity(&mut self, gravity: Vec2) {
+        match self {
+            Run::Cpu(sim) => sim.set_gravity(gravity),
+            #[cfg(feature = "gpu")]
+            Run::Gpu(sim) => sim.set_gravity(gravity),
+        }
+    }
+
+    fn particles(&mut self) -> Vec<Particle> {
+        match self {
+            Run::Cpu(sim) => sim.particles().iter().collect(),
+            #[cfg(feature = "gpu")]
+            Run::Gpu(sim) => {
+                sim.sync_particles_blocking();
+                sim.particles().to_vec()
+            }
+        }
+    }
+
+    /// Adds `dv` to the velocity of the particles in `range`.
+    fn push(&mut self, range: Range<usize>, dv: Vec2) {
+        match self {
+            Run::Cpu(sim) => {
+                for i in range {
+                    sim.particles_mut().v[i] += dv;
+                }
+            }
+            #[cfg(feature = "gpu")]
+            Run::Gpu(sim) => {
+                sim.sync_particles_blocking();
+                for p in &mut sim.particles_mut()[range] {
+                    p.v += dv;
+                }
+                sim.mark_particles_dirty();
+            }
+        }
+    }
+}
+
 /// Two blocks `CELLS` wide and `HEIGHT` cells tall each, stacked on the
 /// floor with the interface on a grid line; the top one is contact group 1
-/// when `two_bodies`, otherwise both are one body. Returns the simulation
-/// and the index range of the top block.
-fn stacked(two_bodies: bool, frame_dt: f32) -> (Simulation, std::ops::Range<usize>) {
+/// when `two_bodies`, otherwise both are one body. Returns the run and the
+/// index range of the top block.
+fn stacked(two_bodies: bool, frame_dt: f32, on_gpu: bool) -> (Run, Range<usize>) {
     const CELLS: i32 = 12;
     const HEIGHT: i32 = 10;
     let config = SimConfig::earth(GRID, DX_M, frame_dt);
@@ -145,46 +261,46 @@ fn stacked(two_bodies: bool, frame_dt: f32) -> (Simulation, std::ops::Range<usiz
             sim.particles_mut().contact_group[i] = 1;
         }
     }
-    (sim, start..end)
+    (Run::new(sim, material, on_gpu), start..end)
 }
 
-fn mean_y(sim: &Simulation, range: std::ops::Range<usize>, top: bool) -> f32 {
-    let p = sim.particles();
-    let ys: Vec<f32> = range.map(|i| p.x[i].y).collect();
+/// Highest (`top`) or lowest particle height in `range`.
+fn extreme_y(p: &[Particle], range: Range<usize>, top: bool) -> f32 {
+    let ys = p[range].iter().map(|p| p.x.y);
     if top {
-        ys.iter().copied().fold(f32::MIN, f32::max)
+        ys.fold(f32::MIN, f32::max)
     } else {
-        ys.iter().copied().fold(f32::MAX, f32::min)
+        ys.fold(f32::MAX, f32::min)
     }
 }
 
 /// Criterion 1.
-#[test]
-#[ignore = "contact rebuild criterion 1: run with --ignored --nocapture"]
-fn criterion1_a_perfect_interface_behaves_as_one_body() {
+fn check_criterion1(on_gpu: bool) {
     let frame_dt = 1.0 / 120.0;
-    let (mut one, top_one) = stacked(false, frame_dt);
-    let (mut two, top_two) = stacked(true, frame_dt);
+    let (mut one, top_one) = stacked(false, frame_dt, on_gpu);
+    let (mut two, top_two) = stacked(true, frame_dt, on_gpu);
+    let p = one.particles();
     let (top0, interface0) = (
-        mean_y(&one, top_one.clone(), true),
-        mean_y(&one, top_one.clone(), false),
+        extreme_y(&p, top_one.clone(), true),
+        extreme_y(&p, top_one.clone(), false),
     );
     let (mut worst, mut largest) = (0.0f32, 0.0f32);
     // Gravity ramps up over the first 200 frames: see criterion 1's doc.
-    let g = one.config().gravity;
+    let g = one.gravity();
     for frame in 1..=240 {
         let ramp = (frame as f32 / 200.0).min(1.0);
         one.set_gravity(g * ramp);
         two.set_gravity(g * ramp);
         one.step();
         two.step();
+        let (p1, p2) = (one.particles(), two.particles());
         let (t1, i1) = (
-            mean_y(&one, top_one.clone(), true),
-            mean_y(&one, top_one.clone(), false),
+            extreme_y(&p1, top_one.clone(), true),
+            extreme_y(&p1, top_one.clone(), false),
         );
         let (t2, i2) = (
-            mean_y(&two, top_two.clone(), true),
-            mean_y(&two, top_two.clone(), false),
+            extreme_y(&p2, top_two.clone(), true),
+            extreme_y(&p2, top_two.clone(), false),
         );
         largest = largest.max(top0 - t1).max(interface0 - i1);
         worst = worst.max((t1 - t2).abs()).max((i1 - i2).abs());
@@ -195,7 +311,9 @@ fn criterion1_a_perfect_interface_behaves_as_one_body() {
         }
     }
     println!(
-        "largest compression of the one body {largest:.3} cells, largest difference {worst:.3} cells, {:.1} percent",
+        "{}: largest compression of the one body {largest:.3} cells, largest difference \
+         {worst:.3} cells, {:.1} percent",
+        one.label(),
         100.0 * worst / largest
     );
     assert!(
@@ -204,10 +322,24 @@ fn criterion1_a_perfect_interface_behaves_as_one_body() {
     );
 }
 
+#[test]
+#[ignore = "contact rebuild criterion 1: run with --ignored --nocapture"]
+fn criterion1_a_perfect_interface_behaves_as_one_body() {
+    check_criterion1(false);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "contact rebuild criterion 9, criterion 1 on the GPU: needs a GPU adapter"]
+fn gpu_criterion1_a_perfect_interface_behaves_as_one_body() {
+    check_criterion1(true);
+}
+
 /// Criterion 2: the resting block's first motion against the time the
 /// moving block's edge reaches it. `offset` shifts both blocks so the gap
-/// closes on a grid line (0.0) or mid-cell (0.5).
-fn contact_time(offset: f32) -> (usize, f32, f32) {
+/// closes on a grid line (0.0) or mid-cell (0.5). Returns the onset frame,
+/// the meeting time and the frame.
+fn contact_time(offset: f32, on_gpu: bool) -> (usize, f32, f32) {
     const CELLS: i32 = 8;
     const HEIGHT: i32 = 6;
     const GAP_CELLS: f32 = 1.5;
@@ -243,12 +375,12 @@ fn contact_time(offset: f32) -> (usize, f32, f32) {
     let low_edge = low.clone().map(|i| p.x[i].y).fold(f32::MIN, f32::max) + SPACING * 0.5;
     let high_edge = high.clone().map(|i| p.x[i].y).fold(f32::MAX, f32::min) - SPACING * 0.5;
     let expected = (high_edge - low_edge) / SPEED_CELLS_S;
+    let mut run = Run::new(sim, material, on_gpu);
     let mut onset = 0;
     for frame in 1..=400 {
-        sim.step();
-        let p = sim.particles();
-        let n = low.len() as f32;
-        let vy = low.clone().map(|i| p.v[i].y).sum::<f32>() / n;
+        run.step();
+        let p = run.particles();
+        let vy = p[low.clone()].iter().map(|p| p.v.y).sum::<f32>() / low.len() as f32;
         if vy < -0.01 * SPEED_CELLS_S {
             onset = frame;
             break;
@@ -258,18 +390,18 @@ fn contact_time(offset: f32) -> (usize, f32, f32) {
 }
 
 /// Criterion 2.
-#[test]
-#[ignore = "contact rebuild criterion 2: run with --ignored --nocapture"]
-fn criterion2_contact_starts_when_the_edges_meet() {
+fn check_criterion2(on_gpu: bool) {
     let mut failures = Vec::new();
     for (label, offset) in [("grid line", 0.0), ("mid-cell", 0.5)] {
-        let (onset, expected, frame_dt) = contact_time(offset);
+        let (onset, expected, frame_dt) = contact_time(offset, on_gpu);
         // Both on the frame clock. In seconds, f32 puts the meeting time
         // (0.1 s) and the frame (1 ms) 5e-8 of a frame off exact, enough to
         // fail a one-frame bound the onset meets exactly.
         let meet = (expected / frame_dt).round() as usize;
         println!(
-            "{label}: resting block moves at frame {onset} ({:.4} s), edges meet at {expected:.4} s",
+            "{} {label}: resting block moves at frame {onset} ({:.4} s), edges meet at \
+             {expected:.4} s",
+            if on_gpu { "GPU" } else { "CPU" },
             onset as f32 * frame_dt
         );
         if onset.abs_diff(meet) > 1 {
@@ -279,20 +411,34 @@ fn criterion2_contact_starts_when_the_edges_meet() {
     assert!(failures.is_empty(), "{failures:?}");
 }
 
+#[test]
+#[ignore = "contact rebuild criterion 2: run with --ignored --nocapture"]
+fn criterion2_contact_starts_when_the_edges_meet() {
+    check_criterion2(false);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "contact rebuild criterion 9, criterion 2 on the GPU: needs a GPU adapter"]
+fn gpu_criterion2_contact_starts_when_the_edges_meet() {
+    check_criterion2(true);
+}
+
 /// Criteria 3 to 5's scene: a block `block` cells `drop_cells` above a slab
 /// `SLAB_W` by `SLAB_H` cells lying on the floor (edge to edge at 0), under
 /// real gravity switched on at once, with the contact's Coulomb coefficient
 /// `friction` (`SimConfig::earth`'s when `None`). The block is contact group
 /// 1 when `two_bodies`, otherwise block and slab are one body, whose state is
-/// the elastic rest position the contact must reproduce. Returns the
-/// simulation and the block's and slab's index ranges.
+/// the elastic rest position the contact must reproduce. Returns the run and
+/// the block's and slab's index ranges.
 fn block_on_slab(
     two_bodies: bool,
     block: IVec2,
     drop_cells: f32,
     friction: Option<f32>,
     frame_dt: f32,
-) -> (Simulation, std::ops::Range<usize>, std::ops::Range<usize>) {
+    on_gpu: bool,
+) -> (Run, Range<usize>, Range<usize>) {
     const SLAB_W: i32 = 48;
     const SLAB_H: i32 = 6;
     let mut config = SimConfig::earth(GRID, DX_M, frame_dt);
@@ -326,26 +472,23 @@ fn block_on_slab(
             sim.particles_mut().contact_group[i] = 1;
         }
     }
-    (sim, block, slab)
+    (Run::new(sim, material, on_gpu), block, slab)
 }
 
 /// Mass-weighted centre and velocity of the particles in `range`, and their
 /// mass.
-fn centre_of_mass(sim: &Simulation, range: std::ops::Range<usize>) -> (Vec2, Vec2, f32) {
-    let p = sim.particles();
+fn centre_of_mass(p: &[Particle], range: Range<usize>) -> (Vec2, Vec2, f32) {
     let (mut x, mut v, mut m) = (Vec2::ZERO, Vec2::ZERO, 0.0f32);
-    for i in range {
-        x += p.mass[i] * p.x[i];
-        v += p.mass[i] * p.v[i];
-        m += p.mass[i];
+    for p in &p[range] {
+        x += p.mass * p.x;
+        v += p.mass * p.v;
+        m += p.mass;
     }
     (x / m, v / m, m)
 }
 
 /// Criterion 3.
-#[test]
-#[ignore = "contact rebuild criterion 3: run with --ignored --nocapture"]
-fn criterion3_a_block_rests_on_a_slab() {
+fn check_criterion3(on_gpu: bool) {
     let frame_dt = 1.0 / 120.0;
     const FRAMES: usize = 240;
     const WINDOW: usize = 40;
@@ -353,21 +496,24 @@ fn criterion3_a_block_rests_on_a_slab() {
     // block keeps ringing with the slab, and over 200 frames a speed swing
     // of a few cells/s moves the average by under 1 percent.
     const FORCE_FROM: usize = 40;
-    let (mut one, block_one, _) = block_on_slab(false, IVec2::splat(8), 0.0, None, frame_dt);
-    let (mut two, block_two, slab_two) = block_on_slab(true, IVec2::splat(8), 0.0, None, frame_dt);
-    let g = two.config().gravity.y.abs();
+    let block_size = IVec2::splat(8);
+    let (mut one, block_one, _) = block_on_slab(false, block_size, 0.0, None, frame_dt, on_gpu);
+    let (mut two, block_two, slab_two) =
+        block_on_slab(true, block_size, 0.0, None, frame_dt, on_gpu);
+    let g = two.gravity().y.abs();
     let (mut worst_speed, mut worst_offset) = (0.0f32, 0.0f32);
     let mut worst_speed_one = 0.0f32;
     let mut v_force_start = Vec2::ZERO;
     let mut deepest = f32::MAX;
+    let mut last = Vec::new();
     for frame in 1..=FRAMES {
         one.step();
         two.step();
-        let (x1, v1, _) = centre_of_mass(&one, block_one.clone());
-        let (x2, v2, _) = centre_of_mass(&two, block_two.clone());
-        let p = two.particles();
-        let block_bottom = block_two.clone().map(|i| p.x[i].y).fold(f32::MAX, f32::min);
-        let slab_top = slab_two.clone().map(|i| p.x[i].y).fold(f32::MIN, f32::max);
+        let (p1, p2) = (one.particles(), two.particles());
+        let (x1, v1, _) = centre_of_mass(&p1, block_one.clone());
+        let (x2, v2, _) = centre_of_mass(&p2, block_two.clone());
+        let block_bottom = extreme_y(&p2, block_two.clone(), false);
+        let slab_top = extreme_y(&p2, slab_two.clone(), true);
         deepest = deepest.min(block_bottom - slab_top);
         if frame == FORCE_FROM {
             v_force_start = v2;
@@ -379,24 +525,27 @@ fn criterion3_a_block_rests_on_a_slab() {
         }
         if frame % 20 == 0 {
             println!(
-                "frame {frame}: block centre {:.4} one body, {:.4} two, v_y {:+.4} cells/s, rows apart {:.3}",
+                "frame {frame}: block centre {:.4} one body, {:.4} two, v_y {:+.4} cells/s, \
+                 rows apart {:.3}",
                 x1.y,
                 x2.y,
                 v2.y,
                 block_bottom - slab_top
             );
         }
+        last = p2;
     }
-    let (_, v_end, mass) = centre_of_mass(&two, block_two.clone());
+    let (_, v_end, mass) = centre_of_mass(&last, block_two.clone());
     let span_s = (FRAMES - FORCE_FROM) as f32 * frame_dt;
     // The slab's average push on the block, from the block's momentum
     // balance: F = M dV/dt + M g.
     let carried = (mass * (v_end.y - v_force_start.y) / span_s + mass * g) / (mass * g);
     println!(
-        "last {WINDOW} frames: centre off the one body by {worst_offset:.4} cells (bound 0.1), \
-         |v_y| up to {worst_speed:.4} cells/s (one body {worst_speed_one:.4}) against g dt {:.4}, \
-         slab carries {:.2} percent \
-         of the weight; closest rows {deepest:.3} cells (spacing {SPACING})",
+        "{}: last {WINDOW} frames: centre off the one body by {worst_offset:.4} cells (bound \
+         0.1), |v_y| up to {worst_speed:.4} cells/s (one body {worst_speed_one:.4}) against \
+         g dt {:.4}, slab carries {:.2} percent of the weight; closest rows {deepest:.3} \
+         cells (spacing {SPACING})",
+        two.label(),
         g * frame_dt,
         100.0 * carried
     );
@@ -415,46 +564,56 @@ fn criterion3_a_block_rests_on_a_slab() {
     );
 }
 
+#[test]
+#[ignore = "contact rebuild criterion 3: run with --ignored --nocapture"]
+fn criterion3_a_block_rests_on_a_slab() {
+    check_criterion3(false);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "contact rebuild criterion 9, criterion 3 on the GPU: needs a GPU adapter"]
+fn gpu_criterion3_a_block_rests_on_a_slab() {
+    check_criterion3(true);
+}
+
 /// How far the block's lowest particle lies below the slab's top edge (its
 /// top row under the block plus half a spacing), in cells; negative while
 /// they are apart.
-fn penetration(
-    sim: &Simulation,
-    block: std::ops::Range<usize>,
-    slab: std::ops::Range<usize>,
-) -> f32 {
-    let p = sim.particles();
-    let (left, right) = block.clone().fold((f32::MAX, f32::MIN), |(l, r), i| {
-        (l.min(p.x[i].x), r.max(p.x[i].x))
-    });
-    let slab_edge = slab
-        .filter(|&i| (left..=right).contains(&p.x[i].x))
-        .map(|i| p.x[i].y)
+fn penetration(p: &[Particle], block: Range<usize>, slab: Range<usize>) -> f32 {
+    let (left, right) = p[block.clone()]
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(l, r), p| {
+            (l.min(p.x.x), r.max(p.x.x))
+        });
+    let slab_edge = p[slab]
+        .iter()
+        .filter(|p| (left..=right).contains(&p.x.x))
+        .map(|p| p.x.y)
         .fold(f32::MIN, f32::max)
         + SPACING * 0.5;
-    slab_edge - block.map(|i| p.x[i].y).fold(f32::MAX, f32::min)
+    slab_edge - extreme_y(p, block, false)
 }
 
 /// Criterion 4.
-#[test]
-#[ignore = "contact rebuild criterion 4: run with --ignored --nocapture"]
-fn criterion4_a_dropped_block_does_not_pass_into_the_slab() {
+fn check_criterion4(on_gpu: bool) {
     let frame_dt = 1.0 / 120.0;
     const FRAMES: usize = 360;
     // The last second.
     const WINDOW: usize = 120;
-    let (mut sim, block, slab) = block_on_slab(true, IVec2::splat(8), 10.0, None, frame_dt);
-    let g = sim.config().gravity.y.abs();
+    let (mut run, block, slab) = block_on_slab(true, IVec2::splat(8), 10.0, None, frame_dt, on_gpu);
+    let g = run.gravity().y.abs();
     let (mut deepest, mut worst_speed, mut worst_gap) = (f32::MIN, 0.0f32, 0.0f32);
     let mut impact = None;
     for frame in 1..=FRAMES {
-        sim.step();
-        let depth = penetration(&sim, block.clone(), slab.clone());
+        run.step();
+        let p = run.particles();
+        let depth = penetration(&p, block.clone(), slab.clone());
         deepest = deepest.max(depth);
         if impact.is_none() && depth > 0.0 {
             impact = Some(frame);
         }
-        let (_, v, _) = centre_of_mass(&sim, block.clone());
+        let (_, v, _) = centre_of_mass(&p, block.clone());
         if frame > FRAMES - WINDOW {
             worst_speed = worst_speed.max(v.y.abs());
             // Between the edges: the block's lowest row sits half a spacing
@@ -469,9 +628,10 @@ fn criterion4_a_dropped_block_does_not_pass_into_the_slab() {
         }
     }
     println!(
-        "a block particle first below the slab edge at frame {impact:?}; deepest {deepest:.3} cells below the slab edge (bound 0.25); \
-         last {WINDOW} frames: |v_y| up to {worst_speed:.3} cells/s against g dt {:.3}, \
-         widest gap {worst_gap:.3} cells",
+        "{}: a block particle first below the slab edge at frame {impact:?}; deepest \
+         {deepest:.3} cells below the slab edge (bound 0.25); last {WINDOW} frames: |v_y| \
+         up to {worst_speed:.3} cells/s against g dt {:.3}, widest gap {worst_gap:.3} cells",
+        run.label(),
         g * frame_dt
     );
     assert!(deepest <= 0.25, "block {deepest:.3} cells into the slab");
@@ -481,31 +641,50 @@ fn criterion4_a_dropped_block_does_not_pass_into_the_slab() {
     );
 }
 
+#[test]
+#[ignore = "contact rebuild criterion 4: run with --ignored --nocapture"]
+fn criterion4_a_dropped_block_does_not_pass_into_the_slab() {
+    check_criterion4(false);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "contact rebuild criterion 9, criterion 4 on the GPU: needs a GPU adapter"]
+fn gpu_criterion4_a_dropped_block_does_not_pass_into_the_slab() {
+    check_criterion4(true);
+}
+
 /// Criterion 5: a flat block (12 by 4 cells, so it cannot tip below `mu` 3)
 /// comes to rest on the slab, is launched along it at `LAUNCH` cells/s, and
 /// slides for `seconds`. Gravity ramps up over the first 200 frames and holds
 /// for 100 more, so the block is at rest when launched: switched on at once,
 /// block and slab still ring vertically, and the normal force, so the
-/// friction, swings through the 0.05 to 0.2 s the block slides. Returns, per frame, the block's centre-of-mass `v_x` and its
-/// speed relative to the slab's, with the frame and `g`.
-fn slide(friction: f32, seconds: f32) -> (Vec<(f32, f32)>, f32, f32) {
+/// friction, swings through the 0.05 to 0.2 s the block slides. Returns, per
+/// frame, the block's centre-of-mass `v_x` and its speed relative to the
+/// slab's, with the frame and `g`.
+fn slide(friction: f32, seconds: f32, on_gpu: bool) -> (Vec<(f32, f32)>, f32, f32) {
     let frame_dt = 1.0 / 240.0;
-    let (mut sim, block, slab) =
-        block_on_slab(true, IVec2::new(12, 4), 0.0, Some(friction), frame_dt);
-    let gravity = sim.config().gravity;
+    let (mut run, block, slab) = block_on_slab(
+        true,
+        IVec2::new(12, 4),
+        0.0,
+        Some(friction),
+        frame_dt,
+        on_gpu,
+    );
+    let gravity = run.gravity();
     let g = gravity.y.abs();
     for frame in 1..=300 {
-        sim.set_gravity(gravity * (frame as f32 / 200.0).min(1.0));
-        sim.step();
+        run.set_gravity(gravity * (frame as f32 / 200.0).min(1.0));
+        run.step();
     }
-    for i in block.clone() {
-        sim.particles_mut().v[i].x += LAUNCH;
-    }
+    run.push(block.clone(), Vec2::new(LAUNCH, 0.0));
     let mut trace = Vec::new();
     for _ in 0..(seconds / frame_dt).round() as usize {
-        sim.step();
-        let (_, v_block, _) = centre_of_mass(&sim, block.clone());
-        let (_, v_slab, _) = centre_of_mass(&sim, slab.clone());
+        run.step();
+        let p = run.particles();
+        let (_, v_block, _) = centre_of_mass(&p, block.clone());
+        let (_, v_slab, _) = centre_of_mass(&p, slab.clone());
         trace.push((v_block.x, v_block.x - v_slab.x));
     }
     (trace, frame_dt, g)
@@ -515,12 +694,11 @@ fn slide(friction: f32, seconds: f32) -> (Vec<(f32, f32)>, f32, f32) {
 const LAUNCH: f32 = 60.0;
 
 /// Criterion 5.
-#[test]
-#[ignore = "contact rebuild criterion 5: run with --ignored --nocapture"]
-fn criterion5_a_launched_block_decelerates_at_mu_g_then_sticks() {
+fn check_criterion5(on_gpu: bool) {
+    let on = if on_gpu { "GPU" } else { "CPU" };
     let mut failures = Vec::new();
     for mu in [0.3f32, 0.6] {
-        let (trace, frame_dt, g) = slide(mu, 0.5);
+        let (trace, frame_dt, g) = slide(mu, 0.5, on_gpu);
         // Least-squares slope of v_x against time while the block slides,
         // between 80 and 20 percent of the launch speed.
         let points: Vec<(f32, f32)> = trace
@@ -547,9 +725,9 @@ fn criterion5_a_launched_block_decelerates_at_mu_g_then_sticks() {
         let slip = (tail.iter().map(|(_, rel)| rel).sum::<f32>() / tail.len() as f32).abs();
         let ringing = tail.iter().map(|(_, rel)| rel.abs()).fold(0.0f32, f32::max);
         println!(
-            "mu {mu}: deceleration {deceleration:.1} cells/s2 over {} frames against mu g {:.1}, \
-             {:+.2} percent; last 0.1 s: mean slip {slip:.3} cells/s \
-             (largest relative speed {ringing:.3}), block v_x {:.3}",
+            "{on} mu {mu}: deceleration {deceleration:.1} cells/s2 over {} frames against mu g \
+             {:.1}, {:+.2} percent; last 0.1 s: mean slip {slip:.3} cells/s (largest relative \
+             speed {ringing:.3}), block v_x {:.3}",
             points.len(),
             mu * g,
             100.0 * (deceleration / (mu * g) - 1.0),
@@ -563,14 +741,27 @@ fn criterion5_a_launched_block_decelerates_at_mu_g_then_sticks() {
         }
     }
     // Frictionless: 0.2 s keeps the block on the slab.
-    let (trace, _, _) = slide(0.0, 0.2);
+    let (trace, _, _) = slide(0.0, 0.2, on_gpu);
     let kept = trace[trace.len() - 1].1 / LAUNCH;
     println!(
-        "mu 0: after 0.2 s the block slides at {:.2} percent of its launch speed",
+        "{on} mu 0: after 0.2 s the block slides at {:.2} percent of its launch speed",
         100.0 * kept
     );
     if kept < 0.95 {
         failures.push(format!("mu 0: kept {:.1} percent", 100.0 * kept));
     }
     assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+#[ignore = "contact rebuild criterion 5: run with --ignored --nocapture"]
+fn criterion5_a_launched_block_decelerates_at_mu_g_then_sticks() {
+    check_criterion5(false);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+#[ignore = "contact rebuild criterion 9, criterion 5 on the GPU: needs a GPU adapter"]
+fn gpu_criterion5_a_launched_block_decelerates_at_mu_g_then_sticks() {
+    check_criterion5(true);
 }
