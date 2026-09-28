@@ -1,4 +1,4 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/gpu/basic_jellies_gpu.rs`'s scene (no window) to check the
 //! real SI migration (soft-tissue E=500 Pa/nu=0.45/rho=1000, same citation
 //! as the CPU twin) for early instability on the GPU backend.
@@ -134,7 +134,7 @@ mod gpu_probe {
 fn basic_jellies_gpu_real_si_stiffness_substep_check() {
     // 120 steps (12s) wasn't enough to even reach the floor at this scene's
     // deliberately-weak gravity (-0.3) -- J stayed flat at 1.0 the entire
-    // run, meaning the real impact/settling event (the thing that actually
+    // run, meaning the impact/settling event (the thing that actually
     // stresses max_substeps_per_step) hadn't happened yet. ~37 grid units
     // of fall at g=0.3 needs ~t=sqrt(2*37/0.3)=~15.7s -- 300 steps (30s)
     // gives real margin past that.

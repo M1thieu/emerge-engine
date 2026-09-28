@@ -110,7 +110,7 @@ fn switch_step_extrapolation_toward_real_repose_angle() {
 /// (36.7 -> 36.2 -> 36.2deg) could just as easily be a temporary lull that
 /// resumes drifting given more time, not a stable equilibrium.
 /// Zero randomness in this scene (`position_jitter=0.0` by construction),
-/// so this is a real extension of the SAME deterministic trajectory, not a
+/// so this is an extension of the SAME deterministic trajectory, not a
 /// repeat of an already-known result.
 fn run_extended(switch_step: usize, checkpoints: &[usize]) -> Vec<(usize, f32)> {
     let config = SimConfig {
@@ -160,11 +160,9 @@ fn switch_step_10000_holds_at_a_genuinely_long_horizon() {
     run_extended(10000, &[6000, 12000, 25000, 50000, 100000, 200000, 300000]);
 }
 
-/// Real robustness check, not just a single lucky point: if ONLY exactly
-/// switch_step=10000 lands near the real target while its immediate
-/// neighbors look wildly different, that is a sign of fragility/coincidence
-/// (matching this same investigation's own switch_step=20000 finding --
-/// non-monotonic, noisy behavior nearby), not a usable region.
+/// Robustness around a point: if only switch_step=10000 lands near the target while
+/// its neighbors differ wildly, the result is fragile or coincidental (as
+/// switch_step=20000's non-monotonic, noisy neighborhood is), not a usable region.
 #[test]
 #[ignore = "real, long-running neighborhood-robustness sweep -- run explicitly with --ignored"]
 fn switch_step_neighborhood_around_10000_is_checked_for_robustness() {

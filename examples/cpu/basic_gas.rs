@@ -71,14 +71,11 @@ fn pocket_ratio(base_ratio: f32, spread: f32) -> f32 {
     1.0 + (base_ratio - 1.0) * spread
 }
 
-/// Real Rayleigh scattering coefficient for clean dry air at sea level,
-/// 550nm (green, the standard photopic reference wavelength) --
-/// Bucholtz 1995, "Rayleigh-scattering calculations for the terrestrial
-/// atmosphere," Applied Optics 34(15):2765-2773. Real absorption in the
-/// visible spectrum is ~0 for clean air (no absorption bands there) --
-/// what makes air even faintly visible over real distance is scattering,
-/// not absorption, which is why `sigma_a` below is genuinely 0.0, not a
-/// stand-in.
+/// Rayleigh scattering coefficient of clean dry air at sea level, at 550 nm (the
+/// photopic reference wavelength) -- Bucholtz 1995, "Rayleigh-scattering calculations
+/// for the terrestrial atmosphere", Applied Optics 34(15):2765-2773. Clean air has no
+/// absorption bands in the visible, so what makes it faintly visible over distance is
+/// scattering, and `sigma_a` below is 0.0.
 const AIR_RAYLEIGH_SCATTERING_M_INV: f32 = 1.16e-5;
 
 /// Grid-scaled real optical coefficients for `ColorMode::ByPhysics` --
@@ -103,22 +100,19 @@ fn real_air_optical_params(spacing: f32, dx_meters: f32) -> ([f32; 3], f32) {
 fn make_sim(temperature_k: f32, density_spread: f32, gravity_fraction: f32) -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
-        // Real compressible-gas CFL is far tighter than a weakly-
-        // compressible liquid's (air's own real ~343 m/s adiabatic sound
-        // speed vs. water's deliberately-slowed WCSPH ~10x-v_max
-        // reference). This version's widest ratio is 4.0x vs 0.6x = 6.7:1
-        // peak-to-peak, so the cap is raised as a disclosed safety
-        // margin matching the phase-transition demo's own steam settings.
+        // A compressible gas's CFL is far tighter than a weakly compressible
+        // liquid's (air's ~343 m/s adiabatic sound speed against water's WCSPH
+        // ~10x v_max reference). The widest ratio here is 4.0x vs 0.6x = 6.7:1
+        // peak to peak, so the cap is raised as a safety margin, as in the
+        // phase-transition demo's steam settings.
         max_substeps_per_step: 200,
         gravity: Vec2::new(0.0, -9.81 * gravity_fraction),
         ..SimConfig::earth(GRID, DX_METERS, DT) // dx=1.0m/cell -> SI numbers pass through unscaled
     };
-    // Real per-region mass: without it every particle gets the SAME
-    // `SimConfig::particle_mass` default regardless of its own material's
-    // real density -- correct for one material, silently wrong the moment
-    // two+ materials with different `rho_kg_m3` share a sim (see
-    // `SpawnRegion::mass_override`'s doc). Real areal-density formula,
-    // same one every `ParticleMass` impl in `physical_props.rs` uses:
+    // Per-region mass: without it every particle gets the same default mass whatever
+    // its material's density, right for one material and wrong once materials with
+    // different `rho_kg_m3` share a sim (see `SpawnRegion::mass_override`). The areal
+    // density formula of every `ParticleMass` impl in `physical_props.rs`:
     // `rho_kg_m3 * (spacing * dx_meters)^2`.
     let mass_for = |rho_kg_m3: f32| rho_kg_m3 * (SPACING * config.dx_meters).powi(2);
 
@@ -264,11 +258,9 @@ impl State {
 
     fn update_and_render(&mut self, window: &Window) {
         if self.lmb || self.rmb {
-            // Real click impulse scaled to a fraction of this gas's own
-            // real adiabatic sound speed at the live temperature, not an
-            // arbitrary constant copied from a liquid/solid demo -- stays
-            // a meaningful kick regardless of what this file's constants
-            // change to later.
+            // Click impulse as a fraction of this gas's adiabatic sound speed at the
+            // live temperature, not a constant from a liquid or solid demo, so it
+            // stays a meaningful kick whatever the constants become.
             let sound_speed_estimate =
                 emerge::thermodynamics::ideal_gas::ideal_gas_sound_speed_from_temperature(
                     emerge::thermodynamics::ideal_gas::AIR_SPECIFIC_GAS_CONSTANT_J_KG_K,
@@ -309,17 +301,13 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Real sim-vs-render-LOD split: every other renderer call site
-        // draws a particle's on-screen quad straight from its real
-        // deformation gradient F -- correct for a solid/liquid where the
-        // shape change IS the signal, but gas here reaches J up to ~18
-        // (visible in the printed diagnostics above), so F-driven
-        // quads would billboard to ~4x their rest size and paint one
-        // solid overlapping blob, hiding the actual particle cloud. Real
-        // sim state (`particles.deformation_gradient`, J, pressure) is
-        // untouched -- only this cloned, render-only copy has F reset to
-        // identity, so what you SEE is fixed-size dots whose density
-        // (how tightly they pack) is the honest signal for a gas cloud.
+        // Render-only copy with F reset to identity. The renderer draws each
+        // particle's quad from its deformation gradient, right for a solid or
+        // liquid where shape change is the signal, but the gas reaches J ~18 (see
+        // the printed diagnostics), and F-driven quads would grow to ~4x their rest
+        // size and paint one overlapping blob. The simulated state
+        // (`particles.deformation_gradient`, J, pressure) is untouched; fixed-size
+        // dots show the gas through how tightly they pack.
         let render_particles: Vec<emerge::Particle> = (0..self.sim.particles().len())
             .map(|i| {
                 let mut p = self.sim.particles().get(i);

@@ -24,7 +24,7 @@
 //! Explicit finite-difference -- matches Haeri & Skonieczny's own verified
 //! choice, not an invented shortcut. Same P2G→normalize→Laplacian→G2P shape
 //! as [`super::scalar_field::ScalarDiffusionField`]/[`super::diffusion::ThermalDiffusion`]
-//! (reuses the shared [`super::stencil::laplacian_step`]), plus a real reaction
+//! (reuses the shared [`super::stencil::laplacian_step`]), plus a reaction
 //! step for the two extra terms above. Quoted stability bound from
 //! that same paper: `Δt < Δx²·t0 / (2·A²·d²)` -- unlike `ScalarDiffusionField`'s
 //! bound (only ever documented, never enforced, since thermal diffusivity is
@@ -146,12 +146,12 @@ impl GranularFluidityField {
     /// `dx_meters`: real physical grid cell size (`SimConfig::dx_meters`).
     /// [`super::stencil::laplacian_step`]'s 4-neighbor-minus-center sum is a
     /// bare grid-INDEX-space finite difference (no implicit cell size) -- it
-    /// must be scaled by `1/dx_meters²` to become the real `∇²g` the PDE
+    /// must be scaled by `1/dx_meters²` to become the `∇²g` the PDE
     /// actually calls for, exactly the convention `ThermalConfig::alpha_grid`
     /// already documents ("Folding dx² in keeps the Laplacian formula
     /// dimensionless over grid indices") and `Cosserat` field's own `apply`
     /// call site already threads through. Without this dx-normalization, the diffusion term's magnitude doesn't
-    /// depend on the real cell size at all, so refining the grid (same `A`,
+    /// depend on the cell size at all, so refining the grid (same `A`,
     /// `d`, `t0`) changes how many REAL METERS the same "diffusivity_dt"
     /// spreads `g` per step -- the direct cause of this module's own
     /// resolution-dependence bug (see `sand.rs`'s `ngf_lajeunesse_runout_
@@ -259,11 +259,11 @@ impl GranularFluidityField {
             let pressure = self.grid_p[i].max(cfg.pressure_floor_pa);
             let linear_coeff = mu - cfg.mu_s; // >0 once locally past static friction
 
-            // g=0 is a REAL, STABLE fixed point whenever linear_coeff<=0 --
+            // g=0 is a STABLE fixed point whenever linear_coeff<=0 --
             // leave it at exactly 0 (matches real physics: nothing to grow
             // from without a source). Only bootstrap the epsilon seed (the
             // `u=1/g` substitution below is singular at g=0) when there IS
-            // a real source to grow toward.
+            // a source to grow toward.
             if linear_coeff <= 0.0 && g_prev <= 0.0 {
                 self.grid_work[i] = 0.0;
                 continue;
@@ -427,7 +427,7 @@ mod tests {
         // time: dg/dt ~ linear_coeff*g/t0 near g~0 is exponential growth,
         // so t_converge ~ t0/linear_coeff * ln(g_eq/seed). Here that's
         // ~1e-4/0.2 * ln(385/1e-6) ~ 9.9ms -- run comfortably past that
-        // (30ms), well inside the real stability bound at this dx/t0/A/d
+        // (30ms), well inside the stability bound at this dx/t0/A/d
         // (~0.24s, `stability_dt_matches_the_cited_formula_directly`).
         let mut out = vec![0.0; 4];
         for _ in 0..3000 {

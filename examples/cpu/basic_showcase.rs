@@ -31,11 +31,8 @@ const SAND_ID: u32 = 1;
 const FLUID_ID: u32 = 2;
 const SPACING: f32 = 0.7;
 
-// Real fix (2026-09-06): was `DruckerPragerMaterial::new(400.0, 200.0)`, an
-// unsourced grid-unit guess. Same real dry-sand citation already used and
-// verified for `basic_sand.rs`/`sand_ngf_collapse.rs` (Haeri & Skonieczny
-// 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through
-// the dt^2-free `lame_from_si`.
+// Dry sand (Haeri & Skonieczny 2022 Table 1, Excavation case: E=15 MPa, nu=0.3,
+// rho=1600 kg/m3, as `basic_sand.rs`/`sand_ngf_collapse.rs`) through `lame_from_si`.
 const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
@@ -67,11 +64,9 @@ struct State {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 0.005,
-        // Real fix (2026-09-06): the real E=15 MPa sand above needs real
-        // substep headroom under CFL -- same value already empirically
-        // verified for the identical citation/grid/dx in basic_sand.rs
-        // (`tests/probes/basic_sand_probe.rs`: confirmed zero dropped
-        // simulated time at this cap).
+        // Substep headroom for E=15 MPa sand: the value measured with zero dropped
+        // simulated time for the same citation, grid and dx in basic_sand.rs
+        // (`tests/probes/basic_sand_probe.rs`).
         max_substeps_per_step: 3000,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
@@ -82,13 +77,11 @@ fn make_sim() -> Simulation {
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // NOT migrated to real SI tonight, unlike `sand`/`fluid` below --
-    // deliberate, same reasoning as `basic_creature.rs`/`grass_field.rs`:
-    // this body is player-driven (arrow keys, see `update_and_render`),
-    // and a real E-Pa stiffness would change how it responds to
-    // the same drive-impulse magnitude. That needs live interactive
-    // verification (does it still feel controllable), not just a headless
-    // stability probe -- real follow-up work, not silently dropped.
+    // Grid units, unlike `sand`/`fluid` below, as `basic_creature.rs`/`grass_field.rs`:
+    // this body is player-driven (arrow keys, see `update_and_render`), and an SI
+    // stiffness would change its response to the same drive impulse, which needs
+    // checking live (is it still controllable), not only with a headless stability
+    // probe.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
     let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
@@ -96,16 +89,12 @@ fn make_sim() -> Simulation {
         SAND_DENSITY_KG_M3,
     );
     let sand = DruckerPragerMaterial::new(sand_lambda, sand_mu);
-    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
-    // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's doc for the full derivation.
-    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
-    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
-    // stiffness for the same compression; confirmed by a real crash in
-    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
-    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's doc for the full derivation.
+    // Water through `NewtonianFluidMaterial::low_viscosity` (Tait exponent 7.0, Cole
+    // 1948; water viscosity). rest_density=0.1 (`rho*dx^2` for water at dx=0.01, see
+    // basic_fluids.rs). eos_stiffness=0.25: with rest_density 40x smaller than 4.0,
+    // `timestep_bound`'s c2 (sound speed squared) is 40x larger at a given stiffness and
+    // compression, so the stiffness is scaled by the same factor (10*0.1/4.0=0.25) to
+    // keep the same c2.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     // Same density-consistency fix as basic_sand.rs: mass must share the
     // same real SAND_DENSITY_KG_M3 the stiffness above uses, not
@@ -131,11 +120,9 @@ fn make_sim() -> Simulation {
         box_size: IVec2::new(22, 14),
         box_center: Vec2::new(45.0, 9.0),
         material_id: FLUID_ID,
-        // Without this, mass falls back to `config.particle_mass` (1.0),
-        // completely decoupled from the material's own rest_density=0.1
-        // -- a separate gap found 2026-08-08 alongside the SI fix
-        // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
-        // derivation used everywhere else.
+        // Mass set explicitly, m = rho0*spacing^2 with the material's
+        // rest_density=0.1 (see basic_fluids.rs), rather than the scene's grid
+        // density.
         mass_override: Some(0.1 * SPACING * SPACING),
         ..SpawnRegion::for_sim(&config)
     });

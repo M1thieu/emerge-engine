@@ -2,9 +2,8 @@
 //!
 //! One file for both so the table the demo's header publishes is measured
 //! on the demo's own scene, and the yield-stress reading the demo shows is
-//! the one the probe prints. They used to be two copies, and an earlier
-//! version of that table was never produced by the scene at all: it
-//! described a geometry the demo had stopped using.
+//! the one the probe prints: two copies can drift until the table describes
+//! a geometry the demo no longer uses.
 //!
 //! Every item here is used by both includers; one that is not would be
 //! dead code in that example.
@@ -31,7 +30,7 @@ pub const GRID: usize = 160;
 /// the whole effect into a single cell.
 pub const DX_M: f32 = 0.002;
 
-/// Real yield stresses in pascals, spanning the three bands
+/// Yield stresses in pascals, spanning the three bands
 /// `BinghamFluidMaterial`'s doc lists (biological 1-50, mud 50-500,
 /// lava 100-2000). Everything else about the three columns is identical.
 pub const YIELD_STRESS_PA: [f32; 3] = [2.0, 60.0, 1200.0];
@@ -100,12 +99,12 @@ pub fn make_config(gravity_fraction: f32, dt: f32) -> SimConfig {
         // floor; leaving the default would clamp the substep above its own
         // stability limit.
         min_dt: 1.0e-5,
-        // Real arithmetic, not a knob turned until it stopped complaining.
-        // The acoustic CFL bound at this sound speed is ~74 us, so a 5 ms
-        // frame needs ~68 substeps, and the 64 default is a
-        // budget rather than a physics cap (see its doc). 256 leaves
-        // room for the compression transient at first contact, where the
-        // Tait EOS raises the local sound speed above its rest value.
+        // From the arithmetic, not raised until it stopped complaining. The
+        // acoustic CFL bound at this sound speed is ~74 us, so a 5 ms frame needs
+        // ~68 substeps, and the 64 default is a budget rather than a physics cap
+        // (see its doc). 256 leaves room for the compression transient at first
+        // contact, where the Tait EOS raises the local sound speed above its rest
+        // value.
         max_substeps_per_step: 256,
         ..SimConfig::earth(GRID, DX_M, dt)
     };
@@ -166,7 +165,7 @@ pub fn make_sim(
             initial_velocity_scale: 0.0,
             ..SpawnRegion::for_sim(&config)
         }
-        // Real density -> real particle mass, rather than a hand-picked one.
+        // Particle mass from the material's density, rather than a hand-picked one.
         .mass_from(props, &config)
     };
 

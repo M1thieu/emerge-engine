@@ -1,14 +1,13 @@
 extern crate emerge_engine as emerge;
 
-/// GPU resource regrowth demo -- real logistic-growth PDE (Verhulst 1838,
-/// GPU-ported 2026-07-17) combined with `saturating_uptake` consumption (same
-/// composition CPU's `resource_field_depletes_near_consumer_then_regrows` proves).
-/// A field of "grass" starts at full resource (bright); a stationary consumer
-/// depletes nearby resource at a rate-limited pace via `particles_near` +
-/// `saturating_uptake` (external, same as the trophic predation demo -- the GPU port
-/// itself only owns the real regrowth PDE, not the consumption rule, matching CPU's
-/// own scope split). Watch resource dim near the consumer, then hold Space to stop
-/// consuming and watch it regrow back via the real PDE alone.
+/// GPU resource regrowth: a logistic-growth PDE (Verhulst 1838) combined with
+/// `saturating_uptake` consumption (the composition of CPU's
+/// `resource_field_depletes_near_consumer_then_regrows`). A field of "grass" starts at
+/// full resource (bright); a stationary consumer depletes nearby resource at a
+/// rate-limited pace via `particles_near` + `saturating_uptake` (external, as in the
+/// trophic predation demo: the GPU port owns only the regrowth PDE, not the consumption
+/// rule, the CPU scope split). Resource dims near the consumer; hold Space to stop
+/// consuming and watch it regrow through the PDE alone.
 ///
 ///   cargo run --example resource_regrowth_gpu --features "render"
 use std::sync::Arc;
@@ -171,11 +170,11 @@ impl State {
         let steps = self.stepper.steps_for_frame(frame_delta);
         for _ in 0..steps {
             if self.consuming {
-                // Real consumption: Holling Type II / saturating_uptake applied per-particle
-                // on THAT particle's own phi (same structure as CPU's own verified
-                // `resource_field_depletes_near_consumer_then_regrows`, tests/solver.rs) --
-                // rate naturally -> 0 as phi -> 0, so depletion decelerates near zero instead
-                // of a flat/aggregate budget driving everything to a hard clamp.
+                // Consumption: Holling Type II / saturating_uptake per particle on that
+                // particle's phi (the structure of CPU's
+                // `resource_field_depletes_near_consumer_then_regrows`, tests/solver.rs):
+                // the rate goes to 0 as phi does, so depletion slows near zero instead of
+                // an aggregate budget driving everything to a hard clamp.
                 //
                 // Skip the readback on frame 0: the CPU mirror already holds the correct
                 // freshly-set scalar_field=RESOURCE_K (no step_frame has uploaded/evolved

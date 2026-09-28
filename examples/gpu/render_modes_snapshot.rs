@@ -138,8 +138,8 @@ fn main() {
         let white = env_or("WHITE", 1.0);
         let mut water = emerge::matter::materials::optical::pure_water();
         // SCATTER_M_INV overrides pure water's own molecular scattering.
-        // Real water bodies scatter far more than pure water because of
-        // suspended particles -- that is a property of the mixture, not of
+        // Water bodies scatter far more than pure water because of suspended
+        // particles -- that is a property of the mixture, not of
         // water, so it is stated by the scene rather than baked into the
         // substance.
         if let Ok(v) = std::env::var("SCATTER_M_INV")

@@ -220,7 +220,7 @@ pub(crate) const RANKINE_MIN_RESIDUAL_TENSILE_FRACTION: f32 = 0.05;
 /// the floor alone stops the exponential runaway but not an unbounded linear
 /// climb. Clamping `prior_damage` at this saturation point is a no-op on future
 /// stress behavior (t_eff there is identical to t_eff at any higher damage value)
-/// and gives the accumulator a real rupture point instead of an arbitrary cutoff.
+/// and gives the accumulator a rupture point instead of an arbitrary cutoff.
 /// `softening_rate <= 0` means no softening at all (hard cutoff, doc'd on
 /// `RankineMaterial::softening_rate`) -- saturation point is +infinity, i.e. no cap.
 #[inline]
@@ -290,11 +290,11 @@ pub(crate) fn stress_to_hencky(tau: Vec2, lambda: f32, mu: f32) -> Vec2 {
 /// adopting Rankine's full constitutive/return-mapping model as its own stress
 /// response. Does not modify `deformation_gradient` -- purely observational, safe
 /// to call alongside a material's own (unrelated) `update_particle`, e.g. a
-/// muscle-actuated `NeoHookeanMaterial` that still needs a real damage/health
+/// muscle-actuated `NeoHookeanMaterial` that still needs a damage/health
 /// signal without giving up its own stress model.
 ///
 /// `lambda`/`mu` should be the SAME Lamé parameters the calling material already
-/// uses for its own elastic response -- this reads the real strain state via the
+/// uses for its own elastic response -- this reads the strain state via the
 /// same Hencky-strain path Rankine's own `update_particle` computes from, just
 /// without writing the projected state back into `F`.
 pub fn rankine_damage_estimate(
@@ -666,9 +666,9 @@ pub(crate) fn frob(a: Mat2, b: Mat2) -> f32 {
 /// `yield_at`: given a CANDIDATE end-of-step hardening state
 /// (`hardening_state + candidate_gamma`), returns the yield function's value
 /// there -- the only material-specific piece.
-/// 8 iterations is real headroom, not a tuned number: every real hardening
+/// 8 iterations is real headroom, not a tuned number: every hardening
 /// law in this engine is a bounded, smooth, saturating function of its own
-/// internal variable, making this a real contraction that converges to float
+/// internal variable, making this a contraction that converges to float
 /// precision in 2-3 passes in practice (confirmed on `DruckerPragerMaterial`,
 /// the first real adopter).
 pub fn self_consistent_plastic_multiplier(
@@ -1030,7 +1030,7 @@ mod corotated_elastic_stress_jvp_tests {
                 // there by construction: `f(x+h)`/`f(x-h)` are both
                 // dominated by the (identical, non-cancelling) O(h^2)
                 // curvature term, so `(plus-minus)/(2h)` recovers pure
-                // O(h^2)*f'''/6 truncation noise, not a real discrepancy
+                // O(h^2)*f'''/6 truncation noise, not a discrepancy
                 // (confirmed: at lambda=2e7, this alone produced a raw FD
                 // value of ~1.8 against an analytic 0 -- but EVERY other
                 // state, all deformed with nonzero analytic
@@ -1074,7 +1074,7 @@ mod corotated_kirchhoff_dtau_dl_psd_tests {
             Mat2::IDENTITY,
             Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(-0.01, 0.97)),
             Mat2::from_cols(Vec2::new(1.0, 0.1), Vec2::new(-0.05, 1.05)),
-            // Large volumetric expansion -- the real regime the plain
+            // Large volumetric expansion -- the regime the plain
             // (unprojected) Hessian is known-indefinite in.
             Mat2::from_cols(Vec2::new(3.0, 0.0), Vec2::new(0.0, 3.0)),
             Mat2::from_cols(Vec2::new(0.7, 0.6), Vec2::new(-0.5, 1.1)),
@@ -1127,7 +1127,7 @@ mod corotated_kirchhoff_dtau_dl_psd_tests {
         // exact chain-rule JVP. NOT bit-identical even here, by design:
         // symmetrizing intentionally discards `dTau/dL`'s antisymmetric
         // part (which contributes nothing to the quadratic form PSD-ness
-        // is actually about), so a real few-percent difference from the
+        // is actually about), so a few-percent difference from the
         // raw (non-symmetrized) exact JVP is expected, not a bug -- this
         // check is only about ruling out AGGRESSIVE over-damping at a
         // benign state, not exact reproduction.

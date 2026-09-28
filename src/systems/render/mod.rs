@@ -160,7 +160,7 @@ pub enum ColorMode {
     /// von Mises equivalent of each particle's deviatoric stress: shear
     /// activity, which `ByVolume` (det(F)) misses and pressure no longer
     /// masks. CPU render path only for now (`Renderer::render`,
-    /// which owns the real `&Particles`/`MaterialRegistry` needed to compute
+    /// which owns the `&Particles`/`MaterialRegistry` needed to compute
     /// it) -- see `Renderer::set_stress_field`'s doc for the real,
     /// disclosed reason the GPU shader path doesn't have this yet.
     ByStress = 7,
@@ -489,7 +489,7 @@ pub struct Renderer {
     /// spatial-edge artifact.
     wave_density_prev_buf: wgpu::Buffer,
 
-    /// Whether `wave_density_prev_buf` has been seeded from a real settled
+    /// Whether `wave_density_prev_buf` has been seeded from a settled
     /// density yet. False right after `Renderer::new`/a capacity grow (the
     /// buffer is a zero placeholder then) -- reading it as "previous
     /// density" on that first frame would read density appearing from
@@ -992,7 +992,7 @@ impl Renderer {
     }
 
     /// `grid_distance_to_pixels`, converted into UI/LOGICAL points -- see
-    /// `grid_to_screen_points`'s doc for the real DPI reasoning this
+    /// `grid_to_screen_points`'s doc for the DPI reasoning this
     /// shares.
     pub fn grid_distance_to_points(
         &self,
@@ -1050,7 +1050,7 @@ impl Renderer {
     }
 
     /// Set the Surface path's propagating-wave excitation strength -- see
-    /// `wave_force_coeff`'s doc for the real mechanism and why this
+    /// `wave_force_coeff`'s doc for the mechanism and why this
     /// should be DERIVED from `MaterialModel::owns_deformation_volume_
     /// state()` at the call site, not hand-picked per scene. `0.0` (the
     /// default) is inert; `0.35` is this engine's own real fluid-tuned
@@ -1184,7 +1184,7 @@ impl Renderer {
     /// `ByPhysics` render path.
     ///
     /// This is intentionally separate from [`Renderer::new`]: the renderer
-    /// cannot infer a simulation's metres-per-cell or the real out-of-plane
+    /// cannot infer a simulation's metres-per-cell or the out-of-plane
     /// thickness represented by a 2-D slice. Until this is called, the shared
     /// GPU uniform remains disabled and existing dimensionless rendering is
     /// explicitly legacy behavior.
@@ -1418,7 +1418,7 @@ impl Renderer {
 
     /// Reduced scattering coefficient for `slot` -- see `OpticalTable`'s doc for
     /// what this represents physically (real subsurface scattering, single-
-    /// scattering approximation) and its real citation (Jacques 2013). Auto-
+    /// scattering approximation) and its citation (Jacques 2013). Auto-
     /// uploads immediately -- see `set_optical_params`'s doc for why.
     pub fn set_optical_scattering(&mut self, queue: &wgpu::Queue, slot: usize, sigma_s: f32) {
         self.sigma_s[slot % 16] = sigma_s;

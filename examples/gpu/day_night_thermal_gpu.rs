@@ -1,12 +1,11 @@
 extern crate emerge_engine as emerge;
 
-/// GPU day-night ambient thermal diffusion demo -- a real Fourier's-law heat equation
-/// (∂T/∂t = α·∇²T) plus Newton cooling, GPU-ported 2026-07-16. A terrain-like slab
-/// starts at a uniform temperature; `set_thermal_ambient` oscillates the ambient
-/// temperature on a real sinusoidal day-night cycle, and the slab's own temperature
-/// chases it via real diffusion + cooling -- watch it with ColorMode::ByThermal to see
-/// warm (day) vs cool (night) spread visibly through the material, not just at a single
-/// point.
+/// GPU day-night ambient thermal diffusion: Fourier's-law heat equation
+/// (∂T/∂t = α·∇²T) plus Newton cooling. A terrain-like slab starts at a uniform
+/// temperature; `set_thermal_ambient` oscillates the ambient on a sinusoidal day-night
+/// cycle, and the slab's temperature follows through diffusion and cooling. With
+/// ColorMode::ByThermal, warm (day) and cool (night) spread visibly through the
+/// material, not only at one point.
 ///
 ///   cargo run --example day_night_thermal_gpu --features "render"
 use std::sync::Arc;
@@ -25,16 +24,14 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 48;
 const DT: f32 = 0.1;
-// Real air-ish thermal constants (see ThermalConfig's doc for reference values):
-// conductivity ~0.5 (between air 0.025 and water 0.6 -- a damp-earth-like slab),
-// heat_capacity ~1000 J/(kg*K), grid_cell_size=1.0m (each cell is a real meter).
+// Thermal constants of a damp-earth-like slab (see ThermalConfig's doc for reference
+// values): conductivity ~0.5 (between air 0.025 and water 0.6), heat_capacity
+// ~1000 J/(kg*K), grid_cell_size=1.0 m (each cell is a meter).
 const CONDUCTIVITY: f32 = 0.5;
 const HEAT_CAPACITY: f32 = 1000.0;
-// kg/m^3, real moist/damp soil (typical range 1200-1900) -- matches the same
-// "damp-earth-like slab" this file's own conductivity/heat_capacity already
-// assume. Added 2026-07-24: `attach_thermal_gpu` previously had no density
-// parameter at all (same engine-wide bug as CPU's `ThermalConfig`), so this
-// demo's diffusion silently ran with an implicit rho=1 -- 1600x too fast.
+// kg/m^3, moist soil (typical range 1200-1900), the damp-earth-like slab of the
+// conductivity and heat capacity above. Diffusivity is k/(rho*c_p), so an implicit
+// rho=1 would make diffusion 1600x too fast.
 const DENSITY: f32 = 1600.0;
 const GRID_CELL_SIZE_M: f32 = 1.0;
 const COOLING_RATE: f32 = 0.05; // Newton cooling, 1/s
@@ -56,7 +53,7 @@ struct State {
     frame: u64,
     /// Real-time-decoupled stepping -- see `basic_fluids_gpu.rs`'s own field
     /// doc for the full real bug/fix writeup. Matters here specifically
-    /// because `elapsed` drives the real sinusoidal day-night cycle --
+    /// because `elapsed` drives the sinusoidal day-night cycle --
     /// letting it advance once per RENDER frame (assuming render fps ==
     /// 1/DT) would desync "real sim seconds" from the cycle's own stated
     /// `CYCLE_SECONDS` whenever fps drifts from that assumption.
@@ -192,11 +189,10 @@ impl State {
         self.last_instant = now;
         let steps = self.stepper.steps_for_frame(frame_delta);
         for _ in 0..steps {
-            // Real sinusoidal day-night cycle -- midpoint + amplitude*sin, phase chosen
-            // so t=0 starts at night_ambient (matches the slab's own initial
-            // temperature). Advanced once per real SIMULATION step (not render
-            // frame) so `elapsed` tracks simulated seconds against
-            // `CYCLE_SECONDS`, regardless of render fps.
+            // Sinusoidal day-night cycle, midpoint + amplitude*sin, phased so t=0
+            // starts at night_ambient (the slab's initial temperature). Advanced once
+            // per simulation step, not per render frame, so `elapsed` tracks
+            // simulated seconds against `CYCLE_SECONDS` whatever the render fps.
             self.elapsed += DT;
             let mid = (DAY_AMBIENT + NIGHT_AMBIENT) * 0.5;
             let amp = (DAY_AMBIENT - NIGHT_AMBIENT) * 0.5;

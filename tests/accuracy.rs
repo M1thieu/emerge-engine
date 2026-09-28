@@ -220,7 +220,7 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     // proven quasi-static holding recipe and continuing to relax
     // afterward keeps drifting the angle DOWN past the target -- real,
     // same mechanism as the patient-pour investigation. Shown
-    // here so this real trajectory stays visible, not just asserted away.
+    // here so this trajectory stays visible, not just asserted away.
     solver.set_apic_blend(0.05);
     solver.set_cundall_damping(1.0);
     for checkpoint in 0..6 {
@@ -443,7 +443,7 @@ fn sand_collapse_relaxation_long_horizon_plateau_check() {
 /// horizon creep was originally documented
 /// (`sand_collapse_relaxation_long_horizon_plateau_check`: 29.6deg at
 /// t=1500 -> 10.8deg at t=101500, never plateaus). Shorter checkpoints
-/// (6000/25000, not the full 100000) to triangulate a real regime before
+/// (6000/25000, not the full 100000) to triangulate a regime before
 /// committing to one expensive full-length confirmation run. Both knobs
 /// are new and uncalibrated -- real values are found empirically here, not
 /// guessed once and trusted.
@@ -650,7 +650,7 @@ fn diag_static_friction_boost_performance_probe() {
 /// the LOW end of its rate-dependent range, µ(I)->µ_static as shear rate
 /// I->0): a nearly-at-rest particle is judged against the WEAKEST point
 /// of the whole friction curve, not the strongest -- the opposite
-/// direction from what would arrest creep. Running the real test rather
+/// direction from what would arrest creep. Running the test rather
 /// than trusting the prediction.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
@@ -1379,7 +1379,7 @@ fn sand_pile_built_by_slow_pour_holds_real_repose_angle() {
     let cx = POUR_GRID as f32 * 0.5;
     let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
 
-    // Start from a tiny seed pad -- `Simulation::new` needs a real initial
+    // Start from a tiny seed pad -- `Simulation::new` needs an initial
     // spawn, so the very first poured batch has something to land on
     // rather than bare boundary cells.
     let seed = SpawnRegion {
@@ -1622,17 +1622,17 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
 
 /// Direct test of `DruckerPragerMaterial::use_pradhana` (see that
 /// field's doc/citation) against the EXACT real scenario the eighteenth
-/// finding above already documented as a real dead end: `surface_y` climbs
+/// finding above already documented as a dead end: `surface_y` climbs
 /// by an almost perfectly constant ~2.25 cells EVERY pour (23.19, 25.45,
 /// 27.71, 29.96, ... measured live) regardless of pour-tuning. Identical
 /// config/geometry/step-counts to that test -- the ONLY change is
-/// `use_pradhana: true` on the sand material -- so any real difference in
+/// `use_pradhana: true` on the sand material -- so any difference in
 /// the per-pour growth rate is directly attributable to this mechanism, not
 /// a confound. See `sand_tests.rs::pradhana_correction_tests` for the
 /// isolated, synthetic verification this expensive scene test
 /// follows up on (which found the mechanism holds volumetric drift near
 /// zero under one continuous sustained load, but could not, in a
-/// single-particle synthetic setting, reproduce the real cross-pour
+/// single-particle synthetic setting, reproduce the cross-pour
 /// compounding this test checks directly).
 #[test]
 #[ignore = "slow, real production validation -- run explicitly with --release --ignored --nocapture"]
@@ -1956,7 +1956,7 @@ fn sand_pile_built_by_pour_with_randomized_drop_position() {
 /// `sand_preshaped_pile_at_30deg_holds_its_slope`, confirmed to genuinely
 /// hold via Cundall damping), then damping OFF and a small batch dropped
 /// partway up the slope's OWN flank, off the peak -- if mu_ratio STILL
-/// never approaches mu_s here, the real gap is not "point loads don't
+/// never approaches mu_s here, the gap is not "point loads don't
 /// shear on flat ground" but something deeper about how impacts couple
 /// into this constitutive model at all.
 #[test]
@@ -2000,7 +2000,7 @@ fn diag_batch_impact_on_sloped_flank_stress_ratio_trace() {
     });
     solver.step_n(1500); // real settle -- this exact recipe is proven to hold
 
-    // Halfway up the real slope: at dy = HEIGHT/2, the flank's own x is
+    // Halfway up the slope: at dy = HEIGHT/2, the flank's own x is
     // cx + half_base*0.5 (one side of the wedge), so drop just outside
     // that, on the slope itself, not the flat floor beyond its base.
     let dy_target = HEIGHT_CELLS * 0.5;
@@ -2510,7 +2510,7 @@ fn fluid_spreads_more_than_elastic_under_gravity_with_spatial_sort() {
 /// benchmark ever since, e.g. Koshizuka & Oka 1996, Monaghan 1994's own SPH
 /// dam-break). Distinct from `fluid_spreads_more_than_elastic_under_gravity`
 /// above: that test drops a CENTERED square blob (symmetric, no directional
-/// runout to measure); a real dam-break is a tall column flush against ONE
+/// runout to measure); a dam-break is a tall column flush against ONE
 /// wall, released under gravity alone, collapsing asymmetrically toward the
 /// open side -- the actual scene this engine's own dam-break demos
 /// (`basic_fluids.rs`/`_gui`/`_gpu`) are named for, which had no dedicated
@@ -2647,7 +2647,7 @@ fn fluid_dam_break_collapses_and_runs_out_away_from_wall() {
 /// so it never diffuses on its own; any change in local temperature homogeneity can ONLY
 /// come from real particle-position interpenetration, not a diffusion shortcut. Two
 /// adjacent blocks of the IDENTICAL `NewtonianFluidMaterial` (hot=373K left, cold=273K
-/// right, a real gap between them at t=0, no overlap) are dropped together under gravity;
+/// right, a gap between them at t=0, no overlap) are dropped together under gravity;
 /// a real fluid must spread/collide into ONE shared puddle where hot- and cold-tagged
 /// particles are spatially interspersed. Measured via `solver.particles_near`
 /// (the engine's own existing real spatial-neighbor query, not a new mechanism) -- the
@@ -2749,7 +2749,7 @@ fn fluid_mixes_via_real_advection_not_left_segregated() {
     // Disclosed catch: `initial_cross_fraction` measures exactly 0.0 (the two
     // blocks start with a gap, zero boundary contact) -- a purely RELATIVE
     // "final > initial * 3" bound would be vacuously true for ANY nonzero final value,
-    // so this needs a real absolute floor too, not just a ratio. 0.03 is a real,
+    // so this needs an absolute floor too, not just a ratio. 0.03 is a real,
     // meaningful non-trivial fraction (measured value: 0.0726), well below the
     // measurement so this isn't tuned to just barely pass it.
     assert!(
@@ -2949,7 +2949,7 @@ fn asflip_preserves_more_relative_velocity_between_separating_halves() {
 }
 
 /// ASFLIP's per-particle velocity correction must not secretly inject or remove NET
-/// system momentum -- a real risk if `old_v`/`diff_vel` were computed inconsistently.
+/// system momentum -- a risk if `old_v`/`diff_vel` were computed inconsistently.
 /// Checked via pure free-fall (no boundary to absorb/reflect momentum): total system
 /// momentum after N steps must match the analytically expected accumulated gravity
 /// impulse (mass · gravity · elapsed_time), with ASFLIP enabled.
@@ -3017,7 +3017,7 @@ fn asflip_preserves_momentum_conservation_under_free_fall() {
 /// Minimal placeholder registry for the scalar-diffusion tests below -- they
 /// exercise `ScalarDiffusionField`'s own math (decay, diffusion, source
 /// terms), not material physics, so the wrapped material's own params don't
-/// matter; `apply()` still needs a real `MaterialRegistry` to resolve each
+/// matter; `apply()` still needs a `MaterialRegistry` to resolve each
 /// particle's material for its own `source` fn (see `ScalarDiffusionField::
 /// source`'s doc on why -- real property-based classification, not a name
 /// check, needs the resolved material).
@@ -3080,7 +3080,7 @@ fn scalar_diffusion_decay_matches_analytical() {
 /// so the field stays `Send + Sync` with no lifetime, see that field's doc) for real
 /// logistic growth, `dS/dt = r·φ·(1 − φ/K)` -- the standard Verhulst 1838 population-growth
 /// equation, the same one real ecology models use for "resource regrows toward a carrying
-/// capacity" (this is the real PDE source term `resource_regrowth_matches_logistic_curve`
+/// capacity" (this is the PDE source term `resource_regrowth_matches_logistic_curve`
 /// below checks against its own closed-form analytical solution).
 const LOGISTIC_R: f32 = 0.5; // growth rate, 1/s
 const LOGISTIC_K: f32 = 1.0; // carrying capacity
@@ -3088,7 +3088,7 @@ fn logistic_regrowth_source(_p: &Particle, phi: f32, _material: &dyn MaterialMod
     LOGISTIC_R * phi * (1.0 - phi / LOGISTIC_K)
 }
 
-/// **Resource regrowth matches the real logistic growth curve** -- proves
+/// **Resource regrowth matches the logistic growth curve** -- proves
 /// `ScalarDiffusionField::source` implements real reaction-diffusion dynamics
 /// (Verhulst 1838 logistic growth: `dφ/dt = r·φ·(1−φ/K)`, closed-form solution
 /// `φ(t) = K / (1 + ((K−φ₀)/φ₀)·e^(−r·t))`), not just "the number goes up." Isolated from
@@ -3466,7 +3466,7 @@ fn hydrostatic_pressure_matches_rho_g_h() {
 
     // Sample particles at several depths, compare measured pressure (from the
     // material's own kirchhoff_stress, -trace/2 in 2D isotropic stress) against
-    // the real analytical p = rho*g*depth, converted through the same
+    // the analytical p = rho*g*depth, converted through the same
     // non-dimensionalization `NewtonianFluidMaterial::from_physical` used.
     let g_si = 9.81_f32;
     let mat = water.material(&config); // same deterministic construction as the sim used (SimConfig is Copy)
@@ -3910,7 +3910,7 @@ mod rod_cantilever_tests {
 /// scalar-state reset (`diag_collapsed_pile_after_internal_state_reset`)
 /// reset `friction_hardening`/`log_volume_strain` but explicitly left
 /// `deformation_gradient` -- each particle's own actual elastic strain
-/// TENSOR -- untouched. That's a real gap: the scarred STRESS state itself
+/// TENSOR -- untouched. That's a gap: the scarred STRESS state itself
 /// was never reset, only its scalar summaries. Combined with the jitter
 /// test (positions alone don't matter, real result: 30.0deg held exactly
 /// through 25000 steps even with realistic position jitter), resetting
@@ -4034,7 +4034,7 @@ fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
     );
 
     // ONLY F is reset -- q/log_volume_strain untouched, still carrying
-    // whatever the real collapse left them at.
+    // whatever the collapse left them at.
     {
         let particles = solver.particles_mut();
         for f in particles.deformation_gradient.iter_mut() {
@@ -4069,7 +4069,7 @@ fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
 /// bit-for-bit frozen) when `deformation_gradient` is forcibly reset. This
 /// tests whether a GRADUAL, ongoing relaxation (not a one-time
 /// reset) achieves the same real arrest. Reduced checkpoints (6000/25000,
-/// not the full 100000) to triangulate a real rate before committing to
+/// not the full 100000) to triangulate a rate before committing to
 /// an expensive full-length confirmation, same discipline as the
 /// hysteresis sweep.
 #[test]
@@ -4538,7 +4538,7 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
 /// (apic_blend=0.6 kept -- already independently established as the numerical-
 /// stability floor for ANY violent collapse, material-agnostic, not a target-
 /// angle tuning knob; cundall_damping=0, i.e. no artificial global damping at
-/// all). If this arrests near a real angle and HOLDS long-horizon on its own,
+/// all). If this arrests near an angle and HOLDS long-horizon on its own,
 /// that is a fix. If it just slides like plain DP, that's a real,
 /// honest negative result too -- reported either way.
 #[test]
@@ -4708,7 +4708,7 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
     /// Independent re-derivation of `sand_mui.rs`'s own quadratic, typed
     /// fresh from the mu(I) formula and the DP yield condition (q_trial -
     /// 2*mu*dt*gamma_dot = mu(I)*p_trial), not copied from the source --
-    /// catches a real implementation bug (wrong coefficient, sign error)
+    /// catches an implementation bug (wrong coefficient, sign error)
     /// rather than just re-confirming whatever the source already does.
     fn expected_gamma_dot_and_mu_i(
         mu_shear: f32,
@@ -4738,8 +4738,8 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
     }
 
     // Small, grid-native values -- this test verifies the FORMULA/mechanism
-    // itself, not a real macroscopic scene (that's the column-collapse test
-    // above, which already uses the real dense_packed citation).
+    // itself, not a macroscopic scene (that's the column-collapse test
+    // above, which already uses the dense_packed citation).
     let lambda = 100.0f32;
     let mu_shear = 200.0f32;
     let mu_static = 30.0_f32.to_radians().tan();
@@ -4965,7 +4965,7 @@ fn diag_hardening_state_saturation_during_plain_collapse() {
 /// engages once KE has fallen to `fallback_fraction` of that measured peak).
 /// This is a physically-measured event, not a magic number for the
 /// TIMING -- `fallback_fraction` itself is still a free parameter, so this
-/// sweeps it too: if the resulting angle is robust across a real range of
+/// sweeps it too: if the resulting angle is robust across a range of
 /// fallback_fraction, that's evidence the peak-detection is doing
 /// real work, not just relocating the same hardcode to a different knob.
 #[test]
@@ -5140,9 +5140,9 @@ fn diag_hardening_relaxation_calibration_sweep() {
     }
 }
 
-/// Measures the REAL deviatoric strain-rate norm (the exact same quantity
+/// Measures the deviatoric strain-rate norm (the exact same quantity
 /// `elastic_relaxation_rate`'s `rest_factor` gate divides by `rest_rate_scale`)
-/// during the "quiet" holding phase of the real creep scene -- answers what
+/// during the "quiet" holding phase of the creep scene -- answers what
 /// `rest_rate_scale` SHOULD have been, instead of guessing. Uses the public
 /// `velocity_gradient` field directly, no material-code changes needed.
 #[test]
@@ -5345,7 +5345,7 @@ fn diag_hardening_relaxation_isolated_single_particle_check() {
 /// Minimal, isolated check of `DruckerPragerMaterial::post_event_relax_
 /// threshold`'s edge-detection logic in ONE particle's `update_particle`
 /// calls: drives the particle through a real "straining, then quiet" cycle
-/// by hand (velocity_gradient with a real deviatoric norm, then zero) and
+/// by hand (velocity_gradient with a deviatoric norm, then zero) and
 /// checks F is reset to IDENTITY EXACTLY on the first quiet call after
 /// straining -- not before (while still straining), not again on
 /// subsequent quiet calls (no repeated resets once already at rest).
@@ -5402,7 +5402,7 @@ fn diag_post_event_relax_isolated_edge_detection_check() {
 /// `update_particle` test showing a clean fix. Before concluding the
 /// MECHANISM itself is wrong, this checks the more basic, real
 /// possibility: is `eps_pl_vol_pradhana` even reaching nonzero values
-/// through the REAL G2P pipeline (rayon-parallel `MutFieldPtrs`/`ctx_at`
+/// through the G2P pipeline (rayon-parallel `MutFieldPtrs`/`ctx_at`
 /// hot path), which the isolated test bypasses entirely (it calls
 /// `update_particle` directly on a hand-built `Particles`)? A fast
 /// (few pours, no long settle) run, reporting how many particles have a

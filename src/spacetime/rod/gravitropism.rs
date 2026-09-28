@@ -483,7 +483,7 @@ mod gsa_tests {
     #[test]
     fn default_gsa_reproduces_original_align_with_gravity_behavior() {
         // GSA=0.0 (the default) must curl the tip TOWARD gravity_dir, exactly
-        // the original (pre-GSA) root-only behavior -- a real regression
+        // the original (pre-GSA) root-only behavior -- a regression
         // guard, not just a smoke test.
         let mut rod = horizontal_tip_rod();
         let gravitropism = Gravitropism::new(1.0, 0.0);
@@ -570,7 +570,7 @@ mod whole_organ_tests {
     /// SAME nonzero deviation from "straight down" (still genuinely
     /// zero actual curvature, but gravitropism only cares about local edge
     /// direction vs. target, not actual curvature), so every one of its 4
-    /// interior vertices has a real correction to make under any mode.
+    /// interior vertices has a correction to make under any mode.
     fn uniformly_tilted_rod() -> RodPoints {
         let mut points = build_straight_rod(Vec2::new(0.0, 6.0), Vec2::new(0.0, 0.0), 6, 0.01, 1.0);
         for (i, p) in points.x.iter_mut().enumerate() {

@@ -64,7 +64,7 @@ pub struct BinghamFluidMaterial {
     /// shear viscosity for water-like liquids); damps acoustic and volumetric
     /// oscillation.
     pub bulk_viscosity: f32,
-    /// Elastic shear modulus G, the storage modulus a real yield-stress
+    /// Elastic shear modulus G, the storage modulus a yield-stress
     /// fluid has BELOW its yield point. `0.0` (the default) selects the
     /// classical purely-viscous Bingham fluid; any positive value selects
     /// the elastoviscoplastic form (Saramito 2007). See this type's own
@@ -100,7 +100,7 @@ pub struct BinghamFluidMaterial {
 impl BinghamFluidMaterial {
     /// Construct directly from grid-native parameters -- NOT SI units.
     /// Prefer [`Self::low_yield`]/[`Self::medium_yield`]/[`Self::high_yield`]
-    /// for a real mud/viscoplastic-fluid preset.
+    /// for a mud/viscoplastic-fluid preset.
     pub const fn new(
         rest_density: f32,
         dynamic_viscosity: f32,
@@ -452,7 +452,7 @@ impl MaterialModel for BinghamFluidMaterial {
         }
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
-        // The carried logarithm is the real state; reading J back from F
+        // The carried logarithm is the state; reading J back from F
         // and multiplying loses a fraction of every small increment (see
         // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {
@@ -475,7 +475,7 @@ impl MaterialModel for BinghamFluidMaterial {
     // Required, as `NewtonianFluidMaterial::owns_deformation_volume_state`
     // (see its doc).
     /// True only for the purely viscous branch. The elastoviscoplastic
-    /// branch keeps a real deviatoric elastic strain in `F`, so it is not a
+    /// branch keeps a deviatoric elastic strain in `F`, so it is not a
     /// strict WC-MPM liquid any more and must not claim to be one: that
     /// claim is what `Simulation::assert_strict_fluid_mode_is_supported`
     /// keys off, and it is also the licence this material used to take to

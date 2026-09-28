@@ -36,7 +36,7 @@ fn frob(a: Mat2, b: Mat2) -> f32 {
 
 /// Same real formula already verified in the Corotated Stage 2 file --
 /// duplicated here (not imported, scratch tests don't share modules) so
-/// this file stands alone as its own real check.
+/// this file stands alone as its own check.
 fn corotated_elastic_stress_reference(f: Mat2, lambda: f32, mu: f32) -> Mat2 {
     let j = f.determinant();
     let x = f.x_axis.x + f.y_axis.y;

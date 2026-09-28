@@ -2,7 +2,7 @@
 //! included) on the GPU, beside the CPU: substeps, wall time per frame,
 //! time dropped, and each blob's mean and smallest J, to see the cost and
 //! whether `VonMisesMaterial`'s known GPU compression drift shows on this
-//! nearly incompressible clay. Needs a real GPU adapter. A probe.
+//! nearly incompressible clay. Needs a GPU adapter. A probe.
 
 // The scene module is included once, by `vonmises_clay`, and shared from there.
 

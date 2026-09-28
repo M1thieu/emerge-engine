@@ -1,23 +1,13 @@
-//! Direct re-verification: does `KinematicCircleBoundary`'s real
-//! two-way reaction-impulse coupling (ported back into the current
-//! codebase 2026-09-14 from a stale, unmerged branch -- see
-//! `[[project_fluid_solid_coupling_real_root_cause_and_path_2026-08-15]]`,
-//! project memory) still behave correctly against the CURRENT engine, 29
-//! real days after it was last measured? The port itself only touched
-//! wiring (a new default trait method + one call site); this test re-runs
-//! the ORIGINAL real probe's own scenario (`diag_reactive_obstacle_water_
-//! probe.rs` on the `contact-based-interaction` branch, byte-for-byte
-//! adapted from a `fn main()` example into a `#[test]`) to confirm the
-//! actual PHYSICS -- not just that it compiles -- still holds after
-//! everything else this engine has changed since 2026-08-16.
+//! Does `KinematicCircleBoundary`'s two-way reaction-impulse coupling behave correctly
+//! against the current engine? Re-runs the scenario of the original probe
+//! (`diag_reactive_obstacle_water_probe.rs` on the `contact-based-interaction` branch),
+//! adapted from a `fn main()` example into a `#[test]`, checking the physics, not only
+//! that the ported wiring (a default trait method and one call site) compiles.
 //!
-//! Real design, unchanged from the original probe: the obstacle is NOT
-//! scripted -- it starts with a real initial velocity heading into
-//! settled water, and its OWN velocity evolves purely from the real,
-//! mass-weighted reaction impulse `take_reaction_impulse()` accumulates
-//! each step (Newton's third law). If this is real physics, a light-
-//! enough obstacle plowing into water should visibly decelerate on
-//! contact -- water pushing back, not just the obstacle pushing water.
+//! The obstacle is not scripted: it starts with an initial velocity into settled water,
+//! and its velocity evolves only from the mass-weighted reaction impulse
+//! `take_reaction_impulse()` accumulates each step (Newton's third law). A light enough
+//! obstacle plowing into water should decelerate on contact: the water pushes back.
 
 use emerge::{KinematicCircleBoundary, NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};

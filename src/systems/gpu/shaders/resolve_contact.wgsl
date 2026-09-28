@@ -148,7 +148,7 @@ fn solve3x3(m: mat3x3<f32>, rhs: vec3<f32>, out: ptr<function, vec3<f32>>) -> bo
 // check against the actual labels. Operates on a caller-supplied LOCAL point list
 // (`points[0..count)`), decoupling this core math from where the points came from
 // (a single block's raw list for the debug entry point, or a distance-filtered
-// multi-block gather for the real resolve_contact pass below).
+// multi-block gather for the resolve_contact pass below).
 fn fit_normal_from_local_points(points: ptr<function, array<vec4<f32>, 128>>, count: u32, node_pos: vec2<f32>, grid_cell_size: f32) -> vec3<f32> {
     var has_grip = false;
     var has_rest = false;

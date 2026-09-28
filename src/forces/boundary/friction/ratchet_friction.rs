@@ -20,7 +20,7 @@ use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_posit
 /// the gait against it), net drift accumulates in `easy_direction` because
 /// backward slip is preferentially resisted.
 /// `easy_direction` is LIVE, not baked in at construction -- real animals decide
-/// which way to anchor moment to moment (a real neural/behavioral choice, not a
+/// which way to anchor moment to moment (a neural/behavioral choice, not a
 /// fixed body plan), so this is `set_easy_direction`-updatable from outside
 /// (e.g. every frame, from player/AI steering input) with no reconstruction and
 /// no boundary-swap. Stored as two `AtomicU32` (bit-cast f32) rather than a plain

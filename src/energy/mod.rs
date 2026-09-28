@@ -10,7 +10,7 @@
 //! optical `MaterialProperties` (refractive index, permittivity/permeability);
 //! the point-charge force-application half lives in `forces::electromagnetics`
 //! instead. `orbital` [feature = "experimental"] -- real Earth rotation +
-//! axial-tilt-driven sun direction (`OrbitalClock`), the real cause of a
+//! axial-tilt-driven sun direction (`OrbitalClock`), the cause of a
 //! day/night + seasonal cycle, first real step toward replacing the existing
 //! arbitrary thermal day/night oscillation.
 //!

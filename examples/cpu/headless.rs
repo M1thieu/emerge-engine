@@ -116,19 +116,13 @@ fn print_timing_full(t: &StepTiming, substeps: usize) {
 fn main() {
     // 64-cell grid, 1 cm/cell, 50 ms/step -- earth gravity auto-derived from dx_meters.
     let config = SimConfig {
-        // Real fix (2026-09-05): `.material(&config)` now routes through the
-        // dt-independent SI conversion (`physical_props.rs`'s own migration
-        // note) instead of the old dt^2-polluted one. The sand material's
-        // real E=50 MPa gives a real elastic wave speed of ~177 m/s --
-        // sqrt(50e6/1600) -- which at this dx/dt needs roughly 1260 substeps
-        // per nominal step to satisfy CFL (measured directly: the old
-        // default of 64 caused a WARN[time_dropped] health status, silently
-        // simulating ~2% of the requested real time per step instead of
-        // crashing -- see `step.rs`'s "honest accounting" doc). Real dry
-        // sand needs this many substeps under explicit MPM at this
-        // resolution; this is the disclosed real cost of a correct SI value,
-        // not a bug -- an implicit solver is the real long-term fix for
-        // materials this stiff (see project memory's stiff-solver research).
+        // `.material(&config)` converts SI to grid units without the timestep. The
+        // sand's E=50 MPa gives an elastic wave speed of ~177 m/s (sqrt(50e6/1600)),
+        // which at this dx/dt needs roughly 1260 substeps per nominal step for CFL;
+        // at the default 64 the step reports WARN[time_dropped], simulating ~2% of the
+        // requested time (see `step.rs`). That is the cost of dry sand at the SI value
+        // under explicit MPM at this resolution; implicit integration is the long-term
+        // answer for materials this stiff.
         max_substeps_per_step: 2048,
         ..SimConfig::earth(64, 0.01, 0.05)
     };

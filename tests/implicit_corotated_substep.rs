@@ -43,7 +43,7 @@ fn make_sim(implicit: bool) -> Simulation {
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
 }
 
-/// The whole point of this opt-in path: a real sand scene should actually
+/// The whole point of this opt-in path: a sand scene should actually
 /// take it, not silently fall back every time due to an eligibility check
 /// that's too strict for real spawned scenes.
 #[test]
@@ -164,7 +164,7 @@ fn violent_impact_diverges_more_than_settled_pile_a_real_disclosed_limitation() 
 
 /// A scene using a feature the v1 implicit path doesn't model (multi-field
 /// contact) must fall back to the normal explicit substep loop instead of
-/// silently mis-simulating it -- the real safety property `implicit_
+/// silently mis-simulating it -- the safety property `implicit_
 /// corotated`'s doc promises.
 #[test]
 fn ineligible_scene_falls_back_cleanly_and_still_runs() {

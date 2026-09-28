@@ -15,20 +15,15 @@ use egui_wgpu::ScreenDescriptor;
 /// incompressible flow; see the pressure projection entry in
 /// `KNOWN_LIMITATIONS.md`.
 ///
-/// Deliberately a SEPARATE, minimal example rather than a change to
-/// `basic_fluids.rs`: that demo's water->ice phase transition uses
-/// `NeoHookeanMaterial` (not a strict fluid), and `SimConfig::
-/// fluid_pressure_iterations` currently requires EVERY particle on the grid
-/// to be a strict fluid (see that field's doc) -- freezing a single
-/// water particle mid-run would violate that and panic. Water + mud here are
-/// BOTH strict fluids (`NewtonianFluidMaterial`/`BinghamFluidMaterial`), so
-/// no such conflict -- solo-maximal proof first, combining with the
-/// freeze feature is real future work, not attempted tonight.
+/// A separate example rather than a change to `basic_fluids.rs`: that demo's
+/// water->ice transition uses `NeoHookeanMaterial` (not a strict fluid), and
+/// `SimConfig::fluid_pressure_iterations` requires every particle on the grid to be a
+/// strict fluid (see that field's doc), so freezing a water particle mid-run would
+/// panic. Water and mud here are both strict fluids
+/// (`NewtonianFluidMaterial`/`BinghamFluidMaterial`).
 ///
-/// SAME hard geometry used all night to find and verify the fix: water
-/// starts only ~2 cells from the left wall, spanning nearly the full grid
-/// height -- the scene that used to explode under the old stiff-EOS
-/// acoustic CFL.
+/// The hard geometry: water starts ~2 cells from the left wall, spanning nearly the
+/// full grid height, the scene that explodes under the stiff-EOS acoustic CFL.
 ///
 ///   cargo run --example fluid_pressure_projection --features render
 use emerge::render::{ColorMode, Renderer};
@@ -52,18 +47,13 @@ const DIG_RADIUS: f32 = 4.0;
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 1.0e-4,
-        // 150 -> 400 (2026-08-15): live-measured headless via
-        // `diag_pressure_projection_timing`, this exact scene's real first-
-        // contact violent transient (water starting ~2 cells from the wall)
-        // now needs slightly more than 150 substeps in its worst
-        // single frame (~frame 20) before it settles -- confirmed bounded,
-        // not divergent: a 2000-cap run completes all 120 frames without
-        // NaN, recovering to ~15ms/frame right after the peak (avg 16.5 fps
-        // over the run; J is clamped for most of it, see the file doc).
-        // 400 gives real headroom over the observed peak without
-        // masking a runaway the way an unbounded cap would (this
-        // strict-fluid path still fails loud, see step.rs's own panic doc,
-        // if 400 is ever insufficient).
+        // 400: this scene's first-contact transient (water ~2 cells from the wall)
+        // needs slightly more than 150 substeps in its worst frame (~frame 20)
+        // before settling (`diag_pressure_projection_timing`): bounded, since a
+        // 2000-cap run completes all 120 frames without NaN, back to ~15 ms/frame
+        // after the peak (avg 16.5 fps; J is clamped for most of it, see the file
+        // doc). 400 gives headroom over the peak without masking a runaway (this
+        // strict-fluid path still fails loud if it is insufficient, see step.rs).
         max_substeps_per_step: 400,
         material_cfl_coefficient: 0.1,
         cfl_include_affine_speed: false,
@@ -81,12 +71,10 @@ fn make_sim() -> Simulation {
         fluid_near_wall_compression_threshold: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // eos_stiffness = 0.0: the acoustic-CFL term this whole fix removes.
-    // Legal value (`fluid_state::tait_pressure`'s own `>= 0.0`
-    // contract) -- incompressibility now comes from the grid-level pressure
-    // projection, not from an explicit stiff spring.
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's doc for the full derivation.
+    // eos_stiffness = 0.0: incompressibility comes from the grid-level pressure
+    // projection, not an explicit stiff spring, which removes the acoustic CFL term.
+    // A legal value (`fluid_state::tait_pressure` takes `>= 0.0`).
+    // rest_density=0.1 (`rho*dx^2` for water at dx=0.01, see basic_fluids.rs).
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.0);
     let mud = BinghamFluidMaterial::new(4.0, 8.0, 0.0, 3.0, 4.0);
     const WATER_MASS: f32 = 0.1 * 0.6 * 0.6;

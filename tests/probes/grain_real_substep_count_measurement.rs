@@ -1,15 +1,9 @@
-//! Direct measurement of `sand_repose_angle.rs`'s own actual shipped
-//! Grains-mode substep count -- NOT a hand-picked/reconstructed config.
-//! Every constant/config value here is copied VERBATIM from that example's
-//! own real source (`GRID`, `FLOOR`, `GRAIN_RADIUS`, `GRAIN_MASS`,
-//! `GRAINS_R0`/`GRAINS_H0`, `grain_contact_config()`'s own real formula, the
-//! real terrain material/boundary/spawn) -- this test exists specifically
-//! to settle a real discrepancy found this session: an earlier session's
-//! own memory claimed ~3504 substeps/rendered-frame for this scene, but a
-//! from-scratch, careful re-derivation of `grain_contact_law::
-//! critical_timestep` for the SAME nominal stiffness gave ~11-12. Rather
-//! than trust either recalled/hand-derived number, this measures the REAL,
-//! live `Simulation::last_substeps()` the actual shipped scene produces.
+//! Measures `sand_repose_angle.rs`'s Grains-mode substep count on its own
+//! configuration, copied verbatim (`GRID`, `FLOOR`, `GRAIN_RADIUS`, `GRAIN_MASS`,
+//! `GRAINS_R0`/`GRAINS_H0`, `grain_contact_config()`'s formula, the terrain material,
+//! boundary and spawn): a recalled figure of ~3504 substeps per rendered frame and a
+//! hand re-derivation of `grain_contact_law::critical_timestep` giving ~11-12
+//! disagree, so this reads `Simulation::last_substeps()` from the scene itself.
 
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
@@ -55,10 +49,9 @@ fn grain_contact_config() -> ContactLawConfig {
     }
 }
 
-/// Real column-build recipe, generalized to an arbitrary
-/// column size -- used by the real grain-count scaling sweep below. Not a
-/// new/invented shape: identical jitter/polydispersity/spacing formula,
-/// just parameterized instead of using the demo's own fixed R0/H0.
+/// Column-build recipe generalized to any column size, for the grain-count scaling
+/// sweep below: the same jitter, polydispersity and spacing formula, parameterized
+/// instead of the demo's fixed R0/H0.
 fn build_grain_column_sized(center_x: f32, base_y: f32, r0: usize, h0: usize) -> Vec<Grain> {
     let spacing = 2.6 * GRAIN_RADIUS;
     let mut rng = SmallRng(0xC0FF_EE11_u64);
@@ -85,7 +78,7 @@ fn make_grains_mode_sim() -> Simulation {
 
 /// Same real recipe as `make_grains_mode_sim`, generalized to an arbitrary
 /// grain-column size and terrain/grid footprint -- used by the real
-/// grain-count scaling sweep below to see whether/where a real substep- or
+/// grain-count scaling sweep below to see whether/where a substep- or
 /// contact-cost bottleneck actually emerges beyond the shipped 80-grain
 /// scene, using the SAME real stiffness/mass/radius/damping values, not
 /// invented ones.
@@ -192,7 +185,7 @@ fn real_grain_count_scaling_substep_and_fps_sweep() {
     // COMPLETELY FIXED across every case (deliberate control): an
     // earlier version of this sweep scaled the domain up alongside grain
     // count, which also grows the terrain's own MPM particle count
-    // (1920->4800) -- a real confound caught before trusting the result,
+    // (1920->4800) -- a confound caught before trusting the result,
     // since that growth could dominate or mask the grain-specific cost this
     // sweep exists to isolate. A wider pile may spill past the fixed
     // terrain's edges at the largest case -- accepted, since this measures
@@ -222,7 +215,7 @@ fn real_grain_count_scaling_substep_and_fps_sweep() {
             substep_counts.iter().sum::<usize>() as f64 / substep_counts.len() as f64;
         let max_substeps = *substep_counts.iter().max().unwrap();
         let ms_per_call = elapsed_ms / CALLS as f64;
-        // Real fps at this scene's own shipped sim_speed=12 calls/rendered-frame.
+        // Fps at the scene's sim_speed of 12 calls per rendered frame.
         let fps = 1000.0 / (ms_per_call * 12.0);
         println!(
             "n_grains={n_grains:<5} avg_substeps={avg_substeps:<6.2} max_substeps={max_substeps:<4} \

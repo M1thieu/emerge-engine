@@ -93,7 +93,7 @@ fn idct_1d_fast(x_hat: &[f32], ifft_2n: &dyn rustfft::Fft<f32>) -> Vec<f32> {
 /// `pressure.rs` can scope this to a small bounding box of the actually
 /// active fluid region instead of the full (possibly sparse, possibly huge)
 /// grid resolution -- see that module's doc for why locking this to a
-/// dense full-domain transform would be a real regression against this
+/// dense full-domain transform would be a regression against this
 /// engine's sparse-grid design.
 pub(super) fn dct2_forward(data: &[f32], nx: usize, ny: usize) -> Vec<f32> {
     let fft_2ny = PLANNER.with_borrow_mut(|p| p.plan_fft_forward(2 * ny));

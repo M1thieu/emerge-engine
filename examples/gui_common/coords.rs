@@ -2,7 +2,7 @@
 //! the renderer draws with, `Renderer::region_projection`, for code that maps
 //! a cursor without holding the renderer. It inverts the engine's own
 //! numbers instead of restating the formula, so a click cannot drift from
-//! what was drawn. See `gui_common::mod`'s doc for the real bug this
+//! what was drawn. See `gui_common::mod`'s doc for the bug this
 //! centralization exists to stop from recurring.
 //!
 //! Split out from `mod.rs` on purpose: many examples only need this pure

@@ -63,7 +63,7 @@ impl ElectricPotentialField {
     }
 
     /// Pin a single cell at a fixed potential, extending the Dirichlet
-    /// boundary to include it -- the real mechanism a growing dielectric-
+    /// boundary to include it -- the mechanism a growing dielectric-
     /// breakdown leader uses to make itself part of the conducting
     /// boundary once it joins the channel (see the `fixed` field's own
     /// doc). Takes effect starting from the NEXT `relax_step` call.
@@ -86,7 +86,7 @@ impl ElectricPotentialField {
     }
 
     /// One Jacobi relaxation sweep: interior cells become the average of
-    /// their 4 neighbors (the real discretization of `∇²φ=0` -- see
+    /// their 4 neighbors (the discretization of `∇²φ=0` -- see
     /// `ScalarDiffusionField`'s doc for the identical Laplacian finite-
     /// difference form, just without the diffusion coefficient/dt scaling
     /// since this solves the steady state directly rather than stepping

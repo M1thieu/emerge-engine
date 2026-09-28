@@ -188,7 +188,7 @@ fn spinning_grain_through_real_grid_coupled_pipeline_makes_its_contact_partner_r
     // Side-by-side along x, a light real touch (overlap=0.001, radius 1.0
     // each, centers 1.999 apart; an overlap of 0.1 explodes, see the
     // standalone control's doc) -- contact normal is +x, so A's own spin
-    // creates a real tangential slip velocity at the shared contact point
+    // creates a tangential slip velocity at the shared contact point
     // (see `resolve_contact_pair`'s own `v_t` derivation), the same geometry
     // Ai et al. 2011's own rolling-friction tests use.
     let grain_a = Grain {
@@ -379,7 +379,7 @@ fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
     // it (with friction=0.6 here the grain stays frozen). The grid owns
     // NORMAL (no-penetration) enforcement only;
     // ALL real tangential/rolling physics for grains comes from the new
-    // `resolve_wall_contact` mechanism, which has its own real Coulomb
+    // `resolve_wall_contact` mechanism, which has its own Coulomb
     // friction cap (`config.friction`, still 0.5 via `contact_config()`) --
     // this is not "no friction," it's "friction correctly computed in one
     // place instead of two fighting over the same velocity component."
@@ -555,7 +555,7 @@ fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
 
     // Exact same geometry as `grain_rolling_closeup_gui.rs::build_heights`
     // at its own 22-degree GUI default: RAMP_START_X=4, RAMP_END_X=22,
-    // FLOOR=3.0, GRID=40 -- a real C1-discontinuous kink at x=22 where the
+    // FLOOR=3.0, GRID=40 -- a C1-discontinuous kink at x=22 where the
     // slope abruptly flattens to zero.
     const GRID: usize = 40;
     const FLOOR: f32 = 3.0;
@@ -588,7 +588,7 @@ fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
     };
     let mut solver = Simulation::empty(config).with_boundary(Box::new(boundary));
 
-    // Start right at the top of the ramp, at rest, matching the real demo's
+    // Start right at the top of the ramp, at rest, matching the demo's
     // own spawn convention.
     let start_x = RAMP_START_X as f32 + 1.5;
     let start_y = FLOOR + rise * (1.0 - (start_x - RAMP_START_X as f32) / run) + RADIUS + 0.1;
@@ -848,7 +848,7 @@ fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
     let boundary = HeightmapBoundary::flat_floor(32, 3.0, 0.0);
     let mut solver = Simulation::empty(config).with_boundary(Box::new(boundary));
 
-    // Three grains in a real row, exactly touching (distance = 2*radius,
+    // Three grains in a row, exactly touching (distance = 2*radius,
     // zero initial overlap -- no repulsive kick at t=0 to confound the
     // result). Letting them "settle" for 3000 steps first does not keep
     // them touching (any tiny initial
@@ -1217,7 +1217,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
 
     fn make_column(spacing: f32) -> (Vec<Grain>, f32) {
         // Centered in the domain, with real headroom on both sides for
-        // the real predicted spread (~66 units radius) -- starting near
+        // the predicted spread (~66 units radius) -- starting near
         // an edge, or using too small a domain, would let the boundary
         // itself artificially clip the collapse, corrupting the measured
         // runout (a separate confound from anything about grid
@@ -2819,7 +2819,7 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
     let mut first_contact_step: Option<u32> = None;
     let mut max_overlap_seen = 0.0f32;
     // Direct trace of the actual wave -- printing INSTANTANEOUS speed
-    // (not a running peak) revealed the real mechanism: a genuine
+    // (not a running peak) revealed the mechanism: a genuine
     // traveling pulse, each grain's own peak arriving measurably LATER
     // than its predecessor's (grain1 peaks ~+100 steps, grain2 ~+200,
     // grain3 ~+300, grain4 ~+450 -- a textbook wavefront, not
@@ -2908,7 +2908,7 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
 /// (`diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low`: middle
 /// grain 1 keeps ~40% of the end grain's speed). A steel contact pulse crosses
 /// each ball in microseconds, far faster than bulk pendulum motion; if that is
-/// the mechanism, stiffness toward the real regime (rather than the stylized
+/// the mechanism, stiffness toward the regime (rather than the stylized
 /// ~1e4) should shrink the middle/end ratio, not just rescale it. Same
 /// late-window method as the test above.
 #[test]
@@ -3625,7 +3625,7 @@ fn diag_isolated_two_ball_release_no_grid_no_string() {
 /// equal-mass restitution collisions, `v1'=(u1+u2-e(u1-u2))/2`,
 /// `v2'=(u1+u2+e(u1-u2))/2`, iterated event by event): grains touching at an
 /// exactly zero gap engage their contact springs simultaneously with the next
-/// collision instead of sequentially, as physics (and any real touching pair,
+/// collision instead of sequentially, as physics (and any touching pair,
 /// never at an exactly zero gap) requires. Momentum stays exactly conserved:
 /// it is a momentum distribution error from overlapping contact events, not
 /// a lost or double-counted force.
@@ -3663,7 +3663,7 @@ fn newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes() {
     let dt_crit = critical_timestep_hertzian(m_eff, RADIUS, &cfg);
     let dt = dt_crit * 0.05;
 
-    // EVERY adjacent pair gets the real gap, not just the released one --
+    // EVERY adjacent pair gets the gap, not just the released one --
     // grain i sits i*GAP_FRACTION*RADIUS farther out than pure touching
     // spacing (cumulative, so every neighbor pair has the same real gap).
     let grains: Vec<Grain> = (0..N_GRAINS)

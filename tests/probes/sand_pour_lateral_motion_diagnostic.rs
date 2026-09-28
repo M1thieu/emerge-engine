@@ -1,14 +1,10 @@
-//! Direct diagnostic: WHY does the poured pile never spread
-//! laterally? Six independent, real fix attempts (post_event_relax_
-//! threshold, switch_step-style damping timing, Pradhana v1/v2, MIBF, all
-//! combinations) have now measured ZERO effect on the real production pour
-//! scenario -- all converge to the same ~88.7-88.9deg non-toppling tower.
-//! Rather than guess a seventh mechanism, this directly instruments the
-//! REAL kinematics: does ANY particle ever develop meaningful LATERAL
-//! (x-direction) velocity during a pour, or is the material moving purely
-//! vertically the entire time (a direct, checkable fact, not an
-//! assumption)? Identical geometry/config to the established pour
-//! test.
+//! Why does the poured pile never spread laterally? Six fix attempts
+//! (post_event_relax_threshold, switch_step-style damping timing, Pradhana v1/v2, MIBF,
+//! their combinations) have no effect on the production pour scenario, all converging to
+//! the same ~88.7-88.9deg non-toppling tower. This instruments the kinematics instead:
+//! does any particle develop meaningful lateral (x) velocity during a pour, or does the
+//! material move purely vertically? Identical geometry and config to the established
+//! pour test.
 
 use emerge::{DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -88,7 +84,7 @@ fn diag_lateral_motion_during_real_pour() {
         // Direct check: has ANY particle ever yielded at all?
         // `friction_hardening` (q) starts at the material's own real
         // neutral-rest value (`friction_residual/hardening_peak`) and only
-        // moves away from it via a real plastic (shear-yield or
+        // moves away from it via a plastic (shear-yield or
         // tension-cutoff) event -- if it's frozen at that same initial
         // value for every particle, NOTHING has ever crossed the yield
         // surface, regardless of any yield-adjacent fix.
@@ -115,7 +111,7 @@ fn diag_lateral_motion_during_real_pour() {
     }
 
     // Final direct check on a handful of individual particles near
-    // the surface and near the base -- their own real position history
+    // the surface and near the base -- their own position history
     // isn't tracked here (would need per-particle IDs across add_body
     // calls, real future work if this diagnostic doesn't already answer
     // the question), but their CURRENT velocity/state is real and direct.

@@ -3,36 +3,22 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// Dedicated close-up scene for grain rolling -- built 2026-08-21 after
-/// the user asked to actually SEE grains rolling with expected physics before
-/// trusting it, rather than trusting isolated unit-test assertions alone
-/// (three of which -- spin-contact, falling-impact, and a continuum-particle
-/// equivalent -- all independently confirmed the underlying mechanism is
-/// correct the same night; see `tests/grains_grid_coupling.rs` and
-/// `tests/particle_neighbor_momentum_transfer.rs`). The existing Grains mode
-/// in `sand_repose_angle.rs` has ~80 grains in a chaotic column collapse
-/// -- physically correct, but hard to visually track ONE grain's
-/// own rotation in that mess. This scene is the "ant-scale zoom" idea flagged
-/// back on 2026-08-03 and never built: few grains, camera zoomed in tight,
-/// nothing else competing for attention.
+/// Close-up scene for grain rolling: few grains, the camera zoomed in, nothing else
+/// competing for attention, so one grain's rotation can be followed (in
+/// `sand_repose_angle.rs`'s Grains mode ~80 grains collapse chaotically). The mechanism
+/// is also tested in `tests/grains_grid_coupling.rs` and
+/// `tests/particle_neighbor_momentum_transfer.rs`.
 ///
-/// # A versatile engine feature, not a demo trick
-/// Building this surfaced a general bug: `HeightmapBoundary` always
-/// used a fixed +Y surface normal regardless of slope -- a "sloped"
-/// heightmap LOOKED tilted but was physically just a staircase of flat
-/// horizontal blocks, so nothing ever pushed a body downhill on it (real
-/// gravity's vertical component was always fully cancelled). Fixed at the
-/// ENGINE level (`src/forces/boundary/heightmap.rs`), not just for this
-/// demo: the boundary now derives a real local surface normal from the
-/// heightmap's own slope, so ANY scene with real terrain gets genuine
-/// inclined-plane physics -- backward compatible (a flat floor's local
-/// normal is exactly +Y everywhere, confirmed via `tests/stress.rs`'s own
-/// `boundary_count_stress`, unaffected) and directly proven via two new
-/// real tests in that file (`flat_floor_normal_is_exactly_up_everywhere`,
-/// `sloped_heightmap_normal_is_tilted_and_lets_gravity_drive_motion_downhill`).
-/// This scene builds a REAL ramp (rising terrain, then a flat landing) and
-/// uses ordinary straight-down gravity -- the actual engine capability, not
-/// a per-demo gravity-rotation workaround.
+/// # Inclined-plane physics from the terrain
+/// `HeightmapBoundary` derives a local surface normal from the heightmap's slope
+/// (`src/forces/boundary/heightmap.rs`), so any scene with terrain gets inclined-plane
+/// physics; with a fixed +Y normal a sloped heightmap would act as a staircase of flat
+/// blocks that never pushes a body downhill. A flat floor's normal is exactly +Y
+/// everywhere (`tests/stress.rs`: `boundary_count_stress`,
+/// `flat_floor_normal_is_exactly_up_everywhere`,
+/// `sloped_heightmap_normal_is_tilted_and_lets_gravity_drive_motion_downhill`). This scene
+/// builds a ramp (rising terrain, then a flat landing) with ordinary straight-down
+/// gravity, no per-demo gravity rotation.
 ///
 ///   cargo run --example grain_rolling_closeup --features render
 use emerge::grains::population::GrainPopulation;
@@ -68,24 +54,17 @@ const SIGMA_TERRAIN: [f32; 3] = [0.550, 0.400, 0.220];
 /// approximation of it.
 const TERRAIN_SAMPLES_PER_CELL: usize = 2;
 
-/// Same already-proven-stable stiffness `sand_repose_angle.rs`
-/// uses -- not a fresh guess (see that file's own `grain_contact_config`
-/// doc for why real-SI stiffness would need a punishingly fine forced dt).
+/// The stiffness of `sand_repose_angle.rs` (see its `grain_contact_config` for why SI
+/// stiffness would need a very fine forced dt).
 ///
-/// `rolling_friction` real fix (2026-08-21): `sand_repose_angle.rs`'s
-/// own `0.2` is a REAL, calibrated value, but for a different real physical
-/// scenario -- it was tuned to match dry sand's own natural angle of repose
-/// (a PILE of angular, interlocking grains that needs to stay put), not a
-/// single smooth ball meant to visibly roll. Reusing it here was a real
-/// category mismatch, confirmed live: a grain dropped onto this scene's own
-/// ramp fell, had a brief flicker of spin on impact, then went completely,
-/// permanently still (traced directly via `tests/grains_grid_coupling.rs`'s
-/// own `diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn`,
-/// exactly reproducing what was observed live). `0.02` is the much
-/// lower rolling-resistance coefficient smooth, hard bodies (steel, glass)
-/// have -- confirmed via the SAME diagnostic to produce continuous,
-/// physically consistent rolling (velocity ratio v.y/v.x tracking
-/// -tan(incline) throughout, not launching or freezing).
+/// `rolling_friction = 0.02`, the low rolling resistance of smooth, hard bodies (steel,
+/// glass). `sand_repose_angle.rs`'s `0.2` is calibrated for dry sand's angle of repose,
+/// a pile of angular, interlocking grains meant to stay put, not a single smooth ball
+/// meant to roll: with it a grain dropped onto this ramp spins briefly on impact, then
+/// stops for good (reproduced by `tests/grains_grid_coupling.rs`'s
+/// `diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn`). With 0.02 the same
+/// diagnostic shows continuous, consistent rolling (v.y/v.x tracking -tan(incline)
+/// throughout, neither launching nor freezing).
 fn grain_contact_config() -> ContactLawConfig {
     let m_eff = GRAIN_MASS * 0.5;
     const DAMPING_RATIO: f32 = 0.6;
@@ -105,12 +84,12 @@ fn grain_contact_config() -> ContactLawConfig {
     }
 }
 
-/// Real ramp: terrain is elevated for x < RAMP_START_X, descends linearly
+/// Ramp: terrain is elevated for x < RAMP_START_X, descends linearly
 /// down to `FLOOR` by x=RAMP_END_X, then a flat landing at `FLOOR` for the
 /// rest of the domain -- grains released near the top (small x) roll DOWN
 /// toward increasing x, landing and settling on the flat run-out.
 /// `incline_deg` controls the ramp's own rise/run ratio (steeper angle =
-/// taller top for the same horizontal span), a real geometric parameter,
+/// taller top for the same horizontal span), a geometric parameter,
 /// not a gravity trick.
 fn build_heights(incline_deg: f32) -> Vec<f32> {
     let run = (RAMP_END_X - RAMP_START_X) as f32;
@@ -131,7 +110,7 @@ fn build_heights(incline_deg: f32) -> Vec<f32> {
 
 /// Linear interpolation between bracketing columns -- mirrors
 /// `HeightmapBoundary::height_at_f32` (private to that module) exactly, so
-/// the rendered line matches the real contact surface a rolling grain
+/// the rendered line matches the contact surface a rolling grain
 /// actually feels, not a coarser approximation of it.
 fn height_at_f32(heights: &[f32], x: f32) -> f32 {
     if heights.is_empty() {
@@ -144,11 +123,10 @@ fn height_at_f32(heights: &[f32], x: f32) -> f32 {
     heights[x0] * (1.0 - t) + heights[x1] * t
 }
 
-/// Real terrain-surface markers, drawn so the ramp itself is visible --
-/// traces the EXACT `heights` array `make_sim` feeds into `HeightmapBoundary`
-/// (the real physics input, not a separately-drawn line that could drift
-/// out of sync with it). `TERRAIN_SAMPLES_PER_CELL` points per grid column,
-/// via `height_at_f32`'s own interpolation.
+/// Terrain-surface markers, so the ramp is visible: they trace the `heights` array
+/// `make_sim` feeds into `HeightmapBoundary` (the physics input, so the line cannot
+/// drift from it), `TERRAIN_SAMPLES_PER_CELL` points per grid column, through
+/// `height_at_f32`'s interpolation.
 fn terrain_markers(incline_deg: f32) -> Vec<Particle> {
     let heights = build_heights(incline_deg);
     let n = (GRID - 1) * TERRAIN_SAMPLES_PER_CELL;
@@ -206,14 +184,10 @@ fn make_sim(incline_deg: f32) -> Simulation {
         config.boundary_thickness,
     )));
 
-    // Real jitter (same non-optional convention every other grain scene in
-    // this codebase uses -- an unjittered lattice has no physical asymmetry
-    // to ever roll/topple, confirmed the hard way elsewhere this project).
-    // Placed near the TOP of the ramp (just past RAMP_START_X, where the
-    // downslope begins) so rolling starts almost immediately -- each
-    // grain's own drop height is measured off the ramp's REAL height at its
-    // own x (the ramp isn't flat, so a single shared y would be wrong for
-    // grains spread across it).
+    // Jitter, as in every grain scene (an unjittered lattice has no asymmetry to roll
+    // or topple). Placed near the top of the ramp (just past RAMP_START_X, where the
+    // downslope begins) so rolling starts almost at once; each grain's drop height is
+    // measured from the ramp's height at its own x (the ramp is not flat).
     let mut rng = SmallRng(0xA11C_E5EE_u64);
     let start_x = RAMP_START_X as f32 + 1.5;
     let spacing = 2.6 * GRAIN_RADIUS;
@@ -249,13 +223,9 @@ struct State {
     cursor_pos: [f32; 2],
 }
 
-/// Real click-to-nudge: LMB applies a small radial impulse to any grain
-/// within `NUDGE_RADIUS` of the cursor's grid position -- a genuine, useful
-/// capability the existing Grains mode in `sand_repose_angle.rs`
-/// explicitly does NOT have ("Push/pull inactive here (grains, not
-/// particles)"), and directly on-topic here: lets you perturb an already-
-/// settled grain and watch it react/roll again, not just the one scripted
-/// run down the ramp.
+/// Click-to-nudge: LMB applies a small radial impulse to any grain within
+/// `NUDGE_RADIUS` of the cursor's grid position, to perturb a settled grain and watch
+/// it roll again (the Grains mode of `sand_repose_angle.rs` has no push/pull).
 const NUDGE_RADIUS: f32 = 3.0;
 const NUDGE_STRENGTH: f32 = 3.0;
 
@@ -265,11 +235,10 @@ impl State {
         let size = window.inner_size();
         let incline_deg = 22.0;
         let sim = make_sim(incline_deg);
-        // Real headroom: 2 marker particles per grain (body + rolling accent
-        // dot), same real technique `sand_repose_angle.rs` already uses,
-        // plus 2 terrain markers per grid column tracing the real ramp
-        // surface (the actual `HeightmapBoundary::heights` this scene
-        // builds, not decoration -- see `terrain_markers`'s doc).
+        // Headroom: 2 marker particles per grain (body + rolling accent dot), as
+        // `sand_repose_angle.rs`, plus 2 terrain markers per grid column tracing the
+        // ramp surface (the `HeightmapBoundary::heights` this scene builds, see
+        // `terrain_markers`).
         let render_capacity = 2 * N_GRAINS + TERRAIN_SAMPLES_PER_CELL * GRID;
         let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
         // Zoomed in tight -- particle_scale=1.4 (well above the usual 0.6-0.9)
@@ -308,9 +277,9 @@ impl State {
         )
     }
 
-    /// Real click-to-nudge: applies a fixed impulse, directed away from the
-    /// click point, to the nearest grain within `NUDGE_RADIUS` -- lets you
-    /// perturb an already-settled grain and watch it roll/react again.
+    /// Click-to-nudge: applies a fixed impulse, directed away from the click point, to
+    /// the nearest grain within `NUDGE_RADIUS`, to perturb a settled grain and watch it
+    /// roll again.
     fn nudge_at_cursor(&mut self) {
         let cursor = self.cursor_grid();
         let population = &mut self.sim.grain_populations_mut()[0];

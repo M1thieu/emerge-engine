@@ -1,4 +1,4 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/cpu/basic_snow.rs`'s real-SI migration (Stomakhin 2013 canonical
 //! E=1.4e5/nu=0.2, rho=200 kg/m3). Checks real substep need and stability.
 

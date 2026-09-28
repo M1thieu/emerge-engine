@@ -20,7 +20,7 @@ pub struct DiffConfig {
     /// solver; a free constant here.
     pub stress_coeff: f32,
     /// Fixed substep size for this mini-sim's own explicit integration --
-    /// NOT CFL-derived (unlike the real solver's adaptive substep logic,
+    /// NOT CFL-derived (unlike the solver's adaptive substep logic,
     /// `spacetime::solver::cfl`): this differentiable stepper trades real
     /// adaptive stability for a constant, backprop-friendly step count per
     /// rollout. 0.01 is an empirically-stable free choice across
@@ -192,7 +192,7 @@ impl SinusoidController {
 }
 
 /// Closed-loop state-feedback controller -- ChainQueen's real `walker_2d.py`
-/// design (verified against the real source, `demos/walker_2d.py`): each
+/// design (verified against the source, `demos/walker_2d.py`): each
 /// muscle group's mean position (relative to the body's own centroid, for
 /// translation invariance) and mean velocity feed ONE shared linear layer +
 /// tanh, producing all groups' activations together (so one group's muscle

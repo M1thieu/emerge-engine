@@ -13,7 +13,7 @@ extern crate emerge_engine as emerge;
 /// Physically-forced scale choice, not an arbitrary demo number: real water's
 /// thermal diffusivity (alpha=k/(rho*c_p)~1.434e-7 m^2/s) makes pure-conduction
 /// freezing take MONTHS across a 1-meter slab (tau~L^2/alpha) --
-/// shrinking `dx_meters` (tau~dx^2) is the real fix to show freezing in any
+/// shrinking `dx_meters` (tau~dx^2) is the fix to show freezing in any
 /// reasonable step count.
 ///
 /// `alpha_grid()` must use `k/(rho*c_p)`, not `k/c_p` -- omitting density makes
@@ -65,7 +65,7 @@ fn main() {
         ..SpawnRegion::for_sim(&config)
     };
 
-    // Grid-native mechanical placeholder, not a real water/ice elastic
+    // Grid-native mechanical placeholder, not a water/ice elastic
     // modulus -- water has no meaningful shear modulus to cite, and this
     // scene's physically-forced claims (module doc above) are entirely
     // thermal (alpha, dx_meters, latent heat). NeoHookean exists here only

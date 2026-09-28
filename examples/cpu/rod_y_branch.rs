@@ -1,23 +1,17 @@
-//! Real verification that the branching rod topology (`spacetime::rod::
-//! network`) settles cleanly under real gravity over a long horizon -- the
-//! same discipline `rod_blade_of_grass.rs` already applies to the linear rod,
-//! now applied to the graph-based one.
+//! The branching rod topology (`spacetime::rod::network`) settles cleanly under
+//! gravity over a long horizon, the check `rod_blade_of_grass.rs` makes for the linear
+//! rod.
 //!
-//! `build_y_branch` builds the smallest real branching case: a trunk and a
-//! single branch sharing ONE array index at the junction (not two `Rod`s
-//! synchronized after the fact) -- proving the actual mechanism multi-
-//! branch/multi-plant structures need: the junction's own bending uses
-//! `forces::discrete_curvature` completely unmodified (Bergou et al. 2008),
-//! same math as an ordinary interior rod point, just addressed through an
-//! explicit edge/bending list instead of implicit i-1/i/i+1 neighbors.
+//! `build_y_branch` builds the smallest branching case: a trunk and a single branch
+//! sharing one array index at the junction (not two `Rod`s synchronized after the fact),
+//! the mechanism multi-branch and multi-plant structures need. The junction's bending
+//! uses `forces::discrete_curvature` unmodified (Bergou et al. 2008), the math of an
+//! ordinary interior rod point, addressed through an explicit edge/bending list
+//! instead of implicit i-1/i/i+1 neighbors.
 //!
-//! Disclosed scope: this specific builder makes a trunk + ONE branch (a
-//! single bend at the joint, 2 edges meeting at the junction) -- a true
-//! trifurcation (trunk splitting into TWO separate children, 3 edges at the
-//! junction) would need one more edge + one more bending vertex added by
-//! hand, same math, not yet built. This test proves the shared-index
-//! mechanism itself is real and stable, which is the actual prerequisite
-//! for that extension, not a replacement for it.
+//! Scope: a trunk + one branch (one bend at the joint, 2 edges meeting at the
+//! junction). A trunk splitting into two children (3 edges at the junction) needs one
+//! more edge and one more bending vertex, same math, not built here.
 //!
 //! Run: `cargo run --example rod_y_branch`
 
@@ -29,11 +23,9 @@ fn main() {
     let dx_meters = 0.01; // 1 grid cell = 1cm, same convention as rod_blade_of_grass.rs
     let gravity = Vec2::new(0.0, -9.81 / dx_meters); // real g=9.81 m/s^2 in grid units (g_SI/dx_meters), same as SimConfig::earth -- same magnitude already proven safe for a rod alone (blade demos)
 
-    // Real plant-tissue stiffness (Niklas 1992 parenchyma range), same E
-    // already used for the blade -- trunk and branch share one material
-    // here for a first check (real plants vary trunk/branch stiffness, but
-    // isolating topology from material variation first is the honest,
-    // one-variable-at-a-time approach).
+    // Plant-tissue stiffness (Niklas 1992 parenchyma range), the E of the blade; trunk
+    // and branch share one material here (plants vary trunk and branch stiffness), to
+    // check the topology alone first.
     let young_modulus_pa: f32 = 1.0e7;
     let width_m: f32 = 0.003;
     let thickness_m: f32 = 0.001;

@@ -84,7 +84,7 @@ mod gui_common;
 ///   3. The coupling runs one way. The quality drives the mechanical
 ///      state; a column squeezed by the cursor does not pay that work back
 ///      into latent heat and boil further. The honest two-way closure
-///      needs a real saturation curve and is a milestone of its own, not
+///      needs a saturation curve and is a milestone of its own, not
 ///      something faked here.
 ///
 /// # What the panel shows

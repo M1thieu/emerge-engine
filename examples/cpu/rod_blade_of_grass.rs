@@ -28,7 +28,7 @@ fn main() {
     // height is comfortably below this exact geometry's own real
     // Euler/Greenhill self-buckling threshold (h_crit ~= 0.1216m, hand-
     // derived from h_crit = (7.8373*E*I/(rho*g*A))^(1/3)) -- it stands for
-    // the same reason a real blade this thin does, not because we tuned it
+    // the same reason a blade this thin does, not because we tuned it
     // to look right.
     let height_m = 0.10;
     let n_points = 20;

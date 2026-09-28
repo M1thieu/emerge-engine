@@ -38,7 +38,7 @@ use winit::window::{Window, WindowId};
 const GRID: usize = 64;
 // The renderer's camera frames the full simulation grid with no pan -- this
 // blade is short, so a separate, smaller DISPLAY_GRID gives a display-only
-// zoom window decoupled from the real simulation domain (GRID stays
+// zoom window decoupled from the simulation domain (GRID stays
 // untouched, physics unaffected). `cursor_grid` must use the same value so
 // mouse push/pull stays aligned with what's on screen.
 const DISPLAY_GRID: usize = 22;
@@ -104,20 +104,14 @@ fn make_sim(wind_enabled: bool) -> Simulation {
     // max_substeps_per_step scales with stiffness under CFL (~ sqrt(stiffness/
     // density)) -- kept conservative rather than re-tuned down for headroom.
     //
-    // Measured (2026-09-10): this demo's own real fps is 23-26, even
-    // with the stalk sitting at rest (Jmin=Jmax=1.0, max_v~0.0004) -- a live
-    // per-phase timing check confirmed the cost is `sim.step()` itself
-    // (~38ms/frame), NOT rendering (acquire+render+present together stay
-    // under 2ms). `min_dt=0.0007` against `DT=0.1` forces ~143 substeps
-    // EVERY frame regardless of how visually calm the scene is, because the
-    // real elastic stiffness (chosen for correct static-equilibrium physics,
-    // see `eta`'s doc below) drives a small CFL-safe dt --
-    // the SAME disclosed stiffness-forces-many-substeps class already
-    // found for `basic_sand.rs`/`basic_showcase.rs` tonight, not a render/UI
-    // bug (an earlier hypothesis, now corrected). Real fix is the same
-    // Stage 3 implicit-MPM plasticity work those two need -- not chased
-    // further here; softening this material's own real stiffness would
-    // break the physics this demo exists to show.
+    // This demo runs at 23-26 fps even with the stalk at rest (Jmin=Jmax=1.0,
+    // max_v~0.0004): `sim.step()` costs ~38 ms/frame, rendering (acquire+render+present)
+    // under 2 ms. `min_dt=0.0007` against `DT=0.1` means ~143 substeps every frame
+    // however calm the scene, because the elastic stiffness (chosen for correct static
+    // equilibrium, see `eta`'s doc below) sets a small CFL-safe dt, the
+    // stiffness-forces-many-substeps case of `basic_sand.rs`/`basic_showcase.rs`. The fix
+    // is implicit integration of the plasticity, as for those two; softening the
+    // stiffness would break the physics this demo shows.
     let config = SimConfig {
         min_dt: 0.0007,
         max_substeps_per_step: 290,
@@ -165,7 +159,7 @@ fn make_sim(wind_enabled: bool) -> Simulation {
         (p.x.x - STALK_CENTER_X).abs() <= half_width
     });
 
-    // Root: pin every particle at/below ROOT_HEIGHT -- a real Dirichlet
+    // Root: pin every particle at/below ROOT_HEIGHT -- a Dirichlet
     // anchor (forces v=0, velocity_gradient=0 every substep in G2P), not a
     // scripted position lock.
     {
@@ -290,7 +284,7 @@ impl State {
             material_mass_bridge_buf,
             // grid_volume.wgsl indexes its density buffer by `params.grid_res`,
             // the same value `set_camera` uses for the display zoom window --
-            // decoupling DISPLAY_GRID from the real GRID breaks that indexing
+            // decoupling DISPLAY_GRID from the GRID breaks that indexing
             // (renders nothing). Splat mode has no such coupling, so it's the
             // default.
             grid_volume_mode: false,

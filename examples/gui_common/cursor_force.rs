@@ -1,36 +1,27 @@
-//! Shared cursor-driven radial force -- extracted for the exact
-//! reason `gui_common::mod`'s doc cites for `Gfx`/`cursor_to_grid`: a
-//! bug fixed in one hand-rolled copy of this plumbing does not reach the
-//! other copies. Confirmed live, 2026-08-26: `sand_water_saturation.rs`
-//! shared ONE force value between LMB push and RMB pull/lift -- fine for
-//! push, but far too weak for pull to ever separate a chunk from a packed
-//! pile's own confinement (measured: 0.097 cells of real lift at the
-//! shared value that gave push a clean, retained_fraction=1.000 feel).
-//! 22 examples independently duplicate this exact push/pull cursor-force
-//! block (`grep -rl push_weights examples/`); every one of them is a
-//! candidate for the SAME shared-value mistake, not just this one scene.
+//! Shared cursor-driven radial force, extracted for the reason `gui_common::mod`
+//! gives for `Gfx`/`cursor_to_grid`: a fix in one hand-rolled copy of this plumbing
+//! does not reach the others. One force value shared between LMB push and RMB pull is
+//! fine for push but far too weak for pull to separate a chunk from a packed pile's
+//! confinement (0.097 cells of lift at the value that gives push a clean
+//! retained_fraction=1.000). 22 examples duplicate this push/pull block
+//! (`grep -rl push_weights examples/`), each a candidate for the same mistake.
 //!
-//! This crosses `gui_common`'s own stated boundary ("deliberately NOT in
-//! scope: panel content... differs enough per example") on purpose: this
-//! block is NOT panel content, it is the exact kind of "genuinely
-//! identical, not just similar" mechanics that module's doc says
-//! justifies extending its scope.
+//! This crosses `gui_common`'s stated boundary ("deliberately NOT in scope: panel
+//! content... differs enough per example") on purpose: this block is not panel
+//! content but identical mechanics, which that module's doc says justifies extending
+//! its scope.
 //!
-//! Deliberately keeps push and pull as SEPARATE strengths in the type
-//! itself, not a single shared field with a sign flip -- that shared-field
-//! shape is the root cause of the bug this module exists to stop from
-//! recurring elsewhere.
+//! Push and pull are separate strengths in the type itself, not one shared field with
+//! a sign flip, the shape behind that mistake.
 
 use crate::emerge::particle::Particles;
 use glam::Vec2;
 
-/// Real `F = m*a` radial cursor force, in units of each particle's OWN
-/// WEIGHT (`push_strength`/`pull_strength * m * g`) -- 1.0 exactly
-/// cancels gravity, 2.0 nets 1g. Physically meaningful and scale-free:
-/// stays correct at any gravity, cell size, or particle mass, unlike a
-/// raw velocity poke (`Simulation::apply_radial_impulse`, which ignores
-/// mass entirely and is why cursor interaction can feel arbitrary against
-/// real gravity).
+/// Radial cursor force (F = m*a), in units of each particle's own weight
+/// (`push_strength`/`pull_strength * m * g`): 1.0 exactly cancels gravity, 2.0 nets 1g.
+/// Scale-free: correct at any gravity, cell size or particle mass, unlike a velocity
+/// poke (`Simulation::apply_radial_impulse`, which ignores mass and makes cursor
+/// interaction feel arbitrary against gravity).
 pub struct CursorForce {
     pub radius: f32,
     /// Strength for `apply(.., pulling: false)` -- disturbing/shoving a

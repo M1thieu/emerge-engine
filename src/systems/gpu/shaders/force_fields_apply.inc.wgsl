@@ -96,7 +96,7 @@ fn apply_force_fields(pp: ptr<function, Particle>) -> bool {
     // because the sleep_wake uniform stays loaded for every substep in this step_frame()
     // call (uploaded once per frame -- see GpuSimulation::step_frame), not just the one
     // substep where the caller's wake_tag() takes effect. A tagged particle hasn't been
-    // given any real velocity by waking -- it's still at rest -- so without
+    // given any velocity by waking -- it's still at rest -- so without
     // exempting it from the natural sleep-scoring below for the WHOLE frame (not just the
     // substep where the flag flips), substep 2 onward would see near-zero velocity and
     // immediately re-sleep it, undoing the wake before step_frame() ever returns.

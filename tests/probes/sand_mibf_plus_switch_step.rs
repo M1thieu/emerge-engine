@@ -1,9 +1,7 @@
-//! Real test of MIBF COMBINED with the already-validated `switch_step`
-//! Cundall-damping recipe (verified tonight: switch_step=9000/11000 hold
-//! stable 32.3-32.4deg plateaus through 100k+ steps). Does adding real,
-//! material-derived wall friction on top of that already-working recipe
-//! help further, hurt, or leave it unchanged? Same scene as `tests/
-//! sand_switch_step_extrapolation.rs` (copied, not re-derived).
+//! MIBF combined with the `switch_step` Cundall-damping recipe (switch_step=9000/11000
+//! hold stable 32.3-32.4deg plateaus through 100k+ steps): does material-derived wall
+//! friction on top of that recipe help, hurt, or change nothing? Same scene as
+//! `sand_switch_step_extrapolation.rs` (copied).
 //!
 //! `cargo test --release --test probes sand_mibf_plus_switch_step:: -- --nocapture`
 

@@ -1,15 +1,12 @@
 extern crate emerge_engine as emerge;
 
-/// Real trophic/predation demo -- proves `saturating_uptake` (Holling Type II /
-/// Michaelis-Menten / Monod, added 2026-07-16 to replace a hardcoded "eat everyone
-/// within radius X, instantly" rule with a density-driven, continuously
-/// rate-limited consumption law). Watch it visually: prey (green) near the predator
-/// (red) convert to eaten (dark grey) gradually over many frames, never all at once,
-/// because the conversion rate saturates with local prey density instead of being a
-/// binary yes/no cutoff -- the same composition already proven in
-/// `tests/solver.rs::trophic_predation_depletes_prey_near_predator`, here driven by a
-/// real render loop instead of a fixed step count so you can actually watch the rate
-/// limiting happen.
+/// Trophic/predation demo of `saturating_uptake` (Holling Type II / Michaelis-Menten /
+/// Monod), a density-driven, rate-limited consumption law in place of "eat everything
+/// within radius X at once". Prey (green) near the predator (red) turn to eaten (dark
+/// grey) gradually over many frames, since the conversion rate saturates with local prey
+/// density rather than being a yes/no cutoff. The composition of
+/// `tests/solver.rs::trophic_predation_depletes_prey_near_predator`, driven by a render
+/// loop so the rate limiting can be watched.
 ///
 ///   cargo run --example trophic_predation_demo --features "render"
 use std::sync::Arc;
@@ -61,11 +58,8 @@ struct State {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         gravity: Vec2::ZERO,
-        // Real fix (2026-09-06): body stiffness migrated off an unsourced
-        // grid-unit guess onto real SI (see BODY_YOUNG_MODULUS_PA above) --
-        // matches basic_jellies.rs's own empirically-measured need for a
-        // much higher cap once a real E=500Pa tissue is used, not the old
-        // placeholder's default of 64.
+        // Substep headroom for the SI body stiffness (see BODY_YOUNG_MODULUS_PA
+        // above), as basic_jellies.rs measured for the same E=500 Pa tissue.
         max_substeps_per_step: 20_000,
         ..SimConfig::standard(GRID, DT, Vec2::ZERO)
     };
@@ -184,11 +178,10 @@ impl State {
     }
 
     fn update_and_render(&mut self) {
-        // Real predation step: gather predator positions, compute local prey density,
+        // Predation step: gather predator positions, compute local prey density,
         // convert that into a saturating (Holling II) consumption rate, accumulate a
-        // budget, and convert only as many prey as the budget allows -- exactly the
-        // composition tests/solver.rs proves, driven every frame here instead of a
-        // fixed step count.
+        // budget, and convert only as many prey as the budget allows -- the
+        // composition tests/solver.rs checks, run every frame here.
         let sense_area = std::f32::consts::PI * SENSE_RADIUS * SENSE_RADIUS;
         let predator_positions: Vec<Vec2> = self
             .sim

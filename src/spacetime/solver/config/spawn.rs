@@ -62,7 +62,7 @@ pub struct SpawnRegion {
     /// single-material scene and adapts automatically when the region is
     /// refined.
     ///
-    /// Set it only to give one region a real density CONTRAST against another:
+    /// Set it only to give one region a density CONTRAST against another:
     /// `(rho_kg_m3 / config.reference_density_kg_m3) * spacing^2`, with every
     /// material's stress converted using that same `reference_density_kg_m3`.
     /// Without it, mixed-density regions differ correctly in stiffness (via the
@@ -153,7 +153,7 @@ impl SpawnRegion {
 
     /// Like `.mass()`, but derives the value from a physical-property struct and
     /// THIS region's own `spacing` (already set via `.spacing()` or the `spacing`
-    /// field) -- avoids passing spacing twice, a real duplication risk (see
+    /// field) -- avoids passing spacing twice, a duplication risk (see
     /// `mass_override`'s field doc; LP hit a sync bug from this exact pattern).
     ///
     /// `ParticleMass::particle_mass` reports real SI kilograms, so this divides

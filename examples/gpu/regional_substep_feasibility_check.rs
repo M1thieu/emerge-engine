@@ -1,44 +1,28 @@
 extern crate emerge_engine as emerge;
 
-/// TEMP diagnostic (2026-09-17) -- delete after use.
+/// Feasibility check for regional/adaptive substepping (Fang, Hu, Hu & Jiang, "A
+/// Temporally Adaptive Material Point Method with Regional Time Stepping", SCA 2018):
+/// does the paper's own caveat apply to this engine's scenes -- *"it is not always the
+/// preferred choice especially for cases where stiff materials occupy the main portion
+/// of a scene."* If most blocks need a fine dt during the active splash, regional
+/// substepping cannot help much however well built, since no calm region is left to
+/// skip.
 ///
-/// Cheap, read-only, non-invasive feasibility check for regional/adaptive
-/// substepping (Fang, Hu, Hu & Jiang, "A Temporally Adaptive Material Point
-/// Method with Regional Time Stepping," SCA 2018): before investing in the
-/// real block-based scheduler (buffer blocks, power-of-two multipliers --
-/// several days of real GPU work), measure whether the paper's own disclosed
-/// caveat applies to OUR scene: *"it is not always the preferred choice
-/// especially for cases where stiff materials occupy the main portion of a
-/// scene."* If most of the domain's blocks are classified "needs fine dt"
-/// during the active splash, regional substepping cannot help much even if
-/// built perfectly -- there would be no calm region left to skip.
+/// Method: run `basic_fluids_gpu.rs`'s DamBreak scene (config copied). Every frame,
+/// partition the domain into 4x4-cell blocks (256 on this GRID=64 scene, the engine's
+/// 256-block partition). For each populated block, an advection-CFL bound from its max
+/// particle speed (`dt_block = cfl_coefficient * grid_cell_size / max_speed_in_block`,
+/// the shape of the engine's CFL scan and the term the paper finds most often binding
+/// for fluids); a block is Fine if `dt_block <= current_frame_sub_dt * margin`, else
+/// Coarse. Reports the fraction of populated blocks that are Fine each frame through the
+/// violent splash. Read-only: it analyzes the particle state each frame already produces.
 ///
-/// Method: run the exact, current, already-stabilized `basic_fluids_gpu.rs`
-/// DamBreak scene (config copied verbatim). Every frame, partition the
-/// domain into 4x4-cell blocks (256 blocks on this GRID=64 scene, matching
-/// this engine's own existing "256-block partition" the config doc comments
-/// already reference for classification). For each populated block, compute
-/// a real advection-CFL bound from the block's own max particle speed
-/// (`dt_block = cfl_coefficient * grid_cell_size / max_speed_in_block`,
-/// the same shape this engine's own CFL scan already uses, and the term the
-/// paper itself identifies as most often binding for fluids). Classify a
-/// block Fine if `dt_block <= current_frame_sub_dt * margin`, else Coarse.
-/// Report the FRACTION of populated blocks that are Fine, every frame,
-/// through the actual violent splash window.
-///
-/// This does NOT change simulation behavior at all -- pure post-hoc
-/// analysis of the real particle state each frame already produces.
-///
-/// REAL RESULT (2026-09-17), on BOTH scenes tested: DamBreak (whole-column
-/// free fall) and DropletImpact (small blob into an ostensibly calm pool)
-/// -- 0% of populated blocks classify Fine through the entire violent
-/// window, including the exact frames where substep count spikes to
-/// 380-440/frame. Confirms this engine's weakly-compressible EOS
-/// propagates velocity/pressure through the whole connected fluid body
-/// fast enough that no real spatial locality exists to exploit on these
-/// scenes -- the paper's own disclosed caveat applies here. See
-/// `KNOWN_LIMITATIONS.md` entry 2 (kept as the record of this finding;
-/// this file itself may be deleted once ported into a permanent test).
+/// Result, on DamBreak (whole-column free fall) and DropletImpact (a small blob into a
+/// calm pool): 0% of populated blocks are Fine through the whole violent window,
+/// including the frames where the substep count spikes to 380-440/frame. The weakly
+/// compressible EOS propagates velocity and pressure through the whole connected fluid
+/// fast enough that there is no spatial locality to exploit on these scenes. Recorded
+/// in `KNOWN_LIMITATIONS.md` entry 2.
 ///
 ///   cargo run --example regional_substep_feasibility_check --features gpu
 use emerge::gpu::GpuSimulation;

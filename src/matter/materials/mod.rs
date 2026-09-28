@@ -88,11 +88,11 @@ pub enum ConstitutiveModel {
     /// see `nacc.rs::kirchhoff_stress`). Issue #5's `needs_cpu_update`
     /// fallback DOES correctly rerun `NaccMaterial::update_particle`'s
     /// real Cam-Clay return-mapping on CPU every frame, keeping
-    /// `deformation_gradient`/plastic state on the real yield surface --
+    /// `deformation_gradient`/plastic state on the yield surface --
     /// but the stress feeding that same substep's P2G grid transfer is
     /// still NeoHookean's, not NACC's. Checking `params().model` for `10`
     /// cannot detect NACC, since `params()` never emits `10`. `GpuSimulation::
-    /// with_device` checks the real `constitutive_model()` value (not
+    /// with_device` checks the `constitutive_model()` value (not
     /// `params()`) and panics if NACC is present -- use
     /// `GranularFluidMaterial` (already fully GPU-native) for a
     /// granular-fluid-like GPU scene instead. See issue #5 for the real
@@ -158,7 +158,7 @@ pub const MAX_MIXTURE_PHASES: usize = 4;
 ///
 /// A plain slot index (0..MAX_MIXTURE_PHASES), not a fixed enum -- unlike
 /// the render side's `material_id % 16` convention, this does NOT wrap: an
-/// out-of-range index is a real configuration error (asserted where used),
+/// out-of-range index is a configuration error (asserted where used),
 /// since silently colliding two unrelated phases into the same slot would
 /// corrupt real physics, not just misdraw a pixel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,7 +250,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// stiffness instead of a fixed absolute percentage tuned for a
     /// different EOS: the standard WCSPH relation Ma² ≈ Δρ (density
     /// variation ≈ squared Mach number; Monaghan 1994, Morris et al. 1997)
-    /// means the compression a real flow induces scales with
+    /// means the compression a flow induces scales with
     /// `(v_max / c_s_rest)²`, not a scene-independent constant -- see
     /// `SimConfig::fluid_near_wall_compression_mach_margin`'s doc, and
     /// Zhang et al., "A variable speed of sound formulation for weakly
@@ -309,7 +309,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
 
     /// Advances plastic/deformation state for one particle after G2P's velocity
     /// gather. Takes a `ParticleUpdateCtx` (disjoint per-field borrows), not
-    /// `&mut Particles, i` -- every real implementation only ever touches its
+    /// `&mut Particles, i` -- every implementation only ever touches its
     /// own particle's fields, so this shape lets G2P run every particle's
     /// update in parallel (see `ParticleUpdateCtx`'s doc).
     fn update_particle(&self, _ctx: &mut crate::particle::ParticleUpdateCtx, _dt: f32) {}
@@ -453,7 +453,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// rises with depth, and for a compressible material that pressure IS a
     /// density change. Spawning a pool at uniform density therefore creates
     /// a body with no internal pressure at all, which then collapses under
-    /// its own weight until the gradient builds -- a real elastic wave, and
+    /// its own weight until the gradient builds -- an elastic wave, and
     /// exactly what you see when a "resting" pool twitches on its first
     /// frames.
     ///
@@ -549,7 +549,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// carrier to mean).
     ///
     /// Generic engine-level hook, deliberately NOT material-specific: any
-    /// material with a real yield surface can define how ITS OWN physics
+    /// material with a yield surface can define how ITS OWN physics
     /// responds to the shared scalar (e.g. `DruckerPragerMaterial` uses real
     /// capillary-cohesion literature for wet sand). A material without a
     /// meaningful notion of cohesion (a fluid's constitutive law, a purely

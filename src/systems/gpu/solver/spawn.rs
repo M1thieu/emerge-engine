@@ -175,7 +175,7 @@ impl GpuSimulation {
 
         self.particle_count = n;
         // This reallocation is exact-fit (shrinking), unlike spawn_region's amortized
-        // growth -- must reset particle_capacity to match the real new buffer size, or
+        // growth -- must reset particle_capacity to match the new buffer size, or
         // spawn_region's fast-path check (`n <= particle_capacity`) would believe there's
         // headroom that doesn't exist any more and write past the buffer's real end.
         self.particle_capacity = n;

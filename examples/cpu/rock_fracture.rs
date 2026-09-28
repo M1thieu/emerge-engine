@@ -3,26 +3,20 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// Real rock fracture -- 4 real rock types side by side (`RankineMaterial`'s
-/// granite/sandstone/limestone/shale presets, real cited E/tensile-strength
-/// ratios), struck with an adjustable-force downward impulse to compare how much
-/// real damage accumulates per rock, per strike, and across REPEATED strikes
-/// (Rankine's own damage state never decreases -- real fatigue-like accumulation,
-/// not a per-hit reset).
+/// Rock fracture: 4 rock types side by side (`RankineMaterial`'s
+/// granite/sandstone/limestone/shale presets, cited E/tensile-strength ratios), struck
+/// with an adjustable downward impulse to compare how much damage accumulates per rock,
+/// per strike and across repeated strikes (Rankine's damage never decreases, a
+/// fatigue-like accumulation).
 ///
-/// Stiffness is GRID-NATIVE, not literal SI Pa -- real GPa-scale rock stiffness is
-/// incompatible with explicit-MPM CFL at this grid resolution (same reason
-/// `fire_spread.rs`'s doc gives for wood). The REAL RATIOS between rock types
-/// are preserved from their cited GPa values (granite 30, sandstone 20,
-/// limestone 8, shale 27) so relative-stiffness honesty survives the rescale --
-/// only the absolute magnitude is adapted for demo practicality, same pattern
-/// `mass_override` already uses for relative density elsewhere tonight.
+/// Stiffness in grid units, not pascals: GPa-scale rock stiffness is incompatible with
+/// explicit-MPM CFL at this grid resolution (see `fire_spread.rs`'s doc for wood). The
+/// ratios between rock types keep their cited GPa values (granite 30, sandstone 20,
+/// limestone 8, shale 27); only the absolute magnitude is adapted.
 ///
-/// Honest, disclosed limitation carried over from `RankineMaterial::shale`'s own
-/// doc: this is an ISOTROPIC model, so shale here represents its real ACROSS-
-/// foliation (stronger) direction, not its well-known weak-along-bedding-planes
-/// direction -- shale showing LESS damage than granite under the same strike is
-/// real and expected given that, not a bug.
+/// From `RankineMaterial::shale`'s doc: the model is isotropic, so shale here is its
+/// across-foliation (stronger) direction, not its weak along-bedding direction, and it
+/// takes less damage than granite under the same strike.
 ///
 ///   F strike at cursor (adjustable force)  |  [ / ] adjust strike force
 ///   R reset  Q quit
@@ -126,8 +120,8 @@ fn make_sim() -> Simulation {
     solver
 }
 
-/// Real per-material max damage report (`friction_hardening`, repurposed by
-/// `RankineMaterial` as damage -- see that struct's doc).
+/// Per-material max damage report (`friction_hardening`, which `RankineMaterial` uses
+/// for damage -- see that struct's doc).
 fn max_damage_by_material(sim: &Simulation) -> [f32; 4] {
     let particles = sim.particles();
     let mut result = [0.0f32; 4];
@@ -183,8 +177,8 @@ impl State {
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
         // Optical params are Beer-Lambert absorption coefficients: color = exp(-sigma_a).
-        // Real representative rock colors (not literal spectral measurements):
-        // granite pale grey-pink, sandstone tan, limestone pale cream, shale dark grey.
+        // Representative rock colors (not spectral measurements): granite pale
+        // grey-pink, sandstone tan, limestone pale cream, shale dark grey.
         renderer.set_optical_params(&queue, GRANITE_ID as usize, [0.288, 0.223, 0.288]);
         renderer.set_optical_params(&queue, SANDSTONE_ID as usize, [0.223, 0.357, 0.799]);
         renderer.set_optical_params(&queue, LIMESTONE_ID as usize, [0.174, 0.223, 0.357]);
@@ -255,8 +249,8 @@ impl State {
         )
     }
 
-    /// Real per-frame health snapshot -- shared by the periodic console print and
-    /// the egui panel so neither can silently drift out of sync with the other.
+    /// Per-frame health snapshot, shared by the periodic console print and the egui
+    /// panel so the two stay in sync.
     fn diagnostics(&self) -> Diagnostics {
         let particles = self.sim.particles();
         let max_speed = particles
@@ -487,9 +481,8 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Real regression check: all 4 blocks spawn distinctly, non-overlapping, and
-    /// every particle carries the material_id its block's x-position implies --
-    /// proves the layout is not just "it compiles".
+    /// All 4 blocks spawn distinctly and without overlap, and every particle carries
+    /// the material_id its block's x-position implies.
     #[test]
     fn four_rock_blocks_spawn_with_correct_materials() {
         let sim = make_sim();

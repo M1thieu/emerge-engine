@@ -153,7 +153,7 @@ pub fn apply_grain_contact_forces(
     stability_fraction: f32,
 ) {
     // Sub-cycled to the contacts' own step (`contact_step_limit`) instead of
-    // clamping the mechanics substep: with a real mineral's stiffness a
+    // clamping the mechanics substep: with a mineral's stiffness a
     // minimum would collapse the whole scene's step. Each sub-step takes at
     // most `stability_fraction` of the limit, the fraction the materials
     // take of theirs; the grid's action already reached the grains' velocity
@@ -426,8 +426,8 @@ mod tests {
     }
 
     /// Both individual mechanisms above (grain-grain contact through the
-    /// grid; a single grain against a real boundary) are separately proven
-    /// stable. This test is the real remaining combination the 80-grain
+    /// grid; a single grain against a boundary) are separately proven
+    /// stable. This test is the remaining combination the 80-grain
     /// isolation test actually has that neither of those does: SEVERAL
     /// grains simultaneously in contact with EACH OTHER while ALSO
     /// overlapped into the SAME boundary's zone -- real gravity included
@@ -445,7 +445,7 @@ mod tests {
         // overlapped into the boundary zone (y=1.0, thickness=2) -- real
         // simultaneous grain-grain + grain-boundary contact. One given real
         // spin, matching what contact-driven friction/rolling torque would
-        // produce mid-collapse in the real test.
+        // produce mid-collapse in the test.
         let grains = vec![
             Grain {
                 spin: 5.0,
@@ -528,8 +528,8 @@ mod tests {
         let gravity = Vec2::new(0.0, -0.3);
         // 5 columns x 4 rows, touching (spacing=2*radius exactly) in both
         // axes -- interior grains have real coordination number 4, matching
-        // the real trigger's own active_contacts=16 density. Small real
-        // jitter (same convention as the real test's own `build_column`/
+        // the trigger's own active_contacts=16 density. Small real
+        // jitter (same convention as the test's own `build_column`/
         // `make_column`) so the pack isn't perfectly symmetric.
         struct SmallRng(u64);
         impl SmallRng {

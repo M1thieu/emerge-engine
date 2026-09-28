@@ -25,7 +25,7 @@ impl GpuSimulation {
     /// matching CPU's identical `self.thermal.is_none()` gate.
     ///
     /// Calls `sync_particles_blocking` first: a predicate driven by live GPU state
-    /// (temperature from the real diffusion PDE, position, velocity) needs the
+    /// (temperature from the diffusion PDE, position, velocity) needs the
     /// current mirror, not whatever the last readback happened to hold --
     /// the same staleness class of bug `remove_particles` guards against for the
     /// same reason (see its doc).

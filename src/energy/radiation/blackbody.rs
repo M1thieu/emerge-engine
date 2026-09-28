@@ -69,7 +69,7 @@ mod tests {
     use super::*;
 
     /// Planck's law must reproduce Wien's displacement law -- two independent
-    /// statements about the same spectrum, so agreement is a real check on the
+    /// statements about the same spectrum, so agreement is a check on the
     /// constants and the formula, not a tautology.
     #[test]
     fn planck_peak_matches_wien_displacement_law() {

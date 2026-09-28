@@ -3,52 +3,40 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// Real soil-horizon layering -- the O/A/B/C genetic horizon sequence (Jenny 1941,
+/// Soil-horizon layering -- the O/A/B/C genetic horizon sequence (Jenny 1941,
 /// "Factors of Soil Formation"; USDA-NRCS Soil Survey Manual horizon nomenclature),
-/// each horizon a REAL material already in this engine, not new physics:
+/// each horizon an existing material of this engine:
 ///
 ///   O (organic litter/humus)      -> DruckerPragerMaterial::low_friction
 ///                                     (closest existing loose/low-cohesion preset)
 ///   A (mineral+organic topsoil)   -> GranularFluidMaterial::saturated_loam
-///                                     ("loam" IS the real A-horizon texture class)
-///   B (clay-illuviated subsoil)   -> NaccMaterial::kaolin (Cam-Clay -- real clay
+///                                     ("loam" is the A-horizon texture class)
+///   B (clay-illuviated subsoil)   -> NaccMaterial::kaolin (Cam-Clay, the clay
 ///                                     accumulation zone)
 ///   C (weathered parent material) -> DruckerPragerMaterial::dilatant (denser,
 ///                                     closer to intact rock than A/O)
 ///
-/// A-horizon note: `GranularFluidMaterial::saturated_loam` was originally found --
-/// via this very demo -- to be genuinely UNSTABLE under real gravity (max_speed
-/// reaching 80-140 grid-units/s, never settling), a real pre-existing engine bug,
-/// not a soil-horizons bug (root-caused and fixed 2026-07-31: `eos_power=7` was the
-/// near-incompressible WATER value applied to a 40%-compressible preset, combined
-/// with a hardening-scale floor that let dilation soften the material below its own
-/// baseline stiffness -- a unbounded positive feedback; see
-/// `granular_fluid_saturated_loam_instability_found_2026-07-31` and its follow-up
-/// fix memory for the full writeup). Verified settling cleanly at this file's own
-/// `young_modulus=1200` before switching back -- the temporary `DruckerPragerMaterial
-/// ::cohesionless` substitution is no longer needed.
+/// `saturated_loam` settles cleanly at this file's `young_modulus=1200` under gravity
+/// (with the loam preset's `eos_power`; the water value 7 on a 40%-compressible preset
+/// made it unstable, see `GranularFluidMaterial::saturated_loam`).
 ///
-/// Real cited bulk-density RATIOS relative to water=1.0 (same convention
-/// `mixture_sand_water.rs` already uses via `mass_override`), web-verified against
-/// real soil-science figures (not a single USDA horizon table, which wasn't found
-/// in this exact form -- these compose from several independently-confirmed real
-/// numbers): organic/peaty soils <0.5 g/cm^3, loam ~1.2-1.5 g/cm^3, clay ~1.0-1.4
-/// g/cm^3 (but B-horizon clay is real-world DENSER than surface clay of the same
-/// texture, from illuviation/compaction -- the actual reason B differs from A, not
-/// texture alone), compact/glacial-till C-horizons specifically measured at
-/// 1.76-1.95 g/cm^3. Representative picks within/near each verified range, not
-/// universal constants -- real soil depth/density varies hugely by climate/parent
-/// material (Jenny's own thesis).
-/// Layer THICKNESS ratios (O thin, C thickest) are the uncontroversial
-/// qualitative ordering pedology gives -- exact depths vary by soil type/location,
-/// so these are representative proportions, not a literal profile.
+/// Bulk-density ratios relative to water=1.0 (set through `mass_override`), composed
+/// from several soil-science figures rather than one horizon table: organic/peaty soils <0.5 g/cm^3, loam ~1.2-1.5 g/cm^3, clay
+/// ~1.0-1.4 g/cm^3 (B-horizon clay is denser than surface clay of the same texture,
+/// from illuviation and compaction, which is what sets B apart from A), compact or
+/// glacial-till C-horizons 1.76-1.95 g/cm^3. Representative picks within or near each
+/// range; soil depth and density vary hugely with climate and parent material
+/// (Jenny's thesis).
+/// Layer thickness ratios (O thin, C thickest) follow pedology's qualitative
+/// ordering; exact depths vary by soil type and location, so these are representative
+/// proportions, not a literal profile.
 ///
-/// Horizon colors are representative real pedology description (dark organic O,
-/// brown A, reddish-orange B from iron-oxide illuviation, pale weathered C) --
-/// NOT literal Munsell soil-color-chart values, which weren't looked up.
+/// Horizon colors are representative pedology descriptions (dark organic O, brown A,
+/// reddish-orange B from iron-oxide illuviation, pale weathered C), not Munsell
+/// soil-color-chart values.
 ///
-/// Real interaction: LMB pushes soil aside, revealing the real cross-section of
-/// layers as you excavate -- proves the layering isn't a static texture.
+/// Interaction: LMB pushes soil aside, revealing the cross-section of layers as you
+/// excavate.
 ///
 ///   cargo run --example soil_horizons --features "render"
 use egui_wgpu::ScreenDescriptor;
@@ -89,8 +77,8 @@ const A_ID: u32 = 1;
 const B_ID: u32 = 2;
 const C_ID: u32 = 3;
 
-// Real bulk-density ratios vs water=1.0 (USDA-NRCS Soil Survey Manual typical
-// ranges, representative midpoints -- see module doc).
+// Bulk-density ratios vs water=1.0 (USDA-NRCS Soil Survey Manual typical ranges,
+// representative midpoints -- see module doc).
 const O_DENSITY_RATIO: f32 = 0.2;
 const A_DENSITY_RATIO: f32 = 1.2;
 const B_DENSITY_RATIO: f32 = 1.5;
@@ -120,9 +108,9 @@ const DIG_RADIUS: f32 = 4.0;
 /// each frame so digging does not depend on the frame time.
 const DIG_RATE: f32 = 100.0;
 
-// Real footstep-force probe: hold F at the cursor to press straight down, like a
-// creature's foot loading the ground. PRESS_RADIUS approximates a real footprint
-// footprint's contact patch relative to this column's own scale.
+// Footstep-force probe: hold F at the cursor to press straight down, like a creature's
+// foot loading the ground. PRESS_RADIUS approximates a footprint's contact patch
+// relative to this column's scale.
 const PRESS_RADIUS: f32 = 3.0;
 const PRESS_FORCE_STEP: f32 = 5.0;
 const PRESS_FORCE_MIN: f32 = 5.0;
@@ -157,11 +145,10 @@ struct State {
     rmb: bool,
     pressing: bool,
     press_force: f32,
-    // Real sag/absorption measurement state: surface height at the press column
-    // captured the instant pressing starts, and the lowest height reached while
-    // held -- lets us report BOTH how far it sagged under load and, after release,
-    // how much of that sag was permanent (absorbed/plastic) vs recovered
-    // (elastic rebound), rather than just "it moved".
+    // Sag/absorption measurement: the surface height at the press column when pressing
+    // starts and the lowest height reached while held, so after release it reports how
+    // far the ground sagged under load and how much of that stayed (plastic) or
+    // recovered (elastic).
     press_baseline_height: Option<f32>,
     press_min_height: f32,
     was_pressing: bool,
@@ -182,18 +169,12 @@ fn make_sim() -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
 
-    // Stiffness doubled across all four horizons vs the original values (2026-07-31)
-    // -- measured, not guessed: a real CFL/substep-headroom sweep at this demo's own
-    // dt=0.1/max_substeps_per_step=16 showed EVERY horizon staying at 50-63% of its
-    // substep budget at this doubled E (real margin left for interactive dig/press
-    // spikes on top of quiescent settling, which is all the sweep itself measured).
-    // Real ceiling is higher still (O measured safe to 16x, C to 4x, B to ~4x) --
-    // this is a conservative real step, not the maximum, so there's known headroom
-    // left if it still feels too soft. Real relative ordering/ratios between
-    // horizons (O softest .. C stiffest) preserved exactly, just uniformly doubled.
-    // (A-horizon's own headroom wasn't re-measured against this doubled value --
-    // it uses a different material now, see below -- but its own isolated settling
-    // was directly reverified at this exact E right before switching back.)
+    // Stiffness at twice the first values for all four horizons, from a CFL/substep
+    // headroom sweep at dt=0.1/max_substeps_per_step=16: every horizon stays at 50-63%
+    // of its substep budget at this E during quiescent settling, leaving room for
+    // dig/press spikes. The ceiling is higher (O safe to 16x, C to 4x, B to ~4x). The
+    // ordering between horizons (O softest .. C stiffest) is kept. The A horizon's
+    // headroom was not re-measured at this E, only its isolated settling.
     // O: loose organic litter -- closest existing preset, see module doc.
     let o_horizon = DruckerPragerMaterial::low_friction(600.0, 0.3);
     // A: loamy topsoil -- real name-match, now fixed and settling cleanly (see
@@ -373,9 +354,9 @@ impl State {
         }
     }
 
-    /// Real surface-height probe: highest y among particles within `PRESS_RADIUS`
-    /// of `x_center` -- the actual local ground-surface height at that column,
-    /// not a fixed/assumed value, so sag is measured against reality each time.
+    /// Surface-height probe: highest y among particles within `PRESS_RADIUS` of
+    /// `x_center`, the local ground height at that column, so sag is measured against
+    /// the current surface.
     fn surface_height_near(&self, x_center: f32) -> f32 {
         self.sim
             .particles()
@@ -405,8 +386,8 @@ impl State {
         )
     }
 
-    /// Real per-frame health snapshot -- shared by the periodic console print and
-    /// the egui panel so neither can silently drift out of sync with the other.
+    /// Per-frame health snapshot, shared by the periodic console print and the egui
+    /// panel so the two stay in sync.
     fn diagnostics(&self) -> Diagnostics {
         let particles = self.sim.particles();
         let max_speed = particles
@@ -463,10 +444,10 @@ impl State {
             let h = self.surface_height_near(press_x);
             self.press_min_height = self.press_min_height.min(h);
         }
-        // Real sag/absorption report, printed once right as the foot lifts --
-        // compares the settled height AFTER release against both the original
-        // baseline and the deepest point reached under load, so "how much
-        // recovered" and "how much stayed sunk" are both measured numbers.
+        // Sag/absorption report, printed once as the foot lifts: the settled height
+        // after release against both the original baseline and the deepest point
+        // under load, so "how much recovered" and "how much stayed sunk" are both
+        // measured.
         if self.was_pressing && !self.pressing {
             if let Some(baseline) = self.press_baseline_height {
                 let recovered = self.surface_height_near(press_x);
@@ -689,10 +670,8 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Real regression check on the layering logic itself: every particle's
-    /// material must match the REAL horizon its y-position falls in (O topmost,
-    /// then A, B, C bottommost), and every horizon must be non-empty -- proves
-    /// the depth-based assignment is actually correct, not just "it compiles".
+    /// Every particle's material must match the horizon its y-position falls in (O
+    /// topmost, then A, B, C bottommost), and every horizon must be non-empty.
     #[test]
     fn particles_are_assigned_to_the_correct_horizon_by_depth() {
         let sim = make_sim();

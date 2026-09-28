@@ -1,9 +1,9 @@
-//! Diagnostic (2026-09-10): isolating why `implicit_and_explicit_paths_
-//! agree_within_loose_tolerance` (`tests/implicit_corotated_substep.rs`)
-//! measured 9.68 grid-cell drift after 20 frames -- is that a real bug in
-//! `spacetime::solver::implicit_corotated`, or expected numerical damping
-//! from a violent free-fall+floor-impact event (real gravity ~981
-//! cells/s^2 in that scene, pile starting 17 cells above the floor)?
+//! Diagnostic: is the 9.68 grid-cell drift after 20 frames measured by an
+//! explicit-vs-implicit comparison of `tests/implicit_corotated_substep.rs` (since
+//! replaced there by the settled-pile and violent-impact tests) a bug in
+//! `spacetime::solver::implicit_corotated`,
+//! or numerical damping from a violent free-fall and floor impact (gravity ~981
+//! cells/s^2 in that scene, the pile starting 17 cells above the floor)?
 //!
 //! `cargo test --release --test probes implicit_corotated_wiring_diagnostic:: -- --nocapture`
 
@@ -52,12 +52,11 @@ fn max_drift(a: &Simulation, b: &Simulation) -> f32 {
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn diag_drift_starting_already_resting_on_floor() {
-    // The REAL target regime for this feature (see project memory: sand's
-    // real fps problem is CFL pinned tiny by ELASTIC STIFFNESS, not
-    // particle speed -- an already-settled, barely-moving pile pays the
-    // same substep cost as a violent one). Pre-settle explicitly first (30
-    // frames, well clear of the boundary), THEN fork into explicit vs
-    // implicit from that SAME already-at-rest state.
+    // The target regime for this feature: sand's frame cost comes from a CFL step
+    // pinned small by elastic stiffness, not particle speed, so a settled, barely moving
+    // pile pays the same substep cost as a violent one. Pre-settle explicitly first
+    // (30 frames, clear of the boundary), then fork into explicit and implicit from the
+    // same settled state.
     let mut pre = make_sim_at(false, 10.0);
     for _ in 0..30 {
         pre.step();
@@ -229,12 +228,10 @@ fn make_sim_at_dt(implicit: bool, center_y: f32, dt: f32) -> Simulation {
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
 }
 
-/// Real test of the "one big implicit step is too large" hypothesis: same
-/// total simulated time, same real fall+impact+settle scenario, but the
-/// implicit side takes N smaller implicit steps instead of exactly 1 per
-/// explicit frame. If drift shrinks substantially as N grows, the premise
-/// needs "a handful of implicit substeps," not exactly one -- a real,
-/// different (and still fast) design, not a formula bug.
+/// Is one big implicit step too large? Same total simulated time and the same fall,
+/// impact and settle, but the implicit side takes N smaller steps per explicit frame
+/// instead of one. If drift shrinks substantially as N grows, the design needs a
+/// handful of implicit substeps rather than one (still fast), not a formula fix.
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn diag_implicit_substep_count_sweep() {

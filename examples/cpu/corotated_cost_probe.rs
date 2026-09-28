@@ -1,4 +1,4 @@
-//! Real per-frame cost for the stiff-elastic bounce scene, headless.
+//! Per-frame cost of the stiff-elastic bounce scene, headless.
 extern crate emerge_engine as emerge;
 
 use emerge::{

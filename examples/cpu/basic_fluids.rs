@@ -5,22 +5,17 @@ mod scripted;
 
 use egui_wgpu::ScreenDescriptor;
 use emerge::Particle;
-/// `basic_fluids.rs` (Newtonian water dam-break) with a real,
-/// live egui panel -- same pattern as `basic_sand.rs`/`basic_snow.rs`:
-/// real gravity slider (1.0 = genuine IRL 9.81 m/s²), push/pull, and directional-
-/// drag digging (the SAME proven mechanism from `basic_sand.rs`: a per-particle
-/// velocity nudge along the cursor's own movement, no second body, no contact_group
-/// tuning -- mass-conserving by construction). Materials and the dam-break setup
-/// are unchanged from `basic_fluids.rs`.
+/// Newtonian water dam-break with a live egui panel, the pattern of
+/// `basic_sand.rs`/`basic_snow.rs`: a gravity slider (1.0 = Earth's 9.81 m/s²),
+/// push/pull, and directional-drag digging (the mechanism of `basic_sand.rs`: a
+/// per-particle velocity nudge along the cursor's movement, no second body, no
+/// contact_group tuning, mass-conserving by construction).
 ///
-/// Real phase range: water below 273K freezes into ice
-/// (`NeoHookeanMaterial` wrapped in `WithLatentHeat(-334_000.0)`, same real
-/// exothermic value `latent_heat.rs` already uses, via
-/// `Simulation::thermal_config_mut()` -- a already-existing engine
-/// hook, not new plumbing). Exposed as a discrete Warm/Cold toggle, not a
-/// continuous slider -- a continuously-tunable gravity/temperature slider
-/// pair turns into a hunt-for-the-right-value loop; a two-state toggle proves
-/// the same real phase transition without that.
+/// Phase range: water below 273 K freezes into ice (`NeoHookeanMaterial` wrapped in
+/// `WithLatentHeat(-334_000.0)`, the exothermic value `latent_heat.rs` uses), with the
+/// ambient set through `Simulation::thermal_config_mut()`. A Warm/Cold toggle rather
+/// than a continuous slider: a two-state toggle shows the phase transition without a
+/// hunt for the right value.
 ///
 /// This explicit WC-MPM branch has no hidden Jacobian floor: an inadmissible
 /// state is reported rather than replaced by a capped deformation. Use the
@@ -53,21 +48,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// The three real rendering paths this demo can show, cycled with G -- same
-/// modes/order as `basic_fluids_gpu.rs`, ported here for the CPU `Simulation`
-/// path (2026-08-09). That demo runs on GPU-resident buffers
-/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`) already in the right
-/// layout for `render_grid_volume`/`render_surface_reconstruction_dual_phase`;
-/// this one runs the CPU solver, which has no such persistent GPU buffer, so
-/// `grid_bridge_buf`/`material_mass_bridge_buf`/`particle_bridge_buf` below
-/// rebuild and upload a snapshot each frame -- same disclosed bridging
-/// cost/approximation `fire_spread.rs` already established for its own
-/// `GridVolume` mode (see `upload_grid_volume_bridge`'s doc), extended
-/// here with a NEW particle-buffer bridge for `Surface` mode (first CPU demo
-/// to drive the curvature-flow dual-phase path -- `Particle` is already
-/// `repr(C)`/`Pod`/GPU-uploadable by design, so this is a direct
-/// `bytemuck::cast_slice` upload of `sim.particles().iter().collect()`, no
-/// new layout work).
+/// The three rendering paths this demo can show, cycled with G, in the modes and
+/// order of `basic_fluids_gpu.rs`. That demo renders from GPU-resident buffers
+/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`) already laid out for
+/// `render_grid_volume`/`render_surface_reconstruction`; the CPU solver has none, so
+/// `grid_bridge_buf`/`material_mass_bridge_buf`/`particle_bridge_buf` below rebuild
+/// and upload a snapshot each frame (the bridging `fire_spread.rs` uses for its
+/// `GridVolume` mode, see `upload_grid_volume_bridge`, plus a particle-buffer bridge
+/// for `Surface` mode: `Particle` is `repr(C)`/`Pod`, so it is a direct
+/// `bytemuck::cast_slice` upload of `sim.particles().iter().collect()`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RenderMode {
     Particles,
@@ -75,14 +64,9 @@ enum RenderMode {
     Surface,
 }
 
-// Foam/spray (Ihmsen-simplified trapped-air potential + Spray/Foam
-// secondary particles) was built and shipped 2026-08-10, then REVERTED same
-// day on the user's own direct instruction: measured perf cost (see
-// [[basic_fluids_foam_spray_shipped_2026-08-10]] for the full postmortem
-// -- visual tuning was never confirmed and the user judged it not worth
-// carrying while the CORE render/perf/physics work below is still unsettled.
-// Deliberately deferred, not abandoned -- pick it back up from that memory
-// entry once Surface mode and interaction-fps stability are solid.
+// No foam/spray (Ihmsen-simplified trapped-air potential with Spray/Foam secondary
+// particles): its render and perf cost is not worth carrying while the core
+// render/perf/physics work is unsettled.
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
@@ -97,39 +81,24 @@ const DT: f32 = 0.1;
 const PLAYBACK_STEP_RATE_HZ: f32 = 30.0;
 /// The push slider's top, which a scripted run presses at.
 const PUSH_STRENGTH_MAX: f32 = 20.0;
-// Measured 45fps-debug-minimum fix (2026-08-09) -- see `make_sim`'s own
-// doc for the full derivation. Promoted to a top-level const (was local to
-// `make_sim`) so `State::new`/`resize`'s own `set_camera` calls can size
-// `particle_scale` to match -- disclosed bug found 2026-08-10: leaving
-// `particle_scale` at the OLD spacing's value (0.6) while particles now sit
-// 0.9 grid-units apart left visible gaps between them, reading as
-// "filtered"/barely-visible fluid, not the actual physics being wrong.
-// 0.5, not the old 0.9 (2026-08-13). This is the particle-per-cell (PPC)
-// sampling rate, a real MPM discretisation parameter, not a cosmetic one:
-// with grid_cell_size = 1.0, spacing s gives PPC = (1/s)^2, so 0.9 gave just
-// **1.23 PPC** where standard 2D MPM uses **4** (particles seeded at dx/2 --
-// the convention in Hu et al.'s MLS-MPM and every reference implementation in
-// tmp/). At 1.23 PPC each grid node is supported by barely one particle, which
-// under-resolves the transfer, makes the free surface ragged, and starves both
-// render paths (grid-volume's density field and the curvature-flow surface
-// reconstruction) of the data they need -- reported live as every render mode
-// looking bad, not just the raw-particle one.
-//
-// 0.5 restores exactly 4 PPC. `box_size` is the region's extent in CELLS, so
-// it stays untouched -- the columns keep their exact physical dimensions and
-// only the sampling density inside them changes. Particle mass is already
-// derived as rho0 * SPACING^2, so it follows automatically. Real cost: ~3.2x
-// more particles (water ~928 -> ~2900).
+// Particle spacing, the particles-per-cell (PPC) sampling rate: a discretization
+// parameter, not a cosmetic one. With grid_cell_size = 1.0, spacing s gives
+// PPC = (1/s)^2, so 0.5 gives the 4 PPC of standard 2D MPM (particles seeded at
+// dx/2, as in Hu et al.'s MLS-MPM and the reference implementations in tmp/). At
+// 0.9 (1.23 PPC) each grid node is supported by barely one particle, which
+// under-resolves the transfer, makes the free surface ragged and starves both
+// density-based render paths. `box_size` is in cells, so the columns keep their
+// dimensions and only the sampling density changes; particle mass is rho0 *
+// SPACING^2, so it follows. A top-level const so `set_camera` calls can size
+// `particle_scale` from it.
 const SPACING: f32 = 0.5;
 /// Rendered diameter of one particle, for `RenderMode::Particles`.
 ///
 /// The quad spans `local_pos` in [-0.5, 0.5], so the drawn disc's DIAMETER is
-/// exactly the `particle_scale` passed to `set_camera`. Passing `SPACING`
-/// (what this demo did until 2026-08-13) makes each disc exactly as wide as
-/// the particle pitch -- and circles of diameter = pitch on a square lattice
-/// cover only pi/4 = 78.5% of the area, leaving 21.5% of the fluid as visible
-/// dark gaps at the diagonals. Live-reported as the particle view looking
-/// speckled/scattered rather than like a liquid.
+/// exactly the `particle_scale` passed to `set_camera`. A diameter equal to
+/// `SPACING` (the particle pitch) covers only pi/4 = 78.5% of a square lattice,
+/// leaving 21.5% of the fluid as dark gaps at the diagonals, so the particle view
+/// looks speckled rather than liquid.
 ///
 /// A material point represents an area of `SPACING^2`, so the disc carrying
 /// exactly that area has `pi*r^2 = SPACING^2`, i.e. diameter
@@ -157,68 +126,29 @@ const DIG_RADIUS: f32 = 4.0;
 fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 1.0e-4,
-        // 12, NOT the real CFL-satisfying ~21 -- a DELIBERATE, DISCLOSED,
-        // TEMPORARY dev-time trade (see MEMORY.md [[feedback_incremental_
-        // substep_cap_perf_methodology_2026-08-09]]), NOT a repeat of the
-        // real bug this exact field once had (see [[fluid_pressure_solve_
-        // perf_profiled_and_component_split_ruled_out_2026-08-09]] Round 5:
-        // cap=8 two weeks ago silently dropped 61% of requested simulation
-        // time every frame while still reporting a flat, comfortable fps --
-        // that was NEVER disclosed or tracked, this is). RE-MEASURED
-        // 2026-08-10 (previous sweep numbers here were stale, measured under
-        // a since-fixed time-dilation bug -- see [[basic_fluids_
-        // realtime_stepping_fixed_2026-08-10]]): on a quiet
-        // machine, real-time-corrected stepping, cap=12 -> stable 46-59fps
-        // clean 20s (zero spikes); cap=16 -> 38-47fps, real dips below the
-        // 45fps floor during warm-up -- REJECTED per the methodology's own
-        // rule (raise only kept if it stays >= 45fps). THE PLAN, not
-        // optional: every time a real per-substep cost reduction lands
-        // (P2G/G2P, render pipeline, etc.), raise this cap by a real
-        // increment and re-verify live fps stays >= 45 before keeping the
-        // raise -- see that methodology memory entry for the full rule.
-        // This demo's gravity_fraction=0.003 is the same
-        // ~10x-stronger-than-basic_fluids.rs regime as basic_fluids_gpu.rs,
-        // so it needs that file's cfl=0.1, not basic_fluids.rs's unchanged
-        // default -- that reasoning still applies to `material_cfl_
-        // coefficient` below, unaffected by this cap.
-        // Raised from 12 to 150 (2026-08-13) to match `basic_fluids_gpu.rs`'s
-        // own value -- the entire 45fps-floor tuning ladder documented above
-        // this field needs a fresh re-pass on this water-only scene; not
-        // re-done here, flagged as real follow-up work.
+        // Substep budget as in `basic_fluids_gpu.rs`. A frame-rate ladder for
+        // this water-only scene (raise the cap in increments, keep a raise only
+        // if live fps stays >= 45) has not been redone at this value. A cap the
+        // CFL scan runs into drops simulated time instead of advancing it (a cap
+        // of 8 once dropped 61% of each frame's time behind a comfortable fps).
         max_substeps_per_step: 150,
-        // `spatial_sort_enabled` real-measured 2026-08-10, NOT enabled here:
-        // tried at this demo's ~1288 particles (46-59fps -> 22-27fps, a real
-        // regression) and re-tried after fixing an initial implementation
-        // mistake (was recomputing the sort every substep instead of once
-        // per outer step) -- still measured WORSE even at 67,600 particles
-        // in a dedicated headless benchmark (52.9ms/step unsorted vs
-        // 79.0ms/step sorted, +49%). Honest negative result on this
-        // engine's actual dev target (debug builds) --
-        // the O(N log N) sort's real cost in an unoptimized build outweighs
-        // the P2G cache-locality win the mechanism itself is real about.
-        // Feature kept (opt-in, default `false`, fully tested/correct --
-        // see `spatial_sort_order`/`scatter_particles_to_grid_sorted`'s own
-        // tests) in case a release build or a very different access pattern
-        // ever makes it worthwhile -- just not proven beneficial today.
-        // 0.3, not the old 0.1 (2026-08-13). This is the CFL *number* C in the
-        // standard explicit acoustic condition `dt <= C * dx / c_sound`, where
-        // C < 1 is the stability limit and real solvers run C = 0.2-0.4 for
-        // margin (Monaghan 1992/1994 uses 0.25-0.3 for SPH; MLS-MPM commonly
-        // 0.3-0.5). 0.1 was 3x more conservative than any of them.
-        //
-        // Why it was 0.1: the note below records `cfl=0.5 panics on frame 1`.
-        // That was measured against the ~100x-too-soft `eos_stiffness = 1.0`
-        // (see the water material's own derivation comment) -- with an EOS
-        // that soft, the column collapsed into the J-clamp floor
-        // every run, and no CFL number could have saved it. With the stiffness
-        // now derived correctly, that failure mode is gone at the source, so
-        // the conservative override it forced is no longer justified.
-        //
-        // Measured effect of the stiffness fix alone: substeps/frame
-        // 11 -> 54 (correct water is genuinely ~5x more work -- higher sound
-        // speed is the whole point of a stiffer EOS), fps ~50 -> ~13. Moving C
-        // 0.1 -> 0.3 recovers ~3x of that from the safety margin rather than
-        // from the physics.
+        // `spatial_sort_enabled` stays off: at this demo's ~1288 particles it
+        // measured 46-59 fps -> 22-27 fps, and in a headless benchmark at 67,600
+        // particles 52.9 ms/step unsorted against 79.0 ms/step sorted (+49%), with
+        // the sort computed once per outer step. In debug builds the O(N log N)
+        // sort costs more than the P2G cache-locality it buys. The feature stays
+        // opt-in (default `false`, tested, see
+        // `spatial_sort_order`/`scatter_particles_to_grid_sorted`) for a release
+        // build or another access pattern.
+        // 0.3: the CFL number C in the explicit acoustic condition
+        // `dt <= C * dx / c_sound`, where C < 1 is the stability limit and solvers
+        // run C = 0.2-0.4 for margin (Monaghan 1992/1994 uses 0.25-0.3 for SPH;
+        // MLS-MPM commonly 0.3-0.5). A "cfl=0.5 panics on frame 1" failure came
+        // from a ~100x too soft EOS (the column collapsed into the J clamp), which
+        // no CFL number can save; with the stiffness derived (see the water
+        // material), substeps/frame went 11 -> 54 (correct water is ~5x more work,
+        // a higher sound speed being the point of a stiffer EOS), and C 0.1 -> 0.3
+        // recovers ~3x of that from the safety margin rather than the physics.
         // This demo's only phase rule is the water->ice freeze predicate, a
         // thermodynamic test -- and temperature now advances once per step
         // (diffusion runs at its own stable rate), so it cannot change within
@@ -228,80 +158,48 @@ fn make_sim() -> Simulation {
         phase_rules_once_per_step: true,
         material_cfl_coefficient: 0.3,
         cfl_include_affine_speed: false,
-        // `fluid_near_wall_cfl_scale` (proven fix for the wall-contact
-        // momentum bug, see project memory) tried here at 1000x and REVERTED,
-        // 2026-08-08: this demo's water starts only ~2 cells from a wall, so a
-        // large, sustained fraction of the domain reads as "near wall" the
-        // whole time, not just during brief contact events -- 1000x turned
-        // that into a live-confirmed freeze/severe-lag, not a one-off
-        // slow frame. The fix is correct but not yet practical for a scene
-        // shaped like this one; left at the engine default (1.0, off) here
-        // until a cheaper version (narrower spatial trigger, or local-only
-        // application) exists.
+        // `fluid_near_wall_cfl_scale` stays at the engine default (1.0, off): the
+        // water starts ~2 cells from a wall, so a large, sustained part of the
+        // domain reads as near-wall, not only during brief contacts, and at 1000x
+        // the scene freezes or lags severely.
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // eos_power=3.0, NOT the real Cole 1948 water exponent (7.0) -- real,
-    // disclosed compressibility-accuracy trade, found live 2026-08-09 on this
-    // demo's GPU twin (basic_fluids_gpu.rs, see its doc for the full
-    // per-substep CFL-term breakdown that found it): under real violent wall
-    // impact, J drops to ~0.3-0.4 (local compression, not a bug), and
-    // `c2 = eos_stiffness*eos_power*ratio^(eos_power-1)/rest_density` explodes
-    // as ratio^6 at power=7 -- confirmed the dt-limiting term by two orders of
-    // magnitude over the deformation-gradient and gravity terms. Lower Tait
-    // exponents (n=1..4) are an established real-time-graphics WCSPH trade for
-    // exactly this reason (Chorin's artificial-compressibility method uses
-    // n=1). eos_stiffness=1.0, not the SI-correct 2.5, as a modest additional
-    // margin -- the exponent is the dominant lever, not the base stiffness
-    // (tried stiffness alone at 0.25 first, barely moved the substep count).
-    // REAL, DERIVED EOS stiffness (2026-08-13) -- replaces a hardcoded
-    // `eos_stiffness = 1.0` that was ~100x too soft and was the actual root
-    // cause of the "particles get crushed" symptom, calculated:
+    // Tait exponent 3, not water's 7 (Cole 1948): under a violent wall impact J drops
+    // to ~0.3-0.4, and the acoustic term
+    // `c2 = eos_stiffness*eos_power*ratio^(eos_power-1)/rest_density` grows as
+    // ratio^6 at 7, becoming the dt-limiting term by two orders of magnitude over the
+    // deformation-gradient and gravity terms (see basic_fluids_gpu.rs). Lower Tait
+    // exponents (n=1..4) are an established real-time WCSPH trade for this reason
+    // (Chorin's artificial compressibility uses n=1).
     //
-    //   Hydrostatic load at this column's base:
-    //     p = rho * g * h = 1000 kg/m^3 * (9.81 * 0.003) m/s^2 * 0.468 m
-    //       = 13.77 Pa                     (h = box_size.y=52 * SPACING=0.9 cells * dx=0.01 m)
-    //   Tait EOS solved for the equilibrium compression it implies:
+    // Stiffness derived from the load, not hardcoded. With B=1.0, the hydrostatic load
+    // at this column's base
+    //     p = rho * g * h = 1000 kg/m^3 * (9.81 * 0.003) m/s^2 * 0.468 m = 13.77 Pa
+    // solved through the Tait EOS for its equilibrium compression,
     //     p = B((rho/rho0)^gamma - 1),  gamma = 3
-    //     B = 1.0  ->  r^3 = 14.77 -> r = 2.45 -> J = 0.408   <-- CRUSHED
-    //     B = 104  ->  r^3 = 1.132 -> r = 1.04 -> J = 0.96    <-- correct
+    //     B = 1.0  ->  r^3 = 14.77 -> r = 2.45 -> J = 0.408   (crushed)
+    //     B = 104  ->  r^3 = 1.132 -> r = 1.04 -> J = 0.96
+    // puts J below the material's [0.5, 2.0] clamp floor, pinning every base particle
+    // at J=0.5; water under this load compresses by well under 1%.
     //
-    // J=0.408 sits BELOW this material's own [0.5, 2.0] clamp floor, so every
-    // base particle was pinned at exactly J=0.5 permanently -- live-confirmed
-    // in this demo's own log line (`water_j=[0.500, ...]`, min pinned at the
-    // floor, never moving). The old comment above rationalised this as
-    // "local compression, not a bug"; it isn't -- real water at this
-    // load compresses by well under 1%, not 60%.
-    //
-    // `c_ref = 10 * v_max` is the standard weakly-compressible rule limiting
-    // density variation to ~1% (Monaghan 1994; Becker & Teschner 2007 WCSPH,
-    // both already cited elsewhere in this engine), with v_max from Torricelli
-    // for this column. Identical derivation to `basic_fluids_gpu.rs`'s own
-    // (that demo already did this correctly; this CPU demo was the holdout) --
-    // including its same deliberately-derated gravity for acoustic sizing, so
-    // the two demos stay directly comparable.
+    // `c_ref = 10 * v_max`, the weakly compressible rule limiting density variation
+    // to ~1% (Monaghan 1994; Becker & Teschner 2007 WCSPH), with v_max from
+    // Torricelli for this column, sized with a derated gravity (0.3) for the acoustic
+    // sizing. `basic_fluids_gpu.rs` now sizes from its scene's full gravity instead,
+    // which removes a ~0.7 s acoustic "breathing" of the pool (see its doc).
     const WATER_EOS_POWER: f32 = 3.0;
     const COLUMN_HEIGHT_CELLS: f32 = 52.0 * SPACING;
     const DERATED_GRAVITY_FOR_ACOUSTIC_SIZING: f32 = 0.3;
     let v_max_grid = (2.0 * DERATED_GRAVITY_FOR_ACOUSTIC_SIZING * COLUMN_HEIGHT_CELLS).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
-    // REAL FIX (2026-09-17): `dynamic_viscosity` was assigned water's raw SI
-    // value (1.0e-3 Pa.s) directly, with NO SI-to-grid conversion -- the
-    // SAME bug pattern as `pressure_floor` below, just never caught until
-    // now. `fluid.rs`'s own stress law (`stress += eff_viscosity *
-    // strain_dev`, strain rate in 1/s grid-time) needs `eff_viscosity` in
-    // grid units, and this engine already has the dimensionally-correct
-    // conversion for exactly this (`SimConfig::visc_from_si`,
-    // `eta_SI/(rho*dx^2)`, doc'd against this exact consumption pattern).
-    // Must pair with the SAME density-normalized family `pressure_floor`
-    // below already uses (`stress_from_si`) -- mixing raw and
-    // density-normalized conventions in the same stress tensor is wrong
-    // (see `q_factor_elastic_viscosity_pa_s`'s doc for a prior
-    // instance of exactly that mistake, ~917x error, a different material).
-    // Real effect here: raw 1.0e-3 was ~10x too weak (correct grid value
-    // 0.01) -- but NOT the fix for the splash-disintegration
-    // instability (verified separately: even 10x more molecular viscosity is
-    // far too small to explain or damp the observed C-matrix growth rate).
+    // Viscosity converted to grid units (`SimConfig::visc_from_si`,
+    // `eta_SI/(rho*dx^2)`), the family `pressure_floor` below uses
+    // (`stress_from_si`): `fluid.rs`'s stress law (`stress += eff_viscosity *
+    // strain_dev`) needs grid units, and mixing raw and density-normalized
+    // conventions in one stress tensor is wrong (see
+    // `q_factor_elastic_viscosity_pa_s` for a ~917x instance of that mistake). The
+    // raw 1.0e-3 would be ~10x too weak here (grid value 0.01).
     const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
     const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
     let water_dynamic_viscosity =
@@ -312,18 +210,12 @@ fn make_sim() -> Simulation {
         water_tait_b_pa,
         WATER_EOS_POWER,
     );
-    // REAL FIX (2026-09-16), ported from the GPU twin -- see
-    // `HANDOFF_fluid_gpu_thin_layer_bug.md`'s Tenth pass. `pressure_floor`
-    // (constructor default -0.1) was never run through this engine's own
-    // SI-to-grid conversion pipeline, unlike `water_tait_b_pa` just above.
-    // Real cavitation onset for water in practice (dissolved-gas nucleation)
-    // is ~-100,000 Pa gauge -- converted through the same `stress_from_si`
-    // pipeline `eos_stiffness` itself uses, this lands orders of
-    // magnitude more negative than this demo's own derated `eos_stiffness`,
-    // matching that real water essentially never cavitates from ordinary
-    // splashing. Applied here too for consistency even though CPU never
-    // showed the GPU's thin-layer collapse -- the underlying unit gap is
-    // backend-independent.
+    // Cavitation floor converted to grid units, as in the GPU twin. The
+    // constructor's `pressure_floor` default (-0.1) is a bare grid-unit constant;
+    // water's practical cavitation onset (dissolved-gas nucleation) is ~-100,000 Pa
+    // gauge, which through `stress_from_si` lands far below the EOS scale, so water
+    // essentially never cavitates from ordinary splashing. The unit gap does not
+    // depend on the backend.
     const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
     const WATER_RHO_SI_KG_M3: f32 = 1000.0;
     water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
@@ -356,7 +248,7 @@ fn make_sim() -> Simulation {
         box_size: IVec2::new(14, 52),
         // x=20, not the old 11 -- matches basic_fluids_gpu.rs's own fix (see
         // that file's doc): at x=11 the column's left edge sat only 2 cells
-        // past the near-wall threshold, permanently close to a real wall-
+        // past the near-wall threshold, permanently close to a wall-
         // contact regime rather than only during interaction.
         box_center: Vec2::new(20.0, 30.0),
         material_id: MAT_WATER,
@@ -410,53 +302,27 @@ struct State {
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
-    // Real diagnostic added 2026-08-10 -- user's own live report that
-    // interaction (push/pull) "slows down the physics" even when the
-    // averaged fps counter looks fine. Two headless hypotheses tested and
-    // BOTH ruled out with real data (sim_time_dropped unchanged during a
-    // scripted push; wall-clock step() cost actually LOWER during a push,
-    // not higher) -- neither explains a live-felt slowdown, so the real
-    // next diagnostic has to be live, not another isolated guess.
-    // `last_fps` is a 1-SECOND AVERAGE, which hides exactly the kind of
-    // short spike a user would feel as a stutter during active interaction
-    // -- this tracks the single WORST individual `Simulation::step()` call
-    // within that same averaging window instead, so a spike becomes
-    // directly visible and correlatable with what's actually being done at
-    // the time (pushing near a wall, digging, etc.), not silently smoothed
-    // away by the average.
+    // Worst single `Simulation::step()` call within the fps averaging window.
+    // `last_fps` is a 1-second average, which hides a short spike felt as a
+    // stutter during push/pull; this makes it visible and correlatable with what
+    // is being done (pushing near a wall, digging). Headless, a scripted push
+    // neither changed sim_time_dropped nor raised the step cost.
     worst_step_ms_this_window: f32,
     last_worst_step_ms: f32,
     fps_log_count: u32,
-    // Real bug found live 2026-08-10 (user: "la physique est bizarre, la
-    // gravite est pas trop forte?"): this demo called `sim.step()` once per
-    // RENDER frame, unconditionally, with `SimConfig::dt_seconds = DT =
-    // 0.1s` baked in -- at the live-measured ~48fps that's 100ms of
-    // simulated time advanced every ~21ms of wall-clock, a real ~4.8x
-    // time-dilation (the whole scene, gravity included, played out ~5x
-    // faster than real time). Every OTHER demo in the project already
-    // avoids exactly this via `FixedStepController` (see `runtime/README.md`
-    // -- "decouples real frame rate from a fixed physics dt... used across
-    // every GPU demo"); this CPU demo was the one exception, added after
-    // that rollout and never migrated. Fixed by driving `sim.step()` off
-    // real elapsed time (`simulation_speed: 1.0` = real-time, no playback-
-    // speed knob wanted here) instead of render cadence. NOTE: the substep-
-    // cap fps sweep documented on `max_substeps_per_step` above (cap=12 ->
-    // 48fps) was measured under the OLD always-step-once-per-frame regime
-    // and is now stale -- physics now steps ~10Hz instead of ~48Hz, so real
-    // per-frame physics cost dropped ~4.8x; a fresh sweep would be needed to
-    // re-tune the cap, not attempted tonight.
+    // Steps `sim.step()` off elapsed time (`FixedStepController`,
+    // `simulation_speed: 1.0` = real time), not once per render frame: at ~48 fps
+    // with DT = 0.1 s, one step per frame advances 100 ms of simulated time every
+    // ~21 ms, playing the scene ~4.8x too fast. Physics now steps ~10 Hz rather than
+    // ~48 Hz, so the per-frame cost at a given substep cap is ~4.8x lower than when
+    // that cap was last tuned.
     stepper: FixedStepController,
-    // Real render-interpolation state (2026-09-09, "Fix Your Timestep" --
-    // Gaffer 2004): a snapshot of every particle's position from BEFORE the
-    // most recent batch of physics steps, so `render_scene` can blend it
-    // against the CURRENT position using `stepper.interpolation_alpha()`.
-    // Purely a render-time read -- `self.sim`'s own particle state is never
-    // permanently altered by this, only briefly swapped out and restored
-    // around one `Renderer::render` call. Fixes a disclosed symptom
-    // (not a new physics change): whenever real per-step cost varies frame
-    // to frame, motion visibly speeds up/slows down because the renderer
-    // was always drawing whatever the LAST completed physics step produced,
-    // with no notion of "how far into the next step we already are."
+    // Render interpolation ("Fix Your Timestep", Gaffer 2004): every particle's
+    // position from before the latest batch of physics steps, so `render_scene` can
+    // blend it with the current position by `stepper.interpolation_alpha()`. Render
+    // only: `self.sim`'s particles are swapped out and restored around one
+    // `Renderer::render` call. Without it, motion speeds up and slows down whenever
+    // the per-step cost varies, since the renderer draws the last completed step.
     prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
     render_mode: RenderMode,
@@ -465,12 +331,11 @@ struct State {
     particle_bridge_buf: wgpu::Buffer,
     /// Persistent scratch for the per-frame CPU->GPU render bridges.
     ///
-    /// These used to be freshly `vec![]`/`collect()`ed every frame, which at
-    /// this scene's size churned ~373 KB (Surface: 2912 particles x 128 B)
+    /// Reused rather than built with `vec![]`/`collect()` each frame, which at
+    /// this scene's size would churn ~373 KB (Surface: 2912 particles x 128 B)
     /// or ~320 KB (GridVolume: 64x64x4 + 64x64x16 f32) of allocate-fill-free
-    /// per frame for zero benefit -- the contents are fully rewritten each
-    /// time either way, so reusing the storage is bit-identical output with
-    /// no allocator traffic.
+    /// per frame; the contents are fully rewritten each time, so the output is
+    /// bit-identical with no allocator traffic.
     bridge_particles: Vec<Particle>,
     bridge_dense: Vec<f32>,
     bridge_material_mass: Vec<f32>,
@@ -554,18 +419,12 @@ impl State {
             true,
         );
         renderer.set_color_mode(ColorMode::ByMaterial);
-        // Disclosed render fix (2026-08-13): the grid-volume and
-        // curvature-flow-surface paths threshold on ABSOLUTE cell mass
-        // (`mass_floor = 0.15`), a constant written for scenes whose occupied
-        // cells weigh "order 0.5-4". This scene is calibrated to REAL water,
-        // `rho0 = 1000 kg/m^3 * dx^2 = 0.1` grid units, so a completely full
-        // cell weighs 0.1 -- BELOW that floor. Every cell was discarded, so
-        // both of those modes rendered the fluid as near-empty while the
-        // raw-particle mode showed it correctly (live-confirmed: the three
-        // modes visibly disagreed about where the fluid even was). Telling the
-        // renderer this scene's real full-cell mass makes the thresholds mean
-        // "fraction of a full cell", which is what they were always intended
-        // to mean.
+        // The grid-volume and curvature-flow-surface paths threshold on absolute
+        // cell mass (`mass_floor = 0.15`), written for scenes whose occupied cells
+        // weigh "order 0.5-4". This scene uses water's `rho0 = 1000 kg/m^3 * dx^2 =
+        // 0.1` grid units, so a full cell weighs 0.1, below that floor, and both
+        // modes would discard every cell. Giving the renderer the scene's full-cell
+        // mass makes the thresholds a fraction of a full cell.
         renderer.set_grid_reference_cell_mass(0.1);
         // Surface grid at 4x the physics grid, not the 6x default -- a real
         // sampling-statistics fix for the speckle/"white noise" on the
@@ -585,34 +444,28 @@ impl State {
         // the surface-pass work. Strictly better on both axes at this particle
         // count; raise it again if the particle count rises.
         renderer.set_surface_res_multiplier(4);
-        // Splat width left at the plain default (1.0). A derivation from real
-        // particle spacing exists (`Renderer::set_particle_spacing_cells`,
-        // reasoning in its doc) and was wired in here 2026-08-14, but
-        // live review found a real regression once composed with an
-        // additional boundary-truncation factor and this demo's own already-
-        // raised `surface_res_multiplier` -- a gap opening at the free
-        // surface, worsening further with resolution. Un-wired here pending
-        // a proper visual diagnosis of that interaction; the derivation
-        // function itself stays available, just not called by default.
-        // Optical properties for the volumetric render paths. Without these
-        // every slot keeps its 0.0 default, so `grid-volume`/`surface` shade
-        // with no absorption, no subsurface scattering and no Fresnel -- which
-        // is exactly why this demo's water rendered flat GREY while the same
-        // scene in `basic_fluids_gpu.rs` (which does set them) looks like
-        // water. Ported from that demo, same values, rather than re-guessed.
+        // Splat width left at the default (1.0). `Renderer::set_particle_spacing_cells`
+        // derives it from particle spacing (see its doc), but combined with a
+        // boundary-truncation factor and this demo's raised `surface_res_multiplier`
+        // it opens a gap at the free surface that grows with resolution; not used
+        // until that interaction is diagnosed.
+        // Optical properties for the volumetric render paths, the values of
+        // `basic_fluids_gpu.rs`. Without them every slot keeps its 0.0 default, and
+        // `grid-volume`/`surface` shade with no absorption, no subsurface scattering
+        // and no Fresnel, so water renders flat grey.
         //
         // The absorption triple is physically meaningful, not a palette pick:
         // water's absorption coefficient rises steeply with wavelength, so red
         // is attenuated ~12x more strongly than blue. Encoding that as
         // sigma_a = [0.85, 0.25, 0.07] (R,G,B) makes transmitted light go blue
-        // through depth for the real Beer-Lambert reason, instead of being
+        // through depth for the Beer-Lambert reason, instead of being
         // tinted blue by hand.
         renderer.set_optical_params(&queue, MAT_WATER as usize, [0.85, 0.25, 0.07]);
         renderer.set_optical_scattering(&queue, MAT_WATER as usize, 0.03);
         renderer.set_specular_r0(&queue, MAT_WATER as usize, 0.02);
         // Derived (not a per-scene guess): a material's free surface
         // only propagates waves if it behaves like a real fluid --
-        // `owns_deformation_volume_state()` IS that real property (see
+        // `owns_deformation_volume_state()` IS that property (see
         // `Renderer::set_wave_force_coeff`'s doc), queried from the
         // actual material TYPE (result is parameter-independent, so a cheap
         // throwaway instance is a correct query, not a placeholder
@@ -773,29 +626,17 @@ impl State {
         );
     }
 
-    /// Rebuilds `particle_bridge_buf` from the CPU solver's current
-    /// particles and uploads it -- first CPU demo to drive the curvature-
-    /// flow dual-phase surface path (`RenderMode::Surface`). `Particle` is
-    /// already `repr(C)`/`Pod` (GPU-uploadable by design, see `Particle`'s
-    /// own struct doc), so this is a direct `bytemuck::cast_slice` of the
-    /// AoS view `Particles::iter()` already produces elsewhere (e.g.
-    /// `Renderer::render`'s own per-particle loop) -- no new layout work,
-    /// just a buffer this demo didn't previously need. Only called when
-    /// `render_mode == Surface`.
-    /// Disclosed fix (2026-08-10) for two real bugs the user found live:
-    /// `render_surface_reconstruction_dual_phase` only knows 2 material IDs
-    /// (`material_id_a`/`material_id_b`, see `DualPhaseSurfaceSource`'s own
-    /// doc), so ice (`MAT_ICE`, neither slot) silently vanished from the
-    /// surface once water froze -- and the earlier same-day fix (remapping
-    /// ice->water in this snapshot) traded that bug for a different one:
-    /// ice rendering visually IDENTICAL to water. Real fix: switched the
-    /// caller to `render_surface_reconstruction`'s N-material path
-    /// (`material_mass_enabled`), which colors every cell from its own real
-    /// per-material mass -- water/ice all stay visually distinct, no
-    /// remap needed here at all.
+    /// Rebuilds `particle_bridge_buf` from the CPU solver's particles and uploads it,
+    /// for `RenderMode::Surface`. `Particle` is `repr(C)`/`Pod` (see its struct doc),
+    /// so this is a direct `bytemuck::cast_slice` of the AoS view `Particles::iter()`
+    /// produces. Only called when `render_mode == Surface`. The surface uses
+    /// `render_surface_reconstruction`'s N-material path (`material_mass_enabled`),
+    /// which colors each cell from its per-material mass, so water and ice stay
+    /// distinct; the dual-phase path knows only 2 material IDs
+    /// (`material_id_a`/`material_id_b`, see `DualPhaseSurfaceSource`).
     fn upload_particle_bridge(&mut self) {
         // No ice->water remap: render_surface_reconstruction's material_mass_enabled
-        // path colors every real material_id (water/ice) from its own per-cell
+        // path colors every material_id (water/ice) from its own per-cell
         // mass, so all 3 stay visually distinct instead of collapsing to one slot.
         self.bridge_particles.clear();
         self.bridge_particles.extend(self.sim.particles().iter());
@@ -856,7 +697,7 @@ impl State {
     }
 
     /// Applies the LMB/RMB radial push-pull impulse, and returns this
-    /// frame's cursor position plus a real digging direction (if actively
+    /// frame's cursor position plus a digging direction (if actively
     /// digging and the cursor moved) for `step_physics` to apply once per
     /// real physics step below -- see that method's doc for why the
     /// direction is sampled here (render cadence) but applied there
@@ -881,10 +722,8 @@ impl State {
         (cursor, dig_dir)
     }
 
-    /// TEMP diagnostic (2026-08-06) -- delete after use. Investigating a real
-    /// live-reported "hold shape ~0.2s then sudden brutal collapse" -- this
-    /// demo never had per-frame diagnostic printing (unlike basic_fluids_gpu.rs),
-    /// so there was no data to check the claim against.
+    /// Temporary diagnostic: per-frame printing, to check a reported "hold shape
+    /// ~0.2 s then sudden collapse" against data.
     fn log_early_frame_diagnostics(&self) {
         if self.frame > 20 {
             return;
@@ -950,20 +789,16 @@ impl State {
             self.sim.step();
             let step_ms = step_start.elapsed().as_secs_f32() * 1000.0;
             self.worst_step_ms_this_window = self.worst_step_ms_this_window.max(step_ms);
-            // Low-cost permanent tripwire (silent in normal operation) --
-            // 2026-08-10, chased a real periodic ~150ms spike that turned
-            // out to be system noise, not an engine bug (see
-            // [[basic_fluids_perf_regression_and_cleanup_2026-08-10]]
-            // items 7-8: substeps_last_step is pinned at the cap regardless
-            // of CFL, and a quiet-machine run showed zero spikes).
-            // Left in place with full phase-timing + substep-count context
-            // in case a real spike ever recurs for real.
+            // Low-cost tripwire (silent in normal operation): a slow step prints
+            // with its phase timing and substep count, in case a periodic spike
+            // recurs. The last one chased (~150 ms) was system noise, absent on a
+            // quiet machine.
             if step_ms > 50.0 {
                 let snap = self.sim.diagnostics_snapshot();
                 let t = snap.timing;
                 // Every phase timer `StepTiming` actually has -- the previous
                 // line printed only 4 of them, leaving ~69% of a 178ms step
-                // unattributed and making the real cost impossible to find.
+                // unattributed and making the cost impossible to find.
                 // `grid_update_us` INCLUDES `pressure_us` (documented subset,
                 // not additive); everything else is disjoint, so these should
                 // sum to ~`total_us`.
@@ -1031,12 +866,9 @@ impl State {
             self.fps_frames = 0;
             self.last_worst_step_ms = self.worst_step_ms_this_window;
             self.worst_step_ms_this_window = 0.0;
-            // TEMP diagnostic (2026-08-10) -- delete after use. Screenshot
-            // capture is known-unreliable in this environment (see
-            // reference_screenshot_tooling_printwindow.md); this prints the
-            // SAME numbers the on-screen panel shows, so real fps/perf can be
-            // read from stdout without a screenshot. Capped to the first 20
-            // seconds so it doesn't spam a long-running session.
+            // Temporary diagnostic: prints the numbers the on-screen panel shows,
+            // so fps and perf can be read from stdout without a screenshot. Limited
+            // to the first 20 seconds.
             if self.fps_log_count < 20 {
                 self.fps_log_count += 1;
                 eprintln!(
@@ -1053,18 +885,14 @@ impl State {
     fn render_scene(&mut self, view: &wgpu::TextureView) {
         match self.render_mode {
             RenderMode::Particles => {
-                // Real render-interpolation (see `prev_x`'s doc): blend
-                // `prev_x` against the CURRENT position by how far real time
-                // has advanced past the last completed physics step, so
-                // motion stays visually smooth even when the real physics-
-                // step cadence itself varies. Swap the blended positions in
-                // for the one `render` call, then swap the true simulated
-                // positions straight back -- `self.sim`'s own state is never
-                // permanently altered by this. Scoped to `RenderMode::
-                // Particles` only for now (the other two modes build their
-                // own grid-density bridge buffers from `self.sim.particles()`
-                // independently -- interpolating those too is a real,
-                // disclosed follow-up, not done here).
+                // Render interpolation (see `prev_x`): blend `prev_x` with the
+                // current position by how far time has advanced past the last
+                // completed physics step, so motion stays smooth when the step
+                // cadence varies. The blended positions are swapped in for the one
+                // `render` call and the simulated positions swapped straight back.
+                // `RenderMode::Particles` only: the other two modes build their own
+                // grid-density bridge buffers from `self.sim.particles()` and do not
+                // interpolate yet.
                 let alpha = self.stepper.interpolation_alpha();
                 if alpha > 0.0 && self.prev_x.len() == self.sim.particles().len() {
                     let blended: Vec<Vec2> = self
@@ -1108,28 +936,16 @@ impl State {
             }
             RenderMode::Surface => {
                 self.upload_particle_bridge();
-                // N-material per-cell coloring (`material_mass_enabled`),
-                // NOT dual-phase -- disclosed switch, 2026-08-10.
-                // Dual-phase caps at exactly 2 materials; this demo has 3
-                // (water/ice), and the earlier fix (remapping ice's
-                // material_id to water's JUST for this render buffer) closed
-                // the "ice vanishes" bug but created a different
-                // problem the user caught live: ice became VISUALLY
-                // IDENTICAL to liquid water, losing its own distinct
-                // optical properties (`OpticalTable` slot 2) even though ice
-                // and water are different materials. This path
-                // builds `surface_material_mass` internally from each
-                // particle's OWN real `material_id` (same quadratic B-spline
-                // kernel as the density splat itself, not the coarser
-                // nearest-cell approximation `upload_grid_volume_bridge`
-                // uses for `GridVolume` mode) -- every material renders in
-                // its own true color, no remap hack needed. Disclosed
-                // tradeoff kept from switching away from dual-phase: this is
-                // ONE shared density/smoothing field, not two independently-
-                // smoothed surfaces, so materials can blend slightly AT
-                // their exact touching boundary (dual-phase's own real
-                // reason to exist) -- correct coloring for 3+ materials was
-                // judged the more important property here.
+                // N-material per-cell coloring (`material_mass_enabled`), not
+                // dual-phase: dual-phase handles exactly 2 materials, and ice and
+                // water must stay distinct (each with its own `OpticalTable` slot).
+                // `surface_material_mass` is built from each particle's own
+                // `material_id` with the density splat's quadratic B-spline kernel
+                // (finer than the nearest-cell approximation
+                // `upload_grid_volume_bridge` uses for `GridVolume`). The trade: one
+                // shared density/smoothing field, not two independently smoothed
+                // surfaces, so materials can blend slightly where they touch, the
+                // reason dual-phase exists.
                 self.renderer.render_surface_reconstruction(
                     &self.device,
                     &self.queue,
@@ -1385,10 +1201,9 @@ impl ApplicationHandler for App {
                         s.prev_x = sim.particles().x.clone();
                         s.sim = sim;
                         s.frame = 0;
-                        // Real elapsed time since the LAST render frame (e.g. the
-                        // window was idle) must not be replayed as a burst of
-                        // catch-up physics steps -- same fix basic_fluids_gpu.rs
-                        // already applies on its own reset.
+                        // Elapsed time since the last render frame (e.g. an idle
+                        // window) must not be replayed as a burst of catch-up
+                        // physics steps, as basic_fluids_gpu.rs does on reset.
                         s.stepper.reset();
                         s.last_instant = std::time::Instant::now();
                         println!("reset");

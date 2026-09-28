@@ -38,7 +38,7 @@ enum MaterialDispatch {
 }
 
 /// Dispatches `$method` to whichever concrete material `MaterialDispatch`
-/// holds -- a real static call per arm (the compiler knows the exact type),
+/// holds -- a static call per arm (the compiler knows the exact type),
 /// not a vtable indirection. `Unknown` returns `None`, telling the caller to
 /// fall back to the `&dyn MaterialModel` it always had. One macro for all
 /// four hot-path methods so a 13-arm match isn't hand-duplicated four times

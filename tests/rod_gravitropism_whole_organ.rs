@@ -207,7 +207,7 @@ fn whole_organ_gravitropism_recovers_a_grown_crooked_blade_while_tip_only_platea
         tip_only.step();
         whole_organ.step();
     }
-    // No gravitropism at all: a real tilt introduces a bending
+    // No gravitropism at all: a tilt introduces a bending
     // moment from self-weight (absent for a perfectly vertical column,
     // where self-weight is purely axial) -- real additional elastic SAG is
     // expected and fine, this only checks passive elasticity has no reason

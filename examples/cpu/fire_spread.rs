@@ -4,33 +4,30 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// `fire_spread.rs` (real ignition + Fourier heat-driven combustion propagation) with a
-/// live egui material picker -- compares how fire spread depends on a material's
-/// thermal diffusivity (alpha = k/(rho*c_p)) and ignition point. Same mechanism
-/// throughout (`WithLatentHeat` combustion exotherm + `ThermalDiffusion` conduction +
-/// `phase_rule` ignition), only the material's own real constants change.
+/// Fire spread (ignition + Fourier heat-driven combustion propagation) with a live egui
+/// material picker: how spread depends on a material's thermal diffusivity
+/// (alpha = k/(rho*c_p)) and ignition point. One mechanism throughout (`WithLatentHeat`
+/// combustion exotherm + `ThermalDiffusion` conduction + `phase_rule` ignition); only
+/// the material constants change.
 ///
-/// Real cited constants for all three:
-///   - Wood: unchanged from `fire_spread.rs` (conductivity 0.147 W/(m*K), heat_capacity
-///     1700 J/(kg*K), density 500 kg/m3 real pine, ignition 603.15K/330C midpoint of the
-///     real 300-365C piloted range, combustion -18.5MJ/kg oven-dry wood).
-///   - Paper: conductivity 0.05 W/(m*K) (cross-grain, real cited range ~0.05-0.07),
-///     heat_capacity 1340 J/(kg*K) (cellulose/paper specific heat, real range
-///     ~1300-1500), density 100 kg/m3 -- but for LOOSELY CRUMPLED paper (what
-///     actually burns), not a pressed stack/cardboard (700-1200): air gaps between
-///     sheets give real bulk density ~50-150 kg/m3, same reason snow's bulk density is
-///     far below solid ice's. Paper's "catches fast" behavior is mostly a
-///     low-thermal-mass effect: alpha=k/(rho*c_p) is inversely proportional to density,
-///     so a lighter material heats and diffuses faster for the identical heat input --
-///     the same fire-science "thin fuels ignite faster than thick fuels" principle.
-///     Ignition 503.15K/230C (real cited piloted-ignition range 218-246C, midpoint).
-///     Combustion -16MJ/kg (real cellulose/paper heat of combustion, range ~15-17MJ/kg).
-///   - Stone (granite): conductivity 2.5 W/(m*K) (real granite range 2.0-3.5),
-///     heat_capacity 790 J/(kg*K) (real granite range ~790-800), density 2700 kg/m3
-///     (real granite). Ignition point = f32::INFINITY -- not an arbitrarily
-///     high finite number: rock is non-combustible, there is no real
-///     "ignition temperature" to cite, so the phase-rule condition structurally
-///     never fires rather than merely being unlikely to.
+/// Cited constants:
+///   - Wood: conductivity 0.147 W/(m*K), heat_capacity 1700 J/(kg*K), density 500 kg/m3
+///     (pine), ignition 603.15K/330C (midpoint of the 300-365C piloted range),
+///     combustion -18.5MJ/kg (oven-dry wood).
+///   - Paper: conductivity 0.05 W/(m*K) (cross-grain, cited range ~0.05-0.07),
+///     heat_capacity 1340 J/(kg*K) (cellulose/paper, range ~1300-1500), density
+///     100 kg/m3 for loosely crumpled paper (what burns), not a pressed stack or
+///     cardboard (700-1200): air gaps between sheets give a bulk density of
+///     ~50-150 kg/m3, as snow's bulk density is far below solid ice's. Paper catches
+///     fast mostly through low thermal mass: alpha=k/(rho*c_p) is inversely
+///     proportional to density, so a lighter material heats and diffuses faster for the
+///     same heat input (fire science's "thin fuels ignite faster than thick fuels").
+///     Ignition 503.15K/230C (piloted-ignition range 218-246C, midpoint). Combustion
+///     -16MJ/kg (cellulose/paper heat of combustion, range ~15-17MJ/kg).
+///   - Stone (granite): conductivity 2.5 W/(m*K) (granite range 2.0-3.5), heat_capacity
+///     790 J/(kg*K) (range ~790-800), density 2700 kg/m3. Ignition point =
+///     f32::INFINITY, not a high finite number: rock is non-combustible, there is no
+///     ignition temperature to cite, so the phase-rule condition never fires.
 ///
 ///   cargo run --example fire_spread --features "render"
 use emerge::render::{ColorMode, GridVolumeSource, Renderer};
@@ -55,20 +52,17 @@ const ASH_ID: u32 = 1;
 
 const AMBIENT_K: f32 = 293.15;
 // 1/s, Newton cooling (natural convective heat loss to still air). 0.001
-// (tau=1000s) is within the real natural-convection range for a wood-sized solid
+// (tau=1000s) is within the natural-convection range for a wood-sized solid
 // in still air, chosen empirically so a several-minute play session shows
 // meaningful, differentiated spread across materials.
 const COOLING_RATE: f32 = 0.001;
-// Real per-material emissivity radiates heat away faster than conduction/combustion
-// can build it up at this demo's real dt/dx scale -- measured directly on
-// fire_spread.rs's identical wood/thermal setup, including several scaled-down values
-// (0.02, 0.01, with/without COOLING_RATE): EVERY nonzero emissivity stalls the fire at
-// 6-7% burned within a few hundred seconds, vs. 18%-and-still-climbing with it off.
-// Stefan-Boltzmann's T^4 term grows faster than this conduction-only spread mechanic
-// can compensate for right in the temperature range spread depends on -- a real
-// physical effect, but incompatible with keeping these demos' fire actually spreading.
-// Kept at 0.0 so the mechanic stays intact; the tested mechanism itself lives in
-// `ThermalConfig::emissivity` for scenes where it's a good fit (e.g. lava cooling).
+// Emissivity off: at this demo's dt/dx scale, radiation removes heat faster than
+// conduction and combustion build it. On the wood setup, every nonzero emissivity tried
+// (including 0.02 and 0.01, with and without COOLING_RATE) stalls the fire at 6-7%
+// burned within a few hundred seconds, against 18% and climbing without it:
+// Stefan-Boltzmann's T^4 term outgrows this conduction-only spread in the temperature
+// range spread depends on. `ThermalConfig::emissivity` is there for scenes where it
+// fits (e.g. lava cooling).
 const EMISSIVITY_DEMO_SCALE: f32 = 0.0;
 
 const PLANK_HALF_LEN: i32 = 22;
@@ -90,8 +84,8 @@ struct FuelProps {
     density: f32,
     ignition_k: f32,
     combustion_enthalpy: f32,
-    /// Real cited emissivity (Incropera). Scaled by `EMISSIVITY_DEMO_SCALE` for
-    /// actual use in `ThermalConfig` -- see that constant's doc.
+    /// Cited emissivity (Incropera). Scaled by `EMISSIVITY_DEMO_SCALE` for use in
+    /// `ThermalConfig` -- see that constant's doc.
     emissivity: f32,
     /// Beer-Lambert absorption coefficient sigma_a, NOT a direct RGB target --
     /// rendered color is `exp(-sigma_a)` per channel (higher sigma_a = more
@@ -370,14 +364,10 @@ impl State {
                 dense[idx * 4 + 2] = grid.mass_at(IVec2::new(x as i32, y as i32));
             }
         }
-        // Real mass-weighted temperature scatter into the previously-unused
-        // channel 0 -- same P2G scatter convention `ThermalDiffusion` already
-        // uses, real fix for `grid_volume.wgsl`'s own disclosed "blackbody not
-        // ported, no per-pixel temperature" gap (confirmed live via a user
-        // side-by-side screenshot). Grid-cell mass already exists above;
-        // temperature isn't tracked per-cell by the CPU solver, so scatter it
-        // here the same way the solver's own P2G would (nearest-cell,
-        // mass-weighted) directly from particle state.
+        // Mass-weighted temperature scattered into channel 0 (nearest cell, the P2G
+        // convention of `ThermalDiffusion`), so `grid_volume.wgsl` can show
+        // per-pixel temperature (its blackbody term): the CPU solver keeps no
+        // per-cell temperature. Grid-cell mass is computed above.
         let particles = self.sim.particles();
         for i in 0..particles.x.len() {
             let p = particles.x[i];

@@ -1,62 +1,34 @@
-//! Phase 0 gate (see plan: real-time fluid via pressure projection) for
-//! whether `Grid::project_fluid_incompressibility`
-//! (`src/spacetime/grid/pressure.rs`) can handle a fully AIRBORNE water
-//! body -- free-surface Dirichlet boundaries on every side at once, no
-//! wall touching anywhere.
+//! Gate for whether `Grid::project_fluid_incompressibility`
+//! (`src/spacetime/grid/pressure.rs`) handles a fully airborne water body: free-surface
+//! Dirichlet boundaries on every side at once, no wall anywhere.
 //!
-//! Disclosed context: this exact solver has a known, unresolved
-//! "wall-free-pool instability" (`pressure.rs`'s doc: a RESTING pool
-//! with free-surface on its entire perimeter spikes to max_speed 100-250
-//! on the very first step, reproducible with zero seed velocity). The
-//! only diagnostic that ever reproduced it (`git show
-//! 9d7fea3^:examples/cpu/diag_vortex_projection_headless.rs`) tested a
-//! pool RESTING ON THE FLOOR -- one real Neumann wall edge to anchor
-//! against. A falling droplet before it touches anything has NO wall edge
-//! at all, a structurally different, never-tested case, and it is exactly
-//! the regime `DropletImpact`'s first frames live in.
+//! Context: this solver has an unresolved "wall-free-pool instability" (see
+//! `pressure.rs`: a resting pool with free surface on its whole perimeter spikes to
+//! max_speed 100-250 on the first step, with zero seed velocity). Its reproduction
+//! (`git show 9d7fea3^:examples/cpu/diag_vortex_projection_headless.rs`) had a pool
+//! resting on the floor, one Neumann wall edge to anchor against. A falling droplet
+//! before contact has no wall edge at all, a different case, and the regime of
+//! `DropletImpact`'s first frames.
 //!
-//! **GATE FAILED (2026-09-17), confirmed, not a guess.** With
-//! `fluid_pressure_iterations: 0` (the projection fully disabled, a pure
-//! control), the blob free-falls exactly as physics predicts: `J` stays
-//! at exactly 1.0000, `max_speed` matches `g*t` to 3 decimal places. The
-//! instant the projection is turned on -- at ANY iteration count tried
-//! (1, 2, 4, 8) -- `J` hits this engine's hard safety clamp `[0.5, 2.0]`
-//! on the very first step, every time, regardless of iteration count.
-//! This rules out "not enough solver passes" as the cause (1 pass fails
-//! exactly as badly as 8) and confirms the wall-free-pool bug (or a
-//! closely related variant of it) reproduces on a falling,
-//! isolated droplet, not just a resting pool.
+//! **Gate failed.** With `fluid_pressure_iterations: 0` (projection off, a control), the
+//! blob free-falls as predicted: `J` stays at exactly 1.0000 and `max_speed` matches
+//! `g*t` to 3 decimals. With the projection on, at any iteration count tried (1, 2, 4,
+//! 8), `J` hits the `[0.5, 2.0]` clamp on the first step. So the number of passes is not
+//! the cause (1 fails as badly as 8), and the wall-free-pool bug (or a close variant)
+//! appears on a falling, isolated droplet too.
 //!
-//! **Real fix attempted the same day, also failed, reverted.** Root-caused
-//! the divergence RHS computation (`Grid::project_fluid_incompressibility`,
-//! `src/spacetime/grid/pressure.rs`) to a hard-zero `velocity_at` fallback
-//! at untouched neighbor cells, and ported the exact fix already proven
-//! for the same class of bug in the ordinary G2P gather stencil
-//! (`velocity_at_or_extrapolated`, `grid/mod.rs`, 2026-08-13). Measured,
-//! not assumed: it did NOT fix this gate (`J` still hit the clamp on
-//! step 1) and, in an EARLIER, methodologically-flawed regression check using
-//! the wrong (full, undreated) gravity, appeared to also break the
-//! validated wall-contact scene -- that specific claim was later corrected
-//! (`fluid_pressure_projection.rs`'s own GUI actually validates at
-//! `gravity_fraction: 0.003`, ~333x gentler; re-tested at the CORRECT
-//! gravity, the original unmodified code is stable there). The
-//! fix itself was still reverted regardless, since it never solved this
-//! gate's own real problem. See `falling_droplet_at_validated_derated_gravity`
-//! below: even at that same correct, gentle gravity, `J` still hits the
-//! clamp, just later (~step 6-7 instead of step 1) -- the instability is
-//! real at any gravity magnitude tested, not an artifact of testing too
-//! violent a fall.
+//! Tried and reverted: replacing the divergence RHS's hard-zero `velocity_at` fallback at
+//! untouched neighbor cells with the extrapolation of `velocity_at_or_extrapolated`
+//! (`grid/mod.rs`). `J` still hits the clamp on step 1. At the gentle gravity the
+//! wall-contact demo runs at (`gravity_fraction: 0.003`, ~333x below Earth's; see
+//! `falling_droplet_at_validated_derated_gravity` below), `J` still reaches the clamp,
+//! later (~step 6-7): the instability is there at every gravity tested.
 //!
-//! Per the plan's own pre-committed stop condition: Phase 1/2/3 do not
-//! start. This test is kept (not deleted) as the permanent, reproducible
-//! record of this finding, matching this project's standing practice for
-//! a proven, disclosed negative result.
+//! Kept as the reproducible record of this negative result.
 //!
-//! Config mirrors `examples/cpu/fluid_pressure_projection.rs`'s own
-//! already-proven pattern exactly (same solver settings that produced a
-//! verified ~30fps on this engine's hardest WALL-CONTACT scene) --
-//! the only variable changed is the scene geometry itself (isolated
-//! falling blob instead of a wall-touching column).
+//! Config mirrors `examples/cpu/fluid_pressure_projection.rs` (the solver settings of
+//! its wall-contact scene); only the geometry changes (an isolated falling blob
+//! instead of a wall-touching column).
 
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -81,13 +53,10 @@ fn falling_droplet_with_no_wall_contact_stays_physically_bounded() {
         fluid_near_wall_compression_threshold: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Full earth gravity from `SimConfig::earth` (9.81 m/s² / cell_m)
-    // -- matches the ORIGINAL wall-free-pool bug's own reproduction
-    // (`diag_vortex_projection_headless.rs`, also full undreated gravity).
-    // CORRECTION (2026-09-17): `fluid_pressure_projection.rs`'s own real
-    // validated ~30fps run does NOT use this -- its GUI starts at
-    // `gravity_fraction: 0.003`, i.e. ~333x gentler. See the sibling test
-    // below for that comparison at the correctly-matched gravity.
+    // Full Earth gravity from `SimConfig::earth` (9.81 m/s² / cell_m), as in the
+    // original wall-free-pool reproduction (`diag_vortex_projection_headless.rs`).
+    // `fluid_pressure_projection.rs` runs at `gravity_fraction: 0.003`, ~333x
+    // gentler; see the sibling test below for that gravity.
     let g_grid = config.gravity.y.abs();
 
     // `DropletImpact`'s own blob box (`basic_fluids_gpu.rs`), placed at the
@@ -195,12 +164,10 @@ fn falling_droplet_with_no_wall_contact_stays_physically_bounded() {
     }
 }
 
-/// Same falling-droplet gate, but at `fluid_pressure_projection.rs`'s own
-/// REAL validated gravity level (`gravity_fraction: 0.003`, ~333x gentler
-/// than full earth gravity) instead of the original bug report's full
-/// gravity -- does the wall-free-pool instability's severity scale down
-/// with a much gentler, more game-realistic acceleration, or is it
-/// independent of gravity magnitude entirely?
+/// Same falling-droplet gate at `fluid_pressure_projection.rs`'s gravity
+/// (`gravity_fraction: 0.003`, ~333x gentler than Earth's) instead of full gravity:
+/// does the wall-free-pool instability scale down with a gentler acceleration, or is it
+/// independent of gravity?
 #[test]
 #[ignore = "temporary manual probe, not a regression test"]
 fn falling_droplet_at_validated_derated_gravity() {

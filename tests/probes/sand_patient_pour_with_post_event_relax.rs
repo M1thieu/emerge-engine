@@ -1,21 +1,10 @@
-//! Direct test of a combination never tried before: the ALREADY-
-//! DOCUMENTED "patient pour" recipe (`tests/accuracy.rs::sand_pile_built_
-//! by_patient_pour_matching_real_creep_timescale`, real creep timescale
-//! between pours, STEPS_BETWEEN_POURS=600 not 15) -- REOPENED 2026-08-20,
-//! its own real 30.8deg result found to be a false positive from an
-//! unrelated `SlipBoundary`-defeats-`FrictionBoundary` bug; once fixed, the
-//! SAME recipe gives 69.1deg, and `apic_blend`/boundary `mu` sweeps were
-//! both measured, ruled out -- COMBINED with `post_event_relax_
-//! threshold` (this session's own separately-validated real fix for
-//! column-drop's own "pile never topples" problem), which the patient-pour
-//! test never tried. Direct diagnostic (`diag_lateral_motion_during_real_
-//! pour`) this session found particles DO yield during a short pour, but
-//! only by infinitesimal amounts (q barely moves), consistent with the
-//! twentieth finding's own real "no time to develop real creep" diagnosis
-//! -- `post_event_relax_threshold`'s own real mechanism (reset elastic
-//! strain on the falling edge of straining) could plausibly interact
-//! differently with a LONG, patient pour than a short one. Honest,
-//! not-yet-known outcome -- measuring, not assuming.
+//! The patient-pour recipe (`tests/accuracy.rs::sand_pile_built_by_patient_pour_matching_real_creep_timescale`,
+//! STEPS_BETWEEN_POURS=600: 69.1deg, with `apic_blend` and boundary `mu` sweeps ruled
+//! out) combined with `post_event_relax_threshold` (the edge-triggered
+//! elastic-strain reset), which that test never tried. `diag_lateral_motion_during_real_pour`
+//! shows particles do yield during a short pour, by tiny amounts (q barely moves), which
+//! fits the "no time to develop creep" diagnosis; the reset (elastic strain cleared on
+//! the falling edge of straining) could act differently in a long, patient pour.
 //!
 //! Identical geometry/config to the existing patient-pour test
 //! (POUR_GRID=256, STEPS_BETWEEN_POURS=600, N_POURS=70,

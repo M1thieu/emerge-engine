@@ -431,7 +431,7 @@ impl Simulation {
         self.frame_index = self.frame_index.saturating_add(1);
     }
 
-    /// Wraps `do_substep` with the real preflight/retry check for strict WC-MPM
+    /// Wraps `do_substep` with the preflight/retry check for strict WC-MPM
     /// fluids -- see `SimConfig::fluid_step_retry_enabled`'s doc for the full
     /// derivation and the empirical evidence this is a genuine, convergent
     /// stability limit (not a hidden clamp masking a bug). Returns the dt actually
@@ -831,7 +831,7 @@ impl Simulation {
                 // A prescribed particle anchor is an essential boundary on
                 // the grid velocity field. Enforce it before the pre-force
                 // snapshot so FLIP/Cundall never treat forbidden anchor
-                // motion as a real previous velocity.
+                // motion as a previous velocity.
                 self.grid.apply_pinned_node_constraints();
                 let snapshot = self.grid.snapshot_velocities();
                 self.grid.apply_gravity(sub_dt, self.config.gravity);
@@ -1360,7 +1360,7 @@ impl Simulation {
                     if let Some(new_id) = rule(&p) {
                         // Shared with `Simulation::phase_transition` -- see
                         // `apply_phase_transition`'s doc (`solver::
-                        // particles`) for the real elastic-reference
+                        // particles`) for the elastic-reference
                         // rebaseline this applies (the fix for a genuine
                         // fluid->solid "spring" artifact) and the
                         // material-specific-state reset it also performs.

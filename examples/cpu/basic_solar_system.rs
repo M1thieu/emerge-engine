@@ -4,37 +4,28 @@ use egui_wgpu::ScreenDescriptor;
 use emerge::fields::NBodyGravityField;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
-/// TRUE full N-body solar system, live: Sun + all 8 real planets, REAL MUTUAL
-/// gravity (every body pulls on every other, Sun included and free to move) --
-/// the real structural upgrade from `basic_orbital.rs`'s restricted
-/// two-body model (fixed Sun, Earth+Mars only). Uses the engine's existing
-/// `NBodyGravityField` (Barnes-Hut + a real quadrupole correction, Hernquist
-/// 1987) -- the same real technique proven headless in
-/// `tests/orbital_mechanics.rs::full_solar_system_conserves_momentum_and_energy`
-/// (momentum drift 0.0020%, energy drift 0.0033% over 30 real days).
+/// Full N-body solar system, live: the Sun and the 8 planets under mutual gravity
+/// (every body pulls on every other, the Sun included and free to move), beyond
+/// `basic_orbital.rs`'s restricted two-body model (fixed Sun, Earth and Mars). Uses
+/// `NBodyGravityField` (Barnes-Hut with a quadrupole correction, Hernquist 1987), as
+/// in `tests/orbital_mechanics.rs::full_solar_system_conserves_momentum_and_energy`
+/// (momentum drift 0.0020%, energy drift 0.0033% over 30 days).
 ///
-/// Real technique grounding (WebSearch, 2026-08-11): symplectic integrators
-/// (Leapfrog, Wisdom-Holman/WHFast -- REBOUND, the real standard N-body
-/// astronomy code) are the established real technique for long-term
-/// solar-system stability. emerge's own MPM position/velocity update is
-/// already semi-implicit/symplectic-Euler by construction -- the same real
-/// structural property, not a new addition.
+/// Symplectic integrators (Leapfrog, Wisdom-Holman/WHFast in REBOUND, the standard
+/// N-body astronomy code) are the standard for long-term solar-system stability; the MPM
+/// position/velocity update is symplectic Euler, the same structural property.
 ///
-/// Disclosed limitations:
-///   - Real LINEAR distance scale (not logarithmic) -- Mercury sits ~78x
-///     closer than Neptune, so inner planets cluster tightly near the Sun.
-///     Every real solar-system diagram is "not to scale" for exactly this
-///     reason; this one IS to scale, which is why it looks this way.
-///   - Found-not-hidden precision limit: at this domain's scale
-///     (needed to fit Neptune's real orbit), the Sun's own tiny wobble
-///     velocity produces a per-step position increment below f32's local
-///     precision -- confirmed in `tests/orbital_mechanics.rs`'s doc
-///     (`sun_velocity_responds_to_real_mutual_gravity`): velocity responds
-///     correctly to real gravity, position does not visibly accumulate the
-///     wobble at this scale/timeframe. A structural float-precision
-///     constraint, not a physics bug.
-///   - Real orbital phase is arbitrary (planets spread at even angles, not
-///     a real ephemeris snapshot) -- real distances/masses/speeds throughout.
+/// Limitations:
+///   - Linear distance scale (not logarithmic): Mercury sits ~78x closer than Neptune,
+///     so the inner planets cluster near the Sun. Solar-system diagrams are "not to
+///     scale" for this reason; this one is to scale.
+///   - At the scale needed to fit Neptune's orbit, the Sun's wobble gives a per-step
+///     position increment below f32's local precision (see
+///     `tests/orbital_mechanics.rs`'s `sun_velocity_responds_to_real_mutual_gravity`):
+///     its velocity responds to gravity, its position does not visibly accumulate the
+///     wobble. A float-precision limit, not a physics bug.
+///   - Orbital phases are arbitrary (planets at even angles, not an ephemeris
+///     snapshot); distances, masses and speeds are real.
 ///
 ///   cargo run --example basic_solar_system --features render
 use std::sync::Arc;
@@ -53,7 +44,7 @@ const DT_SECONDS: f64 = 3600.0;
 const G_SI: f64 = 6.674e-11;
 const SUN_MASS_KG: f64 = 1.9885e30;
 
-/// Real NASA NSSDCA Planetary Fact Sheet data: (name, mass_kg, semi_major_axis_m).
+/// NASA NSSDCA Planetary Fact Sheet data: (name, mass_kg, semi_major_axis_m).
 const PLANETS: [(&str, f64, f64); 8] = [
     ("Mercury", 0.330e24, 57.9e9),
     ("Venus", 4.87e24, 108.2e9),

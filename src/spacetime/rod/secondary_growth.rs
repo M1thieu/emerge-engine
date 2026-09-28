@@ -141,7 +141,7 @@ mod tests {
         points.ea = vec![1.0e5; 5];
         points.ei = vec![1.0; 4];
         // Bend the tip half sideways -- nonzero curvature at every
-        // interior vertex, so there's a real moment to stiffen against.
+        // interior vertex, so there's a moment to stiffen against.
         for i in 3..points.x.len() {
             points.x[i].x += (i - 2) as f32 * 0.3;
         }
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn below_threshold_produces_zero_growth() {
         let mut rod = bent_rod();
-        // Threshold set far above any real moment this rod can produce.
+        // Threshold set far above any moment this rod can produce.
         let growth = SecondaryGrowth::new(1.0, 1.0e6, 1.0, 1.0e6);
         let before = rod.ei.clone();
         for _ in 0..50 {

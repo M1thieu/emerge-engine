@@ -1,7 +1,7 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/gpu/basic_snow_gpu.rs`'s scene (no window) to verify the real
 //! SI migration (Stomakhin 2013 canonical snow, E=1.4e5 Pa/nu=0.2/rho=200,
-//! same citation as the CPU twin) survives the real snowball collision on
+//! same citation as the CPU twin) survives the snowball collision on
 //! the GPU backend.
 
 #[cfg(feature = "gpu")]

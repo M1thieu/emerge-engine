@@ -1,34 +1,25 @@
-//! Item 6 (60fps stability / "dt-related sudden-acceleration" issue) --
-//! FIRST real diagnostic, not a guess. User has flagged this live before,
-//! never previously instrumented (see `project_6_item_pre_fajv_plan_2026-09-15.md`
-//! item 6: "NOT STARTED... real difficulty unknown").
+//! Diagnostic for a "sudden acceleration" seen at 60 fps: does a substep outrun its
+//! own CFL bound?
 //!
-//! Hypothesis under test: `choose_substep_dt` (`src/spacetime/solver/cfl.rs`)
-//! picks dt from THIS substep's own pre-force particle velocities/stresses
-//! (confirmed by reading the source: `last_max_speed` is lagged but used
-//! ONLY for the fluid near-wall Mach gate, NOT the general velocity/material
-//! CFL bound -- that scan is fresh every substep). So a spike can
-//! only come from a FORCE applied within the substep (gravity + contact +
-//! constitutive stress) driving velocity past what the pre-force state's own
-//! CFL bound assumed -- the standard "explicit contact/collision timestep"
-//! problem, not a stale-data bug. This test measures whether that actually
-//! happens, and how large, on a real hard-impact scene -- for a material
-//! (`DruckerPragerMaterial`/sand) that has NO post-hoc retry/rollback safety
-//! net at all (confirmed via grep: `owns_deformation_volume_state` is only
-//! overridden by fluid materials; sand uses the trait default `false`, so
-//! `do_substep_with_retry`'s fast path always takes the plain
-//! `self.do_substep(requested_dt)` branch for sand, unconditionally,
-//! regardless of `fluid_step_retry_enabled`).
+//! Hypothesis: `choose_substep_dt` (`src/spacetime/solver/cfl.rs`) picks dt from the
+//! substep's own pre-force particle velocities and stresses (`last_max_speed` is lagged
+//! but used only for the fluid near-wall Mach gate; the general velocity and material
+//! CFL scan is fresh every substep). So a spike can only come from a force applied
+//! within the substep (gravity + contact + constitutive stress) driving velocity past
+//! what the pre-force CFL bound assumed, the standard explicit contact/collision
+//! timestep problem, not stale data. This measures whether and how much that happens
+//! on a hard-impact scene, for sand (`DruckerPragerMaterial`), which has no
+//! retry/rollback: only fluid materials override `owns_deformation_volume_state`, so
+//! `do_substep_with_retry` takes the plain `self.do_substep(requested_dt)` branch for
+//! sand whatever `fluid_step_retry_enabled` says.
 
 use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 
-/// Real post-substep CFL-safety check, reusing the EXACT same formula
-/// `SimConfig::cfl_coefficient`'s doc gives (`dt <= cfl_coefficient *
-/// cell_width / max_speed`), just evaluated AFTER the step instead of
-/// before -- if a substep's actual resulting speed needed a smaller dt than
-/// the one it was actually integrated with, `ratio > 1.0` proves the
-/// substep briefly violated its own stability margin.
+/// Post-substep CFL check with the formula of `SimConfig::cfl_coefficient`'s doc
+/// (`dt <= cfl_coefficient * cell_width / max_speed`), evaluated after the step instead
+/// of before: `ratio > 1.0` means the substep's resulting speed needed a smaller dt than
+/// it was integrated with, a brief violation of its stability margin.
 fn cfl_safe_speed(config: &SimConfig, dt: f32) -> f32 {
     config.cfl_coefficient * config.grid_cell_size / dt
 }
@@ -70,24 +61,20 @@ fn sand_hard_impact_dt_overshoot_diagnostic() {
     let mut violation_count = 0usize;
     let mut total_steps = 0usize;
     // Tolerance: a small overshoot right at the impact instant is expected
-    // (explicit force-then-check, standard). This flags a REAL problem only
-    // once ratio clears a real margin above 1.0 -- 1.0 itself is the exact
+    // (explicit force-then-check, standard). This flags a problem only
+    // once ratio clears a margin above 1.0 -- 1.0 itself is the exact
     // theoretical CFL limit, so anything over is already, by definition, a
     // step that would be unstable if sustained.
     const REPORT_THRESHOLD: f32 = 1.0;
 
-    // Second, independently-tested hypothesis: not a kinematic-overshoot bug,
-    // but a real "frame-spike" -- CFL correctly demands many more substeps
-    // during a violent event, so a single `step()` call's WALL-CLOCK cost
-    // spikes even though the physics itself stays admissible (matches the
-    // already-documented `basic_snow_gpu` regression from 2026-07-30:
-    // a substep-count explosion collapsing fps 60->13-16). If real demos
-    // gate substeps behind a `FixedStepController`'s `max_substeps_per_frame`,
-    // a frame this expensive either stalls (visible pause) or, once it
-    // finally completes, the renderer's next poll shows a position delta from
-    // MANY accumulated substeps at once -- reading as a sudden jump/
-    // acceleration to a human watching, even though no single substep here
-    // was itself unstable.
+    // Second hypothesis: not a kinematic overshoot but a frame spike. CFL correctly
+    // demands many more substeps during a violent event, so one `step()` call's
+    // wall-clock cost spikes while the physics stays admissible (as when a substep
+    // explosion took `basic_snow_gpu` from 60 to 13-16 fps). Behind a
+    // `FixedStepController`'s `max_substeps_per_frame`, such a frame either stalls
+    // (a visible pause) or, once done, the renderer shows the position change of many
+    // accumulated substeps at once, which reads as a sudden jump though no substep was
+    // unstable.
     let mut baseline_us = 0u64;
     let mut baseline_substeps = 0usize;
     let mut max_step_us = 0u64;

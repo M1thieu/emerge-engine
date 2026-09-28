@@ -150,7 +150,7 @@ fn fluid_pressure_setup_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // unlike Gauss-Seidel's in-place update, which would be a data race
 // across parallel threads). Neumann at a true wall/padding edge (excluded
 // from both the sum and the divisor, matching CPU's own convention exactly);
-// Dirichlet (fixed 0, never updated) at a real free-surface cell. WGSL has
+// Dirichlet (fixed 0, never updated) at a free-surface cell. WGSL has
 // no first-class buffer-pointer parameters that could share one function
 // body across two different storage bindings, so the two directions are
 // two separate, otherwise-identical entry points instead of one parametrized

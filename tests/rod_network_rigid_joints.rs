@@ -137,7 +137,7 @@ fn joint_vertices_concentrate_curvature_far_more_than_stiff_segment_vertices() {
 /// `joint_vertices_concentrate_curvature_far_more_than_stiff_segment_vertices`) to an
 /// existing network, starting FROM `hub_idx` (an already-existing point, typically the
 /// shared body/thorax attachment point -- not a new point of its own, the same
-/// "junction is a real shared index" pattern `build_y_branch` already established for
+/// "junction is a shared index" pattern `build_y_branch` already established for
 /// 2 children, generalized here to as many legs as the caller appends). Returns
 /// (joint_bending_vertex_indices, segment_bending_vertex_indices) as GLOBAL indices
 /// into `net.bending`, for the test to check independently per leg.
@@ -213,7 +213,7 @@ fn three_legs_share_one_hub_without_fighting_each_other() {
     // joint-concentrates-curvature behavior -- without the legs corrupting each
     // other's state or the hub itself drifting off its pinned position. Zero grid
     // coupling, zero rendering: purely whether the RodNetwork data model holds
-    // together under a real multi-leg topology, the same "prove it before building
+    // together under a multi-leg topology, the same "prove it before building
     // the demo" discipline this file's first test already used for one leg.
     let hub = Vec2::new(0.0, 20.0);
     let mut net = RodNetwork {

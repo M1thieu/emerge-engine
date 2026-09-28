@@ -6,7 +6,7 @@
 //
 // 3 vertices, no vertex buffer: a well-known trick (each vertex's clip
 // position is derived purely from its index) that covers the whole screen
-// with one triangle, cheaper than two triangles from a real quad buffer
+// with one triangle, cheaper than two triangles from a quad buffer
 // and with no seam.
 
 struct VertexOutput {
@@ -17,12 +17,9 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> VertexOutput {
     var out: VertexOutput;
-    // Standard fullscreen-triangle trick (was WRONG before -- the
-    // previous formula produced an ordinary triangle inscribed in clip
-    // space, not one large enough to cover the whole viewport, which is
-    // exactly the "black triangle" bug found live 2026-08-27). The correct
-    // version deliberately overshoots clip space on two sides so the
-    // visible -1..1 square sits entirely inside the triangle's interior.
+    // Standard fullscreen-triangle trick: one triangle that overshoots clip space on
+    // two sides, so the visible -1..1 square lies entirely inside it (an ordinary
+    // triangle inscribed in clip space leaves half the viewport black).
     let u = f32((i << 1u) & 2u);
     let v = f32(i & 2u);
     out.uv = vec2<f32>(u, v);

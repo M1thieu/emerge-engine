@@ -4,7 +4,7 @@
 //! convention, e.g. `spacetime::rod`'s `gravitropism.rs`/`forces.rs`).
 //! No behavior change -- same `impl Renderer` methods, moved verbatim.
 //!
-//! See `curvature_flow.wgsl` for the real technique (van der Laan et al.
+//! See `curvature_flow.wgsl` for the technique (van der Laan et al.
 //! 2009 mean curvature flow on a particle-splatted auxiliary buffer).
 
 use super::*;
@@ -771,7 +771,7 @@ impl Renderer {
     /// `render_surface_reconstruction` (inlined, unchanged, zero risk to
     /// already-shipped code) and `render_surface_reconstruction_dual_phase`
     /// (below, calls this twice) both need. `params_buf` must already carry
-    /// the real `phase_filter_material_id` for this specific phase.
+    /// the `phase_filter_material_id` for this specific phase.
     fn encode_phase_pipeline(
         &self,
         device: &wgpu::Device,
@@ -1055,7 +1055,7 @@ impl Renderer {
 
     /// Two-phase extension of `render_surface_reconstruction` (see
     /// `curvature_flow.wgsl`'s own "two-phase extension" doc and
-    /// `DualPhaseSurfaceSource`'s doc): runs the real clear/splat/convert/
+    /// `DualPhaseSurfaceSource`'s doc): runs the clear/splat/convert/
     /// iterate pipeline TWICE, once per material, into two fully
     /// independent buffer sets, so each phase gets its own real,
     /// independently-smoothed surface instead of merging at a shared

@@ -330,7 +330,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // color itself): a continuously-varying optical depth is what makes
     // this read as a smooth, photoreal 3D gradient (the "blobby" look
     // reported directly) even after the lighting itself was banded --
-    // color needs the same treatment for a real Celeste/Rain-World-style
+    // color needs the same treatment for a Celeste/Rain-World-style
     // flat-region look. Alpha (the edge) deliberately still uses the RAW,
     // unbanded `mass` just below -- banding the edge too would read as
     // blocky/pixel-stair-stepped (the "Minecraft" look explicitly rejected

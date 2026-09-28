@@ -100,7 +100,7 @@ mod tests {
         let mut grid = Grid::new(16);
         let particle_mass = 1.0;
         let reference = reference_mass_per_cell(particle_mass);
-        // Half-density -- a real thin-flow/free-surface signature.
+        // Half-density -- a thin-flow/free-surface signature.
         grid.add_mass_momentum(IVec2::new(5, 5), reference * 0.5, glam::Vec2::ZERO);
         let phi = packing_fraction_at(&grid, IVec2::new(5, 5), reference);
         assert!((phi - 0.5).abs() < 1e-5, "phi={phi}");
@@ -134,14 +134,14 @@ mod tests {
 
         // A triangular pile: row 0 (bottom) is widest and fully dense: rows
         // above narrow and are only partially filled at their outer edges,
-        // mimicking a real sloped free surface.
+        // mimicking a sloped free surface.
         for row in 0..6i32 {
             let half_width = 6 - row;
             for col in -half_width..=half_width {
                 let x = 16 + col;
                 let y = 5 + row;
                 // Interior of each row: full density. Outermost column of
-                // each row: half density, standing in for the real partial
+                // each row: half density, standing in for the partial
                 // occupancy a sloped surface has.
                 let is_edge = col == half_width || col == -half_width;
                 let mass = if is_edge { reference * 0.4 } else { reference };

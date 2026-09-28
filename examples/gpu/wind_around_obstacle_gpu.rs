@@ -1,11 +1,10 @@
 extern crate emerge_engine as emerge;
 
-/// GPU potential-flow wind field demo -- real closed-form 2D potential flow around a
-/// circular cylinder (uniform stream + doublet superposition), GPU-ported 2026-07-16
-/// as `GpuFieldEntry::spatial_drag_potential_flow_cylinder`. A cloud of light dust
-/// particles gets pushed by the real flow field and visibly deflects around an
-/// (invisible, force-only -- no rigid obstacle particles) cylinder rather than
-/// plowing straight through it.
+/// GPU potential-flow wind field: closed-form 2D potential flow around a circular
+/// cylinder (uniform stream + doublet superposition), as
+/// `GpuFieldEntry::spatial_drag_potential_flow_cylinder`. A cloud of light dust
+/// particles is pushed by the flow and deflects around the (invisible, force-only, no
+/// obstacle particles) cylinder rather than passing straight through it.
 ///
 ///   cargo run --example wind_around_obstacle_gpu --features "render"
 use std::sync::Arc;

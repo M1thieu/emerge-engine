@@ -91,7 +91,7 @@ pub struct GrowthResistance {
 pub struct Growth {
     /// Logistic growth rate `r`, 1/s.
     pub rate: f32,
-    /// Carrying capacity `K` -- the real maximum length the growing tip
+    /// Carrying capacity `K` -- the maximum length the growing tip
     /// segment approaches, meters. A segment starts well below this and
     /// approaches it asymptotically (real sigmoidal growth curve), never
     /// exceeding it.
@@ -126,7 +126,7 @@ impl Growth {
 
     /// Opt into a finite growth budget (see module doc) -- without
     /// this, growth (combined with point insertion) has no total-length
-    /// limit at all, unrealistic for any real plant given enough real time.
+    /// limit at all, unrealistic for any plant given enough real time.
     pub const fn with_resource_budget(mut self, budget_m: f32) -> Self {
         self.resource_budget_m = Some(budget_m.max(0.0));
         self
@@ -232,17 +232,17 @@ fn insert_tip_point(rod: &mut RodPoints, dx_meters: f32, budget_cap_m: Option<f3
 }
 
 /// Evolves the tip edge's own `rest_edge_length` via real logistic growth,
-/// gated by the real turgor-vs-resistance force balance when
+/// gated by the turgor-vs-resistance force balance when
 /// `growth.resistance` is set, by real photosynthesis/light exposure when
-/// `growth.light_response` is set, and by the real finite
+/// `growth.light_response` is set, and by the finite
 /// `resource_budget_m` when set (see module doc), then inserts a new point
 /// (real cell division) once that edge matures -- unless reserves are
 /// exhausted, in which case cell division halts too (Deleens et al. 1984's
 /// own real "growth crisis"). No-op for a rod with fewer than 2 points (no
 /// edge exists).
 ///
-/// `light_dir` feeds the real light-response gate only (see
-/// `LightResponse`'s doc) -- exposure is measured as a real Lambertian
+/// `light_dir` feeds the light-response gate only (see
+/// `LightResponse`'s doc) -- exposure is measured as a Lambertian
 /// cosine (Lambert's cosine law) between the growing tip's own local
 /// tangent direction and `light_dir` (both normalized), clamped to `[0,
 /// ∞)`. Disclosed simplification: this substitutes local growth-direction
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn light_response_stalls_growth_in_the_dark_and_allows_it_in_full_light() {
         // Tip points straight up (+Y) in both cases -- only `light_dir`
-        // differs, isolating the real light-exposure gate from everything
+        // differs, isolating the light-exposure gate from everything
         // else (gate/budget/rate all identical).
         let grid = Grid::new(16);
         let mut lit = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 0.05), 2, 0.02, 1.0);

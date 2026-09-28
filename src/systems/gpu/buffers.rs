@@ -167,7 +167,7 @@ pub struct GpuBuffers {
     /// per-CELL work; this is per-block).
     pub contact_point_counts: wgpu::Buffer,
     /// Debug/test-only uniform for `resolve_contact.wgsl`'s `debug_fit_normal_main` --
-    /// see `ContactDebugParams`'s doc. Not touched by the real per-substep
+    /// see `ContactDebugParams`'s doc. Not touched by the per-substep
     /// pipeline.
     pub contact_debug_params: wgpu::Buffer,
     /// Debug/test-only output for `debug_fit_normal_main` -- `[n.x, n.y, valid]`, 16
@@ -176,7 +176,7 @@ pub struct GpuBuffers {
     /// Resolved "grip" field velocity per grid node, written by `resolve_contact_main`
     /// -- dense `grid_res² × vec2<f32>`, mirrors CPU's `Grid::grip_velocity_at`. Defaults
     /// to the ordinary total velocity at every cell (matching CPU's fallback), overwritten
-    /// with the real resolved value only at contact-active nodes. Read by a
+    /// with the resolved value only at contact-active nodes. Read by a
     /// future G2P routing change for particles with `contact_group != 0`.
     pub resolved_grip_v: wgpu::Buffer,
     /// Resolved "rest" (contact_group == 0) field velocity -- same layout/fallback as
@@ -229,12 +229,12 @@ pub struct GpuBuffers {
     /// the real size on first use, mirroring `spawn_region`'s existing reallocate-and-
     /// rebuild-bind-group pattern.
     pub asflip_snapshot: wgpu::Buffer,
-    /// `true` once `asflip_snapshot` has been grown to its real `grid_res²` size --
+    /// `true` once `asflip_snapshot` has been grown to its `grid_res²` size --
     /// lets `attach_asflip_gpu` skip re-allocating (and rebuilding the bind group that
     /// references it) on every call, only the first.
     pub asflip_snapshot_grown: bool,
     /// `ColorMode::GridVolume`'s opt-in per-cell per-material mass accumulator (see
-    /// `grid_volume.wgsl`'s doc for the real technique). Real config uniform,
+    /// `grid_volume.wgsl`'s doc for the technique). Real config uniform,
     /// same always-present-but-cheap-when-unused pattern as `grip_params`.
     pub material_mass_params: wgpu::Buffer,
     /// Dense `grid_res² × MAX_RENDER_MATERIAL_SLOTS × f32` per-material mass
@@ -536,7 +536,7 @@ impl GpuBuffers {
         // pattern as thermal/resource above, not ASFLIP/material_mass's
         // lazy-growth pattern -- these are ordinary single-scalar-per-cell
         // fields (same order of magnitude as `thermal_mass`), not a
-        // MAX_RENDER_MATERIAL_SLOTS-multiplied buffer, so the real memory
+        // MAX_RENDER_MATERIAL_SLOTS-multiplied buffer, so the memory
         // cost is negligible even for a scene that never enables this.
         let fluid_pressure_params = make_buffer(
             device,

@@ -345,7 +345,7 @@ fn internal_stress_conserves_centroid() {
 /// Contact-regime verification: exact FD equality is unattainable across
 /// the sticky floor's branch kinks (see the smooth-regime test's doc),
 /// so verify the property gradient descent actually relies on instead --
-/// the analytic gradient must be a real descent direction of the true
+/// the analytic gradient must be a descent direction of the true
 /// (kinked) loss: stepping against it must reduce the loss.
 #[test]
 fn contact_gradient_is_a_descent_direction() {
@@ -464,7 +464,7 @@ fn windowed_loss_gradient_matches_finite_difference() {
 /// FD check of `bounce_penalty`'s own gradient contribution -- the real
 /// fix for the "still flies" gap `loss_window` alone left open (see
 /// `DiffConfig::bounce_penalty`'s doc). Uses `controller_gradient`
-/// directly (the public API a real trainer calls) with both the drift
+/// directly (the public API a trainer calls) with both the drift
 /// window AND the penalty active together, so it verifies they compose
 /// correctly, not just that the penalty term is correct in isolation.
 #[test]
@@ -702,7 +702,7 @@ fn bilateral_symmetry_gradient_matches_finite_difference() {
 /// FD check of `FeedbackController::backward` in COMPLETE isolation
 /// from the physics chain (no rollout, no P2G/G2P) -- pins down the
 /// feature-extraction + centroid + linear-layer adjoint on its own
-/// before it's ever trusted wired into a real substep, since this is
+/// before it's ever trusted wired into a substep, since this is
 /// the highest-risk new derivation of the whole controller (mean/
 /// centroid backward is exactly the kind of "looks obvious, has a
 /// transpose/sign trap" derivation this project's discipline exists to

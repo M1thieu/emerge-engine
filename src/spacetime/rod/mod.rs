@@ -100,7 +100,7 @@ pub struct Rod {
     /// sleep is an all-or-nothing property of the whole rod, not individual
     /// points, unlike independent MPM particles. A sleeping rod skips
     /// scatter/gather/internal-force integration AND `rod_cfl_dt` entirely --
-    /// the real fix for many-simultaneous-rods cost (a grass field): most
+    /// the fix for many-simultaneous-rods cost (a grass field): most
     /// blades settle to near-zero velocity and should stop paying their own
     /// (expensive, stiff) CFL bound every substep once they have. Woken by
     /// the same grid-activity-overlap test `wake_particle` already uses, or
@@ -610,7 +610,7 @@ mod per_vertex_stiffness_tests {
     /// an equivalent uniformly-stiff rod carrying the exact same load -- no
     /// gravity/buckling involved (a straight rod under pure axial gravity
     /// has zero bending moment by symmetry, real physics, not useful for
-    /// this comparison), a real transverse point load instead, same style
+    /// this comparison), a transverse point load instead, same style
     /// `tests/accuracy.rs`'s own cantilever-deflection test already uses.
     #[test]
     fn softer_base_bends_more_than_a_uniformly_stiff_rod() {

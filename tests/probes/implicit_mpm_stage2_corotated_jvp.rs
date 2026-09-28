@@ -1,25 +1,22 @@
-//! Stage 2 of [[project_implicit_mpm_staged_scope_2026-09-06]] (Corotated),
-//! done as part of the user's broader "verify toute formule core" request
-//! (2026-09-09): same real derive-then-verify-then-check-symmetry method
-//! Stage 0 already used for NeoHookean, applied to `CorotatedMaterial`'s own
-//! REAL formula (`src/matter/materials/corotated.rs`):
+//! Stage 2 of the staged implicit-MPM probes (Corotated): the derive, verify, then
+//! check-symmetry method Stage 0 used for NeoHookean, applied to `CorotatedMaterial`'s
+//! formula (`src/matter/materials/corotated.rs`):
 //!
 //!   tau(F) = 2*mu*(F-R)*F^T + lambda*(J-1)*J*I,  R = polar_decomposition_2d(F)
 //!
-//! The closed-form 2D polar decomposition this engine actually uses
-//! (`utils::polar_decomposition_2d`): R = M/||M||, M = [[x,-y],[y,x]],
-//! x = F00+F11 (trace), y = F01-F10. A tractable, exact derivative
-//! (not a generic SVD-based polar-decomposition-derivative formula from the
-//! literature, which is more complex and not what this engine implements):
+//! The closed-form 2D polar decomposition the engine uses
+//! (`utils::polar_decomposition_2d`): R = M/||M||, M = [[x,-y],[y,x]], x = F00+F11
+//! (trace), y = F01-F10. An exact, tractable derivative (not the generic SVD-based
+//! polar-decomposition derivative of the literature, which is more complex and not
+//! what the engine implements):
 //!
 //!   dx = tr(dF), dy = dF01-dF10, dM = [[dx,-dy],[dy,dx]]
 //!   d(norm) = (x*dx+y*dy)/norm
 //!   dR = dM/norm - R*d(norm)/norm
 //!
-//! Then, matching Stage 0's own real finding (Kirchhoff tau is NOT the
-//! gradient of a scalar potential; the first Piola-Kirchhoff P=tau*F^-T IS):
-//! dTau derived from the product rule on `2*mu*(F-R)*F^T + lambda*(J-1)*J*I`,
-//! then dP = dTau*F^-T + Tau*d(F^-T) exactly as Stage 0 already established.
+//! As found in Stage 0, Kirchhoff tau is not the gradient of a scalar potential while
+//! the first Piola-Kirchhoff P=tau*F^-T is: dTau follows from the product rule on
+//! `2*mu*(F-R)*F^T + lambda*(J-1)*J*I`, then dP = dTau*F^-T + Tau*d(F^-T).
 //!
 //! `cargo test --release --test probes implicit_mpm_stage2_corotated_jvp:: -- --nocapture`
 
@@ -45,8 +42,8 @@ fn polar_decomposition_2d(f: Mat2) -> Mat2 {
     }
 }
 
-/// Real analytic JVP of `polar_decomposition_2d` -- see this file's doc
-/// for the derivation.
+/// Analytic JVP of `polar_decomposition_2d` -- see this file's doc for the
+/// derivation.
 fn polar_decomposition_2d_jvp(f: Mat2, df: Mat2) -> Mat2 {
     let x = f.x_axis.x + f.y_axis.y;
     let y = f.x_axis.y - f.y_axis.x;
@@ -59,7 +56,7 @@ fn polar_decomposition_2d_jvp(f: Mat2, df: Mat2) -> Mat2 {
     dm * (1.0 / norm) - r * (d_norm / norm)
 }
 
-/// Real analytic JVP of Corotated's Kirchhoff stress -- product rule on
+/// Analytic JVP of Corotated's Kirchhoff stress -- product rule on
 /// `2*mu*(F-R)*F^T + lambda*(J-1)*J*I`.
 fn corotated_tau_jvp(lambda: f32, mu: f32, f: Mat2, df: Mat2) -> Mat2 {
     let j = f.determinant();
@@ -126,11 +123,10 @@ fn directions() -> Vec<Mat2> {
     ]
 }
 
-/// Real check that the earlier failure was FD truncation error (a metric
-/// artifact from dividing by a small analytic norm), not a formula bug:
-/// halving `h` on a pure central difference should shrink the ABSOLUTE
-/// error by ~4x (O(h^2) convergence) -- confirms/denies before touching the
-/// formula itself.
+/// Is the failure finite-difference truncation error (a metric artifact from dividing
+/// by a small analytic norm) rather than a formula bug? Halving `h` on a central
+/// difference should shrink the absolute error ~4x (O(h^2)); checked before touching
+/// the formula.
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn stage2_corotated_polar_decomposition_jvp_h_convergence_diagnostic() {

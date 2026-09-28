@@ -1,27 +1,19 @@
 extern crate emerge_engine as emerge;
 
 use egui_wgpu::ScreenDescriptor;
-/// Fully automatic, non-interactive proof demo for `post_event_relax_threshold`
-/// (the edge-triggered elastic-strain reset shipped 2026-08-02, see
-/// `sand.rs`'s doc). No keypress required to see the real behavior --
-/// this runs the exact SAME scene/config as `tests/accuracy.rs::
-/// post_event_relax_long_horizon_full_confirmation` (the test that held
-/// 29.6deg bit-for-bit through 100,000 steps headless), just rendered live
-/// with the phase transition (dynamics -> holding) triggered automatically
-/// by a measured kinetic-energy settle-detect instead of a fixed step
-/// count or a keypress.
+/// Automatic, non-interactive demo of `post_event_relax_threshold` (the edge-triggered
+/// elastic-strain reset, see `sand.rs`): the scene and config of
+/// `tests/accuracy.rs::post_event_relax_long_horizon_full_confirmation`, rendered live,
+/// with the switch from dynamics to holding made automatically (see
+/// `HOLD_ENGAGE_STEP`). That test currently measures a 58.6 deg long-horizon angle,
+/// not the ~30 deg target (see its doc).
 ///
-/// This is deliberately a column COLLAPSE (Lajeunesse 2004 / Klar et al.
-/// 2016 Figure 14: "A column of sand collapses into a pile"), not a literal
-/// hourglass (Klar et al. 2016 Figure 1) -- an hourglass needs new funnel-
-/// wall geometry (pinned particles + contact) that has zero precedent or
-/// testing in this codebase yet; a column collapse reuses the EXACT
-/// already-validated 100k-step recipe with zero new physics risk. Real
-/// citation for why a column that starts already touching the floor still
-/// counts as "goes naturally like a drop": the column's own 2:1 height:base
-/// aspect ratio is unstable under gravity and topples/spreads exactly like
-/// a real sand column released from a mold (Lajeunesse et al. 2004's own
-/// lab setup), not merely nudged.
+/// A column collapse (Lajeunesse 2004 / Klar et al. 2016 Figure 14: "A column of sand
+/// collapses into a pile"), not an hourglass (Klar et al. 2016 Figure 1), which would
+/// need funnel-wall geometry (pinned particles + contact) not built or tested here. A
+/// column that starts on the floor still collapses like a released mold: its 2:1
+/// height:base aspect ratio is unstable under gravity and topples and spreads, as in
+/// Lajeunesse et al. 2004's lab setup.
 ///
 ///   cargo run --example sand_collapse_settle_demo --features render
 use emerge::render::{ColorMode, Renderer};
@@ -42,19 +34,12 @@ const FLOOR: f32 = 2.0;
 const DT: f32 = 0.1;
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
-// Exact same trigger as `tests/accuracy.rs::post_event_relax_long_horizon_
-// full_confirmation`: switch to the holding recipe after a FIXED 1500 steps
-// of pure dynamics, not a measured settle-detect. REAL BUG CAUGHT LIVE
-// (2026-08-02): an earlier version of this file gated the switch on
-// `max_speed` dropping below a threshold for N frames -- but raw collapse
-// dynamics (before the fix engages) never reliably drop below any such
-// threshold on their own; the pile just keeps slowly creeping toward flat
-// indefinitely, so that gate could simply never fire. That's the exact
-// bug this whole fix exists to solve -- gating the fix's own activation on
-// the symptom it's meant to cure is circular. The validated test doesn't
-// wait for settling either: it applies the recipe at a fixed, short step
-// count, deliberately BEFORE the pile can fully degrade. One `sim.step()`
-// call here is one full DT=0.1 macro-step, same unit the test counts in.
+// The trigger of `tests/accuracy.rs::post_event_relax_long_horizon_full_confirmation`:
+// switch to the holding recipe after a fixed 1500 steps of dynamics, not on a measured
+// settle. Collapse dynamics without the reset never reliably fall below a speed
+// threshold (the pile keeps creeping toward flat), so gating the switch on settling
+// would wait on the symptom the reset is meant to cure. One `sim.step()` here is one
+// DT=0.1 macro-step, the unit the test counts in.
 const HOLD_ENGAGE_STEP: u64 = 1500;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

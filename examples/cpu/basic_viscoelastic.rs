@@ -9,14 +9,14 @@ mod gui_common;
 ///
 /// A Kelvin-Voigt viscoelastic solid is a spring and a dashpot in
 /// parallel: the same elastic restoring force as `basic_corotated.rs`'s
-/// pure elastic solid, plus a real viscous stress proportional to how
+/// pure elastic solid, plus a viscous stress proportional to how
 /// fast it is being sheared. It still always returns to its own rest
 /// shape -- no permanent dent, same as Corotated -- but energy is lost on
 /// the way there instead of being conserved in an ongoing jiggle.
 ///
 /// Three identical blocks, same Young's modulus, same Poisson's ratio,
 /// same density, same drop. The ONLY difference is the dashpot viscosity
-/// eta, inside the real cited range this material's doc gives for
+/// eta, inside the cited range this material's doc gives for
 /// rubber dampers (100-10000 Pa.s):
 ///
 ///   LEFT    eta = 0 Pa.s     -- pure elastic, no damping (Corotated's own limit).

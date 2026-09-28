@@ -85,7 +85,7 @@ pub struct SimSnapshot {
     /// Max speed among particles with `Particle::pinned != 0`. Should read exactly 0.0
     /// for any scene using pinned/Dirichlet anchors -- G2P forces `v=0` on pinned
     /// particles every substep (see `transfer.rs`). Nonzero here means the pinning
-    /// mechanism itself is broken (a real engine bug), not a scene-tuning issue --
+    /// mechanism itself is broken (an engine bug), not a scene-tuning issue --
     /// added specifically so this class of bug is directly observable instead of
     /// inferred indirectly from a body slowly drifting.
     pub max_pinned_particle_speed: f32,

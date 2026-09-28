@@ -48,9 +48,9 @@ use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
 
 /// Solve `A x = b` via Gaussian elimination with partial pivoting.
 /// `a` is row-major `n*n`, destroyed in the process. Returns `None` if `A`
-/// is numerically singular (no pivot found above a real tolerance) --
+/// is numerically singular (no pivot found above a tolerance) --
 /// callers should fall back to an explicit substep in that case, same
-/// spirit as any real implicit solver needing a graceful degradation path.
+/// spirit as any implicit solver needing a graceful degradation path.
 ///
 /// `pub(crate)`: also reused by `spacetime::grains::implicit` for the exact
 /// same real reason it exists here (a small, general dense Newton solve for
@@ -489,7 +489,7 @@ mod tests {
         // discrete solution should match the same qualitative real decay a
         // continuous critically-damped oscillator has -- checked here via
         // energy monotonically decreasing and reaching nea-zero, not
-        // exploding, the real correctness bar for an implicit integrator.
+        // exploding, the correctness bar for an implicit integrator.
         let dx_meters = 1.0;
         let mut rod =
             build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), 2, 1.0, dx_meters);

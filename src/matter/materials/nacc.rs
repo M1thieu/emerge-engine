@@ -59,7 +59,7 @@ pub struct NaccMaterial {
     /// Cohesion (beta β) -- shifts yield surface min tip.
     /// 0.0 = no tensile strength (standard). 1.0 = symmetric around p=0.
     pub cohesion: f32,
-    /// Hardening exponent ξ: p₀ = p_ref·exp(−ξ·α). For a real soil it is
+    /// Hardening exponent ξ: p₀ = p_ref·exp(−ξ·α). For a soil it is
     /// `v / (λ − κ_cc)` from its own oedometer curve -- specific volume over
     /// the gap between the compression and swelling indices -- so it runs
     /// about 15 to 30 for clays. 0.0 = no hardening (perfect plasticity cap).
@@ -819,7 +819,7 @@ mod marginal_yield_tests {
     /// Two setups that look natural do not work:
     /// 1. `hardening_factor=0` gives `p0=kappa*1e-5` regardless of alpha (xi=0
     ///    zeroes the sinh term unconditionally) -- a vanishingly small elastic
-    ///    region where any real strain immediately exceeds the cap. No real
+    ///    region where any strain immediately exceeds the cap. No real
     ///    preset in this file ever uses hardening_factor=0.
     /// 2. Even with hardening on and a large p0, a PURE shear perturbation at
     ///    near-zero volumetric strain (p_tr~0) still yields. This is correct

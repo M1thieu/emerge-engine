@@ -126,7 +126,7 @@ fn radius_of_gyration(sim: &Simulation) -> f32 {
     mean_sq.sqrt()
 }
 
-/// Quantitative proof: a real regolith body, given ONLY real mutual
+/// Quantitative proof: a regolith body, given ONLY real mutual
 /// self-gravity, stays gravitationally bound (negative total energy,
 /// bounded spatial extent) rather than dispersing -- the standard
 /// astrophysical signature of a self-gravitating rubble pile, not just

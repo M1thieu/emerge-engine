@@ -147,7 +147,7 @@ struct SurfaceParams {
     // fluid about `particle_spacing` across; splatting it 3 cells wide makes
     // every particle overlap ~6 of its neighbours at 0.5-cell spacing, and
     // the overlapping discs merge into the "blobby metaball" look. Narrowing
-    // it toward the real particle spacing gives a sharper surface AND costs
+    // it toward the particle spacing gives a sharper surface AND costs
     // less (the splat loop is O(radius^2)).
     splat_width_cells: f32,
     // Yu & Turk 2013 neighbourhood-fitted kernel anisotropy, for
@@ -291,7 +291,7 @@ fn inverse2x2(f: mat2x2<f32>) -> mat2x2<f32> {
     let det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
     // NOT `sign(det) * max(abs(det), eps)` -- `sign(0.0)` is 0.0 in WGSL
     // (IEEE convention), which would leave a zero divisor for an
-    // exactly-degenerate (rank-deficient) `f` -- a real edge case
+    // exactly-degenerate (rank-deficient) `f` -- an edge case
     // `regularize_deformation`'s own length clamp does NOT rule out (it
     // bounds magnitude, not whether the two columns are parallel).
     // `select` guarantees a nonzero divisor unconditionally.
@@ -673,7 +673,7 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ping-pong buffer -- a separate pass (not folded into splat itself)
 // because multiple particles race-write the same atomic cell; only once
 // every particle's contribution has landed is the value stable to read
-// back as a real float.
+// back as a float.
 @group(0) @binding(0) var<storage, read> surface_atomic_ro: array<atomic<i32>>;
 @group(0) @binding(1) var<storage, read_write> surface_float_out: array<f32>;
 @group(0) @binding(2) var<uniform> convert_params: SurfaceParams;
@@ -758,7 +758,7 @@ const CURVATURE_PSEUDO_DT: f32 = 0.15;
 // CPU port (`curvature_flow_grad_epsilon_is_numerically_stable` in
 // `tests.rs`): at 1.0e-3, 12 iterations grow a flat field's noise variance
 // 357x and a sharp corner grows (0.1 -> 0.205) instead of rounding. 0.1 is
-// the smallest value with a real margin (variance ratio 0.97 after 12
+// the smallest value with a margin (variance ratio 0.97 after 12
 // iterations, 0.99 at 0.03) that still rounds a corner (0.1 -> 0.074); at
 // 1.0 and above the pass barely changes anything (<2%).
 const GRAD_EPSILON: f32 = 0.1;
@@ -1034,7 +1034,7 @@ fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // used for a beam.
     //
     // Weighted by the fraction of a full cell the emitting matter occupies,
-    // so the source is a real volumetric density and not a glow in vacuum.
+    // so the source is a volumetric density and not a glow in vacuum.
     // Normalised against display white exactly as the thermal term is, so
     // the two are in the same units and simply add.
     let occupancy = clamp(
@@ -1610,7 +1610,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // simple, brightened-toward-white version of the
         // surface's own already-lit color -- a standard cheap stand-in
         // for "reflects ambient sky/environment light" other stylized water
-        // shaders use absent a real cubemap, not an invented color.
+        // shaders use absent a cubemap, not an invented color.
         let fresnel_reflection = mix(shaded, vec3<f32>(1.0, 1.0, 1.0), 0.6);
         let with_fresnel = mix(shaded, fresnel_reflection, fresnel * fresnel_interior);
 
@@ -1649,7 +1649,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let with_emission = clamp(lit + emission + diffused_glow, vec3(0.0), vec3(1.0));
 
     // Widened past a narrow 0.5x band -- see `grid_volume.wgsl`'s own
-    // fs_main doc for the real flicker mechanism this fixes. (`edge_margin`
+    // fs_main doc for the flicker mechanism this fixes. (`edge_margin`
     // itself is computed earlier now, next to `grad_len` -- the Fresnel
     // interior mask above needs it too.)
     let density_alpha = smoothstep(render_params.mass_floor, render_params.mass_floor + edge_margin, mass);

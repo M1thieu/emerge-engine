@@ -4,21 +4,14 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// `basic_snow.rs` (two real snowballs colliding -- Stomakhin 2013 snow
-/// plasticity, soft powder vs packed snow, packed snow fractures into loose
-/// granular on hard impact via a real phase transition) with a live
-/// egui panel -- same pattern as `basic_sand.rs`: real gravity slider
-/// (1.0 = genuine IRL 9.81 m/s²) and push/pull strength. Materials, the
-/// collision setup, and the fracture mechanic are unchanged from
-/// `basic_snow.rs` -- already real and good, not touched.
+/// Two snowballs colliding (Stomakhin 2013 snow plasticity; soft powder vs packed snow,
+/// packed snow fracturing into loose granular on a hard impact through a phase
+/// transition) with a live egui panel, the pattern of `basic_sand.rs`: gravity slider
+/// (1.0 = Earth's 9.81 m/s²) and push/pull strength.
 ///
-/// Real gravity default: 0.01, NOT re-guessed -- a headless sweep
-/// (2026-07-23, see MEMORY.md's ecosystem-roadmap note) confirmed every
-/// fraction from 0.001 to 1.0 stays numerically finite here, and the same
-/// 0.01 checkpoint already validated for sand and fluids only adds ~12
-/// grid-units/s on top of this scene's own intrinsic ~15 grid-units/s
-/// collision-launch speed -- consistent across all three tier-0 materials
-/// rather than a fresh guess.
+/// Default gravity fraction 0.01: a headless sweep keeps every fraction from 0.001 to
+/// 1.0 finite, and 0.01 (the checkpoint used for sand and fluids) adds only ~12
+/// grid-units/s on top of the scene's ~15 grid-units/s collision-launch speed.
 ///
 ///   cargo run --example basic_snow --features render
 use emerge::render::{ColorMode, Renderer};
@@ -45,35 +38,25 @@ const SPEED: f32 = 15.0;
 // Radius of the directional dig nudge, grid cells -- matches basic_sand.rs.
 const DIG_RADIUS: f32 = 4.0;
 
-// Real fix (2026-09-05): was `StomakhinMaterial::new(1389.0, 2083.0, ..)`,
-// an unsourced grid-unit guess. Real snow -- `StomakhinMaterial::from_
-// young_modulus`'s doc cites this exact E/nu as "Canonical... matches
-// MPM2D reference and sparkl snow demos" (Stomakhin et al. 2013 -- the same
-// value real-time MPM snow demos in other engines use, not just a textbook
-// number). Density: real fresh/settled snow order of magnitude (a real
-// packed-snow reference of 200 kg/m3 is also cited in this engine's own
-// `physical_props.rs` module doc). Loose/packed differ only in their real
-// Stomakhin plasticity parameters (hardening/compression/stretch limits),
-// not stiffness -- same real physical mechanism (packing changes how much
-// strain triggers plastic flow, not the elastic modulus itself).
+// Snow: `StomakhinMaterial::from_young_modulus`'s doc cites this E/nu as "Canonical...
+// matches MPM2D reference and sparkl snow demos" (Stomakhin et al. 2013). Density: fresh
+// or settled snow, order of magnitude (`physical_props.rs`'s module doc also cites a
+// packed-snow reference of 200 kg/m3). Loose and packed differ only in their Stomakhin
+// plasticity parameters (hardening, compression and stretch limits), not stiffness:
+// packing changes how much strain triggers plastic flow, not the elastic modulus.
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
 const SNOW_POISSON_RATIO: f32 = 0.2;
 const SNOW_DENSITY_KG_M3: f32 = 200.0;
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
-        // Real fix (2026-09-05): the real stiffness above needs real
-        // substep headroom under CFL -- the old 20 silently dropped
-        // simulated time instead of crashing (see `step.rs`'s "honest
-        // accounting" doc). Measured directly during a real snowball
-        // collision (`tests/probes/basic_snow_probe.rs`): 3000 still
-        // dropped ~54% of each step's simulated time; the solver actually
-        // settles around 6590-6600 once given enough headroom, so 8000
-        // leaves real margin, confirmed zero time dropped. Disclosed
-        // cost: this is a heavy substep count for an interactive
-        // demo -- whether E=1.4e5 is practical at this resolution for
-        // real-time framerate (vs. needing a coarser dx or an implicit
-        // solver) is an open question, not resolved here.
+        // Substep headroom for E=1.4e5: a budget the CFL scan runs into drops
+        // simulated time (see `step.rs`). During a snowball collision
+        // (`tests/probes/basic_snow_probe.rs`) 3000 still dropped ~54% of each
+        // step's time; the solver settles around 6590-6600 given room, so 8000
+        // leaves margin with zero time dropped. A heavy count for an interactive
+        // demo: whether E=1.4e5 is practical in real time at this resolution (or
+        // needs a coarser dx or an implicit solver) is open.
         max_substeps_per_step: 8000,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
@@ -82,11 +65,8 @@ fn make_sim() -> Simulation {
         SNOW_POISSON_RATIO,
         SNOW_DENSITY_KG_M3,
     );
-    // Real fix (2026-09-05): mass must share the same real density as the
-    // stiffness above (see project memory on the grid_density/mass-from
-    // gap found migrating this same night's other scenes) -- was left on
-    // the bare `grid_density=1.0` default, computed directly via
-    // `ParticleMass::particle_mass`'s own documented formula since the raw
+    // Mass from the same density as the stiffness above, not the `grid_density=1.0`
+    // default, through `ParticleMass::particle_mass`'s formula, since the raw
     // `StomakhinMaterial::new` constructor bypasses `mass_from`.
     let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn = SpawnRegion {

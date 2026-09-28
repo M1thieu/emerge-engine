@@ -3,57 +3,38 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// GPU material sandbox -- paint real continuum materials with the mouse.
+/// GPU material sandbox -- paint continuum materials with the mouse.
 ///
-/// The pitch this proves: unlike a falling-sand/cellular-automaton toy (single
-/// particle per grid cell, swap-if-heavier rule tables, no stress or strain --
-/// see `tmp/powder-toy` for a directly-verified example of that architecture),
-/// every brush here is a real MLS-MPM particle carrying a real deformation
-/// gradient and a real constitutive law. Sand piles because of Drucker-Prager
-/// friction, not a `Weight` lookup; jelly squishes and springs back because of
-/// real NeoHookean elasticity, not a hardcoded "solid" flag.
+/// Unlike a falling-sand/cellular-automaton toy (one particle per grid cell,
+/// swap-if-heavier rule tables, no stress or strain -- see `tmp/powder-toy` for that
+/// architecture), every brush here is an MLS-MPM particle with a deformation gradient
+/// and a constitutive law. Sand piles because of Drucker-Prager friction, not a
+/// `Weight` lookup; jelly squishes and springs back because of NeoHookean elasticity,
+/// not a "solid" flag.
 ///
-/// Five already-shipped material presets (reused verbatim from
-/// `basic_showcase_gpu`/`basic_snow_gpu`/`basic_jellies_gpu` -- no new invented
-/// constants): NeoHookean jelly, Drucker-Prager sand, Newtonian water, Stomakhin
-/// snow, Kelvin-Voigt viscoelastic tissue.
+/// Five materials: NeoHookean jelly (from `basic_showcase_gpu`), Drucker-Prager sand,
+/// Newtonian water, Stomakhin snow (the SI values of `basic_snow_gpu`), and Kelvin-Voigt
+/// viscoelastic tissue (the SI values of `basic_jellies_gpu`).
 ///
-/// Real UI (egui, the same wgpu-native GUI already used by `basic_jellies`/
-/// `stress_realtime_scaling`), not a repurposed physics hack: clickable material
-/// buttons with names and matching colors, live particle/fps readout, reset.
+/// UI in egui (as `basic_jellies`/`stress_realtime_scaling`): material buttons with
+/// names and matching colors, live particle/fps readout, reset.
 ///
-/// Real phase transitions, not a hardcoded threshold swap: the Heat tool feeds a
-/// real heat source into the real GPU thermal diffusion PDE (`attach_thermal_gpu`,
-/// Fourier's law); the resulting temperature field is what a periodic scan checks
-/// against real melting/boiling points (273.15K / 373.15K, actual water/ice
-/// constants) to call `phase_transition` (snow<->water) or `remove_particles`
-/// (water -> vanishes above boiling, real evaporation, not tracked as a gas phase).
-/// Both engine calls now apply a REAL latent-heat energy debit
-/// (`MaterialModel::latent_heat`, `ΔT = latent_heat/heat_capacity`) -- melting
-/// cools the surrounding material, freezing warms it, real
-/// energy conservation, not a free material swap. This required two engine
-/// fixes: `GpuSimulation::phase_transition` had no latent-heat accounting at
-/// all (CPU-only before), and neither `phase_transition` nor a GPU
-/// `remove_particles` existed in a form safe to call from live/interactive
-/// code. Ambient is set below freezing (260K) so anything not actively heated
-/// drifts back toward frozen via the same real Newton-cooling term
-/// `day_night_thermal_gpu` already proved -- the "cold reverses it" half of the ask
-/// is the PDE's own behavior, not a separate mechanism.
+/// Phase transitions from temperature: the Heat tool feeds a heat source into the GPU
+/// thermal diffusion PDE (`attach_thermal_gpu`, Fourier's law), and a periodic scan
+/// checks the temperature field against the melting and boiling points (273.15 K /
+/// 373.15 K) to call `phase_transition` (snow<->water) or `remove_particles` (water
+/// vanishes above boiling: evaporation, not tracked as a gas phase). Both apply a
+/// latent-heat energy debit (`MaterialModel::latent_heat`, `ΔT =
+/// latent_heat/heat_capacity`): melting cools the surrounding material, freezing warms
+/// it. Ambient is below freezing (260 K), so anything not heated drifts back toward
+/// frozen through the Newton-cooling term `day_night_thermal_gpu` uses.
 ///
-/// Grid cells are set to a small, disclosed physical scale (2cm/cell, a
-/// hand-sized snowball) rather than literal room-scale (1m/cell): real thermal
-/// diffusion at 1m/cell is far too slow to watch live (that's how slow
-/// real conduction is) -- shrinking the domain's physical scale is a legitimate
-/// modeling choice every discretized simulation makes, not a fudge to the physics
-/// itself (conductivity/heat_capacity stay unmodified SI values).
+/// Grid cells are 2 cm (a hand-sized snowball) rather than room scale (1 m/cell):
+/// thermal diffusion at 1 m/cell is far too slow to watch live. Shrinking the domain's
+/// physical scale is a modeling choice; conductivity and heat capacity stay SI.
 ///
-/// Known, disclosed limitation: `GpuSimulation::spawn_region` fully reallocates
-/// every per-particle GPU buffer and rebuilds the bind-group pool on each call
-/// (see its doc). Painting is therefore rate-limited to one small clump
-/// every few frames while the mouse is held, not a true continuous stream --
-/// a deliberate interaction-rate choice given that cost, not a hidden
-/// hack. A streaming/incremental-append spawn path would remove this limit but
-/// is separate, future engine work.
+/// Painting drops one small clump every few frames while the mouse is held, not a
+/// continuous stream.
 ///
 ///   click a material in the panel, or press 1-5  |  LMB paint  |  R reset  |  Q quit
 ///   cargo run --example material_sandbox_gpu --features "gpu render"
@@ -101,27 +82,24 @@ const PALETTE: &[(u32, &str, [u8; 3])] = &[
     (TISSUE_ID, "Tissue", [255, 115, 51]),
 ];
 
-// Real per-material absorption (Beer-Lambert σ_a), reused verbatim from already-shipped
-// demos where a real value exists -- NOT invented for this demo. `ByMaterial` mode gave
-// zero visual feedback while heating (temperature was invisible until the exact instant
-// a particle's material_id flipped) -- real user-observed confusion. `ByPhysics` instead
-// shows each material's own real optical look PLUS a real blackbody-emission glow term
-// driven by `particle.temperature` (see prep_instances.wgsl's ByPhysics branch), so
-// heating is visible continuously, not just at the phase-transition instant.
+// Per-material absorption (Beer-Lambert σ_a), taken from the demos where a value
+// exists. `ByPhysics` shows each material's optical look plus a blackbody emission
+// glow driven by `particle.temperature` (see prep_instances.wgsl's ByPhysics branch),
+// so heating is visible continuously; `ByMaterial` shows nothing until the instant a
+// particle's material_id flips.
 const SIGMA_JELLY: [f32; 3] = [0.05, 0.55, 0.60]; // basic_jellies_gpu (SIGMA_NEO)
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550]; // basic_sand_grid_gpu
 const SIGMA_WATER: [f32; 3] = [0.85, 0.25, 0.07]; // render_physics (real: water absorbs red faster than blue)
-// REAL water absorption coefficients, per-meter -- Pope & Fry 1997 (via the OMLC
-// optical absorption compendium, omlc.org/spectra/water/abs, same real-source
-// tradition as this file's own Jacques 2013 tissue-scattering citation):
+// Water absorption coefficients, per meter -- Pope & Fry 1997 (via the OMLC optical
+// absorption compendium, omlc.org/spectra/water/abs, the source tradition of this
+// file's Jacques 2013 tissue-scattering citation):
 // a_red(630nm)~0.34 m^-1, a_green(532nm)~0.044 m^-1, a_blue(420nm)~0.0044 m^-1.
-// Kept as the literal real-world m^-1 values, NOT pre-multiplied by any particular
-// dx_meters -- see `real_water_sigma_a` below for why baking in one scene's scale
-// as a frozen constant would silently go stale if that scale ever changes.
+// Kept in m^-1, not pre-multiplied by one dx_meters (see `real_water_sigma_a` below),
+// so the constant stays right if the scene's scale changes.
 const WATER_ABSORPTION_PER_METER: [f32; 3] = [0.34, 0.044, 0.0044];
 
 // Beer-Lambert here is per ONE PARTICLE's own depth (prep_instances.wgsl's doc:
-// "depth=1 particle"), so the real shader-space sigma_a is the real m^-1 value
+// "depth=1 particle"), so the shader-space sigma_a is the m^-1 value
 // scaled by however many real meters one particle actually represents at THIS
 // scene's live scale -- computed from `config.dx_meters`, not a frozen literal, so
 // it stays correct if the scene's scale ever changes.
@@ -147,8 +125,7 @@ const SIGMA_TISSUE: [f32; 3] = [0.05, 0.55, 0.60]; // render_physics (SIGMA_TISS
 // non-literature-sourced presets.
 const SIGMA_SNOW: [f32; 3] = [0.06, 0.05, 0.03];
 
-// Real water/ice constants -- same numbers `tests/gpu.rs`'s latent-heat parity
-// tests check against, not invented for this demo.
+// Water/ice constants -- the numbers `tests/gpu.rs`'s latent-heat parity tests check.
 const MELT_POINT_K: f32 = 273.15;
 const FREEZE_POINT_K: f32 = 272.15; // 1K hysteresis -- avoids flicker exactly at 273.15,
 // a small, disclosed simplification of real nucleation-barrier supercooling, not a
@@ -171,15 +148,9 @@ const WATER_PAINT_TEMP_K: f32 = 293.15;
 // const CONDUCTIVITY: f32 = 0.6; // water/ice, W/(m*K)
 // const CELL_SIZE_M: f32 = 0.02; // 2cm/cell -- hand-sized snowball scale, see module doc
 
-// Real fix (2026-09-07): snow/tissue below had gone STALE -- this file's own
-// doc claimed they were "reused verbatim" from basic_snow_gpu.rs/
-// basic_jellies_gpu.rs, true when written but false after those two files'
-// own SI migration (same dx_meters=0.01, so the same citation/formula
-// applies directly here). Found by re-checking this campaign's own work for
-// exactly this kind of drift, the same bug already caught once in
-// basic_vonmises.rs. `jelly`'s own "basic_showcase_gpu" comment stays
-// accurate -- that file's elastic body was deliberately NOT migrated
-// (player-driven, needs live interactive verification).
+// Snow and tissue use the SI values of basic_snow_gpu.rs and basic_jellies_gpu.rs
+// (same dx_meters=0.01, so the same citations and formulas apply). `jelly` follows
+// basic_showcase_gpu, whose elastic body stays in grid units (player-driven).
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
 const SNOW_POISSON_RATIO: f32 = 0.2;
 const SNOW_DENSITY_KG_M3: f32 = 200.0;
@@ -194,31 +165,25 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
     // Cohesionless sand at this MPM resolution under-measures angle of repose (a
     // documented continuum-resolution artifact -- pressure-proportional friction
     // vanishes in thin/fast-flowing layers). This (E, nu, cohesion) triple is
-    // calibrated against the real Lajeunesse et al. 2004 runout scaling law, not
+    // calibrated against the Lajeunesse et al. 2004 runout scaling law, not
     // a fresh guess.
     let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     sand.cohesion = 5.0; // calibrated against the real Lajeunesse benchmark, see above
-    // `low_viscosity()`, not a raw constructor -- real water viscosity (1.0e-3,
-    // Becker & Teschner 2007) and Tait EOS exponent (7.0, Cole 1948).
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's doc for the full derivation.
-    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
-    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
-    // stiffness for the same compression; confirmed by a real crash in
-    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
-    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's doc for the full derivation.
+    // `low_viscosity()`, not a raw constructor -- water viscosity (1.0e-3, Becker &
+    // Teschner 2007) and Tait EOS exponent (7.0, Cole 1948). rest_density=0.1
+    // (`rho*dx^2` for water at dx=0.01, see basic_fluids.rs). eos_stiffness=0.25: with
+    // rest_density 40x smaller than 4.0, `timestep_bound`'s c2 (sound speed squared) is
+    // 40x larger at a given stiffness and compression, so the stiffness is scaled by
+    // the same factor (10*0.1/4.0=0.25) to keep the same c2.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
-    // Real Stomakhin 2013 citation, same as basic_snow_gpu.rs -- was the
-    // stale raw 1389.0/2083.0 that file no longer uses.
+    // Stomakhin 2013 values, as basic_snow_gpu.rs.
     let (snow_lambda, snow_mu) = config.lame_from_si(
         SNOW_YOUNG_MODULUS_PA,
         SNOW_POISSON_RATIO,
         SNOW_DENSITY_KG_M3,
     );
     let snow = StomakhinMaterial::new(snow_lambda, snow_mu, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
-    // Real soft-tissue citation, same as basic_jellies_gpu.rs -- was the
-    // stale raw 10.0/15.0/0.15 that file no longer uses.
+    // Soft-tissue values, as basic_jellies_gpu.rs.
     let (tissue_lambda, tissue_mu) = config.lame_from_si(
         TISSUE_YOUNG_MODULUS_PA,
         TISSUE_POISSON_RATIO,
@@ -246,12 +211,9 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         min_dt: 0.005,
-        // Real fix (2026-09-07): snow/tissue below are now real SI (see
-        // make_registry's doc) -- matches basic_jellies_gpu.rs's own
-        // proven-necessary value for the same soft-tissue citation (that
-        // file's real impact test needed this; not independently re-probed
-        // for this scene's own painting/multi-material interaction, so
-        // treated as the same disclosed uncertainty that file has).
+        // The value basic_jellies_gpu.rs needs for the same soft-tissue citation
+        // (for its impact test); not probed separately for this scene's painting
+        // and multi-material interaction.
         max_substeps_per_step: 20_000,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
@@ -357,17 +319,16 @@ struct State {
     /// doc for the full real bug/fix writeup.
     stepper: FixedStepController,
     last_instant: std::time::Instant,
-    /// Real max temperature within Heat-tool range of the cursor, refreshed at the same
-    /// cadence as the phase-transition scan (not every frame -- a blocking readback every
-    /// frame is a avoidable cost). Direct numeric feedback for the real thing
-    /// `ByPhysics`'s emission glow is too subtle to show at this demo's 260-373K range
-    /// (that glow term is normalized to 5000K, a lava/molten-metal scale) -- clear textual
-    /// proof that heat is accumulating, not just the sudden melt/boil jump.
+    /// Max temperature within Heat-tool range of the cursor, refreshed at the cadence of
+    /// the phase-transition scan (a blocking readback every frame is avoidable cost).
+    /// Numeric feedback that heat is accumulating: `ByPhysics`'s emission glow is
+    /// normalized to 5000 K (a lava/molten-metal scale) and too subtle at this demo's
+    /// 260-373 K range.
     near_cursor_max_temp: f32,
     /// Toggle with M -- swaps water's optics between the demo's artistic
     /// exaggeration (`SIGMA_WATER`) and the literal real-physics value, computed
     /// live via `real_water_sigma_a` (properly derived from Pope & Fry 1997 -- see
-    /// that function's doc). Live demonstration that real water at this
+    /// that function's doc). Live demonstration that water at this
     /// engine's actual 1cm/particle scale is nearly transparent, not the vivid
     /// blue every other demo shows -- both are just answering different
     /// questions ("looks nice" vs "what would this really look like").
@@ -422,13 +383,13 @@ impl State {
         // Grid-volume rendering (G to toggle) samples the solver's own P2G mass
         // field for a continuous solid look instead of per-particle splats.
         //
-        // `attach_grid_material_render_gpu()` is a real opt-in per-substep cost
+        // `attach_grid_material_render_gpu()` is an opt-in per-substep cost
         // (extra P2G scatter + grid_clear zeroing every substep) -- deferred to
         // the first G keypress (see the KeyG handler below) so splat mode (the
         // default) stays cheap.
         //
         // Water settling slowly here is gravity-driven thin-film
-        // spreading for a real low-viscosity fluid, not an instability --
+        // spreading for a low-viscosity fluid, not an instability --
         // artificially damping the residual settling velocity (tried via
         // LinearDragField, reverted) makes perfectly healthy fluid *read* as
         // frozen at 60fps.
@@ -486,21 +447,16 @@ impl State {
             near_cursor_max_temp: AMBIENT_K,
             real_water_optics: false,
             grid_volume_mode: false,
-            // Measured (2026-09-10): `standard(DT, 60.0)` is a 6x
-            // playback multiplier (`simulation_speed = 60*DT = 6.0`). With
-            // 1120 real stiff-sand particles each `step_frame()` costs ~20
-            // CFL substeps (`min_dt=0.005` against `DT=0.1`), and at 6x the
-            // controller asks for ~15 `step_frame()` calls per rendered
-            // frame -- ~300 GPU substep dispatches/frame, measured 3-4fps,
-            // a real catch-up spiral (slower fps -> bigger frame_delta ->
-            // more steps asked -> slower still). Dropped to 1x playback
-            // (`standard(DT, 10.0)` -> `simulation_speed = 1.0`, true
-            // real-time): a demo you paint into and watch settle does not
-            // need faster-than-real-time, and this cuts the per-frame step
-            // count ~6x and breaks the spiral. Zero physics/dt/material
-            // change -- pure playback pacing, same class of fix as
-            // `sand_repose_angle.rs`'s own `sim_speed` and
-            // `basic_fluids.rs`'s own `PLAYBACK_STEP_RATE_HZ`.
+            // 1x playback (`standard(DT, 10.0)` -> `simulation_speed = 1.0`). At 6x
+            // (`standard(DT, 60.0)`), with 1120 stiff-sand particles each
+            // `step_frame()` costs ~20 CFL substeps (`min_dt=0.005` against
+            // `DT=0.1`), the controller asks for ~15 `step_frame()` calls per
+            // rendered frame (~300 GPU substep dispatches) and fps falls to 3-4, a
+            // catch-up spiral (slower fps -> bigger frame_delta -> more steps). A
+            // demo you paint into and watch settle does not need faster than real
+            // time. Pacing only, no physics, dt or material change (like
+            // `sand_repose_angle.rs`'s `sim_speed` and `basic_fluids.rs`'s
+            // `PLAYBACK_STEP_RATE_HZ`).
             stepper: FixedStepController::standard(DT, 10.0),
             last_instant: std::time::Instant::now(),
         }
@@ -590,8 +546,8 @@ impl State {
                 }
             }
             Mode::Force if self.lmb || self.rmb => {
-                // Real radial impulse, same call basic_showcase_gpu's push/pull uses --
-                // no new mechanic, just exposed as a second selectable tool here.
+                // Radial impulse, the call basic_showcase_gpu's push/pull uses,
+                // exposed as a second tool here.
                 let mag = if self.lmb { 3.0 } else { -3.0 };
                 self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
             }
@@ -628,14 +584,11 @@ impl State {
             self.sim.step_frame();
             self.frame += 1;
 
-            // Real phase-transition scan, not evaluated every step (cheap enough at
-            // demo scale, but no reason to pay 3 sync+scan passes 60x/sec for a slow
-            // thermal process). Order matters: melt/freeze before evaporate, so a
-            // particle crossing both snow->water and water->vanish in the same
-            // interval still gets a coherent one-step-at-a-time transition instead
-            // of skipping straight past water. Gated on `self.frame` (real
-            // simulation steps), not render calls, so this cadence stays correct
-            // under real-time-decoupled stepping.
+            // Phase-transition scan, not every step (3 sync+scan passes 60x/s buy
+            // nothing for a slow thermal process). Melt/freeze before evaporate, so a
+            // particle crossing snow->water and water->vanish in one interval passes
+            // through water instead of skipping it. Gated on `self.frame` (simulation
+            // steps), not render calls, so the cadence holds under decoupled stepping.
             if self.frame.is_multiple_of(15) {
                 self.sim.sync_particles_blocking();
                 let particles = self.sim.particles();
@@ -658,9 +611,8 @@ impl State {
                 if evaporated > 0 {
                     println!("evaporated: {evaporated} particles vanished above {BOIL_POINT_K}K");
                 }
-                // DIAG (2026-09-10): real water-health check for the known
-                // "water visual bug" -- rides this block's own already-paid
-                // GPU sync, gated to once/second so it doesn't spam.
+                // Diagnostic: water health check for a known water visual bug,
+                // riding this block's GPU sync, once per second.
                 if self.frame.is_multiple_of(60) {
                     let particles = self.sim.particles();
                     let (mut wn, mut jmin, mut jmax, mut nf, mut vmax) =
@@ -689,11 +641,10 @@ impl State {
             self.last_fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
-            // DIAG (2026-09-10): the egui panel's own fps readout isn't
-            // reachable from a redirected console -- echo it (no GPU sync
-            // needed, `particle_count`/`last_fps` are already CPU-side).
-            // The water-health line rides the existing `is_multiple_of(15)`
-            // sync block above, so this adds no extra GPU stall.
+            // Diagnostic: echoes the egui panel's fps readout (unreachable from a
+            // redirected console); `particle_count`/`last_fps` are already on the
+            // CPU, so no GPU sync is needed. The water-health line rides the
+            // `is_multiple_of(15)` sync block above.
             println!(
                 "DIAG fps={:.0}  total_particles={}  steps_this_frame={steps}  last_substeps={}  step_loop_ms={step_loop_ms:.1}",
                 self.last_fps,

@@ -143,7 +143,7 @@ impl BoundaryCondition for HeightmapBoundary {
         if (y as f32) <= terrain_h {
             let normal = self.normal_at(x);
             let v_n = velocity.dot(normal);
-            // Block velocity moving INTO the surface along its real local
+            // Block velocity moving INTO the surface along its local
             // normal (v_n < 0), same real Coulomb-wall convention every
             // other boundary in this engine uses -- just projected onto the
             // correct tangent/normal frame instead of assuming horizontal/

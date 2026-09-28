@@ -317,7 +317,7 @@ impl Grid {
     /// `transfer::p2g::scatter_particles_to_grid`): `CellMap` grows lazily,
     /// allocating only what a fold chunk touches (a small fraction of
     /// `resolution^2`), which beats a fixed full-grid allocation whatever the
-    /// chunk count. Re-measure the integrated cost on a real scene, not a
+    /// chunk count. Re-measure the integrated cost on a scene, not a
     /// microbenchmark, before trying a dense accumulator again.
     pub(crate) fn merge_cells(&mut self, local: CellMap) {
         for (idx, cell) in local {
@@ -493,14 +493,14 @@ impl Grid {
     }
 
     /// Cundall (1982/1987) local non-viscous damping -- see `SimConfig::cundall_damping`'s
-    /// doc for the real citation/rationale. Compares each active cell's CURRENT
+    /// doc for the citation/rationale. Compares each active cell's CURRENT
     /// velocity against `pre_force` (the same pre-gravity/boundary/contact snapshot
     /// ASFLIP already takes -- see `snapshot_velocities`), treating the delta as a real
     /// proxy for the force applied this substep (Δv = F·dt/m at fixed dt/mass), and
     /// damps the component of velocity that delta is driving -- proportional to the
     /// FORCE magnitude, not velocity magnitude (that distinction is the whole point:
     /// ordinary viscous damping scales with speed, this scales with how hard something
-    /// was just pushed). Component-wise, matching the real Cundall formulation exactly
+    /// was just pushed). Component-wise, matching the Cundall formulation exactly
     /// (each DOF independently, not the vector as a whole). Zero contribution wherever
     /// a component is exactly zero (nothing to oppose) -- honest guard, since
     /// `f32::signum(0.0)` returns `1.0`, not `0.0`, and would otherwise inject a spurious
@@ -552,7 +552,7 @@ impl Grid {
     ///   d_loss_d_mass     = -(d_loss_d_v . momentum) / mass^2
     ///
     /// SCOPED: does not cover boundary-condition application or velocity
-    /// clamping, both applied AFTER this in the real substep -- those are
+    /// clamping, both applied AFTER this in the substep -- those are
     /// piecewise/conditional (zero out or cap components), differentiable
     /// almost everywhere but with real kinks at the boundary, deliberately
     /// deferred as their own future piece, not silently folded in here.
@@ -578,7 +578,7 @@ impl Grid {
     }
 
     /// Deterministic f64 accumulation companion used only by the temporary
-    /// structural-boundary impulse ledger. Cell storage remains the real f32
+    /// structural-boundary impulse ledger. Cell storage remains the f32
     /// solver state; this isolates global reduction/cancellation error from
     /// transfer error without changing dynamics.
     pub(crate) fn raw_momentum_sum_f64(&self) -> DVec2 {
@@ -597,7 +597,7 @@ impl Grid {
             .sum()
     }
 
-    /// Deterministic f64 global sum of the real f32 nodal state. See
+    /// Deterministic f64 global sum of the f32 nodal state. See
     /// `raw_momentum_sum_f64`; this is a diagnostic side channel only.
     pub(crate) fn velocity_field_momentum_sum_f64(&self) -> DVec2 {
         (0..self.resolution * self.resolution).fold(DVec2::ZERO, |sum, index| {

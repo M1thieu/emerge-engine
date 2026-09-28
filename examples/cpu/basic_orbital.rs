@@ -4,20 +4,16 @@ use egui_wgpu::ScreenDescriptor;
 use emerge::fields::GravityWellField;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
-/// `basic_orbital.rs` (Sun + Earth + Mars, real `GravityWellField` gravity)
-/// with a live egui panel -- same pattern as `basic_fluids.rs`: a
-/// speed slider (steps-per-frame, NOT `dt_seconds` -- keeps the validated
-/// integration accuracy fixed regardless of playback speed) and a live real
-/// day/year readout.
+/// Sun + Earth + Mars under `GravityWellField` gravity, with a live egui panel (the
+/// pattern of `basic_fluids.rs`): a speed slider (steps per frame, not `dt_seconds`, so
+/// integration accuracy stays fixed whatever the playback speed) and a live day/year
+/// readout.
 ///
-/// Measured accuracy tuning (2026-08-11, see `tests/orbital_mechanics.rs`
-/// for the full sweep data): `DX_METERS`/`GRID` below were chosen from a real
-/// grid-resolution sweep, not guessed -- Kepler's third law (T^2 ~ a^3,
-/// checked headless between Earth and Mars) holds within 0.09% at this scale,
-/// down from 0.36% at the original (coarser) grid. A separate `dt_seconds`
-/// sweep proved accuracy does NOT depend on timestep here (spatial
-/// discretization, not temporal, was the real limiting factor) -- so the
-/// speed slider is free to change playback pace without touching accuracy.
+/// `DX_METERS`/`GRID` come from a grid-resolution sweep (see
+/// `tests/orbital_mechanics.rs`): Kepler's third law (T^2 ~ a^3, checked headless between
+/// Earth and Mars) holds within 0.09% at this scale, against 0.36% on a coarser grid. A
+/// timestep sweep shows accuracy does not depend on dt here (spatial discretization is
+/// the limit), so the speed slider changes pace without touching accuracy.
 ///
 ///   cargo run --example basic_orbital --features render
 use std::sync::Arc;
@@ -130,11 +126,10 @@ struct State {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     days_elapsed: f32,
-    /// Real steps-per-frame, NOT a `dt_seconds` change -- keeps the
-    /// validated 0.09% Kepler-law accuracy fixed regardless of playback
-    /// speed (accuracy was proven dt-independent in this scene, but
-    /// changing dt would still be a separate physics change; a
-    /// steps-per-frame multiplier is purely a playback-speed control).
+    /// Steps per frame, not a `dt_seconds` change: keeps the 0.09% Kepler-law accuracy
+    /// whatever the playback speed (accuracy does not depend on dt in this scene, but a
+    /// dt change would still be a physics change; a steps-per-frame multiplier is only
+    /// playback speed).
     steps_per_frame: u32,
     paused: bool,
 }

@@ -19,7 +19,7 @@ use glam::Vec2;
 /// stance/lift and horizontal actuators for push-off (the actual Newton's-
 /// third-law mechanism real legged locomotion uses: push the ground
 /// backward, the ground pushes the body forward). `signed_active_stress`
-/// already took `fiber_dir` as a parameter, so this is a real fix, not new
+/// already took `fiber_dir` as a parameter, so this is a fix, not new
 /// derivation -- no new adjoint math, just plumbing a per-group value
 /// through where a global constant was hardcoded before.
 pub struct BodyPlan {

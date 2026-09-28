@@ -74,7 +74,7 @@ impl SmallRng {
     }
 }
 
-/// Builds a real triangular column of grains (same real Lajeunesse et al.
+/// Builds a triangular column of grains (same real Lajeunesse et al.
 /// 2004 collapse-geometry convention this project's own Cosserat/NGF tests
 /// already use: initial radius R0, initial height H0, real predicted
 /// runout R_inf = R0 * (1 + 2*sqrt(H0/R0))) -- packed on a square lattice,
@@ -456,7 +456,7 @@ fn diag_extended_horizon_both_scales() {
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_dt_margin_sensitivity() {
     // Same physical duration (steps*dt held fixed), dt 10x finer -- if the
-    // residual creep is a real dt-margin/dense-coordination stability issue
+    // residual creep is a dt-margin/dense-coordination stability issue
     // (multiple simultaneous stiff contacts on one grain effectively behave
     // stiffer than any single pair's own Rayleigh estimate accounts for), a
     // 10x finer dt at the SAME physical time should show materially less
@@ -852,7 +852,7 @@ fn diag_trace_single_grain_spin_history() {
     // Full-history trace of grain 47 (the one diag_trace_blowup_mechanism
     // found runs away with spin=-201.75 rad/s at step 72853 while having
     // only ONE active contact) -- when does its spin actually start
-    // growing, is it a sudden discrete jump (a real bug trigger event) or
+    // growing, is it a sudden discrete jump (a bug trigger event) or
     // smooth monotonic runaway from early on (a feedback loop),
     // and what is its one contact partner doing.
     const R0_GRAINS: usize = 4;
@@ -892,7 +892,7 @@ fn diag_trace_single_grain_spin_history() {
 
         if step % 5_000 == 0 || step == 74_999 {
             let g = pop.grains[TARGET];
-            // Find nearest other grain (its real contact partner, if any).
+            // Find nearest other grain (its contact partner, if any).
             let mut nearest = (usize::MAX, f32::INFINITY, 0.0f32);
             for (i, other) in pop.grains.iter().enumerate() {
                 if i == TARGET {

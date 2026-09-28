@@ -42,7 +42,7 @@ impl Grid {
     /// Accumulate mass and momentum for one mixture phase during P2G, additively
     /// alongside the normal `add_mass_momentum` call for the SAME particle -- see
     /// `MixtureCell` doc. OOB cell position silently ignored; an out-of-range
-    /// `phase` (`>= MAX_MIXTURE_PHASES`) is a real configuration error and
+    /// `phase` (`>= MAX_MIXTURE_PHASES`) is a configuration error and
     /// panics via the array index, same as any other programmer mistake.
     pub fn add_mixture_mass_momentum(
         &mut self,
@@ -286,7 +286,7 @@ mod mixture_coupling_tests {
         grid
     }
 
-    /// Same as `setup`, but with a real third phase (a plain raw-index
+    /// Same as `setup`, but with a third phase (a plain raw-index
     /// `MixturePhase(2)` -- no material wires this slot to anything yet, this
     /// just proves the grid-level N-phase math itself, per Phase 1's own scope).
     fn setup_three_phase(m: [f32; 3], v0: [Vec2; 3]) -> Grid {
@@ -452,7 +452,7 @@ mod mixture_coupling_tests {
             "3-phase coupling must conserve momentum exactly: before={p_before:?} after={p_after:?}"
         );
 
-        // And a real qualitative check the solve did something sane: pairwise
+        // And a qualitative check the solve did something sane: pairwise
         // relative speed between every phase pair should shrink, matching the
         // 2-phase `drag_pulls_phases_toward_a_shared_velocity_not_apart` test.
         for i in 0..3 {

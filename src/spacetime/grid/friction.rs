@@ -176,7 +176,7 @@ mod tests {
 
     /// A mixed-material node -- some mass from a non-reporting particle
     /// (only ever added via `add_mass_momentum`, never `add_friction_
-    /// mass`) alongside a real friction-reporting particle -- must NOT
+    /// mass`) alongside a friction-reporting particle -- must NOT
     /// have its average diluted by the non-reporting mass. This is the
     /// real reason `friction_mass` is tracked separately from `Cell::mass`.
     #[test]

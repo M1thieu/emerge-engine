@@ -25,7 +25,7 @@ use super::gpu_types::{
 
 /// 4-byte lazy-growth storage placeholder -- standard convention used
 /// throughout this file: allocate minimally at construction, `ensure_*_capacity`
-/// grows the real buffer the first time its true size (e.g. `grid_res`) is
+/// grows the buffer the first time its true size (e.g. `grid_res`) is
 /// known. `copy_src` is per-buffer real intent (readback/diagnostic tools
 /// need to copy FROM some of these, not others) -- kept as a caller-supplied
 /// flag, not inferred, so each call site's doc comment still explains it.
@@ -207,7 +207,7 @@ impl RenderBuffers {
         // COPY_SRC for test readback, as `surface_a_buf`.
         let pre_total_atomic_buf = placeholder_buffer(device, "pre_total_atomic", true);
         let post_total_atomic_buf = placeholder_buffer(device, "post_total_atomic", true);
-        // Ping-pong partner for the real thermal-diffusion PDE -- see
+        // Ping-pong partner for the thermal-diffusion PDE -- see
         // `temp_avg_pipeline`'s doc.
         let surface_temp_b_buf = placeholder_buffer(device, "surface_temp_b", false);
         // COPY_SRC: `surface_a` is where `CURVATURE_ITERATIONS` (even)

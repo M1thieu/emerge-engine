@@ -11,7 +11,7 @@ use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource}
 
 impl Renderer {
     /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
-    /// doc for the real technique). Requires `set_camera` to have been called
+    /// doc for the technique). Requires `set_camera` to have been called
     /// first (same as `render_gpu` needs for its own bind group) -- reuses the
     /// identical cached orthographic projection/grid_res so both modes line up on
     /// screen without re-deriving them.

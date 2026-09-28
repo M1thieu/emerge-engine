@@ -1,7 +1,7 @@
 //! CPU-path color computation for `Renderer` -- split out of `mod.rs` (was its
 //! own already-marked "Color helpers (CPU path)" section plus `particle_color`,
 //! together ~110 of the file's ~930 lines). Mirrors `prep_instances.wgsl`'s
-//! ByPhysics branch exactly -- see that shader for the real citations/
+//! ByPhysics branch exactly -- see that shader for the citations/
 //! derivation of each term (Beer-Lambert absorption, single-scattering-albedo
 //! subsurface approximation, Schlick Fresnel specular, blackbody emission).
 
@@ -46,7 +46,7 @@ impl Renderer {
             ColorMode::ByVolume => heat(det2(p.deformation_gradient) * 0.5),
             ColorMode::ByPhysics => {
                 // Mirrors prep_instances.wgsl's ByPhysics branch exactly -- see that
-                // shader's comments for the real citations/derivation of each term
+                // shader's comments for the citations/derivation of each term
                 // (Beer-Lambert absorption, single-scattering-albedo subsurface
                 // approximation, Schlick Fresnel specular, blackbody emission).
                 let slot = p.material_id as usize % 16;

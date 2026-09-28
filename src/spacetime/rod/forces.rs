@@ -649,7 +649,7 @@ mod tests {
             max_diff
         };
 
-        // Near rest: kappa_rest almost equal to the real kappa -> small total_coeff.
+        // Near rest: kappa_rest almost equal to the kappa -> small total_coeff.
         let diff_near = max_diff(kappa - 1.0e-3);
         assert!(
             diff_near < 1.0,

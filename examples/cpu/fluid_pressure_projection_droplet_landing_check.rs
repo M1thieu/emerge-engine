@@ -1,20 +1,16 @@
 extern crate emerge_engine as emerge;
 
-/// TEMP diagnostic (2026-09-18) -- does CPU's pressure-projection fluid
-/// solver survive a REPRESENTATIVE contact event (a falling droplet landing
-/// on a resting pool), as opposed to
-/// `fluid_pressure_projection_parity_check.rs`'s scene, which is
-/// `SimConfig::fluid_pressure_iterations`'s own documented WORST case (a
-/// column already jammed against a wall at spawn, maximal compression from
-/// frame 0 -- the known "Round 9" limitation).
+/// Does the CPU pressure-projection fluid solver survive a representative contact event
+/// (a falling droplet landing on a resting pool), rather than the worst case of
+/// `fluid_pressure_projection_parity_check.rs` (a column already jammed against a wall
+/// at spawn, maximal compression from frame 0, see
+/// `SimConfig::fluid_pressure_iterations`)?
 ///
-/// Reuses `examples/gpu/basic_fluids_gpu.rs`'s exact `DropletImpact`
-/// geometry (pool `IVec2::new(50,12)` at `(32.0,9.0)`, blob `IVec2::new(7,7)`
-/// at `(32.0,42.0)`, same water density/spacing), routed through the
-/// pressure-projection path instead of that demo's stiff-EOS path. This is
-/// the actual target scenario for the hybrid explicit/projection
-/// contact-switching plan -- a falling body making first contact with a
-/// floor/pool, not a pre-jammed column.
+/// Uses `examples/gpu/basic_fluids_gpu.rs`'s `DropletImpact` geometry (pool
+/// `IVec2::new(50,12)` at `(32.0,9.0)`, blob `IVec2::new(7,7)` at `(32.0,42.0)`, same
+/// water density and spacing), through the pressure-projection path instead of the
+/// stiff EOS: a falling body making first contact with a pool, the target scenario for
+/// switching between explicit and projection handling at contact.
 ///
 ///   cargo run --release --example fluid_pressure_projection_droplet_landing_check
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion};

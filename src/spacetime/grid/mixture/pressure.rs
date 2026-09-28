@@ -63,7 +63,7 @@ impl Grid {
     /// `alpha_s`/`alpha_f` -- required for the discrete integration-by-parts
     /// identity `Σp·D(v) = -Σ<v,G(p)>` (adjoint consistency between the
     /// residual and correction operators), a standard requirement for the
-    /// Poisson system to represent a real Lagrange-multiplier constraint
+    /// Poisson system to represent a Lagrange-multiplier constraint
     /// force rather than an arbitrary correction; see
     /// `correction_weights_must_match_residual_weights_for_adjoint_consistency`
     /// (this module) for the numerical check. NOT fully exact: a `grad(n)`
@@ -285,7 +285,7 @@ impl Grid {
             // of damping it, since next substep's correction reacts to this
             // substep's residual -- not "MPM's noisy grid field", which was
             // ruled out. omega=0.3 is inside the standard SUR range (0.1-0.9),
-            // tuned against the real demo scene rather than exhaustively swept
+            // tuned against the demo scene rather than exhaustively swept
             // -- room to retune if a future scene needs it.
             const RELAXATION: f32 = 0.3;
             let grad_p = grad_p * RELAXATION;
@@ -469,14 +469,14 @@ mod pressure_projection_tests {
         let residual_projected = div_before(&grid2).abs();
 
         // Threshold accounts for two fixes that gentle this single-shot
-        // synthetic test's own kick, both load-bearing for the real demo
+        // synthetic test's own kick, both load-bearing for the demo
         // scene's stability: (1) the porosity-weighted correction fix
         // (`correction_weights_must_match_residual_weights_for_adjoint_
         // consistency`) -- this test's uniform m_s=m_f=2.0 gives n=0.5,
         // halving the kick; (2) the under-relaxation fix (`RELAXATION=0.3`
         // in `project_mixture_incompressibility`), further shrinking a
         // single-shot kick. This test's own weakened reduction is the
-        // expected side effect of the fix that makes the real scene stable,
+        // expected side effect of the fix that makes the scene stable,
         // not a regression.
         assert!(
             residual_projected < residual_unprojected * 0.94,

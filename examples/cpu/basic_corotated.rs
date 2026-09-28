@@ -24,7 +24,7 @@ mod gui_common;
 /// # What the numbers predict
 ///
 /// A corotated solid's own internal oscillation frequency after an impact
-/// scales with its real P-wave speed, `sqrt((lambda+2*mu)/rho)` -- stiffer
+/// scales with its P-wave speed, `sqrt((lambda+2*mu)/rho)` -- stiffer
 /// material rings faster and settles sooner. The diagnostic prints each
 /// block's own centre-of-mass speed after landing; the stiff block's own
 /// bounce should read a visibly higher, faster-decaying oscillation than

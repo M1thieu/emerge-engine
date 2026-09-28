@@ -58,12 +58,9 @@ fn build_column(r0_grains: usize, h0_grains: usize, radius_m: f32) -> Vec<Grain>
     build_column_seeded(r0_grains, h0_grains, radius_m, 0xC0FF_EE11_u64)
 }
 
-/// Same real recipe, parameterized by seed -- used by the real multi-seed
-/// convergence check (a single seed's own result is not a trustworthy
-/// basis for a real production decision, matching this project's own
-/// established "n=20 seeds, check batch-to-batch convergence" discipline
-/// already used for the original 28.55deg figure this session's own
-/// single-seed run didn't match).
+/// The recipe, parameterized by seed, for the multi-seed convergence check: a single
+/// seed is no basis for a production decision (the 28.55deg figure comes from n=20
+/// seeds, checking batch-to-batch convergence).
 fn build_column_seeded(r0_grains: usize, h0_grains: usize, radius_m: f32, seed: u64) -> Vec<Grain> {
     let spacing = 2.6 * radius_m;
     let mut rng = SmallRng(seed);
@@ -83,10 +80,10 @@ fn build_column_seeded(r0_grains: usize, h0_grains: usize, radius_m: f32, seed: 
 
 const FLOOR_RADIUS_M: f32 = 50.0;
 
-/// Real column-collapse-to-repose run, same real pinned-floor technique as
-/// `grains_repose_angle.rs::run_collapse_sized`. Returns the final
-/// angle of repose (height/base_half_width -> atan, same convention
-/// `sand_repose_angle.rs::measure_angle_deg` already uses for the live demo).
+/// Column-collapse-to-repose run, with the pinned-floor technique of
+/// `tests/grains_repose_angle.rs::run_collapse_sized`. Returns the final angle of repose
+/// (height/base_half_width -> atan, the convention of
+/// `sand_repose_angle.rs::measure_angle_deg`).
 fn run_to_repose_angle(
     r0_grains: usize,
     h0_grains: usize,
@@ -186,16 +183,12 @@ fn coarse_graining_alpha_2_repose_angle_comparison() {
     );
 }
 
-/// Direct test at the ACTUALLY-CALIBRATED rolling_friction this
-/// project already found hits the real 30-35deg target at fine scale
-/// (`rolling_friction=2.00`, r0=8/h0=20/320 grains -> 28.55deg, per
-/// `project_grain_clump_shape_scoped_2026-09-09`, project memory) -- checks
-/// whether the SAME calibrated value still lands near target once
-/// coarse-grained (alpha=2, 80 grains), or whether the real "repose angle
-/// decreases with particle size" literature effect forces its own
-/// recalibration here. This is the complete answer to "does
-/// coarse-graining deliver BOTH real-time speed AND the correct physics
-/// together," not just the isolated small-delta check above.
+/// At the calibrated rolling_friction (`2.00`: r0=8/h0=20/320 grains -> 28.55deg, in
+/// the 30-35deg target range at fine scale), does the same value still land near
+/// target once coarse-grained (alpha=2, 80 grains), or does the literature's "repose
+/// angle decreases with particle size" effect force its own recalibration? Answers
+/// whether coarse-graining gives both real-time speed and the right physics, beyond
+/// the small-delta check above.
 #[test]
 #[ignore = "accuracy diagnostic, run explicitly with --release --ignored --nocapture"]
 fn coarse_graining_alpha_2_at_calibrated_rolling_friction() {
@@ -215,7 +208,7 @@ fn coarse_graining_alpha_2_at_calibrated_rolling_friction() {
 }
 
 /// Direct measurement of the ACTUAL fps/cost win from coarse-graining
-/// at this same alpha=2 ratio -- the other half of the real question (does
+/// at this same alpha=2 ratio -- the other half of the question (does
 /// this deliver a real-time benefit, not just "fewer objects").
 #[test]
 #[ignore = "perf diagnostic, run explicitly with --release --ignored --nocapture"]
@@ -250,7 +243,7 @@ fn coarse_graining_alpha_2_real_wallclock_speedup() {
 }
 
 /// Multi-seed convergence check -- a single seed's own result (this
-/// file's earlier tests) is not a trustworthy basis for a real production
+/// file's earlier tests) is not a trustworthy basis for a production
 /// decision, matching this project's own established "n seeds, check
 /// batch-to-batch convergence" discipline (the same discipline the
 /// original, memory-cited 28.55deg figure was built on, which this
@@ -263,16 +256,10 @@ fn coarse_graining_alpha_2_real_wallclock_speedup() {
 fn coarse_graining_alpha_2_multi_seed_convergence_check() {
     const ROLLING_FRICTION: f32 = 2.00;
     const STEPS: usize = 400_000;
-    // Real n=20 seeds, matching this project's own established convergence
-    // discipline for exactly this kind of granular-collapse measurement
-    // (the original 28.55deg figure used n=20 seeds specifically because a
-    // single collapse outcome is genuinely, physically stochastic -- real
-    // sensitive dependence on microscopic initial jitter, not a test bug,
-    // confirmed by this session's own 5-seed run showing 12-17deg swings
-    // for the IDENTICAL config, different seed only). Seeds derived
-    // programmatically (not hand-picked) via the same real LCG this file's
-    // own `SmallRng` already uses, seeded from a fixed base -- reproducible,
-    // not cherry-picked.
+    // n=20 seeds, the convergence discipline behind the 28.55deg figure: a single
+    // collapse outcome is physically stochastic (sensitive to microscopic initial
+    // jitter; 5 seeds of the identical config swing 12-17deg). Seeds derived from a
+    // fixed base through this file's `SmallRng` LCG: reproducible, not hand-picked.
     let mut seed_rng = SmallRng(0x5EED_5EED_5EED_5EED_u64);
     let seeds: Vec<u64> = (0..20)
         .map(|_| {
@@ -339,7 +326,7 @@ fn coarse_graining_alpha_2_multi_seed_convergence_check() {
 /// sweeps `rolling_friction` AT the coarse scale to find a real,
 /// re-calibrated value that recovers the fine-grained baseline, matching
 /// this project's own established rolling_friction calibration
-/// methodology (a real sweep, not a guessed single value) -- 5 seeds per
+/// methodology (a sweep, not a guessed single value) -- 5 seeds per
 /// candidate for a first, real narrowing pass (not the full 20-seed
 /// rigor yet -- that's the follow-up once a promising candidate is found).
 #[test]

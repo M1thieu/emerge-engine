@@ -4,27 +4,20 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// Live egui GUI for `GranularFluidMaterial` -- the tier-0
-/// "solo-maximal pass" this material was still missing (added to the tier-0
-/// list 2026-08-02, never individually stress-tested since: see
-/// `project_ecosystem_slice_roadmap_2026-07-22.md`'s own note). Mirrors
-/// `basic_sand.rs`'s established conventions exactly: LMB/RMB push-pull
-/// (`apply_radial_impulse`), D-toggle directional dig (mass-conserving
-/// per-particle velocity nudge, no second body), P to pour, real IRL
-/// gravity slider (`Simulation::set_gravity`, 1.0 = genuine 9.81 m/s²).
+/// Live egui GUI for `GranularFluidMaterial`, with `basic_sand.rs`'s conventions: LMB/RMB
+/// push-pull (`apply_radial_impulse`), D-toggle directional dig (mass-conserving
+/// per-particle velocity nudge, no second body), P to pour, and a gravity slider
+/// (`Simulation::set_gravity`, 1.0 = 9.81 m/s²).
 ///
-/// PHASE RANGE (this material's own version of sand's loose/dense split):
-/// cycles between its three distinct presets -- `saturated_loam` (soft,
-/// yields easily), `consolidated_clay` (stiff, slower creep), and
-/// `cytoplasmic` (soft biological-matrix regime). Their declared shear and
-/// bulk viscosities supply dissipation; this demo never applies global
-/// settling/Cundall damping as a substitute for constitutive physics.
+/// Phase range: cycles the material's three presets -- `saturated_loam` (soft, yields
+/// easily), `consolidated_clay` (stiff, slower creep) and `cytoplasmic` (soft biological
+/// matrix). Their shear and bulk viscosities supply the dissipation; no global
+/// settling or Cundall damping stands in for constitutive physics.
 ///
-/// Honest disclosure carried over from the material's doc: the
-/// constitutive LAW (Tait EOS + corotated elastic + SVD plasticity) is real
-/// and cited (Dunatunga & Kamrin 2015); these three presets' specific shape
-/// parameters are hand-tuned illustrative values, not measured geotechnical
-/// data (see `GranularFluidMaterial::saturated_loam`'s doc).
+/// The constitutive law (Tait EOS + corotated elastic + SVD plasticity) is cited
+/// (Dunatunga & Kamrin 2015); the presets' shape parameters are hand-tuned
+/// illustrative values, not measured geotechnical data (see
+/// `GranularFluidMaterial::saturated_loam`).
 ///
 ///   cargo run --example basic_granular_fluid --features render
 use emerge::render::{ColorMode, Renderer};
@@ -73,16 +66,11 @@ fn make_sim() -> Simulation {
         position_jitter: 0.3,
         ..SpawnRegion::for_sim(&config)
     };
-    // Disclosed correction (2026-08-06, caught live by the user):
-    // spawning at y=40 (same ~30-unit drop `basic_sand.rs` also uses)
-    // exposed a measured impact-stability gap -- unlike sand,
-    // GranularFluidMaterial's own numerics bounce substantially on a hard
-    // impact even with real viscosity added (see `dynamic_viscosity`/
-    // `bulk_viscosity` on the material itself). This demo's own point is
-    // cursor push/pull/dig/pour interaction, not impact-stress-testing a
-    // free fall this material was never shown to handle as well as sand --
-    // spawning close to the floor sidesteps a still-open
-    // gap rather than hiding it.
+    // Spawned close to the floor: from y=40 (the ~30-unit drop of `basic_sand.rs`)
+    // this material bounces substantially on the impact even with its viscosities
+    // (`dynamic_viscosity`/`bulk_viscosity`), unlike sand. This demo is about cursor
+    // push/pull/dig/pour, not free-fall impact, which remains an open gap for this
+    // material.
     let mut solver = Simulation::new(config, spawn(Vec2::new(16.0, 12.0), MAT_LOAM, 11))
         .with_default_material(Box::new(GranularFluidMaterial::saturated_loam(600.0, 0.3)))
         .with_material(

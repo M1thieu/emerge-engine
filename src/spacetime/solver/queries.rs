@@ -116,7 +116,7 @@ impl Simulation {
     }
 
     /// Directly overwrite `v` (not add, unlike `apply_group_impulse`) on every
-    /// particle with `tag` -- the real primitive for a KINEMATICALLY-driven body
+    /// particle with `tag` -- the primitive for a KINEMATICALLY-driven body
     /// (position/velocity set by an external controller, e.g. player input,
     /// rather than by internal elastic/plastic forces). Combined with a real,
     /// large `mass` on that group and a nonzero `contact_group` (Bardenhagen
@@ -133,7 +133,7 @@ impl Simulation {
     }
 
     /// Set `contact_group` uniformly on all particles with `tag` -- opts a
-    /// body into its own real multi-field Coulomb contact (Bardenhagen 2001)
+    /// body into its own multi-field Coulomb contact (Bardenhagen 2001)
     /// against everything else, instead of MPM's default infinite-friction
     /// stick. O(group_size).
     pub fn set_group_contact_group(&mut self, tag: u32, contact_group: u32) {
@@ -228,7 +228,7 @@ impl Simulation {
     }
 
     /// Indices of the `k` active particles nearest to `center`, sorted by
-    /// distance ascending -- a real topological neighbor rule (Ballerini et al.
+    /// distance ascending -- a topological neighbor rule (Ballerini et al.
     /// 2008, PNAS: real starling flocks track their ~6-7 nearest neighbors
     /// regardless of physical distance, not everything within a fixed radius).
     /// `particles_near`/`count_near` can't express this: a fixed radius pulls

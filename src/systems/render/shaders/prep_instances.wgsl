@@ -184,7 +184,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // scattering tissue instead looks brighter/softer than pure absorption
         // predicts, because scattered photons re-emerge diffusely rather than
         // being lost. Blend transmitted color toward a soft, desaturated glow
-        // by the real albedo fraction, weighted by how deep light had to travel.
+        // by the albedo fraction, weighted by how deep light had to travel.
         let albedo = sigma_s / max(sigma_s + sigma_a, vec3(1e-4));
         let scatter_glow = vec3(1.0, 0.95, 0.9) * (1.0 - exp(-sigma_s * optical_depth));
         let with_scattering = mix(transmitted, scatter_glow, clamp(albedo, vec3(0.0), vec3(1.0)));
@@ -231,7 +231,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if config.mode == 4u {
         // ByThermal: emission alone, nothing else. Cold is black, an ember is
         // deep red, a flame orange, incandescence white, hotter still blue --
-        // the real Planckian sequence, not a colour ramp.
+        // the Planckian sequence, not a colour ramp.
         let thermal = blackbody_emission(
             p.temperature,
             physical.spatial.z,

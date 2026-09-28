@@ -86,12 +86,12 @@ fn apply_impulses_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     particles[i].v = vel;
     // Wake on disturbance -- without this, a sleeping particle inside an
-    // impulse's radius gets a real velocity written but stays sleeping=1, so every
+    // impulse's radius gets a velocity written but stays sleeping=1, so every
     // other pass (p2g/g2p/particles_update/force_fields) keeps skipping it: the
     // velocity sits inert (position never integrates) until it happens to wake on
     // its own via a neighbor's grid activity, then suddenly resumes motion using
     // this stale injected velocity -- a surprising delayed "pop", not an immediate
-    // push. Same wake condition as everywhere else: a real disturbance clears it.
+    // push. Same wake condition as everywhere else: a disturbance clears it.
     if touched && particles[i].sleeping != 0u {
         particles[i].sleeping = 0u;
     }

@@ -20,7 +20,7 @@
 //! advancing less time.
 //!
 //! Real hardware only, like the rest of the GPU suite: the software
-//! adapter CI runs on does not reproduce a real device's behaviour here.
+//! adapter CI runs on does not reproduce a device's behaviour here.
 //!
 //! # The process sometimes dies after this test passes
 //!

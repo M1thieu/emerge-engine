@@ -40,13 +40,10 @@ const LABELS: &[(u32, &str)] = &[
     (MAT_SHATTER, "shatter"),
 ];
 
-// Real fix (2026-09-06): was `StomakhinMaterial::new(1389.0, 2083.0, ..)`,
-// an unsourced grid-unit guess shared by both loose and packed variants --
-// same citation as `basic_snow.rs`'s CPU twin (Stomakhin 2013 canonical
-// snow, E=1.4e5/nu=0.2, matching `StomakhinMaterial::from_young_modulus`'s
-// doc; rho=200 kg/m3, matching `physical_props.rs`'s own module-doc
-// example). Loose/packed still differ only in real Stomakhin plasticity
-// parameters, not stiffness.
+// Snow, as the CPU twin `basic_snow.rs`: Stomakhin 2013 canonical E=1.4e5/nu=0.2 (as
+// `StomakhinMaterial::from_young_modulus`'s doc), rho=200 kg/m3 (the module-doc
+// example of `physical_props.rs`). Loose and packed differ only in their Stomakhin
+// plasticity parameters, not stiffness.
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
 const SNOW_POISSON_RATIO: f32 = 0.2;
 const SNOW_DENSITY_KG_M3: f32 = 200.0;
@@ -75,12 +72,10 @@ struct State {
 
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
-        // Real fix (2026-09-06): the real E=1.4e5 Pa snow above needs real
-        // substep headroom under CFL -- same value already empirically
-        // verified for the identical citation/grid/dx/collision geometry in
-        // basic_snow.rs's CPU twin (`tests/probes/basic_snow_probe.rs`:
-        // 3000 still dropped ~54% of simulated time during the real
-        // snowball collision, 8000 confirmed zero time dropped).
+        // Substep headroom for E=1.4e5 Pa snow, the value measured for the same
+        // citation, grid, dx and collision geometry in the CPU twin basic_snow.rs
+        // (`tests/probes/basic_snow_probe.rs`: 3000 still dropped ~54% of the
+        // simulated time during the collision, 8000 dropped none).
         max_substeps_per_step: 8000,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
@@ -242,20 +237,12 @@ impl State {
         for _ in 0..steps {
             self.sim.step_frame();
             self.frame += 1;
-            // Gated, not evaluated every step -- `phase_transition` does a real,
-            // BLOCKING GPU->CPU sync internally (`sync_particles_blocking`, see
-            // its doc), so calling it once per real simulation step (rather
-            // than once per RENDER callback, the pre-2026-07-30 behavior) was a
-            // genuine, self-inflicted cost multiplication once multiple steps
-            // could happen per callback -- confirmed live: fps collapsed to
-            // 13-16 with a chronic 4-steps-per-render pattern. Isolated timing
-            // showed BOTH `step_frame()` (~6ms) and `phase_transition()` alone
-            // (~1ms) are individually cheap -- the real cost is the sync POINT
-            // itself breaking CPU/GPU pipelining in the live interleaved
-            // render+compute loop (a well-known GPU perf pattern:
-            // synchronization stalls cost far more in context than in
-            // isolation). `is_multiple_of(15)`, matching `material_sandbox_
-            // gpu`'s own already-proven gated-scan interval, not a fresh guess.
+            // Gated to every 15 steps (as `material_sandbox_gpu`'s scan), not every
+            // step: `phase_transition` does a blocking GPU->CPU sync
+            // (`sync_particles_blocking`), and a sync point breaks CPU/GPU pipelining in
+            // the interleaved render+compute loop. `step_frame()` (~6 ms) and
+            // `phase_transition()` (~1 ms) are each cheap in isolation, but a sync every
+            // step with ~4 steps per render dropped fps to 13-16.
             if self.frame.is_multiple_of(15) {
                 self.sim.phase_transition(
                     |p| p.material_id == MAT_PACKED && p.v.length() > 5.0,

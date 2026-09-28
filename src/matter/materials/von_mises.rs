@@ -473,7 +473,7 @@ mod marginal_yield_tests {
         );
 
         // Volumetric (trace) strain must be preserved exactly -- incompressible
-        // plastic flow assumption, a real documented claim of this material.
+        // plastic flow assumption, a documented claim of this material.
         assert!(
             (tr_after - trace).abs() < 1.0e-4,
             "plastic flow must preserve volumetric strain exactly: expected trace={trace}, \

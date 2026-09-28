@@ -86,7 +86,7 @@ pub struct IdealGasMaterial {
     /// Lower bound on `J = V/V0` -- unlike a weakly-compressible liquid, a
     /// real gas can compress far below half its rest volume, so this is
     /// deliberately much wider than `NewtonianFluidMaterial`'s pinned
-    /// `[0.5, 2.0]`. NOT tuned against a real impact/shock test scene the
+    /// `[0.5, 2.0]`. NOT tuned against an impact/shock test scene the
     /// way fluid's own bounds are (no such scene exists for gas yet) --
     /// first real cut, disclosed as provisional.
     pub volume_ratio_min: f32,
@@ -162,7 +162,7 @@ impl IdealGasMaterial {
     /// real γ=Cp/Cv (air/diatomic: 1.4; monatomic: 5/3; triatomic: ~1.3).
     ///
     /// Grid-scaling derivation (mirrors `NewtonianFluidMaterial::
-    /// from_physical`'s doc and the real regression it fixed, extended
+    /// from_physical`'s doc and the regression it fixed, extended
     /// here for the ideal gas law's different functional form): solver
     /// time is already real seconds and positions are grid cells
     /// (`x_grid = x_SI/dx`), so pressure must stay raw SI
@@ -473,9 +473,9 @@ impl MaterialModel for IdealGasMaterial {
         // terms multiply the SAME velocity-gradient-derived stress, so their
         // worst-case combined diffusive coefficient is the conservative
         // bound, not an approximation. `bulk_viscosity` can be "hundreds of
-        // times" `dynamic_viscosity` for a real polyatomic gas (see that
+        // times" `dynamic_viscosity` for a polyatomic gas (see that
         // field's doc) -- without including it here, the substep
-        // selector would never see the real stiffness it adds.
+        // selector would never see the stiffness it adds.
         let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
         if combined_viscosity > 0.0 {
             let density = density.max(self.min_density);
@@ -538,7 +538,7 @@ mod tests {
     /// `init_particle_from_transition` leaves `particle.temperature` alone:
     /// `Simulation::apply_phase_transition` has already debited
     /// `latent_heat/heat_capacity`. Starts the particle at a temperature that
-    /// is not the reference value, as a real transition leaves it, and checks
+    /// is not the reference value, as a transition leaves it, and checks
     /// it survives, as in the sibling overrides.
     #[test]
     fn init_particle_from_transition_preserves_the_incoming_temperature() {

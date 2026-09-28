@@ -1,17 +1,13 @@
 extern crate emerge_engine as emerge;
 
-/// TEMP diagnostic (2026-09-18) -- direct CPU/GPU parity check for the new
-/// GPU port of `Grid::project_fluid_incompressibility`
-/// (`src/systems/gpu/shaders/fluid_pressure.wgsl`). Reuses the EXACT scene
-/// geometry, config, and checkpoint schedule as
-/// `examples/gpu/fluid_pressure_projection_gpu_check.rs`, headless (no
-/// window), so the two runs' printed numbers can be compared line for line.
+/// CPU/GPU parity check for the GPU port of `Grid::project_fluid_incompressibility`
+/// (`src/systems/gpu/shaders/fluid_pressure.wgsl`): the scene geometry, config and
+/// checkpoint schedule of `examples/gpu/fluid_pressure_projection_gpu_check.rs`,
+/// headless, so the two runs' printed numbers compare line for line.
 ///
-/// GPU's run showed J permanently pinned at the hard [0.5,2.0] safety clamp
-/// from step ~20 onward. This answers: does CPU's own proven solver, on the
-/// IDENTICAL scene, also hit that clamp (meaning the GPU port is faithfully
-/// reproducing an already-known CPU limitation), or does CPU stay bounded
-/// without pinning (meaning the GPU port has a separate bug)?
+/// The GPU run shows J pinned at the [0.5,2.0] safety clamp from step ~20 onward. Does
+/// the CPU solver on the identical scene hit that clamp too (the GPU port reproduces a
+/// CPU limitation), or stay bounded (the GPU port has a separate bug)?
 ///
 ///   cargo run --example fluid_pressure_projection_parity_check
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion};

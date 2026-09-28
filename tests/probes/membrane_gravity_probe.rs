@@ -1,18 +1,12 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
-//! `examples/cpu/basic_membrane.rs`'s scene (same lambda/mu, same spawn, same
-//! pin, same `SimConfig::earth`) to check what "gravity_fraction=1.0 explose"
-//! actually means: a divergence (NaN/unbounded blowup), or the
-//! dramatic-stretch-then-settle-near-the-floor already anticipated by that
-//! file's doc comment on `gravity_fraction`.
+//! Headless reproduction of `examples/cpu/basic_membrane.rs`'s scene (same lambda/mu,
+//! spawn, pin and `SimConfig::earth`): does `gravity_fraction=1.0` diverge (NaN,
+//! unbounded blowup) or stretch dramatically and settle near the floor?
 //!
-//! EXTENDED (2026-09-05, real-SI migration): after switching to a real,
-//! sourced bat-wing-membrane stiffness via `lame_from_si`, this
-//! probe caught a NEW real finding -- max|J-1| grows apparently unboundedly
-//! (not a bounded settle) at real gravity with the new, much stiffer
-//! material, roughly two orders of magnitude faster than the old
-//! `lambda=2000,mu=4000` grid-unit material at the old
-//! `gravity_fraction=0.0002`. `run_probe` below isolates whether that's
-//! driven by the STIFFNESS change or the GRAVITY change (or both).
+//! With the sourced bat-wing-membrane stiffness (`lame_from_si`), max|J-1| grows without
+//! apparent bound at full gravity (not a bounded settle), roughly two orders of
+//! magnitude faster than the `lambda=2000,mu=4000` grid-unit material at
+//! `gravity_fraction=0.0002`. `run_probe` separates the stiffness and gravity
+//! contributions.
 
 use emerge::{NoCompressionMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -57,11 +51,9 @@ fn make_sim(lambda: f32, mu: f32, max_substeps_per_step: usize, mass_override: f
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
 }
 
-// Real fix (2026-09-05): mass must share the same real density the
-// stiffness above is scaled by (`ParticleMass::particle_mass`'s own
-// formula, `SPACING^2` at `reference_density_kg_m3=1000` default) -- was
-// left on the bare grid_density=1.0 default (spacing^2) before, silently
-// inconsistent with `MEMBRANE_DENSITY_KG_M3=1100`.
+// Mass from the density the stiffness is scaled by (`ParticleMass::particle_mass`'s
+// formula, `SPACING^2` at the `reference_density_kg_m3=1000` default scaled by
+// `MEMBRANE_DENSITY_KG_M3=1100`), not the grid_density=1.0 default.
 const SPACING: f32 = 0.5;
 const NEW_MASS: f32 = (MEMBRANE_DENSITY_KG_M3 / 1000.0) * SPACING * SPACING;
 // The OLD scene's real mass (grid_density=1.0 default, never fixed) --
@@ -208,7 +200,7 @@ fn membrane_scene_old_stiffness_full_gravity() {
 }
 
 /// Baseline: the ORIGINAL scene exactly as it shipped (old stiffness, old
-/// near-zero gravity fraction) -- the real number the file's comment
+/// near-zero gravity fraction) -- the number the file's comment
 /// (0.001884 @ 600s at cundall=0.0) should reproduce.
 #[test]
 #[ignore = "temporary manual probe, not a regression test"]

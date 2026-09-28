@@ -20,7 +20,7 @@ pub struct RodPoints {
     /// rod's own gather forces `v=0` for a pinned point instead of gathering,
     /// and its position is left completely untouched (not re-clamped to
     /// itself, avoiding float drift), while it still scatters mass/momentum
-    /// normally so other bodies push against a real immovable anchor.
+    /// normally so other bodies push against an immovable anchor.
     pub pinned: Vec<u32>,
     /// Rest length of edge i (between points i, i+1). Length N-1. Meters.
     pub rest_edge_length: Vec<f32>,

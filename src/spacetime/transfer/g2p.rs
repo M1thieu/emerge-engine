@@ -33,7 +33,7 @@ unsafe impl Sync for MutFieldPtrs {}
 
 /// The read-only-per-particle values `ctx_at` copies into a
 /// `ParticleUpdateCtx` -- grouped into one struct (not loose arguments)
-/// once the real parameter count crossed clippy's own too-many-arguments
+/// once the parameter count crossed clippy's own too-many-arguments
 /// threshold, the same reason `G2PParams`/`ProjectInputs` already exist
 /// elsewhere in this codebase. Fixing the root cause (too many real
 /// arguments) rather than `#[allow]`-ing the lint, per this project's own
@@ -50,7 +50,7 @@ struct ParticleReadOnlyScalars {
 }
 
 impl MutFieldPtrs {
-    /// Builds the real `ParticleUpdateCtx` directly, for one index -- a method
+    /// Builds the `ParticleUpdateCtx` directly, for one index -- a method
     /// (not direct field access) on purpose: Rust 2021's disjoint closure
     /// captures would otherwise capture individual `*mut T` fields directly
     /// (never `Sync`, even though the `MutFieldPtrs` wrapper is), silently
@@ -93,7 +93,7 @@ pub struct G2PParams<'a> {
     /// the exact original G2P formula below (see `pre_force_snapshot`'s doc for the gate).
     pub asflip_blend: f32,
     /// The grid's pre-force velocity snapshot (see `Grid::snapshot_velocities`), or `None`
-    /// when ASFLIP is disabled. This, not `asflip_blend` alone, is the real gate: the ASFLIP
+    /// when ASFLIP is disabled. This, not `asflip_blend` alone, is the gate: the ASFLIP
     /// correction below only runs when `Some`, so a caller that never opts in (passes `None`)
     /// gets the byte-identical original code path regardless of what `asflip_blend` holds.
     pub pre_force_snapshot: Option<&'a crate::grid::VelocitySnapshot>,
@@ -147,7 +147,7 @@ pub struct G2PParams<'a> {
 ///   d_loss_d_v_grid[c] = weight_c * d_loss_d_new_v
 ///
 /// Returns the per-cell gradient in the same `[[Vec2; 3]; 3]` shape
-/// `p2g_stress_vjp` consumes, so a real trainer can pass this straight
+/// `p2g_stress_vjp` consumes, so a trainer can pass this straight
 /// through to the P2G side once both meet at the same grid cells. Verified
 /// against central-difference numerical gradients in this module's own
 /// tests.
@@ -436,7 +436,7 @@ pub fn gather_grid_to_particles(
                 // (`pre_force_snapshot`, taken right after P2G's own momentum normalization,
                 // before this substep's gravity/boundary/contact modified it), using the SAME
                 // stencil weights as `new_v` above. `pre_force_snapshot` being `None` (the
-                // default, `asflip_blend=0.0`) is the real gate: `v_store`/`v_position` both
+                // default, `asflip_blend=0.0`) is the gate: `v_store`/`v_position` both
                 // stay exactly `new_v`, reproducing the original formula below bit-for-bit.
                 //
                 // `gamma` (position-correction strength) is 0 while the local velocity
@@ -479,7 +479,7 @@ pub fn gather_grid_to_particles(
             // parallel task (see this function's doc). Runs unconditionally, even for a
             // pinned particle above: its kinematic x/v/velocity_gradient are
             // frozen, but its stress/plastic state must keep evolving normally
-            // (matches the pinned branch's own "acts as a real anchor" comment).
+            // (matches the pinned branch's own "acts as an anchor" comment).
             materials.update_particle(material_id, &mut ctx, dt);
             for boundary in boundaries.iter() {
                 boundary.post_g2p_particle(&mut ctx, grid_res, dt);

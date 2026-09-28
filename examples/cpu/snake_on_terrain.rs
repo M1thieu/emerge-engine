@@ -8,7 +8,7 @@ use emerge::{
     DirectionalContactGrip, FixedStepController, FrameLogger, Lnn, Simulation, per_material_stats,
 };
 use glam::Vec2;
-/// Snake crawling on REAL granular sand terrain -- not the abstract floor
+/// Snake crawling on granular sand terrain -- not the abstract floor
 /// boundary `basic_creature.rs` uses. Proves the full chain works together:
 /// real terrain material (`DruckerPragerMaterial`), real multi-field contact
 /// (`Particle::contact_group`, Bardenhagen 2001), and `DirectionalContactGrip`
@@ -70,7 +70,7 @@ struct State {
     wave_speed: f32,
     steer: f32,
     last_reburn_steer: f32,
-    /// Shared handle to the real multi-field contact grip -- steering this
+    /// Shared handle to the multi-field contact grip -- steering this
     /// updates the SAME instance the solver's `resolve_contact` is already
     /// reading, exactly like `basic_creature.rs`'s ratchet boundary handle.
     grip: Arc<DirectionalContactGrip>,
@@ -86,13 +86,10 @@ struct State {
     // each frame takes exactly `DT` of real time, which it doesn't, and
     // produces jitter.
     stepper: FixedStepController,
-    // Real render-interpolation state (2026-09-09, same fix as
-    // `basic_fluids.rs` -- see that file's own `prev_x` doc for the full
-    // rationale): a snapshot of every particle's position from before the
-    // most recent batch of physics steps, blended against the current
-    // position at render time so on-screen motion stays smooth even though
-    // this scene's own measured real fps (4-6fps) means several sim seconds
-    // can land in one rendered frame.
+    // Render interpolation (as `basic_fluids.rs`, see its `prev_x`): each particle's
+    // position from before the latest batch of physics steps, blended with the current
+    // position at render time, so motion stays smooth while this scene's 4-6 fps puts
+    // several sim steps into one rendered frame.
     prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
 }
@@ -116,9 +113,9 @@ fn make_sim() -> (
     {
         let particles = sim.particles_mut();
         for i in snake_range.clone() {
-            // Real multi-field contact tag -- the snake gets its own "grip"
-            // velocity field against the terrain's "rest" field, instead of
-            // unconditional infinite-friction stick.
+            // Multi-field contact tag: the snake gets its own "grip" velocity field
+            // against the terrain's "rest" field, instead of infinite-friction
+            // stick.
             particles.contact_group[i] = scene::SNAKE_CONTACT_GROUP;
             let (group, dir) = scene::snake_particle_tag(particles.x[i]);
             particles.muscle_group_id[i] = group;
@@ -367,8 +364,8 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        // Real render-interpolation (see `prev_x`'s doc) -- same
-        // contained swap-and-restore pattern as `basic_fluids.rs`.
+        // Render interpolation (see `prev_x`), the swap-and-restore of
+        // `basic_fluids.rs`.
         let alpha = self.stepper.interpolation_alpha();
         if alpha > 0.0 && self.prev_x.len() == self.sim.particles().len() {
             let blended: Vec<Vec2> = self

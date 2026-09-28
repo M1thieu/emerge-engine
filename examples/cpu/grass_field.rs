@@ -73,15 +73,11 @@ fn make_sim() -> (
     std::ops::Range<usize>,
     Arc<RatchetFrictionBoundary>,
 ) {
-    // Real basic_creature.rs tuning -- see that file's history for why
-    // (13,26,40,fiber=0.3,1.0) is the settled-on tradeoff. viscosity=150 +
-    // the ORIGINAL (min_dt=0.01, max_substeps=64) config, not the initially-
-    // tried viscosity=400/finer-timestep combination: that gave a perfectly
-    // flat, non-decaying drift in a headless sweep, but caused real
-    // interactive lag live (up to 512 substeps/frame in debug mode).
-    // viscosity=150 at this cheaper config was independently verified to
-    // sustain real drift far longer than untreated (15,000+ steps vs ~6,500),
-    // at the SAME substep budget the pre-fix code already used.
+    // basic_creature.rs's tuning (13,26,40,fiber=0.3,1.0). viscosity=150 with the
+    // original config (min_dt=0.01, max_substeps=64): viscosity=400 with a finer
+    // timestep gave a flat, non-decaying drift in a headless sweep but lagged live (up
+    // to 512 substeps/frame in debug). At viscosity=150 the drift lasts far longer than
+    // untreated (15,000+ steps vs ~6,500) at the same substep budget.
     let mut mat = NeoHookeanMaterial::new(13.0, 26.0);
     mat.active_stress_coeff = 40.0;
     mat.viscosity = 150.0;
@@ -299,7 +295,7 @@ impl State {
             // Radius 14, not 6: the body itself is ~12 units wide (half-width from
             // centroid to leading edge), so a tighter radius reads near-zero contact
             // even while the body is actively pushing into blades at its front edge
-            // (found via a real headless check: blade x-position visibly shifted
+            // (found via a headless check: blade x-position visibly shifted
             // +5.2 units under body contact while a radius-6 count still read 0).
             let nearby_grass = self.sim.count_near(centroid, 14.0, 1);
             let mut min_j = f32::INFINITY;

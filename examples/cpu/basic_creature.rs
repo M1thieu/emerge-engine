@@ -402,7 +402,7 @@ impl State {
                 snap.min_deformation_j
             ));
         }
-        // Threshold scaled to the real spawn size (~18x2 physical) rather than a
+        // Threshold scaled to the spawn size (~18x2 physical) rather than a
         // fixed constant -- a fixed threshold silently breaks if body
         // proportions change.
         if extent.x > 2.5 * 18.0 || extent.y > 15.0 {
@@ -464,7 +464,7 @@ impl State {
                 } else {
                     Vec2::NEG_X
                 });
-                // Restore the real asymmetric ratchet values while actively steering --
+                // Restore the asymmetric ratchet values while actively steering --
                 // see the `else` branch below for why this is only active on demand.
                 self.ratchet.set_friction(0.1, 0.95);
                 self.lnn.step(DT * self.wave_speed);

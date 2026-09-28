@@ -139,10 +139,10 @@ pub struct SimPipelines {
     /// Apply velocity impulses directly on GPU particle buffer -- no CPU upload needed.
     pub apply_impulses: wgpu::ComputePipeline,
     /// Debug/test-only -- runs the Newton-Raphson LR normal fit against one chosen
-    /// block's point cloud in isolation. Not part of the real per-substep pipeline.
+    /// block's point cloud in isolation. Not part of the per-substep pipeline.
     /// See `resolve_contact.wgsl`'s `debug_fit_normal_main` doc.
     pub debug_fit_normal: wgpu::ComputePipeline,
-    /// Multi-field contact resolution -- the real per-substep pass (GPU port). Runs
+    /// Multi-field contact resolution -- the per-substep pass (GPU port). Runs
     /// after grid_update, before g2p. See `resolve_contact.wgsl`'s `resolve_contact_main`
     /// doc.
     pub resolve_contact: wgpu::ComputePipeline,

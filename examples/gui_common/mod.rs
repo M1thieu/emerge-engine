@@ -1,23 +1,18 @@
 //! Shared winit/wgpu/egui bootstrap for interactive GUI examples.
 //!
-//! Extracted 2026-08-21 after a direct, concrete finding: `sand_repose_
-//! angle_gui.rs` fixed a real cursor-to-grid mapping bug (the naive "screen
-//! fraction * grid_res" formula only works when the window is square), but
-//! `basic_sand_gui.rs` still carries the old, buggy version -- unexposed
-//! only because it happens to launch at a square 480x480 default, not
-//! because its own math is actually correct. A bug fixed in one hand-rolled
-//! copy of this plumbing does not reach the other copies. Every `*_gui.rs`
-//! example in this directory duplicates this exact bootstrap + egui-submit
-//! mechanics; this module is where it now lives once.
+//! One copy of the bootstrap and egui-submit mechanics the interactive examples
+//! share, so a fix reaches all of them: a cursor-to-grid mapping of "screen fraction *
+//! grid_res" is right only for a square window, and a hand-rolled copy of it stays
+//! wrong unnoticed in any example that happens to launch square.
 //!
 //! Deliberately NOT in scope: the `App`/`ApplicationHandler` event-dispatch
 //! skeleton, `main()`, or panel CONTENT -- those differ enough per example
 //! (different keybindings, different modes, different widgets) that forcing
-//! them into one shape now would cost real clarity for a smaller win than
+//! them into one shape now would cost clarity for a smaller win than
 //! this part. Extend this module's scope only if a future pass finds the
 //! same genuinely-identical-not-just-similar property holds there too.
 //!
-//! Usage (see `basic_sand_gui.rs` / `sand_repose_angle_gui.rs`):
+//! Usage (see `basic_sand.rs` / `sand_repose_angle.rs`):
 //! ```ignore
 //! #[path = "gui_common/mod.rs"]
 //! mod gui_common;

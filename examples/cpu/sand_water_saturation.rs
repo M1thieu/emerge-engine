@@ -7,7 +7,7 @@ mod gui_common;
 use cursor_force::CursorForce;
 
 /// Live demo of moisture diffusion driving a phase transition
-/// into a real mixture material: water poured onto a loose sand pile
+/// into a mixture material: water poured onto a loose sand pile
 /// diffuses through the shared grid (`ScalarDiffusionField`, PIC/FLIP-
 /// blended -- see that field's doc), and each sand particle's own
 /// saturation moves it through TWO distinct regimes as it wets:
@@ -17,7 +17,7 @@ use cursor_force::CursorForce;
 ///    capillary bridging between grains (the "sandcastle effect" --
 ///    Hornbaker et al. 1997; Halsey & Levine 1998) -- damp sand holds a
 ///    shape better than bone-dry sand.
-/// 2. Past that ceiling: a real phase transition (`add_phase_rule`, see
+/// 2. Past that ceiling: a phase transition (`add_phase_rule`, see
 ///    `make_mixture`'s doc) converts the particle into
 ///    `GranularFluidMaterial` (Dunatunga & Kamrin 2015) -- capillary
 ///    bridges between separate grains merge and break down at real
@@ -57,7 +57,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
-// 100 Hz outer step, not 10 Hz. With REAL sand stiffness the elastic wave
+// 100 Hz outer step, not 10 Hz. With sand stiffness the elastic wave
 // speed is c = sqrt(E/rho) = 96.8 m/s, so CFL demands
 // dt <= 0.7*dx/c -- about 1400 substeps per 0.1s frame, far past any sane
 // budget. This is not a tuning fudge: it is what resolving real elastic
@@ -67,19 +67,14 @@ const DT: f32 = 0.01;
 const MAT_SAND: u32 = 0;
 const MAT_WATER: u32 = 1;
 const MAT_MIXTURE: u32 = 2;
-// Real saturation threshold shared between `make_sand`'s own
-// `pendular_regime_ceiling` and the phase rule below -- one source of
-// truth, not two literals that could drift apart. See `cohesion_bonus_pa`'s
-// doc in sand.rs: pendular-regime capillary cohesion is a REAL but
-// EXPLICITLY BOUNDED model (Hornbaker et al. 1997; Halsey & Levine 1998),
-// honestly disclosed there as not modeling what real wet sand actually does
-// past this saturation -- capillary bridges between separate grains merge
-// and break down, and the material becomes a continuous granular-
-// fluid mixture (funicular/capillary/slurry regime), not "the same sand
-// with capped cohesion." This is exactly the gap `GranularFluidMaterial`
-// (Dunatunga & Kamrin 2015) exists to fill; the phase rule below hands off
-// to it at the exact point the pendular model's doc says it stops
-// applying, not a separately guessed threshold.
+// Saturation threshold shared by `make_sand`'s `pendular_regime_ceiling` and the phase
+// rule below. Pendular-regime capillary cohesion (see `cohesion_bonus_pa` in sand.rs;
+// Hornbaker et al. 1997; Halsey & Levine 1998) is a bounded model: past this
+// saturation, capillary bridges between grains merge and break down, and the material
+// becomes a continuous granular-fluid mixture (funicular/capillary/slurry regime), not
+// "the same sand with capped cohesion". `GranularFluidMaterial` (Dunatunga & Kamrin
+// 2015) covers that regime; the phase rule hands off to it where the pendular model
+// stops applying.
 const PENDULAR_REGIME_CEILING: f32 = 0.3;
 // Disclosed cap on how much poured water can add beyond the initial
 // sand pile -- same reason `basic_sand.rs`'s own POUR_BUDGET exists: the
@@ -88,7 +83,7 @@ const POUR_BUDGET: usize = 800;
 const POUR_SPACING: f32 = 0.5;
 const POUR_BOX: IVec2 = IVec2::new(2, 1);
 
-/// The CANONICAL MPM sand parameters, taken from the real reference
+/// The CANONICAL MPM sand parameters, taken from the reference
 /// implementations this engine cross-checks against: sparkl/wgsparkl's own
 /// `DruckerPragerPlasticity::new(E, nu)` demo values (`sparkl basic2`:
 /// E = 1e5, nu = 0.2), the same family Klar et al. 2016 works in.
@@ -136,16 +131,12 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         0.0, // water on clean quartz: fully wetting
     );
     let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, SAND_DENSITY_KG_M3);
-    // Real small-strain Kelvin-Voigt damping -- see
-    // `small_strain_elastic_viscosity_pa_s`'s doc (Seed & Idriss 1970 +
-    // Darendeli 2001, zeta 0.5%-2% for clean sand). Below the Drucker-Prager
-    // yield cone, this material has zero built-in dissipation on its own; a
-    // firm push otherwise leaves kinetic energy ringing for 500+ substeps
-    // with no mechanism to arrest it -- measured live as sand "springing
-    // back" no matter how hard it's disturbed. Bottom of the cited range
-    // used here -- measured 2026-08-25 that the top (1%) roughly doubles
-    // substep count via the viscous CFL bound (`timestep_bound`), a real
-    // interactive-fps cost this live demo actually pays.
+    // Small-strain Kelvin-Voigt damping -- see `small_strain_elastic_viscosity_pa_s`'s
+    // doc (Seed & Idriss 1970 + Darendeli 2001, zeta 0.5%-2% for clean sand). Below the
+    // Drucker-Prager yield cone this material has no dissipation of its own, and a firm
+    // push leaves kinetic energy ringing for 500+ substeps (sand "springing back"). The
+    // bottom of the cited range: the top (1%) roughly doubles the substep count through
+    // the viscous CFL bound (`timestep_bound`).
     let shear_modulus_pa = SAND_YOUNG_MODULUS_PA / (2.0 * (1.0 + SAND_POISSON_RATIO));
     let elastic_viscosity_pa_s =
         emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
@@ -154,14 +145,10 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         );
     let elastic_viscosity = config.visc_from_si(elastic_viscosity_pa_s, SAND_DENSITY_KG_M3);
     DruckerPragerMaterial {
-        // Real quartz critical-state friction angle (Bolton 1986, "The
-        // strength and dilatancy of sands," Geotechnique 36(1):65-78) --
-        // an intrinsic material property independent of density/dilatancy,
-        // the correct floor for a genuinely LOOSE pile (near-zero
-        // dilatancy). The previous 27 deg was below the real geotechnical
-        // minimum for ANY sand condition (28-30 deg for loose sand,
-        // web-confirmed 2026-08-26) -- not a real material state, picked
-        // to force visible slumping.
+        // Quartz critical-state friction angle (Bolton 1986, "The strength and
+        // dilatancy of sands", Geotechnique 36(1):65-78): an intrinsic property
+        // independent of density and dilatancy, the floor for a loose pile (near-zero
+        // dilatancy). Loose sand measures 28-30 deg at minimum.
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
         pendular_regime_ceiling: PENDULAR_REGIME_CEILING,
@@ -170,45 +157,25 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
     }
 }
 
-/// Real granular-fluid mixture (Dunatunga & Kamrin 2015 -- Tait EOS +
-/// corotated elastic + SVD plasticity, see `GranularFluidMaterial`'s own
-/// module doc) for sand that has crossed `PENDULAR_REGIME_CEILING`. This is
-/// the actual mixture material this scene exists to demonstrate, replacing
-/// the earlier version's scalar-diffusion-only approximation (moisture just
-/// raised dry sand's apparent cohesion, with nothing modeling what happens
-/// once it's saturated).
+/// Granular-fluid mixture (Dunatunga & Kamrin 2015 -- Tait EOS + corotated elastic + SVD
+/// plasticity, see `GranularFluidMaterial`'s module doc) for sand past
+/// `PENDULAR_REGIME_CEILING`, the mixture material this scene demonstrates.
 ///
-/// `saturated_loam`'s doc HONESTLY DISCLOSES its shape parameters
-/// (eos_stiffness, hardening_exponent, compression_limit) as real-law/
-/// hand-tuned-values, not measured geotechnical loam data -- kept as-is
-/// here rather than re-guessing new numbers, same standard the rest of this
-/// codebase holds unsourced-but-disclosed constants to.
+/// Built as a struct literal rather than by `saturated_loam(E, nu)`, which runs plain
+/// `lame_from_young` (grid units): lambda/mu go through `config.lame_from_si` like this
+/// file's other materials (see `make_sand`), and the remaining shape values of
+/// `saturated_loam` (eos_stiffness, hardening_exponent, compression_limit, ..., and the
+/// anti-bounce viscosity terms scaled off this material's converted mu/eos_stiffness)
+/// are copied unchanged. Its doc labels those shape values hand-tuned, not measured
+/// loam data.
 ///
-/// `rest_density` is the one field overridden from the preset: `saturated_
-/// loam` hardcodes it to a scene-agnostic `1.0`, but this scene's other
-/// materials (see `make_sim`'s water) are built from `config.grid_density`,
-/// the solver's own real SI-derived reference -- using the preset's literal
-/// `1.0` here would silently reintroduce the exact reference-density
-/// mismatch class of bug this session's citation/render sweep spent all
-/// night finding and fixing elsewhere. Corrected to the scene-
-/// consistent value.
+/// `rest_density` is overridden from the preset's scene-agnostic `1.0` to
+/// `config.grid_density`, the reference the water in `make_sim` uses, so the two share
+/// one density scale.
 ///
-/// Elastic modulus halved from dry sand's own numerical `E` (Terzaghi's
-/// effective-stress principle: pore water pressure carries part of the
-/// total stress once saturated, so the load-bearing grain skeleton is
-/// softer -- directionally not an independently measured
-/// wet-sand modulus; disclosed as such).
-///
-/// Built as a struct literal rather than calling `saturated_loam(E, nu)`
-/// directly: that constructor runs plain `lame_from_young` internally, with
-/// no SI-to-grid conversion -- correct for a caller who's already in grid
-/// units, but this scene's other materials (see `make_sand`) go through
-/// `config.lame_from_si`, the dimensionally-correct path. Real
-/// SI here, `lame_from_si`-converted like everything else in
-/// this file, then the rest of `saturated_loam`'s own disclosed shape
-/// values (eos_stiffness/hardening_exponent/compression_limit/etc, and the
-/// anti-elastic-bounce viscosity terms scaled off THIS material's own
-/// correctly-converted mu/eos_stiffness) copied over unchanged.
+/// Elastic modulus half of dry sand's `E` (Terzaghi's effective-stress principle: pore
+/// water carries part of the total stress once saturated, so the grain skeleton is
+/// softer); the direction is physical, the factor is not a measured wet-sand modulus.
 fn make_mixture(config: &SimConfig) -> GranularFluidMaterial {
     let (lambda, mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA * 0.5,
@@ -236,12 +203,9 @@ fn make_mixture(config: &SimConfig) -> GranularFluidMaterial {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
-        // 12 (basic_sand.rs's own value) panics: that config was tuned for
-        // sand alone, no fluid material in the scene. Strict WC-MPM water
-        // has tighter CFL/stability requirements -- see
-        // basic_fluids.rs's own identical fix, same real precedented value,
-        // matching basic_fluids_gpu.rs's own.
-        // Real headroom for genuine SI stiffness under real gravity.
+        // Not basic_sand.rs's 12, tuned for sand alone: strict WC-MPM water needs
+        // more substeps (as basic_fluids.rs and basic_fluids_gpu.rs), and SI
+        // stiffness under full gravity needs the headroom.
         max_substeps_per_step: 400,
         material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
@@ -272,29 +236,20 @@ fn make_sim() -> Simulation {
         )
         .with_material(MAT_MIXTURE, Box::new(make_mixture(&config)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
-        // The real mixture transition this scene exists to demonstrate --
-        // see PENDULAR_REGIME_CEILING's doc for why this exact
-        // threshold, not a separately guessed one. Evaluated every substep
-        // (`add_phase_rule`'s own contract).
+        // The mixture transition this scene demonstrates -- see
+        // PENDULAR_REGIME_CEILING for why this threshold. Evaluated every substep
+        // (`add_phase_rule`'s contract).
         //
-        // KNOWN, DISCLOSED, UNFIXED ISSUE (2026-08-26/27): `apply_phase_
-        // transition` resets a transitioning particle's deformation_gradient
-        // to IDENTITY, which drops GranularFluidMaterial's own EOS pressure
-        // to exactly zero regardless of how much real compressive load that
-        // particle was carrying as sand the substep before -- a genuine
-        // stress discontinuity, confirmed and reproduced in a controlled
-        // diagnostic (`diag_phase_transition_under_load_causes_stress_
-        // discontinuity`, tests/physics_correctness.rs) and the direct
-        // cause of a real crash after ~104,737 frames of live interactive
-        // testing ("strict WC-MPM fluid could not advance the full
-        // requested dt" -- the shock propagated into nearby water's own
-        // strict CFL/retry check). A `GasMaterial`-style
-        // `init_particle_from_transition` fix was tried and made the
-        // measured spike WORSE, not better (see granular_fluid.rs's own
-        // reverted-attempt comment on `GranularFluidMaterial` for the full
-        // writeup) -- root cause not yet fully understood. This scene keeps
-        // the real mixture transition (that's the actual point of it) but
-        // a very long, heavy interactive session can still hit this crash.
+        // Open: a long, heavy interactive session (~104,737 frames) once ended with
+        // "strict WC-MPM fluid could not advance the full requested dt" in the
+        // nearby water. `apply_phase_transition` resets a transitioning particle's
+        // deformation_gradient to identity, which zeroes GranularFluidMaterial's
+        // EOS pressure whatever load the particle carried as sand. With this
+        // scene's `eos_power` of 2, a single transition under load causes only a
+        // small deceleration (`diag_phase_transition_under_load_causes_stress_discontinuity`,
+        // tests/physics_correctness.rs), so the crash's cause is open (see the
+        // repeated-transition test there). An `init_particle_from_transition` like
+        // `GasMaterial`'s made the measured spike worse (see granular_fluid.rs).
         .with_phase_rule(|p| {
             if p.material_id == MAT_SAND && p.scalar_field > PENDULAR_REGIME_CEILING {
                 Some(MAT_MIXTURE)
@@ -307,27 +262,17 @@ fn make_sim() -> Simulation {
 fn make_moisture_field(grid_res: usize) -> ScalarDiffusionField {
     let mut field = ScalarDiffusionField::new(
         ScalarDiffusionConfig {
-            // Real cited sandy-soil moisture diffusivity, horizontal-
-            // infiltration measurements span 1e-9..1.67e-4 m^2/s (two
-            // independent sources, 2026-08-26: real D(theta) is highly
-            // nonlinear, varying 4-5+ orders of magnitude between dry and
-            // near-saturated water content -- pore-scale mechanism: large
-            // pores empty first as soil dries, leaving fewer, smaller,
-            // more tortuous conducting paths). This scene's water is
-            // poured directly onto the pile -- a near-saturated wetting
-            // front at the contact point, not the dry/low-moisture regime
-            // -- so the physically correct point in that cited range is
-            // near its TOP (1.67e-4), not a middle guess. The previous
-            // 1e-6 (this scene's earlier fix, itself real but for the
-            // WRONG end of the same cited range) measured completely
-            // inert: 0/1920 sand particles ever reached the cohesion
-            // ceiling after a realistic ~3s pour
-            // (`diag_wet_sand_cohesion_spread_after_realistic_pour`,
-            // `tests/physics_correctness.rs`) -- the diffusion LENGTH
-            // `sqrt(D*t)` at 1e-6 over 3s doesn't even reach the nearest
-            // sand particle. Converted to grid units: D/dx^2 = 1.67e-4/1e-4.
-            // (The original bug this all traces back to: 0.5, picked by
-            // feel, flooded the whole pile in seconds.)
+            // Moisture diffusivity for sandy soil. Horizontal-infiltration
+            // measurements span 1e-9..1.67e-4 m^2/s: D(theta) is highly nonlinear,
+            // varying 4-5+ orders of magnitude between dry and near-saturated water
+            // content (large pores empty first as soil dries, leaving fewer, smaller,
+            // more tortuous paths). Water here is poured onto the pile, a
+            // near-saturated wetting front at the contact, so the value is near the
+            // top of that range (1.67e-4). At 1e-6 the diffusion length `sqrt(D*t)`
+            // over a ~3 s pour does not reach the nearest sand particle (0/1920 sand
+            // particles reach the cohesion ceiling,
+            // `diag_wet_sand_cohesion_spread_after_realistic_pour`,
+            // `tests/physics_correctness.rs`). In grid units: D/dx^2 = 1.67e-4/1e-4.
             diffusivity: 1.67,
             decay_rate: 0.0,
             ambient: 0.0,
@@ -341,7 +286,7 @@ fn make_moisture_field(grid_res: usize) -> ScalarDiffusionField {
     // fact, not a process that ramps up over an invented per-second rate.
     // Diffusion (above) is the only real transport left, spreading that
     // moisture into neighboring sand exactly as measured/cited.
-    // Pure FLIP (1.0): the ONLY transport is the real Laplacian term, so
+    // Pure FLIP (1.0): the ONLY transport is the Laplacian term, so
     // what is on screen is diffusion. A PIC-leaning blend snaps each
     // particle most of the way toward its local grid average EVERY step,
     // which at this scene's real diffusivity is ~700x stronger than the
@@ -412,10 +357,9 @@ impl State {
             rmb: false,
             pouring: false,
             poured_count: 0,
-            // radius=7, push=3.0 (retained_fraction=1.000 across every real
-            // LMB usage pattern, verified 2026-08-26), pull=7.0 (RMB needs
-            // to overcome a packed pile's own confinement -- 3.0 gave 0.097
-            // cells of real lift, nothing; 7.0 gives 5.94, clearly real).
+            // radius=7, push=3.0 (retained_fraction=1.000 across the LMB usage
+            // patterns tested), pull=7.0 (RMB must overcome a packed pile's
+            // confinement: 3.0 lifts 0.097 cells, 7.0 lifts 5.94).
             cursor_force: CursorForce::new(7.0, 3.0, 7.0),
             pour_seed: 1000,
             frame: 0,
@@ -446,10 +390,9 @@ impl State {
 
     fn update_and_render(&mut self, window: &Window) {
         if self.lmb || self.rmb {
-            // Real F=ma, not a velocity poke -- see `gui_common::
-            // CursorForce`'s doc for why (mass resisting
-            // acceleration, same shape gravity itself takes) and for why
-            // push/pull are separate strengths, not one shared value.
+            // A force (F=ma), not a velocity poke -- see `gui_common::CursorForce`
+            // for why (mass resists acceleration, as with gravity) and why push and
+            // pull have separate strengths.
             let g = self.sim.config().gravity.length();
             let cursor = self.cursor_grid();
             self.cursor_force.apply(

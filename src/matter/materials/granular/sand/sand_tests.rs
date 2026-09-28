@@ -70,7 +70,7 @@ mod marginal_yield_tests {
     /// This test builds a deformation gradient at EXACTLY that marginal angle and checks:
     /// slightly inside (less shear) => elastic (no change). slightly outside (more shear)
     /// => plastic (state changes). If this holds, the constitutive code matches the math
-    /// and the real repose-angle gap lives in MPM's grid transfer, not here.
+    /// and the repose-angle gap lives in MPM's grid transfer, not here.
     /// Builds a strain state whose underlying STRESS state (sigma_i = 2*mu*eps_i +
     /// lambda*tr(eps)) sits at exactly Mohr-Coulomb angle `phi_test_deg`. Strain-space
     /// and stress-space deviatoric/volumetric ratios differ by the elastic `ratio` factor
@@ -244,7 +244,7 @@ mod scale_contract_integration {
         // A 1m macro feature (real terrain scale) must have a genuine,
         // non-empty valid REV window for real dry-sand grain size --
         // otherwise no `dx` could ever make this material a valid continuum
-        // at any resolution, which would be a real modeling dead end.
+        // at any resolution, which would be a modeling dead end.
         let window = granular_dx_window(GRAIN_DIAMETER_M, 1.0);
         assert!(
             window.is_some(),
@@ -573,8 +573,8 @@ mod pradhana_correction_tests {
                 }
                 // Genuine full rest -- safe now that F sits at a real,
                 // non-degenerate elastic equilibrium (dev_norm != 0), long
-                // enough to confirm a real non-yielding steady state,
-                // matching a real pour's own real settling between batches.
+                // enough to confirm a non-yielding steady state,
+                // matching a pour's own real settling between batches.
                 for _ in 0..380 {
                     particles.velocity_gradient[0] = Mat2::ZERO;
                     dp.update_particle(&mut particles.update_ctx(0), dt);

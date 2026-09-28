@@ -1,13 +1,10 @@
-//! Real wall-clock measurement (2026-09-11), NOT the standalone synthetic
-//! benchmark from the night before (`stage3_dp_multi_particle_real_wall_
-//! clock_speedup_vs_real_explicit`, 10.3x) -- that number predates every
-//! correctness fix landed since (Kirchhoff-vs-Piola, mass-normalized
-//! tolerance, and critically the Gershgorin/PSD Hessian construction, which
-//! adds 4 extra JVP evaluations per particle per CG iteration). This
-//! measures the REAL production code path (`Simulation::step` with
-//! `SimConfig::implicit_corotated_elastic`) at basic_sand's own real scale
-//! (~2016 particles, per project memory), for the regime that's actually
-//! verified correct: an already-settled pile, not a violent drop.
+//! Wall-clock measurement of the production path (`Simulation::step` with
+//! `SimConfig::implicit_corotated_elastic`) at basic_sand's scale (~2016 particles), in
+//! the regime verified correct: a settled pile, not a violent drop. The synthetic
+//! benchmark `stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit`
+//! (10.3x) predates the correctness fixes since (Kirchhoff instead of Piola,
+//! mass-normalized tolerance, and the Gershgorin/PSD Hessian construction, which adds 4
+//! JVP evaluations per particle per CG iteration).
 //!
 //! `cargo test --release --test probes implicit_corotated_real_fps_measurement:: -- --nocapture`
 
@@ -21,7 +18,7 @@ const MAT_LOOSE: u32 = 1;
 
 fn make_sand(phi_deg: f32) -> DruckerPragerMaterial {
     // Same real SI stiffness as basic_sand.rs itself (E=15MPa, nu=0.3),
-    // not a toy value -- the whole point is measuring the REAL scene's cost.
+    // not a toy value -- the whole point is measuring the scene's cost.
     let config = SimConfig::earth(GRID, 0.01, 0.016);
     let (lambda, mu) = config.lame_from_si(15.0e6, 0.3, 1600.0);
     let mut m = DruckerPragerMaterial::new(lambda, mu);

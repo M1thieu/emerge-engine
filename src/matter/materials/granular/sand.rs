@@ -165,7 +165,7 @@ pub struct DruckerPragerMaterial {
     /// stay unaffected -- only engages when volumetric compression alone would exceed
     /// sand's own packing limit. `update_particle`'s comment (at the point of use)
     /// records that this already goes beyond a naive clamp: the excess velocity along
-    /// the compressed axis is zeroed too, a real inelastic (dissipative) event, not an
+    /// the compressed axis is zeroed too, an inelastic (dissipative) event, not an
     /// elastic rebound off the floor. A simplified, single-J-threshold stand-in for
     /// DiMaggio-Sandler's full elliptical (p, q) cap, not a literal transcription --
     /// disclosed as such, matching this file's own convention for the Cosserat term.
@@ -517,7 +517,7 @@ impl DruckerPragerMaterial {
     /// Mechanics*, 1969), so this returns `friction_angle` in degrees, for a
     /// demo panel, a test or LP's material authoring. Exact only for the pure
     /// cohesionless case: a nonzero `cohesion` (a numerical compensation
-    /// here) or `dilatancy_angle` moves a real pile's angle away from it.
+    /// here) or `dilatancy_angle` moves a pile's angle away from it.
     pub const fn predicted_repose_angle_deg(&self) -> f32 {
         self.friction_angle.to_degrees()
     }
@@ -701,7 +701,7 @@ impl DruckerPragerMaterial {
 
         // Self-consistency: `alpha(q + gamma)` depends on gamma, and gamma depends
         // on alpha -- shared iteration logic lives in `self_consistent_plastic_
-        // multiplier` (see its doc for the real citation and why it's a
+        // multiplier` (see its doc for the citation and why it's a
         // generic, cross-material solver, not DP-specific), this closure supplies
         // only DP's own yield equation. Single-pass (pre-step-q) value seeds the
         // initial guess.

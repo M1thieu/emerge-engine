@@ -59,7 +59,7 @@ pub struct GpuSimulation {
     /// sub-range `write_buffer` instead of a full realloc + reupload + bind
     /// group rebuild every time. `remove_particles` (spawn.rs) resets this
     /// back down to its own new exact-fit size when it reallocates smaller --
-    /// must stay in sync with the real buffer size everywhere buffers are
+    /// must stay in sync with the buffer size everywhere buffers are
     /// reallocated, or the fast path in `spawn_region` would write past the
     /// buffer's actual end.
     particle_capacity: usize,

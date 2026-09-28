@@ -109,7 +109,7 @@ mod small_strain_linear_elasticity_tests {
         );
     }
 
-    /// Confirms the match is a real convergence to exact linear elasticity as
+    /// Confirms the match is a convergence to exact linear elasticity as
     /// strain shrinks, not a coincidence at one specific delta.
     ///
     /// The ABSOLUTE residual (actual minus predicted stress) is genuine O(delta^2)
@@ -375,7 +375,7 @@ mod kirchhoff_stress_vjp_tests {
     /// Central-difference numerical gradient of `loss` w.r.t. each of F's 4
     /// components, compared against the analytic `kirchhoff_stress_vjp`.
     ///
-    /// This is the real verification the hand derivation needed -- matching
+    /// This is the verification the hand derivation needed -- matching
     /// this project's standing "verify numerically" discipline for anything
     /// hand-derived, doubly so for tensor calculus where sign/transpose
     /// errors are exactly the class of mistake that doesn't show up as a
@@ -472,7 +472,7 @@ mod kirchhoff_stress_vjp_tests {
         // g need not be symmetric in general (only the dev(B)-derived internal
         // adjoint happens to be) -- confirms the derivation handles the fully
         // general case, not just the symmetric one it happens to be called
-        // with in a real P2G force-scatter backward pass.
+        // with in a P2G force-scatter backward pass.
         let mat = NeoHookeanMaterial::new(800.0, 800.0);
         let f = Mat2::from_cols(glam::Vec2::new(1.1, -0.1), glam::Vec2::new(0.2, 0.95));
         let g = Mat2::from_cols(glam::Vec2::new(0.3, 1.2), glam::Vec2::new(-0.8, 0.1));

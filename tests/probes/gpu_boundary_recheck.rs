@@ -1,8 +1,6 @@
-//! TEMPORARY -- re-verifying a claim made earlier tonight ("basic_jellies_gpu.rs
-//! has no boundary condition at all") against direct evidence that
-//! grid_update.wgsl DOES have an always-on slip boundary using
-//! boundary_thickness (default 2, not 0). Tracks real particle position over
-//! time to see what actually happens, instead of trusting either claim.
+//! Does `basic_jellies_gpu.rs` have a boundary? `grid_update.wgsl` applies an always-on
+//! slip boundary using boundary_thickness (default 2, not 0). Tracks particle positions
+//! over time to see what happens.
 
 #[cfg(feature = "gpu")]
 mod gpu_check {

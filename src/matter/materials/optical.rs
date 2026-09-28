@@ -18,7 +18,7 @@
 //! `[0.217, 0.056, 0.0088] m^-1` -- red absorbed ~25x more strongly than
 //! blue, which is why water is blue. It is also why a glass of water is
 //! colourless: over 10 cm even the red loses only ~2%. Scenes that want
-//! visibly blue water state a real path length through
+//! visibly blue water state a path length through
 //! `PhysicalRenderContract::view_thickness_meters`; inflating the
 //! coefficient instead would be painting, not measuring.
 
@@ -205,7 +205,7 @@ mod tests {
     /// A glass of water is colourless and the sea is blue: the same
     /// coefficients, a different path length. Beer-Lambert says so, and this
     /// is the check that stops anyone "fixing" pale water by inflating the
-    /// coefficient instead of stating a real depth.
+    /// coefficient instead of stating a depth.
     #[test]
     fn path_length_not_coefficient_is_what_makes_water_blue() {
         use crate::energy::radiation::beer_lambert_transmittance;

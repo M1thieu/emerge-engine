@@ -177,7 +177,7 @@ fn make_sim(
             initial_velocity_scale: 0.0,
             ..SpawnRegion::for_sim(&config)
         }
-        // Real density -> real particle mass, rather than a hand-picked one.
+        // Particle mass from the material's density, rather than a hand-picked one.
         .mass_from(&props(remembered(slot)), &config)
     };
     let materials: [NaccMaterial; 3] =

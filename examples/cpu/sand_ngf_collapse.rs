@@ -16,7 +16,7 @@ use egui_wgpu::ScreenDescriptor;
 /// this whole effort exists to chip at. NGF (press N) measurably narrows the
 /// final spread vs baseline (press B) but nowhere near enough to stop at the
 /// lines -- do not expect a dramatic visual difference between the two
-/// modes, the real measured effect is ~3% tighter, not a fix.
+/// modes, the measured effect is ~3% tighter, not a fix.
 ///
 ///   cargo run --example sand_ngf_collapse --features render
 use emerge::render::{ColorMode, Renderer};
@@ -37,8 +37,8 @@ const CELL_M: f32 = 0.01;
 const DT_S: f32 = 0.01;
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
-// Real dry sand, same values used throughout tonight's NGF verification
-// (Haeri & Skonieczny 2022 Table 1, Excavation case).
+// Dry sand (Haeri & Skonieczny 2022 Table 1, Excavation case), the values of the NGF
+// checks.
 const YOUNG_MODULUS_PA: f32 = 15.0e6;
 const POISSON_RATIO: f32 = 0.3;
 const BULK_DENSITY_KG_M3: f32 = 1600.0;
@@ -122,14 +122,12 @@ fn make_sim(mode: Mode) -> Simulation {
         max_substeps_per_step: 4000,
         ..SimConfig::earth(GRID, CELL_M, DT_S)
     };
-    // Real fix (2026-09-05): mass was left on `config.grid_density`'s bare
-    // default (1.0), disconnected from the real `BULK_DENSITY_KG_M3` (1600)
-    // the stiffness above is scaled by -- mass/stiffness must share the same
-    // real density or the elastic wave speed is wrong even with correct
-    // lambda/mu. Computed via `ParticleMass::particle_mass`'s own documented
-    // formula directly, since `DruckerPragerMaterial::new` (raw constructor,
-    // needed here for the `ngf_enabled` field the property-struct API
-    // doesn't expose) bypasses `SpawnRegion::mass_from`.
+    // Mass from the same density as the stiffness above (`BULK_DENSITY_KG_M3`, 1600),
+    // not `config.grid_density`'s default (1.0): with mismatched density the elastic
+    // wave speed is wrong even with correct lambda/mu. Computed from
+    // `ParticleMass::particle_mass`'s formula, since `DruckerPragerMaterial::new` (the raw
+    // constructor, needed for the `ngf_enabled` field the property-struct API does not
+    // expose) bypasses `SpawnRegion::mass_from`.
     const SPACING: f32 = 0.5;
     let mass_grid = (BULK_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let column = SpawnRegion {
@@ -327,9 +325,8 @@ impl State {
         // egui's own LOGICAL screen rect (points, not physical pixels)
         // inside the closure below: egui's painter takes point-space
         // coordinates and applies `pixels_per_point` itself when
-        // rasterizing, so feeding it physical-pixel values directly (as an
-        // earlier version of this file did) draws in the wrong place on
-        // any display with a scale factor other than 1.0.
+        // rasterizing, so feeding it physical-pixel values directly draws in
+        // the wrong place on any display with a scale factor other than 1.0.
         let center_x_cells = GRID as f32 * 0.5;
         let r_inf = predicted_r_inf_cells();
 

@@ -1,4 +1,4 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/cpu/basic_sand.rs`'s real-SI migration (real dry sand,
 //! E=15 MPa/nu=0.3/rho=1600, same reference already verified for
 //! sand_ngf_collapse.rs). Checks stability at real gravity, not just the

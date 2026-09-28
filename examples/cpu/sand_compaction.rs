@@ -4,24 +4,15 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// Live demo of the new `DruckerPragerMaterial::compaction_sensitivity`
-/// mechanic (single-phase/dry compaction: denser packing under real
-/// load -> higher friction, Bolton 1986's real relative-density-to-friction
-/// relation). Same GUI boilerplate as `basic_sand.rs` -- LMB push, RMB
-/// pull (`apply_radial_impulse`, already already existed) are the ONLY
-/// forcing here. No scripted/automatic event of any kind drives this scene --
-/// an earlier version of this file auto-injected a periodic velocity kick to
-/// exercise the mechanic without needing live mouse input, which is exactly
-/// the kind of unnatural hardcoded forcing this project's own standing rule
-/// rejects (see MEMORY.md's no-cheating/no-hardcode note) -- removed. Real
-/// compaction only happens here if a real person pushes/pulls the pile
-/// through this window themselves.
+/// Live demo of `DruckerPragerMaterial::compaction_sensitivity` (single-phase, dry
+/// compaction: denser packing under load -> higher friction, Bolton 1986's
+/// relative-density-to-friction relation). Same GUI as `basic_sand.rs`: LMB push and RMB
+/// pull (`apply_radial_impulse`) are the only forcing, with no scripted event, so
+/// compaction happens only when someone pushes or pulls the pile.
 ///
-/// `ColorMode::ByVolume` renders each particle by its own current volume
-/// ratio J = det(F) -- so wherever you actually compact it, that region
-/// visibly shifts color. Console prints a passive compaction readout
-/// every 2s (deep-bulk vs surface, same regions used in the engine-side
-/// diagnostic) -- reporting only, not driving anything.
+/// `ColorMode::ByVolume` renders each particle by its current volume ratio J = det(F),
+/// so compacted regions shift color. The console prints a passive compaction readout
+/// every 2 s (deep bulk vs surface, the regions of the engine-side diagnostic).
 ///
 ///   cargo run --example sand_compaction --features render
 use emerge::render::{ColorMode, Renderer};
@@ -119,10 +110,10 @@ struct State {
 
 /// Honest, PASSIVE measurement: mean ln(J) (J = det(deformation_gradient),
 /// each particle's own actual current volume ratio) in the deep bulk (most
-/// sustained load, if any real pushing has happened near/on it) vs the
+/// sustained load, if any pushing has happened near/on it) vs the
 /// exposed surface -- negative = real compaction. Pure reporting, drives
 /// nothing, changes nothing -- whatever compaction shows up here only
-/// happened because a real person pushed/pulled the pile through the window.
+/// happened because a person pushed/pulled the pile through the window.
 fn log_compaction(sim: &Simulation, cx: f32, floor: f32, height: f32, half_base: f32) {
     let particles = sim.particles();
     let min_y = particles.x.iter().map(|p| p.y).fold(f32::MAX, f32::min);
@@ -193,15 +184,13 @@ impl State {
         let sim = make_sim();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.9, true);
-        // ByVolume itself (heat(det2(F)*0.5)) is nearly flat right at J=1.0 --
-        // real compaction here is only ~0.1-0.2% volume change, far too small
-        // for that mapping's dynamic range (built for much bigger deformation).
-        // Real fix, not a physics hardcode: rescale the DISPLAY of the same
-        // real J value into a visible range, using `Particle::scalar_field`
-        // (the engine's own existing generic visualization/carrier scalar --
-        // not read by DruckerPragerMaterial's constitutive law, so this only
-        // affects color, never physics) + `ColorMode::ByScalarField`. Written
-        // fresh from real state every frame in `update_and_render`.
+        // ByVolume itself (heat(det2(F)*0.5)) is nearly flat at J=1.0, and
+        // compaction here is only ~0.1-0.2% volume change, too small for that
+        // mapping's range. So the display rescales the same J into a visible range,
+        // through `Particle::scalar_field` (a generic carrier scalar that
+        // DruckerPragerMaterial's constitutive law does not read, so only the color
+        // changes) and `ColorMode::ByScalarField`, written from the state every frame
+        // in `update_and_render`.
         renderer.set_color_mode(ColorMode::ByScalarField);
 
         let egui_ctx = egui::Context::default();
@@ -281,12 +270,12 @@ impl State {
 
         self.sim.step();
 
-        // Rescale the real J = det(F) into a visible [0,1] range for display
+        // Rescale the J = det(F) into a visible [0,1] range for display
         // only -- physics already ran above using the unscaled state;
         // this only sets `scalar_field`, which no material reads back.
         // VISUAL_ZOOM chosen from what this scene actually produces (J stays
         // within roughly +/-1% of 1.0 -- see the passive log below), not an
-        // arbitrary number: maps that real range across most of [0,1].
+        // arbitrary number: maps that range across most of [0,1].
         const VISUAL_ZOOM: f32 = 40.0;
         {
             let particles = self.sim.particles_mut();

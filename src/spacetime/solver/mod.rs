@@ -185,7 +185,7 @@ pub struct Simulation {
     /// win it was meant to provide, see `spatial_sort_order`'s doc)
     /// and reused across every substep within that call. Particle positions
     /// shift only slightly substep-to-substep, so a step-stale order still
-    /// captures most of the real locality benefit. Empty when the feature
+    /// captures most of the locality benefit. Empty when the feature
     /// is off -- zero allocation cost in the default case.
     cached_spatial_sort_order: Vec<usize>,
     /// Automatic phase transition rules, evaluated every substep.
@@ -218,13 +218,13 @@ pub struct Simulation {
     /// Discrete-element grain populations (`spacetime::grains`) sharing this
     /// simulation's own MPM grid -- cited elastic-plastic rolling
     /// resistance (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011),
-    /// see `grains::coupling` for the real scatter/gather insertion points
-    /// (mirroring `rods` above exactly). Empty for every scene that never
+    /// see `grains::coupling` for the scatter/gather insertion points
+    /// (mirroring `rods` above). Empty for every scene that never
     /// calls `add_grain_population`/`with_grain_population` (zero-cost:
-    /// 0-iteration loops). Not yet gated by any automatic oracle deciding
-    /// where grains are needed -- that's a separate, not-yet-built
-    /// piece (see `project_dem_rolling_resistance_scoped` memory); today a
-    /// caller decides explicitly, same as `add_rod`.
+    /// 0-iteration loops). Nothing adds grains automatically: a caller
+    /// decides where, as with `add_rod`, optionally guided by the
+    /// `grains::oracle` packing-fraction signal and
+    /// `enrich_region_into_grain`.
     grain_populations: Vec<crate::grains::population::GrainPopulation>,
     /// Scratch buffer for wake/sleep candidates -- pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.

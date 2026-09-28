@@ -3,25 +3,20 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// `basic_sand.rs` with a live egui panel (same wgpu-native egui
-/// already used by `rod_blade_and_root.rs`/`material_sandbox_gpu`):
-/// same push/pull cursor interaction as every other sand example (LMB push,
-/// RMB pull, `apply_radial_impulse`), POURING (holding P spawns a small
-/// trickle of new sand particles at the cursor via `Simulation::add_body`),
-/// and a live GRAVITY slider (1.0 = genuine IRL 9.81 m/s², via
-/// `Simulation::set_gravity` -- both already existed in the engine).
+/// Sand with a live egui panel (the wgpu-native egui of `rod_blade_and_root.rs`/
+/// `material_sandbox_gpu`): push/pull as in the other sand examples (LMB push, RMB
+/// pull, `apply_radial_impulse`), pouring (holding P spawns a small trickle of sand at
+/// the cursor via `Simulation::add_body`), and a gravity slider (1.0 = Earth's
+/// 9.81 m/s², via `Simulation::set_gravity`).
 ///
-/// Disclosed limit: the renderer's instance buffer is sized with a
-/// fixed extra headroom (`POUR_BUDGET`) at startup (wgpu buffers don't
-/// resize live) -- pouring stops once that budget is spent, not a silent
-/// overflow.
+/// The renderer's instance buffer is sized with a fixed extra headroom (`POUR_BUDGET`)
+/// at startup (wgpu buffers do not resize live), so pouring stops once that budget is
+/// spent.
 ///
-/// DIGGING (D toggles): a directional cursor drag -- nudges nearby particles
-/// along the cursor's OWN movement direction, not radially like push/pull.
-/// No second body, no mass-ratio tuning: mass-conserving by construction
-/// (see MEMORY.md's ecosystem-roadmap note for the two rejected alternatives
-/// -- particle deletion, and a kinematic "shovel" body that broke under real
-/// gravity).
+/// Digging (D toggles): a directional cursor drag that nudges nearby particles along
+/// the cursor's movement, not radially like push/pull. No second body and no
+/// mass-ratio tuning, mass-conserving by construction (deleting particles, or a
+/// kinematic "shovel" body, would not be: the shovel also broke under gravity).
 ///
 ///   cargo run --example basic_sand --features render
 // `prelude::*` is the documented single-import entry point (covers
@@ -47,21 +42,17 @@ const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 // initial ~2016 particles -- the renderer's wgpu instance buffer is
 // allocated once at startup, not resizable live.
 const POUR_BUDGET: usize = 2000;
-// Real particles added per frame while the pour key is held -- a small
-// SpawnRegion, not a single point, so a real (tiny) cone/stream forms
-// instead of a perfectly straight line of particles.
+// Particles added per frame while the pour key is held: a small SpawnRegion, not a
+// single point, so a small cone or stream forms rather than a straight line.
 const POUR_SPACING: f32 = 0.5;
 const POUR_BOX: IVec2 = IVec2::new(2, 1);
 // Radius of the directional dig nudge, grid cells.
 const DIG_RADIUS: f32 = 4.0;
 
-// Real fix (2026-09-05): was `DruckerPragerMaterial::new(2000.0, 3000.0, ..)`,
-// an unsourced grid-unit guess. Real dry sand -- same real citation already
-// used and verified tonight for `sand_ngf_collapse.rs` (Haeri & Skonieczny
-// 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3) -- through
-// the dt^2-free `lame_from_si`. Loose/dense differ only by
-// their real friction angle (20 deg loose, 40 deg dense -- both inside the
-// real geotechnical range for sand packing states), not by stiffness.
+// Dry sand (Haeri & Skonieczny 2022 Table 1, Excavation case: E=15 MPa, nu=0.3,
+// rho=1600 kg/m3, as `sand_ngf_collapse.rs`) through `lame_from_si`. Loose and dense
+// differ only in friction angle (20 deg loose, 40 deg dense, both inside the
+// geotechnical range for sand packing states), not in stiffness.
 const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
@@ -75,13 +66,10 @@ fn make_sand(lambda: f32, mu: f32, phi_deg: f32) -> DruckerPragerMaterial {
 fn make_sim() -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
-        // Real fix (2026-09-05): the real E=15 MPa stiffness above needs
-        // real substep headroom under CFL -- the old 12 silently dropped
-        // simulated time instead of crashing (see `step.rs`'s "honest
-        // accounting" doc). Measured directly at real full gravity
-        // (`tests/probes/basic_sand_probe.rs`): 2000 still dropped ~11.6%
-        // of each step's simulated time; the solver actually uses 2263 once
-        // given enough headroom, so 3000 leaves real margin, confirmed
+        // Substep headroom for E=15 MPa: a budget the CFL scan runs into drops
+        // simulated time (see `step.rs`). At full gravity
+        // (`tests/probes/basic_sand_probe.rs`) 2000 still dropped ~11.6% of each
+        // step's time; the solver uses 2263 given room, so 3000 leaves margin with
         // zero time dropped.
         max_substeps_per_step: 3000,
         // No gravity override here -- `earth()`'s own correctly-converted
@@ -97,12 +85,8 @@ fn make_sim() -> Simulation {
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,
     );
-    // Real fix (2026-09-05): mass must share the same real density as the
-    // stiffness above (see project memory on the grid_density/mass-from
-    // gap found migrating basic_membrane.rs/sand_ngf_collapse.rs/
-    // basic_jellies.rs the same night) -- was left on the bare
-    // `grid_density=1.0` default, computed directly via
-    // `ParticleMass::particle_mass`'s own documented formula since the raw
+    // Mass from the same density as the stiffness above, not the `grid_density=1.0`
+    // default, through `ParticleMass::particle_mass`'s formula, since the raw
     // `DruckerPragerMaterial::new` constructor bypasses `mass_from`.
     let mass_grid = (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn = |c: Vec2, mat, seed| SpawnRegion {
@@ -138,10 +122,9 @@ struct State {
     digging: bool,
     dig_strength: f32,
     last_cursor_grid: Vec2,
-    // Real IRL gravity (9.81 m/s², converted via `earth()`'s own real
-    // dx_meters-based formula) captured once at construction -- the slider
-    // scales THIS real value, so 1.0 always means real gravity,
-    // not an arbitrary tuned number.
+    // Earth gravity (9.81 m/s², through `earth()`'s dx_meters-based conversion)
+    // captured at construction: the slider scales this value, so 1.0 always means
+    // Earth gravity.
     real_gravity: Vec2,
     gravity_fraction: f32,
     frame: u64,
@@ -156,10 +139,10 @@ impl State {
         let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
         let sim = make_sim();
-        // Real IRL gravity, captured before anything ever overrides it --
-        // `earth()`'s own real conversion, not a tuned constant.
+        // Earth gravity, captured before anything overrides it (`earth()`'s
+        // conversion).
         let real_gravity = sim.config().gravity;
-        // Real extra headroom for pouring -- see POUR_BUDGET's doc.
+        // Extra headroom for pouring -- see POUR_BUDGET's doc.
         let render_capacity = sim.particles().len() + POUR_BUDGET;
         let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
         // particle_scale=0.9, not the usual 0.6: particles are seeded at
@@ -167,10 +150,9 @@ impl State {
         // disc leaves real visible gaps wherever jitter spreads two
         // neighbors apart -- 0.9 keeps discs comfortably overlapping without
         // reaching 1.0 (full-cell, where distinct grains would start
-        // visually fusing into unbroken blobs). This is a per-scene render
-        // tuning fix, not the deeper "particles vs. a real reconstructed
-        // surface" question -- that's the curvature-flow work already
-        // planned separately (see render-pipeline-plan memory).
+        // visually fusing into unbroken blobs). A per-scene tuning of the
+        // particle discs; a continuous surface is the renderer's separate
+        // curvature-flow path (`curvature_flow.wgsl`).
         renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.9, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
         renderer.set_optical_params(&gfx.queue, MAT_LOOSE as usize, SIGMA_SAND);
@@ -261,20 +243,15 @@ impl State {
             }
         }
         self.last_cursor_grid = cursor;
-        // Real pour tool: `Simulation::add_body` is the same mid-run
-        // body-spawning API the engine already offers elsewhere -- a small
-        // SpawnRegion dropped at the cursor each frame while held, capped by
-        // POUR_BUDGET so the (fixed-size) render buffer never overflows.
+        // Pour tool: `Simulation::add_body`, the engine's mid-run body-spawning
+        // API, drops a small SpawnRegion at the cursor each frame while held,
+        // capped by POUR_BUDGET so the fixed-size render buffer never overflows.
         if self.pouring && self.poured_count < POUR_BUDGET {
-            // Found-live bug (2026-08-04): pouring with the cursor near
-            // the window edge maps to a grid position close enough to the
-            // domain boundary that `POUR_BOX` no longer fits inside the
-            // spawnable region -- `add_body` then hits `validate_for_sim`'s
-            // own real assert and hard-panics the whole demo instead of just
-            // declining that frame's pour. Clamp the pour center to the same
-            // real bound `fits_in_sim` checks (`boundary_thickness` margin
-            // plus half the pour box on each axis) so pouring at the edge
-            // just pours as close to the wall as actually fits, not a crash.
+            // Clamp the pour center to the bound `fits_in_sim` checks
+            // (`boundary_thickness` margin plus half the pour box on each axis):
+            // with the cursor near the window edge, `POUR_BOX` would not fit in the
+            // spawnable region and `add_body` would hit `validate_for_sim`'s assert
+            // and panic. At the edge it pours as close to the wall as fits.
             let config = self.sim.config();
             let half = POUR_BOX.as_vec2() * 0.5;
             let domain_min = Vec2::splat(config.boundary_thickness as f32) + half;
@@ -289,10 +266,9 @@ impl State {
             } else {
                 MAT_LOOSE
             };
-            // Real fix (2026-09-05): poured particles must get the same real
-            // mass as the initial pile (see `make_sim`'s own note) -- was
-            // falling back to the bare `grid_density=1.0` default, silently
-            // pouring sand ~1.6x too light relative to the pile it lands on.
+            // Poured particles get the same mass as the initial pile (see
+            // `make_sim`), not the `grid_density=1.0` default, which would pour sand
+            // ~1.6x too light next to the pile it lands on.
             let pour_mass =
                 (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * POUR_SPACING * POUR_SPACING;
             let spawn = SpawnRegion {
@@ -307,12 +283,9 @@ impl State {
                 ..SpawnRegion::for_sim(self.sim.config())
             };
             let before = self.sim.particles().len();
-            // TEMP diagnostic (2026-08-05, user-flagged pour-vs-default gap
-            // investigation) -- ground-truth the real gap in grid units via
-            // stdout instead of trusting a screenshot alone (this project has
-            // a documented PrintWindow false-positive on a similar demo).
-            // Printed BEFORE add_body so `existing_max_y` excludes this
-            // frame's own new particles.
+            // Temporary diagnostic: prints the pour-to-pile gap in grid units, since
+            // screenshots of this demo are unreliable. Printed before add_body so
+            // `existing_max_y` excludes this frame's new particles.
             if self.frame.is_multiple_of(15) {
                 let existing_max_y = self
                     .sim

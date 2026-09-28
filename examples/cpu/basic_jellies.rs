@@ -44,9 +44,7 @@ struct Params {
     vis_lambda: f32,
     vis_mu: f32,
     vis_viscosity: f32,
-    // Real gravity, as a fraction of IRL 9.81 m/s² (matches basic_sand.rs/
-    // basic_snow.rs) -- was a raw, arbitrary -3.0..=0.0 value before,
-    // not grounded in anything real.
+    // Gravity as a fraction of Earth's 9.81 m/s² (as basic_sand.rs/basic_snow.rs).
     gravity_fraction: f32,
 }
 
@@ -59,20 +57,16 @@ struct Params {
 const JELLY_YOUNG_MODULUS_PA: f32 = 500.0;
 const JELLY_POISSON_RATIO: f32 = 0.45;
 const JELLY_DENSITY_KG_M3: f32 = 1000.0;
-// Real water dynamic viscosity order of magnitude (~1e-3 Pa*s at 20C) reads
-// as inertia-dominated, not visibly damped, at this demo's scale -- glycerin
-// (~1 Pa*s, a commonly cited reference fluid) is the real substance
-// whose damping is actually visible on a human timescale for a body this
-// size, which is the whole point of showing a Viscoelastic material here.
+// Glycerin viscosity (~1 Pa*s, a common reference fluid): water's ~1e-3 Pa*s at 20C
+// reads as inertia-dominated, not visibly damped, at this scale, while glycerin's
+// damping is visible on a human timescale for a body this size, the point of showing a
+// Viscoelastic material.
 const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 
-/// Real SI -> grid Lame conversion (`lame_from_si`, no `dt^2`
-/// pollution -- see that function's doc). Deliberately NOT
+/// SI -> grid Lame conversion (`lame_from_si`). Not
 /// `{Neo,Cor,Viscoelastic}Material::from_young_modulus`: that family calls
-/// `lame_from_young` directly, which never touches `dx_meters`/density at
-/// all -- its `young_modulus` parameter is not actually convertible back to
-/// real Pascals despite the name (a separate gap in that
-/// API, found migrating this file -- not fixed here).
+/// `lame_from_young` directly, never touching `dx_meters` or density, so its
+/// `young_modulus` is not in pascals despite the name.
 fn jelly_lame(config: &SimConfig) -> (f32, f32) {
     config.lame_from_si(
         JELLY_YOUNG_MODULUS_PA,
@@ -126,23 +120,17 @@ struct State {
 fn make_sim(p: &Params) -> Simulation {
     let mut config = SimConfig {
         min_dt: 0.01,
-        // Real fix (2026-09-05): default stiffness migrated from a raw,
-        // unsourced grid-unit guess (lambda=10, mu=20) to a real SI
-        // material (see `jelly_lame`'s doc) -- the corrected, much
-        // stiffer real value needs real substep headroom under CFL (measured
-        // directly, see this file's own migration note in project memory).
+        // Substep headroom for the SI stiffness (see `jelly_lame`), measured on
+        // a drop impact.
         max_substeps_per_step: 20000,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= p.gravity_fraction;
-    // Real fix (2026-09-05): mass made an explicit function of
-    // `JELLY_DENSITY_KG_M3` rather than relying on `config.grid_density`'s
-    // bare default (1.0) happening to equal `reference_density_kg_m3`
-    // (also 1000 by default) -- that coincidence would silently break if
-    // either default ever changes. Same documented formula
-    // `ParticleMass::particle_mass`/`SpawnRegion::mass_from` use; computed
-    // directly since the raw `*Material::new` constructors below bypass the
-    // `ParticleMass`-implementing property-struct API.
+    // Mass as an explicit function of `JELLY_DENSITY_KG_M3`, not `config.grid_density`'s
+    // default (1.0) happening to equal `reference_density_kg_m3` (also 1000 by default),
+    // a coincidence that breaks if either default changes. The formula of
+    // `ParticleMass::particle_mass`/`SpawnRegion::mass_from`, computed here since the raw
+    // `*Material::new` constructors below bypass the property-struct API.
     const SPACING: f32 = 0.5;
     let mass_grid = (JELLY_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let spawn = |c: Vec2, mat| SpawnRegion {
@@ -154,20 +142,13 @@ fn make_sim(p: &Params) -> Simulation {
         mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
-    // Real fix (2026-09-05): drop height lowered 50 -> 15. The old height was
-    // tuned against the unsourced grid-unit placeholder (lambda=10, mu=20);
-    // at the real SI stiffness above, it produced a ~3 m/s impact that
-    // inverted ~370 of 784 CorotatedMaterial particles (deformation gradient
-    // collapsing to the MIN_J clamp and staying there, not a transient
-    // spike) -- a known limitation of linearized corotational
-    // elasticity under large/fast deformation, not something this migration
-    // introduced (NeoHookean and Viscoelastic, both fully nonlinear
-    // hyperelastic, were unaffected at the same drop height). Swept
-    // empirically (`tests/probes/basic_jellies_probe.rs`): height 25 still
-    // inverts 330+ particles, height 15 inverts zero while still showing
-    // substantial deformation (J ranges 0.001-1.3, not a trivial
-    // settle). CorotatedMaterial's own large-deformation robustness stays a
-    // separate, disclosed gap -- not fixed here.
+    // Drop height 15. At the SI stiffness a drop from 50 gives a ~3 m/s impact that
+    // inverts ~370 of 784 CorotatedMaterial particles (the deformation gradient
+    // collapses to the MIN_J clamp and stays there), a known limitation of linearized
+    // corotational elasticity under large, fast deformation; NeoHookean and
+    // Viscoelastic (fully nonlinear hyperelastic) are unaffected at the same height.
+    // Swept in `tests/probes/basic_jellies_probe.rs`: from 25 still 330+ particles
+    // invert, from 15 none do, with substantial deformation (J over 0.001-1.3).
     const DROP_Y: f32 = 15.0;
     let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, DROP_Y), MAT_NEO))
         .with_default_material(Box::new(NeoHookeanMaterial::new(p.neo_lambda, p.neo_mu)))
@@ -375,10 +356,8 @@ impl State {
                             .text("gravity (1.0 = real IRL)"),
                     );
                     ui.separator();
-                    // Real fix (2026-09-05): ranges widened by ~2 orders of
-                    // magnitude to actually cover the real SI-derived default
-                    // (see `jelly_lame`'s doc) -- the old 1..=200/1..=400
-                    // ranges couldn't even represent the corrected value.
+                    // Ranges wide enough to cover the SI-derived default (see
+                    // `jelly_lame`).
                     ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
                     ui.add(egui::Slider::new(&mut p.neo_lambda, 100.0..=50_000.0).text("lambda"));
                     ui.add(egui::Slider::new(&mut p.neo_mu, 100.0..=10_000.0).text("mu"));

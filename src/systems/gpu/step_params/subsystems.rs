@@ -17,7 +17,7 @@
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuThermalParams {
     /// Thermal diffusivity α = k / (c_p · dx²), grid-units²/s -- see
-    /// `ThermalConfig::alpha_grid`'s doc for the real derivation/units.
+    /// `ThermalConfig::alpha_grid`'s doc for the derivation/units.
     pub alpha: f32,
     /// Ambient/boundary temperature -- empty cells and Newton cooling both relax toward this.
     pub ambient: f32,

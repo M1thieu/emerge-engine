@@ -13,7 +13,7 @@ mod gui_common;
 /// rule: below a threshold shear stress they behave like a solid, above it
 /// they flow like a liquid. That threshold is the yield stress, tau_0.
 ///
-/// This scene is the real laboratory test for it -- the slump test, the one
+/// This scene is the laboratory test for it -- the slump test, the one
 /// on every concrete site (ASTM C143). Three identical columns are released
 /// from rest and collapse under their own weight. Same density, same
 /// viscosity, same bulk modulus, same shape, same measured optics, and they
@@ -22,7 +22,7 @@ mod gui_common;
 ///
 ///   LEFT    tau_0 = 2 Pa     -- mucus / cytoplasm band. Spreads nearly flat.
 ///   MIDDLE  tau_0 = 60 Pa    -- the ketchup-and-mayonnaise band. Slumps
-///                               partway, then holds a real slope.
+///                               partway, then holds a slope.
 ///   RIGHT   tau_0 = 1200 Pa  -- stiff-concrete band. Stays where it is put.
 ///
 /// The everyday names are labels for where those numbers land, not
@@ -119,17 +119,14 @@ mod gui_common;
 /// Why a gripping floor stretches the layer it grips is not established:
 /// issue #44.
 ///
-/// Two earlier versions of this table were wrong, and how is worth keeping.
-/// The first was never produced by this scene: it described columns 8 mm
-/// across and 40 mm tall, five to one, which do not demonstrate a yield
-/// stress, they TOPPLE, and the fall makes the stress that makes them flow;
-/// the columns became 2 to 1. The second was produced by this scene, on a
-/// 64-cell tank and a frictionless floor, and its columns touched: the left
-/// deposit reached the middle one, the middle one the right, and the whole
-/// row slid. It read 117 Pa for the 60 Pa column. Alone on that same floor
-/// the column reads 11.2 Pa; its neighbours had raised the reading tenfold.
-/// The tank is now wide enough, and spaced, from each column's measured
-/// spread alone (`bingham_slump_scene.rs`).
+/// Two constraints on the geometry. The columns are 2 to 1: columns 8 mm
+/// across and 40 mm tall (five to one) do not demonstrate a yield stress,
+/// they TOPPLE, and the fall makes the stress that makes them flow. And the
+/// columns must not touch: on a 64-cell tank with a frictionless floor the
+/// deposits reach each other and the whole row slides, and the 60 Pa column
+/// reads 117 Pa against 11.2 Pa alone on the same floor. The tank width and
+/// spacing come from each column's measured spread alone
+/// (`bingham_slump_scene.rs`).
 ///
 /// # Interaction
 ///

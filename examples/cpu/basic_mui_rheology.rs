@@ -68,9 +68,9 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 /// Simulated time advanced per rendered frame, live-adjustable in the
-/// panel. A viewing choice, not a physics one: the real elastic wave
+/// panel. A viewing choice, not a physics one: the elastic wave
 /// speed at this material's real E=15 MPa, rho=1600 kg/m3 is ~97 m/s,
-/// which at dx=0.01m demands a real CFL-safe substep near 0.07ms -- this
+/// which at dx=0.01m demands a CFL-safe substep near 0.07ms -- this
 /// scene's continuous 3-column collapse stays in that stiff regime the
 /// whole time, unlike an interactive pour that mostly idles.
 ///
@@ -91,7 +91,7 @@ const DENSITY_KG_M3: f32 = 1600.0;
 // the only independent variable.
 const FRICTION_ANGLE_DEG: f32 = 30.0;
 
-// Cicoira et al.'s own two cited endpoints, plus their real midpoint.
+// Cicoira et al.'s own two cited endpoints, plus their midpoint.
 const INERTIAL_Q: [f32; 3] = [5.58, 3.00, 1.12];
 const COLUMN_LABEL: [&str; 3] = ["fine (Q=5.58)", "mid (Q=3.00)", "coarse (Q=1.12)"];
 const COLUMN_X: [f32; 3] = [14.0, 32.0, 50.0];

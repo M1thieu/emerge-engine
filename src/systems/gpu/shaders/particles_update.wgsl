@@ -477,7 +477,7 @@ fn g2p_update_particle(p_idx: u32) {
     // Still-sleeping particles (didn't wake in the gather) are frozen -- skip state
     // projection, F update, every plasticity branch, and position integration
     // entirely. Particles that woke have sleeping=0u by this point and get the full
-    // update, same as CPU (a newly-woken particle gets a real update the same substep
+    // update, same as CPU (a newly-woken particle gets a update the same substep
     // it wakes).
     if p.sleeping == 0u {
         update_particle(p_idx, &p);

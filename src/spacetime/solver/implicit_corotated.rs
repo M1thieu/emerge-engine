@@ -173,7 +173,7 @@ impl ImplicitProblem {
     }
 
     /// The LINEAR (forward-Euler-style) `(I+dt*grad_v)*F_n` `deformed_f`'s
-    /// doc deliberately moved away from for the REAL residual (exact
+    /// doc deliberately moved away from for the residual (exact
     /// exponential map fixes real spurious-strain error at large
     /// pre-existing rotation, see that doc). Used ONLY to build a
     /// self-consistent (energy, gradient, Hessian) triple for `newton_
@@ -187,7 +187,7 @@ impl ImplicitProblem {
     /// deliberately avoids -- confirmed necessary by a failed FD
     /// check attempting to skip it). The trust-region model only decides
     /// SEARCH DIRECTION and STEP SIZE; `newton_solve`'s actual convergence
-    /// test and final acceptance always use the REAL `residual`/`min_
+    /// test and final acceptance always use the `residual`/`min_
     /// deformed_j`, exactly the same "approximate model, exact acceptance"
     /// split this module's own JVP doc already used for the (now-removed)
     /// CG search direction.
@@ -256,7 +256,7 @@ impl ImplicitProblem {
     /// not the gradient of a `Psi(F_new(v))` energy under a multiplicative
     /// update.
     ///
-    /// Test-only: `newton_solve` uses the real `residual` as its gradient
+    /// Test-only: `newton_solve` uses the `residual` as its gradient
     /// (see its doc); this stays as the oracle showing
     /// `model_jacobian_vector_product` is the Hessian-vector product of a
     /// real energy's gradient.
@@ -779,7 +779,7 @@ impl ImplicitProblem {
     /// The model (`model_jacobian_vector_product`, see `model_deformed_f`
     /// and `model_residual`, checked by `trust_region_consistency_tests`)
     /// only picks a direction and sizes the region; acceptance is always
-    /// gated on the real exponential-map `residual` improving. Returns `None`
+    /// gated on the exponential-map `residual` improving. Returns `None`
     /// if it does not converge within `MAX_NEWTON_ITERS` or the region
     /// collapses without helping: callers then run the explicit substep.
     ///
@@ -806,7 +806,7 @@ impl ImplicitProblem {
         // `model_jacobian_vector_product` only supplies approximate
         // curvature; predicted/actual reduction is measured in
         // `0.5*||r||^2`. Using `model_residual` (Piola, `dt`-scaled) as `g`
-        // mis-scaled the radius: stepping along the real residual's negative
+        // mis-scaled the radius: stepping along the residual's negative
         // gradient by eps = 1e-8 to 1e-12 improved it (1e-6 overshot), a window
         // the old radius never reached.
         let mut radius = Self::plain_norm(&r).max(1.0e-8);
@@ -1275,7 +1275,7 @@ mod direct_solve_consistency_tests {
             (3, 0.05, Vec2::new(0.05, 0.15)),
         ];
         // Diagonally dominant with positive diagonal -> genuinely SPD, so
-        // this exercises a real solve, not a degenerate one.
+        // this exercises a solve, not a degenerate one.
         let matrix = [
             [20.0, 1.0, -0.5, 0.2],
             [1.0, 18.0, 0.3, -0.4],
@@ -1632,7 +1632,7 @@ mod trust_region_consistency_tests {
     }
 
     /// `real_residual_jvp_fd`'s unit-normalize/rescale convention matches an
-    /// independent, non-normalized central difference of the real `residual`
+    /// independent, non-normalized central difference of the `residual`
     /// on `synthetic_problem`. They agree at the helper's `h = 1e-2`; at
     /// `h = 1e-3` they differ by 19%, a step-size effect of the exponential
     /// map's nonlinearity, not a formula error.

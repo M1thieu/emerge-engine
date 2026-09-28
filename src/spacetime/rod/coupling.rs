@@ -258,7 +258,7 @@ pub(crate) fn push_acceleration(
 ///
 /// Positions use compensated summation (`integrator::advance_position`).
 ///
-/// Bundles this function's own scalar/optional parameters -- the real fix
+/// Bundles this function's own scalar/optional parameters -- the fix
 /// for clippy::too_many_arguments rather than suppressing the lint.
 /// Deliberately does NOT include `gravity` (unlike
 /// `implicit::RodImplicitStepParams`): see above.

@@ -252,7 +252,7 @@ mod p2g_position_vjp_tests {
 
     /// Forward function reconstructing scatter_particles_to_grid's EXACT
     /// per-cell formula (mass_contrib, momentum_contrib), taking the
-    /// particle state directly instead of a real Particles/Grid -- isolates
+    /// particle state directly instead of a Particles/Grid -- isolates
     /// the position-dependence being verified from everything else.
     fn contributions(x: Vec2, state: &P2GParticleState) -> ([[Vec2; 3]; 3], [[f32; 3]; 3]) {
         let weights = quadratic_weights(x);

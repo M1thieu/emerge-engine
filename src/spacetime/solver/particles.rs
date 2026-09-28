@@ -64,7 +64,7 @@ impl Simulation {
     /// gravity, so a body spawned "at rest" starts at rest.
     ///
     /// Particles are created at uniform density, which is not an
-    /// equilibrium state: a real column of fluid is held up by the pressure
+    /// equilibrium state: a column of fluid is held up by the pressure
     /// gradient its own weight creates, `p = rho*g*h`. Spawned uniform, a
     /// pool has no internal pressure anywhere, collapses under its own
     /// weight, and rings -- visible as a "resting" pool twitching for its
@@ -786,7 +786,7 @@ mod hydrostatic_tests {
         );
     }
 
-    /// The equilibrium is a real gradient, not a uniform offset: deeper
+    /// The equilibrium is a gradient, not a uniform offset: deeper
     /// matter is more compressed, because it carries more weight.
     #[test]
     fn settled_pool_is_more_compressed_with_depth() {

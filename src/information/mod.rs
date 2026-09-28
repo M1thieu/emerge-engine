@@ -2,7 +2,7 @@
 //! simulated world, not tooling that observes it from outside.
 //!
 //! `control` -- `Lnn` (Liquid Time-constant Network locomotion controller): a
-//! genome/weights IS information, and this is a real in-world decision-making
+//! genome/weights IS information, and this is an in-world decision-making
 //! system. `measures` [feature = "experimental"] -- O(N) entropy
 //! (spatial/kinetic/phase), local mutual information, KL divergence:
 //! literally information theory applied to real simulated quantities.

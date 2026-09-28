@@ -1,4 +1,4 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/cpu/basic_showcase.rs`'s scene (no GUI, no arrow-key/mouse
 //! interaction) to verify the sand terrain's real SI migration
 //! (E=15 MPa/nu=0.3/rho=1600, same citation as basic_sand.rs) is stable
@@ -116,12 +116,12 @@ fn basic_showcase_real_sand_stiffness_settles() {
 /// `lame_from_si` (which divides by `rho*dx_meters^2`, so the
 /// resulting wave speed scales as `1/dx_meters`, and `dt = cfl/c` scales as
 /// `dx_meters`) -- this sweep confirms that scaling holds for the REAL
-/// function, not a hand-derived guess, and reports the real substep count
+/// function, not a hand-derived guess, and reports the substep count
 /// at each candidate resolution. Doubling/tripling `dx_meters` alone (never
-/// done in the real demo) would silently redefine what real-world size this
+/// done in the demo) would silently redefine what real-world size this
 /// scene represents -- a genuine, honest resolution tradeoff also needs
 /// `GRID` and every cell-unit `box_size`/`box_center` shrunk by the same
-/// factor, so the real domain and the real pile size stay unchanged and the
+/// factor, so the domain and the pile size stay unchanged and the
 /// demo visibly gets chunkier (fewer, bigger particles) as the honest price.
 #[test]
 #[ignore = "temporary manual probe, not a regression test"]
@@ -216,9 +216,8 @@ fn basic_showcase_substep_cost_breakdown_by_material() {
     let config = *sim.config();
     let particles = sim.particles();
 
-    // Real spawn-time density per material (the spawn measures V0
-    // means this is each material's own true rest density, before any
-    // compression) -- read from the actual spawned scene, not assumed.
+    // Spawn-time density per material (the spawn measures V0, so this is each
+    // material's rest density before any compression), read from the spawned scene.
     let spawn_state_of = |mat_id: u32| {
         (0..particles.material_id.len())
             .find(|&i| particles.material_id[i] == mat_id)

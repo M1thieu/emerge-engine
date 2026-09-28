@@ -44,7 +44,7 @@
 //!
 //! COUNTED, and it is not that: 0 excluded nodes of 418,714,560 gathered
 //! over this sweep, because P2G inserts every in-bounds node of a
-//! particle's own stencil. The invariant is kept as a real test,
+//! particle's own stencil. The invariant is kept as a test,
 //! `a_rigid_translation_reads_no_velocity_gradient`, which reads 4.4e-7 on a
 //! drifting block.
 //!

@@ -31,7 +31,7 @@ pub(super) struct SubstepGates {
     /// Re-detect which grid blocks are occupied this substep (swap+clear -> count ->
     /// compact). `false` reuses the previous substep's list, which stays correct while no
     /// particle can have moved far enough to scatter outside it -- see `step_frame`'s
-    /// `active_block_refresh_interval` for the real displacement bound this is derived
+    /// `active_block_refresh_interval` for the displacement bound this is derived
     /// from. Measured at ~20us of a ~170us substep on the dam-break demo.
     pub(super) refresh_active_blocks: bool,
 }
@@ -253,7 +253,7 @@ impl GpuSimulation {
         // Resource regrowth (GPU port) -- same real dispatch-skip discipline as thermal
         // above. Independent system (own buffers/group), can run alongside thermal in
         // the same frame (both gated separately) even though both currently carry
-        // state in particle.temperature -- a real scene using both simultaneously
+        // state in particle.temperature -- a scene using both simultaneously
         // would need a second carrier, same limitation the CPU precedent has.
         if resource_active {
             let grid_res = self.config.grid_res as u32;

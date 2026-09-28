@@ -176,7 +176,7 @@ fn earth_holds_a_real_near_circular_orbit_over_a_short_arc() {
 const MARS_MASS_KG: f64 = 0.642e24;
 const MARS_DISTANCE_M: f64 = 228.0e9;
 
-/// Runs the real Earth+Mars two-body scene at a given `dt_seconds` and
+/// Runs the Earth+Mars two-body scene at a given `dt_seconds` and
 /// returns `(earth_period_days, mars_period_days, kepler_error_fraction)`.
 /// Factored out so integration accuracy can be measured empirically across
 /// several `dt_seconds` values instead of assumed -- this project's own

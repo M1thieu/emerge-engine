@@ -155,14 +155,12 @@ impl RankineMaterial {
         Self::new(lambda, mu, tensile_strength, softening_rate)
     }
 
-    /// Brittle rock regime: tensile strength as a real FRACTION of the caller's own
-    /// `young_modulus`, not a hardcoded absolute number -- a fixed absolute value only
-    /// "means" rock at one specific implicit E, silently wrong at any other (a hardcoded
-    /// tensile=500 gives an 18-50% tensile/E ratio at the values this engine's own tests
-    /// pass it, vs. real brittle rock's tensile-to-modulus ratio of ~2-3e-4 --
-    /// granite/basalt: E~50 GPa, tensile strength~10-15 MPa (Goodman 1989, "Introduction
-    /// to Rock Mechanics"). Fast softening_rate=2.0 (brittle failure propagates
-    /// quickly) unchanged.
+    /// Brittle rock regime: tensile strength as a fraction of the caller's
+    /// `young_modulus`, not an absolute number, which would only mean rock at one E
+    /// (a fixed tensile=500 gives an 18-50% tensile/E ratio at the moduli the tests
+    /// pass). Brittle rock's tensile-to-modulus ratio is ~2-3e-4: granite/basalt,
+    /// E~50 GPa, tensile strength~10-15 MPa (Goodman 1989, "Introduction to Rock
+    /// Mechanics"). Fast softening_rate=2.0: brittle failure propagates quickly.
     pub fn stiff_brittle(young_modulus: f32, poisson_ratio: f32) -> Self {
         const ROCK_TENSILE_TO_MODULUS_RATIO: f32 = 2.5e-4;
         Self::from_young_modulus(
@@ -173,12 +171,11 @@ impl RankineMaterial {
         )
     }
 
-    /// Bone regime: tensile strength as a real fraction of `young_modulus`, same fix as
-    /// `stiff_brittle` above. Real cortical bone tolerates a much higher tensile-to-
-    /// modulus ratio than rock (tougher composite material): E~15-20 GPa, tensile
-    /// strength~100-150 MPa, ratio ~7e-3 (Currey 2002, "Bones: Structure and
-    /// Mechanics"). Slower softening_rate=1.0 (bone fails less abruptly than
-    /// rock) unchanged.
+    /// Bone regime: tensile strength as a fraction of `young_modulus`, as in
+    /// `stiff_brittle`. Cortical bone tolerates a much higher tensile-to-modulus
+    /// ratio than rock (a tougher composite): E~15-20 GPa, tensile strength~100-150
+    /// MPa, ratio ~7e-3 (Currey 2002, "Bones: Structure and Mechanics"). Slower
+    /// softening_rate=1.0: bone fails less abruptly than rock.
     pub fn high_tensile(young_modulus: f32, poisson_ratio: f32) -> Self {
         const BONE_TENSILE_TO_MODULUS_RATIO: f32 = 7.0e-3;
         Self::from_young_modulus(
@@ -189,14 +186,14 @@ impl RankineMaterial {
         )
     }
 
-    /// Sandstone regime: sedimentary clastic rock, same ratio-not-absolute fix as
-    /// `stiff_brittle`. Real E range 11.3-40 GPa (avg ~19.9 GPa), tensile strength
-    /// 19.17-65.66 MPa (Xu 2016, "Characterization of Rock Mechanical Properties
-    /// Using Lab Tests and Numerical Interpretation Model of Well Logs") -- huge
-    /// real spread from cementation/porosity, disclosed not hidden. Representative
-    /// pick near the lower/typical end of both ranges (E~20 GPa, tensile~20 MPa).
-    /// Same softening_rate=2.0 as `stiff_brittle` -- still real brittle failure,
-    /// no separately-cited reason to differ.
+    /// Sandstone regime: sedimentary clastic rock, tensile strength as a fraction of
+    /// `young_modulus` as in `stiff_brittle`. E range 11.3-40 GPa (avg ~19.9 GPa),
+    /// tensile strength 19.17-65.66 MPa (Xu 2016, "Characterization of Rock
+    /// Mechanical Properties Using Lab Tests and Numerical Interpretation Model of
+    /// Well Logs"), a wide spread from cementation and porosity. Representative pick
+    /// near the lower/typical end of both ranges (E~20 GPa, tensile~20 MPa).
+    /// softening_rate=2.0 as `stiff_brittle`: brittle failure, no cited reason to
+    /// differ.
     pub fn sandstone(young_modulus: f32, poisson_ratio: f32) -> Self {
         const SANDSTONE_TENSILE_TO_MODULUS_RATIO: f32 = 1.0e-3;
         Self::from_young_modulus(
@@ -207,11 +204,10 @@ impl RankineMaterial {
         )
     }
 
-    /// Limestone regime: sedimentary chemical rock. Real E range 4.6-12 GPa,
-    /// tensile strength 18.00-38.76 MPa (same Xu 2016 source as `sandstone`) --
-    /// softer AND relatively stronger-in-tension-per-modulus than
-    /// sandstone, a real distinguishing feature, not the same rock renamed.
-    /// Representative pick E~8 GPa, tensile~25 MPa.
+    /// Limestone regime: sedimentary chemical rock. E range 4.6-12 GPa, tensile
+    /// strength 18.00-38.76 MPa (same Xu 2016 source as `sandstone`): softer than
+    /// sandstone and stronger in tension per unit modulus. Representative pick
+    /// E~8 GPa, tensile~25 MPa.
     pub fn limestone(young_modulus: f32, poisson_ratio: f32) -> Self {
         const LIMESTONE_TENSILE_TO_MODULUS_RATIO: f32 = 3.1e-3;
         Self::from_young_modulus(
@@ -222,17 +218,14 @@ impl RankineMaterial {
         )
     }
 
-    /// Shale regime: sedimentary clastic, fissile/foliated. Real E range 15-36.9 GPa
-    /// (avg ~27 GPa, foliated), tensile strength ~168 MPa average ACROSS foliation
-    /// (same Xu 2016 source) -- cited, but an HONEST, DISCLOSED limitation:
-    /// real shale is strongly anisotropic (splits far more easily ALONG bedding
-    /// planes than across them; the source's own "laminated shale shows lower
-    /// values" note, exact number not given). This preset is isotropic (this
-    /// material's yield surface has no per-particle orientation field), so it
-    /// necessarily represents the ACROSS-foliation (stronger) direction -- real
-    /// bedding-plane weakness is a separate, not-yet-built mechanism
-    /// (see the geosphere-taxonomy memory's "anisotropic foliated rock" gap), not
-    /// something this single-number preset can honestly claim to capture.
+    /// Shale regime: sedimentary clastic, fissile/foliated. E range 15-36.9 GPa
+    /// (avg ~27 GPa, foliated), tensile strength ~168 MPa average across foliation
+    /// (same Xu 2016 source). Limitation: shale is strongly anisotropic (it splits
+    /// far more easily along bedding planes than across them; the source notes that
+    /// laminated shale shows lower values, without a number). This preset is
+    /// isotropic (the yield surface has no per-particle orientation field), so it
+    /// represents the across-foliation (stronger) direction; bedding-plane weakness
+    /// needs an anisotropic yield surface, which is not built.
     pub fn shale(young_modulus: f32, poisson_ratio: f32) -> Self {
         const SHALE_TENSILE_TO_MODULUS_RATIO: f32 = 6.2e-3;
         Self::from_young_modulus(
@@ -739,7 +732,7 @@ mod damping_tests {
     }
 
     /// A higher Q (less damping, real physical meaning: colder/purer ice)
-    /// must produce a LOWER viscosity -- the real inverse relationship
+    /// must produce a LOWER viscosity -- the inverse relationship
     /// `eta = G/(Q*omega)`, not an accidental monotonic-the-wrong-way bug.
     #[test]
     fn higher_quality_factor_means_less_damping() {
@@ -902,7 +895,7 @@ mod rock_preset_tests {
     }
 
     /// All 6 Rankine presets (bone/rock/ice family) must produce finite, positive
-    /// tensile strengths at a real representative modulus -- a basic sanity floor
+    /// tensile strengths at a representative modulus -- a basic sanity floor
     /// before trusting any of them in a live scene.
     #[test]
     fn all_rock_and_bone_presets_produce_finite_positive_tensile_strength() {

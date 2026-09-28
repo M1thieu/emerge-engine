@@ -21,7 +21,7 @@ use crate::particle::Grain;
 ///   `Field`.
 /// - No `prepare()` hook (unlike `Field`) and no material-mask convention
 ///   (unlike most `Field` impls): a `GrainPopulation` is a single, already-
-///   homogeneous population. Add masking here only once a real scene needs
+///   homogeneous population. Add masking here only once a scene needs
 ///   mixed-material grains -- don't build it speculatively.
 pub trait GrainField: Send + Sync {
     /// Return the acceleration (in grid-units/s²) applied to this grain this substep.

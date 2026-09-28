@@ -85,7 +85,7 @@ pub fn entropy_change_irreversible(heat_j: f32, source_temp_k: f32, sink_temp_k:
     }
 }
 
-/// Second law check: a real process never decreases total entropy.
+/// Second law check: a process never decreases total entropy.
 #[inline]
 pub fn second_law_holds(total_entropy_change: f32) -> bool {
     total_entropy_change >= 0.0
@@ -99,7 +99,7 @@ pub fn second_law_holds(total_entropy_change: f32) -> bool {
 /// separate laws.
 ///
 /// Replaces any "consume everything within radius X" rule: rate is continuous in local
-/// density, saturating toward `max_rate` as `density → ∞` (a real consumer has a finite
+/// density, saturating toward `max_rate` as `density → ∞` (a consumer has a finite
 /// maximum processing rate no matter how much is available) and linear (∝ density) for
 /// `density ≪ half_saturation` (scarce regime) -- the two asymptotic checks any real
 /// closed-form test should verify, not just "doesn't explode."

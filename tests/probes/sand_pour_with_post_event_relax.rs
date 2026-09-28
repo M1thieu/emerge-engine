@@ -1,23 +1,16 @@
-//! Direct test: does `post_event_relax_threshold` (the actual,
-//! already-validated real fix for column-drop's own toppling/repose-angle
-//! problem, per `project_sand_angle_of_repose_and_mibf_2026-09-13` project
-//! memory) ALSO fix the SEPARATE, still-open poured-pile problem
-//! (`tests/accuracy.rs::sand_pile_built_by_slow_pour_with_pradhana_
-//! correction`, real measured result: 88.7deg non-toppling tower, ~2.25
-//! cells/pour growth, UNCHANGED by two separate Pradhana volume-gain fix
-//! attempts)? The existing real pour test never sets this field at all
-//! (defaults to 0.0, disabled) -- this is the one, most direct,
-//! not-yet-tried lever for the ACTUAL observed symptom (a pile that never
-//! topples sideways), as opposed to the volume-gain mechanism (a real,
-//! separate, additive effect, not necessarily the DOMINANT one for why
-//! this specific pile builds a vertical tower).
+//! Does `post_event_relax_threshold` (the edge-triggered elastic-strain reset tested on
+//! the column drop) also help the poured pile
+//! (`tests/accuracy.rs::sand_pile_built_by_slow_pour_with_pradhana_correction`: an
+//! 88.7deg non-toppling tower, ~2.25 cells/pour growth, unchanged by two Pradhana
+//! volume-gain attempts)? That test leaves the field at 0.0 (disabled), so this is the
+//! most direct untried lever for the observed symptom (a pile that never topples
+//! sideways), as distinct from the volume-gain mechanism.
 //!
-//! Identical geometry/config to the real
-//! `sand_pile_built_by_slow_pour_with_pradhana_correction` test (same
+//! Identical geometry/config to
+//! `sand_pile_built_by_slow_pour_with_pradhana_correction` (same
 //! POUR_GRID/DT/FLOOR/N_POURS/STEPS_BETWEEN_POURS/SETTLE_STEPS_AFTER/
-//! DROP_GAP_CELLS) -- only the material's own `post_event_relax_threshold`
-//! (and, in the combined case, `use_pradhana`) change, so any real
-//! difference is directly attributable.
+//! DROP_GAP_CELLS); only the material's `post_event_relax_threshold` (and, in the
+//! combined case, `use_pradhana`) change, so any difference is attributable.
 
 use emerge::{DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};

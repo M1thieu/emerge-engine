@@ -70,7 +70,7 @@ fn step_frame_becomes_safe_noop_once_device_lost() {
         "sanity check: a healthy device must actually advance frame_index"
     );
 
-    // Directly inject a lost reason, exactly as the real callback does.
+    // Directly inject a lost reason, exactly as the callback does.
     *sim.device_lost.lock().unwrap() = Some("Unknown: Out of memory".to_string());
     assert_eq!(
         sim.device_lost_reason(),
@@ -170,7 +170,7 @@ fn uncaptured_destroyed_buffer_error_sets_device_lost_not_a_panic() {
 /// `enable_device_lost_detection()` makes a `with_device()` instance report
 /// like a `new()`-constructed one. It does not show that `with_device()`
 /// never registers its own callback (telling "no callback" from "callback,
-/// nothing happened yet" needs a real device loss); that rests on
+/// nothing happened yet" needs a device loss); that rests on
 /// `with_device()`'s body containing no `set_device_lost_callback` call.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]

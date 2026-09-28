@@ -1,7 +1,7 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
-//! `examples/cpu/basic_jellies.rs`'s scene (no GUI) to verify the real SI
+//! Headless reproduction of
+//! `examples/cpu/basic_jellies.rs`'s scene (no GUI) to verify the SI
 //! migration (soft-tissue E=500 Pa/nu=0.45/rho=1000, real Earth gravity)
-//! is stable at a real substep budget.
+//! is stable at a substep budget.
 
 use emerge::{
     CorotatedMaterial, NeoHookeanMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,

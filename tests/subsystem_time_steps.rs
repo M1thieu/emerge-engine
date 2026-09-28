@@ -46,7 +46,7 @@
 //!
 //! # Gate 1: the diffusion of a peak matches the analytic
 //!
-//! Through the real path of `ScalarDiffusionField` (particles to grid,
+//! Through the path of `ScalarDiffusionField` (particles to grid,
 //! finite difference, grid to particles) with its transfer blend at the
 //! default, 1.0, and through `ThermalDiffusion`. A body of particles at rest,
 //! no gravity, a Gaussian peak of standard deviation 3 cells.

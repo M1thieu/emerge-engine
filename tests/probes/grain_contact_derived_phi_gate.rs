@@ -73,13 +73,11 @@ fn build_column_seeded(r0_grains: usize, h0_grains: usize, radius_m: f32, seed: 
 
 const FLOOR_RADIUS_M: f32 = 50.0;
 
-/// Real column-collapse-to-repose run -- returns BOTH the real geometric
-/// angle (height/base_half_width -> atan, matching every prior repose-angle
-/// test's own convention) AND the real contact-force-derived
-/// `effective_friction_angle_deg()`, read over only the last `settle_steps`
-/// of the run (accumulator reset right before that window starts, so the
-/// violent collapse's own transient impacts don't pollute a "settled state"
-/// reading).
+/// Column-collapse-to-repose run, returning both the geometric angle
+/// (height/base_half_width -> atan, the convention of the other repose-angle tests)
+/// and the contact-force-derived `effective_friction_angle_deg()`, read over the last
+/// `settle_steps` only (the accumulator resets right before that window, so the
+/// collapse's transient impacts do not pollute a settled reading).
 fn run_to_geometric_and_contact_phi_seeded(
     r0_grains: usize,
     h0_grains: usize,
@@ -147,19 +145,14 @@ fn run_to_geometric_and_contact_phi_seeded(
 }
 
 /// Hypothesis-2 variant: instead of reading the stress accumulator over a
-/// fully-settled, near-zero-velocity TAIL window (the approach that failed
-/// the real Phase 0 gate, saturating at ~90deg -- see
-/// `[[project_hybrid_grains_phase0_gate_failed_2026-09-14]]`), reads it
-/// over an ADAPTIVE "active settling" window: the accumulator resets the
-/// first time the population's own max grain speed drops below `HIGH_FRAC`
-/// of its own running peak speed (past the violent initial collapse, into
-/// quasi-static creep), then keeps accumulating until max speed
-/// drops below `LOW_FRAC` of that peak (captured reading, before the
-/// population goes fully dormant) -- per-seed-adaptive thresholds,
-/// not a hand-picked fixed step count (which would differ per seed's own
-/// settling timeline). A real friction angle is conventionally measured
-/// from an actively-loading/yielding state, not full rest -- this tests
-/// whether THAT was the real problem, independent of `rolling_friction`.
+/// fully-settled, near-zero-velocity tail window (which saturates at ~90deg), reads it
+/// over an adaptive "active settling" window: the accumulator resets the first time
+/// the population's max grain speed drops below `HIGH_FRAC` of its running peak (past
+/// the collapse, into quasi-static creep) and accumulates until max speed drops below
+/// `LOW_FRAC` of that peak (before the population goes dormant). Per-seed adaptive
+/// thresholds, not a fixed step count. A friction angle is conventionally measured in an
+/// actively loading, yielding state, not at full rest; this tests whether that was the
+/// problem, independent of `rolling_friction`.
 fn run_to_geometric_and_contact_phi_active_window_seeded(
     r0_grains: usize,
     h0_grains: usize,
@@ -431,20 +424,13 @@ fn contact_derived_phi_during_active_settling_matches_geometric_repose_angle_gat
     );
 }
 
-/// Cheap (single seed, short run) debugging probe -- NOT a gate,
-/// just a diagnostic. Both real gates above measured a suspiciously EXACT
-/// 90.00deg (hypothesis-2's own run: zero variance across 5 seeds), which
-/// is itself worth doubting: a real settled pile with lateral
-/// spreading (this project's own geometric-angle measurements, 16-25deg,
-/// confirm real spreading did occur) shouldn't generically produce a
-/// perfectly uniaxial stress state. `effective_friction_angle_deg`'s own
-/// `sin_phi.clamp(-1.0, 1.0)` could be MASKING a raw ratio that overshoots
-/// past 1.0 (e.g. `sigma3` slightly negative from real discrete-sum noise,
-/// not truly zero) -- this reads `principal_stresses()` directly (added
-/// this session specifically for this check) to see the RAW sigma1/sigma3
-/// before any clamping, distinguishing a physical plateau from a
-/// numerical artifact. Cheap: 30k steps (not 400k), one seed -- a
-/// diagnostic read, not a statistically-powered gate.
+/// Cheap (single seed, 30k steps rather than 400k) diagnostic, not a gate. Both gates
+/// above measure exactly 90.00deg (zero variance over 5 seeds for hypothesis 2), which
+/// a settled pile with lateral spreading (geometric angles 16-25deg) should not produce
+/// generically. `effective_friction_angle_deg`'s `sin_phi.clamp(-1.0, 1.0)` could hide a
+/// raw ratio past 1.0 (e.g. `sigma3` slightly negative from discrete-sum noise); this
+/// reads `principal_stresses()` directly for the raw sigma1/sigma3 before any clamping,
+/// to tell a physical plateau from a numerical artifact.
 #[test]
 #[ignore = "cheap diagnostic for the Hybrid Grains Phase 0 investigation -- run explicitly with \
             --release --ignored --nocapture (fast: ~1min, single 30k-step run)"]
@@ -529,26 +515,17 @@ fn diag_raw_principal_stresses_reveal_clamp_artifact_or_real_degeneracy() {
     }
 }
 
-/// Real hypothesis-1 test: is `rolling_friction=2.00`'s own already-
-/// disclosed elevated/physically-implausible calibration (a proxy for
-/// missing true grain-shape geometry, see
-/// `project_grain_clump_shape_scoped_2026-09-09`) the reason the contact
-/// network comes out uniaxial (confirmed not a clamp
-/// artifact, by `diag_raw_principal_stresses_reveal_clamp_artifact_or_
-/// real_degeneracy` above -- sigma3 measured at -0.000001 over 2M+ real
-/// samples)? Sweeps `rolling_friction` in [0.0, 0.20 (this project's own
-/// separately-calibrated, more realistic value, `grains_repose_angle.rs`),
-/// 2.00] x 2 seeds (a disclosed narrowing pass, not the full 5-seed
-/// gate rigor -- this is a trend check, not a final verdict) using the
-/// same active-settling-window read as hypothesis 2. NOT asserting a fixed
-/// PASS bar against 23.87deg (that target was calibrated FOR
-/// rolling_friction=2.00's own specific column geometry -- a different
-/// rolling_friction changes the real geometric angle too, so
-/// comparing against the same fixed external number would not be a fair
-/// test). Instead reports, per config: does `principal_stresses()` show a
-/// non-degenerate sigma3 (not pinned near zero), and does
-/// `effective_friction_angle_deg()` move away from 90deg and track this
-/// SAME run's own geometric angle -- a honest trend check.
+/// Hypothesis 1: is `rolling_friction=2.00`, an elevated stand-in for grain-shape
+/// geometry the model lacks, the reason the contact network comes out uniaxial (not a
+/// clamp artifact: `diag_raw_principal_stresses_reveal_clamp_artifact_or_real_degeneracy`
+/// measures sigma3 at -0.000001 over 2M+ samples)? Sweeps `rolling_friction` over
+/// [0.0, 0.20 (the value calibrated in `tests/grains_repose_angle.rs`), 2.00] x 2 seeds (a
+/// trend check, not a 5-seed gate), with the active-settling-window read of hypothesis
+/// 2. No fixed pass bar against 23.87deg (calibrated for 2.00's column geometry; another
+/// rolling_friction changes the geometric angle too). Reports, per config, whether
+/// `principal_stresses()` shows a non-degenerate sigma3 and whether
+/// `effective_friction_angle_deg()` moves away from 90deg and tracks the same run's
+/// geometric angle.
 #[test]
 #[ignore = "hypothesis-1 trend check for the Hybrid Grains Phase 0 investigation -- run \
             explicitly with --release --ignored --nocapture (moderate: 6 runs, 400k steps each)"]

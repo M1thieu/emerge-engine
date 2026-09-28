@@ -196,7 +196,7 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
             stress += self.dynamic_viscosity * strain_dev;
         }
 
-        // Artificial (shock) viscosity -- a real PDE term this material had
+        // Artificial (shock) viscosity -- a PDE term this material had
         // NONE of, despite cavitation being inherently a violent,
         // discontinuous pressure phenomenon (arguably needing shock
         // capturing MORE than a plain liquid, not less). Same cited
@@ -240,7 +240,7 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
-        // The carried logarithm is the real state; reading J back from F
+        // The carried logarithm is the state; reading J back from F
         // and multiplying loses a fraction of every small increment (see
         // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {
@@ -338,7 +338,7 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
 #[derive(Debug, Clone)]
 pub struct CavitatingFluidMaterial {
     /// The real, T-indexed table this material reconstructs from at
-    /// every real query -- see `CavitatingEosTable`'s doc.
+    /// every query -- see `CavitatingEosTable`'s doc.
     pub table: CavitatingEosTable,
     /// Same real role as `IsothermalCavitatingFluidMaterial::dx_meters`.
     pub dx_meters: f32,
@@ -352,7 +352,7 @@ pub struct CavitatingFluidMaterial {
 
 /// Named-field alternative to [`CavitatingFluidMaterial::new`]'s positional
 /// arguments -- see [`IsothermalCavitatingFluidMaterialParams`]'s doc
-/// for why. `Clone`-only, not `Copy`: `table` owns a real `Vec`-backed
+/// for why. `Clone`-only, not `Copy`: `table` owns a `Vec`-backed
 /// lookup table (see [`CavitatingEosTable`]'s doc), same reason that
 /// type itself isn't `Copy`.
 #[derive(Clone, Debug)]
@@ -525,7 +525,7 @@ impl MaterialModel for CavitatingFluidMaterial {
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
-        // The carried logarithm is the real state; reading J back from F
+        // The carried logarithm is the state; reading J back from F
         // and multiplying loses a fraction of every small increment (see
         // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {
@@ -734,7 +734,7 @@ mod tests {
             p
         };
 
-        // Extreme tension: deep in the real vapor branch, right at this
+        // Extreme tension: deep in the vapor branch, right at this
         // material's own self-declared upper bound.
         let p_tension = particle_at_j(volume_ratio_max * 0.99);
         let particles_tension = Particles::from(vec![p_tension]);

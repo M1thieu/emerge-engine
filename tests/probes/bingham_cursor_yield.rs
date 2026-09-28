@@ -29,7 +29,7 @@
 //!
 //! The net force the field applies on a half-covered slab comes out at
 //! 1.007 and 0.979 of `P * 2r` for two placements of the lattice, so the
-//! `r^2 / 3` resultant holds on the real lattice to two percent. (Summing
+//! `r^2 / 3` resultant holds on the lattice to two percent. (Summing
 //! the pushes' magnitudes instead, `pi r^2 / 6`, would read 1.57.)
 //!
 //! Change of shape after release, mm, translation and rotation removed:

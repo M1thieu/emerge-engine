@@ -149,12 +149,10 @@ fn run_basic() {
         (
             "water (Newtonian)",
             Box::new(|| {
-                // rest_density=4.0, not 1.0 (real bug fixed 2026-07-26): center_spawn's
-                // spacing=0.5 with the default particle_mass=1.0 produces a real kernel-
-                // estimated density of mass/spacing^2=4.0 in the bulk. Declaring
-                // rest_density=1.0 was a ~4x calibration mismatch that injected spurious
-                // energy from the first substep -- visible here as spd=35.393 (vs every
-                // other material's <2.1) and "still moving," never settling.
+                // rest_density=4.0 was set for a spawn mass of 1.0 per particle
+                // (density 4.0 at spacing 0.5). Spawn mass now comes from
+                // `SimConfig::grid_density * spacing^2` (grid_density 1.0 here), so the
+                // bulk density is 1.0 and this rest density needs rechecking.
                 let m = NewtonianFluidMaterial::low_viscosity(4.0, 100.0);
                 Simulation::new(config(), center_spawn(0))
                     .with_default_material(Box::new(m))
@@ -315,8 +313,8 @@ fn run_sweep() {
     }
 
     // -- Water: EOS stiffness sweep -------------------------------------------
-    // rho=4.0, not 1.0 (real bug fixed 2026-07-26): center_spawn's spacing=0.5 with the
-    // default particle_mass=1.0 produces a real density of mass/spacing^2=4.0 in the bulk.
+    // rho=4.0 was set for a spawn mass of 1.0 per particle; see the Bingham block
+    // above: with the current spawn convention the bulk density is 1.0.
     println!("\n-- Newtonian fluid, rho=4.0, sweep EOS stiffness --");
     for &k in &[10.0f32, 50.0, 100.0, 500.0, 1000.0, 5000.0] {
         let m = NewtonianFluidMaterial::low_viscosity(4.0, k);
@@ -471,8 +469,8 @@ fn run_scenarios() {
             material_id: 0,
             ..SpawnRegion::for_sim(&config())
         };
-        // rho=4.0, not 1.0 (real bug fixed 2026-07-26): matches this spawn's real
-        // density (particle_mass=1.0 / spacing^2=0.25 = 4.0), not a mismatched round number.
+        // rho=4.0 was set for a spawn mass of 1.0 per particle (1.0 / spacing^2 =
+        // 4.0); with the current spawn convention it needs rechecking (see above).
         let water = NewtonianFluidMaterial::low_viscosity(4.0, 400.0);
         let mut solver = Simulation::new(config(), water_spawn)
             .with_default_material(Box::new(water))

@@ -11,7 +11,7 @@
 //! Frobenius distance). dL/dtau = tau(F) - tau_target feeds directly into
 //! kirchhoff_stress_vjp to get dL/dF, then F -= lr * dL/dF.
 //!
-//! This is the actual mechanism a real trainer would use per-particle, per-
+//! This is the actual mechanism a trainer would use per-particle, per-
 //! substep, chained backward through many more steps (P2G/G2P/grid update,
 //! not yet differentiable) -- this example isolates just the one piece that
 //! IS differentiable right now and proves it drives real convergence.

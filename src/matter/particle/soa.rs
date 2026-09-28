@@ -86,7 +86,7 @@ pub struct Particles {
 /// particles' contexts never alias, even built concurrently on different
 /// threads. Covers exactly the fields every material's `update_particle` (and
 /// `GripFrictionBoundary`'s `post_g2p_particle`) actually touches -- verified
-/// by grepping every real implementation, not guessed.
+/// by grepping every implementation, not guessed.
 pub struct ParticleUpdateCtx<'a> {
     pub x: &'a mut Vec2,
     pub v: &'a mut Vec2,
@@ -133,7 +133,7 @@ pub struct ParticleUpdateCtx<'a> {
 impl Particles {
     /// Builds a `ParticleUpdateCtx` for one particle by index. For single-
     /// particle/test call sites (needs exclusive `&mut Particles`, so NOT
-    /// usable from inside a parallel loop over sliced fields -- the real G2P
+    /// usable from inside a parallel loop over sliced fields -- the G2P
     /// hot path builds these directly from its own already-disjoint parallel
     /// slices instead of calling this).
     pub fn update_ctx(&mut self, i: usize) -> ParticleUpdateCtx<'_> {
@@ -307,7 +307,7 @@ impl Particles {
         self.log_volume_strain.push(p.log_volume_strain);
         // Not part of the AoS `Particle` view (see `eps_pl_vol_pradhana`'s own
         // doc) -- a freshly-pushed particle always starts owing zero
-        // correction, the real physically-correct initial condition.
+        // correction, the physically-correct initial condition.
         self.eps_pl_vol_pradhana.push(0.0);
         self.temperature.push(p.temperature);
         self.user_tag.push(p.user_tag);

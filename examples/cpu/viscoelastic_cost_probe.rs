@@ -1,4 +1,4 @@
-//! Real per-frame cost for the viscoelastic damping-comparison scene, headless.
+//! Per-frame cost of the viscoelastic damping-comparison scene, headless.
 extern crate emerge_engine as emerge;
 
 use emerge::{

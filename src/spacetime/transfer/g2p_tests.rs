@@ -221,7 +221,7 @@ mod g2p_velocity_vjp_tests {
 
     /// Forward formula exactly matching G2P's own `new_v` computation (the
     /// weighted sum over the 3x3 stencil), taking the 9 grid velocities
-    /// directly as an array instead of reading a real `Grid` -- isolates the
+    /// directly as an array instead of reading a `Grid` -- isolates the
     /// weighted-sum math being verified from grid storage/lookup entirely.
     fn gather_velocity(x: Vec2, v_grid: &[[Vec2; 3]; 3]) -> Vec2 {
         let weights = quadratic_weights(x);
@@ -441,7 +441,7 @@ mod g2p_affine_vjp_tests {
 
     /// Forward formula exactly matching G2P's own `new_c`/`velocity_gradient`
     /// computation (the weighted outer-product sum), taking the 9 grid
-    /// velocities directly as an array instead of reading a real `Grid`.
+    /// velocities directly as an array instead of reading a `Grid`.
     fn gather_affine(x: Vec2, v_grid: &[[Vec2; 3]; 3], scale: f32) -> Mat2 {
         let weights = quadratic_weights(x);
         let mut b = Mat2::ZERO;
@@ -763,7 +763,7 @@ mod multistep_backprop_tests {
     /// `p2g_position_vjp` handles it, and isn't exercised here since this
     /// proof targets the OTHER remaining gap -- chaining substeps together).
     /// With one particle and fixed position, the 9-cell stencil can be
-    /// tracked as a plain local array instead of a real `Grid`.
+    /// tracked as a plain local array instead of a `Grid`.
     fn substep_forward(
         f_old: Mat2,
         v_old: Vec2,
@@ -806,7 +806,7 @@ mod multistep_backprop_tests {
     /// SUM of both paths -- the standard multivariable chain rule, not
     /// special-cased per path.
     ///
-    /// `p2g_stress_vjp` is reused twice: once with the real `stress_coeff`
+    /// `p2g_stress_vjp` is reused twice: once with the `stress_coeff`
     /// for the stress->F path, once with `mass` standing in for that same
     /// scalar for the `c_old`->grid path -- both are the identical
     /// `weight*scalar*(tensor*cell_dist)` shape `scatter_particles_to_grid`
@@ -934,7 +934,7 @@ mod multistep_backprop_tests {
         });
     }
 
-    /// Scales the two-substep proof above to a real rollout length (5
+    /// Scales the two-substep proof above to a rollout length (5
     /// substeps) via a plain loop over the same `substep_forward` /
     /// `substep_backward` functions -- no new math, just more of it. Proves
     /// the chain doesn't silently degrade (error accumulation, sign flips)

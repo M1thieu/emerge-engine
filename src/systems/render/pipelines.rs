@@ -485,7 +485,7 @@ pub(super) fn build_surface_convert_pipeline(
 /// `curvature_flow.wgsl`'s `curvature_iterate_main` pipeline -- one real
 /// mean-curvature smoothing step, ping-ponged between two plain float
 /// buffers across several dispatches (see that entry point's doc for
-/// the real cited equation).
+/// the cited equation).
 pub(super) fn build_surface_iterate_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
@@ -509,7 +509,7 @@ pub(super) fn build_surface_iterate_pipeline(
 }
 
 /// `curvature_flow.wgsl`'s `post_total_reduce_main` pipeline -- sums the
-/// settled (post-curvature-flow) density into a real total, half of the
+/// settled (post-curvature-flow) density into a total, half of the
 /// volume-preserving correction, see that entry point's own "Pass 1d" doc.
 pub(super) fn build_post_total_reduce_pipeline(
     device: &wgpu::Device,
@@ -534,7 +534,7 @@ pub(super) fn build_post_total_reduce_pipeline(
 }
 
 /// `curvature_flow.wgsl`'s `volume_correct_main` pipeline -- the other half
-/// of the real volume-preserving correction: rescales the settled density
+/// of the volume-preserving correction: rescales the settled density
 /// by `pre_total/post_total`, see that entry point's own "Pass 1d" doc.
 pub(super) fn build_volume_correct_pipeline(
     device: &wgpu::Device,
@@ -583,7 +583,7 @@ pub(super) fn build_temp_avg_pipeline(
 
 /// `curvature_flow.wgsl`'s `temp_diffuse_main` pipeline -- the real 2D heat
 /// equation (Fourier's law) applied to the recovered temperature field, see
-/// that entry point's own "Pass 1c" doc for the real cited stability bound.
+/// that entry point's own "Pass 1c" doc for the cited stability bound.
 pub(super) fn build_temp_diffuse_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
@@ -610,7 +610,7 @@ pub(super) fn build_temp_diffuse_pipeline(
 /// diffusion approximation to light transport (see that entry point's own
 /// "Pass 1e" doc for the full real derivation, including the cited von
 /// Neumann stability bound). Reads the current fluence + the diffused
-/// temperature field (source) + the real per-material `OpticalTable`
+/// temperature field (source) + the per-material `OpticalTable`
 /// (sigma_a/sigma_s), writes the next fluence.
 pub(super) fn build_light_diffuse_pipeline(
     device: &wgpu::Device,

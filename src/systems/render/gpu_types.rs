@@ -1,14 +1,14 @@
 //! GPU-side wire structs for the renderer -- split out of `mod.rs` (was its own
 //! "GPU-side structs (must match WGSL)" section, ~90 of the file's ~895 lines).
 //! Every `repr(C)` struct here must stay byte-identical to its WGSL counterpart;
-//! the `size_of` asserts are the real guard against silent drift.
+//! the `size_of` asserts are the guard against silent drift.
 
 use std::mem;
 
 use bytemuck::{Pod, Zeroable};
 
 /// Mirrors `grid_volume.wgsl`'s `GridVolumeParams` -- see that shader's doc for
-/// the real technique (samples the solver's own P2G mass field directly instead of
+/// the technique (samples the solver's own P2G mass field directly instead of
 /// per-particle splats).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -103,7 +103,7 @@ const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
 /// ordering dependency for no real benefit -- 16 bytes is the standard
 /// minimum-uniform-size convention already used by every buffer in this file).
 /// `_pad` MUST stay three plain `u32`s, not `[u32; 3]` mirrored as WGSL
-/// `vec3<u32>` -- confirmed via a real runtime wgpu validation panic ("size 16
+/// `vec3<u32>` -- confirmed via a runtime wgpu validation panic ("size 16
 /// where the shader expects 32"): `vec3` has a 16-byte alignment in WGSL's
 /// uniform address space, silently inflating the true GPU-side struct size
 /// past this exactly-16-byte Rust layout. See `snapshot_positions.wgsl`'s own
@@ -213,7 +213,7 @@ const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 32);
 
 /// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the persistent
 /// (across frames) 2D wave-equation pass's own uniform. See that shader's
-/// own "Pass 2b" doc for the real technique (same cited numerical scheme as
+/// own "Pass 2b" doc for the technique (same cited numerical scheme as
 /// `energy::acoustics::WaveEquation2D`, reimplemented for this GPU-resident
 /// buffer).
 #[repr(C)]
@@ -314,7 +314,7 @@ const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 48);
 pub struct SurfaceReconstructionSource<'a> {
     pub particle_buf: &'a wgpu::Buffer,
     pub particle_count: usize,
-    /// The solver's own physics grid resolution -- the real auxiliary
+    /// The solver's own physics grid resolution -- the auxiliary
     /// surface buffer is allocated at `grid_res * SURFACE_RES_MULTIPLIER`,
     /// finer than this, not equal to it (see `curvature_flow.wgsl`'s own
     /// doc for why that's the whole point of this render path).
@@ -338,7 +338,7 @@ pub struct SurfaceReconstructionSource<'a> {
 
 /// Bundles `render_surface_reconstruction_dual_phase`'s args (see that
 /// method's doc, and `curvature_flow.wgsl`'s "two-phase extension" doc
-/// for the real technique) -- two independently-smoothed surfaces sharing
+/// for the technique) -- two independently-smoothed surfaces sharing
 /// one particle buffer, filtered by `material_id`. `material_id` doubles as
 /// the `OpticalTable` color slot for its own phase, same real convention
 /// `SurfaceReconstructionSource::material_slot` already uses.

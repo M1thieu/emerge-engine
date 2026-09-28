@@ -3,7 +3,7 @@ extern crate emerge_engine as emerge;
 #[path = "../scenes/snake_on_terrain.rs"]
 mod scene;
 
-/// Snake crawling on REAL granular sand terrain -- GPU path, zero-copy rendering.
+/// Snake crawling on granular sand terrain -- GPU path, zero-copy rendering.
 ///
 /// GPU counterpart to `snake_on_terrain.rs` (CPU), built after the full GPU multi-field
 /// contact port (P2G grip scatter, point-cloud gather, Newton-Raphson LR normal fit,
@@ -201,8 +201,8 @@ impl State {
         self.muscle_group_of = muscle_group_of;
         self.lnn = make_cpg();
         self.frame = 0;
-        // Real accumulated leftover time from before the reset must not leak into
-        // the new run (would cause a stutter of "catch-up" steps right after reset).
+        // Leftover time accumulated before the reset must not leak into the new run
+        // (a stutter of catch-up steps right after reset).
         self.stepper.reset();
         self.last_instant = std::time::Instant::now();
         println!("reset");

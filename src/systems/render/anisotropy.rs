@@ -385,13 +385,13 @@ mod tests {
     }
 
     /// A free surface offsets the neighborhood centroid inward. The fit must
-    /// use that real weighted mean rather than assuming the particle sits at
+    /// use that weighted mean rather than assuming the particle sits at
     /// its own neighborhood's centre, since that offset is the surface signal.
     #[test]
     fn surface_particle_fits_along_its_own_surface() {
         let params = AnisotropyParams::default();
         // Particle at the top of a block: neighbors to the sides and below,
-        // none above -- the real configuration at a free surface.
+        // none above -- the configuration at a free surface.
         let mut neighbors = Vec::new();
         for gx in -3..=3 {
             for gy in -3..=0 {

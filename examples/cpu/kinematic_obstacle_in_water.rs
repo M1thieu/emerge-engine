@@ -11,11 +11,11 @@ use glam::{IVec2, Vec2};
 /// cursor drives a `KinematicCircleBoundary` (a kinematically-driven
 /// obstacle, NOT a rigid body -- see that type's doc for why this
 /// engine's "no rigid bodies" scope rule doesn't apply to it) through
-/// settled water via a real virtual spring-damper control law (see the
-/// `CONTROL_*` constants' doc for the real derivation -- impedance
+/// settled water via a virtual spring-damper control law (see the
+/// `CONTROL_*` constants' doc for the derivation -- impedance
 /// control, Hogan 1985, not a teleport-to-cursor hack). The obstacle's
 /// velocity every step sums TWO real forces: that spring pulling it toward
-/// the cursor, and the REAL, mass-weighted reaction impulse the water
+/// the cursor, and the mass-weighted reaction impulse the water
 /// exerts back on it (`take_reaction_impulse()`, Newton's third law) -- so
 /// if this coupling is genuine, heavy water resistance visibly displaces
 /// the obstacle away from wherever the cursor is trying to drag it ("gets
@@ -45,26 +45,19 @@ const SETTLE_STEPS: usize = 150;
 const OBSTACLE_RADIUS: f32 = 2.0;
 const OBSTACLE_MASS: f32 = 8.0;
 const PARTICLE_RENDER_DIAMETER: f32 = 0.9;
-// Real control law, not a teleport-to-cursor hack: the cursor sets a target
-// position, and the obstacle is pulled toward it by a virtual
-// spring-damper (impedance control -- Hogan 1985; the same principle every
-// force-feedback/haptic interface uses to let a human "feel" resistance
-// through a driven object). Because the spring force and the real water
-// reaction impulse are summed into the SAME velocity update, heavy
-// resistance displaces the obstacle away from the cursor (gets
-// "carried by the forces"), and holding the cursor against that resistance
-// fights it back -- neither behavior is scripted separately, both
-// fall out of the one real force balance.
+// Control law: the cursor sets a target position, and the obstacle is pulled toward it
+// by a virtual spring-damper (impedance control, Hogan 1985, the principle haptic
+// interfaces use to let a human feel resistance through a driven object). The spring
+// force and the water's reaction impulse are summed into one velocity update, so heavy
+// resistance displaces the obstacle away from the cursor and holding the cursor
+// against it fights back; neither behavior is scripted, both come from one force
+// balance.
 //
-// Disclosed derivation, not an arbitrary gain: choosing a target
-// settling time of `CONTROL_RESPONSE_PERIODS_OF_DT` physics steps gives a
-// real natural frequency omega=2*pi/(periods*DT), then k=m*omega^2 (simple
-// harmonic oscillator relation) and damping=2*sqrt(k*m)*ratio (critical-
-// damping formula, same convention `grain_contact_config` already uses
-// elsewhere in this engine) -- so the "gain" is really just "how many
-// physics steps should a deliberate cursor move take to catch up," a real
-// interface-responsiveness choice, not a material constant pretending to be
-// one.
+// Gains from a target settling time of `CONTROL_RESPONSE_PERIODS_OF_DT` physics steps:
+// natural frequency omega=2*pi/(periods*DT), k=m*omega^2 (harmonic oscillator) and
+// damping=2*sqrt(k*m)*ratio (critical damping, as `grain_contact_config` uses). The
+// "gain" is how many physics steps a deliberate cursor move takes to catch up, an
+// interface-responsiveness choice, not a material constant.
 const CONTROL_RESPONSE_PERIODS_OF_DT: f32 = 20.0;
 const CONTROL_DAMPING_RATIO: f32 = 1.0; // critically damped: no overshoot chasing the cursor
 
@@ -84,47 +77,32 @@ struct State {
     obstacle_pos: Vec2,
     obstacle_vel: Vec2,
     cursor_screen: [f32; 2],
-    // Real spring/damping gains, derived once from `CONTROL_RESPONSE_
-    // PERIODS_OF_DT`/`CONTROL_DAMPING_RATIO` (see those constants' doc)
-    // -- not per-frame recomputed, they don't depend on anything that
-    // changes.
+    // Spring and damping gains, derived once from `CONTROL_RESPONSE_PERIODS_OF_DT`/
+    // `CONTROL_DAMPING_RATIO` (see those constants); nothing they depend on changes.
     control_stiffness: f32,
     control_damping: f32,
     frame: u64,
     log_timer: std::time::Instant,
-    // Derived-from-the-actual-scene camera extent (see
-    // `camera_extent_for_aspect`'s doc): computed ONCE at startup from
-    // the real settled-water bounding box + real obstacle travel room, using
-    // the window's OWN initial aspect. Live-reported bug fixed
-    // 2026-09-15: this used to be RECOMPUTED on every resize using the
-    // window's current aspect, which changes the vertical framing too, not
-    // just the horizontal -- unlike every other example in this codebase,
-    // which passes one FIXED `grid_res` on every resize and lets
-    // `set_camera`'s own internal aspect handling adapt the horizontal
-    // extent alone (that's what its `sx`/`sy` split is FOR). Recomputing a
-    // second time on top of that was redundant and is what broke framing
-    // under a fullscreen-sized aspect change. Fixed by treating this as a
-    // fixed `grid_res` after the initial computation, exactly like every
-    // other example.
+    // Camera extent derived from the scene (see `camera_extent_for_aspect`), computed
+    // once at startup from the settled-water bounding box and the obstacle's travel
+    // room, with the window's initial aspect, then used as a fixed `grid_res` on every
+    // resize like the other examples: `set_camera` already adapts the horizontal extent
+    // to the aspect (its `sx`/`sy` split), and recomputing the extent per resize also
+    // changes the vertical framing.
     camera_extent: f32,
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
 }
 
-/// `Renderer::set_camera`'s `grid_res` always frames a square-ish region
-/// from world origin (0,0), widened by the window's own aspect ratio (see
-/// that function's own derivation: landscape shows `y=grid_res,
-/// x=grid_res*aspect`; portrait the mirror). Passing the PHYSICS grid size
-/// (64 here) frames the whole simulation domain regardless of where the
-/// actual water+obstacle sit in it -- fine for a scene that fills its grid,
-/// but this one's real water pool only occupies a thin band near the
-/// bottom (see the live-reported bug this fixes: 2026-09-15,
-/// screenshot showed a mostly-empty window over a sliver of water). This
-/// computes the smallest `grid_res` that still contains the real scene
-/// (vertical_need: real settled water height + splash/sky headroom;
-/// horizontal_reach: real water extent + room for the obstacle to keep
-/// traveling into view) for whatever aspect ratio the window currently is.
+/// `Renderer::set_camera`'s `grid_res` frames a square-ish region from world origin
+/// (0,0), widened by the window's aspect ratio (see its derivation: landscape shows
+/// `y=grid_res, x=grid_res*aspect`; portrait the mirror). The physics grid size (64
+/// here) frames the whole domain, but this scene's water pool is a thin band near the
+/// bottom, which would leave a mostly empty window over a sliver of water. This
+/// computes the smallest `grid_res` that contains the scene (vertical_need: settled
+/// water height + splash headroom; horizontal_reach: water extent + room for the
+/// obstacle to travel into view) for the window's aspect ratio.
 fn camera_extent_for_aspect(vertical_need: f32, horizontal_reach: f32, aspect: f32) -> f32 {
     if aspect >= 1.0 {
         vertical_need.max(horizontal_reach / aspect)
@@ -160,14 +138,10 @@ fn make_sim() -> Simulation {
     let boundary_thickness = config.boundary_thickness;
     Simulation::new(config, spawn_water)
         .with_default_material(Box::new(water))
-        // Real fix (2026-09-15, live-reported): the scratch test this scene
-        // was ported from never needed a domain wall (its own 200-step
-        // scripted run never depended on where the water ended up), but a
-        // long-running live demo does -- without one the water pool simply
-        // spreads across nearly the whole grid during settling (confirmed
-        // live: bbox reached x=62 of 64), which also pushed the obstacle's
-        // own start position derived from that bbox off-grid entirely.
-        // Same real wall every other fluid example in this codebase uses.
+        // A domain wall, as in the other fluid examples: without one the pool spreads
+        // across nearly the whole grid while settling (bbox reaching x=62 of 64),
+        // which also pushes the obstacle's start position, derived from that bbox,
+        // off the grid.
         .with_boundary(Box::new(SlipBoundary::new(boundary_thickness)))
 }
 
@@ -236,13 +210,10 @@ impl State {
         ));
         sim.add_boundary_condition(Box::new(obstacle.clone()));
 
-        // Real headroom, not arbitrary: enough sky above the settled
-        // surface for a real splash to stay visible. Clamped to the actual
-        // physics domain (`GRID`) on both axes -- there is never a real
-        // reason to show camera space beyond where the simulation actually
-        // exists (see the real bug this closes: the cursor mapping into
-        // that dead space and the obstacle getting stuck there with zero
-        // possible contact, 2026-09-15).
+        // Enough sky above the settled surface for a splash to stay visible, clamped
+        // to the physics domain (`GRID`) on both axes: camera space beyond the
+        // simulation would let the cursor map there and strand the obstacle with no
+        // possible contact.
         const SPLASH_HEADROOM: f32 = 8.0;
         let camera_vertical_need = (bb_max.y + SPLASH_HEADROOM).min(GRID as f32);
         let camera_horizontal_reach = GRID as f32;
@@ -365,26 +336,18 @@ impl State {
         println!("reset");
     }
 
-    /// Real two-way coupling: the obstacle's velocity update sums TWO real
-    /// forces every step -- a virtual spring pulling it toward the cursor
-    /// (see the control constants' doc) and the real reaction impulse
-    /// the water exerts back on it (`take_reaction_impulse()`, Newton's
-    /// third law). Neither is scripted around the other; "gets carried by
-    /// the water" and "fighting back by moving the cursor harder" are both
-    /// just this one force balance playing out differently depending on how
-    /// hard the real water is pushing.
+    /// Two-way coupling: the obstacle's velocity update sums two forces every step --
+    /// a virtual spring toward the cursor (see the control constants) and the reaction
+    /// impulse the water exerts back on it (`take_reaction_impulse()`, Newton's third
+    /// law). Being carried by the water and fighting back by moving the cursor harder
+    /// are the same force balance playing out differently with how hard the water
+    /// pushes.
     fn update_and_render(&mut self, window: &Window) {
-        // Structural fix (2026-09-15, live-reported "no collision at
-        // all"): a raw `screen_to_grid` reading can map to world space
-        // outside the actual [0, GRID] physics domain (window edges, or the
-        // camera's own real splash/travel headroom extending past it -- see
-        // `camera_extent_for_aspect`'s doc) -- if the cursor sits there
-        // and stops moving, the spring finds a real equilibrium exactly
-        // there, off-grid, with zero possible reaction: not a bug in the
-        // coupling itself, but a real trap this clamp closes at the
-        // source. Margin = `OBSTACLE_RADIUS` so the obstacle's own BODY,
-        // not just its center, always stays inside the domain that actually
-        // exists.
+        // Clamp the target to the physics domain: a raw `screen_to_grid` reading can
+        // map outside [0, GRID] (window edges, or the camera's splash/travel headroom,
+        // see `camera_extent_for_aspect`), and a cursor resting there gives the spring
+        // an equilibrium off the grid with no possible reaction. Margin =
+        // `OBSTACLE_RADIUS` so the obstacle's body, not just its center, stays inside.
         let cursor_target = {
             let (gx, gy) = self.renderer.screen_to_grid(
                 self.cursor_screen[0],
@@ -443,23 +406,15 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // Live-reported fix (2026-09-15): the particle renderer has
-        // no notion of the obstacle at all -- it's a `BoundaryCondition`,
-        // not a `Particle`, and can't be added as one without injecting
-        // fake mass into the real MPM grid every frame (that would corrupt
-        // the actual physics, not just the visual). This overlay is purely
-        // a screen-space marker drawn with egui (same library every other
-        // GUI example in this codebase already uses), positioned via the
-        // exact same camera math the particle renderer itself uses -- it
-        // never touches `sim`/`Particles` state.
+        // The particle renderer has no notion of the obstacle: it is a
+        // `BoundaryCondition`, not a `Particle`, and making it one would inject mass
+        // into the MPM grid every frame. This overlay is a screen-space marker drawn
+        // with egui, positioned with the particle renderer's camera math; it never
+        // touches `sim`/`Particles` state.
         let raw_input = self.egui_state.take_egui_input(window);
-        // Real fix (2026-09-15): read the position straight from the
-        // renderer's OWN cached projection, in the LOGICAL points a UI
-        // toolkit actually draws in (`grid_to_screen_points`/
-        // `grid_distance_to_points` -- see their doc for the real,
-        // live-reported DPI bug this closes at the API level, not just in
-        // this one call site: physical-pixel variants exist too, but a UI
-        // overlay should always reach for the `_points` ones).
+        // Position from the renderer's cached projection, in logical points, the unit
+        // a UI toolkit draws in (`grid_to_screen_points`/`grid_distance_to_points`;
+        // see their doc for the DPI issue with the physical-pixel variants).
         let ppp = self.egui_ctx.pixels_per_point();
         let (cx, cy) = self.renderer.grid_to_screen_points(
             self.obstacle_pos.x,
@@ -472,10 +427,9 @@ impl State {
         let radius =
             self.renderer
                 .grid_distance_to_points(OBSTACLE_RADIUS, self.surface_config.height, ppp);
-        // Real signal, not a UI-only flag: solid when the obstacle is
-        // ACTUALLY in contact this frame (real nonzero reaction impulse),
-        // translucent when it's moving through free water -- so the marker
-        // itself shows the same real physics `in_contact` gates on.
+        // Solid when the obstacle is in contact this frame (nonzero reaction impulse),
+        // translucent when it moves through free water: the marker shows what
+        // `in_contact` gates on.
         let in_contact = reaction != Vec2::ZERO;
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             let painter = ctx.layer_painter(egui::LayerId::background());
@@ -546,14 +500,10 @@ impl ApplicationHandler for App {
             )
             .unwrap(),
         );
-        // Real UX fix (2026-09-15, live-reported): the obstacle marker
-        // lagging behind the OS cursor (the whole POINT of the real spring-
-        // damper control law -- see those constants' doc) reads as
-        // "wrong" when a separate, always-on-target OS arrow is ALSO
-        // visible right next to it. Hiding the OS cursor makes the red
-        // circle the only visible pointer, so what's being steered and what
-        // gets pushed around by real water resistance are visually the same
-        // thing, matching the actual control model instead of fighting it.
+        // OS cursor hidden: the obstacle marker lags the cursor by design (the
+        // spring-damper control law), and an always-on-target OS arrow next to it
+        // reads as wrong. With the red circle the only pointer, what is steered and
+        // what the water pushes around are the same thing on screen.
         w.set_cursor_visible(false);
         self.state = Some(pollster::block_on(State::new(w.clone())));
         self.window = Some(w);

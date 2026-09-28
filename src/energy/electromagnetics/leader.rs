@@ -81,7 +81,7 @@ impl DielectricBreakdownLeader {
         self.is_channel[self.idx(x, y)]
     }
 
-    /// The channel's own cells, in the real order they were grown -- the
+    /// The channel's own cells, in the order they were grown -- the
     /// caller (e.g. a renderer) can use this to draw the leader's actual
     /// growth history, not just its current shape.
     pub fn growth_order(&self) -> &[(usize, usize)] {
@@ -96,7 +96,7 @@ impl DielectricBreakdownLeader {
         &self.parent_order
     }
 
-    /// Empty cells 4-adjacent to the existing channel -- the real candidate
+    /// Empty cells 4-adjacent to the existing channel -- the candidate
     /// set the model's own growth rule selects from.
     fn candidates(&self) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
@@ -128,7 +128,7 @@ impl DielectricBreakdownLeader {
     /// growing tip and makes the leader self-reinforce roughly toward its
     /// own source direction instead of growing uniformly at random.
     /// `relax_iterations` controls how fully the field re-settles after
-    /// each single-cell growth step -- a real cost/accuracy trade the
+    /// each single-cell growth step -- a cost/accuracy trade the
     /// caller controls, not a hidden constant.
     ///
     /// Returns `false` if there were no candidates left (the channel

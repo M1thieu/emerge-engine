@@ -89,12 +89,10 @@ pub fn snake_spawn(config: &SimConfig, material_id: u32) -> SpawnRegion {
     }
 }
 
-/// Real per-particle muscle-fiber tagging math, identical on both backends
-/// -- given a particle's real X position, returns its `muscle_group_id` and
-/// `activation_dir` (fiber direction in material frame). `contact_group`
-/// (always `SNAKE_CONTACT_GROUP` for every snake particle) is set directly
-/// by each caller since it's a one-line constant, not worth threading
-/// through here.
+/// Per-particle muscle-fiber tagging, identical on both backends: from a particle's X
+/// position, returns its `muscle_group_id` and `activation_dir` (fiber direction in the
+/// material frame). `contact_group` (always `SNAKE_CONTACT_GROUP` for snake particles)
+/// is set by each caller directly.
 pub fn snake_particle_tag(x: Vec2) -> (u32, Vec2) {
     let body_left = BODY_CENTER.x - BODY_LEN / 2.0;
     let t = ((x.x - body_left) / BODY_LEN).clamp(0.0, 1.0);

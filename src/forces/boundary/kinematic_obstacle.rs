@@ -101,7 +101,7 @@ impl KinematicCircleBoundary {
         }
     }
 
-    /// Register a real per-material friction override (builder). E.g. water
+    /// Register a per-material friction override (builder). E.g. water
     /// and mud can behave differently at the same obstacle.
     pub fn with_material_friction(mut self, material_id: u32, friction: f32) -> Self {
         assert!(
@@ -126,7 +126,7 @@ impl KinematicCircleBoundary {
     /// Set which friction value `apply_to_grid_velocity` actually uses,
     /// live -- the caller decides how (e.g. `Simulation::particles_near`
     /// the obstacle each frame, then `friction_for_material` on whatever's
-    /// nearest, see this struct's doc for the real scope limit here).
+    /// nearest, see this struct's doc for the scope limit here).
     pub fn set_active_friction(&self, friction: f32) {
         self.active_friction_bits
             .store(friction.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -172,7 +172,7 @@ impl KinematicCircleBoundary {
 
     /// Set the obstacle's own spin live -- real F=ma-style integration is
     /// the caller's job: `omega += take_torque() / moment_of_inertia`. For
-    /// a 2D solid disk of mass `m` and radius `r`, the real moment of
+    /// a 2D solid disk of mass `m` and radius `r`, the moment of
     /// inertia is `I = 0.5 * m * r^2` (standard rigid-body mechanics, e.g.
     /// Goldstein's "Classical Mechanics" -- the 2D-disk case, not the 3D
     /// sphere's `(2/5)*m*r^2`, since this engine is genuinely 2D, not a

@@ -3,27 +3,22 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
 
-/// Real permafrost freeze/thaw -- a block of ice-bonded soil (`NaccMaterial::kaolin`
-/// at 250x its own thawed stiffness) that softens once real ambient warming
-/// pushes it past the real freezing point (273.15K), same mechanism verified in
-/// `tests/solver.rs::permafrost_thaws_at_freezing_point_with_real_latent_heat_debit`
-/// and `frozen_ground_resists_a_strike_more_than_thawed_ground` -- this is the live,
-/// watchable version of those two tests, not new physics.
+/// Permafrost freeze/thaw: a block of ice-bonded soil (`NaccMaterial::kaolin` at 250x its
+/// thawed stiffness) that softens once ambient warming takes it past the freezing point
+/// (273.15 K). A live version of
+/// `tests/solver.rs::permafrost_thaws_at_freezing_point_with_real_latent_heat_debit` and
+/// `frozen_ground_resists_a_strike_more_than_thawed_ground`.
 ///
-/// Real water/ice latent heat of fusion (334, same value already used elsewhere in
-/// this codebase for water) is absorbed on thaw via `WithLatentHeat` + `add_phase_rule`
-/// -- the SAME machinery already proven for combustion in `fire_spread.rs`. Real,
-/// disclosed simplification: not scaled down by permafrost's actual real ice-content
-/// fraction (it's an ice-BONDED soil mixture, not pure ice).
+/// Water/ice latent heat of fusion (334, the value used elsewhere for water) is absorbed
+/// on thaw through `WithLatentHeat` + `add_phase_rule`, the machinery of
+/// `fire_spread.rs`'s combustion, not scaled by permafrost's ice-content fraction
+/// (ice-bonded soil, not pure ice).
 ///
-/// Real stiffness ratio, measured not guessed: literature composes to roughly two to
-/// three orders of magnitude stiffer frozen-vs-thawed (~100 MPa unfrozen soil vs
-/// ~23-30 GPa frozen fine sand, Andersland & Ladanyi-adjacent research) -- an earlier
-/// version of this demo compressed that to 8x "for CFL practicality," but a real
-/// substep-headroom sweep (2026-07-31, at this demo's own dt/substep budget, under
-/// continuous strike load) showed CFL was never actually the binding constraint --
-/// the real ~250x ratio (midpoint of the cited ~230-300x range) uses only 8%/31% of
-/// the substep budget. Uses the real ratio directly now, see `THAWED_STIFFNESS`/
+/// Frozen soil is two to three orders of magnitude stiffer than thawed (~100 MPa
+/// unfrozen soil vs ~23-30 GPa frozen fine sand, Andersland & Ladanyi-adjacent
+/// research). The ratio here is ~250x, the midpoint of that ~230-300x range; a
+/// substep-headroom sweep under continuous strikes uses 8% (thawed) and 31% (frozen) of
+/// the budget, so CFL does not force a smaller ratio. See `THAWED_STIFFNESS`/
 /// `FROZEN_STIFFNESS` below.
 ///
 ///   W hold to warm ambient (simulate seasonal thaw)  |  C hold to cool it back down
@@ -55,14 +50,10 @@ const LATENT_HEAT_FUSION: f32 = 334.0;
 const AMBIENT_START_K: f32 = 260.0; // real permafrost winter-range starting temperature
 const AMBIENT_RATE: f32 = 15.0; // K/s while holding W or C -- demo pacing, not a measured rate
 
-// Real, MEASURED values (2026-07-31), not the earlier CFL-compromise guess: a real
-// substep-headroom sweep at this demo's own dt=0.02/max_substeps_per_step=64 showed
-// both values stay well within budget even under continuous strikes (thawed 8%,
-// frozen 31% of the substep budget used) at these numbers -- CFL was never actually
-// the binding constraint here, so the frozen/thawed ratio no longer needs to be
-// compressed. Uses the real cited literature ratio directly instead: ~250x, the
-// midpoint of Andersland & Ladanyi-adjacent research's ~230-300x (~100 MPa unfrozen
-// soil vs ~23-30 GPa frozen fine sand) -- see module doc for the original citation.
+// Measured: at dt=0.02/max_substeps_per_step=64, under continuous strikes, thawed uses
+// 8% and frozen 31% of the substep budget, so the frozen/thawed ratio is the literature
+// ~250x (midpoint of the ~230-300x of ~100 MPa unfrozen soil vs ~23-30 GPa frozen fine
+// sand, see the module doc).
 const THAWED_STIFFNESS: f32 = 18000.0;
 const FROZEN_STIFFNESS: f32 = THAWED_STIFFNESS * 250.0;
 
@@ -232,8 +223,8 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
-        // Real representative colors: frozen = pale blue-white (ice-bonded), thawed =
-        // dark wet-clay brown -- not literal spectral measurements.
+        // Representative colors: frozen = pale blue-white (ice-bonded), thawed = dark
+        // wet-clay brown; not spectral measurements.
         renderer.set_optical_params(&queue, FROZEN_ID as usize, [0.588, 0.470, 0.357]);
         renderer.set_optical_params(&queue, THAWED_ID as usize, [1.386, 1.139, 0.799]);
 
@@ -304,8 +295,8 @@ impl State {
         )
     }
 
-    /// Real per-frame health snapshot -- shared by the periodic console print and
-    /// the egui panel so neither can silently drift out of sync with the other.
+    /// Per-frame health snapshot, shared by the periodic console print and the egui
+    /// panel so the two stay in sync.
     fn diagnostics(&mut self) -> Diagnostics {
         let (frozen, thawed) = material_counts(&self.sim);
         let particles = self.sim.particles();
@@ -325,11 +316,10 @@ impl State {
             .zip(particles.volume.iter())
             .map(|(&v0, &v)| if v0 > 1.0e-9 { v / v0 } else { 1.0 })
             .fold(f32::INFINITY, f32::min);
-        // Real AGGREGATE shape check -- per-particle volume (above) can stay
-        // exactly 1.0 while the whole block still spreads out laterally via
-        // shear/plastic flow (particles sliding past each other, not compressing
-        // individually). Width/height of the block's own bounding box is the
-        // real signal for "did it flatten", not per-particle J.
+        // Aggregate shape: per-particle volume (above) can stay exactly 1.0 while the
+        // block spreads laterally through shear or plastic flow (particles sliding
+        // past each other, not compressing), so the block's bounding-box width and
+        // height show whether it flattened.
         let (mut min_x, mut max_x, mut min_y, mut max_y) = (
             f32::INFINITY,
             f32::NEG_INFINITY,
@@ -366,13 +356,11 @@ impl State {
             if let Some(thermal) = self.sim.thermal_config_mut() {
                 thermal.ambient += sign * AMBIENT_RATE * DT;
             }
-            // Real Fourier diffusion alone is far too slow to be playable here (this
-            // engine's own diffusion.rs doc: real soil-scale conduction is ~18000s vs
-            // MPM's ~0.002s mechanical CFL) -- directly nudging particle temperature
-            // too is the SAME disclosed demo-pacing simplification `fire_spread.rs`'s
-            // own `ignite_at_cursor` already uses (direct Newton-style relaxation, not
-            // waiting on real ambient conduction) so warming/cooling is actually
-            // watchable in a live session.
+            // Fourier diffusion alone is too slow to be playable (diffusion.rs:
+            // soil-scale conduction is ~18000 s against MPM's ~0.002 s mechanical
+            // CFL), so particle temperature is also nudged directly, a demo-pacing
+            // simplification like `fire_spread.rs`'s `ignite_at_cursor` (direct
+            // Newton-style relaxation), so warming and cooling are watchable.
             let particles = self.sim.particles_mut();
             for t in particles.temperature.iter_mut() {
                 *t += sign * AMBIENT_RATE * DT;
@@ -629,11 +617,9 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// Real regression check: the block spawns fully frozen, and warming the real
-    /// ambient past the real freezing point thaws it (material_id changes),
-    /// not just a cosmetic temperature number -- proves the live demo's own
-    /// `make_sim()`/phase-rule wiring works, not just the abstracted unit tests in
-    /// `tests/solver.rs`.
+    /// The block spawns fully frozen, and warming the ambient past the freezing point
+    /// thaws it (material_id changes), through this demo's `make_sim()` and phase-rule
+    /// wiring, beyond the unit tests in `tests/solver.rs`.
     #[test]
     fn warming_past_freezing_point_thaws_the_block() {
         let mut sim = make_sim();
@@ -641,14 +627,11 @@ mod tests {
         assert!(frozen0 > 0, "must start with frozen particles");
         assert_eq!(thawed0, 0, "must start with zero thawed particles");
 
-        // Real Fourier diffusion alone would take a unplayable amount of
-        // sim-time to warm the block from ambient (this engine's own diffusion.rs
-        // doc: real soil-scale conduction is ~18000s vs MPM's ~0.002s mechanical
-        // CFL) -- directly setting particle temperature tests the actual thing that
-        // matters here (the phase-rule + latent-heat wiring), matching how
-        // `tests/solver.rs`'s own permafrost/latent-heat tests already do this; the
-        // interactive W/C warm/cool keys are a live-verified UI concern, not
-        // something a headless test should wait on real diffusion for.
+        // Sets particle temperature directly: Fourier diffusion alone would take an
+        // unplayable sim time to warm the block (diffusion.rs: soil-scale conduction
+        // ~18000 s against MPM's ~0.002 s mechanical CFL). This tests the phase-rule
+        // and latent-heat wiring, as `tests/solver.rs`'s permafrost tests do; the W/C
+        // keys are a UI concern.
         if let Some(thermal) = sim.thermal_config_mut() {
             thermal.ambient = 300.0; // well above freezing
         }

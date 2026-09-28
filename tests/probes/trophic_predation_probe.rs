@@ -1,7 +1,7 @@
-//! TEMPORARY, not part of the real suite -- direct headless reproduction of
+//! Headless reproduction of
 //! `examples/cpu/trophic_predation_demo.rs`'s scene (no GUI, no predation
-//! logic) to verify the real SI migration (soft-tissue E=500 Pa/nu=0.45/
-//! rho=1000, zero gravity) is stable at a real substep budget.
+//! logic) to verify the SI migration (soft-tissue E=500 Pa/nu=0.45/
+//! rho=1000, zero gravity) is stable at a substep budget.
 
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};

@@ -251,7 +251,7 @@ mod tests {
         );
     }
 
-    /// The shader's closed-form fit must agree with the real spectral
+    /// The shader's closed-form fit must agree with the spectral
     /// integration across the range the engine actually renders: embers,
     /// flame, lava, incandescence, sunlight.
     #[test]

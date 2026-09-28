@@ -60,7 +60,7 @@ mod tests {
     /// (`c_p = 449 J/(kg*K)`) sliding at 10 m/s and brought to rest by
     /// friction dissipates `0.5 * 10^2 = 50 J/kg`, so it warms by
     /// `50 / 449 = 0.111 K`. Barely perceptible, which is itself the point:
-    /// braking a real object heats it a little, not a lot.
+    /// braking an object heats it a little, not a lot.
     #[test]
     fn sliding_iron_block_warms_by_the_textbook_amount() {
         let specific_energy = 0.5 * 10.0f32 * 10.0;

@@ -677,10 +677,10 @@ pub fn resolve_contact_pair_hertzian(
 
 /// Hertzian (nonlinear) counterpart to `resolve_wall_contact` -- see
 /// `HertzianContactConfig`'s and `resolve_contact_pair_hertzian`'s doc
-/// for why this exists and its real citations. Wall = infinite effective
+/// for why this exists and its citations. Wall = infinite effective
 /// mass would make `m_eff` blow up in the Hertzian damping formulas
 /// (`sqrt(kn * m_eff)` diverging), so this uses `grain.mass` directly as
-/// `m_eff` -- the real analytic limit of the two-body reduced mass
+/// `m_eff` -- the analytic limit of the two-body reduced mass
 /// `(m1*m2)/(m1+m2)` as the wall's own mass goes to infinity, same
 /// "analytic limit, not an approximation" precedent `resolve_wall_contact`'s
 /// own `r_eff = grain.radius` doc already establishes for the radius term.
@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn rolling_moment_holds_static_nonzero_value_at_exactly_zero_rate() {
         // The whole point of this model over every rate-dependent mechanism
-        // already ruled out: once a real elastic rolling spring has wound
+        // already ruled out: once an elastic rolling spring has wound
         // up (from real deformation history), it must hold a genuine
         // nonzero moment even when the CURRENT relative spin rate is
         // exactly zero -- unlike Cosserat's curvature coupling, which is

@@ -5,28 +5,25 @@ use emerge::{
     Field, FrictionBoundary, NeoHookeanMaterial, Particles, SimConfig, Simulation, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
-/// LITERATURE-GROUNDED proof-of-concept, 2026-07-10: the SLIP (Spring-Loaded
-/// Inverted Pendulum) template model, the actual standard biomechanics model
-/// for legged locomotion (Full & Koditschek 1999 "templates and anchors";
-/// validated against real running/hopping data across humans, birds, insects
-/// -- the SAME template underlies real bipedal running models, which are
-/// literally two alternating SLIP legs).
+/// SLIP (Spring-Loaded Inverted Pendulum), the standard biomechanics template model for
+/// legged locomotion (Full & Koditschek 1999, "templates and anchors"; validated
+/// against running and hopping data across humans, birds and insects, and the basis of
+/// bipedal running models, which are two alternating SLIP legs).
 ///
-/// Real model (verified against a worked example, not guessed):
+/// Model (checked against a worked example):
 ///   - Stance: point-mass body + massless leg-spring, F = k*(L0 - r) purely
 ///     radial along the leg (foot -> body direction).
 ///   - Flight: pure ballistic (gravity only) -- MPM gives this for free.
-///   - Touchdown: leg replants at a FIXED angle of attack from horizontal
-///     each cycle (real running data: ~60-70 degrees; using 70 here).
-///   - Dimensionless stiffness k*L0/(m*g) governs stability; the worked
-///     example (m=6kg, k=1800N/m, L0=0.5m) gives ~15.3 -- matched here in
-///     emerge's own units rather than copying raw SI numbers.
+///   - Touchdown: the leg replants at a fixed angle of attack from horizontal each
+///     cycle (running data: ~60-70 degrees; see TOUCHDOWN_ANGLE_DEG).
+///   - Dimensionless stiffness k*L0/(m*g) governs stability; the worked example (m=6kg,
+///     k=1800N/m, L0=0.5m) gives ~15.3, matched here in emerge's units rather than raw
+///     SI numbers.
 ///
-/// No CPG, no muscle activation -- this is the real finding: SLIP's
-/// locomotion comes from a passive spring + a fixed touchdown geometry, not
-/// active muscle timing. Dramatically simpler than basic_creature's
-/// peristaltic wave, and the actual textbook basis for legged (not
-/// crawling) locomotion.
+/// No CPG and no muscle activation: SLIP's locomotion comes from a passive spring and a
+/// fixed touchdown geometry, not active muscle timing, much simpler than
+/// basic_creature's peristaltic wave, and the textbook basis for legged (not crawling)
+/// locomotion.
 ///
 ///   cargo run --example slip_hopper --features "render"
 use std::sync::Arc;
@@ -38,29 +35,22 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 200; // wide enough for ~15-20 real hops before hitting the wall
 const DT: f32 = 0.02; // finer dt than the creature demos -- SLIP's stance
-// phase is a real stiff spring impact, needs real
+// phase is a stiff spring impact, needs real
 // temporal resolution to resolve cleanly.
 const MAT_BODY: u32 = 0;
 
-// Real SLIP parameters. `L0`/`TOUCHDOWN_ANGLE_DEG` and the k/mass ratio are
-// literature-grounded (see module doc); GRID_G is emerge's own gravity
-// magnitude (already used elsewhere in these demos as 0.3 grid-units/s^2),
-// kept consistent with the other examples rather than re-deriving SI-to-grid
-// unit conversion from scratch.
+// SLIP parameters. `L0`/`TOUCHDOWN_ANGLE_DEG` and the k/mass ratio follow the
+// literature (see module doc); GRID_G is the 0.3 grid-units/s^2 gravity of the other
+// demos, rather than an SI-to-grid conversion.
 const GRID_G: f32 = 0.3;
 const L0: f32 = 6.0; // natural leg length, grid units
-// 70 degrees (a commonly-cited literature figure) was tried first and found
-// NOT self-stabilizing here (2026-07-10): real 40,000-step headless sweep
-// across 4 angle/stiffness combos showed 70 deg's vertical bounce alone was
-// stable but forward velocity drifted and reversed. 52 deg gave the cleanest
-// result of everything tried: 98 real hops, apex height converging tightly
-// (8.77-8.87) AND forward velocity converging (8.25-10.0), with genuine
-// self-correction after single-hop perturbations (matches Seyfarth et al.'s
-// actual finding that a FIXED angle of attack self-stabilizes running when
-// matched to the right stiffness -- the fix wasn't adaptive control, it was
-// finding the right fixed value for this specific mass/stiffness/leg-length
-// combination, verified empirically rather than assumed from one out-of-
-// context literature number).
+// 52 degrees. At 70 degrees (a commonly cited figure), a 40,000-step headless sweep
+// over 4 angle/stiffness combinations gives a stable vertical bounce but a forward
+// velocity that drifts and reverses. 52 deg gives the cleanest result: 98 hops, apex
+// height converging tightly (8.77-8.87), forward velocity converging (8.25-10.0), and
+// self-correction after single-hop perturbations, as Seyfarth et al. find: a fixed
+// angle of attack self-stabilizes running when matched to the stiffness. The angle
+// suits this mass, stiffness and leg length, found empirically.
 const TOUCHDOWN_ANGLE_DEG: f32 = 52.0;
 // k*L0/(m*g) ~ 15.3 in the worked SI example -- matched here once body mass
 // is known (computed at spawn time, see make_sim), so K is derived, not a
@@ -195,13 +185,11 @@ fn make_sim() -> (
         )));
 
     let body_range = 0..solver.particles().len();
-    // Real SLIP models are parameterized by apex velocity (the state at the
-    // top of flight) -- a hopper starting from true rest (vx=0) just brakes
-    // against its own first foot-plant with nothing to carry it past
-    // midstance, which is a real but uninteresting degenerate case, not a
-    // bug. Seed a real forward apex velocity so the propulsive (second-half-
-    // of-stance) phase has something to work with, matching how the
-    // template model is actually initialized in the literature.
+    // SLIP models are parameterized by apex velocity (the state at the top of
+    // flight). From rest (vx=0) the hopper brakes on its first foot-plant with nothing
+    // to carry it past midstance, a degenerate case. A seeded forward apex velocity
+    // gives the propulsive (second-half-of-stance) phase something to work with, as
+    // the template model is initialized in the literature.
     const INITIAL_VX: f32 = 4.0;
     {
         let particles = solver.particles_mut();

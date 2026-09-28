@@ -712,7 +712,7 @@ fn permafrost_thaws_at_freezing_point_with_real_latent_heat_debit() {
         });
 
     // Start well below freezing (real permafrost winter temperature), then warm
-    // past the real freezing point -- like `ThermalConfig::ambient` driving a
+    // past the freezing point -- like `ThermalConfig::ambient` driving a
     // real seasonal thaw, simplified to a direct temperature set for a
     // deterministic test (same style as the existing latent-heat test above).
     for t in solver.particles_mut().temperature.iter_mut() {
@@ -790,7 +790,7 @@ fn frozen_ground_resists_a_strike_more_than_thawed_ground() {
     );
 }
 
-/// Sets a distinctive, material-specific value in `init_particle` so a real test
+/// Sets a distinctive, material-specific value in `init_particle` so a test
 /// can tell whether a phase transition re-ran it or silently carried over
 /// whatever the particle had under its OLD material.
 #[derive(Debug, Default)]
@@ -2688,7 +2688,7 @@ fn granular_fluid_gpu_cpu_single_substep_matches_with_imposed_compression() {
 /// (the pre-existing test above both of these) never drives real
 /// plastic flow (mild gravity, NeoHookean, no yield surface at all), so it
 /// provably could not have caught the P0 #1 Von Mises bug (GPU projecting
-/// onto the PRE-hardening yield limit instead of the real post-hardening
+/// onto the PRE-hardening yield limit instead of the post-hardening
 /// one). This scenario uses real hardening (`hardening_modulus > 0`, where
 /// the bug was invisible under perfect plasticity -- see
 /// `VonMisesMaterial::kirchhoff_stress`'s doc) and a soft, sustained
@@ -2989,7 +2989,7 @@ fn diag_von_mises_gpu_cpu_diverges_under_violent_impact() {
 /// check is), so the imposed C feeds this substep's P2G stress computation
 /// on BOTH backends without needing a G2P round-trip first -- an even more
 /// direct exercise of the 2x factor P0 #2 fixed than Von Mises gets. Still
-/// not a strict constitutive-identity proof: it runs the real P2G stress
+/// not a strict constitutive-identity proof: it runs the P2G stress
 /// kernel end to end (kernel weights, atomic-scatter accumulation order
 /// included), not a bit-identical direct call into `deviatoric_stress`/the
 /// WGSL Bingham branch with the same local state -- see `bingham.rs`'s own
@@ -3344,7 +3344,7 @@ fn split_particles_conserves_mass_and_jitters_apart() {
     let _ = solver.add_body(spawn);
 
     // Mark half the particles as "damaged" directly (mirrors what Rankine's friction_hardening
-    // would accumulate to in a real fracture scenario â€” testing the splitting mechanism
+    // would accumulate to in a fracture scenario â€” testing the splitting mechanism
     // itself, not Rankine's damage accumulation, which already has its own tests).
     {
         let particles = solver.particles_mut();
@@ -3410,7 +3410,7 @@ fn split_particles_conserves_mass_and_jitters_apart() {
 /// sustained load even once a pile looks visually settled (real critical-state soil
 /// mechanics: friction angle relaxes from peak toward residual as cumulative shear strain
 /// grows). `project()` deliberately matches sparkl/wgsparkl's reference single-pass return
-/// mapping with no self-consistency corrector (see [[sand.rs]] doc comment) -- q is not meant
+/// mapping with no self-consistency corrector (see the `sand.rs` doc comment) -- q is not meant
 /// to hit an exact fixed point. This test only verifies q stays bounded by `q_max` and finite,
 /// not that it stops moving.
 #[test]
@@ -3688,7 +3688,7 @@ fn water_saturates_nearby_sand_through_the_real_solver() {
         ..SpawnRegion::for_sim(&config)
     };
     // Offset, not co-located: real "water sitting on sand" only wets the
-    // contact region, leaving a real spatial gradient (wet near the
+    // contact region, leaving a spatial gradient (wet near the
     // interface, dry further in) -- exact overlap with the source is an
     // artificial edge case, not what this coupling looks like in practice.
     let water_spawn = SpawnRegion {

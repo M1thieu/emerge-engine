@@ -243,7 +243,7 @@ fn gravity_grows_momentum_linearly() {
 // â”€â”€â”€ J > 0 INVARIANT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// det(F) > 0 is a non-negotiable physical invariant â€” particles can't invert.
-/// Requires `project_invalid_state: true` (standard config) â€” the J floor that real simulations use.
+/// Requires `project_invalid_state: true` (standard config) â€” the J floor that simulations use.
 #[test]
 fn j_stays_positive_neohookean() {
     let config = SimConfig::standard(64, 0.05, Vec2::new(0.0, -9.81));
@@ -611,7 +611,7 @@ fn rankine_rock_comparison_survives_repeated_strikes_with_real_relative_damage()
     }
 
     // Repeated strikes on each block's own center -- same mechanism
-    // rock_fracture.rs's own F-key strike uses (a real downward impulse),
+    // rock_fracture.rs's own F-key strike uses (a downward impulse),
     // applied to every block simultaneously so all four see the identical
     // real force under the identical real geometry.
     for _ in 0..200 {
@@ -1557,7 +1557,7 @@ fn bingham_mud_stays_standing_under_gravity() {
     const SIDE: i32 = 8;
     // Wet mud, upper end of the 50-500 Pa band this material's doc
     // lists. A deposit stops spreading near tau_0 / (rho g) = 34 mm, which
-    // is more than this 16 mm block is tall, so a real yield stress of this
+    // is more than this 16 mm block is tall, so a yield stress of this
     // size must hold the block essentially intact.
     let config = SimConfig::earth(GRID, DX_M, 0.005);
     let (props, material) = si_bingham(&config, 1500.0, 0.5, 500.0, 0.02);
@@ -2217,7 +2217,7 @@ fn hydrostatic_test_scene_unprestressed_at(
 /// Fully-parameterized scene builder -- `reference_c0_squared`
 /// exposes the material's own real acoustic stiffness as a input
 /// (review step 3): this benchmark's own original 350
-/// gives a real dimensionless `gH/c0^2~=0.32` (VERY compressible), ~200x
+/// gives a dimensionless `gH/c0^2~=0.32` (VERY compressible), ~200x
 /// more compressible than `phase_states_gui.rs`'s own real water
 /// (`c_l=180`, `gH/c0^2~=0.0015`) -- so this lets a caller check whether
 /// the bounce documented above is a structural solver issue (present
@@ -2287,7 +2287,7 @@ fn hydrostatic_test_scene_unprestressed_full(
 
     // Direct verification (not just asserted by construction): step a
     // disposable PROBE instance (same config/spawn, both real `Copy` types
-    // so building it doesn't consume what the real returned scene below
+    // so building it doesn't consume what the returned scene below
     // needs) and confirm a constrained grid node under the column's own
     // footprint actually received real P2G mass -- catches a silent
     // regression of the geometry above without relying on a human
@@ -2312,7 +2312,7 @@ fn hydrostatic_test_scene_unprestressed_full(
          in contact (see this function's own doc for the real bug this guards)"
     );
 
-    // The REAL, un-stepped scene every caller actually gets -- built fresh
+    // The un-stepped scene every caller actually gets -- built fresh
     // from the same `Copy` config/spawn, untouched by the probe above.
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(NewtonianFluidMaterial::new(
@@ -2392,7 +2392,7 @@ fn confined_hydrostatic_test_scene_unprestressed() -> (Simulation, f32, f32, f32
 }
 
 /// `eos_power` is a explicit parameter (not hardcoded to 7.0) so the
-/// SAME scene geometry/rest_density/stiffness can build a real linear-EOS
+/// SAME scene geometry/rest_density/stiffness can build a linear-EOS
 /// (`eos_power=1.0`) control -- see `fluid_geostatic_prestress_linear_eos_control_open_gap`.
 /// Uses the uniform-mass `apply_geostatic_prestress` convention -- see
 /// `hydrostatic_test_scene_unprestressed` to build the same scene with a
@@ -3789,7 +3789,7 @@ fn pressure_trends_upward_with_depth<M: MaterialModel + Clone + 'static>(materia
 /// out INVERTED (shallow=36.6 > deep=29.5) -- at these particle-scale shear
 /// stresses that yield stress was high enough to keep the column behaving as
 /// a near-rigid plug (Bingham's own defining behavior below yield), which
-/// never redistributed into a real depth-pressure gradient in 300 steps.
+/// never redistributed into a depth-pressure gradient in 300 steps.
 /// Lowered to `1.0` (this material's own `low_yield`-class magnitude, real
 /// viscous flow regime) -- honest tuning within the material's own
 /// documented preset range, not an arbitrary fudge to force a pass.
@@ -3799,7 +3799,7 @@ fn bingham_pressure_trends_upward_with_depth() {
     // `SimConfig::standard`, so these are already grid units and must not
     // be read as pascals. The storage modulus is what keeps the scene
     // integrable -- without it the yield term's own regularized viscosity
-    // sets the timestep, which is the real cost this material's
+    // sets the timestep, which is the cost this material's
     // `timestep_bound` now reports instead of hiding.
     let mut material = BinghamFluidMaterial::new(4.0, 1.0e-3, 200.0, 7.0, 1.0);
     material.shear_modulus = 20.0;
@@ -4906,7 +4906,7 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
         };
 
         // Block: small, contact_group=1 ("grip" field), spawned right at the floor's
-        // surface (minimal gap -- a real fall of several units first would cause a hard
+        // surface (minimal gap -- a fall of several units first would cause a hard
         // impact that scrambles the clean slip/stick signal regardless of friction).
         let block_mat = CorotatedMaterial::new(200.0, 400.0);
         let block_spawn = SpawnRegion {
@@ -4948,7 +4948,7 @@ fn multi_field_contact_produces_real_coulomb_slip_and_stick() {
         let _ = sim.add_body(floor_spawn);
 
         // Settle first (friction active the whole time, but starting at rest -- no
-        // impact to scramble), THEN inject the real test velocity and measure over a
+        // impact to scramble), THEN inject the test velocity and measure over a
         // short separate window. Isolates "does it slide" from "does it survive
         // landing."
         // Gravity rises over the first 200 steps: switched on at once, the
@@ -5133,12 +5133,12 @@ fn directional_contact_grip_easy_direction_decelerates_at_coulomb() {
 }
 
 /// `project_particle_state_to_admissible` (`src/spacetime/solver/step.rs`, private) is the
-/// last line of defense against numerical blowup -- every real simulation is built with
+/// last line of defense against numerical blowup -- every simulation is built with
 /// `SimConfig::standard()`/`project_invalid_state: true` specifically so a momentary NaN or
 /// degenerate value gets corrected instead of cascading. Despite that, before this test, NOT
 /// ONE of the 11 distinct fields it guards had a direct regression test anywhere in the
 /// suite -- every existing use just enables it as a background safety net and trusts it
-/// works. This exercises it end-to-end through the real public API (spawn, corrupt one field
+/// works. This exercises it end-to-end through the public API (spawn, corrupt one field
 /// per particle, step once, verify recovery), not by reaching into the private function.
 #[test]
 fn project_invalid_state_recovers_every_guarded_field() {
@@ -5290,7 +5290,7 @@ fn pinned_particles_stay_fixed_under_gravity_and_impact() {
         .with_default_material(Box::new(NeoHookeanMaterial::new(100.0, 200.0)));
 
     // Pin the bottom row (lowest y) of the block -- a "bedrock" layer -- leave everything
-    // else free, matching the real intended use (anchor terrain, not freeze it solid).
+    // else free, matching the intended use (anchor terrain, not freeze it solid).
     let min_y = sim
         .particles()
         .iter()
@@ -5342,7 +5342,7 @@ fn pinned_particles_stay_fixed_under_gravity_and_impact() {
     }
 
     // Unpinned particles in the SAME body must still respond normally -- otherwise this
-    // would just be a slow way to freeze the whole scene, not a real per-particle BC.
+    // would just be a slow way to freeze the whole scene, not a per-particle BC.
     let unpinned_moved = sim
         .particles()
         .iter()
@@ -5444,7 +5444,7 @@ fn drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
     };
 
     let start = centroid_at(&sim, snake_range.clone());
-    // Matches the real live failure exactly: idle grip (symmetric friction,
+    // Matches the live failure exactly: idle grip (symmetric friction,
     // no easy-direction bias), zero muscle activation, for real long enough
     // to have caught the actual bug (live took ~12,500 frames; this runs 16,000
     // headless steps at the SAME dt=0.1 to give real margin past that).
@@ -5977,7 +5977,7 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
 ///
 /// The absolute ratio sits near 0.85 rather than 1.0 for a discretization
 /// reason unrelated to the bug: particle centers sit half a spacing inside the
-/// free surface, so the measured height slightly understates the real column.
+/// free surface, so the measured height slightly understates the column.
 /// What this test pins is that the ratio is CONSTANT.
 #[test]
 fn self_weight_strain_is_spacing_independent() {
@@ -6270,7 +6270,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
 /// DIAGNOSTIC: user reported `sand_water_saturation` still "sticks together".
 /// First run (rate-based moisture source, `RATE=3.0` unsourced) found
 /// cohesion completely inert -- 0/1920 particles ever reached the ceiling.
-/// Root-caused and fixed in the real example: a poured water particle's own
+/// Root-caused and fixed in the example: a poured water particle's own
 /// moisture is now SET to 1.0 directly at spawn (it IS water, not something
 /// that ramps up), no invented rate at all -- see that example's doc.
 /// This reproduces the SAME fixed scene and measures, after a realistic ~3s
@@ -6557,7 +6557,7 @@ fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
 /// `sand_water_saturation.rs::update_and_render` uses for LMB/RMB
 /// (`d/dist * push_weights * m * g * falloff`, `falloff = 1 - dist/radius`,
 /// `dv = (F/m)*dt*sign`) -- not an approximation, copied verbatim so this
-/// diagnostic tests the REAL interaction code path, not a stand-in.
+/// diagnostic tests the interaction code path, not a stand-in.
 fn diag_apply_radial_force(
     particles: &mut Particles,
     cursor: Vec2,
@@ -6913,7 +6913,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
     let g = config.gravity.length();
     let dt = config.dt;
     // Lift: cursor rises 10 cells over 80 steps, RMB (sign=-1, pulls
-    // toward cursor) -- the real force code, unmodified.
+    // toward cursor) -- the force code, unmodified.
     for step in 0..80 {
         let lift_cursor = cursor0 + Vec2::new(0.0, step as f32 * (10.0 / 80.0));
         let p = sim.particles_mut();
@@ -6960,7 +6960,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
 /// This retries from the pile's TOP SURFACE (least confinement) with a
 /// much stronger pull (`push_weights=15.0` vs the demo's default 3.0) to
 /// force separation, then checks whether dispersion recovers once
-/// there IS a real lift-and-fall.
+/// there IS a lift-and-fall.
 #[test]
 fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
     let config = SimConfig {
@@ -7348,7 +7348,7 @@ fn diag_phase_transition_under_load_causes_stress_discontinuity() {
     // TREATMENT: identical settle, then force-transition the bottom rows
     // (the most heavily loaded particles -- real compressive stress from
     // everything above them) to GranularFluidMaterial in one shot, exactly
-    // as a real wetting front reaching deep into a loaded pile would.
+    // as a wetting front reaching deep into a loaded pile would.
     let mut treatment = build_settled_column();
     treatment.step_n(4000);
     let treatment_speed_before = max_speed(&treatment);
@@ -7587,7 +7587,7 @@ fn cavitating_fluid_at_rest_against_a_wall_shows_no_spontaneous_self_excitation(
     }
 
     // Physically-motivated bound, not tuned to pass: a at-
-    // rest fluid touching a real boundary should show only floating-point-
+    // rest fluid touching a boundary should show only floating-point-
     // level noise, not a growing divergence signature. 1e-3 gives
     // real headroom above numerical noise while still catching a real
     // self-excitation bug (the live demo's own OLD, flat-floor material
@@ -7712,11 +7712,11 @@ fn no_compression_tendon_hangs_taut_survives_pull_and_extreme_impulse() {
     let material = NoCompressionMaterial::new(lambda, mu);
     let mass_grid = (TENDON_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
 
-    // A real hanging strip -- top pinned (the real anchor a tendon's own
+    // A real hanging strip -- top pinned (the anchor a tendon's own
     // bone attachment would be), free end hanging under real gravity.
     // box_center.y=45, box_size.y=20*spacing=10 -> real span is y=[40,50];
     // PIN_TOP_Y must sit INSIDE that span to catch the top row(s), not
-    // above it (a real setup bug caught here: 55.0 sat above the whole
+    // above it (a setup bug caught here: 55.0 sat above the whole
     // strip, pinning nothing, producing a pure free-fall that looked like
     // a material bug but wasn't).
     const PIN_TOP_Y: f32 = 49.0;
@@ -7767,7 +7767,7 @@ fn no_compression_tendon_hangs_taut_survives_pull_and_extreme_impulse() {
     println!(
         "[no-compression] free end: start_y={free_end_start_y:.3} after_hang_y={free_end_hung_y:.3}"
     );
-    // Physical sanity: a real tendon this stiff (GPa range) barely
+    // Physical sanity: a tendon this stiff (GPa range) barely
     // stretches under its own small self-weight at this scale -- it must
     // NOT free-fall as if unconnected (that would mean tension isn't
     // actually holding the strip together), so the drop must stay small
@@ -7916,13 +7916,13 @@ fn cavitating_hydrostatic_density_si(
 /// spawn already gave every particle": with uniform mass AND uniform
 /// geometric spacing, `V_p=m_p/rho(y)` would vary with depth even though
 /// every particle's own geometric footprint (from the uniform spawn
-/// spacing) is the same -- a real position/volume mismatch that would
+/// spacing) is the same -- a position/volume mismatch that would
 /// itself inject a spurious P2G residual at t=0, contaminating the very
 /// thing this benchmark means to measure. Fixed: keeps the SAME uniform
 /// `initial_volume` shape the spawn's own geometric spacing implies
 /// constant across depth, varying MASS (and therefore J/density) instead
 /// -- `m_p(y)=m_reference*rho(y)/rho0`, `V_p` stays constant, `m_p/V_p`
-/// exactly reproduces the real hydrostatic profile.
+/// exactly reproduces the hydrostatic profile.
 fn apply_cavitating_hydrostatic_profile(
     solver: &mut Simulation,
     eos: &CavitatingEosParams,
@@ -8111,7 +8111,7 @@ fn run_cavitating_hydrostatic(cfg: &HydrostaticRunConfig) -> HydrostaticErrors {
     let prev_v: Vec<Vec2> = sim.particles().iter().map(|p| p.v).collect();
     sim.step();
     // Disclosed approximation: uses the config's own target frame dt
-    // as the real elapsed time for that last `step()` call -- exact as
+    // as the elapsed time for that last `step()` call -- exact as
     // long as `max_substeps_per_step` was never exhausted (true for this
     // healthy, near-equilibrium scene; would need `last_step_dt`'s
     // own value exposed publicly to be exact in general).
@@ -8252,7 +8252,7 @@ fn cavitating_hydrostatic_temporal_convergence() {
     // `measure_cavitating_hydrostatic_errors`'s doc) -- differentiating
     // a noisy/oscillatory velocity signal amplifies its own noise as
     // `1/dt`, so refining `dt` does not have to shrink THIS proxy's error
-    // even while the real underlying velocity error (`e_v`, asserted
+    // even while the underlying velocity error (`e_v`, asserted
     // above) does genuinely, monotonically converge. Measured:
     // 0.964/0.947/0.957 -- non-monotonic, informational only, not a real
     // convergence-order claim this specific proxy can support.
@@ -8310,7 +8310,7 @@ fn cavitating_hydrostatic_particle_spacing_sensitivity() {
     let max_e = e_rho.iter().cloned().fold(f32::MIN, f32::max);
     // Same real bound as the grid-offset sensitivity test: refining
     // particle count at a fixed grid must not blow the error up by more
-    // than a real factor of 3 -- it stays near the grid's own floor
+    // than a factor of 3 -- it stays near the grid's own floor
     // rather than diverging.
     assert!(
         max_e < min_e.max(1.0e-9) * 3.0,
@@ -8354,7 +8354,7 @@ fn cavitating_hydrostatic_grid_offset_sensitivity() {
     let min_e = e_rho_values.iter().cloned().fold(f32::MAX, f32::min);
     let max_e = e_rho_values.iter().cloned().fold(f32::MIN, f32::max);
     // Disclosed bound: the density error must not vary by more than
-    // a real factor of 3 across sub-cell grid/particle phase shifts -- a
+    // a factor of 3 across sub-cell grid/particle phase shifts -- a
     // healthy discretization's own real error should be dominated by
     // resolution, not by which fraction of a cell the column happens to
     // start at.
@@ -8516,7 +8516,7 @@ fn boiling_hydrostatic_density_si(
 /// Mass-varying hydrostatic initialization for `BoilingMixtureMaterial`
 /// at a FIXED `x` -- same real technique as `apply_cavitating_hydrostatic_
 /// profile` (keeps the spawn's own uniform geometric `initial_volume`,
-/// varies MASS with depth instead, so `m_p/V_p` reproduces the real target
+/// varies MASS with depth instead, so `m_p/V_p` reproduces the target
 /// density exactly with no t=0 P2G residual from a position/volume
 /// mismatch). Bookkeeping density stays anchored to `rho_l_ref` (this
 /// material's own fixed F/V/rho reference, NOT `rho_eq(x)`) -- matching
@@ -8747,7 +8747,7 @@ fn boiling_mixture_column_shows_real_hydrostatic_compression_by_depth() {
     // own CURRENT extent (`actual_top_y`/`actual_height`), not the fixed
     // initial `surface_y`/`COLUMN_HEIGHT` -- a settled column under real
     // (stress-test) gravity can compact overall, shifting AND
-    // shrinking where its own real top/bottom sit; fixed analytical values
+    // shrinking where its own top/bottom sit; fixed analytical values
     // would then miss the column entirely (the fixed `surface_y` finds zero
     // shallow-band particles; `actual_top_y` with the fixed `COLUMN_HEIGHT`
     // finds zero deep-band particles, since the column also gets shorter,
@@ -8934,7 +8934,7 @@ fn boiling_mixture_confined_column_matches_analytical_profile_at_earth_gravity()
     );
     // Disclosed, deliberately loose bound: `e_p` is a genuinely
     // poorly-conditioned metric for THIS material at `X=0.5` regardless of
-    // how good the underlying density profile is -- its own real stiffness
+    // how good the underlying density profile is -- its own stiffness
     // there (`c_mix2~3.6e4 m^2/s^2`, `rho*c_mix^2~3.6e7 Pa` bulk-modulus
     // scale) is intrinsically large relative to this scene's own modest
     // hydrostatic pressure scale (`rho*g*h~4.5e4 Pa` at Earth gravity/16m),

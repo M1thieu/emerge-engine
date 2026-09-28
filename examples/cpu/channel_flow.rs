@@ -60,16 +60,12 @@ fn make_sim() -> Simulation {
         gravity: Vec2::new(0.0, -0.15),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
-    // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's doc for the full derivation.
-    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
-    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
-    // stiffness for the same compression; confirmed by a real crash in
-    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
-    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's doc for the full derivation.
+    // Water through `NewtonianFluidMaterial::low_viscosity` (Tait exponent 7.0, Cole
+    // 1948; water viscosity). rest_density=0.1 (`rho*dx^2` for water at dx=0.01, see
+    // basic_fluids.rs). eos_stiffness=0.25: with rest_density 40x smaller than 4.0,
+    // `timestep_bound`'s c2 (sound speed squared) is 40x larger at a given stiffness and
+    // compression, so the stiffness is scaled by the same factor (10*0.1/4.0=0.25) to
+    // keep the same c2.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let spawn_water = SpawnRegion {
         spacing: 0.6,
@@ -77,11 +73,9 @@ fn make_sim() -> Simulation {
         box_center: Vec2::new(14.0, 12.0),
         material_id: MAT_WATER,
         initial_velocity_scale: 0.0,
-        // Without this, mass falls back to `config.particle_mass` (1.0),
-        // completely decoupled from the material's own rest_density=0.1
-        // -- a separate gap found 2026-08-08 alongside the SI fix
-        // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
-        // derivation used everywhere else.
+        // Mass set explicitly, m = rho0*spacing^2 with the material's
+        // rest_density=0.1 (see basic_fluids.rs), rather than the scene's grid
+        // density.
         mass_override: Some(0.1 * 0.6 * 0.6),
         ..SpawnRegion::for_sim(&config)
     };

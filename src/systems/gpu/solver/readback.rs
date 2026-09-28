@@ -107,7 +107,7 @@ impl GpuSimulation {
     /// accumulator -- `grid_res² × MAX_RENDER_MATERIAL_SLOTS` `f32` entries, flat-indexed
     /// `(y * grid_res + x) * MAX_RENDER_MATERIAL_SLOTS + slot`. Only meaningful after
     /// `attach_grid_material_render_gpu()` has been called (reads a tiny placeholder
-    /// buffer otherwise, since the real buffer hasn't grown yet). Real accessor, not
+    /// buffer otherwise, since the buffer hasn't grown yet). Real accessor, not
     /// test-only scaffolding -- the same buffer `grid_volume.wgsl`'s `dominant_material`
     /// reads at render time.
     pub fn material_mass_blocking(&self) -> Vec<f32> {
@@ -140,7 +140,7 @@ impl GpuSimulation {
     }
 
     /// Debug/test-only: runs `resolve_contact.wgsl`'s `debug_fit_normal_main` -- the SAME
-    /// neighbor-expanded, distance-filtered `gather_local_points` the real per-substep
+    /// neighbor-expanded, distance-filtered `gather_local_points` the per-substep
     /// `resolve_cell` uses -- centered on `node_pos`. Returns `(normal, valid)` -- `valid`
     /// is `false` if the fit found no confident answer (mirrors CPU's
     /// `fit_contact_normal_lr`'s `Option<Vec2>`). Verifies the Newton-Raphson LR fit's

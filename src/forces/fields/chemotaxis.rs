@@ -199,7 +199,7 @@ mod tests {
             RES,
         );
         let mut field = ChemotaxisField::new(RES, 1.0);
-        // Must not panic on a real ScalarDiffusionField of matching grid_res (debug_assert
+        // Must not panic on a ScalarDiffusionField of matching grid_res (debug_assert
         // in sync_from would catch a layout/size mismatch).
         field.sync_from(&scalar);
     }

@@ -264,15 +264,12 @@ impl State {
 
         let mut renderer = Renderer::new(&gfx.device, sim.particles().len(), gfx.format);
         renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.6, true);
-        // Real physically-grounded shading instead of the ByVolume debug heat
-        // map (see basic_membrane.rs's own note on this same swap). Von Mises
-        // here models clay/ductile soil -- reuse SOIL's own cited absorption
-        // spectrum (Baumgardner et al. 1985, humic-acid-dominated soil
-        // reflectance) already recorded in this engine's render plan, scaled
-        // by the same disclosed factor as basic_membrane.rs's TISSUE constant
-        // for consistency across examples. Same real spectrum for all three
-        // blobs -- they're the same material family (only yield/hardening
-        // differ), no invented per-blob optical distinction.
+        // Physically grounded shading instead of the ByVolume debug heat map (see
+        // basic_membrane.rs). Von Mises models clay or ductile soil here, so this
+        // reuses SOIL's cited absorption spectrum (Baumgardner et al. 1985,
+        // humic-acid-dominated soil reflectance), scaled by the same factor as
+        // basic_membrane.rs's TISSUE constant. One spectrum for all three blobs: they
+        // are one material family (only yield and hardening differ).
         const SOIL_SIGMA_A: [f32; 3] = [0.200, 0.275, 0.550];
         let start_on_yield = std::env::var("VONMISES_START_VIEW").is_ok_and(|v| v == "yield");
         renderer.set_color_mode(if start_on_yield {

@@ -1,4 +1,4 @@
-//! Real per-frame cost for the mu(I) rheology scene, headless.
+//! Per-frame cost of the mu(I) rheology scene, headless.
 //!
 //!   cargo run --release --example mui_cost_probe
 extern crate emerge_engine as emerge;

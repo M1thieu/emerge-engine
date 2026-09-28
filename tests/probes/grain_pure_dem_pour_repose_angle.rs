@@ -1,30 +1,17 @@
-//! The most direct test not yet tried in this entire investigation:
-//! does the ALREADY-VALIDATED pure DEM grain engine (real Cundall & Strack
-//! 1979 / Luding 2008 / Ai et al. 2011 elastic-plastic rolling resistance,
-//! `rolling_friction=2.00` at r0=8/h0=20/radius=0.01m -> 23.87deg,
-//! n=20-seed-converged, `grain_coarse_graining_check.rs`) hold a
-//! sane, non-degenerate angle of repose when built by incremental
-//! POURING (successive small batches dropped from a height) instead of a
-//! single instantaneous column collapse?
+//! Does the pure DEM grain engine (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011
+//! elastic-plastic rolling resistance, `rolling_friction=2.00` at
+//! r0=8/h0=20/radius=0.01m -> 23.87deg, converged over 20 seeds in
+//! `grain_coarse_graining_check.rs`) hold a sane angle of repose when the pile is built
+//! by incremental pouring (successive small batches dropped from a height) rather than
+//! one column collapse?
 //!
-//! Every prior real attempt this marathon at the poured-pile symptom
-//! (10 of them: 9 continuum-side, 1 Hybrid-Grains contact-stress-
-//! homogenization attempt, both hypotheses for THAT one's own 90deg
-//! degeneracy also ruled out -- see
-//! `[[project_hybrid_grains_phase0_gate_failed_2026-09-14]]`) either used
-//! CONTINUUM `DruckerPragerMaterial` for the pour, or tried to extract a
-//! continuum-usable friction angle FROM discrete grains via an elaborate
-//! homogenization mapping. Nobody has yet just... poured with grains
-//! directly and measured the resulting pile's own real geometric angle,
-//! sidestepping the whole "can we map discrete stress to a continuum
-//! friction angle" question entirely. If pure DEM (already proven to give
-//! a sane, real angle for a COLLAPSING column) also gives a sane angle
-//! when POURED, that is direct, decisive evidence that a pure-DEM
-//! (not hybrid, not continuum) sand mode is the real fix for scenes that
-//! specifically need pouring/repose behavior -- Hybrid Grains'
-//! own cost-scoping question (keep grain counts bounded) becomes the only
-//! remaining real engineering problem, not "is DEM physics even right,"
-//! which this test answers directly.
+//! The poured-pile attempts before this either poured continuum `DruckerPragerMaterial`
+//! or tried to derive a continuum friction angle from discrete grains by
+//! homogenization (Hybrid Grains; both hypotheses for its 90deg degeneracy ruled out,
+//! see `grain_contact_derived_phi_gate.rs`). This pours grains directly and measures the
+//! pile's geometric angle. If pure DEM gives a sane angle poured as well as collapsed,
+//! a pure-DEM sand mode is the fix for scenes that need pouring and repose, and bounding
+//! the grain count (Hybrid Grains' cost question) is the remaining engineering problem.
 
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
@@ -88,7 +75,7 @@ fn measure_pile_shape(grains: &[Grain], radius_m: f32) -> PileShape {
     }
 }
 
-/// Incremental pour: batches of grains dropped from a real gap above
+/// Incremental pour: batches of grains dropped from a gap above
 /// the pile's own current, live-measured surface height (matching the
 /// continuum pour tests' own `DROP_GAP_CELLS` real technique exactly, just
 /// in grain-radius units instead of MPM cells), letting each batch fall
@@ -222,16 +209,10 @@ fn pure_dem_incremental_pour_reaches_a_real_repose_angle() {
     );
 }
 
-/// Statistically-honest follow-up to the single-seed result above --
-/// this marathon has already been burned TWICE trusting a single-seed
-/// granular measurement (a coarse-graining accuracy claim flipped sign
-/// from a promising single seed to a significant regression under
-/// proper n=20-seed statistics, see `project_grain_coarse_graining_real_
-/// speedup_validated_2026-09-13`) -- not repeating that mistake here just
-/// because the first seed looked good. Real n=10 seeds (each run is cheap,
-/// ~32s single-threaded, unlike the 400k-step column-collapse tests --
-/// this pour is far shorter), same discipline (mean + SEM) as every other
-/// statistical check this session.
+/// Multi-seed follow-up to the single-seed result above: a coarse-graining accuracy
+/// claim once flipped from a promising single seed to a significant regression under
+/// n=20 seeds (see `grain_coarse_graining_check.rs`). n=10 seeds (each ~32 s
+/// single-threaded, far shorter than the 400k-step column collapses), mean + SEM.
 #[test]
 #[ignore = "statistical validation of the pure-DEM pour result -- run explicitly with --release \
             --ignored --nocapture"]

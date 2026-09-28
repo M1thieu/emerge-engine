@@ -13,20 +13,15 @@ mod gui_common;
 /// row and only the end ball swings out, with very little visible decay:
 /// that is the physically right result, not a missing damping.
 ///
-/// # The "string" is a standard, disclosed technique
-/// This engine has no rigid-joint/constraint solver, so each grain's
-/// pendulum string is a direct rigid DISTANCE CONSTRAINT applied after each
-/// physics step: position is projected back onto the fixed-radius circle
-/// around its own anchor, and the RADIAL velocity component is zeroed --
-/// exactly the same "clean the boundary-normal component of velocity"
-/// technique this session's own `GrainPopulation::clean_wall_normal_
-/// velocity` already uses for wall contact, just applied to a string's own
-/// radial direction instead of a floor's normal. This is position-based
-/// dynamics (Jakobsen 2001), a standard, widely-used rigid-constraint
-/// technique -- not a hidden shortcut. Gravity, mass, and every collision
-/// response between grains are the engine's own unmodified physics;
-/// only the "never stretches" string constraint is asserted directly,
-/// exactly like a real cradle's own effectively-inextensible wires.
+/// # The string
+/// The engine has no rigid-joint/constraint solver, so each pendulum string is a rigid
+/// distance constraint applied after each physics step: the position is projected
+/// back onto the fixed-radius circle around the anchor and the radial velocity is
+/// zeroed, the velocity cleaning `GrainPopulation::clean_wall_normal_velocity` applies
+/// at walls, along the string instead of a floor normal. This is position-based
+/// dynamics (Jakobsen 2001). Gravity, mass and every grain-grain collision are the
+/// engine's own physics; only the inextensible string is imposed, like a cradle's
+/// wires.
 ///
 ///   cargo run --example grain_newtons_cradle --features render
 use emerge::grains::population::GrainPopulation;
@@ -42,32 +37,19 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// Disclosed engine limitation found live 2026-08-21: routing grains
-/// through the shared MPM grid (`Simulation`/`spacetime::grains::coupling`,
-/// P2G -> grid_update -> G2P before contact resolution) mixes momentum
-/// between CLOSE grains in a way that does NOT shrink with grid
-/// resolution -- swept grid_cell_size 1.0 -> 0.125 (8x finer) with the
-/// SAME whole-row gap fix and got bit-identical, still-broken results
-/// (grain3/grain4 ratio stuck ~0.67), while the standalone
-/// `GrainPopulation::step` path (bypassing the grid entirely) gives the
-/// correct, real physics (ratio ~1.0, see `tests/grains_grid_coupling.rs::
-/// newtons_cradle_two_ball_release_with_real_gap_survives_repeated_
-/// strikes`). Root cause: MPM's quadratic-B-spline kernel support is
-/// defined in GRID-CELL units (~3 cells wide), so its PHYSICAL width scales
-/// WITH cell size rather than shrinking relative to a grain's own fixed
-/// physical radius -- refining the grid doesn't reduce inter-grain kernel
-/// overlap at all. This demo has no terrain and no ordinary particles, so
-/// it never needed grid coupling in the first place -- it drives
-/// `GrainPopulation` directly instead of wrapping it in a `Simulation`,
-/// sidestepping the issue rather than fighting it.
+/// Gravity for a standalone `GrainPopulation`, which this demo drives directly rather
+/// than through a `Simulation`. Grid coupling (`spacetime::grains::coupling`, P2G ->
+/// grid_update -> G2P before contact resolution) mixes momentum between close grains in
+/// a way that does not shrink with resolution: from grid_cell_size 1.0 to 0.125, with
+/// the whole-row gap, the grain3/grain4 ratio stays ~0.67, against ~1.0 standalone (see
+/// `tests/grains_grid_coupling.rs::newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes`).
+/// The quadratic B-spline support is ~3 cells wide, so its physical width scales with
+/// the cell size and inter-grain kernel overlap does not shrink relative to a grain's
+/// radius. With no terrain and no particles, this scene needs no grid.
 ///
-/// A plain `Vec2` here is not a shortcut -- uniform gravity is a plain
-/// `Vec2` throughout the engine too (`SimConfig::gravity`, `Field`'s own
-/// doc: "uniform body forces go into `SimConfig::gravity`", never a
-/// `Field`/`GrainField` impl). This constant plays the exact same role for
-/// a standalone `GrainPopulation` that `SimConfig::gravity` plays for a
-/// grid-coupled `Simulation` -- same convention, just not wrapped in a
-/// config struct this demo has no other use for.
+/// A plain `Vec2`, as uniform gravity is throughout the engine (`SimConfig::gravity`;
+/// `Field`'s doc: "uniform body forces go into `SimConfig::gravity`"), not a
+/// `Field`/`GrainField`.
 const GRAVITY: Vec2 = Vec2::new(0.0, -9.81 / DX_M);
 
 /// One cell is 1 cm: the balls' 1 cm radius is one cell and the geometry in
@@ -145,25 +127,16 @@ fn contact_config() -> DiscContactConfig {
 /// within its uncertainty and keeps a little loss per strike.
 const RESTITUTION: f32 = 0.99;
 
-/// Measured gap fraction (of grain radius) between EVERY adjacent
-/// pair in the row -- the actual root-cause fix (found 2026-08-21,
-/// `tests/grains_grid_coupling.rs::
-/// newtons_cradle_two_ball_release_with_real_initial_gap_matches_
-/// conservation` and `diag_temp_all_gaps_repeated_strike_check`): grains
-/// touching at an EXACTLY zero gap make their own contact engage
-/// SIMULTANEOUSLY with the next collision instead of sequentially,
-/// breaking real momentum-conserving "N-in-N-out matched" physics
-/// (confirmed via a real analytical sequential-collision cross-check;
-/// `contact_iterations` and stiffness sweeps up to 100,000x were both dead
-/// ends -- this was the root cause, not a resolution/stiffness
-/// issue). Critically, this is NOT just about the released pair: the
-/// REST of the row starts at zero gap too, and every subsequent re-strike
-/// (the launched ball(s) swinging back) suffers the SAME smearing --
-/// confirmed live 2026-08-21 ("first strike ~clean, then it all blurs
-/// together after the return swing"). A small real gap (5% of radius)
-/// between every neighbor -- MORE physically honest than assuming a
-/// mathematically perfect zero gap -- fixes BOTH the first strike AND a
-/// simulated return strike (measured: grain3/grain4 ratio 0.65 -> 1.002).
+/// Gap between every adjacent pair in the row, as a fraction of grain radius. Grains
+/// touching at an exactly zero gap engage their contact simultaneously with the next
+/// collision instead of sequentially, which breaks "N in, N out" momentum transfer
+/// (an analytical sequential-collision cross-check shows it; `contact_iterations` and
+/// stiffness sweeps up to 100,000x do not fix it, see
+/// `tests/grains_grid_coupling.rs::newtons_cradle_two_ball_release_with_real_initial_gap_matches_conservation`).
+/// The gap is on every pair, not only the released one, since each re-strike (the
+/// launched balls swinging back) meets the rest of the row too. 5% of radius, closer to
+/// real touching balls than an exactly zero gap, fixes the first strike and a simulated
+/// return strike (grain3/grain4 ratio 0.65 -> 1.002).
 const RELEASE_GAP_FRACTION: f32 = 0.05;
 
 /// Anchor spacing is slightly WIDER than exact touching distance (`2 *
@@ -182,7 +155,7 @@ fn rest_position(i: usize) -> Vec2 {
 /// Pulls grain `i` out to the left by `pull_deg`, rotated about its OWN
 /// anchor -- generalizes the classic single-ball cradle setup to lifting
 /// `pull_count` balls TOGETHER (same angle keeps them at the same real gap
-/// from `anchor`'s own spacing, exactly like a real hand lifting several
+/// from `anchor`'s own spacing, exactly like a hand lifting several
 /// balls at once).
 fn pulled_position(i: usize, pull_deg: f32) -> Vec2 {
     let theta = pull_deg.to_radians();
@@ -211,10 +184,8 @@ fn make_population(pull_deg: f32, pull_count: usize) -> (GrainPopulation, f32) {
     (population, dt)
 }
 
-/// Real rigid distance constraint -- see this file's module doc for why
-/// this is a legitimate, standard technique, not a hack. Run once per
-/// physics step, after `GrainPopulation::step()`, directly on each grain's
-/// own state.
+/// Rigid distance constraint (see the file doc), run once per physics step after
+/// `GrainPopulation::step()`, on each grain's state.
 fn apply_string_constraints(population: &mut GrainPopulation) {
     for (i, grain) in population.grains.iter_mut().enumerate() {
         let a = anchor(i);

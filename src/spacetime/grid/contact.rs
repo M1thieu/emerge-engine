@@ -207,7 +207,7 @@ impl Grid {
         // a larger threshold here would route every node with small-but-nonzero grip_mass
         // through the branch below, which sets both fields to the raw blended
         // `total.momentum`. But any nonzero grip_mass means `total.momentum` (mass-weighted
-        // across BOTH bodies) already carries a real contribution from grip, contaminating
+        // across BOTH bodies) already carries a contribution from grip, contaminating
         // what `rest` reads back -- worse for thicker bodies (their kernel reaches more
         // small-but-nonzero-grip-mass nodes). Everything above this floor falls through to
         // the "no confident normal" branch below instead, which does correct,
@@ -271,7 +271,7 @@ impl Grid {
                 // Neither the LR fit nor the gradient fallback found a usable normal
                 // (e.g. truly no local gradient AND too few points) -- resolve nothing
                 // at this specific node this substep (other nodes along the same
-                // interface still carry the real contact for the body as a whole).
+                // interface still carry the contact for the body as a whole).
                 let cell = self.contact_cells.get_mut(&idx).unwrap();
                 cell.resolved_grip_v = v_grip;
                 cell.resolved_rest_v = (v_cm * total.mass - v_grip * grip_mass) / rest_mass;

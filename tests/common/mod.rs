@@ -7,7 +7,7 @@ use emerge::SimConfig;
 use glam::Vec2;
 
 /// Minimal `SimConfig` for scenes that isolate a mechanism from
-/// gravity/settling dynamics -- `dt` stays a real parameter, not hardcoded,
+/// gravity/settling dynamics -- `dt` stays a parameter, not hardcoded,
 /// since callers use different real values (0.02 vs 0.05).
 pub fn zero_gravity_config(grid_res: usize, dt: f32) -> SimConfig {
     SimConfig {

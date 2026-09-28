@@ -47,7 +47,7 @@ pub const NUM_CONTACT_BLOCKS: usize = NUM_CONTACT_BLOCKS_PER_DIM * NUM_CONTACT_B
 
 /// Debug/test-only uniform for `resolve_contact.wgsl`'s `debug_fit_normal_main` -- picks
 /// which block's point cloud to run the Newton-Raphson LR normal fit against and what
-/// `node_pos` to center it on. Not part of the real per-substep pipeline; exists solely
+/// `node_pos` to center it on. Not part of the per-substep pipeline; exists solely
 /// to verify `fit_contact_normal_lr`'s WGSL port in isolation, the same way CPU's own
 /// `fit_contact_normal_lr_tests` module unit-tests the fit separately from the full
 /// `resolve_contact` integration.

@@ -29,7 +29,7 @@ pub struct GridNodeP2GComponents {
 /// APIC-affine and stress impulses for every in-domain node.
 ///
 /// This intentionally mirrors `scatter_one_into` term for term and is called
-/// from inside the real substep with that attempt's own `dt`. Rod/grain scatters
+/// from inside the substep with that attempt's own `dt`. Rod/grain scatters
 /// are outside its scope; the controlled boundary experiment contains neither.
 /// Remove with the structural-bounce investigation instrumentation.
 pub fn diagnose_grid_p2g_components(
@@ -374,7 +374,7 @@ pub fn scatter_particles_to_grid_sorted(
     }
 }
 
-/// Computes a real spatial sort permutation of `0..active_count`, ordered by
+/// Computes a spatial sort permutation of `0..active_count`, ordered by
 /// each particle's own P2G stencil center (`quadratic_weights(x).base_cell`,
 /// the SAME cell the scatter loop itself keys into) flattened to a single
 /// grid-row-major index -- particles that land in the same or nearby grid
@@ -642,7 +642,7 @@ pub fn diagnose_particle_node_material_sources(
         dt,
         active_count,
     );
-    // `velocity_at` is only a real velocity AFTER normalization -- see its
+    // `velocity_at` is only a velocity AFTER normalization -- see its
     // doc ("valid after update_velocities()"). Pure momentum/mass here
     // (no gravity/boundary), matching what P2G alone produces before the
     // grid-update phase -- the right snapshot for this diagnostic.

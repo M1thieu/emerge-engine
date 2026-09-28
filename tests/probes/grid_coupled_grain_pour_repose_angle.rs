@@ -1,23 +1,15 @@
-//! Headless verification: does tonight's validated pure-DEM pouring
-//! result (mean=30.85deg, n=10 seeds -- see `[[project_pure_dem_pour_
-//! solves_angle_of_repose_2026-09-14]]`, project memory) hold up once
-//! GRID-COUPLED (real momentum exchange with a continuum sand terrain bed
-//! through the shared MPM grid, `spacetime::grains::coupling`), not just as
-//! an isolated, standalone `GrainPopulation`?
+//! Does the pure-DEM pouring result (mean 30.85deg over 10 seeds, see
+//! `grain_pure_dem_pour_repose_angle.rs`) hold once grid-coupled, with momentum
+//! exchange with a continuum sand terrain bed through the shared MPM grid
+//! (`spacetime::grains::coupling`), not only as a standalone `GrainPopulation`?
 //!
-//! Reuses the REAL, already-shipped, already-proven grid-coupled setup from
-//! `examples/cpu/sand_repose_angle.rs`'s own `Mode::Grains` (terrain
-//! bed/boundary/grid config, `grain_contact_config`'s real damping
-//! derivation) -- same constants, same contact law shape -- with exactly
-//! TWO deliberate changes: (1) `rolling_friction` set to 2.00 (the
-//! value that actually gave tonight's validated real result) instead of
-//! that demo's own 0.20 (calibrated for a DIFFERENT scene, column-collapse,
-//! not pouring) -- dimensionless, transfers directly regardless of
-//! stiffness scale per `grain_contact_config`'s doc; (2) the pile is
-//! built by real INCREMENTAL POUR (batches added via `grain_populations_
-//! mut()`, matching what that demo's own manual "Live pour" tool does under
-//! the hood, just automated/seeded instead of cursor-driven) instead of a
-//! single column dropped at startup.
+//! Uses the grid-coupled setup of `examples/cpu/sand_repose_angle.rs`'s `Mode::Grains`
+//! (terrain bed, boundary and grid config, `grain_contact_config`'s damping) with two
+//! changes: (1) `rolling_friction` 2.00 (the pure-DEM pouring value) instead of the
+//! demo's 0.20, calibrated for a column collapse (dimensionless, so it transfers
+//! across stiffness scales, see `grain_contact_config`); (2) the pile is built by
+//! incremental pour (batches through `grain_populations_mut()`, what the demo's "Live
+//! pour" tool does, automated and seeded) instead of one column dropped at startup.
 
 use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
@@ -25,19 +17,12 @@ use emerge::particle::Grain;
 use emerge::{DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation, SpawnRegion};
 use glam::{IVec2, Vec2};
 
-// Verbatim from examples/cpu/sand_repose_angle.rs's own Mode::Grains constants,
-// EXCEPT `GRAINS_TERRAIN_HALF_WIDTH_CELLS` -- evidence-based change,
-// 2026-09-15, not a re-guess: every real configuration that behaved
-// reasonably (didn't lock up under an over-sticky low threshold) produced a
-// measured `base_half_width` of ~32-33 cells, already exceeding this
-// original 30-cell terrain half-width -- the pile's own natural footprint
-// was running INTO the terrain bed's own edge, a real geometric confound
-// from copying a constant sized for that OTHER demo's own (smaller, single-
-// column) scene, not checked against THIS scene's actual 320-grain
-// incrementally-poured footprint. Raised to 45 (terrain now spans 90 cells,
-// leaving the pile ~12 cells of real margin past its own observed natural
-// width before reaching the edge, still 19 cells clear of the domain
-// boundary at GRID=128).
+// From examples/cpu/sand_repose_angle.rs's Mode::Grains constants, except
+// `GRAINS_TERRAIN_HALF_WIDTH_CELLS`: every configuration that did not lock up measured
+// a `base_half_width` of ~32-33 cells, past the demo's 30-cell terrain half-width, so
+// the pile ran into the terrain bed's edge. 45 (terrain spans 90 cells) leaves ~12
+// cells past the pile's natural width and 19 cells clear of the domain boundary at
+// GRID=128.
 const GRID: usize = 128;
 const FLOOR: f32 = 2.0;
 const GRAIN_RADIUS: f32 = 1.0;
@@ -53,10 +38,9 @@ impl SmallRng {
     }
 }
 
-/// Same real damping derivation as `sand_repose_angle.rs::grain_contact_
-/// config`, only real change: `rolling_friction=2.00` (tonight's validated
-/// value) instead of that demo's own `0.20` (calibrated for column-collapse,
-/// a different scene).
+/// The damping derivation of `sand_repose_angle.rs::grain_contact_config`, with
+/// `rolling_friction=2.00` (the pure-DEM pouring value) instead of the demo's `0.20`
+/// (calibrated for a column collapse).
 fn grain_contact_config(rolling_friction: f32) -> ContactLawConfig {
     let m_eff = GRAIN_MASS * 0.5;
     const DAMPING_RATIO: f32 = 0.6;
@@ -82,29 +66,18 @@ struct PileShape {
     angle_deg: f32,
 }
 
-/// Real fix (found mid-investigation, not a parameter guess): grains here
-/// rest on TOP of a real, 8-cell-tall terrain bed sitting well above the
-/// domain floor (`FLOOR=2.0` is the outer simulation boundary, NOT where
-/// grains actually sit -- confirmed directly, the very first pour's own
-/// logged `surface_y=10.0000` matches this scene's real terrain-top height,
-/// not `FLOOR`). The standalone-`GrainPopulation` version of this
-/// measurement correctly used `FLOOR` because there the pinned floor WAS
-/// the real resting surface -- copying that same constant into THIS
-/// grid-coupled scene silently measured height from 8 cells too low,
-/// inflating every angle this session's grid-coupled runs reported.
-/// `floor_y` is now the REAL, locally-measured terrain surface (from
-/// actual terrain-particle positions near the pile, so compaction
-/// under the pile's own weight is accounted for, not assumed away).
+/// Heights measured from the terrain surface, not `FLOOR`: grains rest on an 8-cell
+/// terrain bed well above the domain floor (`FLOOR=2.0` is the outer boundary; the
+/// first pour logs `surface_y=10.0000`, the terrain top). The standalone
+/// `GrainPopulation` measurement uses `FLOOR` because there the pinned floor is the
+/// resting surface; here that would measure from 8 cells too low and inflate every
+/// angle. `floor_y` is the terrain surface measured from terrain particles near the
+/// pile, so compaction under the pile's weight is included.
 ///
-/// Second real fix, same root cause: a wide enough avalanche can push
-/// grains clean off the edge of the (finite, 60-cell-wide) terrain bed,
-/// where they fall onto the bare domain floor far below -- those stray
-/// grains are not part of the settled pile, but a naive `y < threshold`
-/// base filter would still count them, inflating `base_half_width` for
-/// exactly the avalanche cases this investigation cares most about.
-/// Excluding any grain whose `y` sits more than 2 cells below the real
-/// terrain surface from the WHOLE measurement (not just the base filter)
-/// is the honest fix: it is not part of the coherent pile, it escaped it.
+/// Grains more than 2 cells below the terrain surface are excluded from the whole
+/// measurement: a wide avalanche can push grains off the edge of the finite
+/// terrain bed onto the domain floor far below, and a `y < threshold` base filter would
+/// count them, inflating `base_half_width` exactly in the avalanche cases of interest.
 fn measure_pile_shape(grains: &[Grain], floor_y: f32) -> PileShape {
     let pile: Vec<&Grain> = grains.iter().filter(|g| g.x.y > floor_y - 2.0).collect();
     let n = pile.len() as f32;
@@ -143,31 +116,8 @@ fn real_terrain_surface_y(solver: &Simulation, cx: f32, nominal_top_y: f32) -> f
         .max(nominal_top_y - 4.0) // sane floor if somehow no particle matched
 }
 
-/// Headless, grid-coupled incremental pour -- same terrain/boundary
-/// setup as `sand_repose_angle.rs::make_sim(Mode::Grains)`, empty grain
-/// population at construction (not the demo's own pre-built column), grains
-/// added in batches via `grain_populations_mut()` (the same real mechanism
-/// that demo's manual pour tool uses per click, just automated/seeded).
-///
-/// **Adaptive settle detection between pours** -- a disclosed
-/// fix after the FIXED-step-count version (kept below for its own
-/// historical record) was measured to be fundamentally unreliable: a
-/// 6-seed check at its own best-found fixed step count (10_500) gave
-/// mean=35.94deg but std=7.39deg (range 24.1-44.9deg) -- the real cause,
-/// confirmed by that same narrowing pass, is a avalanche/threshold
-/// transition (spread jumping 20->50+ mid-pour, height briefly DROPPING
-/// despite added mass), whose real timing is itself seed-dependent. No
-/// FIXED step count can reliably land after an avalanche has resolved for
-/// every seed. Real fix: each pour now waits (up to a safety cap) until
-/// the CURRENT max grain speed drops below `SETTLE_FRAC` of that pour's
-/// OWN peak speed since the batch landed -- the same real "settle relative
-/// to your own peak, not a fixed clock" technique already validated
-/// tonight for the Hybrid Grains Phase-0 investigation's own hypothesis-2
-/// active-window read.
-/// Bundles this pour scene's independently-meaningful parameters --
-/// plain positional args grew past clippy's `too_many_arguments` threshold
-/// (a real signal to group them, not to silence the lint) once
-/// `surface_threshold` joined the original set.
+/// Bundles this pour scene's parameters: plain positional arguments grew past
+/// clippy's `too_many_arguments` threshold once `surface_threshold` joined the set.
 struct PourConfig {
     rolling_friction: f32,
     terrain_young_modulus_pa: f32,
@@ -179,6 +129,19 @@ struct PourConfig {
     surface_threshold: f32,
 }
 
+/// Headless, grid-coupled incremental pour -- same terrain/boundary
+/// setup as `sand_repose_angle.rs::make_sim(Mode::Grains)`, empty grain
+/// population at construction (not the demo's pre-built column), grains added in
+/// batches via `grain_populations_mut()` (the mechanism of that demo's pour tool,
+/// automated and seeded).
+///
+/// Adaptive settle detection between pours: each pour waits (up to a safety cap)
+/// until the current max grain speed drops below `SETTLE_FRAC` of that pour's own peak
+/// speed since the batch landed. A fixed step count is unreliable: at its best value
+/// (10_500), 6 seeds give mean 35.94deg, std 7.39deg (24.1-44.9deg), because an
+/// avalanche transition (spread jumping 20->50+ mid-pour, height briefly dropping
+/// despite added mass) has seed-dependent timing. The same settle-relative-to-own-peak
+/// idea as the active-window read in `grain_contact_derived_phi_gate.rs`.
 fn pour_grid_coupled_to_repose_angle_seeded(pour: &PourConfig) -> PileShape {
     let PourConfig {
         rolling_friction,
@@ -227,17 +190,12 @@ fn pour_grid_coupled_to_repose_angle_seeded(pour: &PourConfig) -> PileShape {
         )));
 
     let terrain_top_y = terrain_center_y + GRAINS_TERRAIN_HEIGHT_CELLS as f32 * 0.5;
-    // Real terrain-contact opt-in (see `GrainPopulation::with_terrain_
-    // contact`'s doc: closes the root-caused "base layer gets zero
-    // rolling resistance from the terrain" gap). Both values are real,
-    // derived from THIS scene's own actual state, not guessed: the
-    // terrain's own real per-particle mass (read directly off the
-    // constructed solver, not assumed), and the same scene-tunable
-    // packing-fraction threshold -- CALLER-supplied (`surface_threshold`
-    // param), never hardcoded here. `grains::oracle`'s own sloped-pile test
-    // used 0.7 as its real precedent; this function no longer assumes that
-    // value is correct for grain-vs-terrain contact specifically, since
-    // it was never swept for this use before (see the sweep test below).
+    // Terrain-contact opt-in (see `GrainPopulation::with_terrain_contact`: gives the
+    // base layer rolling resistance from the terrain). Both values come from this
+    // scene: the terrain's per-particle mass (read off the constructed solver) and the
+    // packing-fraction threshold passed by the caller (`surface_threshold`), not
+    // hardcoded here. `grains::oracle`'s sloped-pile test uses 0.7, not swept for
+    // grain-vs-terrain contact (see the sweep test below).
     let terrain_particle_mass = solver.particles().mass[0];
     let reference_mass_per_cell =
         emerge::grains::oracle::reference_mass_per_cell(terrain_particle_mass);
@@ -310,20 +268,13 @@ fn pour_grid_coupled_to_repose_angle_seeded(pour: &PourConfig) -> PileShape {
 
     let floor_y = real_terrain_surface_y(&solver, cx, terrain_top_y);
 
-    // Real diagnostic (2026-09-15), testing a different hypothesis
-    // than any parameter tried so far: does the terrain compact MORE under
-    // the pile's own concentrated weight (near center) than further out
-    // (near the base's real outer edge)? `measure_pile_shape` uses ONE
-    // `floor_y` (sampled only near center) as the reference for its base-
-    // width filter (`y < floor_y + 1.5`) -- if the terrain is measurably
-    // HIGHER (less compacted) at the base's real edge than at center, grains
-    // resting on their own local terrain surface out there would
-    // read as "too high" against the center-only `floor_y` and get wrongly
-    // excluded from `base_half_width`, systematically NARROWING the measured
-    // base and INFLATING every angle this investigation has computed --
-    // which would explain why every real physics parameter tried converges
-    // to the same 36-38deg band: a shared measurement bias, not a shared
-    // physics deficiency.
+    // Diagnostic: does the terrain compact more under the pile's concentrated weight
+    // (near center) than near the base's outer edge? `measure_pile_shape` uses one
+    // `floor_y`, sampled near center, as the reference for its base-width filter
+    // (`y < floor_y + 1.5`). If the terrain is higher (less compacted) at the base's
+    // edge, grains resting there read as too high and drop out of `base_half_width`,
+    // narrowing the base and inflating every angle: a shared measurement bias would
+    // explain why every physics parameter tried converges to the same 36-38deg band.
     let profile_offsets = [0.0_f32, 10.0, 20.0, 30.0];
     print!("terrain surface profile (real compaction check):");
     for &off in &profile_offsets {
@@ -335,19 +286,14 @@ fn pour_grid_coupled_to_repose_angle_seeded(pour: &PourConfig) -> PileShape {
     measure_pile_shape(&solver.grain_populations()[0].grains, floor_y)
 }
 
-/// The decisive, single-seed check -- run first, before any
-/// multi-seed statistical validation (matching this whole session's own
-/// "cheap check first" discipline).
+/// Single-seed check, run before multi-seed statistics.
 ///
-/// Real history, not hidden: a FIXED-step-count narrowing pass found a
-/// avalanche/threshold transition, not a smooth one (3k steps/pour
-/// -> 44.23deg, 7k -> 39.75deg, 15k -> 23.13deg via a real observed
-/// slope-failure event, 10.5k -> 30.82deg) -- but a 6-seed check AT that
-/// best-found fixed value gave mean=35.94deg, std=7.39deg (range
-/// 24.1-44.9deg): NOT reliable, because avalanche timing is itself
-/// seed-dependent and no fixed clock catches it consistently. This test
-/// now uses the ADAPTIVE settle-detection version (see this file's own
-/// `pour_grid_coupled_to_repose_angle_seeded` doc) instead.
+/// A fixed-step-count sweep shows an avalanche transition, not a smooth trend
+/// (3k steps/pour -> 44.23deg, 7k -> 39.75deg, 15k -> 23.13deg through a slope
+/// failure, 10.5k -> 30.82deg), and 6 seeds at the best fixed value give mean
+/// 35.94deg, std 7.39deg (24.1-44.9deg), since avalanche timing depends on the seed.
+/// This uses the adaptive settle detection (see
+/// `pour_grid_coupled_to_repose_angle_seeded`).
 #[test]
 #[ignore = "the real grid-coupled pour verification -- run explicitly with --release --ignored \
             --nocapture"]
@@ -356,7 +302,7 @@ fn grid_coupled_incremental_pour_reaches_a_real_repose_angle() {
     // with_terrain_contact` and `terrain_contact` module doc): the
     // terrain-stiffness hypothesis (100x stiffer terrain, same seed) was
     // tested and REJECTED -- moved the WRONG direction (37.15deg ->
-    // 46.74deg). Direct code analysis found the real structural cause
+    // 46.74deg). Direct code analysis found the structural cause
     // instead: `resolve_wall_contact_forces` (real rolling resistance)
     // only ever fires against a `BoundaryCondition`, never against the
     // real MPM terrain material sharing this grid -- the base layer of
@@ -366,7 +312,7 @@ fn grid_coupled_incremental_pour_reaches_a_real_repose_angle() {
     // resistance). This run uses the ORIGINAL terrain stiffness (2000 Pa)
     // and the ORIGINAL validated rolling_friction=2.00 -- the only real
     // change from the very first grid-coupled attempt is the new terrain-
-    // contact opt-in itself, isolating whether THIS is the real fix.
+    // contact opt-in itself, isolating whether THIS is the fix.
     const ROLLING_FRICTION: f32 = 2.00;
     const TERRAIN_YOUNG_MODULUS_PA: f32 = 2.0e3;
     const N_POURS: usize = 20;
@@ -475,19 +421,15 @@ fn grid_coupled_incremental_pour_multi_seed_check() {
     );
 }
 
-/// Real n=10 escalation of the rolling_friction resweep's own most
-/// promising result (`grid_coupled_terrain_contact_rolling_friction_
-/// resweep`, same-seed check: 1.00->38.95deg, 1.50->35.75deg, 2.00->
-/// 39.53deg -- a real interior minimum near 1.50, not noise or a monotonic
-/// drift). Byte-for-byte the same 10-seed sequence and scene as
-/// `grid_coupled_incremental_pour_multi_seed_check`, the ONLY real change
-/// is `ROLLING_FRICTION=1.50` instead of that test's 2.00 -- direct,
-/// apples-to-apples comparison against that test's own real result
-/// (mean=36.22deg, std=6.60deg, sem=2.09deg, t=0.53 vs pre-fix -- not
-/// significant) to see whether re-tuning this ONE already-calibrated
-/// parameter for the terrain-contact fix's own added resistance actually
-/// closes the gap, or whether the promising single-seed read was itself
-/// noise (this system's own established real std here is ~6-7deg).
+/// n=10 run of the rolling_friction resweep's best point
+/// (`grid_coupled_terrain_contact_rolling_friction_resweep`, same seed: 1.00 ->
+/// 38.95deg, 1.50 -> 35.75deg, 2.00 -> 39.53deg, an interior minimum near 1.50). The
+/// same 10-seed sequence and scene as `grid_coupled_incremental_pour_multi_seed_check`,
+/// with only `ROLLING_FRICTION=1.50` instead of 2.00, for a direct comparison with that
+/// test's result (mean 36.22deg, std 6.60deg, sem 2.09deg; t=0.53 against the
+/// result without terrain contact, not significant):
+/// does retuning this one parameter for the terrain contact close the gap, or was the
+/// single-seed read noise (std here is ~6-7deg)?
 #[test]
 #[ignore = "n=10 escalation of the rolling_friction=1.50 resweep result -- run explicitly with \
             --release --ignored --nocapture (slow: 10 real runs)"]

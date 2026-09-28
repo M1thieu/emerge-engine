@@ -101,7 +101,7 @@ impl CosseratField {
         self.grid_res
     }
 
-    /// Advance omega_c by one substep and gather it (plus its real spatial
+    /// Advance omega_c by one substep and gather it (plus its spatial
     /// gradient, the micro-curvature kappa) into `out_omega`/`out_curvature`
     /// for every particle. `macro_spin` is the particle's own local
     /// antisymmetric velocity-gradient component (`0.5*(dvy/dx - dvx/dy)`,
@@ -145,7 +145,7 @@ impl CosseratField {
                     // omega_c_particle is the field's own last-gathered value for
                     // this particle -- read from out_omega (last substep's
                     // result), 0.0 at rest/first-touch, matching grid_g's own
-                    // "empty cell keeps its real rest value" convention.
+                    // "empty cell keeps its rest value" convention.
                     let omega_c_particle = out_omega.get(pi).copied().unwrap_or(0.0);
                     self.grid_l[idx] += mw * omega_c_particle;
                     self.grid_mass[idx] += mw;
@@ -155,7 +155,7 @@ impl CosseratField {
         }
 
         // --- Solve: omega_c_new = (L + torque*dt) / I_eff, torque =
-        // 2*coupling_modulus*(macro_spin - omega_c) -- the real antisymmetric
+        // 2*coupling_modulus*(macro_spin - omega_c) -- the antisymmetric
         // Cosserat coupling term, mass-normalized the same way L/I_eff is. ---
         let alpha = self.config.coupling_modulus_pa;
         for i in 0..n {
@@ -175,7 +175,7 @@ impl CosseratField {
         }
         self.grid_omega.copy_from_slice(&self.grid_work);
 
-        // --- G2P: gather omega_c and its real spatial gradient (curvature) ---
+        // --- G2P: gather omega_c and its spatial gradient (curvature) ---
         for pi in 0..particles.len().min(out_omega.len()) {
             let p = particles.get(pi);
             let w = quadratic_weights(p.x);

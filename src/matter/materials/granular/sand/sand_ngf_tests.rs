@@ -102,8 +102,8 @@ mod ngf_verification_tests {
 
     /// `resolution_scale=1` matches the original scene (GRID=96,
     /// CELL_M=0.01, 8x16-cell column). `resolution_scale=2` doubles the
-    /// grid resolution (half the real cell size, double the cell counts)
-    /// while keeping the REAL PHYSICAL column size identical -- the same
+    /// grid resolution (half the cell size, double the cell counts)
+    /// while keeping the PHYSICAL column size identical -- the same
     /// resolution-independence discipline already used for the earlier
     /// angle-of-repose fix (confirmed at 2x resolution before trusting it).
     fn run_column_collapse(ngf_enabled: bool, resolution_scale: usize, steps: usize) -> (f32, f32) {
@@ -1114,7 +1114,7 @@ mod ngf_verification_tests {
     }
 
     /// Resolution-independence check (Phase 3 of the NGF plan): the same
-    /// real physical scene, at 2x grid resolution -- a real fix must not
+    /// real physical scene, at 2x grid resolution -- a fix must not
     /// be a resolution-specific fluke, same discipline already used for
     /// the earlier angle-of-repose fix (`sand_preshaped_pile_at_30deg_
     /// holds_its_slope`, confirmed at 2x height/2x particle density before
@@ -1295,7 +1295,7 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Does the real static/kinetic Coulomb hysteresis (`static_friction_
+    /// Does the static/kinetic Coulomb hysteresis (`static_friction_
     /// boost`) actually arrest the long-horizon holding creep, where
     /// baseline (this exact scene, see `ngf_long_horizon_hold_arrests_
     /// creep_vs_baseline`) does not? This is the structural candidate

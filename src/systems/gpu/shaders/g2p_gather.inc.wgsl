@@ -79,9 +79,9 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
 
     // Sleeping particles are never gathered into -- same as CPU, which excludes them
     // from G2P entirely, leaving v/velocity_gradient frozen at whatever they were when
-    // they fell asleep. Exception: wake propagation -- if a nearby cell shows REAL motion
+    // they fell asleep. Exception: wake propagation -- if a nearby cell shows motion
     // this substep, this particle wakes and falls through to the full gather below,
-    // getting a real G2P this same substep (matches CPU: wake_particle happens before
+    // getting a G2P this same substep (matches CPU: wake_particle happens before
     // G2P runs).
     //
     // Checks velocity, not mass: P2G now scatters mass for every particle, awake or
@@ -145,7 +145,7 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     let contact_active = step_params.contact_active != 0u;
     // A node below NUM_FLOOR mass counts as untouched here and is left out
     // of B; an axis needs >= 2 included offsets to give a derivative. A
-    // wall (out-of-bounds) cell is a real boundary value and counts. The
+    // wall (out-of-bounds) cell is a boundary value and counts. The
     // CPU has no such nodes: it gathers only nodes its own P2G created.
     var included_di = array<bool, 3>(false, false, false);
     var included_dj = array<bool, 3>(false, false, false);

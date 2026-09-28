@@ -144,7 +144,7 @@ impl Lnn {
     /// model for bilateral locomotion (e.g. lamprey spinal cord: left/right half-
     /// centers) -- driving one ring's baseline harder than the other (see
     /// [`Self::set_ring_bias`]) turns a symmetric traveling wave into an
-    /// asymmetric one, the real mechanism animals use to steer. `n_rings` isn't
+    /// asymmetric one, the mechanism animals use to steer. `n_rings` isn't
     /// restricted to 2; any number of coupled oscillator groups works.
     ///
     /// `cross_coupling`: weight applied between corresponding neurons in
@@ -309,7 +309,7 @@ mod tests {
         );
 
         // 2. Genuine phase coherence -- neuron 1 must correlate strongly with
-        // a TIME-SHIFTED copy of neuron 0 (a real traveling wave), not just
+        // a TIME-SHIFTED copy of neuron 0 (a traveling wave), not just
         // have its own independent nonzero variance.
         let corr_at = |lag: usize| -> f32 {
             let a = &series[0];

@@ -89,17 +89,17 @@ fn settle(dx_meters: f32, plasticity: Option<RodPlasticity>) -> (f32, Vec<f32>) 
 }
 
 /// Physically meaningful claim: a rod bent into a sharp kink, well
-/// past its own real yield moment, must settle with a genuine PERMANENT bend
+/// past its own yield moment, must settle with a genuine PERMANENT bend
 /// substantially larger than the SAME rod/kink with no plasticity at all
 /// (which still keeps a small residual offset from real gravity sag alone --
-/// comparing against that real baseline, not zero, avoids conflating
+/// comparing against that baseline, not zero, avoids conflating
 /// gravity sag with plasticity's own effect).
 #[test]
 fn overloaded_rod_stays_bent_substantially_more_than_the_same_rod_without_plasticity() {
     let dx_meters = 0.01;
 
     // Deliberately low yield stress relative to E -- a soft, easily
-    // yielded material (well below any real engineering material's own
+    // yielded material (well below any engineering material's own
     // yield-to-modulus ratio), chosen so the real 50-degree kink clearly
     // exceeds it, not tuned to look right.
     let plasticity = RodPlasticity::from_young_modulus_rectangular(1.0e4, 0.003, 0.001);

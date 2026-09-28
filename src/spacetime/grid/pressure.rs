@@ -93,7 +93,7 @@ impl Grid {
         let alpha_const = 1.0 / mass_avg;
 
         // Padded bounding box of the active region (module doc explains the
-        // padding), clamped to the real domain -- clamping at a TRUE wall is
+        // padding), clamped to the domain -- clamping at a TRUE wall is
         // exactly right (Neumann there matches `SlipBoundary`'s own zero-flux
         // condition for real), it's only the non-wall edges where padding is
         // an approximation.

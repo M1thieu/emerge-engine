@@ -5,58 +5,28 @@ mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// `NoCompressionMaterial` interactive showcase -- a real Tier-0 gap this
-/// closes: the material had zero interactive example anywhere in the repo
-/// (only incidental doc-comment mentions in other materials' files, not a
-/// real scene).
+/// `NoCompressionMaterial` interactive showcase: a small block hanging from a single
+/// fixed point at the top, like a plumb line.
 ///
-/// Scene: a small block hanging from a single fixed point at the top, like
-/// a pendant/plumb line. Getting here took live debugging across
-/// several rejected scene designs (a both-ends cable that couldn't build
-/// tension before tearing; a resting pile that was structurally metastable
-/// -- see git history/session notes for the full blow-by-blow) -- but the
-/// actual root cause, found by direct diagnostic logging of a real
-/// particle's own deformation gradient, was a genuine ENGINE bug, not a
-/// scene-design problem: `NoCompressionMaterial` had NO `update_particle`
-/// override, on the mistaken belief (its own, now-corrected, doc comment)
-/// that F updated via some separate generic mechanism. It did not --
-/// confirmed live, F stayed bit-for-bit `Mat2::IDENTITY` forever, for
-/// every particle, in every dynamic scene, no matter how the scene was
-/// built around it. Fixed at the source in `no_compression.rs` (real
-/// `F_new=(I+dt*C)*F_old` integration, the same formula NeoHookean/
-/// Corotated use in their own overrides), with new regression tests there.
-/// Every scene-design problem hit along the way was a secondary
-/// symptom of that same underlying bug, not independent issues.
-///
-/// The point of THIS material specifically: push it (LMB) and it goes
-/// completely slack -- zero resistance, crumples/wrinkles with no
-/// pushback, unlike a normal elastic body which would spring back. Pull it
-/// (RMB) and it resists like a real taut membrane, stretching under real
-/// tension -- try RMB-dragging a corner for the clearest, most dramatic
-/// view of real tension building. No other material in this engine behaves
-/// this asymmetrically; that contrast IS the demo.
+/// The point of this material: push it (LMB) and it goes completely slack -- no
+/// resistance, it crumples and wrinkles with no pushback, unlike an elastic body that
+/// springs back. Pull it (RMB) and it resists like a taut membrane, stretching under
+/// tension; RMB-dragging a corner shows the tension build most clearly. No other
+/// material in this engine behaves this asymmetrically.
 ///
 /// Stiffness (`MEMBRANE_YOUNG_MODULUS_PA` et al., see `membrane_lame`) is a
 /// sourced bat-wing-membrane-skin value converted through `lame_from_si`;
 /// under real gravity the membrane settles to a static equilibrium
 /// (`max_speed` under 0.001 cells/s by t=1s).
 ///
-/// Disclosed residual (found by this same migration, not introduced
-/// by it): even once visibly static, `max|J-1|` keeps drifting slowly and
-/// apparently unboundedly (measured: ~0.02 -> ~0.22 over 600s at the real
-/// default stiffness) -- confirmed via a controlled probe
-/// (`tests/probes/membrane_gravity_probe.rs`) to be driven by STIFFNESS
-/// (more CFL-forced substeps per simulated second means more discrete P2G/
-/// G2P transfer events per second, each contributing the same tiny
-/// per-substep volumetric residual this file's own `cundall_damping` doc
-/// already measured at the OLD stiffness: 0.0018 over 600s), not by
-/// gravity magnitude -- isolated directly by running the new stiffness at
-/// the old near-zero gravity fraction (still drifts, just slower) and the
-/// old stiffness at real gravity (drifts to `|J-1|=1.0` in seconds, a
-/// completely different, much faster failure). Real but low practical
-/// severity for THIS interactive demo (a user's own LMB/RMB strain events
-/// dwarf it within seconds) -- filed as a open, low-priority residual
-/// for the engine broadly, not fixed here.
+/// Open, low priority: once static, `max|J-1|` keeps drifting slowly (~0.02 -> ~0.22
+/// over 600 s at this stiffness). `tests/probes/membrane_gravity_probe.rs` ties it to
+/// stiffness, not gravity: more CFL-forced substeps per simulated second means more
+/// P2G/G2P transfers, each adding the same tiny per-substep volumetric residual (0.0018
+/// over 600 s at a softer stiffness, see `cundall_damping`'s doc). This stiffness at
+/// near-zero gravity still drifts, more slowly; the softer stiffness at full gravity
+/// fails differently and fast (`|J-1|=1.0` in seconds). A user's push and pull strain
+/// dwarfs the drift within seconds.
 ///
 ///   cargo run --example basic_membrane --features render
 use emerge::render::{ColorMode, Renderer};
@@ -120,15 +90,12 @@ fn read_full_frame_rgba(
     tight
 }
 
-/// Same real capture aid as `phase_states_gui.rs`'s own `CaptureState` --
-/// see that file's doc for the full mechanism (offscreen COPY_SRC texture,
-/// one continuous raw RGBA8 stream for `ffmpeg -f rawvideo`). Opt-in via
+/// Frame capture as `phase_states_gui.rs`'s `CaptureState` (offscreen COPY_SRC texture,
+/// one continuous raw RGBA8 stream for `ffmpeg -f rawvideo`), opt-in via
 /// `MEMBRANE_CAPTURE_DIR`, headless-friendly, self-terminating.
-/// `MEMBRANE_STRESS_TEST=1` additionally scripts sustained, aggressive
-/// push/pull cycling (real per-particle admissibility checked every
-/// frame, matching this session's own hard-impact test discipline) --
-/// `MEMBRANE_STRESS_MULTIPLIER` overrides the force scale (default 3.0
-/// under stress test, 1.0 otherwise).
+/// `MEMBRANE_STRESS_TEST=1` also scripts sustained, aggressive push/pull cycling, with
+/// per-particle admissibility checked every frame; `MEMBRANE_STRESS_MULTIPLIER`
+/// overrides the force scale (default 3.0 under the stress test, 1.0 otherwise).
 struct CaptureState {
     file: std::fs::File,
     path: std::path::PathBuf,
@@ -143,24 +110,18 @@ struct CaptureState {
 const GRID: usize = 64;
 const DT: f32 = 0.05;
 // How close to the top (grid cells) counts as "anchored" -- wide enough
-// that the fixed end reads as a real clamp (several particles), not one
+// that the fixed end reads as a clamp (several particles), not one
 // wobbly point.
 const ANCHOR_MARGIN: f32 = 0.4;
 
-/// Real bat wing membrane skin (patagium), low-strain tangent modulus --
-/// Swartz & Groves, "Mechanical properties of bat wing membrane skin,"
-/// Journal of Zoology (a real live-skin collagen-elastin composite, not
-/// chitin): elastic modulus at biologically realistic LOW strain is
-/// "extremely... compliant" (<0.1 MPa), an order of magnitude softer than
-/// its own higher-strain plateau (3-30 MPa) once the collagen network
-/// straightens out. `NoCompressionMaterial`'s doc lists "membranes
-/// (wings, fins...)" as a real intended use case -- a bat patagium is a
-/// direct match: real biological tissue loaded in tension by the wing
-/// skeleton, going slack/wrinkling exactly like this material's own
-/// tension-field law when unloaded (the same wrinkling Swartz's own papers
-/// describe). 50 kPa sits inside the cited "<0.1 MPa" low-strain regime,
-/// not a re-derived numerical convenience value -- unlike the previous
-/// `lambda=2000.0, mu=4000.0`, which had no real material behind it at all.
+/// Bat wing membrane skin (patagium), low-strain tangent modulus -- Swartz & Groves,
+/// "Mechanical properties of bat wing membrane skin", Journal of Zoology (a live-skin
+/// collagen-elastin composite): at biologically realistic low strain the modulus is
+/// "extremely... compliant" (<0.1 MPa), an order of magnitude below its higher-strain
+/// plateau (3-30 MPa) once the collagen network straightens. `NoCompressionMaterial`'s
+/// doc lists membranes (wings, fins...) as a use case, and a patagium is loaded in
+/// tension by the wing skeleton and wrinkles when unloaded, as this material's
+/// tension-field law does. 50 kPa sits inside the cited <0.1 MPa low-strain regime.
 const MEMBRANE_YOUNG_MODULUS_PA: f32 = 5.0e4;
 // Undocumented against this specific tissue (Swartz's own papers report
 // the modulus, not a Poisson ratio) -- 0.45 matches this engine's existing
@@ -185,14 +146,10 @@ fn membrane_lame(config: &SimConfig) -> (f32, f32) {
 fn make_sim(lambda: f32, mu: f32) -> Simulation {
     let config = SimConfig {
         boundary_thickness: 3,
-        // Real stiffness (see `membrane_lame`) needs real substep headroom:
-        // a live biological membrane's actual elastic wave speed is much
-        // higher than the old unsourced 2000/4000 grid-unit guess, and
-        // silently dropping simulated time (see `step.rs`'s own "honest
-        // accounting" doc) would make the scene run in slow motion instead
-        // of at real wall-clock speed. Sized from the real measured
-        // worst-case substep count at DT=0.05 (see this file's own commit
-        // history for the measured number), not a guess.
+        // Substep headroom for this stiffness: a live membrane's elastic wave speed
+        // needs many substeps, and a budget the CFL scan runs into drops simulated
+        // time (see `step.rs`), so the scene would run in slow motion. Sized from the
+        // measured worst-case substep count at DT=0.05.
         max_substeps_per_step: 256,
         material_cfl_coefficient: 0.7,
         // This constitutive law is deliberately reversible and has no
@@ -207,17 +164,13 @@ fn make_sim(lambda: f32, mu: f32) -> Simulation {
         cundall_damping: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Real fix (2026-09-05): particle mass was left on `config.grid_density`'s
-    // bare default (1.0) -- disconnected from the real
-    // `MEMBRANE_DENSITY_KG_M3` (1100) the stiffness above is scaled by. Mass
-    // and stiffness must share the same real density or the wave speed
-    // `c=sqrt((lambda+2mu)/rho)` is wrong even though lambda/mu themselves
-    // are correct. `ParticleMass::particle_mass`'s own documented formula
-    // (`rho_kg_m3 * (spacing*dx_meters)^2`, converted to grid units via
-    // `reference_density_kg_m3` exactly like `SpawnRegion::mass_from` does)
-    // computed directly here since `NoCompressionMaterial::new` (the raw
-    // constructor) bypasses the `ParticleMass`-implementing property-struct
-    // API `mass_from` requires.
+    // Particle mass from the same density the stiffness is scaled by
+    // (`MEMBRANE_DENSITY_KG_M3`, 1100), not `config.grid_density`'s default (1.0): with
+    // mismatched density the wave speed `c=sqrt((lambda+2mu)/rho)` is wrong even with
+    // correct lambda/mu. Computed from `ParticleMass::particle_mass`'s formula
+    // (`rho_kg_m3 * (spacing*dx_meters)^2`, converted to grid units through
+    // `reference_density_kg_m3` as `SpawnRegion::mass_from` does), since
+    // `NoCompressionMaterial::new` bypasses the property-struct API `mass_from` takes.
     const SPACING: f32 = 0.5;
     let mass_grid = (MEMBRANE_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let spawn = SpawnRegion {
@@ -233,22 +186,13 @@ fn make_sim(lambda: f32, mu: f32) -> Simulation {
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
 }
 
-/// Real Dirichlet/kinematic anchor -- `Particle::pinned` (see that field's
-/// doc), the engine's actual, already-tested mechanism for exactly
-/// this ("the standard technique for static/bedrock geometry in
-/// deformable-body sims" -- G2P's doc). Set ONCE, here, not re-applied
-/// every frame: G2P itself forces `v=0`/`velocity_gradient=0` for a pinned
-/// particle DURING its own gather from then on, every substep, forever --
-/// this is NOT the same as this scene's own first (buggy) attempt, which
-/// instead overwrote `x`/`v` AFTER `Simulation::step()` already returned.
-/// That earlier version's particles were ordinary FREE particles as far as
-/// G2P knew for the whole substep (contributing to and reading a real,
-/// unconstrained gravity-driven velocity field), with only their FINAL x/v
-/// silently discarded and replaced afterward -- so `deformation_gradient`
-/// integrated as if free-falling the entire time, real strain
-/// never accumulated, and the "anchor" was pinned in name only. Confirmed
-/// directly: `deformation_gradient.determinant()` stayed EXACTLY 1.0000
-/// forever, even for the free particle spatially closest to the "anchor".
+/// Dirichlet/kinematic anchor through `Particle::pinned` (see that field's doc), set
+/// once here: from then on G2P forces `v=0`/`velocity_gradient=0` for a pinned
+/// particle during its own gather, every substep. Overwriting `x`/`v` after
+/// `Simulation::step()` returns is not an anchor: during the substep the particles are
+/// free as far as G2P knows, so `deformation_gradient` integrates as if in free fall
+/// and no strain accumulates (`deformation_gradient.determinant()` stays exactly
+/// 1.0000, even next to the "anchor").
 fn pin_top_particles(sim: &mut Simulation) -> usize {
     let max_y = sim
         .particles()
@@ -300,28 +244,16 @@ impl State {
 
         let mut renderer = Renderer::new(&gfx.device, sim.particles().len(), gfx.format);
         renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.9, true);
-        // Real curvature-flow surface reconstruction (van der Laan et al.
-        // 2009) was tried here and reverted (2026-09-05), TWICE: first with
-        // its default density calibration (`grid_reference_cell_mass=1.0`,
-        // meant for `basic_fluids_gui`'s much denser 0.1-per-cell fluid),
-        // then again with this scene's own REAL measured rest density
-        // (0.25 mass / 0.64 volume = 0.39, via `set_grid_reference_cell_mass`
-        // -- the API's own intended fix for exactly this mismatch). Real
-        // calibration measurably helped (the stretched body stayed visible
-        // longer -- confirmed via direct frame capture) but did not fully
-        // solve it: `NoCompressionMaterial` here dilates to J≈2 and STAYS
-        // there once settled (confirmed via headless physics probe --
-        // particles remain finite, present, in-grid, permanently ~2x
-        // diluted, not a transient spike), so the reconstruction's
-        // density-isosurface visibility floor still gets crossed at rest,
-        // not just mid-fall. A material whose whole point is large,
-        // PERMANENT volume change is a structural mismatch for a technique
-        // built on a roughly-constant-density isosurface -- calibration
-        // narrows the gap, it does not close it for this material. Real
-        // per-particle `ByVolume` coloring has no density-dependent
-        // visibility gate at all -- particles are always drawn -- so it
-        // stays the correct choice here, even though it reads as a
-        // diagnostic heat map rather than tissue-like shading.
+        // Per-particle `ByVolume` coloring, not curvature-flow surface
+        // reconstruction (van der Laan et al. 2009). Reconstruction draws a
+        // density isosurface, and this material dilates to J~2 and stays there
+        // once settled (particles finite, present, in-grid, ~2x diluted), so the
+        // isosurface's visibility floor is crossed at rest, not only mid-fall. The
+        // scene's measured rest density (0.25 mass / 0.64 volume = 0.39, through
+        // `set_grid_reference_cell_mass`) helps but does not close the gap for a
+        // material whose point is large, permanent volume change. `ByVolume` has no
+        // density-dependent visibility gate, so particles are always drawn; it
+        // reads as a heat map rather than tissue-like shading.
         renderer.set_color_mode(ColorMode::ByVolume);
 
         let capture = std::env::var("MEMBRANE_CAPTURE_DIR").ok().map(|dir_str| {
@@ -387,15 +319,9 @@ impl State {
             rmb: false,
             cursor_force: cursor_force::CursorForce::new(5.0, 3.0, 7.0),
             real_gravity,
-            // Real IRL default (2026-09-05, real-SI migration) -- the OLD
-            // 0.0002 default existed only to compensate for the OLD
-            // `lambda=2000/mu=4000` grid-unit guess collapsing under real
-            // gravity (see the struct's doc for the measured
-            // before/after). With the sourced stiffness now in
-            // `membrane_lame`, real Earth gravity settles to a genuine
-            // static equilibrium on its own -- no fudge needed. The slider
-            // stays a real feature (explore lower/zero gravity), just no
-            // longer defaults away from reality.
+            // Earth gravity by default: with the sourced stiffness in
+            // `membrane_lame` the membrane settles to a static equilibrium on its
+            // own. The slider explores lower or zero gravity.
             gravity_fraction: std::env::var("MEMBRANE_GRAVITY_FRACTION")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -443,18 +369,11 @@ impl State {
         let stress_test = std::env::var("MEMBRANE_STRESS_TEST").is_ok();
         let (cursor, lmb, rmb) = if self.capture.is_some() {
             if stress_test {
-                // Real stress test (user-flagged, live): matches the ACTUAL
-                // reported failure mode ("une partie se detache et
-                // disparait au sol") -- a stationary radial force at the
-                // block's own center (an earlier version of this script,
-                // ALSO stale-coordinate-bugged: cursor sat 12.8 units above
-                // the block's real position, outside the push/pull radius
-                // entirely, so it silently touched nothing) never
-                // reproduced this. A real user's natural first move is to
-                // GRAB and DRAG -- a MOVING cursor, not a fixed point. This
-                // scripts exactly that: settle, then RMB-drag from just
-                // below the block steadily downward and away, same as
-                // dragging the mouse down while holding pull.
+                // Stress test of grab-and-drag, the natural first move: settle,
+                // then RMB-drag from just below the block steadily downward and
+                // away (a moving cursor), which is where part of the block has
+                // been seen to detach and vanish into the floor. A stationary
+                // radial force at the block's center does not reproduce it.
                 let center = Vec2::new(GRID as f32 * 0.5, GRID as f32 * 0.5);
                 if self.frame < 60 {
                     (center, false, false)

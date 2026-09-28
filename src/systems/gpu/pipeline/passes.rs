@@ -350,7 +350,7 @@ pub(super) fn build_impulse_pipeline(
 
 /// Multi-field contact resolution -- `debug_fit_normal` (debug/test-only, runs the
 /// Newton-Raphson LR normal fit against one chosen block's point cloud in isolation)
-/// and `resolve_contact` (the real per-substep pass, runs after grid_update, before
+/// and `resolve_contact` (the per-substep pass, runs after grid_update, before
 /// g2p). `resolve_contact.wgsl` declares BOTH `override NUM_BLOCKS_PER_DIM` (needed by
 /// resolve_contact_main's active-block-neighbor gather) and `override
 /// NUM_CONTACT_BLOCKS_PER_DIM` (needed by gather_local_points' contact-block scan) --

@@ -592,7 +592,7 @@ fn measure_lower_wall_mls_consistency(sim: &Simulation) -> BoundaryMlsConsistenc
                 // Exact affine APIC P2G would put `node_y-y_wall` on this
                 // node. The current lower SlipBoundary then projects its
                 // inward (negative) part to zero. Gathering this synthetic
-                // field with the real weights isolates the composed boundary
+                // field with the weights isolates the composed boundary
                 // operator without mutating the simulation.
                 let projected_node_value =
                     f64::from((cell_pos.y as f32 + 0.5 - clamp_plane).max(0.0));
@@ -689,7 +689,7 @@ pub(crate) fn capture_before_wall(grid: &Grid, ledger: &mut AcceptedBoundaryImpu
 }
 
 /// Re-sum the particle masses onto nodes in canonical particle/stencil order,
-/// then compare that f64 result to the real f32 mass stored by P2G. The grid
+/// then compare that f64 result to the f32 mass stored by P2G. The grid
 /// velocity is the final value immediately before real G2P. No solver state is
 /// modified.
 pub(crate) fn measure_g2p_mass_closure(sim: &Simulation) -> G2pMassClosureLedger {

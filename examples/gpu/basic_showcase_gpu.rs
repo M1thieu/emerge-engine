@@ -33,30 +33,18 @@ const SAND_ID: u32 = 1;
 const FLUID_ID: u32 = 2;
 const SPACING: f32 = 0.7;
 
-// Real fix (2026-09-06): was `DruckerPragerMaterial::new(400.0, 200.0)`, an
-// unsourced grid-unit guess -- same citation as `basic_showcase.rs`'s CPU
-// twin and `basic_sand.rs` (Haeri & Skonieczny 2022, arXiv:2111.01523,
-// Table 2, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through the
-// dt^2-free `lame_from_si`.
-//
-// Real fix (2026-09-17), root-caused this scene's own live ~0.5fps
-// (`tests/probes/basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`:
-// sand alone needs 2623 of the ~2629 substeps this frame's dt demands,
-// versus 5 for the elastic body and 1 for the fluid -- sand is the entire
-// cost here). Not a guessed softening: the SAME paper this E already cites
-// publishes its own "relaxed Young's modulus" variant at E=0.15 MPa (100x
-// softer), Table 2's own footnote calling it done "for significant
-// computational efficiency yet acceptable accuracy," with a measured,
-// disclosed cost (15.8% mean error on excavation forward force, versus
-// -0.5% for the validated 15 MPa case) -- their own number, not derived
-// here. Confirmed via the same real `timestep_bound` function
-// (`tests/probes/basic_showcase_probe.rs::basic_showcase_sand_substep_cost_at_published_relaxed_modulus`):
-// this drops sand's own need from 1777 to 178 substeps, a real ~10x
-// reduction matching `dt ~ 1/sqrt(E)`. This is a player-driven engine demo,
-// not a sand-accuracy validation scene (that stays on the full E=15MPa
-// citation in `basic_sand.rs`/`basic_sand_grid_gpu.rs`, untouched) -- the
-// published, disclosed accuracy cost is the right trade for THIS
-// scene's own purpose.
+// Sand stiffness: Haeri & Skonieczny 2022 (arXiv:2111.01523) publish a "relaxed
+// Young's modulus" variant at E=0.15 MPa, 100x softer than their validated 15 MPa
+// Excavation case (Table 2: E=15 MPa, nu=0.3, rho=1600 kg/m3, used by `basic_sand.rs`/
+// `basic_sand_grid_gpu.rs`), footnoted as done "for significant computational
+// efficiency yet acceptable accuracy", at a measured cost of 15.8% mean error on
+// excavation forward force (against -0.5% at 15 MPa). Through `lame_from_si`. At 15 MPa
+// sand needs 2623 of the ~2629 substeps a frame demands, against 5 for the elastic body
+// and 1 for the fluid (`tests/probes/basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`),
+// a ~0.5 fps scene; at 0.15 MPa its need drops from 1777 to 178 substeps
+// (`basic_showcase_sand_substep_cost_at_published_relaxed_modulus`), ~10x, as
+// `dt ~ 1/sqrt(E)` predicts. A player-driven demo, not a sand-accuracy scene, so the
+// published accuracy cost is the right trade here.
 const SAND_YOUNG_MODULUS_PA: f32 = 0.15e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
@@ -99,12 +87,8 @@ struct State {
 fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         min_dt: 0.005,
-        // Real fix (2026-09-17): lowered from 3000 now that sand above uses
-        // the published relaxed E=0.15MPa (needs ~178 substeps, not ~1777)
-        // -- 500 keeps real margin over that measured baseline for live
-        // player-driven impulses (arrow keys, LMB/RMB) without paying for
-        // 3000's old, no-longer-needed headroom. See `SAND_YOUNG_MODULUS_PA`'s
-        // doc for the full real citation and measurement.
+        // 500: margin over the ~178 substeps the relaxed sand needs (see
+        // `SAND_YOUNG_MODULUS_PA`), for player-driven impulses (arrow keys, LMB/RMB).
         max_substeps_per_step: 500,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
@@ -137,11 +121,9 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
             box_size: IVec2::new(22, 14),
             box_center: Vec2::new(45.0, 9.0),
             material_id: FLUID_ID,
-            // Without this, mass falls back to `config.particle_mass` (1.0),
-            // completely decoupled from the material's own rest_density=0.1
-            // -- a separate gap found 2026-08-08 alongside the SI fix
-            // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
-            // derivation used everywhere else.
+            // Mass set explicitly, m = rho0*spacing^2 with the material's
+            // rest_density=0.1 (see basic_fluids.rs), rather than the scene's grid
+            // density.
             mass_override: Some(0.1 * SPACING * SPACING),
             ..SpawnRegion::for_sim(&config)
         },
@@ -156,12 +138,10 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
             ..SpawnRegion::for_sim(&config)
         },
     ));
-    // NOT migrated to real SI tonight, unlike `sand`/`fluid` below --
-    // deliberate, same reasoning as `basic_showcase.rs`'s CPU twin: this
-    // body is player-driven (arrow keys), and a real E-Pa stiffness would
-    // change how it responds to the same drive-impulse magnitude.
-    // That needs live interactive verification, not just a headless
-    // stability probe -- real follow-up work, not silently dropped.
+    // Grid units, unlike `sand`/`fluid` below, as in the CPU twin `basic_showcase.rs`:
+    // this body is player-driven (arrow keys), and an SI stiffness would change its
+    // response to the same drive impulse, which needs checking live, not only with a
+    // headless stability probe.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
     let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
@@ -169,16 +149,12 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
         SAND_DENSITY_KG_M3,
     );
     let sand = DruckerPragerMaterial::new(sand_lambda, sand_mu);
-    // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
-    // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
-    // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's doc for the full derivation.
-    // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
-    // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
-    // stiffness for the same compression; confirmed by a real crash in
-    // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
-    // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's doc for the full derivation.
+    // Water through `NewtonianFluidMaterial::low_viscosity` (Tait exponent 7.0, Cole
+    // 1948; water viscosity). rest_density=0.1 (`rho*dx^2` for water at dx=0.01, see
+    // basic_fluids.rs). eos_stiffness=0.25: with rest_density 40x smaller than 4.0,
+    // `timestep_bound`'s c2 (sound speed squared) is 40x larger at a given stiffness and
+    // compression, so the stiffness is scaled by the same factor (10*0.1/4.0=0.25) to
+    // keep the same c2.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let mut reg = MaterialRegistry::with_default(Box::new(elastic));
     reg.insert(SAND_ID, Box::new(sand));

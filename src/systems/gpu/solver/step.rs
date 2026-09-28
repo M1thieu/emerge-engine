@@ -705,7 +705,7 @@ impl GpuSimulation {
         self.last_cpu_timings = (cfl_scan_ns, encode_ns, submit_ns, readback_ns, total_ns);
     }
 
-    /// Wait for the GPU to finish the last stepped frame and read its real substep
+    /// Wait for the GPU to finish the last stepped frame and read its substep
     /// count and dropped time into `last_substeps` / `last_sim_time_dropped`, which are
     /// otherwise one frame behind (`step_frame` never blocks on them).
     pub fn sync_frame_stats(&mut self) {

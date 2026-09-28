@@ -73,7 +73,7 @@ fn rod_and_particles_momentum_conserved_zero_gravity() {
 }
 
 /// Builds a cantilever rod (clamped at points 0-1, sticking out horizontally)
-/// inside a real gravity scene, optionally spawning an MPM particle block
+/// inside a gravity scene, optionally spawning an MPM particle block
 /// above the tip so it falls onto the rod. Returns (final average particle
 /// height, final rod tip y).
 fn cantilever_with_optional_particles(with_particles: bool, steps: usize) -> (Option<f32>, f32) {
@@ -158,7 +158,7 @@ fn rod_deflects_and_mpm_particles_feel_reaction() {
 
     let avg_particle_y = avg_particle_y.expect("particles must still exist");
     // Particles spawned above the rod (y=25.5, rod at y=24) should rest near that height,
-    // not fall through -- proves the rod exerts a real reaction force.
+    // not fall through -- proves the rod exerts a reaction force.
     assert!(
         avg_particle_y > 20.0,
         "particles fell through the rod instead of resting on it: avg_y={avg_particle_y:.3}"
@@ -255,7 +255,7 @@ fn sleeping_rod_wakes_on_new_contact_and_still_reacts() {
     );
     let tip_y_before = solver.rods()[0].points.x.last().unwrap().y;
 
-    // Drop a real MPM particle block onto the sleeping rod's tip.
+    // Drop an MPM particle block onto the sleeping rod's tip.
     let particle_spawn = SpawnRegion {
         spacing: 0.5,
         box_size: IVec2::new(1, 1),
@@ -404,7 +404,7 @@ fn coverage_gap_fix_catches_particle_falling_through_sparse_rod_midpoint() {
     let with_rod_y = drop_particle_through_gap(true, 600);
 
     // Negative control: without the rod the particle should fall well past y=20,
-    // confirming this is a real fall and not a scene that stops there anyway.
+    // confirming this is a fall and not a scene that stops there anyway.
     assert!(
         free_fall_y < 10.0,
         "negative control didn't actually fall far -- test geometry is wrong: free_fall_y={free_fall_y:.3}"

@@ -75,7 +75,7 @@ impl RodMaterial {
     /// one segment's own stiffness) -- it is NOT the true GLOBAL modal
     /// critical damping for a whole rod's actual fundamental bending shape
     /// (many points moving together): for a 20-point cantilever blade it
-    /// understates the real modal critical damping by roughly two to three
+    /// understates the modal critical damping by roughly two to three
     /// orders of magnitude. Use `modal_critical_damping` below for natural
     /// whole-rod settling in a physically sensible time -- the common use
     /// case (grass blades, pushable branches, anything a player interacts
@@ -85,7 +85,7 @@ impl RodMaterial {
     /// value.
     ///
     /// The two outputs are different kinds of quantities --
-    /// `axial_damping` [N·s/m] is a real translational dashpot, while
+    /// `axial_damping` [N·s/m] is a translational dashpot, while
     /// `bending_damping` [N·m·s] is conjugate to the dimensionless discrete
     /// curvature (see `forces::discrete_curvature`) -- so naive `c=2*sqrt(k*m)`
     /// with the same translational stiffness is dimensionally wrong for the

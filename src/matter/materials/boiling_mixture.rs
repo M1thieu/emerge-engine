@@ -346,7 +346,7 @@ impl MaterialModel for BoilingMixtureMaterial {
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
-        // The carried logarithm is the real state; reading J back from F
+        // The carried logarithm is the state; reading J back from F
         // and multiplying loses a fraction of every small increment (see
         // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {

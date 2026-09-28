@@ -24,7 +24,7 @@ fn tip_segment_growth_matches_logistic_curve() {
     rod.rest_edge_length[0] = l0;
 
     // Empty grid -- ungated growth (no `resistance` configured) never reads
-    // it, this is just satisfying the real signature.
+    // it, this is just satisfying the signature.
     let grid = Grid::new(16);
     let mut growth = Growth::new(rate, k);
     for _ in 0..n_steps {
@@ -47,7 +47,7 @@ fn tip_segment_growth_matches_logistic_curve() {
 fn growth_pulls_actual_rod_tip_further_away_through_real_elastic_dynamics() {
     // Checkable mechanical consequence: growth changes the TARGET
     // (rest_edge_length), then the already-proven internal-force
-    // integrator (step_rod) does the real work of stretching the actual
+    // integrator (step_rod) does the work of stretching the actual
     // geometry to follow it -- not a position hack.
     let mut grown = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.1, 0.0), 2, 0.3, 1.0);
     let mut baseline = grown.clone();

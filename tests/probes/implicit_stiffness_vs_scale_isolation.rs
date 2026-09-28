@@ -1,11 +1,9 @@
-//! Diagnostic-only (2026-09-11): the passing settled-pile correctness test
-//! uses `lame_from_young(6e5, 0.3)` (grid-native units) with 64 particles;
-//! the failing real `basic_sand`-scale measurement uses
-//! `lame_from_si(15e6, 0.3, 1600.0)` (real SI, converted) with
-//! 1008 particles -- two variables changed at once (stiffness AND scene
-//! size), in two different unit conventions. Isolates which actually
-//! breaks Newton convergence by using the SAME two concrete (lambda, mu)
-//! pairs each real test uses, varied independently against scene size.
+//! Diagnostic: the passing settled-pile test uses `lame_from_young(6e5, 0.3)` (grid
+//! units) with 64 particles; the failing `basic_sand`-scale measurement uses
+//! `lame_from_si(15e6, 0.3, 1600.0)` (SI, converted) with 1008 particles, so two
+//! variables change at once (stiffness and scene size). Uses each test's two concrete
+//! (lambda, mu) pairs, varied independently against scene size, to find which one
+//! breaks Newton convergence.
 //!
 //! `cargo test --release --test probes implicit_stiffness_vs_scale_isolation:: -- --nocapture`
 
@@ -87,7 +85,7 @@ fn isolate_stiffness_vs_particle_count() {
         real_mu,
         IVec2::new(8, 8),
     );
-    // Real stiffness AND the large real scene (reproduces the failure).
+    // SI stiffness and the large scene (reproduces the failure).
     probe(
         "real_stiffness_large_scene",
         real_lambda,

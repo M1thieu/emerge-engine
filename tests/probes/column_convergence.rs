@@ -2,7 +2,7 @@
 //!
 //! `tests/spawn_contract.rs` checks that a column at rest carries its own
 //! weight, and reads 756 Pa against the analytic 881. That bar is wide
-//! enough to hide a real defect, so this runs the SAME physical column,
+//! enough to hide a defect, so this runs the SAME physical column,
 //! 6 by 12 cm of the same material under the same gravity, at three cell
 //! sizes. A discretisation error shrinks as the cells do; anything else
 //! stays put.

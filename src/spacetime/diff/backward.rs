@@ -344,7 +344,7 @@ pub(super) fn backprop_through_time(
 
 /// Gradient of the same locomotion loss as `controller_gradient`, but for a
 /// `FeedbackController`. Same windowed-drift + bounce-penalty objective;
-/// the real difference is the activation gradient chains through
+/// the difference is the activation gradient chains through
 /// `FeedbackController::backward` (feature-extraction + linear + tanh)
 /// instead of the sinusoid's tanh+weights, and that backward ALSO returns
 /// position/velocity gradient contributions (the controller READ this

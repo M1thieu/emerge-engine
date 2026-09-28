@@ -277,7 +277,7 @@ impl GranularProps {
 impl BinghamProps {
     /// See `Elastic::particle_mass`. Present for the same reason as every
     /// other family's: a caller building this material directly (rather
-    /// than through `Fluid::material`) still needs its real particle mass.
+    /// than through `Fluid::material`) still needs its particle mass.
     pub fn particle_mass(&self, spacing: f32, config: &crate::SimConfig) -> f32 {
         self.rho_kg_m3 * (spacing * config.dx_meters).powi(2)
     }

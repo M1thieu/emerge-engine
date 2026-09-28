@@ -85,7 +85,7 @@ mod gpu_tests {
     /// full linear scan (real perf fix -- these were the only two of emerge's real
     /// neighbor-query methods missing the spatial acceleration already proven in
     /// `solver::Simulation`). This must return EXACTLY what a brute-force linear
-    /// scan over the real particle buffer would -- correctness first, speed
+    /// scan over the particle buffer would -- correctness first, speed
     /// second.
     #[test]
     fn gpu_spatial_queries_match_brute_force_scan() {
@@ -93,7 +93,7 @@ mod gpu_tests {
             return;
         }
         let config = small_config();
-        // Two disks of different materials, close enough that a real query radius
+        // Two disks of different materials, close enough that a query radius
         // spans both -- real multi-material scene, not a degenerate single-blob case.
         let mut particles = spawn_disk(&config, Vec2::splat(10.0), 0);
         particles.extend(spawn_disk(&config, Vec2::splat(14.0), 1));
@@ -140,10 +140,10 @@ mod gpu_tests {
     }
 
     /// `particles_knn` (see `Simulation::particles_knn`, CPU side, for the full
-    /// rationale -- a real topological neighbor rule, Ballerini et al. 2008)
+    /// rationale -- a topological neighbor rule, Ballerini et al. 2008)
     /// mirrored on the GPU backend must match a brute-force k-nearest scan.
     /// Query point is off either disk's own center so no two particles land at
-    /// the exact same distance (a real tie right at the k-th cutoff is
+    /// the exact same distance (a tie right at the k-th cutoff is
     /// ambiguous, not a bug -- see the CPU-side test's own note).
     #[test]
     fn gpu_particles_knn_matches_brute_force_scan() {
@@ -459,7 +459,7 @@ mod gpu_tests {
         // alpha=0 isolates cooling (uniform field -> zero Laplacian regardless of alpha
         // anyway, but 0 makes the isolation explicit/intentional, not incidental).
         // density=1.0 is irrelevant here (conductivity=0 zeroes alpha
-        // regardless), kept only to satisfy the real `density > 0.0` requirement.
+        // regardless), kept only to satisfy the `density > 0.0` requirement.
         solver.attach_thermal_gpu(0.0, 1.0, 1.0, 1.0, ambient, cooling_rate);
 
         const STEPS: usize = 10;
@@ -498,7 +498,7 @@ mod gpu_tests {
             return;
         }
         // Same grid_res/dt/conductivity/heat_capacity/grid_cell_size as CPU's own
-        // `thermal_diffusion_spreads_heat` (tests/solver.rs) for a real apples-to-
+        // `thermal_diffusion_spreads_heat` (tests/solver.rs) for an apples-to-
         // apples comparison -- real diffusion coefficients are physically small over
         // a modest simulated time, so matching CPU's own calibration (not inventing a
         // stronger one just to clear an arbitrary threshold) is the honest choice.
@@ -529,7 +529,7 @@ mod gpu_tests {
         solver.mark_particles_dirty();
         // High diffusivity, zero cooling -- isolates diffusion specifically.
         // density=1000.0 (real water) matches CPU's own thermal_diffusion_spreads_heat
-        // (tests/solver.rs) exactly, for a real apples-to-apples comparison.
+        // (tests/solver.rs) exactly, for an apples-to-apples comparison.
         solver.attach_thermal_gpu(0.6, 4182.0, 1000.0, 0.1, 0.0, 0.0);
 
         let mean_hot_before = 100.0; // by construction, before any step
@@ -777,7 +777,7 @@ mod gpu_tests {
     /// Parity smoke test: `thermal_expansion` (CPU formula verified in
     /// tests/physics_correctness.rs) uses the identical `t_scale = 1.0 + thermal_expansion *
     /// temperature` formula in p2g.wgsl -- this just confirms the GPU path doesn't crash or
-    /// diverge with it enabled and a real per-particle temperature gradient, not a re-derivation
+    /// diverge with it enabled and a per-particle temperature gradient, not a re-derivation
     /// of the physics (already covered on CPU).
     #[test]
     fn gpu_neohookean_thermal_softening_stable() {
@@ -851,7 +851,7 @@ mod gpu_tests {
     ///   own `Queue::submit` error path is fatal there. Handled by the never-panic
     ///   uncaptured-error handler (see `GpuSimulation::enable_device_lost_detection`'s
     ///   doc); covered by unit tests plus the `#[ignore]`d 10-minute local WARP repro,
-    ///   which survives all 7500 steps through a real mid-run device loss.
+    ///   which survives all 7500 steps through a mid-run device loss.
     ///
     /// - What remains is wgpu/WARP-internal and nondeterministic: post-device-loss
     ///   teardown inside the driver stack can still terminate the process through paths
@@ -931,7 +931,7 @@ mod gpu_tests {
     ///
     /// `#[ignore]`d for CI: real-hardware-only. The software WARP rasterizer at this
     /// grid size starves the windows-latest hosted runner to death rather than failing
-    /// cleanly. Passes in normal time on a real GPU and on ubuntu's lavapipe.
+    /// cleanly. Passes in normal time on a GPU and on ubuntu's lavapipe.
     #[test]
     #[ignore = "real-hardware-only benchmark: starves windows-latest's WARP runner to \
                 death (56min then runner lost, run 28954055245) -- run manually on a \
@@ -1227,7 +1227,7 @@ mod gpu_tests {
         assert!(first_count > 0, "first spawn produced zero particles");
 
         // Second spawn: small enough to land within the headroom the first (doubling)
-        // growth just created -- the real fast-path case this fix targets.
+        // growth just created -- the fast-path case this fix targets.
         let second = solver.spawn_region(SpawnRegion {
             spacing: 0.5,
             box_size: IVec2::new(2, 2),
@@ -1513,7 +1513,7 @@ mod gpu_tests {
             // velocity (not volume) is the direct signature of the shock-
             // viscosity FORCE term this test exists to guard. Measured
             // 1.1e-6 once the substep confound was removed -- tight enough
-            // that a real regression (measured ~0.042 with the substep
+            // that a regression (measured ~0.042 with the substep
             // mismatch alone, let alone the term missing entirely) cannot
             // pass silently.
             assert!(
@@ -1570,7 +1570,7 @@ mod gpu_tests {
 
     #[test]
     fn gpu_rankine_stable() {
-        // Rankine has needs_cpu_update()=false and a real GPU plasticity branch
+        // Rankine has needs_cpu_update()=false and a GPU plasticity branch
         // (particles_update.wgsl, model==7) but had zero GPU-specific test coverage
         // before this -- implemented, never verified on that path.
         if !gpu_available() {
@@ -1601,7 +1601,7 @@ mod gpu_tests {
     #[test]
     fn gpu_mui_rheology_stable() {
         // Same coverage gap as gpu_rankine_stable: MuIRheology has needs_cpu_update()=false
-        // and a real GPU plasticity branch (model==8) but no prior GPU test.
+        // and a GPU plasticity branch (model==8) but no prior GPU test.
         if !gpu_available() {
             return;
         }
@@ -1952,7 +1952,7 @@ mod gpu_tests {
     }
 
     /// Characterizes GPU per-step cost AND VRAM footprint vs. grid resolution, pushed up to
-    /// just below wgpu's default `max_storage_buffer_binding_size` (128 MiB) -- the real wall.
+    /// just below wgpu's default `max_storage_buffer_binding_size` (128 MiB) -- the wall.
     ///
     /// The GPU grid buffer is dense -- allocated as grid_res² · 16 bytes (sizeof(GpuCell))
     /// regardless of how many particles are active (src/gpu/buffers.rs). The CPU grid is
@@ -2102,7 +2102,7 @@ mod gpu_tests {
         );
     }
 
-    /// GPU sparse grid Phase 1: the real failure mode a block-boundary mapping bug in
+    /// GPU sparse grid Phase 1: the failure mode a block-boundary mapping bug in
     /// grid_clear.wgsl would produce is a stale, never-cleared cell far from any particle --
     /// not a crash, not a NaN, just quietly wrong leftover momentum/mass. Verify directly:
     /// a cell far from both particle disks must read exactly zero after a step, since it was
@@ -2344,7 +2344,7 @@ mod gpu_tests {
     /// human-scale, single concurrent camera, a 320x180-cell viewport, not a larger
     /// multi-camera figure. grid_res=320 here (not larger) because grid_clear/grid_update
     /// cost scales with grid_res^2 independent of particle count -- an oversized grid
-    /// would overstate the real per-step cost for this scene.
+    /// would overstate the per-step cost for this scene.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle GPU budget benchmark, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_particle_count_lp_budget_0_1_0_scene() {
@@ -2553,7 +2553,7 @@ mod gpu_tests {
     /// dropped 3->2 for DP-sand at the 50k target, sustained 60-64fps over thousands of real
     /// frames with no visible instability) -- this test makes the same claim rigorously, with
     /// explicit assertions the live example doesn't have (no finite/J-collapse checks there).
-    /// Long-settled, not just a quick smoke test, matching the real scenario's duration.
+    /// Long-settled, not just a quick smoke test, matching the scenario's duration.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle relaxed-CFL benchmark, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_relaxed_cfl_coefficient_stays_correct_50k_dpsand() {
@@ -3166,7 +3166,7 @@ mod gpu_tests {
     }
 
     /// Queries the ACTUAL runtime device limits (not the textbook wgpu::Limits::default()
-    /// assumed elsewhere) and computes the real hard ceilings for particle count and grid
+    /// assumed elsewhere) and computes the hard ceilings for particle count and grid
     /// resolution on whatever hardware this runs on. Safe -- no buffer creation, just
     /// arithmetic against `adapter.limits()`. Run with `-- --nocapture` to see the numbers.
     #[test]
@@ -3214,7 +3214,7 @@ mod gpu_tests {
     }
 
     /// Pushes GPU particle count toward the storage-binding ceiling (~1.19M particles at the
-    /// default 128MiB limit) to find the REAL compute wall beyond LP's stated 500k target --
+    /// default 128MiB limit) to find the compute wall beyond LP's stated 500k target --
     /// answering "what happens past the documented budget" with measurement, not guesswork.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- pushes toward the ~1.19M particle storage-binding ceiling, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
@@ -3753,7 +3753,7 @@ mod gpu_tests {
 
         // Same node_pos as the CPU test. debug_fit_normal_main now gathers its own
         // neighbor-expanded, distance-filtered point cloud around node_pos (the same
-        // gather_local_points the real resolve_cell pass uses), so no block-index
+        // gather_local_points the resolve_cell pass uses), so no block-index
         // arithmetic is needed here anymore -- see debug_fit_contact_normal_blocking's doc.
         let node_pos = Vec2::new(32.0, 10.0);
         let total_points: u32 = solver.contact_point_counts_blocking().iter().sum();
@@ -3838,7 +3838,7 @@ mod gpu_tests {
     /// particle actually FEEL the resolved contact correction now that G2P routes to
     /// it? Exact same rig as CPU's own `multi_field_contact_produces_real_coulomb_slip_and_stick`
     /// (`tests/physics_correctness.rs`) -- a small block (contact_group=1) resting on a
-    /// wide floor slab (contact_group=0), settled first, then given a real horizontal
+    /// wide floor slab (contact_group=0), settled first, then given a horizontal
     /// velocity and measured after a short window. At friction=0 it must keep real
     /// speed (free slip); at friction=3 it must decelerate to near the floor's rest
     /// speed (real Coulomb stick). This is the test that actually proves the whole GPU
@@ -4285,7 +4285,7 @@ mod gpu_tests {
         solver.mark_particles_dirty();
 
         let mut lnn = Lnn::coupled_traveling_wave(N_RINGS, N_PER_RING, 1.0, RING_CROSS_COUPLING);
-        // Burn-in: let the CPG reach its real oscillating regime before it ever
+        // Burn-in: let the CPG reach its oscillating regime before it ever
         // touches a particle -- matches the interactive example's own CPG_BURN_IN.
         for _ in 0..600 {
             lnn.step(DT);
@@ -4421,7 +4421,7 @@ mod gpu_tests {
         solver.mark_particles_dirty();
         let n = terrain_count + snake_range.len();
 
-        // Let the body fall under gravity and settle into REAL, non-trivial contact with
+        // Let the body fall under gravity and settle into non-trivial contact with
         // the terrain before profiling -- resolve_contact's real cost only shows up once
         // grid nodes carry both fields, not on a scene where the two bodies
         // haven't touched yet.
@@ -4648,10 +4648,10 @@ mod gpu_tests {
     }
 
     /// End-to-end proof of the full real-PDE phase-transition chain the
-    /// `material_sandbox_gpu` demo claims: a real heat source feeds the real GPU
+    /// `material_sandbox_gpu` demo claims: a heat source feeds the GPU
     /// thermal diffusion PDE (`attach_thermal_gpu`, Fourier's law), and a snow
     /// blob melts (`phase_transition` fires only once the real
-    /// diffused temperature field crosses the real melting point, not a fake
+    /// diffused temperature field crosses the melting point, not a fake
     /// instant swap), then refreezes once heating stops and real
     /// Newton cooling pulls it back below the freeze point -- no material_id
     /// changes without the real temperature field actually crossing the real
@@ -4723,7 +4723,7 @@ mod gpu_tests {
 
         // Cool phase: heating stops entirely -- refreezing must come ONLY from the
         // real Newton-cooling term pulling temperature back toward the (below-
-        // freezing) ambient, plus the real freeze phase rule catching the crossing.
+        // freezing) ambient, plus the freeze phase rule catching the crossing.
         for frame in 0..600 {
             if frame % 15 == 0 {
                 solver.phase_transition(
@@ -4747,9 +4747,9 @@ mod gpu_tests {
         );
     }
 
-    /// The other half of the chain: water pushed past the real boiling point
+    /// The other half of the chain: water pushed past the boiling point
     /// vanishes (`remove_particles`, real buffer compaction), not just
-    /// relabeled -- proves evaporation is a real removal, not a third material
+    /// relabeled -- proves evaporation is a removal, not a third material
     /// masquerading as "gone."
     #[test]
     fn gpu_water_evaporates_above_boiling_point() {
@@ -4766,7 +4766,7 @@ mod gpu_tests {
         for p in &mut particles {
             p.temperature = MELT_POINT_K + 5.0; // start already-melted, near freezing
         }
-        // material_id 0 (default/unused here) still needs a real registered model.
+        // material_id 0 (default/unused here) still needs a registered model.
         let snow = StomakhinMaterial::new(1389.0, 2083.0, 7.0, 0.025, 0.0075, 0.6, 20.0);
         let water = NewtonianFluidMaterial::new(4.0, 0.1, 10.0, 4.0);
         let mut registry = MaterialRegistry::with_default(Box::new(snow));
@@ -5173,7 +5173,7 @@ mod gpu_tests {
     /// (`apply_radial_impulse`, the exact call `basic_jellies_gpu`'s own
     /// input handler uses). Reproduces the same scene, then repeatedly
     /// slams a hard radial impulse into the NeoHookean blob (pushing it
-    /// into the domain wall, the real scenario a user mashing LMB near an
+    /// into the domain wall, the scenario a user mashing LMB near an
     /// edge would create) and tracks whether min(J) recovers afterward or
     /// stays pinned at an extreme value.
     #[test]
@@ -5345,8 +5345,8 @@ mod gpu_tests {
 
         // MID window (settled shortly after impact) vs LATE window (should
         // be STABLE by now if the barrier is holding, not still collapsing)
-        // -- comparing these two is the real test, not an overall floor,
-        // since a real body compressing under strong gravity and
+        // -- comparing these two is the test, not an overall floor,
+        // since a body compressing under strong gravity and
         // then STOPPING is correct; one that keeps shrinking is the bug.
         let mut mid_extent_y = f32::MAX;
         let mut late_extent_y = f32::MAX;
@@ -5409,7 +5409,7 @@ mod gpu_tests {
     /// above DOES reliably, deterministically guard against). Flagged as a
     /// genuine, separate, real phenomenon worth deeper investigation in its
     /// own future session (why does compression sometimes lock to an
-    /// exact, not approximate, shared y -- possibly a real MPM grid-
+    /// exact, not approximate, shared y -- possibly an MPM grid-
     /// resolution artifact once particles converge within one cell), not
     /// something today's fix was scoped to solve.
     #[test]

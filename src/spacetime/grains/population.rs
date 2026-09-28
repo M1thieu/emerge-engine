@@ -400,7 +400,7 @@ impl GrainPopulation {
             for j in (i + 1)..n {
                 let gi = self.grains[i].contact_state();
                 let gj = self.grains[j].contact_state();
-                // Cheap reject before the real contact-law geometry check --
+                // Cheap reject before the contact-law geometry check --
                 // avoids allocating/looking up spring history for pairs that
                 // are nowhere near each other. Determined ONCE from
                 // start-of-substep positions -- positions never move inside
@@ -827,7 +827,7 @@ mod tests {
             config(),
         );
         // sigma1+sigma3 <= 0 -- e.g. a population that never actually
-        // loaded any real compressive contact, only recorded tension/noise.
+        // loaded any compressive contact, only recorded tension/noise.
         pop.stress_accum = Mat2::from_cols(Vec2::new(-1.0, 0.0), Vec2::new(0.0, -1.0));
         pop.stress_accum_samples = 20;
         assert_eq!(pop.effective_friction_angle_deg(), None);
@@ -1169,7 +1169,7 @@ mod tests {
             "expected real, nonzero accumulated rotation from 4000 steps of \
              real friction-induced spin-up, got {final_orientation}"
         );
-        // Cross-check: `orientation` must match the real numerical integral
+        // Cross-check: `orientation` must match the numerical integral
         // of `spin`, not just be "some nonzero number" -- reruns the exact
         // same physics while independently trapezoidal-integrating spin by
         // hand, then compares against the engine's own bookkeeping.

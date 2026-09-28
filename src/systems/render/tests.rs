@@ -207,7 +207,7 @@ fn physical_contract_drives_gpu_particle_beer_lambert_in_si() {
 }
 
 /// End-to-end GPU path (the one LP actually uses, `render_gpu`): real
-/// particles on a real `GpuSimulation`, real compute dispatch through
+/// particles on a `GpuSimulation`, real compute dispatch through
 /// `prep_instances.wgsl` with the extended `OpticalTable`, real render pass to
 /// an offscreen texture. Proves the whole pipeline survives, not just that
 /// `Renderer::new` compiles the shader in isolation.
@@ -558,7 +558,7 @@ fn luminescent_material_lights_the_scene_without_being_hot() {
 }
 
 /// The physical fact the previous hand-drawn ramp inverted, checked through
-/// the real GPU pipeline rather than in isolation: a hotter body renders
+/// the GPU pipeline rather than in isolation: a hotter body renders
 /// bluer, not redder.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
@@ -966,7 +966,7 @@ fn readback_brightest_pixel(
 /// Blocking readback of a SAMPLED GRID of pixel luminances (every
 /// `sample_stride`-th pixel in both x/y, row-major) -- test-only, same
 /// staging pattern as `readback_pixel` above but reads the whole texture
-/// once instead of one pixel, for a real per-frame flicker measurement
+/// once instead of one pixel, for a per-frame flicker measurement
 /// across many frames (see `surface_reconstruction_does_not_flicker_over_
 /// many_deterministic_frames` below).
 fn readback_luminance_grid(
@@ -1469,7 +1469,7 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
 
     // Read the whole 64x64 frame ONCE (not per-pixel) -- the exact camera
     // projection's sub-pixel rounding isn't worth hand-deriving precisely;
-    // instead, scan a real window around each cluster's approximate
+    // instead, scan a window around each cluster's approximate
     // expected screen location and take whichever pixel shows that
     // material's color most strongly. Robust against a few cells of
     // rounding error in the pixel<->surface-cell mapping (confirmed via a
@@ -1841,7 +1841,7 @@ fn anisotropic_splat_widens_footprint_along_stretched_axis() {
     // `ensure_surface_capacity` computes this exact same product before any
     // render call -- read the constant directly rather than instantiate a
     // throwaway `Renderer` (whose `surface_res` starts at a placeholder `1`
-    // until a real render grows it).
+    // until a render grows it).
     let surface_res = grid_res * SURFACE_RES_MULTIPLIER;
     let scale = surface_res as f32 / grid_res as f32;
     let center = (16.0 * scale) as i32;
@@ -3047,7 +3047,7 @@ fn curvature_flow_volume_correction_matches_true_particle_mass() {
     // deliberately SMALLER scale than the per-cell `DENSITY_ATOMIC_SCALE`,
     // since these are GLOBAL sums across an entire scene's cells/particles,
     // not one cell's own bounded local overlap (see that constant's own
-    // doc for the real i32-overflow bug this fixes).
+    // doc for the i32-overflow bug this fixes).
     const TOTAL_ATOMIC_SCALE: f32 = 1000.0;
     let pre_total =
         readback_i32_total(&device, &queue, &r.pre_total_atomic_buf) as f32 / TOTAL_ATOMIC_SCALE;
@@ -3408,7 +3408,7 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
     let cell_count = (surface_res * surface_res) as usize;
 
     // Past the initial one-time excitation burst (expected -- a body
-    // appearing IS a real disturbance), but still early in the real
+    // appearing IS a disturbance), but still early in the real
     // WAVE_DAMPING=0.996 decay curve.
     const EARLY_FRAME: u32 = 10;
     for _ in 1..EARLY_FRAME {
@@ -3901,7 +3901,7 @@ mod curvature_iterate_stability {
 
     /// The other half of the same fix: raising GRAD_EPSILON enough to
     /// stabilize the flat interior must not also neuter the pass's actual
-    /// job. A sharp 90-degree corner (the real free-surface case) must still
+    /// job. A sharp 90-degree corner (the free-surface case) must still
     /// round off measurably after iteration, not sit inert.
     #[test]
     #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
@@ -4386,7 +4386,7 @@ fn region_projection_frames_a_region_and_the_whole_grid() {
     }
 }
 
-/// The round trip the cursor depends on, through a real renderer: a point
+/// The round trip the cursor depends on, through a renderer: a point
 /// drawn under `set_camera_region` and read back by `screen_to_grid` comes
 /// back where it was, and the framed strip's ends land on the window's
 /// edges.

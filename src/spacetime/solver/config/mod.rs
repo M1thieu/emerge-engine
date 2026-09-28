@@ -125,7 +125,7 @@ pub struct SimConfig {
     /// very substep CFL is trying to bound. Verified this is a genuine, convergent
     /// stability limit, not a discrete conservation bug: tightening `material_cfl_
     /// coefficient` GLOBALLY to 1000x default measurably converges toward correct
-    /// momentum conservation (not a plateau), but at a real cost no real-time scene can
+    /// momentum conservation (not a plateau), but at a cost no real-time scene can
     /// afford everywhere, all the time, just to cover the rare moments a wall is touched.
     /// When enabled: after computing a substep, the solver checks whether any strict
     /// fluid particle's OWN volume-ratio change this substep exceeded
@@ -273,7 +273,7 @@ pub struct SimConfig {
     /// behavior changes). A rod with an active push (`Rod::push_strength > 0`)
     /// never sleeps regardless of this value. Sleeping rods skip scatter/
     /// gather/internal-force integration AND their own `rod_cfl_dt` term in
-    /// `choose_substep_dt` -- the real cost driver for many simultaneous rods.
+    /// `choose_substep_dt` -- the cost driver for many simultaneous rods.
     pub rod_sleep_threshold: f32,
     /// Coulomb friction coefficient for multi-field contact between a `contact_group != 0`
     /// particle and everything else (Bardenhagen 2001 -- see `Particle::contact_group` doc).
@@ -298,7 +298,7 @@ pub struct SimConfig {
     /// MPM, e.g. Anura3D). Material-agnostic fix for the mismatch an
     /// explicit-dynamic MPM solver has with an inherently quasi-static problem
     /// (a granular pile creeping toward equilibrium): damps the component of
-    /// each grid cell's velocity change THIS substep (a real proxy for applied
+    /// each grid cell's velocity change THIS substep (a proxy for applied
     /// force, since Δv = F·dt/m at fixed dt/mass) that opposes nothing but its
     /// own oscillation -- proportional to the FORCE just applied, not to
     /// velocity itself (that's ordinary viscous damping, a different real

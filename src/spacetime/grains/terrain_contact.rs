@@ -105,7 +105,7 @@ mod tests {
         let mut grid = Grid::new(32);
         let particle_mass = 1.0;
         let reference = reference_mass_per_cell(particle_mass);
-        // Dense terrain for y <= 10, empty above -- a real flat surface at y=10.5
+        // Dense terrain for y <= 10, empty above -- a flat surface at y=10.5
         // (halfway between the last dense row and the first empty one).
         for y in 0..=10i32 {
             for x in 10..22i32 {
@@ -130,7 +130,7 @@ mod tests {
     }
 
     /// A grain far above any terrain mass at all must report no contact --
-    /// the common case almost everywhere on a real grid.
+    /// the common case almost everywhere on a grid.
     #[test]
     fn grain_far_from_any_terrain_reports_no_contact() {
         let grid = Grid::new(32);

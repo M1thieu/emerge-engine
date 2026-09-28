@@ -66,7 +66,7 @@ mod p2g_tests;
 ///   5. Signed activation with amplitude matched to the unsigned case (not
 ///      doubled) -- still stalls, without the earlier catastrophic collapse.
 ///
-/// Root cause remains unsolved; a real fix likely needs rethinking the
+/// Root cause remains unsolved; a fix likely needs rethinking the
 /// friction/actuation mechanism itself (e.g. a redesigned contact model, or
 /// a controller that never enters the failure regime) rather than another
 /// parameter or activation-scheme tweak.
@@ -162,7 +162,7 @@ pub(crate) fn combined_kirchhoff_stress_from(
 /// F -- `kirchhoff_stress_vjp` only covers the passive term.
 ///
 /// SCOPED to the directional case only (every material except Viscoelastic's
-/// isotropic branch) -- matches what a real trained creature body actually
+/// isotropic branch) -- matches what a trained creature body actually
 /// uses (fiber-directed contraction); the isotropic branch is a much simpler
 /// constant-diagonal term not needed here.
 ///
