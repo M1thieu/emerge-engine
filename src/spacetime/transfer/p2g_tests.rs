@@ -1,9 +1,5 @@
-//! P2G test suite for `transfer.rs` -- split out of the original combined
-//! `transfer_tests.rs` (2026-07-19, mirrors `transfer.rs`'s own P2G/G2P
-//! phase split) by pure mechanical line-range extraction, not retyped, to
-//! eliminate transcription risk in adjoint math this precise (every VJP
-//! here is verified against central-difference numerical gradients --
-//! exactly the code where a silent copy error would be hardest to notice).
+//! P2G test suite for `transfer.rs`. Every VJP here is checked against
+//! central-difference numerical gradients.
 
 use super::*;
 
@@ -168,10 +164,10 @@ mod p2g_stress_vjp_tests {
 
     #[test]
     fn chains_correctly_into_neohookean_kirchhoff_stress_vjp() {
-        // Real end-to-end check: P2G's stress gradient feeds NeoHookean's own
-        // F-adjoint, and the composed result still matches a finite-difference
-        // taken all the way from F, through stress, through the P2G scatter --
-        // proves the two pieces compose correctly, not just individually.
+        // End to end: P2G's stress gradient feeds NeoHookean's F-adjoint, and
+        // the composed result matches a finite difference taken from F,
+        // through stress, through the P2G scatter, so the two pieces compose
+        // correctly, not only individually.
         use crate::materials::NeoHookeanMaterial;
         use crate::particle::{Particle, Particles};
 
@@ -376,11 +372,10 @@ mod spatial_sort_tests {
     use crate::particle::{Particle, Particles};
 
     fn scattered_particles(n: usize, resolution: usize) -> Particles {
-        // Real deterministic LCG, same real convention as `sand_repose_
-        // angle_gui.rs`/`tests/grains_repose_angle.rs::SmallRng` -- a
-        // reproducible, real "spawn-order no longer matches spatial order"
-        // layout (the exact real-world condition `spatial_sort_order`
-        // exists to fix), not a contrived best case.
+        // Deterministic LCG, as in `sand_repose_angle_gui.rs`/
+        // `tests/grains_repose_angle.rs::SmallRng`: a reproducible layout where
+        // spawn order no longer matches spatial order, the condition
+        // `spatial_sort_order` exists for.
         struct Rng(u64);
         impl Rng {
             fn next_f32(&mut self) -> f32 {
@@ -444,10 +439,10 @@ mod spatial_sort_tests {
 
     #[test]
     fn spatial_sort_order_groups_nearby_particles() {
-        // Real check that the sort actually improves locality, not just
-        // that it's a valid permutation: consecutive entries in the sorted
-        // order should land in the same or a neighboring grid cell far more
-        // often than the ORIGINAL (random spawn) order does.
+        // The sort must improve locality, not only be a valid permutation:
+        // consecutive entries in the sorted order land in the same or a
+        // neighboring grid cell far more often than in the original (random
+        // spawn) order.
         let resolution = 32;
         let particles = scattered_particles(300, resolution);
         let cell_of = |i: usize| -> IVec2 { particles.x[i].floor().as_ivec2() };
@@ -473,12 +468,10 @@ mod spatial_sort_tests {
 
     #[test]
     fn scatter_sorted_matches_unsorted_mass_and_momentum() {
-        // Real, disclosed tolerance, not exact equality: `scatter_particles_
-        // to_grid_sorted`'s own doc explains WHY exact match isn't
-        // expected (float summation order changes with iteration order).
-        // What must hold is real conservation -- total mass and momentum
-        // scattered onto the grid should agree closely regardless of which
-        // order particles were processed in.
+        // Tolerance, not exact equality: float summation order changes with
+        // iteration order (see `scatter_particles_to_grid_sorted`). Total
+        // mass and momentum scattered onto the grid must still agree closely
+        // whatever the processing order.
         let resolution = 24;
         let particles = scattered_particles(150, resolution);
         let materials =

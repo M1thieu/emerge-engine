@@ -75,19 +75,11 @@ impl GpuSimulation {
         let mut min_mat_dt = self.config.dt;
         let mut near_wall_gravity_scale = 1.0f32;
         let mut awake_count = 0usize;
-        // Real CPU/GPU parity fix (2026-09-16): CPU's own `choose_substep_dt`
-        // returns immediately when `adaptive_timestep` is off (exactly `config.dt`,
-        // one substep, zero scan cost) -- this GPU scan never had that early
-        // return at all, so `adaptive_timestep: false` was silently a no-op here.
-        // Found via a real regression: `gpu_and_cpu_shock_viscosity_match_under_
-        // forced_compression` (tests/gpu.rs) sets this flag specifically to force
-        // one identical substep on both backends for a controlled comparison --
-        // GPU was only ever "passing" by coincidentally landing on 1 substep from
-        // its OLD, incomplete CFL scan; once the real terms below were added, GPU
-        // correctly started recommending 2 substeps for that scene's forced
-        // compression, breaking the coincidence. Gating the whole scan here
-        // restores the real, intended parity: non-adaptive means exactly one
-        // substep of `config.dt`, unconditionally, matching CPU exactly.
+        // As CPU's `choose_substep_dt`: with `adaptive_timestep` off, exactly one
+        // substep of `config.dt`, no scan. Tests such as
+        // `gpu_and_cpu_shock_viscosity_match_under_forced_compression`
+        // (tests/gpu.rs) rely on this to force one identical substep on both
+        // backends.
         if self.config.adaptive_timestep {
             for p in self.particles.iter() {
                 if p.sleeping != 0 {
@@ -106,22 +98,18 @@ impl GpuSimulation {
                 }
                 max_speed = max_speed.max(s);
 
-                // Real, engine-wide CFL parity fix (2026-09-16): CPU's own
-                // `choose_substep_dt` (spacetime/solver/cfl.rs) has several real, cited
-                // per-particle stability terms this GPU scan never computed -- it only
-                // ever saw raw particle speed plus a material's REST-state acoustic
-                // bound. Confirmed live: a GPU-only fluid scene (byte-identical scene
-                // geometry/EOS to a CPU twin that stays stable) explodes on violent
-                // impact while `sub`/`cfl` both looked nominal -- these missing terms
-                // are exactly what CPU had that GPU didn't. Ported via the SAME shared
-                // functions CPU now also calls (single source of truth, no duplicated
-                // formula to drift) -- see each function's own doc for citations.
+                // The per-particle stability terms of CPU's `choose_substep_dt`
+                // (spacetime/solver/cfl.rs), beyond raw speed and a material's
+                // rest-state acoustic bound. Without them a GPU fluid scene
+                // identical to a stable CPU twin explodes on violent impact while
+                // `sub`/`cfl` look nominal. Computed with the same shared
+                // functions CPU calls (see each function's doc for citations).
                 let owns_state = self.registry.owns_deformation_volume_state(p.material_id);
-                // Real, PREDICTIVE (not reactive) near-wall tightening for a strict
-                // fluid (`SimConfig::fluid_near_wall_cfl_scale`) -- mirrors CPU's own
-                // `is_near_wall` gate exactly, including its Mach-number-based
-                // compression-margin check (`fluid_near_wall_compression_mach_margin`)
-                // using this same one-frame-lagged `last_max_particle_speed` CPU uses.
+                // Predictive near-wall tightening for a strict fluid
+                // (`SimConfig::fluid_near_wall_cfl_scale`), as CPU's `is_near_wall`
+                // gate, including its Mach-based compression margin
+                // (`fluid_near_wall_compression_mach_margin`) with the same
+                // one-frame-lagged `last_max_particle_speed`.
                 let near_wall = self.config.fluid_near_wall_cfl_scale != 1.0
                     && owns_state
                     && is_near_wall(p.x, self.config.grid_res, self.config.boundary_thickness);
@@ -157,7 +145,7 @@ impl GpuSimulation {
                 }
 
                 // Deformation-gradient ODE stability -- unconditional on material type,
-                // see the function's own doc.
+                // see the function's doc.
                 let deformation_dt =
                     deformation_gradient_ode_dt_bound(grad_norm, self.config.cfl_coefficient);
                 if deformation_dt.is_finite() && deformation_dt > 0.0 {
@@ -195,11 +183,10 @@ impl GpuSimulation {
                 }
             }
             self.last_max_particle_speed = max_speed;
-            // Real, standard "additional stability condition" for explicit integration
-            // under a body force (Bridson, "Fluid Simulation for Computer Graphics" ch.
-            // 3; Foster & Fedkiw 2001) -- see CPU's own `choose_substep_dt` tail for the
-            // full derivation. Ported here (was previously CPU-only): GPU fluids sit
-            // under the exact same gravity and the same at-rest gap this term closes.
+            // Additional stability condition for explicit integration under a body
+            // force (Bridson, "Fluid Simulation for Computer Graphics" ch. 3; Foster
+            // & Fedkiw 2001); see the tail of CPU's `choose_substep_dt` for the
+            // derivation. GPU fluids sit under the same gravity.
             let g = self.config.gravity.length();
             if g > f32::EPSILON {
                 let gravity_dt = (self.config.cfl_coefficient * self.config.grid_cell_size
@@ -293,7 +280,7 @@ impl GpuSimulation {
 
         // Multi-field contact (GPU port) -- directional grip friction, uploaded once per
         // frame like ff_params above. `self.grip_params` starts symmetric (no
-        // directional bias, identical to every scene before this existed) and is only
+        // directional bias) and is only
         // live-adjustable via `set_grip_direction`/`set_grip_friction` -- a real
         // GPU-side `DirectionalContactGrip` equivalent, matching CPU's own
         // atomics-based live-adjustable pattern (plain field here since GpuSimulation
@@ -304,7 +291,7 @@ impl GpuSimulation {
         // Day-night/ambient thermal diffusion (GPU port) -- uploaded once per frame,
         // same pattern as grip_params above. `enabled == 0` (the default, every
         // existing scene) makes the 4 thermal passes below skip their dispatch
-        // entirely, not just early-return per-thread -- real, not just disabled-in-name.
+        // entirely, not just early-return per-thread -- not just disabled-in-name.
         self.buffers
             .upload_thermal_params(&self.queue, &self.thermal_params);
         let thermal_active = self.thermal_params.enabled != 0;
@@ -334,7 +321,7 @@ impl GpuSimulation {
         // and read once per substep in force_fields.wgsl; cleared after upload since
         // each call is a one-shot edge-trigger, not a persistent state (a tag that's
         // force-asleep doesn't need to be re-sent every frame -- sleeping is sticky on
-        // the particle itself until something genuinely wakes it).
+        // the particle itself until something wakes it).
         let mut sw_params: GpuSleepWakeParams = bytemuck::Zeroable::zeroed();
         sw_params.sleep_count = self.pending_sleep_tags.len() as u32;
         for (i, &tag) in self.pending_sleep_tags.iter().enumerate() {
@@ -500,9 +487,8 @@ impl GpuSimulation {
         let mut chunks = bind_groups[..encoded_substeps]
             .chunks(SUBSTEP_SUBMIT_BATCH)
             .peekable();
-        // Split pure CPU command-building time from GPU-completion wait time --
-        // "encode_ns" previously bundled both under one name, hiding whether a slow
-        // step_frame() was a CPU-side encoding problem or genuinely GPU-execution-bound.
+        // CPU command-building time is timed apart from GPU-completion wait time, to
+        // tell whether a slow step_frame() is CPU-side encoding or GPU-execution-bound.
         // How often the per-substep active-block re-detection has to run. A block is
         // marked active when it OR ANY of its 8 neighbours holds particles
         // (`particle_sort_compact_main`), so a particle's 3x3 scatter stencil stays inside
@@ -568,7 +554,7 @@ impl GpuSimulation {
                             resource_active,
                             asflip_active,
                             // Reuses the SAME `SimConfig` field CPU's own
-                            // `step.rs` already gates on -- real, automatic
+                            // `step.rs` already gates on -- automatic
                             // parity, not a separate GPU-only flag. Default 0
                             // (every existing scene, CPU or GPU) is a true no-op
                             // (see `fluid_pressure_iterations > 0` gate in

@@ -55,9 +55,8 @@ pub use crate::{
 
     IdealGasMaterial,
     IsothermalCavitatingFluidMaterial,
-    // Real, kinematically-driven moving obstacle -- see its own doc for
-    // the "no rigid bodies" scope-compliant design and the real two-way
-    // momentum-exchange mechanism.
+    // Kinematically driven moving obstacle (not a rigid body), with two-way
+    // momentum exchange; see its doc.
     KinematicCircleBoundary,
     // Creature locomotion controller
     Lnn,

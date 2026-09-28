@@ -37,16 +37,14 @@ fn bspline_w(d: f32) -> f32 {
     return 0.0;
 }
 
-// Free-surface velocity extrapolation for an UNTOUCHED grid node -- mirrors
-// CPU's `Grid::velocity_at_or_extrapolated` (`a236fef`, 2026-08-13). An
-// untouched node's raw `cell.momentum` is a stale zero, not a real velocity
-// -- gathering it reads as an artificial jump across a free-surface
-// particle's own stencil, which LOOKS like stretching even in true free
-// fall (where div(v) must be exactly 0). Verified live: free fall's own J
-// went to exactly `[1.000,1.000]`, bit-for-bit matching this fix's own
-// CPU-side measured result. Slip wall on the extrapolated value (matching
-// CPU's `apply_slip_wall_velocity`) so a near-boundary cell doesn't feed
-// back a velocity that ignores the wall.
+// Free-surface velocity extrapolation for an untouched grid node, mirroring
+// CPU's `Grid::velocity_at_or_extrapolated`. An untouched node's raw
+// `cell.momentum` is a stale zero, not a velocity; gathering it makes a
+// free-surface particle's stencil look stretched even in free fall (where
+// div(v) must be exactly 0; with extrapolation free fall's J stays at
+// `[1.000,1.000]`, as on CPU). Slip wall on the extrapolated value (as CPU's
+// `apply_slip_wall_velocity`) so a near-boundary cell does not feed back a
+// velocity that ignores the wall.
 fn extrapolated_boundary_velocity(
     particle_v: vec2<f32>,
     cx: i32,
@@ -65,11 +63,11 @@ fn extrapolated_boundary_velocity(
     return v;
 }
 
-// Measured and NOT kept (2026-09-19): a workgroup-local copy of this workgroup's grid
-// patch (loaded once cooperatively, read from shared memory by its 64 particles) made no
-// difference -- 112-120us without vs 115-125us with, on the dam break. The whole grid is
-// 64KB at grid_res=64 and already sits in the GPU's L2; the extra barriers and the
-// cooperative load cost as much as the saved global reads.
+// Not done: a workgroup-local copy of this workgroup's grid patch (loaded once
+// cooperatively, read from shared memory by its 64 particles) measured no
+// difference -- 112-120us without vs 115-125us with, on the dam break. The whole
+// grid is 64KB at grid_res=64 and already sits in the GPU's L2; the extra
+// barriers and the cooperative load cost as much as the saved global reads.
 
 // Gathers into `*pp` (and writes the same fields to `particles[p_idx]`, exactly as
 // the standalone pass did). Leaves both untouched for a sleeping particle that
@@ -92,7 +90,7 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     // at all, sleeping or not, and can no longer distinguish real activity from a calm,
     // settled neighbor. grid.momentum holds actual velocity by this point (grid_update
     // already converted it) -- a cell fed only by frozen, at-rest particles has velocity
-    // near zero; one fed by a genuinely moving particle does not.
+    // near zero; one fed by a moving particle does not.
     if p.sleeping != 0u {
         var should_wake = false;
         for (var di: i32 = -1; di <= 1; di++) {
@@ -115,7 +113,7 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     // velocity_gradient=0 instead of gathering from the grid -- mirrors
     // `gather_grid_to_particles`'s CPU behavior exactly (see transfer.rs). The
     // particle's own mass/stress still scattered into P2G normally (unconditional
-    // there, same as sleeping particles), so it remains a real, immovable anchor
+    // there, same as sleeping particles), so it remains a immovable anchor
     // other bodies push against.
     if p.pinned != 0u {
         particles[p_idx].v                 = vec2<f32>(0.0);
@@ -173,7 +171,7 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
                 contact_active,
             );
             // Free-surface velocity extrapolation for untouched nodes -- see
-            // `extrapolated_boundary_velocity`'s own doc for the full account.
+            // `extrapolated_boundary_velocity`'s doc for the full account.
             let extrap_v = extrapolated_boundary_velocity(
                 p.v, cx, cy, i32(res), step_params.gravity, substep_dt(),
                 step_params.boundary_thickness,
@@ -213,17 +211,9 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     }
 
     // C = B · D_inverse (APIC affine velocity gradient). No clamp and no
-    // relaxation, matching CPU `gather_grid_to_particles` exactly.
-    //
-    // A per-substep deviatoric "shear relaxation" of C used to live here for
-    // strict fluids (2026-09-16 to 2026-09-18). It was masking a GPU bug, not
-    // an APIC stability limit: `particles_update.wgsl` computed the fluid's
-    // div(v) as C[0][0] + C[0][1] instead of the trace (see `trace2` there),
-    // so J swung with shear instead of real compression and the fluid blew
-    // apart on impact. With that fixed, the CPU twin of the exact scene and
-    // the GPU agree to within a few percent with no relaxation at all, and
-    // the relaxation's own side effect -- compounding over hundreds of
-    // near-wall substeps and freezing the fluid on landing -- is gone with it.
+    // relaxation, matching CPU `gather_grid_to_particles` exactly. Fluid
+    // div(v) is the trace of C (see `trace2` in `particles_update.wgsl`); with
+    // that, GPU and a CPU twin of the same scene agree within a few percent.
     let C = mat2x2<f32>(B_col0, B_col1) * step_params.kernel_d_inverse;
 
     particles[p_idx].v                 = new_v;
@@ -231,16 +221,14 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     (*pp).v                 = new_v;
     (*pp).velocity_gradient = C;
 
-    // GPU/CPU parity fix (2026-08-15): materials that own their own
-    // deformation-derived volume state (today: strict fluids) skip this
-    // raw kernel-mass gather entirely -- it's free-surface-biased and
-    // unbounded (real, measured: water density drifting to [0.0116,0.358]
-    // against a rest density of 0.1, well outside what the analytical,
-    // J-clamp-derived formula in particles_update.wgsl could ever produce).
-    // Mirrors CPU's `estimate_particle_volumes` (density.rs), which
-    // `continue`s past exactly these particles for the identical reason.
-    // Density/volume are left untouched here for them -- particles_update.wgsl
-    // overwrites both, every substep, from the material's own clamped F.
+    // Materials that own their deformation-derived volume state (strict
+    // fluids) skip this raw kernel-mass gather: it is free-surface-biased and
+    // unbounded (measured: water density drifting to [0.0116,0.358] against a
+    // rest density of 0.1, outside anything the J-clamped formula in
+    // particles_update.wgsl can produce). Mirrors CPU's
+    // `estimate_particle_volumes` (density.rs), which skips the same
+    // particles. particles_update.wgsl overwrites their density and volume
+    // every substep from the material's clamped F.
     if materials[p.material_id].owns_deformation_volume_state == 0u {
         let density = max(new_density, NUM_FLOOR);
         particles[p_idx].density = density;

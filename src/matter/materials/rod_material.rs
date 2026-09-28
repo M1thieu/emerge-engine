@@ -1,22 +1,15 @@
 use crate::particle::RodPoints;
 
-/// Real SI-unit rod material parameters -- `EA`/`EI` use the SAME `E`
-/// (Young's modulus) and `I` (second moment of area, `I ~ width^3` for a
-/// rectangular section) used in the Greenhill self-buckling analysis
-/// (`h_crit = (7.8373*EI/(linear_density*g))^(1/3)`) -- direct continuity
-/// with that formula, not a new concept.
+/// SI rod material parameters. `EA`/`EI` use the same `E` (Young's modulus)
+/// and `I` (second moment of area, `I ~ width^3` for a rectangular section)
+/// as the Greenhill self-buckling analysis
+/// (`h_crit = (7.8373*EI/(linear_density*g))^(1/3)`).
 ///
-/// Moved here from `spacetime::rod` 2026-08-05 -- not a `MaterialModel`
-/// (no `constitutive_model`/`kirchhoff_stress` impl, doesn't plug into the
-/// generic multi-material MPM dispatch the other 13 materials share), but
-/// genuinely a constitutive law (EA/EI stiffness) same as
-/// `grain_contact_law`'s own real precedent for this exact situation.
-/// Originally kept in `spacetime::rod` because two of its own methods took
-/// `&RodPoints` directly, which would have been a real backwards dependency
-/// (matter depending on spacetime) at the time -- moot now that `RodPoints`
-/// itself lives in `matter::particle`: both are Matter-domain kinematic
-/// state/constitutive-law now, so this is a same-domain reference, not a
-/// cross-domain one.
+/// Not a `MaterialModel` (no `constitutive_model`/`kirchhoff_stress`, not
+/// part of the MPM material dispatch), but a constitutive law (EA/EI
+/// stiffness), so it lives in `matter::materials` like `grain_contact_law`.
+/// Its methods that take `&RodPoints` stay within the matter domain, since
+/// `RodPoints` lives in `matter::particle`.
 #[derive(Debug, Clone, Copy)]
 pub struct RodMaterial {
     /// Axial (stretch) stiffness `E*A`, Newtons.
@@ -26,7 +19,7 @@ pub struct RodMaterial {
     /// Kelvin-Voigt axial dashpot (mirrors `ViscoelasticMaterial`'s own
     /// `viscosity` field, 1D-projected onto each edge), N·s/m.
     pub axial_damping: f32,
-    /// Rayleigh bending dissipation coefficient, N·m·s. Real, standard
+    /// Rayleigh bending dissipation coefficient, N·m·s. Standard
     /// generalized-force construction (Rayleigh 1873) -- disclosed as this
     /// plan's own composition of two separately-citable classical-mechanics
     /// results (Kelvin-Voigt + Rayleigh dissipation); Bergou et al. 2008
@@ -113,48 +106,36 @@ impl RodMaterial {
         (axial_damping, bending_damping)
     }
 
-    /// Real, GLOBAL modal critical damping for a fixed-free (cantilever)
-    /// rod's actual fundamental modes -- root-cause fix for
-    /// `critical_damping`'s own disclosed local-reference gap above.
+    /// Global modal critical damping for a fixed-free (cantilever) rod's
+    /// fundamental modes, instead of `critical_damping`'s local reference
+    /// (see above).
     ///
-    /// # Real physics: bending
-    /// Uses the SAME real, independently-confirmed fundamental cantilever
-    /// eigenvalue `energy::acoustics::modal` uses (`beta_1*L = 1.8751`,
-    /// verified via web search against Blevins 1979 / Rao's *Mechanical
-    /// Vibrations*, not recalled from memory alone), and the rod's own real
-    /// length/mass (`rest_edge_length`/`mass` sums) -- NOT a new,
-    /// independently-invented constant. The mode shape itself is derived
-    /// directly from the clamped-root/free-tip boundary value problem
-    /// (`phi(0)=phi'(0)=0`, `phi''(L)=phi'''(L)=0`), giving the standard
-    /// closed form `phi(x) = (cos(bx)-cosh(bx)) + sigma*(sinh(bx)-sin(bx))`,
-    /// `sigma = (sinh(bL)-sin(bL))/(cosh(bL)+cos(bL))` -- re-derived here
-    /// from the boundary conditions directly (not copied from an uncertain
-    /// memory of a textbook constant), independently checked against the
-    /// real characteristic equation `cos(bL)*cosh(bL) = -1`
-    /// (cos(1.8751)*cosh(1.8751) ≈ -1.0009, confirms the eigenvalue). The
-    /// true modal mass `integral(mu*phi(x)^2 dx)/phi(L)^2` is computed by
-    /// real numerical integration (2000-sample composite trapezoidal rule)
-    /// over the rod's own uniform-mass assumption (same disclosed
-    /// simplification `energy::acoustics::modal` already makes) -- not a
-    /// memorized modal-mass constant, so there is no new unverified number
-    /// here, only re-derived real physics plus real numerical integration.
+    /// # Bending
+    /// Uses the fundamental cantilever eigenvalue of `energy::acoustics::modal`
+    /// (`beta_1*L = 1.8751`, Blevins 1979 / Rao, *Mechanical Vibrations*) and
+    /// the rod's length and mass (`rest_edge_length`/`mass` sums). The mode
+    /// shape comes from the clamped-root/free-tip boundary value problem
+    /// (`phi(0)=phi'(0)=0`, `phi''(L)=phi'''(L)=0`):
+    /// `phi(x) = (cos(bx)-cosh(bx)) + sigma*(sinh(bx)-sin(bx))`,
+    /// `sigma = (sinh(bL)-sin(bL))/(cosh(bL)+cos(bL))`; the eigenvalue
+    /// satisfies `cos(bL)*cosh(bL) = -1` (cos(1.8751)*cosh(1.8751) ≈ -1.0009).
+    /// The modal mass `integral(mu*phi(x)^2 dx)/phi(L)^2` is integrated
+    /// numerically (2000-sample composite trapezoidal rule) for a uniform
+    /// mass, the simplification `energy::acoustics::modal` also makes.
     /// `c_crit_bending = 2 * m_modal * omega_1`.
     ///
-    /// # Real physics: axial
-    /// Fixed-free rod longitudinal vibration has an exact elementary
-    /// solution (no numerical integration needed): mode shape `sin(pi x /
-    /// 2L)`, modal mass exactly `mu*L/2` (elementary integral of
+    /// # Axial
+    /// Fixed-free longitudinal vibration has an exact elementary solution:
+    /// mode shape `sin(pi x / 2L)`, modal mass `mu*L/2` (integral of
     /// `sin^2(pi x/2L)` over `[0,L]`), `omega_1 = (pi/2L)*sqrt(EA/mu)`.
     /// `c_crit_axial = 2 * (mu*L/2) * omega_1`.
     ///
-    /// # Scope: takes ONE `ea`/`ei`, not `RodPoints::ea`/`ei`
-    /// The closed-form mode shape above is only exact for a UNIFORM rod.
-    /// For a genuinely non-uniform rod (see `RodPoints::ei`'s own doc) this
-    /// is a real, disclosed approximation -- pass a representative (e.g.
-    /// mean, or the caller's own base `RodMaterial`) value; a true
-    /// non-uniform modal solution needs a different, not-yet-built method
-    /// (e.g. a real Rayleigh-Ritz or FE eigenvalue solve), not attempted
-    /// here.
+    /// # Scope: one `ea`/`ei`, not `RodPoints::ea`/`ei`
+    /// The closed-form mode shape is exact only for a uniform rod. For a
+    /// non-uniform rod (see `RodPoints::ei`) it is an approximation: pass a
+    /// representative value (e.g. the mean, or the caller's base
+    /// `RodMaterial`). A true non-uniform modal solution needs another method
+    /// (e.g. a Rayleigh-Ritz or FE eigenvalue solve), not built.
     pub fn modal_critical_damping(points: &RodPoints, ea: f32, ei: f32) -> (f32, f32) {
         let n = points.len();
         if n < 2 {
@@ -182,9 +163,8 @@ impl RodMaterial {
         };
         let phi_tip = phi(length_m);
         if phi_tip.abs() < 1.0e-9 {
-            // Degenerate (shouldn't happen for the real beta_1*L root) --
-            // real, disclosed fallback to the local reference above rather
-            // than divide by ~zero.
+            // Degenerate (should not happen for the beta_1*L root): fall back
+            // to the local reference above rather than divide by ~zero.
             let l0 = length_m / (n - 1) as f32;
             let point_mass = total_mass_kg / n as f32;
             return Self::critical_damping(l0, point_mass, ea, ei);
@@ -208,24 +188,17 @@ impl RodMaterial {
         (axial_damping, bending_damping)
     }
 
-    /// Real fundamental bending-mode period (seconds) for a fixed-free rod --
-    /// same real `beta_1*L=1.8751` eigenvalue and omega formula
-    /// `modal_critical_damping` and `energy::acoustics::modal` both use, so
-    /// this always agrees with them (single source of truth for this
-    /// constant, not a second, possibly-drifting copy).
+    /// Fundamental bending-mode period (seconds) for a fixed-free rod, with
+    /// the `beta_1*L = 1.8751` eigenvalue and omega formula that
+    /// `modal_critical_damping` and `energy::acoustics::modal` use, so the
+    /// three agree.
     ///
-    /// Real use (root-cause fix): the rod sleep-scoring test
-    /// (`step.rs`) used to require a FIXED 0.5s of sustained low velocity
-    /// before sleeping, regardless of the rod's own natural period -- for a
-    /// soft, slow rod whose own period is comparable to or longer than that
-    /// fixed window, a genuine, still-large-amplitude oscillation can dwell
-    /// below the speed threshold near a swing peak for that whole window,
-    /// freezing the rod mid-swing at a real, wrong, off-rest position (this
-    /// is not hypothetical -- it was the direct, measured cause of a real
-    /// user-reported bug). Scaling the settle-duration to a real
-    /// multiple of THIS rod's own period fixes that at the root instead of
-    /// picking a bigger fixed constant that would just move the same
-    /// failure mode to an even slower rod.
+    /// Used by rod sleep scoring (`step.rs`): the settle duration is a
+    /// multiple of this rod's own period. A fixed window (e.g. 0.5 s) lets a
+    /// soft, slow rod whose period is comparable or longer dwell below the
+    /// speed threshold near a swing peak for the whole window and freeze
+    /// mid-swing, off rest; a larger fixed window would only move the failure
+    /// to a slower rod.
     ///
     /// Same uniform-rod scope note as `modal_critical_damping` above: pass
     /// one representative `ei`, not a non-uniform rod's per-vertex array.

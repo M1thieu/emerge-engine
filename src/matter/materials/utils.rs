@@ -91,9 +91,9 @@ fn deformation_increment_exp_with_det(dt_velocity_gradient: Mat2) -> (Mat2, f32)
 /// One substep of the continuity equation for a material that owns its
 /// own volume, carried in the log so a small increment is not absorbed.
 ///
-/// The scalar twin of `advance_deformation_gradient`, and the same
-/// lesson. A fluid used to read `J` back from its isotropic `F` each
-/// substep and multiply: `J_new = det(F) * exp(dt div v)`. Near one, an
+/// The scalar twin of `advance_deformation_gradient`, for the same
+/// reason. Reading `J` back from an isotropic `F` each substep and
+/// multiplying, `J_new = det(F) * exp(dt div v)`, loses precision: near one, an
 /// f32 has a resolution of about 1.2e-7, while a calm flow's own
 /// increment is a thousandth of that, so each step loses a fixed
 /// FRACTION of its increment to absorption and the smallest increments
@@ -124,7 +124,7 @@ pub(crate) fn advance_log_volume_ratio(
 /// The volume ratio a particle is already carrying, read from `volume`
 /// rather than recomputed from `det(F)`: near the identity that
 /// determinant is a cancelling difference, and reading it back every step
-/// is what `advance_deformation_gradient`'s own doc measures as the worse
+/// is what `advance_deformation_gradient`'s doc measures as the worse
 /// of the two options.
 ///
 /// Zero means the particle is not carrying a usable volume yet (a bare
@@ -185,7 +185,7 @@ pub(crate) fn advance_deformation_gradient(
         // this ratio is not the step's own volume change: it is whatever
         // disagreement the carried volume and `det(F)` already had.
         // Round-off is a few parts in 1e7, so anything past a part in
-        // 1e3 means the two are genuinely out of step -- a state this
+        // 1e3 means the two are out of step -- a state this
         // correction must not silently repair by rescaling F.
         const MAX_PINNED_CORRECTION: f32 = 1.0e-3;
         let ratio = carried / det;
@@ -357,30 +357,15 @@ pub(crate) fn corotated_elastic_stress(f: Mat2, lambda: f32, mu: f32) -> Mat2 {
     2.0 * mu * (f - r) * f.transpose() + lambda * (j - 1.0) * j * Mat2::IDENTITY
 }
 
-/// Corotated elastic energy DENSITY `Psi(F) = mu*||F-R||_F^2 +
-/// 0.5*lambda*(J-1)^2` (Stomakhin et al. 2013, the same reference
-/// `corotated_elastic_stress` above already cites -- that function IS this
-/// energy's First-Piola gradient dotted with `F^T` to get to Kirchhoff
-/// form: `dPsi/dF = 2*mu*(F-R) + lambda*(J-1)*J*F^-T`, and `(dPsi/dF)*F^T =
-/// 2*mu*(F-R)*F^T + lambda*(J-1)*J*F^-T*F^T = 2*mu*(F-R)*F^T +
-/// lambda*(J-1)*J*I` since `F^-T*F^T=I` -- exactly `corotated_elastic_
-/// stress`'s own formula). Needed for `spacetime::solver::implicit_
-/// corotated`'s trust-region Newton (Nocedal & Wright, "Numerical
-/// Optimization" 2nd ed., ch.4): a trust-region ratio test needs the
-/// actual scalar objective value, not just its gradient (the residual).
-/// Mirrors `corotated_elastic_stress`'s own `J<=MIN_J` degenerate-state
-/// convention (zero contribution there, matching that function's "no
-/// force" contract in the same regime) rather than inventing a different
-/// rule for the energy alone.
+/// Corotated elastic energy density `Psi(F) = mu*||F-R||_F^2 +
+/// 0.5*lambda*(J-1)^2` (Stomakhin et al. 2013). `corotated_elastic_stress` is
+/// its First-Piola gradient times `F^T`: `dPsi/dF = 2*mu*(F-R) +
+/// lambda*(J-1)*J*F^-T`, and `(dPsi/dF)*F^T = 2*mu*(F-R)*F^T +
+/// lambda*(J-1)*J*I`. Zero at `J <= MIN_J`, like the stress ("no force").
 ///
-/// Test-only (2026-09-11): `implicit_corotated`'s trust region no longer
-/// uses this energy for its ratio test (switched to a Gauss-Newton
-/// `0.5*||residual||^2` merit -- see that module's `newton_solve` doc for
-/// the real scale-mismatch that motivated the change). Kept callable, not
-/// deleted: it is `model_residual`'s own verified-gradient oracle, a real,
-/// hand-checked mathematical finding (Piola, not Kirchhoff, paired with
-/// `F_n^T*grad`, scaled by `dt`) worth having on hand rather than
-/// re-deriving from scratch if a future fix needs it again.
+/// Test-only: the oracle `model_residual`'s gradient is checked against in
+/// `spacetime::solver::implicit_corotated`, whose trust region measures a
+/// Gauss-Newton `0.5*||residual||^2` merit instead (see `newton_solve`).
 #[cfg(test)]
 #[inline]
 pub(crate) fn corotated_elastic_energy_density(f: Mat2, lambda: f32, mu: f32) -> f32 {
@@ -394,27 +379,18 @@ pub(crate) fn corotated_elastic_energy_density(f: Mat2, lambda: f32, mu: f32) ->
 }
 
 /// Analytic Jacobian-vector product of `polar_decomposition_2d`: given `F`
-/// and a perturbation direction `dF`, returns `dR`. Closed form (not the
-/// generic SVD-based polar-decomposition derivative from the literature,
-/// which doesn't match `R=M/norm`, `M=[[x,-y],[y,x]]`, `x=tr(F)`,
-/// `y=F01-F10` -- this engine's own actual formula):
+/// and a perturbation direction `dF`, returns `dR`. Closed form for this
+/// engine's `R = M/norm`, `M = [[x,-y],[y,x]]`, `x = tr(F)`, `y = F01-F10`
+/// (the generic SVD-based polar derivative does not match it):
 ///   dx=tr(dF), dy=dF01-dF10, dM=[[dx,-dy],[dy,dx]]
 ///   d(norm)=(x*dx+y*dy)/norm,  dR=dM/norm - R*d(norm)/norm
-/// Verified against central finite differences
-/// (`stage2_corotated_polar_decomposition_jvp_h_convergence_diagnostic`-
-/// style check, `polar_decomposition_jvp_matches_finite_difference` below):
-/// max relative error 0.06% at h=1e-3 (smaller h is WORSE here, f32
-/// catastrophic cancellation on this normalized/divided quantity -- verify
-/// at h=1e-3, not smaller, a real lesson from deriving this the first time
-/// in `tests/scratch_implicit_mpm_stage2_corotated_jvp.rs`).
+/// Checked by central finite differences
+/// (`polar_decomposition_jvp_matches_finite_difference`): max relative error
+/// 0.06% at h = 1e-3. Smaller h is worse here (f32 cancellation on this
+/// normalized quantity).
 ///
-/// Real production code again (2026-09-11): `spacetime::solver::
-/// implicit_corotated`'s `dTau/dL` Gershgorin-PSD construction calls the
-/// plain `corotated_elastic_stress_jvp` below (which calls this) directly
-/// to build the real local Hessian it then projects -- see that module's
-/// own doc for why the earlier Piola-space SPD projection this replaced
-/// didn't survive the Kirchhoff/spatial-gradient pairing the real engine
-/// actually needs.
+/// Used by `corotated_elastic_stress_jvp` below, which
+/// `spacetime::solver::implicit_corotated` calls to build its local Hessian.
 #[inline]
 pub(crate) fn polar_decomposition_2d_jvp(f: Mat2, df: Mat2) -> Mat2 {
     let x = f.x_axis.x + f.y_axis.y;
@@ -434,25 +410,17 @@ pub(crate) fn polar_decomposition_2d_jvp(f: Mat2, df: Mat2) -> Mat2 {
 /// Analytic Jacobian-vector product of `corotated_elastic_stress`'s
 /// Kirchhoff stress w.r.t. `F`: given `F` and a perturbation `dF`, returns
 /// `dTau`. Product rule on `2*mu*(F-R)*F^T + lambda*(J-1)*J*I` using
-/// `polar_decomposition_2d_jvp` above and `dJ=J*(F^-T:dF)`. This is the
-/// exact Hessian-vector-product building block an implicit (Newton-CG) MPM
-/// solve needs for every material sharing this elastic branch
-/// (DruckerPrager/sand, VonMises, Rankine, MuIRheology, and Corotated
-/// itself) -- see `spacetime::solver::implicit_corotated`'s own doc for
-/// where this gets used. Verified against central finite differences
-/// (`corotated_stress_jvp_matches_finite_difference` below, and originally
-/// in `tests/scratch_implicit_mpm_stage2_corotated_jvp.rs`/`stage3_
-/// drucker_prager_multi_particle.rs` before being promoted here): max
-/// relative error 0.23% at real sand-magnitude stiffness.
+/// `polar_decomposition_2d_jvp` above and `dJ=J*(F^-T:dF)`. The
+/// Hessian-vector-product building block of an implicit (Newton-CG) solve for
+/// every material on this elastic branch (DruckerPrager, VonMises, Rankine,
+/// MuIRheology, Corotated), see `spacetime::solver::implicit_corotated`.
+/// Checked by central finite differences
+/// (`corotated_stress_jvp_matches_finite_difference`): max relative error
+/// 0.23% at sand-magnitude stiffness.
 ///
-/// Mirrors `corotated_elastic_stress`'s own `j <= MIN_J` floor: the stress
-/// is pinned at exactly zero in that regime, so its local derivative is
-/// zero too (a real, standard, practical simplification at a hard
-/// clamp boundary, not a claim the true continuous derivative is zero
-/// there).
-///
-/// Real production code again (2026-09-11), same reason as `polar_
-/// decomposition_2d_jvp` above.
+/// Zero at `j <= MIN_J`, where the stress is pinned at zero: a practical
+/// simplification at a hard clamp, not a claim about the continuous
+/// derivative.
 #[inline]
 pub(crate) fn corotated_elastic_stress_jvp(f: Mat2, df: Mat2, lambda: f32, mu: f32) -> Mat2 {
     let j = f.determinant();
@@ -471,86 +439,35 @@ pub(crate) fn corotated_elastic_stress_jvp(f: Mat2, df: Mat2, lambda: f32, mu: f
     2.0 * mu * d_elastic_term + lambda * d_vol_term * Mat2::IDENTITY
 }
 
-/// The real, correct fix (2026-09-11) for a subtle bug in `spacetime::
-/// solver::implicit_corotated`'s Newton-CG: returns a PSD-guaranteed
-/// approximation of `d(tau)/d(L)` (Kirchhoff stress derivative w.r.t. a
-/// velocity-gradient perturbation `dl`, via `dF = dt*dl*f_n`), applied to
-/// the given `dl` -- NOT the earlier `corotated_elastic_stress_jvp_
-/// projected`, which projected `d(P)/d(F)` (Teran et al. 2005's SPD
-/// construction, correct for THAT pairing) and then converted to
-/// Kirchhoff/velocity-gradient space via the exact product rule. That
-/// conversion does not carry the PSD guarantee across: Teran's proof
-/// establishes `dP:dF >= 0` for First-Piola stress paired with the
-/// MATERIAL-space deformation gradient perturbation; this engine's real
-/// force (matching real implicit-MPM references read directly,
-/// `tmp/ziran2020`/`tmp/GeoTaichi`) pairs KIRCHHOFF stress with the
-/// SPATIAL kernel gradient instead, and `tau = P*F^T`'s dependence on `L`
-/// is a different bilinear form with no inherited guarantee -- confirmed
-/// live: even using the Piola-projected-then-converted JVP, real
-/// multi-particle Newton-CG calls in this exact solver saw the residual
-/// GROW across CG iterations (a negative-curvature direction), which a
-/// genuinely PSD system cannot produce.
+/// A PSD approximation of `d(tau)/d(L)` (the Kirchhoff stress derivative
+/// with respect to a velocity-gradient perturbation `dl`, through `dF =
+/// dt*dl*f_n`), applied to `dl`.
 ///
-/// Rather than re-deriving Teran's closed-form SVD-frame construction for
-/// this different pairing (real, substantial tensor algebra with real risk
-/// of a fresh, equally subtle error), this builds the CONCRETE local 4x4
-/// operator directly -- `L` has 4 real independent components in 2D, so
-/// does `tau` -- from four calls to the already finite-difference-verified
-/// EXACT `corotated_elastic_stress_jvp`, symmetrizes it (only the
-/// symmetric part of any matrix contributes to the quadratic form PSD-ness
-/// is about), then applies Teran et al. 2005's own eigenvalue-clamping
-/// projection DIRECTLY to this symmetric 4x4 matrix: eigendecompose it
-/// (`jacobi_eigen_symmetric_4x4`, Golub & Van Loan's classical cyclic
-/// Jacobi method for small real-symmetric matrices), clamp every negative
-/// eigenvalue to zero, reconstruct. The clamping step is pairing-agnostic
-/// linear algebra (the nearest SPD matrix in Frobenius norm to any real
-/// symmetric matrix, Higham 1988) -- it is Teran's own PAPER FORMULA
-/// (closed-form per-invariant expressions specific to `dP/dF`'s structure)
-/// that does not carry over to this Kirchhoff/spatial-gradient pairing, not
-/// the general clamping principle their paper introduces.
+/// Teran et al. 2005's SPD construction proves `dP:dF >= 0` for First-Piola
+/// stress with a material-space perturbation. This engine's force pairs
+/// Kirchhoff stress with the spatial kernel gradient (as `tmp/ziran2020` and
+/// `tmp/GeoTaichi` do), and `tau = P*F^T` as a function of `L` inherits no such
+/// guarantee: a Piola-projected operator converted by the product rule still
+/// let the residual grow across CG iterations, which a PSD system cannot do.
 ///
-/// Real fix (2026-09-11) replacing a first attempt at this same problem: a
-/// Gershgorin-shift (add a uniform diagonal shift until the matrix is
-/// diagonally dominant) is also a valid sufficient condition for PSD-ness,
-/// but confirmed live to be USELESS at real production stiffness: at
-/// `basic_sand`'s real E=15MPa (25x the softer synthetic modulus the
-/// correctness regression tests use), the shift needed to restore diagonal
-/// dominance dwarfs the real off-diagonal curvature, so the "projected"
-/// matrix degenerates toward a scaled identity carrying almost none of the
-/// true Hessian's directional information -- Newton's line search then
-/// rejects EVERY step from EVERY frame (confirmed via `EMERGE_IMPLICIT_
-/// DIAG=1` on `tests/scratch_implicit_corotated_real_fps_measurement.rs`:
-/// `best_trial_norm` came back statistically equal to `r_norm` even after
-/// CG solved its own linear subproblem to a 90%+ residual reduction),
-/// silently falling back to full explicit cost every single frame -- the
-/// real, deeper cause behind an apparent 0.73x "speedup" (net slower than
-/// explicit), not merely the redundant-rebuild cost this file's split
-/// build/apply API separately fixes below. Eigenvalue clamping only removes
-/// the actually-negative modes and leaves every genuinely positive-
-/// curvature direction untouched regardless of stiffness scale, so it does
-/// not have this failure mode.
+/// So the local 4x4 operator (`L` and `tau` both have 4 components in 2D) is
+/// built from four calls to the exact `corotated_elastic_stress_jvp`,
+/// symmetrized (only the symmetric part enters the quadratic form), then
+/// eigendecomposed (`jacobi_eigen_symmetric_4x4`, Golub & Van Loan's cyclic
+/// Jacobi) with negative eigenvalues clamped to zero: the nearest SPD matrix
+/// in Frobenius norm (Higham 1988), Teran's clamping principle without his
+/// `dP/dF`-specific closed form. A Gershgorin diagonal shift, also
+/// sufficient for PSD, swamps the curvature at production stiffness
+/// (`basic_sand`'s E = 15 MPa): the line search rejected every step.
 ///
-/// Split in two (2026-09-11, real performance fix): the expensive part
-/// (build the 4x4 matrix from 4 JVP evaluations, symmetrize, eigenvalue-
-/// clamp) depends only on `f`/`lambda`/`mu`/`dt`/`f_n` -- NOT on the
-/// direction `dl` being applied. A caller doing Newton-CG evaluates this at
-/// a FIXED trial `v` (hence fixed `f`) across MANY CG iterations, each with
-/// a DIFFERENT `dl` -- rebuilding the matrix from scratch on every one of
-/// those (the original, single-function form of this API) is real,
-/// measured, wasted work. [`corotated_kirchhoff_dtau_dl_psd_matrix`] builds
-/// the matrix ONCE per trial `v`; [`apply_dtau_dl_psd_matrix`] applies it to
-/// an arbitrary `dl` for the cost of a 4x4 mat-vec.
+/// Split in two: [`corotated_kirchhoff_dtau_dl_psd_matrix`] builds the matrix
+/// once per trial `v` (it does not depend on `dl`); [`apply_dtau_dl_psd_matrix`]
+/// applies it for a 4x4 mat-vec, instead of rebuilding it every CG iteration.
 ///
-/// Test-only (2026-09-11): `implicit_corotated`'s Newton solver no longer
-/// uses this eigenvalue-clamped operator in production -- it switched to
-/// `steihaug_cg` (Nocedal & Wright's trust-region method), which handles
-/// indefinite curvature structurally and needs no PSD projection at all.
-/// Kept callable, not deleted: a real, test-verified (`corotated_
-/// kirchhoff_dtau_dl_psd_tests`), literature-grounded (Teran, Sifakis,
-/// Irving & Fedkiw 2005's clamping principle, via a real Jacobi
-/// eigendecomposition rather than a cruder Gershgorin shift) construction
-/// worth having on hand if a future fix needs a guaranteed-PSD operator
-/// again, rather than re-deriving it from scratch.
+/// Test-only: `implicit_corotated` uses `steihaug_cg` (Nocedal & Wright),
+/// which handles indefinite curvature and needs no PSD projection. Kept, with
+/// `corotated_kirchhoff_dtau_dl_psd_tests`, in case a PSD operator is needed
+/// again.
 #[cfg(test)]
 pub(crate) fn corotated_kirchhoff_dtau_dl_psd_matrix(
     f: Mat2,
@@ -595,9 +512,9 @@ pub(crate) fn corotated_kirchhoff_dtau_dl_psd_matrix(
 /// unlike a Gershgorin diagonal shift, it never touches an eigenvalue that
 /// was already non-negative, so it cannot dilute real positive curvature
 /// regardless of how stiff the underlying material is (see this function's
-/// caller for the real, measured failure this replaces).
+/// caller for the measured failure this replaces).
 ///
-/// Test-only -- see `corotated_kirchhoff_dtau_dl_psd_matrix`'s own doc.
+/// Test-only -- see `corotated_kirchhoff_dtau_dl_psd_matrix`'s doc.
 #[cfg(test)]
 fn spd_project_symmetric_4x4(sym: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let (eigenvalues, v) = jacobi_eigen_symmetric_4x4(sym);
@@ -618,7 +535,7 @@ fn spd_project_symmetric_4x4(sym: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// operator, never a global assembly). Returns eigenvalues and the matching
 /// eigenvector matrix (columns), i.e. `sym == v * diag(eigenvalues) * v^T`.
 ///
-/// Test-only -- see `corotated_kirchhoff_dtau_dl_psd_matrix`'s own doc.
+/// Test-only -- see `corotated_kirchhoff_dtau_dl_psd_matrix`'s doc.
 #[cfg(test)]
 fn jacobi_eigen_symmetric_4x4(mut a: [[f32; 4]; 4]) -> ([f32; 4], [[f32; 4]; 4]) {
     let mut v = [[0.0f32; 4]; 4];
@@ -686,14 +603,9 @@ fn jacobi_eigen_symmetric_4x4(mut a: [[f32; 4]; 4]) -> ([f32; 4], [[f32; 4]; 4])
     ([a[0][0], a[1][1], a[2][2], a[3][3]], v)
 }
 
-/// Cheap application step for [`corotated_kirchhoff_dtau_dl_psd_matrix`]'s
-/// output -- a 4x4 mat-vec, no JVP evaluations. Test-only (2026-09-11):
-/// production (`spacetime::solver::implicit_corotated`) no longer applies
-/// this matrix to an arbitrary `dl` via matrix-free CG -- it assembles the
-/// SAME matrix into a dense free-DOF system and solves it directly (see
-/// that module's own doc, "remaining limitation #2 -- scale") -- kept here
-/// only for [`corotated_kirchhoff_dtau_dl_psd`]'s own direct-comparison
-/// test coverage.
+/// Application step for [`corotated_kirchhoff_dtau_dl_psd_matrix`]'s output:
+/// a 4x4 mat-vec, no JVP evaluations. Test-only, for
+/// [`corotated_kirchhoff_dtau_dl_psd`]'s direct comparison.
 #[cfg(test)]
 #[inline]
 pub(crate) fn apply_dtau_dl_psd_matrix(matrix: &[[f32; 4]; 4], dl: Mat2) -> Mat2 {
@@ -776,24 +688,17 @@ pub fn self_consistent_plastic_multiplier(
     gamma
 }
 
-/// Real, generic 1D elastic-perfectly-plastic return mapping -- the shared
-/// ALGORITHMIC core of "clamp a trial value to an interval around a
-/// permanent/plastic offset, permanently absorbing any excess," for any
-/// quantity whose yield surface is a plain interval rather than a
-/// norm-ball. This is the scalar-state sibling of the tensor-space radial
-/// return every material above uses (e.g. `VonMisesMaterial::update_particle`'s
-/// own `dev * (effective_yield/elastic_dev)` projection) -- genuinely
-/// different math from that (an interval clamp, not a norm rescale) because
-/// the underlying state is 1D, not a tensor; the SHARED concept (elastic
-/// trial -> yield check -> permanent return-map) is the same, only the
-/// shape of the projection differs with dimensionality. Real first adopter:
-/// `rod::plasticity`'s bending curvature; any other future scalar-state
-/// plasticity (a scalar damage variable, an axial-force yield) can reuse
-/// this directly instead of re-deriving the same three-line clamp.
+/// Generic 1D elastic-perfectly-plastic return mapping: clamps a trial value
+/// to an interval around a permanent offset and moves the excess into the
+/// offset. The scalar sibling of the tensor radial return (e.g.
+/// `VonMisesMaterial::update_particle`'s `dev * (effective_yield/elastic_dev)`):
+/// same elastic trial, yield check and return mapping, an interval clamp
+/// instead of a norm rescale. Used by `rod::plasticity`'s bending curvature;
+/// any scalar-state plasticity (a damage variable, an axial yield) can use it.
 ///
 /// `trial`: the fully-elastic candidate value (e.g. current curvature).
 /// `permanent`: the current permanent/plastic offset (e.g. rest curvature).
-/// `limit`: the real, positive elastic-limit half-width of the interval.
+/// `limit`: the positive elastic half-width of the interval.
 pub fn scalar_return_map(trial: f32, permanent: f32, limit: f32) -> f32 {
     let elastic = trial - permanent;
     if elastic > limit {
@@ -893,17 +798,13 @@ pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32) -> glam::Vec2 {
 
 /// Von Neumann & Richtmyer 1950 (LA-671) artificial bulk viscosity, EOS-
 /// agnostic core: `q = rho*(c0*h^2*(div v)^2 - c1*h*c_sound*div v)`, gated
-/// to compression (`div v < 0`) -- real shocks only form under
-/// compression. `c0 = (gamma+1)/4` is the Kurapatenko 1967 weak-shock
-/// coefficient; `c1 = 1.0` (Landshoff) is the standard linear term. Every
-/// EOS supplies its OWN `c_sound` (its own `dp/drho` at the current state)
-/// and its own real `gamma` (an ideal gas's actual adiabatic index, or a
-/// Tait-EOS liquid's `eos_power` used as Kurapatenko's stand-in -- see
-/// `fluid::artificial_bulk_viscosity`'s doc) -- this function owns
-/// only the shared shock-viscosity FORM, not any one EOS's derivative.
-/// Extracted 2026-08-18 so a genuinely different EOS (ideal gas) can reuse
-/// the real, cited shock-capturing term without faking Tait parameters to
-/// back into it.
+/// to compression (`div v < 0`), where shocks form. `c0 = (gamma+1)/4` is
+/// the Kurapatenko 1967 weak-shock coefficient; `c1 = 1.0` (Landshoff) is
+/// the standard linear term. Each EOS supplies its own `c_sound` (its
+/// `dp/drho` at the current state) and `gamma` (an ideal gas's adiabatic
+/// index, or a Tait liquid's `eos_power` standing in, see
+/// `fluid::artificial_bulk_viscosity`); this function owns only the shared
+/// form, so the ideal gas reuses it without fake Tait parameters.
 #[inline]
 pub(crate) fn von_neumann_richtmyer_q(
     rest_density: f32,
@@ -1071,12 +972,8 @@ mod corotated_elastic_stress_jvp_tests {
         ]
     }
 
-    /// Real verification this file's own testing convention requires before
-    /// trusting any derivative -- central finite difference at h=1e-3 (NOT
-    /// smaller: f32 catastrophic cancellation on `polar_decomposition_2d`'s
-    /// own normalized/divided quantity makes smaller h WORSE, a real lesson
-    /// from deriving this the first time in `tests/scratch_implicit_mpm_
-    /// stage2_corotated_jvp.rs`).
+    /// Central finite difference at h = 1e-3, not smaller: f32 cancellation on
+    /// `polar_decomposition_2d`'s normalized quantity makes smaller h worse.
     #[test]
     fn matches_finite_difference_at_moderate_and_real_sand_stiffness() {
         let h = 1.0e-3f32;
@@ -1114,24 +1011,19 @@ mod corotated_elastic_stress_jvp_tests {
         assert_eq!(corotated_elastic_stress_jvp(f, df, 100.0, 50.0), Mat2::ZERO);
     }
 
-    /// Real verification that `corotated_elastic_energy_density` is
-    /// actually the potential `corotated_elastic_stress` is the gradient
-    /// of -- needed for `spacetime::solver::implicit_corotated`'s
-    /// trust-region Newton (its ratio test needs a real objective value,
-    /// not just the residual/gradient) to be solving the SAME problem the
-    /// rest of this file's tests already trust, not a mismatched one.
-    /// Central finite difference, same h=1e-3 convention as this module's
-    /// own stress-JVP check above (f32 catastrophic cancellation makes
-    /// smaller h worse here, not better). Recovers First-Piola from the
-    /// existing Kirchhoff-stress function via `P = tau*F^-T` (`tau=P*F^T`)
-    /// rather than duplicating the stress formula in Piola form.
+    /// `corotated_elastic_energy_density` is the potential
+    /// `corotated_elastic_stress` is the gradient of, so the trust-region
+    /// ratio test solves the problem the other tests trust. Central finite
+    /// difference at h = 1e-3 (smaller h is worse here); First-Piola comes from
+    /// the Kirchhoff function via `P = tau*F^-T` rather than a second copy of
+    /// the formula.
     #[test]
     fn energy_density_gradient_matches_finite_difference_of_the_stress() {
         let h = 1.0e-3f32;
         for &(lambda, mu) in &[(50.0f32, 30.0f32), (2.0e7, 1.5e7)] {
             let mut max_rel_err = 0.0f32;
             for &f in &states() {
-                // `Mat2::IDENTITY` is a genuine critical point of `Psi`
+                // `Mat2::IDENTITY` is a critical point of `Psi`
                 // (F=R, J=1 -> both terms are exactly zero, the analytic
                 // global minimum) -- its analytic gradient is exactly
                 // zero, which makes central-difference ill-conditioned
@@ -1141,7 +1033,7 @@ mod corotated_elastic_stress_jvp_tests {
                 // O(h^2)*f'''/6 truncation noise, not a real discrepancy
                 // (confirmed: at lambda=2e7, this alone produced a raw FD
                 // value of ~1.8 against an analytic 0 -- but EVERY other
-                // state, all genuinely deformed with nonzero analytic
+                // state, all deformed with nonzero analytic
                 // gradients, passed at the same h and stiffness with
                 // max_rel_err=2.45e-4). Standard, documented FD-checking
                 // practice (e.g. PyTorch's `gradcheck`) explicitly skips
@@ -1204,10 +1096,10 @@ mod corotated_kirchhoff_dtau_dl_psd_tests {
     /// 0` for EVERY direction `dl`, at EVERY state including the ones the
     /// plain (unprojected) Hessian is known-indefinite at -- this is what
     /// guarantees CG can never see a negative-curvature direction from
-    /// this operator, unlike the plain JVP or the earlier Piola-space
-    /// projection (which didn't survive the Kirchhoff/spatial-gradient
-    /// conversion, confirmed by real negative-curvature CG calls in
-    /// `spacetime::solver::implicit_corotated` before this fix).
+    /// this operator, unlike the plain JVP or a Piola-space projection
+    /// (which does not survive the Kirchhoff/spatial-gradient conversion:
+    /// CG in `spacetime::solver::implicit_corotated` saw negative curvature
+    /// with it).
     #[test]
     fn quadratic_form_is_never_negative() {
         let lambda = 6.0e7f32;
@@ -1257,24 +1149,14 @@ mod corotated_kirchhoff_dtau_dl_psd_tests {
         }
     }
 
-    /// The real, measured failure this eigenvalue-clamp replaces a
-    /// Gershgorin-shift for: at a benign, already-mostly-PSD state, the
-    /// projection must leave the real curvature close to intact EVEN AT
-    /// REAL PRODUCTION STIFFNESS (`basic_sand`'s own E=15MPa DruckerPrager
-    /// converts to lambda/mu on this order) -- a uniform diagonal shift
-    /// large enough to guarantee diagonal dominance at this stiffness scale
-    /// was confirmed live to swamp the real curvature entirely (`tests/
-    /// scratch_implicit_corotated_real_fps_measurement.rs` with
-    /// `EMERGE_IMPLICIT_DIAG=1`: Newton's line search rejected every step
-    /// on every one of 30 real frames, `best_trial_norm` statistically
-    /// equal to `r_norm` even after CG solved its own linear subproblem to
-    /// a 90%+ residual reduction). Eigenvalue clamping must not reproduce
-    /// that failure: it should track the exact JVP's own quadratic form
-    /// about as closely here as the softer `matches_plain_jvp_via_chain_
-    /// rule_at_moderate_already_psd_states` test above does at low
-    /// stiffness -- proving the fix is stiffness-independent, not just
-    /// correct at the soft synthetic modulus the regression suite happens
-    /// to use elsewhere.
+    /// At production stiffness (`basic_sand`'s E = 15 MPa DruckerPrager, lambda
+    /// and mu of this order) and a benign, mostly PSD state, the projection
+    /// keeps the curvature close to intact: it tracks the exact JVP's
+    /// quadratic form about as closely as
+    /// `matches_plain_jvp_via_chain_rule_at_moderate_already_psd_states` does
+    /// at low stiffness. A Gershgorin shift large enough for diagonal
+    /// dominance here swamped the curvature (every line-search step
+    /// rejected over 30 frames).
     #[test]
     fn eigenvalue_clamp_preserves_curvature_at_real_production_stiffness() {
         let lambda = 6.0e7f32;

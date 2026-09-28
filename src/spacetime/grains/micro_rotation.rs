@@ -1,49 +1,36 @@
-//! Grain micro-rotation coupling -- a real, bounded, energy-conservative
-//! way for grains to exchange rotational influence with nearby grains
-//! through the grid, replacing an earlier, reverted attempt that scattered
-//! `spin` directly into the shared momentum grid (see
-//! `coupling::scatter_grains_to_grid`'s own doc for the full story: exact
-//! for an isolated grain, but a real, confirmed, unbounded energy leak once
-//! many spinning grains share overlapping grid nodes -- the raw momentum
-//! grid has no notion of a bounded coupling STRENGTH, so a neighbor's
-//! gather can read a slice of a spinning neighbor's rotational energy with
-//! nothing ever debited from the source).
+//! Grain micro-rotation coupling: a bounded, energy-conservative way for
+//! grains to exchange rotation with nearby grains through the grid. Spin is
+//! not scattered into the shared momentum grid (see
+//! `coupling::scatter_grains_to_grid`): that is exact for an isolated grain
+//! but leaks energy without bound once many spinning grains share grid
+//! nodes, since the momentum grid has no bounded coupling strength and a
+//! neighbor's gather can read part of a spinning grain's rotational energy
+//! with nothing debited from the source.
 //!
-//! Mirrors `energy::thermodynamics::CosseratField`'s own real, cited
-//! mechanism (de Borst, Sabet & Hageman 2022) -- a genuine elastic Cosserat
-//! coupling torque `2*alpha*(local_avg - own_spin)`, integrated via the
-//! SAME exact, unconditionally-stable exponential solution (not an
-//! explicit-Euler numerics workaround: that field's own doc records a real,
-//! confirmed NaN failure from trying explicit Euler on this class of stiff
-//! relaxation term first). Real, disclosed, energy-BOUNDED by construction:
-//! the exact solution of this linear ODE has a stable fixed point at the
-//! local average, so grains genuinely converge toward local rotational
-//! equilibrium at a rate set by `coupling_modulus`, never able to inject
-//! unbounded energy the way the raw momentum-grid scatter could.
+//! Mirrors `energy::thermodynamics::CosseratField` (de Borst, Sabet &
+//! Hageman 2022): an elastic Cosserat coupling torque `2*alpha*(local_avg -
+//! own_spin)`, integrated with the same exact, unconditionally stable
+//! exponential solution (explicit Euler produced NaN on this stiff
+//! relaxation term, see that field's doc). Energy-bounded by construction:
+//! the linear ODE's exact solution has a stable fixed point at the local
+//! average, so grains converge toward local rotational equilibrium at a rate
+//! set by `coupling_modulus` and cannot inject energy.
 //!
-//! Real, disclosed structural differences from `CosseratField`:
-//! 1. An ordinary MPM particle's own "macro_spin" is INSTANTANEOUS (freshly
-//!    computed from the local velocity gradient every substep, no memory of
-//!    its own), so `CosseratField` needs a separate persistent `omega_c`
-//!    field to hold real inertia. A grain's `spin` ALREADY has real inertia
-//!    (integrated via its own contact-torque ODE in `grain_contact_law.rs`)
-//!    -- so `grain.spin` itself plays the role `omega_c` plays for
-//!    continuum particles; this module only needs the transient local-
-//!    average scatter/gather each substep, not a second persistent memory
-//!    stacked on an already-persistent one.
-//! 2. `CosseratConfig`'s own `micro_inertia` uses ONE domain-wide
-//!    `grain_diameter_m` (a disclosed simplification for continuum
-//!    particles, which don't carry a real per-particle radius). A `Grain`
-//!    already has its own real, possibly-polydisperse `radius` -- so this
-//!    module uses `Grain::moment_of_inertia()` directly (`I = 0.5*m*r^2`,
-//!    real, exact, already the SAME formula `apply_grain_contact_forces`
-//!    uses for its own spin ODE) instead of introducing a redundant,
-//!    less-accurate domain-wide diameter parameter.
-//! 3. Real, disclosed, scoped-for-now simplification: grains couple only to
-//!    OTHER grains here, not yet to the continuum's own separate
-//!    `CosseratField` (a real, valuable future extension -- letting a grain
-//!    feel torque from a surrounding rotating/shearing sand flow -- not
-//!    required to fix the confirmed energy-conservation bug this replaces).
+//! Differences from `CosseratField`:
+//! 1. An MPM particle's "macro_spin" is instantaneous (recomputed from the
+//!    local velocity gradient every substep), so `CosseratField` keeps a
+//!    persistent `omega_c` field for inertia. A grain's `spin` already has
+//!    inertia (its contact-torque ODE in `grain_contact_law.rs`) and plays
+//!    the role of `omega_c`; this module only needs the per-substep
+//!    local-average scatter/gather.
+//! 2. `CosseratConfig::micro_inertia` uses one domain-wide
+//!    `grain_diameter_m`, since continuum particles carry no radius. A
+//!    `Grain` has its own, possibly polydisperse `radius`, so this module
+//!    uses `Grain::moment_of_inertia()` (`I = 0.5*m*r^2`, the formula
+//!    `apply_grain_contact_forces` uses).
+//! 3. Grains couple only to other grains, not yet to the continuum's
+//!    `CosseratField` (which would let a grain feel torque from a
+//!    surrounding shearing sand flow).
 
 use std::collections::HashMap;
 
@@ -53,29 +40,25 @@ use crate::grid::kernel::quadratic_weights;
 
 use super::population::GrainPopulation;
 
-/// Real, standalone parameter for this coupling -- deliberately its own
-/// small type rather than a new field bolted onto `ContactLawConfig`
-/// (already constructed via struct-literal in half a dozen call sites) or
-/// a reuse of `CosseratConfig` (whose `grain_diameter_m`/
-/// `micro_inertia_coefficient` fields are redundant here, see this
-/// module's own doc point 2). `coupling_modulus` plays the exact role
-/// `CosseratConfig::coupling_modulus_pa` (`alpha`) plays in the real,
-/// cited Cosserat elastic relation (de Borst, Sabet & Hageman 2022) -- a
-/// genuine, separate micropolar material parameter, not derivable from
-/// `rolling_stiffness` (a different physical mechanism: a discrete contact
-/// spring between two specific touching bodies, not a field coupling
-/// across a shared neighborhood) by any principled formula.
+/// Parameters for this coupling, as a separate type rather than a field on
+/// `ContactLawConfig` (built by struct literal at several call sites) or a
+/// reuse of `CosseratConfig` (whose `grain_diameter_m`/
+/// `micro_inertia_coefficient` are redundant here, see point 2 of the
+/// module doc). `coupling_modulus` is the `alpha` of the Cosserat elastic
+/// relation (`CosseratConfig::coupling_modulus_pa`, de Borst, Sabet &
+/// Hageman 2022): a micropolar material parameter with no principled
+/// derivation from `rolling_stiffness`, which is a contact spring between
+/// two touching bodies, not a field coupling across a neighborhood.
 #[derive(Clone, Copy, Debug)]
 pub struct GrainMicroRotationConfig {
     pub coupling_modulus: f32,
 }
 
-/// Real, exact-exponential relaxation of each grain's spin toward its own
-/// local (kernel-weighted) neighborhood average spin. `HashMap`-keyed
-/// scratch (not `CosseratField`'s own dense, whole-domain `Vec<f32>`):
-/// grains are always a small fraction of a scene's total particle count
-/// (see this project's own `oracle.rs` framing), so only-touched-cells
-/// allocation is the right cost/simplicity tradeoff here.
+/// Exact-exponential relaxation of each grain's spin toward its local
+/// (kernel-weighted) neighborhood average. Scratch is a `HashMap` over the
+/// touched cells rather than `CosseratField`'s dense whole-domain
+/// `Vec<f32>`: grains are a small fraction of a scene's particles (see
+/// `oracle.rs`).
 pub fn couple_grain_spin_to_local_average(
     grains: &mut GrainPopulation,
     config: &GrainMicroRotationConfig,
@@ -156,11 +139,10 @@ mod tests {
 
     #[test]
     fn two_grains_relax_toward_their_shared_average_spin() {
-        // Real, minimal proof: two grains close enough to share grid nodes,
-        // one spinning, one not -- both should relax toward SOME shared
-        // value strictly between their two starting spins (real, bounded
-        // exchange, neither grain's own spin ODE touched by this
-        // function -- only `couple_grain_spin_to_local_average` runs here).
+        // Two grains close enough to share grid nodes, one spinning, one
+        // not: both relax toward a shared value strictly between their
+        // starting spins. Only `couple_grain_spin_to_local_average` runs
+        // here; neither grain's own spin ODE is touched.
         let mut pop = GrainPopulation::new(
             vec![
                 Grain {
@@ -192,8 +174,8 @@ mod tests {
     #[test]
     fn isolated_grain_spin_is_unaffected() {
         // No neighbor within kernel reach -- local average IS the grain's
-        // own spin, so nothing should change (real, necessary invariant:
-        // this mechanism must not perturb a genuinely isolated grain).
+        // own spin, so nothing should change (necessary invariant:
+        // this mechanism must not perturb a isolated grain).
         let mut pop = GrainPopulation::new(
             vec![Grain {
                 spin: 3.0,

@@ -11,15 +11,15 @@
 // P2G access. This is a simplified single-workgroup-scan variant (NUM_BLOCKS=256, bounded so
 // the scan fits in one workgroup's shared memory -- no cross-workgroup reduction needed).
 //
-// Five passes, run once per FRAME (not per substep) in sequence: clear -> count -> compact ->
-// scan -> scatter. Each must complete before the next starts -- wgpu inserts the necessary
-// barriers automatically between compute dispatches that read/write the same buffer.
+// Once per frame (step.rs), for the sort permutation: clear -> count -> scan -> scatter.
+// Every substep (encode_substep.rs), for active-block detection:
+// active_block_swap_and_clear -> count -> compact. Each pass completes before the next;
+// wgpu inserts the barriers between compute dispatches that share a buffer.
 //
-// "compact" (GPU sparse grid Phase 1 -- see mpm_technique_survey memory note) reads the RAW
-// per-block histogram built by count, before scan overwrites block_counts into an exclusive-
-// prefix-sum scatter cursor. block_counts[b] > 0 right after count means block b has at least
-// one particle; compact records which blocks those are into active_block_ids, consumed by
-// grid_clear.wgsl to bound its real work to occupied blocks instead of the whole dense grid.
+// "compact" (GPU sparse grid) reads the raw per-block histogram built by count. A block
+// with block_counts[b] > 0 has at least one particle; compact records those blocks
+// (halo-expanded) into active_block_ids, which grid_clear.wgsl and grid_update.wgsl use
+// to bound their work to occupied blocks instead of the whole dense grid.
 
 struct Particle {
     x:                    vec2<f32>,

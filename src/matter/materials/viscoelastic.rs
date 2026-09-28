@@ -73,13 +73,10 @@ impl ViscoelasticMaterial {
         }
     }
 
-    /// Construct from Young's modulus E, Poisson's ratio ν, and viscosity --
-    /// **grid units, NOT real Pascals/Pa*s** (real disclosure added
-    /// 2026-09-05, same finding as `NeoHookeanMaterial::from_young_modulus`'s
-    /// own doc): calls [`lame_from_young`] directly, never touches
-    /// `dx_meters`/density. For a real, correctly SI-to-grid-converted
-    /// material use [`Self::from_physical`] (needs a `&SimConfig` and real
-    /// `rho_kg_m3`).
+    /// Construct from Young's modulus E, Poisson's ratio ν, and viscosity.
+    /// **Grid units, not pascals or Pa·s**: calls [`lame_from_young`]
+    /// directly and never touches `dx_meters` or density. For an SI material
+    /// use [`Self::from_physical`] (needs a `&SimConfig` and `rho_kg_m3`).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32, viscosity: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, viscosity)
@@ -156,11 +153,9 @@ impl MaterialModel for ViscoelasticMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Exact matrix exponential, not forward Euler -- see
-        // `deformation_increment_exp`'s own doc for the real O(dt^2)
-        // volumetric ratchet this removes (found+fixed 2026-09,
-        // NoCompression/VonMises, now rolled out here on the same basis:
-        // every tensor-F material shares the identical exposure).
+        // Exact matrix exponential, not forward Euler: see
+        // `deformation_increment_exp` for the O(dt^2) volumetric ratchet
+        // Euler causes in every tensor-F material.
         let (f_new, carried) = advance_deformation_gradient(
             *ctx.deformation_gradient,
             dt * *ctx.velocity_gradient,
@@ -250,7 +245,7 @@ mod analytical_validation_tests {
     /// This material's elastic term is `mu*(F*F^T-I) + lambda*ln(J)*I` -- the
     /// same "simple" NeoHookean form `NeoHookeanMaterial`'s doc describes as
     /// historical context (that material's actual CODE now uses a
-    /// plane-strain vol-dev split, `k=lambda+mu` -- see its own doc). For
+    /// plane-strain vol-dev split, `k=lambda+mu` -- see its doc). For
     /// F=I+delta*E (E symmetric), this linearizes to the STANDARD textbook
     /// form `2*mu*eps + lambda*tr(eps)*I` (same as `CorotatedMaterial`'s own
     /// verified small-strain limit, NOT the `k=lambda+mu` substitution
@@ -314,10 +309,9 @@ mod analytical_validation_tests {
         );
     }
 
-    /// Real, checkable claim: elastic and viscous contributions are additive
-    /// (Kelvin-Voigt = spring + dashpot IN PARALLEL) -- stress at a state with
-    /// both nonzero strain AND nonzero strain rate must equal the sum of each
-    /// computed independently, not some coupled/nonlinear combination.
+    /// Elastic and viscous contributions add (Kelvin-Voigt = spring + dashpot
+    /// in parallel): stress at a state with both nonzero strain and nonzero
+    /// strain rate equals the sum of each computed alone.
     #[test]
     fn elastic_and_viscous_contributions_are_additive() {
         let lambda = 1000.0;
@@ -351,14 +345,10 @@ mod analytical_validation_tests {
     }
 }
 
-/// Real regression guard for the 2026-09 kinematic-integrator rollout
-/// (`deformation_increment_exp` replacing forward Euler across every
-/// tensor-F material -- see that function's own doc for the O(dt^2)
-/// volumetric-ratchet mechanism it removes, first found+fixed on
-/// `NoCompressionMaterial`/`VonMisesMaterial`). Tests the actual real
-/// call site (`update_particle`), not just the isolated helper (already
-/// covered by its own 3 tests in `utils.rs`) -- proves this material is
-/// really wired to the exponential integrator, not still silently on Euler.
+/// `update_particle` uses the exponential integrator
+/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
+/// ratchet forward Euler causes). Tests the call site, not the helper (which
+/// has its own 3 tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;
@@ -374,7 +364,7 @@ mod kinematic_integrator_tests {
         p
     }
 
-    /// The real, direct test of the O(dt^2) ratchet Euler had: apply a
+    /// The direct test of the O(dt^2) ratchet Euler had: apply a
     /// velocity gradient for one substep, then its exact opposite for the
     /// same substep -- a perfectly reversible round trip. Under the OLD
     /// Euler integration this would NOT return exactly to the starting F

@@ -7,23 +7,13 @@ use super::BoundaryCondition;
 /// The terrain is described by `heights[x]` in grid units for each x-column.
 /// All grid cells at (x, y) with `y ≤ heights[x]` are treated as solid terrain.
 ///
-/// The terrain surface normal is the REAL LOCAL normal derived from the
-/// heightmap's own slope (central-difference `dh/dx`), not a fixed +Y --
-/// real fix, 2026-08-21: an earlier version always used +Y regardless of
-/// slope, which meant a "sloped" heightmap looked tilted but was physically
-/// just a staircase of flat horizontal blocks -- nothing ever pushed
-/// anything downhill on it (found live, building a grain-rolling-on-a-
-/// slope demo: grains released on a visually sloped heightmap just sat
-/// there, because gravity's own vertical component was always fully
-/// cancelled by a normal that never actually tilted). Backward compatible:
-/// a flat floor (`flat_floor`, zero slope everywhere) has a local normal of
-/// exactly (0,1) at every column, identical to the old fixed behavior --
-/// confirmed via `tests/stress.rs::boundary_count_stress`, the only other
-/// real consumer, which uses `flat_floor` and is unaffected.
+/// The terrain surface normal comes from the heightmap's slope (central
+/// difference `dh/dx`), not a fixed +Y: with +Y everywhere a sloped
+/// heightmap is a staircase of flat blocks and grains released on it never
+/// roll. A flat floor (`flat_floor`) has the normal (0,1) at every column.
 ///
-/// Coulomb friction is applied on the TANGENTIAL velocity component
-/// relative to this real local normal/tangent frame (degenerates to the old
-/// horizontal-only friction exactly when the local slope is zero).
+/// Coulomb friction acts on the tangential velocity in this local frame
+/// (horizontal friction when the slope is zero).
 ///
 /// Outer axis-aligned walls are always enforced (same as `SlipBoundary`), so the
 /// heightmap sits inside the standard simulation domain.
@@ -32,7 +22,7 @@ use super::BoundaryCondition;
 /// Y increases upward. `heights[0]` is the left column, `heights[grid_res-1]` is the right.
 /// Heights beyond the array length clamp to the last value.
 ///
-/// # Usage
+/// # Examples
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// use emerge::HeightmapBoundary;
@@ -74,9 +64,9 @@ impl HeightmapBoundary {
         self.heights[x.min(self.heights.len() - 1)]
     }
 
-    /// Real local surface normal at column `x`, from a central-difference
-    /// slope estimate (forward/backward difference at the array edges).
-    /// Unit length, always pointing generally "up" (positive y component).
+    /// Returns the surface normal at column `x`, from a central-difference
+    /// slope (one-sided at the array edges). Unit length, pointing up
+    /// (positive y component).
     #[inline]
     fn normal_at(&self, x: usize) -> Vec2 {
         if self.heights.len() < 2 {
@@ -97,17 +87,9 @@ impl HeightmapBoundary {
         Vec2::new(-slope, 1.0).normalize()
     }
 
-    /// Real, continuous height at a fractional x -- linear interpolation
-    /// between the two bracketing columns. Real fix, 2026-08-21: without
-    /// this, a grain's own continuous position saw a DISCRETE height/normal
-    /// jump every time it crossed an integer column boundary -- confirmed
-    /// live as the actual cause of a rolling grain's motion feeling
-    /// "stair-stepped" (this demo doesn't even render the terrain surface
-    /// itself, so what looked like steps was the grain's own contact
-    /// response updating in jumps, not a drawn line). The struct's own doc
-    /// already says "fractional values are supported" for `heights` -- this
-    /// is that promise finally kept for continuous positions, not a new
-    /// design.
+    /// Returns the height at a fractional x, linearly interpolated between the
+    /// two bracketing columns. Without it a grain's contact response jumped at
+    /// every integer column, and rolling looked stair-stepped.
     #[inline]
     fn height_at_f32(&self, x: f32) -> f32 {
         if self.heights.is_empty() {
@@ -121,9 +103,8 @@ impl HeightmapBoundary {
         self.heights[x0] * (1.0 - t) + self.heights[x1] * t
     }
 
-    /// Real, continuous local normal at a fractional x -- central difference
-    /// built from `height_at_f32` itself, so it varies smoothly as `x`
-    /// varies continuously, not just at integer column boundaries.
+    /// Returns the normal at a fractional x, by central difference of
+    /// `height_at_f32`, so it varies smoothly with `x`.
     #[inline]
     fn normal_at_f32(&self, x: f32) -> Vec2 {
         if self.heights.len() < 2 {
@@ -195,15 +176,11 @@ impl BoundaryCondition for HeightmapBoundary {
         let wall_max = grid_res.saturating_sub(self.wall_thickness) as f32;
         let mut pos = position.clamp(Vec2::splat(wall_min), Vec2::splat(wall_max));
 
-        // Terrain: push particles above the surface. Deliberately still the
-        // discrete per-column lookup, NOT `height_at_f32` -- confirmed via
-        // direct bisection (2026-08-21) that switching this specific
-        // function to the continuous lookup regresses real grain rolling
-        // (a grain that genuinely rolled down a slope froze solid instead).
-        // This is a last-resort domain-enforcement clamp, not the primary
-        // physics (that's `apply_to_grid_velocity` and `grain_contact`,
-        // which safely use the continuous lookup) -- not worth chasing the
-        // exact interaction further tonight.
+        // Terrain: push particles above the surface. Keeps the per-column
+        // lookup, not `height_at_f32`: the continuous one here froze a grain
+        // that rolled down a slope. A last-resort domain clamp; the physics
+        // is in `apply_to_grid_velocity` and `grain_contact`, which use the
+        // continuous lookup.
         let x_col = (pos.x as usize).min(grid_res.saturating_sub(1));
         let terrain_h = self.height_at(x_col);
         if pos.y < terrain_h + 1.0 {
@@ -213,13 +190,10 @@ impl BoundaryCondition for HeightmapBoundary {
         pos
     }
 
-    /// Real local normal + overlap for a grain touching this heightmap's
-    /// surface -- see this file's own module doc and `BoundaryCondition::
-    /// grain_contact`'s own doc for why this exists (grain-vs-terrain
-    /// rolling torque, previously entirely missing). Uses the real
-    /// continuous height/normal (`height_at_f32`/`normal_at_f32`), not a
-    /// per-column snap, so contact response varies smoothly as the grain's
-    /// own continuous position moves.
+    /// Returns the local normal and overlap of a grain touching the surface
+    /// (see `BoundaryCondition::grain_contact`: grain-vs-terrain rolling
+    /// torque), from the continuous height and normal (`height_at_f32`/
+    /// `normal_at_f32`), so the response varies smoothly as the grain moves.
     fn grain_contact(&self, position: Vec2, radius: f32, _grid_res: usize) -> Option<(Vec2, f32)> {
         if self.heights.is_empty() {
             return None;
@@ -235,47 +209,25 @@ impl BoundaryCondition for HeightmapBoundary {
         }
     }
 
-    /// Real, radius-aware grain backstop: outer-wall containment is the
-    /// same generic (radius-agnostic, still correct -- a hard box edge
-    /// doesn't care about tilt) clamp `clamp_particle_position` already
-    /// uses, but the TERRAIN correction below uses this boundary's own
-    /// real `grain_contact` (continuous, tilted, radius-aware) instead of
-    /// `clamp_particle_position`'s crude discrete/vertical/hardcoded-radius
-    /// one. See `BoundaryCondition::clamp_grain_position`'s own doc for why
-    /// this replaces rather than layers onto the generic clamp.
+    /// Radius-aware grain backstop: the outer walls use the generic
+    /// `clamp_particle_position` clamp (a box edge has no tilt), the terrain
+    /// uses this boundary's continuous, tilted, radius-aware `grain_contact`
+    /// (see `BoundaryCondition::clamp_grain_position`).
     ///
-    /// Real, load-bearing correction scheme -- checked directly against the
-    /// already-cited reference DEM implementation tonight (2026-08-21,
-    /// `tmp/GeoTaichi/src/dem/contact/ContactKernel.py`'s own `wall_contact_
-    /// model_type1/2`) after two real, measured, hand-tuned attempts both
-    /// failed to generalize (kept left as the honest record: correcting
-    /// overlap to exactly zero every substep starved `resolve_wall_contact`
-    /// of any normal force to compute a friction cap from -- a grain with
-    /// real slip on flat ground stayed at that exact slip value for 10,000+
-    /// steps; a fixed "slop" margin, and later a Baumgarte-style fractional
-    /// correction, each fixed one real scene while silently breaking
-    /// another already-verified one -- different hand-picked constants
-    /// trading one regression for another, not a real fix). Grepping that
-    /// reference's own wall-contact code turned up NO position-correction
-    /// mechanism at all -- no slop, no Baumgarte term, nothing: real,
-    /// published soft-sphere DEM resolves contact ENTIRELY through the
-    /// penalty spring's own continuous force (`resolve_wall_contact`'s
-    /// `normal_stiffness * overlap`), relying on a correctly-bounded
-    /// timestep (`critical_timestep`, already computed from the SAME
-    /// stiffness) to keep penetration naturally small -- exactly this
-    /// engine's own existing mechanism, no extra position hack needed.
+    /// No per-step position correction: soft-sphere DEM resolves contact
+    /// through the penalty force alone (`resolve_wall_contact`'s
+    /// `normal_stiffness * overlap`), with the timestep bounded by
+    /// `critical_timestep` to keep penetration small; GeoTaichi's
+    /// `dem/contact/ContactKernel.py` (`wall_contact_model_type1/2`) has no
+    /// position correction either. Correcting overlap to zero starved the
+    /// friction cap of normal force (a slipping grain kept its slip for
+    /// 10,000+ steps), and a slop margin or a Baumgarte fraction each fixed
+    /// one scene and broke another.
     ///
-    /// This function's only real job, then, is what its own name always
-    /// said: a last-resort DOMAIN backstop against genuine tunneling (a
-    /// fast grain overshooting past the surface entirely in one substep --
-    /// the real, original, disclosed reason this existed, see `coupling.rs`
-    /// `apply_grain_contact_forces`'s own module doc), not a per-step
-    /// physics substitute. The threshold is deliberately set at a FULL
-    /// radius of overlap -- physically impossible for real, bounded contact
-    /// (the grain's own center would be exactly AT the surface), so normal
-    /// resting/rolling contact (real overlaps of a few percent of radius,
-    /// confirmed via direct trace tonight) never triggers this at all; only
-    /// a genuine escape does.
+    /// So this only catches tunnelling (a fast grain passing the surface in
+    /// one substep): it fires at a full radius of overlap, the centre at the
+    /// surface, while resting and rolling contact overlaps a few percent of
+    /// the radius.
     fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
         let wall_min = self.wall_thickness.saturating_sub(1) as f32;
         let wall_max = grid_res.saturating_sub(self.wall_thickness) as f32;
@@ -293,9 +245,8 @@ impl BoundaryCondition for HeightmapBoundary {
 mod tests {
     use super::*;
 
-    /// Real regression: a flat floor's local normal must be exactly (0,1)
-    /// at every column -- the old, fixed-+Y behavior every existing
-    /// consumer (`tests/stress.rs::boundary_count_stress`) depends on.
+    /// A flat floor's normal is exactly (0,1) at every column
+    /// (`tests/stress.rs::boundary_count_stress` relies on it).
     #[test]
     fn flat_floor_normal_is_exactly_up_everywhere() {
         let b = HeightmapBoundary::flat_floor(20, 3.0, 0.4);
@@ -308,13 +259,9 @@ mod tests {
         }
     }
 
-    /// Real, direct proof of the fix: a genuinely SLOPED heightmap must
-    /// produce a tilted normal that lets gravity's own component along the
-    /// slope actually accelerate a resting body downhill -- the exact real
-    /// capability the old fixed-+Y normal could never provide (a body would
-    /// just sit motionless on a "sloped" heightmap forever, since a purely
-    /// vertical normal always fully cancels vertical gravity regardless of
-    /// how tilted the terrain looks).
+    /// A sloped heightmap gives a tilted normal, so the downhill component of
+    /// gravity accelerates a resting body; a vertical normal cancels all of
+    /// it.
     #[test]
     fn sloped_heightmap_normal_is_tilted_and_lets_gravity_drive_motion_downhill() {
         // A real 30-degree-ish rise: height increases by 1.0 per column.
@@ -332,14 +279,12 @@ mod tests {
              left (negative x), got {n:?}"
         );
 
-        // Real dynamics check: a grid cell resting exactly on this slope,
-        // hit by straight-down gravity for one substep, must NOT be fully
-        // arrested (the old bug) -- some of that velocity should survive
-        // along the real tangent direction, driving real downhill motion.
+        // A cell resting on this slope under straight-down gravity for one
+        // substep keeps some velocity along the tangent instead of being
+        // fully arrested.
         let gravity_dt = Vec2::new(0.0, -0.05); // one substep's worth of g*dt
         let mut v = gravity_dt;
-        // Real grid layout: cell_index = x*grid_res + y (matches this
-        // module's own `apply_to_grid_velocity` convention).
+        // cell_index = x*grid_res + y, as in `apply_to_grid_velocity`.
         let grid_res = 64usize;
         let x = 20usize;
         let y = b.height_at(x) as usize; // exactly on the surface

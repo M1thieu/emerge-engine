@@ -8,7 +8,7 @@ use crate::particle::Grain;
 /// `Particles` SoA.
 ///
 /// Kept as a SEPARATE trait rather than extending `Field` itself: `Grain`
-/// and `Particles` are genuinely different storage shapes (an AoS
+/// and `Particles` are different storage shapes (an AoS
 /// `Vec<Grain>` vs a columnar SoA), so one trait signature can't serve both
 /// without an artificial adapter. A field that makes physical sense for
 /// both bodies (e.g. `LinearDragField`, which only ever reads a body's own

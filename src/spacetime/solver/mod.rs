@@ -89,17 +89,14 @@ pub struct Simulation {
     /// Empty and untouched in every scene where nothing rubs.
     friction_heat_debt: Vec<f32>,
     boundaries: Vec<Box<dyn BoundaryCondition>>,
-    /// True while `boundaries` still holds only the auto-inserted default
-    /// `SlipBoundary` from construction (see `empty`/`new`). The FIRST real
-    /// `add_boundary_condition` call clears it before pushing instead of
-    /// stacking underneath it -- see that method's own doc for why a silent
-    /// stack was a real, confirmed bug (2026-08-20): the default's
-    /// zero-friction no-penetration correction runs first every substep,
-    /// zeroing the into-wall velocity component before a user's own
-    /// `FrictionBoundary` ever sees it nonzero, permanently defeating its
-    /// friction with no error, no warning -- found chasing a grain that
-    /// coasted at a dead-constant velocity for 500,000+ steps against a
-    /// real `FrictionBoundary(2, 0.7)` floor.
+    /// True while `boundaries` still holds only the default `SlipBoundary`
+    /// inserted at construction (see `empty`/`new`). The first
+    /// `add_boundary_condition` call clears it instead of stacking on top:
+    /// the default's zero-friction no-penetration correction runs first every
+    /// substep and zeroes the into-wall velocity before a user's
+    /// `FrictionBoundary` sees it, which silently cancels that friction (a
+    /// grain coasted at constant velocity for 500,000+ steps on a
+    /// `FrictionBoundary(2, 0.7)` floor).
     boundaries_are_default: bool,
     /// Optional directional (setae-style) friction for the multi-field contact
     /// "grip" field -- see `DirectionalContactGrip`'s doc. `None` (default) keeps
@@ -145,51 +142,36 @@ pub struct Simulation {
     /// SAME substep.
     cosserat_curvature: Vec<glam::Vec2>,
     frame_index: u64,
-    /// "Sticky" fine-substep hold for `SimConfig::fluid_step_retry_enabled`
-    /// (2026-08-08): `(held_dt, substeps_remaining)`. A one-off retry alone
-    /// (see `do_substep_with_retry`) doesn't work -- measured directly: the
-    /// very next substep re-derives its size from the ordinary CFL scan,
-    /// forgetting the rejection immediately, so a sustained near-wall
-    /// compression event just repeats the same reject-shrink-forget cycle
-    /// substep after substep instead of ever holding fine resolution long
-    /// enough to actually resolve the event (confirmed: a plain per-substep
-    /// retry, swept across several thresholds, never reproduced the clean
-    /// convergence a globally-tightened CFL coefficient did). This field is
-    /// the fix: once a retry fires, `choose_substep_dt`'s result is capped
-    /// to `held_dt` for `substeps_remaining` further substeps (decremented
-    /// each one), holding the fine resolution through the actual event
-    /// instead of relaxing on the very next substep. `None` = no hold
-    /// active (every scene that never enables the feature stays here
-    /// permanently, zero cost).
+    /// Fine-substep hold for `SimConfig::fluid_step_retry_enabled`:
+    /// `(held_dt, substeps_remaining)`. A one-off retry (see
+    /// `do_substep_with_retry`) is not enough: the next substep re-derives its
+    /// size from the CFL scan and forgets the rejection, so a sustained
+    /// near-wall compression repeats a reject-shrink-forget cycle every
+    /// substep (a per-substep retry swept across several thresholds never
+    /// matched a globally tightened CFL coefficient). Once a retry fires,
+    /// `choose_substep_dt` is capped to `held_dt` for `substeps_remaining`
+    /// further substeps. `None` = no hold active (always, in scenes that
+    /// never enable the feature).
     fluid_sticky_fine_dt: Option<(f32, u32)>,
-    /// TEMPORARY diagnostic (2026-08-30), `EMERGE_TRACK_BOUNDARY_BIAS`, see
-    /// `transfer::diagnose_particle_divergence_decomposition`'s own doc.
-    /// Set by `do_substep` right after the real P2G scatter (using the
-    /// SAME `dt` that scatter used -- no separate/redundant reconstruction,
-    /// no possible retry-`dt` mismatch), filled in with the real final
-    /// `tr(C)` at the end of the same `do_substep` call, then read and
-    /// printed by `do_substep_with_retry` AFTER its retry loop exits --
-    /// naturally reflects the ACCEPTED attempt, since the loop only
-    /// continues past a rejected one. `None` (default) for every scene
-    /// that never sets the env var, zero cost. Fields: `(tracked_index,
-    /// trace_translation, trace_affine, trace_stress, trace_final,
-    /// dt_used)`.
+    /// Temporary diagnostic, `EMERGE_TRACK_BOUNDARY_BIAS` (see
+    /// `transfer::diagnose_particle_divergence_decomposition`). Set by
+    /// `do_substep` right after P2G with the `dt` that scatter used, filled
+    /// with the final `tr(C)` at the end of the same call, then printed by
+    /// `do_substep_with_retry` after its retry loop exits, so it reflects the
+    /// accepted attempt. `None` unless the env var is set. Fields:
+    /// `(tracked_index, trace_translation, trace_affine, trace_stress,
+    /// trace_final, dt_used)`.
     pending_divergence_diagnostic: Option<(usize, f32, f32, f32, f32, f32)>,
     /// TEMPORARY, opt-in structural wall-bounce impulse ledger. `None` is the
     /// default and preserves the normal hot path exactly.
     boundary_impulse_diagnostic: Option<boundary_diagnostics::BoundaryImpulseDiagnostic>,
-    /// Real max particle speed measured by the PREVIOUS `choose_substep_dt`
-    /// call -- one-substep-lagged, since a substep's own max speed isn't
-    /// known until its CFL fold completes. Feeds the near-wall gate's
-    /// Mach-relative compression threshold
-    /// (`SimConfig::fluid_near_wall_compression_mach_margin`); `0.0` at
-    /// construction, which makes the very first substep's near-wall gate
-    /// maximally sensitive (threshold collapses to 0.0, matching the OLD
-    /// always-reactive behavior for exactly one substep) -- a safe,
-    /// conservative cold-start default, not a special case: it errs toward
-    /// too-cautious for one substep rather than too-permissive, and
-    /// self-corrects the moment the first real fold measures an actual
-    /// speed.
+    /// Max particle speed measured by the previous `choose_substep_dt` call
+    /// (lagged one substep: a substep's max speed is known only after its CFL
+    /// fold). Feeds the near-wall gate's Mach-relative compression threshold
+    /// (`SimConfig::fluid_near_wall_compression_mach_margin`). `0.0` at
+    /// construction, so the first substep's gate is maximally sensitive
+    /// (threshold 0.0): cautious for one substep, corrected as soon as the
+    /// first fold measures a speed.
     last_max_particle_speed: f32,
     last_step_dt: f32,
     last_substeps: usize,
@@ -198,9 +180,9 @@ pub struct Simulation {
     last_sim_time_dropped: f32,
     last_timing: crate::diagnostics::StepTiming,
     /// `SimConfig::spatial_sort_enabled` cache: computed ONCE per outer
-    /// `step()` call (not per substep -- real, measured: recomputing this
+    /// `step()` call (not per substep -- measured: recomputing this
     /// O(N log N) sort every substep cost MORE than the P2G cache-locality
-    /// win it was meant to provide, see `spatial_sort_order`'s own doc)
+    /// win it was meant to provide, see `spatial_sort_order`'s doc)
     /// and reused across every substep within that call. Particle positions
     /// shift only slightly substep-to-substep, so a step-stale order still
     /// captures most of the real locality benefit. Empty when the feature
@@ -212,26 +194,17 @@ pub struct Simulation {
     /// O(candidates_in_neighborhood) for `particles_near`/`count_near`/
     /// `particles_knn`/`region_state`.
     ///
-    /// Lazily rebuilt: `step()` only marks it dirty (`spatial_hash_dirty`),
-    /// it does NOT rebuild eagerly every frame -- real, measured cost found
-    /// 2026-08-03 (see `perf_opportunities_survey` memory): rebuilding
-    /// unconditionally every step cost 16.4% of a step's total time even in
-    /// scenes that never call any of the four query methods above. Mirrors
-    /// the identical fix already shipped on the GPU path (`GpuSimulation`'s
-    /// own lazy spatial-hash rebuild, 2026-07-12, 25% win at 100k particles)
-    /// -- this ports the same real technique to CPU. `RefCell` because the
-    /// four query methods take `&self` (a real, established public API
-    /// contract LP depends on) but need to trigger a rebuild internally --
-    /// the classic "conceptually read-only, lazily-computed cache" case
-    /// interior mutability exists for. Structural mutations that change
-    /// particle count/positions outside `step()` (`add_body`, `remove_where`,
-    /// `split_particles`, construction) still rebuild EAGERLY right after
-    /// mutating and clear the dirty flag, so a query issued between two
-    /// `step()` calls (LP's actual usage pattern) always sees fresh data --
-    /// only the once-per-frame "rebuild whether or not anyone will query it"
-    /// cost is what became lazy.
+    /// Lazily rebuilt: `step()` only marks it dirty (`spatial_hash_dirty`).
+    /// Rebuilding every step measured at 16.4% of a step's time even in
+    /// scenes that never query it; `GpuSimulation` rebuilds lazily the same
+    /// way. `RefCell` because the four queries take `&self` (public API LP
+    /// uses) but may trigger a rebuild: a read-only, lazily computed cache.
+    /// Mutations outside `step()` that change particle count or positions
+    /// (`add_body`, `remove_where`, `split_particles`, construction) rebuild
+    /// eagerly and clear the flag, so a query between two `step()` calls
+    /// always sees fresh data.
     spatial_hash: RefCell<SpatialHash>,
-    /// See `spatial_hash`'s own doc. `true` right after `step()` runs a
+    /// See `spatial_hash`'s doc. `true` right after `step()` runs a
     /// substep loop (positions moved, hash is stale); cleared by
     /// `ensure_spatial_hash_fresh` the first time any query method is
     /// actually called. Never true after an eager rebuild (spawn/remove/
@@ -243,13 +216,13 @@ pub struct Simulation {
     /// never calls `add_rod`/`with_rod` (zero-cost: 0-iteration loops).
     rods: Vec<Rod>,
     /// Discrete-element grain populations (`spacetime::grains`) sharing this
-    /// simulation's own MPM grid -- real, cited elastic-plastic rolling
+    /// simulation's own MPM grid -- cited elastic-plastic rolling
     /// resistance (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011),
     /// see `grains::coupling` for the real scatter/gather insertion points
     /// (mirroring `rods` above exactly). Empty for every scene that never
     /// calls `add_grain_population`/`with_grain_population` (zero-cost:
     /// 0-iteration loops). Not yet gated by any automatic oracle deciding
-    /// where grains are needed -- that's a real, separate, not-yet-built
+    /// where grains are needed -- that's a separate, not-yet-built
     /// piece (see `project_dem_rolling_resistance_scoped` memory); today a
     /// caller decides explicitly, same as `add_rod`.
     grain_populations: Vec<crate::grains::population::GrainPopulation>,

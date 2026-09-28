@@ -150,7 +150,7 @@ pub fn spectral_band_average(samples: &[(f32, f32)]) -> [f32; 3] {
 ///
 /// Out-of-gamut chromaticities (which the Planckian locus reaches at both
 /// ends) are brought into gamut by desaturating toward white -- adding the
-/// most negative channel to all three. That is a real, visible approximation:
+/// most negative channel to all three. That is a visible approximation:
 /// sRGB simply cannot show those colours, and this keeps the hue while
 /// admitting the loss of saturation, rather than clipping one channel to zero
 /// and shifting the hue silently.

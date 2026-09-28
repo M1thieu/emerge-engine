@@ -31,13 +31,12 @@ impl GpuSimulation {
 
     /// Force every particle with `user_tag == tag` asleep, regardless of velocity,
     /// applied at the start of the next `step_frame()`. P2G still scatters for them
-    /// (see `gpu_sleep_wake_phase1` memory note -- sleeping particles must keep
-    /// providing structural support); only their own gather/integration/force-field
-    /// work is skipped.
+    /// (sleeping particles keep providing structural support); only their own
+    /// gather/integration/force-field work is skipped.
     ///
-    /// Minimal hook, not a chunk system: this just lets a caller (e.g. LP's future
-    /// chunk loader, once it exists) force-sleep a tagged group by distance instead
-    /// of waiting for velocity to drop. Mirrors the CPU `Simulation::sleep_tag` API.
+    /// A minimal hook, not a chunk system: it lets a caller (e.g. a chunk loader)
+    /// force-sleep a tagged group by distance instead of waiting for velocity to
+    /// drop. Mirrors the CPU `Simulation::sleep_tag` API.
     pub fn sleep_tag(&mut self, tag: u32) {
         if self.pending_sleep_tags.len() < MAX_SLEEP_WAKE_TAGS {
             self.pending_sleep_tags.push(tag);
@@ -106,7 +105,7 @@ impl GpuSimulation {
     /// For gameplay impulses use `apply_impulse` / `apply_radial_impulse` instead.
     /// After modifying, call `mark_particles_dirty()` so the GPU sees the changes.
     /// Puts every particle into hydrostatic equilibrium under the current
-    /// gravity, so a body spawned "at rest" genuinely starts at rest.
+    /// gravity, so a body spawned "at rest" starts at rest.
     ///
     /// The GPU mirror of `Simulation::settle_hydrostatic`; both call the
     /// same `hydrostatic_state`, so equilibrium means the same thing on

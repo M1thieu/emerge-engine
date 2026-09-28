@@ -1,47 +1,38 @@
-//! Real, cited packing-fraction oracle signal (Yue, Smith, Chen,
-//! Chantharayukhonthorn, Kamrin & Grinspun, "Hybrid Grains," ACM TOG 2018) --
-//! the criterion their real, published adaptive discrete/continuum coupling
-//! uses to decide where grain-scale physics is genuinely needed versus where
-//! plain continuum suffices. Their own oracle computes packing fraction of
-//! the (already-discrete) grain population on a background grid; this
-//! module adapts the same real signal to OUR situation -- deciding where a
-//! CONTINUUM region's own grid mass indicates it's near a free surface or
-//! thin flowing layer (their paper's own stated triggers: "low pressure,"
-//! "thin flows," "finite-size effects") -- exactly the regime this
-//! project's own long repose-angle investigation independently root-caused
-//! as where plain Drucker-Prager fails (pressure -> 0, Coulomb yield stress
-//! vanishes regardless of friction angle).
+//! Packing-fraction oracle signal from Hybrid Grains (Yue, Smith, Chen,
+//! Chantharayukhonthorn, Kamrin & Grinspun, ACM TOG 2018): the criterion
+//! their adaptive discrete/continuum coupling uses to decide where
+//! grain-scale physics is needed. Their oracle computes the packing fraction
+//! of an already-discrete grain population on a background grid; here the
+//! same signal is read from a continuum region's grid mass, to find free
+//! surfaces and thin flowing layers (the paper's triggers: "low pressure",
+//! "thin flows", "finite-size effects"). That is where plain Drucker-Prager
+//! fails: as pressure goes to 0 the Coulomb yield stress vanishes whatever
+//! the friction angle.
 //!
-//! Real, disclosed scope: this is the SIGNAL only -- a function that says
-//! "this cell looks like a free surface/thin-flow region, real discrete
-//! treatment would help here." It does NOT yet dynamically create/destroy
-//! `Grain`s (the paper's own "enrichment"/"homogenization" conversion
-//! machinery) -- that real, separate mechanism remains future work, per
-//! `project_dem_rolling_resistance_scoped` memory's own disclosed scope.
+//! Signal only: it flags cells where discrete treatment would help.
+//! Creating grains from continuum is `Simulation`'s enrichment path
+//! (`solver/particles.rs`); homogenization back to continuum is not
+//! implemented.
 
 use glam::IVec2;
 
 use crate::grid::Grid;
 
-/// Real, already-cited reference density for a fully, densely packed MPM
-/// cell in THIS engine's own convention: ~4 particles/cell is the
-/// literature-established minimum for MLS-MPM stability/quadrature accuracy
-/// (Jiang et al. 2016) -- already the basis for this project's own real
-/// particle-budget accounting (see `perf_opportunities_survey` memory's
-/// "4 particles/cell" convention). Not a re-guessed number.
+/// Reference mass for a fully packed MPM cell: ~4 particles per cell, the
+/// usual minimum for MLS-MPM stability and quadrature accuracy (Jiang et al.
+/// 2016).
 const DENSE_PARTICLES_PER_CELL: f32 = 4.0;
 
 /// Reference ("fully packed") mass for one grid cell, given the scene's own
 /// per-particle mass. `packing_fraction_at` divides a cell's real
-/// accumulated mass by this to get a real, dimensionless density ratio.
+/// accumulated mass by this to get a dimensionless density ratio.
 pub fn reference_mass_per_cell(particle_mass: f32) -> f32 {
     particle_mass * DENSE_PARTICLES_PER_CELL
 }
 
-/// Real packing fraction (accumulated grid mass / dense-reference mass) at
-/// `cell_pos`, clamped to `[0.0, 1.0]` (a cell can accumulate slightly more
-/// than the nominal dense reference from kernel overlap/jitter -- clamped
-/// so the ratio stays a genuine fraction, not an unbounded overshoot).
+/// Packing fraction (accumulated grid mass / dense-reference mass) at
+/// `cell_pos`, clamped to `[0.0, 1.0]`: kernel overlap and jitter can push a
+/// cell slightly past the nominal reference.
 pub fn packing_fraction_at(grid: &Grid, cell_pos: IVec2, reference_mass_per_cell: f32) -> f32 {
     if reference_mass_per_cell <= 0.0 {
         return 0.0;
@@ -53,7 +44,7 @@ pub fn packing_fraction_at(grid: &Grid, cell_pos: IVec2, reference_mass_per_cell
 /// flowing layer (real material present, but below the dense-packing
 /// threshold), where this project's own investigation already root-caused
 /// plain continuum Drucker-Prager as structurally unable to hold a real
-/// repose angle? `threshold` is the paper's own `phi_crit` -- a real, scene-
+/// repose angle? `threshold` is the paper's own `phi_crit` -- a scene-
 /// tunable cutoff, not hardcoded (their own oracle treats it as a user
 /// parameter too).
 ///
@@ -133,14 +124,10 @@ mod tests {
 
     #[test]
     fn a_real_sloped_pile_flags_its_surface_but_not_its_dense_interior() {
-        // Real, meaningful validation, not just synthetic single-cell
-        // checks: build a small triangular pile of real per-particle mass
-        // deposits (mimicking real P2G accumulation) and confirm the
-        // oracle correctly distinguishes the dense interior (deep inside
-        // the pile, fully surrounded) from the sloped surface layer
-        // (real material present, but thin/partially packed) -- exactly
-        // the distinction the real repose-angle problem this session spent
-        // all night on lives inside.
+        // A small triangular pile of per-particle mass deposits (mimicking
+        // P2G accumulation): the oracle must tell the dense interior (fully
+        // surrounded) from the sloped surface layer (material present, but
+        // thin and partly packed), the region where the repose angle is set.
         let mut grid = Grid::new(32);
         let particle_mass = 1.0;
         let reference = reference_mass_per_cell(particle_mass);
@@ -167,8 +154,8 @@ mod tests {
             !needs_discrete_treatment(&grid, IVec2::new(16, 5), reference, 0.7),
             "dense pile interior was incorrectly flagged as needing discrete treatment"
         );
-        // Real sloped edge cell of row 4 (y=9, half_width=2 -> edge at
-        // col=+-2, x=16+2=18): must BE flagged.
+        // Sloped edge cell of row 4 (y=9, half_width=2 -> edge at col=+-2,
+        // x=16+2=18): must be flagged.
         assert!(
             needs_discrete_treatment(&grid, IVec2::new(18, 9), reference, 0.7),
             "sloped surface cell was NOT flagged, oracle missed the real free surface"

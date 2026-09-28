@@ -292,13 +292,11 @@ fn block_index_of(cell_x: u32, cell_y: u32, res: u32) -> vec2<u32> {
     return vec2<u32>(bx, by);
 }
 
-// Gathers this node's real contact point cloud: scans its own block plus its 8
-// neighbors (same halo-expansion reasoning as particle_sort_compact_main -- a point
-// near a block boundary can belong to an adjacent block from this node's perspective),
-// filtering to points within actual P2G kernel range (`|rel| < 1.5` cells, the 3x3
-// B-spline stencil reach). Real, disclosed cap: stops at MAX_LOCAL_POINTS (128) even
-// if more real candidates exist -- a bounded-memory tradeoff, not silently wrong (see
-// MAX_LOCAL_POINTS' own reasoning above).
+// Gathers this node's contact point cloud: scans its own block plus its 8 neighbors
+// (same halo reasoning as particle_sort_compact_main: a point near a block boundary can
+// belong to an adjacent block from this node's view), keeping points within the
+// particle-to-node reach below. Stops at MAX_LOCAL_POINTS (128) even if more candidates
+// exist, a bounded-memory tradeoff (see MAX_LOCAL_POINTS above).
 fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, array<vec4<f32>, 128>>) -> u32 {
     let cell_x = u32(clamp(node_pos.x, 0.0, f32(res - 1u)));
     let cell_y = u32(clamp(node_pos.y, 0.0, f32(res - 1u)));
@@ -324,23 +322,16 @@ fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, 
                 // slot so `resolve_cell` can read its edge data back.
                 let pt = vec4<f32>(head.xyz, bitcast<f32>(slot));
                 let rel = pt.xy - node_pos;
-                // Real, confirmed-via-derivation fix (2026-09-15): CPU's exact
-                // port (`Grid::add_contact_point`, via `gather_contact_point_
-                // cloud`) includes a particle at every one of the 3x3 cells
-                // `base_cell + {-1,0,1}`, where `base_cell = floor(position)`
-                // -- so a particle's real distance from an included query node
-                // can approach (not reach) 2.0 grid units (e.g. position at
-                // `base_cell + 0.999`, node at `base_cell - 1`). The former
-                // `< 1.5` bound here was TIGHTER than that true reach and,
-                // for a regular particle lattice (this bug's own repro used
-                // `spacing=0.5`), excluded points in a spatially CONSISTENT
-                // (not random-noise) pattern -- a real, measured cause of the
-                // tilted contact-normal fit behind
-                // `gpu_multi_field_contact_produces_real_coulomb_slip_and_stick`'s
-                // failure (mean v_x went NEGATIVE at friction=0, not just
-                // "stuck"). `< 2.0` matches CPU's true worst-case reach
-                // exactly (a continuous position can approach but never equal
-                // 2.0 here).
+                // Same reach as CPU (`Grid::add_contact_point`, via
+                // `gather_contact_point_cloud`): a particle is included at every
+                // one of the 3x3 cells `base_cell + {-1,0,1}`, `base_cell =
+                // floor(position)`, so its distance to an included node can
+                // approach (not reach) 2.0 grid units (position at
+                // `base_cell + 0.999`, node at `base_cell - 1`). A `< 1.5` bound
+                // drops points in a spatially consistent pattern on a regular
+                // lattice (e.g. `spacing=0.5`), tilting the fitted contact
+                // normal (mean v_x went negative at friction=0 in
+                // `gpu_multi_field_contact_produces_real_coulomb_slip_and_stick`).
                 if abs(rel.x) < 2.0 && abs(rel.y) < 2.0 {
                     (*out_points)[n] = pt;
                     n++;

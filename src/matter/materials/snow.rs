@@ -78,15 +78,12 @@ impl StomakhinMaterial {
 
     /// Stomakhin 2013 canonical plasticity: ξ=10, θ_c=0.025, θ_s=0.0075.
     /// Canonical: E = 1.4e5, ν = 0.2 -- matches MPM2D reference and sparkl snow demos.
-    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
-    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
-    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material, build
-    /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
+    /// **Grid units, not pascals**: calls [`lame_from_young`] directly and
+    /// never touches `dx_meters` or density. For an SI material build an
+    /// [`Elastoplastic`](crate::materials::Elastoplastic) with
     /// `model: PlasticityModel::Snow` and call its `.material(&config)`
-    /// (real dispatch, see that method's own doc) -- `Self::from_physical`
-    /// exists but its `SnowProps` input type is crate-internal, not
-    /// constructible from outside.
+    /// (`Self::from_physical` exists, but its `SnowProps` input is
+    /// crate-internal).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)
@@ -154,8 +151,8 @@ impl MaterialModel for StomakhinMaterial {
         let mut tau = 2.0 * mu_eff * (f - r) * f_t + lambda_eff * (j - 1.0) * j * Mat2::IDENTITY;
 
         // Cohesion pressure: τ += -c * max(1-Jp, 0) * I -- matches this struct's
-        // own doc on `cohesion_coeff`. An addition beyond Stomakhin 2013's base
-        // model (disclosed on `cohesion_coeff`'s own doc: "0.0 = no cohesion,
+        // doc on `cohesion_coeff`. An addition beyond Stomakhin 2013's base
+        // model (disclosed on `cohesion_coeff`'s doc: "0.0 = no cohesion,
         // Stomakhin 2013 default").
         if self.cohesion_coeff > 0.0 && particles.plastic_volume_ratio[i] < 1.0 {
             tau -= self.cohesion_coeff * (1.0 - particles.plastic_volume_ratio[i]) * Mat2::IDENTITY;
@@ -354,9 +351,9 @@ mod analytical_validation_tests {
             f_after.x_axis.x
         );
 
-        // Real, exact analytical claim: Jp_new = Jp_old * (sigma.x*sigma.y) /
-        // (sigma_c.x*sigma_c.y) -- with sigma.y=1 unclamped, this reduces to
-        // Jp_new = sigma_x / expected_clamped exactly.
+        // Exact: Jp_new = Jp_old * (sigma.x*sigma.y) / (sigma_c.x*sigma_c.y);
+        // with sigma.y=1 unclamped this reduces to Jp_new = sigma_x /
+        // expected_clamped.
         let expected_jp = sigma_x / expected_clamped;
         assert!(
             (particles.plastic_volume_ratio[0] - expected_jp).abs() < 1.0e-5,
@@ -417,7 +414,7 @@ mod analytical_validation_tests {
     /// Constructs trial stretches through nonzero C, on either side of the
     /// compression limit. This pins the important migration invariant: using
     /// exp(dt*C) must not move a marginal elastic case onto the plastic branch,
-    /// while a genuinely over-limit trial must still clamp and update Jp.
+    /// while a over-limit trial must still clamp and update Jp.
     #[test]
     fn exponential_trial_respects_both_sides_of_compression_limit() {
         let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
@@ -485,7 +482,7 @@ mod analytical_validation_tests {
         let expected = -with_cohesion.cohesion_coeff * (1.0 - 0.9);
 
         // Isolate the cohesion CONTRIBUTION by diffing against the same F/Jp
-        // with cohesion off -- the background elastic stress (real, nonzero
+        // with cohesion off -- the background elastic stress (nonzero
         // whenever F != I) must not be mistaken for the cohesion term itself.
         let cohesion_delta = |f: Mat2, jp: f32| -> Mat2 {
             let p_on = particle_with(f, 1.0, jp);
@@ -522,18 +519,15 @@ mod analytical_validation_tests {
         );
     }
 
-    /// **Real, dynamic compaction-hardening test** -- the category-defining
-    /// snow behavior ("compressed snow is stiffer," this file's own module
-    /// doc, Stomakhin 2013 §4.2) had zero test driving it through real
-    /// `update_particle` substeps before this; every existing test above
-    /// hand-sets `hardening_scale`/`plastic_volume_ratio` directly rather
-    /// than letting them accumulate from real sustained compression. Real,
-    /// dynamic mirror of `VonMises`'s permanent-set test and `Rankine`'s
-    /// softening test (2026-08-04) -- snow's own real contrast is
-    /// HARDENING, the opposite sign of Rankine's softening.
+    /// Dynamic compaction hardening, the defining snow behavior ("compressed
+    /// snow is stiffer", Stomakhin 2013 §4.2), driven through `update_particle`
+    /// substeps under sustained compression rather than by hand-setting
+    /// `hardening_scale`/`plastic_volume_ratio` as the tests above do. The
+    /// counterpart of `VonMises`'s permanent-set test and `Rankine`'s
+    /// softening test, with the opposite sign to Rankine: hardening.
     #[test]
     fn repeated_compaction_genuinely_stiffens_snow_real_hardening_dynamics() {
-        // Real Stomakhin 2013 canonical params (xi=10, theta_c=0.025).
+        // Stomakhin 2013 canonical params (xi=10, theta_c=0.025).
         let mat = StomakhinMaterial::from_young_modulus(1.4e5, 0.2);
 
         // Drive ONE particle through repeated compressive substeps via the
@@ -561,11 +555,9 @@ mod analytical_validation_tests {
             "genuinely compacted snow must be stiffer (hardening_scale>1), got {h_after}"
         );
 
-        // Real stress-stiffening proof: apply the exact same current
-        // deformation to a compacted particle vs a fresh (h=1, Jp=1)
-        // particle AT THE SAME F -- compacted must produce a LARGER stress
-        // for the identical deformation, the real "packed snow resists
-        // further compression more" signature, not just an unused number.
+        // Apply the same deformation to a compacted particle and a fresh
+        // (h=1, Jp=1) one at the same F: the compacted one must give the
+        // larger stress (packed snow resists further compression more).
         let f_current = particles.deformation_gradient[0];
         let compacted = particle_with(f_current, h_after, jp_after);
         let fresh = particle_with(f_current, 1.0, 1.0);

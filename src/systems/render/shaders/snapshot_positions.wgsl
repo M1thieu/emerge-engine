@@ -2,7 +2,7 @@
 // the pre-step snapshot `prep_instances.wgsl` interpolates against for
 // "Fix Your Timestep" (Gaffer 2004) render smoothing. Called once per
 // render-frame's physics-step batch, BEFORE stepping (see
-// `Renderer::snapshot_particle_positions`'s own doc) -- zero CPU readback,
+// `Renderer::snapshot_particle_positions`'s doc) -- zero CPU readback,
 // stays GPU-resident the whole way.
 //
 // Particle struct layout (128 bytes) must match src/matter/particle.rs
@@ -38,7 +38,7 @@ struct Particle {
 // give vec3 a 16-byte alignment, which silently inflates this struct's real
 // GPU size to 32 bytes (16-byte aligned offset + its own 16-byte rounded
 // size) even though the equivalent `repr(C)` Rust struct (u32 + [u32;3],
-// all 4-byte-aligned) is only 16 bytes -- a real, confirmed wgpu validation
+// all 4-byte-aligned) is only 16 bytes -- a confirmed wgpu validation
 // panic ("size 16 where the shader expects 32") caught by actually running
 // this, not a hypothetical. Three separate `u32` fields keep every member's
 // alignment at 4 bytes, matching the Rust side exactly.

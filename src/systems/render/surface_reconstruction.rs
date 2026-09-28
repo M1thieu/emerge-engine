@@ -31,16 +31,12 @@ struct PhasePipelineBuffers<'a> {
 impl Renderer {
     // ── Curvature-flow surface reconstruction ──────────────────────────────────
 
-    /// Real, finer-than-physics-grid surface reconstruction (see
-    /// `curvature_flow.wgsl`'s own top doc for the full real technique --
-    /// van der Laan et al. 2009 mean curvature flow on a particle-splatted
-    /// auxiliary buffer, resolution-independent from the solver's own
-    /// `grid_res`). Requires `set_camera` to have been called first (reuses
-    /// its cached orthographic projection, rescaled to this pass's own
-    /// finer `surface_res` -- see the real derivation in this function's
-    /// body). `material_slot` picks ONE `OpticalTable` slot for the whole
-    /// surface (real v1 scope: single dominant material, not full per-
-    /// material phase-fraction separation -- see the shader's own doc).
+    /// Surface reconstruction finer than the physics grid: van der Laan et
+    /// al. 2009 mean curvature flow on a particle-splatted buffer whose
+    /// resolution is independent of `grid_res` (see `curvature_flow.wgsl`).
+    /// Needs `set_camera` first: its orthographic projection is reused,
+    /// rescaled to `surface_res`. `material_slot` picks one `OpticalTable`
+    /// slot for the whole surface (single dominant material, see the shader).
     pub fn render_surface_reconstruction(
         &mut self,
         device: &wgpu::Device,
@@ -93,7 +89,7 @@ impl Renderer {
                 ty,
                 light_dir: [self.light_dir.0, self.light_dir.1],
                 surface_res,
-                // See `SURFACE_MASS_FLOOR_FRACTION`'s own doc: sized off what
+                // See `SURFACE_MASS_FLOOR_FRACTION`'s doc: sized off what
                 // ONE isolated particle's B-spline splat can concentrate into a
                 // single surface cell, not copied from `render_grid_volume`'s
                 // own (differently-diluted) units.
@@ -297,13 +293,12 @@ impl Renderer {
                 },
             ],
         });
-        // Real thermal-diffusion pair (see `curvature_flow.wgsl`'s own
-        // "Pass 1c" doc): `temp_avg_bg` recovers real temperature from the
-        // mass-weighted scatter using THIS frame's now-settled density
-        // (`surface_a_buf`); `temp_diffuse_bg` then runs one real heat-
-        // equation step, reading `surface_temp_b_buf` (avg's output) and
-        // writing back into `surface_temp_float_buf` (the buffer `fs_main`
-        // already binds -- no render-bind-group change needed).
+        // Thermal-diffusion pair (`curvature_flow.wgsl`'s Pass 1c):
+        // `temp_avg_bg` recovers temperature from the mass-weighted scatter
+        // with this frame's settled density (`surface_a_buf`);
+        // `temp_diffuse_bg` runs one heat-equation step from
+        // `surface_temp_b_buf` back into `surface_temp_float_buf`, the buffer
+        // `fs_main` binds.
         let temp_avg_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("temp_avg_bg"),
             layout: &self.temp_avg_bgl,
@@ -344,15 +339,11 @@ impl Renderer {
                 },
             ],
         });
-        // Real light-diffusion pair (`curvature_flow.wgsl`'s "Pass 1e") --
-        // must run AFTER temp_diffuse above (needs the FINAL, already-
-        // diffused temperature as its own real emission source, same real
-        // ordering reasoning `temp_diffuse_bg`'s own doc gives for running
-        // after the density iterate loop). `light_cur_idx`/`light_next_idx`
-        // alternate which of the 2 ping-pong buffers is read vs written
-        // this frame -- simpler 2-way rotation than the wave field's own
-        // 3-way (see `light_frame_index`'s own doc for why one fewer buffer
-        // suffices here).
+        // Light-diffusion pair (`curvature_flow.wgsl`'s Pass 1e), after
+        // temp_diffuse: its emission source is the diffused temperature.
+        // `light_cur_idx`/`light_next_idx` alternate the 2 ping-pong buffers
+        // (see `light_frame_index` for why 2 suffice where the wave field
+        // needs 3).
         let light_cur_idx = (self.light_frame_index % 2) as usize;
         let light_next_idx = ((self.light_frame_index + 1) % 2) as usize;
         let light_diffuse_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -385,19 +376,12 @@ impl Renderer {
                 },
             ],
         });
-        // Real, persistent (across frames) wave field -- see `curvature_
-        // flow.wgsl`'s own "Pass 2b" doc. THREE distinct physical buffers
-        // rotate through the "current" (read with neighbor offsets),
-        // "previous" (self-index read only), and "next" (self-index write
-        // only) roles each call -- wgpu's usage-scope validator rejects
-        // binding the SAME buffer as both read-only and read_write within
-        // one dispatch (confirmed via a real validation error when a
-        // cheaper 2-buffer aliasing scheme was tried first), even though
-        // that scheme's actual access pattern was index-disjoint and
-        // logically hazard-free -- 3 buffers is the correct, always-valid
-        // way to satisfy that rule for a leapfrog integrator. After this
-        // dispatch, the buffer that served as "next" holds the freshly
-        // computed state, which is what `render_bg` below must read.
+        // Persistent wave field (`curvature_flow.wgsl`'s Pass 2b). Three
+        // buffers rotate through "current" (read with neighbour offsets),
+        // "previous" (own index, read) and "next" (own index, write): wgpu
+        // rejects one buffer bound read-only and read_write in one dispatch,
+        // even for index-disjoint access. After this dispatch the "next"
+        // buffer holds the new state, which `render_bg` reads.
         let cur_idx = (self.wave_frame_index % 3) as usize;
         let prev_idx = ((self.wave_frame_index + 2) % 3) as usize;
         let next_idx = ((self.wave_frame_index + 1) % 3) as usize;
@@ -432,10 +416,9 @@ impl Renderer {
             ],
         });
 
-        // Real hysteresis visibility step -- a SINGLE persistent buffer
-        // (no rotation needed: self-index read+write only, no neighbor
-        // stencil, so no wgpu usage-scope conflict). Reads this frame's
-        // settled density (`surface_a_buf`), same as the wave step above.
+        // Hysteresis visibility step: one persistent buffer (own index only,
+        // no stencil, so no usage-scope conflict), reading this frame's
+        // settled density (`surface_a_buf`).
         let visibility_step_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("visibility_step_bg"),
             layout: &self.visibility_step_bgl,
@@ -455,9 +438,7 @@ impl Renderer {
             ],
         });
 
-        // Real hysteresis color-band step -- same single-buffer, one-way-
-        // downstream shape as the visibility step above (see "Pass 2d"
-        // doc in the shader).
+        // Hysteresis color-band step, the same single-buffer shape (Pass 2d).
         let band_hysteresis_step_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("band_hysteresis_step_bg"),
             layout: &self.band_hysteresis_step_bgl,
@@ -569,35 +550,14 @@ impl Renderer {
             cp.set_bind_group(0, &convert_bg, &[]);
             cp.dispatch_workgroups(cell_count.div_ceil(SURFACE_CLEAR_WG), 1, 1);
         }
-        // ROOT FIX (2026-08-13): `temp_avg_main` recovers per-cell AVERAGE
-        // temperature by dividing the raw mass-weighted temperature sum by
-        // mass -- and, in this file's own already-stated words, "that ratio is
-        // only meaningful against the mass value the weighted sum was
-        // ORIGINALLY splatted against".
-        //
-        // That principle was previously enforced against ONE mutator of
-        // `surface_a_buf` (the volume-preserving correction) by moving this
-        // pass before it -- but the curvature iterate loop below mutates the
-        // very same buffer, and used to run FIRST. So the division paired a
-        // RAW numerator with a SMOOTHED denominator: wherever curvature flow
-        // moves mass out of a cell the denominator shrinks while the numerator
-        // does not, and the recovered "temperature" blows up far past any real
-        // value.
-        //
-        // Visible symptom that traced back to here, under the hand-drawn
-        // emission ramp `blackbody.inc.wgsl` has since replaced: that ramp
-        // was `heat(0.5 + t_norm*0.5) * t_norm^2 * 2` with
-        // `t_norm = clamp(avg_temp/5000, 0, 1)`, and `heat(1.0)` is PURE RED.
-        // So rim/thin cells of 300 K water rendered as saturated red-pink
-        // added on top of the correct body colour -- measured as body
-        // (0.078, 0.43, 0.59) vs artifact (1.0, 0.43, 0.59): identical green
-        // and blue, red alone driven to 1.0, which is exactly an additive
-        // heat(1.0).
-        //
-        // Running it HERE -- straight after convert, before any smoothing --
-        // divides raw by raw, which is the pairing the algorithm actually
-        // requires. `temp_diffuse` below still smooths the resulting
-        // temperature field, so nothing is lost.
+        // `temp_avg_main` divides the mass-weighted temperature sum by mass,
+        // which only means something against the mass the sum was splatted
+        // with. Both the curvature iterate loop and the volume correction
+        // change `surface_a_buf`, so this runs straight after convert, raw
+        // over raw. (Run after the smoothing, a raw numerator over a smoothed
+        // denominator blew up wherever mass moved out of a cell: rim cells of
+        // 300 K water rendered saturated red.) `temp_diffuse` below still
+        // smooths the result.
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("temp_avg"),
@@ -628,24 +588,11 @@ impl Renderer {
             cp.set_bind_group(0, bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real thermal-diffusion pair (see `curvature_flow.wgsl`'s own
-        // "Pass 1c" doc) -- must run AFTER the density iterate loop above
-        // (needs the final settled `surface_a_buf`) and BEFORE the render
-        // pass below reads `surface_temp_float_buf` for blackbody emission.
-        // Real ordering requirement, caught by a real test failure: this
-        // MUST run BEFORE the volume-preserving correction below --
-        // `temp_avg_main` divides `surface_temp_float_buf` (raw weighted
-        // sum) by `surface_a_buf` (mass) to recover a real per-cell AVERAGE
-        // temperature; that ratio is only meaningful against the mass value
-        // the weighted sum was ORIGINALLY splatted against. Rescaling mass
-        // first (for a completely different, unrelated reason -- volume
-        // preservation) before this division silently corrupted the
-        // recovered temperature by the same rescale factor (confirmed via
-        // the real test: hot/cold both shifted by the identical ratio).
-        // Average temperature is an INTENSIVE quantity -- it doesn't need
-        // "volume preservation" at all, so it must be computed from the
-        // real, as-settled mass, before that mass is corrected for anything
-        // else.
+        // Thermal-diffusion step (`curvature_flow.wgsl`'s Pass 1c), before
+        // the render pass reads `surface_temp_float_buf` and before the
+        // volume correction below: rescaling mass first shifted every
+        // recovered temperature by the rescale factor (a test caught it). An
+        // average temperature is intensive and needs no volume preservation.
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("temp_diffuse"),
@@ -655,8 +602,7 @@ impl Renderer {
             cp.set_bind_group(0, &temp_diffuse_bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real light-diffusion step -- see `light_diffuse_bg`'s own doc for
-        // why this must run after temp_diffuse above.
+        // Light-diffusion step, after temp_diffuse (see `light_diffuse_bg`).
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("light_diffuse"),
@@ -667,11 +613,9 @@ impl Renderer {
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
         self.light_frame_index = self.light_frame_index.wrapping_add(1);
-        // Real volume-preserving correction (see `curvature_flow.wgsl`'s own
-        // "Pass 1d" doc) -- must run AFTER temperature recovery above (see
-        // that step's own doc for why) and BEFORE the wave/visibility/band
-        // steps and the render pass, all of which need the CORRECTED mass
-        // for alpha/banding/excitation purposes.
+        // Volume-preserving correction (`curvature_flow.wgsl`'s Pass 1d),
+        // after temperature recovery and before the wave, visibility and band
+        // steps and the render pass, which all use the corrected mass.
         {
             let post_total_reduce_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("post_total_reduce_bg"),
@@ -745,10 +689,9 @@ impl Renderer {
             );
             self.wave_prev_seeded = true;
         }
-        // Real wave-equation step, reading this frame's now-settled density
-        // (`surface_a_buf`) as its excitation source -- must run AFTER the
-        // iterate loop above finishes writing it, and BEFORE the render
-        // pass below reads the wave field for shading.
+        // Wave-equation step, excited by this frame's settled density
+        // (`surface_a_buf`): after the iterate loop, before the render pass
+        // reads the wave field.
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("wave_step"),
@@ -769,10 +712,8 @@ impl Renderer {
             0,
             (cell_count as u64) * mem::size_of::<f32>() as u64,
         );
-        // Real hysteresis visibility step -- also reads this frame's now-
-        // settled density, independent of the wave step above (order
-        // between the two doesn't matter, neither reads the other's
-        // output).
+        // Hysteresis visibility step, also from the settled density;
+        // independent of the wave step (neither reads the other).
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("visibility_step"),
@@ -782,8 +723,7 @@ impl Renderer {
             cp.set_bind_group(0, &visibility_step_bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real hysteresis color-band step -- also reads this frame's now-
-        // settled density, independent of the wave/visibility steps above.
+        // Hysteresis color-band step, also from the settled density.
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("band_hysteresis_step"),
@@ -821,13 +761,13 @@ impl Renderer {
         }
         queue.submit(std::iter::once(enc.finish()));
         // Rotate which of the 3 wave buffers plays which role next call --
-        // see the bind-group construction above's own doc for the full
+        // see the bind-group construction above's doc for the full
         // rotation reasoning.
         self.wave_frame_index = self.wave_frame_index.wrapping_add(1);
     }
 
     /// Encodes clear+splat+convert+`CURVATURE_ITERATIONS`-iterate for ONE
-    /// phase into the shared encoder -- the real, common body both
+    /// phase into the shared encoder -- the common body both
     /// `render_surface_reconstruction` (inlined, unchanged, zero risk to
     /// already-shipped code) and `render_surface_reconstruction_dual_phase`
     /// (below, calls this twice) both need. `params_buf` must already carry
@@ -1051,9 +991,8 @@ impl Renderer {
             cp.set_bind_group(0, bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
-        // Real volume-preserving correction for THIS phase -- see
-        // `render_surface_reconstruction`'s own identical step for the full
-        // doc (`curvature_flow.wgsl`'s "Pass 1d").
+        // Volume-preserving correction for this phase, as in
+        // `render_surface_reconstruction` (Pass 1d).
         {
             let post_total_reduce_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("phase_post_total_reduce_bg"),
@@ -1215,10 +1154,9 @@ impl Renderer {
             }),
         );
 
-        // Real per-phase wave/visibility/band params -- SHARED across both
-        // phases (only `surface_res`/`mass_floor` matter here, identical for
-        // both), same single-write-covers-both-dispatches convention the
-        // single-phase path already established.
+        // Wave/visibility/band params shared by both phases (only
+        // `surface_res`/`mass_floor` matter, identical for both): one write
+        // covers both dispatches, as in the single-phase path.
         queue.write_buffer(
             &self.wave_params_buf,
             0,
@@ -1292,14 +1230,11 @@ impl Renderer {
             },
         );
 
-        // Real per-phase wave/visibility/band steps -- reuses the SAME
-        // wave_frame_index rotation (see `render_surface_reconstruction`'s
-        // own doc for the 3-buffer reasoning) applied to phase A's existing
-        // buffers AND phase B's own separate set, so both phases get the
-        // identical proven flicker fixes. Must run AFTER both
-        // `encode_phase_pipeline` calls above (they need the now-settled
-        // `surface_a_buf`/`phase_b_a_buf`) and BEFORE the render pass below
-        // (which reads their output).
+        // Per-phase wave/visibility/band steps with the same
+        // `wave_frame_index` rotation (see `render_surface_reconstruction`),
+        // on phase A's buffers and phase B's own set. After both
+        // `encode_phase_pipeline` calls (they settle `surface_a_buf`/
+        // `phase_b_a_buf`) and before the render pass.
         let iterate_wg_x = surface_res.div_ceil(8);
         let iterate_wg_y = surface_res.div_ceil(8);
         let cur_idx = (self.wave_frame_index % 3) as usize;
@@ -1587,7 +1522,7 @@ impl Renderer {
         // Rotate which of the 3 wave-buffer slots plays which role next call
         // -- same real rotation `render_surface_reconstruction` performs,
         // shared here since both phases index off the SAME frame counter
-        // (see the wave-step bind-group construction above's own doc).
+        // (see the wave-step bind-group construction above's doc).
         self.wave_frame_index = self.wave_frame_index.wrapping_add(1);
     }
 
@@ -1637,8 +1572,8 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Real mass-weighted temperature pair, grown together -- see
-        // `surface_temp_atomic_buf`'s own doc.
+        // Mass-weighted temperature pair, grown together (see
+        // `surface_temp_atomic_buf`).
         self.surface_temp_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("surface_temp_atomic"),
             size: cell_count * mem::size_of::<i32>() as u64,
@@ -1686,7 +1621,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         // Phase B's own temperature pair, grown together -- see
-        // `surface_temp_atomic_buf`'s own doc.
+        // `surface_temp_atomic_buf`'s doc.
         self.phase_b_temp_atomic_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("phase_b_temp_atomic"),
             size: cell_count * mem::size_of::<i32>() as u64,
@@ -1721,10 +1656,8 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        // Real, persistent light-fluence diffusion field, grown together --
-        // same real, disclosed reset-to-zero behavior as the wave field
-        // just below (no light has diffused yet right after a resize,
-        // which is simply true, not a bug).
+        // Light-fluence field, grown together; a resize resets it to zero, as
+        // the wave field below.
         self.light_phi_bufs = std::array::from_fn(|i| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(match i {
@@ -1738,10 +1671,8 @@ impl Renderer {
                 mapped_at_creation: false,
             })
         });
-        // Real wave field, grown together -- a resize resets it to flat
-        // (zero), the same real, disclosed behavior `surface_a_buf`/
-        // `surface_b_buf` already have on resize (a rare, one-time event,
-        // and "undisturbed" is a physically sensible reset state).
+        // Wave field, grown together; a resize resets it to flat, as
+        // `surface_a_buf`/`surface_b_buf`.
         self.wave_bufs = std::array::from_fn(|i| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(match i {
@@ -1756,8 +1687,8 @@ impl Renderer {
                 mapped_at_creation: false,
             })
         });
-        // Real temporal-disturbance history, grown together -- see
-        // `wave_density_prev_buf`'s own doc.
+        // Temporal-disturbance history, grown together (see
+        // `wave_density_prev_buf`).
         self.wave_density_prev_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wave_density_prev"),
             size: float_size,
@@ -1767,12 +1698,10 @@ impl Renderer {
             mapped_at_creation: false,
         });
         // Back to a zero placeholder -- needs reseeding before the next
-        // `wave_step`, see `wave_prev_seeded`'s own doc.
+        // `wave_step`, see `wave_prev_seeded`'s doc.
         self.wave_prev_seeded = false;
-        // Real hysteresis visibility state, grown together -- a resize
-        // resets it to all-"not visible" (the same real, disclosed,
-        // harmless one-time bias the constructor's own placeholder
-        // allocation already has).
+        // Hysteresis visibility state, grown together; a resize resets it to
+        // "not visible", like the constructor's placeholder.
         self.visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("visibility_state"),
             size: float_size,
@@ -1781,9 +1710,8 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        // Real hysteresis color-band state, grown together -- a resize
-        // resets it to band 0, same real, disclosed harmless bias the
-        // constructor's own placeholder already has.
+        // Hysteresis color-band state, grown together; a resize resets it to
+        // band 0, like the constructor's placeholder.
         self.band_state_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("band_state"),
             size: float_size,
@@ -1800,9 +1728,8 @@ impl Renderer {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        // Phase B's own wave/visibility/band state, grown together -- same
-        // real, disclosed reset-to-flat/not-visible/band-0 bias as phase
-        // A's own fields above.
+        // Phase B's wave/visibility/band state, grown together, with the same
+        // resets as phase A's.
         self.phase_b_wave_bufs = std::array::from_fn(|i| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(match i {
@@ -1845,16 +1772,12 @@ impl Renderer {
         self.surface_res = needed;
     }
 
-    /// N-material extension (see `surface_material_mass_buf`'s own doc) --
-    /// grows it to `surface_res² × MAX_RENDER_MATERIAL_SLOTS × 4` bytes.
-    /// Deliberately NOT called from `ensure_surface_capacity` above: only
-    /// invoked when a caller actually opts in
+    /// N-material extension (see `surface_material_mass_buf`): grows it to
+    /// `surface_res² × MAX_RENDER_MATERIAL_SLOTS × 4` bytes. Not called from
+    /// `ensure_surface_capacity`: only when a caller opts in
     /// (`SurfaceReconstructionSource::material_mass_enabled`), so a
-    /// `Renderer` that never opts in keeps paying only the 4-byte
-    /// placeholder -- same real, disclosed lazy-growth reasoning as
-    /// `GpuBuffers::grow_material_mass` on the solver side (`buffers.rs`),
-    /// not the always-grow-together convention every other surface buffer
-    /// above uses.
+    /// `Renderer` that never does keeps the 4-byte placeholder, like
+    /// `GpuBuffers::grow_material_mass` on the solver side.
     pub(super) fn ensure_surface_material_mass_capacity(
         &mut self,
         device: &wgpu::Device,

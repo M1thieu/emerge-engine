@@ -3,11 +3,8 @@
 // Called before particle_sort and physics substeps each frame. Reads the LIVE GPU
 // particle positions and writes updated velocities in-place -- no CPU mirror upload.
 //
-// This eliminates the stale-CPU-mirror artifact: previously apply_radial_impulse
-// scanned CPU particles (potentially 2 frames stale due to async readback lag),
-// modified them, and uploaded. The GPU would receive 2-frame-old positions with
-// new velocities, causing visible particle jumps. Now the GPU reads its own current
-// positions and applies the impulse correctly.
+// Working from the CPU mirror instead would read positions up to 2 frames stale
+// (async readback lag) and upload them with new velocities, making particles jump.
 //
 // mode 0 (radial): push/pull from center -- `v += normalize(p - center) * strength * falloff`
 // mode 1 (directional): fixed force vector -- `v += force * falloff`
@@ -88,7 +85,7 @@ fn apply_impulses_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     particles[i].v = vel;
-    // Wake on genuine disturbance -- without this, a sleeping particle inside an
+    // Wake on disturbance -- without this, a sleeping particle inside an
     // impulse's radius gets a real velocity written but stays sleeping=1, so every
     // other pass (p2g/g2p/particles_update/force_fields) keeps skipping it: the
     // velocity sits inert (position never integrates) until it happens to wake on

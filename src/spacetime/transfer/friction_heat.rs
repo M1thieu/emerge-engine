@@ -66,7 +66,7 @@ const MIN_APPLIED_TEMPERATURE_RISE_K: f32 = 1.0e-3;
 ///
 /// A material that has not declared a heat capacity keeps its particles'
 /// temperature unchanged, and the energy is reported but not converted --
-/// see `temperature_rise_from_dissipation`'s own doc for why that is the
+/// see `temperature_rise_from_dissipation`'s doc for why that is the
 /// honest answer rather than a guessed `c_p`.
 ///
 /// `heat_debt` is the caller-owned per-particle accumulator described
@@ -206,7 +206,7 @@ mod tests {
         let mut grid = Grid::new(32);
         scatter_masses(&mut grid, &particles);
 
-        // Dissipate at a few nodes the particles genuinely overlap.
+        // Dissipate at a few nodes the particles overlap.
         let dissipating = [
             (IVec2::new(8, 6), 3.0f32),
             (IVec2::new(9, 6), 1.5),

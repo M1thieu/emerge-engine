@@ -1,53 +1,41 @@
-//! Real implicit (backward Euler) time integration for a discrete elastic
-//! rod -- the actual fix for the CFL-driven substep ceiling explicit
-//! integration hits for a stiff rod (see `mod.rs`'s own doc and
-//! `integrator::rod_cfl_dt`). Standard, established numerical method for
-//! stiff ODEs (Baraff & Witkin 1998, "Large Steps in Cloth Simulation";
-//! DisMech, a real published fully-implicit discrete-elastic-rod simulator,
-//! confirms this is the standard approach for exactly this rod
-//! formulation) -- genuinely solving the SAME Newtonian equations of motion
-//! `compute_internal_forces` already does, just with an implicit numerical
-//! integration scheme instead of explicit symplectic Euler. NOT a
-//! constraint-based method (PBD/XPBD) -- those reformulate the problem as
-//! geometric constraint projection, a different mathematical object from
-//! the real force-based PDE this engine is built on, and were explicitly
-//! rejected for that reason.
+//! Implicit (backward Euler) time integration for a discrete elastic rod,
+//! which removes the CFL substep ceiling explicit integration hits for a
+//! stiff rod (see `mod.rs` and `integrator::rod_cfl_dt`). The standard
+//! method for stiff ODEs (Baraff & Witkin 1998, "Large Steps in Cloth
+//! Simulation"; DisMech, a published fully-implicit discrete-elastic-rod
+//! simulator, uses it for this rod formulation). It solves the same
+//! Newtonian equations of motion as `compute_internal_forces`, with an
+//! implicit scheme instead of explicit symplectic Euler. Not a
+//! constraint-based method (PBD/XPBD), which reformulates the problem as
+//! geometric constraint projection rather than the force-based PDE this
+//! engine uses.
 //!
 //! # Method
 //! Backward Euler: `v_{n+1} = v_n + dt*a(x_{n+1}, v_{n+1})`,
 //! `x_{n+1} = x_n + dt*v_{n+1}`. Linearizing `F` around the current state
-//! (standard Newton/quasi-Newton treatment) with `x_{n+1} = x_n + dt*v_{n+1}`
-//! gives the real, standard linear system:
+//! (Newton/quasi-Newton) with `x_{n+1} = x_n + dt*v_{n+1}` gives
 //! `(M - dt*C - dt^2*K) * dv = dt * F(x_n, v_n)`
-//! where `K = dF/dx`, `C = dF/dv` (system Jacobians), solved once per real
-//! step for `dv = v_{n+1} - v_n`.
+//! with `K = dF/dx`, `C = dF/dv` (system Jacobians), solved once per step
+//! for `dv = v_{n+1} - v_n`.
 //!
-//! # Real, disclosed simplification: analytic Jacobians, one term approximate
-//! `K`/`C` are assembled analytically, not finite-differenced (an earlier
-//! version of this file used central differences of `compute_internal_
-//! forces` throughout -- see `implicit_solver_cost_profile`'s own doc for
-//! the real, measured history of replacing that). Axial (stretch +
-//! Kelvin-Voigt damping) has an exact, standard damped-spring Jacobian
+//! # Analytic Jacobians, one term approximate
+//! `K`/`C` are assembled analytically, not finite-differenced (see
+//! `implicit_solver_cost_profile` for the measured cost difference). Axial
+//! (stretch + Kelvin-Voigt damping) uses the exact damped-spring Jacobian
 //! (Baraff & Witkin 1998; `forces::axial_force_and_jacobian`). Bending
-//! (discrete curvature) has `forces::bending_jacobian_gauss_newton`: EXACT
-//! for `dF/dv` (bending damping's rate term is exactly linear in velocity),
-//! a disclosed Gauss-Newton (material-stiffness-only) APPROXIMATION for
-//! `dF/dx` -- the true Hessian of `discrete_curvature` has no derived
-//! closed form yet for this engine's own 2D reduction (a real, separate,
-//! harder undertaking than the gradient was); see that function's own doc
-//! for exactly what's dropped, why it's a standard technique, and why it's
-//! positive-semi-definite (a real stability advantage, not just an
-//! approximation of convenience).
+//! uses `forces::bending_jacobian_gauss_newton`: exact for `dF/dv`
+//! (bending damping is linear in velocity), a Gauss-Newton
+//! (material-stiffness-only) approximation for `dF/dx`, since the Hessian
+//! of this engine's 2D `discrete_curvature` has no derived closed form yet.
+//! That function's doc lists what is dropped and why the result is
+//! positive-semi-definite.
 //!
-//! # Real, disclosed simplification: dense solve, not banded
-//! The true Jacobian has bandwidth ~2 (a pentadiagonal-like structure --
-//! stretch couples i to i+/-1, bending couples i to i+/-2 through each
-//! vertex's own 3-point coupling), but this uses a general dense Gaussian
-//! elimination with partial pivoting instead of a specialized banded
-//! solver. For a rod's real point counts (tens, not thousands), O(N^3)
-//! dense solve is a real, correct, negligible cost -- optimizing to exploit
-//! the band structure is real future work if profiling ever shows this
-//! matters, not attempted here (YAGNI).
+//! # Dense solve, not banded
+//! The Jacobian has bandwidth ~2 (stretch couples i to i+/-1, bending couples
+//! i to i+/-2 through each vertex's 3-point stencil), but the solve is a
+//! dense Gaussian elimination with partial pivoting. For tens of points the
+//! O(N^3) cost is negligible; a banded solver would only matter if
+//! profiling showed it.
 
 use glam::Vec2;
 
@@ -140,10 +128,8 @@ pub struct RodImplicitStepParams {
     pub dt: f32,
 }
 
-/// Real fallback: if the assembled system is singular (degenerate
-/// geometry, e.g. a fully-collapsed rod), falls back to one explicit
-/// substep rather than silently producing nonsense -- a real, disclosed
-/// safety net, not hidden.
+/// If the assembled system is singular (degenerate geometry, e.g. a fully
+/// collapsed rod), falls back to one explicit substep.
 pub fn step_rod_implicit(
     rod: &mut RodPoints,
     material: &RodMaterial,
@@ -189,21 +175,13 @@ pub fn step_rod_implicit(
     // still matter -- they're baked into f0 -- but its OWN position/velocity
     // are never perturbed or solved for, since it can't move).
     //
-    // Real, disclosed motivation -- `implicit_solver_cost_profile`, this
-    // module's own `#[ignore]`d perf test: profiling found the finite-
-    // difference Jacobian sweep costs 14-18x `solve_dense`'s own O(ndof^3)
-    // elimination at every point count tested (20-200), so THIS sweep, not
-    // the linear solve, was the real bottleneck. The axial (stretch +
-    // Kelvin-Voigt damping) term already had a real, standard, closed-form
-    // damped-spring Jacobian (Baraff & Witkin 1998; see
-    // `forces::axial_force_and_jacobian`'s own doc). Bending now has its own
-    // analytic Jacobian too (`forces::bending_jacobian_gauss_newton`) --
-    // EXACT for the velocity term, a real, disclosed Gauss-Newton
-    // (material-stiffness-only) approximation for the position term, since
-    // this engine's own 2D-reduced curvature law has no derived Hessian yet
-    // (see that function's own doc for what's dropped and why it's a
-    // reasonable, standard, PSD-guaranteed approximation). No perturbation
-    // needed for either term anymore.
+    // Assembled analytically: `implicit_solver_cost_profile` (this module's
+    // `#[ignore]`d perf test) measured a finite-difference Jacobian sweep at
+    // 14-18x `solve_dense`'s O(ndof^3) elimination for 20-200 points. Axial
+    // uses the closed-form damped-spring Jacobian (Baraff & Witkin 1998, see
+    // `forces::axial_force_and_jacobian`); bending uses
+    // `forces::bending_jacobian_gauss_newton`, exact for the velocity term
+    // and Gauss-Newton for the position term (see that function's doc).
     let mut k_mat = vec![0.0f32; ndof * ndof];
     let mut c_mat = vec![0.0f32; ndof * ndof];
 
@@ -356,15 +334,11 @@ pub fn step_rod_implicit(
         a_mat[(row * 2) * ndof + (row * 2)] += m;
         a_mat[(row * 2 + 1) * ndof + (row * 2 + 1)] += m;
 
-        // Real, disclosed simplification: gravity/wind/push are treated as
-        // ordinary EXTERNAL forces on the right-hand side (like gravity
-        // already was), not folded into the implicit K/C solve -- only the
-        // rod's OWN internal elastic/damping forces are stiff enough to
-        // need implicit treatment; wind drag and push are comparatively
-        // soft, real forces, safe to treat this way (same real convention
-        // `advance_rod` already uses for the
-        // explicit path, converted to real Newtons via the same
-        // `mass*dx_meters` factor internal forces already use).
+        // Gravity, wind and push are external forces on the right-hand side,
+        // not part of the implicit K/C solve: only the rod's internal
+        // elastic/damping forces are stiff enough to need implicit treatment.
+        // Same convention as the explicit `advance_rod`, converted to newtons
+        // with the `mass*dx_meters` factor the internal forces use.
         let a_wind = wind_drag_coeff * (wind_velocity - rod.v[pi]);
         let a_push = push_acceleration(rod.x[pi], push_center, push_strength, push_radius);
         let f_total = f0[pi] + (gravity + a_wind + a_push) * m * dx_meters;
@@ -388,9 +362,8 @@ pub fn step_rod_implicit(
     let dv = match solve_dense(a_mat, b_vec, ndof) {
         Some(dv) => dv,
         None => {
-            // Real, disclosed fallback: singular system (degenerate
-            // geometry) -- one explicit substep instead of silently
-            // producing garbage.
+            // Singular system (degenerate geometry): one explicit substep
+            // instead.
             for (i, &pi) in free.iter().enumerate() {
                 let _ = i;
                 let a = (f0[pi] + gravity * rod.mass[pi].max(1.0e-9) * dx_meters)
@@ -437,7 +410,7 @@ mod tests {
     /// Jacobians -- bending's is exact for the velocity term but a
     /// Gauss-Newton (material-stiffness-only) approximation for the
     /// position term, since the true Hessian of `discrete_curvature` has no
-    /// derived closed form here (see that function's own doc for what's
+    /// derived closed form here (see that function's doc for what's
     /// dropped and why). Accuracy is still covered by `tests/accuracy.rs`'s
     /// `cantilever_tip_deflection_matches_euler_bernoulli` and
     /// `cantilever_deflection_error_shrinks_with_resolution`.

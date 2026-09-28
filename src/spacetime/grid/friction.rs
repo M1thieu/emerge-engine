@@ -5,9 +5,9 @@ use glam::IVec2;
 use super::{FxU32BuildHasher, Grid, flat_index};
 
 /// Material-Induced Boundary Friction (MIBF) accumulator -- see
-/// `MaterialModel::current_friction_coefficient`'s own doc for the real
+/// `MaterialModel::current_friction_coefficient`'s doc for the real
 /// citation (Blatny & Gaume 2025, `tmp/ref_matter.md` sec.19). Mirrors
-/// `contact::ContactCell`'s own real, already-proven shape: a sparse side
+/// `contact::ContactCell`'s own already-proven shape: a sparse side
 /// map keyed the same way as the main `cells`, only ever allocated at
 /// nodes a friction-reporting particle actually touches, with its own
 /// dirty list so `has_friction_activity()` gates every extra cost to zero
@@ -69,15 +69,13 @@ impl Grid {
         }
     }
 
-    /// Real, normalized per-node friction coefficient at the flat index a
+    /// Normalized per-node friction coefficient at the flat index a
     /// `BoundaryCondition::apply_to_grid_velocity_with_node_friction` call
-    /// already carries (same `x*resolution+y` convention `flat_index`
-    /// uses) -- `None` when no friction-reporting particle ever touched
-    /// this node this substep, letting the caller fall back to its own
-    /// fixed coefficient (the same "caller decides the fallback"
-    /// convention `grip_velocity_at` already establishes for the contact
-    /// system, adapted to return `Option` since here the fallback is a
-    /// BOUNDARY's own constant, not another grid quantity).
+    /// carries (the `x*resolution+y` convention of `flat_index`). `None`
+    /// when no friction-reporting particle touched this node this substep,
+    /// so the caller falls back to its own fixed coefficient (as with
+    /// `grip_velocity_at` for contact, returning `Option` here since the
+    /// fallback is the boundary's constant, not another grid quantity).
     pub fn node_friction_at_index(&self, idx: usize) -> Option<f32> {
         self.friction_cells
             .get(&(idx as u32))
@@ -145,8 +143,8 @@ mod tests {
         assert!((grid.node_friction_at_index(idx).unwrap() - 0.7).abs() < 1.0e-6);
     }
 
-    /// Real, hand-computed mass-weighted average of two particles sharing
-    /// one node -- not just "some value comes back."
+    /// Hand-computed mass-weighted average of two particles sharing one
+    /// node.
     #[test]
     fn two_particles_sharing_a_node_average_by_mass() {
         let mut grid = Grid::new(8);
@@ -166,7 +164,7 @@ mod tests {
 
     /// A node no friction-reporting particle ever touched must return
     /// `None`, not a silent zero -- the "caller decides the fallback"
-    /// contract `node_friction_at_index`'s own doc promises.
+    /// contract `node_friction_at_index`'s doc promises.
     #[test]
     fn untouched_node_returns_none_not_zero() {
         let mut grid = Grid::new(8);

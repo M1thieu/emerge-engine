@@ -67,58 +67,35 @@ pub struct NaccMaterial {
     /// Enable volumetric hardening. If false, p₀ stays fixed (perfect plasticity cap).
     pub hardening_enabled: bool,
     pub min_density: f32,
-    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
-    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
-    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
-    /// pairing rule and the real regression it documents) -- same
-    /// mechanism, same formula, as
+    /// Kelvin-Voigt viscous damping on the deviatoric elastic strain rate
+    /// (SI Pa.s, converted like `lambda`/`mu`, see
+    /// `rankine::q_factor_elastic_viscosity_pa_s`), the formula of
     /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
-    /// Zero cost, zero behavior change at `0.0` (default, matching every
-    /// other material using this same mechanism).
+    /// `0.0` (default) = off.
     ///
-    /// Only damps the ELASTIC response below yield -- real soils/clays are
-    /// never purely elastic even before plastic flow begins (internal
-    /// friction measurably dissipates energy, reported for soils/clays as a
-    /// small-strain damping ratio -- Seed & Idriss 1970, "Soil Moduli and
-    /// Damping Factors for Dynamic Response Analyses"; Darendeli 2001 PhD
-    /// dissertation modulus-reduction/damping curves, same sources already
-    /// used for `DruckerPragerMaterial::elastic_viscosity`'s own sand
-    /// default, directly applicable here since both papers cover clay/soil
-    /// damping, not only sand). Confirmed live 2026-08-29: this is a real,
-    /// structural gap -- `NaccMaterial` had NO damping mechanism of any kind
-    /// before this field existed (found while root-causing sustained
-    /// post-impact bouncing on `RankineMaterial::ice()`, same class of
-    /// missing dissipation, different material).
+    /// Damps the elastic response below yield: soils and clays dissipate
+    /// before plastic flow too, reported as a small-strain damping ratio
+    /// (Seed & Idriss 1970, "Soil Moduli and Damping Factors for Dynamic
+    /// Response Analyses"; Darendeli 2001 PhD dissertation, both covering clay
+    /// and soil, the sources of `DruckerPragerMaterial::elastic_viscosity`).
+    /// Without it this material has no damping at all.
     pub elastic_viscosity: f32,
-    /// Real apparent cohesion (Pa) from soil suction at LOW saturation, via
-    /// the SAME generic `MaterialModel::cohesion_bonus_pa` engine-level hook
-    /// `DruckerPragerMaterial` (sand) already uses -- see that method's own
-    /// doc for the hook's own contract. This is the SECOND real material to
-    /// wire it (2026-09-02, closing the "extend to a 2nd material" item of
-    /// the 2026-08-23 dual-phase-coupling plan) -- deliberately a DIFFERENT
-    /// real mechanism from sand's, not a copy-paste: sand's capillary
-    /// bridging PEAKS at low-but-nonzero saturation and requires discrete
-    /// grain-scale menisci (Hornbaker et al. 1997), a coarse-granular
-    /// phenomenon. Fine-grained soil/clay's own real apparent cohesion comes
-    /// from MATRIC SUCTION instead (Fredlund & Rahardjo 1993, "Soil
-    /// Mechanics for Unsaturated Soils," extended Mohr-Coulomb: tau_f =
-    /// c' + (sigma-u_a)*tan(phi') + (u_a-u_w)*tan(phi^b) -- the suction term
-    /// (u_a-u_w)*tan(phi^b) IS an apparent-cohesion contribution), which is
-    /// HIGHEST at low saturation (dry clay: high suction, real, well-known
-    /// behavior -- e.g. desiccation-cracked clay holding together as hard
-    /// clods) and vanishes toward full saturation (zero suction, real
-    /// unconfined-strength-vs-water-content relations, Terzaghi & Peck) --
-    /// the OPPOSITE saturation trend from sand's own peak, a real,
-    /// mechanistically distinct effect, not the same formula reused.
+    /// Apparent cohesion (Pa) from soil suction at low saturation, through
+    /// the `MaterialModel::cohesion_bonus_pa` hook `DruckerPragerMaterial` also
+    /// uses, with a different mechanism: sand's capillary bridges peak at low
+    /// but nonzero saturation and need grain-scale menisci (Hornbaker et al.
+    /// 1997), while fine-grained soil draws apparent cohesion from matric
+    /// suction (Fredlund & Rahardjo 1993, "Soil Mechanics for Unsaturated
+    /// Soils", extended Mohr-Coulomb: tau_f = c' + (sigma-u_a)*tan(phi') +
+    /// (u_a-u_w)*tan(phi^b), the suction term being the apparent cohesion).
+    /// Suction is highest when dry (desiccated clay holds as hard clods) and
+    /// vanishes at saturation (Terzaghi & Peck on unconfined strength against
+    /// water content): the opposite trend to sand's.
     ///
-    /// Real, disclosed simplification, same honesty standard as sand's own
-    /// `pendular_regime_ceiling` doc: a plain linear decrease from this
-    /// coefficient's own full value at `Sr=0` to `0.0` at `Sr=1`, not a
-    /// literal transcription of any cited paper's own suction/saturation
-    /// curve (the real soil-water characteristic curve, e.g. van Genuchten
-    /// 1980, is nonlinear) -- captures "drier clay is apparently stronger,"
-    /// not the full non-monotonic real curve. 0.0 (default) = byte-identical
-    /// to every existing preset/scene that doesn't opt in.
+    /// A linear decrease from this coefficient at `Sr = 0` to `0.0` at `Sr = 1`,
+    /// not a soil-water characteristic curve (van Genuchten 1980 is
+    /// nonlinear): "drier clay is stronger", not the full curve. 0.0 (default)
+    /// = off.
     pub saturation_cohesion_coeff: f32,
     /// Preconsolidation pressure the soil starts from, in the same grid stress
     /// units as `kappa`: the largest mean effective stress it has carried
@@ -134,7 +111,7 @@ pub struct NaccMaterial {
 /// arguments -- same real struct-bundling fix already used elsewhere in
 /// this codebase (`PhysicalRenderContractParams`, `ContactKinematics`,
 /// `SubstepScene`/`SubstepBounds`) for a constructor where several
-/// same-typed adjacent parameters make transposition a real, silent risk
+/// same-typed adjacent parameters make transposition a silent risk
 /// (swapping `friction`/`cohesion` compiles without a hint).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NaccMaterialParams {
@@ -168,7 +145,7 @@ impl NaccMaterial {
     }
 
     /// Same as [`Self::new`], named fields instead of 5 positional `f32`s --
-    /// see [`NaccMaterialParams`]'s own doc for why.
+    /// see [`NaccMaterialParams`]'s doc for why.
     pub fn from_params(params: NaccMaterialParams) -> Self {
         Self::new(
             params.mu,
@@ -182,13 +159,9 @@ impl NaccMaterial {
     /// Construct from Young's modulus E and Poisson's ratio ν.
     /// Friction slope M and cohesion β set separately.
     ///
-    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
-    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
-    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. Real, correctly SI-to-grid-converted construction is now
-    /// possible via [`Self::from_physical`] (`FromSI<NaccProps>`, added the
-    /// same night this gap was found) -- this raw constructor stays
-    /// grid-unit-only.
+    /// **Grid units, not pascals**: calls [`lame_from_young`] directly and
+    /// never touches `dx_meters` or density. For an SI material use
+    /// [`Self::from_physical`] (`FromSI<NaccProps>`).
     pub fn from_young_modulus(
         young_modulus: f32,
         poisson_ratio: f32,
@@ -197,9 +170,9 @@ impl NaccMaterial {
         hardening_factor: f32,
     ) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
-        // 2D plane-strain bulk modulus (kappa = lambda + mu, not the 3D
-        // lambda + 2*mu/3 an earlier version used to match sparkl -- see
-        // elastic.rs's ConstitutiveModel impl for the full derivation/fix note).
+        // 2D plane-strain bulk modulus (kappa = lambda + mu, not sparkl's 3D
+        // lambda + 2*mu/3 -- see elastic.rs's ConstitutiveModel impl for the
+        // derivation).
         let kappa = lambda + mu;
         Self::new(mu, kappa, friction, cohesion, hardening_factor)
     }
@@ -242,7 +215,7 @@ impl NaccMaterial {
     /// Preconsolidation pressure p0, in grid stress units, for the plastic
     /// volumetric state `alpha` (negative after plastic compaction).
     ///
-    /// Real Cam-Clay hardening (Roscoe and Burland 1968): p0 grows in
+    /// Cam-Clay hardening (Roscoe and Burland 1968): p0 grows in
     /// proportion to itself, `p0 = p_ref exp(-xi alpha)`, so the pressure a
     /// soil can carry rises by a fixed FRACTION per unit of plastic
     /// compaction. The hardening modulus is therefore `xi p0`, small at the
@@ -262,8 +235,8 @@ impl NaccMaterial {
     ///   elastic: inside yield surface → no projection
     ///
     /// `cohesion_bonus_pa` (real, Pa, from `Self::cohesion_bonus_pa` -- see
-    /// that method's own doc) adds directly onto the ellipse's own `β·p₀`
-    /// shift term everywhere it appears below: both are real, additive,
+    /// that method's doc) adds directly onto the ellipse's own `β·p₀`
+    /// shift term everywhere it appears below: both are additive,
     /// Pa-valued contributions to the SAME "how far the ellipse's own
     /// tension tip sits below p=0" quantity, so `cohesive_shift_pa = β·p₀ +
     /// cohesion_bonus_pa` is the dimensionally exact generalization, not an
@@ -280,8 +253,8 @@ impl NaccMaterial {
 
         // Current preconsolidation pressure.
         let p0 = self.preconsolidation_pressure(alpha);
-        // See this function's own doc: generalizes every `beta*p0` below to
-        // include the real, separate saturation-cohesion contribution.
+        // See this function's doc: generalizes every `beta*p0` below to
+        // include the separate saturation-cohesion contribution.
         let cohesive_shift_pa = beta * p0 + cohesion_bonus_pa;
 
         // J = det(F) = product of singular values.
@@ -325,7 +298,7 @@ impl NaccMaterial {
 
         // Yield function: y = (1+2β)·(6−2)/2·‖s_tr‖² + M²·(p_tr+β·p₀)·(p_tr−p₀)
         // In 2D: d=2, factor = (6−d)/2 = 2. `β·p₀` generalized to
-        // `cohesive_shift_pa` -- see this function's own doc.
+        // `cohesive_shift_pa` -- see this function's doc.
         let y0 = (1.0 + 2.0 * beta) * 2.0_f32; // (6-d)/2 with d=2
         let y1 = m * m * (p_tr + cohesive_shift_pa) * (p_tr - p0);
         let s_norm_sq = s_tr.x * s_tr.x + s_tr.y * s_tr.y;
@@ -337,7 +310,7 @@ impl NaccMaterial {
         }
 
         // Hardening: move p₀ to reduce y to zero. `β·p₀` generalized to
-        // `cohesive_shift_pa` throughout -- see this function's own doc.
+        // `cohesive_shift_pa` throughout -- see this function's doc.
         let mut y1 = y1;
         if self.hardening_enabled
             && p0 > 1.0e-4
@@ -511,12 +484,9 @@ impl NaccMaterial {
     }
 }
 
-/// Real fix (2026-09-05): `NaccMaterial` previously had no dimensionally-
-/// correct SI-conversion path at all (see `from_young_modulus`'s own doc,
-/// which disclosed exactly this gap). `friction`/`cohesion`/
-/// `hardening_factor` are yield-surface shape parameters, not stress-like
-/// quantities -- passed through unconverted, matching `from_young_modulus`'s
-/// own existing convention for the same three fields.
+/// SI construction. `friction`/`cohesion`/`hardening_factor` are
+/// yield-surface shape parameters, not stresses, and pass through
+/// unconverted, as in `from_young_modulus`.
 impl FromSI<NaccProps> for NaccMaterial {
     fn from_physical(props: &NaccProps, config: &crate::SimConfig) -> Self {
         let (lambda, mu) = scale_lame(
@@ -537,7 +507,7 @@ impl FromSI<NaccProps> for NaccMaterial {
             props.compression_index,
             props.swelling_index
         );
-        // Real Cam-Clay hardening exponent, v / (lambda - kappa).
+        // Cam-Clay hardening exponent, v / (lambda - kappa).
         let hardening = (1.0 + props.void_ratio) / (props.compression_index - props.swelling_index);
         let mut material = Self::new(mu, kappa, props.friction, props.cohesion, hardening);
         material.rest_density = Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3);
@@ -561,10 +531,9 @@ impl MaterialModel for NaccMaterial {
         ConstitutiveModel::Nacc
     }
 
-    /// Real apparent cohesion from soil suction -- see `saturation_cohesion_
-    /// coeff`'s own doc for the mechanism, citation, and why this is the
-    /// opposite saturation trend from `DruckerPragerMaterial`'s own capillary-
-    /// bridging override, not a copy of it.
+    /// Apparent cohesion from soil suction (see `saturation_cohesion_coeff`:
+    /// the opposite saturation trend to `DruckerPragerMaterial`'s capillary
+    /// bridging).
     fn cohesion_bonus_pa(&self, scalar_field: f32) -> f32 {
         if self.saturation_cohesion_coeff == 0.0 {
             return 0.0;
@@ -731,11 +700,9 @@ mod marginal_yield_tests {
         (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
     }
 
-    /// Real pressure computed from a deformation gradient the SAME way
-    /// `project`'s own trial-pressure formula does (`p = -kappa/2*(J-1/J)*J`),
-    /// used to verify the projected state lands where the material's own
-    /// documented cap formula (`j_n1 = sqrt(-2*p0/kappa+1)`) analytically
-    /// predicts -- not just "less than before."
+    /// Pressure from a deformation gradient by `project`'s trial-pressure
+    /// formula (`p = -kappa/2*(J-1/J)*J`), to check the projected state lands
+    /// where the cap formula (`j_n1 = sqrt(-2*p0/kappa+1)`) predicts.
     fn pressure_from_j(kappa: f32, j: f32) -> f32 {
         let psi_kappa = kappa * 0.5 * (j - j.recip());
         -psi_kappa * j
@@ -849,31 +816,29 @@ mod marginal_yield_tests {
     /// pressure PLUS a small shear perturbation) must leave the deformation
     /// gradient completely unchanged.
     ///
-    /// Two earlier versions of this test failed, for genuinely informative
-    /// reasons (not test-tooling bugs):
+    /// Two setups that look natural do not work:
     /// 1. `hardening_factor=0` gives `p0=kappa*1e-5` regardless of alpha (xi=0
     ///    zeroes the sinh term unconditionally) -- a vanishingly small elastic
     ///    region where any real strain immediately exceeds the cap. No real
     ///    preset in this file ever uses hardening_factor=0.
     /// 2. Even with hardening on and a large p0, a PURE shear perturbation at
-    ///    near-zero volumetric strain (p_tr~0) still yielded. This is REAL,
-    ///    physically-correct behavior, not a bug: with cohesion (beta) = 0,
+    ///    near-zero volumetric strain (p_tr~0) still yields. This is correct
+    ///    behavior, not a bug: with cohesion (beta) = 0,
     ///    the ellipse's y1 term is `M^2*(p_tr+beta*p0)*(p_tr-p0)`, and at
     ///    p_tr=0/beta=0 this is exactly 0 regardless of how large p0 is --
-    ///    a cohesionless material genuinely has ~zero elastic shear capacity
-    ///    at zero confining pressure (real critical-state soil mechanics:
-    ///    frictional materials can't resist shear without confinement). The
-    ///    fix is testing what the model actually claims: shear WITH real
-    ///    confining pressure present, not shear alone.
+    ///    a cohesionless material has ~zero elastic shear capacity at zero
+    ///    confining pressure (critical-state soil mechanics: frictional
+    ///    materials cannot resist shear without confinement). So the test
+    ///    applies shear with confining pressure present, what the model
+    ///    claims, not shear alone.
     #[test]
     fn small_elastic_strain_is_not_projected() {
         let mut mat = NaccMaterial::new(3000.0, 2000.0, 1.2, 0.0, 2.0);
         mat.initial_preconsolidation = 7254.0; // a heavily preconsolidated soil
         let alpha = 0.0;
-        // Real isotropic confining compression (sv=0.999 each way, giving
-        // p_tr~4.0, comfortably inside p0~7254) PLUS a tiny shear on top --
-        // this is the physically meaningful "small elastic strain" case: real
-        // confining pressure present, not shear at zero pressure.
+        // Isotropic confining compression (sv = 0.999 each way, p_tr ~4.0,
+        // well inside p0 ~7254) plus a tiny shear: small elastic strain under
+        // confining pressure, not shear at zero pressure.
         let f = Mat2::from_diagonal(Vec2::new(0.99895, 0.99905));
         let (f_after, alpha_after) = mat.project(f, alpha, 0.0);
         assert!(
@@ -1024,7 +989,7 @@ mod elastic_viscosity_tests {
 
     /// Same audit-closing test `RankineMaterial`/`CorotatedMaterial`/
     /// `VonMisesMaterial` all carry for their own copy of this identical
-    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// mechanism (see `elastic_viscosity`'s doc): `kirchhoff_stress`
     /// must actually respond to the particle's velocity gradient when
     /// `elastic_viscosity > 0.0`, not just carry the field.
     #[test]
@@ -1085,7 +1050,7 @@ mod saturation_cohesion_tests {
     /// `saturation_cohesion_coeff == 0.0` (every existing preset/scene) must
     /// keep `cohesion_bonus_pa` at exactly 0.0 for any saturation -- real
     /// regression guard that this second real material (see
-    /// `saturation_cohesion_coeff`'s own doc) is genuinely inert by default,
+    /// `saturation_cohesion_coeff`'s doc) is inert by default,
     /// same convention `DruckerPragerMaterial`'s own hook uses.
     #[test]
     fn zero_coefficient_is_inert_at_any_saturation() {
@@ -1096,12 +1061,9 @@ mod saturation_cohesion_tests {
         }
     }
 
-    /// Real shape check, and the real point of difference from
-    /// `DruckerPragerMaterial`'s own override (see `saturation_cohesion_
-    /// coeff`'s own doc for why): apparent cohesion here is MAXIMAL at
-    /// Sr=0 (dry, real suction) and EXACTLY zero at Sr=1 (saturated, zero
-    /// suction) -- the opposite saturation trend from sand's own pendular-
-    /// regime peak at low-but-nonzero saturation.
+    /// Apparent cohesion here is largest at Sr = 0 (dry, high suction) and
+    /// exactly zero at Sr = 1 (saturated), the opposite of sand's pendular peak
+    /// at low but nonzero saturation (see `saturation_cohesion_coeff`).
     #[test]
     fn cohesion_bonus_decreases_monotonically_with_saturation() {
         let mat = NaccMaterial {
@@ -1129,14 +1091,14 @@ mod saturation_cohesion_tests {
         );
     }
 
-    /// The real, load-bearing proof this mechanism was added for -- not just
+    /// The load-bearing proof this mechanism was added for -- not just
     /// that the formula looks plausible in isolation, but that it changes
     /// actual yield-surface behavior end to end through `project()`, same
     /// discipline `DruckerPragerMaterial`'s own wet/dry sand test uses. A
     /// small isotropic TENSION state (F=s*I, s slightly >1, real negative
     /// p_tr, zero shear) is right past the cohesionless (beta=0) material's
     /// own tensile limit (`p_tr < -beta*p0 = 0` whenever beta=0 -- a
-    /// cohesionless material has genuinely zero tensile strength, real
+    /// cohesionless material has zero tensile strength, real
     /// critical-state soil mechanics) -- WITHOUT real apparent cohesion
     /// (Sr=1, saturated) this must fail and get projected; WITH it (Sr=0,
     /// dry) the exact same trial state must hold elastically, unprojected.
@@ -1206,9 +1168,8 @@ mod from_si_tests {
         assert_eq!(mat_a.hardening_factor, mat_b.hardening_factor);
     }
 
-    /// Real, direct check against the same `scale_lame` + plane-strain
-    /// `kappa=lambda+mu` relation this impl documents using -- not just an
-    /// opaque "it doesn't crash" test.
+    /// Checks against the `scale_lame` + plane-strain `kappa = lambda + mu`
+    /// relation this impl uses.
     #[test]
     fn from_physical_matches_scale_lame_plus_plane_strain_kappa() {
         let props = NaccProps {

@@ -170,14 +170,13 @@ fn controller_gradient_matches_finite_difference_smooth_regime() {
     }
 }
 
-/// The real end-to-end gate for the whole `FeedbackController` chain:
-/// `feedback_controller_backward_matches_finite_difference` above only
-/// checks the controller in isolation (no physics); this backprops
-/// through real P2G/grid-update/G2P/F-update substeps AND the
-/// controller's own state-read backward, together, in the smooth
-/// (contact-free) regime -- same rationale as the sinusoid controller's
-/// own smooth-regime test (non-centroid loss, origin-placed body, gentle
-/// actuation for the O(h^2) FD error margin).
+/// End-to-end gate for the `FeedbackController` chain:
+/// `feedback_controller_backward_matches_finite_difference` checks the
+/// controller alone (no physics); this backprops through P2G/grid-update/
+/// G2P/F-update substeps and the controller's state-read backward together,
+/// in the smooth (contact-free) regime, set up like the sinusoid
+/// controller's smooth-regime test (non-centroid loss, origin-placed body,
+/// gentle actuation for the O(h^2) FD error margin).
 #[test]
 fn feedback_controller_gradient_matches_finite_difference_smooth_regime() {
     let plan = BodyPlan::biped(Vec2::new(1.5, 1.3), 0.5);
@@ -713,7 +712,7 @@ fn feedback_controller_backward_matches_finite_difference() {
     let plan = BodyPlan::biped(Vec2::new(1.5, 1.3), 0.5);
     let controller = FeedbackController::seeded_with(plan.n_groups, 3);
 
-    // A real, non-rest state: nonzero velocities and perturbed
+    // A non-rest state: nonzero velocities and perturbed
     // positions, so both `rel` and `vel` features are nonzero.
     let mut state = DiffState::rest(&plan);
     for (i, x) in state.x.iter_mut().enumerate() {

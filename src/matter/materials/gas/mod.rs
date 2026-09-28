@@ -1,29 +1,14 @@
-//! Compressible ideal-gas material -- real density does (no rest-pressure
-//! offset), and real shock-capturing matters far more than for a weakly-
+//! Compressible ideal-gas material: density matters fully (no rest-pressure
+//! offset), and shock capturing matters far more than for a weakly
 //! compressible liquid.
 //!
-//! `IdealGasMaterial` (`ideal_gas.rs`) landed 2026-08-18: `p=ρRT`, real
-//! adiabatic sound speed `c=√(γRT)`, von Neumann-Richtmyer shock
-//! viscosity reusing the same shared q-formula
-//! (`matter::materials::utils::von_neumann_richtmyer_q`) liquids use, fed
-//! this material's own real γ instead of a Tait-derived stand-in. CPU
-//! only -- `p2g.wgsl`/`particles_update.wgsl` have no `case 13u` branch
-//! yet, a real, disclosed limitation (see `IdealGasMaterial`'s own doc and
-//! `ConstitutiveModel::Gas`'s doc), not yet verified against Sod's shock
-//! tube (Toro, *Riemann Solvers and Numerical Methods for Fluid
-//! Dynamics* -- the standard exact-analytical-solution benchmark for a
-//! compressible-gas solver; needs an iterative Riemann solver, real
-//! future work).
-//!
-//! Recovered 2026-08-22 from the `contact-based-interaction` branch
-//! (commit `a7e4723`, 2026-08-18), which was never merged into `main` --
-//! this branch forked from `main` before that merge happened, so the
-//! material was genuinely absent here despite shipping on that other
-//! branch. Adapted from that commit's `matter/materials/gas/{mod,
-//! ideal_gas}.rs` (a `solid/liquid/gas/mixture` taxonomy split this
-//! branch doesn't have yet) into one flat file matching this branch's
-//! own current `materials/` layout -- no functional change, same real
-//! physics, same tests, verified independently after the move.
+//! `IdealGasMaterial`: `p = ρRT` as an isentropic law, adiabatic sound speed
+//! `c = √(γRT)`, and von Neumann-Richtmyer shock viscosity through the
+//! shared `matter::materials::utils::von_neumann_richtmyer_q`, fed this
+//! material's own γ. CPU only: `p2g.wgsl`/`particles_update.wgsl` have no
+//! `case 13u` branch (see `ConstitutiveModel::Gas`). Not yet checked against
+//! Sod's shock tube (Toro, *Riemann Solvers and Numerical Methods for Fluid
+//! Dynamics*), which needs an iterative Riemann solver.
 
 use glam::{Mat2, Vec2};
 
@@ -34,108 +19,67 @@ use crate::materials::utils::von_neumann_richtmyer_q;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
-/// Real standard sea-level atmospheric pressure (Pa) -- the default real
-/// ambient reference `IdealGasMaterial::reference_pressure_pa` uses. See
-/// that field's own doc.
+/// Standard sea-level atmospheric pressure (Pa), the default ambient
+/// `IdealGasMaterial::reference_pressure_pa`.
 pub const STANDARD_ATMOSPHERE_PA: f32 = 101_325.0;
 
 /// Compressible ideal-gas material: isentropic (adiabatic) EOS
-/// `p = p0·(ρ/ρ0)^γ` where `p0 = ρ0·R·T` (real ideal gas law evaluated at
-/// the particle's own reference state), real adiabatic sound speed
-/// `c = √(γRT)`, von Neumann-Richtmyer shock viscosity for compression
-/// events. Genuinely different EOS shape from `NewtonianFluidMaterial`'s
-/// Tait law: `p0` is a real physical rest pressure (not an empirically-fit
-/// stiffness) and there's NO rest-pressure offset -- `p → 0` as `ρ → 0`,
-/// exactly (see `energy::thermodynamics::ideal_gas`'s own
-/// `pressure_vanishes_with_density` test).
+/// `p = p0·(ρ/ρ0)^γ` with `p0 = ρ0·R·T` (the ideal gas law at the particle's
+/// own reference state), adiabatic sound speed `c = √(γRT)`, and von
+/// Neumann-Richtmyer shock viscosity under compression. Unlike
+/// `NewtonianFluidMaterial`'s Tait law, `p0` is a physical rest pressure,
+/// not a fitted stiffness, and there is no rest-pressure offset: `p → 0` as
+/// `ρ → 0` (`energy::thermodynamics::ideal_gas`'s
+/// `pressure_vanishes_with_density`).
 ///
-/// Real, disclosed history (2026-08-18): the FIRST version of this
-/// material used the naive isothermal law `p=ρRT` at fixed T directly --
-/// internally inconsistent with the ADIABATIC sound speed it already used
-/// for CFL/shock viscosity, and NOT self-limiting under expansion
-/// (`p·V=nRT` stays exactly constant for a fixed-T ideal gas, so the
-/// outward force never throttles down). A live demo (`examples/
-/// basic_gas.rs`) caught this as a genuine runaway (avg J climbing to
-/// 8-11 within under 2 simulated seconds from a 3:1 initial pressure
-/// ratio) -- not a tuning problem. The isentropic form fixes it: MPM
-/// substeps run far too fast for heat conduction to equalize (the SAME
-/// real justification the adiabatic sound speed already relied on), and
-/// `p·V` now falls off as `V^(1-γ)` under expansion, strictly decreasing
-/// for γ>1.
+/// Isentropic, not isothermal: substeps are far too short for conduction to
+/// equalize (the reason for the adiabatic sound speed), and an isothermal
+/// `p = ρRT` never throttles under expansion (`p·V` stays constant; in
+/// `examples/basic_gas.rs` average J ran to 8-11 within 2 s from a 3:1
+/// pressure ratio), while here `p·V` falls as `V^(1-γ)`.
 ///
-/// Real, disclosed coupling: `p0` reads `Particles::temperature` directly,
-/// so a `ThermalDiffusion` attached to the same scene still genuinely
-/// shifts gas pressure as it heats/cools particles over its own slower
-/// (conductive) timescale -- the fast, per-substep mechanical response to
-/// compression/expansion is what changed, not the (slow) thermal coupling.
-/// Without a `ThermalDiffusion`, temperature stays at whatever
-/// `init_particle` seeds it to (`reference_temperature_k`).
+/// `p0` reads `Particles::temperature`, so a `ThermalDiffusion` in the same
+/// scene still shifts the pressure on its slower conductive timescale.
+/// Without one, temperature stays at the `init_particle` seed
+/// (`reference_temperature_k`).
 ///
-/// CPU only today -- `p2g.wgsl`/`particles_update.wgsl` have no
-/// `case 13u` branch, so a `Gas`-modeled particle on the GPU path silently
-/// falls through those shaders' `default: { return mat2x2<f32>(); }` arm
-/// (zero stress). Real, disclosed limitation, not a hidden gap -- see
-/// `ConstitutiveModel::Gas`'s own doc. Matches this engine's own standing
-/// rule: CPU correctness first, GPU port second.
+/// CPU only: `p2g.wgsl`/`particles_update.wgsl` have no `case 13u` branch,
+/// so a `Gas` particle on the GPU falls through to their zero-stress default
+/// arm (see `ConstitutiveModel::Gas`).
 #[derive(Debug, Clone, Copy)]
 pub struct IdealGasMaterial {
     /// Reference density ρ₀ (grid units, `rho_SI * dx_meters²`).
     pub rest_density: f32,
-    /// Dynamic viscosity µ (Pa·s, raw SI -- passes through unconverted,
-    /// same regression-fixed convention `NewtonianFluidMaterial` uses).
-    /// Real air value ≈1.81e-5 Pa·s; 0.0 = inviscid (Euler gas dynamics).
+    /// Dynamic viscosity µ (Pa·s, raw SI, passed through unconverted as in
+    /// `NewtonianFluidMaterial`). Air ≈1.81e-5 Pa·s; 0.0 = inviscid (Euler).
     pub dynamic_viscosity: f32,
     /// Specific gas constant R, GRID-scaled (`R_SI / dx_meters²`) -- see
-    /// `from_physical`'s own doc for the full derivation of why R itself
+    /// `from_physical`'s doc for the full derivation of why R itself
     /// (not just density) needs this factor, unlike Tait's ratio-based EOS.
     pub specific_gas_constant: f32,
-    /// Real adiabatic index γ = Cp/Cv (air/diatomic: 1.4, `AIR_ADIABATIC_INDEX`;
-    /// monatomic: 5/3; triatomic: ~1.3). Used both for the real adiabatic
-    /// sound speed AND as the shock-viscosity weak-shock coefficient's own
-    /// gamma (`von_neumann_richtmyer_q`'s `weak_shock_gamma`) -- for this
-    /// material that substitution is exact, not a stand-in: γ here IS the
-    /// real thermodynamic adiabatic index Kurapatenko's own coefficient is
-    /// defined in terms of.
+    /// Adiabatic index γ = Cp/Cv (air/diatomic: 1.4, `AIR_ADIABATIC_INDEX`;
+    /// monatomic: 5/3; triatomic: ~1.3), used for the adiabatic sound speed
+    /// and as the shock viscosity's `weak_shock_gamma`: for a gas that is
+    /// exactly the index Kurapatenko's coefficient is defined with.
     pub adiabatic_index: f32,
     /// Temperature (Kelvin) seeded onto every particle at spawn
     /// (`init_particle`) and used as the fixed reference state for
-    /// `timestep_bound`/`rest_acoustic_c2` (see `timestep_bound`'s own
-    /// doc for the real, disclosed limitation this implies under strong
-    /// active heating).
+    /// `timestep_bound`/`rest_acoustic_c2` (see `timestep_bound` for what
+    /// that means under strong heating).
     pub reference_temperature_k: f32,
-    /// Real, disclosed fix (2026-08-29, independent verification):
-    /// ambient absolute pressure (Pa, raw SI)
-    /// this gas mechanically pushes AGAINST. `kirchhoff_stress` computes a
-    /// real absolute pressure `p_abs = rho0*R*T*(rho/rho0)^gamma` (correct
-    /// for the thermodynamics -- temperature/sound-speed/EOS identities all
-    /// still use `p_abs`), but the MECHANICAL stress this material
-    /// contributes to P2G must be `-(p_abs - reference_pressure_pa)*I`, the
-    /// real gauge-pressure convention (Oregon State MPM documentation
-    /// explicitly distinguishes absolute pressure for a gas confined by
-    /// rigid walls from gauge pressure for a gas interacting with an
-    /// initially-unstressed material -- the latter is this engine's own
-    /// case, ice/water/steam sharing one grid with no confining walls
-    /// around the gas). Real, confirmed structural bug this fixes: without
-    /// this subtraction, EVERY steam particle, even sitting exactly at its
-    /// own rest density (`J=1`), exerted a real, full ~101325 Pa of
-    /// outward-pushing stress with nothing to balance it (unlike
-    /// `NewtonianFluidMaterial`'s Tait EOS, which has a `-1` term making
-    /// its own pressure exactly ZERO at rest by construction) -- a
-    /// persistent, un-opposed DC force no amount of viscosity/damping can
-    /// arrest, since damping only resists the RATE of expansion, not a
-    /// constant driving pressure. This is the real, confirmed root cause of
-    /// steam particles racing to `volume_ratio_max` and sticking there
-    /// (the "grossit" symptom) -- two separate, real, sourced damping
-    /// escalations (Kelvin-Voigt 2x, bulk viscosity 10x) were tried first
-    /// and measured to do nothing, exactly as expected once this mechanism
-    /// was understood: a constant unopposed force has no equilibrium for
-    /// viscosity to damp toward.
+    /// Ambient absolute pressure (Pa, raw SI) this gas pushes against.
+    /// `kirchhoff_stress` computes the absolute `p_abs = rho0*R*T*
+    /// (rho/rho0)^gamma` for the thermodynamics, but the mechanical stress it
+    /// adds to P2G is gauge, `-(p_abs - reference_pressure_pa)*I` (the Oregon
+    /// State MPM notes separate absolute pressure for a gas confined by rigid
+    /// walls from gauge pressure for a gas next to an unstressed material,
+    /// this engine's case). With absolute pressure a steam particle at rest
+    /// density pushed with a full ~101325 Pa that nothing balanced, drove J to
+    /// `volume_ratio_max` and stuck there; viscosity cannot damp a constant
+    /// force (Kelvin-Voigt 2x and bulk viscosity 10x changed nothing).
     ///
-    /// Real default: standard sea-level atmospheric pressure (101,325 Pa) --
-    /// the correct, physically-honest default for a gas released into any
-    /// normal terrestrial scene, not an arbitrary zero. A submerged-bubble
-    /// scene wanting hydrostatic realism can add `rho_water*g*depth` on
-    /// top; this default is the right floor for that, not a replacement.
+    /// Default: standard sea-level pressure (101,325 Pa). A submerged bubble
+    /// can add `rho_water*g*depth` on top.
     pub reference_pressure_pa: f32,
     pub min_density: f32,
     pub min_volume: f32,
@@ -146,41 +90,25 @@ pub struct IdealGasMaterial {
     /// way fluid's own bounds are (no such scene exists for gas yet) --
     /// first real cut, disclosed as provisional.
     pub volume_ratio_min: f32,
-    /// Upper bound on `J`. See `volume_ratio_min`'s own doc.
+    /// Upper bound on `J`. See `volume_ratio_min`'s doc.
     pub volume_ratio_max: f32,
     /// Bulk (dilatational/second) viscosity ζ, Pa·s -- raw SI, unconverted,
-    /// same convention as `dynamic_viscosity`'s own doc. Adds
-    /// `τ += ζ·(∇·v)·I` to Kirchhoff stress -- the real Navier-Stokes
-    /// second-viscosity term, mirroring `NewtonianFluidMaterial::
-    /// bulk_viscosity`'s own already-proven formula exactly, but UNLIKE
-    /// this material's own shock viscosity `q` (gated to `∇·v < 0`,
-    /// compression only), this term is unconditional on sign -- it
-    /// resists rapid EXPANSION exactly as much as compression.
+    /// same convention as `dynamic_viscosity`. Adds `τ += ζ·(∇·v)·I` to the
+    /// Kirchhoff stress, the Navier-Stokes second-viscosity term (as in
+    /// `NewtonianFluidMaterial::bulk_viscosity`). Unlike the shock viscosity
+    /// `q` (compression only), it resists expansion as much as compression:
+    /// without it nothing but the `volume_ratio_max` clamp resisted
+    /// buoyancy-driven expansion, and J raced to the clamp and back
+    /// (`phase_states_gui.rs` chimney, per-particle `det(F)` logs).
     ///
-    /// Real, found live 2026-08-28 (`phase_states_gui.rs`'s chimney demo):
-    /// before this field existed, `IdealGasMaterial` had real resistance to
-    /// over-COMPRESSION (the EOS pressure term self-limits, `q` engages),
-    /// but genuinely NOTHING resisting over-EXPANSION beyond the hard
-    /// `volume_ratio_max` clamp -- under real buoyancy-driven velocity
-    /// divergence, individual particles' `J` would race toward that clamp
-    /// with zero damping, hit it, fall back, race up again: a real,
-    /// confirmed (via direct per-particle `det(F)` logging) chaotic
-    /// particle-to-particle size variance, not a rendering bug and not
-    /// fixed by narrowing the clamp's numeric range alone.
+    /// A monatomic gas has zero bulk viscosity (Stokes' hypothesis); water
+    /// vapour is polyatomic, with rotational and vibrational relaxation, and
+    /// its bulk viscosity is "hundreds or thousands of times larger than
+    /// [its] shear viscosity" over 380-1000 K (Cramer 2012, "Numerical
+    /// estimates for the bulk viscosity of ideal gases", Physics of Fluids
+    /// 24, 066102). See `water_vapor_bulk_viscosity_pa_s`.
     ///
-    /// Real, cited magnitude: unlike a monatomic ideal gas (bulk viscosity
-    /// exactly zero under Stokes' hypothesis), water vapor is polyatomic
-    /// (asymmetric top, real rotational AND vibrational relaxation modes)
-    /// -- Cramer, M.S. (2012), "Numerical estimates for the bulk viscosity
-    /// of ideal gases," Physics of Fluids 24, 066102: water vapor's bulk
-    /// viscosity (estimated over 380-1000 K, covering this material's own
-    /// real boiling-point reference) is "hundreds or thousands of times
-    /// larger than [its] shear viscosity" -- a real, large, well-cited
-    /// effect, not a small correction. See `water_vapor_bulk_viscosity_pa_s`
-    /// for a real, sourced conversion from a gas's own shear viscosity,
-    /// using the conservative (low) end of that cited range.
-    ///
-    /// 0.0 = off (default, every existing preset/scene unaffected).
+    /// 0.0 = off (default).
     pub bulk_viscosity: f32,
 }
 
@@ -211,11 +139,11 @@ impl IdealGasMaterial {
         }
     }
 
-    /// Real dry air at a given SI density/temperature. Real, standard
-    /// constants: `AIR_SPECIFIC_GAS_CONSTANT_J_KG_K`/`AIR_ADIABATIC_INDEX`
-    /// (already verified against the real ~343 m/s reference speed of
-    /// sound in `energy::thermodynamics::ideal_gas`'s own tests), dynamic
-    /// viscosity 1.81e-5 Pa·s (air at ~20°C, Sutherland's law reference).
+    /// Dry air at a given SI density and temperature:
+    /// `AIR_SPECIFIC_GAS_CONSTANT_J_KG_K`/`AIR_ADIABATIC_INDEX` (checked
+    /// against the ~343 m/s speed of sound in `energy::thermodynamics::
+    /// ideal_gas`'s tests), dynamic viscosity 1.81e-5 Pa·s (air at ~20°C,
+    /// Sutherland's law reference).
     pub fn air(rho_kg_m3: f32, temperature_k: f32, config: &crate::SimConfig) -> Self {
         Self::from_physical(
             rho_kg_m3,
@@ -234,7 +162,7 @@ impl IdealGasMaterial {
     /// real γ=Cp/Cv (air/diatomic: 1.4; monatomic: 5/3; triatomic: ~1.3).
     ///
     /// Grid-scaling derivation (mirrors `NewtonianFluidMaterial::
-    /// from_physical`'s own doc and the real regression it fixed, extended
+    /// from_physical`'s doc and the real regression it fixed, extended
     /// here for the ideal gas law's different functional form): solver
     /// time is already real seconds and positions are grid cells
     /// (`x_grid = x_SI/dx`), so pressure must stay raw SI
@@ -274,7 +202,7 @@ impl IdealGasMaterial {
     /// positional `f32`s -- same real struct-bundling fix already used
     /// elsewhere in this codebase (`PhysicalRenderContractParams`,
     /// `NaccMaterialParams`) for a constructor where several same-typed
-    /// parameters make transposition a real, silent risk.
+    /// parameters make transposition a silent risk.
     pub fn from_physical_params(params: IdealGasPhysicalParams, config: &crate::SimConfig) -> Self {
         Self::from_physical(
             params.rho_kg_m3,
@@ -297,40 +225,20 @@ pub struct IdealGasPhysicalParams {
     pub temperature_k: f32,
 }
 
-/// Real, cited bulk (dilatational) viscosity for a polyatomic gas whose
-/// bulk viscosity is dominated by rotational/vibrational relaxation --
-/// water vapor specifically, though the same real mechanism applies to any
-/// non-monatomic gas. See `IdealGasMaterial::bulk_viscosity`'s own doc for
-/// the full citation (Cramer 2012, Physics of Fluids 24, 066102: water
-/// vapor's bulk viscosity is "hundreds or thousands of times" its shear
-/// viscosity, estimated over 380-1000 K).
+/// Bulk (dilatational) viscosity of a polyatomic gas dominated by
+/// rotational/vibrational relaxation, water vapour in particular: Cramer
+/// 2012 (Physics of Fluids 24, 066102) puts water vapour's bulk viscosity at
+/// "hundreds or thousands of times" its shear viscosity over 380-1000 K.
 ///
-/// `BULK_TO_SHEAR_RATIO` uses the HIGH end of that cited range (thousands),
-/// not the low end (hundreds) this constant originally used. Real,
-/// disclosed escalation (2026-08-29): the low-end value (100x) was
-/// confirmed live, via a real per-node P2G diagnostic on
-/// `phase_states_gui.rs`'s own Moon-gravity heated scene, to still let an
-/// isolated steam particle's J race to `volume_ratio_max` and stick there
-/// -- the real "grossit" symptom this whole field exists to damp. Moving to
-/// the high end of the SAME citation is a real, sourced choice, not a new
-/// number invented to chase the symptom.
+/// `BULK_TO_SHEAR_RATIO` takes the high end (thousands): at 100x an isolated
+/// steam particle in `phase_states_gui.rs`'s heated Moon-gravity scene still
+/// reached `volume_ratio_max` and stuck there.
 ///
-/// Returns real SI Pa·s -- passes through UNCONVERTED into
-/// `bulk_viscosity`, same raw-SI convention `dynamic_viscosity` already
-/// uses for this material (see that field's own doc).
+/// Returns SI Pa·s, passed unconverted into `bulk_viscosity`.
 pub fn water_vapor_bulk_viscosity_pa_s(shear_viscosity_pa_s: f32) -> f32 {
-    // Real, disclosed escalation (2026-08-29): Cramer 2012's own cited range
-    // for water vapor is "hundreds or thousands of times" shear viscosity --
-    // the previous 100x sat at the conservative LOW edge of that range and
-    // was confirmed live (Moon-gravity heated run, `EMERGE_TRACK_PARTICLE_
-    // NODES` diagnostic) to still let an isolated steam particle's own J
-    // race to the material's `volume_ratio_max` ceiling and stick there --
-    // the exact "grossit" symptom this field was added for in the first
-    // place (see this material's own `volume_ratio_max` doc, found
-    // 2026-08-28). Moving to 1000x -- the higher end of the SAME cited
-    // range, not a new number invented to chase the symptom -- since 100x
-    // demonstrably wasn't enough real damping against this engine's own
-    // buoyancy-driven divergence.
+    // The high end of Cramer 2012's range ("hundreds or thousands of times"
+    // the shear viscosity); 100x let an isolated steam particle reach
+    // `volume_ratio_max` in the heated Moon-gravity run.
     const BULK_TO_SHEAR_RATIO: f32 = 1000.0;
     shear_viscosity_pa_s * BULK_TO_SHEAR_RATIO
 }
@@ -349,7 +257,7 @@ impl MaterialModel for IdealGasMaterial {
     /// Seeds the exact analytical rest state, same contract
     /// `NewtonianFluidMaterial::init_particle` establishes (`V0=m/ρ0`,
     /// `ρ=ρ0/J`) -- plus `temperature`, which a strict fluid never needs
-    /// but this EOS genuinely depends on (`p=ρRT`).
+    /// but this EOS depends on (`p=ρRT`).
     fn init_particle(&self, particle: &mut Particle) {
         let j = particle.deformation_gradient.determinant();
         particle.initial_volume = particle.mass / self.rest_density;
@@ -358,34 +266,20 @@ impl MaterialModel for IdealGasMaterial {
         particle.temperature = self.reference_temperature_k;
     }
 
-    /// Real fix, found live 2026-08-18 debugging `examples/basic_steam.rs`
-    /// (water boiling into gas -- see `MaterialModel::
-    /// init_particle_from_transition`'s own doc for the full mechanism):
-    /// `init_particle`'s own `mass/rest_density` formula is exactly right
-    /// for a FRESH spawn, but wrong for a TRANSITION from a material with
-    /// a dramatically different rest density (e.g. water->steam, a real
-    /// ~1700x ratio) -- it would make the particle's claimed volume jump
-    /// that same ~1700x in a single instant, injecting a real but wildly
-    /// under-resolved force spike (confirmed live as a real crash cause).
+    /// For a transition from a material of very different rest density
+    /// (water -> steam, ~1700x), `init_particle`'s `mass/rest_density` would
+    /// make the particle's volume jump ~1700x in one instant, a force spike
+    /// that crashed `examples/basic_steam.rs` (see `MaterialModel::
+    /// init_particle_from_transition`).
     ///
-    /// Correct fix: keep the reference volume TRUE (`mass/rest_density`,
-    /// matching exactly what `kirchhoff_stress`/`update_particle` already
-    /// assume every substep), and instead give the particle a STARTING
-    /// deformation gradient reflecting how compressed it genuinely is
-    /// relative to that true reference -- a real, physically honest
-    /// picture (freshly-formed gas still occupying roughly its old, much
-    /// smaller prior footprint IS heavily compressed relative to this
-    /// material's own rest state), clamped to this material's own
-    /// `[volume_ratio_min, volume_ratio_max]`, the SAME bounds every
-    /// subsequent substep already enforces -- so the starting state is
-    /// consistent with the ongoing dynamics from frame one, not a
-    /// separate, inconsistent value that later dynamics silently
-    /// overwrite (a first, wrong fix attempt -- capping `initial_volume`
-    /// directly -- learned this the hard way: `update_particle` recomputes
-    /// volume fresh from `mass*j/rest_density` every substep, never
-    /// reading `initial_volume` again, so a capped `initial_volume` alone
-    /// only held for one substep before becoming permanently inconsistent
-    /// with the real volume update.
+    /// The reference volume stays `mass/rest_density`, as `kirchhoff_stress`
+    /// and `update_particle` assume; the particle instead starts with a
+    /// deformation gradient saying how compressed it is against that
+    /// reference (freshly formed gas still in its small old footprint),
+    /// clamped to `[volume_ratio_min, volume_ratio_max]`, the bounds every
+    /// substep enforces. Capping `initial_volume` does not work:
+    /// `update_particle` recomputes volume from `mass*j/rest_density` every
+    /// substep and never reads it again.
     fn init_particle_from_transition(&self, particle: &mut Particle) {
         let true_initial_volume = particle.mass / self.rest_density;
         let prior_volume = particle.volume.max(1.0e-9);
@@ -396,26 +290,19 @@ impl MaterialModel for IdealGasMaterial {
         particle.initial_volume = true_initial_volume;
         particle.volume = true_initial_volume * j;
         particle.density = particle.mass / particle.volume.max(1.0e-9);
-        // Real regression fix (external review): do NOT touch temperature
-        // here. `Simulation::apply_phase_transition` already debits it by
-        // `latent_heat / heat_capacity` immediately before calling this --
-        // overwriting it back to a fixed `reference_temperature_k` silently
-        // erased that debit every single time (water boiling into steam
-        // paid the latent-heat cost, then had it discarded a few lines
-        // later, always landing exactly at 373.15K regardless of how much
-        // energy actually crossed the threshold). Every sibling override
+        // Temperature is not touched here: `Simulation::apply_phase_transition`
+        // has just debited `latent_heat / heat_capacity`, and resetting it to
+        // `reference_temperature_k` would erase that debit (boiling would
+        // always land at 373.15 K). The sibling overrides
         // (`NewtonianFluidMaterial`, `BoilingMixtureMaterial`,
-        // `CavitatingFluidMaterial`) already leaves `particle.temperature`
-        // untouched for the same reason -- this material was the one
-        // outlier. `init_particle` (fresh spawns, no real prior thermal
-        // history) is unaffected and still seeds `reference_temperature_k`.
+        // `CavitatingFluidMaterial`) leave it alone too; `init_particle`
+        // (fresh spawns) still seeds `reference_temperature_k`.
     }
 
     /// `c² = γ·R·T` evaluated at the reference state (`J=1`,
     /// `T=reference_temperature_k`) -- the same formula `timestep_bound`
-    /// evaluates, not a second derivation. See that method's own doc for
-    /// the real, disclosed limitation this fixed-reference-T evaluation
-    /// implies under active heating.
+    /// evaluates, not a second derivation. See `timestep_bound` for what
+    /// the fixed reference temperature means under heating.
     fn rest_acoustic_c2(&self) -> Option<f32> {
         if self.specific_gas_constant > 0.0 && self.reference_temperature_k > 0.0 {
             Some(self.adiabatic_index * self.specific_gas_constant * self.reference_temperature_k)
@@ -424,28 +311,13 @@ impl MaterialModel for IdealGasMaterial {
         }
     }
 
-    /// Real fix (2026-08-31, found live -- `phase_states_gui.rs`'s own
-    /// sustained-heating steam divergence, confirmed by a direct A/B
-    /// against the pre-existing, untouched material: divergence in the
-    /// THOUSANDS, `last_substeps` climbing toward its own cap, fps
-    /// collapsing to single digits, `steam max(J)` pinned at
-    /// `volume_ratio_max`). Real, previously-DISCLOSED gap this closes
-    /// (see `timestep_bound`'s own doc, written 2026-08-29, never
-    /// implemented): `kirchhoff_stress` already evaluates `p0=rho0*R*T`
-    /// at the particle's own LIVE `temperature` (adiabatic ideal-gas law,
-    /// same citation as `rest_acoustic_c2`'s own doc), but `timestep_bound`
-    /// only ever evaluated `c^2=gamma*R*T` at the FIXED, construction-time
-    /// `reference_temperature_k` -- under real active heating (this
-    /// demo's own boiling scene routinely pushes steam well past its own
-    /// `reference_temperature_k=373.15K` reference), the real stiffness
-    /// GROWS (`c^2` is linear in `T`) while the CFL bound stays anchored
-    /// to the old, softer value, an increasingly under-resolved timestep
-    /// that gets WORSE the longer heating continues -- exactly the
-    /// observed escalating-then-runaway signature, not a one-off spike.
-    /// Same real formula as `rest_acoustic_c2`, evaluated at the live
-    /// temperature instead of the frozen reference -- not a new physics
-    /// model, the SAME adiabatic ideal-gas relation with its one
-    /// temperature-dependent input finally supplied.
+    /// `c^2 = gamma*R*T` at a live temperature. `kirchhoff_stress` evaluates
+    /// `p0 = rho0*R*T` at the particle's live temperature, so under heating
+    /// the stiffness grows linearly with `T`; a CFL bound fixed at
+    /// `reference_temperature_k` (373.15 K) fell further behind the longer
+    /// heating lasted (in `phase_states_gui.rs`: divergence in the thousands,
+    /// substeps at their cap, steam max(J) at `volume_ratio_max`). Same
+    /// relation as `rest_acoustic_c2`, with its temperature input supplied.
     fn acoustic_c2_at_temperature(&self, temperature_k: f32) -> Option<f32> {
         if self.specific_gas_constant > 0.0 && temperature_k > 0.0 {
             Some(self.adiabatic_index * self.specific_gas_constant * temperature_k)
@@ -459,46 +331,27 @@ impl MaterialModel for IdealGasMaterial {
         let density = (self.rest_density / j).max(self.min_density);
         let temperature = particles.temperature[i].max(0.0);
 
-        // Isentropic (adiabatic) pressure law, NOT the naive isothermal
-        // `p=ρRT` at fixed T this used until 2026-08-18. Real, found via a
-        // live-crashing demo (basic_gas.rs): MPM substeps operate on
-        // timescales far too short for heat conduction to equalize --
-        // exactly the same real justification `ideal_gas_sound_speed`'s
-        // own doc already gives for using the ADIABATIC sound speed
-        // (`c=√(γRT)`), not the isothermal one. Using the isothermal
-        // pressure law together with the adiabatic sound speed was a real,
-        // internal inconsistency: the CFL/shock-viscosity terms assumed a
-        // stiffer, self-limiting adiabatic response while the actual
-        // restoring force was the softer isothermal one, which never
-        // throttles down under expansion (`p·V = nRT` stays EXACTLY
-        // constant as a fixed-T ideal gas expands, so the P2G force
-        // contribution never decays) -- a real energy-injecting mismatch,
-        // not a tuning problem, and the direct cause of the observed
-        // runaway (avg J climbing to 8-11 in well under 2 simulated
-        // seconds from an initial 3:1 pressure ratio).
+        // Isentropic (adiabatic) pressure law, not an isothermal `p = ρRT` at
+        // fixed T: substeps are far too short for conduction to equalize,
+        // the reason the sound speed is adiabatic (`c = √(γRT)`). An
+        // isothermal pressure with an adiabatic sound speed is inconsistent,
+        // and it never throttles under expansion (`p·V = nRT` stays constant),
+        // which ran `basic_gas.rs` away (average J 8-11 within 2 s from a 3:1
+        // pressure ratio).
         //
-        // Standard compressible-flow result (isentropic relation):
-        // combining `p=ρRT` with the adiabatic relation `T/T0=(ρ/ρ0)^(γ-1)`
-        // gives `p = p0·(ρ/ρ0)^γ`, where `p0=ρ0·R·T` is the real rest
-        // pressure at the particle's CURRENT temperature (still real
-        // thermal coupling -- a `ThermalDiffusion` shifts `p0` exactly as
-        // `p=ρRT` would). This form self-limits under expansion (`p·V`
-        // now falls off as `V^(1-γ)`, strictly decreasing for γ>1) and its
-        // own `dp/dρ` at `ρ=ρ0` is exactly `γRT` -- the SAME formula
-        // `rest_acoustic_c2`/`timestep_bound` already compute, now
-        // internally consistent rather than assumed.
+        // Combining `p = ρRT` with the adiabatic relation `T/T0 =
+        // (ρ/ρ0)^(γ-1)` gives `p = p0·(ρ/ρ0)^γ`, with `p0 = ρ0·R·T` at the
+        // particle's current temperature (so a `ThermalDiffusion` still
+        // shifts it). `p·V` falls as `V^(1-γ)` under expansion, and `dp/dρ`
+        // at `ρ = ρ0` is `γRT`, the formula `rest_acoustic_c2`/
+        // `timestep_bound` use.
         let p0 = self.rest_density * self.specific_gas_constant * temperature;
         let pressure_abs = (p0
             * crate::materials::utils::fast_pow(density / self.rest_density, self.adiabatic_index))
         .max(0.0); // physically required floor: ρ,T >= 0 => p_abs >= 0, nothing to configure
 
-        // Real, disclosed fix (2026-08-29, see `reference_pressure_pa`'s own
-        // doc): the MECHANICAL stress this material contributes must be
-        // gauge pressure, not absolute -- `p_abs` alone means this gas
-        // pushes with its full ~101325 Pa even sitting at its own rest
-        // density, with nothing to balance it. `p_abs` itself stays
-        // available for anything thermodynamic (temperature coupling,
-        // sound speed) -- only the mechanical stress below changes.
+        // Mechanical stress is gauge (see `reference_pressure_pa`); `p_abs`
+        // stays for the thermodynamics (temperature coupling, sound speed).
         let pressure_gauge = pressure_abs - self.reference_pressure_pa;
 
         let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure_gauge));
@@ -513,7 +366,7 @@ impl MaterialModel for IdealGasMaterial {
         }
 
         // Bulk viscosity zeta: tau += zeta*(div v)*I -- see this field's
-        // own doc. Same real formula NewtonianFluidMaterial::kirchhoff_stress
+        // doc. Same real formula NewtonianFluidMaterial::kirchhoff_stress
         // already uses; `div_v` here is tr(C+C^T) = 2*div(v), so the *0.5
         // recovers the true divergence, same convention that file's own
         // comment documents.
@@ -525,7 +378,7 @@ impl MaterialModel for IdealGasMaterial {
         // reusing the SAME shared q-formula `NewtonianFluidMaterial` uses
         // (`materials::utils::von_neumann_richtmyer_q`), fed this
         // material's own real adiabatic sound speed and real γ rather
-        // than a Tait-EOS-derived stand-in (see that function's own doc).
+        // than a Tait-EOS-derived stand-in (see that function's doc).
         let c_sound = ideal_gas_sound_speed_from_temperature(
             self.specific_gas_constant,
             self.adiabatic_index,
@@ -549,14 +402,10 @@ impl MaterialModel for IdealGasMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Real, disclosed regression fixed 2026-08-30 -- same fix, same
-        // root cause, as `NewtonianFluidMaterial::update_particle`'s own
-        // doc: `det(I+dt*C)` is not rotation-invariant (a pure rigid
-        // rotation should leave J exactly unchanged but this formula gives
-        // a strictly positive O(dt^2) expansion every substep, baked in
-        // permanently by isotropization). Fixed with the continuity
-        // equation's own exact exponential solution, `J_{n+1}=J_n*exp(dt*
-        // div(v))` -- restores the pre-`57b83dc` `fluid_state.rs` behavior.
+        // `det(I+dt*C)` is not rotation-invariant: a rigid rotation gives a
+        // positive O(dt^2) expansion every substep, which isotropization bakes
+        // in. The continuity equation's exact solution, `J_{n+1} = J_n*exp(dt*
+        // div(v))`, does not (as in `NewtonianFluidMaterial::update_particle`).
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
         let j = (old_j * (dt * div_v).exp()).clamp(self.volume_ratio_min, self.volume_ratio_max);
@@ -595,17 +444,12 @@ impl MaterialModel for IdealGasMaterial {
         }
     }
 
-    /// Real, disclosed limitation, PARTIALLY closed 2026-08-31 (see
-    /// `acoustic_c2_at_temperature`'s own doc): this trait method's
-    /// signature still carries only `density`, not per-particle
-    /// temperature, so the acoustic term BELOW still uses
-    /// `reference_temperature_k` rather than the particle's actual
-    /// current `T` -- but `cfl.rs`'s own dispatch site now adds a SEPARATE,
-    /// real live-temperature-aware term via `acoustic_c2_at_temperature`
-    /// (same established pattern as its shock-viscosity and single-
-    /// particle-instability terms, neither of which live inside
-    /// `timestep_bound` either), so the true, live-T-tightened bound is
-    /// still real and enforced -- just not from this method alone.
+    /// This trait method only has `density`, not the particle's temperature,
+    /// so the acoustic term below uses `reference_temperature_k`. `cfl.rs`
+    /// adds a separate live-temperature term through
+    /// `acoustic_c2_at_temperature` (like its shock-viscosity and
+    /// single-particle terms, which do not live here either), so the bound
+    /// enforced does follow the live temperature.
     fn timestep_bound(
         &self,
         density: f32,
@@ -623,14 +467,14 @@ impl MaterialModel for IdealGasMaterial {
 
         // Combined explicit-viscous-diffusion bound for BOTH shear and bulk
         // viscosity -- same real stability reasoning `DruckerPragerMaterial::
-        // timestep_bound`'s own doc gives for its Kelvin-Voigt term (measured
+        // timestep_bound`'s doc gives for its Kelvin-Voigt term (measured
         // live: an unbounded viscous term makes peak speed jump instead of
         // damping). Combined linearly, not each bounded separately: both
         // terms multiply the SAME velocity-gradient-derived stress, so their
-        // worst-case combined diffusive coefficient is the real, conservative
+        // worst-case combined diffusive coefficient is the conservative
         // bound, not an approximation. `bulk_viscosity` can be "hundreds of
         // times" `dynamic_viscosity` for a real polyatomic gas (see that
-        // field's own doc) -- without including it here, the substep
+        // field's doc) -- without including it here, the substep
         // selector would never see the real stiffness it adds.
         let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
         if combined_viscosity > 0.0 {
@@ -655,7 +499,7 @@ mod tests {
 
     /// `dx_meters = 1.0` collapses grid<->SI scaling to identity, so this
     /// test can compare `kirchhoff_stress`'s output directly against the
-    /// real, textbook air reference `energy::thermodynamics::ideal_gas`'s
+    /// textbook air reference `energy::thermodynamics::ideal_gas`'s
     /// own test already verifies (~101,325 Pa at ρ=1.204 kg/m³, T=293.15K).
     fn unit_dx_config() -> SimConfig {
         SimConfig::standard(64, 0.05, Vec2::NEG_Y * 0.3)
@@ -669,19 +513,10 @@ mod tests {
         Particles::from(vec![p])
     }
 
-    /// Real, corrected expectation (2026-08-29, see `reference_pressure_pa`'s
-    /// own doc -- a confirmed structural bug found while investigating
-    /// `phase_states_gui.rs`'s steam-explosion symptom). Real air at its
-    /// own real rest density/temperature (p_abs
-    /// really is ~101325 Pa here) exerts ZERO mechanical stress once
-    /// embedded in the real default ambient (1 standard atmosphere) --
-    /// there's nothing pushing it to expand or compress relative to its
-    /// surroundings. This REPLACES the pre-fix expectation (that
-    /// `kirchhoff_stress` should reproduce the raw ~101325 Pa absolute
-    /// pressure), which was exactly the bug: it meant every gas particle
-    /// pushed outward with its full absolute pressure even at its own
-    /// rest state, with nothing to balance it -- a persistent, un-opposed
-    /// force no viscosity could arrest.
+    /// Air at its rest density and temperature (`p_abs` ~101325 Pa) exerts
+    /// zero mechanical stress inside the default ambient of one standard
+    /// atmosphere: nothing pushes it to expand or compress relative to its
+    /// surroundings (see `reference_pressure_pa`).
     #[test]
     fn rest_gauge_pressure_is_zero_at_standard_atmosphere() {
         let mut config = unit_dx_config();
@@ -700,20 +535,11 @@ mod tests {
         );
     }
 
-    /// Real regression guard (external review, P0 #5): `init_particle_
-    /// from_transition` must NOT touch `particle.temperature` --
-    /// `Simulation::apply_phase_transition` already debits it by
-    /// `latent_heat/heat_capacity` immediately before calling this, and
-    /// this material used to silently overwrite that debit back to a
-    /// fixed `reference_temperature_k`, discarding it completely (water
-    /// boiling into steam always landed at exactly 373.15K regardless of
-    /// how much energy actually crossed the threshold). Starts the
-    /// particle at a temperature that is deliberately NOT the reference
-    /// value -- the real post-debit state a genuine transition leaves
-    /// behind -- and confirms it survives untouched, matching every
-    /// sibling `init_particle_from_transition` override
-    /// (`NewtonianFluidMaterial`, `BoilingMixtureMaterial`,
-    /// `CavitatingFluidMaterial`) which never touched temperature at all.
+    /// `init_particle_from_transition` leaves `particle.temperature` alone:
+    /// `Simulation::apply_phase_transition` has already debited
+    /// `latent_heat/heat_capacity`. Starts the particle at a temperature that
+    /// is not the reference value, as a real transition leaves it, and checks
+    /// it survives, as in the sibling overrides.
     #[test]
     fn init_particle_from_transition_preserves_the_incoming_temperature() {
         let config = unit_dx_config();
@@ -738,7 +564,7 @@ mod tests {
         );
     }
 
-    /// `water_vapor_bulk_viscosity_pa_s` must return a real, finite,
+    /// `water_vapor_bulk_viscosity_pa_s` must return a finite,
     /// positive multiple of shear viscosity -- basic sanity floor for the
     /// cited Cramer 2012 conversion before trusting it in a live scene.
     #[test]
@@ -777,11 +603,9 @@ mod tests {
         let tau_inviscid = inviscid.kirchhoff_stress(&particles, 0);
         let tau_damped = damped.kirchhoff_stress(&particles, 0);
 
-        // Real Navier-Stokes second-viscosity sign: resisting expansion
-        // means an ADDED positive (compressive-direction-opposing, i.e.
-        // less negative / more positive) diagonal stress relative to the
-        // inviscid case -- a real restoring force against further
-        // expansion, not an amplifying one.
+        // Navier-Stokes second-viscosity sign: resisting expansion adds a
+        // positive diagonal stress relative to the inviscid case, a restoring
+        // force against further expansion.
         assert!(
             tau_damped.x_axis.x > tau_inviscid.x_axis.x,
             "bulk viscosity must add real resistance to expansion: \
@@ -791,10 +615,8 @@ mod tests {
         );
     }
 
-    /// `bulk_viscosity == 0.0` (every preset's default) must reproduce the
-    /// exact pre-2026-08-28 stress -- a real regression guard that adding
-    /// this mechanism did not change default behavior for any existing
-    /// preset/scene.
+    /// `bulk_viscosity == 0.0` (every preset's default) reproduces the stress
+    /// without the term.
     #[test]
     fn zero_bulk_viscosity_is_bit_identical_to_prior_behavior() {
         let mut config = unit_dx_config();
@@ -823,15 +645,11 @@ mod tests {
         );
     }
 
-    /// Real, corrected physics (2026-08-29, see `reference_pressure_pa`'s
-    /// own doc). As a gas pocket approaches vacuum, its ABSOLUTE pressure
-    /// really does vanish (real ideal-gas law, unchanged) -- but the
-    /// MECHANICAL (gauge) stress it exerts approaches `-reference_
-    /// pressure_pa`, not zero, exactly what a real near-vacuum bubble
-    /// embedded in a real atmosphere actually does: get crushed inward by
-    /// the full ambient pressure, not sit in force-free equilibrium. This
-    /// REPLACES the pre-fix expectation (mechanical stress -> 0), which was
-    /// exactly the confirmed "no counter-pressure" bug this field fixes.
+    /// As a gas pocket approaches vacuum its absolute pressure vanishes (the
+    /// ideal gas law), but its mechanical (gauge) stress approaches
+    /// `-reference_pressure_pa`: a near-vacuum bubble in an atmosphere is
+    /// crushed inward by the full ambient pressure (see
+    /// `reference_pressure_pa`).
     #[test]
     fn gauge_pressure_approaches_negative_reference_as_density_vanishes() {
         let mut config = unit_dx_config();

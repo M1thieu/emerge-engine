@@ -1,26 +1,16 @@
-//! Real orbital/rotational mechanics for a 2D side-view scene's sun position.
+//! Sun position for a 2D side-view scene from Earth's rotation (24 h) and its
+//! axial tilt around the orbit: the sun direction (a 2D unit vector,
+//! horizontal sweep across the sky and elevation above the horizon) as a
+//! function of simulated time, varying with the hour and the season.
 //!
-//! Replaces an arbitrary thermal oscillation with the ACTUAL cause of a real
-//! day/night + seasonal cycle: Earth's own rotation (24h) combined with its
-//! axial tilt sweeping through a real Kepler orbit around the sun. This module
-//! computes the real sun DIRECTION (a 2D unit vector: horizontal sweep across
-//! the sky + vertical elevation above the horizon) as a function of simulated
-//! time -- genuinely varying with both time-of-day and season, not a fudge.
-//!
-//! # Scope (disclosed, matches this crate's own "just the idea, not full
-//! detail" first pass)
-//! - Earth's real orbit (eccentricity ~0.0167) is approximated as circular for
-//!   this first pass -- Earth's orbit is close enough to circular that this is
-//!   a small, disclosed simplification (real eccentricity only shifts solar
-//!   intensity ~3.4%/1.7% at perihelion/aphelion, not the elevation angle this
-//!   module computes), not a physically wrong shortcut.
-//! - Longitude/timezone are not modeled -- only local solar time (hour angle
-//!   measured directly from local solar noon), the same simplification any
-//!   single-location solar-position calculator makes.
-//! - Real time is compressed via a caller-chosen `seconds_per_day` scale (a
-//!   real, disclosed convenience -- nobody plays a 24-real-hour day/night
-//!   cycle) -- but the ANGLE math itself uses the real ratios (real axial
-//!   tilt, real 365.25-day year), not a rescaled fake cycle.
+//! # Scope
+//! - Earth's orbit (eccentricity ~0.0167) is taken as circular: eccentricity
+//!   shifts solar intensity ~3.4%/1.7% at perihelion/aphelion, not the
+//!   elevation angle computed here.
+//! - Longitude and time zones are not modelled: local solar time only (hour
+//!   angle from local solar noon), as any single-location solar calculator.
+//! - Time is compressed by a caller-chosen `seconds_per_day`; the angles use
+//!   the real ratios (axial tilt, 365.25-day year).
 //!
 //! # References
 //! - Solar declination: Cooper, P.I. (1969), "The absolute solar radiation".
@@ -76,11 +66,10 @@ pub fn solar_elevation_deg(latitude_deg: f32, declination_deg: f32, hour_angle_d
         .to_degrees()
 }
 
-/// Real sun direction for a 2D side-view scene, as a unit vector: `x` = which
-/// way across the sky (east/west sweep, from the hour angle's sign), `y` =
-/// height above the horizon (from the real elevation angle above). Combines
-/// real Earth rotation (daily) and real axial-tilt-driven declination
-/// (seasonal) -- genuinely varies with both, not a single fixed arc.
+/// Sun direction for a 2D side-view scene, as a unit vector: `x` = which way
+/// across the sky (east/west, from the hour angle's sign), `y` = height above
+/// the horizon (from the elevation angle). Combines daily rotation and the
+/// tilt-driven seasonal declination.
 pub fn sun_direction(latitude_deg: f32, day_of_year: f32, hour_of_day: f32) -> Vec2 {
     let dec = solar_declination_deg(day_of_year);
     let ha = hour_angle_deg(hour_of_day);
@@ -112,8 +101,7 @@ impl OrbitalClock {
         }
     }
 
-    /// Real Earth day/365.25-day-year default proportions -- only
-    /// `seconds_per_day` needs to be chosen by the caller.
+    /// Earth day and 365.25-day year; the caller only picks `seconds_per_day`.
     pub const fn with_seconds_per_day(seconds_per_day: f32) -> Self {
         Self::new(seconds_per_day, 1.0)
     }
@@ -126,7 +114,7 @@ impl OrbitalClock {
         (sim_time_seconds / self.seconds_per_day).rem_euclid(1.0) * 24.0
     }
 
-    /// Real sun direction at a given latitude and simulated time.
+    /// Sun direction at a given latitude and simulated time.
     pub fn sun_direction(&self, latitude_deg: f32, sim_time_seconds: f32) -> Vec2 {
         sun_direction(
             latitude_deg,
@@ -142,10 +130,8 @@ mod tests {
 
     #[test]
     fn declination_is_near_zero_at_equinox() {
-        // Cooper's formula's own real equinoxes fall near day 80 (spring)
-        // and day 264 (fall) -- not exactly astronomical equinox dates
-        // (~day 79/266) since it's a sine-fit approximation, not an exact
-        // ephemeris. Real, disclosed accuracy bound: within ~1 degree.
+        // Cooper's formula puts the equinoxes near day 80 and day 264, not the
+        // astronomical ~79/266: a sine fit, not an ephemeris, within ~1 degree.
         assert!(solar_declination_deg(80.0).abs() < 1.0);
         assert!(solar_declination_deg(264.0).abs() < 1.0);
     }
@@ -171,9 +157,8 @@ mod tests {
 
     #[test]
     fn equator_at_equinox_noon_sun_is_near_overhead() {
-        // Real, precise check: at the equator (lat=0) on an equinox
-        // (dec~=0) at local solar noon (hour_angle=0), the sun should sit
-        // almost exactly at the zenith (elevation ~= 90 deg).
+        // At the equator (lat=0) on an equinox (dec~=0) at local solar noon
+        // (hour_angle=0), the sun sits almost at the zenith (elevation ~= 90 deg).
         let dec = solar_declination_deg(80.0);
         let elevation = solar_elevation_deg(0.0, dec, 0.0);
         assert!((elevation - 90.0).abs() < 1.0, "elevation={elevation}");
@@ -200,9 +185,8 @@ mod tests {
 
     #[test]
     fn sun_direction_sweeps_from_east_to_west_over_a_day() {
-        // Real, qualitative check: the horizontal (x) component should sit
-        // on opposite sides of noon in the morning vs afternoon (east vs
-        // west sweep), not stay fixed.
+        // The horizontal (x) component lies on opposite sides in the morning and
+        // afternoon (east and west).
         let morning = sun_direction(45.0, 172.0, 8.0);
         let afternoon = sun_direction(45.0, 172.0, 16.0);
         assert!(morning.x.signum() != afternoon.x.signum() || morning.x == 0.0);

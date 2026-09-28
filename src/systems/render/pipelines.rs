@@ -191,7 +191,7 @@ pub(super) fn build_prep_pipeline(
 /// `snapshot_positions.wgsl` compute pipeline -- extracts the current
 /// particle positions into a tightly-packed buffer `prep_instances.wgsl`
 /// later interpolates against. See `Renderer::snapshot_particle_positions`'s
-/// own doc for the real "Fix Your Timestep" (Gaffer 2004) render-smoothing
+/// doc for the real "Fix Your Timestep" (Gaffer 2004) render-smoothing
 /// this exists for.
 pub(super) fn build_snapshot_pipeline(
     device: &wgpu::Device,
@@ -229,7 +229,7 @@ pub(super) fn build_snapshot_pipeline(
 }
 
 /// `grid_volume.wgsl` pipeline -- samples the solver's own P2G mass field
-/// directly instead of per-particle splats (see that shader's own doc).
+/// directly instead of per-particle splats (see that shader's doc).
 /// `grid_volume.wgsl`'s `grid_visibility_step_main` pipeline -- the SAME
 /// real hysteresis technique `build_visibility_step_pipeline` already
 /// ships for the curvature-flow surface, ported to this mode's own
@@ -361,19 +361,19 @@ pub(super) fn build_surface_clear_pipeline(
             bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE), // unused by this entry point, layout shared with splat's bg
             bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
-            // Real mass-weighted temperature atomic, also cleared here --
-            // see `surface_temp_atomic`'s own doc in the shader.
+            // Mass-weighted temperature atomic, cleared here too (see
+            // `surface_temp_atomic` in the shader).
             bgl_storage_rw(3, wgpu::ShaderStages::COMPUTE),
-            // Real volume-preserving-correction totals, also cleared here --
-            // see `pre_total_atomic`'s own doc in the shader.
+            // Volume-preserving-correction totals, cleared here too (see
+            // `pre_total_atomic` in the shader).
             bgl_storage_rw(4, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(5, wgpu::ShaderStages::COMPUTE),
             // N-material extension's per-cell mass array, also cleared here
             // (gated, real cost only when opted in) -- see
-            // `surface_material_mass_atomic`'s own doc in the shader.
+            // `surface_material_mass_atomic`'s doc in the shader.
             bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
             // Yu & Turk neighbourhood moments, also cleared here -- see
-            // `surface_moments_atomic`'s own doc in the shader.
+            // `surface_moments_atomic`'s doc in the shader.
             bgl_storage_rw(7, wgpu::ShaderStages::COMPUTE),
         ],
     });
@@ -401,17 +401,16 @@ pub(super) fn build_surface_splat_pipeline(
             bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
-            // Real mass-weighted temperature atomic scatter -- see
-            // `surface_temp_atomic`'s own doc in the shader.
+            // Mass-weighted temperature atomic scatter (see
+            // `surface_temp_atomic` in the shader).
             bgl_storage_rw(3, wgpu::ShaderStages::COMPUTE),
-            // Real ground-truth total mass accumulation -- see
-            // `pre_total_atomic`'s own doc in the shader.
+            // Ground-truth total mass accumulation (see `pre_total_atomic`).
             bgl_storage_rw(4, wgpu::ShaderStages::COMPUTE),
             // Unused by this entry point (only cleared, filled later by
             // `post_total_reduce_main`) but the layout is shared with clear.
             bgl_storage_rw(5, wgpu::ShaderStages::COMPUTE),
             // N-material extension's per-cell mass array -- see
-            // `surface_material_mass_atomic`'s own doc in the shader.
+            // `surface_material_mass_atomic`'s doc in the shader.
             bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
             // Yu & Turk neighbourhood moments -- written by
             // `splat_moments_main`, read back by `splat_density_main` to fit
@@ -452,7 +451,7 @@ pub(super) fn build_surface_moments_pipeline(
 
 /// `curvature_flow.wgsl`'s `convert_atomic_to_float_main` pipeline --
 /// converts the settled fixed-point splat buffer into the first plain-f32
-/// ping-pong buffer (see that entry point's own doc for why this can't
+/// ping-pong buffer (see that entry point's doc for why this can't
 /// fold into the splat pass itself).
 pub(super) fn build_surface_convert_pipeline(
     device: &wgpu::Device,
@@ -463,11 +462,11 @@ pub(super) fn build_surface_convert_pipeline(
             bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
-            // Real, persistent raw-splat history for neighborhood-clamped
-            // temporal smoothing -- see that entry point's own doc.
+            // Persistent raw-splat history for neighbourhood-clamped temporal
+            // smoothing (see that entry point).
             bgl_storage_rw(3, wgpu::ShaderStages::COMPUTE),
-            // Real mass-weighted temperature: settled atomic in, plain f32
-            // out -- see `surface_temp_atomic_ro`'s own doc in the shader.
+            // Mass-weighted temperature: settled atomic in, f32 out (see
+            // `surface_temp_atomic_ro` in the shader).
             bgl_storage_ro(4, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(5, wgpu::ShaderStages::COMPUTE),
         ],
@@ -485,7 +484,7 @@ pub(super) fn build_surface_convert_pipeline(
 
 /// `curvature_flow.wgsl`'s `curvature_iterate_main` pipeline -- one real
 /// mean-curvature smoothing step, ping-ponged between two plain float
-/// buffers across several dispatches (see that entry point's own doc for
+/// buffers across several dispatches (see that entry point's doc for
 /// the real cited equation).
 pub(super) fn build_surface_iterate_pipeline(
     device: &wgpu::Device,
@@ -638,7 +637,7 @@ pub(super) fn build_light_diffuse_pipeline(
     (pipeline, bgl)
 }
 
-/// `curvature_flow.wgsl`'s `wave_step_main` pipeline -- the real, persistent
+/// `curvature_flow.wgsl`'s `wave_step_main` pipeline -- the persistent
 /// 2D wave-equation step (see that entry point's own "Pass 2b" doc for the
 /// full real-technique citation). 4 storage buffers (density read, wave
 /// current read, wave previous read, wave next write) + 1 uniform.
@@ -724,7 +723,7 @@ pub(super) fn build_band_hysteresis_step_pipeline(
 
 /// `curvature_flow.wgsl`'s `vs_main`/`fs_main` render pipeline -- final
 /// extraction + Beer-Lambert/gradient-shading composite, reading the
-/// settled, smoothed surface buffer (see that shader's own doc).
+/// settled, smoothed surface buffer (see that shader's doc).
 pub(super) fn build_surface_render_pipeline(
     device: &wgpu::Device,
     output_format: wgpu::TextureFormat,
@@ -738,16 +737,15 @@ pub(super) fn build_surface_render_pipeline(
             bgl_storage_ro(3, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(4, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(5, wgpu::ShaderStages::FRAGMENT),
-            // Real mass-weighted temperature, single-phase only -- see
-            // `surface_temp_final`'s own doc in the shader for why
-            // `fs_main_dual_phase` doesn't get this (already at the real
-            // 8-storage-buffer WebGPU-guaranteed minimum).
+            // Mass-weighted temperature, single-phase only (see
+            // `surface_temp_final` in the shader: the dual-phase bind group is
+            // at WebGPU's guaranteed 8 storage buffers).
             bgl_storage_ro(6, wgpu::ShaderStages::FRAGMENT),
             // N-material extension, single-phase only -- see
-            // `surface_material_mass`'s own doc in the shader.
+            // `surface_material_mass`'s doc in the shader.
             bgl_storage_ro(7, wgpu::ShaderStages::FRAGMENT),
-            // Real diffused light fluence, single-phase only -- see
-            // `surface_light_phi`'s own doc in the shader.
+            // Diffused light fluence, single-phase only (see
+            // `surface_light_phi` in the shader).
             bgl_storage_ro(8, wgpu::ShaderStages::FRAGMENT),
             bgl_uniform(11, wgpu::ShaderStages::FRAGMENT),
         ],
@@ -795,8 +793,8 @@ pub(super) fn build_surface_render_pipeline(
 
 /// `curvature_flow.wgsl`'s `vs_main`/`fs_main_dual_phase` render pipeline --
 /// the two-phase extension's own final composite, reading TWO
-/// independently-smoothed surface buffers and picking the real, locally
-/// denser phase per pixel (see that shader's own doc).
+/// independently-smoothed surface buffers and picking the locally
+/// denser phase per pixel (see that shader's doc).
 pub(super) fn build_surface_dual_render_pipeline(
     device: &wgpu::Device,
     output_format: wgpu::TextureFormat,
@@ -809,10 +807,8 @@ pub(super) fn build_surface_dual_render_pipeline(
             bgl_uniform(2, wgpu::ShaderStages::FRAGMENT),
             bgl_uniform(3, wgpu::ShaderStages::FRAGMENT),
             bgl_uniform(4, wgpu::ShaderStages::FRAGMENT),
-            // Real per-phase wave/hysteresis state -- see
-            // `curvature_flow.wgsl`'s own Pass 3b doc for the exact
-            // storage-buffer-count reasoning (8 total, at the WebGPU
-            // guaranteed minimum).
+            // Per-phase wave/hysteresis state (see `curvature_flow.wgsl`'s Pass
+            // 3b: 8 storage buffers, WebGPU's guaranteed minimum).
             bgl_storage_ro(5, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(6, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(7, wgpu::ShaderStages::FRAGMENT),

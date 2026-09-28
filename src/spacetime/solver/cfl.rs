@@ -39,14 +39,11 @@ pub(crate) struct SubstepBounds {
     /// Remaining frame time -- the hard upper bound on the returned dt.
     pub max_dt: f32,
     pub granular_fluidity_dt_bound: Option<f32>,
-    // Real max particle speed from the PREVIOUS call to this function
-    // (one-substep-lagged -- see `Simulation::last_max_particle_speed`'s own
-    // doc). Used ONLY by the near-wall gate's Mach-relative compression
-    // threshold (`SimConfig::fluid_near_wall_compression_mach_margin`) --
-    // THIS call's own max_speed isn't known yet at the point the gate needs
-    // it (it's still being folded), so the previous substep's value is the
-    // freshest real data available, same "react at the next sync point"
-    // pattern this codebase's GPU batch CFL scan already uses.
+    // Max particle speed from the previous call (one substep lagged, see
+    // `Simulation::last_max_particle_speed`), used only by the near-wall
+    // gate's Mach-relative threshold
+    // (`SimConfig::fluid_near_wall_compression_mach_margin`): this call's
+    // own max speed is still being folded when the gate needs it.
     pub last_max_speed: f32,
 }
 
@@ -70,15 +67,11 @@ pub(crate) fn choose_substep_dt(
     if !config.adaptive_timestep {
         return (max_dt.min(config.dt), 0.0);
     }
-    // Single pass for both velocity CFL and material timestep bound.
-    // Parallelized (2026-08-07, real measured win: this scan was ~8ms/frame
-    // running on a SINGLE core, the other 7 idle) -- pure `(f32, f32)`
-    // fold/reduce, no allocation per chunk at all, so none of the same-night
-    // dense-buffer failure mode applies (see `transfer::p2g::
-    // scatter_particles_to_grid`'s own doc for that story). `with_min_len`
-    // matches P2G/G2P's own real fix, same reasoning: rayon's default
-    // chunking splits far more/smaller tasks than a naive one-per-core
-    // assumption.
+    // Single parallel pass for both the velocity CFL and the material bound
+    // (single-threaded it measured ~8 ms per frame): a pure `(f32, f32)`
+    // fold/reduce with no per-chunk allocation. `with_min_len` as in P2G/G2P,
+    // since rayon's default chunking makes many more, smaller tasks than
+    // one per core.
     let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
     let (max_speed, min_mat_dt, near_wall_gravity_scale) = (0..active_count)
         .into_par_iter()
@@ -86,17 +79,11 @@ pub(crate) fn choose_substep_dt(
         .fold(
             || (0.0f32, max_dt, 1.0f32),
             |(mut max_speed, mut min_mat_dt, mut near_wall_scale), i| {
-                // Real, small (2026-08-14) solver-core tightening: this loop
-                // body used to call `affine_cfl_speed_contribution` and
-                // `deformation_gradient_cfl_bound` separately below, each
-                // independently recomputing the SAME Frobenius norm of
-                // `velocity_gradient[i]` -- two sqrt where one suffices.
-                // Computed once here and reused by both; bit-identical
-                // result (same formula, same operands), not an approximation.
-                // Left the two `pub(crate)` functions themselves untouched
-                // (their own doc: also called from the GPU CFL scan's CPU
-                // side) so this stays a local, self-contained change with no
-                // GPU-path blast radius.
+                // Frobenius norm of `velocity_gradient[i]`, computed once and
+                // shared by the affine and deformation-rate bounds below
+                // (`affine_cfl_speed_contribution`/
+                // `deformation_gradient_cfl_bound` each compute it themselves
+                // for the GPU CFL scan's CPU side).
                 let grad_norm = (particles.velocity_gradient[i].x_axis.length_squared()
                     + particles.velocity_gradient[i].y_axis.length_squared())
                 .sqrt();
@@ -107,19 +94,14 @@ pub(crate) fn choose_substep_dt(
                 }
                 max_speed = max_speed.max(s);
                 // Proactive near-wall tightening for strict fluids (see
-                // `SimConfig::fluid_near_wall_cfl_scale`'s own doc) -- `1.0`
-                // (default) makes this branch's division a no-op, so every
-                // scene that never opts in pays nothing extra beyond the
-                // branch check itself. Gated on ACTUAL compression too, but
-                // (2026-08-11) relative to THIS material's own acoustic
-                // stiffness when it has one, not a fixed absolute percentage
-                // -- see `fluid_near_wall_compression_mach_margin`'s own doc
-                // for the real WCSPH-literature grounding (Ma²≈Δρ) and why an
-                // absolute threshold self-defeats for a deliberately
-                // softened EOS. Falls back to the old absolute
-                // `fluid_near_wall_compression_threshold` for a material with
-                // no acoustic term at all (e.g. `eos_stiffness=0.0`
-                // pressure-projection fluids), unchanged from before.
+                // `SimConfig::fluid_near_wall_cfl_scale`); the default `1.0`
+                // makes the division a no-op. Gated on actual compression,
+                // relative to the material's acoustic stiffness when it has
+                // one (see `fluid_near_wall_compression_mach_margin`, Ma² ≈ Δρ
+                // in WCSPH; an absolute threshold defeats itself for a
+                // softened EOS), else on the absolute
+                // `fluid_near_wall_compression_threshold` (e.g.
+                // `eos_stiffness=0.0` projection fluids).
                 let material_cfl = if config.fluid_near_wall_cfl_scale != 1.0
                     && materials.owns_deformation_volume_state(particles.material_id[i])
                     && is_near_wall(particles.x[i], config.grid_res, config.boundary_thickness)
@@ -149,44 +131,24 @@ pub(crate) fn choose_substep_dt(
                 if mdt.is_finite() && mdt > 0.0 {
                     min_mat_dt = min_mat_dt.min(mdt);
                 }
-                // Real, standard hydrocode stability correction for von
-                // Neumann-Richtmyer artificial (shock) viscosity (Wilkins 1980,
-                // "Calculation of Elastic-Plastic Flow," Methods in
-                // Computational Physics; Benson 1992, "Computational methods in
-                // Lagrangian and Eulerian hydrocodes," Comput. Methods Appl.
-                // Mech. Engrg. 99) -- found live 2026-08-28 debugging a real,
-                // severe steam fps collapse (`phase_states_gui.rs`): both
-                // `IdealGasMaterial` and `NewtonianFluidMaterial` feed
-                // `von_neumann_richtmyer_q`'s real, dimensionally-correct
-                // (fixed 2026-08-13, see that fix's own comment for the
-                // identical "J pinned at clamp, fps collapses" signature this
-                // closes the rest of) quadratic term
-                // (`c0_quadratic*h^2*div_v^2`) -- real added numerical
-                // stiffness that GROWS with the current compression rate. But
-                // `timestep_bound`'s own trait signature only carries
-                // density/hardening/cell_width, never live `div_v`, so this
-                // term was completely invisible to the CFL scan: nothing ever
-                // shrank dt in response to it, live-measured
-                // `|trace(velocity_gradient)|` climbing past 5000/s with no
-                // corresponding tightening. Standard practice augments the
-                // acoustic sound speed with the viscosity's own contribution,
-                // `c_eff = c_sound + 2*c0_quadratic*h*|div_v|`, then bounds dt
-                // the same way the plain acoustic term already does.
-                // `grad_norm` (Frobenius norm of the velocity gradient, already
-                // computed above for the deformation-rate bound) is a real,
-                // conservative proxy for `|div_v|` -- it upper-bounds any
-                // single directional derivative including the trace/
-                // divergence, so this errs toward MORE caution, never less.
-                // Gated to strict-fluid materials with a real acoustic term
-                // (`owns_deformation_volume_state` + `rest_acoustic_c2`) --
-                // the same real population `von_neumann_richtmyer_q` is ever
-                // invoked for; an elastic solid's own (shear-based) acoustic
-                // term has nothing to do with this mechanism and must not be
-                // tightened by it. `eos_power` doubles as
-                // `von_neumann_richtmyer_q`'s own `weak_shock_gamma` argument
-                // for BOTH materials that call it (confirmed: gas.rs passes
-                // `adiabatic_index`, fluid.rs passes its own Tait `eos_power`
-                // -- same convention, same field in `MaterialParams`).
+                // Hydrocode stability correction for von Neumann-Richtmyer
+                // shock viscosity (Wilkins 1980, "Calculation of
+                // Elastic-Plastic Flow", Methods in Computational Physics;
+                // Benson 1992, "Computational methods in Lagrangian and
+                // Eulerian hydrocodes", Comput. Methods Appl. Mech. Engrg. 99):
+                // the quadratic term `c0_quadratic*h^2*div_v^2` of
+                // `von_neumann_richtmyer_q` (used by `IdealGasMaterial` and
+                // `NewtonianFluidMaterial`) adds stiffness that grows with the
+                // compression rate, and `timestep_bound` never sees `div_v`
+                // (measured: `|trace(velocity_gradient)|` past 5000/s with no
+                // tightening). Standard practice: `c_eff = c_sound +
+                // 2*c0_quadratic*h*|div_v|`. `grad_norm` bounds `|div_v|` from
+                // above, so this errs toward caution. Only strict fluids with
+                // an acoustic term (`owns_deformation_volume_state` +
+                // `rest_acoustic_c2`), the population that calls
+                // `von_neumann_richtmyer_q`; `eos_power` is its
+                // `weak_shock_gamma` (gas.rs passes `adiabatic_index`,
+                // fluid.rs its Tait `eos_power`).
                 if let Some(shock_dt) = shock_viscosity_dt_bound(
                     grad_norm,
                     materials.owns_deformation_volume_state(particles.material_id[i]),
@@ -197,39 +159,26 @@ pub(crate) fn choose_substep_dt(
                 ) {
                     min_mat_dt = min_mat_dt.min(shock_dt);
                 }
-                // Real, derived "single-particle instability" bound for strict-fluid
-                // materials (Sun, Shinar & Schroeder 2020, "Effective time step
-                // restrictions for explicit MPM simulation," SCA 2020, Section 4.5)
-                // -- found live 2026-08-28 chasing the still-open steam divergence
-                // (see project memory): when a particle becomes isolated (few or no
-                // neighbors sharing its local grid nodes -- exactly what a rising,
-                // buoyancy-driven steam particle does as it spreads into
-                // previously-empty upper cells), the grid velocity there is driven
-                // by that ONE particle's own pressure force, which feeds back into
-                // its own next-substep J -- a real fixed-point iteration on J that
-                // can diverge if the timestep doesn't respect it. The paper derives
-                // this bound assuming the WORST case (`tr(H)` at its own proven
-                // upper bound `K*d/dx^2`), so it's a valid universal restriction for
-                // every strict-fluid particle, not conditional on detecting
-                // isolation directly -- and it's the authors' own relaxed form
-                // (their stricter Eq. 6 forces J<=1 outright; this one instead
-                // allows overshoot but bounds it from diverging, "relaxed by up to
-                // a factor of 2 near Jp~=1," and is the version they report using
-                // for their own fluid results). `K=6` is the paper's own derived
-                // constant for quadratic B-splines (this engine's own kernel,
-                // `spacetime::grid::kernel::quadratic_weights`); `d=2` for this 2D
-                // engine. Continuous at J=1 from both sides by construction
-                // (verified by hand: both branches evaluate to
-                // `dx*sqrt(2*rest_density/(K*d))` there), a real internal-
-                // consistency check on the derivation, not just trust in the source.
-                // Real constitutive stiffness lambda = rho0*c0^2 (the Tait/
-                // ideal-gas EOS tangent bulk modulus at rest, J=1) -- REQUIRED
-                // by Sun, Shinar & Schroeder's own derivation (their own
-                // `lambda` term); see `single_particle_instability_dt_bound`'s
-                // own doc for the full citation. Honest, disclosed limitation:
-                // this uses the REST-state tangent stiffness (correct near
-                // J=1), not a full nonlinear-Tait worst-case bound over the
-                // whole admissible J range.
+                // Single-particle instability bound for strict fluids (Sun,
+                // Shinar & Schroeder 2020, "Effective time step restrictions
+                // for explicit MPM simulation", SCA 2020, Section 4.5): an
+                // isolated particle (a rising steam particle spreading into
+                // empty cells) drives its grid nodes alone, so its pressure
+                // feeds back into its own next J, a fixed-point iteration
+                // that diverges if dt is too large. Derived for the worst
+                // case (`tr(H)` at its bound `K*d/dx^2`), so it holds for every
+                // strict-fluid particle without detecting isolation. This is
+                // the paper's relaxed form, the one it uses for fluids (its
+                // Eq. 6 forces J <= 1; this bounds the overshoot, "relaxed by up
+                // to a factor of 2 near Jp~=1"). `K = 6` for quadratic
+                // B-splines (`spacetime::grid::kernel::quadratic_weights`),
+                // `d = 2`. Both branches give `dx*sqrt(2*rest_density/(K*d))`
+                // at J = 1.
+                // The constitutive stiffness lambda = rho0*c0^2 (the Tait or
+                // ideal-gas tangent bulk modulus at rest) is the paper's own
+                // `lambda` (see `single_particle_instability_dt_bound`). It is
+                // the rest-state tangent, right near J = 1, not a worst case
+                // over the whole admissible J range.
                 if materials.owns_deformation_volume_state(particles.material_id[i]) {
                     let rest_density = materials
                         .get(particles.material_id[i])
@@ -246,33 +195,19 @@ pub(crate) fn choose_substep_dt(
                         min_mat_dt = min_mat_dt.min(single_particle_dt);
                     }
                 }
-                // Real, live density-AND-temperature-aware acoustic term
-                // (found live via a direct A/B on `phase_states_gui.rs`'s
-                // own sustained-heating steam scene: divergence escalating
-                // into the thousands, `last_substeps` climbing toward its
-                // own cap, fps collapsing) -- see `MaterialModel::
-                // acoustic_c2_at`'s own doc for the real, previously-
-                // disclosed-but-unclosed gap: `timestep_bound` alone can
-                // only ever see a material's fixed, construction-time
-                // acoustic stiffness, never a particle's own LIVE state --
-                // which climbs continuously under real active heating
-                // (`IdealGasMaterial`'s own `c^2` linear in `T`), or shifts
-                // with BOTH density and temperature jointly (a real
-                // temperature-coupled cavitation EOS's own mixture band and
-                // C^1 patches, which `T` alone cannot resolve -- external
-                // review's own explicit point). Same established pattern as
-                // the shock-viscosity/single-particle-instability terms
-                // above: a real, separate CFL term, not a `timestep_bound`
-                // signature change (every other material's own
-                // `acoustic_c2_at` defaults down through `acoustic_c2_at_
-                // temperature`/`rest_acoustic_c2`, so this is a no-op for
-                // anything that doesn't override one of those). Calls the
-                // most general tier (`acoustic_c2_at_particle`, not
-                // `acoustic_c2_at` directly) so a material needing a real
-                // per-particle scalar beyond density/temperature (e.g.
-                // `BoilingMixtureMaterial`'s own mass quality) is reachable
-                // too -- every other material's own default just forwards
-                // straight through to `acoustic_c2_at`, unchanged.
+                // Acoustic term aware of density and temperature together (see
+                // `MaterialModel::acoustic_c2_at`): `timestep_bound` only sees a
+                // material's construction-time stiffness, while a heated
+                // `IdealGasMaterial`'s `c^2` grows linearly with `T` and a
+                // temperature-coupled cavitation EOS shifts with density and
+                // temperature jointly (measured on `phase_states_gui.rs`'s
+                // heated steam: divergence in the thousands, substeps at their
+                // cap). A separate term like the two above, no signature
+                // change: materials that override nothing fall back through
+                // `acoustic_c2_at_temperature`/`rest_acoustic_c2`. Calls the
+                // most general tier, `acoustic_c2_at_particle`, so a
+                // per-particle scalar (`BoilingMixtureMaterial`'s quality) is
+                // reachable too.
                 if let Some(c2_live) =
                     materials.acoustic_c2_at_particle(particles.material_id[i], particles, i)
                     && c2_live.is_finite()
@@ -296,24 +231,14 @@ pub(crate) fn choose_substep_dt(
                 if deformation_dt.is_finite() && deformation_dt > 0.0 {
                     min_mat_dt = min_mat_dt.min(deformation_dt);
                 }
-                // Real, PREDICTIVE (not reactive) near-wall tightening for a
-                // strict fluid with `eos_stiffness=0` -- see MEMORY.md's
-                // fluid-recovery notes, Round 9, for why this is needed:
-                // `fluid_near_wall_cfl_scale`'s ORIGINAL tightening (above,
-                // dividing `material_cfl`) only affects the ACOUSTIC bound
-                // (`c2` in `NewtonianFluidMaterial::timestep_bound`), which
-                // is IDENTICALLY ZERO once `eos_stiffness=0` -- confirmed
-                // live, bit-for-bit identical results at scale=5 vs scale=20
-                // vs disabled entirely, since the lever has nothing left to
-                // act on. The gravity-CFL bound below (module-level, folded
-                // in after this loop) is the one bound that's actually still
-                // ACTIVE and PREDICTIVE for an eos-less fluid at rest -- so
-                // THIS is the real lever to tighten, not the dead acoustic
-                // one. No compression gate here on purpose (unlike the
-                // acoustic version above): a compression-based gate is
-                // reactive by definition (needs `J` to have ALREADY drifted
-                // away from 1 to fire), which is exactly what fails at the
-                // critical first substep, before anything has moved yet.
+                // Predictive near-wall tightening for a strict fluid with
+                // `eos_stiffness=0`: `fluid_near_wall_cfl_scale`'s tightening
+                // above only affects the acoustic bound, which is zero for
+                // such a fluid (bit-for-bit identical at scale 5, 20 or off).
+                // The gravity CFL bound (folded in after this loop) is the one
+                // still active and predictive at rest, so it is the lever. No
+                // compression gate: a gate needs J to have drifted already,
+                // which fails at the first substep.
                 if config.fluid_near_wall_cfl_scale != 1.0
                     && materials.owns_deformation_volume_state(particles.material_id[i])
                     && is_near_wall(particles.x[i], config.grid_res, config.boundary_thickness)
@@ -329,23 +254,14 @@ pub(crate) fn choose_substep_dt(
         );
     let mut min_mat_dt = min_mat_dt;
     let mut max_speed = max_speed;
-    // Grains aren't scanned by the particle loop above (separate storage,
-    // same reason rods below aren't either) -- fold in their own advection
-    // speed the same way, so a spinning grain can never silently escape the
-    // adaptive substep logic. Real, found-not-guessed need (2026-08-20):
-    // `scatter_grains_to_grid` now scatters a grain's TRUE rigid-body
-    // rotational velocity field (`v_com + spin*perp(r)`, see that
-    // function's own doc), which can put a FAR larger velocity on the grid
-    // than the grain's own `v.length()` once `spin` is large -- exactly the
-    // same real effect ordinary particles' own affine `velocity_gradient`
-    // term already gets a CFL contribution for
-    // (`AFFINE_CFL_STENCIL_CORNER_DISTANCE`, reused here unchanged: same
-    // 3x3 kernel, same max corner offset, same reasoning). Before this,
-    // a scene relying on `adaptive_timestep` still had zero protection once
-    // grain spin grew large -- confirmed directly: a real column-collapse
-    // isolation test exploded (domain-spanning positions, spin up to ~10.6)
-    // once real spin started feeding the grid, at a dt sized only for the
-    // grains' own DEM contact stiffness, blind to this term entirely.
+    // Grains are not scanned by the particle loop above (separate storage,
+    // like rods below), so their advection speed is folded in here.
+    // `scatter_grains_to_grid` scatters the rigid-body velocity field
+    // (`v_com + spin*perp(r)`), which can put far more than `v.length()` on
+    // the grid once `spin` is large, the effect particles' affine
+    // `velocity_gradient` term covers (`AFFINE_CFL_STENCIL_CORNER_DISTANCE`,
+    // same 3x3 kernel). Without it a column collapse exploded (spin up to
+    // ~10.6) at a dt sized only for the DEM contact stiffness.
     for population in grain_populations {
         for grain in &population.grains {
             let s = grain.v.length()
@@ -375,7 +291,7 @@ pub(crate) fn choose_substep_dt(
             }
         }
     }
-    // Nonlocal Granular Fluidity's own real, quoted Von Neumann stability
+    // Nonlocal Granular Fluidity's own quoted Von Neumann stability
     // bound (`GranularFluidityConfig::stability_dt`, Haeri & Skonieczny
     // 2022). `None` (every scene without a configured `GranularFluidityField`)
     // leaves this exactly as it always was.
@@ -385,29 +301,18 @@ pub(crate) fn choose_substep_dt(
     {
         min_mat_dt = min_mat_dt.min(bound);
     }
-    // Real, standard "additional stability condition" for explicit
-    // integration under a body force (Bridson, "Fluid Simulation for
-    // Computer Graphics" ch. 3; Foster & Fedkiw 2001) -- gravity alone can
-    // move a particle more than one cell per substep even at REST (zero
-    // velocity, zero material stress), which none of the bounds above catch
-    // (they all key off existing velocity/stress/velocity-gradient, all
-    // zero at t=0). Derived the same way the velocity CFL above already is
-    // (a substep shouldn't let a particle gain more than
-    // `cfl_coefficient*cell_width` of *implied* motion): a constant
-    // acceleration g reaches speed g*dt after time dt, so bounding
-    // `g*dt <= cfl_coefficient*cell_width/dt` gives `dt <=
-    // sqrt(cfl_coefficient*cell_width/g)`. Normally dominated by a much
-    // tighter material bound (e.g. a stiff EOS's acoustic term) and never
-    // the binding constraint -- confirmed live as a real, previously-latent
-    // gap once a strict fluid's `eos_stiffness` is set to 0.0 for pressure-
-    // projection incompressibility (see `SimConfig::fluid_pressure_
-    // iterations`'s own doc): with no per-material bound left at rest, a
-    // scene's very first substep took the full frame dt in one step, and a
-    // single ~0.1s free-fall substep at real Earth gravity is enormous for
-    // an explicit MPM update (Δv ≈ 98 grid-units/s in one substep on a
-    // 64-cell domain at dx_meters=0.01) -- root cause, not the projection
-    // itself, which was correctly reacting to state a too-large substep had
-    // already made extreme.
+    // Body-force stability condition for explicit integration (Bridson,
+    // "Fluid Simulation for Computer Graphics" ch. 3; Foster & Fedkiw 2001):
+    // gravity can move a particle more than a cell per substep from rest,
+    // which none of the bounds above see (they key off velocity, stress or
+    // velocity gradient, all zero at t = 0). Bounding `g*dt <=
+    // cfl_coefficient*cell_width/dt` gives `dt <=
+    // sqrt(cfl_coefficient*cell_width/g)`. Usually dominated by a material
+    // bound; it binds when nothing else does, e.g. a strict fluid with
+    // `eos_stiffness = 0.0` under pressure projection (see
+    // `SimConfig::fluid_pressure_iterations`), whose first substep otherwise
+    // took the whole frame (~98 cells/s of free fall in one substep at 1 cm
+    // cells).
     let g = config.gravity.length();
     if g > f32::EPSILON {
         // `near_wall_gravity_scale` (computed in the fold above) is >1.0
@@ -424,24 +329,14 @@ pub(crate) fn choose_substep_dt(
     (cfl_bound(config, max_speed, min_mat_dt, max_dt), max_speed)
 }
 
-/// TEMPORARY diagnostic (2026-08-28): identifies which real CFL term is
-/// actually binding `min_mat_dt` for the single worst (most constraining)
-/// particle of a given material -- found needed live-debugging the
-/// still-open steam divergence, after three independent, correctly-
-/// implemented, sourced CFL tightenings (shock-viscosity augmentation,
-/// single-particle instability, a since-reverted retry-bound experiment)
-/// each showed ZERO measurable effect on the actual bug. Three real
-/// negative results in a row means the next step is answering directly
-/// which term is deciding, not guessing a fourth blind.
+/// Diagnostic: which CFL term binds `min_mat_dt` for the most constraining
+/// particle of a material, built for the steam divergence after three sourced
+/// CFL tightenings (shock-viscosity augmentation, single-particle
+/// instability, a reverted retry bound) each changed nothing.
 ///
-/// Deliberately sequential and separate from the production fold above,
-/// not a refactor of it: this is diagnostic-only, not performance-
-/// sensitive, and reuses the exact same formulas already proven correct in
-/// that fold (copied, not re-derived, so there's no risk of the two
-/// drifting apart) -- touching the hot, already-hardened, parallel path
-/// itself carries real regression risk this session can't afford to
-/// re-verify from scratch this late. Remove once the investigation
-/// concludes; see project memory for the full context.
+/// Sequential and separate from the production fold, with its formulas
+/// copied so the parallel hot path stays untouched; the copies must be kept
+/// in sync by hand.
 pub(crate) fn diagnose_worst_particle_cfl_term(
     config: &SimConfig,
     particles: &Particles,
@@ -504,14 +399,8 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
                 .params()
                 .rest_density;
             let j = particles.volume[i] / particles.initial_volume[i];
-            // Same real constitutive-stiffness fix as `choose_substep_dt`'s
-            // own copy of this bound -- see that copy's own comment for the
-            // full story (missing `lambda=rho0*c0^2` term, found 2026-08-29).
-            // This diagnostic deliberately COPIES the production formula
-            // rather than sharing a helper (see this function's own
-            // top-level doc) -- so this copy must be kept in sync by hand
-            // whenever the production formula changes, exactly as it just
-            // was here.
+            // Copy of `choose_substep_dt`'s bound, with the `lambda=rho0*c0^2`
+            // stiffness term (see that copy); kept in sync by hand.
             if let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
                 && rest_density.is_finite()
                 && rest_density > 0.0
@@ -542,10 +431,8 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
             }
         }
 
-        // Real, live density-AND-temperature-aware acoustic term -- same
-        // production formula `choose_substep_dt`'s own copy adds, see that
-        // copy's own doc for the full account (this diagnostic must be
-        // kept in sync by hand, per this function's own top-level doc).
+        // Live density- and temperature-aware acoustic term, a copy of
+        // `choose_substep_dt`'s (see there); kept in sync by hand.
         if let Some(c2_live) =
             materials.acoustic_c2_at_particle(particles.material_id[i], particles, i)
             && c2_live.is_finite()
@@ -624,19 +511,13 @@ pub(crate) fn is_near_wall(x: Vec2, grid_res: usize, boundary_thickness: usize) 
 // The APIC affine matrix C encodes the local velocity gradient.
 // The farthest point in the quadratic B-spline 3×3 stencil is at 1.5 cells per axis,
 // so its corner distance is 1.5*√2 cells -- the effective maximum affine speed contribution.
-// Hoisted to module scope (2026-08-14, was local to `affine_cfl_speed_contribution`)
-// so `choose_substep_dt`'s own fold can share it too, without duplicating the
-// magic number, when it inlines this same formula against a pre-shared
-// Frobenius norm -- see that call site's own comment.
+// Module scope so `choose_substep_dt`'s fold shares it.
 pub(crate) const AFFINE_CFL_STENCIL_CORNER_DISTANCE: f32 = 1.5 * std::f32::consts::SQRT_2;
 
-// Only called from `systems::gpu::solver::step`'s own substep loop since
-// 2026-08-14: the CPU solver's own `choose_substep_dt` used to call this
-// directly too, but now inlines the same math against a norm it computes
-// once and shares (see that fold's own comment) rather than recomputing it
-// separately. Real, disclosed feature-gate (matches the existing convention
-// already on this function's own re-export in `solver::mod`, not a new
-// one) -- without it, a build without `gpu` correctly has no caller.
+// Only called from `systems::gpu::solver::step`'s substep loop: the CPU
+// `choose_substep_dt` inlines the same math against a shared norm. Gated on
+// `gpu` like its re-export in `solver::mod`, since a build without it has no
+// caller.
 #[cfg(feature = "gpu")]
 pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
     let grad_norm = (c.x_axis.length_squared() + c.y_axis.length_squared()).sqrt();
@@ -649,7 +530,7 @@ pub(crate) fn affine_cfl_speed_contribution(c: &Mat2, cell_width: f32) -> f32 {
 /// advection CFL. `grad_norm` is the Frobenius norm of the particle's own
 /// `velocity_gradient` -- a caller that already computed it for another CFL
 /// term (advection speed, shock viscosity) should pass that same value
-/// rather than recomputing it. Real, standard practice (bounds the
+/// rather than recomputing it. Standard practice (bounds the
 /// dimensionless per-substep velocity-gradient increment, `cfl_coefficient`
 /// capped at 0.5 as the safety margin), unconditional on material type --
 /// every particle integrates its own F this way.
@@ -661,20 +542,16 @@ pub(crate) fn deformation_gradient_ode_dt_bound(grad_norm: f32, cfl_coefficient:
     }
 }
 
-/// Real, standard hydrocode stability correction for von Neumann-Richtmyer
-/// artificial (shock) viscosity (Wilkins 1980, "Calculation of Elastic-
-/// Plastic Flow," Methods in Computational Physics; Benson 1992,
-/// "Computational methods in Lagrangian and Eulerian hydrocodes," Comput.
-/// Methods Appl. Mech. Engrg. 99): augments the acoustic sound speed with
-/// the shock-viscosity's own contribution, `c_eff = c_sound +
-/// 2*c0_quadratic*h*|div_v|`, so a violent local compression event tightens
-/// dt even before it has driven J far from 1. `grad_norm` (Frobenius norm of
-/// the velocity gradient) is a real, conservative proxy for `|div_v|` -- it
-/// upper-bounds any single directional derivative including the trace/
-/// divergence, so this errs toward MORE caution, never less. `None` when
-/// the material has no real acoustic term (not a strict fluid) or an input
-/// is degenerate -- the same population `von_neumann_richtmyer_q` is ever
-/// invoked for.
+/// Hydrocode stability correction for von Neumann-Richtmyer shock viscosity
+/// (Wilkins 1980, "Calculation of Elastic-Plastic Flow", Methods in
+/// Computational Physics; Benson 1992, "Computational methods in Lagrangian
+/// and Eulerian hydrocodes", Comput. Methods Appl. Mech. Engrg. 99): augments
+/// the sound speed with the shock viscosity's contribution,
+/// `c_eff = c_sound + 2*c0_quadratic*h*|div_v|`, so a violent compression tightens dt before J
+/// has moved far from 1. `grad_norm` (Frobenius norm of the velocity
+/// gradient) bounds `|div_v|` from above, so this errs toward caution. `None`
+/// when the material has no acoustic term (not a strict fluid) or an input
+/// is degenerate.
 pub(crate) fn shock_viscosity_dt_bound(
     grad_norm: f32,
     owns_deformation_volume_state: bool,
@@ -700,20 +577,15 @@ pub(crate) fn shock_viscosity_dt_bound(
     (shock_dt.is_finite() && shock_dt > 0.0).then_some(shock_dt)
 }
 
-/// Real, derived "single-particle instability" bound (Sun, Shinar &
-/// Schroeder 2020, "Effective time step restrictions for explicit MPM
-/// simulation," SCA 2020, Section 4.5): when a particle becomes isolated,
-/// the grid velocity there is driven by that ONE particle's own pressure
-/// force, which feeds back into its own next-substep J -- a fixed-point
-/// iteration on J that can diverge if the timestep doesn't respect it. Valid
-/// for every strict-fluid particle unconditionally (the paper derives it
-/// from `tr(H)`'s own proven worst-case upper bound, not from detecting
-/// isolation directly) -- the authors' own relaxed form (their stricter Eq.
-/// 6 forces J<=1 outright; this one instead allows overshoot but bounds it
-/// from diverging). `K=6` is the paper's own derived constant for quadratic
-/// B-splines (this engine's own kernel); `d=2` for this 2D engine.
-/// Continuous at J=1 from both sides by construction. `None` when the
-/// material has no real acoustic term or an input is degenerate.
+/// Single-particle instability bound (Sun, Shinar & Schroeder 2020,
+/// "Effective time step restrictions for explicit MPM simulation", SCA 2020,
+/// Section 4.5): an isolated particle drives its grid nodes alone, so its
+/// pressure feeds back into its own next J, a fixed-point iteration that
+/// diverges if dt is too large. Holds for every strict-fluid particle (it is
+/// derived from `tr(H)`'s worst-case bound, not from detecting isolation);
+/// the paper's relaxed form (its Eq. 6 forces J <= 1; this bounds the
+/// overshoot). `K = 6` for quadratic B-splines, `d = 2`. Continuous at J = 1.
+/// `None` when the material has no acoustic term or an input is degenerate.
 pub(crate) fn single_particle_instability_dt_bound(
     owns_deformation_volume_state: bool,
     rest_density: f32,
@@ -767,11 +639,10 @@ mod tests {
         assert!(dt < config.min_dt);
     }
 
-    // Real, one-particle scene for the near-wall Mach-relative gate
-    // (2026-08-11): a strict-fluid particle sitting near a wall, with a
-    // known, real Tait EOS (eos_stiffness=100, eos_power=7, rest_density=1
-    // -> c2_rest=700, c_s_rest=sqrt(700)~=26.46) and a deliberate 10%
-    // compression (J=0.9), so `|J-1|=0.1` is a fixed, known probe value.
+    // One strict-fluid particle near a wall for the near-wall Mach-relative
+    // gate, with a known Tait EOS (eos_stiffness=100, eos_power=7,
+    // rest_density=1 -> c2_rest=700, c_s_rest=sqrt(700)~=26.46) and a 10%
+    // compression (J=0.9), so `|J-1| = 0.1` is a known probe value.
     fn near_wall_fluid_scene(eos_stiffness: f32) -> (SimConfig, Particles, MaterialRegistry) {
         let mut config = SimConfig::standard(16, 1.0, Vec2::ZERO);
         config.grid_cell_size = 1.0;
@@ -839,7 +710,7 @@ mod tests {
         );
 
         // At last_max_speed=20.0 (Mach~=0.756, close to the material's own
-        // c_s_rest -- a genuinely fast flow), Mach^2*margin ~= 1.14 -- ABOVE
+        // c_s_rest -- a fast flow), Mach^2*margin ~= 1.14 -- ABOVE
         // the real |J-1|=0.1 probe, so the SAME compression is now within
         // what this flow speed already predicts as normal, and the gate
         // should NOT fire (no 20x tightening).
@@ -869,10 +740,10 @@ mod tests {
 
     #[test]
     fn near_wall_gate_falls_back_to_absolute_threshold_with_no_acoustic_term() {
-        // eos_stiffness=0.0 -- the real `fluid_pressure_projection_gui.rs`
-        // case (`rest_acoustic_c2()` must return `None` here). The gate must
-        // then use `fluid_near_wall_compression_threshold` (0.01) regardless
-        // of `last_max_speed`, unchanged from before this session's fix.
+        // eos_stiffness=0.0, the `fluid_pressure_projection_gui.rs` case
+        // (`rest_acoustic_c2()` returns `None`): the gate uses
+        // `fluid_near_wall_compression_threshold` (0.01) whatever
+        // `last_max_speed` is.
         let (config, particles, materials) = near_wall_fluid_scene(0.0);
         assert!(materials.get(0).rest_acoustic_c2().is_none());
 
@@ -919,16 +790,10 @@ mod tests {
         );
     }
 
-    /// Real, closed-form check on the single-particle-instability bound's
-    /// missing constitutive-stiffness term (found 2026-08-29, both by
-    /// independent deep research and by reading this
-    /// formula directly -- before this fix the formula had no stiffness
-    /// term at all, so `sqrt(density)` alone is not dimensionally a time).
-    /// At J=1, K=6 (this engine's own quadratic-B-spline constant), d=2:
-    /// the `j<=1.0` branch's `(dx/(2-j))*sqrt(2*rho0/(kd*lambda))` reduces
-    /// to `dx*sqrt(2/(12*rho0*c0^2/rho0))` = `dx*sqrt(1/(6*c0^2))`
-    /// = `sqrt(1/6)*dx/c0` -- an exact, hand-derivable identity, not a
-    /// tuned/fitted expectation.
+    /// Closed-form check of the single-particle bound's stiffness term
+    /// (without it `sqrt(density)` alone is not a time). At J=1, K=6, d=2 the
+    /// `j<=1.0` branch `(dx/(2-j))*sqrt(2*rho0/(kd*lambda))` reduces to
+    /// `dx*sqrt(2/(12*rho0*c0^2/rho0))` = `sqrt(1/6)*dx/c0`, an exact identity.
     #[test]
     fn single_particle_instability_bound_matches_closed_form_at_j_equals_one() {
         let mut config = SimConfig::standard(16, 1.0, Vec2::ZERO);

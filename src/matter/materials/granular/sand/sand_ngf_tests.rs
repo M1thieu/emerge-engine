@@ -1,11 +1,7 @@
-//! Nonlocal Granular Fluidity (NGF) verification suite for `DruckerPragerMaterial`
-//! -- split out of `sand.rs` (2026-08-05), same reasoning as `sand_tests.rs`
-//! (see that file's own doc comment). This is the whole NGF research
-//! investigation's own diagnostics and verification tests: a genuinely
-//! distinct, self-contained research topic (real repose-angle undershoot
-//! investigation, substep-count sensitivity, long-horizon hold/creep checks),
-//! not the material's own core correctness suite -- kept separate rather
-//! than force-merged into one file just because both touch sand.
+//! Nonlocal Granular Fluidity (NGF) tests and diagnostics for
+//! `DruckerPragerMaterial`: the repose-angle undershoot, substep-count
+//! sensitivity and long-horizon hold and creep, kept apart from the
+//! material's core suite (`sand_tests.rs`).
 
 use super::*;
 
@@ -47,14 +43,11 @@ mod ngf_verification_tests {
         // (`sand_mui.rs`): p_trial = -(lambda+mu)*trace, q_trial =
         // sqrt(2)*mu*dev_norm (STRESS-space deviator -- the `*mu` converts
         // the strain deviator into stress via the elastic shear modulus;
-        // dropping it, as an earlier version of this function did, gives a
-        // strain-space quantity off by a factor of `mu` -- ~3600x too small
-        // at this scene's real SI-to-grid scaling, which is why the first
-        // real run of this test showed `max_mu` pinned exactly at the
-        // empty-cell fallback `mu_s`, never a real scattered value: no
-        // particle's mu_ratio ever came remotely close to crossing it).
-        // mu_ratio = q_trial/p_trial, real stress-ratio, comparable to
-        // `mu_s` on the same footing.
+        // without it the result is a strain-space quantity off by a factor
+        // of `mu`, ~3600x too small at this scene's SI-to-grid scaling, and
+        // `max_mu` stays pinned at the empty-cell fallback `mu_s`).
+        // mu_ratio = q_trial/p_trial, a stress ratio, comparable to `mu_s`
+        // on the same footing.
         let p_trial = -(lambda + mu) * trace;
         let mu_ratio = if p_trial > 1.0e-6 {
             std::f32::consts::SQRT_2 * mu * dev_norm / p_trial
@@ -65,56 +58,31 @@ mod ngf_verification_tests {
     }
 
     fn ngf_config() -> GranularFluidityConfig {
-        // Real, root-caused fix (2026-08-03), replacing an earlier, WRONG
-        // diagnosis: this used to say the LITERAL real grain diameter
-        // (0.3mm, GRAIN_DIAMETER_M) couldn't diffuse fast enough within this
-        // scene's substep budget, and bumped `d` to 8mm purely to make `g`
-        // move at all. That diagnosis was itself downstream of two real
-        // bugs, now fixed at the root instead of papered over with `d`:
+        // `d` is 8 mm, not the literal 0.3 mm grain (GRAIN_DIAMETER_M). The
+        // fluidity diffusion now carries its `1/dx_meters^2` (as
+        // `ThermalConfig::alpha_grid` and the Cosserat field do); without it
+        // its reach in meters changed with the cell size (a ~7.7x swing
+        // between 1x and 2x resolution). And `cfl_bound` treats every
+        // material and diffusion bound as an upper bound, so
+        // `with_granular_fluidity` needs no hidden configuration rewrite.
         //
-        // 1. `GranularFluidityField::apply` fed `(A*d)^2/t0*sub_dt` straight
-        //    into the shared 4-neighbor-minus-center Laplacian stencil with
-        //    NO `1/dx_meters^2` normalization -- unlike `ThermalConfig::
-        //    alpha_grid` (which explicitly folds `1/grid_cell_size^2` in,
-        //    "keeps the Laplacian formula dimensionless over grid indices")
-        //    and the Cosserat field's own `apply` call site (which already
-        //    threads `config.dx_meters` through). Missing that term meant
-        //    the diffusion term's real-meter reach didn't depend on the
-        //    real cell size at all -- refining the grid changed how many
-        //    REAL METERS the same "diffusivity_dt" spread `g` per step, the
-        //    direct cause of the resolution-dependence this module's own
-        //    tests measured (a ~7.7x swing between 1x/2x resolution).
-        // 2. An older `min_dt` floor could override the granular-fluidity
-        //    stability bound. `cfl_bound` now treats every material/diffusion
-        //    bound as a true upper bound, so `with_granular_fluidity` needs no
-        //    hidden configuration rewrite.
+        // An 8-40 mm sweep at both resolutions (200-step Lajeunesse column,
+        // `ngf_lajeunesse_runout_resolution_independence`) gave the tightest
+        // 1x/2x agreement at 8 mm (ratio_1x = 0.474x, ratio_2x = 0.482x, swing
+        // 1.02x; 9 mm next at 1.03x; 2-6 mm swung 1.1-2.6x, the 200-step
+        // measurement sitting mid-collapse, see
+        // `ngf_lajeunesse_runout_long_duration_creep_check`). `mu_s`, `A`, `b`
+        // keep their cited, dimensionless values; `d`'s magnitude is a
+        // simulation-scale calibration, not a grain size (like `cohesion`).
         //
-        // With both fixed, an 8-40mm sweep at both resolutions (200-step
-        // Lajeunesse column, `ngf_lajeunesse_runout_resolution_independence`)
-        // showed 8mm giving the tightest 1x/2x agreement of any value tried
-        // (ratio_1x=0.474x, ratio_2x=0.482x, swing=1.02x -- next best was
-        // 9mm at 1.03x; smaller d, e.g. 2-6mm, showed swings of 1.1-2.6x,
-        // i.e. WORSE resolution agreement, not better, likely because the
-        // 200-step measurement sits mid-collapse (a violently dynamic,
-        // genuinely chaotic-at-small-perturbation transient -- see
-        // `ngf_lajeunesse_runout_long_duration_creep_check`), not a settled
-        // equilibrium). 8mm therefore stays -- now confirmed as the real,
-        // resolution-independent choice, not merely "big enough to move."
-        // `mu_s`, `A`, `b` stay their real, literature-cited values
-        // (dimensionless, scale-invariant); `d`'s absolute magnitude
-        // remains a simulation-scale calibration, not a claim about real
-        // sand grains -- same honest precedent as `cohesion`.
-        //
-        // Honest residual: the converged ratio (~0.47-0.48x) still
-        // undershoots the Lajeunesse target of 1.0x by about half -- far
-        // better than the pre-fix 0.17x (massive overcorrection) and no
-        // longer resolution-dependent, but not an exact match. See this
-        // test module's own diagnostic tests for the full picture.
+        // The converged ratio (~0.47-0.48x) still undershoots the Lajeunesse
+        // target of 1.0x by about half, no longer resolution-dependent (see
+        // the diagnostic tests in this module).
         const EFFECTIVE_GRAIN_DIAMETER_M: f32 = 0.008;
         const GRAIN_DENSITY_KG_M3: f32 = 2583.0;
         // Even with the exact closed-form reaction fix (see
-        // `GranularFluidityField::apply`'s own doc), the equation's own
-        // analytic equilibrium genuinely diverges as real pressure -> 0: a
+        // `GranularFluidityField::apply`'s doc), the equation's own
+        // analytic equilibrium diverges as real pressure -> 0: a
         // real cell at ~1e-3 Pa gives a mathematically-correct g_eq in the
         // TENS OF MILLIONS even under exact integration. Real,
         // physically-motivated floor (same justification `cohesion` already
@@ -195,7 +163,7 @@ mod ngf_verification_tests {
     }
 
     /// Same real scene as `run_column_collapse`, but with `grain_diameter_m`
-    /// exposed as a real, swept parameter instead of pinned at `ngf_config`'s
+    /// exposed as a swept parameter instead of pinned at `ngf_config`'s
     /// own 8mm -- temporary sweep helper, not a replacement for
     /// `run_column_collapse`/`ngf_config` (those stay the single source of
     /// truth for the shipped calibration).
@@ -264,15 +232,11 @@ mod ngf_verification_tests {
         (measured_r_inf_cells, predicted_r_inf_cells)
     }
 
-    /// Real parameter sweep (2026-08-03, closing the accuracy-gap follow-up
-    /// to `ngf_config`'s own 8mm calibration): does ANY `grain_diameter_m` in
-    /// a real, physically-plausible range close the 0.47x undershoot toward
-    /// 1.0x without regressing the resolution-independence fix (target: stay
-    /// near the already-solved ~1.02x swing, not regress toward the old
-    /// 7.7x)? Checked at BOTH resolutions for every candidate, not just 1x --
-    /// a candidate that only "wins" at one resolution is exactly the trap
-    /// `ngf_config`'s own doc already found once (2-6mm gave tighter-looking
-    /// numbers at a single resolution but 1.1-2.6x swings).
+    /// Parameter sweep: does any `grain_diameter_m` in a plausible range
+    /// close the 0.47x undershoot toward 1.0x without losing resolution
+    /// independence (swing near 1.02x, not the old 7.7x)? Every candidate is
+    /// checked at both resolutions: 2-6 mm looked tighter at one resolution
+    /// but swung 1.1-2.6x across the two.
     #[test]
     // Exploratory: prints a sweep, asserts nothing. Runs 20 column
     // collapses (10 diameters x 2 resolutions, 200 steps each) and does
@@ -296,11 +260,10 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real, decisive test: does the Cosserat rolling-resistance coupling
-    /// (`cosserat_modulus_pa`, see that field's own doc for the citation and
-    /// the disclosed SVD-space adaptation) change the SAME real Lajeunesse
-    /// collapse this file's own NGF diagnostic already measures? Same real
-    /// scene, same real predicted R_inf, only the coupling toggled.
+    /// Does the Cosserat rolling-resistance coupling (`cosserat_modulus_pa`,
+    /// see that field for the citation and the SVD-space adaptation) change
+    /// the Lajeunesse collapse this file's NGF diagnostic measures? Same
+    /// scene and predicted R_inf, only the coupling toggled.
     fn run_column_collapse_cosserat(
         cosserat_enabled: bool,
         alpha_multiplier: f32,
@@ -336,16 +299,12 @@ mod ngf_verification_tests {
             },
             &config,
         );
-        // Real, disclosed choice (see `cosserat_modulus_pa`'s own doc): no
-        // independently-sourced paper value exists for THIS coupling
-        // modulus at this engine's own grid scaling, so it's set as a real,
-        // disclosed MULTIPLE of the material's own (already correctly
-        // grid-scaled) `mu` -- dimensionally consistent by construction,
-        // `alpha_multiplier` swept to find the real regime where the
-        // coupling becomes non-negligible, not guessed blind.
-        // `cosserat_length_scale_m = CELL_M`: real, disclosed effective
-        // length scale (see that field's own doc, 2026-08-03 finding) --
-        // the grid's own resolution, not the literal sub-mm grain diameter.
+        // No sourced value exists for this coupling modulus at this grid
+        // scaling (see `cosserat_modulus_pa`), so it is a multiple of the
+        // material's grid-scaled `mu`, dimensionally consistent, with
+        // `alpha_multiplier` swept for the regime where the coupling matters.
+        // `cosserat_length_scale_m = CELL_M`: the grid resolution, not the
+        // sub-mm grain diameter (see that field).
         sand.cosserat_modulus_pa = if cosserat_enabled {
             sand.mu * alpha_multiplier
         } else {
@@ -381,10 +340,9 @@ mod ngf_verification_tests {
         (measured_r_inf_cells, predicted_r_inf_cells, center_y)
     }
 
-    /// Real, direct diagnostic (not indirect inference): does `Simulation::
-    /// cosserat_curvature()` ever actually become nonzero during this real
+    /// Does `Simulation::cosserat_curvature()` become nonzero during this
     /// collapse, and how does its magnitude compare to `dev_norm`/
-    /// `cohesion_term`'s own real scale in the yield check?
+    /// `cohesion_term` in the yield check?
     #[test]
     fn diag_cosserat_curvature_actual_magnitude_during_collapse() {
         const GRID: usize = 96;
@@ -461,15 +419,12 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real isolation test: does the SAME instability (max_speed runaway,
-    /// column collapsing to a single y-value near the friction boundary)
-    /// reproduce using a huge `cohesion` value instead of Cosserat -- ZERO
-    /// Cosserat code involved, just the SAME "shear yield suppressed"
-    /// effect via a completely different, pre-existing mechanism? If yes,
-    /// this is a real, pre-existing engine bug (suppressed-shear-yield +
-    /// volumetric-floor + friction-boundary interaction) that Cosserat
-    /// merely happened to be the first thing to trigger, not a Cosserat-
-    /// specific defect.
+    /// Isolation: does the same instability (max_speed runaway, the column
+    /// collapsing to one y near the friction boundary) reproduce with a huge
+    /// `cohesion` instead of Cosserat, no Cosserat code at all, only shear
+    /// yield suppressed another way? If so it is an engine bug in the
+    /// suppressed-shear-yield + volumetric-floor + friction-boundary
+    /// interaction that Cosserat merely triggered first.
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -502,11 +457,9 @@ mod ngf_verification_tests {
             },
             &config,
         );
-        // Real, huge cohesion -- shifts the yield threshold enough to
-        // suppress shear yielding almost entirely, the SAME real effect
-        // high cosserat_modulus_pa had, via a completely different,
-        // pre-existing, non-Cosserat mechanism (cohesion_term in the SAME
-        // yield check, `sand.rs`'s own pre-existing code).
+        // A huge cohesion shifts the yield threshold enough to suppress shear
+        // yield almost entirely, the effect a high cosserat_modulus_pa had,
+        // through `sand.rs`'s existing `cohesion_term` in the same yield check.
         sand.cohesion = sand.mu * 100.0;
         let mut solver = Simulation::new(config, column)
             .with_default_material(Box::new(sand))
@@ -527,13 +480,11 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real diagnostic, not a guess: the previous test showed the SAME
-    /// bit-for-bit result with Cosserat enabled/disabled -- exact equality
-    /// (not "small difference") suggests the coupling never actually
-    /// engages, not that it's merely too weak. Directly measure whether
-    /// real local vorticity (macro spin, the antisymmetric velocity-
-    /// gradient component the whole coupling is driven by) is present
-    /// during this collapse at all.
+    /// The previous test gave bit-for-bit the same result with Cosserat on
+    /// and off, which suggests the coupling never engages rather than being
+    /// weak. Measures whether local vorticity (macro spin, the antisymmetric
+    /// velocity-gradient part the coupling is driven by) is present in this
+    /// collapse at all.
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -594,23 +545,9 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real sensitivity sweep (not a blind guess): with the effective
-    /// length scale fixed at the real, disclosed `CELL_M` (see
-    /// `cosserat_length_scale_m`'s own 2026-08-03 finding), sweep the
-    /// coupling modulus across real orders of magnitude relative to the
-    /// material's own shear modulus `mu` to find whether ANY defensible
-    /// choice produces a genuine, non-negligible effect on the real
-    /// Lajeunesse collapse -- reported honestly either way.
-    /// Real check, not an assumption: `cosserat_lajeunesse_runout_alpha_
-    /// sweep` showed R=0.00 exactly at alpha>=100*mu -- an abrupt jump,
-    /// suspicious for a genuine physical transition. Verify directly
-    /// whether particles are finite (elastic lockup: real, particles still
-    /// exist, just never spread) or NaN/degenerate (a real numerical bug).
-    /// Real, step-by-step trace: the health check above showed ALL
-    /// particles collapsing to the exact same (x,y) point at alpha=100*mu
-    /// -- not "stays rigid" (which is what suppressing yield should cause),
-    /// a genuine degenerate bug. Watch it happen frame by frame to find
-    /// where it starts.
+    /// Step-by-step trace: at alpha = 100*mu all particles collapsed to the same
+    /// (x, y) point, a degenerate bug, not the rigidity suppressed yield should
+    /// cause. Watches it frame by frame to find where it starts.
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -680,6 +617,9 @@ mod ngf_verification_tests {
         }
     }
 
+    /// `cosserat_lajeunesse_runout_alpha_sweep` gave R = 0.00 exactly from
+    /// alpha = 100*mu up, an abrupt jump: are the particles finite (elastic
+    /// lockup) or NaN/degenerate (a numerical bug)?
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -754,6 +694,10 @@ mod ngf_verification_tests {
         );
     }
 
+    /// Sensitivity sweep: with the length scale at `CELL_M` (see
+    /// `cosserat_length_scale_m`), sweeps the coupling modulus across orders
+    /// of magnitude relative to `mu`: does any defensible value change the
+    /// Lajeunesse collapse noticeably?
     #[test]
     fn cosserat_lajeunesse_runout_alpha_sweep() {
         let (baseline_r, predicted, _) = run_column_collapse_cosserat(false, 1.0, 200);
@@ -776,25 +720,14 @@ mod ngf_verification_tests {
         }
     }
 
-    /// The real question this whole effort exists to answer: does the pile
-    /// hold longer / at a higher angle over a LONG horizon, not just narrow
-    /// the initial spread a little? Same real scene, run far longer than
-    /// initial settling takes, matching this project's own established
-    /// long-horizon discipline for exactly this kind of claim.
-    /// Real, zero-new-code experiment (Path B's own cheapest possible real
-    /// test, before committing to any N-field rewrite): every rate/motion-
-    /// dependent mechanism tried tonight (Cundall damping, KE-peak
-    /// triggers, Cosserat curvature) fails because its restraining signal
-    /// depends on ACTIVE MOTION and fades to zero at rest. Real Bardenhagen
-    /// multi-field contact (`Particle::contact_group`, already shipped,
-    /// already tested) resolves via a POSITION/GEOMETRY-fitted contact
-    /// normal (`fit_contact_normal_lr`) and Coulomb friction -- neither
-    /// depends on velocity magnitude fading at rest. Split the SAME real
-    /// collapsing column into two contact groups (left half / right half)
-    /// using ONLY the existing, already-tested mechanism (no new
-    /// infrastructure) and see whether real geometric contact resistance,
-    /// unlike every rate-based mechanism, produces genuine long-horizon
-    /// arrest.
+    /// Does a contact split arrest the collapse where every rate-dependent
+    /// mechanism (Cundall damping, KE-peak triggers, Cosserat curvature)
+    /// fails because its restraining signal fades to zero at rest?
+    /// Bardenhagen multi-field contact (`Particle::contact_group`) resolves
+    /// with a geometry-fitted normal (`fit_contact_normal_lr`) and Coulomb
+    /// friction, neither of which fades at rest. Splits the collapsing column
+    /// into two contact groups (left and right halves) with the existing
+    /// mechanism only.
     #[test]
     // Exploratory: prints a measurement, asserts nothing -- a research
     // log kept as a reproducible record, not a regression guard. Runs 30 000 solver steps on a 96-cell sand column
@@ -866,6 +799,9 @@ mod ngf_verification_tests {
         }
     }
 
+    /// Does the pile hold longer or steeper over a long horizon, beyond
+    /// narrowing the initial spread? Same scene, run far past initial
+    /// settling.
     #[test]
     // Exploratory: prints a measurement, asserts nothing -- a research
     // log kept as a reproducible record, not a regression guard. Runs 30 000 solver steps on a 96-cell sand column
@@ -875,12 +811,9 @@ mod ngf_verification_tests {
     // it answers comes up again.
     #[ignore]
     fn cosserat_long_horizon_arrest_check() {
-        // Real, calibrated value from `cosserat_lajeunesse_runout_alpha_
-        // sweep`'s own fine-grained sweep: alpha=5*mu landed at ratio=1.01x
-        // (R=20.27 cells vs predicted 20.00) -- almost exactly the real
-        // Lajeunesse et al. 2004 prediction, and a modest, physically
-        // plausible multiple of the material's own shear modulus, not a
-        // number picked to hit the target.
+        // From `cosserat_lajeunesse_runout_alpha_sweep`'s fine sweep:
+        // alpha = 5*mu gave ratio 1.01x (R = 20.27 cells against 20.00), close
+        // to Lajeunesse et al. 2004, a modest multiple of the shear modulus.
         const ALPHA_MULTIPLIER: f32 = 5.0;
         println!("── COSSERAT LONG-HORIZON ARREST CHECK, alpha={ALPHA_MULTIPLIER}*mu ──");
         for &steps in &[200usize, 1000, 3000, 10000, 30000] {
@@ -900,16 +833,12 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real diagnostic (2026-08-04): does `g` stay anomalously small/narrow
-    /// throughout the real Lajeunesse collapse (the "spatial cooperation too
-    /// slow relative to the moving flow front" hypothesis for the measured
-    /// 0.47x undershoot), or does it reach a plausible, widespread value
-    /// quickly and stay there (which would point elsewhere -- most likely
-    /// the rate-limiter coupling formula's own translation from the paper's
-    /// rate-explicit form into this engine's quasi-static return-mapping,
-    /// already flagged as real, unresolved, bounded derivation work in the
-    /// original NGF plan)? Same exact scene as `run_column_collapse`, real
-    /// SI throughout, `g_stats()` sampled at real checkpoints.
+    /// Does `g` stay small and narrow through the Lajeunesse collapse (the
+    /// "spatial cooperation too slow for the moving front" explanation of the
+    /// 0.47x undershoot), or spread quickly and stay (pointing instead at the
+    /// translation of the paper's rate-explicit coupling into this
+    /// quasi-static return mapping)? Same scene as `run_column_collapse`, SI
+    /// throughout, `g_stats()` sampled at checkpoints.
     #[test]
     fn diag_ngf_g_field_trajectory_during_real_collapse() {
         const GRID: usize = 96;
@@ -948,11 +877,9 @@ mod ngf_verification_tests {
         solver = solver.with_granular_fluidity(field);
 
         println!("── NGF g-field trajectory during real Lajeunesse collapse ──");
-        // Run this test in isolation (exact name filter) -- these are shared
-        // process-wide statics; cargo's default parallel test execution
-        // would let another ngf_enabled test pollute the count, the same
-        // real cross-test-contention lesson already on record in
-        // `project_ecosystem_slice_roadmap_2026-07-22`'s "Sand findings".
+        // Run this test alone (exact name filter): these are process-wide
+        // statics, and another ngf_enabled test running in parallel would
+        // pollute the count.
         NGF_CAP_TOTAL_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         NGF_CAP_BINDING_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
         NGF_CAP_SEVERITY_SUM_X1E6.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -990,19 +917,13 @@ mod ngf_verification_tests {
         );
     }
 
-    /// Real, decisive control experiment (2026-08-04): if forcing PLAIN DP
-    /// (ngf_enabled=false, zero coupling, zero `GranularFluidityField`) to
-    /// take the SAME real substep count NGF forces (~30/step, via a tighter
-    /// `material_cfl_coefficient`, not via NGF at all) ALSO drops runout
-    /// toward NGF's own 0.47x, that PROVES the undershoot is a pure
-    /// substep-count/numerical-integration artifact -- something in DP's own
-    /// per-substep pipeline not properly scaled by `dt`, amplified by taking
-    /// ~15x more (smaller) substeps over the identical real elapsed time --
-    /// NOT a real NGF-coupling-specific effect at all. Baseline's own
-    /// natural mean_dt was 0.004251s at the real default
-    /// `material_cfl_coefficient=0.5`; NGF forced 0.000167s (~25.5x
-    /// smaller) -- scaling the coefficient by that same ~25.5x forces a
-    /// comparable dt/substep-count WITHOUT touching NGF at all.
+    /// Control: plain DP (ngf_enabled = false, no `GranularFluidityField`)
+    /// forced to take NGF's substep count (~30 per step, through a tighter
+    /// `material_cfl_coefficient`). If its runout also drops toward NGF's
+    /// 0.47x, the undershoot is a substep-count artifact of DP's per-substep
+    /// pipeline, not an NGF effect. The baseline's mean dt was 0.004251 s at
+    /// `material_cfl_coefficient = 0.5`, NGF's 0.000167 s (~25.5x smaller),
+    /// so the coefficient is scaled by the same ~25.5x.
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -1081,15 +1002,12 @@ mod ngf_verification_tests {
         }
     }
 
-    /// Real follow-up (2026-08-04): the rate-limiter cap almost NEVER binds
-    /// (0.003% of yield checks, see the trajectory diagnostic above) -- ruled
-    /// out as the mechanism behind NGF's 0.47x undershoot. Real remaining
-    /// candidate: attaching a `GranularFluidityField` adds its OWN CFL
-    /// stability bound to `choose_substep_dt` (`granular_fluidity_dt_bound`)
-    /// -- if that bound is tighter than plain DP's own, NGF-enabled runs take
-    /// more/smaller substeps THROUGHOUT the whole collapse, changing the
-    /// numerical integration itself, independent of the yield-cap mechanism.
-    /// Direct A/B on total substep count for the identical real collapse.
+    /// The rate-limiter cap almost never binds (0.003% of yield checks, see
+    /// the trajectory diagnostic above), so it does not explain the 0.47x
+    /// undershoot. Remaining candidate: a `GranularFluidityField` adds its
+    /// own CFL bound (`granular_fluidity_dt_bound`); if tighter than DP's,
+    /// NGF runs take smaller substeps throughout. Direct A/B on total substep
+    /// count for the same collapse.
     #[test]
     // Diagnostic: runs full sand column collapses to print a measurement.
     // Minutes to hours even in release, which is why it does not belong in
@@ -1257,7 +1175,7 @@ mod ngf_verification_tests {
     /// 10.8deg (t=101500), monotonic, never plateaus. NGF exists precisely
     /// to give marginal, near-yield flow a length-scale-aware arrest
     /// instead of the pointwise Coulomb model's "any nonzero shear ratio
-    /// can flow forever" behavior -- this is the real, motivated test of
+    /// can flow forever" behavior -- this is the motivated test of
     /// whether it does that specific job, distinct from
     /// `ngf_lajeunesse_runout_diagnostic` (which already showed NGF only
     /// narrows initial runout ~3%, a different question: how far it gets
@@ -1287,8 +1205,8 @@ mod ngf_verification_tests {
             let config = SimConfig {
                 max_substeps_per_step: 4000,
                 // apic_blend=1.0 (this config's own base default) is
-                // genuinely numerically unstable for a violent dynamic
-                // collapse, independent of NGF -- 0.6 is the real, bounded
+                // numerically unstable for a violent dynamic
+                // collapse, independent of NGF -- 0.6 is the bounded
                 // value for the collapse phase itself, distinct from the
                 // 0.05 "holding" value applied after settling below.
                 apic_blend: 0.6,
@@ -1322,7 +1240,7 @@ mod ngf_verification_tests {
                 solver = solver.with_granular_fluidity(field);
             }
 
-            // Real collapse dynamics settle in well under 1 real second.
+            // Collapse dynamics settle in well under 1 s.
             solver.step_n(200);
             solver.set_apic_blend(0.05);
             solver.set_cundall_damping(1.0);
@@ -1335,7 +1253,7 @@ mod ngf_verification_tests {
                 let xs = &solver.particles().x;
                 let vs = &solver.particles().v;
                 // p99, not raw max: a single particle flung by the initial
-                // violent corner-impact (real, expected in MPM column
+                // violent corner-impact (expected in MPM column
                 // collapse) can sit at an outlier position for a long time
                 // even once bulk velocity has died down, dragging a raw
                 // min/max metric far from the pile's real bulk shape --
@@ -1380,9 +1298,9 @@ mod ngf_verification_tests {
     /// Does the real static/kinetic Coulomb hysteresis (`static_friction_
     /// boost`) actually arrest the long-horizon holding creep, where
     /// baseline (this exact scene, see `ngf_long_horizon_hold_arrests_
-    /// creep_vs_baseline`) does not? This is the real, structural candidate
+    /// creep_vs_baseline`) does not? This is the structural candidate
     /// found by direct inspection of `alpha`'s own math (see
-    /// `static_friction_boost`'s own doc): baseline DP's hardening law
+    /// `static_friction_boost`'s doc): baseline DP's hardening law
     /// asymptotes back to the SAME friction angle for large q regardless of
     /// history, giving marginal states zero safety margin. Distinct from
     /// NGF (a spatial cooperativity length scale) and from every earlier

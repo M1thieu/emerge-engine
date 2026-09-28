@@ -98,7 +98,7 @@ impl Simulation {
         //
         // No MaterialRegistry exists yet at this point in construction (built
         // just below) -- harmless: write_initial=true never reaches the
-        // material-aware clamp, see density.rs's own doc comment.
+        // material-aware clamp, see density.rs's doc comment.
         let n = particles.len();
         estimate_particle_volumes(&mut particles, &mut grid, None, n, true);
         let materials = MaterialRegistry::with_default(Box::new(FallbackMaterial));
@@ -238,7 +238,7 @@ impl Simulation {
     }
 
     /// Mutable access to the attached thermal model's config, if any (`None` when no
-    /// `with_thermal`/`set_thermal` was ever called). The real, minimal hook for a
+    /// `with_thermal`/`set_thermal` was ever called). The minimal hook for a
     /// scene/LP-driven day-night or seasonal cycle: mutate `.ambient` each frame from a
     /// time-varying function (e.g. a sinusoid) BEFORE calling `step()` -- `ThermalDiffusion
     /// ::apply` already runs automatically every substep and reads `config.ambient` fresh
@@ -328,14 +328,10 @@ impl Simulation {
         &self.grid
     }
 
-    /// Direct read-only access to the material registry -- real, necessary
-    /// gap closed 2026-09-15: `MaterialRegistry::von_mises_stress_field`
-    /// (the real, generic per-material stress computation `ColorMode::
-    /// ByStress` reads from) takes `&MaterialRegistry`, but no caller
-    /// outside this crate could ever obtain one from a `Simulation` before
-    /// this existed -- the field itself is, and stays, private. A real,
-    /// working feature was otherwise unusable from any example or game
-    /// code, not just unused by convention.
+    /// Read-only access to the material registry, e.g. for
+    /// `MaterialRegistry::von_mises_stress_field` (what `ColorMode::ByStress`
+    /// reads), which takes `&MaterialRegistry`. The field itself stays
+    /// private.
     pub const fn materials(&self) -> &MaterialRegistry {
         &self.materials
     }
@@ -478,19 +474,13 @@ impl Simulation {
 
     /// Append an additional boundary condition (stacks with existing ones).
     ///
-    /// The FIRST call clears the auto-inserted default `SlipBoundary` (see
-    /// `empty`/`new`) instead of stacking underneath it -- a real, confirmed
-    /// bug otherwise (2026-08-20): the default's zero-friction no-penetration
-    /// pass runs first every substep and zeroes the into-wall velocity
-    /// component before a user's own boundary (e.g. `FrictionBoundary`) ever
-    /// sees it nonzero, permanently defeating that boundary's own friction
-    /// with no error, no warning -- a scene calling `.with_boundary(real)`
-    /// exactly once, the overwhelming common case (38 of 39 real call sites
-    /// across the whole codebase at the time this was found; the one
-    /// exception, `tests::boundary_count_stress`, only asserts finite/
-    /// contained, not friction magnitude, so is unaffected), almost
-    /// certainly means "this is THE boundary," not "add me to a hidden
-    /// pile." Calls after the first genuinely stack, unchanged.
+    /// The first call clears the default `SlipBoundary` inserted at
+    /// construction (see `empty`/`new`) instead of stacking on top: that
+    /// default's zero-friction no-penetration pass runs first every substep
+    /// and zeroes the into-wall velocity before a user's boundary (e.g.
+    /// `FrictionBoundary`) sees it, silently cancelling its friction. A scene
+    /// calling `.with_boundary(b)` once almost always means "this is THE
+    /// boundary". Later calls stack.
     pub fn add_boundary_condition(&mut self, boundary: Box<dyn BoundaryCondition>) {
         if self.boundaries_are_default {
             self.boundaries.clear();
@@ -582,18 +572,14 @@ impl Simulation {
     /// space (same convention as `Particle::x`) -- build it with
     /// `rod::build_straight_rod(start, end, n, linear_density, config.dx_meters)`
     /// so `start`/`end` (grid-cell units) and the resulting rest lengths
-    /// (real meters) both land in the right space for `scatter_rod_to_grid`/
+    /// (meters) both land in the right space for `scatter_rod_to_grid`/
     /// `gather_grid_to_rod` to interoperate with ordinary particles.
     ///
-    /// Real Euler/Greenhill self-weight buckling check happens HERE, not as
-    /// something each example has to remember to call (2026-07-27: a live
-    /// GUI session found blade B swinging wide and slow under a push and it
-    /// read as "broken" until traced back to real, disclosed buckling
-    /// physics -- the check existed but only one example was actually
-    /// calling it). `self.config.gravity` is already real, whatever this
-    /// simulation was configured with (grid units, `g_si = g_grid *
-    /// dx_meters` per `gravity_to_grid`'s own convention) -- not hardcoded to
-    /// Earth's 9.81, so this holds for any configured gravity.
+    /// Runs the Euler/Greenhill self-weight buckling check on every rod, so
+    /// no caller has to remember it: a rod past its critical height swings
+    /// wide and slow and looks broken without the warning. Uses
+    /// `self.config.gravity` (grid units, `g_si = g_grid * dx_meters` per
+    /// `gravity_to_grid`), whatever gravity was configured.
     pub fn add_rod(&mut self, rod: crate::rod::Rod) -> usize {
         let gravity_m_s2 = self.config.gravity.length() * self.config.dx_meters;
         if let Some(warning) = rod.buckling_warning(gravity_m_s2) {
@@ -619,7 +605,7 @@ impl Simulation {
 
     /// Adds a discrete-element grain population (`spacetime::grains`),
     /// returning its index. Mirrors `add_rod` exactly. See `grain_populations`'s
-    /// own doc on `Simulation` for real scope (no automatic oracle yet --
+    /// doc on `Simulation` for real scope (no automatic oracle yet --
     /// this is an explicit, caller-decided population, same as a rod).
     pub fn add_grain_population(
         &mut self,
@@ -652,16 +638,10 @@ mod add_rod_buckling_check_tests {
     use super::*;
     use crate::rod::{Rod, RodMaterial, build_straight_rod};
 
-    /// Real regression guard for the 2026-07-27 fix: the buckling check used
-    /// to be an opt-in print each example had to remember to call (only one
-    /// of three rod-using examples actually did) -- now `add_rod` itself
-    /// checks every rod against its own real Greenhill critical height using
-    /// THIS simulation's own configured gravity, so no example can silently
-    /// add an unstable rod without at least a real, printed warning. This
-    /// test only confirms `add_rod` keeps working correctly (returns the
-    /// right index, `rods()` reflects it) whether or not the rod happens to
-    /// be over its own critical height -- the warning CONTENT itself is
-    /// already covered by `rod::root_cause_fixes_tests::
+    /// `add_rod` returns the right index and `rods()` reflects it whether or
+    /// not the rod is past its Greenhill critical height (it checks every rod
+    /// against this simulation's gravity and prints a warning). The warning
+    /// content is covered by `rod::root_cause_fixes_tests::
     /// buckling_warning_matches_expected_critical_height`.
     fn make_rod(young_modulus: f32, height_m: f32, dx_meters: f32) -> Rod {
         let start = Vec2::new(9.0, 4.0);
@@ -675,7 +655,7 @@ mod add_rod_buckling_check_tests {
     #[test]
     fn add_rod_still_registers_correctly_when_over_its_own_critical_height() {
         let mut sim = Simulation::empty(SimConfig::earth(32, 0.01, 0.02));
-        // E=5e6, height=0.10m -- the real, confirmed-over-critical blade B case.
+        // E=5e6, height=0.10m -- the confirmed-over-critical blade B case.
         let idx = sim.add_rod(make_rod(5.0e6, 0.10, 0.01));
         assert_eq!(idx, 0);
         assert_eq!(sim.rods().len(), 1);
@@ -684,7 +664,7 @@ mod add_rod_buckling_check_tests {
     #[test]
     fn add_rod_still_registers_correctly_when_safely_under_its_own_critical_height() {
         let mut sim = Simulation::empty(SimConfig::earth(32, 0.01, 0.02));
-        // E=1e7, height=0.10m -- the real, confirmed-safe blade A case.
+        // E=1e7, height=0.10m -- the confirmed-safe blade A case.
         let idx = sim.add_rod(make_rod(1.0e7, 0.10, 0.01));
         assert_eq!(idx, 0);
         assert_eq!(sim.rods().len(), 1);

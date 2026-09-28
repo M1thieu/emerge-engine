@@ -24,18 +24,14 @@ pub(crate) fn volume_j(initial_volume: f32, volume: f32, material_name: &str) ->
 /// Massively Parallel Implementation of a Material Point Method for
 /// Compressible Flows", arXiv:2404.17057, eq. 4). Gated to compression
 /// (`div(v) < 0`) so it vanishes identically wherever the flow is smooth --
-/// real shocks only form under compression, so that gate is textbook, not a
-/// convenience.
+/// shocks only form under compression.
 ///
-/// `c0` (quadratic) is Kurapatenko 1967-derived rather than a flat constant:
-/// `(gamma+1)/4` is the WEAK-shock limit of the fundamental derivative
-/// Kurapatenko ties `c0` to. Deliberately weak-shock, NOT strong-shock
-/// `(gamma+1)/2`: real, measured 2026-08-08, the strong-shock value made a
-/// then-live crash WORSE, because the quadratic term's own contribution must
-/// feed back into the CFL bound (Bate et al. 1995's combined
-/// `c_eff = c_sound + 2*c0*h*|div(v)|`) before a stronger coefficient is safe.
-/// That CFL extension needs a `timestep_bound` signature change and is real,
-/// disclosed, unimplemented future work.
+/// `c0` (quadratic) is `(gamma+1)/4`, the weak-shock limit of the fundamental
+/// derivative Kurapatenko 1967 ties it to, not the strong-shock `(gamma+1)/2`:
+/// the strong-shock value made a crash worse while its contribution was not
+/// yet in the CFL bound (Bate et al. 1995's `c_eff = c_sound +
+/// 2*c0*h*|div(v)|`). That CFL term now exists (`shock_viscosity_dt_bound` in
+/// `cfl.rs`); the strong-shock value has not been re-measured with it.
 ///
 /// `c1 = 1.0` (Landshoff) is the standard theoretical value.
 pub(crate) fn artificial_bulk_viscosity(
@@ -46,23 +42,16 @@ pub(crate) fn artificial_bulk_viscosity(
     div_v: f32,
     grid_cell_size: f32,
 ) -> f32 {
-    // REAL BUG FIXED 2026-08-13: an earlier form used rho^2 in the
-    // quadratic term and NO rho at all in the linear one -- neither
-    // matches the cited sources (Wang et al. arXiv:2404.17057 eq. 4;
-    // `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity`), both of
-    // which multiply BOTH terms by rho exactly once, the same real form
-    // `von_neumann_richtmyer_q` (shared, EOS-agnostic) implements below.
-    // Dimensionally the old form was inconsistent, and at this engine's
-    // grid-unit rho ~ 0.1 it inflated q by ~8x, swamping the EOS --
-    // live-measured: max_speed 11 -> 130, J pinned at the upper clamp 2.0,
-    // fps 45 -> 12. The corrected form lands q at ~63 against an EOS
-    // pressure scale of ~94, the intended same-order balance.
+    // Both terms carry rho exactly once, as in Wang et al. arXiv:2404.17057
+    // eq. 4 and `tmp/GeoTaichi`'s `MaterialModel.py::artifical_viscosity` (the
+    // shared `von_neumann_richtmyer_q` below). With rho^2 in the quadratic
+    // term and none in the linear one, q was ~8x too large at grid rho ~0.1
+    // (max_speed 11 -> 130, J pinned at 2.0, 45 -> 12 fps); now q ~63 against
+    // an EOS pressure scale of ~94.
     //
-    // Tait EOS's own real `c_sound` (this material's own `dp/drho`) --
-    // `von_neumann_richtmyer_q` owns only the shared shock-viscosity form,
-    // not any one EOS's sound speed, so it's computed here and passed in.
-    // `eos_power` doubles as Kurapatenko's weak-shock gamma (a real,
-    // disclosed stand-in, see `von_neumann_richtmyer_q`'s own doc).
+    // Tait EOS's own `c_sound` (this material's `dp/drho`), passed in since
+    // `von_neumann_richtmyer_q` owns only the shared form. `eos_power` stands
+    // in for Kurapatenko's weak-shock gamma (see `von_neumann_richtmyer_q`).
     let density_ratio = 1.0 / j;
     let c2 = eos_stiffness
         * eos_power
@@ -80,19 +69,13 @@ pub struct NewtonianFluidMaterial {
     pub dynamic_viscosity: f32,
     pub eos_stiffness: f32,
     pub eos_power: f32,
-    /// Floor on the Tait EOS pressure -- prevents unbounded negative
-    /// (tensile) pressure at a free surface, where the raw EOS formula has
-    /// no restoring force in real fluids (cavitation, not sustained
-    /// tension). Real, precedented value: `tmp/sparkl`'s
-    /// `MonaghanSphEos::max_neg_pressure` uses the same `-0.1` clamp on
-    /// `Ktait0*((rho/rho0)^gamma - 1)`, and `tmp/incremental_mpm`'s MLS-MPM
-    /// fluid solver (Unity/C#) uses the identical constant with an honest
-    /// author's-own comment ("i clamped it as a bit of a hack") -- this
-    /// engine's default traces to that same real, working, if pragmatic,
-    /// precedent, not an arbitrary guess. Bounds pressure SIGN/magnitude
-    /// only -- does not bound `density`/`volume`'s own kinematic drift (see
-    /// GPU/CPU parity work in `basic_fluids_gpu_blank_render_unconfirmed`
-    /// memory, 2026-08-15, for the separate mechanism that still needs).
+    /// Floor on the Tait EOS pressure: limits negative (tensile) pressure at
+    /// a free surface, where a real fluid cavitates rather than sustaining
+    /// tension. `tmp/sparkl`'s `MonaghanSphEos::max_neg_pressure` clamps
+    /// `Ktait0*((rho/rho0)^gamma - 1)` at the same `-0.1`, and
+    /// `tmp/incremental_mpm`'s MLS-MPM fluid uses the same constant ("i
+    /// clamped it as a bit of a hack"). Bounds the pressure only, not the
+    /// drift of `density`/`volume`.
     pub pressure_floor: f32,
     /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
     /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`. Liquid water
@@ -188,26 +171,12 @@ impl NewtonianFluidMaterial {
         // identically in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994;
         // Becker & Teschner 2007, already cited elsewhere in this project).
         //
-        // Real, confirmed regression fix (2026-08-29, independent
-        // git-history verification): this exact
-        // real-SI-direct form (no `scale_stress`/`scale_visc`, matching
-        // `IdealGasMaterial::from_physical`'s own already-correct convention
-        // -- solver time is already real seconds and positions are grid
-        // cells, so stress/viscosity stay raw SI, only density converts via
-        // `dx^2`) existed in this exact file as of commit `cac544b`
-        // (2026-08-11), then was SILENTLY LOST one day later by `57b83dc`
-        // ("restore pre-cac544b material state"), a wholesale revert that
-        // was only meant to restore the J clamp/pressure floor/settling
-        // damping but reverted the whole file to an even older state,
-        // sweeping this separate, correct fix away with it -- that same
-        // revert's own commit message disclosed "very little motion...
-        // likely over-damped" as a known, unresolved side effect, unknowingly
-        // describing this exact bug three weeks before it was root-caused.
-        // The stale `scale_stress`/`dt_seconds`-based form silently made
-        // this scene's water EOS stiffness ~4.4 million times too soft and
-        // its viscosity ~296 million times too large (verified live,
-        // `project_gas_bulk_viscosity_shipped_steam_lag_unresolved` memory) --
-        // not a tuning gap, a real, confirmed regression, restored here.
+        // Stress and viscosity stay raw SI, as in `IdealGasMaterial::
+        // from_physical`: solver time is seconds and positions are cells, so
+        // only density converts (through `dx^2`). Routed through the old
+        // `scale_stress`/`dt_seconds` conversion, this scene's water EOS was
+        // ~4.4 million times too soft and its viscosity ~296 million times
+        // too large.
         const GAMMA: f32 = 7.0;
         assert!(
             config.dx_meters.is_finite() && config.dx_meters > 0.0,
@@ -216,14 +185,10 @@ impl NewtonianFluidMaterial {
         let rho_grid = rho_kg_m3 * config.dx_meters * config.dx_meters;
         let tait_b_pa = rho_kg_m3 * c_ref_m_s * c_ref_m_s / GAMMA;
         let mut material = Self::new(rho_grid, eta_pa_s, tait_b_pa, GAMMA);
-        // REAL FIX (2026-09-17): same root bug as `FromSI::from_physical`'s
-        // own fix just above -- `Self::new`'s `pressure_floor: -0.1` default
-        // is a bare, unconverted grid-unit constant. This constructor's own
-        // convention keeps stress/viscosity RAW SI (see this function's own
-        // doc above -- no `scale_stress` here, unlike `from_physical`), so
-        // the fix must match: the real cavitation pressure stays raw SI Pa
-        // too, not run through `scale_stress` (which would double-convert
-        // and be wrong for this specific constructor's units).
+        // `Self::new`'s `pressure_floor: -0.1` is an unconverted grid-unit
+        // constant. This constructor keeps stress raw SI (see above), so the
+        // cavitation pressure stays raw SI Pa too; `scale_stress` would
+        // convert it twice.
         material.pressure_floor = -100_000.0; // real dissolved-gas cavitation onset, Pa gauge
         material
     }
@@ -252,19 +217,12 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // actual depth or compression -- see `SimConfig::grid_density`.
         let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
         let mut material = Self::new(rho_grid, visc, eos, GAMMA);
-        // REAL FIX (2026-09-17): `Self::new`'s own `pressure_floor: -0.1`
-        // default is a bare grid-unit constant, never SI-converted -- the
-        // exact bug already found and patched per-demo in
-        // `basic_fluids_gpu.rs`/`basic_fluids.rs` this week
-        // (`HANDOFF_fluid_gpu_thin_layer_bug.md`, Tenth pass). Fixing it
-        // only in those two call sites left this, the actually-documented
-        // "real SI" construction path, still silently broken for any other
-        // caller. Real cavitation onset for water in practice
-        // (dissolved-gas nucleation, the standard engineering figure, not
-        // the much higher pure-degassed lab value) is ~-100,000 Pa gauge --
-        // converted through the SAME `scale_stress`/`stress_from_si`
-        // pipeline `eos` itself just used above, at THIS material's own
-        // real `props.rho_kg_m3`, not assumed water.
+        // `Self::new`'s `pressure_floor: -0.1` is an unconverted grid-unit
+        // constant. Water's cavitation onset in practice (dissolved-gas
+        // nucleation, the engineering figure, not the higher degassed lab
+        // value) is ~-100,000 Pa gauge, converted through the same
+        // `scale_stress`/`stress_from_si` as `eos`, at this material's own
+        // `props.rho_kg_m3`.
         const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
         material.pressure_floor =
             scale_stress(REAL_CAVITATION_PRESSURE_PA, props.rho_kg_m3, config);
@@ -277,26 +235,14 @@ impl MaterialModel for NewtonianFluidMaterial {
         ConstitutiveModel::Fluid
     }
 
-    // Restored 2026-08-13 after a wholesale revert silently dropped it;
-    // PERMANENT and required (no longer "temporary" -- the uncertainty that
-    // word carried is resolved, the override is proven necessary and is
-    // covered by this file's own tests). Historical detail kept because it
-    // explains WHY the override is needed at all: this
-    // material never overrode `init_particle` even in the true pre-
-    // `cac544b` file (confirmed: `git show 6234d06:...` has no override
-    // either) -- but the CURRENT (non-reverted) engine's spawn contract
-    // relies on materials that own their volume/density state to set them
-    // exactly here, overriding the spawn's own kernel-density estimate
-    // (which every body now gets, a real, legitimate default for materials
-    // that DON'T have an exact analytical initial state, but wrong for a
-    // strict fluid, which does: V0 = mass/rest_density exactly). Without
-    // this override, that kernel estimate was the only thing setting
-    // `volume`/`density` at spawn, while `deformation_gradient` stayed at
-    // Identity (J=1) -- an internally INCONSISTENT state
-    // (`assert_owned_deformation_state` caught it live: "det(F)=1,
-    // V/V0=0.528"). This restores the exact contract this demo's own spawn
-    // comment already describes ("The strict fluid initializer then sets
-    // V0=m/rho0 and rho=rho0").
+    // Required: the spawn contract lets materials that own their volume and
+    // density state set them here, overriding the spawn's kernel-density
+    // estimate, which is a fine default for materials without an exact
+    // initial state but wrong for a strict fluid, which has one: V0 =
+    // mass/rest_density exactly. Without this override the kernel estimate
+    // set `volume`/`density` while F stayed at identity (J=1), an
+    // inconsistent state `assert_owned_deformation_state` caught ("det(F)=1,
+    // V/V0=0.528").
     fn init_particle(&self, particle: &mut Particle) {
         let j = particle.deformation_gradient.determinant();
         particle.initial_volume = particle.mass / self.rest_density;
@@ -304,40 +250,20 @@ impl MaterialModel for NewtonianFluidMaterial {
         particle.density = self.rest_density / j;
     }
 
-    /// Real fix, same mechanism as `IdealGasMaterial::init_particle_from_transition`'s
-    /// own doc (found live 2026-08-18, `examples/basic_steam.rs`, water
-    /// boiling into steam) -- but for the REVERSE direction, root-caused
-    /// live 2026-08-28 from a real "gas cooling down explodes the
-    /// particles" bug report. Without this override, condensing (e.g.
-    /// steam -> water) fell back to the default `init_particle_from_transition`
-    /// (delegates straight to `init_particle` above), which throws away
-    /// `Simulation::apply_phase_transition`'s own real, continuous
-    /// rebaseline (`initial_volume` = the particle's actual current volume
-    /// as steam, `density` = mass over that real volume) and replaces it
-    /// with water's rest-state formula at `deformation_gradient=IDENTITY`
-    /// (`j=1`, zero pressure) -- making the particle's claimed volume jump
-    /// instantly to `mass/rest_density(water)`, several times smaller than
-    /// its real physical footprint a substep earlier, while that real
-    /// footprint (position, spacing from still-gaseous neighbors) hasn't
-    /// changed at all in the same instant. A diffuse condensation front
-    /// then has freshly-condensed particles falsely claiming water's small
-    /// rest volume sitting right next to neighbors still occupying steam's
-    /// real, larger volume -- the Tait EOS reacts to that fabricated
-    /// overcompression with a violent repulsive pressure spike (particles
-    /// "exploding" apart), confirmed as the real cause, not assumed.
+    /// The condensing counterpart of `IdealGasMaterial::init_particle_from_
+    /// transition`. The default (delegating to `init_particle`) throws away
+    /// `Simulation::apply_phase_transition`'s rebaseline (`initial_volume` =
+    /// the particle's current volume as steam) and sets water's rest volume at
+    /// `F = IDENTITY`, several times smaller than the footprint the particle
+    /// still occupies next to neighbours that are still steam. The Tait EOS
+    /// answers that fake overcompression with a pressure spike that blew a
+    /// cooling gas apart.
     ///
-    /// Same fix as `IdealGasMaterial`'s: keep the reference volume TRUE
-    /// (`mass/rest_density`, matching what `kirchhoff_stress`/`update_particle`
-    /// already assume every substep), and instead set a STARTING
-    /// deformation gradient reflecting the real compression ratio between
-    /// the particle's actual prior volume (as whatever it transitioned
-    /// FROM) and this material's true rest volume -- clamped to the SAME
-    /// `[0.5, 2.0]` bound `update_particle` already enforces every
-    /// subsequent substep (see that method's own comment: empirically
-    /// verified load-bearing against a real drop test, min_j/max_j hit
-    /// exactly, not vestigial), so the starting state is consistent with
-    /// the ongoing dynamics from frame one, not a separate, inconsistent
-    /// value later dynamics silently overwrite.
+    /// As for the gas: the reference volume stays `mass/rest_density` (what
+    /// `kirchhoff_stress`/`update_particle` assume), and the particle starts
+    /// with a deformation gradient giving its compression against it,
+    /// clamped to the `[0.5, 2.0]` `update_particle` enforces every substep
+    /// (load-bearing, see that method).
     fn init_particle_from_transition(&self, particle: &mut Particle) {
         let true_initial_volume = particle.mass / self.rest_density;
         let prior_volume = particle.volume.max(1.0e-9);
@@ -352,18 +278,10 @@ impl MaterialModel for NewtonianFluidMaterial {
     /// Rest-state acoustic speed squared, `c^2 = B*gamma/rho0` (Tait EOS
     /// evaluated at `J = 1`).
     ///
-    /// Restored 2026-08-13; PERMANENT and required -- without it the
-    /// near-wall CFL gate silently degrades (see below). Kept documented
-    /// because the failure it prevents is invisible, not because it is
-    /// provisional. It was the THIRD
-    /// trait method the wholesale pre-`cac544b` revert silently dropped
-    /// (after `owns_deformation_volume_state` and `init_particle`) -- it
-    /// postdates this file's restored form. Without it the near-wall CFL
-    /// gate (`cfl.rs`) can't compute a Mach number, falls back to its fixed
-    /// absolute threshold, and therefore fires identically at every flow
-    /// speed -- exactly what
-    /// `near_wall_gate_relaxes_when_measured_speed_predicts_this_much_compression`
-    /// caught (dt_low_speed == dt_high_speed, no relaxation).
+    /// Required: without it the near-wall CFL gate (`cfl.rs`) cannot compute
+    /// a Mach number, falls back to its fixed absolute threshold and fires
+    /// the same at every flow speed
+    /// (`near_wall_gate_relaxes_when_measured_speed_predicts_this_much_compression`).
     fn rest_acoustic_c2(&self) -> Option<f32> {
         if self.eos_stiffness > 0.0 && self.rest_density > 0.0 {
             Some(self.eos_stiffness * self.eos_power / self.rest_density)
@@ -373,26 +291,11 @@ impl MaterialModel for NewtonianFluidMaterial {
     }
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
-        // Density from F's own determinant (rho = rest_density / J), NOT the
-        // grid-mass-gathered `particles.density[i]` this used before -- a
-        // real CPU/GPU parity fix: the GPU fluid path (`p2g.wgsl`'s case 1u)
-        // already uses this exact formula ("sparkl canonical, no grid-lag"
-        // per its own comment), and `GranularFluidMaterial`'s CPU code
-        // (the engine's other EOS-pressure material) already does too --
-        // plain `NewtonianFluidMaterial` was the one inconsistent holdout.
-        // Grid-mass density carries a real one-substep lag (P2G scatter ->
-        // grid -> G2P gather, vs J which is already current this same
-        // substep) and is blind to how it's actually used elsewhere in this
-        // engine (GranularFluid, GPU) -- switching removes a real, disclosed
-        // inconsistency, not just a style choice.
-        //
-        // Real, honest disclosure: the OLD grid-mass approach is exactly
-        // what `hydrostatic_pressure_matches_rho_g_h`'s own doc measured
-        // settling at ~1.3x rest_density (not the correct ~1.003x) --
-        // whether J-based density changes that specific overshoot is NOT
-        // yet re-measured (that test stays `#[ignore]`d); this fix is
-        // motivated by real consistency across the engine, not a confirmed
-        // fix for that specific still-open gap.
+        // Density from F's determinant (rho = rest_density / J), not the
+        // grid-gathered `particles.density[i]`: the GPU fluid path (`p2g.wgsl`'s
+        // case 1u) and `GranularFluidMaterial` use this formula, and the
+        // grid-mass density lags one substep (P2G -> grid -> G2P) while J is
+        // current.
         //
         // Clamp density both ways: min prevents div-by-zero, max (2x rho0)
         // limits how far the EOS pressure response saturates under impact
@@ -433,35 +336,14 @@ impl MaterialModel for NewtonianFluidMaterial {
             stress += Mat2::from_diagonal(Vec2::splat(self.surface_tension_coeff * j));
         }
 
-        // Artificial (shock) viscosity -- a REAL PDE term, not a bandaid:
-        // von Neumann & Richtmyer 1950 (LA-671) quadratic + Landshoff linear,
-        // the standard shock-capturing pair for Lagrangian hydrocodes, gated
-        // to compression only (`div(v) < 0`) so it vanishes identically in
-        // smooth flow. Independently corroborated in `tmp/GeoTaichi`
-        // (`MaterialModel.py::artifical_viscosity`, same von Neumann citation,
-        // same compression gate, same linear+quadratic form) -- and its own
-        // shipped Newtonian dam-break example enables it (`cL: 1.0, cQ: 2`).
-        //
-        // Restored here 2026-08-13: it had existed in `fluid_state.rs`, which
-        // a wholesale revert to this file's pre-`cac544b` form deleted, so the
-        // CPU fluid path silently lost it while `p2g.wgsl` kept its own copy.
-        //
-        // CORRECTION (2026-09-15, audit-found): the claim above ("now
-        // closed") stopped being true on 2026-08-15 -- commit `7c7991f`
-        // ("consolidate GPU/render backlog") silently deleted THIS SAME term
-        // from `p2g.wgsl`'s fluid branch (and the granular-fluid branch's own
-        // Kelvin-Voigt damping) alongside ~480 unrelated line changes, with
-        // no disclosure that it had gone. Every GPU-run fluid/mud scene had
-        // zero shock-capturing viscosity for a month with this doc still
-        // claiming parity. Both restored 2026-09-15, ported from THIS
-        // function's current form (not the stale pre-deletion GPU snapshot,
-        // which still used the strong-shock coefficient this function has
-        // since moved away from) -- see `p2g.wgsl`'s own comment at the
-        // restoration site for the full account. Real, disclosed lesson: a
-        // "closed" cross-language parity claim needs its own regression
-        // test, not just a comment, to actually stay closed -- none existed
-        // here, which is exactly how a large consolidation commit could
-        // delete it without any test failing.
+        // Artificial (shock) viscosity, a PDE term: von Neumann & Richtmyer
+        // 1950 (LA-671) quadratic plus Landshoff linear, the standard
+        // shock-capturing pair, gated to compression (`div(v) < 0`) so it
+        // vanishes in smooth flow. `tmp/GeoTaichi` has the same form
+        // (`MaterialModel.py::artifical_viscosity`) and enables it in its
+        // Newtonian dam-break example (`cL: 1.0, cQ: 2`). `p2g.wgsl`'s fluid
+        // branch carries a port of this function's current form; no test pins
+        // the two together yet.
         // Reuses `j` (this function's own `det(F)`, computed above) rather
         // than recomputing `volume/initial_volume`. They are the SAME
         // quantity for a strict fluid -- `assert_owned_deformation_state`
@@ -492,40 +374,14 @@ impl MaterialModel for NewtonianFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Real bug fixed 2026-08-06: this used to re-isotropize FROM THE OLD F's
-        // own determinant, never actually applying the velocity-gradient update
-        // every other material's `update_particle` does -- J was permanently
-        // frozen at its spawn value (1.0) for the material's entire lifetime,
-        // regardless of any real compression/expansion. Silent before 2026-08-04
-        // (density came from the separate grid-mass estimate then), but became a
-        // real, previously-undetected regression once `kirchhoff_stress` switched
-        // to `rest_density/J` -- the EOS pressure term went completely inert
-        // (density permanently == rest_density, pressure permanently ~0). Found
-        // via `fluid_impact_shows_real_free_surface_splash_separation`
-        // (`tests/physics_correctness.rs`): a hard floor impact showed max_j_seen
-        // EXACTLY 1.0000 across 250 steps, not just close to it.
-        // Real, disclosed regression fixed 2026-08-30: `det(I + dt*C)` (the
-        // old `f_trial` this line used to build) is NOT rotation-invariant --
-        // for a pure rigid rotation `C=[[0,-w],[w,0]]` (div(v)=tr(C)=0, no
-        // real volume change should occur), `det(I+dt*C) = 1 + dt^2*w^2`, a
-        // strictly POSITIVE expansion every single substep from pure O(dt^2)
-        // discretization error, not real physics. Immediately baked in
-        // permanently by the very next line's isotropization (nothing ever
-        // reverses it), this is a real, measured, monotonic `detF`-max drift
-        // confirmed live over thousands of frames, dynamics-independent
-        // (kept climbing at an unchanged rate even after real convection/
-        // vorticity had fully died to near-zero). The exact fix is the
-        // continuity equation's own exponential solution for constant `C`
-        // over a substep, `J_{n+1} = J_n * exp(dt*div(v))` -- exactly 1.0
-        // for any rotation (div(v)=0 always, regardless of vorticity), and
-        // matching `det(I+dt*C)` to first order for genuine compression/
-        // expansion, so this is a strict correctness fix, not a behavior
-        // change for real divergent flow. This exact formula previously
-        // existed in a since-deleted `fluid_state.rs` module (added
-        // `cac544b` 2026-08-11, silently lost the very next day by the SAME
-        // wholesale revert, `57b83dc`, that also caused the
-        // `weakly_compressible` units regression found earlier this
-        // session) -- restored here, not reinvented.
+        // J advances by the continuity equation's exact solution for constant
+        // `C` over the substep, `J_{n+1} = J_n * exp(dt*div(v))`. `det(I + dt*C)`
+        // is not rotation-invariant: for a rigid rotation `C = [[0,-w],[w,0]]`
+        // (div(v) = 0) it gives `1 + dt^2*w^2`, an expansion every substep that
+        // isotropization then keeps (measured: a monotonic `detF` max drift
+        // that continued after the flow had come to rest). The exponential is
+        // exactly 1 for any rotation and matches `det(I+dt*C)` to first order
+        // for real compression or expansion.
         // `old_j` recovers the fluid's own scalar state from its ALREADY-
         // isotropic F (`s*I`, `det=s^2`) -- exactly this material's `j`
         // from the previous substep, the same equivalence
@@ -533,20 +389,14 @@ impl MaterialModel for NewtonianFluidMaterial {
         // this file (bit-equivalent to `volume/initial_volume` to 2e-4).
         let old_j = ctx.deformation_gradient.determinant();
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
-        // Real, measured 2026-08-14: this clamp is NOT dead weight from a
-        // stiffness-derivation era this engine has since outgrown -- earlier
-        // memory recorded it as "dormant" after the real EOS-stiffness fix
-        // raised the observed floor to ~0.964 on a calm interactive scene,
-        // but that was never checked against a genuinely violent one. It
-        // is: `fluid_impact_shows_real_free_surface_splash_separation`
-        // (`tests/physics_correctness.rs`, a 6x6 block dropped 20 units onto
-        // a rigid floor at eos_stiffness=50) hits BOTH bounds EXACTLY --
-        // min_j_seen=0.5000, max_j_seen=2.0000 -- over 250 real steps. Under
-        // a hard impact this clamp is load-bearing, not vestigial; keep it.
+        // The [0.5, 2.0] clamp is load-bearing: a 6x6 block dropped 20 units
+        // onto a rigid floor at eos_stiffness=50
+        // (`fluid_impact_shows_real_free_surface_splash_separation`) hits both
+        // bounds exactly over 250 steps.
         // `old_j` above is only the fallback: the carried logarithm is the
         // real state, because reading J back from F and multiplying loses a
         // fraction of every small increment (see
-        // `advance_log_volume_ratio`'s own doc for the measurement).
+        // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {
             *ctx.log_volume_strain
         } else {
@@ -557,25 +407,14 @@ impl MaterialModel for NewtonianFluidMaterial {
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
-        // Real, disclosed 2026-08-04 fix: `stress_volume`/`timestep_bound` both
-        // read `particles.volume`/`density` -- but until now this material never
-        // wrote either. Both were left entirely to `estimate_particle_volumes`'s
-        // grid-mass-kernel estimate (`spacetime::solver::density`), which is
-        // real but has NO ceiling on compaction (`clamp_rarefied_volume` only
-        // bounds rarefaction, i.e. it's a floor on density, not a ceiling) --
-        // and unlike every plastic solid material (DP/Snow/NACC/etc, see
-        // `sand.rs`'s own `*ctx.density = ctx.mass / v` at the end of every
-        // substep), nothing here ever pulled a drifting estimate back to a
-        // physically-bounded value. In a settling/compacting scene the
-        // per-substep noise can only ratchet UP (nothing corrects it back
-        // down at near-zero divergence), which silently stiffens this
-        // material's own CFL bound over a long horizon -- the real, root
-        // mechanism behind `mixture_sand_water.rs`'s `dropped`/min_dt-clamp
-        // issue (see `mixture_sand_water_explosion_investigation` memory).
-        // Fix: self-correct every substep from the SAME already-bounded
-        // formula `stress()` already uses for pressure (`(rest_density/j)
-        // .max(min_density).min(2*rest_density)`) -- real, symmetric,
-        // nothing new invented, just applied where it was missing.
+        // `stress_volume`/`timestep_bound` read `particles.volume`/`density`,
+        // so they are set here every substep from the same bounded formula
+        // `stress()` uses (`(rest_density/j).max(min_density).min(2*rest_density)`),
+        // as every plastic solid does (`sand.rs`'s `*ctx.density = ctx.mass /
+        // v`). Left to `estimate_particle_volumes`'s kernel estimate, which has
+        // no ceiling on compaction, the per-substep noise in a settling scene
+        // only ratcheted up and stiffened the CFL bound over time
+        // (`mixture_sand_water.rs`'s min_dt clamp).
         let density = (self.rest_density / j)
             .max(self.min_density)
             .min(self.rest_density * 2.0);
@@ -583,24 +422,13 @@ impl MaterialModel for NewtonianFluidMaterial {
         *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
-    // Restored 2026-08-13; PERMANENT and required -- removing it froze GPU
-    // water completely from frame 1 (live-confirmed, see below). Not
-    // provisional. This trait
-    // method did not exist before `cac544b` -- this file predates it, so
-    // reverting the file wholesale silently dropped the override, leaving
-    // the default `false`. REAL, LIVE-CONFIRMED bug this caused on GPU:
-    // without this returning `true`, `basic_fluids_gpu.rs`'s water froze
-    // completely from frame 1 (v~0, J=1.000 exactly, forever) -- most
-    // likely because a kernel-density recompute this method exists to
-    // suppress (see this file's own top-of-file doc: "biased at a free
-    // surface... not a conservative thermodynamic state update") started
-    // overwriting volume/density in a way that failed
-    // `strict_fluid_state_is_admissible`'s internal consistency check in
-    // `particles_update.wgsl` every single substep, silently freezing the
-    // fluid branch's own state update via its early return. `true` restores
-    // the correct, current-codebase-wide convention: this material owns its
-    // own volume/density (see `update_particle` above), don't let a kernel
-    // gather overwrite it.
+    // Required: this material owns its volume and density (see
+    // `update_particle`), so no kernel gather may overwrite them. With the
+    // default `false`, `basic_fluids_gpu.rs`'s water froze from frame 1 (v~0,
+    // J = 1.000), most likely because the kernel-density recompute broke
+    // `strict_fluid_state_is_admissible`'s consistency check in
+    // `particles_update.wgsl` every substep, whose early return skipped the
+    // fluid's state update.
     fn owns_deformation_volume_state(&self) -> bool {
         true
     }
@@ -671,17 +499,14 @@ impl MaterialModel for NewtonianFluidMaterial {
             dt_bound = dt_bound.min(material_cfl * cell_width / c2.sqrt());
         }
 
-        // Viscous diffusion bound for explicit integration -- combines
-        // dynamic_viscosity AND bulk_viscosity (real regression fix,
-        // external review: this used to bound only shear viscosity,
-        // leaving bulk viscosity's own explicit-damping term with no
-        // matching CFL bound, same real instability mechanism
-        // `GranularFluidMaterial::timestep_bound`'s own doc already fixed
-        // this for -- an explicit damping term whose dt*viscosity/mass
-        // ratio is too large INJECTS energy instead of removing it. Both
-        // terms multiply the same velocity-gradient-derived stress, so
-        // combining them linearly is the real, conservative bound, not an
-        // approximation.
+        // Viscous diffusion bound for explicit integration, over
+        // dynamic_viscosity and bulk_viscosity together: bulk viscosity's
+        // explicit damping term needs a CFL bound too, since an explicit
+        // damping term whose dt*viscosity/mass ratio is too large injects
+        // energy instead of removing it (see
+        // `GranularFluidMaterial::timestep_bound`). Both terms multiply the
+        // same velocity-gradient-derived stress, so their linear sum is a
+        // conservative bound.
         let combined_viscosity = self.dynamic_viscosity + self.bulk_viscosity.max(0.0);
         if combined_viscosity > 0.0 {
             let kinematic_viscosity = combined_viscosity / density;
@@ -694,25 +519,16 @@ impl MaterialModel for NewtonianFluidMaterial {
         dt_bound
     }
 
-    /// `false`, not the `true` this file carried (2026-08-13).
+    /// `false`: this material does not read a kernel-density measurement.
+    /// `init_particle` seeds `rho = rho0/J` and `update_particle` maintains it,
+    /// which `owns_deformation_volume_state -> true` declares; the trait's
+    /// doc says strict WC-MPM liquids own `rho = rho0 / J` together with
+    /// `V = V0 J`.
     ///
-    /// This override is a leftover from the pre-`cac544b` design, where this
-    /// material really did read `particles.density[i]` straight out of the
-    /// kernel-density gather. It no longer does: `init_particle` seeds
-    /// `rho = rho0/J` analytically and `update_particle` maintains it every
-    /// substep, which is exactly what `owns_deformation_volume_state -> true`
-    /// declares. The trait's own doc states the rule directly -- "Strict
-    /// WC-MPM liquids do *not* [consume a kernel-density measurement]: their
-    /// EOS state is rho = rho0 / J, owned together with V = V0 J" -- so
-    /// returning `true` here contradicted this same impl's other two methods.
-    ///
-    /// Keeping it `true` was also pure waste, not merely redundant:
-    /// `estimate_particle_volumes` runs a full `grid.clear()` + mass scatter
-    /// over EVERY particle, and only then skips each one that owns its own
-    /// volume state (`density.rs`'s own `continue`) -- so the entire pass was
-    /// computed and thrown away. Live-measured on `basic_fluids_gui.rs`:
-    /// `density_us` was 12000-13700 us of a ~54000 us step, ~24%, the
-    /// second-largest cost in the whole solver, for zero effect on state.
+    /// `true` would also cost a full `grid.clear()` and mass scatter in
+    /// `estimate_particle_volumes`, thrown away for each particle that owns
+    /// its volume: measured on `basic_fluids_gui.rs`, 12000-13700 us of a
+    /// ~54000 us step.
     fn needs_density_recompute(&self) -> bool {
         false
     }
@@ -722,20 +538,9 @@ impl MaterialModel for NewtonianFluidMaterial {
 mod si_construction_tests {
     use super::*;
 
-    /// Real regression guard (2026-08-29): `weakly_compressible` must keep
-    /// stress/viscosity in raw SI units (matching `IdealGasMaterial::
-    /// from_physical`'s own already-correct convention) and convert ONLY
-    /// density via `dx^2` -- NOT route through `scale_stress`/`scale_visc`
-    /// (a stale, `dt_seconds`-based convention gravity itself no longer
-    /// uses). This exact test existed in this exact file as of commit
-    /// `cac544b` (2026-08-11), was silently lost the next day by a
-    /// wholesale revert (`57b83dc`) that only meant to restore unrelated
-    /// fields (J clamp/pressure floor/settling damping), and stayed lost
-    /// for weeks -- a real, confirmed regression (found live 2026-08-29 while
-    /// investigating a still-open water-compression symptom, then verified
-    /// independently against this file's own git
-    /// history), not a hypothetical. Restored here as the real regression
-    /// guard it always should have stayed.
+    /// `weakly_compressible` keeps stress and viscosity in raw SI (as
+    /// `IdealGasMaterial::from_physical` does) and converts only density
+    /// through `dx^2`, not through `scale_stress`/`scale_visc`.
     #[test]
     fn si_constructor_preserves_pressure_and_viscosity_units() {
         let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
@@ -745,17 +550,11 @@ mod si_construction_tests {
         assert!((material.eos_stiffness - (1000.0 * 20.0 * 20.0 / 7.0)).abs() < 1.0e-3);
     }
 
-    /// Real regression guard (2026-09-17): `Self::new`'s own `pressure_floor:
-    /// -0.1` default is a bare, unconverted grid-unit constant -- the exact
-    /// bug already found and manually patched per-demo in
-    /// `basic_fluids_gpu.rs`/`basic_fluids.rs` (`HANDOFF_fluid_gpu_thin_
-    /// layer_bug.md`, Tenth pass). Both real SI construction paths must
-    /// carry a properly-converted, real cavitation pressure (~-100,000 Pa
-    /// gauge, dissolved-gas nucleation onset) by default, not leave it to
-    /// every caller to remember to override manually -- each in ITS OWN
-    /// constructor's real unit convention (`weakly_compressible` keeps
-    /// stress raw SI; `from_physical` routes through `scale_stress`, same
-    /// as its own `eos_stiffness`).
+    /// Both SI construction paths carry a converted cavitation pressure
+    /// (~-100,000 Pa gauge, dissolved-gas nucleation onset) by default instead
+    /// of `Self::new`'s unconverted grid-unit `-0.1`, each in its own unit
+    /// convention (`weakly_compressible` raw SI; `from_physical` through
+    /// `scale_stress`, like its `eos_stiffness`).
     #[test]
     fn si_constructors_convert_pressure_floor_not_just_stiffness() {
         let cfg = crate::SimConfig::earth(32, 0.01, 0.1);
@@ -804,22 +603,10 @@ mod volume_integration_tests {
         Particles::from(vec![p])
     }
 
-    /// Real regression guard (2026-08-30): a pure rigid rotation carries
-    /// zero divergence (`tr(C)=0`) and must leave `J=det(F)` EXACTLY
-    /// unchanged -- rotation alone never compresses or expands anything.
-    /// The bug this guards against: `update_particle` used to build
-    /// `f_trial=(I+dt*C)*F_old` and take `det(f_trial)` directly, which for
-    /// this exact `C` gives `det(f_trial) = 1 + dt^2*omega^2`, a strictly
-    /// POSITIVE expansion every substep from pure O(dt^2) discretization
-    /// error -- confirmed live over thousands of frames as a real, slow,
-    /// monotonic `detF`-max drift, dynamics-independent (kept climbing at
-    /// an unchanged rate even once real vorticity had fully died to near-
-    /// zero). Fixed with the exact exponential solution
-    /// `J_new=J_old*exp(dt*div(v))`, which is identically 1.0 for any
-    /// rotation regardless of `omega`. Same root cause, same fix, as the
-    /// `weakly_compressible` units regression -- both lost the same day
-    /// (`57b83dc`) from the same `fluid_state.rs` module `cac544b`
-    /// introduced (`log_j = old_j.ln() + dt*div_v; j = log_j.exp()`).
+    /// A rigid rotation carries zero divergence (`tr(C) = 0`) and leaves
+    /// `J = det(F)` exactly unchanged. `det((I+dt*C)*F_old)` gives `1 +
+    /// dt^2*omega^2` for this `C`, a positive expansion every substep; the
+    /// exponential `J_new = J_old*exp(dt*div(v))` is exactly 1 for any rotation.
     #[test]
     fn rigid_rotation_leaves_j_exactly_unchanged() {
         let mat = NewtonianFluidMaterial::new(1.0, 0.0, 100.0, 7.0);
@@ -841,12 +628,10 @@ mod volume_integration_tests {
         );
     }
 
-    /// Real regression guard (2026-08-30): a constant, uniform dilation
-    /// (`C = k*I`, `div(v) = 2k` in 2D) must integrate to EXACTLY the
-    /// continuity equation's own exponential solution,
-    /// `J_new = J_old * exp(N*dt*2k)`, for constant `C` held over `N`
-    /// substeps -- not the old `det(I+dt*C)`-per-step approximation, which
-    /// only agrees with this to first order and drifts at higher `dt*k`.
+    /// A constant, uniform dilation (`C = k*I`, `div(v) = 2k` in 2D)
+    /// integrates to exactly the continuity equation's solution,
+    /// `J_new = J_old * exp(N*dt*2k)`, over `N` substeps of constant `C`, not
+    /// the per-step `det(I+dt*C)`, which only agrees to first order.
     #[test]
     fn constant_dilation_matches_exact_exponential_solution() {
         let mat = NewtonianFluidMaterial::new(1.0, 0.0, 100.0, 7.0);

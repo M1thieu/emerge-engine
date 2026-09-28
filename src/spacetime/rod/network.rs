@@ -1,27 +1,21 @@
-//! Real branching rod topology -- a genuine graph, not two `Rod`s synchronized
-//! after the fact.
-//! A branch's root point literally IS a point in the SAME array as its
-//! parent -- one array, one source of truth, no post-hoc synchronization.
+//! Branching rod topology: a graph, not several `Rod`s synchronized after
+//! the fact. A branch's root point is a point in the same array as its
+//! parent, so there is one source of truth.
 //!
 //! Reuses `forces::discrete_curvature`/`discrete_curvature_gradient`
-//! completely unchanged -- those functions are already point-based (three
-//! raw `Vec2`s), not index-based, so the real curvature math from Bergou et
-//! al. 2008 needs no modification at all to work at a branch vertex; only
-//! the TOPOLOGY (which points form which edges/bending triples) needed to
-//! generalize from "always i-1,i,i+1" (implicit, linear-chain `RodPoints`)
-//! to an explicit list.
+//! unchanged: they take three raw `Vec2`s, not indices, so Bergou et al.
+//! 2008's curvature applies at a branch vertex as is. Only the topology
+//! (which points form which edges and bending triples) generalizes from the
+//! implicit i-1,i,i+1 of a linear-chain `RodPoints` to an explicit list.
 //!
-//! Scope, disclosed: binary branching only -- a point may have at most 3
-//! incident edges (one "parent" side, two "child" sides), giving exactly 2
-//! meaningful bending vertices at a branch point. Real botanical branching
-//! is overwhelmingly bifurcation; true simultaneous trifurcation would need
-//! a further real extension, not attempted here.
+//! Binary branching only: a point has at most 3 incident edges (one parent
+//! side, two child sides), giving 2 bending vertices at a branch point.
+//! Botanical branching is overwhelmingly bifurcation; trifurcation would
+//! need an extension.
 //!
-//! Per-edge/per-bending-vertex stiffness and damping (`ea`/`ei`,
-//! `axial_damping`/`bending_damping`) are stored explicitly, not one shared
-//! `RodMaterial` -- a real trunk and its fine branches genuinely differ in
-//! their mechanical response, unlike a single unbranched rod where one
-//! material was always a reasonable assumption.
+//! Stiffness and damping (`ea`/`ei`, `axial_damping`/`bending_damping`) are
+//! stored per edge and per bending vertex, not one shared `RodMaterial`: a
+//! trunk and its fine branches respond differently.
 
 use glam::Vec2;
 
@@ -92,7 +86,7 @@ pub struct YBranchSpec {
 
 /// Builds a simple Y-branch: a straight trunk from `trunk_start` to
 /// `junction`, with a straight branch continuing from `junction` to
-/// `branch_end` -- the smallest real, testable branching topology. The
+/// `branch_end` -- the smallest testable branching topology. The
 /// junction point is shared: it is NOT duplicated, it is literally point
 /// index `n_trunk - 1`, referenced by both the trunk's last edge and the
 /// branch's first edge.
@@ -201,12 +195,12 @@ pub fn build_y_branch(spec: YBranchSpec) -> RodNetwork {
     }
     // The junction itself also bends against the trunk's own last segment
     // (p0=trunk's second-to-last point, p1=junction, p2=branch's first real
-    // point) -- this is the real, physically meaningful bending vertex that
+    // point) -- this is the physically meaningful bending vertex that
     // makes the branch mechanically coupled to the trunk's own orientation,
     // not just sharing a point in name only.
     //
     // rest_curvature must be the ACTUAL discrete curvature of the constructed
-    // geometry, not 0.0 -- a Y-branch genuinely bends here by construction (the
+    // geometry, not 0.0 -- a Y-branch bends here by construction (the
     // branch angles away from the trunk's own direction), so claiming
     // "straight/rest" here is false and injects a large spurious bending force
     // from the very first substep. `build_straight_rod`'s 0.0 is correct there
@@ -242,11 +236,10 @@ pub fn build_y_branch(spec: YBranchSpec) -> RodNetwork {
     }
 }
 
-/// Real per-point internal force (Newtons), generalizing
-/// `forces::compute_internal_forces` from implicit linear-chain adjacency
-/// to an explicit edge/bending topology. Same stretch + bending + damping
-/// physics, same underlying curvature math -- only the iteration is
-/// different (over explicit lists instead of an index range).
+/// Per-point internal force (newtons), generalizing
+/// `forces::compute_internal_forces` from implicit linear-chain adjacency to
+/// an explicit edge/bending topology. Same stretch + bending + damping
+/// physics and curvature math; only the iteration differs.
 pub fn compute_network_internal_forces(net: &RodNetwork, dx_meters: f32) -> Vec<Vec2> {
     let n = net.len();
     let mut force = vec![Vec2::ZERO; n];
@@ -296,11 +289,10 @@ pub fn compute_network_internal_forces(net: &RodNetwork, dx_meters: f32) -> Vec<
     force
 }
 
-/// Real Gershgorin CFL bound, generalizing `integrator::rod_cfl_dt` from
-/// implicit `i-1/i/i+1` neighbor lookups to an explicit edges/bending pass
-/// -- same principle (sum every stiffness/damping term touching each point),
-/// single accumulation pass instead of a per-point neighbor scan since the
-/// topology is no longer a fixed linear pattern.
+/// Gershgorin CFL bound, generalizing `integrator::rod_cfl_dt` from
+/// implicit `i-1/i/i+1` lookups to explicit edge/bending lists: the same
+/// sum of every stiffness/damping term touching each point, in one
+/// accumulation pass since the topology is not a fixed linear pattern.
 pub fn network_cfl_dt(net: &RodNetwork, safety: f32) -> f32 {
     let n = net.len();
     let mut omega_sq = vec![0.0f32; n];

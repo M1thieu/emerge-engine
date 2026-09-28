@@ -144,10 +144,10 @@ impl Simulation {
         }
     }
 
-    /// Scale `mass` uniformly on all particles with `tag` -- a real, disclosed
-    /// way to make a kinematically-driven body act like a much heavier real
-    /// object (e.g. a tool vs. the loose material it displaces) without
-    /// changing its own internal material response. O(group_size).
+    /// Scale `mass` uniformly on all particles with `tag`, e.g. to make a
+    /// kinematically driven body act like a much heavier object (a tool vs.
+    /// the loose material it displaces) without changing its material
+    /// response. O(group_size).
     pub fn scale_group_mass(&mut self, tag: u32, multiplier: f32) {
         if let Some(indices) = self.tag_index.get(&tag) {
             for &i in indices {
@@ -157,7 +157,7 @@ impl Simulation {
     }
 
     /// Lazily rebuilds the spatial hash if `step()` has run since the last
-    /// rebuild (see `spatial_hash`'s own doc on `Simulation`). No-op when
+    /// rebuild (see `spatial_hash`'s doc on `Simulation`). No-op when
     /// already fresh -- at most one real rebuild per `step()` call no matter
     /// how many query methods get called before the next `step()`.
     fn ensure_spatial_hash_fresh(&self) {
@@ -200,9 +200,8 @@ impl Simulation {
     /// Indices of active particles within `radius` grid-cells of `center`.
     ///
     /// Returns indices only -- read particle data via `solver.particles().x[i]` etc.
-    /// O(candidates) via spatial hash, not O(N). Collected eagerly into a `Vec`
-    /// (not a lazy iterator, unlike an earlier version of this method) -- the
-    /// lazy spatial-hash rebuild below needs a `Ref` borrow that can't outlive
+    /// O(candidates) via spatial hash, not O(N). Collected eagerly into a `Vec`,
+    /// not a lazy iterator: the lazy spatial-hash rebuild below needs a `Ref` borrow that can't outlive
     /// this call, so results are gathered up front instead. Negligible extra
     /// cost relative to the O(candidates) work already being done.
     pub fn particles_near(&self, center: Vec2, radius: f32) -> Vec<usize> {

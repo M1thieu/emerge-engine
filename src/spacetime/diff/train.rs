@@ -7,26 +7,20 @@ use super::stress::StressEval;
 /// Plain gradient descent on the controller parameters. Returns per-iteration
 /// drift so callers can report/plot training progress.
 ///
-/// Keeps the BEST-drift parameters seen, not the last: measured on the real
-/// walker, late training oscillates (a 600-substep horizon regressed from a
-/// 0.74 best back to 0.06 by the final iteration -- the classic
-/// backprop-through-time instability, sharpened here by the contact kinks),
-/// so `controller` is restored to its best-scoring snapshot before returning.
-/// Standard model selection, not a workaround specific to this trainer.
+/// Keeps the best-drift parameters seen, not the last: late training
+/// oscillates (on the walker, a 600-substep horizon fell from a 0.74 best
+/// back to 0.06 by the final iteration, the usual backprop-through-time
+/// instability sharpened by contact kinks), so `controller` is restored to
+/// its best-scoring snapshot before returning (standard model selection).
 ///
-/// Uses Adam (Kingma & Ba 2014), not plain gradient descent: a real, measured
-/// symptom found live 2026-07-11 -- with a fixed step size, the same body
-/// went from "flies" (contact 0.31) to "frozen" (drift 0.05, near-zero
-/// movement) between bounce-penalty values 0.05 and 0.1, a razor-thin usable
-/// range. That's the textbook fixed-step-size failure: SGD takes the same
-/// size step regardless of how consistent or noisy a parameter's gradient
-/// history has been. Adam tracks per-parameter first/second moment
-/// estimates and scales each parameter's step by them, damping steps for
-/// noisy/spiky gradients and taking confident steps where gradients are
-/// small but consistent -- standard fix for exactly this symptom, not a
-/// tuning trick specific to this trainer. `lr` here is Adam's own learning
-/// rate (typically much smaller than an SGD-tuned one, ~1e-2 to 1e-1 for
-/// this problem's scale, not ~1.0).
+/// Uses Adam (Kingma & Ba 2014), not fixed-step gradient descent: with a
+/// fixed step the same body went from "flies" (contact 0.31) to "frozen"
+/// (drift 0.05) between bounce-penalty values 0.05 and 0.1, a very narrow
+/// usable range. Adam tracks per-parameter first and second moment
+/// estimates and scales each step by them, damping noisy gradients and
+/// taking confident steps where gradients are small but consistent. `lr`
+/// is Adam's learning rate (~1e-2 to 1e-1 at this problem's scale, much
+/// smaller than an SGD-tuned ~1.0).
 pub fn train(
     plan: &BodyPlan,
     controller: &mut SinusoidController,

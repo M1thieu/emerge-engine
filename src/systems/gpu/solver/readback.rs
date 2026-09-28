@@ -92,7 +92,7 @@ impl GpuSimulation {
     /// Test/diagnostic readback of the per-block contact point-cloud counts (GPU port) --
     /// `NUM_CONTACT_BLOCKS` (4096) `u32` entries, one per dedicated contact-point spatial
     /// block (see `MAX_CONTACT_POINTS_PER_BLOCK`'s doc in `step_params/spatial_blocks.rs`).
-    /// A count can exceed `MAX_CONTACT_POINTS_PER_BLOCK` on overflow (a real, observable signal, not
+    /// A count can exceed `MAX_CONTACT_POINTS_PER_BLOCK` on overflow (a observable signal, not
     /// silently capped) -- callers must clamp before indexing `contact_points_blocking`.
     pub fn contact_point_counts_blocking(&self) -> Vec<u32> {
         self.buffers.readback_u32_blocking(
@@ -148,12 +148,10 @@ impl GpuSimulation {
     /// `fit_contact_normal_lr_tests` module unit-tests the fit separately from the full
     /// `resolve_contact` integration. Blocking -- test/diagnostic use only.
     ///
-    /// CHANGED 2026-07-18 (GPU sparse-contact perf pass): `target_block`/`point_count`
-    /// are vestigial -- the shader no longer reads one un-expanded block's raw points (an
-    /// assumption that only held by coincidence at the old coarse partition's
-    /// block_size=4, false in general and definitely false against the new, finer,
-    /// dedicated contact partition). Kept as parameters only because removing them would
-    /// also require reshaping `ContactDebugParams`'s uniform layout for no real benefit.
+    /// `target_block`/`point_count` are unused: the shader gathers the
+    /// neighbor-expanded point cloud rather than one block's raw points. They
+    /// remain parameters because removing them would reshape
+    /// `ContactDebugParams`'s uniform layout.
     pub fn debug_fit_contact_normal_blocking(&self, node_pos: glam::Vec2) -> (glam::Vec2, bool) {
         let params = ContactDebugParams {
             node_pos,
@@ -197,7 +195,7 @@ impl GpuSimulation {
 
     /// Test/diagnostic readback of the resolved "grip" field velocity per node --
     /// `grid_res² × vec2<f32>`, written by `resolve_contact_main`. See
-    /// `GpuBuffers::resolved_grip_v`'s own doc.
+    /// `GpuBuffers::resolved_grip_v`'s doc.
     pub fn resolved_grip_v_blocking(&self) -> Vec<f32> {
         let floats = self.config.grid_res * self.config.grid_res * 2;
         self.buffers.readback_f32_blocking(

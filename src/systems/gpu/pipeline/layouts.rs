@@ -12,9 +12,8 @@
 //! The per-group comments below explain each individual binding.
 
 /// A `read_write` storage-buffer binding, COMPUTE-visible -- the shape shared by every
-/// storage entry in the pipeline's bind group layout. Collapses what used to be a ~10-line
-/// struct literal repeated 8 times into one call each, cutting real line count (not just
-/// moving it) while every binding still gets its own doc comment at the call site.
+/// storage entry in the pipeline's bind group layout; each binding keeps its comment
+/// at the call site.
 const fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -77,12 +76,10 @@ pub(super) fn build_core_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
     })
 }
 
-/// Group 1 -- contact subsystem, split out 2026-07-16 (see the `pipeline.rs` module doc
-/// comment) to keep each layout within the WebGPU-guaranteed 8-storage-buffers-per-stage
-/// baseline. Binding NUMBERS are kept exactly as they were under the old single layout
-/// (12-19) -- only which GROUP they belong to changed, so every WGSL shader only needed
-/// its `@group(0)` -> `@group(1)` annotation updated on these specific bindings, no
-/// renumbering.
+/// Group 1 -- contact subsystem, kept apart (see the `pipeline.rs` module doc)
+/// so each layout stays within the WebGPU-guaranteed 8-storage-buffers-per-stage
+/// baseline. Bindings 12-19, plus 30/31 (see below), in the flat numbering
+/// shared by all groups.
 pub(super) fn build_contact_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mpm_contact_bind_group_layout"),
@@ -120,12 +117,10 @@ pub(super) fn build_contact_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
     })
 }
 
-/// Group 2 -- day-night/ambient thermal diffusion (GPU port, 2026-07-16). A real,
-/// separate group rather than squeezing into group 0 (already at 8/8 storage,
-/// zero headroom, per that group's own doc) or group 1 (wrong category -- thermal
-/// has nothing to do with contact). 3 storage + 1 uniform, well under the
-/// baseline limit. Bindings 20-23, continuing the flat numbering the split
-/// already established.
+/// Group 2 -- day-night/ambient thermal diffusion. Its own group: group 0 is
+/// at 8/8 storage (see that group's doc) and group 1 is contact-only.
+/// Bindings 20-23, plus 37 (`adaptive_dt`, see below): 4 storage + 1
+/// uniform, under the baseline limit.
 pub(super) fn build_thermal_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mpm_thermal_bind_group_layout"),
@@ -149,11 +144,10 @@ pub(super) fn build_thermal_bind_group_layout(device: &wgpu::Device) -> wgpu::Bi
     })
 }
 
-/// Group 3 -- resource regrowth (GPU port, 2026-07-16). Own separate group from
-/// thermal despite the near-identical shape (see `GpuResourceParams`' doc for
-/// why: both would otherwise fight over the same particle.temperature carrier).
-/// 4 storage + 2 uniform once ASFLIP's 2 bindings are added below, still well
-/// under the baseline 8-storage-per-stage limit. Bindings 24-29.
+/// Group 3 -- resource regrowth, separate from thermal despite the similar
+/// shape (see `GpuResourceParams`). Also holds ASFLIP's 2 bindings and the
+/// fluid pressure projection's (see the `pipeline.rs` module doc for the
+/// 4-group baseline limit). Bindings 24-29 and 32-36.
 pub(super) fn build_resource_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mpm_resource_bind_group_layout"),
@@ -176,15 +170,12 @@ pub(super) fn build_resource_bind_group_layout(device: &wgpu::Device) -> wgpu::B
             // 29: asflip_snapshot -- grid_res² vec2<f32> pre-force velocity
             // snapshot, written by grid_update.wgsl, read by g2p_asflip_fused.wgsl.
             storage_entry(29),
-            // 32-36: real GPU port of the CPU-proven Chorin-style fluid
-            // incompressibility pressure projection (`fluid_pressure.wgsl`,
-            // see its own module doc for the full real algorithm and
-            // citations). Shares this group for the same bind-group-count
-            // economy reason as ASFLIP/resource regrowth above -- nothing
-            // thematically related, group 3 is simply the one with real
-            // storage-slot headroom (4 free of 8 before this addition,
-            // exactly used up by this feature). 31 is already taken by
-            // group 1's `material_mass_params`, so this starts at 32.
+            // 32-36: the Chorin-style fluid incompressibility pressure
+            // projection (`fluid_pressure.wgsl`, see its module doc for the
+            // algorithm and citations). In this group for bind-group-count
+            // economy, like ASFLIP: it filled the group's 4 free storage
+            // slots. 31 is taken by group 1's `material_mass_params`, so this
+            // starts at 32.
             uniform_entry(32), // fluid_pressure_params
             storage_entry(33), // fp_divergence
             storage_entry(34), // fp_pressure_a

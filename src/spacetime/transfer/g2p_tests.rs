@@ -1,9 +1,5 @@
-//! G2P test suite for `transfer.rs` -- split out of the original combined
-//! `transfer_tests.rs` (2026-07-19, mirrors `transfer.rs`'s own P2G/G2P
-//! phase split) by pure mechanical line-range extraction, not retyped, to
-//! eliminate transcription risk in adjoint math this precise (every VJP
-//! here is verified against central-difference numerical gradients --
-//! exactly the code where a silent copy error would be hardest to notice).
+//! G2P test suite for `transfer.rs`. Every VJP here is checked against
+//! central-difference numerical gradients.
 
 use super::*;
 
@@ -110,10 +106,9 @@ mod activation_tests {
     }
 }
 
-/// Real, checkable validation of the internal pre-stress mechanism added for
-/// turgor-pressure-style support (see `Particle::internal_pressure` and
-/// `MaterialModel::pressure_scale` docs) -- not a "looks nicer" check, a direct
-/// verification of the `-P*I` formula `combined_kirchhoff_stress` adds.
+/// Internal pre-stress for turgor-pressure-style support (see
+/// `Particle::internal_pressure` and `MaterialModel::pressure_scale`): checks
+/// the `-P*I` term `combined_kirchhoff_stress` adds.
 #[cfg(test)]
 mod pre_stress_tests {
     use super::combined_kirchhoff_stress;
@@ -546,13 +541,11 @@ mod g2p_affine_vjp_tests {
         }
     }
 
-    /// Real end-to-end check: combines g2p_velocity_vjp and g2p_affine_vjp
-    /// (the two halves of G2P's actual joint computation, gathered from the
-    /// SAME 9 grid velocities in the same pass) and verifies the SUMMED
-    /// gradient matches a finite difference taken through the true combined
-    /// loss L = g_v . new_v + g_c : new_c -- proves the two adjoints compose
-    /// correctly when G2P's real output (both v and C) feeds a real loss,
-    /// not just that each is independently correct in isolation.
+    /// End to end: g2p_velocity_vjp and g2p_affine_vjp (the two halves of
+    /// G2P's joint computation, gathered from the same 9 grid velocities)
+    /// summed match a finite difference through the combined loss
+    /// L = g_v . new_v + g_c : new_c, so the adjoints compose correctly when
+    /// both v and C feed a loss, not only each in isolation.
     #[test]
     fn composes_correctly_with_g2p_velocity_vjp() {
         let x = Vec2::new(18.3, 9.7);

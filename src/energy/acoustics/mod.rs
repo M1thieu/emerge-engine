@@ -6,7 +6,7 @@
 //! `modal` -- real vibrational frequencies/damping derived from a rod's own
 //! material properties (Euler-Bernoulli cantilever bending modes), the
 //! physics half of zero-asset procedural sound. No audio synthesis/buffer
-//! generation here -- that's real, separate, not-yet-started work.
+//! generation here -- that's separate, not-yet-started work.
 
 pub mod modal;
 pub mod wave_equation;

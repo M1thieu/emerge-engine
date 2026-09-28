@@ -33,7 +33,7 @@ pub struct CorotatedMaterial {
     pub active_stress_coeff: f32,
     /// Clamp J ≥ j_min before evaluating the volumetric term, same convention
     /// `ViscoelasticMaterial`/`NeoHookeanMaterial` use (default 0.01) -- see
-    /// `NeoHookeanMaterial::j_min`'s own doc. Clamp, don't hard-zero below
+    /// `NeoHookeanMaterial::j_min`'s doc. Clamp, don't hard-zero below
     /// `MIN_J`, or the volumetric restoring force can't act exactly when it's
     /// needed most. Honest, disclosed limitation: this model's volumetric
     /// term (`λ·(J−1)·J`, a bounded polynomial, not a diverging log-barrier)
@@ -44,27 +44,17 @@ pub struct CorotatedMaterial {
     /// the clamp removes the permanent-zero-stress trap, it doesn't give
     /// this model NeoHookean's stronger barrier.
     pub j_min: f32,
-    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
-    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
-    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
-    /// pairing rule and the real regression it documents) -- same
-    /// mechanism, same formula, as
+    /// Kelvin-Voigt viscous damping on the deviatoric elastic strain rate
+    /// (SI Pa.s, converted like `lambda`/`mu`, see
+    /// `rankine::q_factor_elastic_viscosity_pa_s`), the formula of
     /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
-    /// Zero cost, zero behavior change at `0.0` (default, matching every
-    /// other material using this same mechanism).
+    /// `0.0` (default) = off.
     ///
-    /// Without this, a pure elastic solid has NO energy dissipation at all
-    /// -- real solids are never purely elastic (internal friction from
-    /// dislocation motion and grain-boundary sliding measurably dissipates
-    /// energy in every real material, reported as a seismic/ultrasonic
-    /// quality factor Q -- see `q_factor_elastic_viscosity_pa_s`). Confirmed
-    /// live 2026-08-29: this is a real, structural gap -- `CorotatedMaterial`
-    /// had NO damping mechanism of any kind before this field existed, so
-    /// any solid built from it rings elastically forever under repeated
-    /// impact (found while root-causing sustained post-impact bouncing on
-    /// `RankineMaterial::ice()`, which shares this same corotated elastic
-    /// base -- see `project_rankine_damping_and_fluid_condensation_
-    /// continuity_fixed`).
+    /// Without it an elastic solid dissipates nothing and rings under repeated
+    /// impact, while real solids lose energy to internal friction (dislocation
+    /// motion, grain-boundary sliding), measured as a quality factor Q (see
+    /// `q_factor_elastic_viscosity_pa_s`). `RankineMaterial::ice()` shares this
+    /// elastic base.
     pub elastic_viscosity: f32,
 }
 
@@ -85,11 +75,9 @@ impl CorotatedMaterial {
     }
 
     /// Construct from Young's modulus E and Poisson's ratio ν -- **grid
-    /// units, NOT real Pascals** (real disclosure added 2026-09-05, same
-    /// finding as `NeoHookeanMaterial::from_young_modulus`'s own doc): calls
-    /// [`lame_from_young`] directly, never touches `dx_meters`/density.
-    /// For a real, correctly SI-to-grid-converted material use
-    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
+    /// units, not pascals**: calls [`lame_from_young`] directly and never
+    /// touches `dx_meters` or density. For an SI material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and `rho_kg_m3`).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
@@ -123,20 +111,11 @@ impl MaterialModel for CorotatedMaterial {
     fn corotated_lame_params(&self) -> Option<(f32, f32)> {
         // `hardening_scale`/`temperature` modifiers below fold into
         // mu_eff/lambda_eff only when thermal_expansion != 0 or
-        // hardening_scale != 1 (never true for a passive Corotated particle
-        // -- `init_particle` sets it to 1.0 and nothing ever touches it
-        // again, no plastic return-mapping on this material). Real fix
-        // (2026-09-11): this used to say the SOLVER'S eligibility check
-        // also verified `hardening_scale == 1.0` per particle -- removed
-        // from there, it was a blanket, all-materials check based on an
-        // assumption that field means the same thing everywhere. It
-        // doesn't: `DruckerPragerMaterial` legitimately repurposes
-        // `hardening_scale` as strain-rate edge-detection memory (see its
-        // own `update_particle`), so a blanket `== 1.0` gate silently
-        // rejected the implicit solver for nearly every real, non-static
-        // sand particle. Correctness for THIS material still holds without
-        // that external gate -- `hardening_scale` genuinely never leaves
-        // 1.0 here, for the reason stated above.
+        // hardening_scale != 1. A passive Corotated particle keeps
+        // `hardening_scale` at the 1.0 `init_particle` sets (no return mapping
+        // here). The implicit solver does not gate on `hardening_scale == 1.0`
+        // for all materials: `DruckerPragerMaterial` uses the field as
+        // strain-rate edge memory.
         if self.elastic_viscosity == 0.0
             && self.thermal_expansion == 0.0
             && self.active_stress_coeff == 0.0
@@ -149,7 +128,7 @@ impl MaterialModel for CorotatedMaterial {
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
-        // Clamp, don't zero -- see `j_min`'s own doc.
+        // Clamp, don't zero -- see `j_min`'s doc.
         let j = f.determinant().max(self.j_min);
 
         let r = polar_decomposition_2d(f);
@@ -181,11 +160,9 @@ impl MaterialModel for CorotatedMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Exact matrix exponential, not forward Euler -- see
-        // `deformation_increment_exp`'s own doc for the real O(dt^2)
-        // volumetric ratchet this removes (found+fixed 2026-09,
-        // NoCompression/VonMises, now rolled out here on the same basis:
-        // every tensor-F material shares the identical exposure).
+        // Exact matrix exponential, not forward Euler: see
+        // `deformation_increment_exp` for the O(dt^2) volumetric ratchet it
+        // removes from every tensor-F material.
         let (f_new, carried) = advance_deformation_gradient(
             *ctx.deformation_gradient,
             dt * *ctx.velocity_gradient,
@@ -216,10 +193,9 @@ impl MaterialModel for CorotatedMaterial {
             mu: self.mu,
             thermal_expansion: self.thermal_expansion,
             active_stress_coeff: self.active_stress_coeff,
-            // Real, per-material stress-computation floor -- see `j_min`'s own
-            // doc. NOT shared with Snow/Sand's own reuse of this same GPU
-            // param slot for their real, different plastic-clamp range --
-            // Corotated doesn't populate it for anything else.
+            // Per-material stress floor (see `j_min`). Snow and sand use this GPU
+            // slot for a different plastic clamp range; Corotated fills it for
+            // nothing else.
             volume_ratio_min: self.j_min,
             ..Default::default()
         }
@@ -268,18 +244,14 @@ mod small_strain_linear_elasticity_tests {
 
     /// **Small-strain limit must recover exact linear elasticity (Hooke's law).**
     ///
-    /// `CorotatedMaterial` had zero test comparing it to any measured/analytical
-    /// result (confirmed via a full test-file audit, 2026-07-07). For a
-    /// SYMMETRIC small strain F=I+delta*E (E symmetric, no rotation), the polar
-    /// decomposition's rotation R is EXACTLY I (not just to leading order --
-    /// `polar_decomposition_2d`'s own formula gives y=F10-F01=delta(E10-E01)=0
-    /// exactly when E is symmetric, so R=I for any delta, not an approximation).
-    /// This makes the leading-order linearization of tau=2*mu*(F-R)*F^T +
-    /// lambda*(J-1)*J*I reduce to EXACTLY tau = 2*mu*eps + lambda*tr(eps)*I
-    /// (eps=delta*E) -- the textbook linear-elasticity form directly, no
-    /// plane-strain k=lambda+mu correction needed (unlike NeoHookean's
-    /// vol-dev split form -- Corotated already IS linear elasticity, just
-    /// extended to finite rotation).
+    /// For a symmetric small strain F = I + delta*E (E symmetric, no rotation),
+    /// the polar rotation R is exactly I at any delta
+    /// (`polar_decomposition_2d` gives y = F10-F01 = delta(E10-E01) = 0), so to
+    /// leading order tau = 2*mu*(F-R)*F^T + lambda*(J-1)*J*I is exactly
+    /// tau = 2*mu*eps + lambda*tr(eps)*I (eps = delta*E), textbook linear
+    /// elasticity, with no plane-strain k = lambda+mu correction (unlike
+    /// NeoHookean's volumetric-deviatoric split): Corotated is linear
+    /// elasticity extended to finite rotation.
     fn particle_with_f(f: Mat2) -> Particles {
         let mut particles = Particles::default();
         particles.push(Particle {
@@ -365,12 +337,9 @@ mod small_strain_linear_elasticity_tests {
         );
     }
 
-    /// Real, exact property (not an approximation): for symmetric F, the
-    /// rotation R from polar decomposition must be EXACTLY identity, at any
-    /// strain magnitude (not just small) -- this is what makes Corotated
-    /// reduce cleanly to linear elasticity for pure-strain (no-rotation)
-    /// deformations. Checked directly, independent of the Hooke's-law tests
-    /// above.
+    /// For symmetric F the polar rotation R is exactly identity at any strain
+    /// magnitude, which is why Corotated reduces to linear elasticity for pure
+    /// strain. Checked apart from the Hooke's-law tests.
     #[test]
     fn symmetric_deformation_gradient_has_exact_identity_rotation() {
         let e = Mat2::from_cols(Vec2::new(0.3, -0.15), Vec2::new(-0.15, 0.6)); // symmetric, large
@@ -391,7 +360,7 @@ mod elastic_viscosity_tests {
 
     /// Same audit-closing test `RankineMaterial`/`VonMisesMaterial`/
     /// `NaccMaterial` all carry for their own copy of this identical
-    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// mechanism (see `elastic_viscosity`'s doc): `kirchhoff_stress`
     /// must actually respond to the particle's velocity gradient when
     /// `elastic_viscosity > 0.0`, not just carry the field.
     #[test]
@@ -501,14 +470,10 @@ mod elastic_viscosity_tests {
     }
 }
 
-/// Real regression guard for the 2026-09 kinematic-integrator rollout
-/// (`deformation_increment_exp` replacing forward Euler across every
-/// tensor-F material -- see that function's own doc for the O(dt^2)
-/// volumetric-ratchet mechanism it removes, first found+fixed on
-/// `NoCompressionMaterial`/`VonMisesMaterial`). Tests the actual real
-/// call site (`update_particle`), not just the isolated helper (already
-/// covered by its own 3 tests in `utils.rs`) -- proves this material is
-/// really wired to the exponential integrator, not still silently on Euler.
+/// `update_particle` uses the exponential integrator
+/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
+/// ratchet of forward Euler), checked at the call site rather than on the
+/// helper (covered by its own 3 tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;
@@ -524,7 +489,7 @@ mod kinematic_integrator_tests {
         p
     }
 
-    /// The real, direct test of the O(dt^2) ratchet Euler had: apply a
+    /// The direct test of the O(dt^2) ratchet Euler had: apply a
     /// velocity gradient for one substep, then its exact opposite for the
     /// same substep -- a perfectly reversible round trip. Under the OLD
     /// Euler integration this would NOT return exactly to the starting F

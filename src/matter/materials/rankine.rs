@@ -10,67 +10,33 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
 
-/// Real Kelvin-Voigt viscosity (SI Pa.s) for `RankineMaterial::elastic_viscosity`,
-/// derived from a material's own measured seismic/ultrasonic quality factor Q --
-/// the standard way solid-earth/ice-physics literature reports internal damping
-/// (distinct from soil's small-strain damping ratio convention,
-/// `granular::sand::small_strain_elastic_viscosity_pa_s`, but the same
-/// underlying equivalent-viscous-damping conversion).
+/// Kelvin-Voigt viscosity (SI Pa.s) for `RankineMaterial::elastic_viscosity`,
+/// from a material's measured seismic or ultrasonic quality factor Q, the way
+/// solid-earth and ice physics report internal damping (soil uses a damping
+/// ratio instead, `granular::sand::small_strain_elastic_viscosity_pa_s`; same
+/// equivalent-viscous conversion).
 ///
-/// `zeta = 1/(2*Q)` is the standard quality-factor/damping-ratio relation
-/// (Aki & Richards, "Quantitative Seismology," 2002). Real, disclosed fix
-/// (2026-08-29): this engine's own `kirchhoff_stress` applies the viscous
-/// term as `eta*D_dev` (NOT `2*eta*D_dev` -- a deliberate, already-tested
-/// convention, see `ViscoelasticMaterial`'s own
-/// `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly` test),
-/// so under THIS convention the textbook `eta=2*zeta*G/omega` relation
-/// (which assumes the fully-matched `sigma=2G*eps+2*eta*D` tensor form)
-/// silently produces a measured Q exactly 2x the target -- confirmed both
-/// by hand derivation and a direct numeric cyclic-oscillation test
-/// (`measured_q_factor_matches_target_after_the_conversion_fix`, this
-/// file's own test module), found via independent deep research the same
-/// night. Real, corrected relation for THIS engine's
-/// `eta*D_dev` convention: `eta = 2*G/(Q*omega)` (double the naive
-/// `G/(Q*omega))` -- verified by that same test to reproduce the cited Q
-/// exactly, not just approximately.
+/// `zeta = 1/(2*Q)` (Aki & Richards, "Quantitative Seismology," 2002). The
+/// textbook `eta = 2*zeta*G/omega` assumes `sigma = 2G*eps + 2*eta*D`; this
+/// engine's `kirchhoff_stress` applies `eta*D_dev` (see `ViscoelasticMaterial`'s
+/// `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`), so here
+/// `eta = 2*G/(Q*omega)`, which reproduces the cited Q exactly
+/// (`measured_q_factor_matches_target_after_the_conversion_fix`); the
+/// textbook form gives twice the Q.
 ///
-/// `reference_frequency_hz` must be the SAME frequency the cited Q
-/// measurement used -- Q is frequency-dependent in real polycrystalline
-/// solids (grain-boundary friction loss scales ~linearly with frequency,
-/// scattering loss ~quartically), so this conversion is only exact at that
-/// reference, same caveat `small_strain_elastic_viscosity_pa_s` carries for
-/// its own 1 Hz reference.
+/// `reference_frequency_hz` must be the frequency of the cited Q measurement:
+/// Q depends on frequency in polycrystalline solids (grain-boundary friction
+/// loss ~linear, scattering loss ~quartic), so the conversion is exact only
+/// there, like `small_strain_elastic_viscosity_pa_s` at its 1 Hz.
 ///
-/// Returns real SI Pa.s. Must be converted with the SAME convention the
-/// caller's own `lambda`/`mu` used, since `kirchhoff_stress` adds
-/// `elastic_viscosity * d_dev` directly into the same stress tensor those
-/// build: raw `lame_from_young`/`from_young_modulus` lambda/mu (density-
-/// agnostic) pairs with this value assigned RAW, unconverted; density-
-/// normalized `lame_from_si` lambda/mu pairs with
-/// `SimConfig::visc_from_si(eta, rho)`. Mixing the two is wrong either
-/// direction.
-///
-/// Real, disclosed regression found+fixed 2026-08-29: `RankineMaterial::ice`'s
-/// real call sites (`examples/cpu/phase_states_gui.rs`,
-/// `phase_states_headless.rs`) build `lambda`/`mu` via `ice()` ->
-/// `from_young_modulus` -> raw `lame_from_young`, but were WRONGLY paired
-/// with `SimConfig::visc_from_si`, an ~917x-too-small division
-/// (ice's real density ~917 kg/m^3, dx=1 in that scene) that belongs only
-/// with the OTHER (density-normalized) lambda/mu family. Confirmed wrong
-/// three ways: (1) dimensionally inconsistent with `ice()`'s own raw,
-/// undivided lambda/mu; (2) this file's own
-/// `measured_q_factor_matches_target_after_the_conversion_fix` test assigns
-/// `elastic_viscosity: eta` raw alongside raw `lambda`/`mu` and empirically
-/// measures the correct real Q (that test doesn't discriminate between
-/// conventions on its own -- Q is scale-invariant if lambda/mu/eta all scale
-/// together -- but it does confirm raw+raw is internally self-consistent,
-/// which `ice()`'s own raw lambda/mu requires); (3) it silently explained an
-/// earlier same-night finding that doubling Q "had no visible effect" -- the
-/// damping was already ~917x too small before the 2x change. Fixed at
-/// those two real call sites only (assign this function's return value
-/// directly); the helper itself is correct and still needed by every call
-/// site that legitimately pairs it with density-normalized lambda/mu (e.g.
-/// `examples/cpu/sand_water_saturation.rs`).
+/// Returns SI Pa.s. `kirchhoff_stress` adds `elastic_viscosity * d_dev` into
+/// the stress tensor built from `lambda`/`mu`, so convert it the same way:
+/// raw `lame_from_young`/`from_young_modulus` values take it raw;
+/// density-normalized `lame_from_si` values take
+/// `SimConfig::visc_from_si(eta, rho)` (as `examples/cpu/
+/// sand_water_saturation.rs`). `RankineMaterial::ice` builds raw values, so
+/// its call sites (`phase_states_gui.rs`, `phase_states_headless.rs`) assign
+/// the result raw; converting it divided the damping by ~917 there.
 pub fn q_factor_elastic_viscosity_pa_s(
     shear_modulus_pa: f32,
     quality_factor: f32,
@@ -84,28 +50,22 @@ pub fn q_factor_elastic_viscosity_pa_s(
     2.0 * shear_modulus_pa / (quality_factor * omega)
 }
 
-/// Real, cited P-wave quality factor for COLD polycrystalline ice (not
-/// temperate ice near 0C -- see this constant's own disclosed limitation
-/// below). Two independent real sources: Bentley & Kohnen (1976), "Seismic
-/// refraction measurements of internal friction in Antarctic ice," Journal
-/// of Geophysical Research 81(9):1519-1526, measured Q_P ~= 715 at 136 Hz,
-/// Byrd Station, ~-28C, 100-500m depth; Peters et al. (2012), "Seismic
-/// attenuation in glacial ice: A proxy for englacial temperature," JGR
-/// Earth Surface, independently cross-checks this with Q_P ~ 500-1700 for
-/// cold Antarctic ice at the same site. Representative pick near the
-/// lower/typical end of both, not the extreme.
+/// P-wave quality factor of cold polycrystalline ice. Bentley & Kohnen
+/// (1976), "Seismic refraction measurements of internal friction in
+/// Antarctic ice," Journal of Geophysical Research 81(9):1519-1526, measured
+/// Q_P ~= 715 at 136 Hz (Byrd Station, ~-28C, 100-500 m depth); Peters et al.
+/// (2012), "Seismic attenuation in glacial ice: A proxy for englacial
+/// temperature," JGR Earth Surface, report Q_P ~ 500-1700 for cold Antarctic
+/// ice at the same site. A typical value near the low end of both.
 ///
-/// Disclosed limitation: Q drops sharply toward the melting point (grain-
-/// boundary sliding/premelting become dominant loss mechanisms) -- the
-/// same Peters et al. 2012 review reports Q_P ~ 65 for TEMPERATE ice near
-/// 0C (Athabasca Glacier), an order of magnitude lower. This constant
-/// represents `RankineMaterial::ice()`'s own -10C reference point (cold,
-/// not temperate), so real ice very close to 0C would genuinely dissipate
-/// energy faster than this value implies.
+/// Limitation: Q drops sharply toward the melting point (grain-boundary
+/// sliding and premelting dominate); Peters et al. 2012 report Q_P ~ 65 for
+/// temperate ice near 0C (Athabasca Glacier). This matches `ice()`'s -10C
+/// reference, so ice near 0C dissipates faster than it implies.
 pub const ICE_QUALITY_FACTOR_Q: f32 = 700.0;
 
 /// The real measurement frequency Bentley & Kohnen (1976) used -- see
-/// `ICE_QUALITY_FACTOR_Q`'s own doc. Pair the two together, never `Q`
+/// `ICE_QUALITY_FACTOR_Q`'s doc. Pair the two together, never `Q`
 /// alone, at a different reference frequency.
 pub const ICE_Q_REFERENCE_FREQUENCY_HZ: f32 = 136.0;
 
@@ -152,25 +112,18 @@ pub struct RankineMaterial {
     /// Positive values reduce σ_t as damage accumulates.
     /// Typical: 0.5–5.0 -- higher = more brittle (strength collapses fast after first crack).
     pub softening_rate: f32,
-    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
-    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
-    /// -- raw if they came from `lame_from_young`, `SimConfig::visc_from_si`
-    /// if from `lame_from_si` -- see `q_factor_elastic_viscosity_pa_s`'s
-    /// own doc) -- same mechanism, same formula, as
-    /// `DruckerPragerMaterial::elastic_viscosity`. Zero cost, zero behavior
-    /// change at `0.0` (every preset's default, same convention as sand).
+    /// Kelvin-Voigt viscous damping on the deviatoric elastic strain rate
+    /// (SI Pa.s, converted like `lambda`/`mu`: raw after `lame_from_young`,
+    /// `SimConfig::visc_from_si` after `lame_from_si`, see
+    /// `q_factor_elastic_viscosity_pa_s`), the formula of
+    /// `DruckerPragerMaterial::elastic_viscosity`. `0.0` (every preset's
+    /// default) = off.
     ///
-    /// Without this, a pure elastic-plus-brittle-fracture model has NO
-    /// energy dissipation at all below the fracture threshold -- real
-    /// solids are never purely elastic (internal friction from dislocation
-    /// motion and grain-boundary sliding measurably dissipates energy in
-    /// every real material, reported as a seismic/ultrasonic quality
-    /// factor Q -- see `q_factor_elastic_viscosity_pa_s`). Confirmed live
-    /// 2026-08-28: `ice()` with `elastic_viscosity=0.0` bounces near-
-    /// elastically off the ground on any sub-fracture impact, and a
-    /// borderline impact can look like a wrong bounce-then-partial-
-    /// fracture hybrid (some region locally exceeds the yield surface and
-    /// softens while the rest of the body stays perfectly elastic).
+    /// Without it an elastic-plus-brittle-fracture model dissipates nothing
+    /// below the fracture threshold, while real solids lose energy to
+    /// internal friction (measured as Q): `ice()` at 0.0 bounces almost
+    /// elastically on any sub-fracture impact, and a borderline impact looks
+    /// like a bounce with partial fracture.
     pub elastic_viscosity: f32,
 }
 
@@ -189,11 +142,9 @@ impl RankineMaterial {
         }
     }
 
-    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
-    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
-    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material use
-    /// [`Self::from_physical`] (needs a `&SimConfig` and real `rho_kg_m3`).
+    /// **Grid units, not pascals**: calls [`lame_from_young`] directly and
+    /// never touches `dx_meters` or density. For an SI material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and `rho_kg_m3`).
     pub fn from_young_modulus(
         young_modulus: f32,
         poisson_ratio: f32,
@@ -210,7 +161,7 @@ impl RankineMaterial {
     /// tensile=500 gives an 18-50% tensile/E ratio at the values this engine's own tests
     /// pass it, vs. real brittle rock's tensile-to-modulus ratio of ~2-3e-4 --
     /// granite/basalt: E~50 GPa, tensile strength~10-15 MPa (Goodman 1989, "Introduction
-    /// to Rock Mechanics"). Real, fast softening_rate=2.0 (brittle failure propagates
+    /// to Rock Mechanics"). Fast softening_rate=2.0 (brittle failure propagates
     /// quickly) unchanged.
     pub fn stiff_brittle(young_modulus: f32, poisson_ratio: f32) -> Self {
         const ROCK_TENSILE_TO_MODULUS_RATIO: f32 = 2.5e-4;
@@ -226,7 +177,7 @@ impl RankineMaterial {
     /// `stiff_brittle` above. Real cortical bone tolerates a much higher tensile-to-
     /// modulus ratio than rock (tougher composite material): E~15-20 GPa, tensile
     /// strength~100-150 MPa, ratio ~7e-3 (Currey 2002, "Bones: Structure and
-    /// Mechanics"). Real, slower softening_rate=1.0 (bone fails less abruptly than
+    /// Mechanics"). Slower softening_rate=1.0 (bone fails less abruptly than
     /// rock) unchanged.
     pub fn high_tensile(young_modulus: f32, poisson_ratio: f32) -> Self {
         const BONE_TENSILE_TO_MODULUS_RATIO: f32 = 7.0e-3;
@@ -258,7 +209,7 @@ impl RankineMaterial {
 
     /// Limestone regime: sedimentary chemical rock. Real E range 4.6-12 GPa,
     /// tensile strength 18.00-38.76 MPa (same Xu 2016 source as `sandstone`) --
-    /// genuinely softer AND relatively stronger-in-tension-per-modulus than
+    /// softer AND relatively stronger-in-tension-per-modulus than
     /// sandstone, a real distinguishing feature, not the same rock renamed.
     /// Representative pick E~8 GPa, tensile~25 MPa.
     pub fn limestone(young_modulus: f32, poisson_ratio: f32) -> Self {
@@ -273,13 +224,13 @@ impl RankineMaterial {
 
     /// Shale regime: sedimentary clastic, fissile/foliated. Real E range 15-36.9 GPa
     /// (avg ~27 GPa, foliated), tensile strength ~168 MPa average ACROSS foliation
-    /// (same Xu 2016 source) -- real, cited, but an HONEST, DISCLOSED limitation:
+    /// (same Xu 2016 source) -- cited, but an HONEST, DISCLOSED limitation:
     /// real shale is strongly anisotropic (splits far more easily ALONG bedding
     /// planes than across them; the source's own "laminated shale shows lower
     /// values" note, exact number not given). This preset is isotropic (this
     /// material's yield surface has no per-particle orientation field), so it
     /// necessarily represents the ACROSS-foliation (stronger) direction -- real
-    /// bedding-plane weakness is a genuinely separate, not-yet-built mechanism
+    /// bedding-plane weakness is a separate, not-yet-built mechanism
     /// (see the geosphere-taxonomy memory's "anisotropic foliated rock" gap), not
     /// something this single-number preset can honestly claim to capture.
     pub fn shale(young_modulus: f32, poisson_ratio: f32) -> Self {
@@ -292,51 +243,31 @@ impl RankineMaterial {
         )
     }
 
-    /// Ice regime: same ratio-not-absolute pattern as the rock presets above --
-    /// the real, defining reason ice belongs HERE, not in `StomakhinMaterial`
-    /// (snow): snow's whole constitutive law is compaction-hardening (crushing
-    /// trapped air pockets between ice crystals, a real, distinct porous-media
-    /// mechanism), which solid, non-porous ice does not have -- real ice is
-    /// brittle, it cracks rather than crushes, the same failure MODE this
-    /// material already models for rock/bone. Real E for polycrystalline ice:
-    /// 9.0-11.2 GPa at -10C (randomly oriented polycrystals ~9.0 GPa at -5C;
-    /// granular polycrystalline ice 9.3 GPa at 263K) -- representative pick
-    /// E~9.0 GPa, the lower/typical end. Real tensile strength: 0.7-3.1 MPa
-    /// over -10C to -20C (Petrovic 2003, "Review: mechanical properties of ice
-    /// and snow," J. Materials Science 38), general engineering estimate ~1 MPa
-    /// -- ratio ~1.1e-4, the same order of magnitude as rock's 2.5e-4 (both
-    /// brittle crystalline solids, a real cross-check, not a coincidence).
-    /// softening_rate=2.0 matching rock/sandstone/shale's own "fails fast, no
-    /// separately-cited reason to differ" convention -- ice's own real fracture
-    /// propagation is brittle/abrupt like rock, not bone's tougher, slower mode.
+    /// Ice regime, with the same strength-to-modulus-ratio pattern as the rock
+    /// presets. Ice belongs here, not in `StomakhinMaterial` (snow): snow's law
+    /// is compaction hardening (crushing air pockets between crystals), which
+    /// solid, non-porous ice does not have; ice cracks rather than crushes, the
+    /// failure mode this material models for rock and bone. E for
+    /// polycrystalline ice is 9.0-11.2 GPa at -10C (random polycrystals ~9.0
+    /// GPa at -5C; granular polycrystalline ice 9.3 GPa at 263 K); 9.0 GPa is
+    /// the typical low end. Tensile strength 0.7-3.1 MPa from -10C to -20C
+    /// (Petrovic 2003, "Review: mechanical properties of ice and snow," J.
+    /// Materials Science 38), ~1 MPa as an engineering estimate: a ratio ~1.1e-4,
+    /// the order of rock's 2.5e-4. softening_rate=2.0 as for the rocks: ice
+    /// fractures abruptly, not like bone.
     ///
-    /// Real, disclosed engine limitation this preset inherits, not a new one:
-    /// explicit MPM must resolve the elastic wave speed `c = sqrt(E/rho)` --
-    /// at E=9 GPa and real ice density this is genuinely fast, ~3130 m/s (the
-    /// bar-wave speed from E alone). Real cross-check: this lands almost
-    /// exactly on ice's own directly-measured laboratory rod/bar longitudinal
-    /// speed, 3163 m/s (Northwood 1947, "Propagation of Elastic Waves in
-    /// Ice"), the same wave mode `sqrt(E/rho)` represents -- full-body deep-
-    /// ice P-wave measurements run somewhat higher (3410-3878 m/s, a
-    /// different wave mode that also depends on Poisson's ratio, not just
-    /// E). A scene using this preset needs a correspondingly fine substep
-    /// budget, same real stiffness-vs-explicit-timestep tradeoff already
-    /// documented for the `stiff_brittle`/`sandstone`/`shale` rock presets
-    /// above (which also use real, unreduced GPa-scale stiffness) -- not
-    /// reduced here either, for the same reason: this preset represents real
-    /// ice, not a demo-scaled stand-in.
+    /// Explicit MPM must resolve `c = sqrt(E/rho)`, ~3130 m/s here, close to
+    /// ice's measured bar longitudinal speed, 3163 m/s (Northwood 1947,
+    /// "Propagation of Elastic Waves in Ice"; deep-ice P waves, a different
+    /// mode, run 3410-3878 m/s). Scenes need a correspondingly fine substep,
+    /// as for `stiff_brittle`/`sandstone`/`shale`; the stiffness is not
+    /// reduced.
     ///
-    /// Leaves `elastic_viscosity` at its default `0.0` -- this constructor
-    /// (like every preset above) is a unit-agnostic function of `young_modulus`
-    /// alone, with no real damping baked in (same reason `DruckerPragerMaterial`'s
-    /// own presets never bake in `elastic_viscosity` either -- see
-    /// `granular::sand::small_strain_elastic_viscosity_pa_s`'s own doc and
-    /// `examples/cpu/sand_water_saturation.rs`'s real call site for the
-    /// established pattern). A caller that needs real damping (any scene
-    /// putting this preset under real gravity/impacts) should set it
-    /// explicitly via struct-update syntax -- assign the raw SI Pa.s value
-    /// directly, no `SimConfig` conversion (see
-    /// `q_factor_elastic_viscosity_pa_s`'s own doc for why):
+    /// `elastic_viscosity` stays `0.0`: presets are functions of
+    /// `young_modulus` alone (as `DruckerPragerMaterial`'s, see
+    /// `examples/cpu/sand_water_saturation.rs`). A scene under gravity or
+    /// impacts sets it, raw SI Pa.s, no `SimConfig` conversion (see
+    /// `q_factor_elastic_viscosity_pa_s`):
     /// ```ignore
     /// let g = young_modulus / (2.0 * (1.0 + poisson_ratio));
     /// let eta_pa_s = q_factor_elastic_viscosity_pa_s(g, ICE_QUALITY_FACTOR_Q, ICE_Q_REFERENCE_FREQUENCY_HZ);
@@ -405,21 +336,12 @@ impl MaterialModel for RankineMaterial {
     }
 
     /// Corotated elastic Kirchhoff stress plus a Kelvin-Voigt viscous term
-    /// on the deviatoric strain rate -- see `elastic_viscosity`'s own doc.
-    /// Zero cost, zero behavior change when `elastic_viscosity == 0.0`
-    /// (every existing preset/scene before 2026-08-28). Same formula as
-    /// `DruckerPragerMaterial::kirchhoff_stress`'s own Kelvin-Voigt dashpot,
-    /// and `ViscoelasticMaterial::kirchhoff_stress`'s own -- `tau_v =
-    /// eta*D_dev` (NOT `2*eta*D_dev`) is this engine's one, deliberate,
-    /// already-tested convention everywhere (see `ViscoelasticMaterial`'s
-    /// own `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`
-    /// test) -- do NOT add a factor of 2 here; a real Q-vs-target
-    /// discrepancy found 2026-08-29 (independent deep research +
-    /// independent hand derivation + a direct numeric cyclic-oscillation
-    /// test, `measured_q_factor_matches_target_after_the_conversion_fix`
-    /// below) was fixed at its actual source instead --
-    /// `q_factor_elastic_viscosity_pa_s`'s own conversion formula, not this
-    /// stress application -- see that function's own doc for why.
+    /// on the deviatoric strain rate -- see `elastic_viscosity`'s doc.
+    /// Zero when `elastic_viscosity == 0.0`. `tau_v = eta*D_dev`, without a
+    /// factor of 2, the convention of `DruckerPragerMaterial` and
+    /// `ViscoelasticMaterial` (locked by
+    /// `viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`); the
+    /// factor lives in `q_factor_elastic_viscosity_pa_s`'s conversion.
     fn corotated_lame_params(&self) -> Option<(f32, f32)> {
         if self.elastic_viscosity == 0.0 {
             Some((self.lambda, self.mu))
@@ -517,12 +439,10 @@ impl MaterialModel for RankineMaterial {
             cell_width,
             material_cfl,
         );
-        // Same explicit-viscous-diffusion stability bound
-        // `DruckerPragerMaterial::timestep_bound` already uses for its own
-        // Kelvin-Voigt term -- without this, `elastic_viscosity` adds real
-        // stiffness the substep selector never sees (measured directly for
-        // sand, 2026-08-25: an unbounded viscous term made peak speed jump
-        // instead of damping).
+        // The explicit viscous-diffusion bound of
+        // `DruckerPragerMaterial::timestep_bound` for the Kelvin-Voigt term:
+        // without it the substep selector does not see `elastic_viscosity`'s
+        // stiffness.
         let viscous_dt = if self.elastic_viscosity > 0.0 {
             let density = density.max(1.0e-6);
             let kinematic = self.elastic_viscosity / density;
@@ -547,13 +467,9 @@ mod marginal_yield_tests {
     use super::*;
     use crate::Particle;
 
-    /// Isolates whether `update_particle`'s return mapping matches this
-    /// material's OWN documented tensile-cutoff criterion (`max(tau1,tau2) <=
-    /// t_eff`) exactly -- same discipline as `sand.rs`/`von_mises.rs`'s own
-    /// `marginal_yield_tests`. `RankineMaterial` had zero test comparing its
-    /// return mapping to an exact analytical prediction before this (only
-    /// stability + softening-direction checks existed, confirmed via the
-    /// 2026-07-07 citation audit).
+    /// Checks that `update_particle`'s return mapping matches this material's
+    /// documented tensile cutoff (`max(tau1,tau2) <= t_eff`) exactly, like
+    /// `sand.rs`/`von_mises.rs`'s `marginal_yield_tests`.
     fn run_one_step(mat: &RankineMaterial, sigma: Vec2, damage: f32) -> (Vec2, f32) {
         let mut p = Particle::zeroed();
         p.deformation_gradient = Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y));
@@ -624,8 +540,7 @@ mod marginal_yield_tests {
         let (sigma_after, damage_after) = run_one_step(&mat, sigma, 0.0);
 
         // The projected principal stress must land EXACTLY at tensile_strength
-        // (damage=0, so t_eff=tensile_strength exactly -- no floor/saturation
-        // complication from the 2026-07-07 ratchet fix).
+        // (damage = 0, so t_eff = tensile_strength, no floor or saturation).
         let a = 2.0 * mat.mu + mat.lambda;
         let eps_after_x = sigma_after.x.ln();
         let eps_after_y = sigma_after.y.ln();
@@ -644,9 +559,8 @@ mod marginal_yield_tests {
         // (true,false) branch only rewrites tau.x). Because stress and strain
         // are coupled through lambda, inverting back to strain space changes
         // BOTH eps.x and eps.y even though only tau.x was projected -- eps.y
-        // changing is real, correct coupled elasticity, not a bug (confirmed:
-        // an earlier version of this test wrongly asserted sigma.y itself must
-        // stay fixed, and failed -- the fix is checking the right invariant).
+        // changing is correct coupled elasticity, not a bug, so the invariant
+        // to check is tau.y, not sigma.y.
         let original_tau_y = mat.lambda * eps_x_for_target_tau_x(&mat, 1.5 * mat.tensile_strength)
             + a * sigma.y.ln();
         assert!(
@@ -807,7 +721,7 @@ mod damping_tests {
     use super::*;
     use crate::Particle;
 
-    /// `q_factor_elastic_viscosity_pa_s` must return a real, finite,
+    /// `q_factor_elastic_viscosity_pa_s` must return a finite,
     /// positive SI viscosity for the cited real ice Q-factor -- basic
     /// sanity floor before trusting the constant in a live scene.
     #[test]
@@ -839,33 +753,15 @@ mod damping_tests {
         );
     }
 
-    /// Real, direct empirical check of `elastic_viscosity`'s actual damping
-    /// against its CITED target Q -- not a sanity floor like the two tests
-    /// above, a genuine measurement. Forces one particle through a full
-    /// cycle of pure-shear oscillation (`F(t) = I + A*sin(wt)*E`, E
-    /// symmetric and traceless so the corotated rotation R=I EXACTLY --
-    /// same construction `CorotatedMaterial`'s own
-    /// `small_shear_strain_matches_hookes_law` test uses to stay in the
-    /// exact small-strain linear-elasticity limit), reads `kirchhoff_stress`
-    /// at many samples, and numerically integrates the real dissipated
-    /// energy per cycle via `tau:D` (the elastic term's own contribution to
-    /// this integral is exactly zero over a full cycle -- a standard
-    /// property of any conservative term, not assumed away). Standard
-    /// viscoelastic definition: `Q = 2*pi*E_max/delta_E_cycle`.
-    ///
-    /// Real regression guard (2026-08-29) against reintroducing the bug
-    /// this same test originally caught: `q_factor_elastic_viscosity_pa_s`'s
-    /// naive `G/(Q*omega)` (matching the textbook `eta=2*zeta*G/omega`
-    /// relation for a fully-matched `sigma=2G*eps+2*eta*D` tensor form) was
-    /// silently wrong for THIS engine's actual `eta*D_dev` (no factor of 2)
-    /// stress convention -- measured, via this exact test, to give a Q 2x
-    /// the cited target (half the intended damping). Found via
-    /// independent deep research, confirmed by hand
-    /// derivation, then fixed at the conversion function itself (now
-    /// `2*G/(Q*omega)`) rather than changing the stress formula, since
-    /// `ViscoelasticMaterial`'s own `eta*D_dev` convention is deliberate
-    /// and already locked by its own test
-    /// (`viscous_term_matches_eta_times_deviatoric_strain_rate_exactly`).
+    /// Measures `elastic_viscosity`'s damping against its cited target Q. One
+    /// particle goes through a full cycle of pure shear (`F(t) = I +
+    /// A*sin(wt)*E`, E symmetric and traceless so the corotated rotation is
+    /// exactly I, as in `CorotatedMaterial`'s `small_shear_strain_matches_
+    /// hookes_law`); the energy dissipated per cycle is integrated from
+    /// `tau:D` (the elastic part integrates to zero over a cycle), and `Q =
+    /// 2*pi*E_max/delta_E_cycle`. It must match the target: the textbook
+    /// conversion `G/(Q*omega)` gives twice the Q (see
+    /// `q_factor_elastic_viscosity_pa_s`).
     #[test]
     fn measured_q_factor_matches_target_after_the_conversion_fix() {
         let mu = 4.0e9_f32;
@@ -956,10 +852,8 @@ mod damping_tests {
         );
     }
 
-    /// `elastic_viscosity == 0.0` (every preset's default) must reproduce
-    /// the exact pre-2026-08-28 pure-elastic stress -- a real regression
-    /// guard that adding the damping mechanism did not change default
-    /// behavior for any existing preset/scene.
+    /// `elastic_viscosity == 0.0` (every preset's default) reproduces the pure
+    /// elastic stress.
     #[test]
     fn zero_elastic_viscosity_is_bit_identical_to_pure_elastic_stress() {
         let mat = RankineMaterial::new(2000.0, 3000.0, 100.0, 1.0);
@@ -985,12 +879,9 @@ mod rock_preset_tests {
     use super::*;
     use crate::Particle;
 
-    /// Real, cited rock presets must be genuinely DIFFERENT materials, not the
-    /// same numbers under different names -- checks the real distinguishing
-    /// feature each preset's own doc claims: limestone is softer (lower E) than
-    /// sandstone AND relatively stronger in tension per unit stiffness (higher
-    /// tensile-to-modulus ratio), a real geotechnical distinction (Xu 2016), not
-    /// an assumption.
+    /// The rock presets are different materials, not renamed numbers:
+    /// limestone is softer (lower E) than sandstone and stronger in tension
+    /// per unit stiffness (higher tensile-to-modulus ratio, Xu 2016).
     #[test]
     fn sandstone_and_limestone_presets_are_genuinely_distinct() {
         let sandstone = RankineMaterial::sandstone(20.0e9, 0.25);
@@ -1033,25 +924,16 @@ mod rock_preset_tests {
         }
     }
 
-    /// Real Tier-0 closure (2026-09-02): the two tests above only compare
-    /// preset PARAMETERS (`tensile_strength` values/ratios) -- real, but
-    /// weaker evidence than watching the actual EMERGENT fracture behavior
-    /// `rock_fracture.rs`'s own live demo shows (repeated strikes, weaker
-    /// rock visibly damages, stiffer rock doesn't). This closes that gap
-    /// with a real, dynamic, automated check through `update_particle`'s
-    /// own return mapping, same technique `marginal_yield_tests::run_one_
-    /// step` (this file, sibling module) already uses for a single preset.
+    /// Emergent fracture, not only preset parameters, through
+    /// `update_particle`'s return mapping (the technique of
+    /// `marginal_yield_tests::run_one_step`), as `rock_fracture.rs` shows it
+    /// on screen.
     ///
-    /// `sandstone`/`limestone` both funnel through the SAME
-    /// `from_young_modulus` at the SAME (E, nu) here, so they share
-    /// IDENTICAL lambda/mu -- the only real difference is `tensile_strength`
-    /// (sandstone ratio 1.0e-3 vs limestone's real, cited, stronger-per-
-    /// modulus 3.1e-3, Xu 2016): at E=20 GPa, sandstone=20 MPa,
-    /// limestone=62 MPa. A single, IDENTICAL real tensile stress state
-    /// (35 MPa, strictly between the two) must therefore fracture
-    /// (damage-accumulate) sandstone while leaving limestone elastic --
-    /// the real, live comparative claim the example demonstrates
-    /// visually, now checked automatically.
+    /// `sandstone` and `limestone` go through the same `from_young_modulus` at
+    /// the same (E, nu), so share lambda and mu; only `tensile_strength`
+    /// differs (ratio 1.0e-3 against limestone's 3.1e-3, Xu 2016): at E = 20
+    /// GPa, 20 MPa and 62 MPa. One tensile stress state of 35 MPa, between
+    /// them, must damage sandstone and leave limestone elastic.
     #[test]
     fn weaker_rock_fractures_under_a_load_stiffer_rock_survives() {
         let e = 20.0e9;

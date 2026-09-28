@@ -23,18 +23,13 @@ fn gpu_available() -> bool {
     .is_ok()
 }
 
-/// Real, white-box verification of the device-lost guard added for emerge
-/// issue #10 (see project memory gpu_readback_error_path_bug_issue10 -- the
-/// root cause, a genuine `Out of Memory` device loss under sustained
-/// slow-backend load, was confirmed with hard evidence via a real
-/// `device_lost_callback` firing; forcing that same OOM condition again just
-/// to test the GUARD would repeat the same heavy, machine-stressing
-/// reproduction unnecessarily). This directly injects a lost reason into the
-/// private `device_lost` flag exactly as the real callback would, then
-/// proves three things: (1) `device_lost_reason()` reports it, (2)
-/// `step_frame()` becomes a real no-op (frame_index does not advance,
-/// proving it didn't just avoid panicking by luck), (3) the blocking sync
-/// methods are also safe no-ops (don't panic touching a "dead" device).
+/// White-box check of the device-lost guard (issue #10, whose root cause was
+/// an `Out of Memory` device loss under sustained load, seen through
+/// `device_lost_callback`). Rather than force that OOM again, this injects
+/// a lost reason into the private `device_lost` flag as the callback would,
+/// then checks that (1) `device_lost_reason()` reports it, (2) `step_frame()`
+/// is a no-op (frame_index does not advance), and (3) the blocking sync
+/// methods are safe no-ops on a dead device.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn step_frame_becomes_safe_noop_once_device_lost() {
@@ -96,23 +91,18 @@ fn step_frame_becomes_safe_noop_once_device_lost() {
     sim.sync_particle_ranges_blocking(&ranges);
 }
 
-/// Real repro of issue #10's ACTUAL failure mode, found via real windows-latest
-/// CI evidence (not speculation): re-enabling the crash-repro test showed that,
-/// under sustained load, wgpu invalidates/destroys buffers tied to the device
-/// BEFORE this instance's `device_lost_callback` fires -- the readback path's
-/// `.unmap()` call then hits an uncaptured Validation error naming the destroyed
-/// resource, and wgpu's default handler panics unconditionally
-/// (`default_error_handler`: `panic!("wgpu error: {err}")`, confirmed by reading
-/// wgpu-27.0.1's source directly).
+/// Reproduces issue #10's failure mode seen on windows-latest CI: under
+/// sustained load, wgpu destroys buffers tied to the device before this
+/// instance's `device_lost_callback` fires; the readback path's `.unmap()`
+/// then hits an uncaptured Validation error naming the destroyed resource,
+/// and wgpu's default handler panics (`default_error_handler`:
+/// `panic!("wgpu error: {err}")`, wgpu-27.0.1).
 ///
-/// Forcing a real 9-minute sustained-load OOM again just to hit this exact race
-/// would repeat the same heavy, machine-stressing reproduction unnecessarily --
-/// this reproduces the SAME call path directly: destroy the readback staging
-/// buffer ourselves (exactly what the device-loss cascade does to it), then call
-/// `abandon_readback()`, the exact function whose `.unmap()` call panicked on
-/// real CI. Before the `on_uncaptured_error` fix this would panic and abort the
-/// test process; with it installed, it must set `device_lost` instead -- no
-/// panic, `device_lost_reason()` reports it.
+/// Instead of a 9-minute sustained-load OOM, this takes the same call path
+/// directly: destroy the readback staging buffer (as the device-loss cascade
+/// does), then call `abandon_readback()`, whose `.unmap()` panicked on CI.
+/// With `on_uncaptured_error` installed it must set `device_lost` instead:
+/// no panic, and `device_lost_reason()` reports it.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn uncaptured_destroyed_buffer_error_sets_device_lost_not_a_panic() {
@@ -175,18 +165,13 @@ fn uncaptured_destroyed_buffer_error_sets_device_lost_not_a_panic() {
     );
 }
 
-/// Real proof that the OPT-IN path works -- this is the path LP's actual
-/// production code needs (`World::with_device`, since LP shares its device
-/// with a renderer and has no device-lost handling of its own, confirmed by
-/// inspection of LP's `src/main.rs`). Proves `enable_device_lost_detection()`
-/// makes a `with_device()` instance behave identically to a `new()`-
-/// constructed one for reporting purposes. NOTE: this does NOT independently
-/// prove `with_device()` never silently registers its own callback -- that
-/// would need a real device-loss trigger to distinguish "no callback
-/// registered" from "callback registered but nothing happened yet," which
-/// this test doesn't force (see the heavy stress-test caution elsewhere in
-/// this file). Static code inspection is what actually backs that claim:
-/// `with_device()`'s body contains no `set_device_lost_callback` call.
+/// The opt-in path, which LP needs (`World::with_device`: LP shares its
+/// device with a renderer and has no device-lost handling of its own).
+/// `enable_device_lost_detection()` makes a `with_device()` instance report
+/// like a `new()`-constructed one. It does not show that `with_device()`
+/// never registers its own callback (telling "no callback" from "callback,
+/// nothing happened yet" needs a real device loss); that rests on
+/// `with_device()`'s body containing no `set_device_lost_callback` call.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn with_device_instances_need_explicit_opt_in_for_device_lost_detection() {

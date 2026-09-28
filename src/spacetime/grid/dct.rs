@@ -1,20 +1,13 @@
-//! Minimal 2D discrete cosine transform (DCT-II forward / its exact
-//! algebraic inverse), used by `pressure.rs`'s exact constant-density
-//! Poisson solve (see that module's own doc for why an exact transform-based
-//! solve replaced an iterative Jacobi/Gauss-Seidel one).
+//! Minimal 2D discrete cosine transform (DCT-II forward and its exact
+//! inverse), used by `pressure.rs`'s exact constant-density Poisson solve
+//! (see that module for why a transform-based solve replaced an iterative
+//! Jacobi/Gauss-Seidel one).
 //!
-//! O(N log N) per row/column via `rustfft`, replacing an earlier direct
-//! O(N^2) summation. Real motivation, not a micro-optimization for its own
-//! sake: found live 2026-08-09 via direct per-phase timing on
-//! `fluid_pressure_projection_gui.rs` that this transform was 88% of the
-//! total per-substep pressure-projection cost (~17ms of ~19.4ms on a 63x61
-//! active region) -- the actual reason that demo, which structurally has NO
-//! acoustic-CFL substep explosion at all (`eos_stiffness=0`,
-//! incompressibility comes from this Poisson solve instead), still only ran
-//! at ~2fps. `rustfft` (not a hand-rolled arbitrary-length FFT) specifically
-//! because the active-region bounding box -- this transform's own N -- is
-//! whatever size the fluid body currently occupies, not a power of two
-//! chosen in advance.
+//! O(N log N) per row/column via `rustfft`. A direct O(N^2) summation was
+//! measured at 88% of the per-substep pressure-projection cost (~17 ms of
+//! ~19.4 ms on a 63x61 active region in `fluid_pressure_projection_gui.rs`).
+//! `rustfft` rather than a hand-rolled FFT because N is the active-region
+//! bounding box, whatever size the fluid occupies, not a power of two.
 //!
 //! Construction: zero-pad the length-N real signal to 2N, take a 2N-point
 //! complex FFT, and read the DCT-II coefficients off a per-bin phase twiddle
@@ -23,12 +16,9 @@
 //! `cos(theta) = Re(exp(-i*theta))` and splitting the phase). The inverse
 //! (DCT-III) is the same relation solved the other way: a padded,
 //! phase-twiddled spectrum fed through an unnormalized inverse 2N-point FFT.
-//! Both derivations verified BY HAND for N=1 and N=2 (not just asserted) and
-//! then checked numerically against the OLD O(N^2) direct-sum reference
-//! (kept as a `#[cfg(test)]`-only oracle) across even/odd/prime sizes,
-//! including a first version that was WRONG (a mis-remembered "Makhoul"
-//! reordering with a spurious factor of 2, caught immediately by this same
-//! test suite, not shipped) -- this is the corrected, re-derived version.
+//! Both derivations are checked by hand for N=1 and N=2 and numerically
+//! against the direct O(N^2) sum (a `#[cfg(test)]` oracle) for even, odd
+//! and prime sizes.
 
 use std::cell::RefCell;
 
@@ -36,17 +26,11 @@ use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
 
 thread_local! {
-    // Real, necessary reuse, not a micro-optimization: found live 2026-08-09
-    // that building a FRESH `FftPlanner` per call (the first version of this
-    // fix) gave ZERO fps improvement over the old O(N^2) code, despite
-    // passing every correctness test -- planning a non-power-of-two length
-    // (this active region's own size, e.g. 2*61=122) does real, repeated
-    // setup work internally (Bluestein/mixed-radix strategy construction),
-    // and `pressure.rs` calls this every substep. `rustfft`'s own planner
-    // caches plans BY LENGTH within one planner instance -- this thread-
-    // local keeps ONE instance alive for the process's lifetime so that
-    // cache actually pays off across substeps/frames instead of being
-    // rebuilt and discarded every single call.
+    // One planner per thread for the process lifetime: `rustfft` caches plans
+    // by length inside a planner instance, and planning a non-power-of-two
+    // length (e.g. 2*61 = 122) does real setup work (Bluestein/mixed-radix).
+    // `pressure.rs` calls this every substep; a fresh planner per call
+    // measured no faster than the O(N^2) sum.
     static PLANNER: RefCell<FftPlanner<f32>> = RefCell::new(FftPlanner::new());
 }
 
@@ -108,7 +92,7 @@ fn idct_1d_fast(x_hat: &[f32], ifft_2n: &dyn rustfft::Fft<f32>) -> Vec<f32> {
 /// (`data[x*ny+y]`). Rectangular, not just square -- real requirement so
 /// `pressure.rs` can scope this to a small bounding box of the actually
 /// active fluid region instead of the full (possibly sparse, possibly huge)
-/// grid resolution -- see that module's own doc for why locking this to a
+/// grid resolution -- see that module's doc for why locking this to a
 /// dense full-domain transform would be a real regression against this
 /// engine's sparse-grid design.
 pub(super) fn dct2_forward(data: &[f32], nx: usize, ny: usize) -> Vec<f32> {
@@ -184,13 +168,10 @@ mod tests {
         idct_1d_fast(x_hat, fft.as_ref())
     }
 
-    /// Real, direct numerical check that the FFT-based forward transform
-    /// agrees with the direct O(N^2) reference -- for even, odd, AND prime
-    /// sizes (the active-region bounding box in `pressure.rs` is an
-    /// arbitrary runtime size, not chosen to be FFT-friendly), not just
-    /// round-trip self-consistency (which a consistently-wrong pair could
-    /// still pass -- exactly how the first, wrong version of this file
-    /// would NOT have been caught by round-trip alone).
+    /// The FFT-based forward transform agrees with the direct O(N^2)
+    /// reference for even, odd and prime sizes (the active region in
+    /// `pressure.rs` has an arbitrary runtime size). Round-trip alone is not
+    /// enough: a consistently wrong forward/inverse pair would pass it.
     #[test]
     fn fft_dct_matches_direct_sum_reference_for_various_sizes() {
         for n in [1usize, 2, 3, 4, 5, 7, 8, 11, 13, 16, 31, 61, 63] {
@@ -206,8 +187,7 @@ mod tests {
         }
     }
 
-    /// Real, direct numerical check that `idct_1d_fast` recovers the
-    /// original signal for the same size sweep.
+    /// `idct_1d_fast` recovers the original signal for the same size sweep.
     #[test]
     fn dct_round_trip_recovers_original_signal_1d() {
         for n in [1usize, 2, 3, 4, 5, 7, 8, 11, 13, 16, 31, 61, 63] {
@@ -239,11 +219,9 @@ mod tests {
         }
     }
 
-    /// Real check that rectangular (non-square) domains work too -- the
-    /// whole point of generalizing past a fixed `n x n` was so `pressure.rs`
-    /// can scope this to an arbitrary bounding box, not just a square one.
-    /// Deliberately includes odd/prime dimensions (5, 11), matching the
-    /// live-observed 63x61 active-region size this fix was measured against.
+    /// Rectangular (non-square) domains, so `pressure.rs` can use an
+    /// arbitrary bounding box, including odd/prime dimensions (5, 11) like a
+    /// 63x61 active region.
     #[test]
     fn dct2_round_trip_recovers_original_signal_rectangular() {
         let (nx, ny) = (5, 11);

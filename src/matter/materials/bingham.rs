@@ -45,32 +45,24 @@ pub struct BinghamFluidMaterial {
     /// Lower bound on the Tait EOS pressure; negative values permit limited
     /// isotropic tension. Default: 0.0 (no tensile pressure).
     ///
-    /// HONEST DISCLOSURE (audit 2026-08-15): 0.0 is a free numerical parameter,
-    /// chosen empirically for this engine, not a physical consequence of Bingham
-    /// rheology and not a literature-calibrated value for mud or another yield-
-    /// stress material. The classical model separates total stress as
-    /// `sigma_total = -p I + sigma_dev` and applies the Bingham yield condition
-    /// to `sigma_dev` (Roquet & Saramito, J. Non-Newtonian Fluid Mech. 155,
-    /// 2008, Eqs. 1-2, doi:10.1016/j.jnnfm.2007.12.008); it does not prescribe a
-    /// tensile-pressure cutoff. Unlike `NewtonianFluidMaterial`'s `-0.1`, this
-    /// default does not trace to the `tmp/sparkl` or `tmp/incremental_mpm`
-    /// precedents. Keep it labelled as engine calibration unless tensile data
-    /// for a specific viscoplastic material supplies a real value -- the same
-    /// honesty convention used for `FORAGING_RECOVERY_RATE` elsewhere.
+    /// 0.0 is an engine calibration, not a property of Bingham rheology nor a
+    /// value measured for mud or another yield-stress material: the classical
+    /// model splits `sigma_total = -p I + sigma_dev` and applies the yield
+    /// condition to `sigma_dev` (Roquet & Saramito, J. Non-Newtonian Fluid
+    /// Mech. 155, 2008, Eqs. 1-2, doi:10.1016/j.jnnfm.2007.12.008), with no
+    /// tensile-pressure cutoff. Unlike `NewtonianFluidMaterial`'s `-0.1`, it
+    /// has no `tmp/sparkl` or `tmp/incremental_mpm` precedent. Replace it
+    /// once tensile data for a specific material gives one.
     pub pressure_floor: f32,
     pub min_density: f32,
     pub min_volume: f32,
     /// Surface tension coefficient γ -- adds γ·J·I to Kirchhoff stress.
     /// See `NewtonianFluidMaterial::surface_tension_coeff` for details.
     pub surface_tension_coeff: f32,
-    /// Physical second (bulk) viscosity ζ, same real term as
-    /// `NewtonianFluidMaterial::bulk_viscosity` (see that field's own doc --
-    /// Litovitz & Davis, ~3x shear viscosity for water-like liquids). NOT
-    /// part of the original pre-`cac544b` file this struct was otherwise
-    /// restored from (2026-08-13) -- added back here because it's a real,
-    /// separately-sourced fix from later the same investigation
-    /// (2026-08-12, acoustic/volumetric oscillation damping), not a
-    /// guard-rail bandaid, and dropping it would lose real value.
+    /// Physical second (bulk) viscosity ζ, the term of
+    /// `NewtonianFluidMaterial::bulk_viscosity` (Litovitz & Davis, ~3x the
+    /// shear viscosity for water-like liquids); damps acoustic and volumetric
+    /// oscillation.
     pub bulk_viscosity: f32,
     /// Elastic shear modulus G, the storage modulus a real yield-stress
     /// fluid has BELOW its yield point. `0.0` (the default) selects the
@@ -208,33 +200,26 @@ impl BinghamFluidMaterial {
 
         // Bi-viscosity regularization (O'Donovan & Tanner 1984; Beverly &
         // Tanner 1989): below the critical rate the apparent viscosity
-        // SATURATES at tau_0/gamma_dot_c. This used to `return Mat2::ZERO`
-        // instead, which is a different and wrong statement -- it discards
-        // the yield stress at exactly the rates where a yield stress is the
-        // only thing holding the material up, so a slow or resting body
-        // reverted to an inviscid liquid. Confirmed against the same model
-        // in `tmp/GeoTaichi/.../Bingham.py`, whose own cutoff is 1e-8, four
-        // orders finer than the 1e-4 default here, and which gates on the
-        // stress invariant rather than nulling the stress outright.
+        // saturates at tau_0/gamma_dot_c. Returning zero stress there would
+        // drop the yield stress exactly where it holds the material up, so a
+        // slow or resting body would behave as an inviscid liquid.
+        // `tmp/GeoTaichi/.../Bingham.py` regularizes the same model with a
+        // 1e-8 cutoff (four orders below this 1e-4 default), gating on the
+        // stress invariant.
         //
-        // Real, disclosed cost, not hidden: the saturated viscosity is what
-        // `timestep_bound` must now respect, and for a large tau_0 that is
-        // genuinely expensive. That cost is the reason the elastoviscoplastic
-        // branch (`shear_modulus > 0`) exists and is the recommended route
-        // for a material meant to hold its shape at rest.
+        // `timestep_bound` must respect the saturated viscosity, which is
+        // expensive for a large tau_0; that is why the elastoviscoplastic
+        // branch (`shear_modulus > 0`) exists and is the route for a material
+        // meant to hold its shape at rest.
         let regularized_rate = shear_rate.max(self.critical_shear_rate);
 
         // Apparent viscosity: Bingham formula η_app = τ₀/γ̇ + η
         let eta_app = self.yield_stress / regularized_rate + self.dynamic_viscosity;
-        // Real, disclosed regression fix (external review): with D=(C+Cᵀ)/2
-        // (the symmetric strain rate built above), the real tensorial
-        // Bingham law is tau_dev = 2*eta_app*D_dev, not eta_app*D_dev --
-        // the codebase's own real, cited source (Balmforth, Frigaard &
-        // Ovarlez) writes the law in terms of the FULL shear-rate tensor
-        // Delta = grad(v)+grad(v)^T = 2*D, which is exactly the factor of 2
-        // missing here. Pre-fix, simple shear gave exactly HALF the real
-        // stress (tau_xy = (tau_y+eta*gamma_dot)/2 instead of
-        // tau_y+eta*gamma_dot).
+        // With D = (C+Cᵀ)/2 (the symmetric strain rate built above) the
+        // tensorial Bingham law is tau_dev = 2*eta_app*D_dev: Balmforth,
+        // Frigaard & Ovarlez write it with the full shear-rate tensor
+        // Delta = grad(v)+grad(v)^T = 2*D. Without the 2, simple shear gives
+        // half the stress, (tau_y+eta*gamma_dot)/2.
         2.0 * eta_app * d_dev
     }
 }
@@ -254,18 +239,11 @@ impl FromSI<BinghamProps> for BinghamFluidMaterial {
         // two different units and silently move the yield point.
         let shear_modulus = scale_stress(props.shear_modulus_pa, props.rho_kg_m3, config);
         let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
-        // Real bug fix: this was `rho_kg_m3 * dx^2`, precisely the extra
-        // `dx_meters^2` factor `NewtonianFluidMaterial::from_physical`'s own
-        // doc says in as many words not to reintroduce. Both `scale_visc`
-        // and `scale_stress` already divide by `rho * dx^2` (they return a
-        // kinematic viscosity and a squared wave speed, both in cells), so
-        // dividing by this density a second time inside `timestep_bound`
-        // scaled the acoustic and viscous CFL bounds by `1/(rho * dx^2)`.
-        // At 2 mm cells that is 250x, which is why a millimetre-scale
-        // Bingham scene could not advance a 5 ms step inside 64 substeps.
-        // The density the solver actually measures is a RATIO against the
-        // scene reference density -- 1.0 for a fluid at that reference --
-        // exactly as the Newtonian twin computes it.
+        // Density as a ratio against the scene's reference density (1.0 for a
+        // fluid at that reference), as `NewtonianFluidMaterial::from_physical`
+        // computes it. `scale_visc` and `scale_stress` already divide by
+        // `rho * dx^2`, so `rho_kg_m3 * dx^2` here would scale the acoustic and
+        // viscous CFL bounds by another `1/(rho * dx^2)` (250x at 2 mm cells).
         let rho_grid = props.rho_kg_m3 / config.reference_density_kg_m3;
         let mut material = Self::new(rho_grid, visc, eos, GAMMA, tau0);
         material.shear_modulus = shear_modulus;
@@ -360,9 +338,7 @@ impl MaterialModel for BinghamFluidMaterial {
         ConstitutiveModel::Fluid
     }
 
-    // Restored 2026-08-13; PERMANENT and required -- same
-    // reasoning as `NewtonianFluidMaterial::init_particle`, see that
-    // method's own doc for the full live-confirmed root cause.
+    // Required, as `NewtonianFluidMaterial::init_particle` (see its doc).
     fn init_particle(&self, particle: &mut Particle) {
         let j = particle.deformation_gradient.determinant();
         particle.initial_volume = particle.mass / self.rest_density;
@@ -418,19 +394,13 @@ impl MaterialModel for BinghamFluidMaterial {
             Mat2::ZERO
         };
 
-        // Bulk viscosity: τ += ζ·div(v)·I -- see field's own doc. Real,
-        // disclosed regression fix (external review): this used to read
-        // `div_v` from the RAW velocity gradient (`trace(C)`, already the
-        // real divergence with no extra factor), then multiplied by an
-        // extra `*0.5` on top -- a genuine 2x-too-small bulk viscosity
-        // here specifically. `NewtonianFluidMaterial`/`IdealGasMaterial`/
-        // `GranularFluidMaterial` all compute `div_v` from the SYMMETRIZED
-        // strain (`C+Cᵀ`, i.e. `2*trace(C)`) instead, where the same `*0.5`
-        // correctly recovers the real divergence -- matches the GPU
-        // shader's own convention (`p2g.wgsl`'s `tr_s*0.5`) exactly. Fixed
-        // by using the SAME symmetrized-strain convention here, not by
-        // dropping the `*0.5` (which would have been correct ONLY for this
-        // file's own now-removed raw-gradient basis, not the shared one).
+        // Bulk viscosity: τ += ζ·div(v)·I -- see the field's doc. `div_v`
+        // comes from the symmetrized strain (`C+Cᵀ`, trace `2*trace(C)`),
+        // where `*0.5` recovers the divergence, as in
+        // `NewtonianFluidMaterial`/`IdealGasMaterial`/`GranularFluidMaterial`
+        // and the GPU (`p2g.wgsl`'s `tr_s*0.5`). Applying `*0.5` to the raw
+        // `trace(C)`, which is already the divergence, halves the bulk
+        // viscosity.
         let bulk = if self.bulk_viscosity > 0.0 {
             let gradient = particles.velocity_gradient[i];
             let sym_strain = gradient + gradient.transpose();
@@ -442,7 +412,7 @@ impl MaterialModel for BinghamFluidMaterial {
 
         // Artificial (shock) viscosity -- same real PDE term, same citation,
         // as `NewtonianFluidMaterial::kirchhoff_stress` (see
-        // `artificial_bulk_viscosity`'s own doc). This material shares the
+        // `artificial_bulk_viscosity`'s doc). This material shares the
         // identical Tait EOS, so it needs the identical shock-capturing term;
         // it was lost from the CPU path by the same wholesale revert.
         let gradient = particles.velocity_gradient[i];
@@ -470,25 +440,12 @@ impl MaterialModel for BinghamFluidMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // REAL BUG, found+fixed for real 2026-08-13: this material's comment
-        // already said it "carries the identical dead-EOS-pressure bug" that
-        // `NewtonianFluidMaterial::update_particle` was fixed for 2026-08-06
-        // -- but the fix itself was never actually ported here, only noted
-        // as still-outstanding. Live-confirmed consequence tonight: mud's
-        // `deformation_gradient` updates normally (J drifts, e.g. 0.9989)
-        // but `volume`/`density` never move from their spawn values (stuck
-        // at exactly V/V0=1 forever) -- an internally inconsistent state
-        // that trips `assert_owned_deformation_state`
-        // ("det(F)=0.9989268, V/V0=1"). This is the user's own live
-        // observation exactly: water settles correctly, mud does not.
-        // Real, disclosed regression fixed 2026-08-30 -- same fix, same
-        // root cause, as `NewtonianFluidMaterial::update_particle`'s own
-        // doc: `det(I+dt*C)` is not rotation-invariant (a pure rigid
-        // rotation should leave J exactly unchanged but this formula gives
-        // a strictly positive O(dt^2) expansion every substep, baked in
-        // permanently by isotropization). Fixed with the continuity
-        // equation's own exact exponential solution, `J_{n+1}=J_n*exp(dt*
-        // div(v))` -- restores the pre-`57b83dc` `fluid_state.rs` behavior.
+        // J advances by the continuity equation's exact solution, `J_{n+1} =
+        // J_n*exp(dt*div(v))`, as in `NewtonianFluidMaterial::update_particle`
+        // (`det(I+dt*C)` is not rotation-invariant), and `volume`/`density`
+        // follow J every substep; otherwise F drifts while V/V0 stays at 1, the
+        // state `assert_owned_deformation_state` rejects ("det(F)=0.9989268,
+        // V/V0=1").
         if self.shear_modulus > 0.0 {
             self.update_elastoviscoplastic(ctx, dt);
             return;
@@ -497,7 +454,7 @@ impl MaterialModel for BinghamFluidMaterial {
         let div_v = ctx.velocity_gradient.x_axis.x + ctx.velocity_gradient.y_axis.y;
         // The carried logarithm is the real state; reading J back from F
         // and multiplying loses a fraction of every small increment (see
-        // `advance_log_volume_ratio`'s own doc for the measurement).
+        // `advance_log_volume_ratio`'s doc for the measurement).
         let carried = if *ctx.log_volume_strain != 0.0 || old_j == 1.0 {
             *ctx.log_volume_strain
         } else {
@@ -515,9 +472,8 @@ impl MaterialModel for BinghamFluidMaterial {
         *ctx.volume = (ctx.mass / density).max(1.0e-9);
     }
 
-    // Restored 2026-08-13; PERMANENT and required -- same
-    // reasoning as `NewtonianFluidMaterial::owns_deformation_volume_state`,
-    // see that method's own doc for the full live-confirmed root cause.
+    // Required, as `NewtonianFluidMaterial::owns_deformation_volume_state`
+    // (see its doc).
     /// True only for the purely viscous branch. The elastoviscoplastic
     /// branch keeps a real deviatoric elastic strain in `F`, so it is not a
     /// strict WC-MPM liquid any more and must not claim to be one: that
@@ -614,26 +570,16 @@ impl MaterialModel for BinghamFluidMaterial {
         }
 
         // Viscous diffusion bound -- apparent viscosity is at least
-        // dynamic_viscosity, combined with bulk_viscosity (real regression
-        // fix, external review: same gap, same fix, as
-        // `NewtonianFluidMaterial::timestep_bound` -- see that file's own
-        // doc for the full explicit-integrator-instability reasoning this
-        // closes).
+        // dynamic_viscosity, combined with bulk_viscosity, as in
+        // `NewtonianFluidMaterial::timestep_bound` (see its doc).
         //
-        // Real gap closed with the regularization fix in
-        // `deviatoric_stress`: the purely viscous branch's apparent
-        // viscosity SATURATES at `tau_0/gamma_dot_c + eta`, which can be
-        // orders above `eta` alone, and this bound ignored it completely --
-        // so the explicit step was never actually CFL-safe for the yield
-        // term it was integrating. The elastoviscoplastic branch is exempt
-        // because there the viscous term is solved implicitly inside the
-        // return mapping, so it cannot destabilise the step.
-        // `dynamic_viscosity` is dropped here for the elastoviscoplastic
-        // branch, and that is not an oversight: there it appears ONLY in
-        // the return mapping's denominator, i.e. integrated implicitly, so
-        // it cannot destabilise an explicit step and must not be allowed to
-        // shrink one. `bulk_viscosity` stays in either branch -- it is
-        // applied explicitly in `kirchhoff_stress` regardless.
+        // In the purely viscous branch the apparent viscosity saturates at
+        // `tau_0/gamma_dot_c + eta` (see `deviatoric_stress`), which can be
+        // orders above `eta`, and the explicit step must respect it. In the
+        // elastoviscoplastic branch `dynamic_viscosity` only appears in the
+        // return mapping's denominator, integrated implicitly, so it cannot
+        // destabilise the step and must not shrink it. `bulk_viscosity` stays
+        // in both: `kirchhoff_stress` applies it explicitly.
         let explicit_shear_viscosity = if self.shear_modulus > 0.0 {
             0.0
         } else if self.critical_shear_rate > 0.0 {
@@ -653,11 +599,10 @@ impl MaterialModel for BinghamFluidMaterial {
         dt_bound
     }
 
-    /// `false` -- same reasoning and same 2026-08-13 fix as
-    /// `NewtonianFluidMaterial::needs_density_recompute`; see that method's
-    /// own doc. This material owns `rho = rho0/J` through `init_particle` /
+    /// `false`, as `NewtonianFluidMaterial::needs_density_recompute` (see its
+    /// doc): this material owns `rho = rho0/J` through `init_particle` /
     /// `update_particle` and declares it via `owns_deformation_volume_state`,
-    /// so the kernel-density gather was computed for it and then discarded.
+    /// so a kernel-density gather would be computed and discarded.
     fn needs_density_recompute(&self) -> bool {
         false
     }
@@ -706,7 +651,7 @@ mod analytical_validation_tests {
         let mat = BinghamFluidMaterial::new(1000.0, 0.5, 5000.0, 7.0, 100.0);
         // Pure shear strain rate: C = [[0, g], [g, 0]] gives D=C (already symmetric),
         // D_dev=D (already traceless), d_xx=d_yy=0, d_xy=g, d_sq=2*g^2,
-        // shear_rate=sqrt(2*2*g^2)=2*g (real, hand-derivable from the formula).
+        // shear_rate=sqrt(2*2*g^2)=2*g (hand-derivable from the formula).
         let g = 5.0_f32;
         let c = Mat2::from_cols(Vec2::new(0.0, g), Vec2::new(g, 0.0));
         let tau = mat.deviatoric_stress(c);
@@ -714,9 +659,8 @@ mod analytical_validation_tests {
         let shear_rate = 2.0 * g;
         let eta_app = mat.yield_stress / shear_rate + mat.dynamic_viscosity;
         let d_dev = Mat2::from_cols(Vec2::new(0.0, g), Vec2::new(g, 0.0)); // D_dev = D here
-        // Real, disclosed fix: the real tensorial law is 2*eta_app*D_dev for
-        // this D=(C+C^T)/2 convention (Balmforth, Frigaard & Ovarlez) -- see
-        // `deviatoric_stress`'s own doc.
+        // The tensorial law is 2*eta_app*D_dev for this D = (C+C^T)/2
+        // (Balmforth, Frigaard & Ovarlez), see `deviatoric_stress`.
         let predicted = 2.0 * eta_app * d_dev;
 
         let diff = tau - predicted;
@@ -728,12 +672,9 @@ mod analytical_validation_tests {
         );
     }
 
-    /// Real regression guard (external review): as `yield_stress -> 0`,
-    /// Bingham's own law must converge EXACTLY to plain Newtonian viscous
-    /// stress (`2*eta*D_dev`) -- the same real tensorial form
-    /// `NewtonianFluidMaterial`'s own bulk/shear terms use. A real,
-    /// independent cross-check the factor-of-2 bug above could not have
-    /// passed: pre-fix, this limit was still off by 2x.
+    /// As `yield_stress -> 0`, Bingham's law converges exactly to Newtonian
+    /// viscous stress (`2*eta*D_dev`), the form of `NewtonianFluidMaterial`'s
+    /// terms; a missing factor of 2 fails this limit.
     #[test]
     fn zero_yield_stress_limit_matches_newtonian_viscous_stress_exactly() {
         let eta = 0.5_f32;
@@ -754,21 +695,13 @@ mod analytical_validation_tests {
         );
     }
 
-    /// Real regression guard (external review, P0 #3): bulk viscosity's own
-    /// `div(v)` must be read from the SAME symmetrized-strain basis as
-    /// `NewtonianFluidMaterial`'s (`sym=C+Cᵀ`, `div_v=trace(sym)`, then the
-    /// `*0.5` in the stress formula recovers the true divergence) -- not
-    /// from the raw gradient directly, which already IS the divergence and
-    /// so must not be halved again. Isolated two ways at once: a
-    /// pure-dilation `C=k*I` makes `D_dev=0` exactly (no deviatoric term to
-    /// separate out), and `density=rest_density` makes the Tait EOS
-    /// pressure exactly zero (no hydrostatic term either) -- density=1200
-    /// was tried first and rejected: it gave a real but ~13000-magnitude
-    /// pressure that swamped the ~0.1-magnitude bulk signal, so recovering
-    /// it via subtraction hit f32's own ULP noise floor at that magnitude
-    /// (catastrophic cancellation, not a code bug). With both zeroed,
-    /// `kirchhoff_stress` reduces to the bulk term alone. Pre-fix, this
-    /// measured exactly HALF of `zeta*div(v)*I`.
+    /// Bulk viscosity reads `div(v)` in `NewtonianFluidMaterial`'s basis
+    /// (`sym = C+Cᵀ`, `div_v = trace(sym)`, the stress formula's `*0.5`
+    /// recovering the divergence), not halving the raw gradient's trace a
+    /// second time. A pure dilation `C = k*I` makes `D_dev = 0`, and
+    /// `density = rest_density` makes the Tait pressure zero, so
+    /// `kirchhoff_stress` reduces to the bulk term. (At density 1200 a
+    /// ~13000 pressure swamped the ~0.1 bulk signal in f32 cancellation.)
     #[test]
     fn bulk_viscosity_matches_real_divergence_term_exactly() {
         use crate::particle::{Particle, Particles};
@@ -801,10 +734,9 @@ mod analytical_validation_tests {
         );
     }
 
-    /// Real, checkable monotonic claim: apparent viscosity (and thus deviatoric
-    /// stress magnitude at a FIXED shear rate) must DECREASE as shear rate
-    /// increases -- shear-thinning behavior intrinsic to the Bingham model
-    /// (tau0/gamma_dot term shrinks as gamma_dot grows), not an assumption.
+    /// At a fixed shear rate, apparent viscosity (so deviatoric stress) falls
+    /// as the shear rate rises: Bingham shear thinning (the tau0/gamma_dot term
+    /// shrinks as gamma_dot grows).
     #[test]
     fn apparent_viscosity_decreases_as_shear_rate_increases() {
         let mat = BinghamFluidMaterial::new(1000.0, 0.5, 5000.0, 7.0, 100.0);

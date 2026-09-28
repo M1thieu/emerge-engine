@@ -77,7 +77,7 @@ pub fn diagnose_grid_p2g_components(
 /// Scatters ONE particle's mass/momentum contribution into a thread-local
 /// `CellMap` accumulator -- factored out of `scatter_particles_to_grid`'s
 /// fold closure so `scatter_particles_to_grid_sorted` (spatial-sort opt-in,
-/// see that function's own doc) can share the exact same per-particle math
+/// see that function's doc) can share the exact same per-particle math
 /// without duplicating it.
 fn scatter_one_into(
     acc: &mut CellMap,
@@ -141,44 +141,26 @@ fn merge_cell_maps(a: &mut CellMap, b: CellMap) {
 /// Stress is pre-integrated as a momentum impulse so the grid needs one accumulation pass.
 /// The APIC affine term conserves angular momentum without a correction step.
 ///
-/// PARALLELIZED (2026-08-05) via a thread-local `CellMap` fold/reduce, then merged into the
-/// real grid in one serial pass (`Grid::merge_cells`) -- pure safe Rust, no unsafe pointers,
-/// no shared mutable state during the parallel phase (each rayon task owns its own private
-/// `CellMap`; `HashMap::entry()`'s possible resize is therefore never shared across threads).
+/// Parallel through a thread-local `CellMap` fold/reduce, merged into the grid
+/// in one serial pass (`Grid::merge_cells`): safe Rust, no shared mutable
+/// state during the parallel phase (each rayon task owns its `CellMap`).
 ///
-/// Tried a dense `Vec<Cell>` (2026-08-07) instead of `CellMap` here, on the strength of an
-/// isolated SERIAL measurement showing a HashMap insert costs 6.5x a plain indexed write.
-/// Measured the REAL integrated version afterward (not just the isolated microbenchmark):
-/// catastrophically worse, 330-375ms vs ~20ms (15-20x), because rayon's fold/reduce creates
-/// far more, far smaller accumulator instances than assumed -- each one now paying a full
-/// `resolution^2` allocation+zero, vastly more total work than a lazily-growing HashMap that
-/// only ever allocates what a given chunk actually touches. Exact same failure mode as the
-/// earlier same-night capacity-reservation attempt (also reverted for measuring worse) --
-/// should have been the tell. Reverted; `CellMap::default` is the real, measured winner for
-/// THIS parallel-fold access pattern, even though a bare serial HashMap-vs-Vec test says the
-/// opposite. Lesson: a microbenchmark of the accumulator alone does not predict the cost of
-/// the real fold/reduce shape -- always measure the integrated change, not the isolated one.
+/// Not a dense `Vec<Cell>`: although a serial microbenchmark puts a HashMap
+/// insert at 6.5x an indexed write, rayon's fold/reduce makes many small
+/// accumulators, each paying a full `resolution^2` allocation and zeroing
+/// (330-375 ms against ~20 ms). The lazily growing map only allocates what a
+/// chunk touches.
 ///
-/// A first attempt at this (2026-06-20) used the identical thread-local-map-then-merge shape
-/// and was reverted -- NOT for a soundness reason (that version was safe Rust too), but because
-/// it changed the floating-point SUMMATION ORDER for grid cells touched by multiple particles
-/// (float addition isn't associative), and that shifted `fluid_spreads_more_than_elastic_under_
-/// gravity`'s (a 600-step CHAOTIC simulation) qualitative outcome. Re-verified 2026-08-05: that
-/// test's own assertions are real qualitative inequalities (`ar_fluid_final > ar_elastic_final`),
-/// not exact-value matching -- a legitimate physical claim, not a fragile snapshot -- so the
-/// real risk is chaotic amplification of a thin margin, not a badly-designed test. This
-/// implementation is re-verified against that exact test (and the full regression suite) before
-/// being trusted, same "revert immediately if anything moves" discipline as every other change
-/// tonight.
+/// The parallel fold changes the floating-point summation order at cells
+/// shared by several particles, which can move a chaotic run: checked
+/// against `fluid_spreads_more_than_elastic_under_gravity` (600 steps,
+/// asserting `ar_fluid_final > ar_elastic_final`) and the full suite.
 ///
-/// Contact (`Particle::contact_group`) and mixture (`WithMixturePhase`) scatter are
-/// DELIBERATELY kept in a separate, still-serial second pass rather than folded into the
-/// parallel accumulator: both are opt-in, zero-cost-when-unused features that only a minority
-/// of scenes touch, and giving them their own parallel-safe accumulator design wasn't worth the
-/// added risk for this pass. The real, disclosed cost: particles that use either feature get
-/// `combined_kirchhoff_stress`/`stress_volume` recomputed a second time (same pure functions,
-/// same inputs, so results are identical -- just a small redundant-computation cost for the
-/// particles that opt into these features, not a correctness risk).
+/// Contact (`Particle::contact_group`) and mixture (`WithMixturePhase`)
+/// scatter stay in a separate serial second pass: both are opt-in features
+/// few scenes use. Particles using them get
+/// `combined_kirchhoff_stress`/`stress_volume` computed a second time (same
+/// pure functions, same result).
 pub fn scatter_particles_to_grid(
     particles: &Particles,
     grid: &mut Grid,
@@ -192,7 +174,7 @@ pub fn scatter_particles_to_grid(
     // temp diagnostic, not guessed): 105 fold instances for 2925 particles
     // on 8 cores -- ~13x more, much smaller chunks than the naive
     // one-per-core assumption. `with_min_len` forces fewer, larger chunks;
-    // real, measured, KEPT win on its own: p2g_us 20ms -> 13ms, ~22fps ->
+    // measured, KEPT win on its own: p2g_us 20ms -> 13ms, ~22fps ->
     // ~28fps, `CellMap` unchanged. A dense `Vec<Cell>` accumulator was tried
     // TWICE on top of this same-night investigation -- once against default
     // chunking (catastrophic, 330-375ms: 105 instances x a full
@@ -278,7 +260,7 @@ pub fn scatter_particles_to_grid(
                 }
                 // Additive second scatter for Material-Induced Boundary Friction
                 // (Blatny & Gaume 2025) -- see `MaterialModel::
-                // current_friction_coefficient`'s own doc.
+                // current_friction_coefficient`'s doc.
                 if let Some(mu) = friction_coefficient {
                     grid.add_friction_mass(cell_pos, weight * mass_i, mu);
                 }
@@ -287,39 +269,22 @@ pub fn scatter_particles_to_grid(
     }
 }
 
-/// Real, opt-in spatial-sort variant of `scatter_particles_to_grid`'s dense
-/// (first) scatter pass -- `SimConfig::spatial_sort_enabled`, see that
-/// field's own doc for the full real motivation (Gao et al. 2018 SIGGRAPH
-/// Asia, "GPU Optimization of Material Point Methods": periodic particle
-/// reordering for cache locality; this engine's OWN GPU path already does
-/// this via an indirection array, `particle_sort.wgsl`'s `sorted_particle_
-/// ids`, never physically moving particle data -- this CPU version mirrors
-/// that exact precedent instead of physically reordering the `Particles`
-/// SoA, since nothing in this codebase's index-instability model needed
-/// changing to support it (confirmed: `tag_index`/sleep-wake already treat
-/// indices as unstable across frames, but a NEW un-synchronized reorder
-/// pass would still need its own bookkeeping -- the indirection approach
-/// sidesteps that entirely, real indices never move).
+/// Opt-in spatial-sort variant of `scatter_particles_to_grid`'s dense first
+/// pass (`SimConfig::spatial_sort_enabled`; Gao et al. 2018 SIGGRAPH Asia,
+/// "GPU Optimization of Material Point Methods": periodic reordering for cache
+/// locality). Like the GPU path (`particle_sort.wgsl`'s `sorted_particle_ids`)
+/// it goes through an indirection array instead of moving the `Particles`
+/// SoA, so particle indices never move.
 ///
-/// `order` must contain each of `0..active_count` exactly once (a real
-/// permutation, not filtered/subset) -- callers get this from
-/// `spatial_sort_order` below. Only the dense CellMap-accumulated pass is
-/// reordered; the second (contact/mixture) pass deliberately stays
-/// iterating `0..active_count` in the original order, unaffected -- it
-/// isn't parallel-fold-accumulated (no CellMap, no chunk-locality benefit
-/// to gain there) and keeping it untouched means this feature's blast
-/// radius is exactly the one pass it's meant to help, nothing more.
+/// `order` must contain each of `0..active_count` exactly once (a
+/// permutation), as `spatial_sort_order` returns. Only the `CellMap` pass is
+/// reordered; the contact/mixture pass keeps iterating `0..active_count` (it
+/// is not fold-accumulated, so it gains nothing).
 ///
-/// REAL, DISCLOSED RISK (not new -- see `scatter_particles_to_grid`'s own
-/// doc on the 2026-06-20 revert): changing which particles land in which
-/// rayon chunk changes the floating-point SUMMATION ORDER for grid cells
-/// touched by multiple particles (float addition isn't associative). That
-/// exact class of change previously shifted a chaotic test's (`fluid_
-/// spreads_more_than_elastic_under_gravity`) qualitative outcome. This
-/// function must be re-verified against that specific test (and the full
-/// regression suite) before being trusted, same discipline as last time --
-/// not assumed safe just because the underlying math per-particle is
-/// unchanged.
+/// Reordering changes which particles share a rayon chunk and so the
+/// floating-point summation order at shared cells, which once moved a
+/// chaotic test's outcome (`fluid_spreads_more_than_elastic_under_gravity`):
+/// check it and the full suite before relying on this.
 pub fn scatter_particles_to_grid_sorted(
     particles: &Particles,
     grid: &mut Grid,
@@ -416,7 +381,7 @@ pub fn scatter_particles_to_grid_sorted(
 /// cells end up adjacent in the returned order, so a rayon chunk (a
 /// contiguous slice of this order) touches far fewer DISTINCT `CellMap`
 /// entries than a chunk of spawn-order particles that have since drifted
-/// apart spatially. Real, not guessed: `CellMap` is a `HashMap`, and this
+/// apart spatially. Not guessed: `CellMap` is a `HashMap`, and this
 /// engine's own `scatter_particles_to_grid` doc already establishes that
 /// its per-chunk hashmap-entry cost dominates over raw memory-access
 /// pattern for this workload.
@@ -489,35 +454,27 @@ pub fn gather_contact_point_cloud(
 }
 
 /// Analytic adjoint of P2G's stress→force scatter contribution w.r.t. the
-/// particle's own Kirchhoff stress tensor -- the second real piece of
-/// differentiable stepping, after `NeoHookeanMaterial::kirchhoff_stress_vjp`.
+/// particle's Kirchhoff stress, the step after
+/// `NeoHookeanMaterial::kirchhoff_stress_vjp` in differentiable stepping.
 ///
-/// SCOPED, not a full P2G adjoint: differentiates only the elastic-force term
-/// `weight * stress_coeff * (stress * cell_dist)` inside `scatter_particles_to_grid`,
-/// treating the particle's position `x` (and therefore the kernel weights and
-/// `cell_dist`) as FIXED. The mass/velocity/affine-C term is untouched here --
-/// a separate, much simpler linear adjoint, not yet implemented. Differentiating
-/// through the kernel weights' own dependence on `x` (how MOVING the particle
-/// changes which cells it deposits to, and by how much) is the real remaining
-/// gap in a fully general P2G adjoint -- deliberately deferred, not silently
-/// dropped: this covers the actual control-relevant path (muscle activation →
-/// stress → grid force) needed to train a controller, without yet handling
-/// the harder position-dependence.
+/// Only the elastic-force term `weight * stress_coeff * (stress * cell_dist)`
+/// of `scatter_particles_to_grid`, with the position `x` (so the weights and
+/// `cell_dist`) fixed. Not covered: the mass/velocity/affine term (a simpler
+/// linear adjoint) and the weights' dependence on `x`. This covers the
+/// control path (muscle activation → stress → grid force) a controller is
+/// trained through.
 ///
-/// Real derivation: for one particle, cell `c`'s momentum contribution from
-/// stress is `y_c = (weight_c * stress_coeff) * (stress * cell_dist_c)` --
-/// linear in `stress`, a matrix-vector product `y = M*v` scaled by a fixed
-/// scalar. Given the gradient flowing back from each cell's grid momentum,
-/// `d_loss_d_momentum[c]` (a Vec2), the standard VJP for `y=Mv` is
-/// `dL/dM = outer(dL/dy, v)`, i.e. `dL/dM_kl = dL/dy_k * v_l`. Summed over
-/// all 9 stencil cells:
+/// Derivation: for one particle, cell `c`'s momentum from stress is `y_c =
+/// (weight_c * stress_coeff) * (stress * cell_dist_c)`, linear in `stress`, a
+/// scaled matrix-vector product `y = M*v`. Given each cell's momentum gradient
+/// `d_loss_d_momentum[c]` (a Vec2), the VJP of `y = Mv` is
+/// `dL/dM = outer(dL/dy, v)`. Summed over the 9 stencil cells:
 ///
 ///   d_loss_d_stress = sum_c (weight_c * stress_coeff) * outer(d_loss_d_momentum[c], cell_dist_c)
 ///
-/// Returns d_loss_d_stress, ready to feed into e.g.
+/// Returns d_loss_d_stress, to feed e.g.
 /// `NeoHookeanMaterial::kirchhoff_stress_vjp` to continue the chain back to F.
-/// Verified against central-difference numerical gradients in this module's
-/// own tests, same non-negotiable discipline as the stress adjoint itself.
+/// Checked against central-difference gradients in the tests.
 pub fn p2g_stress_vjp(x: Vec2, stress_coeff: f32, d_loss_d_momentum: &[[Vec2; 3]; 3]) -> Mat2 {
     let weights = quadratic_weights(x);
     let mut d_loss_d_stress = Mat2::ZERO;
@@ -566,7 +523,7 @@ pub fn p2g_stress_vjp(x: Vec2, stress_coeff: f32, d_loss_d_momentum: &[[Vec2; 3]
 ///
 /// Bundles the particle state P2G itself reads (`mass`, `v`, `C`, `stress`,
 /// `stress_coeff`) into one struct rather than five separate parameters --
-/// this function differentiates the FULL forward pass, so it genuinely needs
+/// this function differentiates the FULL forward pass, so it needs
 /// all of it, but five-plus-position-plus-two-gradient-array parameters
 /// crossed the project's own no-`#[allow]` line for argument count.
 pub struct P2GParticleState {
@@ -626,7 +583,7 @@ pub fn scatter_particle_mass(particles: &Particles, grid: &mut Grid, active_coun
 }
 
 /// One material's real contribution to one grid node's P2G mass/momentum --
-/// see `diagnose_particle_node_material_sources`'s own doc.
+/// see `diagnose_particle_node_material_sources`'s doc.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeMaterialSource {
     pub material_id: u32,
@@ -637,7 +594,7 @@ pub struct NodeMaterialSource {
 
 /// One of a tracked particle's 9 P2G/G2P support nodes, broken down by
 /// which material contributed what -- see `diagnose_particle_node_material_
-/// sources`'s own doc.
+/// sources`'s doc.
 #[derive(Debug, Clone)]
 pub struct TrackedNodeBreakdown {
     pub cell_pos: IVec2,
@@ -645,9 +602,8 @@ pub struct TrackedNodeBreakdown {
     /// much this node's velocity counts toward the tracked particle's next
     /// G2P gather.
     pub tracked_particle_weight: f32,
-    /// Real, production-accurate normalized velocity at this node (from an
-    /// independent, full `scatter_particles_to_grid` call on a fresh grid --
-    /// see this function's own doc).
+    /// Normalized velocity at this node, from an independent full
+    /// `scatter_particles_to_grid` on a fresh grid (see this function's doc).
     pub real_velocity: Vec2,
     pub real_mass: f32,
     /// Every material's contribution to this node, reproducing `scatter_
@@ -655,34 +611,21 @@ pub struct TrackedNodeBreakdown {
     pub sources: Vec<NodeMaterialSource>,
 }
 
-/// TEMPORARY diagnostic (2026-08-29): for one tracked particle's own 9 P2G/
-/// G2P support nodes, breaks down EVERY particle's mass/momentum
-/// contribution to those nodes by `material_id` -- built to test a real,
-/// concrete hypothesis (2026-08-29, on the
-/// still-open particle-15 pre-transition runaway found live in
-/// `phase_states_gui.rs`'s Moon-gravity run): a water particle's observed
-/// runaway acceleration -- BEFORE it crosses the boiling threshold, with no
-/// external forcing on itself -- might be inheriting momentum from an
-/// already-buoyant STEAM neighbor through the shared, unpartitioned MPM
-/// grid, not from any self-pressure/CFL effect (self-pressure impulses sum
-/// to zero under partition-of-unity, and APIC conserves linear momentum, so
-/// neither can explain a NET translational acceleration for one isolated
-/// particle -- a real, independently-checkable objection to the CFL-only
-/// explanation this session had been assuming).
+/// Diagnostic: for one tracked particle's 9 support nodes, breaks down every
+/// particle's mass and momentum contribution by `material_id`. Tests whether
+/// a particle's runaway acceleration (a water particle before its boiling
+/// threshold, `phase_states_gui.rs`'s Moon-gravity run) is inherited from a
+/// buoyant steam neighbour through the shared grid: self-pressure impulses
+/// sum to zero under partition of unity and APIC conserves linear momentum,
+/// so neither accelerates an isolated particle as a whole.
 ///
-/// Step 1 runs a real, independent, production-accurate `scatter_particles_
-/// to_grid` on a fresh `Grid` to get the actual merged mass/velocity at
-/// each node (the "ground truth" this diagnostic's own bucketed breakdown
-/// is checked against). Step 2 re-scans every particle, reproducing `scatter_
-/// one_into`'s exact per-particle formula (advective term + stress-impulse
-/// term separately, both broken out), but restricted
-/// to just the tracked particle's 9 nodes and bucketed by `material_id`
-/// instead of merged -- so summing a node's buckets must reproduce step 1's
-/// real mass/momentum for that node exactly (a genuine self-consistency
-/// check, not just a plausible-looking number).
+/// Step 1 runs an independent `scatter_particles_to_grid` on a fresh `Grid`
+/// for the merged mass and velocity at each node. Step 2 re-scans every
+/// particle with `scatter_one_into`'s per-particle formula (advective and
+/// stress-impulse terms apart), restricted to the 9 nodes and bucketed by
+/// `material_id`; each node's buckets must sum to step 1's values exactly.
 ///
-/// O(active_count * 9) -- fine for an on-demand diagnostic, not meant for
-/// the hot per-substep path. Remove once the investigation concludes.
+/// O(active_count * 9), for on-demand use, not the per-substep path.
 pub fn diagnose_particle_node_material_sources(
     particles: &Particles,
     materials: &MaterialRegistry,
@@ -700,7 +643,7 @@ pub fn diagnose_particle_node_material_sources(
         active_count,
     );
     // `velocity_at` is only a real velocity AFTER normalization -- see its
-    // own doc ("valid after update_velocities()"). Pure momentum/mass here
+    // doc ("valid after update_velocities()"). Pure momentum/mass here
     // (no gravity/boundary), matching what P2G alone produces before the
     // grid-update phase -- the right snapshot for this diagnostic.
     ground_truth_grid.normalize_velocities();
@@ -771,39 +714,22 @@ pub fn diagnose_particle_node_material_sources(
     breakdowns
 }
 
-/// Three-way decomposition of a tracked particle's own pre-grid-update
-/// `tr(C)`: translation (`w*m*v`), affine (`w*m*C*d`), stress
-/// (`w*stress_coeff*(tau*d)`) -- a real methodological fix (2026-08-30)
-/// over an earlier, removed diagnostic
-/// (`diagnose_particle_boundary_divergence_bias`), which reconstructed its
-/// "before" state from a SEPARATE, redundant `scatter_particles_to_grid`
-/// call fed whatever `dt` the caller happened to pass -- real risk of
-/// using the wrong `dt` when `SimConfig::fluid_step_retry_enabled` causes
-/// `do_substep_with_retry` to settle on an `actual_dt` different from the
-/// one first tried, AND unable to distinguish "this bias is the
-/// particle's own current EOS pressure pushing its neighbors"
-/// (`trace_stress`) from "this bias is inherited motion from earlier
-/// substeps" (`trace_translation`+`trace_affine`) -- both real, distinct
-/// gaps this version fixes.
+/// Three-way decomposition of a tracked particle's pre-grid-update `tr(C)`:
+/// translation (`w*m*v`), affine (`w*m*C*d`), stress (`w*stress_coeff*(tau*d)`),
+/// separating the particle's own EOS pressure pushing its neighbours
+/// (`trace_stress`) from inherited motion (`trace_translation` +
+/// `trace_affine`).
 ///
-/// Call this from WITHIN the real, currently-executing substep (right
-/// after the real P2G scatter, using the SAME `dt` that scatter used --
-/// see `Simulation::do_substep`'s own call site), not from outside the
-/// retry loop, so there is no possible `dt` mismatch: this recomputes the
-/// exact same per-particle formula `scatter_one_into` uses, just bucketed
-/// by contribution type instead of merged, for the tracked particle's own
-/// 9-node stencil only.
+/// Call it inside the executing substep, right after the P2G scatter and
+/// with its `dt` (see `Simulation::do_substep`), so a retry's `actual_dt`
+/// cannot differ: it recomputes `scatter_one_into`'s per-particle formula for
+/// the particle's 9-node stencil, bucketed by contribution.
 ///
-/// By construction (summing three per-node momentum buckets that all
-/// divide by the SAME real total nodal mass, then applying G2P's own
-/// linear reconstruction to each), `trace_translation + trace_affine +
-/// trace_stress` must equal the ordinary combined `trace(C)` to floating-
-/// point precision -- a real self-consistency check, not just a
-/// plausible-looking split. Returns
-/// `(trace_translation, trace_affine, trace_stress)`.
+/// The three buckets share the node's total mass, so `trace_translation +
+/// trace_affine + trace_stress` equals the combined `trace(C)` to float
+/// precision. Returns `(trace_translation, trace_affine, trace_stress)`.
 ///
-/// O(active_count) -- fine for an on-demand diagnostic, not the hot path.
-/// Remove once the investigation concludes.
+/// O(active_count), for on-demand use, not the hot path.
 pub fn diagnose_particle_divergence_decomposition(
     particles: &Particles,
     materials: &MaterialRegistry,

@@ -1,63 +1,41 @@
-//! Real grain-vs-CONTINUUM-terrain contact normal/overlap estimation --
-//! closes a genuine, root-caused structural gap: `GrainPopulation::
-//! resolve_wall_contact_forces` (real rolling resistance, the ONE
-//! parameter this whole project's own sand investigation found necessary
-//! to hold a genuine angle of repose at all) only ever runs against real
-//! `BoundaryCondition` implementors (static geometry) -- a grain resting
-//! on a real, DYNAMIC MPM terrain material (sharing the same grid via
-//! ordinary P2G/G2P, not a `BoundaryCondition`) gets ZERO rolling
-//! resistance from that contact, because the terrain is neither a grain
-//! (`resolve_contact_forces`) nor a boundary (`resolve_wall_contact_
-//! forces`). Root-caused 2026-09-14 while investigating why grid-coupled
-//! pouring gives a real, measured, higher/less-reliable angle
-//! (mean=37.97deg, std=5.74deg, n=6) than the standalone rigid-floor
-//! result (30.85deg, std=2.59deg, n=10) -- the BASE layer of grains,
-//! which directly sets the pile's own footprint, is exactly the layer
-//! missing this mechanism.
+//! Grain-vs-continuum-terrain contact: a normal and an overlap estimated from
+//! the terrain's grid mass. `GrainPopulation::resolve_wall_contact_forces`
+//! (rolling resistance, what holds a sand pile's angle of repose) only runs
+//! against `BoundaryCondition`s, so a grain resting on an MPM terrain, which
+//! is neither a grain nor a boundary, got no rolling resistance from it. That
+//! base layer sets a pile's footprint: grid-coupled pouring gave 37.97
+//! degrees (std 5.74, n = 6) against 30.85 (std 2.59, n = 10) on a rigid floor.
 //!
-//! Real technique: estimate a local surface normal + penetration overlap
-//! from the terrain's own real grid mass field, the same way an implicit
-//! surface (a level set) yields a normal and distance from a scalar field
-//! -- gradient of the field gives the normal direction, marching along it
-//! until the field crosses a real threshold gives the distance (standard
-//! numerical technique, e.g. Bridson, "Fluid Simulation for Computer
-//! Graphics," 2nd ed., ch. 4 -- not invented here). Reuses `grains::
-//! oracle`'s own real, already-cited packing-fraction field
-//! (`packing_fraction_at`/`reference_mass_per_cell`, Jiang et al. 2016's
-//! dense-particles-per-cell convention) as that scalar field, rather than
-//! introducing a second, competing density convention.
+//! The normal and distance come from a scalar field the way a level set gives
+//! them (the gradient gives the normal; marching along it to a threshold
+//! gives the distance; Bridson, "Fluid Simulation for Computer Graphics," 2nd
+//! ed., ch. 4). The field is `grains::oracle`'s packing fraction
+//! (`packing_fraction_at`/`reference_mass_per_cell`, the particles-per-cell
+//! convention of Jiang et al. 2016), not a second density convention.
 
 use glam::{IVec2, Vec2};
 
 use super::oracle::packing_fraction_at;
 use crate::grid::Grid;
 
-/// Real, disclosed bounded ray-march step size (grid-index units) -- the
-/// real march RANGE is derived per-call from the grain's own radius (see
-/// `terrain_grain_contact`'s own doc: the surface can sit anywhere within
-/// the grain's own diameter), this only sets the resolution.
+/// Ray-march step (grid-index units). The march range comes from the grain's
+/// radius per call (the surface can lie anywhere within its diameter, see
+/// `terrain_grain_contact`); this only sets the resolution.
 const MARCH_STEP: f32 = 0.5;
 /// Floor on the number of march steps even for a very small grain radius
 /// -- keeps the search real and meaningful rather than degenerating to a
 /// single sample for a sub-cell-radius grain.
 const MIN_MARCH_STEPS: i32 = 6;
 
-/// Real, generic grain-vs-terrain contact estimate -- `None` when the
-/// grain isn't touching the terrain's real dense region at all (the
-/// common case almost everywhere on the grid; cheap early exit). Contract
-/// matches `BoundaryCondition::grain_contact` exactly (`normal` points
-/// AWAY from the surface into free space, `overlap = radius -
-/// distance_to_surface`) so the SAME real contact-resolution code
-/// (`grain_contact_law::resolve_wall_contact`) can consume either source
-/// identically.
+/// Grain-vs-terrain contact estimate, `None` when the grain does not touch the
+/// terrain's dense region (the common case, a cheap early exit). Same
+/// contract as `BoundaryCondition::grain_contact` (`normal` points away from
+/// the surface into free space, `overlap = radius - distance_to_surface`), so
+/// `grain_contact_law::resolve_wall_contact` consumes either.
 ///
-/// `surface_threshold` is the SAME real, scene-tunable packing-fraction
-/// cutoff `grains::oracle::needs_discrete_treatment` already takes as a
-/// caller-supplied parameter, not a hardcoded constant (that function's
-/// own doc: "a real, scene-tunable cutoff, not hardcoded"). Deliberately
-/// threaded through here the same way -- what counts as "the real free
-/// surface" is a property of the scene's own density calibration, not a
-/// universal number this function should assume on the caller's behalf.
+/// `surface_threshold` is the packing-fraction cutoff
+/// `grains::oracle::needs_discrete_treatment` takes from the caller: where the
+/// free surface lies depends on the scene's density calibration.
 pub fn terrain_grain_contact(
     grid: &Grid,
     reference_mass_per_cell: f32,
@@ -71,41 +49,30 @@ pub fn terrain_grain_contact(
         packing_fraction_at(grid, cell, reference_mass_per_cell)
     };
 
-    // Real gradient of the packing-fraction field, sampled at a stencil
-    // width matching the GRAIN's OWN radius (not a fixed +-1 cell) -- a
-    // grain's relevant question is "is there a real surface anywhere
-    // within my own body," and a fixed narrow stencil would only ever see
-    // a transition that happens to fall exactly one cell from the grain's
-    // rounded center, missing the far more common case of a several-cell-
-    // wide grain whose body reaches a surface its own center does not.
-    // Points toward increasing density (into the terrain); the real
-    // outward surface normal is the NEGATIVE of that.
+    // Gradient of the packing-fraction field over a stencil as wide as the
+    // grain's radius, not +-1 cell: the question is whether a surface lies
+    // anywhere within the grain's body, and a several-cell grain's body can
+    // reach a surface its centre does not. Points into the terrain
+    // (increasing density); the outward normal is its negative.
     let r = radius.max(1.0);
     let dx = sample(Vec2::new(r, 0.0)) - sample(Vec2::new(-r, 0.0));
     let dy = sample(Vec2::new(0.0, r)) - sample(Vec2::new(0.0, -r));
     let grad = Vec2::new(dx, dy) * (0.5 / r);
     if grad.length_squared() < 1.0e-8 {
         // Uniform field across the grain's own footprint (e.g. deep in a
-        // fully dense interior, or genuinely far from any terrain at all)
+        // fully dense interior, or far from any terrain at all)
         // -- no real surface direction to report here.
         return None;
     }
     let normal = -grad.normalize();
-    // Real march direction: TOWARD increasing density (i.e. `grad`'s own
-    // direction, equivalently `-normal`) -- a grain floating just above
-    // the terrain has its own CENTER in free space (phi < threshold
-    // already), so marching outward (along `normal`) would only ever
-    // move further away from the surface. Marching inward instead finds
-    // the real distance from the grain's center to where the field first
-    // crosses into genuinely dense territory.
+    // March toward increasing density (`grad`, i.e. `-normal`): a grain just
+    // above the terrain has its centre in free space already, so marching
+    // outward would only move away from the surface.
     let into_terrain = -normal;
 
-    // Real, bounded ray-march looking for where the field first crosses
-    // INTO the real dense threshold -- a standard, disclosed implicit-
-    // surface distance estimate, not an exact signed distance field.
-    // Range covers the grain's own diameter plus margin, since the real
-    // surface can sit anywhere within that span for a grain whose body
-    // already reaches it.
+    // Bounded march to where the field first crosses the dense threshold, an
+    // implicit-surface distance estimate, not an exact signed distance. The
+    // range covers the grain's diameter plus a margin.
     let max_steps = ((2.0 * r / MARCH_STEP).ceil() as i32 + 2).max(MIN_MARCH_STEPS);
     let mut surface_dist = radius * 2.0; // disclosed: "never found" sentinel, produces overlap<=0 below
     for s in 0..=max_steps {
@@ -130,12 +97,9 @@ mod tests {
     use super::*;
     use crate::spacetime::grains::oracle::reference_mass_per_cell;
 
-    /// Real, hand-verified case: a flat terrain surface (dense below a
-    /// known row, empty above), a grain centered exactly AT the surface
-    /// with real, known overlap -- confirms both the normal direction
-    /// (straight up, away from the dense terrain below) and the overlap
-    /// magnitude (grain radius minus the real known distance to the
-    /// surface) match a hand computation, not just "returns something."
+    /// Flat terrain (dense below a known row, empty above) and a grain centred
+    /// on the surface with a known overlap: the normal points straight up and
+    /// the overlap equals the radius minus the known distance, by hand.
     #[test]
     fn flat_surface_gives_the_real_hand_computed_normal_and_overlap() {
         let mut grid = Grid::new(32);

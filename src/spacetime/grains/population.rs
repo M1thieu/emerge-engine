@@ -1,24 +1,16 @@
-//! A standalone, self-contained discrete-grain population -- rigid circular
-//! bodies (2D: position + planar spin, matching this engine's own 2D
-//! convention throughout) integrated via real semi-implicit Euler, with
-//! contacts resolved by `contact_law`'s real, cited force law.
+//! A discrete-grain population: rigid circular bodies (position and planar
+//! spin) integrated by semi-implicit Euler, with contacts resolved by
+//! `contact_law`'s force law.
 //!
 //! This type integrates the grains themselves. Coupling to the shared MPM
 //! grid lives in `coupling.rs` and the packing-fraction oracle that decides
 //! where grains are needed in `oracle.rs`.
 //!
-//! Real, disclosed simplification for CPU-first correctness (per this
-//! project's own standing "CPU correctness first, GPU port second" rule):
-//! contacts are tracked as a flat, growable `Vec<ActiveContact>`, rebuilt
-//! each substep via brute-force O(n^2) neighbor detection, not the
-//! fixed-size-per-grain bounded array a real GPU port would need (matching
-//! GeoTaichi's own real `cplist` precedent, which uses exactly this
-//! flat-contact-list SHAPE, just with GPU-parallelization-driven fixed
-//! capacity -- the same real technique, not a different one). Brute-force
-//! neighbor detection is the correct, simple choice for THIS population's
-//! expected scale (a thin enrichment layer, not the whole domain's particle
-//! count) -- revisit only if a real profiling number shows it's the
-//! bottleneck, per this project's own "measure before optimizing" rule.
+//! Contacts are a flat, growable `Vec<ActiveContact>` rebuilt each substep
+//! by brute-force O(n^2) neighbour detection, the flat contact list shape of
+//! GeoTaichi's `cplist` without its fixed GPU capacity. Brute force suits a
+//! thin enrichment layer of grains; revisit if profiling shows it is the
+//! bottleneck.
 
 use glam::{Mat2, Vec2};
 
@@ -37,7 +29,7 @@ use crate::matter::particle::Grain;
 /// through -- `Linear` (Cundall & Strack 1979, constant stiffness, the
 /// original and still-default model, right for granular/sand material) or
 /// `Hertzian` (nonlinear, contact-patch-dependent stiffness, right for
-/// smooth hard bodies -- see `HertzianContactConfig`'s own doc). A real,
+/// smooth hard bodies -- see `HertzianContactConfig`'s doc). A real,
 /// additive capability, not a breaking change: `GrainPopulation::new` keeps
 /// its exact original signature and wraps its `ContactLawConfig` as
 /// `Linear` internally, so every existing call site across this codebase
@@ -61,87 +53,67 @@ struct ActiveContact {
     spring: ContactSpring,
 }
 
-/// A standalone discrete-grain population. See module doc for real, disclosed
-/// scope (not grid-coupled yet, brute-force neighbor detection).
+/// A discrete-grain population. See the module doc for its scope.
 pub struct GrainPopulation {
     pub grains: Vec<Grain>,
     contacts: Vec<ActiveContact>,
     /// Persistent per-grain wall-contact spring state (real elastic-plastic
     /// memory, same role as `contacts` above but for grain-vs-boundary
     /// contact instead of grain-grain -- see `resolve_wall_contact_forces`'s
-    /// own doc). Resized lazily to match `grains.len()` rather than kept in
+    /// doc). Resized lazily to match `grains.len()` rather than kept in
     /// sync at every push site -- indices beyond the current length are
     /// just treated as a fresh (zeroed) spring the first time they're used.
     wall_springs: Vec<ContactSpring>,
     /// Persistent per-grain terrain-contact spring state -- same real
-    /// role as `wall_springs` above, but for the real, dynamic MPM
+    /// role as `wall_springs` above, but for the dynamic MPM
     /// terrain surface estimated by `terrain_contact::terrain_grain_
     /// contact` instead of a static `BoundaryCondition`. See
-    /// `resolve_terrain_contact_forces`'s own doc for why this exists as
-    /// a genuinely separate mechanism.
+    /// `resolve_terrain_contact_forces`'s doc for why this exists as
+    /// a separate mechanism.
     terrain_springs: Vec<ContactSpring>,
     pub config: ContactModel,
-    /// Real, opt-in sweep count for `resolve_contact_forces`'s own
-    /// iterative relaxation -- see that function's doc for the real
-    /// technique/citation. Defaults to `1` (today's exact single-pass
-    /// behavior, zero blast radius) via `new`/`new_hertzian`; opt into
-    /// K>1 real sweeps via `with_contact_iterations` for scenes with
-    /// simultaneous multi-body contact chains (e.g. releasing >1 grain
-    /// together in a Newton's-cradle-style row).
+    /// Sweeps of `resolve_contact_forces`'s iterative relaxation (see that
+    /// function). `1` via `new`/`new_hertzian` is the single pass; raise it
+    /// with `with_contact_iterations` for simultaneous multi-body contact
+    /// chains (several balls released together in a cradle row).
     pub contact_iterations: usize,
-    /// Real, opt-in external body forces (drag, wind, anything shaped like
-    /// `GrainField`) applied on top of gravity + contact forces every
-    /// `step`. Empty by default -- zero blast radius for every existing
-    /// scene. A standalone `GrainPopulation` bypasses `Simulation`'s own
-    /// `Field` pipeline entirely (see module doc: not grid-coupled yet), so
-    /// this is its own equivalent hook rather than a duplicated one-off
-    /// function per demo -- see `GrainField`'s own doc for why it's a
-    /// separate trait from `Field` instead of reusing it directly.
+    /// External body forces (drag, wind, anything shaped like `GrainField`)
+    /// applied on top of gravity and contact forces every `step`; empty by
+    /// default. A standalone population bypasses `Simulation`'s `Field`
+    /// pipeline, so this is its own hook (see `GrainField` for why it is a
+    /// separate trait).
     pub grain_fields: Vec<Box<dyn GrainField>>,
-    /// Real, opt-in running accumulator for the discrete-to-continuum
-    /// stress mapping (Christoffersen, Mehrabadi & Nemat-Nasser 1981 /
-    /// Bagi 1996: `sigma_ij = (1/A) * sum_contacts f_i^c * l_j^c`, branch
-    /// vector `l` taken center-to-center between the two contacting
-    /// grains). Updated inside `resolve_contact_forces`'s own existing
-    /// per-pair loop (the force this population already computes there,
-    /// just also summed here) -- zero cost/behaviour change for every
-    /// scene that never reads `effective_friction_angle_deg`. Reset via
-    /// `reset_stress_accum` to start a fresh averaging window (e.g. once a
-    /// population has settled and its prior transient/impact contacts
-    /// should not pollute a "current state" reading).
+    /// Running accumulator for the discrete-to-continuum stress
+    /// (Christoffersen, Mehrabadi & Nemat-Nasser 1981; Bagi 1996:
+    /// `sigma_ij = (1/A) * sum_contacts f_i^c * l_j^c`, branch vector `l`
+    /// centre to centre), summed in `resolve_contact_forces`'s pair loop.
+    /// `reset_stress_accum` starts a fresh averaging window, e.g. once a
+    /// population has settled and its impact contacts should not count.
     stress_accum: Mat2,
-    /// Real, cumulative count of active-pair contributions folded into
-    /// `stress_accum` since the last reset -- a per-substep, per-contact
-    /// count (not a distinct-pair count), used only as a "have we sampled
-    /// enough real contact data yet" gate for `effective_friction_angle_deg`.
+    /// Active-pair contributions folded into `stress_accum` since the last
+    /// reset, per substep and contact (not distinct pairs): the "enough
+    /// contact data yet" gate of `effective_friction_angle_deg`.
     stress_accum_samples: usize,
-    /// Real, opt-in terrain-contact configuration -- `None` (the default
-    /// via `new`/`new_hertzian`, zero cost/behavior change) means this
-    /// population never attempts real terrain contact at all. `Some((
-    /// reference_mass_per_cell, surface_threshold))` opts in explicitly,
-    /// via `with_terrain_contact` -- both real values the CALLER derives
-    /// from its own actual scene (the terrain's own real per-particle
-    /// mass; the packing-fraction cutoff, same real, scene-tunable
-    /// convention `grains::oracle::needs_discrete_treatment` already
-    /// uses), never guessed or hardcoded by this struct itself. See
-    /// `resolve_terrain_contact_forces`'s own doc for the real mechanism
-    /// this unlocks.
+    /// Terrain-contact configuration: `None` (via `new`/`new_hertzian`)
+    /// never attempts terrain contact. `Some((reference_mass_per_cell,
+    /// surface_threshold))`, set with `with_terrain_contact`, both derived by
+    /// the caller from its scene (the terrain's per-particle mass; the
+    /// packing-fraction cutoff of `grains::oracle::needs_discrete_treatment`).
+    /// See `resolve_terrain_contact_forces`.
     terrain_contact_config: Option<(f32, f32)>,
     /// How many contact sub-steps the last grid-coupled substep took (see
     /// `grains::coupling::apply_grain_contact_forces`); 0 before any.
     last_contact_substeps: usize,
 }
 
-/// Real outer product `a (x) b` as a 2x2 matrix (`M*v = a*(b.dot(v))` for
-/// any `v`) -- the per-contact term Bagi's/Christoffersen's discrete
-/// stress formula sums over all active contacts.
+/// Outer product `a (x) b` as a 2x2 matrix (`M*v = a*(b.dot(v))`): the
+/// per-contact term of the discrete stress sum.
 fn outer_product(a: Vec2, b: Vec2) -> Mat2 {
     Mat2::from_cols(a * b.x, a * b.y)
 }
 
-/// Real closed-form eigenvalues of a symmetric 2x2 matrix `[[a,b],[b,d]]`,
-/// returned as `(largest, smallest)`. Standard formula (trace/2 +/-
-/// sqrt(((a-d)/2)^2 + b^2)) -- not an iterative solver, exact for 2x2.
+/// Closed-form eigenvalues of a symmetric 2x2 matrix `[[a,b],[b,d]]`, as
+/// `(largest, smallest)`: trace/2 +/- sqrt(((a-d)/2)^2 + b^2).
 fn symmetric_2x2_eigenvalues(a: f32, b: f32, d: f32) -> (f32, f32) {
     let mean = (a + d) * 0.5;
     let half_diff = (a - d) * 0.5;
@@ -166,8 +138,8 @@ impl GrainPopulation {
         }
     }
 
-    /// Real, additive entry point for the Hertzian (nonlinear) contact
-    /// model -- see `ContactModel`/`HertzianContactConfig`'s own doc.
+    /// Hertzian (nonlinear) contact model -- see `ContactModel`/
+    /// `HertzianContactConfig`.
     pub const fn new_hertzian(grains: Vec<Grain>, config: HertzianContactConfig) -> Self {
         Self {
             grains,
@@ -285,23 +257,20 @@ impl GrainPopulation {
     }
 
     /// Opts this population into K real iterative-relaxation sweeps per
-    /// substep for `resolve_contact_forces` -- see that function's own doc.
+    /// substep for `resolve_contact_forces` -- see that function's doc.
     /// `k=1` (the default) is a no-op (bit-identical to not calling this).
     pub fn with_contact_iterations(mut self, contact_iterations: usize) -> Self {
         self.contact_iterations = contact_iterations;
         self
     }
 
-    /// Real, explicit opt-in for grain-vs-CONTINUUM-terrain contact (see
-    /// `resolve_terrain_contact_forces`'s own doc for the full mechanism
-    /// and why it's a genuinely separate concern from grain-vs-boundary
-    /// contact). Both arguments are real values the CALLER must derive
-    /// from its own actual scene -- `reference_mass_per_cell` from the
-    /// terrain's own real per-particle mass (`grains::oracle::
-    /// reference_mass_per_cell`), `surface_threshold` from the same real,
-    /// scene-tunable packing-fraction cutoff `grains::oracle::
-    /// needs_discrete_treatment` already exposes as a caller parameter --
-    /// this method never picks a default value on the caller's behalf.
+    /// Opt-in grain-vs-continuum-terrain contact (see
+    /// `resolve_terrain_contact_forces`; separate from grain-vs-boundary
+    /// contact). The caller derives both values from its scene:
+    /// `reference_mass_per_cell` from the terrain's per-particle mass
+    /// (`grains::oracle::reference_mass_per_cell`), `surface_threshold` from
+    /// the packing-fraction cutoff `grains::oracle::needs_discrete_treatment`
+    /// takes. No default is picked here.
     pub fn with_terrain_contact(
         mut self,
         reference_mass_per_cell: f32,
@@ -313,22 +282,20 @@ impl GrainPopulation {
 
     /// Adds one real external body force (e.g. `LinearDragField`) applied
     /// every `step`, on top of gravity and contact forces -- see
-    /// `grain_fields`'s own doc.
+    /// `grain_fields`'s doc.
     pub fn with_grain_field(mut self, field: impl GrainField + 'static) -> Self {
         self.grain_fields.push(Box::new(field));
         self
     }
 
-    /// Real number of currently-resolved contacts -- diagnostic/test use.
+    /// Number of currently resolved contacts (diagnostics, tests).
     pub const fn active_contact_count(&self) -> usize {
         self.contacts.len()
     }
 
-    /// Real, cumulative active-pair-contribution count folded into the
-    /// stress accumulator since the last `reset_stress_accum` -- exposed so
-    /// callers (and tests) can tell a fresh/near-empty accumulator from one
-    /// with enough real contact data to trust, without duplicating the
-    /// threshold `effective_friction_angle_deg` itself uses.
+    /// Active-pair contributions in the stress accumulator since the last
+    /// `reset_stress_accum`, so callers can tell a near-empty accumulator
+    /// from one worth reading.
     pub const fn stress_accum_sample_count(&self) -> usize {
         self.stress_accum_samples
     }
@@ -342,31 +309,20 @@ impl GrainPopulation {
         self.stress_accum_samples = 0;
     }
 
-    /// Real discrete-to-continuum effective internal friction angle
-    /// (degrees), derived from THIS population's own actual accumulated
-    /// contact forces -- Christoffersen, Mehrabadi & Nemat-Nasser 1981 /
-    /// Bagi 1996's area-averaged discrete stress
-    /// (`sigma_ij = (1/A) * sum_contacts f_i^c * l_j^c`, `stress_accum`'s
-    /// own running sum divided here by this population's own total grain
-    /// area x sample count -- a real, disclosed proxy for the true
-    /// representative area, matching this codebase's existing
-    /// `Particle::volume`-as-2D-footprint convention used elsewhere, e.g.
-    /// `Simulation::enrich_region_into_grain`), symmetrized (real discrete
-    /// contact sums need not be exactly symmetric per contact even though
-    /// the true averaged Cauchy stress is, by angular-momentum balance --
-    /// standard practice, Bagi's own paper addresses this the same way),
-    /// then closed-form 2x2 eigen-decomposed into principal stresses and
-    /// converted via the standard Mohr-Coulomb relation
-    /// `sin(phi) = (sigma1-sigma3)/(sigma1+sigma3)` (compression-positive
-    /// convention: contact normal forces are purely repulsive/outward along
-    /// the branch vector, so this accumulator is already compression-
-    /// positive by construction, matching soil-mechanics convention).
+    /// Discrete-to-continuum effective internal friction angle (degrees)
+    /// from this population's accumulated contact forces: the area-averaged
+    /// stress of Christoffersen, Mehrabadi & Nemat-Nasser 1981 / Bagi 1996
+    /// (`stress_accum` over total grain area times sample count, grain area
+    /// standing in for the representative area as `Particle::volume` does
+    /// elsewhere), symmetrized (a contact sum need not be symmetric per
+    /// contact, the averaged Cauchy stress is), eigen-decomposed, then
+    /// Mohr-Coulomb `sin(phi) = (sigma1-sigma3)/(sigma1+sigma3)`. Compression
+    /// is positive: contact normal forces push outward along the branch
+    /// vector.
     ///
-    /// `None` when too few real contacts have been sampled yet (an
-    /// arbitrary but disclosed floor, not zero -- a near-empty accumulator
-    /// is noise, not a measurement) or when the resulting stress state
-    /// isn't genuinely compressive (`sigma1 + sigma3 <= 0`, e.g. a
-    /// population that never actually loaded any contacts).
+    /// `None` with too few sampled contacts (a near-empty accumulator is
+    /// noise) or a stress state that is not compressive (`sigma1 + sigma3 <=
+    /// 0`).
     pub fn effective_friction_angle_deg(&self) -> Option<f32> {
         let (sigma1, sigma3) = self.principal_stresses()?;
         let denom = sigma1 + sigma3;
@@ -377,19 +333,12 @@ impl GrainPopulation {
         Some(sin_phi.asin().to_degrees())
     }
 
-    /// Real diagnostic entry point, exposing the RAW (major, minor)
-    /// principal stresses `effective_friction_angle_deg` derives its
-    /// Mohr-Coulomb angle from -- pre-clamp, pre-`asin`. Added 2026-09-14
-    /// specifically to distinguish a genuine physical plateau from a
-    /// numerical-clamp artifact: `effective_friction_angle_deg` reporting a
-    /// suspiciously exact 90deg (`sin_phi` saturating its `[-1,1]` clamp)
-    /// could mean a real, degenerate (near-uniaxial) stress state, OR it
-    /// could mean the raw ratio is silently overshooting past 1.0 (e.g.
-    /// `sigma3` slightly negative from real discrete-sum noise) and the
-    /// clamp is masking that distinction -- this method lets a caller see
-    /// which. `None` under the exact same conditions
-    /// `effective_friction_angle_deg` returns `None` (too few samples, zero
-    /// total area).
+    /// The raw (major, minor) principal stresses behind
+    /// `effective_friction_angle_deg`, before clamp and `asin`: a reported
+    /// 90 degrees (`sin_phi` saturating its clamp) can be a near-uniaxial
+    /// stress state or a ratio overshooting 1 because `sigma3` came out
+    /// slightly negative from discrete-sum noise; this tells which. `None`
+    /// under the same conditions as `effective_friction_angle_deg`.
     pub fn principal_stresses(&self) -> Option<(f32, f32)> {
         const MIN_SAMPLES: usize = 20;
         if self.stress_accum_samples < MIN_SAMPLES {
@@ -412,15 +361,10 @@ impl GrainPopulation {
         Some(symmetric_2x2_eigenvalues(a, b, d))
     }
 
-    /// Per-grain active contact count this substep -- the real
-    /// COORDINATION NUMBER, a standard granular-physics measure (how many
-    /// neighbours each grain is actually touching), not a debug counter.
-    ///
-    /// Originally added for the 2026-08-03 scale-residual investigation and
-    /// labelled temporary; kept as permanent API because it is genuinely
-    /// meaningful on its own and four real tests consume it
-    /// (`grains_grid_coupling.rs`, `grains_repose_angle.rs`) to correlate
-    /// contact count with per-grain energy behaviour.
+    /// Per-grain active contact count this substep: the coordination number
+    /// (how many neighbours each grain touches). Tests in
+    /// `grains_grid_coupling.rs` and `grains_repose_angle.rs` correlate it
+    /// with per-grain energy.
     pub fn contact_count_per_grain(&self) -> Vec<usize> {
         let mut counts = vec![0usize; self.grains.len()];
         for c in &self.contacts {
@@ -432,8 +376,8 @@ impl GrainPopulation {
 
     /// Detects contacts (carrying over persistent spring history for pairs
     /// that were ALREADY in contact last substep, matched by index -- a
-    /// genuinely new pair starts with a fresh, zeroed spring, real DEM
-    /// convention per `contact_law`'s own doc) and resolves every pair's
+    /// new pair starts with a fresh, zeroed spring, real DEM
+    /// convention per `contact_law`'s doc) and resolves every pair's
     /// force/moment, returning per-grain net contact force and torque.
     /// Pure computation, no integration -- separated from `step` so grid
     /// coupling (`grains::coupling`) can apply these forces AFTER a
@@ -484,24 +428,15 @@ impl GrainPopulation {
         let v0: Vec<Vec2> = self.grains.iter().map(|g| g.v).collect();
         let spin0: Vec<f32> = self.grains.iter().map(|g| g.spin).collect();
 
-        // Real iterative relaxation, Jacobi-per-sweep, K sweeps: each sweep
-        // resolves every active pair against velocities FROZEN at that
-        // sweep's own start (same structure as the original always-single-
-        // pass code -- pair order inside a sweep never matters), then
-        // commits every pair's delta together before the next sweep reads
-        // it. This lets a momentum handoff (grain0->grain1->grain2) cross
-        // MORE THAN ONE contact interface within a single substep --
-        // impossible in one sweep at any stiffness, which is exactly the
-        // confirmed multi-body-chain bug (real data:
-        // `diag_newtons_cradle_two_ball_release_real_conservation_check`,
-        // stiffness-independent, 1x-1000x, no convergence). Real, standard
-        // technique family: iterative constraint relaxation for
-        // simultaneous-contact chains, same lineage as Erin Catto/Box2D's
-        // sequential-impulse solver -- Jacobi ordering (not Gauss-Seidel's
-        // usual immediate per-pair commit) is deliberately used here so
-        // `contact_iterations=1` (the default) reduces to EXACTLY today's
-        // math, sweep for sweep, keeping every existing scene (sand piles,
-        // grain columns) that never opts in fully unaffected.
+        // Iterative relaxation, Jacobi per sweep, K sweeps: each sweep
+        // resolves every pair against velocities frozen at the sweep's start,
+        // then commits all deltas together. A momentum handoff
+        // (grain0 -> grain1 -> grain2) can then cross more than one contact
+        // within a substep, which one sweep cannot at any stiffness
+        // (`diag_newtons_cradle_two_ball_release_real_conservation_check`).
+        // Same family as Box2D's sequential impulses (Catto); Jacobi rather
+        // than Gauss-Seidel so `contact_iterations = 1` is exactly the single
+        // pass.
         for _ in 0..k {
             let mut dv = vec![Vec2::ZERO; n];
             let mut dspin = vec![0.0f32; n];
@@ -523,25 +458,18 @@ impl GrainPopulation {
                 if let Some(resolution) = resolution {
                     let force_on_j = resolution.normal_force * (gj.x - gi.x).normalize()
                         + resolution.tangential_force;
-                    // Real Bagi (1996) / Christoffersen et al. (1981)
-                    // discrete-to-continuum stress term for this contact --
-                    // branch vector center-to-center, force this contact
-                    // actually exerts (already computed above for the
-                    // velocity update, not recomputed). See `stress_accum`'s
-                    // own doc for the full formula/citation.
+                    // Discrete-to-continuum stress term for this contact
+                    // (see `stress_accum`): branch vector centre to centre,
+                    // the force already computed above.
                     self.stress_accum += outer_product(force_on_j, gj.x - gi.x);
                     self.stress_accum_samples += 1;
                     dv[pair.j] += force_on_j / gj.mass * sub_dt;
                     dv[pair.i] -= force_on_j / gi.mass * sub_dt;
-                    // Rolling moment: real action-reaction pair on spin.
-                    // Friction torque: a SEPARATE source (the tangential
-                    // force acting at the contact point, offset by each
-                    // grain's own radius -- not an action-reaction pair
-                    // since the moment arm differs per grain even though
-                    // the underlying force is shared). See
-                    // `ContactResolution`'s own doc for both; missing the
-                    // friction-torque term was a real, confirmed bug found
-                    // 2026-08 (`diag_max_speed_reached_during_collapse`).
+                    // Rolling moment: an action-reaction pair on spin.
+                    // Friction torque is a separate source: the tangential
+                    // force at the contact point, whose moment arm is each
+                    // grain's own radius, so not an action-reaction pair.
+                    // See `ContactResolution`.
                     let moi_i = self.grains[pair.i].moment_of_inertia();
                     let moi_j = self.grains[pair.j].moment_of_inertia();
                     dspin[pair.j] += (resolution.rolling_moment + resolution.friction_torque_on_j)
@@ -587,28 +515,17 @@ impl GrainPopulation {
         (forces, torques)
     }
 
-    /// Real, DIRECT per-grain normal-velocity correction against any
-    /// touching boundary -- found necessary live 2026-08-21, alongside the
-    /// rolling-torque fix: the grid's OWN boundary correction
-    /// (`BoundaryCondition::apply_to_grid_velocity`) applies PER GRID CELL,
-    /// but a grain's momentum spreads across a 3x3 kernel of cells via
-    /// P2G/G2P, several of which sit ABOVE the local terrain height and
-    /// never receive the correction. The grain's gathered velocity ends up
-    /// a noisy BLEND of corrected and uncorrected cell contributions, not
-    /// the clean result real single-rigid-body contact needs -- confirmed
-    /// the hard way: a grain given this blended velocity as the input to
-    /// `resolve_wall_contact` rolled in the WRONG direction and appeared to
-    /// fall through the terrain, even though `resolve_wall_contact`'s own
-    /// math was hand-verified correct in isolation.
+    /// Per-grain normal-velocity correction against a touching boundary.
+    /// The grid's boundary correction (`BoundaryCondition::
+    /// apply_to_grid_velocity`) acts per cell, but a grain's momentum spreads
+    /// over a 3x3 kernel, several cells of which sit above the terrain and
+    /// are never corrected; the gathered velocity is a blend, and given that
+    /// blend `resolve_wall_contact` rolled a grain the wrong way.
     ///
-    /// This replaces the grid's own (noisy) normal correction with a clean,
-    /// direct, per-grain one using the exact real local normal -- run
-    /// BEFORE any contact-force resolution, so everything downstream
-    /// (tangential friction, rolling torque) reacts to a physically clean
-    /// velocity, not kernel-blend noise. The grid's own per-cell correction
-    /// still runs too (harmless -- both push in the same direction, and
-    /// this one runs last, fully re-establishing correctness regardless of
-    /// what came before).
+    /// This sets the normal component from the exact local normal before any
+    /// contact force, so friction and rolling torque see a clean velocity.
+    /// The per-cell correction still runs; both push the same way and this
+    /// one runs last.
     pub fn clean_wall_normal_velocity(
         &mut self,
         boundaries: &[Box<dyn BoundaryCondition>],
@@ -629,24 +546,16 @@ impl GrainPopulation {
         }
     }
 
-    /// Real grain-vs-BOUNDARY contact forces/torques -- found missing live
-    /// 2026-08-21 (see `BoundaryCondition::grain_contact`'s own doc): before
-    /// this, a grain resting on the ground had literally no mechanism to
-    /// ever start rolling from rest, since only grain-grain contact
-    /// (`resolve_contact_forces` above) ever produced torque. Separate from
-    /// that method (not merged into it) because a boundary isn't a `Grain`
-    /// -- it has no index into `self.grains`, no mass, no spin of its own.
+    /// Grain-vs-boundary contact forces and torques (see
+    /// `BoundaryCondition::grain_contact`): without them a grain resting on
+    /// the ground never starts rolling, since only grain-grain contact gives
+    /// torque. Separate from `resolve_contact_forces` because a boundary is
+    /// not a `Grain` (no index, mass or spin).
     ///
-    /// Real persistent elastic memory per grain (`wall_springs`, same "broken
-    /// contact has no memory" convention as `contacts` above) -- reset to a
-    /// fresh spring whenever a grain isn't touching any boundary this
-    /// substep, carried forward otherwise. Only tracks ONE spring per grain
-    /// (not per grain-per-boundary): a real, disclosed simplification for a
-    /// grain touching multiple boundaries at once (e.g. a corner) -- rare,
-    /// and this codebase's own DEM work has repeatedly found "handle the
-    /// common case correctly, don't chase rare corner geometry" the right
-    /// tradeoff (same spirit as `HeightmapBoundary`'s own real, disclosed
-    /// fixed-+Y-normal-for-outer-walls simplification elsewhere).
+    /// Elastic memory per grain (`wall_springs`): a fresh spring whenever the
+    /// grain touches no boundary this substep, carried forward otherwise.
+    /// One spring per grain, not per grain and boundary, so a grain in a
+    /// corner shares one spring between two walls.
     pub fn resolve_wall_contact_forces(
         &mut self,
         boundaries: &[Box<dyn BoundaryCondition>],
@@ -696,21 +605,13 @@ impl GrainPopulation {
                     ),
                 };
                 if let Some(resolution) = resolution {
-                    // Real, load-bearing choice (found the hard way, see this
-                    // method's own doc): apply ONLY the tangential friction
-                    // force and its resulting torque here -- NOT `resolution.
-                    // normal_force`. The grid's own hard position/velocity
-                    // clamp already owns the normal direction (stable,
-                    // rigid); this spring's own normal_force is only ever
-                    // used internally, as the Coulomb-friction cap basis.
-                    // Applying it as a real force too double-counts the
-                    // normal direction against a clamp that keeps resetting
-                    // the same small overlap every step, so the spring keeps
-                    // "refilling" a large repulsive force with nothing to
-                    // bring it back down -- confirmed directly via debug
-                    // instrumentation: normal_force stayed in the hundreds
-                    // every single substep, launching the grain rather than
-                    // letting it settle.
+                    // Only the tangential friction force and its torque are
+                    // applied, not `resolution.normal_force`: the grid's
+                    // position/velocity clamp owns the normal direction, and
+                    // the spring's normal force only sets the Coulomb cap.
+                    // Applied as a force too, it refills every step against
+                    // a clamp that keeps resetting the overlap (measured: in
+                    // the hundreds every substep) and launches the grain.
                     forces[i] += resolution.tangential_force;
                     torques[i] += resolution.rolling_moment + resolution.friction_torque_on_j;
                     touched = true;
@@ -723,27 +624,17 @@ impl GrainPopulation {
         (forces, torques)
     }
 
-    /// Real grain-vs-CONTINUUM-terrain contact -- closes the real,
-    /// root-caused structural gap `resolve_wall_contact_forces` above
-    /// cannot: that method only ever fires against a real
-    /// `BoundaryCondition` (static geometry), so a grain resting on a
-    /// real, dynamic MPM terrain material (sharing the same grid via
-    /// ordinary P2G/G2P, not a boundary) got ZERO rolling resistance from
-    /// that contact -- exactly the base layer that sets a poured pile's
-    /// own footprint. See `terrain_contact`'s own module doc for the full
-    /// real diagnosis and the discrete-to-implicit-surface technique used
-    /// to estimate a normal/overlap from the terrain's own real packing-
-    /// fraction field.
+    /// Grain-vs-continuum-terrain contact. `resolve_wall_contact_forces`
+    /// only fires against a `BoundaryCondition`, so a grain resting on an MPM
+    /// terrain (sharing the grid, not a boundary) got no rolling resistance
+    /// from it, and that base layer sets a poured pile's footprint. See
+    /// `terrain_contact`'s module doc for the normal/overlap estimate from
+    /// the terrain's packing-fraction field.
     ///
-    /// Same real, deliberate choice as `resolve_wall_contact_forces`
-    /// above: applies ONLY the tangential friction force and its
-    /// resulting torque, NOT the estimated contact's own normal
-    /// component -- the shared grid's ordinary P2G/G2P momentum exchange
-    /// with the terrain ALREADY provides real normal repulsion (the
-    /// terrain's own elastic-plastic incompressibility resists overlap);
-    /// adding a second, independent normal spring on top would double-
-    /// count it, the same real failure mode that method's own doc
-    /// disclosed and avoided.
+    /// Like `resolve_wall_contact_forces`, applies only the tangential
+    /// friction force and its torque: the grid's P2G/G2P exchange with the
+    /// terrain already provides the normal repulsion, and a second normal
+    /// spring would count it twice.
     pub fn resolve_terrain_contact_forces(
         &mut self,
         grid: &crate::grid::Grid,
@@ -752,9 +643,7 @@ impl GrainPopulation {
         let n = self.grains.len();
         let mut forces = vec![Vec2::ZERO; n];
         let mut torques = vec![0.0f32; n];
-        // Real, disclosed opt-in gate -- see `terrain_contact_config`'s
-        // own doc. Zero cost, zero behavior change for every population
-        // that never calls `with_terrain_contact`.
+        // Opt-in gate -- see `terrain_contact_config`.
         let Some((reference_mass_per_cell, surface_threshold)) = self.terrain_contact_config else {
             return (forces, torques);
         };
@@ -811,7 +700,7 @@ impl GrainPopulation {
         (forces, torques)
     }
 
-    /// One real, standalone semi-implicit Euler substep (gravity + contact
+    /// One standalone semi-implicit Euler substep (gravity + contact
     /// forces + any `grain_fields` integrated directly into velocity/spin,
     /// then position integrated from the new velocity) -- for a
     /// `GrainPopulation` NOT coupled to the shared MPM grid (real,
@@ -873,21 +762,13 @@ mod tests {
         assert_eq!(pop.active_contact_count(), 0);
     }
 
-    /// Real, hand-verified check of `effective_friction_angle_deg`'s own
-    /// math (eigen-decomposition + Mohr-Coulomb), independent of the DEM
-    /// dynamics that normally populate `stress_accum` -- directly injects a
-    /// known accumulator value (same-module private-field access, this test
-    /// is a child of `population`'s own module) and checks the closed-form
-    /// answer against a hand-computed expectation, not the contact-force
-    /// pipeline. A deliberately ASYMMETRIC raw accumulator (`x_axis.y=2`,
-    /// `y_axis.x=0` -- real discrete contact sums need not be symmetric per
-    /// contact, see `effective_friction_angle_deg`'s own doc) that
-    /// symmetrizes to `[[2,1],[1,2]]`: eigenvalues 3 and 1 (mean=2,
-    /// half_diff=0, radius=sqrt(0^2+1^2)=1), `sin(phi)=(3-1)/(3+1)=0.5` ->
-    /// `phi=30deg` exactly. Using the RAW (unsymmetrized) matrix instead
-    /// would give eigenvalues (2,2) -> `phi=0deg` -- this test's chosen
-    /// asymmetry is deliberate, so a broken/missing symmetrization step
-    /// would fail this test, not silently pass it.
+    /// `effective_friction_angle_deg`'s math (eigen-decomposition and
+    /// Mohr-Coulomb) against a hand-computed value, with an injected
+    /// accumulator instead of the contact pipeline. The raw accumulator is
+    /// asymmetric on purpose (`x_axis.y = 2`, `y_axis.x = 0`) and symmetrizes
+    /// to `[[2,1],[1,2]]`: eigenvalues 3 and 1, `sin(phi) = 0.5`, `phi = 30`
+    /// degrees. The raw matrix would give (2, 2) and 0 degrees, so a missing
+    /// symmetrization fails here.
     #[test]
     fn effective_friction_angle_matches_hand_computed_mohr_coulomb_value() {
         let mut pop = GrainPopulation::new(
@@ -972,27 +853,13 @@ mod tests {
 
     #[test]
     fn light_grain_resting_on_a_pinned_floor_reaches_the_real_predicted_equilibrium_overlap() {
-        // Two real mistakes fixed here from an earlier version of this test:
-        // (1) a spatially-uniform force applied to BOTH grains equally
-        //     produces ZERO relative acceleration between them -- elementary
-        //     mechanics (equivalence principle: gravity accelerates
-        //     everything identically regardless of mass), not a property of
-        //     this contact code. A huge MASS alone does not pin a body
-        //     against gravity -- it still free-falls at the same rate, just
-        //     reacts less to CONTACT forces. A real fixed floor needs an
-        //     actual position anchor (real precedent: `Particle::pinned`'s
-        //     own Dirichlet-boundary convention elsewhere in this engine),
-        //     approximated here by re-clamping the floor grain's state after
-        //     every step -- a real, standard test technique, not a hack
-        //     specific to this bug.
-        // (2) using a huge position offset (1e6) alongside an expected
-        //     SIGNAL of order 1e-4 completely loses f32 precision (~7
-        //     significant digits) -- real numerical-conditioning mistake,
-        //     not a contact-law bug. Kept both grains at well-conditioned,
-        //     order-1 coordinates instead.
+        // A uniform force on both grains gives no relative acceleration, and a
+        // huge mass alone still free-falls, so the floor grain is re-clamped
+        // after every step (as `Particle::pinned` anchors a particle). Both
+        // grains sit at order-1 coordinates: a 1e6 offset would lose the
+        // 1e-4 signal to f32.
         //
-        // Real, precise, closed-form prediction at equilibrium: kn*overlap =
-        // m*g (spring force balances weight) -> overlap = m*g/kn.
+        // At equilibrium kn*overlap = m*g, so overlap = m*g/kn.
         let cfg = config();
         let m = 1.0;
         let g = 9.8;
@@ -1029,17 +896,11 @@ mod tests {
         );
     }
 
-    /// Real end-to-end wiring check (as opposed to
-    /// `effective_friction_angle_matches_hand_computed_mohr_coulomb_value`'s
-    /// isolated math check): does `resolve_contact_forces`'s own real
-    /// per-substep loop -- exercised by real settling dynamics, not a
-    /// hand-injected accumulator -- actually populate `stress_accum` with
-    /// sane data? Same settling scenario as the equilibrium-overlap test
-    /// above (a light grain compressing onto a pinned floor grain under
-    /// gravity). Doesn't assert an exact angle (that depends on the full
-    /// nonlinear settling trajectory, not a closed form) -- just that a
-    /// real reading exists and falls in a physically sane range once the
-    /// grain has settled into sustained contact.
+    /// End-to-end wiring: settling dynamics (a light grain compressing onto a
+    /// pinned floor grain under gravity, as in the equilibrium test above)
+    /// populate `stress_accum` through `resolve_contact_forces`. No exact
+    /// angle is asserted (it depends on the settling trajectory), only a
+    /// sane reading once contact is sustained.
     #[test]
     fn effective_friction_angle_reads_real_nonzero_data_after_real_settling_contact() {
         let cfg = config();
@@ -1068,20 +929,12 @@ mod tests {
         let phi = pop
             .effective_friction_angle_deg()
             .expect("a real, sustained compressive contact must yield Some");
-        // Real, honest finding from running this test, not assumed: a
-        // single two-grain vertical contact with no sliding is a
-        // DEGENERATE case for Mohr-Coulomb -- the contact force is purely
-        // normal (parallel to the branch vector), so `outer(f, l)` is
-        // rank-1 (one nonzero eigenvalue, one exactly zero -- zero real
-        // lateral/confining stress). `sin(phi) = (sigma1-0)/(sigma1+0) = 1`
-        // -> exactly 90deg. Mathematically correct, but physically
-        // uninformative: no real granular assembly has zero lateral
-        // confinement. This is why the REAL Phase-0 gate (comparing
-        // against the 23.87deg pure-DEM baseline) must use a genuine
-        // multi-grain pile with contacts in multiple directions, not a
-        // single vertical pair -- this test only confirms the WIRING
-        // (a real, sane, non-NaN value in [0,90]) reaches this point, not
-        // that a two-grain pair is a meaningful friction-angle measurement.
+        // A single vertical contact with no sliding is degenerate for
+        // Mohr-Coulomb: the force is along the branch vector, so `outer(f, l)`
+        // has rank 1, zero lateral stress, and `sin(phi) = 1`, 90 degrees.
+        // Correct but uninformative, so this checks the wiring only (a
+        // finite value in [0, 90]); a friction-angle gate needs a pile with
+        // contacts in several directions.
         assert!(
             (0.0..=90.0).contains(&phi),
             "phi={phi}deg is outside any physically sane range"
@@ -1090,12 +943,9 @@ mod tests {
 
     #[test]
     fn small_pile_under_gravity_settles_without_exploding() {
-        // Real, minimal "does this actually work as a pile" sanity check --
-        // not the full long-horizon repose-angle verification (a separate,
-        // later, dedicated test matching this session's own established
-        // discipline), just confirming a handful of grains dropped under
-        // gravity onto a floor settle into a bounded, finite configuration
-        // instead of diverging.
+        // A handful of grains dropped onto a floor settle into a bounded,
+        // finite configuration instead of diverging. Not a repose-angle
+        // check.
         let mut grains = Vec::new();
         for row in 0..3 {
             for col in 0..4 {
@@ -1133,45 +983,16 @@ mod tests {
 
     #[test]
     fn two_free_grains_total_mechanical_energy_never_grows_without_an_external_driver() {
-        // Real, CORRECTED physical invariant (2026-08-03). The original
-        // version of this test asserted raw KINETIC energy alone could not
-        // grow past its initial value -- empirically measured as a 64%
-        // "violation" (ke0=4.0, max_ke=6.571). A full energy-breakdown
-        // instrumentation (see `spacetime::grains` session notes) traced
-        // this to a real, non-buggy cause: this test's own initial
-        // condition spawns the two grains ALREADY overlapping by 1% of
-        // radius (radii sum 1.0, separation 0.99), which means the contact
-        // starts with substantial PRELOADED elastic potential energy in the
-        // normal spring -- PE_n0 = 0.5*kn*overlap0^2 = 5.0, actually MORE
-        // than the initial kinetic energy itself (KE0=4.0). As that real
-        // compressed spring naturally pushes the two free grains apart --
-        // ordinary, correct physics for ANY spring-dashpot contact model,
-        // not a bug, exactly like releasing a compressed spring between two
-        // free masses -- it legitimately converts stored PE into KE, which
-        // the old invariant misread as an energy-conservation violation.
-        //
-        // Direct instrumentation confirmed this is legitimate: total
-        // mechanical energy (KE + normal-spring PE + tangential-spring PE +
-        // cumulative dissipated energy) stayed within 0.58% of its initial
-        // value across the entire 2,000,000-step run (peak relative
-        // overshoot 0.5786% at step 18229) -- real, bounded, expected
-        // semi-implicit-Euler numerical error for a stiff damped spring
-        // (matches this force law's own hand-derived power balance:
-        // d(KE+PE)/dt = -normal_damping*v_n^2 - tangential_damping*v_t^2 <=
-        // 0), nowhere close to a genuine 64% energy injection. A separate
-        // check at 10x finer dt (which any REAL discretization bug should
-        // shrink under, not grow under) instead showed the KE-alone
-        // "violation" tracks physical PE release consistently at matching
-        // physical time, further confirming this is not a discretization
-        // artifact of contact_law.rs/population.rs.
-        //
-        // The real, physically correct invariant for a purely dissipative
-        // (damped) contact system with zero external driver -- one that may
-        // start pre-loaded with elastic energy, exactly like every real
-        // pair of touching grains in a settled pile -- is that TOTAL
-        // mechanical energy (KE + energy stored in the contact springs) is
-        // monotonically non-increasing, NOT raw KE alone, which is free to
-        // rise as preloaded spring PE legitimately converts into it.
+        // The two grains start overlapping by 1% of the radius (radii sum 1.0,
+        // separation 0.99), so the normal spring starts with PE_n0 =
+        // 0.5*kn*overlap0^2 = 5.0, more than the initial KE (4.0). Releasing
+        // it raises KE (measured peak 6.571), which is correct, so kinetic
+        // energy alone is not the invariant. For a damped contact with no
+        // driver, total mechanical energy (KE plus spring PE) never increases:
+        // d(KE+PE)/dt = -normal_damping*v_n^2 - tangential_damping*v_t^2 <= 0.
+        // Measured over 2,000,000 steps, KE + spring PE + dissipated energy
+        // stays within 0.58% of its start (semi-implicit Euler error for a
+        // stiff damped spring).
         let mut cfg = config();
         cfg.friction = 1.0e6; // cap should never engage except right at separation
         cfg.rolling_stiffness = 0.0; // isolate normal+tangential only
@@ -1186,10 +1007,8 @@ mod tests {
         pop.grains[0].v = Vec2::new(0.0, 2.0);
         pop.grains[1].v = Vec2::new(0.0, -2.0);
 
-        // Real total mechanical energy: KE (translational + rotational)
-        // plus whatever elastic PE is currently stored in the active
-        // contact's normal and tangential springs -- the actual
-        // conserved-minus-dissipated quantity for this force law.
+        // Total mechanical energy: KE (translational and rotational) plus the
+        // elastic PE in the active contact's normal and tangential springs.
         let mechanical_energy = |pop: &GrainPopulation| -> f32 {
             let ke: f32 = pop
                 .grains
@@ -1230,10 +1049,9 @@ mod tests {
                 "diverged at step {step}"
             );
         }
-        // Real measured peak this session: 0.5786% overshoot. 1% gives
-        // real headroom for bounded explicit-Euler numerical error while
-        // still catching genuine energy injection (a real bug here would
-        // look like the old invariant's measured 64% "violation").
+        // Measured peak 0.5786% overshoot; 1% leaves room for explicit Euler
+        // error and still catches an energy injection (the 64% KE-only
+        // reading would fail it).
         assert!(
             max_e <= e0 * 1.01,
             "total mechanical energy grew without an external driver: e0={e0:.6} max_e={max_e:.6} \
@@ -1246,25 +1064,12 @@ mod tests {
 
     #[test]
     fn sliding_grain_on_a_pinned_floor_converges_toward_rolling_not_away_from_it() {
-        // Real, direct physical check for the friction-induced-rolling
-        // torque (`ContactResolution::friction_torque_on_i/j`): a grain
-        // given a real sliding velocity along a fixed floor must evolve
-        // TOWARD "rolling without slipping" (the contact-point tangential
-        // slip speed |v_t| decaying over time as spin builds up to match).
-        // Confirms the torque's sign/formula is genuinely correct in
-        // isolation (verified: slip decays smoothly 3.0 -> 0.9 while real
-        // contact stays engaged). A real, SEPARATE full-column collapse
-        // test (`tests/grains_repose_angle.rs`) showed unbounded growth
-        // instead -- this test proves that's NOT a sign error in the core
-        // force law; the real cause is elsewhere (many-body/repeated-
-        // contact dynamics specific to that scene, not this pairwise law).
-        // Real, fixed overlap (1% of radius) from the start, ZERO gravity --
-        // isolates purely the sliding-friction-induces-rolling question,
-        // removing the confound of an earlier version of this test (gravity
-        // continuously growing the overlap over time, meaning the contact
-        // barely engaged at all for the first several thousand steps while
-        // a real gap was still closing -- a real, separate effect that
-        // muddied this specific measurement, not itself a bug).
+        // Friction-induced rolling (`ContactResolution::friction_torque_on_
+        // i/j`): a grain sliding on a fixed floor must evolve toward rolling
+        // without slipping, its contact-point slip |v_t| decaying as spin
+        // builds up (measured 3.0 -> 0.9). This checks the torque's sign and
+        // formula on one pair. Fixed 1% overlap and no gravity, so the contact
+        // is engaged from the first step.
         let floor_anchor = Vec2::new(0.0, -0.495);
         let mut pop = GrainPopulation::new(
             vec![
@@ -1286,12 +1091,12 @@ mod tests {
             (v_rel.dot(t) - (g.radius * g.spin + floor.radius * floor.spin)).abs()
         };
 
-        // Measured over the window real contact stays genuinely engaged
+        // Measured over the window real contact stays engaged
         // (checked directly: this pair separates vertically -- the normal
         // spring's own bounce -- a bit after step ~4500, at which point
         // velocity/spin freeze and any further "slip" reading is pure
         // separated-body geometric drift, not real contact physics; this
-        // window is entirely within the real, engaged-contact regime).
+        // window is entirely within the engaged-contact regime).
         let slip_early = slip_speed(&pop);
         for _ in 0..4000 {
             pop.step(gravity, dt);
@@ -1314,16 +1119,10 @@ mod tests {
         );
     }
 
-    /// Real, direct numeric proof that `Grain::orientation` (added
-    /// 2026-08-03 specifically so a grain's real rolling has something to
-    /// render) actually accumulates a genuine rotation, not just a nonzero
-    /// `spin` that never gets integrated anywhere. Same real scenario as
+    /// `Grain::orientation` accumulates `integral(spin dt)`, not just a
+    /// nonzero spin that is never integrated. Same scenario as
     /// `sliding_grain_on_a_pinned_floor_converges_toward_rolling_not_away_
-    /// from_it` above (a grain sliding on a pinned floor, real friction-
-    /// induced spin-up) -- reused rather than invented fresh, since that
-    /// scenario already independently proves the underlying spin dynamics
-    /// are correct; this test's ONLY new claim is that `orientation`
-    /// faithfully tracks `integral(spin dt)`.
+    /// from_it` (sliding on a pinned floor, friction-induced spin-up).
     #[test]
     fn grain_orientation_genuinely_accumulates_real_rotation_while_rolling() {
         let floor_anchor = Vec2::new(0.0, -0.495);
@@ -1361,18 +1160,10 @@ mod tests {
             }
         }
         let final_orientation = pop.grains[0].orientation;
-        // Real, corrected threshold (2026-08-04): the ORIGINAL >0.5 rad bound
-        // here was simply wrong -- at dt=1e-6s, 4000 steps is only 4ms of
-        // real simulated time, and spin ramps from 0 up to ~-2.4 rad/s over
-        // that same window, so the real, correct integral is on the order
-        // of -0.005 rad (roughly avg_spin * duration), not >0.5 rad. Caught
-        // by actually running this test rather than assuming the threshold
-        // was right -- exactly the kind of "prove it, don't assume it"
-        // check this session's own standing discipline requires. The real
-        // claim this test makes is or nonzero, correctly-signed, non-NaN
-        // rotation consistent with the spin history -- verified precisely
-        // by the independent trapezoidal cross-check below, not by an
-        // arbitrary magnitude bound.
+        // At dt = 1e-6 s, 4000 steps are 4 ms, with spin ramping from 0 to
+        // ~-2.4 rad/s, so the integral is about -0.005 rad. The claim is a
+        // nonzero, correctly signed, finite rotation matching the spin
+        // history, checked by the trapezoidal cross-check below.
         assert!(
             final_orientation.is_finite() && final_orientation != 0.0,
             "expected real, nonzero accumulated rotation from 4000 steps of \

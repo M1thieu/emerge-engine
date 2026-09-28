@@ -116,7 +116,7 @@ pub(crate) fn combined_kirchhoff_stress_from(
     // identical (`&&` short-circuits either way, same result), but skips a
     // vtable call for every particle of every material that never sets
     // activation (e.g. every fluid particle in a plain fluid scene), a real
-    // per-substep cost multiplied by particle count. Real, measured lever:
+    // per-substep cost multiplied by particle count. Measured lever:
     // this function runs inside P2G's hot per-particle loop.
     if particles.activation[i] > 0.0 {
         let coeff = material.activation_scale();

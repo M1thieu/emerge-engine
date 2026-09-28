@@ -4,10 +4,10 @@
 //
 // One thread per particle (sorted access via sorted_particle_ids). The gather
 // (`g2p_gather.inc.wgsl`) and force-field (`force_fields_apply.inc.wgsl`) code is
-// appended to this source at pipeline creation. These used to be three separate
-// dispatches (g2p -> particles_update -> force_fields), each loading and storing
-// the full 128-byte particle; on a small integrated GPU the fixed cost per
-// dispatch alone was ~15-20us, a large share of a ~0.35ms substep.
+// appended to this source at pipeline creation, so one dispatch does the work of
+// g2p -> particles_update -> force_fields and loads and stores the 128-byte particle
+// once. On a small integrated GPU the fixed cost per dispatch alone is ~15-20us, a
+// large share of a ~0.35ms substep.
 //
 // Update steps (in `update_particle`):
 //   1. F = (I + dt·C) · F_old          (C = velocity_gradient from the gather)
@@ -69,10 +69,9 @@ struct MaterialParams {
     bulk_viscosity:          f32,
     surface_tension_coeff:   f32,
     cohesion_coeff:              f32,
-    // GPU/CPU parity fix (2026-08-15) -- see Rust MaterialParams's own doc.
-    // 1u = this material derives density/volume analytically from its own
-    // clamped F (matches CPU's `owns_deformation_volume_state()`), 0u =
-    // unused by this material.
+    // See Rust MaterialParams. 1u = this material derives density/volume
+    // analytically from its own clamped F (CPU's
+    // `owns_deformation_volume_state()`), 0u = unused by this material.
     owns_deformation_volume_state: u32,
     _pad0: u32,
     _pad1: u32,
@@ -377,11 +376,9 @@ fn vm_plasticity(f_trial: mat2x2<f32>, kappa: f32, mat: MaterialParams) -> VmRet
 
     let denom     = 2.0 * mat.mu + mat.hardening_modulus;
     let gamma     = select((elastic_dev - yield_s) / denom, 0.0, denom < NUM_FLOOR_TIGHT);
-    // Real, disclosed regression fix (2026-09-02, external review, same
-    // bug as the CPU path's own von_mises.rs -- see that file's own doc
-    // for the worked counterexample): must project onto the yield surface
-    // AFTER this step's own hardening increment, not the pre-hardening
-    // trial-state limit `yield_s`.
+    // Project onto the yield surface after this step's hardening increment,
+    // not the pre-hardening trial limit `yield_s` (Simo & Taylor's
+    // associative J2 return mapping; worked case in CPU von_mises.rs).
     let new_yield_s = yield_s + mat.hardening_modulus * gamma;
     let eps_proj  = dev * (new_yield_s / elastic_dev) + vec2<f32>(tr * 0.5);
     let sigma_new = exp(eps_proj);
@@ -485,8 +482,7 @@ fn g2p_update_particle(p_idx: u32) {
     if p.sleeping == 0u {
         update_particle(p_idx, &p);
     }
-    // Force fields see the advanced position and the updated velocity, exactly as
-    // the former standalone pass did when it ran after this one. Only `v` and
+    // Force fields see the advanced position and the updated velocity. Only `v` and
     // `sleeping` can change there, so only those are written back.
     if apply_force_fields(&p) {
         particles[p_idx].v = p.v;
@@ -711,36 +707,21 @@ fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
     const FLUID_J_MIN: f32 = 0.5; // below this, EOS pressure overwhelms timestep → clamp to prevent crushing
     if mat.model == 1u {
         let fluid_j_max = select(2.0, mat.volume_ratio_max, mat.volume_ratio_max > 1.0);
-        // Real, disclosed regression fixed 2026-08-30 -- same fix, same
-        // root cause, as CPU's NewtonianFluidMaterial::update_particle (see
-        // that function's own doc for the full writeup): `new_F`'s own
-        // determinant (built above via `(I+dt*C)*F_old`) is NOT rotation-
-        // invariant -- a pure rigid rotation (div(v)=0) should leave J
-        // exactly unchanged, but that formula gives a strictly positive
-        // O(dt^2) expansion every substep, baked in permanently by this
-        // branch's own isotropic reset just below. Fixed with the
-        // continuity equation's own exact exponential solution,
-        // `J_new = J_old * exp(dt*div(v))`, computed from the OLD
-        // (pre-substep) `p.deformation_gradient`/`p.velocity_gradient`
-        // directly instead of trusting `new_F`'s determinant.
-        // TESTED (2026-09-16): a GPU-native per-substep rate clamp on
-        // `dt*div_v` (reusing `SimConfig::fluid_step_retry_threshold`'s real,
-        // already-disclosed 0.5 bound, since that CPU-only rollback-and-retry
-        // mechanism has zero GPU implementation) was tried here and found
-        // INERT, not merely ineffective: byte-identical results to the
-        // unclamped baseline (v=10.963 at frame 40, exact match). Real
-        // reason, confirmed by arithmetic: at this scene's ~650-700
-        // substeps/frame (needed by the Eleventh pass's `max_substeps_per_
-        // step=1000` fix), each sub_dt is ~1.5e-4, so hitting the 0.5 bound
-        // would need `div_v~=3250` -- implausible given max observed speed is
-        // only 10-18 over ~1 grid-unit spacing. The finer substeps that fixed
-        // the earlier CFL-truncation explosion also make a per-substep RATE
-        // bound structurally unable to bind here. Not a lever for this
-        // scene's disintegration bug; see HANDOFF_fluid_gpu_thin_layer_bug.md
-        // Twelfth pass for the other 3 real fixes already ruled out.
+        // As CPU's NewtonianFluidMaterial::update_particle: `new_F`'s
+        // determinant (built above via `(I+dt*C)*F_old`) is not
+        // rotation-invariant. A pure rotation (div(v)=0) should leave J
+        // unchanged, but that formula expands it by O(dt^2) every substep,
+        // and the isotropic reset below would keep the error. J instead
+        // uses the continuity equation's exact solution,
+        // `J_new = J_old * exp(dt*div(v))`, from the pre-substep
+        // `p.deformation_gradient`/`p.velocity_gradient`.
+        // No per-substep clamp on `dt*div_v`: with the 0.5 bound of
+        // `SimConfig::fluid_step_retry_threshold` it measured byte-identical
+        // to unclamped, since at ~1.5e-4 s substeps reaching it needs
+        // `div_v ~= 3250`.
         let old_J = det2(p.deformation_gradient);
         // `trace2`, not `p.velocity_gradient[0].x + p.velocity_gradient[1].y`:
-        // see `trace2`'s own doc -- the direct-index form silently computed
+        // see `trace2`'s doc -- the direct-index form silently computed
         // C[0][0] + C[0][1] on the AMD Vulkan target, the real root cause of
         // the GPU fluid impact explosion (and of the per-substep shear damping
         // once added to mask it).
@@ -765,14 +746,13 @@ fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
         let sqrtJ = sqrt(J_fluid);
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
 
-        // GPU/CPU parity fix (2026-08-15): derive density/volume ANALYTICALLY
-        // from this already-clamped J, matching CPU's fluid.rs::update_particle
-        // exactly (`density = (rest_density/j).max(min_density).min(2*rest_density)`,
-        // NUM_FLOOR here is the same 1e-6 CPU's `min_density` default uses).
-        // Only takes effect for materials with owns_deformation_volume_state=1u
-        // -- g2p.wgsl already skipped its own kernel-mass write for exactly
-        // these particles, so this is the ONLY place their density/volume get
-        // set, every substep, same as CPU's own single source of truth.
+        // Density/volume derived analytically from this clamped J, as CPU's
+        // fluid.rs::update_particle
+        // (`density = (rest_density/j).max(min_density).min(2*rest_density)`,
+        // NUM_FLOOR here is the same 1e-6 as CPU's `min_density` default).
+        // Only for materials with owns_deformation_volume_state=1u: g2p.wgsl
+        // skips its kernel-mass write for these particles, so this is the only
+        // place their density/volume are set, every substep, as on CPU.
         if mat.owns_deformation_volume_state == 1u {
             let density = clamp(mat.rest_density / J_fluid, NUM_FLOOR, mat.rest_density * 2.0);
             particles[p_idx].density = density;

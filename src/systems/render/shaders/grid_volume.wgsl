@@ -2,15 +2,12 @@
 // directly instead of drawing one instanced splat per particle, so adjacent
 // cells blend into one continuous shape instead of a cloud of discrete dots.
 //
-// Per-cell material coloring: uses `GpuSimulation::attach_grid_material_render_gpu`'s
-// opt-in per-material mass accumulator (`material_mass`) to build a real
-// mass-fraction-weighted color blend per cell (see `material_accum_at`'s own
-// doc). Real fix (2026-08-10): color is now bilinearly blended across the
-// SAME 4 corner cells the density/alpha falloff already uses (see
-// `sample_mass`) -- previously nearest-cell only, a real, visible hard
-// material-color transition at every mixed-material boundary distinct from
-// (and previously not fixed by) the density field's own smoothing. Falls
-// back to slot 0 for every cell when `material_mass_enabled` is 0.
+// Per-cell material colour from `GpuSimulation::attach_grid_material_render_gpu`'s
+// opt-in per-material mass accumulator (`material_mass`): a mass-fraction-
+// weighted blend (see `material_accum_at`), bilinear across the same 4 corner
+// cells as the density and alpha (`sample_mass`), so mixed-material
+// boundaries fade instead of stepping. Slot 0 for every cell when
+// `material_mass_enabled` is 0.
 
 const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
 
@@ -31,10 +28,8 @@ struct GridVolumeParams {
     tx: f32,
     sy: f32,
     ty: f32,
-    // Real light direction, sourced from `SimConfig::light_dir` via
-    // `Renderer::set_light_dir` -- the SAME real value real plant
-    // phototropism (`rod::Phototropism`) uses, not a separate value
-    // hardcoded here and disconnected from anything.
+    // Light direction from `SimConfig::light_dir` via
+    // `Renderer::set_light_dir`, the value `rod::Phototropism` uses.
     light_dir: vec2<f32>,
     grid_res: u32,
     mass_floor: f32,
@@ -63,8 +58,7 @@ struct PhysicalRenderParams {
 @group(0) @binding(0) var<storage, read> grid_int: array<u32>;
 @group(0) @binding(1) var<uniform> params: GridVolumeParams;
 @group(0) @binding(2) var<uniform> optics: OpticalTable;
-// Real i32 (NOT bit-reinterpreted as f32), read plainly -- see
-// `dominant_material`'s own doc for why.
+// Read as i32, not reinterpreted as f32 (see `dominant_material`).
 @group(0) @binding(3) var<storage, read> material_mass: array<i32>;
 @group(0) @binding(4) var<storage, read> grid_visibility_field: array<f32>;
 @group(0) @binding(5) var<uniform> physical: PhysicalRenderParams;
@@ -89,7 +83,7 @@ struct GridVisibilityParams {
 
 // MUST stay equal to `curvature_flow.wgsl`'s own `VISIBILITY_HIGH_FACTOR`/
 // `VISIBILITY_LOW_FACTOR` -- same Schmitt-trigger technique, no cross-module
-// const sharing to enforce it automatically. See that file's own doc.
+// const sharing to enforce it automatically. See that file's doc.
 const GRID_VISIBILITY_HIGH_FACTOR: f32 = 1.3;
 const GRID_VISIBILITY_LOW_FACTOR: f32 = 0.7;
 
@@ -127,10 +121,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
     return out;
 }
 
-// Real mass at grid cell (cx, cy), 0.0 for any cell outside the domain (matches
-// CPU Grid::velocity_at's own OOB-is-zero convention) -- lets bilinear sampling
-// blend smoothly toward "no matter" at the domain edge instead of needing a
-// special-case border check.
+// Mass at grid cell (cx, cy), 0.0 outside the domain (the out-of-bounds
+// convention of CPU `Grid::velocity_at`), so bilinear sampling fades to "no
+// matter" at the domain edge without a border special case.
 fn sample_mass(cx: i32, cy: i32) -> f32 {
     let res = i32(params.grid_res);
     if cx < 0 || cy < 0 || cx >= res || cy >= res {
@@ -140,31 +133,18 @@ fn sample_mass(cx: i32, cy: i32) -> f32 {
     return bitcast<f32>(grid_int[idx * 4u + 2u]);
 }
 
-// Real per-pixel vertical mass integral, "how much matter sits above this
-// cell before reaching open air" -- see `optical_depth`'s own doc in
-// `fs_main` for the full physical grounding (real solar attenuation with
-// depth, Pope & Fry 1997, not an invented camera-ray dimension). Marches
-// toward increasing y (this engine's real "up," opposite gravity), summing
-// real mass one cell at a time; stops at MAX_COLUMN_SAMPLES (a real, bounded
-// GPU-cost cap, not a physical limit) or after 2 consecutive near-empty
-// cells (a real free-surface exit condition, robust to one noisy near-zero
-// read rather than stopping on the first).
+// Vertical mass integral above this cell up to open air (see `optical_depth`
+// in `fs_main`: sunlight attenuated with depth, Pope & Fry 1997). Marches
+// toward increasing y (up, against gravity) one cell at a time; stops at
+// MAX_COLUMN_SAMPLES (a GPU cost cap) or after 2 consecutive near-empty cells
+// (the free surface, robust to one noisy near-zero read).
 //
-// MAX_COLUMN_SAMPLES=56, NOT a round-number guess: every real fluid demo
-// this engine currently ships (`basic_fluids.rs`/`_gui`/`_gpu`, all three
-// share the SAME scene) uses a water column exactly `box_size: IVec2::new(14,
-// 52)` -- 52 cells deep. This constant is that real, currently-shipping
-// depth plus a small margin, not an arbitrary "seems generous" pick (a
-// first version used 40, WHICH WOULD HAVE TRUNCATED the very demos this
-// feature exists to improve -- caught and fixed 2026-08-11 before shipping,
-// not after). Real, measured cost at this cap, at the actual demo's own
-// resolution and scene depth (grid_res=64, water column filled to y=54,
-// matching `basic_fluids_gui.rs` exactly): +742us/frame vs the pre-existing
-// local-density-only path (569.5us -> 1311.5us, headless GPU timing,
-// `diag_grid_volume_render_timing`) -- real, disclosed, roughly 3.5% of the
-// demo's own ~20.8ms/frame budget (48fps at the existing tracked substep
-// cap), not the much larger cost an inflated 256-grid stress test first
-// suggested.
+// MAX_COLUMN_SAMPLES = 56: the fluid demos (`basic_fluids.rs`/`_gui`/`_gpu`,
+// one scene) use a 52-cell-deep column (`box_size: IVec2::new(14, 52)`), plus a
+// margin (40 would truncate them). Cost at grid_res 64 with the column filled
+// to y = 54: +742 us per frame over the local-density-only path (569.5 ->
+// 1311.5 us, `diag_grid_volume_render_timing`), ~3.5% of the demo's
+// ~20.8 ms frame.
 const MAX_COLUMN_SAMPLES: i32 = 56;
 
 fn accumulate_column_depth(cx: i32, cy: i32) -> f32 {
@@ -185,13 +165,12 @@ fn accumulate_column_depth(cx: i32, cy: i32) -> f32 {
     return depth;
 }
 
-// Real mass-WEIGHTED temperature at grid cell (cx, cy) -- i.e. sum(mass_p *
-// temperature_p) over the particles that scattered into this cell, same real
-// P2G scatter convention `ThermalDiffusion` already uses. Dividing by the
-// cell's own (bilinearly-sampled) mass elsewhere recovers a real average
-// temperature; kept unnormalized here so it bilinearly interpolates
-// correctly (interpolating an already-divided average would double-weight
-// low-mass neighbor cells). 0.0 OOB, matching `sample_mass`.
+// Mass-weighted temperature at grid cell (cx, cy): sum(mass_p *
+// temperature_p) over the particles scattered into it (the P2G convention of
+// `ThermalDiffusion`). Divided by the bilinearly sampled mass elsewhere; kept
+// unnormalized here so it interpolates correctly (interpolating averages
+// would over-weight low-mass neighbours). 0.0 out of bounds, like
+// `sample_mass`.
 fn sample_weighted_temp(cx: i32, cy: i32) -> f32 {
     let res = i32(params.grid_res);
     if cx < 0 || cy < 0 || cx >= res || cy >= res {
@@ -216,19 +195,11 @@ fn sample_weighted_temp(cx: i32, cy: i32) -> f32 {
 // holds under the paper's micro-homogeneous assumption, since one grid cell
 // represents many particles, not a single sharp interface.
 //
-// Real fix (2026-08-10): returns the raw (accum, total_mass) pair instead of
-// dividing internally, specifically so `fs_main` can bilinearly blend across
-// 4 neighbor cells BEFORE the one division -- the same real bilinear pattern
-// already used for `mass`/`weighted_temp` just below, extended to material
-// color (previously nearest-cell only, the actual source of this render
-// mode's "blocky material boundary" look, distinct from the density
-// blockiness the physics grid resolution itself is responsible for).
-// Blending 4 already-normalized colors (accum/total_mass per corner first)
-// would incorrectly pull the result toward slot 0 whenever a sparse
-// neighbor corner has zero mass and falls back to a default color -- doing
-// the division ONCE, after blending the raw sums, avoids that: a corner
-// with no data contributes (0,0) and simply carries no weight, the same
-// well-behaved way `mass` already handles a sparse neighbor.
+// Returns the raw (accum, total_mass) pair so `fs_main` blends 4 neighbour
+// cells before one division, like `mass`/`weighted_temp`. Blending 4
+// normalized colours would pull toward slot 0 wherever an empty corner falls
+// back to the default; with raw sums an empty corner contributes (0, 0) and
+// carries no weight.
 struct MaterialAccum {
     accum: vec4<f32>,
     // Mass-weighted Fresnel R0, blended the same way absorption is: a cell
@@ -293,9 +264,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let wt01 = sample_weighted_temp(bx, by + 1);
     let wt11 = sample_weighted_temp(bx + 1, by + 1);
     let weighted_temp = mix(mix(wt00, wt10, frac.x), mix(wt01, wt11, frac.x), frac.y);
-    // Real average temperature: weighted-sum / mass, both already bilinearly
-    // interpolated over the SAME 4 neighbor cells -- floored to avoid a
-    // divide-by-near-zero in sparse/edge cells where both values are tiny.
+    // Average temperature: weighted sum over mass, both bilinear over the same
+    // 4 cells, floored against near-zero mass at sparse edges.
     let avg_temp = weighted_temp / max(mass, 1.0e-4);
 
     // Gate visibility on the NEAREST cell's mass, not the bilinear-blended value --
@@ -306,22 +276,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ny = i32(round(grid_pos.y - 0.5));
     let nx_c = clamp(nx, 0, i32(params.grid_res) - 1);
     let ny_c = clamp(ny, 0, i32(params.grid_res) - 1);
-    // Real hysteresis-stabilized visible/invisible decision (see the
-    // "Real hysteresis visibility state" doc above) -- replaces a flat
-    // `mass < mass_floor` comparison.
+    // Hysteresis-stabilized visible/invisible decision (see the hysteresis
+    // visibility state above) instead of a flat `mass < mass_floor`.
     let vis_idx = u32(ny_c) * params.grid_res + u32(nx_c);
     if grid_visibility_field[vis_idx] < 0.5 {
         discard;
     }
 
-    // Real mass-fraction-weighted material blend, bilinear across the SAME
-    // 4 corner cells `mass`/`weighted_temp` already use above (`bx`/`by`/
-    // `frac`) -- see `material_accum_at`'s own doc for why this replaced a
-    // nearest-cell lookup (this render mode's actual "blocky material
-    // boundary" source, distinct from the grid-resolution blockiness the
-    // density field's own bilinear smoothing already handles). Falls back
-    // to slot 0 only when ALL 4 corners are genuinely empty (matches the
-    // v1 behavior when material tracking isn't attached at all).
+    // Mass-fraction-weighted material blend, bilinear over the same 4 corners
+    // as `mass`/`weighted_temp` (`bx`/`by`/`frac`, see `material_accum_at`).
+    // Slot 0 only when all 4 corners are empty, as with material tracking off.
     var optical_slot: vec4<f32> = optics.slots[0];
     var specular_r0: f32 = optics.specular[0].x;
     if params.material_mass_enabled != 0u {
@@ -385,23 +349,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     const DEPTH_BANDS: f32 = 4.0;
     let sigma_a = optical_slot.rgb;
 
-    // Real column-depth attenuation (2026-08-11): before this, `optical_depth`
-    // only ever reflected the LOCAL density at this one pixel, clamped to
-    // [0,4] -- a 1-cell puddle and a 20-cell lake read as nearly the same
-    // color, since both saturate `depth_banded` well below the
-    // EDGE_COLOR_REFERENCE_DEPTH floor. Real physical mechanism this was
-    // missing: it's not eye-to-surface viewing distance that makes deep
-    // water look darker/bluer IRL (this is a 2D side-view sim, there is no
-    // simulated camera-ray depth axis to integrate along) -- it's that
-    // SUNLIGHT has to travel down through the water column before reaching
-    // this point (and back up to the eye), a real vertical attenuation
-    // along this engine's own y-axis (gravity direction), exactly the
-    // mechanism Pope & Fry 1997 measured (this project's own sigma_a table
-    // for water is already sourced from that paper). `accumulate_column_
-    // depth` marches upward from this cell toward the free surface,
-    // summing real mass -- a direct discretization of tau = integral
-    // sigma_a*rho ds along a real, already-simulated spatial axis, not an
-    // invented dimension.
+    // Column-depth attenuation: with local density alone (clamped to [0,4]) a
+    // 1-cell puddle and a 20-cell lake read the same. In this 2D side view the
+    // darkening comes from sunlight crossing the water column down to this
+    // point (Pope & Fry 1997, the source of the water sigma_a table), not from
+    // a camera ray. `accumulate_column_depth` marches up to the free surface
+    // summing mass, discretizing tau = integral sigma_a*rho ds along y.
     let column_depth = accumulate_column_depth(bx, by);
     let depth_banded = floor(clamp(mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
     let column_banded = floor(clamp(column_depth, 0.0, 16.0) * DEPTH_BANDS) / DEPTH_BANDS;
@@ -410,7 +363,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // Subsurface scattering + Fresnel specular: same real formula
     // `prep_instances.wgsl`'s ByPhysics mode already uses per-particle (see
-    // that file's own doc for the Jacques 2013 / Schlick 1994 grounding) --
+    // that file's doc for the Jacques 2013 / Schlick 1994 grounding) --
     // ported here so the grid-native and curvature-flow render paths reach
     // the same optical detail ByPhysics already had, at zero new cost (both
     // terms only need `optics`, already bound, and the `optical_depth`
@@ -441,13 +394,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // range, reading as flicker there even though the dense main body (alpha
     // pinned at 1 well past this ramp) never shows it. Standard real-time
     // volume-rendering fix: widen the transfer-function ramp to reduce its
-    // sensitivity to small input noise, at the real, disclosed cost of a
-    // slightly softer edge overall.
+    // sensitivity to small input noise, at the cost of a slightly softer
+    // edge overall.
     //
     // Surface normal from the finite-difference gradient of the bilinear density
     // corners (standard volume-rendering technique). Gradient points toward
-    // increasing mass; outward normal is its negative. Lambertian shading from a
-    // fixed light direction (not yet tied to the day-night system).
+    // increasing mass; outward normal is its negative. Lambertian shading from
+    // `light_dir`.
     let grad = vec2<f32>(
         ((m10 - m00) + (m11 - m01)) * 0.5,
         ((m01 - m00) + (m11 - m10)) * 0.5,
@@ -485,17 +438,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Additive blackbody glow on top of the (possibly cel-shaded) lit color --
     // same additive placement `prep_instances.wgsl`'s ByPhysics mode uses
     // (`with_specular + emission`), so near-ignition material reads as
-    // genuinely glowing rather than just a brighter base color.
+    // glowing rather than just a brighter base color.
     let with_emission = clamp(lit + emission, vec3(0.0), vec3(1.0));
 
     let edge_margin = max(params.mass_floor * 1.5, 1.0e-4);
     let alpha = smoothstep(params.mass_floor, params.mass_floor + edge_margin, mass);
     if physical.spatial.z > 0.5 {
-        // Real SI radiative transfer -- absorption, single scattering and
-        // Fresnel together (see `radiative_transfer.inc.wgsl`), not
-        // transmission alone. `cos_view` comes from the same density
-        // gradient the shading above already treats as a surface normal, so
-        // a steep gradient reflects and a flat one transmits.
+        // SI radiative transfer: absorption, single scattering and Fresnel
+        // together (`radiative_transfer.inc.wgsl`). `cos_view` comes from the
+        // density gradient used as the surface normal above, so a steep
+        // gradient reflects and a flat one transmits.
         let relative_density = max(mass / max(params.reference_cell_mass, 1.0e-12), 0.0);
         let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
         let path_m = relative_density * view_length_m;

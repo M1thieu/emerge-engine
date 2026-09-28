@@ -21,7 +21,7 @@
 //!
 //! `drag_coefficient` (`k`, units 1/time) sets the relaxation rate: a particle's velocity
 //! decays toward `target_velocity` as `v(t) = target + (v0 − target)·exp(−k·t)` with no
-//! other forces acting -- a real, checkable analytical prediction, not just "doesn't explode."
+//! other forces acting -- a checkable analytical prediction, not just "doesn't explode."
 //!
 //! # Particle masking
 //! Which particles feel this field is controlled by `material_mask`, a bitmask over
@@ -79,7 +79,7 @@ impl Field for LinearDragField {
 
 /// Same formula as the `Field` impl above (a grain has no `material_id` to
 /// mask against -- a `GrainPopulation` is already a single, homogeneous
-/// population, see `GrainField`'s own doc).
+/// population, see `GrainField`'s doc).
 impl GrainField for LinearDragField {
     fn acceleration(&self, grain: &Grain) -> Vec2 {
         self.drag_coefficient * (self.target_velocity - grain.v)
@@ -96,13 +96,13 @@ impl GrainField for LinearDragField {
 /// The MECHANISM here (sampling a position-dependent velocity) is standard, well-
 /// established numerical infrastructure -- the same idea any semi-Lagrangian/grid-based
 /// flow solver uses to look up an ambient velocity at a point. What the function
-/// actually computes is up to the caller: this module's own test uses the real, exact,
+/// actually computes is up to the caller: this module's own test uses the exact,
 /// textbook closed-form solution for potential flow around a circular cylinder (uniform
 /// stream + doublet superposition -- Anderson-style fluid dynamics, confirmed against
 /// MIT 16.unified fluid mechanics lecture notes and Caltech's "An Internet Book on Fluid
 /// Dynamics," not invented), not a procedural/noise-based approximation.
 pub struct SpatialDragField {
-    /// Real, position-dependent target flow velocity, evaluated at the particle's OWN
+    /// Position-dependent target flow velocity, evaluated at the particle's own
     /// `x` each substep. A pure function of position -- no time-dependence, no captured
     /// state (matches the `fn` pointer constraint).
     pub target_velocity_fn: fn(Vec2) -> Vec2,

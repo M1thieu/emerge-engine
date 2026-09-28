@@ -1,28 +1,21 @@
-//! A single growing dielectric-breakdown leader channel -- Niemeyer,
-//! Pietronero & Wiesmann 1984 ("Fractal Dimension of Dielectric Breakdown,"
-//! Phys. Rev. Lett. 52, 1033, planar discharges), the real, named, cited
-//! model this entire family of phenomena (lightning, electrochemical
-//! deposition, viscous fingering, mineral dendrites) is built on -- verified
-//! independently against a real reference implementation
-//! (github.com/diluuuu10/triggered-discharge, cloned in `tmp/`), not just
-//! this crate's own invention.
+//! A single growing dielectric-breakdown leader channel: Niemeyer,
+//! Pietronero & Wiesmann 1984 ("Fractal Dimension of Dielectric Breakdown",
+//! Phys. Rev. Lett. 52, 1033, planar discharges), the model behind lightning,
+//! electrochemical deposition, viscous fingering and mineral dendrites.
+//! Checked against a reference implementation
+//! (github.com/diluuuu10/triggered-discharge, cloned in `tmp/`).
 //!
-//! Growth rule: every empty grid cell 4-adjacent to the existing channel is
-//! a candidate. Each candidate's probability of being chosen is
-//! proportional to `(local field strength)^eta` -- `eta` is the model's own
-//! real, named parameter controlling how strongly growth follows the field
-//! versus real physical randomness (dust, humidity, free electrons -- see
-//! this module's own doc discussion of chaotic-but-deterministic
-//! real-world noise). High eta follows the strongest field almost
-//! deterministically; low eta branches more.
+//! Growth rule: every empty grid cell 4-adjacent to the channel is a
+//! candidate, chosen with probability proportional to `(local field
+//! strength)^eta`. `eta` sets how strongly growth follows the field versus
+//! physical randomness (dust, humidity, free electrons): high eta follows the
+//! strongest field almost deterministically, low eta branches more.
 //!
-//! Real, disclosed simplification: after growth, the caller is expected to
-//! re-relax the potential field (electrostatic screening -- a branch that
-//! has grown changes the field around it, suppressing further growth
-//! nearby, which is why real lightning forms a few dominant branches
-//! instead of spreading evenly) before the next `grow_step` call. This
-//! struct itself does not own or re-relax the field -- see `grow_step`'s
-//! own signature, which takes the field by reference each call.
+//! The caller re-relaxes the potential field between `grow_step` calls
+//! (electrostatic screening: a grown branch changes the field around it and
+//! suppresses growth nearby, which is why lightning forms a few dominant
+//! branches instead of spreading evenly). This struct does not own the
+//! field; `grow_step` takes it by reference each call.
 
 use super::potential_field::ElectricPotentialField;
 use crate::spacetime::solver::LcgRng;
@@ -32,18 +25,12 @@ pub struct DielectricBreakdownLeader {
     height: usize,
     is_channel: Vec<bool>,
     growth_order: Vec<(usize, usize)>,
-    /// The real channel-cell each grown cell actually branched FROM --
-    /// parallel to `growth_order`, `None` only for the seed itself (which
-    /// has no parent). This is the true tree structure of the discharge:
-    /// growth order and spatial adjacency are NOT the same thing (the next
-    /// cell chosen can be adjacent to ANY existing frontier cell, not
-    /// necessarily the most recently grown one), so a renderer connecting
-    /// consecutive `growth_order` entries with a line draws spurious edges
-    /// across the whole channel instead of its real branches -- exactly
-    /// the bug found live (2026-08-27) when the first real rendered strike
-    /// showed a wrong-looking fan/mess partway down. `parent_order` is the
-    /// real fix: connect each cell to ITS OWN parent, not to whatever grew
-    /// immediately before it in time.
+    /// The channel cell each grown cell branched from, parallel to
+    /// `growth_order`; `None` only for the seed. This is the discharge's tree:
+    /// the next cell can be adjacent to any frontier cell, not only the most
+    /// recent one, so joining consecutive `growth_order` entries draws
+    /// spurious edges across the channel. Connect each cell to its own parent
+    /// instead.
     parent_order: Vec<Option<(usize, usize)>>,
     eta: f32,
     rng: LcgRng,
@@ -103,7 +90,7 @@ impl DielectricBreakdownLeader {
 
     /// The real branch structure: `parents()[i]` is the channel cell
     /// `growth_order()[i]` actually grew from (`None` for the seed). See
-    /// `parent_order`'s own doc for why this, not growth order, is what a
+    /// `parent_order`'s doc for why this, not growth order, is what a
     /// renderer must connect.
     pub fn parents(&self) -> &[Option<(usize, usize)>] {
         &self.parent_order
@@ -170,9 +157,8 @@ impl DielectricBreakdownLeader {
             r -= w;
         }
         let (cx, cy) = candidates[chosen];
-        // Real parent: whichever existing channel neighbor this cell
-        // actually grew from -- see `parent_order`'s own doc for why this
-        // must be tracked separately from growth order.
+        // The channel neighbor this cell grew from (see `parent_order` for
+        // why this is tracked separately from growth order).
         let parent = [
             (cx.checked_sub(1), Some(cy)),
             (Some(cx + 1).filter(|&x| x < self.width), Some(cy)),
@@ -198,17 +184,11 @@ impl DielectricBreakdownLeader {
 mod dielectric_breakdown_leader_tests {
     use super::*;
 
-    /// Real, falsifiable check of the model's own defining property: growth
-    /// should be biased toward the real field direction (from the seed
-    /// toward the boundary with the OPPOSITE potential -- here, growing
-    /// down from a top seed toward a bottom Dirichlet boundary at a
-    /// different potential, matching a real downward leader), not
-    /// uniformly random in every direction. With eta=4 (a real, strongly
-    /// field-following exponent per the cited model's own convention -- the
-    /// video/repo reference this session checked used eta in a similar
-    /// range) the mean y-coordinate of the grown channel should have moved
-    /// substantially toward the bottom boundary, not sit near the seed's
-    /// own row.
+    /// Growth follows the field: from a top seed toward a bottom Dirichlet
+    /// boundary at the opposite potential (a downward leader), the mean y of
+    /// the grown channel moves well toward the bottom rather than staying
+    /// near the seed's row. `eta = 4` is strongly field-following, in the
+    /// range the reference implementation uses.
     #[test]
     fn leader_grows_toward_the_field_not_uniformly_random() {
         const WIDTH: usize = 40;
@@ -228,13 +208,11 @@ mod dielectric_breakdown_leader_tests {
             .map(|&(_, y)| y as f32)
             .sum::<f32>()
             / leader.growth_order().len() as f32;
-        // Real, measured baseline WITHOUT screening (mean_y~2.23 for this same
-        // seed/step count) established that a single-point seed's own early
-        // steps are dominated by which of its few immediate neighbors gets
-        // picked first, before the growing tip's own field concentration has
-        // enough channel length to meaningfully bias direction -- so the bar
-        // here is "clearly better than that unscreened baseline," not an
-        // arbitrary fraction of the grid height.
+        // Without screening, this seed and step count give mean_y ~2.23: a
+        // single-point seed's first steps are dominated by which neighbor is
+        // picked first, before the tip is long enough to concentrate the
+        // field. The bar is "clearly better than that unscreened baseline",
+        // not a fraction of the grid height.
         assert!(
             mean_y > 5.0,
             "after growing {} steps from the top with real electrostatic screening \
@@ -244,11 +222,10 @@ mod dielectric_breakdown_leader_tests {
         );
     }
 
-    /// Real check that `eta` actually does what its own doc claims: a very
-    /// high eta should produce a straighter (less laterally spread) channel
-    /// than a very low eta, on the SAME field and seed, since high eta
-    /// follows the strongest (here, purely vertical) field almost
-    /// deterministically while low eta lets real random noise dominate.
+    /// On the same field and seed, a very high eta gives a straighter
+    /// (less laterally spread) channel than a very low eta: high eta follows
+    /// the strongest (here purely vertical) field, low eta lets the random
+    /// choice dominate.
     #[test]
     fn higher_eta_produces_a_straighter_less_spread_channel() {
         const WIDTH: usize = 40;

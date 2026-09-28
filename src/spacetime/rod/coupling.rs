@@ -1,12 +1,12 @@
 //! Rod <-> shared MPM grid coupling (Phase 2). Mirrors
 //! `spacetime::transfer::p2g`/`g2p`'s own scatter/gather exactly, so a rod
 //! and ordinary MPM particles exchange momentum through the identical
-//! mechanism -- see `mod.rs`'s own doc for why `Grid` being fully
-//! source-agnostic makes this a real, not aspirational, integration.
+//! mechanism -- see `mod.rs`'s doc for why `Grid` being fully
+//! source-agnostic makes this a not aspirational, integration.
 //!
 //! Wired into `Simulation::do_substep` (`solver/step.rs`): scatter after
 //! particle P2G, gather after particle G2P, forces after particle force
-//! fields -- see that file's own comments at each call site for the exact
+//! fields -- see that file's comments at each call site for the exact
 //! ordering and why it matters (gravity/wake propagation for free).
 
 use glam::Vec2;
@@ -22,7 +22,7 @@ use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces, rod_c
 /// stencils, so nothing between them is left uncovered. This is also the
 /// trigger threshold for `coverage_samples` below: an edge shorter than
 /// this needs no sub-sampling at all, so an already-dense rod (e.g. the
-/// blade-of-grass demos) gets zero extra scatter calls -- real, not just
+/// blade-of-grass demos) gets zero extra scatter calls -- not just
 /// nominal, zero cost when unneeded.
 const COVERAGE_SPACING: f32 = 1.5;
 
@@ -39,9 +39,8 @@ fn extra_samples_toward(rod: &RodPoints, i: usize, neighbor: usize) -> usize {
     }
 }
 
-/// One quadratic-B-spline scatter at `pos` -- the same inner loop
-/// `scatter_rod_to_grid` used to run directly; factored out so it can be
-/// called once per coverage sample instead of once per point. Additive
+/// One quadratic-B-spline scatter at `pos`, called once per coverage sample
+/// by `scatter_rod_to_grid`. Additive
 /// second scatter into the grip field when `contact_group != 0` -- real
 /// multi-field frictional contact (Bardenhagen 2001 + Nairn, Hammerquist,
 /// Smith 2020), identical mechanism and identical zero-cost-when-unused
@@ -71,9 +70,9 @@ fn scatter_point(grid: &mut Grid, pos: Vec2, mass: f32, momentum: Vec2, contact_
 /// Newtons force, not a stress tensor) -- mirrors only the mass/velocity part
 /// of `scatter_particles_to_grid`, not its stress term.
 ///
-/// **Coverage gap fix** (real, citable technique, not invented): a rod
+/// **Coverage gap fix** (citable technique, not invented): a rod
 /// whose points are spaced farther apart than the kernel's support radius
-/// leaves a genuine hole in its grid presence between them -- a small MPM
+/// leaves a hole in its grid presence between them -- a small MPM
 /// particle (rain) can pass straight through without ever registering
 /// contact, since nothing was deposited into the cells in between. Guo,
 /// Han, Fu, Gast, Tamstorf, Teran, "A Material Point Method for Thin Shells
@@ -87,7 +86,7 @@ fn scatter_point(grid: &mut Grid, pos: Vec2, mass: f32, momentum: Vec2, contact_
 /// single-point scatter; only *where* it lands is denser. Every sample uses
 /// the point's own velocity (not an inter-point interpolation), trading a
 /// minor physical simplification for EXACT -- not merely small -- mass and
-/// momentum conservation. Verified against the real, reproduced bug this
+/// momentum conservation. Verified against the reproduced bug this
 /// fixes in `tests/rod_grid_coupling.rs::coverage_gap_fix_catches_particle_
 /// falling_through_sparse_rod_midpoint`.
 pub fn scatter_rod_to_grid(rod: &RodPoints, grid: &mut Grid) {
@@ -195,10 +194,10 @@ pub fn gather_grid_to_rod(rod: &RodPoints, grid: &Grid, dt: f32) -> Vec<Vec2> {
                     continue;
                 }
                 let cell_pos = weights.base_cell + glam::IVec2::new(gx as i32 - 1, gy as i32 - 1);
-                // Real multi-field contact routing (Bardenhagen 2001), same
-                // convention as `transfer::g2p`: a grip point reads the
-                // resolved grip field, both helpers fall back to the
-                // ordinary velocity where no contact was registered.
+                // Multi-field contact routing (Bardenhagen 2001), as in
+                // `transfer::g2p`: a grip point reads the resolved grip field;
+                // both helpers fall back to the ordinary velocity where no
+                // contact was registered.
                 let node_v = if contact_group != 0 {
                     grid.grip_velocity_at(cell_pos)
                 } else {
@@ -217,18 +216,11 @@ pub fn gather_grid_to_rod(rod: &RodPoints, grid: &Grid, dt: f32) -> Vec<Vec2> {
 /// radial push degenerates to near-pure axial compression near the rod's
 /// centerline, invisible given EA >> EI); defaults to +x on the cursor's own
 /// x to avoid a divide-by-zero direction.
-/// Real, disclosed bug fix (2026-07-28, user-caught "there's something
-/// totally wrong"): the previous version gated AND scaled this push by
-/// VERTICAL distance only (`dy = (pos.y-center.y).abs()`), ignoring
-/// horizontal distance entirely -- a cursor at the same height as any
-/// point on the rod but arbitrarily far away horizontally still pushed it
-/// at nearly full strength. Confirmed directly: a live session showed a
-/// rod's kinetic energy climbing steadily while the demo's own logged
-/// cursor distance read ~14 grid units, far outside any real 3-unit push
-/// radius -- the real Euclidean distance was large, but `dy` alone was
-/// still under the radius. Now uses real 2D distance for both the cutoff
-/// and the falloff -- a genuine localized point push, not a "same-height
-/// anywhere" force.
+///
+/// Cutoff and falloff use the 2D distance to the cursor, so the push is
+/// local: gating on vertical distance alone let a cursor at the same height
+/// as a rod point push it at nearly full strength from any horizontal
+/// distance.
 pub(crate) fn push_acceleration(
     pos: Vec2,
     push_center: Option<Vec2>,

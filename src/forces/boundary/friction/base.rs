@@ -22,15 +22,15 @@ pub struct FrictionBoundary {
     /// Coulomb friction coefficient µ ∈ [0, 1].
     /// 0 = slip (no friction), 1 = strong friction (full tangential damping at normal speed).
     pub friction_coefficient: f32,
-    /// Real, opt-in Material-Induced Boundary Friction (MIBF, Blatny & Gaume
-    /// 2025) -- when `true`, a colliding node's real friction comes from
+    /// Opt-in Material-Induced Boundary Friction (MIBF, Blatny & Gaume 2025).
+    /// When `true`, a colliding node's friction comes from
     /// `Grid::node_friction_at_index` (the mass-weighted average of nearby
-    /// particles' own currently-computed internal friction, see
-    /// `MaterialModel::current_friction_coefficient`'s own doc) whenever a
-    /// friction-reporting particle actually touched that node this
-    /// substep, falling back to `friction_coefficient` otherwise (a scene
-    /// with no granular material, or a node no sand particle reached).
-    /// `false` (default in `new()`) = every existing scene byte-identical.
+    /// particles' current internal friction, see
+    /// `MaterialModel::current_friction_coefficient`) whenever a
+    /// friction-reporting particle touched that node this substep, and from
+    /// `friction_coefficient` otherwise (no granular material in the scene, or
+    /// a node no sand particle reached). `false` (default in `new()`) keeps
+    /// the fixed coefficient.
     pub use_material_friction: bool,
 }
 
@@ -80,7 +80,7 @@ impl BoundaryCondition for FrictionBoundary {
 
 impl FrictionBoundary {
     /// Returns the total specific energy dissipated across every wall face
-    /// this node touches -- a corner node genuinely rubs on two walls, and
+    /// this node touches -- a corner node rubs on two walls, and
     /// both do work.
     fn apply_with_mu(
         &self,

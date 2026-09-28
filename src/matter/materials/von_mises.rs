@@ -43,24 +43,16 @@ pub struct VonMisesMaterial {
     /// Linear isotropic hardening modulus H.
     /// σ_Y(κ) = yield_stress + H·κ. Set 0.0 for perfect plasticity (default).
     pub hardening_modulus: f32,
-    /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
-    /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
-    /// -- see `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for the
-    /// pairing rule and the real regression it documents) -- same
-    /// mechanism, same formula, as
+    /// Kelvin-Voigt viscous damping on the deviatoric elastic strain rate
+    /// (SI Pa.s, converted like `lambda`/`mu`, see
+    /// `rankine::q_factor_elastic_viscosity_pa_s`), the formula of
     /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
-    /// Zero cost, zero behavior change at `0.0` (default, matching every
-    /// other material using this same mechanism).
+    /// `0.0` (default) = off.
     ///
-    /// Only damps the ELASTIC response below yield -- real solids are never
-    /// purely elastic even before plastic flow begins (internal friction
-    /// measurably dissipates energy in every real material, reported as a
-    /// seismic/ultrasonic quality factor Q -- see
-    /// `q_factor_elastic_viscosity_pa_s`). Confirmed live 2026-08-29: this
-    /// is a real, structural gap -- `VonMisesMaterial` had NO damping
-    /// mechanism of any kind before this field existed (found while
-    /// root-causing sustained post-impact bouncing on `RankineMaterial::ice()`,
-    /// same class of missing dissipation, different material).
+    /// Damps the elastic response below yield: solids dissipate before plastic
+    /// flow too, measured as a quality factor Q (see
+    /// `q_factor_elastic_viscosity_pa_s`). Without it this material has no
+    /// damping at all.
     pub elastic_viscosity: f32,
 }
 
@@ -68,14 +60,11 @@ impl VonMisesMaterial {
     /// Construct from Young's modulus E, Poisson's ratio ν, and yield stress σ_Y.
     ///
     /// Typical values for lava/clay: E = 5e4–1e5, ν = 0.3–0.4, σ_Y = 1e2–1e3.
-    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
-    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
-    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material, build
-    /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
+    /// **Grid units, not pascals**: calls [`lame_from_young`] directly and
+    /// never touches `dx_meters` or density. For an SI material build an
+    /// [`Elastoplastic`](crate::materials::Elastoplastic) with
     /// `model: PlasticityModel::Ductile { yield_stress_pa }` and call its
-    /// `.material(&config)` (real dispatch, see that method's own doc), or
-    /// call `Self::from_physical` with a `DuctileProps` for the concrete type.
+    /// `.material(&config)`, or `Self::from_physical` with a `DuctileProps`.
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32, yield_stress: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu, yield_stress)
@@ -214,14 +203,9 @@ impl MaterialModel for VonMisesMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Controlled A/B experiment (external review, 2026-09-03): swapped
-        // from forward-Euler `(I+dt*C)*F` to the exact matrix exponential
-        // `exp(dt*C)*F` (see `deformation_increment_exp`'s own doc for the
-        // real O(dt^2) volumetric-ratchet mechanism this removes). Nothing
-        // else in this function changed -- the plastic return-mapping below
-        // still operates on whatever F_trial it's handed, so this isolates
-        // the kinematic integration as the ONLY variable, matching the
-        // basic_vonmises.rs live-drift investigation this is testing against.
+        // Exact matrix exponential `exp(dt*C)*F`, not forward Euler `(I+dt*C)*F`
+        // (see `deformation_increment_exp` for the O(dt^2) volumetric ratchet);
+        // the return mapping below works on whatever F_trial it receives.
         let (f_trial, _) = advance_deformation_gradient(
             *ctx.deformation_gradient,
             dt * *ctx.velocity_gradient,
@@ -243,19 +227,13 @@ impl MaterialModel for VonMisesMaterial {
                 0.0
             };
             *ctx.friction_hardening = kappa + gamma;
-            // Real, disclosed regression fix (2026-09-02, external review):
-            // the radial-return consistency condition requires projecting
-            // onto the UPDATED yield surface (after this step's own
-            // hardening increment), not the trial-state limit computed
-            // BEFORE it -- Simo & Taylor's own associative J2 return
-            // mapping. The old code divided by `effective_yield` (pre-
-            // hardening), which silently reproduces the OLD surface every
-            // single step: worked counterexample (mu=3000, yield_stress=100,
-            // hardening_modulus=500, elastic_dev=150) gives gamma=0.007692,
-            // real post-hardening limit=103.846, but the old code returned
-            // exactly 100. `new_effective_yield = effective_yield +
-            // hardening_modulus*gamma` is the exact, real value the
-            // projected stress must land on.
+            // Radial return onto the updated surface, after this step's
+            // hardening (Simo & Taylor's associative J2 return mapping):
+            // `new_effective_yield = effective_yield + hardening_modulus*gamma`.
+            // Projecting onto the pre-hardening `effective_yield` keeps the old
+            // surface: mu = 3000, yield_stress = 100, hardening_modulus = 500,
+            // elastic_dev = 150 give gamma = 0.007692 and a limit of 103.846, not
+            // 100.
             let new_effective_yield = effective_yield + self.hardening_modulus * gamma;
             let eps_proj = dev * (new_effective_yield / elastic_dev) + Vec2::splat(tr * 0.5);
             Vec2::new(eps_proj.x.exp(), eps_proj.y.exp())
@@ -480,10 +458,9 @@ mod marginal_yield_tests {
 
         let (sigma_after, kappa_after) = run_one_step(&mat, sigma, 0.0);
 
-        // Real, exact analytical claim: the projected state's dev_norm must equal
-        // EXACTLY yield_stress/(2*mu) (perfect plasticity, no hardening here) --
-        // not just "less than before." Computed the SAME way the material's own
-        // code does (L2 norm of the deviatoric vector), not a per-component value.
+        // The projected dev_norm must equal exactly yield_stress/(2*mu) (perfect
+        // plasticity here), computed as the material does (L2 norm of the
+        // deviatoric vector), not per component.
         let eps_after = crate::materials::utils::hencky_strains(sigma_after);
         let tr_after = eps_after.x + eps_after.y;
         let dev_after_vec = eps_after - Vec2::splat(tr_after * 0.5);
@@ -510,7 +487,7 @@ mod marginal_yield_tests {
     fn hardening_raises_the_effective_yield_surface() {
         // With hardening_modulus > 0, a state that would yield at kappa=0 should
         // require LESS additional plastic strain once kappa has already
-        // accumulated (softer transition) -- real, checkable monotonic claim.
+        // accumulated (softer transition) -- checkable monotonic claim.
         let mat = VonMisesMaterial::with_hardening(2000.0, 3000.0, 100.0, 500.0);
         let target_dev_norm = 1.5 * mat.yield_stress / (2.0 * mat.mu);
         let d = per_component_d_for_target_dev_norm(target_dev_norm);
@@ -531,27 +508,18 @@ mod marginal_yield_tests {
         );
     }
 
-    /// Real regression guard (2026-09-02, external review): the two tests
-    /// above cannot catch a real bug that shipped here -- neither checks
-    /// the projected stress against the real, ANALYTICAL post-hardening
-    /// yield surface with `hardening_modulus > 0`
-    /// (`marginal_state_beyond_yield_stress_projects_exactly_to_the_yield_
-    /// surface` uses `hardening_modulus=0`, where the bug is invisible;
-    /// `hardening_raises_the_effective_yield_surface` only checks
-    /// monotonicity of `kappa`, never the final stress value). The real
-    /// bug: `update_particle` computed `gamma` correctly and updated
-    /// `kappa_new = kappa + gamma` correctly, but then projected onto
-    /// `effective_yield` (the PRE-hardening limit) instead of
-    /// `effective_yield + hardening_modulus*gamma` (the real, consistent
-    /// POST-hardening limit) -- radial-return consistency requires the
-    /// latter (Simo & Taylor's own associative J2 return mapping).
+    /// With `hardening_modulus > 0`, the projected stress lands on the
+    /// analytical post-hardening surface `effective_yield +
+    /// hardening_modulus*gamma` (Simo & Taylor's associative J2 return
+    /// mapping). The tests above cannot see a projection onto the
+    /// pre-hardening limit: one has `hardening_modulus = 0`, the other only
+    /// checks that `kappa` grows.
     ///
-    /// Exact worked case (independently hand-derived, not just re-deriving
-    /// what the code itself computes): mu=3000, yield_stress=100,
-    /// hardening_modulus=500, a trial state giving `elastic_dev=150` ->
-    /// `gamma=(150-100)/(6000+500)=0.0076923...`, real post-hardening
-    /// limit `=100+500*0.0076923=103.846...`. The pre-fix code returned
-    /// exactly 100 (the untouched pre-hardening limit) here.
+    /// Hand-derived case: mu = 3000, yield_stress = 100, hardening_modulus =
+    /// 500, a trial state with `elastic_dev = 150` -> `gamma =
+    /// (150-100)/(6000+500) = 0.0076923...`, post-hardening limit
+    /// `100+500*0.0076923 = 103.846...` (the pre-hardening projection gives
+    /// exactly 100).
     #[test]
     fn hardened_projection_lands_exactly_on_the_real_post_hardening_surface() {
         let mat = VonMisesMaterial::with_hardening(2000.0, 3000.0, 100.0, 500.0);
@@ -684,7 +652,7 @@ mod elastic_viscosity_tests {
 
     /// Same audit-closing test `RankineMaterial`/`CorotatedMaterial`/
     /// `NaccMaterial` all carry for their own copy of this identical
-    /// mechanism (see `elastic_viscosity`'s own doc): `kirchhoff_stress`
+    /// mechanism (see `elastic_viscosity`'s doc): `kirchhoff_stress`
     /// must actually respond to the particle's velocity gradient when
     /// `elastic_viscosity > 0.0`, not just carry the field.
     #[test]

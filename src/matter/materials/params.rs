@@ -4,10 +4,8 @@
 /// all others are zero. `model` is the `ConstitutiveModel` discriminant and is always set.
 ///
 /// 112 bytes, 16-byte aligned -- directly uploadable to a GPU uniform buffer as
-/// `array<MaterialParams, N>` indexed by `particle.material_id`. Grew from 96
-/// (2026-08-15) to add `owns_deformation_volume_state` -- see that field's own
-/// doc. `_pad` is explicit, always-zeroed real reserved space (same Pod-safety
-/// convention `Particle::_pad` already uses), not implicit struct padding.
+/// `array<MaterialParams, N>` indexed by `particle.material_id`. `_pad` is explicit,
+/// always-zeroed reserved space (bytemuck `Pod` forbids implicit padding).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialParams {
@@ -113,26 +111,21 @@ pub struct MaterialParams {
     pub cohesion_coeff: f32,
 
     /// Mirrors `MaterialModel::owns_deformation_volume_state()` (1 = true,
-    /// 0 = false) -- GPU/CPU parity fix, 2026-08-15. CPU's
-    /// `estimate_particle_volumes` (`src/spacetime/solver/density.rs`)
-    /// SKIPS the raw kernel-mass density/volume gather for any material
-    /// returning true from that trait method (today: `NewtonianFluidMaterial`/
-    /// `BinghamFluidMaterial`), instead deriving density/volume ANALYTICALLY
-    /// from the material's own already-clamped deformation gradient. GPU had
-    /// no equivalent gate -- `g2p.wgsl` wrote every particle's density/volume
-    /// unconditionally from the same free-surface-biased kernel gather CPU
-    /// explicitly avoids for these materials. Measured, real consequence
-    /// (`basic_fluids_gpu.rs`, 2026-08-15): water density drifting to
-    /// [0.0116, 0.358] against a rest density of 0.1 -- both bounds outside
-    /// what the analytical, J-clamp-derived formula could ever produce
-    /// (theoretical range ~[0.05, 0.2] under CPU's own `.max(min_density)
-    /// .min(2*rest_density)` clamp) -- feeding a spurious excursion into the
-    /// CFL acoustic term (∝ density^(eos_power-1)) and pinning substep count
-    /// at its cap indefinitely instead of settling. Set via
-    /// `self.owns_deformation_volume_state() as u32` in each material's own
-    /// `params()` -- a GENERIC per-material flag, not a hardcoded material-ID
-    /// check, so any future material overriding that trait method gets
-    /// correct GPU behavior automatically.
+    /// 0 = false). CPU's `estimate_particle_volumes`
+    /// (`src/spacetime/solver/density.rs`) skips the raw kernel-mass
+    /// density/volume gather for any material returning true (today:
+    /// `NewtonianFluidMaterial`/`BinghamFluidMaterial`) and derives density
+    /// and volume analytically from the material's clamped deformation
+    /// gradient; this flag gives `g2p.wgsl` the same gate. Without it, the
+    /// free-surface-biased kernel gather set water density to [0.0116, 0.358]
+    /// against a rest density of 0.1 (`basic_fluids_gpu.rs`), outside the
+    /// ~[0.05, 0.2] the clamped analytic formula allows
+    /// (`.max(min_density).min(2*rest_density)`), and the spurious excursion
+    /// fed the CFL acoustic term (∝ density^(eos_power-1)), pinning the
+    /// substep count at its cap. Set via
+    /// `self.owns_deformation_volume_state() as u32` in each material's
+    /// `params()`, a per-material flag, so any material overriding that trait
+    /// method gets the GPU behavior automatically.
     pub owns_deformation_volume_state: u32,
     /// Specific heat capacity `c_p`, J/(kg*K). 0 means the material has not
     /// declared one.
@@ -143,13 +136,9 @@ pub struct MaterialParams {
     /// per-material value, and it is what lets dissipated work become a real
     /// temperature rise on the particle that absorbed it
     /// (`energy::thermodynamics::frictional_heating`).
-    ///
-    /// Was one of three reserved `_pad` words -- same offset, same size, the
-    /// struct stays 112 bytes and every GPU upload is unchanged.
     pub specific_heat_j_kg_k: f32,
-    /// Explicit, always-zeroed reserved space -- keeps the struct's real
-    /// size at the next 16-byte-aligned boundary (112, up from 96) with
-    /// genuine headroom for future flags, same convention as `Particle::_pad`.
+    /// Explicit, always-zeroed reserved space: keeps the struct at a 16-byte
+    /// multiple (112) with room for future flags.
     pub _pad: [u32; 2],
 }
 

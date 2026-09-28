@@ -1,11 +1,11 @@
 //! Shared 5-point explicit-Euler Laplacian diffusion stencil.
 //!
-//! The one piece of math genuinely identical between [`super::diffusion`]
+//! The one piece of math identical between [`super::diffusion`]
 //! and [`super::scalar_field`] -- both scatter a particle scalar to the grid,
 //! run this stencil, then gather the delta back. What differs between them
 //! (direct-field access vs. runtime fn-pointer access, decay-to-zero vs.
-//! Newton-cooling-to-ambient) is real, not accidental duplication -- see
-//! each module's own docs. Only the stencil itself was hand-copied.
+//! Newton-cooling-to-ambient) is not accidental duplication -- see
+//! each module's docs. Only the stencil itself was hand-copied.
 
 /// Largest `D dt / dx^2` one explicit step of the 5-point scheme stays
 /// stable at. A Fourier mode of wavenumbers `(kx, ky)` is multiplied each

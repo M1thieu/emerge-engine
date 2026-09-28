@@ -306,7 +306,7 @@ pub(super) fn build_force_fields_pipeline(
 }
 
 /// ASFLIP (GPU port, Fei et al. 2021) -- replaces g2p+particles_update for a substep,
-/// only when `SimConfig::asflip_blend > 0.0`. See `g2p_asflip_fused.wgsl`'s own doc for
+/// only when `SimConfig::asflip_blend > 0.0`. See `g2p_asflip_fused.wgsl`'s doc for
 /// why this is one fused kernel rather than two, and `SimPipelines::g2p_asflip_fused`'s
 /// own field doc.
 pub(super) fn build_asflip_pipeline(
@@ -501,12 +501,11 @@ pub(super) fn build_resource_pipelines(
     )
 }
 
-/// Real GPU port of the CPU-proven Chorin-style fluid incompressibility
-/// pressure projection -- see `fluid_pressure.wgsl`'s own module doc for the
-/// full real algorithm, citations, and why Jacobi (not CPU's exact DCT
-/// solve) is the right GPU technique. 4 pipelines: divergence+classification
-/// setup, the two alternating Jacobi sweep directions, and the final
-/// per-cell-mass momentum correction.
+/// Chorin-style fluid incompressibility pressure projection -- see
+/// `fluid_pressure.wgsl`'s module doc for the algorithm, citations, and why
+/// the GPU uses Jacobi rather than CPU's exact DCT solve. 4 pipelines:
+/// divergence+classification setup, the two alternating Jacobi sweep
+/// directions, and the final per-cell-mass momentum correction.
 pub(super) fn build_fluid_pressure_pipelines(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,

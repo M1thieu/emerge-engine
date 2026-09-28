@@ -1,40 +1,33 @@
-//! Cosserat micro-rotation field -- the real, grid-level angular-momentum
-//! channel that closes the loop `matter::materials::granular::cosserat`'s kinematics
-//! module deliberately left open. Same architectural family as
-//! `GranularFluidityField`: a standalone, opt-in, grid-sized scratch field
-//! with its own P2G-scatter → solve → G2P-gather cycle, entirely separate
-//! from the core `Cell`/momentum machinery every material already depends
-//! on -- adding this touches ZERO shared code when unconfigured (no scene
-//! that never constructs a `CosseratField` sees any difference at all).
+//! Cosserat micro-rotation field: the grid-level angular-momentum channel
+//! that `matter::materials::granular::cosserat`'s kinematics leave open. Like
+//! `GranularFluidityField`, an opt-in, grid-sized scratch field with its own
+//! P2G scatter, solve and G2P gather, apart from the `Cell`/momentum
+//! machinery, so a scene that never builds a `CosseratField` is unaffected.
 //!
-//! # Real citation
+//! # Citation
 //! de Borst, R., Sabet, S.A. and Hageman, T. (2022), "Non-associated
 //! Cosserat plasticity", International Journal of Mechanical Sciences,
-//! 230, 107535. See `matter::materials::granular::cosserat`'s own doc for the
-//! kinematics/constitutive equations this field solves for.
+//! 230, 107535. See `matter::materials::granular::cosserat` for the
+//! kinematic and constitutive equations this field solves for.
 //!
 //! # What this solves
-//! A Cosserat continuum's micro-rotation field ω_c obeys its own angular-
-//! momentum balance, `div(m) + e:σ_antisym = 0` (quasi-static, matching this
-//! engine's own per-substep quasi-static treatment of ordinary plasticity).
-//! Discretized on the SAME grid as ordinary MPM momentum, mirroring exactly
-//! how `v = p/m` already solves the ordinary linear-momentum balance:
+//! A Cosserat continuum's micro-rotation ω_c obeys its own angular-momentum
+//! balance, `div(m) + e:σ_antisym = 0` (quasi-static, like this engine's
+//! per-substep plasticity). On the same grid as MPM momentum, the way
+//! `v = p/m` solves linear momentum:
 //! ```text
 //! ω_c(node) = L(node) / I_eff(node) + τ(node) · dt / I_eff(node)
 //! ```
-//! where `L` is scattered micro-angular-momentum (mass-weighted, mirroring
-//! ordinary P2G momentum scatter), `I_eff` is scattered micro-inertia, and
-//! `τ` is the real coupling torque `2·coupling_modulus·(ω_macro − ω_c)` --
-//! the antisymmetric part of the elastic Cosserat stress relation (de Borst
-//! et al. 2022 eq. 36's `(μ+μc)e + μ(e)ᵀ` term is exactly this once split
-//! into symmetric/antisymmetric halves), NOT an invented shortcut.
+//! with `L` the scattered micro-angular momentum (mass-weighted, like P2G
+//! momentum), `I_eff` the scattered micro-inertia, and `τ` the coupling
+//! torque `2·coupling_modulus·(ω_macro − ω_c)`: the antisymmetric half of the
+//! elastic Cosserat stress (de Borst et al. 2022 eq. 36's `(μ+μc)e + μ(e)ᵀ`
+//! split into symmetric and antisymmetric parts).
 //!
-//! Real, disclosed simplifying assumption: grains are treated as
-//! effectively spherical/rounded for the micro-inertia coefficient
-//! (`1/10` -- the mass-specific polar moment of inertia of a solid sphere of
-//! diameter `d`, elementary mechanics, not paper-specific), matching the
-//! same single-scalar "grain diameter" convention `GranularFluidityConfig`
-//! already uses rather than modeling real grain angularity explicitly.
+//! Grains are treated as rounded for the micro-inertia coefficient (`1/10`,
+//! the mass-specific polar moment of a solid sphere of diameter `d`), with
+//! the single grain diameter of `GranularFluidityConfig`, not modelling
+//! angularity.
 
 use glam::{IVec2, Vec2};
 
@@ -42,30 +35,24 @@ use crate::{
     grid::kernel::quadratic_weights, matter::materials::granular::cosserat::micro_curvature_2d,
 };
 
-/// Real physical parameters for the Cosserat micro-rotation field.
+/// Physical parameters of the Cosserat micro-rotation field.
 #[derive(Clone, Copy, Debug)]
 pub struct CosseratConfig {
-    /// Real elastic coupling modulus `alpha` \[Pa\] -- see
-    /// `matter::materials::granular::cosserat`'s own doc for the cited relation this
-    /// feeds (`m = alpha * l^2 * kappa`, and the coupling torque
-    /// `2*alpha*(omega_macro - omega_c)`).
+    /// Elastic coupling modulus `alpha` \[Pa\] (see
+    /// `matter::materials::granular::cosserat`: `m = alpha * l^2 * kappa`, and
+    /// the coupling torque `2*alpha*(omega_macro - omega_c)`).
     pub coupling_modulus_pa: f32,
-    /// Real grain diameter `l` \[m\] -- same physical quantity
-    /// `GranularFluidityConfig::grain_diameter_m` already uses, not a
-    /// separate free parameter.
+    /// Grain diameter `l` \[m\], the quantity
+    /// `GranularFluidityConfig::grain_diameter_m` uses.
     pub grain_diameter_m: f32,
-    /// Dimensionless micro-inertia shape coefficient. `1/10` (a solid
-    /// sphere/disk's real mass-specific polar moment of inertia,
-    /// `I = (2/5)*r^2 = (1/10)*d^2`) is the real, disclosed default for
-    /// effectively-rounded grains -- a genuine simplifying assumption, not
-    /// an arbitrary numerical knob.
+    /// Dimensionless micro-inertia shape coefficient. `1/10`, a solid
+    /// sphere's mass-specific polar moment (`I = (2/5)*r^2 = (1/10)*d^2`), for
+    /// rounded grains.
     pub micro_inertia_coefficient: f32,
 }
 
 impl CosseratConfig {
-    /// Real default: `1/10`, the solid-sphere mass-specific polar moment of
-    /// inertia coefficient (elementary mechanics, `I = (2/5)r^2` in terms of
-    /// diameter `d=2r` gives `I = d^2/10`).
+    /// Default `1/10`: `I = (2/5)r^2` with `d = 2r` gives `I = d^2/10`.
     pub fn micro_inertia(&self, particle_mass: f32) -> f32 {
         particle_mass
             * self.micro_inertia_coefficient
@@ -73,12 +60,10 @@ impl CosseratConfig {
             * self.grain_diameter_m
     }
 
-    /// Real, quoted-family stability bound for this explicit scheme,
-    /// following the SAME derivation shape as `GranularFluidityConfig::
-    /// stability_dt` (a diffusion-like second-order spatial operator):
-    /// `dt < dx^2 * I_eff / (2 * coupling_modulus * l^2)`, using a real
-    /// per-unit-mass `I_eff` estimate (`micro_inertia(1.0)`) since the bound
-    /// must hold per unit mass, matching how the solve itself is
+    /// Stability bound of this explicit scheme, derived like
+    /// `GranularFluidityConfig::stability_dt` (a diffusion-like second-order
+    /// operator): `dt < dx^2 * I_eff / (2 * coupling_modulus * l^2)`, with a
+    /// per-unit-mass `I_eff` (`micro_inertia(1.0)`), since the solve is
     /// mass-normalized (`L/I_eff`).
     pub fn stability_dt(&self, dx_m: f32) -> f32 {
         let i_eff = self.micro_inertia(1.0).max(1e-30);
@@ -180,16 +165,10 @@ impl CosseratField {
             }
             let omega_prev = self.grid_l[i] / self.grid_mass[i];
             let spin_avg = self.grid_spin[i] / self.grid_mass[i];
-            // d(omega)/dt = k*(spin_avg - omega), k = 2*alpha/i_eff_per_mass --
-            // a REAL, LINEAR relaxation ODE (simpler than GranularFluidityField's
-            // logistic one) with an EXACT closed-form solution. Real, disclosed
-            // lesson applied from that file's own doc: naive explicit Euler on
-            // this class of stiff microscopic-timescale relaxation term either
-            // understates or wildly overshoots (confirmed here directly -- an
-            // earlier explicit-Euler version of this solve produced NaN under
-            // real parameters). The exact exponential solution is
-            // UNCONDITIONALLY STABLE for any dt, by construction, not a
-            // numerics workaround.
+            // d(omega)/dt = k*(spin_avg - omega), k = 2*alpha/i_eff_per_mass:
+            // a linear relaxation with an exact exponential solution, stable for
+            // any dt. Explicit Euler on this stiff relaxation produced NaN at
+            // real parameters.
             let i_eff_per_mass = self.config.micro_inertia(1.0).max(1e-20);
             let k = 2.0 * alpha / i_eff_per_mass;
             self.grid_work[i] = spin_avg + (omega_prev - spin_avg) * (-k * sub_dt).exp();
@@ -261,9 +240,8 @@ mod tests {
 
     #[test]
     fn omega_stays_zero_with_zero_macro_spin() {
-        // Real, necessary invariant: with no macro spin anywhere (a purely
-        // irrotational flow), there is no source to drive micro-rotation
-        // away from its zero rest state -- omega_c must stay exactly 0.
+        // With no macro spin anywhere (irrotational flow) nothing drives the
+        // micro-rotation from rest: omega_c stays exactly 0.
         let cfg = test_config();
         let mut field = CosseratField::new(cfg, 16);
         let particles = Particles::from(vec![
@@ -287,11 +265,9 @@ mod tests {
 
     #[test]
     fn omega_grows_toward_macro_spin_when_driven() {
-        // Real check: with a real, sustained macro spin, omega_c should be
-        // driven away from zero TOWARD that spin (the coupling torque's own
-        // real sign convention: torque = 2*alpha*(spin - omega_c), which is
-        // exactly a relaxation of omega_c toward spin -- omega_c=spin is the
-        // real fixed point of this ODE).
+        // A sustained macro spin drives omega_c toward it: the torque
+        // 2*alpha*(spin - omega_c) relaxes omega_c toward spin, its fixed
+        // point.
         let cfg = test_config();
         let mut field = CosseratField::new(cfg, 16);
         let particles = Particles::from(vec![

@@ -7,17 +7,12 @@ use crate::diagnostics::snapshot::SimSnapshot;
 
 /// NDJSON frame logger -- one JSON object per line, one file per run.
 ///
-/// Each `log()` call appends one line. The underlying OS write is flushed
-/// every `FLUSH_EVERY` calls (real, measured necessity, not a style choice
-/// -- see this const's own doc), not every single call, so `tail -f
-/// run.ndjson | jq` still gives live output during a simulation (well under
-/// a second behind at any real frame rate) without paying a real disk-sync
-/// cost every rendered frame. `BufWriter`'s own `Drop` impl flushes its
-/// internal buffer on ordinary program exit regardless (so a normal quit
-/// never loses data) -- the ONLY real, disclosed tradeoff of not flushing
-/// every call is that a hard crash/panic can lose up to `FLUSH_EVERY-1`
-/// frames of log data instead of zero, a real, acceptable cost for a
-/// diagnostics/telemetry log, not gameplay-critical state.
+/// Each `log()` call appends one line. The OS write is flushed every
+/// `FLUSH_EVERY` calls (see that const), not every call, so `tail -f
+/// run.ndjson | jq` still shows live output during a simulation without a
+/// disk sync every frame. `BufWriter` flushes on drop, so a normal exit
+/// loses nothing; a hard crash can lose up to `FLUSH_EVERY-1` frames of log
+/// data, acceptable for a diagnostics log.
 ///
 /// # Usage
 /// ```ignore
@@ -35,15 +30,12 @@ pub struct FrameLogger {
     calls_since_flush: usize,
 }
 
-/// Real, measured choice (2026-09-10): flushing every single call was
-/// found to be a genuine, real fps bottleneck completely independent of
-/// particle count or grid resolution -- `basic_plant.rs` (37 particles)
-/// measured 22-24fps in the same real audit that found `basic_sand.rs`'s
-/// own real material-stiffness gap, and `Write::flush` on a `File` forces a
-/// real OS-level write-through (often several ms on Windows, filesystem/AV
-/// filters included) EVERY call. 30 calls (~0.5s at 60fps, ~1s at 30fps)
-/// keeps `tail -f` feeling live to a human watching, while cutting the
-/// real per-frame syscall cost by ~30x.
+/// Flushing on every call was an fps bottleneck independent of particle
+/// count: `basic_plant.rs` (37 particles) measured 22-24 fps, since
+/// `Write::flush` on a `File` forces an OS write-through (often several ms on
+/// Windows, filesystem/AV filters included). 30 calls (~0.5 s at 60 fps, ~1 s
+/// at 30 fps) keeps `tail -f` live for a human and cuts the per-frame syscall
+/// cost ~30x.
 const FLUSH_EVERY: usize = 30;
 
 impl FrameLogger {
@@ -96,11 +88,10 @@ impl FrameLogger {
             health,
         );
 
-        // Real, generic sanity check: any pinned/Dirichlet-anchored particle should
-        // read exactly v=0 (see `SimSnapshot::max_pinned_particle_speed`'s own doc) --
-        // only emitted when the scene actually uses `Particle::pinned` (nonzero here
-        // means either real motion at an anchor -- a genuine engine bug -- or, more
-        // often, that no particle is pinned at all, in which case this stays absent).
+        // A pinned (Dirichlet-anchored) particle should read exactly v=0 (see
+        // `SimSnapshot::max_pinned_particle_speed`). Emitted only when the
+        // scene pins particles; a nonzero value means motion at an anchor, an
+        // engine bug.
         if snap.max_pinned_particle_speed > 0.0 {
             line.push_str(&format!(
                 ",\"pinned_v\":{:.6}",
@@ -230,12 +221,10 @@ impl FrameLogger {
 }
 
 impl Drop for FrameLogger {
-    /// Real, final flush on drop -- `BufWriter` itself already does this on
-    /// its own `Drop`, but doing it explicitly here (and swallowing any
-    /// error the same way `log`'s own periodic flush already does) makes
-    /// the "a normal exit never loses buffered data" guarantee this
-    /// struct's own doc promises a real, direct property of `FrameLogger`
-    /// itself, not just an inherited side effect of what it happens to wrap.
+    /// Final flush on drop. `BufWriter` already flushes on its own `Drop`;
+    /// doing it here (swallowing errors like `log`'s periodic flush) makes
+    /// "a normal exit never loses buffered data" a property of `FrameLogger`
+    /// itself rather than of what it wraps.
     fn drop(&mut self) {
         let _ = self.writer.flush();
     }

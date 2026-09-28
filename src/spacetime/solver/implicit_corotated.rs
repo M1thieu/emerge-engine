@@ -1,284 +1,56 @@
 //! Opt-in implicit (Newton-CG) grid-velocity update for scenes built
 //! entirely from the shared Corotated elastic branch (`MaterialModel::
-//! corotated_lame_params`) -- DruckerPrager (sand), Corotated, VonMises,
-//! Rankine, DruckerPragerMuI. Real, disclosed strategy (Klar 2016 operator
-//! split): solve the velocity field treating every particle as ordinary
-//! Corotated elasticity via Newton-CG at the FULL frame `dt` (one solve
-//! instead of thousands of CFL-limited explicit substeps), then apply each
-//! particle's own REAL, unmodified plastic return-mapping
-//! (`MaterialModel::update_particle`, via the existing `gather_grid_to_
-//! particles` G2P pass -- no reimplementation) once at the end.
+//! corotated_lame_params`): DruckerPrager (sand), Corotated, VonMises,
+//! Rankine, DruckerPragerMuI. Klar 2016 operator split: solve the velocity
+//! field as Corotated elasticity by Newton-CG at the full frame `dt`, then
+//! apply each particle's own plastic return mapping
+//! (`MaterialModel::update_particle`, through the ordinary G2P pass) once.
 //!
-//! Real measured motivation (2026-09-10, `tests/scratch_implicit_mpm_
-//! stage3_drucker_prager_multi_particle.rs`, a STANDALONE synthetic
-//! Newton-CG benchmark scaled to basic_sand's own real ~2016-particle
-//! count, NOT this file's real production wiring): 10.3x wall-clock
-//! speedup at that scale, real operator-split plastic-correction error
-//! under 1% at far coarser correction frequency than used here (1
-//! correction per big-step here, vs. 100 corrections/big-step in that error
-//! measurement). That number predates every correctness fix landed since
-//! (Kirchhoff-vs-Piola, mass-normalized tolerance, wall-frozen DOFs,
-//! eigenvalue-clamp SPD projection) and, per the REAL scale-dependent
-//! limitation disclosed below, does not currently hold for this module's
-//! actual production wiring at `basic_sand`'s real scene size.
+//! `eligible` requires the whole active scene to qualify (every material on
+//! the shared elastic branch; no rods, grains, contact, mixture, ASFLIP,
+//! Cundall damping, pressure projection, pinned or sleeping particles). A
+//! solve that does not reach its relative tolerance leaves `self.particles`/
+//! `self.grid` untouched. Either way the explicit substep loop runs instead,
+//! so `SimConfig::implicit_corotated_elastic` is always safe to turn on.
 //!
-//! Deliberately narrow v1 scope, not a silent partial application:
-//! `eligible` below requires the WHOLE active scene to qualify (every
-//! particle's material on the shared elastic branch, no rods/grains/
-//! contact/mixture/ASFLIP/Cundall/pressure-projection/pinned particles/
-//! sleeping particles). Any scene that doesn't qualify falls back to the
-//! normal explicit substep loop,
-//! byte-identical to before this module existed -- turning `SimConfig::
-//! implicit_corotated_elastic` on for an unsupported scene is always safe,
-//! just inert. Convergence itself is ALSO checked before committing: a
-//! Newton-CG solve that fails to reach its relative tolerance leaves
-//! `self.particles`/`self.grid` untouched and reports ineligible, so the
-//! caller's normal substep loop runs instead -- this is a real, working
-//! fallback, not merely a static scope guard.
+//! # Status: correct at small scale, inert at `basic_sand` scale
 //!
-//! **STATUS AS OF 2026-09-12 -- CORRECT BUT INERT AT REAL SCALE, AND THE
-//! REASON IS NOW PROVEN, NOT OPEN. Read this before trusting anything above
-//! about "verified working": this module is correct and matches the
-//! explicit baseline at the correctness suite's SMALL scale (256
-//! particles), but at `basic_sand.rs`'s ACTUAL production scale (~1008
-//! particles, real E=15MPa DruckerPrager) it still does NOT converge --
-//! every measured production frame falls back to the normal explicit
-//! substep loop. The two numbers are not a contradiction (see "the scale
-//! gap" below for why), but they describe genuinely different outcomes and
-//! must not be conflated: this module has never yet delivered a real
-//! performance win on the scene it was built to speed up, and per the
-//! root-cause analysis below (points 7-14), delivering one is not simply a
-//! matter of continuing to tune this solver -- see "why this closes the
-//! investigation" for what a real fix would actually require.**
+//! At 256 particles a settled pile matches the explicit baseline (0.0000
+//! cells, `tests/implicit_corotated_substep.rs`), and a dropped pile drifts
+//! ~3.05 cells over 20 frames, within that test's tolerance. At
+//! `basic_sand.rs`'s scale (1008 particles, E = 15 MPa DruckerPrager) the
+//! full-frame solve stalls at ~99.6% residual reduction, short of
+//! `RELATIVE_TOLERANCE`, so every frame falls back to explicit.
 //!
-//! **Small-scale correctness (still real, still verified):** an already-
-//! settled or slowly-consolidating pile at the correctness suite's scale
-//! (256 particles) matches the explicit baseline closely (`tests/
-//! implicit_corotated_substep.rs`'s `implicit_matches_explicit_for_an_
-//! already_settled_pile`, 0.0000 grid-cell drift). A violent impact
-//! (dropped from height) at that same small scale currently drifts ~3.05
-//! grid cells from the explicit baseline over 20 frames (`violent_impact_
-//! diverges_more_than_settled_pile_a_real_disclosed_limitation`) -- down
-//! from ~9.7 before wall-adjacent-DOF freezing was added, and briefly
-//! 0.0000 with an intermediate trust-region design, but back up to ~3.05
-//! after later fixes (Gauss-Newton merit switch, Jacobi preconditioning)
-//! changed the solver's exact trajectory again; still comfortably under
-//! that test's own tolerance, not re-investigated further tonight.
+//! The cause is single-giant-step Gauss-Newton stagnation: the same stuck
+//! state converges (99.76%) when Newton covers `dt/400` to `dt/500` and
+//! fails at `dt/300` and every larger fraction. Load stepping that fine
+//! needs ~350-400 solves per frame at ~10 ms each, ~4.2-4.7 s per frame
+//! against ~145-180 ms explicit: 25-30x slower. A speedup would need a
+//! per-solve cost about two orders of magnitude lower (e.g. multigrid
+//! preconditioning), a different solver, not a tuning pass.
 //!
-//! **The scale gap -- basic_sand's real production scene still does not
-//! converge, and this is the actual, currently open problem:** at 1008
-//! particles / real E=15MPa, Newton reduces the (correctly-measured, see
-//! below) residual by a real, substantial amount before stalling short of
-//! `RELATIVE_TOLERANCE`, never reaching convergence within one frame
-//! (`tests/scratch_implicit_corotated_real_fps_measurement.rs` with
-//! `EMERGE_IMPLICIT_DIAG=1`). This session's real, sequential findings,
-//! roughly in the order they were found (each one real and kept, even
-//! though the final problem remains open):
+//! Ruled out by measurement on the stuck state: linear-solver quality (an
+//! exact dense Cholesky solve stalls identically); the approximate curvature
+//! (it underestimates the true Jacobian 62-70x, but the exact FD Jacobian
+//! stalls too); Jacobian asymmetry (0.1-6%); residual concentrated at the
+//! wall (it is not); the presence of frozen wall DOFs (freeing all still
+//! stalls); heterogeneous or large `F_n` (forcing `F_n = I` still stalls);
+//! near-zero-mass nodes alone (freezing the 6 below 1e-4 still stalls). Why a
+//! synthetic 2025-particle benchmark without walls converges while this
+//! scene does not is still open; a combination (near-zero-mass nodes next to
+//! frozen ones) is the next candidate.
 //!
-//! 1. Root-caused via controlled isolation (`tests/scratch_implicit_
-//!    stiffness_vs_scale_isolation.rs`) that the failure tracks problem
-//!    SIZE (DOF count/domain extent), not material stiffness: the
-//!    correctness suite's softer modulus fails just as fast at the LARGE
-//!    scene, while real E=15MPa at the SMALL scene makes real progress for
-//!    several iterations before eventually failing.
-//! 2. Proved (via a real dense Cholesky direct solve, `direct_solve` --
-//!    kept, `#[cfg(test)]`, see its own doc) that this was NEVER a linear-
-//!    solver-quality problem: an EXACT solve of the same linearized system
-//!    hit the identical wall a "fully converged" CG did.
-//! 3. Found and fixed a real bug in the trust-region model construction
-//!    (`model_residual`/`model_jacobian_vector_product`, both kept
-//!    `#[cfg(test)]`): the true production `residual` (Kirchhoff stress,
-//!    spatial gradient, exact exponential-map `F`) is NOT the literal
-//!    calculus gradient of any simple `Psi(F_new(v))` energy under a
-//!    multiplicative `F` update -- the correct model gradient needs Piola
-//!    stress paired with `F_n^T*grad`, scaled by `dt`. Verified by hand on
-//!    a minimal single-particle case (`direct_solve_end_to_end_with_real_
-//!    material_parameters` and the `trust_region_consistency_tests`
-//!    module), not just derived.
-//! 4. Found and fixed a real structural bug in the convergence CRITERION
-//!    itself (`free_mass_normalized_norm`'s own doc has the full
-//!    quantitative story): 31% of grid DOFs are `wall_frozen` and their
-//!    residual contribution can never be reduced by this free-DOF-only
-//!    solve, so a naive frozen+free residual norm made `RELATIVE_
-//!    TOLERANCE` mathematically unreachable regardless of solver quality.
-//! 5. Found and fixed a real scale-mismatch bug: using `model_residual`
-//!    (Piola/`dt`-scaled) as Steihaug-CG's own gradient corrupted the
-//!    trust region's radius calibration relative to what the REAL
-//!    residual's landscape needed (confirmed via a direct probe: stepping
-//!    along the real residual's own negative-gradient direction by a tiny
-//!    `eps` DID improve it, in a window the old radius never explored).
-//!    Fixed by switching `newton_solve` to a Gauss-Newton trust region
-//!    (Nocedal & Wright 2nd ed. ch.10; Moré 1978) using the REAL `residual`
-//!    directly as the gradient, `model_jacobian_vector_product` only as an
-//!    approximate curvature operator, and `0.5*||residual||^2` (not
-//!    energy) as the ratio-test merit. Result: residual reduction went
-//!    from 0% (immediate stall) to 97.7%.
-//! 6. Added Jacobi preconditioning to `steihaug_cg` (`jacobi_diagonal`,
-//!    same lumped mass+stiffness diagonal this module's earlier, now-
-//!    removed CG path used) after confirming the unpreconditioned trust
-//!    region was itself the limiter. Result: 97.7% -> 99.6% reduction.
-//!    Confirmed NOT an iteration-budget problem: raising `MAX_CG_ITERS`
-//!    from 150 to 400 (a separate constant from `MAX_NEWTON_ITERS` after
-//!    this same investigation) reproduced the identical stall bit-for-bit.
-//!
-//! **Root cause now IDENTIFIED AND PROVEN (2026-09-12), remedy PROVEN NOT
-//! PERFORMANCE-VIABLE -- this investigation is closed, not abandoned
-//! mid-hypothesis.** Continuing past the 99.6% stall above, a further
-//! session ruled out every remaining solver-quality explanation with real,
-//! run experiments before finding the true cause:
-//!
-//! 7. Found and fixed a real (if ultimately non-causal) bug: `steihaug_cg`
-//!    never projected its own operator output (`model_jacobian_vector_
-//!    product`) back onto the free-DOF subspace each iteration -- only
-//!    `newton_solve` zeroed the FINAL `p` once, after the fact. A node
-//!    sharing a particle with a `wall_frozen` neighbor gets a real, nonzero
-//!    force response even when the search direction `d` is exactly zero
-//!    there, and that leak was silently corrupting `r`/the preconditioner/
-//!    `beta` from the second CG iteration onward (confirmed live:
-//!    `hd_frozen_norm` up to ~465 with `d_frozen_norm` pinned at exactly
-//!    0.0 after adding the per-iteration projection -- matching Ziran's own
-//!    real production practice, `tmp/ref_ziran_implicit_mpm.md`). Kept as
-//!    a real, permanent, unconditional correctness fix -- but the SAME
-//!    real `basic_sand` scene stalled at a bit-for-bit identical residual
-//!    (317) before and after, ruling this out as the cause of the stall.
-//! 8. Directly measured whether `model_jacobian_vector_product`'s
-//!    approximation (built from the LINEAR `model_deformed_f`, Piola
-//!    stress) was simply too different from the TRUE residual's own
-//!    Jacobian (built from the exponential-map `deformed_f`, Kirchhoff
-//!    stress) for Steihaug-CG's inexact-Newton theory to hold. It genuinely
-//!    was: a finite-difference JVP of the real `residual` (`real_residual_
-//!    jvp_fd`, kept `#[cfg(test)]`) showed the approximation UNDERESTIMATES
-//!    the true local sensitivity by ~62-70x in the free residual's own
-//!    direction (`cos_similarity`~0.9999 -- same direction, wildly
-//!    different scale). Swapping the EXACT finite-difference Jacobian in as
-//!    `steihaug_cg`'s own curvature, though, still stalled (r_norm floor
-//!    moved from 317 to 276, same collapse signature) -- ruling this out
-//!    too, even though the underestimate itself was real.
-//! 9. Measured the true Jacobian's own symmetry (a genuine energy gradient
-//!    would guarantee it; `residual`'s Kirchhoff/spatial-gradient
-//!    convention has no such guarantee, and Stage 0 already proved raw
-//!    Kirchhoff's own derivative is asymmetric): relative asymmetry came
-//!    back small (0.1%-6% across several probes) -- real, but far too
-//!    small to explain a total stall on its own. Ruled out.
-//! 10. Measured whether the stuck residual was concentrated on nodes
-//!     sharing a particle with a `wall_frozen` neighbor -- the leading
-//!     hypothesis carried over from the previous session. It was NOT:
-//!     142 wall-adjacent free nodes carried r_norm~140-188 while 175
-//!     purely-interior free nodes carried a COMPARABLE OR LARGER
-//!     ~204-240 -- no concentration near the wall. This specific,
-//!     previously-unproven hypothesis is now empirically falsified, not
-//!     just superseded.
-//! 11. With every solver-quality and boundary-coupling explanation ruled
-//!     out by direct measurement, tested the one thing left: does the SAME
-//!     exact configuration (particles, `v_n`, `wall_frozen`, unchanged)
-//!     converge if Newton only has to cover a FRACTION of the full frame
-//!     `dt`? This is real, standard nonlinear-FEM practice (load/time
-//!     stepping) for exactly this failure signature (a genuine local
-//!     minimum of the Gauss-Newton merit under one enormous step) -- and it
-//!     is the real, confirmed answer: a `dt`-divisor sweep on the identical
-//!     stuck state converged cleanly (99.76% reduction) at `dt/400`-
-//!     `dt/500`, and reproducibly failed at `dt/300` and every larger
-//!     fraction tested (2, 5, 10, 20, 50, 100, 150, 200, 300). The stall is
-//!     real, provable, single-giant-Newton-step Gauss-Newton stagnation --
-//!     confirmed positively (a fix exists and works), not just by
-//!     elimination.
-//!
-//! **Follow-up, same session: why does a near-identical SYNTHETIC benchmark
-//! (`stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit`,
-//! N=2025, 10.3x speedup) converge fine while this REAL N=1008 production
-//! scene does not, given fewer real particles should if anything be
-//! easier?** Three further real, measured, disclosed findings, still not
-//! fully resolved:
-//!
-//! 12. The synthetic benchmark has NO concept of a wall/frozen DOF
-//!     anywhere -- a free-floating elastic system under uniform force.
-//!     Directly tested: does the SAME real stuck configuration converge if
-//!     EVERY node is treated as free (no `wall_frozen` at all)? It does
-//!     NOT -- ruling out the mere STRUCTURAL PRESENCE of Dirichlet DOFs
-//!     (distinct from finding 10's "not concentrated near the wall" --
-//!     this tests removing the constraint entirely, a stronger claim, also
-//!     falsified).
-//! 13. The synthetic benchmark also uses ONE identical, mildly-deformed
-//!     `f_n` (`det~1.02`) for every particle -- never a real, heterogeneous,
-//!     history-dependent settled-pile state. Measured the real scene's own
-//!     `f_n` statistics first rather than assuming: `min_j=0.9994,
-//!     max_j=1.0000` -- i.e. this real settled pile is barely deformed at
-//!     all yet, actually CLOSER to identity and less variable than the
-//!     synthetic benchmark's own uniform value. Directly tested forcing
-//!     every particle to `f_n=IDENTITY` (real `wall_frozen` kept intact):
-//!     still did NOT converge. Both F_n heterogeneity and F_n magnitude are
-//!     ruled out.
-//! 14. Measured the real per-node mass distribution and found a genuine,
-//!     real structural fact: at least one grid node (a quadratic-kernel
-//!     stencil corner touched by only one particle's near-zero edge
-//!     weight) carries essentially ZERO accumulated mass alongside nodes
-//!     carrying O(1) mass -- an astronomically ill-conditioned mass
-//!     distribution the synthetic benchmark's regular lattice may never
-//!     produce. This is a real, plausible contributor to numerical
-//!     ill-conditioning (and a real, independent explanation for why the
-//!     EXACT Cholesky solve in finding 2 hit the identical wall -- a
-//!     near-singular mass matrix defeats any linear solver equally,
-//!     regardless of technique). Directly tested: freezing every node
-//!     with mass below `1e-4` (6 of 462 nodes) still did NOT converge --
-//!     so this real, measured pathology is not SUFFICIENT on its own
-//!     either, though it has not been ruled out as a contributing factor
-//!     (only as a sufficient standalone fix).
-//!
-//! **Honest state of the real-vs-synthetic discrepancy: still open.**
-//! Seven real hypotheses (findings 7-14, seven, not the six that closed
-//! the dt-stepping question) have each been measured and found wanting --
-//! this is a genuinely harder discrepancy than any single mechanism found
-//! so far explains, not evidence the search was sloppy. A future session
-//! picking this up should look for a factor combining several of these
-//! (e.g. near-zero-mass nodes SPECIFICALLY where they also sit near
-//! `wall_frozen` nodes) rather than another single-variable isolation.
-//!
-//! **Why this closes tonight's investigation instead of opening a path
-//! forward:**
-//! the fix that provably works is not performance-viable at this scale.
-//! Converging needs ~350-400 implicit sub-steps per frame (vs. ~2263 raw
-//! explicit substeps today -- only a ~6x reduction in STEP COUNT), and one
-//! real Newton-CG solve at this scale measured ~9.5-10.5ms wall-clock --
-//! projecting to ~4.2-4.7 SECONDS per frame, roughly 25-30x SLOWER than the
-//! ~145-180ms explicit baseline this module exists to beat. (This
-//! projection assumes each sub-step costs about the same as the one
-//! measured -- a real, disclosed simplification, not a claim every one of
-//! 400 sub-steps was individually timed; the margin against the explicit
-//! baseline is wide enough that this simplification cannot flip the
-//! conclusion.) Load-stepping fine enough to converge and coarse enough to
-//! win would need a per-solve cost roughly 2 orders of magnitude below
-//! what this Newton-CG implementation currently achieves -- a different,
-//! much larger undertaking (e.g. a real multigrid preconditioner, or
-//! abandoning per-frame Newton-CG for a fundamentally cheaper scheme) than
-//! anything scoped so far, not a tuning pass on the current design.
-//!
-//! **Practical consequence, unchanged in kind, now understood in full:**
-//! `implicit_corotated_eligible` and `newton_solve`'s own convergence check
-//! both trigger the real, safe explicit fallback whenever the full-frame
-//! solve doesn't converge, so `SimConfig::implicit_corotated_elastic`
-//! remains SAFE to enable on any scene -- it is INERT (falls back every
-//! frame, no crash, no wrong physics) at `basic_sand`'s real production
-//! scale, and now for a proven, understood reason rather than an open
-//! question. It has not delivered, and per the analysis above is not
-//! expected to deliver without substantially different solver machinery, a
-//! real measured speedup on that scene.
-//!
-//! **Diagnostic infrastructure kept, not deleted, despite being unused in
-//! production right now** (each gated `#[cfg(test)]`, each with its own
-//! doc explaining why it's still worth having on hand for whatever
-//! investigation comes next): the dense Cholesky direct-solve chain
-//! (`direct_solve`, `assemble_free_dof_system`, `particle_stiffness_block`,
-//! `cholesky_solve`, `free_dof_map`, `grad_basis`, `build_particle_
-//! matrices`) that proved this was never a linear-solver problem; the
-//! eigenvalue-clamp PSD projection chain in `materials::utils`
+//! Kept `#[cfg(test)]` as oracles for that work: the dense direct-solve
+//! chain (`direct_solve`, `assemble_free_dof_system`,
+//! `particle_stiffness_block`, `cholesky_solve`, `free_dof_map`,
+//! `grad_basis`, `build_particle_matrices`), the eigenvalue-clamp PSD
+//! projection chain in `materials::utils`
 //! (`corotated_kirchhoff_dtau_dl_psd_matrix`, `spd_project_symmetric_4x4`,
-//! `jacobi_eigen_symmetric_4x4`, `corotated_elastic_energy_density`) that
-//! proved the projection method was never the bottleneck either;
-//! `model_residual`/`total_energy`, the verified-consistent energy
-//! formulation `model_jacobian_vector_product` (still real production
-//! code) is checked against; and `real_residual_jvp_fd`, the exact-but-
-//! expensive finite-difference oracle that proved the approximate
-//! curvature's own error was real but non-causal.
+//! `jacobi_eigen_symmetric_4x4`, `corotated_elastic_energy_density`), the
+//! energy formulation `model_residual`/`total_energy` that
+//! `model_jacobian_vector_product` is checked against, and
+//! `real_residual_jvp_fd`, the exact finite-difference Jacobian.
 
 use glam::{IVec2, Mat2, Vec2};
 
@@ -292,68 +64,40 @@ use crate::materials::utils::{
 use crate::materials::utils::{corotated_elastic_stress, corotated_elastic_stress_jvp};
 use crate::transfer::{G2PParams, gather_grid_to_particles};
 
-/// Real max Newton iteration count and relative tolerance -- same values
-/// `stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit`
-/// used at basic_sand's own real scale, not guessed.
+/// Max Newton iterations and relative tolerance: the values of
+/// `stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit` at
+/// basic_sand's scale.
 const MAX_NEWTON_ITERS: usize = 150;
-/// `steihaug_cg`'s own, SEPARATE iteration budget -- real fix (2026-09-11):
-/// sharing `MAX_NEWTON_ITERS` between the OUTER Newton loop (expensive:
-/// real residual/energy evaluation, `min_deformed_j`, per retry) and the
-/// INNER CG solve (cheap: matrix-free, now Jacobi-preconditioned) starved
-/// CG at a real, densely-coupled `basic_sand`-scale problem -- confirmed
-/// live, the preconditioned solve reduced the real residual 99.6% (from
-/// ~8e4 to ~317) but stalled short of `RELATIVE_TOLERANCE`, needing more
-/// CG iterations to finish, not a different algorithm.
+/// `steihaug_cg`'s own iteration budget, separate from `MAX_NEWTON_ITERS`:
+/// the outer Newton loop is expensive, the inner matrix-free CG cheap, and
+/// sharing one budget starved CG on basic_sand-scale problems.
 const MAX_CG_ITERS: usize = 400;
 const RELATIVE_TOLERANCE: f32 = 1.0e-3;
 /// Line-search admissibility floor on `det(F)` -- see `ImplicitProblem::
-/// min_deformed_j`'s own doc. Comfortably above `corotated_elastic_
+/// min_deformed_j`'s doc. Comfortably above `corotated_elastic_
 /// stress`'s `MIN_J=1e-6` hard-zero clamp (that discontinuity is exactly
 /// what a residual-only acceptance test can be fooled by), while still
-/// permissive enough to allow real, large compaction under a genuinely
+/// permissive enough to allow large compaction under a genuinely
 /// stiff sand pile's own weight.
 const MIN_ADMISSIBLE_J: f32 = 0.1;
 
 /// One particle's 9-node quadratic-kernel stencil: node position, weight,
-/// and the EXACT analytic kernel gradient (`axis_weights_derivative`) --
-/// deliberately NOT the `weight*cell_dist*KERNEL_D_INVERSE` MLS-MPM
-/// quadrature approximation (Hu et al. 2018) the engine's own explicit
-/// P2G/G2P pipeline uses.
+/// and the exact analytic kernel gradient (`axis_weights_derivative`), not
+/// the `weight*cell_dist*KERNEL_D_INVERSE` MLS-MPM quadrature (Hu et al.
+/// 2018) the explicit P2G/G2P uses.
 ///
-/// Real fix (2026-09-11), reversing an earlier same-week fix that turned
-/// out to be backwards: a prior version of this file used the MLS-MPM
-/// approximation here specifically to match what `gather_grid_to_
-/// particles` independently re-derives for `particles.deformation_
-/// gradient`/`velocity_gradient` every frame. That mismatch is real, but
-/// per a direct read of two independent real implicit-MPM codebases --
-/// `tmp/ziran2020` (Chenfanfu Jiang's group, the SAME lineage that
-/// published Klar 2016's own sand model and the MLS-MPM paper this
-/// approximation comes from) and `tmp/GeoTaichi` (an independent
-/// geotechnical MPM/DEM framework with its own real implicit
-/// Drucker-Prager solver) -- it is the WRONG mismatch to close. Both
-/// build their Newton/CG force assembly (residual AND its
-/// differential/Hessian-vector-product) from the exact analytic shape-
-/// function gradient unconditionally, even in code that supports the MLS
-/// approximation elsewhere for explicit kinematics --
-/// `ziran2020/Lib/Ziran/Sim/MpmSimulationBase.cpp` asserts `mls_mpm`
-/// requires `symplectic==true` (explicit) and every real implicit demo in
-/// that repo explicitly sets `mls_mpm=false`; its own force assembly
-/// (`Lib/MPM/Force/MpmForceBase.cpp::rasterizeForceToTVStack`/
-/// `FBasedMpmForceHelper.cpp::computeStressDifferential`) is built on
-/// `BSplineWeights`' real analytic derivative, never `cell_dist`.
-/// `GeoTaichi`'s `NewtonIteration.py::assemble_element_local_stiffness_2D`
-/// takes `scene.element.dshape_fn` (the exact gradient) regardless of
-/// which velocity-gradient reconstruction its OWN kinematics use
-/// elsewhere. The likely mechanism: the MLS-MPM approximation is a
-/// quadrature scheme whose consistency guarantee is per-particle, in the
-/// specific explicit single-step context it was derived for -- summing it
-/// across MULTIPLE particles at a shared node and demanding Newton drive
-/// THAT SUM to a stationary point via a Hessian built the same way does
-/// not inherit the same guarantee, which would explain exactly why an
-/// isolated particle (nothing to be inconsistent WITH) matched the
-/// explicit baseline throughout prior testing while a densely-packed pile
-/// (many particles' approximations summed at shared nodes) diverged from
-/// frame one regardless of which other formula got fixed.
+/// Implicit MPM codes assemble the residual and its Hessian-vector product
+/// from the exact shape-function gradient even where they use MLS for
+/// explicit kinematics: `ziran2020` requires `symplectic==true` for
+/// `mls_mpm` and every implicit demo sets `mls_mpm=false`, its force
+/// assembly (`MpmForceBase.cpp::rasterizeForceToTVStack`,
+/// `FBasedMpmForceHelper.cpp::computeStressDifferential`) uses
+/// `BSplineWeights`' analytic derivative; GeoTaichi's
+/// `NewtonIteration.py::assemble_element_local_stiffness_2D` uses
+/// `dshape_fn`. MLS consistency is per particle in one explicit step;
+/// summed over many particles at shared nodes it is not, which fits an
+/// isolated particle matching the explicit baseline while a packed pile
+/// diverged from frame one.
 fn build_stencil(pos: Vec2) -> [(IVec2, f32, Vec2); 9] {
     let w = quadratic_weights(pos);
     let dx = axis_weights_derivative(pos.x - w.base_cell.x as f32 - 0.5);
@@ -391,26 +135,14 @@ struct ImplicitProblem {
     v_n: Vec<Vec2>,
     ext_force: Vec<Vec2>,
     dt: f32,
-    /// `true` for a node close enough to a domain wall (within
-    /// `SimConfig::boundary_thickness`) that a real boundary condition
-    /// will act on it. Real fix (2026-09-11): a real, densely-packed sand
-    /// pile resting on a floor needs the wall's reaction force in
-    /// CONTINUOUS balance against gravity, every substep -- something a
-    /// single free elastic Newton solve across the WHOLE frame, with the
-    /// wall applied as a one-shot correction only after convergence, can
-    /// never represent (confirmed live: an 8-particle clump matched the
-    /// explicit baseline closely right up until it touched a wall, then
-    /// diverged sharply -- explicit's real bounce came from thousands of
-    /// tiny "apply gravity, clip once" cycles through the same contact,
-    /// which a single big step cannot reproduce). These DOFs are held
-    /// fixed at `v_n` throughout the free Newton search (never perturbed
-    /// by `delta`) -- the SAME real "essential boundary condition lives on
-    /// grid DOFs" principle `Particle::pinned`/`Grid::pinned_nodes`
-    /// already use elsewhere in this engine -- letting Newton solve ONLY
-    /// the genuinely free interior DOFs; the real, unmodified boundary
-    /// condition (`apply_boundary_conditions_to_grid`) still runs
-    /// afterward exactly as before, on top of whatever these nodes end up
-    /// at.
+    /// `true` for a node within `SimConfig::boundary_thickness` of a wall.
+    /// A pile on a floor needs the wall reaction in continuous balance with
+    /// gravity; one free solve with the wall applied afterwards cannot
+    /// represent that (an 8-particle clump matched explicit until it touched
+    /// a wall, then diverged). These DOFs stay at `v_n` through the free
+    /// search, the essential-boundary principle of `Particle::pinned`/
+    /// `Grid::pinned_nodes`; `apply_boundary_conditions_to_grid` still runs
+    /// afterwards.
     wall_frozen: Vec<bool>,
 }
 
@@ -423,42 +155,25 @@ impl ImplicitProblem {
         g
     }
 
-    /// Real, exact closed-form `exp(dt*grad_v)*F_n` (`deformation_increment_
-    /// exp`, already real production code used elsewhere for the same
-    /// reason -- see its own doc), NOT the naive linear `(I+dt*grad_v)*F_n`
-    /// this file used originally. Real, necessary fix (2026-09-10): a
-    /// settled `DruckerPragerMaterial` particle's real rest-state `F_n` is a
-    /// PURE ROTATION (correctly zero elastic stress -- corotated elasticity
-    /// is rotation-invariant by construction), not Identity, once its
-    /// plastic return-mapping has relaxed all elastic strain away. The
-    /// linear approximation is only accurate for SMALL `dt*grad_v`
-    /// regardless of `F_n`, but composing it onto an ALREADY substantially
-    /// rotated `F_n` (confirmed live: ~34 degrees, `tests/scratch_implicit_
-    /// corotated_wiring_diagnostic.rs`'s `diag_properly_isolated_
-    /// equilibrium_maintenance`) is NOT exactly orthogonal to first order
-    /// the way the true rotation composition is -- that gap manufactures
-    /// spurious "strain" (and hence spurious stress) that is pure
-    /// linearization error, not real physics. Newton then had something
-    /// genuine to chase in the wrong direction: reducing a residual built
-    /// from an artifact rather than the true equilibrium, which is exactly
-    /// what let a real, properly-isolated (explicit-settled, then switched
-    /// to implicit from that identical verified-good state) sand pile drift
-    /// several grid cells from the explicit baseline within a handful of
-    /// frames even though each individual Newton solve "converged."
+    /// Exact closed-form `exp(dt*grad_v)*F_n` (`deformation_increment_exp`),
+    /// not the linear `(I+dt*grad_v)*F_n`. A settled DruckerPrager particle's
+    /// rest `F_n` is a pure rotation (zero corotated stress), ~34 degrees in
+    /// `diag_properly_isolated_equilibrium_maintenance`; composing the linear
+    /// increment onto it is not orthogonal to first order, and the spurious
+    /// strain it makes gave Newton an artifact to chase (a settled pile
+    /// drifted several cells although every solve converged).
     ///
-    /// Deliberately NOT also switching `jacobian_vector_product`'s `df`
-    /// formula to the exponential map's own (much harder) Fréchet
-    /// derivative: `newton_solve`'s line search always re-evaluates
-    /// acceptance against THIS (exact) residual before taking a step, so an
-    /// approximate/quasi-Newton search direction only affects convergence
-    /// speed and robustness, never what the solve converges TO.
+    /// `jacobian_vector_product` keeps the linear `df`, not the exponential
+    /// map's Fréchet derivative: the line search always re-checks this exact
+    /// residual, so the approximate direction only affects convergence speed,
+    /// never what the solve converges to.
     fn deformed_f(p: &ImplicitParticle, v: &[Vec2], dt: f32) -> Mat2 {
         let grad_v = Self::velocity_gradient(&p.entries, v);
         crate::materials::utils::deformation_increment_exp(dt * grad_v) * p.f_n
     }
 
     /// The LINEAR (forward-Euler-style) `(I+dt*grad_v)*F_n` `deformed_f`'s
-    /// own doc deliberately moved away from for the REAL residual (exact
+    /// doc deliberately moved away from for the REAL residual (exact
     /// exponential map fixes real spurious-strain error at large
     /// pre-existing rotation, see that doc). Used ONLY to build a
     /// self-consistent (energy, gradient, Hessian) triple for `newton_
@@ -468,8 +183,8 @@ impl ImplicitProblem {
     /// assumed: `trust_region_consistency_tests`), unlike the true
     /// exponential-map `residual`, which is NOT the gradient of any energy
     /// built the same way (the matrix exponential's own Fréchet derivative
-    /// would be needed for that, real, substantial extra math this file
-    /// deliberately avoids -- confirmed necessary by a real, failed FD
+    /// would be needed for that, substantial extra math this file
+    /// deliberately avoids -- confirmed necessary by a failed FD
     /// check attempting to skip it). The trust-region model only decides
     /// SEARCH DIRECTION and STEP SIZE; `newton_solve`'s actual convergence
     /// test and final acceptance always use the REAL `residual`/`min_
@@ -486,17 +201,13 @@ impl ImplicitProblem {
     /// `(I+dt*grad_v)*F_n`, only valid for small `dt*grad_v` -- a large
     /// Newton trial step can push it past `corotated_elastic_stress`'s own
     /// `j <= MIN_J` hard clamp (stress pinned to exactly zero there). That
-    /// clamp is a discontinuous cliff in the residual: crossing it makes
-    /// `|r|` look like it dropped a lot (a large stress term vanished), so
-    /// an acceptance test based on `|r|` alone will happily walk a particle
-    /// INTO that degenerate, zero-elastic-support regime and call it
-    /// progress -- confirmed live (2026-09-10): a real, densely-packed,
-    /// already-settled sand pile's particles picked up near-free-fall
-    /// velocity within the FIRST implicit frame after this exact mechanism,
-    /// `tests/scratch_implicit_corotated_wiring_diagnostic.rs`'s
-    /// `diag_settled_pile_first_forked_step_velocity_field`. `newton_solve`
-    /// below additionally requires this to stay comfortably above `MIN_J`
-    /// before accepting a step, closing that acceptance-criterion gap.
+    /// clamp is a cliff in the residual: crossing it makes `|r|` drop (a
+    /// large stress term vanished), so an `|r|`-only acceptance test walks a
+    /// particle into that zero-support regime and calls it progress
+    /// (`diag_settled_pile_first_forked_step_velocity_field`: a settled pile
+    /// reached near free-fall speed in the first implicit frame).
+    /// `newton_solve` also requires this to stay above `MIN_J` before
+    /// accepting a step.
     fn min_deformed_j(&self, v: &[Vec2]) -> f32 {
         self.particles
             .iter()
@@ -516,17 +227,14 @@ impl ImplicitProblem {
             // (`stress_volume` defaults to `initial_volume`, paired directly
             // with Kirchhoff `combined_kirchhoff_stress` and a spatial
             // `cell_dist`/grad_w term, never a First-Piola/material-gradient
-            // conversion). An earlier version of this file used First-Piola
-            // stress (`tau * F^-T`) here, which introduces a spurious extra
-            // `F^-T` factor when paired with a SPATIAL gradient instead of
-            // the material gradient it actually requires -- caught by
-            // `tests/scratch_implicit_corotated_wiring_diagnostic.rs`'s
-            // real multi-frame trajectory comparison (a barely-moving,
-            // already-settled pile diverged 8+ grid cells from the explicit
-            // baseline in ONE frame with that bug in place), not by any
-            // finite-difference self-consistency check -- those only verify
-            // the JVP matches ITS OWN residual formula, not that the
-            // formula matches this engine's real force convention.
+            // conversion). First-Piola stress (`tau * F^-T`) here would add a
+            // spurious `F^-T` factor, since it pairs with the material
+            // gradient, not a spatial one. With it, a settled pile diverged 8+
+            // grid cells from the explicit baseline in one frame
+            // (`tests/scratch_implicit_corotated_wiring_diagnostic.rs`'s
+            // multi-frame trajectory comparison). Finite-difference checks
+            // cannot catch this: they verify the JVP against its own residual
+            // formula, not the formula against this engine's force convention.
             let stress = corotated_elastic_stress(f_new, p.lambda, p.mu);
             for &(idx, _w, grad) in &p.entries {
                 r[idx] += p.v0 * (stress * grad);
@@ -535,45 +243,23 @@ impl ImplicitProblem {
         r
     }
 
-    /// The trust-region MODEL's own residual -- `total_energy`'s exact
-    /// gradient, built on `model_deformed_f` (linear, not the exact
-    /// exponential map -- see that function's own doc for why the true
-    /// `residual` cannot make this same claim without the matrix
-    /// exponential's own Fréchet derivative).
+    /// The trust-region model's residual: `total_energy`'s exact gradient,
+    /// on the linear `model_deformed_f` (the true `residual` would need the
+    /// matrix exponential's Fréchet derivative to make that claim).
     ///
-    /// Real, necessary fix over a first attempt: naively reusing
-    /// `residual`'s own `stress*grad` (Kirchhoff tau, no `dt` factor) form
-    /// here is WRONG -- confirmed by a real, numerically hand-verified
-    /// minimal case (`debug_minimal_single_entry_case`, single particle,
-    /// single stencil entry, `F_n=I`): the true FD gradient of `total_
-    /// energy` was 13.918 while `tau*grad` gave 487.0, off by >30x, while
-    /// separately verified `dF_new/dv` (matches its own closed-form FD
-    /// check to 0.16%) and the material-level `Psi`-vs-Piola relationship
-    /// (already FD-verified in `materials::utils`) were each individually
-    /// correct. The actual chain rule through `F_new(v)=(I+dt*grad_v)*F_n`
-    /// (worked by hand via the trace identity `frob(P,(e⊗grad)*F_n) =
-    /// e·(P*F_n^T*grad)`, then confirmed numerically) gives `dt*V0*Piola*
-    /// (F_n^T*grad)` for the elastic term -- Piola (not Kirchhoff), paired
-    /// with `F_n^T*grad` (not the raw spatial `grad`), scaled by `dt`
-    /// (from the `dt*grad_v` inside `model_deformed_f`). `residual`'s own
-    /// `tau*grad` (Kirchhoff, spatial gradient, no `dt`) is the REAL,
-    /// separately-validated production MPM force convention (matches
-    /// `spacetime::transfer::p2g` exactly) -- it is simply NOT the literal
-    /// calculus gradient of a `Psi(F_new(v))`-type energy under a
-    /// multiplicative F update, a real, structural MPM fact rather than a
-    /// bug in either formula.
+    /// Through `F_new(v) = (I+dt*grad_v)*F_n` and the identity
+    /// `frob(P,(e⊗grad)*F_n) = e·(P*F_n^T*grad)`, the elastic term is
+    /// `dt*V0*Piola*(F_n^T*grad)`: Piola, not Kirchhoff, paired with
+    /// `F_n^T*grad`, scaled by `dt` (`debug_minimal_single_entry_case`: FD
+    /// 13.918 against 487.0 for `tau*grad`). `residual`'s `tau*grad` is the
+    /// production MPM force (as in `spacetime::transfer::p2g`); it is simply
+    /// not the gradient of a `Psi(F_new(v))` energy under a multiplicative
+    /// update.
     ///
-    /// Test-only (2026-09-11): `newton_solve` no longer uses this as
-    /// Steihaug-CG's gradient `g` (a real, measured scale mismatch between
-    /// this Piola/`dt`-scaled quantity and the real `residual` corrupted
-    /// the trust region's own radius calibration -- see `newton_solve`'s
-    /// own doc). Kept, not deleted: it is the verified oracle proving
-    /// `model_jacobian_vector_product` (still real production code, used
-    /// as Steihaug-CG's approximate curvature) is a genuine, principled
-    /// Hessian-vector product of a real energy's gradient, not an
-    /// arbitrary formula -- exactly the kind of hard-won diagnostic tool
-    /// worth keeping callable for whatever the next real fix turns out to
-    /// need, not just archived in test-only assertions.
+    /// Test-only: `newton_solve` uses the real `residual` as its gradient
+    /// (see its doc); this stays as the oracle showing
+    /// `model_jacobian_vector_product` is the Hessian-vector product of a
+    /// real energy's gradient.
     #[cfg(test)]
     fn model_residual(&self, v: &[Vec2]) -> Vec<Vec2> {
         let n = self.node_pos.len();
@@ -603,20 +289,15 @@ impl ImplicitProblem {
 
     /// Total scalar MODEL objective for one implicit big-step: `0.5*m*(v-
     /// v_n)^2/dt - ext_force.v + sum_particles(V0*Psi(F_new_linear(v)))`
-    /// -- the standard "optimization time integration" formulation of
-    /// implicit Euler MPM (e.g. Gast et al. 2015 "Optimization Integrator
-    /// for Large Time Steps"; also how Klar 2016's own implicit sand solve
-    /// is framed), built on `model_deformed_f` (see that function's own
-    /// doc for why, not the real `deformed_f`). Needed by `newton_solve`'s
-    /// trust-region ratio test (Nocedal & Wright ch.4): predicted-vs-
-    /// actual reduction needs a real scalar value, not just a gradient.
+    /// -- the "optimization time integration" form of implicit Euler MPM
+    /// (Gast et al. 2015 "Optimization Integrator for Large Time Steps"; Klar
+    /// 2016's implicit sand solve is framed the same way), on
+    /// `model_deformed_f`.
     ///
-    /// Test-only (2026-09-11): `newton_solve`'s ratio test now measures
-    /// `0.5*||residual||^2` (Gauss-Newton merit, Moré 1978) instead of
-    /// this energy -- see `newton_solve`'s own doc for the real scale-
-    /// mismatch that motivated the switch. Kept as `model_residual`'s own
-    /// verified-gradient oracle (`model_residual_matches_energy_gradient_
-    /// in_a_hand_verifiable_minimal_case`), not deleted.
+    /// Test-only: `newton_solve`'s ratio test measures `0.5*||residual||^2`
+    /// (Gauss-Newton merit, Moré 1978). Kept as `model_residual`'s gradient
+    /// oracle (`model_residual_matches_energy_gradient_in_a_hand_verifiable_
+    /// minimal_case`).
     #[cfg(test)]
     fn total_energy(&self, v: &[Vec2]) -> f32 {
         let mut e = 0.0f32;
@@ -642,7 +323,7 @@ impl ImplicitProblem {
     /// matrix` built for the (now-removed) direct/CG solve -- is DESIGNED
     /// to detect and handle negative curvature on its own (terminating
     /// exactly on the trust-region boundary), so it needs the TRUE model
-    /// Hessian, not a PSD projection of it (see this module's own doc,
+    /// Hessian, not a PSD projection of it (see this module's doc,
     /// "remaining limitation #2", for why a fixed PSD projection was
     /// confirmed to blind Newton to real curvature it still needed after
     /// the first accepted step).
@@ -678,33 +359,16 @@ impl ImplicitProblem {
         dr
     }
 
-    /// Test-only (2026-09-12): a finite-difference Jacobian-vector product
-    /// of the REAL, exact-exponential-map `residual` -- built to test
-    /// whether `model_jacobian_vector_product`'s approximation (linear
-    /// `model_deformed_f`, Piola/`F_n^T*grad`/`dt`-scaled) was close enough
-    /// to the TRUE curvature for Steihaug-CG's inexact-Newton theory to
-    /// hold, at `basic_sand`'s real production scale. Normalizes `dv` to
-    /// unit length before perturbing (matching the h-convergence lesson
-    /// from this project's own JVP verification history: `h=1e-2` on a
-    /// UNIT direction stays clear of f32 catastrophic cancellation, unlike
-    /// a fixed absolute `h` applied to a `dv` of unknown magnitude), then
-    /// rescales the result back by `dv`'s real norm (valid because a true
-    /// JVP is linear in `dv`).
+    /// Test-only: finite-difference Jacobian-vector product of the true,
+    /// exponential-map `residual`. Normalizes `dv` to unit length before
+    /// perturbing (`h = 1e-2` on a unit direction stays clear of f32
+    /// cancellation), then rescales by `dv`'s norm (a JVP is linear in `dv`).
     ///
-    /// Real, measured finding (2026-09-12): at the exact point `newton_
-    /// solve` stalls, `model_jacobian_vector_product` underestimates this
-    /// EXACT Jacobian's magnitude by ~62-70x in the direction of the free
-    /// residual (`cos_similarity` ~0.9999 at `h=1e-2` -- same DIRECTION,
-    /// wildly different SCALE). A real, substantial finding on its own --
-    /// but swapping this exact (if 2-evaluations-per-call expensive) JVP
-    /// in as `steihaug_cg`'s own curvature did NOT fix the stall either
-    /// (r_norm floor moved from ~317 to ~276, same collapse signature) --
-    /// ruling out the approximation as the root cause too. See this
-    /// module's own top-of-file doc for the real root cause this
-    /// elimination process led to. Kept `#[cfg(test)]`, not deleted: the
-    /// real, verified oracle proving `model_jacobian_vector_product`'s
-    /// own approximation error, on hand for whatever a future faster/
-    /// better curvature construction needs to be checked against.
+    /// At the point `newton_solve` stalls, `model_jacobian_vector_product`
+    /// underestimates this Jacobian 62-70x along the free residual
+    /// (`cos_similarity` ~0.9999), yet using this exact JVP as `steihaug_cg`'s
+    /// curvature still stalls (r_norm floor 317 -> 276), so the approximation
+    /// is not the cause (see the module doc).
     #[cfg(test)]
     fn real_residual_jvp_fd(&self, v: &[Vec2], dv: &[Vec2]) -> Vec<Vec2> {
         let n = v.len();
@@ -757,7 +421,7 @@ impl ImplicitProblem {
     /// preconditioner. Only needs to be a REASONABLE diagonal estimate of
     /// `model_jacobian_vector_product`'s own diagonal, not exact -- a
     /// preconditioner only affects CG's convergence RATE, never what it
-    /// converges to (that's `steihaug_cg`'s own real, exact recurrence).
+    /// converges to (that's `steihaug_cg`'s own exact recurrence).
     fn jacobi_diagonal(&self) -> Vec<Vec2> {
         let mut diag: Vec<Vec2> = self
             .node_mass
@@ -774,68 +438,29 @@ impl ImplicitProblem {
     }
 
     /// Preconditioned Steihaug-Toint truncated CG (Nocedal & Wright 2nd
-    /// ed., Algorithm 4.3 plus its own "Preconditioning" section) --
-    /// approximately minimizes the trust-region model `m(p) = g.p +
-    /// 0.5*p.H.p` subject to `||p||<=radius`, using `model_jacobian_
-    /// vector_product` matrix-free. Its real, standard advantage over the
-    /// (removed) eigenvalue-clamped direct solve: it detects negative
-    /// curvature ON ITS OWN (terminating exactly on the trust-region
-    /// boundary along the current search direction) instead of needing
-    /// the operator pre-projected to PSD -- a fixed PSD projection was
-    /// confirmed (this module's own doc, "remaining limitation #2") to
-    /// blind Newton to real curvature it still needed after its first
-    /// accepted step; Steihaug-CG never needs that projection because it
-    /// handles indefiniteness structurally.
+    /// ed., Algorithm 4.3 and its "Preconditioning" section): approximately
+    /// minimizes `m(p) = g.p + 0.5*p.H.p` subject to `||p|| <= radius`, with
+    /// `model_jacobian_vector_product` matrix-free. It detects negative
+    /// curvature itself (stopping on the trust-region boundary), so the
+    /// operator needs no PSD projection, which blinded Newton to curvature it
+    /// still needed after its first step.
     ///
-    /// Real fix (2026-09-11): preconditions the CG RECURRENCE (`jacobi_
-    /// diagonal`, standard preconditioned-CG `r^T*y` inner products for
-    /// `alpha`/`beta`) to fix a real, measured stall -- confirmed live, a
-    /// real `basic_sand`-scale settled pile (1008 particles, real
-    /// E=15MPa) reduced its residual 97.7% (from ~1e5 to ~2.3e3) via the
-    /// unpreconditioned Gauss-Newton trust region, then stalled short of
-    /// `RELATIVE_TOLERANCE`, the classic symptom of a genuinely stiff,
-    /// poorly-conditioned system exhausting CG's iteration budget before
-    /// finishing, not a wrong direction. Deliberately does NOT also switch
-    /// the trust-region BOUNDARY check to the preconditioner's own `M`-
-    /// norm (the textbook-complete preconditioned-Steihaug form) -- that
-    /// would reintroduce exactly the kind of radius/scale-mismatch risk
-    /// this module's own `newton_solve` doc already found and fixed once
-    /// (switching from `model_residual`'s mismatched scale to the real
-    /// residual's own); preconditioning only the search-direction
-    /// generation, while keeping the boundary check in the SAME plain
-    /// Euclidean norm the real residual's own scale is calibrated to, is a
-    /// real, common, defensible simplification that keeps that fix intact.
+    /// Jacobi preconditioning (`jacobi_diagonal`, preconditioned `r^T*y`
+    /// inner products for `alpha`/`beta`) took the basic_sand-scale
+    /// reduction from 97.7% to 99.6%. Only the search direction is
+    /// preconditioned; the boundary check stays in the Euclidean norm the
+    /// real residual's scale is calibrated to, since an `M`-norm boundary
+    /// would reopen the radius/scale mismatch `newton_solve` avoids.
     ///
-    /// Real fix (2026-09-12): projects `hd` back onto the free-DOF subspace
-    /// EVERY iteration, not just the final `p` once at the end (`newton_
-    /// solve` already zeroed `p[i]` for `wall_frozen` `i`, but only after
-    /// this loop returned). `model_jacobian_vector_product` operates on the
-    /// full node set per particle stencil -- it has no notion of
-    /// `wall_frozen` -- so a purely-free-DOF search direction `d` (`d[i]=0`
-    /// for every frozen `i`, true by construction on the first iteration
-    /// since `g` is already zeroed there) can still produce a NONZERO `hd`
-    /// at a frozen node whenever that node shares a particle with a moving
-    /// free neighbor -- a real, physically meaningful reaction force, but
-    /// one this free-DOF-only solve has no business injecting back into its
-    /// own recurrence. Left unprojected, that leak flows straight into
-    /// `r_next[frozen]`, then `precondition(r_next)`, then `ry_next`/`beta`,
-    /// then `d` itself picks up nonzero frozen components from the SECOND
-    /// iteration onward -- silently corrupting the Krylov subspace this
-    /// algorithm is supposed to build for the free-free reduced system
-    /// `H_ff*p_f=-g_f`, the standard "Dirichlet-DOF projection every
-    /// iteration" practice (confirmed as real production precedent in
-    /// `tmp/ziran2020`'s own preconditioned CG, distilled in this project's
-    /// own `tmp/ref_ziran_implicit_mpm.md`).
-    ///
-    /// Real, measured outcome of this specific fix (2026-09-12): a genuine
-    /// leak was confirmed (`hd_frozen_norm` up to ~465 at `basic_sand`'s
-    /// real production scale, `d_frozen_norm` correctly pinned at exactly
-    /// 0.0 after this projection, proving it structurally prevents any
-    /// contamination). This is kept unconditionally as a real correctness
-    /// fix regardless -- but it did NOT close `basic_sand`'s own long-
-    /// standing ~99.6%-then-stall gap (bit-for-bit identical stall before
-    /// and after). See this module's own top-of-file doc for the real
-    /// root cause that investigation went on to find.
+    /// `hd` is projected onto the free-DOF subspace every iteration, not only
+    /// the final `p`: `model_jacobian_vector_product` knows nothing of
+    /// `wall_frozen`, so a free-only `d` still gives a nonzero `hd` at a
+    /// frozen node sharing a particle with a moving neighbour, which would
+    /// leak through `r_next`, the preconditioner and `beta` into `d` from the
+    /// second iteration on. Projecting every iteration is standard Dirichlet
+    /// practice (ziran2020's preconditioned CG, `tmp/ref_ziran_implicit_
+    /// mpm.md`). The leak was real (`hd_frozen_norm` up to ~465) but not the
+    /// cause of the stall.
     fn steihaug_cg(&self, v: &[Vec2], g: &[Vec2], radius: f32, tol: f32) -> Vec<Vec2> {
         let n = self.node_pos.len();
         let diag = self.jacobi_diagonal();
@@ -894,30 +519,16 @@ impl ImplicitProblem {
 
     /// Build the per-particle Gershgorin-PSD 4x4 Hessian ONCE for a given
     /// trial velocity field `v` (see `corotated_kirchhoff_dtau_dl_psd_
-    /// matrix`'s own doc for why this is the expensive part -- 4 JVP
-    /// evaluations per particle). Real fix (2026-09-11): `v` is fixed for
-    /// the whole duration of one `conjugate_gradient_solve` call, so this
-    /// only needs to run once per Newton iteration, not once per CG
-    /// iteration -- confirmed live as the actual cause of a real production
-    /// regression: `basic_sand`-scale (1008 particles, real E=15MPa) ran
-    /// the implicit path at 0.73x the explicit path's speed (SLOWER, not
-    /// faster) purely from rebuilding this matrix from scratch on every one
-    /// of up to 50 CG iterations x up to 150 Newton iterations, despite
-    /// depending only on `v`.
+    /// matrix` for why this is the expensive part -- 4 JVP evaluations per
+    /// particle). `v` is fixed for one `conjugate_gradient_solve`, so this
+    /// runs once per Newton iteration; rebuilding it per CG iteration made
+    /// the implicit path 0.73x the explicit speed at basic_sand scale.
     ///
-    /// Test-only (2026-09-11): this function and the rest of the direct-
-    /// solve chain it feeds (`free_dof_map`, `grad_basis`, `particle_
-    /// stiffness_block`, `assemble_free_dof_system`, `cholesky_solve`,
-    /// `direct_solve`) are no longer production code -- `newton_solve` now
-    /// uses `steihaug_cg` (matrix-free, handles indefinite curvature
-    /// structurally, no PSD projection needed). Kept callable, not
-    /// deleted: this chain is the real, test-verified oracle that PROVED
-    /// the original convergence failure was not a linear-solver problem
-    /// (an exact Cholesky solve of this SAME eigenvalue-clamped system hit
-    /// the identical wall a "fully converged" CG did) -- exactly the kind
-    /// of diagnostic tool worth keeping on hand for the next investigation
-    /// into `basic_sand`'s still-unresolved real-scale convergence gap
-    /// (see this module's own top-of-file doc), not archived away.
+    /// Test-only, with the rest of the direct-solve chain it feeds
+    /// (`free_dof_map`, `grad_basis`, `particle_stiffness_block`,
+    /// `assemble_free_dof_system`, `cholesky_solve`, `direct_solve`):
+    /// production uses `steihaug_cg`. Kept as the oracle showing the stall is
+    /// not a linear-solver problem (see the module doc).
     #[cfg(test)]
     fn build_particle_matrices(&self, v: &[Vec2]) -> Vec<[[f32; 4]; 4]> {
         self.particles
@@ -932,10 +543,10 @@ impl ImplicitProblem {
     /// Maps each full grid-node index to its row/column in the dense
     /// free-DOF-only system (`None` for a `wall_frozen` node, which is held
     /// fixed and excluded from the system entirely rather than solved for
-    /// and zeroed afterward -- a real, smaller, better-posed subsystem, not
+    /// and zeroed afterward -- a smaller, better-posed subsystem, not
     /// just a masking step).
     ///
-    /// Test-only -- see `build_particle_matrices`'s own doc for why this
+    /// Test-only -- see `build_particle_matrices`'s doc for why this
     /// whole chain is kept callable rather than deleted.
     #[cfg(test)]
     fn free_dof_map(wall_frozen: &[bool]) -> Vec<Option<usize>> {
@@ -961,28 +572,22 @@ impl ImplicitProblem {
     /// contribution to that 4-vector is exactly `B_j * dv_j` for this 4x2
     /// matrix.
     ///
-    /// Test-only -- see `build_particle_matrices`'s own doc.
+    /// Test-only -- see `build_particle_matrices`'s doc.
     #[cfg(test)]
     fn grad_basis(g: Vec2) -> [[f32; 2]; 4] {
         [[g.x, 0.0], [0.0, g.x], [g.y, 0.0], [0.0, g.y]]
     }
 
-    /// Real closed-form per-particle-pair 2x2 stiffness block, derived
-    /// mechanically from the SAME linear map `jacobian_vector_product`
-    /// already applies matrix-free (see this module's own doc for the full
-    /// derivation and why a direct solve, not a better-preconditioned CG,
-    /// is the right tool at this problem's real DOF count): `dr_i = v0 *
-    /// (B_i^T * M * B_j) * dv_j` for stencil nodes `i`, `j` of the SAME
-    /// particle, reusing the already eigenvalue-clamped 4x4 `matrix`
-    /// (`corotated_kirchhoff_dtau_dl_psd_matrix`) unchanged -- no new
-    /// physics, purely the bilinear form's own explicit matrix, standard
-    /// FEM/MPM local-stiffness assembly (e.g. `GeoTaichi`'s own
-    /// `assemble_element_local_stiffness_2D`). Verified via a real
-    /// self-consistency test (`assembled_operator_matches_matrix_free_
-    /// jacobian_vector_product`) against the matrix-free path this
-    /// mirrors, not assumed correct from the derivation alone.
+    /// Closed-form per-particle-pair 2x2 stiffness block, the explicit matrix
+    /// of the linear map `jacobian_vector_product` applies matrix-free:
+    /// `dr_i = v0 * (B_i^T * M * B_j) * dv_j` for stencil nodes `i`, `j` of one
+    /// particle, with the eigenvalue-clamped 4x4 `matrix`
+    /// (`corotated_kirchhoff_dtau_dl_psd_matrix`). Standard local-stiffness
+    /// assembly (as in GeoTaichi's `assemble_element_local_stiffness_2D`),
+    /// checked by `assembled_operator_matches_matrix_free_jacobian_vector_
+    /// product`.
     ///
-    /// Test-only -- see `build_particle_matrices`'s own doc.
+    /// Test-only -- see `build_particle_matrices`.
     #[cfg(test)]
     fn particle_stiffness_block(
         matrix: &[[f32; 4]; 4],
@@ -1016,7 +621,7 @@ impl ImplicitProblem {
     /// Van Loan; Saad, "Iterative Methods for Sparse Linear Systems": the
     /// regime iterative solvers exist for is much larger than this).
     ///
-    /// Test-only -- see `build_particle_matrices`'s own doc.
+    /// Test-only -- see `build_particle_matrices`'s doc.
     #[cfg(test)]
     fn assemble_free_dof_system(
         &self,
@@ -1070,7 +675,7 @@ impl ImplicitProblem {
     /// invariant, not an expected failure mode -- treated the same as any
     /// other Newton failure (fall back to the normal explicit substep).
     ///
-    /// Test-only -- see `build_particle_matrices`'s own doc.
+    /// Test-only -- see `build_particle_matrices`'s doc.
     #[cfg(test)]
     fn cholesky_solve(a: &[f32], dim: usize, b: &[f32]) -> Option<Vec<f32>> {
         let mut l = vec![0.0f32; dim * dim];
@@ -1109,24 +714,13 @@ impl ImplicitProblem {
         Some(x)
     }
 
-    /// Direct solve replacing `conjugate_gradient_solve` (see this module's
-    /// own doc, "remaining limitation #2 -- scale", for why an iterative
-    /// solve is the wrong tool at this problem's real DOF count): assembles
-    /// the dense free-DOF system once and factors it once, instead of
-    /// iterating a matrix-free operator. Returns a full-length `delta`
-    /// (zero at every `wall_frozen` node, by construction). `None` only if
-    /// the assembled matrix fails the SPD invariant (checked, not expected).
+    /// Direct solve: assembles the dense free-DOF system once and factors it
+    /// once. Returns a full-length `delta` (zero at every `wall_frozen` node).
+    /// `None` only if the assembled matrix fails the SPD invariant.
     ///
-    /// Test-only (2026-09-11) -- superseded in production by `steihaug_cg`
-    /// (matrix-free, no PSD projection needed). Kept callable, not
-    /// deleted: this is the real, test-verified proof (`direct_solve_
-    /// actually_solves_the_assembled_system`) that a real production
-    /// regression (`basic_sand`-scale non-convergence) was NEVER a linear-
-    /// solver problem -- an EXACT Cholesky solve of this same eigenvalue-
-    /// clamped system hit the identical wall a "fully converged" CG did --
-    /// a diagnostic worth having on hand for the next investigation into
-    /// this module's still-unresolved real-scale convergence gap (see this
-    /// module's own top-of-file doc), not archived away.
+    /// Test-only: production uses `steihaug_cg`. Kept as the proof
+    /// (`direct_solve_actually_solves_the_assembled_system`) that the
+    /// basic_sand-scale stall is not a linear-solver problem.
     #[cfg(test)]
     fn direct_solve(&self, v: &[Vec2], neg_r: &[Vec2]) -> Option<Vec<Vec2>> {
         let n = self.node_pos.len();
@@ -1147,62 +741,24 @@ impl ImplicitProblem {
         Some(delta)
     }
 
-    /// Per-node MASS-NORMALIZED residual norm (`sum(|r_i|^2 / mass_i)`),
-    /// NOT the plain global L2 norm (`sum(|r_i|^2)`) -- real, cited fix
-    /// (2026-09-11) for a genuine failure mode confirmed present in this
-    /// exact solver: `ziran2020` (Chenfanfu Jiang's group, `Lib/Ziran/Sim/
-    /// BackwardEuler.h::BackwardEulerLagrangianForceObjective::
-    /// computeNorm`) divides every node's squared residual by that node's
-    /// own mass before summing, specifically because an UNWEIGHTED global
-    /// sum lets a low-mass/low-support node's residual go unnoticed: EVERY
-    /// term in that node's residual (`m*(v-vn)/dt`, `m*g`, and its
-    /// internal elastic support) scales down together with its tiny mass,
-    /// so the residual can look small in absolute terms for almost ANY
-    /// trial velocity there -- including pure free-fall, which trivially
-    /// nearly satisfies `m*(v-vn)/dt - m*g ~= 0` regardless of whether the
-    /// (also tiny) elastic term is actually correct. A global sum
-    /// dominated by well-supported interior nodes can report a genuine
-    /// 1000x overall reduction while such a node sits at a "near-zero
-    /// residual but physically wrong" point the whole time -- exactly the
-    /// symptom confirmed live in `tests/scratch_implicit_corotated_
-    /// wiring_diagnostic.rs` (Newton reporting real, verified convergence
-    /// while some particles retained near-free-fall velocity). `HOT`
-    /// (`Projects/multigrid/MultigridSimulation.h::computeCharacteristicNorm`,
-    /// same Ziran lineage) independently confirms the same principle from
-    /// the other direction: its absolute tolerance is built from the
-    /// material's own stiffness scale specifically so the stopping test is
-    /// material/mesh independent, not anchored to gravity or the initial
-    /// residual the way this file's tolerance was before this fix.
+    /// Per-node mass-normalized residual norm, `sum(|r_i|^2 / mass_i)`, over
+    /// free nodes only.
     ///
-    /// Real, root-cause fix (2026-09-11) ADDED on top of the above,
-    /// excluding `wall_frozen` nodes from the sum -- a structural
-    /// convergence-criterion bug, not a search-algorithm one: `wall_
-    /// frozen` nodes are held fixed at `v_n` throughout the ENTIRE free
-    /// Newton search (see that field's own doc -- their real force
-    /// balance is resolved separately, afterward, by `apply_boundary_
-    /// conditions_to_grid`), so their own residual contribution can NEVER
-    /// be reduced by anything this solve does. Confirmed live at `basic_
-    /// sand`'s real production scale (1008 particles): 145 of 462 grid
-    /// DOFs (31%) are wall_frozen, and their own residual norm (~5.5-5.8e4)
-    /// is COMPARABLE to the free DOFs' own (~5.2-6.3e4) -- meaning a plain
-    /// frozen+free mass-normalized sum has a hard, structural floor around
-    /// the frozen contribution alone, making `RELATIVE_TOLERANCE=1e-3` (a
-    /// 99.9% reduction target) mathematically UNREACHABLE regardless of
-    /// solver quality. This is the real explanation for why THREE
-    /// completely different search algorithms (CG, direct Cholesky solve,
-    /// Steihaug-CG trust region) all independently hit the identical wall
-    /// at this exact scale before this fix: none of them were ever solving
-    /// an achievable problem, because the CONVERGENCE MEASURE itself
-    /// included a quantity none of them could touch. `newton_solve`'s
-    /// outer convergence check and its trust-region acceptance gate both
-    /// use this free-only norm; the full (frozen-inclusive) `residual` is
-    /// still what's added back to the grid on success (`wall_frozen` nodes
-    /// keep their real, current momentum-balance contribution -- only the
-    /// CONVERGENCE JUDGMENT excludes them, not the physics). Real,
-    /// disclosed limitation this fix does NOT close on its own: even after
-    /// it, `basic_sand`'s real production scale still does not converge
-    /// (stalls around ~99.6% reduction, not the required 99.9% -- see this
-    /// module's own top-of-file doc for the current, unresolved state).
+    /// Mass-normalized as in ziran2020 (`BackwardEuler.h::
+    /// BackwardEulerLagrangianForceObjective::computeNorm`): every term of a
+    /// low-mass node's residual (`m*(v-vn)/dt`, `m*g`, its elastic support)
+    /// shrinks with its mass, so in a plain sum it looks converged at almost
+    /// any velocity, free fall included, while interior nodes dominate
+    /// (measured: Newton reported convergence with particles still near free
+    /// fall). HOT (`MultigridSimulation.h::computeCharacteristicNorm`) builds
+    /// its tolerance from the material stiffness for the same reason.
+    ///
+    /// `wall_frozen` nodes are excluded: they stay at `v_n` through the whole
+    /// search, so their residual cannot be reduced. At basic_sand scale they
+    /// are 145 of 462 DOFs with a residual (~5.5-5.8e4) comparable to the
+    /// free ones (~5.2-6.3e4), which made `RELATIVE_TOLERANCE = 1e-3`
+    /// unreachable for any solver. Only the convergence judgment excludes
+    /// them; the full `residual` is still what goes back to the grid.
     fn free_mass_normalized_norm(&self, r: &[Vec2]) -> f32 {
         self.node_mass
             .iter()
@@ -1215,43 +771,21 @@ impl ImplicitProblem {
     }
 
     /// Trust-region Newton (Nocedal & Wright 2nd ed., ch.4; Steihaug-CG
-    /// subproblem solve, Algorithm 4.3) -- real fix (2026-09-11) replacing
-    /// this module's earlier backtracking-line-search Newton. Root cause
-    /// that motivated the switch: a real, densely-packed `basic_sand`-
-    /// scale settled pile (1008 particles, real E=15MPa) made ONE genuine
-    /// Newton step (21% residual reduction, confirmed via `EMERGE_
-    /// IMPLICIT_LINESEARCH_DIAG=1` trace) then STALLED completely -- every
-    /// subsequent iteration's full-to-tiny backtrack found no real
-    /// improvement at ANY step scale, because backtracking can only RESCALE
-    /// a single fixed Newton direction, never change it; when that
-    /// direction stops correlating with real improvement (expected once
-    /// the true, possibly-indefinite Hessian diverges from whatever
-    /// approximation produced the direction), no amount of rescaling
-    /// recovers. A trust region fixes this structurally: on rejection it
-    /// SHRINKS the region and RE-SOLVES the subproblem, which can return a
-    /// genuinely different (more steepest-descent-like) direction, not
-    /// just a smaller step along the same one.
+    /// subproblem, Algorithm 4.3). Backtracking can only rescale one Newton
+    /// direction; at basic_sand scale one step gave 21% and then no scale
+    /// helped. On rejection a trust region shrinks and re-solves, which can
+    /// return a different, more steepest-descent-like direction.
     ///
-    /// Uses the SEPARATE, verified-self-consistent model triple (`model_
-    /// residual`=`total_energy`'s exact gradient, `model_jacobian_vector_
-    /// product`=its exact Hessian-vector product -- see `model_deformed_f`
-    /// and `model_residual`'s own docs for why these differ from the real
-    /// `residual`/`deformed_f`, and `trust_region_consistency_tests` for
-    /// the real, run verification) ONLY to pick a direction and size the
-    /// trust region. Acceptance is ALWAYS gated on the REAL `residual`
-    /// (exact exponential map) actually improving -- the model's own ratio
-    /// test only fine-tunes how much to grow the region after a real
-    /// success, never overrides a real failure. Returns `None` if it fails
-    /// to converge within `MAX_NEWTON_ITERS` or the trust region collapses
-    /// without ever helping the real residual -- callers must treat that
-    /// as "run the normal explicit substep instead," never a partial
-    /// result.
+    /// The model (`model_jacobian_vector_product`, see `model_deformed_f`
+    /// and `model_residual`, checked by `trust_region_consistency_tests`)
+    /// only picks a direction and sizes the region; acceptance is always
+    /// gated on the real exponential-map `residual` improving. Returns `None`
+    /// if it does not converge within `MAX_NEWTON_ITERS` or the region
+    /// collapses without helping: callers then run the explicit substep.
     ///
-    /// Real absolute-vs-relative lesson (2026-09-10, still applies):
-    /// anchoring the outer convergence tolerance to the LARGER of
-    /// `r0_norm` and `ext_force`'s own magnitude avoids demanding an
-    /// impossible absolute residual when a genuinely at-rest particle's
-    /// `r0_norm` starts tiny by definition.
+    /// The outer tolerance is anchored to the larger of `r0_norm` and
+    /// `ext_force`'s magnitude, since a particle at rest starts with a tiny
+    /// `r0_norm`.
     fn newton_solve(&self, v_init: &[Vec2]) -> Option<Vec<Vec2>> {
         let n = self.node_pos.len();
         let mut v = v_init.to_vec();
@@ -1266,37 +800,15 @@ impl ImplicitProblem {
         const MAX_RADIUS_RETRIES: usize = 80;
         let diag = std::env::var("EMERGE_IMPLICIT_DIAG").is_ok();
 
-        // Gauss-Newton trust region for a NONLINEAR EQUATION SOLVE
-        // (`residual(v)=0`, Nocedal & Wright 2nd ed. ch.10; Moré 1978's
-        // classic trust-region Levenberg-Marquardt paper), NOT an energy-
-        // minimization trust region -- real fix (2026-09-11) replacing an
-        // energy-based design that, while internally provably consistent
-        // (`model_residual` IS `total_energy`'s exact gradient, verified
-        // by `trust_region_consistency_tests`), used `model_residual` as
-        // Steihaug-CG's gradient `g` -- a DIFFERENT vector from the real
-        // `residual` (Piola-based, `dt`-scaled, paired with `F_n^T*grad`,
-        // vs. `residual`'s Kirchhoff-based, unscaled, spatial-`grad`
-        // convention -- `model_deformed_f`'s own doc explains why they
-        // must differ). That scale/direction mismatch corrupted the trust
-        // region's own radius calibration: a real diagnostic probe
-        // (stepping along the REAL residual's own negative-gradient
-        // direction by a tiny `eps`) confirmed a genuinely improving
-        // direction DOES exist from `v_n` at `basic_sand`'s real
-        // production scale (1008 particles, real E=15MPa) -- `eps=1e-8,
-        // 1e-10, 1e-12` all improved the real residual, `eps=1e-6`
-        // already overshot -- but the OLD design's radius, derived from
-        // `model_residual`'s own (differently-scaled) magnitude, never
-        // actually explored that specific window. Using the REAL
-        // `residual` directly as `g` (the model's approximate Hessian-
-        // vector product, `model_jacobian_vector_product`, still informs
-        // Steihaug-CG's curvature/step-size choice -- an approximate
-        // Jacobian for a quasi-Newton search direction is real, standard
-        // practice, same "approximate model, exact acceptance" split this
-        // module has used throughout) and measuring predicted/actual
-        // reduction in `0.5*||r||^2` (the standard Gauss-Newton merit for
-        // nonlinear equations, not a potentially-mismatched energy)
-        // removes the scale-mismatch risk structurally, not by tuning a
-        // constant.
+        // Gauss-Newton trust region for the nonlinear equation
+        // `residual(v) = 0` (Nocedal & Wright 2nd ed. ch.10; Moré 1978), not
+        // an energy minimization. The real `residual` is the gradient `g`;
+        // `model_jacobian_vector_product` only supplies approximate
+        // curvature; predicted/actual reduction is measured in
+        // `0.5*||r||^2`. Using `model_residual` (Piola, `dt`-scaled) as `g`
+        // mis-scaled the radius: stepping along the real residual's negative
+        // gradient by eps = 1e-8 to 1e-12 improved it (1e-6 overshot), a window
+        // the old radius never reached.
         let mut radius = Self::plain_norm(&r).max(1.0e-8);
 
         for _ in 0..MAX_NEWTON_ITERS {
@@ -1413,7 +925,7 @@ impl ImplicitProblem {
 impl Simulation {
     /// `true` when every active particle's material qualifies for the
     /// shared Corotated elastic branch AND no feature this v1 doesn't model
-    /// yet is active in the scene -- see this module's own doc for the
+    /// yet is active in the scene -- see this module's doc for the
     /// full, disclosed list.
     fn implicit_corotated_eligible(&self) -> bool {
         if !self.config.implicit_corotated_elastic {
@@ -1449,10 +961,9 @@ impl Simulation {
         true
     }
 
-    /// Real assembly + solve for one implicit big-step. Returns `false`
-    /// (and touches nothing) whenever the scene is ineligible OR the solve
-    /// fails to converge -- see this module's own doc for why both are
-    /// real, safe fallback triggers, not just a static scope guard.
+    /// Assembly and solve for one implicit big step. Returns `false` (and
+    /// touches nothing) when the scene is ineligible or the solve does not
+    /// converge; see the module doc.
     pub(crate) fn try_implicit_corotated_substep(&mut self, dt: f32) -> bool {
         if !self.implicit_corotated_eligible() {
             return false;
@@ -1463,7 +974,7 @@ impl Simulation {
         // force this substep applies comes from the Newton-CG residual's
         // own `ext_force`/internal-stress terms below, not from baking a
         // single-F-linearized force into the scatter the way the explicit
-        // path does (see `spacetime::transfer::p2g`'s own doc for that
+        // path does (see `spacetime::transfer::p2g`'s doc for that
         // convention -- this is deliberately NOT that).
         self.grid.clear();
         for i in 0..self.active_count {
@@ -1545,23 +1056,14 @@ impl Simulation {
             wall_frozen,
         };
 
-        // TEMPORARY diagnostic (2026-09-10/11), same opt-in-via-env-var
-        // convention as `EMERGE_CFL_DIAGNOSE` elsewhere in this solver --
-        // zero cost for every scene that doesn't set it. Real, resolved
-        // investigation this was built for (kept for future debugging, not
-        // stale): a densely-packed, already-settled `DruckerPragerMaterial`
-        // sand pile used to diverge several grid cells from the explicit
-        // baseline within a handful of frames even though each Newton
-        // solve reported genuine convergence -- root-caused to wall-
-        // adjacent grid DOFs being perturbed by the free search and
-        // corrected only once, after the fact (see `ImplicitProblem::
-        // wall_frozen`'s own doc for the real fix and `tests/
-        // implicit_corotated_substep.rs`'s `implicit_matches_explicit_
-        // for_an_already_settled_pile` for the passing regression test).
-        // Real, disclosed, remaining limitation NOT covered by that fix: a
-        // VIOLENT impact still diverges more than a settled pile does --
-        // see this file's own top-of-module doc and `violent_impact_
-        // diverges_more_than_settled_pile_a_real_disclosed_limitation`.
+        // Diagnostic, opt-in through an env var like `EMERGE_CFL_DIAGNOSE`.
+        // Built for a settled DruckerPrager pile drifting from the explicit
+        // baseline although each solve converged, fixed by
+        // `ImplicitProblem::wall_frozen` (regression test
+        // `implicit_matches_explicit_for_an_already_settled_pile` in
+        // `tests/implicit_corotated_substep.rs`). A violent impact still
+        // diverges more (`violent_impact_diverges_more_than_settled_pile_a_
+        // real_disclosed_limitation`).
         let diag = std::env::var("EMERGE_IMPLICIT_DIAG").is_ok();
         if diag {
             let r0_norm = problem
@@ -1648,13 +1150,10 @@ impl Simulation {
             apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
         }
 
-        // Real, unmodified G2P: gathers velocity/position/APIC-C from the
-        // (implicit-solved, boundary-corrected) grid AND applies each
-        // particle's own real plastic return-mapping
-        // (`MaterialModel::update_particle`) exactly as the explicit path
-        // does -- see this module's own doc for why that single call here
-        // IS the Klar 2016 operator-split plastic correction, not a
-        // separate reimplementation of it.
+        // Unmodified G2P: gathers velocity, position and APIC C from the
+        // solved, boundary-corrected grid and applies each particle's plastic
+        // return mapping (`MaterialModel::update_particle`) as the explicit
+        // path does; this call is Klar 2016's operator-split plastic step.
         self.last_vel_clamp_count += gather_grid_to_particles(
             &mut self.particles,
             &self.grid,
@@ -1681,18 +1180,10 @@ mod direct_solve_consistency_tests {
     use super::*;
     use crate::materials::utils::apply_dtau_dl_psd_matrix;
 
-    /// Real self-consistency check for `particle_stiffness_block`'s
-    /// closed-form derivation (this module's own doc, on `particle_
-    /// stiffness_block` and `assemble_free_dof_system`, has the full
-    /// derivation). Direct assembly replaced the matrix-free Newton-CG
-    /// path entirely (2026-09-11) -- this test proves the block formula
-    /// `dr_i = v0 * (B_i^T * M * B_j) * dv_j`, summed over every pair of a
-    /// particle's stencil nodes, EXACTLY reproduces what the removed
-    /// matrix-free path computed (`v0 * apply_dtau_dl_psd_matrix(M,
-    /// velocity_gradient(entries, dv)) * grad_i`, reconstructed here
-    /// inline for comparison since the original method no longer exists in
-    /// production) -- a real, run, empirical check, not an unverified
-    /// derivation claim.
+    /// Self-consistency of `particle_stiffness_block`: summed over every pair
+    /// of a particle's stencil nodes, `dr_i = v0 * (B_i^T * M * B_j) * dv_j`
+    /// reproduces the matrix-free product `v0 * apply_dtau_dl_psd_matrix(M,
+    /// velocity_gradient(entries, dv)) * grad_i`, rebuilt inline here.
     #[test]
     fn particle_stiffness_block_matches_matrix_free_jvp_formula() {
         let entries: [(usize, f32, Vec2); 9] = [
@@ -1755,11 +1246,9 @@ mod direct_solve_consistency_tests {
         }
     }
 
-    /// Real end-to-end check that `assemble_free_dof_system` + `cholesky_
-    /// solve` actually solves the linear system it claims to: for a random
-    /// SPD-guaranteed local matrix and a small synthetic 2-particle,
-    /// shared-DOF problem, `A*x` (recomputed via the SAME matrix-free
-    /// formula this file used before tonight's rewrite) must equal `b` to
+    /// `assemble_free_dof_system` + `cholesky_solve` solve the system they
+    /// claim to: for a random SPD local matrix on a small 2-particle,
+    /// shared-DOF problem, `A*x` (by the matrix-free formula) equals `b` to
     /// float precision.
     #[test]
     fn direct_solve_actually_solves_the_assembled_system() {
@@ -1865,16 +1354,10 @@ mod direct_solve_consistency_tests {
         }
     }
 
-    /// Real end-to-end exercise of `direct_solve` ITSELF (not just its
-    /// sub-components `assemble_free_dof_system`/`cholesky_solve`, which
-    /// the test above already covers with a hand-fabricated matrix) --
-    /// with REAL, nonzero `lambda`/`mu`/non-identity `f_n`, so `build_
-    /// particle_matrices` computes a genuine eigenvalue-clamped operator
-    /// from the actual corotated stress JVP, not a fixture. Verifies
-    /// `direct_solve`'s own returned `delta` actually solves the SAME
-    /// system `assemble_free_dof_system` would build from `build_
-    /// particle_matrices(v)` -- the real, closed loop this "kept as a
-    /// diagnostic oracle" function needs to still demonstrably work.
+    /// `direct_solve` end to end with nonzero `lambda`/`mu` and non-identity
+    /// `f_n`, so `build_particle_matrices` builds an eigenvalue-clamped
+    /// operator from the corotated stress JVP: its `delta` solves the system
+    /// `assemble_free_dof_system` builds from `build_particle_matrices(v)`.
     #[test]
     fn direct_solve_end_to_end_with_real_material_parameters() {
         let entries: [(usize, f32, Vec2); 9] = [
@@ -1943,7 +1426,7 @@ mod direct_solve_consistency_tests {
 mod trust_region_consistency_tests {
     use super::*;
 
-    /// A real, non-trivial 2-particle problem (3 shared nodes, non-
+    /// A non-trivial 2-particle problem (3 shared nodes, non-
     /// identity `f_n` so the exponential-map subtlety this module's own
     /// `deformed_f` doc flags is actually exercised, not sidestepped by
     /// testing only at the trivial `F_n=I` state) -- shared by both FD
@@ -2006,15 +1489,11 @@ mod trust_region_consistency_tests {
         }
     }
 
-    /// Minimal hand-verifiable case (single particle, single active
-    /// stencil entry, `F_n=I`, one node) that root-caused `model_
-    /// residual`'s real formula bug (2026-09-11): the true FD gradient of
-    /// `total_energy` at this exact state is `13.9177` -- `residual`'s own
-    /// `tau*grad` convention gives `487.03` (>30x off, confirmed wrong for
-    /// THIS purpose), while `inertia (6.25) + dt*Piola*(F_n^T*grad)
-    /// (7.68)` gives `13.93`, matching to 0.09%. Kept as a real, cheap,
-    /// exactly-reproducible regression guard for that fix, not just a
-    /// diagnostic artifact.
+    /// Minimal hand-verifiable case (single particle, single active stencil
+    /// entry, `F_n = I`, one node): the FD gradient of `total_energy` is
+    /// `13.9177`; `residual`'s `tau*grad` gives `487.03`, while
+    /// `inertia (6.25) + dt*Piola*(F_n^T*grad) (7.68)` gives `13.93`, within 0.09%. Guards
+    /// `model_residual`'s formula.
     #[test]
     fn model_residual_matches_energy_gradient_in_a_hand_verifiable_minimal_case() {
         let entries: [(usize, f32, Vec2); 9] = [
@@ -2061,41 +1540,17 @@ mod trust_region_consistency_tests {
         );
     }
 
-    /// Real, run verification (not an assumed derivation) that `model_
-    /// residual` is `total_energy`'s own gradient -- central finite
-    /// difference at `h=1e-2`, NOT this file's/`materials::utils`'s usual
-    /// `h=1e-3` convention. Real, measured reason, not an arbitrary choice:
-    /// a genuine h-convergence sweep (`h=1e-2,1e-3,1e-4` -> max_rel_err
-    /// `0.30%, 2.17%, 8.22%`) shows error GROWING as `h` shrinks -- the
-    /// exact opposite of what a real formula bug would produce (which
-    /// would stay roughly constant or shrink toward some genuine residual
-    /// as `h`->0), and the exact textbook signature of f32 catastrophic
-    /// cancellation in `total_energy`'s own central difference (summing
-    /// large `O(lambda)~2.5-3e5`-scale terms into ONE scalar before
-    /// differencing is far more cancellation-prone than this codebase's
-    /// usual matrix-valued JVP checks, which difference component-wise).
-    /// `h=1e-2` is the point in that sweep where truncation error still
-    /// dominates over float noise. This is the SAME "smaller h is WORSE"
-    /// lesson `materials::utils`'s own corotated JVP tests already
-    /// document, applied at a coarser `h` because THIS check differences a
-    /// scalar built from a stiffer-scale sum, not a stress matrix.
+    /// `model_residual` is `total_energy`'s gradient, by central finite
+    /// difference at `h = 1e-2`: an h sweep (1e-2, 1e-3, 1e-4 -> 0.30%, 2.17%,
+    /// 8.22%) grows as `h` shrinks, the signature of f32 cancellation in a
+    /// scalar summing `O(lambda) ~ 2.5-3e5` terms, not of a formula error.
     ///
-    /// This is the load-bearing assumption behind the trust-region ratio
-    /// test (`newton_solve`): if it didn't hold, `predicted_reduction`
-    /// (built from `model_residual`/`model_jacobian_vector_product`) and
-    /// `actual_reduction` (built from `total_energy`) would be comparing
-    /// two different, inconsistent quantities. Deliberately checks `model_
-    /// residual` (linear `model_deformed_f`), NOT the real exponential-map
-    /// `residual` -- a real, failed first attempt at this exact test
-    /// (max_rel_err=1.28, 128%) proved the true `residual` is NOT this
-    /// energy's gradient (the matrix exponential's own Fréchet derivative
-    /// would be needed for that); a second real, failed attempt
-    /// (max_rel_err=1.24, still ~124%) additionally found `model_residual`
-    /// itself needed a genuine formula fix -- Piola (not Kirchhoff) paired
-    /// with `F_n^T*grad` (not the raw spatial `grad`), scaled by `dt` --
-    /// confirmed via a hand-verifiable minimal case
-    /// (`debug_minimal_single_entry_case`, single particle/entry/node,
-    /// `F_n=I`, matches to 0.09%) before trusting it here.
+    /// The trust-region ratio test relies on it: `predicted_reduction` (from
+    /// `model_residual`/`model_jacobian_vector_product`) and
+    /// `actual_reduction` (from `total_energy`) must describe one quantity.
+    /// The true exponential-map `residual` is not this energy's gradient
+    /// (max_rel_err 1.28); see `debug_minimal_single_entry_case` for the
+    /// Piola/`F_n^T*grad`/`dt` form.
     #[test]
     fn energy_gradient_matches_model_residual_via_finite_difference() {
         let problem = synthetic_problem();
@@ -2129,10 +1584,9 @@ mod trust_region_consistency_tests {
         );
     }
 
-    /// Real, run verification that `model_jacobian_vector_product` is
-    /// `model_residual`'s own derivative (the Hessian `steihaug_cg`
-    /// needs) -- central finite difference of `model_residual` itself
-    /// along a probe direction, same h=1e-3 convention.
+    /// `model_jacobian_vector_product` is `model_residual`'s derivative (the
+    /// Hessian `steihaug_cg` needs), by central finite difference along a
+    /// probe direction, h = 1e-3.
     #[test]
     fn model_jvp_matches_finite_difference_of_model_residual() {
         let problem = synthetic_problem();
@@ -2177,23 +1631,11 @@ mod trust_region_consistency_tests {
         );
     }
 
-    /// Real correctness check for `real_residual_jvp_fd` itself (kept
-    /// `#[cfg(test)]`, see that function's own doc) -- confirms its own
-    /// unit-normalize/rescale convention gives the same answer as an
-    /// independently-written, non-normalized central difference of the
-    /// REAL `residual`, on `synthetic_problem`'s own small hand-built
-    /// system. Real, measured note: this only agrees at the SAME `h=1e-2`
-    /// the helper itself uses -- a first attempt at `h=1e-3` disagreed by
-    /// 19%, not a bug (confirmed a pure step-size effect, not a formula
-    /// error: `residual`'s exponential-map nonlinearity has its own
-    /// truncation-error behavior, genuinely different from `model_
-    /// residual`'s linear one at this problem's stiffness). This function
-    /// was the decisive tool that ruled out `model_jacobian_vector_
-    /// product`'s own approximation as `basic_sand`'s real production
-    /// stall (see `implicit_corotated`'s own top-of-file doc, "the real,
-    /// proven root cause") -- kept correct and callable for whatever
-    /// future curvature construction needs checking against the TRUE
-    /// residual's own Jacobian next.
+    /// `real_residual_jvp_fd`'s unit-normalize/rescale convention matches an
+    /// independent, non-normalized central difference of the real `residual`
+    /// on `synthetic_problem`. They agree at the helper's `h = 1e-2`; at
+    /// `h = 1e-3` they differ by 19%, a step-size effect of the exponential
+    /// map's nonlinearity, not a formula error.
     #[test]
     fn real_residual_jvp_fd_matches_a_naive_non_normalized_central_difference() {
         let problem = synthetic_problem();

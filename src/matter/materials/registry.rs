@@ -149,7 +149,7 @@ impl MaterialDispatch {
 #[derive(Debug)]
 pub struct MaterialRegistry {
     materials: Vec<Box<dyn MaterialModel>>,
-    // Parallel to `materials` -- see `MaterialDispatch`'s own doc.
+    // Parallel to `materials` -- see `MaterialDispatch`'s doc.
     dispatch: Vec<MaterialDispatch>,
 }
 
@@ -221,12 +221,10 @@ impl MaterialRegistry {
             .as_ref()
     }
 
-    /// Real, static-dispatched `kirchhoff_stress` -- falls back to the
-    /// `Box<dyn MaterialModel>` vtable call only for a material
-    /// `MaterialDispatch::from_model` didn't recognise (see that type's
-    /// doc). This is the hot per-particle P2G call; identical result to
-    /// `self.get(material_id).kirchhoff_stress(...)` on every path, just
-    /// without the vtable indirection when the fast path applies.
+    /// Statically dispatched `kirchhoff_stress`, falling back to the
+    /// `Box<dyn MaterialModel>` vtable only for a material
+    /// `MaterialDispatch::from_model` does not recognise. The hot per-particle
+    /// P2G call; same result as `self.get(material_id).kirchhoff_stress(...)`.
     pub(crate) fn kirchhoff_stress(
         &self,
         material_id: u32,
@@ -273,8 +271,8 @@ impl MaterialRegistry {
             .collect()
     }
 
-    /// Real, static-dispatched `timestep_bound` -- same fallback contract as
-    /// `kirchhoff_stress` above. Hot per-particle CFL call.
+    /// Statically dispatched `timestep_bound`, same fallback as
+    /// `kirchhoff_stress`. Hot per-particle CFL call.
     pub(crate) fn timestep_bound(
         &self,
         material_id: u32,
@@ -305,8 +303,8 @@ impl MaterialRegistry {
         }
     }
 
-    /// Real, static-dispatched `stress_volume` -- same fallback contract as
-    /// `kirchhoff_stress` above. Hot per-particle P2G call.
+    /// Statically dispatched `stress_volume`, same fallback as
+    /// `kirchhoff_stress`. Hot per-particle P2G call.
     pub(crate) fn stress_volume(
         &self,
         material_id: u32,
@@ -324,9 +322,9 @@ impl MaterialRegistry {
         }
     }
 
-    /// Real, static-dispatched `owns_deformation_volume_state` -- same
-    /// fallback contract as `kirchhoff_stress` above. Hot per-particle P2G
-    /// call (gates the strict WC-MPM finite-stress assertion).
+    /// Statically dispatched `owns_deformation_volume_state`, same fallback as
+    /// `kirchhoff_stress`. Hot per-particle P2G call (gates the strict WC-MPM
+    /// finite-stress assertion).
     pub(crate) fn owns_deformation_volume_state(&self, material_id: u32) -> bool {
         let idx = material_id as usize;
         match self
@@ -339,8 +337,8 @@ impl MaterialRegistry {
         }
     }
 
-    /// Real, static-dispatched `update_particle` -- same fallback contract
-    /// as `kirchhoff_stress` above. Hot per-particle G2P call.
+    /// Statically dispatched `update_particle`, same fallback as
+    /// `kirchhoff_stress`. Hot per-particle G2P call.
     pub(crate) fn update_particle(
         &self,
         material_id: u32,
@@ -415,7 +413,7 @@ impl MaterialRegistry {
 
     /// Same real dispatch shape as `rest_acoustic_c2` above, for the most
     /// general tier of the same chain -- see
-    /// `MaterialModel::acoustic_c2_at_particle`'s own doc. `cfl.rs`'s own
+    /// `MaterialModel::acoustic_c2_at_particle`'s doc. `cfl.rs`'s own
     /// dispatch calls THIS directly (its own `density`/`temperature`-only
     /// siblings, `acoustic_c2_at`/`acoustic_c2_at_temperature`, are
     /// reached through this same trait method's own default chain -- no
@@ -433,7 +431,7 @@ impl MaterialRegistry {
     }
 
     /// Same real dispatch shape as `rest_acoustic_c2`/`acoustic_c2_at_particle`
-    /// above -- see `MaterialModel::current_friction_coefficient`'s own doc.
+    /// above -- see `MaterialModel::current_friction_coefficient`'s doc.
     /// Plain vtable passthrough, not routed through `MaterialDispatch`'s fast
     /// path -- only called from the opt-in MIBF P2G scatter pass, not every
     /// substep's hot loop.
@@ -469,10 +467,10 @@ impl MaterialRegistry {
 }
 
 /// `sqrt(3 J2)` of the in-plane deviator, see
-/// `MaterialRegistry::von_mises_stress_field`. It used to be the plane-stress
-/// von Mises of the FULL tensor, `sqrt(sxx^2 - sxx syy + syy^2 + 3 sxy^2)`,
-/// where a pure pressure reads as its own magnitude: on a body at rest the
-/// view painted weight, not shear. Symmetrizes the off-diagonal term first,
+/// `MaterialRegistry::von_mises_stress_field`. Not the plane-stress von
+/// Mises of the full tensor, `sqrt(sxx^2 - sxx syy + syy^2 + 3 sxy^2)`, where
+/// a pure pressure reads as its own magnitude: on a body at rest that view
+/// paints weight, not shear. Symmetrizes the off-diagonal term first,
 /// since a discrete Kirchhoff stress need not come back exactly symmetric.
 fn von_mises_equivalent_2d(sigma: Mat2) -> f32 {
     // s = [[d, sxy], [sxy, -d]] with d = (sxx - syy) / 2, so J2 = d^2 + sxy^2.
@@ -527,11 +525,9 @@ mod von_mises_tests {
         );
     }
 
-    /// Real, hand-verified case 2: pure shear (sxx=syy=0, only sxy nonzero)
-    /// reduces to EXACTLY sqrt(3)*sxy -- the standard, textbook von Mises
-    /// result for pure shear (the same sqrt(3) factor that sets the real
-    /// ratio between the uniaxial and shear yield stresses in von Mises
-    /// plasticity generally).
+    /// Pure shear (sxx=syy=0, only sxy nonzero) gives exactly sqrt(3)*sxy, the
+    /// textbook von Mises value (the factor between uniaxial and shear yield
+    /// stress).
     #[test]
     fn pure_shear_gives_sqrt_3_times_tau() {
         let tau = 4.0;
@@ -550,10 +546,9 @@ mod von_mises_tests {
         assert_eq!(von_mises_equivalent_2d(Mat2::ZERO), 0.0);
     }
 
-    /// Real, deliberate asymmetric input (a raw Kirchhoff stress need not
-    /// come back perfectly symmetric) -- confirms the symmetrization
-    /// actually runs: using the RAW (unsymmetrized) off-diagonal terms
-    /// would give a different (wrong) answer than averaging them first.
+    /// An asymmetric input (a raw Kirchhoff stress need not be symmetric):
+    /// the raw off-diagonal terms would give a different answer than their
+    /// average, so this checks the symmetrization runs.
     #[test]
     fn asymmetric_raw_tensor_is_symmetrized_before_reducing() {
         // sxy_raw = (2.0 + 6.0)/2 = 4.0 -- matches the pure-shear case

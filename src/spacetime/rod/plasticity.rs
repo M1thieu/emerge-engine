@@ -1,77 +1,40 @@
-//! Real elastic-perfectly-plastic bending -- permanent curvature set once a
-//! vertex's real bending moment exceeds the material's own real yield
-//! moment. Standard mechanics-of-materials result (elastic-plastic bending
-//! of a beam -- e.g. Gere & Goodno, *Mechanics of Materials*, "Elastoplastic
-//! Bending"): for a rectangular cross-section, first yield (outer-fiber
-//! stress reaching `sigma_yield`) occurs at the real YIELD MOMENT
+//! Elastic-perfectly-plastic bending: permanent curvature set once a
+//! vertex's bending moment exceeds the yield moment. For a rectangular
+//! section, first yield (outer-fibre stress at `sigma_yield`) occurs at
 //! `M_yield = sigma_yield * I / c` (`I` the second moment of area, `c` the
-//! outer-fiber distance from the neutral axis).
+//! outer-fibre distance from the neutral axis; Gere & Goodno, *Mechanics of
+//! Materials*, "Elastoplastic Bending").
 //!
-//! Real, disclosed dimensional note (the actual bug this module's own
-//! integration test caught before this doc was written): `forces::
-//! discrete_curvature`'s own output `kappa` is DIMENSIONLESS (≈ the real
-//! turning angle for small bends, see that function's own doc) -- NOT a real
-//! per-meter curvature. `forces::compute_internal_forces`'s own bending
-//! moment is `coeff = (ei/voronoi_length)*(kappa-kappa_rest)`, a real N·m
-//! quantity (`secondary_growth.rs` already uses this SAME `coeff` as its own
-//! real stress proxy for exactly this reason -- no separate cross-section
-//! area is tracked independent of `EA`/`EI`, so comparing a raw `kappa`
-//! against a stress-derived threshold is dimensionally meaningless; the
-//! real moment is the correct, real-unit quantity to compare). This module
-//! follows that SAME established precedent: the yield check compares the
-//! real MOMENT (not raw curvature) against `yield_moment_n_m`, converting
-//! back to a `kappa` update only through each vertex's own real local
-//! stiffness `ei/voronoi_length`.
+//! `forces::discrete_curvature` returns a dimensionless `kappa` (about the
+//! turning angle for small bends), not a curvature per metre, so the yield
+//! check compares the moment `coeff = (ei/voronoi_length)*(kappa-kappa_rest)`
+//! (N·m, from `forces::compute_internal_forces`, the stress proxy
+//! `secondary_growth.rs` uses too) with `yield_moment_n_m`, converting back
+//! to `kappa` through each vertex's `ei/voronoi_length`.
 //!
-//! This is the SAME real, established concept the engine already uses for
-//! bulk MPM materials (`VonMisesMaterial`'s own return-mapping projects an
-//! over-yield stress state back onto its yield surface) -- here the "stress
-//! tensor" is replaced by a single scalar (the bending moment), so the
-//! return mapping reduces to the engine's own shared, dimension-agnostic
-//! `matter::materials::utils::scalar_return_map` core (the same "true core
-//! concept, not reimplemented per domain" already backing
-//! `self_consistent_plastic_multiplier` across the bulk MPM materials).
-//! Rate-independent (no `dt`): the return mapping is an algebraic
-//! projection, applied once per call, same as `VonMisesMaterial`'s own
-//! per-substep return mapping.
+//! The return mapping of `VonMisesMaterial` with a scalar in place of the
+//! stress tensor, through `matter::materials::utils::scalar_return_map`
+//! (the core behind `self_consistent_plastic_multiplier`). Rate-independent
+//! (no `dt`): an algebraic projection per call.
 //!
-//! # Real, cited fix for unbounded creep: isotropic hardening
-//! A pure elastic-PERFECTLY-plastic yield surface (no hardening) is real,
-//! but has a real, well-documented failure mode under a SUSTAINED load that
-//! never itself drops below the yield threshold: the structure never
-//! "shakes down" and instead undergoes unrestricted ongoing plastic
-//! deformation -- "ratcheting" / "incremental collapse", the classical
-//! opposite outcome to shakedown in Melan's (1938, static/lower-bound
-//! theorem) and Koiter's (1956, "A new general theorem on shakedown of
-//! elastic-plastic structures," Proc. Koninklijke Nederlandsche Akademie
-//! van Wetenschappen B59:24-34, kinematic/upper-bound theorem) -- the two
-//! foundational results in this area of plasticity theory, re-verified via
-//! web search, not recalled from memory alone. This is exactly what a rod
-//! under a
-//! sustained real bending moment (e.g. its own weight, in a geometry bad
-//! enough that gravity alone keeps exceeding a fixed yield moment) will do
-//! with zero hardening: creep, permanently, indefinitely, with no external
-//! force needed to sustain it -- confirmed directly (a real, reproduced,
-//! not hypothetical finding).
+//! # Isotropic hardening against unbounded creep
+//! Perfect plasticity under a sustained load that stays above yield never
+//! shakes down: it ratchets, deforming without end (incremental collapse,
+//! the opposite of shakedown in Melan's 1938 static theorem and Koiter's
+//! 1956 kinematic theorem, "A new general theorem on shakedown of
+//! elastic-plastic structures," Proc. Koninklijke Nederlandsche Akademie van
+//! Wetenschappen B59:24-34). A rod whose own weight keeps exceeding a fixed
+//! yield moment creeps without end.
 //!
-//! The real, standard fix: `hardening_modulus_n_m` (mirrors
-//! `VonMisesMaterial`'s own `hardening_modulus`, `sigma_y(kappa) =
-//! yield_stress + H*kappa`) grows the EFFECTIVE yield moment with
-//! `RodPoints::accumulated_plastic_curvature` (that vertex's own running
-//! total of permanent set so far), so continued yielding under a SUSTAINED,
-//! constant-direction moment (this engine's real scenario -- gravity/a
-//! held push, not cyclic loading) makes the material progressively harder
-//! to yield further, until the effective yield moment finally exceeds the
-//! sustaining moment and the structure shakes down to a stable, purely
-//! elastic residual shape -- it does NOT ratchet forever. Real, disclosed
-//! scope limit: this is ISOTROPIC hardening specifically, which a real
-//! literature search confirms is the correct, sufficient fix for
-//! monotonic, one-direction sustained loading (this engine's actual case)
-//! but is known to NOT capture ratcheting under genuinely CYCLIC/reversed
-//! loading (that needs KINEMATIC hardening, a real, distinct, harder
-//! mechanism -- not attempted here, no current scenario needs it). Default
-//! `hardening_modulus_n_m = 0.0` (perfectly plastic, the original
-//! behavior) -- opt in via `with_hardening`.
+//! `hardening_modulus_n_m` (as `VonMisesMaterial`'s `hardening_modulus`,
+//! `sigma_y(kappa) = yield_stress + H*kappa`) raises the effective yield
+//! moment with `RodPoints::accumulated_plastic_curvature`, so under a
+//! sustained one-direction moment (gravity, a held push) yielding gets
+//! harder until the yield moment exceeds the load and the rod shakes down to
+//! an elastic residual shape. Isotropic hardening covers monotonic loading;
+//! ratcheting under cyclic, reversed loading needs kinematic hardening, not
+//! implemented. Default `0.0` (perfectly plastic); opt in with
+//! `with_hardening`.
 
 use super::RodPoints;
 use super::forces::discrete_curvature;
@@ -79,12 +42,11 @@ use crate::matter::materials::utils::scalar_return_map;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RodPlasticity {
-    /// Real yield moment, `sigma_yield*I/c`, N·m -- see module doc. Use
-    /// `from_young_modulus_rectangular` rather than computing this by hand.
+    /// Yield moment, `sigma_yield*I/c`, N·m (see module doc). Use
+    /// `from_young_modulus_rectangular` rather than computing it by hand.
     pub yield_moment_n_m: f32,
-    /// Real isotropic hardening modulus, N·m per unit accumulated plastic
-    /// curvature -- see module doc's "Real, cited fix for unbounded creep"
-    /// section. `0.0` (default) = perfectly plastic, the original behavior.
+    /// Isotropic hardening modulus, N·m per unit accumulated plastic curvature
+    /// (see the module doc). `0.0` (default) = perfectly plastic.
     pub hardening_modulus_n_m: f32,
 }
 
@@ -104,13 +66,11 @@ impl RodPlasticity {
         self
     }
 
-    /// Real derivation for a rectangular cross-section bent about the axis
-    /// perpendicular to the simulation's own 2D plane -- same `width_m`/
-    /// `thickness_m` convention as `RodMaterial::from_young_modulus_
-    /// rectangular` (`I = width_m^3*thickness_m/12`, bending about this SAME
-    /// axis, outer fiber at `c = width_m/2`): `M_yield = sigma_yield_pa * I
-    /// / c`. `hardening_modulus_n_m` defaults to `0.0` -- chain
-    /// `.with_hardening(...)` to opt in.
+    /// Yield moment for a rectangular section bent about the axis
+    /// perpendicular to the plane, with `RodMaterial::from_young_modulus_
+    /// rectangular`'s `width_m`/`thickness_m` (`I = width_m^3*thickness_m/12`,
+    /// outer fibre at `c = width_m/2`): `M_yield = sigma_yield_pa * I / c`.
+    /// `hardening_modulus_n_m` is `0.0`; chain `.with_hardening(...)` to opt in.
     pub fn from_young_modulus_rectangular(
         yield_stress_pa: f32,
         width_m: f32,
@@ -122,20 +82,16 @@ impl RodPlasticity {
     }
 }
 
-/// Real elastic-plastic return mapping -- at every interior vertex, clamps
-/// the real bending MOMENT (`ei/voronoi_length * (kappa-rest_curvature)`,
-/// exactly `forces::compute_internal_forces`'s own `coeff`) to
-/// `[-effective_yield, +effective_yield]`, permanently absorbing any excess
-/// into `rest_curvature` (converted back through that same local stiffness,
-/// so the actual clamp on `kappa` itself is real and vertex-local, not a
-/// single global threshold), and accumulating the absorbed magnitude into
+/// Elastic-plastic return mapping: at every interior vertex, clamps the
+/// bending moment (`ei/voronoi_length * (kappa-rest_curvature)`,
+/// `forces::compute_internal_forces`'s `coeff`) to `[-effective_yield,
+/// +effective_yield]`, moves the excess into `rest_curvature` through the
+/// same local stiffness, and adds its magnitude to
 /// `RodPoints::accumulated_plastic_curvature`. `effective_yield =
 /// yield_moment_n_m + hardening_modulus_n_m * accumulated_plastic_
-/// curvature[i]` -- real isotropic hardening (see module doc), `0.0` by
-/// default (perfectly plastic). No-op for a rod with fewer than 3 points,
-/// or whose `ei`/`accumulated_plastic_curvature` aren't filled to the real
-/// per-vertex length (`Rod::new`/`build_straight_rod` do this -- same guard
-/// `secondary_growth`'s own apply function uses).
+/// curvature[i]` (see the module doc). No-op for fewer than 3 points, or when
+/// `ei`/`accumulated_plastic_curvature` are not filled per vertex
+/// (`Rod::new`/`build_straight_rod` fill them), like `secondary_growth`.
 pub fn apply_bending_plasticity(rod: &mut RodPoints, plasticity: &RodPlasticity, dx_meters: f32) {
     let n = rod.x.len();
     if n < 3 || rod.ei.len() != n - 2 || rod.accumulated_plastic_curvature.len() != n - 2 {
@@ -176,8 +132,8 @@ mod tests {
         let mut points = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 5.0), 8, 0.01, 1.0);
         points.ea = vec![1.0e5; 7];
         points.ei = vec![1.0e-3; 6];
-        // Real, sharp, LOCALIZED kink at one vertex -- rotate everything
-        // past index 4 by `angle_deg` about point 4.
+        // A sharp kink at one vertex: everything past index 4 rotated by
+        // `angle_deg` about point 4.
         let pivot = points.x[4];
         let (sin_a, cos_a) = angle_deg.to_radians().sin_cos();
         for i in 5..points.x.len() {
@@ -190,9 +146,9 @@ mod tests {
 
     #[test]
     fn from_young_modulus_rectangular_matches_hand_derivation() {
-        // Real, independent check: sigma_yield=2e7 Pa, width=0.02m,
-        // thickness=0.001m -> I=width^3*thickness/12=8e-6*0.001/12=6.667e-10,
-        // c=0.01 -> M_yield = 2e7*6.667e-10/0.01 = 1.3333 N*m, by hand.
+        // By hand: sigma_yield = 2e7 Pa, width = 0.02 m, thickness = 0.001 m ->
+        // I = width^3*thickness/12 = 6.667e-10, c = 0.01 ->
+        // M_yield = 2e7*6.667e-10/0.01 = 1.3333 N*m.
         let p = RodPlasticity::from_young_modulus_rectangular(2.0e7, 0.02, 0.001);
         assert!(
             (p.yield_moment_n_m - 1.3333).abs() < 1.0e-3,
@@ -216,8 +172,8 @@ mod tests {
     #[test]
     fn overload_produces_a_real_nonzero_permanent_set() {
         let mut rod = kinked_rod(50.0); // real, sharp overload
-        // Real, deliberately low yield moment relative to this rod's own
-        // EI/voronoi_length -- a soft, easily yielded material.
+        // A yield moment low against this rod's EI/voronoi_length: a soft,
+        // easily yielded material.
         let plasticity = RodPlasticity::new(1.0e-4);
         apply_bending_plasticity(&mut rod, &plasticity, 1.0);
 
@@ -230,11 +186,9 @@ mod tests {
 
     #[test]
     fn permanent_set_reduces_the_elastic_restoring_moment_at_the_bent_shape() {
-        // Real, physically meaningful check: the whole POINT of plasticity
-        // is that the rod's NEW natural shape is the bent one, not straight
-        // -- proven by comparing the real bending force (isolated from
-        // axial via `forces::compute_bending_forces_only`) at the SAME
-        // still-bent shape, before vs after the plastic correction.
+        // After plastic correction the bent shape is the rod's new natural
+        // shape: the bending force (`forces::compute_bending_forces_only`,
+        // without axial) at the same bent shape drops.
         use super::super::RodMaterial;
         use super::super::forces::compute_bending_forces_only;
 
@@ -289,14 +243,9 @@ mod tests {
         assert!(rod.ei.is_empty());
     }
 
-    /// Real, permanent regression guard for the exact real-demo finding that
-    /// motivated hardening: a rod repeatedly re-kinked a little further each
-    /// "step" (standing in for a real sustained external moment, e.g.
-    /// gravity acting on an ever-worsening geometry, continuing to demand
-    /// slightly more curvature than the structure currently accommodates)
-    /// must accumulate LESS total permanent set with hardening than without
-    /// it -- proving hardening is actually resisting further yield, not
-    /// just present and inert.
+    /// A rod re-kinked a little further each step (standing in for a
+    /// sustained moment on a worsening shape) accumulates less permanent set
+    /// with hardening than without it.
     #[test]
     fn hardening_accumulates_substantially_less_permanent_set_than_perfectly_plastic() {
         let drive = |hardening_modulus_n_m: f32| -> f32 {
@@ -305,9 +254,8 @@ mod tests {
             let pivot_index = 4;
             let pivot = rod.x[pivot_index];
             for _ in 0..40 {
-                // Real, small, SUSTAINED additional rotation each iteration --
-                // the tail keeps demanding a bit more curvature, standing in
-                // for gravity continuing to load an ever-worsening shape.
+                // A small additional rotation each iteration: the tail keeps
+                // demanding a bit more curvature.
                 let (sin_a, cos_a) = 1.0_f32.to_radians().sin_cos();
                 for i in (pivot_index + 1)..rod.x.len() {
                     let rel = rod.x[i] - pivot;

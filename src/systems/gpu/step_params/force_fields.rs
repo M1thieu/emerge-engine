@@ -1,5 +1,5 @@
 //! GPU force-field entries -- split out of `step_params.rs`, see that module's
-//! own doc comment for the full file map.
+//! doc comment for the full file map.
 
 /// Maximum number of active GPU force-field entries per frame.
 /// Must match `MAX_FORCE_FIELDS` in `force_fields.wgsl`.
@@ -215,7 +215,7 @@ impl GpuFieldEntry {
     }
 
     /// Spatially-varying wind/current drag: same `a = k·(target(x) − v)` mechanism as
-    /// `linear_drag`, but `target` is sampled from the real, exact closed-form solution
+    /// `linear_drag`, but `target` is sampled from the exact closed-form solution
     /// for 2D potential flow around a circular cylinder (uniform stream + doublet
     /// superposition -- see CPU's `SpatialDragField`/its test module doc for the derivation
     /// and citations). WGSL has no function pointers, so unlike CPU's generic

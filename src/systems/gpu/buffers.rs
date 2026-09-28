@@ -42,8 +42,7 @@ const _: () = assert!(mem::size_of::<GpuCell>() == 16);
 
 /// Every buffer in this file shares this exact shape (`mapped_at_creation` is always
 /// `false` -- every upload here goes through `write_buffer`, never a mapped pointer at
-/// creation time); only label/size/usage actually vary per call site. Collapses what
-/// used to be a 5-line `BufferDescriptor` literal repeated ~35 times into one call each.
+/// creation time); only label/size/usage actually vary per call site.
 fn make_buffer(
     device: &wgpu::Device,
     label: &str,
@@ -102,18 +101,17 @@ pub struct GpuBuffers {
     pub block_counts: wgpu::Buffer,
     /// Compacted active block IDs, rebuilt every frame -- NUM_BLOCKS (256) × u32, STORAGE |
     /// COPY_SRC (COPY_SRC for test readback, same precedent as sorted_particle_ids). GPU
-    /// sparse grid (see mpm_technique_survey memory note): block b is "active" iff it OR one
-    /// of its 8 neighbors contains at least one particle this frame (halo-expanded in
-    /// particle_sort_compact_main so the P2G kernel's cross-block scatter stencil is always
-    /// covered), detected from particle_sort's raw per-block histogram before scan overwrites
-    /// it into a scatter cursor. Consumed by grid_clear AND grid_update (Phase 1 and Phase 2
-    /// respectively -- both bound their real work to occupied blocks instead of the whole
-    /// dense grid_res² domain; grid_update additionally guards against double-processing a
-    /// block present in both this list and `active_block_ids_prev`, since unlike grid_clear's
-    /// idempotent zero-write, grid_update computes each cell via several read-modify-write
-    /// steps and two workgroups racing on the same non-atomic cells corrupts it (see
-    /// `grid_update.wgsl`). The `grid` buffer itself stays dense -- real memory compaction
-    /// would need a different sparse-allocation scheme, not done here.
+    /// sparse grid: block b is "active" iff it or one of its 8 neighbors contains at
+    /// least one particle this frame (halo-expanded in particle_sort_compact_main so the
+    /// P2G kernel's cross-block scatter stencil is always covered), detected from
+    /// particle_sort's raw per-block histogram before scan overwrites it into a scatter
+    /// cursor. Consumed by grid_clear and grid_update, which bound their work to occupied
+    /// blocks instead of the whole dense grid_res² domain. grid_update also guards against
+    /// processing a block present both here and in `active_block_ids_prev`: unlike
+    /// grid_clear's idempotent zero-write, it computes each cell through several
+    /// read-modify-write steps, and two workgroups racing on the same non-atomic cells
+    /// corrupt it (see `grid_update.wgsl`). The `grid` buffer itself stays dense; memory
+    /// compaction would need a different sparse-allocation scheme.
     pub active_block_ids: wgpu::Buffer,
     /// Atomic count of valid entries in `active_block_ids` this frame -- 1 × u32, STORAGE |
     /// COPY_SRC.
@@ -163,13 +161,13 @@ pub struct GpuBuffers {
     /// grid_res. Bounds-checked against `MAX_CONTACT_POINTS_PER_BLOCK` at the atomic
     /// slot-claim site (`gather_contact_points_main`) -- excess points are dropped, not
     /// undefined behavior, and the counter keeps counting past the cap so overflow is a
-    /// real, observable signal. Zeroed every substep by `particle_sort_clear_main`
+    /// observable signal. Zeroed every substep by `particle_sort_clear_main`
     /// (`particle_sort.wgsl`, grid-stride loop since `NUM_CONTACT_BLOCKS` (4096) exceeds
     /// that pass's own 256-thread workgroup) -- not `grid_clear.wgsl` (which processes
     /// per-CELL work; this is per-block).
     pub contact_point_counts: wgpu::Buffer,
     /// Debug/test-only uniform for `resolve_contact.wgsl`'s `debug_fit_normal_main` --
-    /// see `ContactDebugParams`'s own doc. Not touched by the real per-substep
+    /// see `ContactDebugParams`'s doc. Not touched by the real per-substep
     /// pipeline.
     pub contact_debug_params: wgpu::Buffer,
     /// Debug/test-only output for `debug_fit_normal_main` -- `[n.x, n.y, valid]`, 16
@@ -178,16 +176,16 @@ pub struct GpuBuffers {
     /// Resolved "grip" field velocity per grid node, written by `resolve_contact_main`
     /// -- dense `grid_res² × vec2<f32>`, mirrors CPU's `Grid::grip_velocity_at`. Defaults
     /// to the ordinary total velocity at every cell (matching CPU's fallback), overwritten
-    /// with the real resolved value only at genuinely contact-active nodes. Read by a
+    /// with the real resolved value only at contact-active nodes. Read by a
     /// future G2P routing change for particles with `contact_group != 0`.
     pub resolved_grip_v: wgpu::Buffer,
     /// Resolved "rest" (contact_group == 0) field velocity -- same layout/fallback as
     /// `resolved_grip_v`, mirrors CPU's `Grid::rest_velocity_at`.
     pub resolved_rest_v: wgpu::Buffer,
-    /// Directional grip friction params -- see `GpuDirectionalGripParams`' own doc.
+    /// Directional grip friction params -- see `GpuDirectionalGripParams`' doc.
     pub grip_params: wgpu::Buffer,
     /// Day-night/ambient thermal diffusion (GPU port) -- real config uniform, see
-    /// `GpuThermalParams`' own doc. Always uploaded (disabled by default), same
+    /// `GpuThermalParams`' doc. Always uploaded (disabled by default), same
     /// always-present-but-cheap-when-unused pattern as `grip_params`.
     pub thermal_params: wgpu::Buffer,
     /// Thermal scratch: Σ(w·mass) per cell, cleared+rebuilt every substep by the
@@ -201,7 +199,7 @@ pub struct GpuBuffers {
     /// first, then overwritten with the post-Laplacian `T_new` -- dense `grid_res²` f32.
     pub thermal_work: wgpu::Buffer,
     /// Resource regrowth (GPU port) -- real config uniform, see `GpuResourceParams`'
-    /// own doc. Own separate group/buffers from thermal (see that struct's doc for why).
+    /// doc. Own separate group/buffers from thermal (see that struct's doc for why).
     pub resource_params: wgpu::Buffer,
     /// Resource scratch: Σ(w·mass) per cell -- dense `grid_res²` f32, mirrors
     /// `thermal_mass`.
@@ -212,7 +210,7 @@ pub struct GpuBuffers {
     /// Resource scratch, dual-use like `thermal_work`: P2G scatter accumulator first,
     /// then overwritten with the post-Laplacian+logistic-growth `φ_new`.
     pub resource_work: wgpu::Buffer,
-    /// ASFLIP (GPU port) -- real config uniform, see `GpuAsflipParams`' own doc.
+    /// ASFLIP (GPU port) -- real config uniform, see `GpuAsflipParams`' doc.
     pub asflip_params: wgpu::Buffer,
     /// Dense `grid_res² × vec2<f32>` pre-force velocity snapshot -- GPU mirror of CPU's
     /// `Grid::snapshot_velocities` (a sparse `HashMap`), made dense here because the GPU
@@ -236,7 +234,7 @@ pub struct GpuBuffers {
     /// references it) on every call, only the first.
     pub asflip_snapshot_grown: bool,
     /// `ColorMode::GridVolume`'s opt-in per-cell per-material mass accumulator (see
-    /// `grid_volume.wgsl`'s own doc for the real technique). Real config uniform,
+    /// `grid_volume.wgsl`'s doc for the real technique). Real config uniform,
     /// same always-present-but-cheap-when-unused pattern as `grip_params`.
     pub material_mass_params: wgpu::Buffer,
     /// Dense `grid_res² × MAX_RENDER_MATERIAL_SLOTS × f32` per-material mass
@@ -251,10 +249,9 @@ pub struct GpuBuffers {
     /// `true` once `material_mass` has been grown to its real size -- mirrors
     /// `asflip_snapshot_grown`.
     pub material_mass_grown: bool,
-    /// Real GPU port of the CPU-proven fluid incompressibility pressure
-    /// projection (`fluid_pressure.wgsl`) -- `reference_cell_mass` for the
-    /// free-surface classification threshold. Always allocated (negligible
-    /// real size, see `fp_divergence`'s own doc), unlike ASFLIP/material_mass.
+    /// `reference_cell_mass` for the fluid pressure projection's free-surface
+    /// classification threshold (`fluid_pressure.wgsl`). Always allocated
+    /// (negligible size, see `fp_divergence`), unlike ASFLIP/material_mass.
     pub fluid_pressure_params: wgpu::Buffer,
     /// Dense `grid_res²` divergence RHS, real size `grid_res² * 4` bytes --
     /// same order of magnitude as `thermal_mass`, always allocated rather
@@ -262,7 +259,7 @@ pub struct GpuBuffers {
     /// MAX_RENDER_MATERIAL_SLOTS-multiplied buffer, not applicable here).
     pub fp_divergence: wgpu::Buffer,
     /// Jacobi pressure iterate, buffer A of the ping-pong pair (see
-    /// `fluid_pressure.wgsl`'s own doc for why two entry points instead of a
+    /// `fluid_pressure.wgsl`'s doc for why two entry points instead of a
     /// runtime buffer-select flag).
     pub fp_pressure_a: wgpu::Buffer,
     /// Jacobi pressure iterate, buffer B of the ping-pong pair.
@@ -273,7 +270,7 @@ pub struct GpuBuffers {
 }
 
 /// `asflip_snapshot`'s pre-attach size -- large enough to satisfy wgpu's nonzero-buffer
-/// requirement, small enough to be genuinely free. Never actually read/written at this
+/// requirement, small enough to be free. Never actually read/written at this
 /// size (gated on `asflip_params.enabled`), so its exact value doesn't matter beyond
 /// "nonzero and 8-byte aligned for vec2<f32>".
 const ASFLIP_SNAPSHOT_PLACEHOLDER_BYTES: u64 = 8;
@@ -534,7 +531,7 @@ impl GpuBuffers {
         );
 
         // Fluid incompressibility pressure projection (GPU port, real
-        // Chorin-style Jacobi solve, see `fluid_pressure.wgsl`'s own doc).
+        // Chorin-style Jacobi solve, see `fluid_pressure.wgsl`'s doc).
         // Same "always allocate at real grid_res² size, no lazy growth"
         // pattern as thermal/resource above, not ASFLIP/material_mass's
         // lazy-growth pattern -- these are ordinary single-scalar-per-cell
@@ -740,7 +737,7 @@ impl GpuBuffers {
     }
 
     /// Debug/test-only upload for `resolve_contact.wgsl`'s `debug_fit_normal_main` --
-    /// see `ContactDebugParams`'s own doc.
+    /// see `ContactDebugParams`'s doc.
     pub fn upload_contact_debug_params(&self, queue: &wgpu::Queue, params: &ContactDebugParams) {
         queue.write_buffer(&self.contact_debug_params, 0, bytemuck::bytes_of(params));
     }
@@ -777,6 +774,6 @@ impl GpuBuffers {
 
 // GPU -> CPU readback methods (begin_readback, readback_blocking and its
 // variants, finish_readback, abandon_readback) -- split into their own file,
-// was ~250 of this file's ~700 lines, matching this file's own doc comment
+// was ~250 of this file's ~700 lines, matching this file's doc comment
 // split between "Upload path" and "Download path".
 mod readback;

@@ -1,33 +1,24 @@
-// ASFLIP (GPU port, Fei, Guo, Wu, Huang, Gao 2021, "Revisiting Integration in the
-// Material Point Method: A Scheme for Easier Separation and Less Dissipation") --
-// fused G2P + particles_update, dispatched INSTEAD OF the ordinary g2p+particles_update
-// pair for a substep, ONLY when SimConfig::asflip_blend > 0.0 (see SubstepGates::
-// asflip_active in encode_substep.rs). Ordinary scenes (asflip disabled, the default)
-// never touch this file at all -- zero cost, zero behavior change.
+// ASFLIP (Fei, Guo, Wu, Huang, Gao 2021, "Revisiting Integration in the Material
+// Point Method: A Scheme for Easier Separation and Less Dissipation") -- fused G2P +
+// particles_update, dispatched instead of the ordinary g2p+particles_update pair for
+// a substep only when SimConfig::asflip_blend > 0.0 (see SubstepGates::asflip_active
+// in encode_substep.rs). Scenes with ASFLIP disabled (the default) never run it.
 //
-// WHY FUSED (not two separate ASFLIP-aware passes mirroring g2p/particles_update's own
-// split): ASFLIP's position correction is adaptive -- it applies while two bodies are
-// SEPARATING (gamma=1) but not while COMPRESSING (gamma=0), see CPU's
-// `gather_grid_to_particles` in transfer.rs for the reference formula this ports. That
-// means the STORED velocity (v_store, always gets the ASFLIP kick) and the POSITION
-// velocity (v_position, only gets the kick while separating) can genuinely differ. CPU
-// computes both in one function and uses them locally. GPU's existing architecture
-// splits velocity-gather (g2p.wgsl) from F-update/position (particles_update.wgsl) into
-// two separate dispatches for a real, different reason (Gao et al. 2018 sorted-access
-// cache locality) -- meaning v_position would need to survive from the first dispatch
-// to the second. `Particle` has exactly one spare u32 (4 bytes) left; a second stored
-// Vec2 needs 8. Rather than grow the 128-byte struct (real risk: this exact struct had
-// a confirmed, still-not-fully-understood GPU corruption bug from a MUCH smaller
-// mid-struct field insertion earlier this project -- see Particle::scalar_field's own
-// doc), this fused kernel keeps v_store/v_position as pure local variables that never
-// need to leave one thread's registers, at the cost of one new pipeline variant.
+// Why fused: ASFLIP's position correction is adaptive, applied while two bodies
+// separate (gamma=1) but not while they compress (gamma=0); see CPU's
+// `gather_grid_to_particles` in transfer.rs for the formula this ports. The stored
+// velocity (v_store, always kicked) and the position velocity (v_position, kicked only
+// while separating) can differ. CPU computes both in one function. The GPU splits
+// velocity gather (g2p.wgsl) from F-update/position (particles_update.wgsl) for sorted-
+// access cache locality (Gao et al. 2018), so v_position would have to survive between
+// the two dispatches, and `Particle` has no spare bytes left in its 128-byte layout.
+// This kernel keeps v_store/v_position as thread-local variables, at the cost of one
+// more pipeline variant.
 //
-// REAL, DISCLOSED MAINTENANCE COST: WGSL has no module/include system, so this file
-// duplicates particles_update.wgsl's plasticity math (svd2 and all 6 material-model
-// return-mapping functions) verbatim rather than sharing it. If that file's plasticity
-// logic ever changes, THIS file needs the identical change applied by hand -- there is
-// no compiler enforcement keeping them in sync. Flagged honestly, not hidden; a real
-// WGSL-side module system would remove this risk but doesn't exist in this toolchain.
+// Maintenance cost: WGSL has no module/include system, so this file duplicates
+// particles_update.wgsl's plasticity math (svd2 and all 6 material-model return-mapping
+// functions) verbatim. A change to that file's plasticity logic must be applied here by
+// hand; nothing enforces it.
 
 struct Particle {
     x:                    vec2<f32>,
@@ -86,11 +77,10 @@ struct MaterialParams {
     bulk_viscosity:          f32,
     surface_tension_coeff:   f32,
     cohesion_coeff:              f32,
-    // GPU/CPU parity fix (2026-08-15) -- see Rust MaterialParams's own doc.
-    // Not consumed here (ASFLIP is mutually exclusive with strict-fluid
-    // mode, see step.rs's assert_strict_fluid_mode_is_supported), kept only
-    // for byte-layout parity with the other MaterialParams mirrors sharing
-    // the same uniform buffer.
+    // See Rust MaterialParams. Not consumed here (ASFLIP is mutually
+    // exclusive with strict-fluid mode, see step.rs's
+    // assert_strict_fluid_mode_is_supported); kept for byte-layout parity
+    // with the other MaterialParams mirrors sharing the uniform buffer.
     owns_deformation_volume_state: u32,
     _pad0: u32,
     _pad1: u32,
@@ -510,7 +500,7 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     contact_active,
                 );
                 // Free-surface velocity extrapolation for untouched nodes --
-                // see `extrapolated_boundary_velocity`'s own doc.
+                // see `extrapolated_boundary_velocity`'s doc.
                 let extrap_v = extrapolated_boundary_velocity(
                     p.v, cx, cy, i32(res), step_params.gravity, substep_dt(),
                     step_params.boundary_thickness,
@@ -642,7 +632,7 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var dp_sigma = abs(dp_res.sigma);
         // Floor each axis individually before the product-based rescale below --
         // same real bug (and same fix) as CPU `DruckerPragerMaterial`'s own
-        // `MIN_AXIS` guard (see that code's own doc): under a hard enough
+        // `MIN_AXIS` guard (see that code's doc): under a hard enough
         // impact one singular value can collapse to exactly (or within float
         // noise of) zero on its own axis, and a rescale that multiplies BOTH
         // axes by the same scalar can never recover an axis already at zero

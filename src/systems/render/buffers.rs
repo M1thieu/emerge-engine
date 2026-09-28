@@ -5,11 +5,11 @@
 //! already split into `pipelines.rs` -- extracting it changes nothing about
 //! when/how these buffers are built or which fields `Renderer` itself has.
 //!
-//! Two real, mechanical patterns cover 39 of the 43 buffers here --
+//! Two mechanical patterns cover 39 of the 43 buffers here --
 //! `placeholder_buffer` (4-byte lazy-growth storage placeholders, STORAGE |
 //! COPY_DST [| COPY_SRC]) and `uniform_buffer` (a UNIFORM | COPY_DST buffer
 //! sized to exactly one `T`) -- factored out so the per-buffer doc comments
-//! (each real, explaining WHY that specific buffer needs COPY_SRC or not)
+//! (each explaining WHY that specific buffer needs COPY_SRC or not)
 //! stay attached to their own call site instead of being duplicated 20+
 //! times over inside an identical `BufferDescriptor` literal.
 
@@ -23,12 +23,12 @@ use super::gpu_types::{
     SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
 
-/// 4-byte lazy-growth storage placeholder -- real, standard convention used
+/// 4-byte lazy-growth storage placeholder -- standard convention used
 /// throughout this file: allocate minimally at construction, `ensure_*_capacity`
 /// grows the real buffer the first time its true size (e.g. `grid_res`) is
 /// known. `copy_src` is per-buffer real intent (readback/diagnostic tools
 /// need to copy FROM some of these, not others) -- kept as a caller-supplied
-/// flag, not inferred, so each call site's own doc comment still explains it.
+/// flag, not inferred, so each call site's doc comment still explains it.
 fn placeholder_buffer(device: &wgpu::Device, label: &str, copy_src: bool) -> wgpu::Buffer {
     let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
     if copy_src {
@@ -106,11 +106,10 @@ pub(super) struct RenderBuffers {
     pub band_state_buf: wgpu::Buffer,
     pub band_hysteresis_params_buf: wgpu::Buffer,
     pub raw_splat_history_buf: wgpu::Buffer,
-    /// Real, persistent light-fluence diffusion field (`curvature_flow.wgsl`'s
-    /// "Pass 1e") -- two buffers, not three: unlike the wave field's real
-    /// second-order-in-time leapfrog (needs current+previous to read, next to
-    /// write), diffusion is first-order-in-time -- one "current" to read, one
-    /// "next" to write, swapped each frame (see `light_frame_index`'s own doc).
+    /// Persistent light-fluence diffusion field (`curvature_flow.wgsl`'s Pass
+    /// 1e). Two buffers, not three: diffusion is first order in time (read
+    /// current, write next, swapped each frame, see `light_frame_index`),
+    /// unlike the wave field's leapfrog.
     pub light_phi_bufs: [wgpu::Buffer; 2],
     pub light_diffuse_params_buf: wgpu::Buffer,
 }
@@ -121,13 +120,10 @@ impl RenderBuffers {
             label: Some("render_instances"),
             size: (cap * mem::size_of::<InstanceData>()) as u64,
             // VERTEX for draw; COPY_DST for both the CPU fill path and the GPU compute copy.
-            // COPY_SRC (2026-08-15): kept permanently -- lets tests read back
-            // this buffer directly to check what actually landed here, not
-            // just what was written to it. Used by the `#[ignore]`d
-            // render_gpu/render_cpu pixel tests in tests.rs (see
-            // basic_fluids_gpu_blank_render_unconfirmed memory) to prove
-            // storage_instances -> instance_buffer copies correctly even
-            // when the final drawn pixels don't show it.
+            // COPY_SRC lets tests read back what landed here: the ignored
+            // render_gpu/render_cpu pixel tests in tests.rs check that
+            // storage_instances -> instance_buffer copies correctly even when
+            // the drawn pixels do not show it.
             usage: wgpu::BufferUsages::VERTEX
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -162,7 +158,7 @@ impl RenderBuffers {
         });
 
         // Pre-step position snapshot for GPU render interpolation (see
-        // `Renderer::snapshot_particle_positions`'s own doc) -- tightly-packed
+        // `Renderer::snapshot_particle_positions`'s doc) -- tightly-packed
         // `vec2<f32>` per particle, distinct from `storage_instances` (that one
         // holds full `InstanceData`, this one only ever needs a position).
         // read_write: `snapshot_positions.wgsl` writes it, `prep_instances.wgsl`
@@ -184,10 +180,9 @@ impl RenderBuffers {
         let grid_volume_params_buf =
             uniform_buffer::<GridVolumeParams>(device, "grid_volume_params");
 
-        // Real hysteresis visibility state for the grid-native path --
-        // same real, disclosed all-zero starting bias as `visibility_buf`
-        // above (every cell starts "not visible" until it genuinely earns
-        // visibility on its own first real frame).
+        // Hysteresis visibility state for the grid-native path; like
+        // `visibility_buf`, every cell starts "not visible" until its first
+        // frame earns it.
         let grid_visibility_buf =
             placeholder_buffer(device, "grid_visibility_state", /* copy_src */ true);
         let grid_visibility_params_buf =
@@ -200,21 +195,20 @@ impl RenderBuffers {
         // needed, same lazy-growth pattern `ensure_capacity` already uses
         // for the particle instance buffers.
         let surface_atomic_buf = placeholder_buffer(device, "surface_atomic", false);
-        // Real mass-weighted temperature pair -- same minimal-placeholder-
-        // then-grow convention as `surface_atomic_buf` above.
+        // Mass-weighted temperature pair: placeholder, then grown, as
+        // `surface_atomic_buf`.
         let surface_temp_atomic_buf = placeholder_buffer(device, "surface_temp_atomic", false);
         // COPY_SRC: `fs_main`'s own final temperature source, same real
         // "readback/diagnostic tools need to copy FROM it" reason
-        // `surface_a_buf` is COPY_SRC (see that field's own doc).
+        // `surface_a_buf` is COPY_SRC (see that field's doc).
         let surface_temp_float_buf = placeholder_buffer(device, "surface_temp_float", true);
-        // Real volume-preserving-correction totals. Always exactly 4 bytes
-        // (one atomic i32), never grown by `ensure_surface_capacity` -- a
-        // global scalar, not a per-cell field. COPY_SRC: diagnostic/test
-        // readback, same real reason `surface_a_buf` has it.
+        // Volume-preserving-correction totals: always 4 bytes (one atomic
+        // i32), never grown by `ensure_surface_capacity` (a global scalar).
+        // COPY_SRC for test readback, as `surface_a_buf`.
         let pre_total_atomic_buf = placeholder_buffer(device, "pre_total_atomic", true);
         let post_total_atomic_buf = placeholder_buffer(device, "post_total_atomic", true);
         // Ping-pong partner for the real thermal-diffusion PDE -- see
-        // `temp_avg_pipeline`'s own doc.
+        // `temp_avg_pipeline`'s doc.
         let surface_temp_b_buf = placeholder_buffer(device, "surface_temp_b", false);
         // COPY_SRC: `surface_a` is where `CURVATURE_ITERATIONS` (even)
         // always settles the final result -- readback/diagnostic tools
@@ -238,11 +232,11 @@ impl RenderBuffers {
         // Two-phase extension's own phase-B buffers -- same minimal-
         // placeholder-then-grow convention as phase A's own buffers above.
         let phase_b_atomic_buf = placeholder_buffer(device, "phase_b_atomic", false);
-        // Phase B's own temperature pair -- see `surface_temp_atomic_buf`'s own doc.
+        // Phase B's own temperature pair -- see `surface_temp_atomic_buf`'s doc.
         let phase_b_temp_atomic_buf = placeholder_buffer(device, "phase_b_temp_atomic", false);
         let phase_b_temp_float_buf = placeholder_buffer(device, "phase_b_temp_float", false);
         // Phase B's own volume-preserving-correction totals -- see
-        // `pre_total_atomic_buf`'s own doc.
+        // `pre_total_atomic_buf`'s doc.
         let phase_b_pre_total_atomic_buf =
             placeholder_buffer(device, "phase_b_pre_total_atomic", true);
         let phase_b_post_total_atomic_buf =
@@ -255,8 +249,7 @@ impl RenderBuffers {
         let render_params_b_buf =
             uniform_buffer::<SurfaceRenderParams>(device, "surface_render_params_b");
 
-        // Phase B's own wave/visibility/band state -- same real, disclosed
-        // placeholder-then-grow convention as every other buffer above.
+        // Phase B's wave/visibility/band state: placeholder, then grown.
         let phase_b_wave_bufs = std::array::from_fn(|i| {
             placeholder_buffer(
                 device,
@@ -273,11 +266,9 @@ impl RenderBuffers {
         let phase_b_visibility_buf = placeholder_buffer(device, "phase_b_visibility_state", true);
         let phase_b_band_state_buf = placeholder_buffer(device, "phase_b_band_state", true);
 
-        // Real, persistent wave field -- placeholder-then-grow, same
-        // convention as the surface buffers above. WebGPU/wgpu guarantees
-        // newly created buffers start zero-filled (undisturbed water genuinely
-        // starts at zero height -- no explicit clear pass needed). THREE
-        // buffers, not two -- see this struct's own `wave_bufs` field doc.
+        // Persistent wave field: placeholder, then grown. New WebGPU buffers
+        // start zero-filled, so undisturbed water starts at zero height with
+        // no clear pass. Three buffers, see `wave_bufs`.
         let wave_bufs = std::array::from_fn(|i| {
             placeholder_buffer(
                 device,
@@ -290,39 +281,31 @@ impl RenderBuffers {
             )
         });
         let wave_params_buf = uniform_buffer::<WaveStepParams>(device, "wave_params");
-        // Real temporal-disturbance history -- see `wave_density_prev_buf`'s
-        // own doc. Starts all-zero (WebGPU guarantee), but the render call
-        // seeds it from the real settled density before the first `wave_step`
-        // ever reads it (`wave_prev_seeded`), so this zero is never actually
-        // read as a "previous" density.
+        // Temporal-disturbance history (see `wave_density_prev_buf`). Starts
+        // zeroed, but the render call seeds it from the settled density
+        // before the first `wave_step` reads it (`wave_prev_seeded`).
         let wave_density_prev_buf = placeholder_buffer(device, "wave_density_prev", true);
 
-        // Real hysteresis visibility state -- single persistent buffer,
-        // starts all-zero (WebGPU guarantee), meaning every cell starts
-        // "not visible" until it genuinely earns visibility on its own
-        // first real frame (a harmless, expected one-time conservative
-        // bias from hysteresis itself, not a bug). COPY_SRC: readback/
-        // diagnostic tools (incl. this crate's own tests) need to copy FROM it.
+        // Hysteresis visibility state, one persistent buffer, zeroed at
+        // creation: every cell starts "not visible" until its first frame
+        // earns it (a one-time conservative bias of hysteresis). COPY_SRC
+        // for readback by diagnostics and tests.
         let visibility_buf = placeholder_buffer(device, "visibility_state", true);
         let visibility_params_buf = uniform_buffer::<VisibilityParams>(device, "visibility_params");
 
-        // Real hysteresis color-band state -- single persistent buffer,
-        // same real, disclosed all-zero starting bias as `visibility_buf`
-        // (every cell starts in band 0 until it genuinely earns a
-        // different one on its own first real frame).
+        // Hysteresis color-band state, one persistent buffer: every cell
+        // starts in band 0, like `visibility_buf`.
         let band_state_buf = placeholder_buffer(device, "band_state", true);
         let band_hysteresis_params_buf =
             uniform_buffer::<BandHysteresisParams>(device, "band_hysteresis_params");
 
-        // Real, persistent raw-splat history -- starts all-zero (WebGPU
-        // guarantee), a real, harmless one-time bias (first frame's blend
-        // ramps up to the true value over a few frames).
+        // Persistent raw-splat history, zeroed at creation: the first frames'
+        // blend ramps up to the true value.
         let raw_splat_history_buf = placeholder_buffer(device, "raw_splat_history", true);
 
-        // Real, persistent light-fluence diffusion field -- placeholder-then-
-        // grow, same convention as the wave field above. Starts all-zero
-        // (WebGPU guarantee) -- a real, harmless one-time bias (no light has
-        // diffused yet on the very first frame, which is simply true).
+        // Persistent light-fluence field: placeholder, then grown, like the
+        // wave field. Zeroed at creation: no light has diffused on the first
+        // frame.
         let light_phi_bufs = std::array::from_fn(|i| {
             placeholder_buffer(
                 device,

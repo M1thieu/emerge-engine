@@ -1,29 +1,24 @@
 //! Discrete elastic rod internal forces -- stretch (axial spring) + bending
 //! (discrete curvature) + damping, specialized to 2D.
 //!
-//! Real citation: Bergou, Wardetzky, Robinson, Audoly, Grinspun 2008,
-//! SIGGRAPH, "Discrete Elastic Rods", eq. 1 (curvature binormal) and eq. 4-5
-//! (bending energy). See `mod.rs`'s own doc for why the 3D binormal vector
-//! collapses to a signed scalar in 2D.
+//! Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, SIGGRAPH, "Discrete
+//! Elastic Rods", eq. 1 (curvature binormal) and eq. 4-5 (bending energy).
+//! See `mod.rs` for why the 3D binormal is a signed scalar in 2D.
 
 use glam::{Mat2, Vec2};
 
 use super::RodMaterial;
 
-/// Discrete curvature at an interior vertex (Bergou et al. 2008, eq. 1,
-/// specialized to 2D). In 3D `kb` is a vector along the (out-of-plane)
-/// binormal with magnitude `2*tan(turning_angle/2)`; in 2D the binormal
-/// direction is FIXED (the plane's own normal), so the whole quantity
-/// collapses to this signed scalar -- a real dimensional reduction (2D
-/// genuinely has one fewer curvature DOF than 3D), not an invented
-/// shortcut. DIMENSIONLESS (≈ turning angle for small bends) -- the
-/// per-unit-length normalization happens in the bending-FORCE formula
-/// below (division by rest Voronoi length), not here.
+/// Discrete curvature at an interior vertex (Bergou et al. 2008, eq. 1, in
+/// 2D). In 3D `kb` is a vector along the out-of-plane binormal with magnitude
+/// `2*tan(turning_angle/2)`; in 2D the binormal is the plane's normal, so it
+/// is this signed scalar. Dimensionless (about the turning angle for small
+/// bends): the per-length normalization is in the bending force (division by
+/// the rest Voronoi length).
 ///
-/// Real, known limitation of this exact closed form (Bergou 2008 §4.2's own
-/// numerical-stability note): the denominator vanishes as `e0`/`e1` approach
-/// antiparallel (a very sharp local bend). Fine for moderate bending (a
-/// grass blade); not unconditionally robust for arbitrary large deformation.
+/// Limitation of this closed form (Bergou 2008 §4.2): the denominator vanishes
+/// as `e0`/`e1` become antiparallel (a very sharp bend). Fine for moderate
+/// bending (a grass blade), not for arbitrary large deformation.
 pub fn discrete_curvature(p0: Vec2, p1: Vec2, p2: Vec2) -> f32 {
     let e0 = p1 - p0;
     let e1 = p2 - p1;
@@ -229,15 +224,12 @@ pub fn compute_bending_forces_only(
     force
 }
 
-/// Real, analytic (NOT finite-differenced) axial force + its own Jacobians
-/// -- a standard damped-spring Jacobian, the same real technique every
-/// cloth/mass-spring simulator has used since Baraff & Witkin 1998 (already
-/// this whole implicit scheme's own cited basis) and Provot 1995. Returns
-/// `(force, dF/dd, dF/d(rel_v))` where `d` is the real (meters) edge vector
-/// `(x[i+1]-x[i])*dx_meters` and `rel_v` is `(v[i+1]-v[i])*dx_meters` --
-/// RAW derivatives wrt these two vectors, not yet chained through to
-/// `x[i]`/`x[i+1]`/`v[i]`/`v[i+1]` (the caller does that, since the sign
-/// and `dx_meters` factor differ for the two endpoints).
+/// Analytic axial force and its Jacobians, the standard damped-spring
+/// Jacobian of cloth and mass-spring simulation (Provot 1995; Baraff & Witkin
+/// 1998, this implicit scheme's basis). Returns `(force, dF/dd, dF/d(rel_v))`
+/// for the edge vector in meters `d = (x[i+1]-x[i])*dx_meters` and `rel_v =
+/// (v[i+1]-v[i])*dx_meters`, not yet chained to the four endpoint variables
+/// (the caller does that; sign and `dx_meters` differ per endpoint).
 ///
 /// Derivation: let `l=|d|`, `dir=d/l`, `s = f_stretch + f_damp` (the
 /// scalar force magnitude along `dir`), `F = s*dir`. Using the standard
@@ -247,9 +239,8 @@ pub fn compute_bending_forces_only(
 /// dF/dd      = dir⊗(ds/dd) + (s/l)*P
 /// dF/d(rel_v) = axial_damping*(dir⊗dir)
 /// ```
-/// Verified against central differences of the SAME force law
-/// `compute_internal_forces`'s own axial section uses, in this file's own
-/// tests below -- same house discipline as `discrete_curvature_gradient`.
+/// Checked against central differences of the force law
+/// `compute_internal_forces` uses, in the tests below.
 pub fn axial_force_and_jacobian(
     d: Vec2,
     rel_v: Vec2,
@@ -277,43 +268,27 @@ pub fn axial_force_and_jacobian(
     (force, df_dd, df_drelv)
 }
 
-/// Real, analytic (NOT finite-differenced) Jacobian of the BENDING force at
-/// one interior vertex, w.r.t. the same 3 points `discrete_curvature_gradient`
-/// takes -- `grad` is that function's own output, reused directly (no new
-/// derivative needed for it). Returns `(dF/dx, dF/dv)`, each a 3x3 grid of
-/// 2x2 blocks (`[a][b]` = force at point `a`'s Jacobian w.r.t. point `b`).
+/// Analytic Jacobian of the bending force at one interior vertex, with
+/// respect to the 3 points `discrete_curvature_gradient` takes (`grad` is its
+/// output). Returns `(dF/dx, dF/dv)`, each a 3x3 grid of 2x2 blocks (`[a][b]`
+/// = force at point `a` against point `b`).
 ///
-/// `dF/dv` is EXACT, not an approximation: `F[a] = -total_coeff*grad[a]`,
-/// and bending damping's rate term `kappa_dot = sum_m grad[m].v[m]` is
-/// exactly LINEAR in `v` with `grad` (which doesn't depend on `v`) as its
-/// coefficient, so `d(kappa_dot)/dv[b] = grad[b]` with no missing term at
-/// all -- unlike the position case below.
+/// `dF/dv` is exact: `F[a] = -total_coeff*grad[a]`, and the damping rate
+/// `kappa_dot = sum_m grad[m].v[m]` is linear in `v` with `grad` (independent
+/// of `v`) as coefficient, so `d(kappa_dot)/dv[b] = grad[b]`.
 ///
-/// `dF/dx` is a real, standard, DISCLOSED approximation: the full derivative
-/// needs `d(grad[a])/dx[b]`, i.e. the Hessian of `discrete_curvature` --
-/// this engine's own 2D-reduced closed form has no such Hessian derived yet
-/// (a real, separate, harder undertaking than this gradient was, no ready
-/// citation for this exact 2D reduction). What's kept here is the Gauss-
-/// Newton (a.k.a. tangent/material-stiffness-only) term, `-(EI/l_v)*
-/// outer(grad[a],grad[b])` -- the EXACT derivative of the part of the force
-/// that's genuinely LINEAR in `kappa` (the elastic restoring term), with the
-/// term needing the true Hessian (geometric/stress stiffness, and the
-/// damping/kappa_dot cross-term) dropped rather than finite-differenced.
-/// Standard, well-established technique for exactly this class of problem
-/// (energy-based force Jacobians in physics-based animation, e.g.
-/// Projective Dynamics) -- and unlike finite differences, this dropped term
-/// is a KNOWN, named omission with a clear reason to reach for the full
-/// Hessian later (large bending deviation from rest), not an unavoidable
-/// truncation/round-off artifact. Also guaranteed positive-semi-definite
-/// (each per-vertex block is `coeff * outer(g,g)`, a real, textbook rank-2
-/// PSD form), a genuine stability advantage over a possibly-indefinite full
-/// Newton Hessian for the implicit solve.
+/// `dF/dx` is the Gauss-Newton approximation: the full derivative needs
+/// `d(grad[a])/dx[b]`, the Hessian of `discrete_curvature`, not derived for
+/// this 2D reduction. The kept term, `-(EI/l_v)*outer(grad[a],grad[b])`, is
+/// the exact derivative of the part linear in `kappa` (the elastic
+/// restoring term); the geometric-stiffness term and the damping cross-term
+/// are dropped, a named omission (standard for energy-based force Jacobians,
+/// e.g. Projective Dynamics) that grows with bending away from rest. Each
+/// block is `coeff * outer(g,g)`, positive semi-definite, which helps the
+/// implicit solve.
 ///
-/// Verified against central differences in this file's own tests: `dF/dv`
-/// matches tightly (it's exact); `dF/dx` matches near rest (`kappa` close to
-/// `kappa_rest`, where the dropped term is genuinely small) and the gap
-/// widens for large bending deviation -- both checked explicitly, not
-/// glossed over.
+/// The tests check both against central differences: `dF/dv` tightly,
+/// `dF/dx` near rest, with the gap growing for large bending, as expected.
 pub fn bending_jacobian_gauss_newton(
     grad: [Vec2; 3],
     stiffness: f32,
@@ -446,10 +421,9 @@ mod tests {
         }
     }
 
-    /// Real force law under test, standalone (matches
-    /// `compute_internal_forces`'s own axial section exactly) -- used ONLY
-    /// by this file's central-difference check, so the check can't hide a
-    /// shared bug behind calling the exact same code being verified.
+    /// The force law under test, standalone (as `compute_internal_forces`'s
+    /// axial section), so the central-difference check does not share code
+    /// with what it checks.
     fn axial_force_reference(d: Vec2, rel_v: Vec2, l0: f32, ea: f32, axial_damping: f32) -> Vec2 {
         let l = d.length().max(1.0e-9);
         let dir = d / l;
@@ -461,14 +435,10 @@ mod tests {
 
     #[test]
     fn axial_force_and_jacobian_matches_finite_difference() {
-        // Real, standard central-difference step for f32: h ~ cbrt(EPSILON)
-        // (the well-known optimal step balancing truncation error, O(h^2),
-        // against floating-point cancellation error, O(EPSILON/h)) -- NOT
-        // `discrete_curvature_gradient`'s own 1e-4 (that function's inputs
-        // stay O(1) and its own outputs aren't scaled by a large `ea` like
-        // 1000-2000 here; at 1e-4, this axial law's absolute cancellation
-        // error gets divided by 2h and amplified ~17% relative -- measured
-        // directly, a real FD artifact, not a bug in the analytic formula).
+        // Central-difference step for f32 h ~ cbrt(EPSILON), balancing
+        // truncation (O(h^2)) against cancellation (O(EPSILON/h)).
+        // `discrete_curvature_gradient`'s 1e-4 does not fit here: with `ea` of
+        // 1000-2000 the cancellation error divided by 2h came out ~17%.
         let h = f32::EPSILON.cbrt();
         let cases = [
             (Vec2::new(1.0, 0.0), Vec2::new(0.0, 0.0), 1.0, 1000.0, 5.0),
@@ -485,11 +455,11 @@ mod tests {
         // components) -- appropriate given `ea` spans 500-2000 across
         // cases, so a single fixed absolute tolerance would either be too
         // loose for the small case or too tight for the large one. Floor
-        // of 3.0 (not 1.0) is itself a real, measured choice: perturbing
+        // of 3.0 (not 1.0) is itself a measured choice: perturbing
         // PERPENDICULAR to `dir` makes `l` an even function of `h` (length
         // barely changes to first order), so `f_stretch` there is O(h^2)
         // and the true analytic derivative is exactly 0 -- central
-        // difference of that genuinely odd-in-h, cubic-leading-term
+        // difference of that odd-in-h, cubic-leading-term
         // component has O(ea*h^2) truncation error (confirmed: measured
         // 0.012 at ea=1000, matching `(ea/2)*h^2` by hand), not a formula
         // bug. Still 2+ orders of magnitude tighter than the real
@@ -552,12 +522,10 @@ mod tests {
         }
     }
 
-    /// Real force law under test, standalone (matches
-    /// `compute_bending_forces_only`'s own per-vertex math exactly, already
-    /// in whatever units `p`/`v` are given in -- no `dx_meters` scaling,
-    /// since `bending_jacobian_gauss_newton` itself is unit-agnostic) --
-    /// used ONLY by this file's central-difference checks below, so they
-    /// can't hide a shared bug behind calling the exact code being verified.
+    /// The force law under test, standalone (as `compute_bending_forces_only`
+    /// per vertex, in whatever units `p`/`v` come in; no `dx_meters`, since
+    /// `bending_jacobian_gauss_newton` is unit-agnostic), so the checks do not
+    /// share code with what they check.
     fn bending_force_reference(
         p: [Vec2; 3],
         v: [Vec2; 3],
@@ -578,7 +546,7 @@ mod tests {
 
     #[test]
     fn bending_jacobian_velocity_term_is_exact() {
-        // dF/dv has NO dropped term (see the function's own doc) -- this
+        // dF/dv has NO dropped term (see the function's doc) -- this
         // should match finite differences as tightly as the axial Jacobian
         // does, not just "close enough for an approximation".
         let h = f32::EPSILON.cbrt();
@@ -633,9 +601,9 @@ mod tests {
     #[test]
     fn bending_jacobian_position_term_matches_near_rest_and_diverges_far_from_it() {
         // dF/dx drops the true Hessian's geometric-stiffness term (see the
-        // function's own doc) -- this is the real, honest test of that
+        // function's doc) -- this is the honest test of that
         // disclosed approximation: close near rest (small `total_coeff`,
-        // where the dropped term is genuinely small), and a real, EXPECTED
+        // where the dropped term is small), and a real, EXPECTED
         // widening gap far from rest, not silently passed with a loose
         // tolerance that could just as easily be hiding a wrong formula.
         let stiffness = 800.0;
@@ -690,7 +658,7 @@ mod tests {
         );
 
         // Far from rest: large synthetic deviation -> large total_coeff -> the dropped
-        // geometric-stiffness term should now matter, a real, expected gap, not a bug.
+        // geometric-stiffness term should now matter, a expected gap, not a bug.
         let diff_far = max_diff(kappa - 5.0);
         assert!(
             diff_far > diff_near,
@@ -702,10 +670,9 @@ mod tests {
 
     #[test]
     fn compute_bending_forces_only_matches_full_function_minus_axial() {
-        // Real cross-check: bending-only force must equal the full
-        // function's own output on a rod with EA=0 (axial contributes
-        // exactly zero in that case), proving the extracted function is a
-        // faithful duplicate, not a subtly different formula.
+        // With EA = 0 the axial term is zero, so the bending-only force equals
+        // the full function's output: the extracted function is the same
+        // formula.
         let x = vec![
             Vec2::new(0.0, 0.0),
             Vec2::new(1.0, 0.0),

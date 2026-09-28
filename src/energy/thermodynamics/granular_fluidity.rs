@@ -1,8 +1,8 @@
 //! Nonlocal Granular Fluidity (NGF) field -- lets granular flow "cooperate"
 //! spatially instead of every point deciding to yield in total local
-//! isolation. Real, published mechanism (Kamrin & Koval, PRL 2012; Henann &
+//! isolation. Published mechanism (Kamrin & Koval, PRL 2012; Henann &
 //! Kamrin, several follow-ups); the MPM-specific numerical scheme below
-//! matches a real, peer-reviewed reference read directly (not from its
+//! matches a peer-reviewed reference read directly (not from its
 //! abstract): Haeri & Skonieczny 2022, *"Three-dimensional granular flow
 //! continuum modeling via material point method with hyperelastic nonlocal
 //! granular fluidity"* (CMAME, arXiv:2111.01523).
@@ -25,7 +25,7 @@
 //! choice, not an invented shortcut. Same P2G→normalize→Laplacian→G2P shape
 //! as [`super::scalar_field::ScalarDiffusionField`]/[`super::diffusion::ThermalDiffusion`]
 //! (reuses the shared [`super::stencil::laplacian_step`]), plus a real reaction
-//! step for the two extra terms above. Real, quoted stability bound from
+//! step for the two extra terms above. Quoted stability bound from
 //! that same paper: `Δt < Δx²·t0 / (2·A²·d²)` -- unlike `ScalarDiffusionField`'s
 //! bound (only ever documented, never enforced, since thermal diffusivity is
 //! tiny relative to MPM's own elastic-wave CFL), this one is plausibly
@@ -46,7 +46,7 @@
 //! Pressure `P` and stress ratio `μ` are computed fresh each substep from a
 //! particle's own `deformation_gradient`, reusing the exact same
 //! Hencky-trace formula `MuIRheologyMaterial::update_particle`
-//! (`src/matter/materials/sand_mui.rs`) already uses -- real, cited reuse,
+//! (`src/matter/materials/sand_mui.rs`) already uses -- cited reuse,
 //! not a new formula invented here. The caller supplies
 //! `pressure_and_ratio: fn(&Particle) -> (f32, f32)` since only the coupled
 //! material knows its own elastic Lamé parameters.
@@ -55,18 +55,18 @@ use glam::IVec2;
 
 use crate::{grid::kernel::quadratic_weights, particle::Particles};
 
-/// Real, physical parameters for the NGF PDE above.
+/// Physical parameters for the NGF PDE above.
 #[derive(Clone, Copy, Debug)]
 pub struct GranularFluidityConfig {
     /// Static friction coefficient μs (dimensionless) -- the same real value
     /// as the coupled material's own `tan(friction_angle)`.
     pub mu_s: f32,
-    /// Real grain diameter `d` \[m\] -- see e.g.
+    /// Grain diameter `d` \[m\] -- see e.g.
     /// `DruckerPragerMaterial::GRAIN_DIAMETER_M`.
     pub grain_diameter_m: f32,
     /// Grain density ρs \[kg/m³\].
     pub grain_density_kg_m3: f32,
-    /// Nonlocal amplitude `A` (dimensionless) -- real, cited value 0.48
+    /// Nonlocal amplitude `A` (dimensionless) -- cited value 0.48
     /// (Henann & Kamrin 2013 glass beads; independently reconfirmed for
     /// real sand by Haeri & Skonieczny 2022, same value).
     pub nonlocal_amplitude: f32,
@@ -76,28 +76,22 @@ pub struct GranularFluidityConfig {
     /// Microscopic grain-inertial relaxation timescale `t0` \[s\]. Real,
     /// cited value 1e-4s (Haeri & Skonieczny 2022, Table 1).
     pub t0_s: f32,
-    /// Real, physically-motivated minimum pressure \[Pa\] fed to the
-    /// reaction term's `1/sqrt(P)` factor. NOT a numerical fudge: the
-    /// equation's own analytic equilibrium
-    /// (`g_eq = linear_coeff/(b*sqrt(P/rho_s)*d)`) genuinely diverges as
-    /// `P -> 0` -- a real cell at ~1e-3 Pa gives a
-    /// mathematically-correct-but-physically-absurd `g_eq` in the tens of
-    /// millions, even under an exact (unconditionally stable) closed-form
-    /// integration -- this is the equation's own real singularity, not a
-    /// numerics bug. Real granular material at ANY free surface still has
-    /// some minimum confining pressure from its own weight/interlocking
-    /// (the same real justification `DruckerPragerMaterial::cohesion`
-    /// already documents) -- a natural, physically-derived floor is one
-    /// grain's own hydrostatic self-weight: `rho_s * g_accel * d`.
+    /// Minimum pressure \[Pa\] fed to the reaction term's `1/sqrt(P)` factor.
+    /// The equation's analytic equilibrium, `g_eq = linear_coeff/(b*sqrt(P/
+    /// rho_s)*d)`, diverges as `P -> 0`: a cell at ~1e-3 Pa gives `g_eq` in
+    /// the tens of millions even under an exact closed-form integration, so
+    /// the singularity is the equation's, not the numerics'. Granular
+    /// material at a free surface still carries some confining pressure from
+    /// its own weight (as `DruckerPragerMaterial::cohesion` documents); the
+    /// floor is one grain's hydrostatic self-weight, `rho_s * g_accel * d`.
     pub pressure_floor_pa: f32,
 }
 
 impl GranularFluidityConfig {
-    /// Real, quoted Von Neumann stability bound for the explicit scheme
-    /// above (Haeri & Skonieczny 2022, §4, verified via `pdftotext` against
-    /// the real PDF): `Δt < Δx² · t0 / (2·A²·d²)`.
+    /// Von Neumann stability bound for the explicit scheme above, quoted
+    /// from Haeri & Skonieczny 2022, §4: `Δt < Δx² · t0 / (2·A²·d²)`.
     ///
-    /// `dx_m` is the real physical grid cell size (`SimConfig::dx_meters`).
+    /// `dx_m` is the physical grid cell size (`SimConfig::dx_meters`).
     pub fn stability_dt(&self, dx_m: f32) -> f32 {
         let denom = 2.0 * self.nonlocal_amplitude.powi(2) * self.grain_diameter_m.powi(2);
         dx_m * dx_m * self.t0_s / denom.max(1e-30)
@@ -156,8 +150,7 @@ impl GranularFluidityField {
     /// actually calls for, exactly the convention `ThermalConfig::alpha_grid`
     /// already documents ("Folding dx² in keeps the Laplacian formula
     /// dimensionless over grid indices") and `Cosserat` field's own `apply`
-    /// call site already threads through. A real, previously-missing
-    /// dx-normalization: without it, the diffusion term's magnitude doesn't
+    /// call site already threads through. Without this dx-normalization, the diffusion term's magnitude doesn't
     /// depend on the real cell size at all, so refining the grid (same `A`,
     /// `d`, `t0`) changes how many REAL METERS the same "diffusivity_dt"
     /// spreads `g` per step -- the direct cause of this module's own
@@ -208,7 +201,7 @@ impl GranularFluidityField {
 
         // --- Diffuse: shared explicit-Euler 5-point Laplacian, same
         // stencil ScalarDiffusionField/ThermalDiffusion already use ---
-        // dx_meters^2 division: see this method's own doc.
+        // dx_meters^2 division: see this method's doc.
         let dx2 = (dx_meters * dx_meters).max(1e-30);
         let diffusivity_dt = (self.config.nonlocal_amplitude * self.config.grain_diameter_m)
             .powi(2)
@@ -233,7 +226,7 @@ impl GranularFluidityField {
         //    (g_eq = linear_coeff/(b*sqrt(P/rho_s)*d), Kamrin & Henann 2015
         //    eq. 4's "g_loc") the first time a cell crosses `mu_s`: that
         //    equilibrium itself DIVERGES as P->0 (division by sqrt(P)) --
-        //    exactly the real, low-confinement regime this whole mechanism
+        //    exactly the low-confinement regime this whole mechanism
         //    targets, not an edge case. A cell at real pressure ~1e-3 Pa
         //    produces a seed of ~16 MILLION.
         // 2. Seeding a small epsilon instead, then advancing via EXPLICIT
@@ -251,7 +244,7 @@ impl GranularFluidityField {
         // Instead: restricted to g>=0 (the physical domain), this ODE is
         // EXACTLY the logistic equation `dg/dt = r*g*(1-g/g_eq)` with
         // `r=linear_coeff/t0`, `g_eq=r/c`, `c=b*sqrt(P/rho_s)*d/t0` -- which
-        // has a real, standard closed-form solution via the substitution
+        // has a standard closed-form solution via the substitution
         // `u=1/g` (turns the nonlinear ODE into the LINEAR one `du/dt =
         // -r*u + c`, solved exactly): `u(t)=c/r+(u0-c/r)*exp(-r*t)`. This
         // is UNCONDITIONALLY STABLE -- correct for any `dt`, any `t0`, by
@@ -321,12 +314,9 @@ impl GranularFluidityField {
         self.grid_res
     }
 
-    /// Real, permanent diagnostic: (min, mean-over-nonzero, max, count-nonzero)
-    /// of the current `g` field. Added 2026-08-04 chasing the real, measured
-    /// 0.47x Lajeunesse undershoot -- lets a caller check DIRECTLY whether
-    /// `g` is staying anomalously small/narrow throughout a real collapse
-    /// (the "cooperation too slow/narrow relative to the moving flow front"
-    /// hypothesis) rather than reasoning about it in the abstract.
+    /// (min, mean over nonzero, max, count nonzero) of the current `g` field,
+    /// to check directly whether `g` stays small or narrow through a collapse
+    /// (cooperation too slow or narrow relative to the moving flow front).
     pub fn g_stats(&self) -> (f32, f32, f32, usize) {
         let mut min = f32::INFINITY;
         let mut max = 0.0f32;
@@ -352,7 +342,7 @@ mod tests {
     use glam::Vec2;
 
     fn test_config() -> GranularFluidityConfig {
-        // Real values from Haeri & Skonieczny 2022 Table 1 (Excavation case).
+        // Values from Haeri & Skonieczny 2022 Table 1 (Excavation case).
         GranularFluidityConfig {
             mu_s: 0.70,
             grain_diameter_m: 0.3e-3,

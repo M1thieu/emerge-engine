@@ -12,7 +12,7 @@ use glam::Vec2;
 /// grid units over a ~1.5-unit-tall body) -- because EVERY group could only
 /// push straight up/down, net horizontal drift could only emerge indirectly
 /// through the sticky floor's timing, which is inherently a pogo motion,
-/// not a step. Cross-checked against EvoGym's real, published, walking
+/// not a step. Cross-checked against EvoGym's published, walking
 /// voxel robots (Bhatia et al. 2021, source in `evogym/utils.py`): their
 /// voxels come in two actuator types, `H_ACT` (horizontal) and `V_ACT`
 /// (vertical) -- real walkers mix both, using vertical actuators for

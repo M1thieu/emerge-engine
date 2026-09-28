@@ -1,11 +1,11 @@
 //! Boundary conditions: the `BoundaryCondition` trait plus 5 real models.
-//! The 3 Coulomb-friction variants (plain/grip/ratchet) are a real, tightly
-//! related family -- grouped under `friction/` (see that module's own doc);
+//! The 3 Coulomb-friction variants (plain/grip/ratchet) are a tightly
+//! related family -- grouped under `friction/` (see that module's doc);
 //! `heightmap`/`slip` are each standalone, one file apiece.
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
 //! `clamp_position_inside_grid`) and their direct unit tests live here,
-//! since they're genuinely shared math, not any one model's own logic.
+//! since they're shared math, not any one model's own logic.
 
 use glam::Vec2;
 
@@ -55,20 +55,17 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
         false
     }
 
-    /// Real local contact normal + penetration overlap for a grain of the
-    /// given `radius` at `position`, if it's touching this boundary's
-    /// surface -- lets grain-vs-terrain contact produce a real rolling
-    /// torque via `grain_contact_law::resolve_wall_contact`, the same real
-    /// physics grain-vs-grain contact already has. Found missing live
-    /// 2026-08-21 (see `heightmap.rs`'s own doc for the full story): without
-    /// this, a grain resting on ANY boundary has literally no mechanism to
-    /// ever start rolling from rest.
+    /// Local contact normal and penetration overlap for a grain of `radius` at
+    /// `position`, if it touches this boundary's surface. Lets grain-vs-terrain
+    /// contact produce a rolling torque via
+    /// `grain_contact_law::resolve_wall_contact`, as grain-vs-grain contact
+    /// does; without it a grain resting on a boundary cannot start rolling
+    /// from rest (see `heightmap.rs`).
     ///
     /// `normal` must point AWAY from the surface (toward free space, where
     /// the grain is); `overlap = radius - distance_to_surface`. Default:
-    /// `None` (no rolling torque from this boundary) -- safe and backward
-    /// compatible; a boundary that's mostly outer box walls a grain rarely
-    /// embeds into the way it rests on terrain doesn't need to opt in.
+    /// `None` (no rolling torque from this boundary), for boundaries such as
+    /// outer box walls that a grain rarely rests on.
     fn grain_contact(
         &self,
         _position: Vec2,
@@ -78,39 +75,29 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
         None
     }
 
-    /// Real position backstop for a GRAIN specifically (radius-aware),
-    /// after its own velocity integration -- see `clamp_particle_position`'s
-    /// own doc for why a backstop exists at all (last-resort domain
-    /// enforcement, not physics). Default just delegates to `clamp_particle_
-    /// position` -- correct for any boundary with no grain-specific contact
-    /// logic (e.g. `FrictionBoundary`, which only ever had the generic,
-    /// point-particle clamp to begin with).
+    /// Radius-aware position backstop for a grain, after its velocity
+    /// integration (see `clamp_particle_position` for why a backstop exists:
+    /// last-resort domain enforcement, not physics). The default delegates to
+    /// `clamp_particle_position`, right for a boundary with no grain-specific
+    /// contact logic (e.g. `FrictionBoundary`).
     ///
-    /// `HeightmapBoundary` overrides this (see that file's own doc): its
-    /// generic `clamp_particle_position` hardcodes a "+1" vertical
-    /// clearance and checks straight-down `y`, ignoring both the grain's
-    /// real radius and a sloped surface's own tilt. An earlier attempt
-    /// (2026-08-21) tried layering a `grain_contact`-based correction on
-    /// TOP of `clamp_particle_position`'s own terrain clamp, gated by a
-    /// `grain_contact().is_some()` check -- but `grain_contact`'s `None` is
-    /// ambiguous (it means both "no grain logic at all" and "genuinely not
-    /// touching," and the generic clamp's own OVER-correction made the
-    /// second case indistinguishable from the first, an endless fight
-    /// between two disagreeing notions of "on the surface" that silently
-    /// regressed outer-wall containment too when worked around with a bare
-    /// boolean flag). This single method is the real fix: each boundary
-    /// fully owns its own grain backstop end to end, no ambiguity to
-    /// resolve at the call site.
+    /// `HeightmapBoundary` overrides it: its generic `clamp_particle_position`
+    /// uses a fixed "+1" vertical clearance and checks straight-down `y`,
+    /// ignoring the grain's radius and the slope. Each boundary owns its
+    /// grain backstop end to end here, rather than the caller layering a
+    /// `grain_contact`-based correction over the generic clamp: `None` from
+    /// `grain_contact` means both "no grain logic" and "not touching", so the
+    /// call site cannot tell the two apart.
     fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
         let _ = radius;
         self.clamp_particle_position(position, grid_res)
     }
 
-    /// Same as `apply_to_grid_velocity`, with an optional real, per-node
+    /// Same as `apply_to_grid_velocity`, with an optional per-node
     /// Material-Induced Boundary Friction coefficient (`Grid::
     /// node_friction_at_index`, `None` when no friction-reporting particle
     /// touched this node) available for boundaries that want it -- see
-    /// `MaterialModel::current_friction_coefficient`'s own doc for the real
+    /// `MaterialModel::current_friction_coefficient`'s doc for the real
     /// citation (Blatny & Gaume 2025). Default: ignore `node_friction`
     /// entirely and delegate to the ordinary method -- safe and backward
     /// compatible, the same "default no-op" shape `grain_contact`/
@@ -126,17 +113,13 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
         self.apply_to_grid_velocity(cell_index, grid_res, velocity)
     }
 
-    /// Real Newton's-third-law reaction hook: called once per grid cell
-    /// this boundary's own `apply_to_grid_velocity[_with_node_friction]`
-    /// actually corrected, with the real mass-weighted impulse the GRID
-    /// lost at that cell (`-mass * (v_after - v_before)`) -- what the grid
-    /// lost, a kinematically-driven obstacle boundary gains, letting it
-    /// genuinely feel the fluid/solid it's pushing instead of having
-    /// effectively infinite mass. Default: no-op (zero cost for every
-    /// existing boundary -- `SlipBoundary`/`FrictionBoundary`/etc. are
-    /// static geometry with nothing to accumulate into). Only a boundary
-    /// that represents a real, externally-driven moving body (e.g. a
-    /// kinematic obstacle) overrides this.
+    /// Equal-and-opposite reaction hook: called once per grid cell this
+    /// boundary's `apply_to_grid_velocity[_with_node_friction]` corrected,
+    /// with the mass-weighted impulse the grid lost at that cell (`-mass *
+    /// (v_after - v_before)`). A kinematically driven obstacle gains what the
+    /// grid lost, so it feels the material it pushes. Default: no-op (static
+    /// boundaries such as `SlipBoundary`/`FrictionBoundary` have nothing to
+    /// accumulate into).
     fn on_grid_correction(&self, _cell_pos: Vec2, _reaction_impulse: Vec2) {}
 }
 
@@ -332,10 +315,8 @@ mod boundary_physics_tests {
         );
     }
 
-    /// Real Coulomb friction law: tangential speed is reduced by EXACTLY
-    /// mu * |v_normal| (not more, not less), direction preserved -- this is the
-    /// actual physical law (friction force proportional to normal force), not
-    /// just "friction slows things down somewhat."
+    /// Coulomb friction: tangential speed drops by exactly mu * |v_normal|,
+    /// direction preserved (friction force proportional to normal force).
     #[test]
     fn coulomb_wall_reduces_tangential_speed_by_exactly_mu_times_normal_speed() {
         let v_n = 4.0_f32; // normal speed into the wall
@@ -353,9 +334,8 @@ mod boundary_physics_tests {
         assert_eq!(v.x, 0.0, "normal component always fully zeroed on impact");
     }
 
-    /// Real Coulomb friction can only decelerate, never reverse direction --
-    /// once tangential speed would go negative, it clamps to exactly zero
-    /// (a particle can't be pushed backward by its own friction).
+    /// Coulomb friction only decelerates: once tangential speed would go
+    /// negative it clamps to exactly zero, never reversing direction.
     #[test]
     fn coulomb_wall_never_reverses_tangential_direction() {
         let mut v = Vec2::new(-10.0, 2.0); // huge normal speed, tiny tangential
@@ -369,7 +349,7 @@ mod boundary_physics_tests {
     }
 
     /// Outward-moving velocity must be completely untouched by Coulomb friction
-    /// too, same as the slip wall -- friction only applies to genuine impacts.
+    /// too, same as the slip wall -- friction only applies to impacts.
     #[test]
     fn coulomb_wall_does_not_touch_outward_velocity() {
         let mut v = Vec2::new(4.0, -2.0); // moving away from the wall

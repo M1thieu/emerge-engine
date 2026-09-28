@@ -1,14 +1,12 @@
-// Resource regrowth -- GPU port of ScalarDiffusionField's real logistic-growth source
-// (src/energy/thermodynamics/scalar_field.rs). Same real PDE shape as thermal.wgsl
+// Resource regrowth -- GPU port of ScalarDiffusionField's logistic-growth source
+// (src/energy/thermodynamics/scalar_field.rs). Same PDE shape as thermal.wgsl
 // (scatter -> normalize -> Laplacian+reaction -> gather), but the reaction term is
 // logistic growth (Verhulst 1838, dφ/dt = r·φ·(1−φ/K)) instead of Newton cooling.
-// Own separate buffers/group from thermal -- carries state in particle.scalar_field,
-// NOT particle.temperature (real fix, 2026-07-17: both fields used to hijack
-// temperature as their carrier, meaning two already-shipped GPU features literally
-// could not run in the same scene together -- see Particle::scalar_field's own doc).
+// Own buffers and group, separate from thermal; state lives in particle.scalar_field,
+// not particle.temperature, so both can run in one scene (see Particle::scalar_field).
 //
 // 4 passes, same reasoning as thermal.wgsl for why they're separate dispatches (the
-// Laplacian pass needs every cell's normalized φ settled first, a genuine global
+// Laplacian pass needs every cell's normalized φ settled first, a global
 // barrier):
 //   1. resource_clear_main               -- zero resource_mass + resource_work
 //   2. resource_p2g_main                 -- scatter mass-weighted φ (particle.scalar_field)
@@ -182,7 +180,7 @@ fn resource_normalize_laplacian_main(@builtin(global_invocation_id) gid: vec3<u3
     let laplacian = p_xm + p_xp + p_ym + p_yp - 4.0 * phi_old_i;
     var phi_new = phi_old_i + resource_params.diffusivity * substep_dt() * laplacian;
 
-    // Real logistic growth: dφ/dt = r·φ·(1−φ/K) (Verhulst 1838).
+    // Logistic growth: dφ/dt = r·φ·(1−φ/K) (Verhulst 1838).
     let k = max(resource_params.resource_k, 1e-6);
     let growth = resource_params.resource_r * phi_new * (1.0 - phi_new / k);
     phi_new += growth * substep_dt();

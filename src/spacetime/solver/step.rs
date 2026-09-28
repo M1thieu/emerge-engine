@@ -7,7 +7,7 @@
 //! live alongside `Simulation` in the parent module. `do_substep`'s own body
 //! stays a single ordering-sensitive sequence on purpose (see its inline
 //! comments for why each phase must run where it does) -- only the two
-//! genuinely self-contained pieces split further, into sibling files:
+//! self-contained pieces split further, into sibling files:
 //! adaptive-timestep selection (`cfl.rs`) and per-substep NaN/invalid-state
 //! guards (`projection.rs`).
 
@@ -47,7 +47,7 @@ impl Simulation {
             if !material.owns_deformation_volume_state() {
                 // Pressure-projection incompressibility (`grid::pressure`) has
                 // no per-cell fluid-fraction tracking yet -- see
-                // `SimConfig::fluid_pressure_iterations`'s own doc -- so it is
+                // `SimConfig::fluid_pressure_iterations`'s doc -- so it is
                 // only correct when EVERY particle on the shared grid is a
                 // strict fluid. A non-fluid particle here means it isn't.
                 assert!(
@@ -116,7 +116,7 @@ impl Simulation {
         self.last_j_projection_count = 0;
         self.last_timing = crate::diagnostics::StepTiming::default();
         // Computed ONCE here, reused by every substep below -- see
-        // `cached_spatial_sort_order`'s own doc for why (real, measured:
+        // `cached_spatial_sort_order`'s doc for why (measured:
         // recomputing per substep cost more than it saved).
         if self.config.spatial_sort_enabled {
             self.cached_spatial_sort_order =
@@ -130,7 +130,7 @@ impl Simulation {
         // plain explicit `v += g*dt`, only safe elsewhere because every other
         // body has its own CFL ceiling keeping dt small; an implicit rod has
         // none, so that path is unconditionally unstable at the full frame dt.
-        // Not grid-coupled yet -- see the struct field's own doc.
+        // Not grid-coupled yet -- see the struct field's doc.
         for rod in &mut self.rods {
             if !rod.use_implicit_integration {
                 continue;
@@ -216,20 +216,17 @@ impl Simulation {
                     );
                 }
             }
-            // Real elastic-perfectly-plastic bending (see `plasticity`
-            // module doc) -- applied AFTER any biological reshaping above,
-            // so mechanical yield acts on top of whatever active tropism/
-            // growth already did this step, not instead of it.
+            // Elastic-perfectly-plastic bending (see `plasticity`), applied
+            // after any biological reshaping above, so yield acts on top of
+            // this step's tropism and growth.
             if let Some(plasticity) = &rod.plasticity {
                 apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
             }
         }
-        // Real, opt-in implicit big-step (see `implicit_corotated`'s own
-        // module doc): one Newton-CG solve at the FULL frame `dt` instead
-        // of the CFL-limited loop below. Only engages when the whole active
-        // scene qualifies AND the solve actually converges -- otherwise
-        // falls through to the exact same explicit loop every other scene
-        // already runs, byte-identical to before this existed.
+        // Opt-in implicit big step (see `implicit_corotated`): one Newton-CG
+        // solve at the full frame `dt` instead of the CFL-limited loop below.
+        // Only when the whole active scene qualifies and the solve converges;
+        // otherwise the explicit loop runs unchanged.
         if remaining > 0.0 && self.try_implicit_corotated_substep(remaining) {
             substeps_taken = 1;
             self.last_step_dt = remaining;
@@ -261,10 +258,9 @@ impl Simulation {
             // `choose_substep_dt`'s own `last_max_speed` param doc.
             self.last_max_particle_speed = measured_max_speed;
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
-            // TEMPORARY diagnostic (2026-08-28), see `diagnose_worst_particle_
-            // cfl_term`'s own doc -- opt-in via env var so every existing scene
-            // pays nothing. `EMERGE_CFL_DIAGNOSE=all` scans every particle;
-            // `EMERGE_CFL_DIAGNOSE=<material_id>` filters to one material.
+            // Diagnostic, see `diagnose_worst_particle_cfl_term`: opt-in
+            // through `EMERGE_CFL_DIAGNOSE` (`all` scans every particle,
+            // `<material_id>` one material), free otherwise.
             if let Ok(spec) = std::env::var("EMERGE_CFL_DIAGNOSE") {
                 let filter = if spec.eq_ignore_ascii_case("all") {
                     None
@@ -284,15 +280,11 @@ impl Simulation {
                     );
                 }
             }
-            // TEMPORARY diagnostic (2026-08-29), see `transfer::diagnose_
-            // particle_node_material_sources`'s own doc -- opt-in via env
-            // var so every existing scene pays nothing. Built to test
-            // whether a tracked particle's runaway velocity (found live in
-            // `phase_states_gui.rs`'s Moon-gravity run, particle 15) comes
-            // from a neighboring particle of a DIFFERENT material sharing
-            // its P2G/G2P support nodes -- not visible from `same_material_
-            // neighbors`-style checks, which only ever count the tracked
-            // particle's own material.
+            // Diagnostic, see `transfer::diagnose_particle_node_material_
+            // sources`: opt-in through an env var. Tests whether a tracked
+            // particle's runaway velocity comes from a neighbour of another
+            // material sharing its P2G/G2P nodes, which same-material
+            // neighbour counts cannot see.
             if let Ok(spec) = std::env::var("EMERGE_TRACK_PARTICLE_NODES")
                 && let Ok(tracked_index) = spec.parse::<usize>()
                 && tracked_index < self.active_count
@@ -329,7 +321,7 @@ impl Simulation {
                     );
                 }
             }
-            // Sticky fine-substep hold (`fluid_sticky_fine_dt`'s own doc) -- caps
+            // Sticky fine-substep hold (`fluid_sticky_fine_dt`'s doc) -- caps
             // the ordinary CFL result while a recent retry's hold is still active,
             // so a sustained near-wall compression event doesn't relax back to a
             // too-coarse dt on the very next substep. A no-op read (`None`) for
@@ -351,19 +343,10 @@ impl Simulation {
             remaining -= actual_dt;
             self.last_step_dt = actual_dt;
             substeps_taken += 1;
-            // TEMPORARY diagnostic (2026-08-30), see `transfer::diagnose_
-            // particle_divergence_decomposition`'s own doc and
-            // `pending_divergence_diagnostic`'s own doc for why this reads
-            // AFTER `do_substep_with_retry` returns: `do_substep` (called
-            // once per retry attempt, real dt each time) overwrites this
-            // field every call, so what's here now reflects only the LAST
-            // (i.e. ACCEPTED) attempt -- a real, disclosed fix for a real
-            // methodological gap in this diagnostic's first version
-            // (`diagnose_particle_boundary_divergence_bias`,
-            // removed): that one reconstructed its "before" state from a
-            // separate scatter fed whatever `dt` the OUTER caller happened
-            // to have, before `do_substep_with_retry` had a chance to
-            // settle on a different `actual_dt`.
+            // Diagnostic, see `transfer::diagnose_particle_divergence_
+            // decomposition` and `pending_divergence_diagnostic`. Read after
+            // `do_substep_with_retry` returns: each retry attempt overwrites
+            // the field, so it holds the accepted attempt and its `dt`.
             if let Some((
                 tracked_index,
                 trace_translation,
@@ -382,7 +365,7 @@ impl Simulation {
                 );
             }
             // Decay the hold by one substep, regardless of whether THIS substep
-            // needed a fresh retry -- see the field's own doc for why persistence
+            // needed a fresh retry -- see the field's doc for why persistence
             // across several substeps (not just the one that triggered it) is the
             // real fix.
             if let Some((held_dt, remaining_holds)) = self.fluid_sticky_fine_dt {
@@ -394,28 +377,17 @@ impl Simulation {
             }
         }
         self.last_substeps = substeps_taken;
-        // Honest accounting: `max_substeps_per_step` is a real per-frame work
-        // budget again (a runaway CFL collapse must not be free to make a
-        // single step() call take seconds). If the budget runs out before
-        // `remaining` reaches zero, report exactly how much simulation time
-        // this call did not advance instead of either discarding it silently
-        // (pre-2026-08-06 behavior) or looping unbounded to always finish it.
+        // `max_substeps_per_step` is a per-frame work budget: a CFL collapse
+        // must not make one step() call take seconds. If it runs out before
+        // `remaining` reaches zero, the simulation time not advanced is
+        // reported instead of discarded silently or looped for.
         self.last_sim_time_dropped = remaining.max(0.0);
-        // Real, deliberate choice (2026-08-10), not a coin flip: a silently
-        // dropped strict-fluid step is exactly the class of hidden
-        // corner-cut "strict" WC-MPM mode exists to forbid (same real
-        // philosophy as `check_j_range`/`assert_owned_deformation_state`
-        // just above -- report loudly rather than silently accept a wrong
-        // state). Ordinary materials tolerate an honestly-tracked drop (the
-        // whole point of the accounting above); a strict fluid does not --
-        // its own physical model has no notion of "close enough," so
-        // silently advancing less than the requested dt would silently
-        // break the mass/momentum conservation this mode's own strictness
-        // promises. NOT a revert to unbounded looping (the real cost-DoS
-        // concern the "budget again" fix above addresses stays valid) --
-        // fails loud and immediately instead, with an actionable message,
-        // the same real tradeoff every other strict-fluid safety check in
-        // this codebase already makes.
+        // A strict fluid panics instead of dropping time: strict WC-MPM
+        // forbids hidden corner cuts (like `check_j_range`/
+        // `assert_owned_deformation_state`), and advancing less than the
+        // requested dt would break the conservation it promises. Other
+        // materials tolerate a reported drop. Still bounded, not an
+        // unbounded loop.
         if self.last_sim_time_dropped > 0.0 && self.materials.any_owns_deformation_volume_state() {
             panic!(
                 "strict WC-MPM fluid could not advance the full requested dt within \
@@ -426,13 +398,10 @@ impl Simulation {
                 self.config.max_substeps_per_step, self.last_sim_time_dropped, self.config.dt
             );
         }
-        // Lazy: just mark stale here, don't do the rebuild work every frame
-        // regardless of whether a query will ever consume it before the next
-        // step -- see `spatial_hash`'s own doc on `Simulation` for the real,
-        // measured cost this was (16.4% of a step, 2026-08-03). The first
-        // query method called after this (`particles_near`/`count_near`/
-        // `particles_knn`/`region_state`) does the real rebuild, lazily, via
-        // `ensure_spatial_hash_fresh`.
+        // Lazy: only mark the spatial hash stale here (rebuilding it every
+        // step measured 16.4% of a step); the first query after the step
+        // (`particles_near`/`count_near`/`particles_knn`/`region_state`)
+        // rebuilds it through `ensure_spatial_hash_fresh`.
         // Diffusion operators, applied ONCE for all the time this step
         // advanced -- see `do_substep`'s own note for the stability
         // derivation. Runs after the substep loop so temperature/scalar
@@ -463,16 +432,15 @@ impl Simulation {
     }
 
     /// Wraps `do_substep` with the real preflight/retry check for strict WC-MPM
-    /// fluids -- see `SimConfig::fluid_step_retry_enabled`'s own doc for the full
+    /// fluids -- see `SimConfig::fluid_step_retry_enabled`'s doc for the full
     /// derivation and the empirical evidence this is a genuine, convergent
     /// stability limit (not a hidden clamp masking a bug). Returns the dt actually
     /// committed, which may be smaller than requested if retries fired -- callers
     /// must advance `remaining` by the RETURNED value, not the original `sub_dt`.
     ///
-    /// No-op fast path (a plain `self.do_substep(sub_dt)` call, byte-identical to
-    /// before this existed) whenever the feature is disabled (the default) or no
-    /// registered material owns strict deformation/volume state -- every existing
-    /// scene is completely unaffected.
+    /// Fast path (a plain `self.do_substep(sub_dt)` call) whenever the feature is
+    /// disabled (the default) or no registered material owns strict
+    /// deformation/volume state.
     fn do_substep_with_retry(&mut self, requested_dt: f32) -> f32 {
         if !self.config.fluid_step_retry_enabled
             || !self.materials.any_owns_deformation_volume_state()
@@ -486,7 +454,7 @@ impl Simulation {
         // CFL-chosen dt.
         const FLUID_STEP_RETRY_LIMIT: u32 = 16;
         // How many FURTHER substeps hold the fine dt once a retry fires -- see
-        // `fluid_sticky_fine_dt`'s own doc for why a one-off retry alone doesn't
+        // `fluid_sticky_fine_dt`'s doc for why a one-off retry alone doesn't
         // work. An engineering constant (how long to keep paying the extra cost
         // after the LAST sign of trouble), not a physics parameter.
         const STICKY_HOLD_SUBSTEPS: u32 = 20;
@@ -498,41 +466,22 @@ impl Simulation {
             self.last_timing.retry_snapshot_us += t_snapshot.elapsed().as_micros() as u64;
             self.do_substep(sub_dt);
             let mut worst_ln_j_change = 0.0f32;
-            // Real gap, found 2026-08-09 alongside the retry-exhaustion fix below:
-            // `worst_ln_j_change` alone is blind to a substep that blows up a
-            // particle's VELOCITY without its J having caught up yet in the SAME
-            // substep (measured live: `ke` spiking from ~19 to 33 MILLION between
-            // two consecutive substeps while `J` stayed flat at 3.212 throughout --
-            // the pressure-projection correction can kick a particle's velocity far
-            // past what its own CFL-safe motion should have been THIS substep,
-            // since it's applied to the grid AFTER `choose_substep_dt` already
-            // committed to a dt based on the PREVIOUS substep's state). Same
-            // physical reasoning as `cfl_bound`'s own velocity term
-            // (`cfl_coefficient*grid_cell_size/max_speed`), just checked reactively
-            // here instead of predicted in advance -- a substep that moved a
-            // particle further than that in ONE step already violated the CFL it
-            // was supposed to satisfy, regardless of what J says.
+            // `worst_ln_j_change` misses a substep that blows up a particle's
+            // velocity before its J catches up (measured: kinetic energy from
+            // ~19 to 33 million between two substeps with J flat at 3.212).
+            // The pressure projection acts on the grid after
+            // `choose_substep_dt` has committed to a dt from the previous
+            // state, so a particle can move further than the CFL allows in one
+            // substep. This checks that reactively, with `cfl_bound`'s
+            // velocity term (`cfl_coefficient*grid_cell_size/max_speed`).
             let mut worst_speed = 0.0f32;
-            // Real gap, found 2026-08-09 debugging a hard panic in
-            // `assert_owned_deformation_state`'s own J-range check ([j_min,
-            // j_max]) on a scene where no single substep ever tripped
-            // `admissible_ln_j_change`: this loop only ever compared J's
-            // RELATIVE change against the immediately preceding substep --
-            // many individually-small, consistently-signed changes (the
-            // exact "many small changes" compounding-bias class already
-            // named in `fluid_step_retry_threshold`'s own doc) can walk J
-            // past the assert's absolute [j_min, j_max] band over the course
-            // of a frame's ~150 substeps without any single step ever
-            // looking inadmissible, so retry never engages and the
-            // exhaustion backstop below never gets a chance to clamp it.
-            // Checking the ABSOLUTE bound here too closes that gap: once a
-            // substep's own J leaves the admissible band, retrying at a
-            // finer dt (and holding it via `fluid_sticky_fine_dt`) slows the
-            // drift's rate, and if it still can't recover within
-            // `FLUID_STEP_RETRY_LIMIT`, the existing exhaustion backstop
-            // (`project_particle_state_to_admissible`, already clamps J to
-            // `config.j_max`) now actually gets invoked instead of the state
-            // silently sailing through to the next substep's hard assert.
+            // Also check the absolute band: many small, same-signed changes,
+            // none inadmissible relative to the previous substep, can walk J
+            // past `assert_owned_deformation_state`'s [j_min, j_max] over a
+            // frame's ~150 substeps, so retry would never engage. Leaving
+            // the band triggers a retry at a finer dt (held through
+            // `fluid_sticky_fine_dt`), and if `FLUID_STEP_RETRY_LIMIT` runs
+            // out, the exhaustion backstop below clamps J to `config.j_max`.
             let mut worst_j_out_of_bounds = false;
             for i in 0..self.active_count {
                 if !self
@@ -547,16 +496,9 @@ impl Simulation {
                 let ln_j_change = (new_j / old_j).ln().abs();
                 worst_ln_j_change = worst_ln_j_change.max(ln_j_change);
                 worst_speed = worst_speed.max(self.particles.v[i].length());
-                // Tried tightening this to the material's own (usually
-                // stricter) `volume_ratio_min/max` on 2026-08-28 while
-                // debugging a real steam fps collapse -- reverted: `new_j`
-                // here is the POST-`update_particle` value, and that function
-                // already unconditionally clamps to those exact bounds before
-                // this ever runs, so a check against the SAME bounds can
-                // structurally never fire (confirmed live: zero effect on the
-                // actual collapse, just added a `.params()` call per particle
-                // per retry attempt for nothing). Real fix for that failure
-                // mode still open -- see project memory.
+                // Not checked against the material's own `volume_ratio_min/
+                // max`: `new_j` is post-`update_particle`, which already clamps
+                // to those bounds, so such a check could never fire.
                 if new_j < self.config.j_min || new_j > self.config.j_max {
                     worst_j_out_of_bounds = true;
                 }
@@ -566,46 +508,23 @@ impl Simulation {
                 && worst_speed <= cfl_safe_speed
                 && !worst_j_out_of_bounds;
             if admissible || attempt == FLUID_STEP_RETRY_LIMIT {
-                // Real gap, found 2026-08-09 via a delayed crash one frame after a
-                // violent first wall impact (see project memory's
-                // pressure_projection_wall_leak_bug_fixed entry): the retry loop
-                // above can exhaust `FLUID_STEP_RETRY_LIMIT` with `worst_ln_j_change`
-                // STILL above threshold and, until this fix, silently returned the
-                // still-corrupted particle state anyway -- nothing else ever clamped
-                // it, because `do_substep`'s own pre-P2G pass routes any material
-                // that `owns_deformation_volume_state()` (every strict fluid) to an
-                // ASSERT-only path (`assert_owned_deformation_state`), trusting THIS
-                // retry loop to keep state admissible. That trust had no backstop:
-                // an extreme-but-finite J/velocity (e.g. J=0.004, v=800,000+ measured
-                // live) passes the assert fine, gets scattered into next frame's P2G,
-                // and poisons its CFL scan into demanding a sub-ULP dt -- the actual
-                // observed crash. `project_particle_state_to_admissible` already
-                // exists, is material-agnostic (operates on raw particle fields, no
-                // `owns_deformation_volume_state` check inside it), and is already
-                // trusted for every NON-fluid material via `project_invalid_state` --
-                // reusing it here for the one case that currently has no backstop at
-                // all, only when retries were truly exhausted (not on the common
-                // "converged within budget" path, so this never fires for a healthy
-                // scene). General fix, not scene-specific: applies to any strict
-                // fluid material, any wall, any geometry.
+                // Backstop when retries are exhausted with `worst_ln_j_change`
+                // still above threshold: a strict fluid's pre-P2G pass only
+                // asserts (`assert_owned_deformation_state`), trusting this
+                // loop, and an extreme but finite state (J = 0.004, v =
+                // 800,000+) passes that assert, reaches the next P2G and
+                // drives its CFL scan to a sub-ULP dt. So the material-
+                // agnostic `project_particle_state_to_admissible` (already used
+                // for other materials via `project_invalid_state`) runs here,
+                // only on exhaustion.
                 if attempt == FLUID_STEP_RETRY_LIMIT && !admissible {
-                    // `project_particle_state_to_admissible` only catches NON-FINITE
-                    // velocity, not finite-but-absurd velocity (measured live: up to
-                    // ~9.5e6 grid-units/s after a retry-exhausted substep, still
-                    // "finite" by IEEE754's definition but far beyond anything the
-                    // solver's own timestep floor can ever represent). A real,
-                    // derived ceiling: `choose_substep_dt`'s own velocity-CFL term
-                    // is `dt = cfl_coefficient*grid_cell_size/max_speed` (`cfl.rs::
-                    // cfl_bound`) -- solving for the max_speed that keeps that
-                    // formula's OWN result at or above `min_dt` requires the
-                    // `cfl_coefficient` factor here too. Real bug, found
-                    // 2026-08-09: the previous version omitted it (`grid_cell_size/
-                    // min_dt` alone), so a velocity clamped to exactly that ceiling
-                    // still produced `cfl_coefficient*min_dt` next frame -- SMALLER
-                    // than `min_dt` itself by construction whenever
-                    // `cfl_coefficient<1.0` (every real config), which is exactly
-                    // what was still poisoning the NEXT frame's CFL scan into a
-                    // sub-ULP dt even after this clamp fired.
+                    // `project_particle_state_to_admissible` only catches
+                    // non-finite velocity; after an exhausted retry it reached
+                    // ~9.5e6 cells/s. Cap it where `cfl_bound`'s velocity term
+                    // (`cfl_coefficient*grid_cell_size/max_speed`) still
+                    // returns at least `min_dt`, which needs the
+                    // `cfl_coefficient` factor: without it the next frame got
+                    // `cfl_coefficient*min_dt`, below `min_dt`.
                     let max_representable_speed = self.config.cfl_coefficient
                         * self.config.grid_cell_size
                         / self.config.min_dt;
@@ -627,54 +546,25 @@ impl Simulation {
                         }
                     }
                 }
-                // Real bug, found 2026-08-09 via direct instrumentation of a
-                // sub-ULP-dt crash a full frame after the triggering event:
-                // this used to fire on EXHAUSTION too (`attempt ==
-                // FLUID_STEP_RETRY_LIMIT && !admissible`), holding the
-                // FAILED sub_dt -- one that 16 halvings still couldn't make
-                // admissible -- as a ceiling on the next `STICKY_HOLD_
-                // SUBSTEPS` substeps. That's backwards: exhaustion means "no
-                // dt this loop tried was enough," so the state was instead
-                // force-corrected by the backstop just above; the fresh,
-                // now-admissible state deserves a FRESH CFL scan next
-                // substep, not a stale, arbitrarily tiny floor inherited from
-                // the attempt that just failed (measured live: an exhausted
-                // sub_dt near 2^-16 of the original request, small enough to
-                // fail the very next frame's `remaining - sub_dt < remaining`
-                // representability check even though the corrected state
-                // itself was perfectly reasonable). Only the genuinely
-                // successful path -- retry found an admissible finer dt on
-                // its own -- earns the sticky hold now.
+                // Only a retry that found an admissible finer dt on its own
+                // earns the sticky hold. On exhaustion the state was repaired
+                // by the backstop above and deserves a fresh CFL scan, not the
+                // failed sub_dt (16 halvings down, near 2^-16 of the request,
+                // small enough to fail the next frame's `remaining - sub_dt <
+                // remaining` representability check).
                 if admissible && sub_dt < requested_dt {
                     // At least one halving was needed to reach an admissible
                     // state -- hold this fine dt for subsequent substeps too,
                     // not just this one (refreshes/extends an existing hold).
                     //
-                    // Real gap, found 2026-08-09 alongside the exhaustion-path
-                    // fix just above: even the genuinely-`admissible` path can
-                    // land on a vanishingly small `sub_dt` -- `admissible`
-                    // itself gets EASIER to satisfy as `sub_dt` shrinks
-                    // (`cfl_safe_speed = cfl_coefficient*grid_cell_size/
-                    // sub_dt` grows without bound, and `worst_ln_j_change`
-                    // over a near-zero step trivially shrinks too), so a
-                    // sufficiently violent substep can walk all the way down
-                    // through several halvings to something far below
-                    // `min_dt` and still report success, not exhaustion.
-                    // Holding THAT floorless value for `STICKY_HOLD_SUBSTEPS`
-                    // more substeps (crossing into the next frame if the
-                    // hold outlives `step()`'s own substep budget) is what
-                    // was still poisoning a later, otherwise-healthy CFL scan
-                    // into an unrepresentable sub-`min_dt` result. `min_dt`
-                    // is the solver's own configured floor for exactly this
-                    // situation elsewhere (see the exhaustion backstop's
-                    // `max_representable_speed`, derived from the same
-                    // constant) -- flooring the HOLD here (an artificial,
-                    // engineering-only ceiling, not a physics quantity) at
-                    // `min_dt` doesn't touch the real per-substep CFL scan's
-                    // own freedom to legitimately go below `min_dt` again
-                    // later if the state genuinely still demands it (`sub_dt.
-                    // min(held_dt)` only ever tightens, never loosens, so a
-                    // smaller FRESH result still wins).
+                    // Floored at `min_dt`: admissibility gets easier as
+                    // `sub_dt` shrinks (`cfl_safe_speed` grows without bound,
+                    // `worst_ln_j_change` shrinks), so a violent substep can
+                    // succeed far below `min_dt`, and holding that for
+                    // `STICKY_HOLD_SUBSTEPS` (possibly into the next frame)
+                    // poisoned later CFL scans. The floor only limits the
+                    // hold; `sub_dt.min(held_dt)` still lets a fresh scan go
+                    // below `min_dt` when the state needs it.
                     self.fluid_sticky_fine_dt =
                         Some((sub_dt.max(self.config.min_dt), STICKY_HOLD_SUBSTEPS));
                 }
@@ -700,15 +590,14 @@ impl Simulation {
         //   placement exists for. Stays per-substep, unconditionally.
         // * `assert_owned_deformation_state` only VALIDATES -- it panics on an
         //   inconsistent strict-fluid state and changes nothing otherwise. The
-        //   real per-substep safety for those materials is enforced inside
-        //   their own `update_particle` (the J admissibility assert), so this
-        //   scan is a redundant second opinion. Running it once per FRAME
-        //   still catches any corruption within that frame, just at the frame
-        //   boundary instead of mid-substep.
+        //   per-substep safety for those materials is enforced inside their
+        //   own `update_particle` (the J admissibility assert), so this scan
+        //   is a second opinion. Running it once per FRAME still catches any
+        //   corruption within that frame, just at the frame boundary.
         //
-        // Live-measured: this scan was `project_us` ~2900 us of a ~29000 us
-        // step (10%), and in a fluid-only scene every particle takes the
-        // assert branch.
+        // Measured: this scan was `project_us` ~2900 us of a ~29000 us step
+        // (10%), and in a fluid-only scene every particle takes the assert
+        // branch.
         let validate_owned_state = self.substep_index_in_frame == 0;
         for i in 0..self.active_count {
             let material = self.materials.get(self.particles.material_id[i]);
@@ -776,10 +665,10 @@ impl Simulation {
         // created). No-op for every scene that never calls add_rod/with_rod.
         // Sleeping rods skip this entirely (see `Rod::sleeping` doc) -- they
         // neither scatter mass/momentum nor self-trigger their own wake check
-        // below; they're woken only by genuinely external activity.
+        // below; they're woken only by external activity.
         //
         // Grain -> grid scatter, same shared `Grid`, same convention as rods
-        // below -- see `grains::coupling`'s own doc. No-op for every scene
+        // below -- see `grains::coupling`'s doc. No-op for every scene
         // that never calls `add_grain_population`. Before the rods, so each
         // rod can tell whether it touches other matter.
         for population in &self.grain_populations {
@@ -811,13 +700,11 @@ impl Simulation {
             diagnostic.pending = Some(ledger);
         }
 
-        // TEMPORARY diagnostic (2026-08-30), `EMERGE_TRACK_BOUNDARY_BIAS`,
-        // see `transfer::diagnose_particle_divergence_decomposition`'s own
-        // doc. Deliberately placed HERE, right after the real P2G scatter,
-        // using the SAME `sub_dt` that scatter just used -- no separate
-        // reconstruction, no possible retry-`dt` mismatch. Stores only the
-        // pre-grid-update decomposition for now; `trace_final`/`dt_used`
-        // get filled in after G2P runs, below.
+        // Diagnostic, `EMERGE_TRACK_BOUNDARY_BIAS` (see
+        // `transfer::diagnose_particle_divergence_decomposition`): right
+        // after the P2G scatter, with the `sub_dt` it used. Stores the
+        // pre-grid-update decomposition; `trace_final`/`dt_used` are filled
+        // in after G2P below.
         if let Ok(spec) = std::env::var("EMERGE_TRACK_BOUNDARY_BIAS")
             && let Ok(tracked_index) = spec.parse::<usize>()
             && tracked_index < self.active_count
@@ -933,7 +820,7 @@ impl Simulation {
         // right after P2G's own momentum normalization -- before THIS substep's gravity,
         // boundary conditions, or contact resolution modify it -- to compute G2P's FLIP
         // residual. Cundall damping (SimConfig::cundall_damping) needs the exact same
-        // pre-force reference point -- see `Grid::apply_cundall_damping`'s own doc --
+        // pre-force reference point -- see `Grid::apply_cundall_damping`'s doc --
         // so both features share one snapshot. Taking it only when either feature is
         // enabled keeps every other scene on the exact original single-call path (zero
         // cost, zero behavior change).
@@ -1022,52 +909,32 @@ impl Simulation {
             self.config.mixture_pressure_iterations,
         );
         // Strict (single-phase) fluid incompressibility pressure projection
-        // (`grid::pressure`, see `SimConfig::fluid_pressure_iterations`'s own
-        // doc). Runs after boundary/contact/mixture resolution so it corrects
-        // the real post-gravity/post-wall velocity field, and before G2P so
-        // particles gather the corrected field. No-op when
-        // `fluid_pressure_iterations == 0`, the default -- every existing
-        // scene is unaffected.
+        // (`grid::pressure`, see `SimConfig::fluid_pressure_iterations`). Runs
+        // after boundary/contact/mixture resolution, so it corrects the
+        // post-gravity, post-wall velocity field, and before G2P. No-op at
+        // `fluid_pressure_iterations == 0`, the default.
         //
-        // Called `fluid_pressure_iterations` times in a row, not once --
-        // real, standard technique (outer corrector passes, the same
-        // principle PISO/SIMPLE-family incompressible-flow solvers use: one
-        // projection is a first-order splitting of a genuinely violent
-        // state, re-measuring the residual divergence AFTER a correction and
-        // correcting again converges much closer to a true divergence-free
-        // field than a single pass can, especially right after a violent
-        // impact the first substep(s) haven't had a chance to smooth yet --
-        // see MEMORY.md's fluid-recovery notes, Round 9, for why a single
-        // exact solve was confirmed (not guessed: Gauss-Seidel, which has no
-        // spectral artifacts at all, converged to the SAME extreme answer)
-        // to be the true solution of the underlying equation for an already-
-        // extreme input, not a solver artifact -- the fix has to reduce how
-        // extreme that input is allowed to get, which repeated correction
-        // within the same substep does directly.
+        // Called `fluid_pressure_iterations` times in a row: outer corrector
+        // passes, as in PISO/SIMPLE-family solvers. One projection is a
+        // first-order splitting of a violent state; re-measuring the residual
+        // divergence and correcting again gets much closer to divergence-free.
+        // A single exact solve (Gauss-Seidel gave the same answer) was the true
+        // solution for an already extreme input, so the fix is to keep the
+        // input from getting that extreme, which repeated correction does.
         let t_pressure = std::time::Instant::now();
         for _ in 0..self.config.fluid_pressure_iterations {
             self.grid
                 .project_fluid_incompressibility(self.config.grid_cell_size, 1);
-            // Real, confirmed bug (2026-08-09): the projection's own gradient
-            // correction (`Grid::project_fluid_incompressibility`) writes
-            // directly to `cell.momentum` with no awareness of the wall --
-            // it can (and, measured, does) push velocity back through a wall
-            // whose zero-normal-velocity condition was already satisfied by
-            // the `apply_boundary_conditions_to_grid` call above. G2P then
-            // gathers that un-reclamped field. Symptom, root-caused via
-            // direct per-substep instrumentation (not guessed): a particle
-            // resting against the floor showed a SUSTAINED (not spiking,
-            // never reversing) positive velocity-gradient trace every
-            // substep for over 100 frames, compounding `J` from ~1 to
-            // >1,000,000 -- while `grad_p` itself never exceeded 50 and the
-            // gathered `C` matrix never exceeded 200 in any single substep,
-            // ruling out a solver-accuracy/spike explanation (GS sweep count
-            // 5 vs 10 vs 30 made zero measurable difference). Re-applying the
-            // same boundary pass after every corrector iteration -- not just
-            // once at the end -- keeps the wall as the LAST word on grid
-            // velocity for every one of the `fluid_pressure_iterations`
-            // passes, matching the loop's own multi-pass-corrector
-            // rationale above.
+            // The projection's gradient correction
+            // (`Grid::project_fluid_incompressibility`) writes `cell.momentum`
+            // without knowing the wall, and pushed velocity back through a
+            // wall already satisfied by `apply_boundary_conditions_to_grid`.
+            // Measured: a particle resting on the floor read a sustained
+            // positive velocity-gradient trace for over 100 frames, J from ~1
+            // to >1,000,000, while `grad_p` stayed under 50 and `C` under 200
+            // (5, 10 or 30 GS sweeps made no difference). The boundary pass
+            // reruns after every corrector iteration, so the wall has the
+            // last word each time.
             for boundary in &self.boundaries {
                 apply_boundary_conditions_to_grid(&mut self.grid, grid_res, boundary.as_ref());
             }
@@ -1125,11 +992,10 @@ impl Simulation {
                 active_count: self.active_count,
                 asflip_blend: self.config.asflip_blend,
                 boundary_thickness: self.config.boundary_thickness,
-                // Real, honest, minor shared cost: if only `cundall_damping` is enabled
-                // (asflip_blend still 0.0), G2P still takes the `Some` branch and computes
-                // the extra pre-force stencil gather -- harmless (asflip_blend=0.0 zeroes
-                // its own contribution exactly) but not free. Reusing one snapshot for both
-                // features beats duplicating the mechanism; this is the real tradeoff.
+                // If only `cundall_damping` is enabled (asflip_blend still 0.0),
+                // G2P still takes the `Some` branch and computes the pre-force
+                // gather: harmless (asflip_blend = 0.0 zeroes its contribution)
+                // but not free. One snapshot for both features.
                 pre_force_snapshot: pre_force_snapshot.as_ref(),
                 // Computed at the END of the PREVIOUS substep, by the
                 // granular-fluidity pass alongside thermal/scalar diffusion
@@ -1175,10 +1041,9 @@ impl Simulation {
                     ledger.g2p_transfer_residual_f64 - ledger.g2p_mass_closure.delta_p_sum;
             }
         }
-        // TEMPORARY diagnostic (2026-08-30), see the P2G-side insertion
-        // above and `pending_divergence_diagnostic`'s own doc -- fills in
-        // the REAL, final `tr(C)` G2P just wrote onto the tracked
-        // particle, now that G2P has actually run this same substep.
+        // Diagnostic (see the P2G-side insertion above and
+        // `pending_divergence_diagnostic`): fills in the final `tr(C)` G2P
+        // just wrote onto the tracked particle.
         if let Some((tracked_index, trace_translation, trace_affine, trace_stress, _, dt_used)) =
             self.pending_divergence_diagnostic
         {
@@ -1220,22 +1085,14 @@ impl Simulation {
                 );
             }
         }
-        // Grid -> grain gather -- velocity only, does NOT advance position
-        // (unlike rods above): see `grains::coupling::gather_grid_to_grains`'s
-        // own doc for why grains need contact resolved before integration.
-        // Real APIC (2026-08-20), reusing the SAME `apic_blend` config knob
-        // ordinary particles already use (no new parameter) -- confirmed
-        // necessity for grains specifically: pure PIC held a real, jittered
-        // column-collapse frozen near its initial lattice shape (matches
-        // Jiang et al. 2015's own documented "PIC causes sand to clump
-        // together" finding); an interim pure-FLIP fix worked but showed
-        // real, literature-predicted noise/dt-instability. APIC is the
-        // literature's own real resolution to both problems at once.
-        // Also reuses `asflip_blend`/`pre_force_snapshot` (2026-08-20) --
-        // the SAME real hybrid ordinary particles already get from
-        // `gather_grid_to_particles`, no new config surface. `asflip_blend`
-        // defaults to 0.0 (every existing scene), so this is a zero-cost,
-        // zero-behavior-change extension until a scene explicitly opts in.
+        // Grid -> grain gather: velocity only, no position advance (unlike
+        // rods above), see `grains::coupling::gather_grid_to_grains` for why
+        // contact is resolved before integration. APIC, through the same
+        // `apic_blend` as particles: pure PIC froze a jittered column collapse
+        // near its lattice (Jiang et al. 2015's "PIC causes sand to clump
+        // together"), pure FLIP was noisy and dt-unstable. `asflip_blend`/
+        // `pre_force_snapshot` are shared with `gather_grid_to_particles`;
+        // `asflip_blend` defaults to 0.0.
         for population in &mut self.grain_populations {
             gather_grid_to_grains(
                 population,
@@ -1270,7 +1127,7 @@ impl Simulation {
                 // case pinned particles either, since a pinned particle's mass/stress
                 // SHOULD still be felt by neighbors, just not its velocity). A supposedly-
                 // fixed anchor was quietly injecting wind-driven momentum into the grid
-                // every substep -- a real, confirmed root cause of long-horizon energy
+                // every substep -- a confirmed root cause of long-horizon energy
                 // injection at every pinned+force-field composition, not just this scene.
                 if self.particles.pinned[i] != 0 {
                     continue;
@@ -1292,7 +1149,7 @@ impl Simulation {
         //
         // J-range check deferred to `do_substep_with_retry`'s own loop when
         // retry is enabled (see `assert_owned_deformation_state_j_range_
-        // deferred`'s own doc): that loop is the only caller of `do_substep`
+        // deferred`'s doc): that loop is the only caller of `do_substep`
         // in that configuration (the retry guard at the top of `do_substep_
         // with_retry` falls back to a plain, undeferred `do_substep` call
         // otherwise), and it already re-derives this exact bound to decide
@@ -1322,7 +1179,7 @@ impl Simulation {
         // matching the proven standalone `GrainPopulation::step`'s own
         // order. Gravity NOT reapplied here (already received via the
         // shared grid-update step) -- see
-        // `grains::coupling::apply_grain_contact_forces`'s own doc.
+        // `grains::coupling::apply_grain_contact_forces`'s doc.
         for population in &mut self.grain_populations {
             apply_grain_contact_forces(
                 population,
@@ -1333,31 +1190,18 @@ impl Simulation {
                 self.config.material_cfl_coefficient,
             );
         }
-        // Real, bounded grid-mediated rotational coupling between nearby
-        // grains -- see `grains::micro_rotation`'s own doc for the full
-        // story: replaces an earlier, reverted attempt that scattered
-        // `spin` directly into the shared momentum grid (exact for an
-        // isolated grain, but a confirmed unbounded energy leak once many
-        // spinning grains share overlapping grid nodes).
+        // Bounded grid-mediated rotational coupling between nearby grains
+        // (see `grains::micro_rotation`), replacing a scatter of `spin` into
+        // the momentum grid that was exact for one grain but leaked energy
+        // without bound once many spinning grains shared nodes.
         //
-        // Real, honest, disclosed status (2026-08-20): proven SAFE
-        // (unconditionally stable by construction, confirmed directly at
-        // both 1.0 and 1000x that value against a real, deterministic
-        // replay of a genuine near-instability capture) but NOT proven
-        // sufficient on its own to fix the real column-collapse isolation
-        // test's own frozen-lattice result (`tests/grains_grid_coupling.rs`)
-        // -- swept 1.0 to 1000.0, bit-for-bit IDENTICAL final spread ratio
-        // at every value. That test's own geometry dump shows the pile
-        // reaching a genuinely static, friction-locked mechanical
-        // equilibrium within the first ~20% of the run and simply staying
-        // there -- current leading hypothesis is that the grid coupling
-        // path itself gives the pile MORE stability than the same real
-        // contact_law physics provides standalone (not proven, not yet
-        // root-caused -- see memory for the full, real investigation
-        // history). Kept enabled at a modest value: real, safe, physically
-        // motivated (Cosserat-family rotational coupling), zero known
-        // downside -- just not, on its own, the fix for the frozen-column
-        // question above.
+        // Stable by construction (checked at 1.0 and 1000x on a replay of a
+        // near-instability), but it does not change the grid-coupled column
+        // collapse of `tests/grains_grid_coupling.rs`: swept from 1.0 to
+        // 1000.0, the final spread ratio is bit-for-bit identical. That pile
+        // locks into a static frictional equilibrium within the first ~20%
+        // of the run; why the grid-coupled pile is more stable than the same
+        // contact law standalone is not root-caused (#28).
         const GRAIN_MICRO_ROTATION_COUPLING_MODULUS: f32 = 1.0;
         for population in &mut self.grain_populations {
             couple_grain_spin_to_local_average(
@@ -1377,11 +1221,9 @@ impl Simulation {
             if rod.sleeping || rod.use_implicit_integration {
                 continue;
             }
-            // Real root gravitropism (Porat, Rivière, Meroz 2024 -- see
-            // `rod::gravitropism` module doc): evolves the tip's own
-            // rest_curvature toward gravity-alignment. No-op for every rod
-            // that doesn't opt in (plain stems/blades don't grow toward
-            // gravity).
+            // Root gravitropism (Porat, Rivière, Meroz 2024 -- see
+            // `rod::gravitropism`): evolves the tip's rest_curvature toward
+            // gravity alignment. No-op for rods that do not opt in.
             if let Some(gravitropism) = &rod.gravitropism {
                 apply_gravitropism(
                     &mut rod.points,
@@ -1391,10 +1233,9 @@ impl Simulation {
                     sub_dt,
                 );
             }
-            // Real phototropism (Cholodny & Went auxin-asymmetry theory --
-            // see `rod::gravitropism` module doc's own "Phototropism reuses
-            // the SAME core" section). No-op for every rod that doesn't
-            // opt in.
+            // Phototropism (Cholodny & Went auxin asymmetry -- see
+            // `rod::gravitropism`'s "Phototropism reuses the SAME core").
+            // No-op for rods that do not opt in.
             if let Some(phototropism) = &rod.phototropism {
                 apply_phototropism(
                     &mut rod.points,
@@ -1404,9 +1245,8 @@ impl Simulation {
                     sub_dt,
                 );
             }
-            // Real elongation growth (Verhulst 1838 logistic law -- see
-            // `rod::growth` module doc). No-op for every rod that doesn't
-            // opt in.
+            // Elongation growth (Verhulst 1838 logistic law -- see
+            // `rod::growth`). No-op for rods that do not opt in.
             if let Some(growth) = &mut rod.growth {
                 apply_growth(
                     &mut rod.points,
@@ -1417,12 +1257,10 @@ impl Simulation {
                     sub_dt,
                 );
             }
-            // Real stress-driven secondary growth (Jaffe 1973, Mattheck &
-            // Kübler 1995 -- see `rod::secondary_growth` module doc). No-op
-            // for every rod that doesn't opt in. Gated on the rod STILL
-            // being over-critical -- see the other call site's own doc for
-            // the real, measured bug this fixes (unbounded stiffening long
-            // past the point it was actually needed).
+            // Stress-driven secondary growth (Jaffe 1973, Mattheck & Kübler
+            // 1995 -- see `rod::secondary_growth`). No-op for rods that do not
+            // opt in. Gated on the rod still being over-critical, so it stops
+            // stiffening once no longer needed (see the other call site).
             if let Some(secondary_growth) = &rod.secondary_growth {
                 let gravity_si = self.config.gravity.length() * self.config.dx_meters;
                 if rod.buckling_warning(gravity_si).is_some() {
@@ -1434,10 +1272,8 @@ impl Simulation {
                     );
                 }
             }
-            // Real elastic-perfectly-plastic bending (see `rod::plasticity`
-            // module doc) -- same ordering rationale as the implicit branch's
-            // own call site: mechanical yield applies on top of whatever
-            // biological reshaping already happened this substep.
+            // Elastic-perfectly-plastic bending (see `rod::plasticity`), after
+            // this substep's biological reshaping, as in the implicit branch.
             if let Some(plasticity) = &rod.plasticity {
                 apply_bending_plasticity(&mut rod.points, plasticity, self.config.dx_meters);
             }
@@ -1513,7 +1349,7 @@ impl Simulation {
         // whose rules are thermodynamic -- which cannot change within a frame,
         // since diffusion advances once per `step()` -- can opt into
         // once-per-step via `SimConfig::phase_rules_once_per_step` and skip
-        // ~17 redundant O(N) scans per frame. See that field's own doc.
+        // ~17 redundant O(N) scans per frame. See that field's doc.
         let evaluate_phase_rules =
             !self.config.phase_rules_once_per_step || self.substep_index_in_frame == 0;
         if !self.phase_rules.is_empty() && evaluate_phase_rules {
@@ -1523,7 +1359,7 @@ impl Simulation {
                 for rule in &rules {
                     if let Some(new_id) = rule(&p) {
                         // Shared with `Simulation::phase_transition` -- see
-                        // `apply_phase_transition`'s own doc (`solver::
+                        // `apply_phase_transition`'s doc (`solver::
                         // particles`) for the real elastic-reference
                         // rebaseline this applies (the fix for a genuine
                         // fluid->solid "spring" artifact) and the
@@ -1558,39 +1394,18 @@ impl Simulation {
         // keeps swinging. Never sleeps mid-push (`push_strength > 0`), since
         // that's a live interaction the caller is actively driving.
         //
-        // Must sleep on a sustained duration below threshold, not the instant
-        // `max_speed_sq < threshold_sq`: a freshly-constructed rod trivially
-        // satisfies that (`v = Vec2::ZERO` at birth) before gravity/grid coupling
-        // gets a chance to act within one tiny substep, so it could fall asleep on
-        // its very first substep, then skip its own gravity entirely while
-        // "asleep" until external activity woke it -- receiving the entire
-        // deferred gravitational transient at once as an unphysical velocity
-        // spike. Every major real-time physics engine (Box2D's documented
-        // `b2_timeToSleep = 0.5s`, Bullet, PhysX) requires staying below threshold
-        // for a minimum duration, not one instant, for exactly this reason.
+        // Sleep needs a sustained duration below threshold, not one instant:
+        // a new rod has `v = 0` before gravity acts, would sleep on its first
+        // substep, and later receive the deferred fall as one velocity spike
+        // (Box2D's `b2_timeToSleep = 0.5s`, Bullet and PhysX do the same).
         //
-        // Real root-cause fix (user-reported "never settles straight",
-        // headlessly confirmed): a FIXED settle-duration (this used to be a
-        // single constant, 0.5s) is wrong for ANY rod whose own natural
-        // period is comparable to or longer than that fixed window. A
-        // rod's velocity genuinely dips near zero at every swing peak, not
-        // just at true rest -- if the fixed window is short enough relative
-        // to the period, the sustained-below-threshold requirement can
-        // complete DURING a single slow peak of a still-large-amplitude
-        // swing, freezing the rod there at a real, wrong, off-rest position.
-        // A soft demo blade (period ~0.53s) froze
-        // several cells from true vertical rest at a fixed 0.5s window, and
-        // even bumping that fixed constant up only shifts the same failure
-        // to an even slower rod -- the real fix is SCALING the window to
-        // each rod's OWN period, not picking a bigger universal constant.
-        // `ROD_SLEEP_SETTLE_PERIODS=3.0`: three full natural periods of
-        // sustained quiet is real headroom past any single swing peak's own
-        // dwell time, for any rod's own stiffness/mass. Clamped to
-        // `[ROD_SLEEP_SETTLE_MIN_SECONDS, ROD_SLEEP_SETTLE_MAX_SECONDS]`:
-        // the floor preserves the original anti-instant-sleep protection
-        // above for a very stiff/fast rod (three periods of a very fast rod
-        // could be under a millisecond); the ceiling keeps an extremely
-        // soft/slow rod from waiting an impractically long real time.
+        // The window scales with the rod's own natural period: velocity also
+        // dips near zero at every swing peak, and a fixed 0.5 s froze a soft
+        // blade (period ~0.53 s) several cells off vertical. Three periods
+        // (`ROD_SLEEP_SETTLE_PERIODS`) clears any single peak's dwell,
+        // clamped to `[ROD_SLEEP_SETTLE_MIN_SECONDS,
+        // ROD_SLEEP_SETTLE_MAX_SECONDS]` so a very stiff rod keeps the
+        // anti-instant-sleep floor and a very soft one does not wait forever.
         const ROD_SLEEP_SETTLE_PERIODS: f32 = 3.0;
         const ROD_SLEEP_SETTLE_MIN_SECONDS: f32 = 0.3;
         const ROD_SLEEP_SETTLE_MAX_SECONDS: f32 = 8.0;
@@ -1644,13 +1459,10 @@ impl Simulation {
     }
 }
 
-/// Real macro-spin (antisymmetric velocity-gradient component, the ordinary
-/// vorticity) for a particle: `0.5*(dvy/dx - dvx/dy)`. Same field-access
-/// convention `sand.rs`'s own `strain_rate_norm` computation already uses
-/// for the symmetric part -- `l.x_axis.y` = dvy/dx, `l.y_axis.x` = dvx/dy.
-/// Plain `fn` (not a closure) so it coerces to `CosseratField::apply`'s
-/// fn-pointer parameter, matching `GranularFluidityField::pressure_and_ratio`'s
-/// own caller-supplied convention.
+/// Macro-spin (the antisymmetric velocity-gradient part, vorticity) of a
+/// particle: `0.5*(dvy/dx - dvx/dy)`, with `l.x_axis.y` = dvy/dx and
+/// `l.y_axis.x` = dvx/dy as in `sand.rs`'s `strain_rate_norm`. A plain `fn`
+/// so it coerces to `CosseratField::apply`'s fn-pointer parameter.
 fn macro_spin_from_velocity_gradient(p: &crate::particle::Particle) -> f32 {
     let l = p.velocity_gradient;
     0.5 * (l.x_axis.y - l.y_axis.x)

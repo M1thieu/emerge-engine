@@ -1,24 +1,18 @@
-//! Real electric potential field on a 2D grid, solved by relaxing Laplace's
-//! equation (Gauss's law with zero charge density in air, ∇²φ = 0) via
-//! Jacobi iteration -- the same numerical family `ScalarDiffusionField`'s
-//! own diffusion already uses (Laplace is that same PDE's zero-source,
-//! steady-state limit: `∂φ/∂t = D∇²φ` settles to `∇²φ = 0`), but a pure
-//! GRID field with no particle coupling -- the potential between a cloud
-//! and the ground doesn't live on any particle, unlike temperature or
-//! moisture.
+//! Electric potential field on a 2D grid, from Laplace's equation (Gauss's
+//! law with zero charge in air, ∇²φ = 0) by Jacobi relaxation, the family of
+//! `ScalarDiffusionField` (Laplace is the zero-source steady state of
+//! `∂φ/∂t = D∇²φ`), as a pure grid field: the potential between a cloud and
+//! the ground lives on no particle, unlike temperature or moisture.
 //!
-//! Generic, not lightning-specific: this is a real, reusable steady-state
-//! potential-field solver, usable for any problem needing one (a first real
-//! application is dielectric-breakdown / lightning-leader growth, see
-//! `super::leader`, since the leader grows toward the strongest local
-//! field, `-∇φ`).
+//! A general steady-state potential solver; its first use is
+//! dielectric-breakdown (lightning-leader) growth, `super::leader`, since a
+//! leader grows toward the strongest local field, `-∇φ`.
 //!
 //! Dirichlet boundaries top/bottom (fixed potential each -- e.g. cloud=0,
 //! ground=1), Neumann (zero-gradient, copy-nearest) on the left/right sides
-//! -- an open lateral domain. Same convention the real reference
-//! implementation this was checked against uses
-//! (github.com/diluuuu10/triggered-discharge, cloned in `tmp/` -- Jacobi
-//! relaxation for the potential field, confirmed via that repo's own code).
+//! -- an open lateral domain, as in the reference implementation checked
+//! against (github.com/diluuuu10/triggered-discharge, cloned in `tmp/`,
+//! Jacobi relaxation of the potential).
 
 use glam::Vec2;
 
@@ -28,27 +22,19 @@ pub struct ElectricPotentialField {
     height: usize,
     phi: Vec<f32>,
     phi_next: Vec<f32>,
-    /// Real, generalized Dirichlet overlay: `Some(v)` pins a cell at
-    /// potential `v` every relaxation sweep, `None` leaves it free. The
-    /// top/bottom rows start pinned this way at construction -- but this is
-    /// the SAME mechanism a growing conductor (a dielectric-breakdown
-    /// leader channel) uses to extend the boundary as it grows (see `pin`'s
-    /// own doc): a real conductor is an equipotential, so once a cell joins
-    /// the channel, the field around it must be solved as if THAT cell were
-    /// also a fixed-potential electrode, which is the actual physical
-    /// mechanism (field concentration ahead of a growing conductive tip)
-    /// that makes a leader grow roughly toward its own origin's field
-    /// direction instead of uniformly at random.
+    /// Dirichlet overlay: `Some(v)` pins a cell at potential `v` every sweep,
+    /// `None` leaves it free. The top and bottom rows start pinned. A growing
+    /// conductor (a leader channel) extends the boundary the same way (see
+    /// `pin`): a conductor is an equipotential, so a cell joining the channel
+    /// becomes a fixed-potential electrode, and the field concentrating ahead
+    /// of its tip is what steers the leader.
     fixed: Vec<Option<f32>>,
 }
 
 impl ElectricPotentialField {
-    /// Real initial guess: linear interpolation from `top_value` to
-    /// `bottom_value`. Not required for correctness -- Jacobi relaxation
-    /// converges from any starting state, including all-zero -- but a
-    /// starting guess already close to the true solution converges in far
-    /// fewer iterations than starting flat, the same real reason a good
-    /// initial guess matters for any iterative solver.
+    /// Initial guess: linear interpolation from `top_value` to `bottom_value`.
+    /// Jacobi converges from any start, including zero, but a start near the
+    /// solution converges in far fewer iterations.
     pub fn new(width: usize, height: usize, top_value: f32, bottom_value: f32) -> Self {
         assert!(
             width > 0 && height > 0,
@@ -101,7 +87,7 @@ impl ElectricPotentialField {
 
     /// One Jacobi relaxation sweep: interior cells become the average of
     /// their 4 neighbors (the real discretization of `∇²φ=0` -- see
-    /// `ScalarDiffusionField`'s own doc for the identical Laplacian finite-
+    /// `ScalarDiffusionField`'s doc for the identical Laplacian finite-
     /// difference form, just without the diffusion coefficient/dt scaling
     /// since this solves the steady state directly rather than stepping
     /// toward it in time). Top/bottom rows stay pinned at the Dirichlet
@@ -140,11 +126,9 @@ impl ElectricPotentialField {
         std::mem::swap(&mut self.phi, &mut self.phi_next);
     }
 
-    /// Repeated relaxation -- see `relax_step`'s own doc. Real convergence
-    /// rate for Jacobi iteration on a Laplace grid is `O(N^2)` sweeps for an
-    /// `N`-cell-tall domain (no acceleration here, e.g. no red-black
-    /// Gauss-Seidel or multigrid -- a real, disclosed simplification,
-    /// matching the reference implementation's own plain Jacobi approach).
+    /// Repeated relaxation (see `relax_step`). Plain Jacobi needs `O(N^2)`
+    /// sweeps for an `N`-cell-tall domain (no red-black Gauss-Seidel or
+    /// multigrid acceleration, like the reference implementation).
     pub fn relax_n(&mut self, iterations: usize) {
         for _ in 0..iterations {
             self.relax_step();
@@ -155,10 +139,8 @@ impl ElectricPotentialField {
         self.phi[self.idx(x, y)]
     }
 
-    /// Real electric field `E = -∇φ`, central difference (one-sided at
-    /// domain edges). This is the actual physics the ball-on-a-hill
-    /// analogy describes: the field points DOWNHILL (toward lower
-    /// potential), with magnitude equal to the slope.
+    /// Electric field `E = -∇φ`, central difference (one-sided at the domain
+    /// edges): it points toward lower potential, with the slope as magnitude.
     pub fn field_at(&self, x: usize, y: usize) -> Vec2 {
         let xl = x.saturating_sub(1);
         let xr = (x + 1).min(self.width - 1);
@@ -176,14 +158,10 @@ impl ElectricPotentialField {
 mod electric_potential_field_tests {
     use super::*;
 
-    /// Real, closed-form check: with uniform Dirichlet top/bottom and
-    /// Neumann sides, and no x-varying feature anywhere in the domain, the
-    /// EXACT analytic solution to Laplace's equation has no x-dependence at
-    /// all -- it's the 1D linear interpolation `new()` already initializes
-    /// to. That means this starting state is already the fixed point of
-    /// the Jacobi iteration: relaxing it further should change nothing
-    /// (within float tolerance), confirming `relax_step` doesn't introduce
-    /// a bug that perturbs an already-correct state.
+    /// With uniform Dirichlet top and bottom, Neumann sides and nothing varying
+    /// in x, Laplace's exact solution is the 1D linear interpolation `new()`
+    /// starts from, a fixed point of the Jacobi iteration: relaxing changes
+    /// nothing (within float tolerance).
     #[test]
     fn uniform_case_is_a_fixed_point_of_relaxation() {
         let mut field = ElectricPotentialField::new(16, 32, 0.0, 1.0);
@@ -200,12 +178,10 @@ mod electric_potential_field_tests {
         }
     }
 
-    /// Real convergence check, starting from a WRONG initial guess (flat
-    /// zero, not the linear interpolation `new()` normally starts from):
-    /// after enough relaxation, the field must still converge to the same
-    /// real analytic solution -- a uniform field pointing from high to low
-    /// potential, magnitude `(bottom-top)/(height-1)`, zero in x. This is
-    /// the textbook parallel-plate capacitor field solution.
+    /// From a wrong start (flat zero, not `new()`'s interpolation), relaxation
+    /// converges to the analytic solution: a uniform field from high to low
+    /// potential, magnitude `(bottom-top)/(height-1)`, zero in x (the
+    /// parallel-plate capacitor field).
     #[test]
     fn converges_to_uniform_field_from_a_flat_start() {
         const WIDTH: usize = 16;
@@ -224,7 +200,7 @@ mod electric_potential_field_tests {
                 field.phi_next[i] = 0.0;
             }
         }
-        // O(N^2) plain-Jacobi convergence -- see relax_n's own doc.
+        // O(N^2) plain-Jacobi convergence -- see relax_n's doc.
         field.relax_n(HEIGHT * HEIGHT * 4);
 
         let expected_field_y = -(BOTTOM - TOP) / (HEIGHT as f32 - 1.0);

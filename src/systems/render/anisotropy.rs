@@ -3,18 +3,17 @@
 //!
 //! ## Why this exists
 //!
-//! `curvature_flow.wgsl`'s splat is already anisotropic: it transforms each
-//! candidate cell's offset through a per-particle 2x2 matrix before evaluating
-//! the isotropic B-spline kernel. Until now that matrix came from the
-//! particle's own `deformation_gradient` (composed with a velocity-stretch
-//! term). That works for a solid, but it degenerates for a fluid, and the
-//! reason is constitutive rather than incidental: a liquid carries no shear
-//! memory, so its `F` stays isotropic (`sqrt(J) * I`) by definition, and the
-//! velocity-stretch term is `1 + |v|*dt / kernel_radius`, which is ~1 for any
+//! `curvature_flow.wgsl`'s splat transforms each candidate cell's offset
+//! through a per-particle 2x2 matrix before evaluating the isotropic
+//! B-spline kernel. Built only from the particle's `deformation_gradient`
+//! (composed with a velocity-stretch term), that matrix works for a solid
+//! but degenerates for a fluid, for a constitutive reason: a liquid carries
+//! no shear memory, so its `F` stays isotropic (`sqrt(J) * I`), and the
+//! velocity-stretch term, `1 + |v|*dt / kernel_radius`, is ~1 for any
 //! CFL-limited step. The product collapses to a scaled identity, every
-//! particle splats the same symmetric blob, and blobs sitting on a regular
-//! spawn lattice interfere -- the visible regular crosshatch/"white noise"
-//! over fluid surfaces.
+//! particle splats the same symmetric blob, and blobs on a regular spawn
+//! lattice interfere into a visible crosshatch ("white noise") over fluid
+//! surfaces.
 //!
 //! Yu & Turk's answer is to derive the kernel's shape from the *neighborhood*
 //! instead of from the material state: a weighted PCA of nearby particle
@@ -30,8 +29,8 @@
 //!
 //! The matrix this module returns is normalized to `det == 1` -- a pure
 //! *shape*, carrying orientation and aspect ratio but no size. Size continues
-//! to come from the existing kernel radius and from `F`'s own `J`, exactly as
-//! before. Two consequences, both wanted:
+//! to come from the existing kernel radius and from `F`'s own `J`. Two
+//! consequences:
 //!
 //! - It composes multiplicatively with the existing `motion_stretch * F`
 //!   without changing the splat's total footprint area, so the mass the splat
@@ -39,32 +38,24 @@
 //!   untouched.
 //! - Because a covariance of positions scales as (length)^2 and the
 //!   normalization divides that scale straight back out, the result is
-//!   invariant to the absolute particle spacing. The same code is correct at
-//!   ant scale and at landscape scale with no retuning -- the property this
-//!   was chosen for.
+//!   invariant to the absolute particle spacing: the same code is correct at
+//!   ant scale and at landscape scale with no retuning.
 //!
 //! It is also material-agnostic: it reads positions only, so sand, water,
 //! snow and tissue all get the same treatment with no per-material branch.
 //!
-//! CPU-first per this project's own rule ("CPU correctness first, GPU port
-//! second"): the math lives here, unit-tested against the cases that actually
-//! matter (flat sheet, isotropic bulk, sparse splash), so the GPU port is a
-//! translation of verified code rather than eigendecomposition debugged
-//! through a shader.
-//!
-//! Disclosed 2026-08-23: this Rust implementation does NOT run at runtime --
-//! `curvature_flow.wgsl` carries its own hand-ported copy of this exact
-//! math (that shader's own comment says so explicitly), since WGSL has no
-//! way to share code with a `.rs` module. This file's real, live job is
-//! being the verified reference the shader was ported from and is checked
-//! against, per the rule above -- not a dead-code oversight.
+//! This Rust code does not run at runtime: `curvature_flow.wgsl` carries a
+//! hand-ported copy of the same math (WGSL cannot share code with a `.rs`
+//! module). This file is the unit-tested reference (flat sheet, isotropic
+//! bulk, sparse splash) the shader is ported from and checked against, per
+//! "CPU correctness first, GPU port second".
 
 use glam::{Mat2, Vec2};
 
 /// Tunables for [`kernel_shape_from_neighbors`].
 ///
-/// Every field is a real, stated quantity rather than a scene-fitted fudge --
-/// see each one's own doc for where its default comes from.
+/// Every field is a stated quantity rather than a scene-fitted fudge --
+/// see each one's doc for where its default comes from.
 #[derive(Clone, Copy, Debug)]
 pub struct AnisotropyParams {
     /// Neighbor search radius, in grid cells.

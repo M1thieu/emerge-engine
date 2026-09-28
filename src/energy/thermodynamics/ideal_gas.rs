@@ -1,37 +1,26 @@
-//! Ideal gas equation of state -- pure IRL physics, SI units, same
-//! "library function" convention as `transfer.rs`'s scalar primitives.
+//! Ideal gas equation of state in SI units, as plain library functions like
+//! `transfer.rs`'s scalar primitives.
 //!
-//! Real gap this addressed (2026-08-17): the engine shipped 13 material
-//! models (solids, granular, liquids) but had never modeled a gaseous
-//! phase. Confirmed via real literature search (2026-08-17, not
-//! guessed) that the Material Point Method genuinely extends to
-//! compressible gas dynamics -- Wikipedia's own MPM article states MPM
-//! simulates "solids, liquids, gases, and any other continuum material";
-//! a foundational reference specifically titled *"An Introduction to the
-//! Material Point Method using a Case Study from Gas Dynamics"* exists
-//! (Y. Guilkey et al.). The real, structural difference from this
-//! engine's existing weakly-compressible liquids
-//! (`NewtonianFluidMaterial`'s Tait EOS) is the equation of state itself:
-//! a liquid's Tait form `p = B·((ρ/ρ₀)^γ − 1)` has a real, empirically-
-//! fitted stiffness `B` and a nonzero rest pressure at ρ=ρ₀; an ideal gas
-//! has NO such offset -- pressure genuinely goes to zero as density does
-//! (`p = 0` at `ρ = 0`), a pure power law, not shifted.
+//! MPM covers compressible gas dynamics as well as solids and liquids (see
+//! Guilkey et al., "An Introduction to the Material Point Method using a
+//! Case Study from Gas Dynamics"). What separates a gas from this engine's
+//! weakly compressible liquids (`NewtonianFluidMaterial`'s Tait EOS) is the
+//! equation of state: Tait's `p = B·((ρ/ρ₀)^γ − 1)` has a fitted stiffness
+//! `B` and an offset at ρ=ρ₀, while an ideal gas's pressure goes to zero
+//! with density (`p = 0` at `ρ = 0`), an unshifted power law.
 //!
-//! # Scope, honestly bounded (2026-08-17, updated 2026-08-18)
-//! This file is the EOS/sound-speed layer -- verified against the real,
-//! independently-known speed of sound in air, two different ways (see
-//! this file's own tests). `matter::materials::gas::IdealGasMaterial` (landed
-//! 2026-08-18) is the real `MaterialModel` wired on top of it: kirchhoff
-//! stress from `ideal_gas_pressure`, shock viscosity via the shared
-//! `matter::materials::utils::von_neumann_richtmyer_q` (the same real
-//! Von Neumann & Richtmyer 1950 term liquids use, fed this EOS's own real
-//! γ instead of Tait's stand-in). CPU only -- no GPU shader branch yet
-//! (`ConstitutiveModel::Gas`'s own doc), and NOT yet verified against
-//! Sod's shock tube (the standard real, exact-analytical-solution
-//! benchmark for a compressible-gas solver, Toro *Riemann Solvers and
-//! Numerical Methods for Fluid Dynamics* -- needs an iterative Riemann
-//! solver for the star-region pressure, genuinely more work, real next
-//! step).
+//! # Scope
+//! This file is the EOS and sound-speed layer, checked against the speed of
+//! sound in air two ways (see the tests).
+//! `matter::materials::gas::IdealGasMaterial` is the `MaterialModel` on top:
+//! Kirchhoff stress from `ideal_gas_pressure`, shock viscosity from the
+//! shared `matter::materials::utils::von_neumann_richtmyer_q` (Von Neumann
+//! & Richtmyer 1950, the term liquids use) with this EOS's γ. CPU only, no
+//! GPU shader branch yet (see `ConstitutiveModel::Gas`). Not yet checked
+//! against Sod's shock tube, the exact-solution benchmark for compressible
+//! gas solvers (Toro, *Riemann Solvers and Numerical Methods for Fluid
+//! Dynamics*), which needs an iterative Riemann solver for the star-region
+//! pressure.
 
 /// Specific gas constant for dry air (J/(kg·K)) -- `R/M`, universal gas
 /// constant R=8.314 J/(mol·K) divided by air's real molar mass
@@ -75,7 +64,7 @@ pub fn ideal_gas_sound_speed(pressure_pa: f32, density_kg_m3: f32, adiabatic_ind
 /// to `ideal_gas_sound_speed` after substituting `p = ρRT` -- exposed
 /// separately since a caller often has temperature directly rather than a
 /// paired pressure/density, and because the two forms agreeing is itself
-/// a real, useful self-consistency check -- see this file's own test).
+/// a useful self-consistency check -- see this file's own test).
 #[inline]
 pub fn ideal_gas_sound_speed_from_temperature(
     specific_gas_constant_j_kg_k: f32,
@@ -89,21 +78,18 @@ pub fn ideal_gas_sound_speed_from_temperature(
 mod tests {
     use super::*;
 
-    /// Real, independently-known reference: dry air at 20°C (293.15 K),
-    /// standard density ~1.204 kg/m³, resonates at the commonly-cited
-    /// ~343 m/s speed of sound (the number every acoustics/aviation
-    /// textbook quotes). Two independent checks: the pressure-form and
-    /// temperature-form sound-speed formulas must agree with each other
-    /// (real internal consistency of the ideal gas law itself), AND both
-    /// must land near the real 343 m/s external reference.
+    /// Dry air at 20°C (293.15 K) and ~1.204 kg/m³ has the commonly quoted
+    /// ~343 m/s speed of sound. Two checks: the pressure-form and
+    /// temperature-form sound-speed formulas agree with each other (internal
+    /// consistency of the ideal gas law), and both land near 343 m/s.
     #[test]
     fn air_at_room_temperature_matches_the_real_343_m_s_reference() {
         let density = 1.204_f32;
         let temperature = 293.15_f32; // 20°C
 
         let pressure = ideal_gas_pressure(density, AIR_SPECIFIC_GAS_CONSTANT_J_KG_K, temperature);
-        // Real sanity: this should land near standard atmospheric pressure
-        // (101,325 Pa) for real air at these real density/temperature values.
+        // Should land near standard atmospheric pressure (101,325 Pa) for air
+        // at this density and temperature.
         assert!(
             (pressure - 101_325.0).abs() / 101_325.0 < 0.01,
             "ideal gas pressure at real air density/temperature should match \
@@ -132,9 +118,8 @@ mod tests {
         );
     }
 
-    /// Real, physically expected trend: hotter air has a genuinely faster
-    /// speed of sound (√T dependence) -- the real reason a trumpet/organ
-    /// pipe's pitch rises in warm air, not asserted blind.
+    /// Hotter air has a faster speed of sound (√T dependence), which is why a
+    /// trumpet or organ pipe's pitch rises in warm air.
     #[test]
     fn hotter_air_has_a_faster_real_sound_speed() {
         let cold = ideal_gas_sound_speed_from_temperature(
@@ -154,9 +139,8 @@ mod tests {
         );
     }
 
-    /// Real structural distinction from the Tait EOS liquids use: an
-    /// ideal gas's pressure genuinely vanishes as density does (no rest-
-    /// pressure offset), unlike Tait's `-1` term.
+    /// Unlike the Tait EOS liquids use, an ideal gas's pressure vanishes with
+    /// density (no rest-pressure offset, no `-1` term).
     #[test]
     fn pressure_vanishes_with_density() {
         let p = ideal_gas_pressure(0.0, AIR_SPECIFIC_GAS_CONSTANT_J_KG_K, 293.15);

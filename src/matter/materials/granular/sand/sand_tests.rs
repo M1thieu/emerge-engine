@@ -1,11 +1,6 @@
-//! Core `DruckerPragerMaterial` test suite -- split out of `sand.rs` (2026-08-05),
-//! same reasoning as `elastic/elastic_tests.rs`: the constitutive-model file should
-//! read as the model, not scroll past its own test suites to get there. This file
-//! holds the material's own always-relevant correctness checks (presets, the
-//! analytical marginal-yield-surface derivation, scale-contract integration).
-//! The much larger, distinct Nonlocal Granular Fluidity research investigation's
-//! own tests live separately in `sand_ngf_tests.rs` -- a genuinely different
-//! research topic, not force-merged into one file just because both touch sand.
+//! Core `DruckerPragerMaterial` tests: presets, the analytical
+//! marginal-yield-surface derivation, the scale contract. The Nonlocal
+//! Granular Fluidity investigation's tests are in `sand_ngf_tests.rs`.
 
 use super::*;
 
@@ -13,9 +8,8 @@ use super::*;
 mod preset_tests {
     use super::*;
 
-    /// Real, direct check that `gravel()` sets the exact real, cited
-    /// friction/dilatancy angles documented on the constructor -- not just
-    /// "compiles and returns something."
+    /// `gravel()` sets the friction and dilatancy angles its constructor
+    /// documents.
     #[test]
     fn gravel_preset_matches_its_own_documented_real_angles() {
         let g = DruckerPragerMaterial::gravel(1.0e5, 0.2);
@@ -29,21 +23,16 @@ mod preset_tests {
             "expected real, disclosed 8deg dilatancy, got {}",
             g.dilatancy_angle.to_degrees()
         );
-        // Real, standard geotechnical fact this preset is grounded in
-        // (verified 2026-08-04): gravel's real friction angle spans
-        // 30-48 degrees -- 42 must sit inside that real range, not just
-        // match itself.
+        // Gravel's friction angle spans 30-48 degrees; 42 must lie inside.
         assert!(
             (30.0..=48.0).contains(&g.friction_angle.to_degrees()),
             "gravel's friction angle must fall inside the real, cited 30-48deg range"
         );
     }
 
-    /// Real, closed-form check: for the standard cohesionless presets,
-    /// `predicted_repose_angle_deg()` must exactly equal the real friction
-    /// angle each preset already documents (Coulomb 1776's own real
-    /// relationship for a cohesionless pile, see the method's own doc) --
-    /// not an approximation, an exact identity by construction.
+    /// For the cohesionless presets, `predicted_repose_angle_deg()` equals the
+    /// friction angle each preset documents (Coulomb 1776, see the method),
+    /// exactly.
     #[test]
     fn predicted_repose_angle_matches_friction_angle_exactly_for_every_preset() {
         let cases: [(DruckerPragerMaterial, f32); 4] = [
@@ -226,32 +215,21 @@ mod marginal_yield_tests {
     }
 }
 
-/// Real, headless first measurement of the Nonlocal Granular Fluidity
-/// coupling (Phase 3 of the NGF plan) -- DIAGNOSTIC, not yet a pass/fail
-/// regression: the real outcome isn't known ahead of time, so this reports
-/// honest numbers rather than asserting a threshold picked in advance.
+/// Headless measurement of the Nonlocal Granular Fluidity coupling: a
+/// diagnostic that reports numbers, not a pass/fail check.
 ///
-/// Runs on `SimConfig::earth` (real SI throughout: `dx_meters`, `dt_seconds`,
-/// gravity) rather than the arbitrary-unit convention `tests/accuracy.rs`'s
-/// own Lajeunesse benchmark uses, because `GranularFluidityField::apply`'s
-/// reaction step divides by `t0_s` (real seconds) and multiplies by
-/// `sub_dt` -- mixing a real-seconds `t0_s` against an arbitrary substep
-/// time unit is a genuine units error. Real SI sand properties (E=15MPa,
-/// nu=0.3, matching Haeri & Skonieczny 2022's own Excavation case,
-/// cross-checked internally consistent: their bulk modulus B=12.5MPa at
-/// E=15MPa implies nu=0.3 exactly via K=E/(3(1-2nu))). Since this is a
-/// genuinely different (real-SI) scene than `tests/accuracy.rs`'s own
-/// Lajeunesse benchmark, this test measures its own fresh cohesionless
-/// baseline under the same config rather than reusing that benchmark's
-/// arbitrary-unit numbers.
+/// Runs on `SimConfig::earth` (SI throughout) rather than the arbitrary
+/// units of `tests/accuracy.rs`'s Lajeunesse benchmark, because
+/// `GranularFluidityField::apply` divides by `t0_s` (seconds) and multiplies
+/// by `sub_dt`. SI sand of Haeri & Skonieczny 2022's excavation case (E = 15
+/// MPa, nu = 0.3; their B = 12.5 MPa gives nu = 0.3 through K = E/(3(1-2nu))),
+/// with its own cohesionless baseline under the same config.
 ///
-/// Internal (not `tests/accuracy.rs`) because the pressure/stress-ratio
-/// closure needs `svd2` and the real Hencky-strain formula, both
-/// crate-internal -- same reason `marginal_yield_tests` above lives here.
+/// Internal (not in `tests/accuracy.rs`) because the pressure/stress-ratio
+/// closure needs `svd2` and the Hencky-strain formula, both crate-internal,
+/// like `marginal_yield_tests` above.
 /// Ties `scale_contract`'s REV-derived grid-resolution check to this
-/// material's own real grain diameter, so the module is exercised against a
-/// real material's real constant rather than sitting wired to nothing but
-/// its own standalone unit tests.
+/// material's grain diameter.
 #[cfg(test)]
 mod scale_contract_integration {
     use super::*;
@@ -275,10 +253,9 @@ mod scale_contract_integration {
         let (lo, hi) = window.unwrap();
         assert!(lo < hi);
 
-        // Informational, not asserted pass/fail -- per `scale_contract`'s own
-        // doc, callers decide what to do with a `false` result. Reports
-        // whether this session's own small collapsed-pile scenes (cell_m=0.01,
-        // pile height ~0.12m) sit inside the physically valid window.
+        // Informational, not asserted: callers decide what a `false` means
+        // (see `scale_contract`). Reports whether small collapsed-pile scenes
+        // (cell_m = 0.01, pile height ~0.12 m) sit inside the valid window.
         let small_pile_valid = dx_in_valid_granular_range(CELL_M, GRAIN_DIAMETER_M, 0.12);
         println!(
             "scale_contract: cell_m={CELL_M} grain_diameter_m={GRAIN_DIAMETER_M} \
@@ -292,10 +269,8 @@ mod saturation_cohesion_tests {
     use super::*;
     use crate::materials::MaterialModel;
 
-    /// Real, direct check on the inert default: `saturation_cohesion_coeff`
-    /// starts at 0.0 (`new()`'s own default), so `cohesion_bonus_pa` must
-    /// return exactly 0.0 regardless of saturation -- the "byte-identical to
-    /// every existing scene" guarantee this field's own doc promises.
+    /// `saturation_cohesion_coeff` starts at 0.0, so `cohesion_bonus_pa` is
+    /// exactly 0.0 at any saturation.
     #[test]
     fn cohesion_bonus_is_inert_by_default() {
         let dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
@@ -309,10 +284,9 @@ mod saturation_cohesion_tests {
         }
     }
 
-    /// Real check on the pendular-regime shape: rises with saturation up to
-    /// `pendular_regime_ceiling`, then plateaus -- the disclosed
-    /// simplification `cohesion_bonus_pa`'s own doc describes (real rise,
-    /// real cap, NOT the full post-peak decline).
+    /// The pendular-regime shape: rises with saturation up to
+    /// `pendular_regime_ceiling`, then plateaus (no post-peak decline, see
+    /// `cohesion_bonus_pa`).
     #[test]
     fn cohesion_bonus_rises_through_pendular_regime_then_plateaus() {
         let dp = DruckerPragerMaterial {
@@ -336,8 +310,7 @@ mod saturation_cohesion_tests {
             (at_ceiling - dp.saturation_cohesion_coeff).abs() < 1.0e-4,
             "at the ceiling, bonus should equal the full coefficient, got {at_ceiling}"
         );
-        // Real, disclosed scope limit: this core does NOT model the real
-        // literature's post-peak decline -- it plateaus instead of falling.
+        // The post-peak decline of the literature is not modelled: it plateaus.
         assert_eq!(
             past_ceiling, at_ceiling,
             "past the pendular ceiling this simplified core plateaus, doesn't decline"
@@ -345,7 +318,7 @@ mod saturation_cohesion_tests {
         assert_eq!(fully_saturated, at_ceiling);
     }
 
-    /// The real, load-bearing proof, not just a check on the raw formula in
+    /// The load-bearing proof, not just a check on the raw formula in
     /// isolation: a trial strain state that WOULD yield when dry must NOT
     /// yield once wet enough, because `saturation_cohesion_term` genuinely
     /// raises the yield threshold inside `project()` -- confirms the wiring
@@ -359,8 +332,8 @@ mod saturation_cohesion_tests {
             ..DruckerPragerMaterial::cohesionless(1.0e5, 0.2)
         };
 
-        // A real, marginal trial state: small deviatoric strain, near-zero
-        // trace, chosen so the dry case genuinely yields (gamma > 0) but
+        // A marginal trial state: small deviatoric strain, near-zero
+        // trace, chosen so the dry case yields (gamma > 0) but
         // isn't buried so deep past the surface that the cohesion bonus
         // couldn't plausibly matter.
         let sigma = Vec2::new(1.003, 0.997);
@@ -393,9 +366,8 @@ mod saturation_cohesion_tests {
     }
 }
 
-/// Real correctness checks for `MaterialModel::current_friction_
-/// coefficient` (Material-Induced Boundary Friction, Blatny & Gaume 2025)
-/// -- see that trait method's own doc and this material's own override.
+/// `MaterialModel::current_friction_coefficient` (Material-Induced Boundary
+/// Friction, Blatny & Gaume 2025) for this material.
 #[cfg(test)]
 mod current_friction_coefficient_tests {
     use super::*;
@@ -409,17 +381,11 @@ mod current_friction_coefficient_tests {
         Particles::from(vec![p])
     }
 
-    /// Real, direct check: at the default `compaction_sensitivity=0.0`,
-    /// `current_friction_coefficient` must match a hand-called
-    /// `tan(phi(q, 0.0, 0.0))` exactly -- NOT `alpha(q, 0.0)`, a real,
-    /// caught-before-shipping distinction (see the method's own doc):
-    /// `alpha` is the DP cone's own geometry-specific coefficient, a
-    /// different real number from the ordinary Coulomb wall convention
-    /// `FrictionBoundary` needs. Cross-checked against the real, known
-    /// identity `tan(35deg)~=0.700` (matching `FrictionBoundary`'s own
-    /// long-standing hand-picked default almost exactly) at `q=0.696`,
-    /// this material's own real neutral/rest hardening state
-    /// (`friction_residual/hardening_peak` for the `cohesionless` preset).
+    /// At the default `compaction_sensitivity = 0.0`,
+    /// `current_friction_coefficient` equals a hand-called `tan(phi(q, 0.0,
+    /// 0.0))`, not `alpha(q, 0.0)` (the cone's coefficient, see the method).
+    /// Checked at `q = 0.696`, the `cohesionless` preset's rest hardening
+    /// (`friction_residual/hardening_peak`), against `tan(35deg) ~= 0.700`.
     #[test]
     fn matches_tan_phi_at_zero_compaction_sensitivity() {
         let dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
@@ -437,12 +403,9 @@ mod current_friction_coefficient_tests {
                 "current_friction_coefficient must match tan(phi(q, 0.0, 0.0)) exactly at q={q}"
             );
         }
-        // Real, independent cross-check at this preset's own real neutral
-        // rest state: q = friction_residual/hardening_peak makes phi(q) =
-        // friction_angle EXACTLY (see `init_particle`'s own comment) --
-        // 35deg for `cohesionless`, so `tan(phi)` here must land near the
-        // real, known `tan(35deg)~=0.700` identity, not `alpha`'s own
-        // ~0.386 for the same angle.
+        // At the rest state q = friction_residual/hardening_peak, phi(q) =
+        // friction_angle exactly (see `init_particle`): 35 degrees for
+        // `cohesionless`, so tan(phi) lands near 0.700, not alpha's ~0.386.
         let q_rest = dp.friction_residual / dp.hardening_peak;
         let at_rest = dp
             .current_friction_coefficient(&particle_with_q(q_rest), 0)
@@ -454,10 +417,9 @@ mod current_friction_coefficient_tests {
         );
     }
 
-    /// Real, disclosed scope limit: once `compaction_sensitivity != 0.0`,
-    /// the real coefficient needs a `trace` this pass doesn't recompute --
-    /// must return `None` (fall back to the boundary's own fixed
-    /// coefficient), never a silently wrong value that ignores compaction.
+    /// With `compaction_sensitivity != 0.0` the coefficient needs a `trace`
+    /// this does not recompute, so it returns `None` (the boundary keeps its
+    /// own coefficient).
     #[test]
     fn returns_none_when_compaction_sensitivity_is_nonzero() {
         let mut dp = DruckerPragerMaterial::cohesionless(1.0e5, 0.2);
@@ -467,64 +429,31 @@ mod current_friction_coefficient_tests {
     }
 }
 
-/// Real, isolated, controlled measurement of `use_pradhana` -- see that
-/// field's own doc/citation. Deliberately NOT the full poured-pile scene
-/// (`tests/accuracy.rs`'s own `sand_pile_built_by_slow_pour_*` family,
-/// expensive and already known to have a SEPARATE, unrelated confound) --
-/// checks the mechanism's own sign/direction on a synthetic scenario first,
-/// matching this project's own "measure before trusting a derived sign"
-/// discipline (the exact discipline that caught two real sign bugs in this
-/// project's DEM implicit-integration prototype work).
+/// Controlled measurement of `use_pradhana` on a synthetic particle, not the
+/// poured-pile scene (`tests/accuracy.rs`'s `sand_pile_built_by_slow_pour_*`,
+/// expensive and with a separate confound): checks the mechanism's sign
+/// first.
 ///
-/// **Real history, both real attempts disclosed, not just the current one**:
-/// a FIRST design (accumulate `trace.max(0.0)` into a debt that shifts the
-/// tension-cutoff TRIGGER condition, carrying debt forward unchanged
-/// through ordinary shear-yield, clearing only on a genuinely elastic step)
-/// was built, measured, and found to REALLY overcorrect: baseline settles
-/// at `log_volume_strain=+0.002` under sustained load, that design drifted
-/// to -0.625 and still falling at the same step count -- a real, disclosed
-/// negative result (see git history / `project_pradhana_correction_built_
-/// and_found_not_working_2026-09-13`, project memory, for the full
-/// account). Root cause: Blatny's own real reference has FOUR branches
-/// (elastic / deep-tension / shear-yield-WITH-volumetric-correction /
-/// pure-shear-yield), debt accumulating in two and clearing in the other
-/// two; this material's simpler two-branch model (tension-cutoff /
-/// trace-preserving shear-yield, this file's own "Case III") has no branch
-/// equivalent to Blatny's "shear-yield WITH volumetric correction", so
-/// shifting the TRIGGER never had a clean home for the debt to live in.
+/// A first design shifted the tension-cutoff trigger by an accumulated debt
+/// and overcorrected: under sustained load the baseline settles at
+/// `log_volume_strain = +0.002`, that design drifted to -0.625 and still
+/// falling. Blatny's reference has four branches, one of them shear yield
+/// with volumetric correction; this material's two (tension cutoff and
+/// trace-preserving shear yield, "Case III") give the debt nowhere to live.
 ///
-/// **Current design, re-targeted at the projection itself, not the
-/// trigger**: after directly re-reading `tmp/sparkl`'s own real, published
-/// Drucker-Prager reference (confirmed byte-identical to this material's
-/// own tension-cutoff/apex-return structure -- this is textbook-correct DP
-/// theory, not a bug), the real mechanism was traced precisely: EVERY
-/// tension-cutoff firing sets `log_volume_strain` to track `ln(prev_det)`
-/// unconditionally, with zero memory across firings. `eps_pl_vol_pradhana`
-/// is now a real BOUNDED FLAG (not an unbounded accumulator): the first
-/// tension-cutoff firing since the particle was last genuinely non-yielding
-/// applies the normal, real, correct correction and sets the flag; any
-/// FURTHER firing before a real non-yielding step is a genuine no-op
-/// (`ProjectedBranch::DebtBlocked` -- trial state passed through unchanged,
-/// verified zero effect on `log_volume_strain`/`friction_hardening`) rather
-/// than re-injecting more volume on top of what this compaction cycle
-/// already gave back once.
+/// The current design acts on the projection: every tension-cutoff firing
+/// sets `log_volume_strain` to `ln(prev_det)` with no memory (the
+/// projection itself matches `tmp/sparkl`'s textbook DP), so
+/// `eps_pl_vol_pradhana` is a bounded flag: the first firing since the
+/// particle was last non-yielding applies the correction and sets it; later
+/// firings are no-ops (`ProjectedBranch::DebtBlocked`) until a non-yielding
+/// step. Under the same sustained load `corrected` settles at
+/// `log_volume_strain ~= 1.5e-8` against the baseline's `+0.002`
+/// (`pradhana_holds_near_zero_volumetric_drift_under_sustained_load`).
 ///
-/// **Real, measured result on the SAME sustained-load scenario the first
-/// design failed on**: `corrected` now settles at `log_volume_strain ~=
-/// 1.5e-8` (real floating-point zero) vs baseline's own `+0.002` -- BETTER
-/// than the uncorrected baseline, not an overcorrection. See
-/// `pradhana_holds_near_zero_volumetric_drift_under_sustained_load` below.
-///
-/// **Real, disclosed, still-open question this module's own next test
-/// answers**: the sustained-load scenario keeps the SAME compaction cycle
-/// going the whole time (one continuous tension-cutoff streak), which is
-/// exactly where a per-cycle flag helps. A REAL poured pile's impacts are
-/// separate, brief events with genuine intervening rest -- does the flag
-/// (which resets on real non-yielding behavior) still help THAT case, or
-/// does each new pour simply get its own fresh "free" correction, same gap
-/// the first design also had? See
-/// `pradhana_effect_across_repeated_separate_impact_episodes` for the real,
-/// measured answer -- not assumed either way.
+/// Sustained load is one long compaction cycle, where a per-cycle flag
+/// helps; a poured pile has separate impacts with rest between them, which
+/// `pradhana_effect_across_repeated_separate_impact_episodes` measures.
 #[cfg(test)]
 mod pradhana_correction_tests {
     use super::*;
@@ -541,16 +470,13 @@ mod pradhana_correction_tests {
         Particles::from(vec![p])
     }
 
-    /// Drives one particle through a real anisotropic expansion impact (a
-    /// PURELY isotropic `diag(a,a)` would keep `dev_norm` exactly 0.0 the
-    /// whole run, tripping this branch's own `dev_norm == 0.0` OR-condition
-    /// regardless of the pradhana shift -- a real bug caught in this test's
-    /// own first draft before this fix), then holds it under sustained
-    /// anisotropic compression (same reasoning -- not `L=0`, which freezes
-    /// `F` at exactly the tension-cutoff's own rotation-only output and
-    /// re-triggers `dev_norm == 0.0` forever regardless of debt, another
-    /// real bug caught here). Returns the full `(log_volume_strain,
-    /// friction_hardening)` trajectory.
+    /// Drives one particle through an anisotropic expansion impact (a purely
+    /// isotropic `diag(a,a)` keeps `dev_norm` at exactly 0.0 the whole run,
+    /// tripping the branch's `dev_norm == 0.0` OR-condition whatever the
+    /// pradhana shift), then holds it under sustained anisotropic compression
+    /// (not `L=0`, which freezes `F` at the tension cutoff's rotation-only
+    /// output and re-triggers `dev_norm == 0.0` forever whatever the debt).
+    /// Returns the full `(log_volume_strain, friction_hardening)` trajectory.
     fn run_impact_then_sustained_load(use_pradhana: bool, settle_steps: usize) -> Vec<(f32, f32)> {
         let dp = DruckerPragerMaterial {
             use_pradhana,
@@ -580,12 +506,9 @@ mod pradhana_correction_tests {
         log
     }
 
-    /// Real, honest measurement backing this module's own disclosed
-    /// negative-result doc above -- reports the actual divergence, does not
-    /// assume the mechanism works before checking. Real, current result
-    /// (the bounded-flag design, NOT the first, overcorrecting attempt --
-    /// see module doc): `corrected` settles at real floating-point zero,
-    /// BETTER than baseline's own small residual drift.
+    /// Reports the divergence of the bounded-flag design under sustained load:
+    /// `corrected` settles at floating-point zero, below the baseline's small
+    /// drift.
     #[test]
     fn pradhana_holds_near_zero_volumetric_drift_under_sustained_load() {
         let baseline = run_impact_then_sustained_load(false, 200);
@@ -615,28 +538,18 @@ mod pradhana_correction_tests {
         );
     }
 
-    /// Real, direct answer to this module's own open question: a REAL
-    /// poured pile's impacts are separate, brief events with genuine
-    /// intervening rest, not one continuous compaction cycle -- does the
-    /// per-cycle flag still help there, or does each new pour just get its
-    /// own fresh "free" correction (the same real gap the FIRST, reverted
-    /// design also had)? Drives the SAME particle through several
-    /// independent impact-then-rest episodes and compares TOTAL accumulated
-    /// `log_volume_strain` drift, baseline vs corrected.
+    /// A poured pile's impacts are separate events with rest between them,
+    /// not one compaction cycle: does the per-cycle flag still help, or does
+    /// each impact get a fresh free correction? Drives one particle through
+    /// several impact-then-rest episodes and compares the total
+    /// `log_volume_strain` drift, baseline against corrected.
     ///
-    /// Real, disclosed test-design fix, NOT `L=0` for the whole rest phase:
-    /// tension-cutoff's own output is an EXACT pure rotation (`sigma=(1,1)`,
-    /// `dev_norm=0`) -- a real bug already caught once earlier this session
-    /// (the FIRST design's own "full rest" scratch test) is that freezing
-    /// `L` at exactly zero right after such a firing leaves `dev_norm`
-    /// stuck at EXACTLY 0.0 forever, independently re-triggering this
-    /// branch's OWN `dev_norm == 0.0` half of its condition regardless of
-    /// the mechanism being tested -- a measurement artifact, not a real
-    /// finding. Fixed the same way as this file's own sustained-load test:
-    /// a brief real compression phase first (reusing the exact gradient
-    /// already verified to drive the particle to genuine elastic
-    /// equilibrium by step ~91 in that test) to reach a real,
-    /// non-degenerate rest state, THEN `L=0` is safe.
+    /// Each rest phase starts with a brief compression (the gradient that
+    /// brings the particle to elastic equilibrium by step ~91 in the
+    /// sustained-load test) before `L = 0`: tension cutoff leaves an exact
+    /// pure rotation (`dev_norm = 0`), and with `L = 0` right after it
+    /// `dev_norm` stays exactly 0 and retriggers the branch's own
+    /// `dev_norm == 0.0` condition, an artifact of the test.
     #[test]
     #[ignore = "premise no longer holds: the baseline it compares against was the f32 round-off in the F product, now pinned by advance_deformation_gradient. Baseline log_volume_strain over 15 episodes read a small positive number before the pin and -2.19e-8 after, so the sign this test asserts is round-off, not the physical volume gain Pradhana corrects. Needs a scene where that gain is real."]
     fn pradhana_effect_across_repeated_separate_impact_episodes() {

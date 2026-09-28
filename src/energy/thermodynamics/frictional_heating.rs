@@ -15,7 +15,7 @@
 //! condition, not matter with a temperature), that the heat then conducts
 //! away on its own (`ThermalDiffusion` does that, if a scene runs it), or
 //! that the normal part of an impact is heat -- see `apply_coulomb_wall`'s
-//! own doc for why only the tangential part is reported.
+//! doc for why only the tangential part is reported.
 
 /// Temperature rise, in kelvin, from a specific dissipated energy.
 ///

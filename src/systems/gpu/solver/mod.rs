@@ -417,10 +417,10 @@ impl GpuSimulation {
 // Trivial public accessors/setters (GPU handle sharing, CPU-mirror access, material
 // registry management, frame/timing state) -- split into their own file (`mod
 // accessors` declared up top alongside the other 9 submodules), see accessors.rs's
-// own doc comment.
+// doc comment.
 
 // White-box device-lost tests -- split into their own file (was ~240 lines inline
-// here), see device_lost_tests.rs's own doc comment for why it must stay a
+// here), see device_lost_tests.rs's doc comment for why it must stay a
 // submodule (super::* private-field access) rather than a standalone integration test.
 #[cfg(test)]
 mod device_lost_tests;

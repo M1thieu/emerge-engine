@@ -10,7 +10,7 @@ use super::GpuSimulation;
 /// Per-substep dispatch-skip gates -- bundled instead of 4 separate bool args to
 /// `encode_substep` (crossed the project's own no-`#[allow]` line for argument count,
 /// same real precedent as `P2GParticleState` in `spacetime::transfer`: a struct, not a
-/// suppressed lint). Each `true` means the corresponding real, measured optional pass
+/// suppressed lint). Each `true` means the corresponding measured optional pass
 /// actually runs this substep; `false` means it's skipped entirely, not just a no-op.
 #[derive(Clone, Copy)]
 pub(super) struct SubstepGates {
@@ -23,15 +23,10 @@ pub(super) struct SubstepGates {
     /// skipped, a REPLACEMENT of two passes with one. See `g2p_asflip_fused.wgsl`'s own
     /// doc for why fusion is structurally required.
     pub(super) asflip_active: bool,
-    /// Real GPU port of the CPU-proven fluid incompressibility pressure
-    /// projection (`fluid_pressure.wgsl`) -- mirrors CPU's own
-    /// `SimConfig::fluid_pressure_iterations` exactly (0 = off, the default,
-    /// every existing scene unaffected; N = real outer-corrector-pass count,
-    /// same PISO/SIMPLE-family repeated-correction technique CPU's own
-    /// `step.rs` doc already explains). 0 for every scene as of this
-    /// writing -- no caller sets it above 0 yet (see the real-time fluid
-    /// pressure-projection plan for the real remaining contact-detection
-    /// wiring that will).
+    /// Outer-corrector passes of the fluid incompressibility pressure
+    /// projection (`fluid_pressure.wgsl`), as CPU's
+    /// `SimConfig::fluid_pressure_iterations`: 0 = off (the default), N =
+    /// repeated PISO/SIMPLE-style corrections (see CPU `step.rs`).
     pub(super) fluid_pressure_iterations: u32,
     /// Re-detect which grid blocks are occupied this substep (swap+clear -> count ->
     /// compact). `false` reuses the previous substep's list, which stays correct while no
@@ -128,7 +123,7 @@ impl GpuSimulation {
             // Multi-field contact (GPU port, first slice) -- must run strictly after p2g
             // (reads grip mass p2g just scattered) and strictly before grid_update, same
             // ordering CPU's own step.rs enforces between scatter_particles_to_grid,
-            // gather_contact_point_cloud, and update_velocities. A real, separate compute
+            // gather_contact_point_cloud, and update_velocities. A separate compute
             // pass (not folded into p2g_main itself) specifically so this barrier is
             // enforced -- see p2g.wgsl's gather_contact_points_main doc.
             self.profile_stamp(pass, 3, false);
@@ -162,36 +157,29 @@ impl GpuSimulation {
             pass.dispatch_workgroups(2 * NUM_BLOCKS as u32, 1, 1);
             self.profile_stamp(pass, 5, true);
         }
-        // Real GPU port of the CPU-proven Chorin-style fluid incompressibility
-        // pressure projection (`fluid_pressure.wgsl`) -- runs after grid_update
-        // (needs the real, gravity/boundary-applied velocity field) and before
-        // G2P (particles must gather the CORRECTED field), same real ordering
-        // CPU's own `step.rs` doc already establishes for this exact mechanism.
-        // `fluid_pressure_iterations == 0` (every scene as of this writing --
-        // no caller sets it above 0 yet) skips all of this entirely, same
-        // dispatch-skip discipline as `contact_active`/`force_fields_needed`
-        // above -- zero cost, byte-identical behavior to before this feature
-        // existed.
+        // Chorin-style fluid incompressibility pressure projection
+        // (`fluid_pressure.wgsl`): after grid_update (needs the gravity- and
+        // boundary-applied velocity field), before G2P (particles gather the
+        // corrected field), the order CPU's `step.rs` uses.
+        // `fluid_pressure_iterations == 0` (the default) skips the whole
+        // block, like `contact_active`/`force_fields_needed` above.
         if fluid_pressure_iterations > 0 {
-            // Real per-CELL passes (grid_res x grid_res domain, workgroup_size
-            // 16x16 in fluid_pressure.wgsl) -- NOT `particle_wg`, which is
-            // sized for the particle count and would under- or over-dispatch
-            // depending on how particle_count compares to grid_res². Ceiling
-            // division so a grid_res not a multiple of 16 is still fully
-            // covered (the shader's own bounds check discards the excess).
+            // Per-cell passes (grid_res x grid_res domain, workgroup_size 16x16
+            // in fluid_pressure.wgsl), not `particle_wg`, which is sized for the
+            // particle count. Ceiling division covers a grid_res that is not a
+            // multiple of 16 (the shader's bounds check discards the excess).
             let grid_wg = (self.config.grid_res as u32).div_ceil(16);
             {
                 pass.set_pipeline(&self.pipelines.fluid_pressure_setup);
                 pass.dispatch_workgroups(grid_wg, grid_wg, 1);
             }
-            // Real, fixed, even sweep count per outer iteration -- matches
-            // CPU's own `GS_CORRECTION_SWEEPS=10` (see `pressure.rs`'s own
-            // doc for why 10, not fewer or more: a live per-sweep convergence
-            // dump showed the max per-cell delta dropping ~100x by sweep 10,
-            // an order of magnitude below the pressure field's own working
-            // scale). EVEN so the final answer always lands back in
-            // `fp_pressure_a`, which `fluid_pressure_correct` reads
-            // unconditionally -- see fluid_pressure.wgsl's own module doc.
+            // Fixed, even sweep count per outer iteration, CPU's
+            // `GS_CORRECTION_SWEEPS=10` (see `pressure.rs`: a per-sweep dump
+            // showed the max per-cell delta dropping ~100x by sweep 10, an order
+            // of magnitude below the pressure field's working scale). Even, so
+            // the result lands back in `fp_pressure_a`, which
+            // `fluid_pressure_correct` reads (see fluid_pressure.wgsl's module
+            // doc).
             const JACOBI_SWEEPS: u32 = 30;
             for sweep in 0..JACOBI_SWEEPS {
                 let pipeline = if sweep % 2 == 0 {
@@ -209,7 +197,7 @@ impl GpuSimulation {
         }
         if asflip_active {
             // ASFLIP (GPU port) -- REPLACES the gather + update half of `g2p_update` with
-            // one fused dispatch of its own. See g2p_asflip_fused.wgsl's own doc for why
+            // one fused dispatch of its own. See g2p_asflip_fused.wgsl's doc for why
             // fusion is structurally required.
             self.profile_stamp(pass, 6, false);
             pass.set_pipeline(&self.pipelines.g2p_asflip_fused);
@@ -266,7 +254,7 @@ impl GpuSimulation {
         // above. Independent system (own buffers/group), can run alongside thermal in
         // the same frame (both gated separately) even though both currently carry
         // state in particle.temperature -- a real scene using both simultaneously
-        // would need a genuine second carrier, same limitation the CPU precedent has.
+        // would need a second carrier, same limitation the CPU precedent has.
         if resource_active {
             let grid_res = self.config.grid_res as u32;
             let cell_wg = (grid_res * grid_res).div_ceil(64);

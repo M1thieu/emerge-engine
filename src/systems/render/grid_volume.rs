@@ -11,7 +11,7 @@ use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource}
 
 impl Renderer {
     /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
-    /// own doc for the real technique). Requires `set_camera` to have been called
+    /// doc for the real technique). Requires `set_camera` to have been called
     /// first (same as `render_gpu` needs for its own bind group) -- reuses the
     /// identical cached orthographic projection/grid_res so both modes line up on
     /// screen without re-deriving them.
@@ -26,17 +26,13 @@ impl Renderer {
         let (sx, tx, sy, ty) = self.cached_ortho;
         let grid_res = self.cached_grid_res;
         self.ensure_grid_visibility_capacity(device, grid_res);
-        // Real per-particle cell-mass scale here is order 0.5-4 per occupied
-        // cell; 0.15 requires non-trivial local density before showing anything,
-        // instead of any measurable trace (which combined with bilinear smoothing
-        // would overshoot true particle extent). SAME floor the visibility step
-        // below gates on, so the hysteresis band and the raw discard agree.
-        // Scaled by the caller's real full-cell mass (see
-        // `Renderer::grid_reference_cell_mass`'s own doc). 0.15 is now a
-        // FRACTION of a full cell -- "needs non-trivial local density before
-        // showing anything" -- instead of an absolute number that silently
-        // assumed a particular density calibration. Defaults to 1.0, so every
-        // existing caller keeps the exact previous threshold.
+        // A fraction of the caller's full-cell mass (see
+        // `Renderer::grid_reference_cell_mass`, default 1.0): a cell needs
+        // non-trivial local density (0.15 of a full cell) before it shows,
+        // not any measurable trace, which with bilinear smoothing would
+        // overshoot the particles' true extent. The visibility step below
+        // gates on the same floor, so the hysteresis band and the raw
+        // discard agree.
         let mass_floor = 0.15 * self.grid_reference_cell_mass;
         queue.write_buffer(
             &self.grid_volume_params_buf,
@@ -72,11 +68,10 @@ impl Renderer {
             &self.specular_r0,
         );
 
-        // Real hysteresis visibility step -- see `grid_volume.wgsl`'s own
-        // `grid_visibility_step_main` doc. Reads the SAME raw grid buffer
-        // the render pass below samples, must run before it in this
-        // encoder so `fs_main`'s discard sees this frame's decision, not
-        // last frame's.
+        // Hysteresis visibility step (see `grid_volume.wgsl`'s
+        // `grid_visibility_step_main`). Reads the raw grid buffer the render
+        // pass below samples, and runs before it in this encoder so
+        // `fs_main`'s discard sees this frame's decision, not last frame's.
         let grid_visibility_step_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("grid_visibility_step_bg"),
             layout: &self.grid_visibility_step_bgl,

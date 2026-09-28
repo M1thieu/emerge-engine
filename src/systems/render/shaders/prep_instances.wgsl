@@ -66,14 +66,14 @@ struct RenderConfig {
 // High σ_a = strong absorption = dark / hue-shifted toward complementary color.
 // .w = σ_s, reduced scattering coefficient (single scalar -- real tissue scattering
 // is far less wavelength-dependent than absorption in the visible range, Jacques
-// 2013 -- used for a real, bounded single-scattering-albedo subsurface approximation,
+// 2013 -- used for a bounded single-scattering-albedo subsurface approximation,
 // not a full BSSRDF/diffusion simulation).
 //
 // specular[i].x = R0, Fresnel base reflectance (Schlick 1994 approximation) for
 // material slot i. This renderer has no surface-normal estimation (particle
 // instances, not a reconstructed/raytraced surface), so this is a constant
 // near-normal-incidence reflectance, not a view-angle-dependent Fresnel term --
-// a real, cited, but honestly bounded simplification.
+// a cited, but honestly bounded simplification.
 struct OpticalTable {
     slots: array<vec4<f32>, 16>,
     specular: array<vec4<f32>, 16>,
@@ -178,7 +178,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let transmitted = exp(-sigma_a * optical_depth);
         //
         // Subsurface scattering (single-scattering albedo approximation, real but
-        // bounded -- see OpticalTable's own doc). Real single-scattering albedo:
+        // bounded -- see OpticalTable's doc). Real single-scattering albedo:
         //   a = σ_s / (σ_s + σ_a)
         // Light lost to absorption alone would just leave the medium dark; real
         // scattering tissue instead looks brighter/softer than pure absorption
@@ -190,7 +190,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let with_scattering = mix(transmitted, scatter_glow, clamp(albedo, vec3(0.0), vec3(1.0)));
         //
         // Specular: constant near-normal Fresnel reflectance (Schlick 1994), real
-        // but bounded -- see OpticalTable's own doc for why this isn't view-angle
+        // but bounded -- see OpticalTable's doc for why this isn't view-angle
         // dependent. Adds a small additive highlight, real magnitude (water R0~0.02).
         let r0 = optics.specular[slot].x;
         let with_specular = with_scattering + vec3(r0);
@@ -207,12 +207,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         //
         if physical.spatial.z > 0.5 {
-            // Real SI radiative transfer: absorption, single scattering and
+            // SI radiative transfer: absorption, single scattering and
             // Fresnel together (`radiative_transfer.inc.wgsl`). A particle
             // has no surface normal, so reflection is evaluated at normal
-            // incidence -- the same disclosed limitation `OpticalTable`'s
-            // own doc already states for this path, now at least anchored
-            // to a real R0 instead of added flat.
+            // incidence (the limitation `OpticalTable`'s doc states), with
+            // the Fresnel R0 rather than a flat added term.
             let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
             let path_m = (1.0 / j) * view_length_m;
             let radiance = slab_radiance(
@@ -242,7 +241,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         color = vec4(clamp(thermal, vec3(0.0), vec3(1.0)), 1.0);
     } else if config.mode == 6u {
         // ByScalarField: generic second carrier (resource/grass level, pheromone,
-        // nutrients -- see Particle::scalar_field's own doc). Unlike temperature,
+        // nutrients -- see Particle::scalar_field's doc). Unlike temperature,
         // this field has no universal physical scale, so no normalization divisor --
         // callers own fields in roughly [0,1] (matches GpuResourceParams' own
         // logistic carrying-capacity convention).

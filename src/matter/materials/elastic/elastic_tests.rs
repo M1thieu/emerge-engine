@@ -14,18 +14,13 @@ mod small_strain_linear_elasticity_tests {
 
     /// **Small-strain limit must recover exact linear elasticity (Hooke's law).**
     ///
-    /// `NeoHookeanMaterial` had zero test comparing its stress-strain response to
-    /// any real/analytical elasticity result (confirmed via a full test-file
-    /// audit, 2026-07-07) -- only stability (J>0, symmetry) and damage-direction
-    /// checks existed. Every well-formed hyperelastic model must reduce to
-    /// isotropic linear elasticity as strain -> 0: sigma = lambda*tr(eps)*I +
-    /// 2*mu*eps for infinitesimal strain eps. Derivation for THIS model's exact
-    /// formula (tau = (mu/J)*dev(B) + (k/2)*(J^2-1)*I, k=lambda+mu, B=F*F^T):
-    /// for F = I + delta*E (E symmetric, delta small), linearizing to O(delta)
-    /// gives tau ~= 2*mu*delta*dev(E) + (lambda+mu)*delta*tr(E)*I, which is
-    /// EXACTLY sigma = lambda*tr(eps)*I + 2*mu*eps with eps=delta*E (the plane-
-    /// strain form, matching this material's own k=lambda+mu bulk modulus
-    /// fix). Verified numerically here, not just derived by hand.
+    /// Every well-formed hyperelastic model reduces to isotropic linear
+    /// elasticity as strain -> 0: sigma = lambda*tr(eps)*I + 2*mu*eps. For this
+    /// model (tau = (mu/J)*dev(B) + (k/2)*(J^2-1)*I, k = lambda+mu, B = F*F^T) and
+    /// F = I + delta*E (E symmetric, delta small), linearizing to O(delta) gives
+    /// tau ~= 2*mu*delta*dev(E) + (lambda+mu)*delta*tr(E)*I, which is exactly
+    /// sigma = lambda*tr(eps)*I + 2*mu*eps with eps = delta*E (the plane-strain
+    /// form, with k = lambda+mu). Checked numerically here.
     pub(super) fn particle_with_f(f: Mat2) -> Particles {
         let mut particles = Particles::default();
         particles.push(Particle {
@@ -56,7 +51,7 @@ mod small_strain_linear_elasticity_tests {
         particles
     }
 
-    /// Real analytical Hooke's law prediction: sigma = lambda*tr(eps)*I + 2*mu*eps.
+    /// Analytical Hooke's law prediction: sigma = lambda*tr(eps)*I + 2*mu*eps.
     fn linear_elastic_prediction(lambda: f32, mu: f32, eps: Mat2) -> Mat2 {
         let tr_eps = eps.x_axis.x + eps.y_axis.y;
         Mat2::from_diagonal(Vec2::splat(lambda * tr_eps)) + 2.0 * mu * eps
@@ -165,32 +160,23 @@ mod poisson_response_tests {
     use super::*;
     use glam::Vec2;
 
-    /// **Free lateral (Poisson) response, real gap found 2026-08-04**: every
-    /// existing small-strain test above prescribes an ARBITRARY strain E and
-    /// checks the stress FORMULA matches Hooke's law for that E -- none test
-    /// what the material actually DOES when pulled in one direction and left
-    /// free to move in the other (the real, physically meaningful "Poisson
-    /// ratio" behavior). This model is an explicitly documented 2D
-    /// PLANE-STRAIN formulation (`kirchhoff_stress`'s own doc: bulk modulus
-    /// `k=lambda+mu`, NOT the 3D `k=lambda+2mu/3`) -- so the real, self-
-    /// consistent question isn't "does it reproduce an externally-assumed 3D
-    /// nu" but "does solving THIS model's own already-validated linearized
-    /// formula (`tau ~= lambda*tr(eps)*I + 2*mu*eps`, proven exactly by
-    /// `small_uniaxial_strain_matches_hookes_law` above) for a genuinely
-    /// stress-free lateral direction give a self-consistent answer."
+    /// **Free lateral (Poisson) response.** The tests above prescribe a strain
+    /// and check the stress formula; this one pulls in x and leaves y free.
+    /// The model is 2D plane strain (`kirchhoff_stress`: `k = lambda+mu`, not
+    /// the 3D `k = lambda+2mu/3`), so the question is whether its own
+    /// linearized form (`tau ~= lambda*tr(eps)*I + 2*mu*eps`, checked by
+    /// `small_uniaxial_strain_matches_hookes_law`) gives a consistent
+    /// stress-free lateral answer, not whether it matches a 3D nu.
     ///
     /// For `eps = diag(e_xx, e_yy)`, this model's linearized formula gives
     /// `tau_yy = lambda*(e_xx+e_yy) + 2*mu*e_yy`. Solving `tau_yy = 0` for
-    /// e_yy gives `e_yy = -lambda/(lambda+2*mu) * e_xx`, the real,
-    /// closed-form, self-consistent 2D free-lateral-strain ratio for this
-    /// material's own documented formula.
+    /// e_yy gives `e_yy = -lambda/(lambda+2*mu) * e_xx`, the closed-form 2D
+    /// free-lateral strain ratio of this formula.
     ///
-    /// A real, independent second check: the resulting axial stress should
-    /// equal the analytically-derived effective 1D stiffness `tau_xx = e_xx *
-    /// 4*mu*(lambda+mu)/(lambda+2*mu)` (substituting e_yy back into `tau_xx =
-    /// lambda*(e_xx+e_yy) + 2*mu*e_xx` and simplifying) -- confirms the solved
-    /// e_yy isn't just zeroing tau_yy by coincidence, but is the genuine
-    /// free-lateral elastic solution.
+    /// Second check: the axial stress equals the effective 1D stiffness
+    /// `tau_xx = e_xx * 4*mu*(lambda+mu)/(lambda+2*mu)` (substituting e_yy into
+    /// `tau_xx = lambda*(e_xx+e_yy) + 2*mu*e_xx`), so e_yy is the free-lateral
+    /// solution, not a coincidental zero of tau_yy.
     #[test]
     fn free_lateral_strain_matches_zero_transverse_stress() {
         let lambda = 1200.0;
@@ -205,8 +191,8 @@ mod poisson_response_tests {
         let particles = particle_with_f(f);
         let tau = mat.kirchhoff_stress(&particles, 0);
 
-        // Real check 1: transverse (yy) stress must be genuinely ~0 (free lateral
-        // boundary), not just small relative to xx.
+        // Check 1: transverse (yy) stress is ~0 (free lateral boundary), not
+        // only small relative to xx.
         let scale = (2.0 * mu * delta * e_xx.abs()).max(1e-9);
         assert!(
             tau.y_axis.y.abs() / scale < 1.0e-3,
@@ -215,9 +201,8 @@ mod poisson_response_tests {
             tau.y_axis.y
         );
 
-        // Real check 2: the resulting axial stress matches the independently-
-        // derived effective 1D stiffness, confirming e_yy is the genuine
-        // free-lateral solution, not a coincidental zero.
+        // Check 2: the axial stress matches the separately derived effective 1D
+        // stiffness.
         let expected_tau_xx = delta * e_xx * 4.0 * mu * (lambda + mu) / (lambda + 2.0 * mu);
         let rel_err = (tau.x_axis.x - expected_tau_xx).abs() / expected_tau_xx.abs().max(1e-9);
         assert!(
@@ -229,20 +214,11 @@ mod poisson_response_tests {
         );
     }
 
-    /// Real sanity bound: the free-lateral strain ratio `-e_yy/e_xx` this
-    /// model's own formula predicts must stay inside the mathematically valid
-    /// range [0, 1) for any real, stable (lambda, mu > 0) material -- as
-    /// lambda/mu -> 0 the ratio -> 0 (a nearly-incompressible-shear material
-    /// barely contracts laterally), as lambda/mu -> infinity the ratio -> 1
-    /// (never reaching or exceeding it for finite mu > 0). Real, fixed
-    /// mistake (2026-08-04): the first version of this test wrongly asserted
-    /// [0, 0.5) -- confusing THIS 2D formula's own ratio (`lambda/(lambda+
-    /// 2*mu)`) with the standard 3D Poisson-ratio range, which is a
-    /// DIFFERENT quantity (`lambda/(2*lambda+2*mu)`, that one does approach
-    /// 0.5 as lambda/mu->infinity) -- caught by the very first real run
-    /// (lambda=1000, mu=500 gives ratio=0.5 exactly, a real, valid point this
-    /// model's own formula produces, not a bug), fixed here rather than
-    /// picking a different test point to dodge the boundary.
+    /// The free-lateral strain ratio `-e_yy/e_xx = lambda/(lambda+2*mu)` stays
+    /// in [0, 1) for any stable (lambda, mu > 0) material: toward 0 as
+    /// lambda/mu -> 0, toward 1 (never reaching it) as lambda/mu -> infinity. Not
+    /// the 3D Poisson range [0, 0.5): that is `lambda/(2*lambda+2*mu)`, another
+    /// quantity (lambda = 1000, mu = 500 gives exactly 0.5 here, a valid point).
     #[test]
     fn free_lateral_ratio_stays_in_physically_valid_range() {
         for &(lambda, mu) in &[
@@ -551,14 +527,10 @@ mod kirchhoff_stress_vjp_tests {
     }
 }
 
-/// Real regression guard for the 2026-09 kinematic-integrator rollout
-/// (`deformation_increment_exp` replacing forward Euler across every
-/// tensor-F material -- see that function's own doc for the O(dt^2)
-/// volumetric-ratchet mechanism it removes, first found+fixed on
-/// `NoCompressionMaterial`/`VonMisesMaterial`). Tests the actual real
-/// call site (`update_particle`), not just the isolated helper (already
-/// covered by its own 3 tests in `utils.rs`) -- proves this material is
-/// really wired to the exponential integrator, not still silently on Euler.
+/// `update_particle` uses the exponential integrator
+/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
+/// ratchet of forward Euler), checked at the call site rather than on the
+/// helper (covered by its own 3 tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;
@@ -575,7 +547,7 @@ mod kinematic_integrator_tests {
         p
     }
 
-    /// The real, direct test of the O(dt^2) ratchet Euler had: apply a
+    /// The direct test of the O(dt^2) ratchet Euler had: apply a
     /// velocity gradient for one substep, then its exact opposite for the
     /// same substep -- a perfectly reversible round trip. Under the OLD
     /// Euler integration this would NOT return exactly to the starting F

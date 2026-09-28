@@ -1,5 +1,5 @@
 //! GPU force-sleep/force-wake-by-tag params -- split out of `step_params.rs`,
-//! see that module's own doc comment for the full file map.
+//! see that module's doc comment for the full file map.
 
 /// Max tags per frame for force-sleep/force-wake-by-tag.
 /// Must match `array<u32, 8>` in `force_fields.wgsl`.

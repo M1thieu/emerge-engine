@@ -5,20 +5,16 @@
 /// they're dispatched in). Once per frame: a 4-pass block-level counting
 /// sort (`particle_sort_clear → count → scan → scatter`, see
 /// `particle_sort.wgsl`). Active-block detection (`particle_sort_compact`,
-/// GPU sparse grid Phase 1) runs every substep, not once per frame --
-/// particles move every substep, so a once-per-frame version goes stale by
-/// substep 2 of a multi-substep step.
+/// GPU sparse grid) runs every substep, not once per frame: particles move
+/// every substep, so a once-per-frame version goes stale by substep 2.
 ///
-/// TWO bind group layouts shared by all passes (split 2026-07-16 -- a single 20-binding
-/// layout hit a real, present limit: `create_bind_group_layout` failed on any adapter
-/// exposing only the WebGPU-guaranteed baseline of 8 storage buffers per compute stage,
-/// once contact's GPU port pushed the count to 14. `maxStorageBuffersPerShaderStage` is
-/// validated per bind-group-layout, not aggregated across a pipeline's layouts, so
-/// splitting genuinely fixes it rather than moving the count around. Every real pass sets
-/// BOTH groups regardless of which bindings its own entry point references, same
-/// philosophy as "passes that don't use a binding still share the same layout" below --
-/// keeps `encode_substep`/`readback.rs` from needing per-shader reasoning about which
-/// group is actually touched.
+/// Bindings are split across bind group layouts because
+/// `maxStorageBuffersPerShaderStage` is validated per bind-group layout, and
+/// an adapter exposing only the WebGPU-guaranteed baseline of 8 storage
+/// buffers per compute stage rejects a single layout with more. Every pass
+/// sets all groups whatever its entry point references, so
+/// `encode_substep`/`readback.rs` need no per-shader reasoning about which
+/// group is touched.
 ///
 /// Group 0 -- core MPM state, needed by nearly every pass (8 storage, at the baseline
 /// limit with zero headroom; any future core addition needs its own new group, not a
@@ -44,8 +40,8 @@
 /// (rebuilt whenever `spawn_region` reallocates `buffers.particles`), this bind group is
 /// built once at construction and never needs rebuilding:
 ///   binding 12: grip_grid               -- storage read_write (multi-field contact "grip"
-///                                         field mass/momentum, grid_res² cells -- GPU port,
-///                                         first slice, see buffers.rs doc)
+///                                         field mass/momentum, grid_res² cells, see
+///                                         buffers.rs doc)
 ///   binding 13: contact_points           -- storage read_write (labeled contact point cloud,
 ///                                         grid_res² × MAX_CONTACT_POINTS_PER_NODE)
 ///   binding 14: contact_point_counts     -- storage read_write (grid_res² atomic<u32>)
@@ -56,20 +52,16 @@
 ///   binding 18: resolved_rest_v          -- storage read_write (grid_res² vec2<f32>)
 ///   binding 19: grip_params              -- uniform (GpuDirectionalGripParams, 16 bytes)
 ///
-/// Group 3 also carries ASFLIP's 2 bindings (28-29, GPU port) alongside resource
-/// regrowth -- NOT because the two are related (they aren't), but because WebGPU's
-/// baseline `max_bind_groups` is exactly 4 (confirmed against wgpu-types' own downlevel
-/// defaults) and this pipeline already uses all 4 -- the same baseline-adapter safety
-/// concern that forced the original group 0/1 split in the first place. A 5th group
-/// would break on any adapter reporting only the guaranteed baseline. Group 3 has real
-/// headroom (4 of 8 storage slots used), so ASFLIP's 2 bindings go there instead of a
-/// new group:
+/// Group 3 also carries ASFLIP's 2 bindings (28-29) and the fluid pressure
+/// projection's, alongside resource regrowth. They are unrelated; they share
+/// a group because WebGPU's baseline `max_bind_groups` is 4 (wgpu-types'
+/// downlevel defaults) and this pipeline already uses all 4:
 ///   binding 28: asflip_params  -- uniform (GpuAsflipParams, 16 bytes)
 ///   binding 29: asflip_snapshot -- storage read_write (grid_res² vec2<f32> pre-force
 ///                                velocity snapshot, see buffers.rs doc)
 ///   binding 32: fluid_pressure_params -- uniform (FluidPressureParams, 16 bytes,
-///                                GPU port of the CPU-proven incompressibility
-///                                pressure projection, `fluid_pressure.wgsl`)
+///                                incompressibility pressure projection,
+///                                `fluid_pressure.wgsl`)
 ///   binding 33: fp_divergence   -- storage read_write (grid_res² f32)
 ///   binding 34: fp_pressure_a   -- storage read_write (grid_res² f32, Jacobi ping-pong)
 ///   binding 35: fp_pressure_b   -- storage read_write (grid_res² f32, Jacobi ping-pong)
@@ -87,7 +79,7 @@ use super::step_params::{
 
 // Bind-group-LAYOUT construction (the four `wgpu::BindGroupLayout`s shared by every
 // pass, plus the impulse pass's own minimal layout) -- split into its own file, was
-// ~160 of this file's ~730 lines. See layouts.rs's own doc.
+// ~160 of this file's ~730 lines. See layouts.rs's doc.
 mod layouts;
 use layouts::{
     build_contact_bind_group_layout, build_core_bind_group_layout, build_impulse_bind_group_layout,
@@ -97,7 +89,7 @@ use layouts::{
 // Compute-PIPELINE construction (the `wgpu::ComputePipeline`s built from those
 // layouts, grouped the same way the module doc comment above already groups the
 // eleven passes) -- split into its own file, was ~280 of this file's ~730 lines.
-// See passes.rs's own doc.
+// See passes.rs's doc.
 mod passes;
 use passes::{
     build_asflip_pipeline, build_cfl_commit_pipeline, build_contact_resolve_pipelines,
@@ -172,17 +164,14 @@ pub struct SimPipelines {
     /// ASFLIP (GPU port, Fei et al. 2021) -- replaces `g2p` + `particles_update` for a
     /// substep, ONLY dispatched when `SimConfig::asflip_blend > 0.0` (see
     /// `SubstepGates::asflip_active`). Does both passes' jobs fused into one dispatch --
-    /// see `g2p_asflip_fused.wgsl`'s own doc for why the fusion is structurally required
+    /// see `g2p_asflip_fused.wgsl`'s doc for why the fusion is structurally required
     /// (the adaptive position-correction gamma needs the pre-correction velocity to
     /// survive from the gather stage to the position-write stage, and `Particle` has no
     /// spare capacity for a second stored velocity).
     pub g2p_asflip_fused: wgpu::ComputePipeline,
-    /// Real GPU port of the CPU-proven Chorin-style fluid incompressibility
-    /// pressure projection -- see `fluid_pressure.wgsl`'s own module doc.
-    /// ONLY dispatched once real contact-based switching logic invokes it
-    /// (not yet wired into `encode_substep.rs` as of this writing -- see the
-    /// real-time fluid pressure-projection plan's "REVISED PLAN" section for
-    /// the real remaining work).
+    /// Chorin-style fluid incompressibility pressure projection, see
+    /// `fluid_pressure.wgsl`'s module doc. Dispatched by `encode_substep.rs`
+    /// when `SimConfig::fluid_pressure_iterations > 0`.
     pub fluid_pressure_setup: wgpu::ComputePipeline,
     pub fluid_pressure_jacobi_a_to_b: wgpu::ComputePipeline,
     pub fluid_pressure_jacobi_b_to_a: wgpu::ComputePipeline,
@@ -244,8 +233,8 @@ impl SimPipelines {
         // shared by particle_sort's compaction pass and grid_clear/grid_update's block-guarded
         // dispatch.
         let block_consts: &[(&str, f64)] = &[("NUM_BLOCKS_PER_DIM", NUM_BLOCKS_PER_DIM as f64)];
-        // NUM_CONTACT_BLOCKS_PER_DIM: dedicated finer contact-point partition (2026-07-18
-        // re-partition, see MAX_CONTACT_POINTS_PER_BLOCK's doc in step_params.rs) --
+        // NUM_CONTACT_BLOCKS_PER_DIM: dedicated finer contact-point partition
+        // (see MAX_CONTACT_POINTS_PER_BLOCK's doc in step_params.rs) --
         // separate override from NUM_BLOCKS_PER_DIM above, needed by p2g.wgsl's
         // gather_contact_points_main and resolve_contact.wgsl's gather_local_points/
         // debug_fit_normal_main.
@@ -306,7 +295,7 @@ impl SimPipelines {
         let cfl_commit = build_cfl_commit_pipeline(device, &pipeline_layout);
 
         // ASFLIP (GPU port) -- replaces g2p+particles_update for a substep, only when
-        // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's own doc for why this
+        // SimConfig::asflip_blend > 0.0. See g2p_asflip_fused.wgsl's doc for why this
         // is one fused kernel rather than two, and SimPipelines::g2p_asflip_fused's doc.
         let g2p_asflip_fused = build_asflip_pipeline(device, &pipeline_layout);
 

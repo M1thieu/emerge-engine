@@ -1,6 +1,6 @@
 //! The camera's side of the optics: scale, exposure, and viewing geometry.
 //!
-//! What this module owns is genuinely a rendering choice, not physics. The
+//! What this module owns is a rendering choice, not physics. The
 //! simulation is two-dimensional, while optical attenuation needs a
 //! three-dimensional path length, so [`PhysicalRenderContract`] makes that
 //! modelling decision explicit: one grid cell has a stated SI size and the

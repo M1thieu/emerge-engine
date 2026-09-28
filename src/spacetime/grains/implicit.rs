@@ -1,82 +1,52 @@
-//! Real implicit (backward Euler) time integration for grain-grain NORMAL
-//! contact forces -- the real fix for the DEM "timestep problem" this
-//! engine's own grain population is genuinely stuck on (`critical_timestep`
-//! forces ~3500 substeps/rendered-frame from real contact stiffness,
-//! independent of grain count -- see `project_grain_realtime_fps_measured_
-//! 2026-09-09`, project memory). Same real, standard method already
-//! shipped and tested in THIS codebase for the exact same class of problem
-//! (a stiff mass-spring-damper system whose explicit CFL bound is too
-//! restrictive for real-time use): `spacetime::rod::implicit`, Baraff &
-//! Witkin 1998 "Large Steps in Cloth Simulation". This module reuses that
-//! file's own verified linear-system assembly/solve PATTERN (and its
-//! `solve_dense` routine directly, `pub(crate)`) rather than re-deriving
-//! sign conventions from scratch -- the earlier isolated prototype work
-//! that verified this exact technique for grain contacts
-//! (`project_grain_implicit_integration_scoped_2026-09-09`, project memory)
-//! was lost before being generalized to real N-grain scale; this module is
-//! that generalization, re-derived fresh against `rod::implicit`'s own
-//! real, working code instead of purely from memory.
+//! Implicit (backward Euler) integration of grain-grain normal contact
+//! forces. Contact stiffness makes `critical_timestep` force ~3500 substeps
+//! per frame whatever the grain count; a stiff mass-spring-damper system is
+//! what `spacetime::rod::implicit` already integrates (Baraff & Witkin 1998,
+//! "Large Steps in Cloth Simulation"), and this module reuses its assembly
+//! pattern and its `solve_dense` (`pub(crate)`).
 //!
 //! # Method
 //! `(M + dt*C + dt^2*K) * dv = dt*F_n - dt^2*K*v_n`, `K = -dF/dx`,
-//! `C = -dF/dv` -- IDENTICAL system shape to `rod::implicit::step_rod_
-//! implicit`'s own doc (see there for the full derivation/citation), one
-//! dense solve per real step over every grain's free (x,y) velocity DOFs.
+//! `C = -dF/dv`: the system of `rod::implicit::step_rod_implicit` (see there
+//! for the derivation), one dense solve per step over every free grain's
+//! (x, y) velocity.
 //!
-//! # Real, disclosed scope: NORMAL contact force only
-//! `F_n = kn*overlap - c_n*v_n` (Cundall & Strack 1979 linear spring-
-//! dashpot, `grain_contact_law::resolve_contact_core_linear`'s own first
-//! term) -- tangential/rolling elastic-plastic Coulomb-CAPPED springs are
-//! NOT included. Real, disclosed reason, already found once by the lost
-//! prototype work (preserved in project memory): a capped spring's force
-//! becomes a CONSTANT independent of the unknown velocity once it saturates
-//! (real kinetic sliding), which makes backward Euler's own stabilizing
-//! mechanism structurally inapplicable there -- only the smooth (static-
-//! holding) regime benefits, which is exactly what this module covers. A
-//! real, complete integrator needs the hybrid smooth/capped-fallback
-//! technique the prototype work verified (real explicit burst during
-//! genuine sliding transients) -- not yet ported here, real future work,
-//! not silently dropped.
+//! # Scope: normal contact force only
+//! `F_n = kn*overlap - c_n*v_n` (Cundall & Strack 1979, the first term of
+//! `grain_contact_law::resolve_contact_core_linear`). The Coulomb-capped
+//! tangential and rolling springs are not included: once a capped spring
+//! saturates (sliding) its force no longer depends on the unknown velocity,
+//! and backward Euler gains nothing there. A complete integrator needs a
+//! hybrid that falls back to explicit bursts during sliding.
 //!
-//! # Real, disclosed scope: no wall contact yet
-//! Only grain-grain pairs are included in the implicit solve; a floor/wall
-//! boundary needs its own analogous single-body Jacobian (same method,
-//! simpler -- one fixed point instead of two free ones). Not yet built.
+//! # Scope: no wall contact yet
+//! Only grain-grain pairs; a floor or wall needs its own single-body
+//! Jacobian (one fixed point instead of two free ones).
 
 use glam::Vec2;
 
 use crate::matter::particle::Grain;
 use crate::rod::implicit::solve_dense;
 
-/// Real, analytic (verified-by-construction against `rod::forces::
-/// axial_force_and_jacobian`'s own already-FD-verified METHOD, not
-/// independently FD-checked here -- see this module's own top-of-file doc)
-/// Jacobian of the grain-grain normal contact force.
+/// Analytic Jacobian of the grain-grain normal contact force, built the way
+/// `rod::forces::axial_force_and_jacobian` (finite-difference checked) builds
+/// its own, not separately checked here.
 ///
 /// `d = x_j - x_i`, `rel_v = v_j - v_i`, `r_sum = r_i + r_j`. Returns
 /// `(force_on_j, df_dd, df_drelv)` -- force on `i` is the exact negation
 /// (Newton's third law), matching `grain_contact_law::resolve_contact_pair`'s
 /// own convention.
 ///
-/// Real derivation (hand-checked, not guessed): let `l = |d|`,
-/// `dir = d/l`, `overlap = r_sum - l`,  `v_n = rel_v . dir`,
-/// `s = F_n = kn*overlap - c_n*v_n` (the real force LAW,
-/// `grain_contact_law::resolve_contact_core_linear`'s own first line, before
-/// the `.max(0.0)` clamp -- linearizing the CURRENTLY-ACTIVE, still-
-/// overlapping regime, the same real, standard practice
-/// `rod::implicit`'s own doc already establishes for this class of solver).
-/// Force on `j` (repulsive, pushes j away from i along `+dir`): `force =
-/// dir * s`.
+/// Let `l = |d|`, `dir = d/l`, `overlap = r_sum - l`, `v_n = rel_v . dir`,
+/// `s = F_n = kn*overlap - c_n*v_n` (the force law of
+/// `grain_contact_law::resolve_contact_core_linear` before its `.max(0.0)`,
+/// linearized in the active, overlapping regime as `rod::implicit` does).
+/// Force on `j` (repulsive, along `+dir`): `force = dir * s`.
 ///
-/// `ds/dd = -kn*dir - c_n*(P*rel_v)/l` (`P = I - outer(dir,dir)`, the
-/// standard projection removing the radial component -- `d(dir)/dd = P/l`).
-/// `df_dd = outer(dir, ds/dd) + s*(P/l)` -- the standard product-rule
-/// Jacobian of `dir*s` w.r.t. `d` (`d(dir*s)/dd = dir⊗(ds/dd) + s*d(dir)/dd`),
-/// IDENTICAL shape to `axial_force_and_jacobian`'s own `df_dd` line, just
-/// with this function's own `s`/`ds_dd` substituted in -- matching an
-/// already-verified pattern structurally, not re-derived in a vacuum.
-/// `ds/d(rel_v) = -c_n*dir` (only the damping term depends on `rel_v`),
-/// giving `df_drelv = -c_n*outer(dir,dir)`.
+/// `ds/dd = -kn*dir - c_n*(P*rel_v)/l` (`P = I - outer(dir,dir)`, since
+/// `d(dir)/dd = P/l`). `df_dd = outer(dir, ds/dd) + s*(P/l)`, the product
+/// rule on `dir*s`, the shape of `axial_force_and_jacobian`'s `df_dd`.
+/// `ds/d(rel_v) = -c_n*dir`, so `df_drelv = -c_n*outer(dir,dir)`.
 pub(crate) fn normal_contact_force_and_jacobian(
     d: Vec2,
     rel_v: Vec2,
@@ -101,29 +71,21 @@ pub(crate) fn normal_contact_force_and_jacobian(
     (force_on_j, df_dd, df_drelv)
 }
 
-/// One real implicit (backward Euler) step for grain-grain NORMAL contact
-/// forces across a whole population -- the direct N-grain generalization of
-/// the single/2-grain-chain technique verified in isolated prototypes (see
-/// this module's own top-of-file doc). Mirrors `rod::implicit::
-/// step_rod_implicit`'s own structure closely: assemble `K`/`C` from every
-/// active contact's analytic Jacobian (restricted to non-pinned grains),
-/// solve one dense system for `dv`, apply it.
+/// One implicit (backward Euler) step for grain-grain normal contact forces
+/// across a population, structured like `rod::implicit::step_rod_implicit`:
+/// assembles `K`/`C` from every active contact's analytic Jacobian (over
+/// non-pinned grains), solves one dense system for `dv`, applies it.
 ///
-/// `pinned[i] = true` excludes grain `i` from the solved DOF set entirely
-/// (its own velocity is treated as fixed for this step) -- same real
-/// Dirichlet-anchor convention `rod::implicit` already uses for its own
-/// pinned points, needed here for a fixed floor/wall grain (see
-/// `grains_repose_angle.rs`'s own real "huge pinned floor grain" technique,
-/// already proven in this codebase's explicit path).
+/// `pinned[i] = true` removes grain `i` from the solved set (its velocity is
+/// fixed this step), `rod::implicit`'s Dirichlet anchor, for a fixed floor
+/// or wall grain (`grains_repose_angle.rs`'s large pinned floor grain).
 ///
-/// `gravity` is applied as an ordinary external force on the right-hand
-/// side (same real, disclosed simplification `rod::implicit` already makes
-/// for its own external forces -- only the contact spring itself is stiff
-/// enough to need implicit treatment).
+/// `gravity` is an ordinary external force on the right-hand side, as in
+/// `rod::implicit`: only the contact spring is stiff enough to need implicit
+/// treatment.
 ///
-/// Real fallback: a singular assembled system (degenerate geometry) falls
-/// back to a plain explicit substep for the affected grains, same
-/// `rod::implicit`'s own disclosed safety net.
+/// A singular system (degenerate geometry) falls back to one explicit
+/// substep for the free grains, as `rod::implicit` does.
 pub fn step_grains_implicit_normal_only(
     grains: &mut [Grain],
     pinned: &[bool],
@@ -252,9 +214,8 @@ pub fn step_grains_implicit_normal_only(
             }
         }
         None => {
-            // Real, disclosed fallback -- singular system, one explicit
-            // substep for the free grains instead of silently producing
-            // garbage, same `rod::implicit`'s own precedent.
+            // Singular system: one explicit substep for the free grains
+            // instead of garbage, as `rod::implicit` does.
             for &gi in &free {
                 let a =
                     (f0[gi] + gravity * grains[gi].mass.max(1.0e-9)) / grains[gi].mass.max(1.0e-9);
@@ -272,14 +233,10 @@ pub fn step_grains_implicit_normal_only(
 mod tests {
     use super::*;
 
-    /// Real, controlled verification, matching the lost prototype work's
-    /// own methodology exactly (per project memory): an N-grain vertical
-    /// stack on a fixed floor, real closed-form predicted equilibrium
-    /// overlap at EVERY contact (`overlap_i = weight_above_contact_i / kn`),
-    /// run at a LARGE dt=1/60s -- a dt an explicit integrator at this real
-    /// stiffness could never take stably (this scene's own real
-    /// `critical_timestep` is many orders of magnitude smaller, matching
-    /// the same "DEM timestep problem" this whole module exists to solve).
+    /// An N-grain vertical stack on a fixed floor reaches the closed-form
+    /// equilibrium overlap at every contact (`overlap_i =
+    /// weight_above_contact_i / kn`) at dt = 1/60 s, far above this stiffness's
+    /// `critical_timestep`.
     #[test]
     fn n_grain_stack_converges_to_closed_form_equilibrium_overlap() {
         let radius = 0.1_f32;
@@ -313,9 +270,8 @@ mod tests {
             );
         }
 
-        // Real closed-form check: contact i (grain i to grain i+1, 0-indexed
-        // with grain 0 = floor) supports the real weight of every free grain
-        // ABOVE it -- (n_free - i) grains' worth of weight.
+        // Contact i (grain i to grain i+1, grain 0 the floor) carries the
+        // weight of the (n_free - i) free grains above it.
         for i in 0..n_free {
             let overlap = (grains[i].radius + grains[i + 1].radius)
                 - (grains[i + 1].x - grains[i].x).length();
@@ -327,9 +283,8 @@ mod tests {
                 "contact {i}: overlap={overlap}, predicted={predicted_overlap}, rel_err={rel_err}"
             );
         }
-        // Real stability check: every free grain's velocity must have
-        // genuinely settled (this is a static-equilibrium scene), not just
-        // happen to be measured at a zero-crossing of an ongoing oscillation.
+        // Every free grain has settled (a static scene), not merely passing
+        // through a zero crossing of an oscillation.
         for &gi in &[1, n_free] {
             assert!(
                 grains[gi].v.length() < 1.0e-2,
@@ -340,14 +295,11 @@ mod tests {
     }
 }
 
-/// Real, disclosed diagnostic (not correctness) -- measures the actual
-/// real-time win this module exists to deliver: wall-clock cost to advance
-/// 1/60s of simulated time via ONE large implicit step vs the many tiny
-/// explicit substeps the real Rayleigh critical timestep
-/// (`grain_contact_law::critical_timestep`) forces at the same real contact
-/// stiffness. Both paths resolve the IDENTICAL normal-only physics (same
-/// `kn`/`cn`, same pair list) so the comparison isolates the INTEGRATOR,
-/// not a different force model. Run manually:
+/// Diagnostic: wall-clock cost of advancing 1/60 s with one implicit step
+/// against the explicit substeps `grain_contact_law::critical_timestep`
+/// forces at the same stiffness. Both resolve the same normal-only physics
+/// (same `kn`/`cn`, same pair list), so the comparison isolates the
+/// integrator. Run manually:
 /// `cargo test --release --lib grain_implicit_realtime_speedup -- --ignored --nocapture`.
 #[cfg(test)]
 mod perf_diagnostic {

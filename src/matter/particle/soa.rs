@@ -36,29 +36,23 @@ pub struct Particles {
     pub hardening_scale: Vec<f32>,
     pub friction_hardening: Vec<f32>,
     pub log_volume_strain: Vec<f32>,
-    /// Real, signed Pradhana volumetric-plastic-strain correction accumulator
+    /// Signed Pradhana volumetric-plastic-strain correction accumulator
     /// (Pradhana, co-author of Klar, Gast, Pradhana, Fu, Teran, Jiang & Museth
     /// 2016 "A Drucker-Prager Elastoplasticity Theory for Sand Simulation";
-    /// mechanism per Blatny & Gaume 2025, `tmp/matter/src/simulation/
-    /// plasticity.cpp`'s own `eps_pl_vol_pradhana`/`use_pradhana`) -- tracks how
-    /// much volumetric correction `DruckerPragerMaterial::project`'s own
-    /// tension-cutoff branch (full-expansion return mapping -- NOT the
-    /// branch that file's own comments call "Case III", which is the
-    /// ordinary shear-yield cone projection instead) has ALREADY applied to
-    /// this particle since it was last genuinely elastic, so the NEXT
-    /// tension-cutoff evaluation can account for debt already paid instead of re-adding
-    /// volume from scratch every firing -- the real, cited fix for
-    /// `dp_volumetric_floor_terrain_failure`'s own sibling bug, "volume gain on
-    /// expansion" (Tampubolon et al. 2017). SoA-only: no AoS `Particle`
-    /// counterpart exists (unlike `log_volume_strain` above) -- there is no
-    /// spare byte on the 128-byte GPU-uploadable `Particle` view (see its own
-    /// module doc, "Append-only past this point"), and this correction is
-    /// CPU-only real physics, not yet GPU-shader-side (matches this project's
-    /// own standing "CPU correctness first, GPU port second" rule -- a real,
-    /// disclosed CPU/GPU parity gap, not a hidden one, same category as the
-    /// already-known snow GPU cohesion gap). 0.0 (no correction owed) for
-    /// every particle of every material that isn't `DruckerPragerMaterial`
-    /// with `use_pradhana=true` -- provably inert there, not a tuning default.
+    /// mechanism as in Blatny & Gaume 2025, `tmp/matter/src/simulation/
+    /// plasticity.cpp`'s `eps_pl_vol_pradhana`/`use_pradhana`). Tracks how much
+    /// volumetric correction `DruckerPragerMaterial::project`'s tension-cutoff
+    /// branch (the full-expansion return mapping, not the shear-yield cone
+    /// projection that file calls "Case III") has already applied since the
+    /// particle was last elastic, so the next tension-cutoff evaluation
+    /// accounts for it instead of re-adding volume from scratch each time:
+    /// the fix for "volume gain on expansion" (Tampubolon et al. 2017).
+    ///
+    /// SoA only, with no AoS `Particle` counterpart (unlike `log_volume_strain`
+    /// above): the 128-byte GPU-uploadable `Particle` has no spare bytes, and
+    /// this correction is CPU-only, not yet on the GPU (a known CPU/GPU parity
+    /// gap). 0.0 (no correction owed) for every particle that is not
+    /// `DruckerPragerMaterial` with `use_pradhana=true`.
     pub eps_pl_vol_pradhana: Vec<f32>,
 
     // ── Extended -- cold ───────────────────────────────────────────────────────
@@ -104,7 +98,7 @@ pub struct ParticleUpdateCtx<'a> {
     pub plastic_volume_ratio: &'a mut f32,
     pub log_volume_strain: &'a mut f32,
     pub friction_hardening: &'a mut f32,
-    /// See `Particles::eps_pl_vol_pradhana`'s own doc.
+    /// See `Particles::eps_pl_vol_pradhana`'s doc.
     pub eps_pl_vol_pradhana: &'a mut f32,
     pub mass: f32,
     pub temperature: f32,

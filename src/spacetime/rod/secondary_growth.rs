@@ -1,49 +1,36 @@
-//! Stress-driven secondary growth (thigmomorphogenesis) -- a stem's own
-//! bending stiffness (`RodPoints::ei`, per vertex -- see Phase 1's own doc)
-//! grows over time in response to the REAL bending moment already acting
-//! at that vertex, not a fixed schedule. Real, cited mechanism: Jaffe 1973,
-//! "Thigmomorphogenesis: The response of plant growth and development to
-//! mechanical stimulation," *Planta* 114(2):143–157 -- mechanical loading
-//! (wind sway, a push) measurably changes real plant growth, not just
-//! elastic response. The specific direction of that change -- the cambium
-//! adds wood preferentially where mechanical stress is locally high, moving
-//! the whole structure toward a more uniform stress distribution -- is
-//! Mattheck & Kübler 1995's "axiom of uniform stress" (*Wood -- The Internal
-//! Optimization of Trees*), a real, established tree-biomechanics principle
-//! also covered in Niklas 1992, *Plant Biomechanics*.
+//! Stress-driven secondary growth (thigmomorphogenesis): a stem's bending
+//! stiffness (`RodPoints::ei`, per vertex) grows over time in response to
+//! the bending moment acting at that vertex, not on a fixed schedule. Jaffe
+//! 1973, "Thigmomorphogenesis: The response of plant growth and development
+//! to mechanical stimulation", *Planta* 114(2):143–157: mechanical loading
+//! (wind sway, a push) changes plant growth, not only elastic response. The
+//! direction of the change (the cambium adds wood where mechanical stress is
+//! locally high, moving the structure toward uniform stress) is Mattheck &
+//! Kübler 1995's "axiom of uniform stress" (*Wood -- The Internal
+//! Optimization of Trees*), also covered in Niklas 1992, *Plant
+//! Biomechanics*.
 //!
-//! Real, disclosed simplification: this engine's rod doesn't track a
-//! separate cross-section area independent of `EA`/`EI`, so there is no
-//! literal Pa stress value to compare against a real yield/allowable
-//! stress. Bending MOMENT (`forces::compute_internal_forces`'s own
-//! `coeff = (ei/voronoi_length)*(kappa-kappa_rest)`, real N·m, already
-//! computed there for the force itself) is used as the real driving signal
-//! instead -- a standard beam-theory proxy for bending stress (bending
-//! stress at a fixed cross-section IS a direct function of bending moment,
-//! `sigma = M*c/I`; without a separate `c`/`I` this engine can compare
-//! moment directly, same real physical driver, one less independent
-//! unknown), not a new invented shortcut. Same real proxy applies to axial
-//! force for `EA`'s own growth.
+//! The rod does not track a cross-section area separate from `EA`/`EI`, so
+//! there is no stress in Pa to compare with an allowable stress. The bending
+//! moment (`forces::compute_internal_forces`'s `coeff =
+//! (ei/voronoi_length)*(kappa-kappa_rest)`, N·m) is the driving signal
+//! instead: at a fixed cross-section bending stress is a direct function of
+//! moment, `sigma = M*c/I`, so comparing moments avoids one more unknown.
+//! Axial force drives `EA`'s growth the same way.
 //!
-//! Real ODE, directly analogous to `growth::Growth`'s own logistic law but
-//! keyed on stress excess rather than a fixed carrying capacity:
+//! ODE, analogous to `growth::Growth`'s logistic law but keyed on stress
+//! excess rather than a carrying capacity:
 //! `d(ei)/dt = bending_rate * max(0, |M| - M_threshold)`, `d(ea)/dt =
-//! axial_rate * max(0, |F| - F_threshold)`. Rate/threshold constants are
-//! disclosed as illustrative (same disclosed-calibration status as
-//! `Gravitropism`'s own rate constants) -- not fitted to a specific species.
+//! axial_rate * max(0, |F| - F_threshold)`. The rate and threshold constants
+//! are illustrative (like `Gravitropism`'s), not fitted to a species.
 //!
-//! **Mass update**: real wood deposition also adds mass at
-//! that cross-section (thicker = heavier), not just stiffness. Derived from
-//! the SAME real relationship already used for `ea`/`ei` themselves:
-//! `EA = E*A` with `E` constant means `d(area)/area == d(ea)/ea` exactly, so
-//! that fraction is applied directly to `RodPoints::linear_density_kg_per_m`
-//! and the two endpoint masses of the growing edge -- no new invented
-//! mechanism, the same real physics the stiffness growth already assumes.
-//! Deliberately keyed on `ea`'s own growth only (not `ei`'s): `EA` is
-//! linearly proportional to cross-sectional area with no ambiguity, while
-//! `EI ~ width^3` entangles which geometric dimension is growing -- using
-//! `ea` avoids double-counting the same wood through two different,
-//! independently-tunable rate constants.
+//! **Mass update**: wood deposition also adds mass at that cross-section.
+//! `EA = E*A` with `E` constant gives `d(area)/area == d(ea)/ea`, so that
+//! fraction is applied to `RodPoints::linear_density_kg_per_m` and the two
+//! endpoint masses of the growing edge. Keyed on `ea`'s growth only, not
+//! `ei`'s: `EA` is linear in cross-sectional area, while `EI ~ width^3`
+//! mixes in which dimension grows; using `ea` avoids counting the same wood
+//! twice through two independently tuned rates.
 
 use super::RodPoints;
 use super::forces::discrete_curvature;
@@ -80,10 +67,10 @@ impl SecondaryGrowth {
 }
 
 /// Evolves `rod.ei`/`rod.ea` toward a more uniform-stress state (Mattheck &
-/// Kübler 1995) by growing stiffness wherever the real, current bending
+/// Kübler 1995) by growing stiffness wherever the current bending
 /// moment/axial force exceeds `growth`'s own threshold. No-op for a rod
 /// with fewer than 2 points. Requires `rod.ea`/`rod.ei` to already be
-/// filled to full length (`Rod::new` does this -- see Phase 1's own doc);
+/// filled to full length (`Rod::new` does this -- see Phase 1's doc);
 /// a rod with empty `ea`/`ei` is skipped entirely rather than panicking,
 /// since there is nowhere real to store the growth.
 pub fn apply_secondary_growth(
@@ -106,15 +93,11 @@ pub fn apply_secondary_growth(
         let excess = (f_stretch - growth.axial_force_threshold_n).max(0.0);
         let d_ea = growth.axial_rate * excess * dt;
         if d_ea > 0.0 && rod.ea[i] > 1.0e-9 {
-            // Real wood-deposition mass update, not a separate invented
-            // mechanism: EA = E*A with E (Young's modulus) held constant as
-            // wood is added, so d(area)/area == d(EA)/EA exactly. Mass at
-            // fixed length and material density scales the same way as
-            // area, so this edge's own linear density -- and the real
-            // kilograms sitting at its two endpoints -- grow by the
-            // identical fraction. This is the same real fraction driving
-            // the stiffness growth below, just applied to the OTHER real
-            // physical quantity (E*A) implies, not a new assumption.
+            // Wood-deposition mass update: EA = E*A with E (Young's modulus)
+            // constant, so d(area)/area == d(EA)/EA. Mass at fixed length and
+            // material density scales like area, so this edge's linear density
+            // and the kilograms at its two endpoints grow by the same fraction
+            // that drives the stiffness growth below.
             let frac = d_ea / rod.ea[i];
             let old_edge_mass = rod.linear_density_kg_per_m[i] * l0;
             let d_mass = old_edge_mass * frac;
@@ -157,7 +140,7 @@ mod tests {
         let mut points = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 5.0), 6, 0.01, 1.0);
         points.ea = vec![1.0e5; 5];
         points.ei = vec![1.0; 4];
-        // Bend the tip half sideways -- real, nonzero curvature at every
+        // Bend the tip half sideways -- nonzero curvature at every
         // interior vertex, so there's a real moment to stiffen against.
         for i in 3..points.x.len() {
             points.x[i].x += (i - 2) as f32 * 0.3;
@@ -197,7 +180,7 @@ mod tests {
         let mut points = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 5.0), 4, 0.01, 1.0);
         points.ea = vec![1.0e5; 3];
         points.ei = vec![1.0; 2];
-        // Stretch every edge 20% beyond its own rest length -- real, nonzero
+        // Stretch every edge 20% beyond its own rest length -- nonzero
         // axial force to grow against.
         for i in 1..points.x.len() {
             let dir = (points.x[i] - points.x[i - 1]).normalize_or_zero();

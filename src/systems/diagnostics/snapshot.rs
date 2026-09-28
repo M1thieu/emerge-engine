@@ -77,10 +77,9 @@ pub struct SimSnapshot {
     /// Accumulated across all substeps -- divide by `substeps_last_step` for per-substep cost.
     pub timing: StepTiming,
     /// Total kinetic energy (sum of `0.5 * mass * |v|^2`) across all particles.
-    /// Real, generic sanity signal for ANY scene: should decay toward a steady value
-    /// under damping (viscous/plastic materials) or oscillate boundedly for a purely
-    /// elastic one -- unbounded growth with no external force driving it is a real bug,
-    /// not just "high energy."
+    /// A sanity signal for any scene: it decays toward a steady value under
+    /// damping (viscous/plastic materials) or oscillates boundedly for a purely
+    /// elastic one; unbounded growth with no external driving force is a bug.
     pub total_kinetic_energy: f32,
     /// Max speed among particles with `Particle::pinned != 0`. Should read exactly 0.0
     /// for any scene using pinned/Dirichlet anchors -- G2P forces `v=0` on pinned
@@ -140,18 +139,15 @@ pub struct StepTiming {
     /// P2G scatter: particle → grid momentum/stress accumulation.
     pub p2g_us: u64,
     /// Grid update: momentum normalization + gravity + boundary application.
-    /// Includes `pressure_us` below (a real cost, not double-counted against
-    /// `total_us`) -- `pressure_us` exists purely to break out how much of
-    /// this bucket is the fluid pressure-projection loop specifically, since
-    /// that loop was folded in here silently before 2026-08-09.
+    /// Includes `pressure_us` below (not counted twice in `total_us`), which
+    /// breaks out the fluid pressure-projection loop's share of this bucket.
     pub grid_update_us: u64,
     /// The `SimConfig::fluid_pressure_iterations` corrector loop
     /// (`Grid::project_fluid_incompressibility` + its own re-applied
     /// boundary pass) -- a SUBSET of `grid_update_us`, not additive to it.
-    /// Zero for any scene that doesn't enable pressure projection. Split out
-    /// 2026-08-09 because the prior "63% of frame time is grid_update_us"
-    /// profiling number couldn't distinguish the pressure solve from
-    /// gravity/boundary/contact/mixture/Cundall -- see MEMORY.md.
+    /// Zero for any scene that doesn't enable pressure projection. Separates
+    /// the pressure solve from gravity/boundary/contact/mixture/Cundall within
+    /// `grid_update_us`.
     pub pressure_us: u64,
     /// G2P gather: grid → particle velocity/position + plasticity update.
     pub g2p_us: u64,
@@ -169,14 +165,13 @@ pub struct StepTiming {
     pub project_us: u64,
     /// Density recompute via P2G volume estimation (only when fluid materials present).
     pub density_us: u64,
-    /// `do_substep_with_retry`'s own `self.particles.clone()` snapshot -- taken
-    /// unconditionally once per attempt (up to `FLUID_STEP_RETRY_LIMIT+1`, worst
-    /// case 17x) whenever `SimConfig::fluid_step_retry_enabled` is on, regardless
-    /// of whether that attempt actually needed a retry. A full SoA deep-copy at
-    /// full particle count, added 2026-08-09 alongside the retry/backstop fixes --
-    /// not visible in any other bucket before this field existed (fell into the
-    /// unaccounted `total_us` - sum(other fields) residual). Zero when retry is
-    /// disabled (the default) or no material owns deformation/volume state.
+    /// `do_substep_with_retry`'s `self.particles.clone()` snapshot, taken once
+    /// per attempt (up to `FLUID_STEP_RETRY_LIMIT+1`, worst case 17x) whenever
+    /// `SimConfig::fluid_step_retry_enabled` is on, whether or not that
+    /// attempt needed a retry. A full SoA deep copy at full particle count;
+    /// without this field it falls into the unaccounted `total_us` residual.
+    /// Zero when retry is disabled (the default) or no material owns
+    /// deformation/volume state.
     pub retry_snapshot_us: u64,
     /// Total wall time for the step (includes overhead not captured in individual phases).
     pub total_us: u64,
@@ -186,7 +181,7 @@ pub struct StepTiming {
 // collect_snapshot_particles_only, and their private per-particle/per-cell
 // helpers) split into collect.rs -- was ~330 of this file's ~524 lines of
 // pure computation, as opposed to the data definitions above. See that
-// file's own doc comment.
+// file's doc comment.
 mod collect;
 pub use collect::{collect_snapshot, collect_snapshot_particles_only};
 
@@ -261,9 +256,8 @@ mod rod_snapshot_tests {
 mod si_conversion_tests {
     use super::*;
 
-    /// Real, hand-checkable conversion: a particle moving at exactly 1
-    /// grid-cell/second in a scene where 1 cell = 0.01m must read as
-    /// exactly 0.01 m/s once converted -- not an approximation.
+    /// Hand-checkable conversion: a particle moving at exactly 1 grid
+    /// cell/second where 1 cell = 0.01 m reads exactly 0.01 m/s.
     #[test]
     fn to_si_converts_known_values_exactly() {
         let snap = SimSnapshot {

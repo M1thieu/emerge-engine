@@ -54,55 +54,29 @@ pub struct GranularFluidMaterial {
     /// choice for the granular branch, not free-surface surface tension and
     /// not used by strict Newtonian/Bingham WC-MPM liquids.
     pub pressure_floor: f32,
-    /// Dynamic shear viscosity η -- real, physically-motivated dissipation
-    /// (real wet granular materials, mud/clay/cytoplasm, are NOT purely
-    /// elastic; they carry genuine viscous energy loss on top of their
-    /// elastic+plastic response). Same formula `NewtonianFluidMaterial`
-    /// already uses (`τ += η·dev(D)`, D = symmetric part of the velocity
-    /// gradient). Real, previously-disclosed gap found 2026-08-06: with
-    /// this at 0.0, a hard impact (as opposed to gentle self-weight
-    /// settling) makes the material bounce almost elastically -- min_j
-    /// dropping to ~0.43 on impact then the whole body rebounding UPWARD
-    /// past its own drop height, the same superball-bounce failure mode
-    /// already found+fixed once before for a different zero-damping
-    /// material (see `fire_spread_plank_drift_root_caused_2026-07-31`'s own
-    /// "elastic-bounce" fix). 0.0 = disabled (`new()`'s own default,
-    /// matching every other numerical-stability field's convention here).
+    /// Dynamic shear viscosity η: wet granular materials (mud, clay,
+    /// cytoplasm) dissipate on top of their elastic-plastic response. Same
+    /// formula as `NewtonianFluidMaterial` (`τ += η·dev(D)`, D the symmetric
+    /// velocity gradient). At 0.0 a hard impact bounces almost elastically
+    /// (min_j ~0.43, the body rebounding past its drop height). 0.0 =
+    /// disabled (`new()`'s default).
     pub dynamic_viscosity: f32,
-    /// Bulk (volumetric) viscosity ζ -- real, disclosed 2026-08-06 addition
-    /// alongside `dynamic_viscosity`. Shear viscosity alone left a real,
-    /// measured residual: on hard impact this material's TWO independent
-    /// volumetric-stiffness sources (Tait EOS pressure + the corotated
-    /// model's own `lambda*(J-1)*J` term) kept bouncing -- min_j oscillating
-    /// 0.6-0.85 with no volumetric damping at all, since `dynamic_viscosity`
-    /// only damps the deviatoric/shear part. Same formula `NewtonianFluid
-    /// Material::bulk_viscosity` already uses (`τ += ζ·(∇·v)·I`). Real
-    /// physical mechanism for wet consolidated materials: pore-fluid
-    /// drainage resistance genuinely damps volumetric change, distinct from
-    /// shear viscosity. 0.0 = disabled.
+    /// Bulk (volumetric) viscosity ζ. With shear viscosity alone, the two
+    /// volumetric stiffness sources (Tait EOS pressure and the corotated
+    /// `lambda*(J-1)*J` term) kept bouncing on impact (min_j 0.6-0.85), since
+    /// `dynamic_viscosity` only damps the deviatoric part. Same formula as
+    /// `NewtonianFluidMaterial::bulk_viscosity` (`τ += ζ·(∇·v)·I`); physically,
+    /// pore-fluid drainage resists volume change. 0.0 = disabled.
     pub bulk_viscosity: f32,
 }
 
 impl GranularFluidMaterial {
-    /// Raw field constructor, for consistency with every other material struct
-    /// in this crate (`sand.rs`/`fluid.rs`/`snow.rs`/etc. all have a `::new()`
-    /// -- this was the sole exception). Takes the physically-meaningful
-    /// parameters directly; the remaining numerical-stability fields default
-    /// to the same values EVERY real preset below (`saturated_loam`/
-    /// `consolidated_clay`/`cytoplasmic`) actually uses.
-    ///
-    /// Real bug fixed 2026-09-15 (found via audit, not live-reported): this
-    /// used to default `eos_power` to 7.0 while its OWN doc comment claimed
-    /// that matched `saturated_loam` -- it doesn't; that preset (and both
-    /// others) uses 2.0. Worse, `saturated_loam`'s own doc, right below,
-    /// explicitly states 7.0 "causes runaway pressure under gravity-settling
-    /// compression... an unbounded feedback loop" for this material's real
-    /// granular-flow regime -- so the general-purpose constructor was
-    /// shipping a default this very file calls unsuitable. 2.0 is not a
-    /// guess: it's the one value every real preset already independently
-    /// converged on, and the one the field's own doc says granular flow
-    /// requires (1-3 range). `pressure_floor: 0.0` = no tensile granular-
-    /// contact traction (this part was already correct).
+    /// Raw field constructor (like every other material's `::new()`) with the
+    /// physically meaningful parameters; the numerical-stability fields take
+    /// the values every preset below (`saturated_loam`/`consolidated_clay`/
+    /// `cytoplasmic`) uses: `eos_power` 2.0, in the granular-flow range the
+    /// field requires (7.0 runs away under settling, see `saturated_loam`),
+    /// and `pressure_floor: 0.0` (no tensile traction between grains).
     pub const fn new(
         lambda: f32,
         mu: f32,
@@ -130,24 +104,17 @@ impl GranularFluidMaterial {
 
     /// Saturated loam: eos_stiffness=200, ξ=5, θ_c=0.4 -- yields easily, flows under load.
     ///
-    /// HONEST DISCLOSURE (audit 2026-07-17): the constitutive LAW above (Tait EOS +
-    /// corotated elastic + Stomakhin SVD plasticity) is real and cited. These specific
-    /// shape-parameter VALUES (eos_stiffness, hardening_exponent, compression_limit,
-    /// stretch_limit, plastic-Jacobian bounds, rest_density) are NOT -- checked directly
-    /// against SoftZoo's own mud material (`mud.py`, the file this module's top doc
-    /// pointed to) and they don't trace to it: SoftZoo uses one fixed parameter set
-    /// (not three material variants), a different (linear, not Tait power-law) EOS
-    /// form, and its compression limit (θ_c=0.025) is off by ~12-24x from this preset's
-    /// 0.4. They also don't trace to Dunatunga & Kamrin 2015 (a granular-only paper,
-    /// no mud/fluid blend or these numbers). This preset's real-world name ("saturated
-    /// loam") is illustrative/hand-tuned, not a measured real-loam value -- same
-    /// honesty standard as `FORAGING_RECOVERY_RATE` elsewhere in this codebase: the
-    /// mechanism is real, this specific calibration is not yet, and shouldn't be
-    /// presented as if it were. Needs a real geotechnical/soil-mechanics source before
-    /// any claim of "this is real loam" would be honest.
+    /// The constitutive law (Tait EOS + corotated elastic + Stomakhin SVD
+    /// plasticity) is cited; these parameter values (eos_stiffness,
+    /// hardening_exponent, compression_limit, stretch_limit, plastic-Jacobian
+    /// bounds, rest_density) are hand-tuned. They do not trace to SoftZoo's
+    /// `mud.py` (one parameter set, a linear EOS, θ_c = 0.025, 12-24x below
+    /// this preset's 0.4) nor to Dunatunga & Kamrin 2015 (granular only).
+    /// "Saturated loam" is illustrative, not a measured loam; it needs a
+    /// geotechnical source before claiming otherwise.
     ///
     /// `eos_power` must stay in the granular-flow range (1-3, per the field's
-    /// own doc) -- the near-incompressible value 7.0 causes runaway pressure
+    /// doc) -- the near-incompressible value 7.0 causes runaway pressure
     /// under gravity-settling compression, driving dilation that weakens
     /// `hardening_scale` toward its floor in an unbounded feedback loop.
     pub fn saturated_loam(young_modulus: f32, poisson_ratio: f32) -> Self {
@@ -164,20 +131,14 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.2,
             max_plastic_jacobian: 3.0,
             pressure_floor: 0.0,
-            // Real, disclosed 2026-08-06 addition: 0.3*mu, order-of-mu damping
-            // (same real-physics convention `ViscoelasticMaterial`'s own doc
-            // uses) -- empirically verified to stop a hard impact bouncing
-            // elastically, not a re-guess (see `dynamic_viscosity`'s own doc
-            // on this struct for the real bug this closes).
+            // 0.3*mu, order-of-mu damping (as `ViscoelasticMaterial`), enough
+            // to stop a hard impact bouncing elastically (see
+            // `dynamic_viscosity`).
             dynamic_viscosity: 0.3 * mu,
-            // Real, disclosed CORRECTION 2026-08-06: first version scaled this
-            // by mu too -- wrong pairing, caught live (consolidated_clay kept
-            // creeping/growing indefinitely, never settling, despite this).
-            // bulk_viscosity damps div_v, the SAME quantity eos_stiffness's
-            // own pressure term and lambda's own lam_vol term both act on --
-            // it must scale with the material's VOLUMETRIC stiffness
-            // (eos_stiffness), not shear stiffness (mu). See `bulk_viscosity`'s
-            // own doc on the struct.
+            // Scales with the volumetric stiffness (eos_stiffness), not mu:
+            // bulk_viscosity damps div_v, the quantity the EOS pressure and the
+            // `lam_vol` term act on (scaled by mu, consolidated_clay crept
+            // without settling).
             bulk_viscosity: 0.5 * 200.0,
         }
     }
@@ -203,12 +164,10 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.3,
             max_plastic_jacobian: 2.5,
             pressure_floor: 0.0,
-            // Real, disclosed 2026-08-06 addition -- see saturated_loam's own
-            // note. Higher factor (0.5 vs 0.3) matches this preset's own
-            // "stiffer, slower creep" real-world framing.
+            // As saturated_loam, with 0.5 instead of 0.3 for the stiffer,
+            // slower-creeping preset.
             dynamic_viscosity: 0.5 * mu,
-            // Real correction -- see saturated_loam's own note: scales with
-            // this preset's OWN eos_stiffness (500, the highest of the three),
+            // As saturated_loam: scales with this preset's eos_stiffness (500),
             // not mu.
             bulk_viscosity: 0.5 * 500.0,
         }
@@ -238,13 +197,10 @@ impl GranularFluidMaterial {
             min_plastic_jacobian: 0.1,
             max_plastic_jacobian: 5.0,
             pressure_floor: 0.0,
-            // Real, disclosed 2026-08-06 addition -- see saturated_loam's own
-            // note. Lower factor (0.15 vs 0.3): softer biological matrix,
-            // real cytoplasm is less viscous relative to its own stiffness
-            // than wet soil.
+            // As saturated_loam, with 0.15 instead of 0.3: cytoplasm is less
+            // viscous relative to its stiffness than wet soil.
             dynamic_viscosity: 0.15 * mu,
-            // Real correction -- see saturated_loam's own note: scales with
-            // this preset's OWN eos_stiffness (50, the lowest of the three).
+            // As saturated_loam: scales with this preset's eos_stiffness (50).
             bulk_viscosity: 0.5 * 50.0,
         }
     }
@@ -255,23 +211,15 @@ impl MaterialModel for GranularFluidMaterial {
         ConstitutiveModel::GranularFluid
     }
 
-    // Real bug fixed 2026-09-15 (found via audit, not live-reported): unlike
-    // every sibling EOS-pressure material in this crate
-    // (`NewtonianFluidMaterial`, `BinghamFluidMaterial`, `IdealGasMaterial`,
-    // `CavitatingFluidMaterial`, `BoilingMixtureMaterial` -- see each one's
-    // own `init_particle`), this never seeded `initial_volume`/`volume`/
-    // `density` from the real conserved quantity `mass/rest_density`, and
-    // never overrode `owns_deformation_volume_state()` (stays at the trait
-    // default `false`). Combined, this left density/volume entirely to
-    // `SpawnRegion`'s kernel-mass-density gather at spawn -- the exact
-    // free-surface-biased measurement `NewtonianFluidMaterial::init_particle`
-    // exists specifically to avoid (see that function's own doc) -- and, on
-    // the GPU backend, `g2p.wgsl` OVERWRITES density/volume from that same
-    // biased gather every substep for any material with
-    // `owns_deformation_volume_state==0`, not just at spawn. `update_particle`
-    // below already correctly derives `volume = initial_volume * j` and
-    // `density = mass / volume` every substep -- it only ever needed a
-    // correct `initial_volume` to start from.
+    // Seeds `initial_volume`/`volume`/`density` from the conserved
+    // `mass/rest_density` and owns that state (`owns_deformation_volume_state`),
+    // like every sibling EOS-pressure material (`NewtonianFluidMaterial`,
+    // `BinghamFluidMaterial`, `IdealGasMaterial`, `CavitatingFluidMaterial`,
+    // `BoilingMixtureMaterial`). Otherwise density and volume come from
+    // `SpawnRegion`'s kernel gather, biased at the free surface (see
+    // `NewtonianFluidMaterial::init_particle`), and on the GPU `g2p.wgsl`
+    // overwrites them from that gather every substep. `update_particle` then
+    // derives `volume = initial_volume * j` and `density = mass / volume`.
     fn init_particle(&self, particle: &mut Particle) {
         particle.plastic_volume_ratio = 1.0;
         particle.hardening_scale = 1.0;
@@ -285,68 +233,15 @@ impl MaterialModel for GranularFluidMaterial {
         true
     }
 
-    // TRIED, REVERTED (2026-08-26/27): a `GasMaterial`-style
-    // `init_particle_from_transition` override (preserve real J relative to
-    // `rest_density` instead of the engine's default identity reset -- see
-    // `gas.rs`'s own override for that real, working pattern on a DIFFERENT
-    // material) was attempted here for the exact same class of bug
-    // (`Simulation::apply_phase_transition` resets `deformation_gradient` to
-    // IDENTITY unconditionally, so `kirchhoff_stress`'s EOS pressure, which
-    // reads `det(deformation_gradient)` directly rather than the stored
-    // `Particle::density` field, drops to exactly zero regardless of real
-    // load -- confirmed live and reproduced in a controlled diagnostic,
-    // `diag_phase_transition_under_load_causes_stress_discontinuity` in
-    // `tests/physics_correctness.rs`: 0.023 -> 0.188 max-speed spike in one
-    // substep, ~18000x the matched no-transition control).
-    //
-    // Live-measured result of the fix attempt: WORSE, not better -- same
-    // diagnostic went from a 0.16 speed delta to 2.93 (confirmed twice,
-    // including after finding and fixing a real bug in the diagnostic's own
-    // test setup, which turned out not to be the actual explanation). The
-    // isotropic F this override installed does correctly zero out the
-    // corotated deviatoric term (an isotropic matrix has zero deviatoric
-    // part by construction) and lands J very close to the real prior
-    // compression ratio (measured J~1.02, near the material's own
-    // stretch_limit clamp) -- so the mechanism is doing roughly what
-    // `gas.rs`'s own working version does.
-    //
-    // RESOLVED, mostly (2026-08-28, see `tests/physics_correctness.rs`'s own
-    // doc on `diag_phase_transition_under_load_causes_stress_discontinuity`):
-    // the `eos_power` candidate below WAS checked -- the diagnostic's own
-    // material had been built via the raw `::new()` constructor, which
-    // hardcoded 7.0 (the value flagged above as unsuitable), while the real
-    // scene (`sand_water_saturation.rs`'s `make_mixture`) already used 2.0
-    // directly and was never actually exposed to the danger. Rebuilding the
-    // diagnostic to match `make_mixture` field-for-field dropped the
-    // measured spike from +0.1646 to -0.0076 -- the identity-reset
-    // mechanism, with the CORRECT eos_power, is not the catastrophic problem
-    // it looked like. `new()`'s own default was fixed separately (2026-09-15,
-    // see that constructor's own doc) so future callers can't reintroduce
-    // this by using the raw constructor instead of a preset. Honest residual
-    // scope, per that test's own doc: this explains why the diagnostic
-    // OVERSTATED the danger, not necessarily the real scene's own eventual
-    // 104,737-frame crash, which may have a slower, separate cause (a real
-    // water-side CFL/retry instability per that crash's own panic message)
-    // -- a repeated-transition version of the diagnostic remains the real
-    // next step there, not more single-transition analysis.
-    //
-    // Original "not yet checked" note, kept for the historical record: this
-    // material's `eos_power` default (7.0 in the raw `new()` constructor, already
-    // documented elsewhere in this file as "causes runaway pressure under
-    // gravity-settling compression" and NOT the value `sand_water_
-    // saturation.rs`'s own `make_mixture` actually uses, 2.0 -- the
-    // diagnostic test itself used the raw `new()` default and never
-    // re-checked with eos_power=2.0), and/or a real mismatch between
-    // DruckerPragerMaterial's own compressive support stress at a loaded
-    // particle and what GranularFluidMaterial's Tait EOS can supply at a
-    // J this close to 1 by construction (near-incompressible EOS forms are
-    // deliberately flat near J=1 -- see this file's own honest-disclosure
-    // doc on `saturated_loam` for why eos_power=7.0 is flagged unsuitable
-    // for a granular-settling regime in the first place). Reverted rather
-    // than shipping a confirmed regression; the diagnostic test stays as a
-    // real regression guard for whoever picks this up next.
-    //
-    // fn init_particle_from_transition(&self, particle: &mut Particle) { ... }
+    // No `init_particle_from_transition` override: the default resets F to
+    // identity. A `gas.rs`-style override preserving J against `rest_density`
+    // made `diag_phase_transition_under_load_causes_stress_discontinuity`
+    // (`tests/physics_correctness.rs`) worse (speed delta 0.16 -> 2.93). With
+    // the eos_power 2.0 the scene uses (`sand_water_saturation.rs`'s
+    // `make_mixture`) the identity reset gives -0.0076 there, so it is not the
+    // danger it looked like at 7.0. That scene's 104,737-frame crash may have a
+    // separate, slower cause; a repeated-transition diagnostic is the next
+    // step.
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
@@ -369,9 +264,9 @@ impl MaterialModel for GranularFluidMaterial {
 
         let mut stress = Mat2::from_diagonal(Vec2::splat(-pressure)) + dev_coro + lam_vol;
 
-        // Real viscous dissipation -- see `dynamic_viscosity`/`bulk_viscosity`'s
-        // own docs. Identical formulas to `NewtonianFluidMaterial::
-        // kirchhoff_stress` (τ += η·dev(D) + ζ·(∇·v)·I).
+        // Viscous dissipation (see `dynamic_viscosity`/`bulk_viscosity`), the
+        // formulas of `NewtonianFluidMaterial::kirchhoff_stress`
+        // (τ += η·dev(D) + ζ·(∇·v)·I).
         if self.dynamic_viscosity > 0.0 || self.bulk_viscosity > 0.0 {
             let c = particles.velocity_gradient[i];
             let sym_strain = c + c.transpose();
@@ -454,13 +349,9 @@ impl MaterialModel for GranularFluidMaterial {
             pressure_floor: self.pressure_floor,
             dynamic_viscosity: self.dynamic_viscosity,
             bulk_viscosity: self.bulk_viscosity,
-            // Real bug fixed 2026-09-15, second half of the fix on
-            // `init_particle`'s own doc: `MaterialParams::
-            // owns_deformation_volume_state` is NOT auto-derived from the
-            // trait method -- each material's `params()` must forward it
-            // explicitly (see that field's own doc), and this one never did,
-            // so `..Default::default()` below silently left it at 0/false on
-            // GPU even once the trait method itself returned `true`.
+            // `MaterialParams::owns_deformation_volume_state` is not derived
+            // from the trait method: each material's `params()` forwards it,
+            // or `..Default::default()` leaves it false on the GPU.
             owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }
@@ -484,18 +375,11 @@ impl MaterialModel for GranularFluidMaterial {
             material_cfl,
         );
 
-        // Real, disclosed 2026-08-06 fix, found live: adding real
-        // dynamic_viscosity/bulk_viscosity (see their own docs) without a
-        // matching viscous CFL bound let the solver pick a substep too large
-        // for stable EXPLICIT integration of that damping term -- a large
-        // enough dt*viscosity/mass ratio makes an explicit damping term
-        // INJECT energy instead of removing it (classic explicit-integrator
-        // instability), which is exactly what looked like "exploding" on
-        // impact (clay's own pile height growing to 52+ units instead of
-        // settling). Same formula `NewtonianFluidMaterial::timestep_bound`
-        // already uses, extended to cover bulk_viscosity too since it's the
-        // same explicit-damping character on the same velocity-gradient
-        // quantities.
+        // Viscous CFL bound for the explicit viscosity terms: too large a
+        // dt*viscosity/mass makes an explicit damping term inject energy
+        // (clay piles grew to 52+ units on impact). The formula of
+        // `NewtonianFluidMaterial::timestep_bound`, extended to
+        // bulk_viscosity, which acts on the same velocity gradient.
         let total_viscosity = self.dynamic_viscosity + self.bulk_viscosity;
         if total_viscosity > 0.0 {
             let density = density.max(1.0e-6);
@@ -604,14 +488,10 @@ mod kinematic_projection_tests {
     }
 }
 
-/// Real regression tests, 2026-09-15, for the spawn-state/GPU-density bug
-/// found by audit (see `init_particle`'s own doc for the full account): a
-/// freshly-spawned particle must get its real, conserved volume/density
-/// from `mass/rest_density`, matching every sibling EOS-pressure material,
-/// and the material must correctly declare that it owns that state (both
-/// the trait method AND its own separate forwarding into `MaterialParams`
-/// for the GPU path -- these are NOT automatically linked, a real, second
-/// bug this test also catches).
+/// A fresh particle gets its conserved volume and density from
+/// `mass/rest_density`, like every sibling EOS-pressure material, and the
+/// material declares it owns that state both through the trait method and
+/// through `MaterialParams` for the GPU (the two are not linked).
 #[cfg(test)]
 mod spawn_state_tests {
     use super::*;
@@ -677,10 +557,8 @@ mod spawn_state_tests {
              derives both from its own EOS+deformation-gradient, not a \
              kernel-mass gather"
         );
-        // Real, separate check: the trait method alone does NOT reach the
-        // GPU -- `params()` must forward it explicitly (see that function's
-        // own doc). This would have stayed silently 0/false even with the
-        // trait method fixed, if only the trait override existed.
+        // The trait method alone does not reach the GPU: `params()` must
+        // forward it (see that function).
         assert_eq!(
             mat.params().owns_deformation_volume_state,
             1,

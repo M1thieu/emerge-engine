@@ -5,7 +5,7 @@
 //! a Jacobi-iterated variable-mobility Poisson solve, run AFTER
 //! `resolve_mixture_coupling`'s own closed-form drag solve to enforce the
 //! mixture's actual incompressibility constraint instead of just conserving
-//! momentum. See `project_mixture_incompressibility`'s own doc for the full
+//! momentum. See `project_mixture_incompressibility`'s doc for the full
 //! derivation and citations (Zhao & Choo 2020; Bridson's Chorin-style
 //! projection).
 
@@ -18,7 +18,7 @@ use super::{FxU32BuildHasher, Grid, flat_index};
 impl Grid {
     // This module stays hardcoded to phase slots 0 (solid) and 1 (fluid) --
     // `MixturePhase::SOLID`/`FLUID` -- pressure projection is not part of the
-    // N-phase generalization (`mixture::mod`'s own doc).
+    // N-phase generalization (`mixture::mod`'s doc).
     fn mixture_solid_v_or_zero(&self, pos: IVec2) -> Vec2 {
         flat_index(pos, self.resolution)
             .and_then(|idx| self.mixture_cells.get(&idx))
@@ -68,7 +68,7 @@ impl Grid {
     /// `correction_weights_must_match_residual_weights_for_adjoint_consistency`
     /// (this module) for the numerical check. NOT fully exact: a `grad(n)`
     /// cross-term (product rule, since porosity is itself spatially varying)
-    /// is still omitted -- known gap, see that test's own doc for scope.
+    /// is still omitted -- known gap, see that test's doc for scope.
     ///
     /// The mobility `K` must be folded into the Laplacian operator itself via
     /// harmonic-mean FACE coefficients (`K_face = 2*K_i*K_j/(K_i+K_j)`), not
@@ -141,29 +141,17 @@ impl Grid {
             // convention, just with a threshold large enough to matter.
             const MIN_MASS_FRACTION: f32 = 0.01;
             let total_mass = (m_s + m_f).max(MIN_MASS);
-            // Real, disclosed 2026-08-04 fix: a RELATIVE-fraction check alone
-            // does NOT bound the failure mode this comment already describes.
-            // A cell where BOTH phases have tiny absolute mass (a genuine
-            // kernel-support-edge cell, e.g. the outer boundary of a settled
-            // pile) can easily satisfy `m_s/total > 1%` while `m_s` itself is
-            // still near `MIN_MASS` (1e-6) -- giving `alpha_s = 1/m_s` up to
-            // ~1e6, applied directly to `grad_p` below with NO harmonic-mean
-            // safety net (unlike the Poisson solve's own `k`, which IS
-            // face-bounded). Found via direct instrumentation of
-            // `mixture_sand_water.rs`: synchronized solid+fluid velocity
-            // spikes (both phases jumping to the same, ~10-20x-baseline
-            // speed at the same position every time) concentrated near the
-            // settled pile's own boundary -- exactly this failure mode, not
-            // sand's own constitutive stress (`sand_min_j` stayed near 1.0
-            // through most of these events). A real ABSOLUTE mass floor,
-            // three orders of magnitude above the pure divide-by-zero guard
-            // (`MIN_MASS`), caps the worst-case `alpha` at ~1e3 instead of
-            // ~1e6 -- a real, disclosed order-of-magnitude buffer (not a
-            // precisely first-principles-derived constant), required IN
-            // ADDITION to the existing relative-fraction check, not instead
-            // of it (both catch different real cases: fraction excludes "real
-            // total mass, negligible SHARE"; this excludes "negligible mass
-            // regardless of share").
+            // An absolute mass floor as well as the relative fraction: a cell
+            // where both phases have tiny mass (the edge of a settled pile's
+            // kernel support) can pass `m_s/total > 1%` with `m_s` near `MIN_MASS`
+            // (1e-6), giving `alpha_s = 1/m_s` up to ~1e6 on `grad_p` below, with
+            // no harmonic-mean bound (the Poisson `k` has one). In
+            // `mixture_sand_water.rs` this showed as solid and fluid jumping
+            // together to 10-20x baseline speed at the pile's boundary. The floor,
+            // three orders above `MIN_MASS`, caps alpha near 1e3 (an
+            // order-of-magnitude buffer, not a derived constant). The fraction
+            // excludes a negligible share of real mass; the floor, negligible
+            // mass whatever the share.
             const MIN_ABSOLUTE_MASS_FOR_CORRECTION: f32 = 1.0e-3;
             let solid_significant =
                 m_s / total_mass > MIN_MASS_FRACTION && m_s > MIN_ABSOLUTE_MASS_FOR_CORRECTION;
@@ -213,20 +201,13 @@ impl Grid {
             }
         };
 
-        // Opt-in diagnostic, env-gated (`EMERGE_DIAG_MIXTURE_PRESSURE`,
-        // zero cost when unset -- same pattern as `sand.rs`'s
-        // `EMERGE_DIAG_FLOOR_FIX`). Permanent debugging facility, not a
-        // pending cleanup: the investigation that motivated it concluded,
-        // but a way to inspect mobility `k` in a consolidated region stays
-        // useful. Originally added 2026-08-04 chasing the real
-        // "geyser" event found live in `mixture_sand_water.rs` -- sand
-        // erupting to 3-7x its settled pile height once water is fully
-        // consolidated at the bottom. Checking whether the mobility `k`
-        // itself (not just the correction-step alpha already fixed) goes
-        // extreme in a fully-consolidated region, where MULTIPLE adjacent
-        // cells could all have tiny water mass at once -- harmonic-mean
-        // faces only bound a mismatch between neighbors, not a whole
-        // cluster of uniformly-huge k.
+        // Opt-in diagnostic, env-gated (`EMERGE_DIAG_MIXTURE_PRESSURE`, free
+        // when unset, like `sand.rs`'s `EMERGE_DIAG_FLOOR_FIX`), kept to inspect
+        // the mobility `k` in a consolidated region: whether `k` goes extreme
+        // where several adjacent cells all hold tiny water mass (harmonic-mean
+        // faces only bound a mismatch between neighbours). Built for sand
+        // erupting to 3-7x its pile height once water consolidated at the
+        // bottom in `mixture_sand_water.rs`.
         #[cfg(debug_assertions)]
         let diag_enabled = std::env::var("EMERGE_DIAG_MIXTURE_PRESSURE").is_ok();
         #[cfg(debug_assertions)]
@@ -296,7 +277,7 @@ impl Grid {
             // and `correction_weights_must_match_residual_weights_for_adjoint_
             // consistency` (this module) for why this matters. Not fully exact:
             // the grad(n) cross-term from the product rule is still omitted when
-            // porosity varies spatially (known gap, see that test's own doc).
+            // porosity varies spatially (known gap, see that test's doc).
             //
             // Under-relaxation (successive under-relaxation / SUR) fixes an
             // unstable feedback loop: applying the full, undamped correction
@@ -325,32 +306,23 @@ mod pressure_projection_tests {
     use super::*;
     use crate::materials::MixturePhase;
 
-    /// Real, direct numerical check of the adjoint-consistency requirement
-    /// flagged in `project_mixture_incompressibility`'s own doc history (see
-    /// the memory this test was built from): a proper pressure-projection
-    /// Poisson system needs the discrete divergence operator D (used to
-    /// build the residual/RHS: `r = (1-n)*div(vs) + n*div(vf)`) and the
-    /// discrete gradient operator G (used to apply the velocity correction)
-    /// to be NEGATIVE ADJOINTS with respect to the mass-weighted momentum
-    /// inner product -- the standard discrete integration-by-parts identity
-    /// `Σ p·D(v) = -Σ <v, G(p)>` a symmetric/SPD Poisson operator requires.
-    /// Tests this DIRECTLY on the exact same stencils the real code uses
-    /// (central-difference div/grad, h=1), independent of `Grid` plumbing,
-    /// on an interior patch with periodic wraparound so there's no boundary-
-    /// condition ambiguity clouding the result -- isolates the WEIGHTING
-    /// question (does the correction use the same (1-n)/n weights the
-    /// residual does?) from any boundary-treatment mismatch.
+    /// A pressure-projection Poisson system needs the discrete divergence D
+    /// (the residual `r = (1-n)*div(vs) + n*div(vf)`) and gradient G (the
+    /// velocity correction) to be negative adjoints in the mass-weighted
+    /// momentum inner product, `Σ p·D(v) = -Σ <v, G(p)>` (discrete integration
+    /// by parts, needed for a symmetric Poisson operator). Checked on the
+    /// stencils the code uses (central differences, h = 1), outside `Grid`, on
+    /// a periodic interior patch so no boundary treatment interferes: does
+    /// the correction use the residual's (1-n)/n weights?
     #[test]
     fn correction_weights_must_match_residual_weights_for_adjoint_consistency() {
         const N: usize = 8;
         let idx = |x: i32, y: i32| -> usize {
             (x.rem_euclid(N as i32) as usize) * N + (y.rem_euclid(N as i32) as usize)
         };
-        // Real, deterministic (not random -- reproducible), spatially-varying
-        // test fields: masses vary so porosity `n` genuinely varies per cell
-        // (the exact condition under which weighting matters), velocities
-        // and pressure are independent arbitrary fields (not derived from
-        // each other -- this tests the OPERATOR PAIR, not a specific solve).
+        // Deterministic, spatially varying fields: masses vary so porosity `n`
+        // varies per cell (where the weighting matters); velocities and
+        // pressure are independent (the operator pair is tested, not a solve).
         let mut m_s = [0.0f32; N * N];
         let mut m_f = [0.0f32; N * N];
         let mut vs = [Vec2::ZERO; N * N];
@@ -426,13 +398,9 @@ mod pressure_projection_tests {
         );
     }
 
-    /// Real test for the incompressibility projection itself: build a small
-    /// neighborhood of mixture-active nodes with a deliberately divergent
-    /// solid velocity field (radiating outward from a center node -- a real,
-    /// nonzero div(v_s)), run the projection, and confirm the projected
-    /// divergence residual actually SHRINKS relative to the unprojected one.
-    /// This is the real, checkable claim behind
-    /// `project_mixture_incompressibility` -- not just "runs without crashing."
+    /// With a divergent solid velocity field (radiating from a centre node,
+    /// nonzero div(v_s)) on a small patch of mixture-active nodes, the
+    /// projected divergence residual is smaller than the unprojected one.
     #[test]
     fn pressure_projection_reduces_divergence_residual() {
         let mut grid = Grid::new(16);
@@ -444,7 +412,7 @@ mod pressure_projection_tests {
         // A uniform dilation (v = 0.5*d) has constant divergence everywhere and
         // a closed (Neumann) system can never fully cancel that -- it's a
         // net source with nowhere to drain. Use a decaying (Gaussian-weighted)
-        // radial field instead: real, concentrated divergence near `center`
+        // radial field instead: concentrated divergence near `center`
         // that fades toward the patch edge, so a closed system CAN resolve
         // it (the total divergence over the patch is close to zero).
         let v_s_at = |pos: IVec2| -> Vec2 {
@@ -517,15 +485,12 @@ mod pressure_projection_tests {
         );
     }
 
-    /// Real, direct check on the ACTUAL `Grid` code path (not the standalone
-    /// symbolic check above) that the porosity-weighted fix genuinely halves
-    /// the total momentum defect vs. the old unweighted formula -- provable
-    /// exactly, not just observed: `Δmomentum_total = m_s·(-(1-n)·a_s·∇p) +
-    /// m_f·(-n·a_f·∇p) = -(1-n)·∇p - n·∇p = -∇p` (mass cancels out of
-    /// `m·(1/m)` regardless of `n`), vs. the old `-∇p - ∇p = -2·∇p`. Same
-    /// real scene as the divergence test above (uniform `n=0.5`), measuring
-    /// TOTAL summed momentum (both phases, real known masses) before/after
-    /// the real `resolve_mixture_coupling` call with projection enabled.
+    /// On the `Grid` code path, the porosity-weighted correction halves the
+    /// total momentum defect against the unweighted formula: `Δmomentum_total
+    /// = m_s·(-(1-n)·a_s·∇p) + m_f·(-n·a_f·∇p) = -(1-n)·∇p - n·∇p = -∇p` (mass
+    /// cancels in `m·(1/m)` for any `n`), against `-2·∇p` unweighted. Same scene
+    /// as the divergence test (uniform `n = 0.5`), total momentum of both
+    /// phases before and after `resolve_mixture_coupling` with projection on.
     #[test]
     fn porosity_weighted_correction_halves_the_real_momentum_defect() {
         let mut grid = Grid::new(16);
@@ -564,23 +529,11 @@ mod pressure_projection_tests {
         let momentum_after = total_momentum(&grid);
         let defect = (momentum_after - momentum_before).length();
 
-        // Real, disclosed, BETTER-than-predicted finding: this test
-        // originally asserted the total defect would be substantially
-        // nonzero (per-cell `-∇p` is real and nonzero by the exact
-        // derivation in this module's own doc). Measured instead: the total
-        // defect on this REAL scene is ~1e-6 -- essentially exact GLOBAL
-        // conservation, not just "bounded." Real reason, not a mystery:
-        // `Σ_i ∇p_i` over a closed patch telescopes toward boundary terms
-        // (same discrete-Stokes reasoning `pressure_projection_reduces_
-        // divergence_residual`'s own comment already invokes for why a
-        // decaying-toward-the-edge field is resolvable at all), and this
-        // scene's Gaussian-decaying, roughly-symmetric source makes those
-        // boundary terms nearly cancel. So: LOCALLY nonzero (`-∇p` per
-        // cell, real, disclosed, not literally zero anywhere), GLOBALLY
-        // conserved to numerical precision for this real, physically-
-        // reasonable (boundary-decaying) scene -- correcting this test's
-        // own prediction with the real measured number, not forcing the
-        // old assumption to pass.
+        // The total defect measures ~1e-6, not the per-cell `-∇p` the
+        // derivation predicts: `Σ_i ∇p_i` over a closed patch telescopes to
+        // boundary terms (see `pressure_projection_reduces_divergence_residual`),
+        // which this scene's decaying, roughly symmetric source nearly cancels.
+        // Locally nonzero, globally conserved to numerical precision here.
         let scene_momentum_scale: f32 = cells.iter().map(|&pos| (m_s * v_s_at(pos)).length()).sum();
         assert!(
             defect < scene_momentum_scale * 1.0e-3,

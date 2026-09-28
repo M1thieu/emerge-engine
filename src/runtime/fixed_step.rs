@@ -55,16 +55,13 @@ impl FixedStepController {
     pub const fn dt(&self) -> f32 {
         self.config.dt
     }
-    /// Real, additive accessor for the leftover fractional step -- how far
-    /// (as a `[0,1)` fraction of one `dt`) real elapsed time has advanced
-    /// PAST the last completed physics step. A renderer can use this to
-    /// interpolate between the previous and current physics state
-    /// (`x_render = lerp(x_prev, x_now, alpha)`, the standard "Fix Your
-    /// Timestep" render-interpolation pattern -- Gaffer 2004) so on-screen
-    /// motion stays visually smooth even when the real achievable physics-
-    /// step cadence itself varies frame to frame, without changing any
-    /// physics value. Zero behavior change for every existing caller that
-    /// doesn't read this (`steps_for_frame`'s own math is untouched).
+    /// The leftover fractional step: how far elapsed time has advanced past
+    /// the last completed physics step, as a `[0,1)` fraction of one `dt`. A
+    /// renderer can interpolate between the previous and current physics
+    /// state (`x_render = lerp(x_prev, x_now, alpha)`, the "Fix Your
+    /// Timestep" pattern, Gaffer 2004) so on-screen motion stays smooth when
+    /// the achievable step cadence varies frame to frame. Changes no physics
+    /// value.
     pub fn interpolation_alpha(&self) -> f32 {
         (self.accumulator / self.config.dt).clamp(0.0, 1.0)
     }
@@ -118,10 +115,9 @@ mod tests {
             max_substeps_per_frame: 2, // deliberately tiny cap
             max_frame_delta: 1.0,
         });
-        // Real elapsed time worth far more than the cap allows -- the
-        // accumulator keeps the UNCONSUMED backlog (by design, see
-        // `steps_for_frame`'s own doc), so alpha must stay clamped to
-        // [0,1) rather than reporting a nonsensical multi-step overrun.
+        // Elapsed time far beyond what the cap allows: the accumulator keeps
+        // the unconsumed backlog (see `steps_for_frame`), so alpha stays
+        // clamped to [0,1) rather than reporting a multi-step overrun.
         let steps = stepper.steps_for_frame(1.0);
         assert_eq!(steps, 2);
         let alpha = stepper.interpolation_alpha();

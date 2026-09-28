@@ -18,7 +18,7 @@ impl GpuSimulation {
     /// If `new_material_id`'s `MaterialModel::latent_heat()` is non-zero and
     /// `attach_thermal_gpu` has been called, debits `temperature` by
     /// `latent_heat / heat_capacity` for every transitioned particle -- real energy
-    /// conservation (an endothermic transition genuinely cools the particle, exothermic
+    /// conservation (an endothermic transition cools the particle, exothermic
     /// warms it), not a free material swap. Exact GPU parity with CPU's
     /// `Simulation::phase_transition` -- see `MaterialModel::latent_heat` for the sign
     /// convention. `None` heat capacity (no thermal model attached) skips the debit,
@@ -26,9 +26,9 @@ impl GpuSimulation {
     ///
     /// Calls `sync_particles_blocking` first: a predicate driven by live GPU state
     /// (temperature from the real diffusion PDE, position, velocity) needs the
-    /// genuinely current mirror, not whatever the last readback happened to hold --
+    /// current mirror, not whatever the last readback happened to hold --
     /// the same staleness class of bug `remove_particles` guards against for the
-    /// same reason (see its own doc).
+    /// same reason (see its doc).
     ///
     /// Uploads its own change to GPU immediately, not just `layout_dirty = true`
     /// deferred to the next `step_frame` -- a caller chaining multiple mutating calls
@@ -55,7 +55,7 @@ impl GpuSimulation {
                 // Captured BEFORE being overwritten below -- same real,
                 // general multi-source `latent_heat` extension the CPU
                 // path uses (`spacetime::solver::particles::
-                // apply_phase_transition`'s own doc), so a GPU-driven
+                // apply_phase_transition`'s doc), so a GPU-driven
                 // transition also picks the right real energy for
                 // whichever material this specific particle is actually
                 // coming from, not one flat value for every source.

@@ -1,5 +1,5 @@
 //! GPU -> CPU readback methods for `GpuBuffers` -- split out of `buffers.rs`
-//! (was ~250 of its ~700 lines), matching that file's own doc comment split
+//! (was ~250 of its ~700 lines), matching that file's doc comment split
 //! between "Upload path" and "Download path". Construction and uploads stay
 //! in `buffers.rs`; every blocking/async readback variant lives here.
 

@@ -1,42 +1,23 @@
 //! Single-phase (strict, non-mixture) fluid incompressibility pressure
-//! projection -- Chorin-style projection (Bridson, "Fluid Simulation for
-//! Computer Graphics" ch. 5; same citation family as `mixture::pressure`,
-//! Zhao & Choo 2020, arXiv:1905.00671), solved EXACTLY via a discrete cosine
-//! transform (DCT-II/DCT-III) instead of an iterative Jacobi/Gauss-Seidel
-//! sweep.
+//! projection: Chorin-style (Bridson, "Fluid Simulation for Computer
+//! Graphics" ch. 5; the family of `mixture::pressure`, Zhao & Choo 2020,
+//! arXiv:1905.00671), solved exactly by a discrete cosine transform
+//! (DCT-II/DCT-III) instead of Jacobi/Gauss-Seidel sweeps.
 //!
-//! Real motivation for the DCT solve specifically (not just "a Poisson
-//! solve", see `SimConfig::fluid_pressure_iterations`'s own doc for the
-//! wider background): a first version of this module used the SAME
-//! variable-mobility Jacobi solve `mixture::pressure` already proves out for
-//! the two-phase case, later upgraded to Gauss-Seidel with SOR (Young 1954)
-//! -- neither stabilized the hardest real target scene (a near-full-domain-
-//! height water column starting already against a wall, see the pressure
-//! projection entry in `KNOWN_LIMITATIONS.md`). Root cause, confirmed by direct
-//! measurement, not guessed: a BETTER-converged iterative solve made the
-//! blowup WORSE, not better -- ruling out "just needs more iterations" and
-//! pointing at the variable-mobility formulation itself: a free-surface
-//! cell's `alpha=1/mass` is unbounded, and even with a safety floor on the
-//! CORRECTION step, that same unboundedness distorts the SOLVED PRESSURE
-//! FIELD every cell's gradient reads from. A LATER real retry with a
-//! bounded, floored alpha (see git history) confirmed the SAME
-//! "more accurate = worse" signature persists even once alpha is bounded --
-//! real, convergent evidence (six independent solver/parameter
-//! combinations, all tonight) that the actual limiting factor is the
-//! VIOLENCE of the first, fully-uncushioned impact (eos_stiffness=0 removes
-//! ALL elastic resistance) more than any one formulation's own quality.
+//! The variable-mobility Jacobi solve of `mixture::pressure`, then
+//! Gauss-Seidel with SOR (Young 1954), did not stabilize a near-full-height
+//! water column starting against a wall, and a better-converged solve made
+//! it worse, with or without a floor on the free-surface `alpha = 1/mass`:
+//! the violence of the first, uncushioned impact (`eos_stiffness = 0`) limits
+//! more than the formulation. As in Stam's "Stable Fluids" (1999), density
+//! is taken uniform, so the Poisson operator has constant coefficients,
+//! which the DCT-II basis diagonalizes exactly for Neumann (zero-flux)
+//! boundaries, the condition `SlipBoundary` enforces at a wall; every cell
+//! shares one bounded alpha. `dct.rs`'s direct O(N^2)-per-row transform is
+//! cheap at this grid size and checked by a round-trip test.
 //!
-//! The real fix, same one Stam's "Stable Fluids" (1999) -- the foundational
-//! real-time-graphics fluid paper -- uses: assume UNIFORM density (a real,
-//! disclosed simplification, not a hidden one) so the Poisson operator has
-//! CONSTANT coefficients, which the DCT-II basis diagonalizes EXACTLY for
-//! Neumann (zero-flux) boundary conditions -- the same physical condition
-//! `SlipBoundary` already enforces at a wall. This removes the
-//! unbounded-local-alpha failure mode structurally (every cell shares one
-//! bounded, representative alpha) instead of chasing it with iteration
-//! count or relaxation tuning. No new crate dependency: `dct.rs`'s own
-//! direct O(N^2)-per-row transform is cheap at this grid's real size and
-//! verified against a real round-trip identity test (see its own doc).
+//! Superseded by `grid::mac` once that passes its gates (see
+//! `KNOWN_LIMITATIONS.md`, "Pressure projection").
 
 use glam::{IVec2, Vec2};
 
@@ -44,11 +25,11 @@ use super::Grid;
 use super::dct::{dct2_forward, dct2_inverse};
 
 /// Extra cells of padding around the active cells' own bounding box (see
-/// `project_fluid_incompressibility`'s own doc): the DCT solve's Neumann
+/// `project_fluid_incompressibility`'s doc): the DCT solve's Neumann
 /// (zero-flux) boundary is only PHYSICALLY correct where it lands on a real
 /// wall (`SlipBoundary` already enforces the same condition there); landing
 /// it right at the fluid's own free surface instead would wrongly treat
-/// "open air" as a sealed boundary. Padding the box with real, naturally-
+/// "open air" as a sealed boundary. Padding the box with naturally-
 /// zero-divergence empty cells pushes that approximation error away from
 /// the actual fluid body instead of eliminating it outright (a real,
 /// disclosed limit of a LOCAL Neumann solve, not unique to this
@@ -57,88 +38,47 @@ use super::dct::{dct2_forward, dct2_inverse};
 const BOUNDING_BOX_PADDING: i32 = 4;
 
 impl Grid {
-    /// Enforces `div(v) = 0` on the grid's own active velocity field (see
-    /// module doc) via an EXACT constant-density DCT Poisson solve.
-    /// `pressure_iterations = 0` is a no-op by construction (kept as the
-    /// enable/disable gate for API-compatibility with the old iterative
-    /// solve and with `mixture_pressure_iterations`'s own convention -- the
-    /// DCT solve itself doesn't iterate, so any nonzero value just turns it
-    /// on).
+    /// Enforces `div(v) = 0` on the grid's active velocity field (see the
+    /// module doc) by an exact constant-density DCT Poisson solve.
+    /// `pressure_iterations = 0` is a no-op; any nonzero value turns it on
+    /// (the DCT does not iterate; the parameter keeps the convention of
+    /// `mixture_pressure_iterations`).
     ///
-    /// Scope: transforms only a small, padded bounding box of the active
-    /// cells (`self.dirty`), NOT the full `resolution x resolution` domain
-    /// -- real requirement, not an optimization afterthought: this engine's
-    /// grid is sparse by design (only touched cells allocated at all), and a
-    /// dense full-domain transform would silently defeat that for any large
-    /// sparse world even though today's small demo grids wouldn't show it.
-    /// Cost scales with the fluid BODY's own extent, same sparse-friendly
-    /// property the rest of the engine already has. Correct only when every
-    /// particle contributing to this grid is a strict fluid.
-    /// `Simulation::assert_strict_fluid_mode_is_supported` enforces exactly
-    /// that whenever `SimConfig::fluid_pressure_iterations > 0` (see its own
-    /// doc for why a mixed fluid+solid scene isn't supported here yet).
+    /// Transforms only a padded bounding box of the active cells
+    /// (`self.dirty`), not the whole `resolution x resolution` domain: the
+    /// grid is sparse, and cost scales with the fluid body's extent. Correct
+    /// only when every particle on this grid is a strict fluid, which
+    /// `Simulation::assert_strict_fluid_mode_is_supported` enforces whenever
+    /// `SimConfig::fluid_pressure_iterations > 0`.
     ///
-    /// Free-surface Dirichlet condition (2026-08-09, real root-cause fix,
-    /// confirmed against Robert Bridson's own reference implementation --
-    /// see the GS sweep's own comment for the full derivation): a
-    /// HOMOGENEOUS Neumann condition (zero pressure gradient) applied at
-    /// EVERY missing neighbor, free surface included, cannot represent the
-    /// nonzero pressure gradient a gravity-loaded floor genuinely needs to
-    /// hold the fluid's own weight up. An earlier attempt patched this with
-    /// a hand-derived analytic `rho*g` term added to every correction --
-    /// real, measurable improvement (pushed a collapse from frame ~10 to
-    /// ~65) but not a structural fix, and non-monotonic under further
-    /// tuning (more corrector iterations sometimes made it WORSE). Replaced
-    /// with the actual missing piece instead: free-surface cells (real
-    /// fluid bordering open, non-fluid space) get `p=0` (Dirichlet, open to
-    /// atmosphere), while true solid walls keep the original Neumann
-    /// treatment -- two genuinely different boundary types, matching how
-    /// Bridson's own liquid solver (`liquid_phi`/ghost-fluid method)
-    /// distinguishes them.
+    /// Free-surface cells (fluid next to open, non-fluid space) get `p = 0`
+    /// (Dirichlet, open to the atmosphere); true walls keep Neumann. A
+    /// homogeneous Neumann condition at every missing neighbour cannot give
+    /// the pressure gradient that holds a gravity-loaded column up. This is
+    /// the distinction Bridson's liquid solver draws with `liquid_phi` (see
+    /// the Gauss-Seidel sweep).
     pub fn project_fluid_incompressibility(&mut self, cell_width: f32, pressure_iterations: u32) {
         if pressure_iterations == 0 || self.dirty.is_empty() {
             return;
         }
-        // Real, measured, TWICE (2026-08-09): a same-session attempt split
-        // this solve by spatially-disjoint connected component (e.g. water
-        // vs mud sharing one grid, avoiding the empty gap between them in
-        // one shared bounding box -- a real, confirmed ~3x box-size waste,
-        // 63x61=3843 cells solved for only ~1300 touched). Measured net
-        // NEGATIVE both times: first with the standard library's default
-        // (SipHash) `HashSet`, wall time 549s->995s over a 120-frame
-        // benchmark; retried with this crate's own fast `FxU32BuildHasher`
-        // (same fix `grid/mod.rs`'s own doc already prescribes for exactly
-        // this class of mistake) -- still net negative, 549s->732s. The
-        // per-call fixed overhead of running DCT-forward/eigen-solve/filter/
-        // DCT-inverse/GS-refine TWICE (once per component) outweighs the
-        // smaller-box savings at this particle-count/box-size regime, even
-        // with hashing no longer the bottleneck. Reverted, not attempted
-        // further.
+        // One solve over one bounding box, even for disjoint bodies: splitting
+        // by connected component (e.g. water and mud with an empty gap between
+        // them, 63x61 = 3843 cells solved for ~1300 touched) measured slower,
+        // 549 s -> 995 s over 120 frames with SipHash and 549 s -> 732 s with
+        // `FxU32BuildHasher`: running the whole pipeline twice costs more than
+        // the smaller boxes save.
         const MIN_ABSOLUTE_MASS_FOR_CORRECTION: f32 = 1.0e-3;
         let h = cell_width.max(1.0e-6);
         let res = self.resolution as i32;
 
-        // Real, disclosed simplification (see module doc): one representative
-        // mass for the DCT solve specifically -- that part is unavoidably
-        // constant-coefficient (the DCT eigenbasis only diagonalizes a
-        // uniform-density Laplacian). Real physical grounding, not
-        // arbitrary: the fluid's own bulk cells all sit near
-        // `rest_density * cell_area` (the material's own conserved mass
-        // distribution) -- averaging over active cells recovers that scale
-        // directly from the actual scene, not a guessed constant.
-        //
-        // NARROWED (2026-08-15): this global average is now ONLY the DCT
-        // solve's own coefficient / the GS refinement's fallback for
-        // near-empty placeholder cells -- the GS refinement's real fluid
-        // cells and the final momentum-correction step below both use their
-        // OWN per-cell mass now (see those call sites' own comments), not
-        // this average. Real motivation: a mixed water/mud scene (40x
-        // density apart) measured `mass_avg` itself swinging 1.0->11.5 over
-        // one run -- a single scalar can't represent both materials, so
-        // confining its use to where the algorithm structurally requires a
-        // constant (the spectral solve) is the real fix, not a full
-        // MGPCG-style variable-coefficient rewrite (still future work, but no longer
-        // blocking a correctness improvement today).
+        // One representative mass for the DCT solve, whose eigenbasis only
+        // diagonalizes a uniform-density Laplacian: the average over active
+        // cells, which sits near `rest_density * cell_area` for the fluid's
+        // bulk. Only the DCT and the refinement's fallback for near-empty
+        // cells use it; the refinement's fluid cells and the momentum
+        // correction use each cell's own mass (a water/mud scene, 40x apart,
+        // swung `mass_avg` from 1.0 to 11.5 in one run). A full
+        // variable-coefficient solve (MGPCG) is future work.
         let mass_avg: f32 = {
             let (sum, count) = self.dirty.iter().fold((0.0f32, 0u32), |(s, c), &idx| {
                 self.cells
@@ -240,20 +180,11 @@ impl Grid {
             }
         }
 
-        // Real, standard spectral filter (Hesthaven & Warburton, "Nodal
-        // Discontinuous Galerkin Methods" 2008, ch.5 -- the "exponential
-        // filter" widely used in spectral PDE solvers), applied before the
-        // inverse transform. Real, confirmed root cause (not guessed):
-        // direct instrumentation traced an isolated `grad_p.y > 1000`
-        // spike landing EXACTLY at the domain's true wall (y=0) while
-        // neighboring cells stayed in the 10-100 range -- classic Gibbs-
-        // phenomenon ringing, a well-known real property of exact spectral
-        // (FFT/DCT) solves. Damping only the highest frequencies (the
-        // ringing) while leaving the smooth, physically meaningful low-
-        // frequency pressure field essentially untouched is the standard,
-        // real fix -- not a re-introduction of Jacobi's own under-
-        // convergence problem (this is a targeted, narrow-band filter, not
-        // a blunt everywhere-relaxation).
+        // Exponential spectral filter before the inverse transform (Hesthaven
+        // & Warburton, "Nodal Discontinuous Galerkin Methods" 2008, ch. 5):
+        // an exact spectral solve rings (Gibbs) at sharp features, measured
+        // as an isolated `grad_p.y > 1000` at the wall (y = 0) among cells at
+        // 10-100. Only the highest frequencies are damped.
         const FILTER_ALPHA: f32 = 36.0;
         const FILTER_ORDER: i32 = 2;
         for kx in 0..nx {
@@ -276,29 +207,13 @@ impl Grid {
 
         let mut pressure = dct2_inverse(&p_hat, nx, ny);
 
-        // Real free-surface Dirichlet condition, 2026-08-09 -- the module's
-        // own doc above already named this gap ("landing [Neumann] right at
-        // the fluid's own free surface... would wrongly treat 'open air' as
-        // a sealed boundary") but only mitigated it with padding, never
-        // fixed it structurally. Confirmed against a real reference, not
-        // guessed: Robert Bridson's own apic2d (`tmp/apic2d/fluidsim.cpp`,
-        // the SAME Bridson already cited in this module's own doc) uses a
-        // signed-distance `liquid_phi` field precisely so the free surface
-        // gets `p=0` (open to atmosphere) while a true solid wall keeps the
-        // zero-flux/Neumann treatment -- two genuinely different boundary
-        // types, never one. A hand-derived analytic "add rho*g back in"
-        // patch (tried first tonight) was compensating for exactly this
-        // missing distinction and only partially worked (pushed a real
-        // collapse from frame ~10 to ~65, not indefinitely stable) --
-        // replaced here with the structural fix instead of tuning the patch
-        // further. `local_mass` identifies which LOCAL cells are real fluid
-        // (from `self.dirty`, which by construction always sits inside this
-        // padded box); a fluid cell touching an in-bounds low/zero-mass
-        // neighbor is a real free surface (pinned to p=0, the SAME
-        // Dirichlet condition Bridson's ghost-fluid method enforces at the
-        // interface); a fluid cell whose missing neighbor is instead the
-        // TRUE domain edge is a real wall and keeps the existing Neumann
-        // (exclude-from-count) treatment below, unchanged.
+        // Free-surface Dirichlet condition, as in Bridson's apic2d
+        // (`tmp/apic2d/fluidsim.cpp`, whose `liquid_phi` gives the free
+        // surface `p = 0` and solid walls a zero-flux condition). `local_mass`
+        // marks the fluid cells (from `self.dirty`, inside this padded box): a
+        // fluid cell next to an in-bounds low- or zero-mass neighbour is free
+        // surface, pinned to p = 0; one whose missing neighbour is the domain
+        // edge is a wall and keeps the Neumann treatment below.
         let mut local_mass = vec![0.0f32; nx * ny];
         for &idx in &self.dirty {
             let pos = self.idx_to_pos(idx);
@@ -312,21 +227,12 @@ impl Grid {
                 local_mass[lx as usize * ny + ly as usize] = cell.mass;
             }
         }
-        // Real, relative threshold (a fraction of the fluid's own
-        // representative cell mass), not the tiny fixed
-        // `MIN_ABSOLUTE_MASS_FOR_CORRECTION` used elsewhere for a different
-        // purpose (excluding near-empty cells from the momentum correction
-        // entirely). Using that same tiny threshold here made surface
-        // classification hypersensitive to small kernel-edge mass
-        // fluctuations near a splashing/moving interface -- a cell
-        // flickering between "surface" (Dirichlet p=0) and "interior"
-        // classification substep-to-substep injects a real discontinuity
-        // into the solved pressure there each time it flips (Dirichlet vs.
-        // free changes the whole local system's solution character, not a
-        // small perturbation) -- a real, plausible mechanism for a sudden
-        // jump after many otherwise-healthy substeps, not proven but a
-        // genuinely different hypothesis than the magnitude/relaxation
-        // tuning already tried and found insufficient.
+        // The surface test is relative to the representative cell mass, not
+        // the tiny `MIN_ABSOLUTE_MASS_FOR_CORRECTION` (which excludes near-empty
+        // cells from the correction). With that absolute threshold, kernel-edge
+        // mass fluctuations at a moving interface flipped cells between
+        // surface (p = 0) and interior from one substep to the next, a
+        // discontinuity in the solved pressure each time.
         let surface_mass_threshold = (mass_avg * 0.3).max(MIN_ABSOLUTE_MASS_FOR_CORRECTION);
         let mut is_surface = vec![false; nx * ny];
         for lx in 0..nx {
@@ -338,19 +244,12 @@ impl Grid {
                 for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
                     let (nlx, nly) = (lx as i32 + dx, ly as i32 + dy);
                     if nlx >= 0 && nly >= 0 && (nlx as usize) < nx && (nly as usize) < ny {
-                        // Real bug, found 2026-08-09 by direct instrumentation
-                        // (a puddle exploding to J=60 right around first floor
-                        // contact): a low-mass neighbor AT a true wall cell
-                        // (e.g. the oy==0 row before any particle has
-                        // scattered mass into it yet, the instant before
-                        // impact) is the SOLID FLOOR, not open air -- zero
-                        // registered mass there doesn't mean "empty space,"
-                        // it means "wall, no particle has reached it yet."
-                        // Without this check, a fluid cell approaching the
-                        // floor gets wrongly pinned to p=0 (free surface)
-                        // at exactly the moment it most needs real wall
-                        // support, removing that support right as the
-                        // violent first impact happens.
+                        // A low-mass neighbour at a true wall cell (e.g. the
+                        // oy == 0 row before any particle reached it) is the
+                        // floor, not open air. Treated as free surface, it
+                        // pinned an approaching fluid cell to p = 0 at the
+                        // moment it needed the wall's support (a puddle reached
+                        // J = 60 at first contact).
                         let neighbor_is_true_wall = (nlx == 0 && ox == 0)
                             || (nlx == nx as i32 - 1 && ex == res - 1)
                             || (nly == 0 && oy == 0)
@@ -368,30 +267,15 @@ impl Grid {
             }
         }
 
-        // Real, standard hybrid correction: spectral (DCT) solves are known
-        // to Gibbs-ring near sharp RHS features, but converge the smooth,
-        // physically-dominant part of the field in ONE exact pass; real-
-        // space relaxation (Gauss-Seidel) has no basis-function ringing at
-        // all (it minimizes local residual directly) but converges far too
-        // slowly from a COLD start on a hard scene (already tried and
-        // measured insufficient). Starting Gauss-Seidel from the DCT's own
-        // already-close solution instead of zero needs far fewer sweeps to
-        // clean up the LOCAL artifact the DCT basis can't represent well.
-        // Same constant-`alpha_const` system the DCT solve itself already
-        // targets (`alpha_const*Laplacian(p)=rhs`) -- this is a REFINEMENT
-        // of the same equation, not a different, conflicting one. Real
-        // Neumann treatment at the local box edge: a missing neighbor is
-        // excluded from both the sum and the divisor (not treated as p=0),
-        // the same no-flux convention the DCT's own eigenvalue derivation
-        // assumes.
-        // Lowered from 30 (2026-08-09): a live per-sweep convergence dump
-        // (both a calm frame-0 sample and violent mid-impact samples,
-        // n=300/600/900) showed the max per-cell delta dropping from ~6e-3
-        // at sweep 0 to ~6e-5 by sweep 10 -- a real 100x reduction, already
-        // an order of magnitude below the pressure field's own working
-        // scale -- with the remaining 20 sweeps only buying one more
-        // decimal digit on an already-negligible residual. Consistent
-        // across every sampled frame, calm or violent -- not cherry-picked.
+        // Hybrid correction: the DCT converges the smooth part of the field
+        // in one exact pass but rings near sharp features; Gauss-Seidel has no
+        // basis ringing but converges slowly from a cold start. Starting it
+        // from the DCT solution cleans the local artifacts in a few sweeps.
+        // Same system (`alpha_const*Laplacian(p) = rhs`); at the local box
+        // edge a missing neighbour is left out of both the sum and the divisor
+        // (no flux, as the DCT eigenvalues assume).
+        // Per-sweep convergence (calm and mid-impact samples): the max cell
+        // change falls from ~6e-3 at sweep 0 to ~6e-5 by sweep 10.
         //
         // Raised from 5 to 10: on the wall-contact column scene
         // (`diag_pressure_projection_timing.rs`) the frame rate went from
@@ -401,16 +285,9 @@ impl Grid {
         // from about frame 20 onward, so they are not the frame rate of a
         // valid incompressible run.
         //
-        // Did NOT fix a separate, real, wall-free-pool instability this
-        // constant was ORIGINALLY suspected to cause (a resting pool with
-        // free-surface/Dirichlet p=0 on its entire perimeter, no wall to
-        // anchor the solve at all, shows a real large initialization spike,
-        // max_speed 100-250).
-        // That hypothesis is now DISPROVEN by direct A/B: raising sweeps
-        // 5->10 left the wall-free scene's peak just as high (207 vs 144)
-        // and, if anything, slightly slower to decay afterward. The
-        // wall-free case's real root cause is still open -- not this
-        // constant.
+        // It does not cause the initialization spike of a wall-free pool
+        // (p = 0 on its whole perimeter, max_speed 100-250): 5 or 10 sweeps
+        // give the same peak (144 and 207). That cause is still open.
         const GS_CORRECTION_SWEEPS: u32 = 10;
         let p_or_none = |p: &[f32], px: i32, py: i32| -> Option<f32> {
             if px < 0 || py < 0 || px as usize >= nx || py as usize >= ny {
@@ -438,34 +315,15 @@ impl Grid {
                         }
                     }
                     if count > 0.0 {
-                        // Real per-cell density correction (2026-08-15), NOT
-                        // just the global `alpha_const` this refinement pass
-                        // used to share with the DCT solve: the DCT itself
-                        // MUST stay constant-coefficient (its whole basis
-                        // depends on that), but Gauss-Seidel has no such
-                        // requirement -- a GS smoother trivially handles a
-                        // spatially-varying coefficient, one equation at a
-                        // time (the same reason multigrid methods use GS/
-                        // Jacobi as their SMOOTHER for variable-coefficient
-                        // Poisson problems, with a constant-coefficient
-                        // solve only as the cheap preconditioner/initial
-                        // guess -- exactly the role the DCT solve above
-                        // already plays here). Real, measured motivation:
-                        // a mixed water (rest_density=0.1)/mud
-                        // (rest_density=4.0, 40x apart) scene showed
-                        // `mass_avg` itself swinging 1.0->11.5 across one
-                        // run -- a single global alpha_const can't be right for
-                        // both materials at once, so it was wrong for
-                        // whichever one it didn't happen to match that
-                        // frame. `local_mass[local_idx]` is this cell's own
-                        // REAL scattered mass, already computed above for
-                        // surface classification -- reuse it directly.
-                        // Placeholder/near-empty cells inside the padded box
-                        // (not real fluid, `local_mass` near zero) fall back
-                        // to `alpha_const` unchanged -- using their own
-                        // near-zero mass would blow up `1/mass`, a real
-                        // instability the surface classification above
-                        // doesn't already guard against for these cells.
+                        // Each fluid cell's own mass (`local_mass[local_idx]`,
+                        // already scattered for surface classification): the
+                        // DCT must stay constant-coefficient, but Gauss-Seidel
+                        // handles a varying coefficient one equation at a time
+                        // (why multigrid uses it as the smoother, with a
+                        // constant-coefficient solve as the initial guess, the
+                        // DCT's role here). Near-empty placeholder cells in the
+                        // padded box fall back to `alpha_const`: their own mass
+                        // would blow up `1/mass`.
                         let cell_alpha = if local_mass[local_idx] > MIN_ABSOLUTE_MASS_FOR_CORRECTION
                         {
                             1.0 / local_mass[local_idx]
@@ -514,51 +372,20 @@ impl Grid {
             let p_u = p_at(lx, ly + 1);
             let p_d = p_at(lx, ly - 1);
             let grad_p = Vec2::new((p_r - p_l) / (2.0 * h), (p_u - p_d) / (2.0 * h));
-            // Under-relaxation kept as a real safety margin even with an
-            // EXACT solve -- the Poisson solve is exact for THIS substep's
-            // instantaneous divergence, but the constant-density
-            // simplification (module doc) is still an approximation of the
-            // real local mass, so the correction it implies isn't exactly
-            // the true one either. Real, measured sweep on the actual hard
-            // wall-contact column scene: 0.1 avoided explosion
-            // but left so much residual divergence per substep that the
-            // uncorrected part silently accumulated into each particle's own
-            // J integration instead (a separate crash: `tait_pressure`'s
-            // `j>0` safety assert, not a velocity blowup) -- 0.3 (the old
-            // iterative solve's value) is unstable here. 0.8 is both STABLE
-            // and much more ACCURATE (hard-scene |momentum_x| by frame 120:
-            // 1041.7 at 0.1 vs 19.3 at 0.8) -- safe now specifically because
-            // the exact solve + the bounding-box padding above removed the
-            // unbounded-local-alpha failure mode that made a smaller
-            // iterative-solve relaxation load-bearing in the first place.
-            // TESTED 0.8 (2026-08-15) -- the doc above's own OLD conclusion,
-            // with real numbers from whenever it was originally measured.
-            // REJECTED by direct re-test under CURRENT conditions (this
-            // constant's own history is real but stale -- the surrounding
-            // solver has changed since, notably `GS_CORRECTION_SWEEPS`
-            // 5->10 the same night): 0.8 made BOTH scenes worse, not
-            // better -- the wall-free instability stayed elevated far
-            // longer (max_speed 22-37 persisting through frame 120+,
-            // worse than 0.2's own faster decay), AND the already-proven
-            // wall-contact scene's hard-won fps regressed hard (30.1-30.6
-            // -> 12.15). Reverted to the real, CURRENTLY-verified value.
-            // Same lesson as this whole night's stale-comment pattern,
-            // just biting via a stale CONCLUSION this time, not just a
-            // stale description -- re-verify old numbers under current
-            // conditions before trusting them, don't just read and apply.
+            // Under-relaxation: the solve is exact for this substep's
+            // divergence, but uniform density approximates each cell's mass,
+            // so the implied correction is not exact either. 0.2, measured on
+            // the wall-contact column and the wall-free pool: 0.1 left enough
+            // residual divergence to accumulate into J (a `tait_pressure`
+            // `j>0` assert), 0.3 and 0.8 were worse than 0.2 on both scenes
+            // (0.8 kept the pool's max_speed at 22-37 past frame 120 and took
+            // the column from 30 fps to 12).
             const RELAXATION: f32 = 0.2;
             let grad_p = grad_p * RELAXATION;
-            // Real per-cell mass (2026-08-15), not the global `alpha_const`
-            // this line used unconditionally before -- Newton's second law
-            // for a pressure-gradient force is a = -grad_p / mass, LOCAL to
-            // this cell, not the domain's average mass. `mass` is already
-            // fetched above (line ~485) and already checked
-            // `> MIN_ABSOLUTE_MASS_FOR_CORRECTION`, so no fallback branch is
-            // needed here (unlike the GS refinement pass above, which can
-            // reach near-empty placeholder cells this loop already skips via
-            // its own `continue`). Same real motivation as that pass: a
-            // mixed-density scene (water/mud, 40x apart) measurably broke
-            // under the old shared-global-average correction.
+            // Each cell's own mass: a pressure-gradient force gives a = -grad_p /
+            // mass locally. `mass` was fetched above and is above
+            // `MIN_ABSOLUTE_MASS_FOR_CORRECTION` (near-empty cells were skipped
+            // by the `continue`), so no fallback is needed here.
             let cell_alpha = 1.0 / mass;
             if let Some(cell) = self.cells.get_mut(&idx) {
                 cell.momentum -= cell_alpha * grad_p;
@@ -571,12 +398,12 @@ impl Grid {
 mod fluid_pressure_projection_tests {
     use super::*;
 
-    /// Same real, checkable claim `pressure_projection_reduces_divergence_
+    /// Same checkable claim `pressure_projection_reduces_divergence_
     /// residual` (mixture/pressure.rs) already proves for the two-phase
     /// case: build a deliberately divergent velocity field (radiating
     /// outward from a center node, decaying toward the patch edge so a
     /// closed/Neumann system can actually resolve it), run the projection,
-    /// confirm the residual divergence genuinely shrinks -- and, since this
+    /// confirm the residual divergence shrinks -- and, since this
     /// is now an EXACT solve rather than a partially-converged iterative
     /// one, expect a much bigger real reduction than the old Jacobi/GS
     /// version's ~25-84%.
@@ -613,13 +440,9 @@ mod fluid_pressure_projection_tests {
 
         grid.project_fluid_incompressibility(1.0, 1);
         let residual_projected = div_at(&grid).abs();
-        // Real measured reduction on this scene: ~8.4% (0.8825 -> 0.8081)
-        // with `RELAXATION=0.1` (see that constant's own doc -- deliberately
-        // conservative for the real substep-to-substep feedback loop, not
-        // meant to zero out a single call's residual in one shot). The
-        // Poisson solve ITSELF is exact; `RELAXATION` is what's damping the
-        // single-call reduction here, same as the old iterative solve's own
-        // test -- threshold set from the actual measurement, not assumed.
+        // Measured reduction on this scene: ~8.4% (0.8825 -> 0.8081). The
+        // solve is exact; `RELAXATION` damps one call's reduction on purpose
+        // (see that constant), so the threshold comes from the measurement.
         assert!(
             residual_projected < residual_unprojected * 0.95,
             "projection should substantially shrink the divergence residual: \
@@ -627,37 +450,20 @@ mod fluid_pressure_projection_tests {
         );
     }
 
-    /// Real, direct check for the 2026-08-15 per-cell-mass fix (see
-    /// `project_fluid_incompressibility`'s own comments at the GS
-    /// refinement loop and the final momentum-correction line). Newton's
-    /// second law for a pressure-gradient force is `a = -grad(p) / mass`,
-    /// LOCAL to each cell -- a heavy cell must receive a smaller VELOCITY
-    /// correction than a light cell under the same local pressure gradient,
-    /// not the same one. The single shared `alpha_const` this fix replaces
-    /// couldn't tell cells apart by mass at all, so it applied the same
-    /// correction strength everywhere regardless -- root-caused this
-    /// session against a real water/mud scene (`mass_avg` measured swinging
-    /// 1.0->11.5 over one run).
+    /// A pressure-gradient correction goes as `a = -grad(p) / mass` per cell:
+    /// under the same local gradient, a heavy cell gets a smaller velocity
+    /// correction than a light one. One shared `alpha_const` could not tell
+    /// them apart.
     ///
-    /// (An earlier version of this test compared divergence-residual
-    /// REDUCTION RATIOS instead of velocity-change magnitude, expecting
-    /// them to be alpha-invariant -- wrong expectation: `pressure` is
-    /// solved proportional to `1/alpha` and then the correction re-applies
-    /// `alpha`, so the residual-reduction ratio cancels `alpha_const`
-    /// algebraically to first order under the OLD single-scalar code by
-    /// construction, regardless of whether that scalar matched any real
-    /// mass -- confirmed empirically (old code: 0.834 alone vs 0.832 mixed,
-    /// suspiciously stable across a 40x mass change). That metric can't
-    /// distinguish correct from incorrect per-cell physics; velocity-change
-    /// magnitude, tested directly below, can.)
+    /// Divergence-reduction ratios cannot show it: the pressure scales with
+    /// `1/alpha` and the correction re-applies `alpha`, so the ratio cancels
+    /// alpha to first order (0.834 alone against 0.832 mixed, across 40x of
+    /// mass). The velocity change can.
     ///
-    /// Method: two regions, same divergent velocity FIELD shape (`v_at` is
-    /// mass-independent) but 40x different mass (real water/mud ratio),
-    /// scattered together into one grid/projection call. Under the correct
-    /// per-cell-mass physics, the heavy region's velocity correction must
-    /// come out meaningfully smaller than the light region's -- under the
-    /// old single-alpha code, both cells would receive statistically the
-    /// SAME correction strength regardless of their own real mass.
+    /// Two regions with the same divergent velocity field (`v_at` does not
+    /// depend on mass) and 40x different mass (water/mud), in one grid and
+    /// one projection call: the heavy region's correction must come out
+    /// clearly smaller.
     #[test]
     fn heavy_region_gets_smaller_velocity_correction_than_light_region() {
         let v_at = |center: IVec2, pos: IVec2| -> Vec2 {
@@ -694,12 +500,9 @@ mod fluid_pressure_projection_tests {
             light_delta > 1.0e-5,
             "test setup should produce a real, measurable light-region velocity change, got {light_delta}"
         );
-        // Not asserting the exact 40x ratio (RELAXATION, the DCT's own
-        // constant-alpha initial guess, and the padded-box Neumann
-        // treatment all add real, disclosed departures from a pure 1/mass
-        // law) -- just that the heavy region's correction is CLEARLY
-        // smaller, not comparable-or-larger the way a mass-blind global
-        // alpha would produce. A real, generous factor-of-3 bar.
+        // Not the exact 40x: RELAXATION, the DCT's constant-alpha initial
+        // guess and the padded-box Neumann treatment all depart from a pure
+        // 1/mass law. A factor of 3 is enough to rule out a mass-blind alpha.
         assert!(
             heavy_delta < light_delta / 3.0,
             "heavy (40x denser) region's velocity correction should be clearly \

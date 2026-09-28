@@ -1,59 +1,44 @@
-//! A genuine 1D discrete elastic rod (Cosserat-rod family) -- a real,
-//! dimensionally-reduced continuum solver for slender (length >> width)
-//! bodies, sibling to `spacetime::diff` (a second, narrower, self-contained
-//! solver living under `spacetime/`, not shoehorned into `solver/`).
+//! A 1D discrete elastic rod (Cosserat-rod family): a dimensionally reduced
+//! continuum solver for slender (length >> width) bodies, a second, narrower
+//! solver under `spacetime/` beside `spacetime::diff`.
 //!
-//! # Why this exists
-//! Real engineering practice does not use full volumetric FEM/MPM for a
-//! fishing rod, a cable, or a blade of grass -- it uses beam/rod theory, a
-//! rigorous 1D reduction of the SAME continuum elasticity MPM's own 2D
-//! materials already are relative to full 3D. Pure 2D volumetric MPM shows
-//! genuine self-weight Euler/Greenhill buckling for a slender cantilever --
-//! pushing a thin volumetric blade taller destabilizes it. `EI` (bending
-//! stiffness) is an emergent property of carved cross-section width in 2D
-//! MPM; here it is a direct, exact input parameter -- the real advantage of
-//! the right dimensional reduction for this class of body.
+//! # Why
+//! Engineering does not model a fishing rod, a cable or a blade of grass with
+//! volumetric FEM/MPM but with rod theory, a rigorous 1D reduction of the
+//! same continuum elasticity. Volumetric 2D MPM does show self-weight
+//! Euler/Greenhill buckling of a slender cantilever, but there `EI` emerges
+//! from the carved cross-section width; here it is an exact input.
 //!
-//! # Real physics: discrete elastic rods, specialized to 2D
-//! Bergou, Wardetzky, Robinson, Audoly, Grinspun 2008, SIGGRAPH, "Discrete
-//! Elastic Rods" -- the modern discrete form of classical Cosserat rod theory
-//! (Cosserat brothers, 1909). A rod is `N` control points along a centerline;
-//! `N-1` edges carry axial (stretch) elastic energy; `N-2` interior vertices
-//! carry bending elastic energy from the discrete curvature between adjacent
-//! edges. In 3D the curvature is a vector (the discrete binormal) with a
-//! separate twist DOF about the centerline; in 2D the binormal direction is
-//! fixed to the plane's own normal, so curvature collapses to a signed
-//! scalar and twist has no real DOF at all (2D genuinely has one fewer
-//! curvature dimension than 3D -- a real dimensional fact, not a cut corner).
-//! See `forces.rs` for the actual formulas.
+//! # Physics: discrete elastic rods in 2D
+//! Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, SIGGRAPH, "Discrete
+//! Elastic Rods", the discrete form of Cosserat rod theory (Cosserat
+//! brothers, 1909). A rod is `N` control points along a centreline; `N-1`
+//! edges carry axial (stretch) energy; `N-2` interior vertices carry bending
+//! energy from the discrete curvature between adjacent edges. In 3D the
+//! curvature is a vector (the discrete binormal) with a separate twist; in 2D
+//! the binormal is the plane's normal, so curvature is a signed scalar and
+//! there is no twist. See `forces.rs` for the formulas.
 //!
 //! # Coupling to the shared MPM grid
-//! `Grid` (`spacetime::grid`) is a fully source-agnostic mass/momentum
-//! accumulator -- every mutator is keyed purely by `IVec2` cell position,
-//! nothing in it references `Particle`/`Particles`. `coupling.rs` scatters
-//! rod points into that SAME grid using the identical quadratic-B-spline
-//! weights `transfer::p2g`/`transfer::g2p` already use, so a rod and ordinary
-//! MPM particles (fluid, sand, fire) genuinely exchange momentum through one
-//! shared mechanism -- not an isolated parallel system. See `Simulation::rods`
-//! and its `do_substep` insertion points for the real coupling (Phase 2).
+//! `Grid` (`spacetime::grid`) accumulates mass and momentum keyed only by
+//! `IVec2` cell, with no reference to `Particle`. `coupling.rs` scatters rod
+//! points into that grid with the quadratic-B-spline weights of
+//! `transfer::p2g`/`transfer::g2p`, so rods and MPM particles (fluid, sand,
+//! fire) exchange momentum through one mechanism. See `Simulation::rods`
+//! and `do_substep`.
 //!
-//! `RodPoints` is a new, independent SoA -- NOT grafted onto `Particle`
-//! (which is `repr(C)`/`Pod`/128-byte GPU-layout-locked, append-only after a
-//! real past corruption bug) or `Particles`. Same "independent store,
-//! cross-talk only through the shared `Grid`" shape `Particles` itself
-//! already is relative to `Grid`. Lives in `matter::particle` (moved there
-//! 2026-08-05, re-exported here) -- pure kinematic state is a Matter
-//! concern, same as `Particle`; everything in this module is the dynamics
-//! that evolves it.
+//! `RodPoints` is its own SoA, not part of `Particle` (`repr(C)`/`Pod`, 128
+//! bytes, GPU-layout-locked) or `Particles`: an independent store that
+//! talks to others only through the shared `Grid`, as `Particles` does. It
+//! lives in `matter::particle` (kinematic state is a matter concern) and is
+//! re-exported here; this module holds the dynamics.
 //!
-//! # Scope (explicit, disclosed)
-//! CPU-first (matches this engine's own "CPU correctness first, GPU port
-//! second" rule -- GPU port is real future work, not attempted here: WGPU bind-group layouts are already
-//! at the 4-group WebGPU baseline limit). 2D only. True branching topology
-//! exists via `network::RodNetwork` (a real graph, not a single chain); a
-//! plain `Rod` itself stays a single unbranched chain. No twist DOF (none
-//! exists in 2D). `SimSnapshot::rods` covers per-rod count/sleeping/speed/tip
-//! aggregates; `RodNetwork` isn't wired into that aggregate yet.
+//! # Scope
+//! CPU only (no GPU port: the bind-group layouts are already at WebGPU's
+//! 4-group baseline). 2D only. Branching topology through
+//! `network::RodNetwork`; a plain `Rod` is one unbranched chain. No twist (none
+//! in 2D). `SimSnapshot::rods` aggregates per-rod count, sleeping, speed and
+//! tip; `RodNetwork` is not in that aggregate yet.
 
 pub mod coupling;
 pub mod forces;
@@ -133,29 +118,23 @@ pub struct Rod {
     /// this tracks that duration (real seconds), reset to 0 the moment speed
     /// exceeds the threshold, checked in `step.rs`'s sleep-scoring pass.
     pub below_threshold_time: f32,
-    /// Real root gravitropism (Porat, Rivière, Meroz 2024 -- see
-    /// `gravitropism` module doc). `None` (default) = no gravitropic
-    /// response, zero cost -- a plain stem/blade doesn't grow toward
-    /// gravity, only a root does.
+    /// Root gravitropism (Porat, Rivière, Meroz 2024 -- see `gravitropism`).
+    /// `None` (default) = no gravitropic response: a stem or blade does not
+    /// grow toward gravity, a root does.
     pub gravitropism: Option<Gravitropism>,
-    /// Real phototropism (Cholodny & Went auxin-asymmetry theory -- see
-    /// `gravitropism` module doc's own "Phototropism reuses the SAME core"
-    /// section). `None` (default) = no light-seeking response, zero cost.
+    /// Phototropism (Cholodny & Went auxin asymmetry -- see `gravitropism`'s
+    /// "Phototropism reuses the SAME core"). `None` (default) = none.
     pub phototropism: Option<Phototropism>,
-    /// Real elongation growth (see `growth` module doc). `None` (default) =
-    /// fixed length, zero cost -- most bodies aren't actively growing every
-    /// frame of their existence.
+    /// Elongation growth (see `growth`). `None` (default) = fixed length.
     pub growth: Option<Growth>,
-    /// Real stress-driven secondary growth / thigmomorphogenesis (Jaffe
-    /// 1973, Mattheck & Kübler 1995 -- see `secondary_growth` module doc).
-    /// `None` (default) = fixed stiffness, zero cost -- requires Phase 1's
-    /// per-vertex `RodPoints::ea`/`ei` to already be filled (`Rod::new`
-    /// does this).
+    /// Stress-driven secondary growth / thigmomorphogenesis (Jaffe 1973,
+    /// Mattheck & Kübler 1995 -- see `secondary_growth`). `None` (default) =
+    /// fixed stiffness. Needs the per-vertex `RodPoints::ea`/`ei` that
+    /// `Rod::new` fills.
     pub secondary_growth: Option<SecondaryGrowth>,
-    /// Real elastic-perfectly-plastic bending (see `plasticity` module doc).
-    /// `None` (default) = purely elastic, zero cost -- most bodies don't
-    /// permanently deform under load; a wire/branch/cable that should stay
-    /// bent after enough force opts in.
+    /// Elastic-perfectly-plastic bending (see `plasticity`). `None` (default)
+    /// = purely elastic; a wire, branch or cable that should stay bent after
+    /// enough force opts in.
     pub plasticity: Option<RodPlasticity>,
     /// Implicit (backward Euler) integration, opt-in (Baraff & Witkin 1998;
     /// see `implicit` module doc). `false` (default) = the explicit path,
@@ -231,7 +210,7 @@ impl Rod {
     }
 
     /// Immediate self-weight buckling check (Euler/Greenhill, see
-    /// `RodMaterial::greenhill_critical_height_m`'s own doc). Returns
+    /// `RodMaterial::greenhill_critical_height_m`'s doc). Returns
     /// `Some(human-readable message)` if this rod's length exceeds its own
     /// critical height (it will NEVER stand straight under gravity alone,
     /// regardless of damping -- that's the correct physics, not a numerical
@@ -240,7 +219,7 @@ impl Rod {
     /// mistake immediately.
     ///
     /// For a NON-uniform rod (per-vertex `points.ei`, see `RodPoints::ei`'s
-    /// own doc): `greenhill_critical_height_m` is a closed-form result for a
+    /// doc): `greenhill_critical_height_m` is a closed-form result for a
     /// UNIFORM column, so there is no single exact non-uniform
     /// generalization here. Uses the WEAKEST (minimum) `ei` entry as the
     /// conservative bound instead -- a non-uniform rod buckles first at its
@@ -307,14 +286,14 @@ impl Rod {
     }
 
     /// True while `growth` is still meaningfully lengthening the tip edge --
-    /// real guard against a genuine sleep/growth interaction bug: sleep
+    /// real guard against a sleep/growth interaction bug: sleep
     /// scoring (`step.rs`) only sees `rod.points.v`, but a critically-damped
     /// rod's elastic response reaches quasi-static equilibrium (near-zero
     /// velocity) on a MUCH faster timescale than logistic growth itself
     /// (milliseconds vs. tens of seconds), so a velocity-only sleep check
     /// would put the rod to sleep mid-growth and silently freeze it there --
     /// once `sleeping=true`, `apply_growth` is skipped entirely alongside
-    /// everything else. 99% of `max_segment_length_m` is the real, standard
+    /// everything else. 99% of `max_segment_length_m` is the standard
     /// cutoff for an asymptotic logistic curve that mathematically never
     /// exactly reaches its carrying capacity. `false` (safe to sleep) for a
     /// rod with no `growth` at all.
@@ -328,23 +307,23 @@ impl Rod {
         }
     }
 
-    /// True while `gravitropism` still has a real, meaningful angular
+    /// True while `gravitropism` still has a meaningful angular
     /// deviation left to correct -- the same class of sleep/growth
-    /// interaction `is_growing`'s own doc describes: sleep scoring only
+    /// interaction `is_growing`'s doc describes: sleep scoring only
     /// sees `rod.points.v`, but gravitropism reshapes `rest_curvature`
     /// (not velocity directly), so a rod can settle to near-zero velocity
     /// from its LAST push, go to sleep, and then never wake again -- freezing
     /// gravitropism forever with no external event left to rouse it (a
     /// sleeping rod is skipped entirely at both `apply_gravitropism` call
     /// sites in `step.rs`). `false` (safe to sleep) for a rod with no
-    /// `gravitropism` at all, or once it's genuinely converged.
+    /// `gravitropism` at all, or once it's converged.
     pub fn is_correcting_gravitropically(&self, gravity: Vec2, grid: &crate::grid::Grid) -> bool {
         self.gravitropism
             .as_ref()
             .is_some_and(|g| gravitropism::still_correcting(&self.points, g, gravity, grid))
     }
 
-    /// See `is_correcting_gravitropically`'s own doc -- the phototropism
+    /// See `is_correcting_gravitropically`'s doc -- the phototropism
     /// analog, same sleep-freeze-prevention purpose.
     pub fn is_correcting_phototropically(&self, light_dir: Vec2, grid: &crate::grid::Grid) -> bool {
         self.phototropism.as_ref().is_some_and(|p| {
@@ -411,12 +390,9 @@ pub fn build_straight_rod(
 mod root_cause_fixes_tests {
     use super::*;
 
-    /// Real, permanent regression guard for the modal-damping root-cause
-    /// fix: `modal_critical_damping` must give a substantially LARGER
-    /// bending value than the old, disclosed-as-too-small
-    /// `critical_damping` for a real multi-point cantilever -- confirmed
-    /// empirically to be a two-to-three-orders-of-magnitude gap for a
-    /// 20-point blade.
+    /// `modal_critical_damping` gives a much larger bending value than the
+    /// per-element `critical_damping` for a multi-point cantilever: two to
+    /// three orders of magnitude for a 20-point blade.
     #[test]
     fn modal_critical_damping_exceeds_local_reference_substantially() {
         let start = Vec2::new(9.0, 4.0);
@@ -445,11 +421,9 @@ mod root_cause_fixes_tests {
         );
     }
 
-    /// Real cross-check: `fundamental_period_s` must be the exact reciprocal
-    /// of the frequency `energy::acoustics::modal::cantilever_rod_modes`
-    /// computes -- both use the SAME real beta_1 eigenvalue and omega
-    /// formula, so any divergence between them is a real bug in one or the
-    /// other, not just numerical noise.
+    /// `fundamental_period_s` is the exact reciprocal of the frequency
+    /// `energy::acoustics::modal::cantilever_rod_modes` computes: both use the
+    /// same beta_1 eigenvalue and omega formula.
     #[cfg(feature = "experimental")]
     #[test]
     fn fundamental_period_matches_acoustics_module_frequency() {
@@ -476,9 +450,8 @@ mod root_cause_fixes_tests {
         );
     }
 
-    /// Real, permanent regression guard: blade B's real parameters
-    /// (E=5e6, height=0.10m) must trigger a buckling warning; blade A's
-    /// (E=1e7, same height) must not.
+    /// Blade B (E=5e6, height=0.10 m) triggers a buckling warning; blade A
+    /// (E=1e7, same height) does not.
     #[test]
     fn buckling_warning_matches_expected_critical_height() {
         let start = Vec2::new(9.0, 4.0);
@@ -511,11 +484,9 @@ mod root_cause_fixes_tests {
         );
     }
 
-    /// Real, permanent regression guard for the 2026-07-27 sleep-freeze fix:
-    /// a rod with a genuine, uncorrected gravitropic deviation must report
-    /// `is_correcting_gravitropically() == true` (blocking sleep), while one
-    /// already aligned with its own target must NOT (so ordinary sleep still
-    /// works once gravitropism has nothing real left to do).
+    /// A rod with an uncorrected gravitropic deviation reports
+    /// `is_correcting_gravitropically() == true` (which blocks sleep); one
+    /// already aligned with its target does not, so it can still sleep.
     #[test]
     fn gravitropism_prevents_premature_sleep_until_converged() {
         let dx_meters = 0.01;
@@ -594,10 +565,9 @@ mod root_cause_fixes_tests {
 mod per_vertex_stiffness_tests {
     use super::*;
 
-    /// Real backward-compat guard: `Rod::new` must fill `points.ea`/`ei` to
-    /// the material's OWN scalar at every index -- a uniform-material rod's
-    /// internal forces must be bit-identical to what the single-scalar
-    /// `RodMaterial` path always produced, not just "close".
+    /// `Rod::new` fills `points.ea`/`ei` with the material's scalar at every
+    /// index, so a uniform rod's internal forces are bit-identical to the
+    /// single-scalar `RodMaterial` path.
     #[test]
     fn rod_new_fills_uniform_stiffness_from_material_bit_identical() {
         let points = build_straight_rod(Vec2::new(0.0, 0.0), Vec2::new(0.0, 4.0), 5, 0.01, 1.0);
@@ -634,9 +604,9 @@ mod per_vertex_stiffness_tests {
         assert_eq!(rod.points.ei, vec![1.0, 2.0, 3.0]);
     }
 
-    /// The real, observable effect non-uniform stiffness should produce: a
+    /// The observable effect non-uniform stiffness should produce: a
     /// horizontal cantilever with a SOFT base half must deflect more at its
-    /// arc-length midpoint under a real, constant transverse tip load than
+    /// arc-length midpoint under a constant transverse tip load than
     /// an equivalent uniformly-stiff rod carrying the exact same load -- no
     /// gravity/buckling involved (a straight rod under pure axial gravity
     /// has zero bending moment by symmetry, real physics, not useful for
@@ -738,14 +708,11 @@ mod per_vertex_stiffness_tests {
 mod secondary_growth_integration_tests {
     use super::*;
 
-    /// The real, concrete proof this whole chain was previously blocked on:
-    /// a rod built ABOVE its own Greenhill critical height (`buckling_warning`
-    /// reports genuine risk) that experiences real, sustained bending moment under its own
-    /// self-weight (a tiny initial tilt breaks the perfectly-straight
-    /// symmetric case, which has zero moment by construction -- same real
-    /// lesson as the buckling investigation above) should,
-    /// given `SecondaryGrowth`, genuinely stiffen enough over real time to
-    /// raise its own critical height back above its actual height.
+    /// A rod built above its Greenhill critical height (`buckling_warning`
+    /// reports the risk) under sustained self-weight bending (a tiny initial
+    /// tilt breaks the perfectly straight case, which has zero moment by
+    /// construction) stiffens enough under `SecondaryGrowth` to raise its
+    /// critical height back above its actual height.
     #[test]
     fn sustained_bending_stress_raises_greenhill_height_above_actual_height() {
         let dx_meters = 0.01;
@@ -760,19 +727,13 @@ mod secondary_growth_integration_tests {
         let mut points = build_straight_rod(start, end, n_points, 0.01, dx_meters);
         points.pinned[0] = 1;
         points.pinned[1] = 1;
-        // Real, genuinely CURVED shape (quadratic in index, not a rigid
-        // linear tilt -- three colinear points have zero discrete
-        // curvature regardless of overall angle, so a rigid tilt alone
-        // would give secondary growth no real moment to respond to).
-        // Modest magnitude (max ~0.15 grid cells = 1.5mm at the tip,
-        // comparable to the rod's own ~9mm segment length) -- a real,
-        // sustained bend a mature stem could plausibly hold under wind
-        // load, not a violent distortion that would itself dominate the
-        // dynamics. This test verifies `SecondaryGrowth`'s OWN response to
-        // a sustained real moment directly (`x` held fixed, no `step_rod`
-        // dynamics) -- the genuine buckling INSTABILITY's own real-seconds-
-        // scale dynamics are already covered by
-        // `tests/rod_gravitropism_whole_organ.rs`'s negative-control test.
+        // A curved shape (quadratic in index): three colinear points have zero
+        // discrete curvature whatever the tilt, so a rigid tilt gives
+        // secondary growth no moment. Up to ~0.15 cells (1.5 mm) at the tip
+        // against ~9 mm segments, a bend a mature stem could hold in wind.
+        // Checks `SecondaryGrowth`'s response to a sustained moment with `x`
+        // held fixed (no `step_rod`); the buckling dynamics are covered by
+        // `tests/rod_gravitropism_whole_organ.rs`'s negative control.
         for (i, p) in points.x.iter_mut().enumerate() {
             let t = i as f32 / (n_points - 1) as f32;
             p.x += t * t * 0.15;

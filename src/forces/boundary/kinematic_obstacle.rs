@@ -4,47 +4,36 @@ use glam::Vec2;
 
 use super::{BoundaryCondition, apply_coulomb_wall};
 
-/// A moving circular obstacle, driven kinematically (position/velocity supplied
-/// from outside, no mass/inertia/constraint solver of its own -- this is
-/// deliberately NOT a rigid body, per this engine's own standing "no rigid
-/// bodies, ever" scope rule; see `feedback_engine_scope` project memory).
+/// A moving circular obstacle, driven kinematically: position and velocity
+/// come from outside, with no mass, inertia or constraint solver of its own.
+/// Not a rigid body (the engine has none).
 ///
-/// Real prior art: `tmp/sparkl`'s own rigid-collider grid coupling
-/// (`grid_update.rs`) projects grid velocity against a collider's geometric
-/// shape rather than running a second particle-particle contact field --
-/// `new_vel = rigid_vel + project_velocity(vel - rigid_vel, normal)`. This is
-/// exactly that idea, narrowed to a circle (simplest real shape) and reusing
-/// this module's own `apply_coulomb_wall` for the projection, unchanged.
+/// Prior art: `tmp/sparkl`'s rigid-collider coupling (`grid_update.rs`)
+/// projects grid velocity against the collider's shape instead of running a
+/// second contact field, `new_vel = rigid_vel + project_velocity(vel -
+/// rigid_vel, normal)`; this does the same for a circle with this module's
+/// `apply_coulomb_wall`.
 ///
-/// Unlike `Particle::contact_group`'s multi-field contact (built for
-/// solid-vs-solid, see that field's own doc + `Grid::resolve_contact`'s doc),
-/// this is a GRID-level boundary correction -- the same category as
-/// `SlipBoundary`/`FrictionBoundary`, just with a moving instead of static
-/// shape. The grid has no notion of which material touches it, so this is
-/// generic across the full material spectrum by construction, with zero
-/// per-material special-casing.
+/// Unlike `Particle::contact_group`'s multi-field contact (solid against
+/// solid, see `Grid::resolve_contact`), this is a grid-level boundary
+/// correction like `SlipBoundary`/`FrictionBoundary`, with a moving shape.
+/// The grid does not know which material touches it, so it works for every
+/// material alike.
 ///
-/// `center`/`velocity` are stored as `AtomicU32` (bit-cast f32), same pattern
-/// as `RatchetFrictionBoundary::set_easy_direction` -- lets a caller update
-/// position/velocity live every frame (from a cursor, a creature's own body,
-/// etc.) through a shared `Arc`, with no reconstruction and no boundary swap.
+/// `center`/`velocity` are stored as `AtomicU32` (bit-cast f32), like
+/// `RatchetFrictionBoundary::set_easy_direction`, so a caller can update them
+/// every frame (from a cursor, a creature's body) through a shared `Arc`.
 ///
-/// Real, two-way momentum exchange via `on_grid_correction` (see
-/// `BoundaryCondition::on_grid_correction`'s own doc): every grid cell this
-/// obstacle corrects feeds a real, mass-weighted, Newton's-third-law reaction
-/// impulse back into `reaction_x_bits`/`reaction_y_bits`, read (and reset)
-/// via `take_reaction_impulse()` -- the caller integrates real F=ma
-/// (`v += impulse/mass`), so this obstacle genuinely feels whatever it
-/// pushes instead of behaving like it has infinite mass.
+/// Two-way momentum exchange (see `BoundaryCondition::on_grid_correction`):
+/// each corrected cell adds its mass-weighted, equal-and-opposite reaction
+/// impulse to `reaction_x_bits`/`reaction_y_bits`, read and reset by
+/// `take_reaction_impulse()`; the caller integrates `v += impulse/mass`, so
+/// the obstacle feels what it pushes.
 ///
-/// `is_strict_wc_mpm_fluid_compatible()` deliberately stays the conservative
-/// default (`false`, not overridden here) -- `FrictionBoundary`, which uses
-/// the exact same `apply_coulomb_wall` primitive, also does NOT declare
-/// itself fluid-compatible despite being structurally similar to
-/// `SlipBoundary` (which does). Only measured, verified safety earns that
-/// flag in this codebase, not structural resemblance -- flip it once a real
-/// strict-fluid scene has been run against this boundary and checked, not
-/// before.
+/// `is_strict_wc_mpm_fluid_compatible()` keeps its `false` default, as for
+/// `FrictionBoundary`, which uses the same `apply_coulomb_wall`: the flag
+/// follows a strict-fluid scene run against the boundary, not structural
+/// resemblance.
 #[derive(Debug)]
 pub struct KinematicCircleBoundary {
     center_x_bits: std::sync::atomic::AtomicU32,
@@ -52,7 +41,7 @@ pub struct KinematicCircleBoundary {
     velocity_x_bits: std::sync::atomic::AtomicU32,
     velocity_y_bits: std::sync::atomic::AtomicU32,
     /// Accumulated reaction impulse since the last `take_reaction_impulse()`
-    /// call -- real, mass-weighted, Newton's-third-law momentum this
+    /// call -- mass-weighted, Newton's-third-law momentum this
     /// obstacle received from every grid cell it corrected this substep.
     /// The caller (not this struct) decides what to do with it -- e.g.
     /// `v_new = v_old + impulse/mass` -- so this stays a simple point-mass
@@ -60,12 +49,10 @@ pub struct KinematicCircleBoundary {
     /// when/how often it should run relative to `Simulation::step()`.
     reaction_x_bits: std::sync::atomic::AtomicU32,
     reaction_y_bits: std::sync::atomic::AtomicU32,
-    /// Real angular velocity (radians/s, 2D scalar about the implicit z
-    /// axis) -- real use case: a rolling ball's own rotation. Set by the
-    /// caller (real F=ma-style integration: `omega += take_torque()/
-    /// moment_of_inertia`), the SAME pattern as `velocity`/`reaction`: this
-    /// struct never auto-integrates its own state, it just accumulates real
-    /// physics for the caller to apply.
+    /// Angular velocity (rad/s, 2D scalar about z), e.g. a rolling ball's
+    /// rotation. The caller integrates it (`omega += take_torque()/
+    /// moment_of_inertia`), as with `velocity`/`reaction`: this struct only
+    /// accumulates.
     angular_velocity_bits: std::sync::atomic::AtomicU32,
     /// Accumulated real torque (`cross(cell_pos - center, reaction_impulse)`
     /// per corrected cell, same Newton's-third-law sign convention as
@@ -77,25 +64,17 @@ pub struct KinematicCircleBoundary {
     /// as `FrictionBoundary::friction_coefficient` -- the DEFAULT, used for
     /// any material not listed in `friction_profile` below.
     pub friction: f32,
-    /// Per-material friction overrides -- e.g. water and mud can genuinely
+    /// Per-material friction overrides: e.g. water and mud can
     /// feel different at the SAME obstacle. Set once at construction (via
     /// `with_material_friction`), not live-updated -- the profile itself is
     /// static data, only WHICH entry is active changes frame to frame.
     ///
-    /// Real, honest scope limit: `apply_to_grid_velocity` corrects a GRID
-    /// CELL, not a particle -- after P2G, a cell can carry blended
-    /// contributions from several materials at once, and this engine's
-    /// `Cell` struct (unlike `ContactCell`) tracks no per-material
-    /// breakdown at all. Building real per-cell material tracking would
-    /// mean touching P2G's scatter itself, the hottest and most heavily-
-    /// verified code path in the engine -- deliberately not done here.
-    /// Instead, this is a real but APPROXIMATE first slice: the CALLER
-    /// queries `Simulation::particles_near` (already-existing, already-
-    /// tested neighbor API) to find which material is actually near the
-    /// obstacle, then calls `set_active_friction` before `step()`. Good
-    /// enough to prove the concept and give genuinely different physical
-    /// behavior per material; not a substitute for real per-cell tracking
-    /// if finer-grained mixed-material contact ever becomes necessary.
+    /// Approximate: `apply_to_grid_velocity` corrects a grid cell, which after
+    /// P2G can mix several materials, and `Cell` (unlike `ContactCell`) keeps
+    /// no per-material breakdown; adding one would touch P2G's scatter. The
+    /// caller instead finds the material near the obstacle with
+    /// `Simulation::particles_near` and calls `set_active_friction` before
+    /// `step()`.
     friction_profile: HashMap<u32, f32>,
     active_friction_bits: std::sync::atomic::AtomicU32,
 }
@@ -147,7 +126,7 @@ impl KinematicCircleBoundary {
     /// Set which friction value `apply_to_grid_velocity` actually uses,
     /// live -- the caller decides how (e.g. `Simulation::particles_near`
     /// the obstacle each frame, then `friction_for_material` on whatever's
-    /// nearest, see this struct's own doc for the real scope limit here).
+    /// nearest, see this struct's doc for the real scope limit here).
     pub fn set_active_friction(&self, friction: f32) {
         self.active_friction_bits
             .store(friction.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -260,14 +239,10 @@ impl BoundaryCondition for KinematicCircleBoundary {
             return 0.0;
         }
         let outward_normal = d / dist;
-        // Real rigid-body surface velocity at this contact point, not just
-        // the center's translational velocity -- `v_surface = v_center +
-        // omega x r` (2D cross product of a scalar omega with the radius
-        // vector is `omega * (-r.y, r.x)`, standard rigid-body kinematics).
-        // Without this, a spinning ball's own surface motion at the
-        // contact patch is invisible to the friction correction below,
-        // and real rolling-without-slipping can never emerge -- the
-        // contact point would look stationary even while the ball spins.
+        // Surface velocity at the contact point, `v_surface = v_center +
+        // omega x r` (in 2D `omega * (-r.y, r.x)`), not only the centre's:
+        // without it a spinning ball's surface looks stationary to the
+        // friction correction and rolling without slipping cannot emerge.
         let omega = self.angular_velocity();
         let rigid_v = self.velocity() + omega * Vec2::new(-d.y, d.x);
         let mut v_rel = *velocity - rigid_v;
@@ -302,13 +277,11 @@ impl BoundaryCondition for KinematicCircleBoundary {
     fn on_grid_correction(&self, cell_pos: Vec2, reaction_impulse: Vec2) {
         use std::sync::atomic::Ordering::Relaxed;
         // Accumulate as bit-cast f32 via compare-exchange (no atomic f32 add
-        // in stable Rust) -- same bit-cast-atomic convention as center/
-        // velocity above. Contention here is real but bounded: only cells
-        // this obstacle actually overlaps call this, i.e. a handful of grid
-        // nodes per substep, never the whole grid.
-        // Real torque, same Newton's-third-law sign as the linear impulse:
-        // `tau = r x F`, 2D cross product `r.x*F.y - r.y*F.x`, `r` measured
-        // from the obstacle's own center to the corrected cell.
+        // in stable Rust), like center/velocity above. Only the few cells this
+        // obstacle overlaps contend.
+        // Torque with the same equal-and-opposite sign as the impulse: `tau =
+        // r x F`, `r.x*F.y - r.y*F.x`, `r` from the obstacle's centre to the
+        // corrected cell.
         let r = cell_pos - self.center();
         let torque = r.x * reaction_impulse.y - r.y * reaction_impulse.x;
         for (bits, delta) in [
@@ -327,32 +300,18 @@ impl BoundaryCondition for KinematicCircleBoundary {
         }
     }
 
-    // TRUE, on real accumulated evidence, not the conservative default --
-    // this is one of the few boundaries in this codebase where measured
-    // verification (not structural resemblance) genuinely earned the flag.
-    // Full trail (2026-08-16, all headless and real, see
-    // `project_fluid_solid_coupling_real_root_cause_and_path_2026-08-15`
-    // project memory for the complete account):
-    //   1. Real, LIVE-CONFIRMED contact (nearest-particle distance tracked
-    //      every step, held exactly at the obstacle's own radius under
-    //      sustained approach) -- proof the no-penetration correction is
-    //      genuinely active, not just present. Mass exactly conserved,
-    //      max_speed rose smoothly (2.78->3.45), no blowup.
-    //   2. Real, NON-scripted two-way coupling -- obstacle's own velocity
-    //      evolved purely from `take_reaction_impulse()`. Real deceleration
-    //      on contact (2.00->1.595 in one step), reaction genuinely ~zero
-    //      during a real non-contact stretch (proves it's contact-driven,
-    //      not a constant drag hack), mass conserved.
-    //   3. A 4-case verification matrix: water at moderate speed, water at
-    //      HIGH speed (6.0, no blowup), Bingham MUD (a different material
-    //      entirely -- correctly showed LOWER final speed than water,
-    //      matching mud's real higher viscosity/yield stress, not a
-    //      coincidence), and a vertical-drop approach angle. Every case:
-    //      mass exactly conserved, finite throughout, real confirmed
-    //      contact.
-    // Real, disclosed residual gap: no test has tried multiple simultaneous
-    // obstacles, extreme mass ratios beyond what the friction-profile probe
-    // covered, or a non-circular shape (this boundary is circle-only).
+    // `true`, on measurement:
+    //   1. Contact holds: the nearest particle stays exactly at the obstacle's
+    //      radius under sustained approach; mass conserved; max_speed rises
+    //      smoothly (2.78 -> 3.45), no blowup.
+    //   2. Two-way coupling unscripted: the obstacle's velocity comes only
+    //      from `take_reaction_impulse()`; it decelerates on contact
+    //      (2.00 -> 1.595 in one step) and the reaction is ~zero out of contact.
+    //   3. Water at moderate and high speed (6.0), Bingham mud (slower than
+    //      water, as its viscosity and yield stress imply) and a vertical
+    //      drop: mass conserved, finite, contact confirmed in every case.
+    // Not tested: several obstacles at once, more extreme mass ratios, or a
+    // non-circular shape (this boundary is circles only).
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         true
     }

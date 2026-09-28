@@ -9,18 +9,16 @@ use crate::materials::utils::{
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::Particles;
 
-/// No-compression (tension-only) elastic material -- the continuum-mechanics dual of
-/// no-tension masonry theory, a real, established treatment for cables, membranes,
-/// tendons, and spider silk (unified variational framework for no-tension/no-
-/// compression solids; the classic special case, tension-field theory for wrinkling
-/// membranes under compression, describes exactly this: "an ideal membrane... can
-/// sustain only tensile loads and offers no resistance to in-plane compression,
-/// instead forming wrinkles").
+/// No-compression (tension-only) elastic material, the dual of no-tension
+/// masonry theory, for cables, membranes, tendons and spider silk. Its
+/// classic case, tension-field theory of wrinkling membranes: "an ideal
+/// membrane... can sustain only tensile loads and offers no resistance to
+/// in-plane compression, instead forming wrinkles".
 ///
 /// Elastic response: the relaxed isotropic Hencky energy in principal-strain
 /// space. In a taut region this is the same Hencky law used by
 /// `RankineMaterial`/`VonMisesMaterial`. In a wrinkled region the transverse
-/// strain is minimized out subject to zero transverse stress, leaving a real
+/// strain is minimized out subject to zero transverse stress, leaving a
 /// uniaxial tensile stress independent of any additional slack contraction.
 /// If both principal logarithmic strains are non-positive the region is slack
 /// and carries no stress. This is the tension-field construction of Pipkin and
@@ -28,25 +26,15 @@ use crate::particle::Particles;
 /// (which is not the gradient of a relaxed energy and can incorrectly erase a
 /// load-bearing tension when the transverse direction contracts).
 ///
-/// Fully REVERSIBLE, unlike every plasticity model in this engine: a particle that
-/// goes slack under compression regains full tensile stiffness immediately once
-/// stretched back past zero -- no permanent damage/hardening state. Its own
-/// `update_particle` does real elastic F-integration
-/// (`F_new=exp(dt*C)*F_old`, the exact constant-rate solution of `dF/dt=C*F`)
-/// with volume/density sync, but no plastic return-mapping on
-/// top -- "reversible" means no PERMANENT state, not that F itself never updates.
-/// (An earlier version of this doc claimed F updated via some separate "ordinary
-/// G2P integration" needing no override here at all -- that was wrong, and a real
-/// bug: with no override, F stayed bit-for-bit IDENTITY forever in every dynamic
-/// scene, confirmed live. `kirchhoff_stress` was always correct GIVEN a real F;
-/// F itself just never became one.) This is a genuinely different kind of material
-/// from Rankine/VonMises/Sand: an asymmetric nonlinear ELASTIC law, not an
-/// irreversible return-mapping plasticity law -- belongs alongside `Elastic`/
-/// `Viscoelastic` in the property taxonomy, not `PlasticityModel`.
+/// Fully reversible, unlike the plasticity models: a slack particle regains
+/// its tensile stiffness as soon as it is stretched back past zero, with no
+/// permanent state. `update_particle` integrates F (`F_new = exp(dt*C)*F_old`,
+/// the exact constant-rate solution of `dF/dt = C*F`) and syncs volume and
+/// density, with no return mapping. An asymmetric nonlinear elastic law, so
+/// it belongs with `Elastic`/`Viscoelastic` in the property taxonomy, not
+/// `PlasticityModel`.
 ///
-/// CPU-only for now -- a real, disclosed scope limit (this engine's own "CPU
-/// correctness first, GPU port second" rule): a WGSL SVD-based stress branch is real,
-/// separate follow-up work, not silently skipped.
+/// CPU only: the WGSL SVD-based stress branch is not written yet.
 ///
 /// Suitable for: spider silk/webs, tendons/ligaments, membranes (wings, fins, drum
 /// skins, inflatable structures -- pairs naturally with `Particle::internal_pressure`
@@ -142,31 +130,14 @@ impl MaterialModel for NoCompressionMaterial {
         particles.initial_volume[i]
     }
 
-    /// Real regression fix (external review, found live building the first
-    /// real interactive example for this material): this struct's own doc
-    /// used to claim `deformation_gradient` "advances through the ordinary
-    /// G2P integration, same as `NeoHookeanMaterial`/`CorotatedMaterial`",
-    /// as the reason it didn't need its own `update_particle` override.
-    /// That claim was simply wrong -- `NeoHookeanMaterial::update_particle`
-    /// (elastic.rs) and `CorotatedMaterial::update_particle` (corotated.rs)
-    /// BOTH perform the real `F_new = (I+dt*C)*F_old` integration
-    /// THEMSELVES; there is no separate, generic mechanism that does it for
-    /// materials which skip the override. Confirmed directly, live: with no
-    /// override, `deformation_gradient` stayed bit-for-bit `Mat2::IDENTITY`
-    /// forever, for every particle, in a real dynamic scene (a block
-    /// falling under real gravity) -- the material's own `kirchhoff_stress`
-    /// is correct GIVEN a real F (its own closed-form test proves this),
-    /// but F itself never updated to reflect any real motion at all, so a
-    /// NoCompressionMaterial body has been unable to register real strain
-    /// in ANY dynamic simulation, ever, undetected until now because no
-    /// interactive/dynamic example exercised it before. This material now
-    /// uses the exact constant-rate exponential update rather
-    /// than forward Euler.  Forward Euler is not reversible even for equal
-    /// and opposite rates: `(1+a)(1-a)=1-a^2`, producing a deterministic
-    /// volume-loss ratchet in precisely the slack directions where this
-    /// material has no restoring stress.  The exponential is the exact
-    /// solution of the continuum kinematic equation `dF/dt=C*F`; it is the
-    /// physical correction, not an admissibility clamp.
+    /// Integrates F itself: every elastic material does so in its own
+    /// `update_particle` (there is no generic mechanism), and without this
+    /// override F stayed at identity in every dynamic scene. Uses the exact
+    /// constant-rate exponential rather than forward Euler, which is not
+    /// reversible for equal and opposite rates (`(1+a)(1-a) = 1-a^2`) and would
+    /// ratchet volume away in exactly the slack directions where this
+    /// material has no restoring stress. The exponential is the exact solution
+    /// of `dF/dt = C*F`, not an admissibility clamp.
     fn update_particle(&self, ctx: &mut crate::particle::ParticleUpdateCtx, dt: f32) {
         let (f_new, carried) = advance_deformation_gradient(
             *ctx.deformation_gradient,
@@ -227,11 +198,9 @@ mod tension_compression_tests {
         p
     }
 
-    /// Real, checkable asymmetry: pure uniaxial STRETCH must produce the full
-    /// underlying elastic stiffness (same as an ordinary elastic material), pure
-    /// uniaxial COMPRESSION of the same magnitude must produce exactly zero stress
-    /// on that axis (goes slack) -- the textbook no-compression signature, not a
-    /// vibes check.
+    /// Pure uniaxial stretch gives the full elastic stiffness; pure uniaxial
+    /// compression of the same magnitude gives exactly zero stress on that
+    /// axis (slack), the no-compression signature.
     #[test]
     fn stretch_gives_full_stiffness_compression_gives_zero() {
         let mat = NoCompressionMaterial::new(100.0, 200.0);
@@ -289,14 +258,9 @@ mod tension_compression_tests {
         );
     }
 
-    /// Real regression guard (external review): `update_particle` used to be
-    /// the trait default (a true no-op), on the mistaken belief that F
-    /// updated some other, generic way -- it did not, so F was frozen at
-    /// IDENTITY forever in real dynamic use. Confirms zero velocity_gradient
-    /// still leaves F genuinely unchanged (a real invariant, not just an
-    /// accident of the old no-op), and that `needs_cpu_update()` stays
-    /// false (this is a pure elastic law, no CPU-only plastic pass needed,
-    /// same as NeoHookean/Corotated).
+    /// Zero velocity_gradient leaves F unchanged, and `needs_cpu_update()` stays
+    /// false (a pure elastic law with no CPU-only plastic pass, like
+    /// NeoHookean/Corotated).
     #[test]
     fn update_particle_is_a_no_op_only_under_zero_velocity_gradient() {
         let mat = NoCompressionMaterial::new(100.0, 200.0);
@@ -316,13 +280,9 @@ mod tension_compression_tests {
         );
     }
 
-    /// Real regression guard (external review, the actual bug): with a
-    /// REAL, nonzero velocity_gradient, `update_particle` must genuinely
-    /// integrate the kinematic equation. Before this fix, F stayed at
-    /// IDENTITY here too, silently, in every real simulation using this
-    /// material. Unlike the legacy forward-Euler solid paths, this regression
-    /// checks the exact constant-rate solution so it cannot encode their
-    /// volume-ratchet error as the expected result.
+    /// A nonzero velocity_gradient integrates the kinematic equation, checked
+    /// against the exact constant-rate solution (forward Euler's volume
+    /// ratchet would not pass).
     #[test]
     fn update_particle_integrates_exact_constant_rate_elastic_strain() {
         let mat = NoCompressionMaterial::new(100.0, 200.0);
@@ -351,13 +311,8 @@ mod tension_compression_tests {
         );
     }
 
-    /// Real reversibility check, now that F genuinely updates: compressing
-    /// then restretching back to the SAME F must land on the SAME stress a
-    /// fresh particle at that F would give -- no hysteresis, no lingering
-    /// memory, matching this material's own "fully reversible" claim. This
-    /// specifically could not have been checked meaningfully against the
-    /// old no-op version (F never moved at all, so there was nothing to
-    /// return FROM).
+    /// Compressing then stretching back to the same F gives the stress a fresh
+    /// particle at that F has: no hysteresis, as "fully reversible" claims.
     #[test]
     fn compress_then_restretch_matches_a_fresh_particle_at_the_same_f() {
         let mat = NoCompressionMaterial::new(100.0, 200.0);

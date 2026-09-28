@@ -96,7 +96,7 @@ fn apply_force_fields(pp: ptr<function, Particle>) -> bool {
     // because the sleep_wake uniform stays loaded for every substep in this step_frame()
     // call (uploaded once per frame -- see GpuSimulation::step_frame), not just the one
     // substep where the caller's wake_tag() takes effect. A tagged particle hasn't been
-    // given any real velocity by waking -- it's still genuinely at rest -- so without
+    // given any real velocity by waking -- it's still at rest -- so without
     // exempting it from the natural sleep-scoring below for the WHOLE frame (not just the
     // substep where the flag flips), substep 2 onward would see near-zero velocity and
     // immediately re-sleep it, undoing the wake before step_frame() ever returns.
@@ -265,7 +265,7 @@ fn apply_force_fields(pp: ptr<function, Particle>) -> bool {
             }
             case FIELD_SPATIAL_DRAG_CYLINDER: {
                 // Same drag mechanism as FIELD_LINEAR_DRAG, but the target flow velocity
-                // is sampled fresh from position -- the real, exact closed-form solution
+                // is sampled fresh from position -- the exact closed-form solution
                 // for 2D potential flow around a circular cylinder (uniform stream +
                 // doublet superposition). See GpuFieldEntry::spatial_drag_potential_flow_
                 // cylinder's doc for why this ONE analytic formula is baked in here

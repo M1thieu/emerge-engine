@@ -222,7 +222,7 @@ impl Grid {
     /// cell) equivalent to just calling `HashMap::clear()` (one sweep of the backing
     /// table's control bytes, no hashing at all, capacity kept for reuse -- the exact
     /// guarantee `std`'s own `clear()` docs make). Same real "remove, don't zero-in-place"
-    /// requirement as this fn's own doc above -- `clear()` still empties every entry, it
+    /// requirement as this fn's doc above -- `clear()` still empties every entry, it
     /// just does it without re-deriving the key set `dirty` already gives us for free.
     pub fn clear(&mut self) {
         self.cells.clear();
@@ -313,15 +313,12 @@ impl Grid {
     /// parallel scatter completes. `pub(crate)` since only `transfer.rs` (same
     /// crate) needs it.
     ///
-    /// A dense `Vec<Cell>` replacement was tried here twice (2026-08-07, see
-    /// `transfer::p2g::scatter_particles_to_grid`'s own doc for the full
-    /// writeup) -- measured worse both times (once catastrophically, once
-    /// merely worse after fixing the first attempt's chunking problem).
-    /// `CellMap`'s lazy growth (only ever allocates what a given fold chunk
-    /// actually touches, a small fraction of `resolution^2` per chunk) beats
-    /// a dense buffer's fixed full-grid allocation regardless of chunk
-    /// count. Don't re-try a dense accumulator here without re-measuring the
-    /// INTEGRATED cost on the real scene, not an isolated microbenchmark.
+    /// A dense `Vec<Cell>` accumulator measured worse, in two variants (see
+    /// `transfer::p2g::scatter_particles_to_grid`): `CellMap` grows lazily,
+    /// allocating only what a fold chunk touches (a small fraction of
+    /// `resolution^2`), which beats a fixed full-grid allocation whatever the
+    /// chunk count. Re-measure the integrated cost on a real scene, not a
+    /// microbenchmark, before trying a dense accumulator again.
     pub(crate) fn merge_cells(&mut self, local: CellMap) {
         for (idx, cell) in local {
             self.accumulate(idx, cell.mass, cell.momentum);
@@ -360,49 +357,30 @@ impl Grid {
             .map_or(Vec2::ZERO, |c| c.momentum)
     }
 
-    /// Same as `velocity_at`, but an untouched (never-scattered-to) cell falls back to
-    /// `gravity * dt` (boundary-clamped) instead of a hard zero.
+    /// Same as `velocity_at`, but an untouched (never scattered to) cell reads
+    /// `extrapolated_v + gravity * dt`, slip-wall-clamped, instead of zero.
     ///
-    /// Real, CPU/GPU parity fix (2026-08-08): a G2P kernel stencil can span BOTH touched
-    /// (real particle mass, real momentum, gravity already added by `apply_gravity`) and
-    /// untouched (`velocity_at`'s old hard-zero) cells -- e.g. a sparse free surface.
-    /// Gravity accelerates touched cells every substep but never untouched ones, so the
-    /// gathered field has a discontinuity of exactly `gravity * dt` at that boundary that
-    /// is a pure grid sampling artifact, not physics. The GPU solver already had this
-    /// right (`grid_update.wgsl`'s "empty cells: gravity for stray particles" block); this
-    /// brings CPU in line with it. Investigated as a candidate root cause for a separate,
-    /// still-open momentum-conservation bug (see `MEMORY.md`'s fluid-recovery notes) --
-    /// confirmed via an instrumented counter that this path is NEVER hit in that bug's own
-    /// repro (a dense, packed water column has no cell that's genuinely untouched within
-    /// any particle's stencil before impact), so it is NOT that bug's cause. Kept anyway:
-    /// real, correct, and will matter for any genuinely sparse fluid scene.
-    /// `extrapolated_v`: the velocity to use at an EMPTY node -- pass the
-    /// gathering particle's own current velocity. See the free-surface
-    /// extrapolation note below for why this, and not zero, is correct.
+    /// `extrapolated_v`: the velocity to use at an empty node; pass the
+    /// gathering particle's own current velocity.
     ///
-    /// Free-surface velocity extrapolation (2026-08-13). The `gravity * dt`
-    /// fallback this replaced supplied only ONE substep of gravity to an empty
-    /// node, ignoring the fluid's accumulated velocity entirely -- measured, it
-    /// was ~99.5% wrong (`gravity*dt = 0.0056` against a fluid genuinely moving
-    /// at 0.3-2.0). A particle at a free surface therefore gathered a huge
-    /// artificial jump across its own stencil, reading as stretching: positive
-    /// `div(v)`, so `J` grew every substep and never self-corrected.
-    ///
-    /// Decisive evidence this is a pure artifact, not physics: during FREE FALL
-    /// gravity accelerates every particle identically, so a falling column
-    /// cannot stretch and `div(v)` must be exactly 0. Live-measured on
-    /// `basic_fluids_gpu.rs`, `J` instead climbed monotonically 1.000 -> 1.005
-    /// -> 1.022 -> 1.052 -> 1.093 -> 1.140 -> 1.185 -> ... -> pinned at the 2.0
-    /// clamp, all BEFORE any impact.
+    /// A G2P stencil can span touched cells (particle mass and momentum,
+    /// already accelerated by `apply_gravity`) and untouched ones, e.g. at a
+    /// sparse free surface. A zero at the untouched cells, or `gravity * dt`
+    /// alone (one substep of gravity, ~0.0056 against a fluid moving at
+    /// 0.3-2.0), puts an artificial jump across the particle's stencil that
+    /// reads as stretching: positive `div(v)`, so `J` grows every substep and
+    /// never self-corrects. In free fall every particle accelerates alike, so
+    /// `div(v)` must be exactly 0; measured on `basic_fluids_gpu.rs` without
+    /// extrapolation, `J` climbed 1.000 -> 1.005 -> 1.022 -> 1.052 -> 1.093 ->
+    /// 1.140 -> 1.185 -> ... up to the 2.0 clamp, before any impact.
     ///
     /// Constant (zeroth-order) extrapolation of the fluid velocity into empty
-    /// nodes is the standard treatment -- Bridson, "Fluid Simulation for
-    /// Computer Graphics", ch. 5 (extrapolate velocity from fluid into air
-    /// before advection/gather), universal in FLIP/PIC solvers. `+ gravity*dt`
-    /// keeps it consistent with touched cells, which `apply_gravity` has
-    /// already accelerated by exactly that. For a particle in free fall the
-    /// stencil is then uniform, `div(v) = 0` exactly, and `J` stays 1 -- which
-    /// is the correct answer.
+    /// nodes is the standard treatment (Bridson, "Fluid Simulation for
+    /// Computer Graphics", ch. 5: extrapolate velocity from fluid into air
+    /// before advection/gather). `+ gravity*dt` matches touched cells, which
+    /// `apply_gravity` has already accelerated by that much. A particle in
+    /// free fall then sees a uniform stencil, `div(v) = 0`, and `J` stays 1.
+    /// The GPU does the same (`g2p_gather.inc.wgsl`).
     ///
     /// It also encodes the right free-surface boundary condition: zero traction
     /// (no stress from the empty side), rather than the implicit "the air is a
@@ -515,7 +493,7 @@ impl Grid {
     }
 
     /// Cundall (1982/1987) local non-viscous damping -- see `SimConfig::cundall_damping`'s
-    /// own doc for the real citation/rationale. Compares each active cell's CURRENT
+    /// doc for the real citation/rationale. Compares each active cell's CURRENT
     /// velocity against `pre_force` (the same pre-gravity/boundary/contact snapshot
     /// ASFLIP already takes -- see `snapshot_velocities`), treating the delta as a real
     /// proxy for the force applied this substep (Δv = F·dt/m at fixed dt/mass), and
@@ -524,7 +502,7 @@ impl Grid {
     /// ordinary viscous damping scales with speed, this scales with how hard something
     /// was just pushed). Component-wise, matching the real Cundall formulation exactly
     /// (each DOF independently, not the vector as a whole). Zero contribution wherever
-    /// a component is exactly zero (nothing to oppose) -- real, honest guard, since
+    /// a component is exactly zero (nothing to oppose) -- honest guard, since
     /// `f32::signum(0.0)` returns `1.0`, not `0.0`, and would otherwise inject a spurious
     /// damping force at rest.
     pub fn apply_cundall_damping(&mut self, pre_force: &VelocitySnapshot, coefficient: f32) {

@@ -32,14 +32,11 @@ pub(super) fn apply_boundary_conditions_to_grid(
                 dissipated.push((i, friction_heat));
             }
             let delta_v = cell.momentum - before;
-            // Real Newton's-third-law reaction: whatever velocity this
-            // correction removed from the grid at this cell, a real,
-            // externally-driven obstacle boundary gains as momentum (sign-
-            // flipped, mass-weighted) -- see `BoundaryCondition::
-            // on_grid_correction`'s own doc. A no-op for every boundary
-            // that doesn't override the hook (default is empty), so this
-            // costs nothing beyond one subtraction + one vector compare for
-            // every scene that never uses it.
+            // Equal-and-opposite reaction: the velocity this correction removed
+            // from the grid cell goes, mass-weighted and sign-flipped, to an
+            // externally driven obstacle boundary (see `BoundaryCondition::
+            // on_grid_correction`). The default hook is empty, so other scenes
+            // pay one subtraction and one vector compare.
             if delta_v != Vec2::ZERO {
                 let cell_pos = Vec2::new((i / grid_res) as f32, (i % grid_res) as f32);
                 boundary.on_grid_correction(cell_pos, -delta_v * cell.mass);
@@ -80,21 +77,13 @@ pub(super) fn project_particle_state_to_admissible(
         projected = true;
     }
 
-    // Real gap, found 2026-08-09 debugging a sub-ULP-timestep crash one
-    // substep after this exact clamp fired: both branches below rescale
-    // `deformation_gradient` but never touched `volume`/`density`, leaving
-    // `V/V0 != det(F)` and `rho*V != m` -- invariants `assert_owned_
-    // deformation_state`'s own consistency checks require (2e-4 relative
-    // tolerance) and that a stale, unclamped `volume`/`density` silently
-    // violates. For an owns-deformation-volume-state material (strict
-    // fluids, the retry-exhaustion backstop's real caller) that stale
-    // `volume` also feeds `MaterialModel::timestep_bound` via `density`
-    // directly, which can poison the VERY NEXT CFL scan into an
-    // unrepresentably tiny dt -- the actual observed crash, not a separate
-    // bug from the clamp not firing at all. Recomputing `volume`/`density`
-    // from the just-clamped `deformation_gradient` here keeps every field
-    // this function touches in the same consistent state the assert (and
-    // the material's own physics) already require everywhere else.
+    // Both branches below rescale `deformation_gradient`, so `volume` and
+    // `density` are recomputed from the clamped F: otherwise `V/V0 != det(F)`
+    // and `rho*V != m`, which `assert_owned_deformation_state` checks (2e-4
+    // relative tolerance). For a material that owns its deformation/volume
+    // state (strict fluids, the retry-exhaustion backstop's caller) a stale
+    // `density` also feeds `MaterialModel::timestep_bound` and can drive the
+    // next CFL scan to an unrepresentably small dt.
     let f = particles.deformation_gradient[i];
     if !f.x_axis.is_finite()
         || !f.y_axis.is_finite()
@@ -170,19 +159,13 @@ pub(super) fn assert_owned_deformation_state(particles: &Particles, i: usize, co
 }
 
 /// Same checks as `assert_owned_deformation_state`, minus the final
-/// `[j_min, j_max]` panic -- used ONLY by `do_substep`'s post-G2P validation
-/// when `SimConfig::fluid_step_retry_enabled` is on (see that call site's own
-/// comment). Real bug this closes, found 2026-08-09: `do_substep_with_retry`'s
-/// own retry loop already recomputes this exact bound after `do_substep`
-/// returns (`worst_j_out_of_bounds`) so it can retry at a finer dt or fall
-/// back to its exhaustion backstop -- but `do_substep`'s unconditional
-/// post-G2P call to the full assert panicked on THIS substep's own fresh
-/// result first, unwinding the stack before the retry loop's body (which only
-/// runs after `do_substep` RETURNS) ever executed. The retry mechanism could
-/// never actually engage for this failure class as a result -- every other
-/// invariant here (finiteness, positivity, F/volume/mass consistency) still
-/// panics immediately regardless, retry was never meant to (and cannot
-/// meaningfully) recover from those.
+/// `[j_min, j_max]` panic. Used only by `do_substep`'s post-G2P validation
+/// when `SimConfig::fluid_step_retry_enabled` is on: `do_substep_with_retry`
+/// checks that bound itself after `do_substep` returns
+/// (`worst_j_out_of_bounds`) and retries at a finer dt or falls back to its
+/// exhaustion backstop, which a panic inside `do_substep` would pre-empt.
+/// The other invariants (finiteness, positivity, F/volume/mass consistency)
+/// still panic immediately; retry is not meant to recover from those.
 pub(super) fn assert_owned_deformation_state_j_range_deferred(
     particles: &Particles,
     i: usize,
@@ -241,21 +224,15 @@ fn assert_owned_deformation_state_impl(
         mass_error <= 2.0e-4,
         "strict material particle {i} violates rho*V=m by relative error {mass_error}"
     );
-    // Real gap, found 2026-08-09: this function's own design (see its doc
-    // above) deliberately reports rather than silently rescales -- but
-    // "finite and positive" alone let a genuine compression collapse pass
-    // unnoticed through hundreds of substeps, each one individually too
-    // small to trip `fluid_step_retry_enabled`'s own per-substep check
-    // (same "many small changes" gap that field's own doc already named,
-    // just in the opposite, compression direction: measured live, min_j
-    // drifted 0.72 -> 0.0000154 over 120 frames on a pressure-projection
-    // scene with zero elastic backstop to resist it, density_ratio hitting
-    // 64,916x, entirely unreported the whole time). `j_min`/`j_max` are a
-    // real, generous (50x) safety range, not a physical bound -- widened
-    // to strict fluids here for the first time (previously solid-only, see
-    // `j_max`'s own doc) specifically so a genuinely runaway trajectory
-    // fails LOUD, immediately, with an actionable message, instead of
-    // silently corrupting density/pressure for the rest of the run.
+    // Finite and positive alone lets a compression collapse pass through
+    // hundreds of substeps, each too small to trip
+    // `fluid_step_retry_enabled`'s per-substep check (measured: min_j 0.72 ->
+    // 0.0000154 over 120 frames on a pressure-projection scene with no
+    // elastic backstop, density ratio 64,916x, unreported). `j_min`/`j_max`
+    // are a generous (50x) safety range, not a physical bound, applied to
+    // strict fluids as well as solids (see `j_max`) so a runaway trajectory
+    // fails immediately with an actionable message instead of corrupting
+    // density and pressure for the rest of the run.
     if check_j_range {
         assert!(
             j_f >= config.j_min && j_f <= config.j_max,
@@ -275,11 +252,9 @@ mod grid_correction_tests {
     use crate::boundary::KinematicCircleBoundary;
     use glam::IVec2;
 
-    /// Real, hand-computed check of the `on_grid_correction` wiring itself
-    /// (the physics of `KinematicCircleBoundary`'s own contact projection
-    /// was already extensively validated elsewhere -- this isolates the
-    /// NEW glue: does `apply_boundary_conditions_to_grid` actually compute
-    /// and deliver the real Newton's-third-law reaction impulse?).
+    /// Hand-computed check of the `on_grid_correction` wiring: does
+    /// `apply_boundary_conditions_to_grid` deliver the reaction impulse?
+    /// (`KinematicCircleBoundary`'s contact projection is tested elsewhere.)
     ///
     /// Setup: one grid cell at (8,8), mass=2.0, velocity=(5,0) (moving in
     /// +x). Obstacle centered at (9,8), radius=2.0, friction=0.0 -- the
@@ -287,10 +262,10 @@ mod grid_correction_tests {
     /// normal is (-1,0) and its velocity (+x) points directly INTO the
     /// obstacle. With friction=0, Coulomb projection zeroes the full
     /// velocity (normal component removed, zero tangential component to
-    /// begin with) -- `delta_v = (0,0)-(5,0) = (-5,0)`, so the real
-    /// expected reaction impulse is `-delta_v*mass = (10.0, 0.0)`, and
-    /// since the impulse is exactly anti-parallel to `r = cell_pos -
-    /// center = (-1,0)`, the real expected torque is exactly 0.0.
+    /// begin with) -- `delta_v = (0,0)-(5,0) = (-5,0)`, so the expected
+    /// reaction impulse is `-delta_v*mass = (10.0, 0.0)`, and since the
+    /// impulse is anti-parallel to `r = cell_pos - center = (-1,0)`, the
+    /// expected torque is exactly 0.0.
     #[test]
     fn stationary_obstacle_receives_the_real_hand_computed_reaction_impulse() {
         let grid_res = 16;

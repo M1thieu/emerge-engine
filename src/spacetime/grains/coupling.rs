@@ -3,7 +3,7 @@
 //! source-agnostic (a flat `Cell { mass, momentum }` accumulator, no idea
 //! whether a contribution came from an ordinary particle, a rod point, or a
 //! grain) -- so a grain exchanging real momentum with ordinary MPM sand
-//! particles through the shared grid is a real, not aspirational,
+//! particles through the shared grid is a not aspirational,
 //! integration, exactly like the rod solver already proved.
 //!
 //! Same real division of labor as `rod::coupling`: gravity and interaction
@@ -22,30 +22,19 @@ use crate::solver::config::KERNEL_D_INVERSE;
 
 use super::population::GrainPopulation;
 
-/// Grain -> grid scatter. Real APIC (Jiang, Schroeder, Selle, Teran &
-/// Stomakhin 2015) -- the SAME real formula ordinary MPM particles already
-/// use in `p2g.rs` (`v_i + c_i*cell_dist`), applied to a grain's own
-/// persistent `Grain::c` affine matrix.
+/// Grain -> grid scatter. APIC (Jiang, Schroeder, Selle, Teran & Stomakhin
+/// 2015), the formula particles use in `p2g.rs` (`v_i + c_i*cell_dist`),
+/// with the grain's persistent `Grain::c` affine matrix.
 ///
-/// Real history, kept for the record (2026-08-20, same day): first tried
-/// scattering the grain's TRUE rigid-body field directly from `spin`
-/// (`v_com + spin*perp(r)`) -- exact for an isolated grain, but a real,
-/// confirmed, unbounded energy leak once many spinning grains share grid
-/// nodes (`spin` was never debited when a neighbor's gather "read" it).
-/// REVERTED. Replaced with a plain spin-blind blob + ASFLIP -- fixed the
-/// original clumping (confirmed: pure PIC held a real, jittered column
-/// frozen near its initial shape, matching Jiang et al. 2015's own
-/// independent finding that pure PIC "causes sand to clump together") but
-/// pure FLIP (`asflip_blend=1.0`) is ALSO independently documented to
-/// "suffer from excessive noise and instability" -- confirmed here too (a
-/// real dt-convergence sweep showed non-monotonic bouncing, 0.73x/0.77x/
-/// 0.74x at three different dt values on the same scene). APIC is the
-/// literature's own real resolution to exactly this dilemma: as stable as
-/// PIC, as low-dissipation as FLIP, while ALSO conserving angular momentum
-/// -- this is that fix, done properly this time: `c` is not an externally
-/// -fed guess, it is RECONSTRUCTED every substep by `gather_grid_to_grains`
-/// from the grid's own local velocity field, the exact closed loop the
-/// earlier spin-based attempt was missing.
+/// Scattering the rigid-body field from `spin` (`v_com + spin*perp(r)`) is
+/// exact for one grain but leaks energy without bound once spinning grains
+/// share nodes (`spin` is never debited when a neighbour's gather reads it).
+/// Pure PIC froze a jittered column near its initial shape (Jiang et al.
+/// 2015: PIC "causes sand to clump together"); pure FLIP was noisy and
+/// dt-unstable (0.73x/0.77x/0.74x at three dt). APIC is as stable as PIC,
+/// as low-dissipation as FLIP and conserves angular momentum; `c` is rebuilt
+/// every substep by `gather_grid_to_grains` from the grid's local velocity
+/// field, closing the loop.
 pub fn scatter_grains_to_grid(grains: &GrainPopulation, grid: &mut Grid) {
     for grain in &grains.grains {
         let weights = quadratic_weights(grain.x);
@@ -65,52 +54,32 @@ pub fn scatter_grains_to_grid(grains: &GrainPopulation, grid: &mut Grid) {
     }
 }
 
-/// Grid -> grain gather. Real APIC, mirroring `gather_grid_to_particles`'s
-/// own exact formula: gathers `new_v` (plain PIC average -- correct as-is,
-/// a rigid body's center-of-mass velocity genuinely IS the local average)
-/// AND `b = sum(weight * outer(node_v, cell_dist))`, then sets
-/// `grain.c = b * KERNEL_D_INVERSE * apic_blend` for the NEXT scatter to
-/// consume -- the self-consistent closed loop. `apic_blend` is the SAME
-/// real, existing `SimConfig::apic_blend` knob ordinary particles already
-/// use (default `1.0`, full APIC) -- not a new parameter.
+/// Grid -> grain gather, the APIC formula of `gather_grid_to_particles`:
+/// gathers `new_v` (the plain average, a rigid body's centre-of-mass
+/// velocity) and `b = sum(weight * outer(node_v, cell_dist))`, and sets
+/// `grain.c = b * KERNEL_D_INVERSE * apic_blend` for the next scatter, with
+/// the particles' `SimConfig::apic_blend` (default `1.0`, full APIC).
 ///
-/// `spin` is intentionally NOT re-derived from `c` here: it stays owned by
-/// `apply_grain_contact_forces`'s own torque integration (below), the real,
-/// calibrated, 2,000,000-step-verified DEM rolling-resistance physics.
-/// `c` is a separate, additive, transfer-layer momentum-conservation
-/// device -- it doesn't replace spin's own real dynamics, it just stops
-/// the grid round-trip from being lossy the way pure PIC was.
+/// `spin` is not re-derived from `c`: it belongs to
+/// `apply_grain_contact_forces`'s torque integration (the calibrated DEM
+/// rolling resistance). `c` only keeps the grid round trip from losing
+/// momentum as pure PIC did.
 ///
-/// ASFLIP (2026-08-20, Fei, Guo, Wu, Huang, Gao 2021 -- same real mechanism
-/// `gather_grid_to_particles` already uses, see that function's own doc):
-/// reintroduces the classic FLIP residual (`v_old - old_v`) on top of the
-/// APIC gather above. `old_v` is a PIC-style gather against the grid's
-/// PRE-FORCE velocity snapshot (`pre_force_snapshot`, taken right after
-/// P2G's own momentum normalization, before this substep's gravity/
-/// boundary/contact modified it), using the SAME stencil weights as
-/// `new_v`. `pre_force_snapshot` being `None` (`asflip_blend=0.0`, the
-/// default) is the real gate: `grain.v` stays exactly `new_v`, reproducing
-/// the pre-ASFLIP formula bit-for-bit. No `gamma`/compression-aware split
-/// here unlike the ordinary-particle version -- that split only matters
-/// because ordinary G2P ALSO advances position; grains defer position
-/// advance to `apply_grain_contact_forces` below, so there is only one
-/// velocity to correct, not a separate "position-advance velocity."
+/// ASFLIP (Fei, Guo, Wu, Huang & Gao 2021, as in
+/// `gather_grid_to_particles`): adds the FLIP residual (`v_old - old_v`) on
+/// top of the APIC gather, `old_v` gathered with the same weights from the
+/// pre-force snapshot (`pre_force_snapshot`, taken after P2G's momentum
+/// normalization, before gravity, boundaries and contact). `None`
+/// (`asflip_blend = 0.0`, the default) leaves `grain.v = new_v`. No
+/// compression-aware `gamma` split: that exists because particle G2P also
+/// advances position, while grains advance in `apply_grain_contact_forces`.
 ///
-/// Velocity ONLY -- does NOT advance position (`gather_grid_to_rod` does
-/// the same now; rods advance in their own sub-steps). Advancing position
-/// in the gather and letting the force correction only affect the NEXT
-/// substep's advection is real-measured WRONG for grains: the proven, 2,000,000-step-verified standalone
-/// `GrainPopulation::step` resolves contact forces FIRST, applies them to
-/// `v`, THEN integrates `x += v*dt` -- position is never advanced on
-/// stale, pre-contact velocity. Grid-coupled grains used to do the
-/// opposite (advance position here, correct velocity a whole substep
-/// later in `apply_grain_contact_forces`), silently interpenetrating every
-/// substep before their own repulsive contact spring ever got to push
-/// back at the position it actually applies to. `apply_grain_contact_forces`
-/// now does the position advance instead, after its own correction --
-/// matching the standalone order exactly. (Rod's own convention is
-/// untouched here; rods aren't stiff DEM contacts and weren't measured to
-/// have this problem.)
+/// Velocity only, no position advance: like standalone
+/// `GrainPopulation::step`, contact forces act on `v` before `x += v*dt`.
+/// Advancing position here and correcting velocity a substep later let
+/// grains interpenetrate every substep before their contact spring could
+/// push back where it applies. (`gather_grid_to_rod` does not advance
+/// position either; rods advance in their own sub-steps.)
 pub fn gather_grid_to_grains(
     grains: &mut GrainPopulation,
     grid: &Grid,
@@ -161,7 +130,7 @@ pub fn gather_grid_to_grains(
 /// AFTER `gather_grid_to_grains`, THEN advances position -- mirrors the
 /// proven standalone `GrainPopulation::step`'s own order exactly (contact
 /// resolved before integration, not after; see `gather_grid_to_grains`'s
-/// own doc for why this changed). Gravity is NOT reapplied here -- it
+/// doc for why this changed). Gravity is NOT reapplied here -- it
 /// already reached every grain through the shared grid's own `grid_update`
 /// step, the same mechanism ordinary particles and rods already use.
 ///
@@ -169,16 +138,12 @@ pub fn gather_grid_to_grains(
 /// (`BoundaryCondition::clamp_particle_position`), same real convention
 /// `gather_grid_to_particles` already uses for ordinary particles
 /// (`g2p.rs`'s own `new_pos = boundary.clamp_particle_position(...)` loop).
-/// Grains previously had NO position clamp anywhere in this coupling path
-/// -- only the grid-level velocity damping near a boundary
-/// (`apply_boundary_conditions_to_grid`, node-velocity-only, a few cells
-/// wide). A confirmed, real, structural gap: a fast-moving grain could
-/// advance straight past that thin damping zone in one substep with
-/// nothing to stop it, since (unlike ordinary particles) nothing ever
-/// called a hard position backstop for a grain. Found chasing a real
-/// column-collapse isolation test that measured a 5.26x spread ratio --
-/// mathematically impossible to reach without leaving the simulation
-/// domain entirely, which is exactly what was happening.
+/// The grid-level velocity damping near a boundary
+/// (`apply_boundary_conditions_to_grid`, node velocity only, a few cells
+/// wide) is not enough on its own: a fast grain can cross that thin zone
+/// in one substep, so grains need the same hard position backstop as
+/// particles (without it a column-collapse test measured a 5.26x spread
+/// ratio, reachable only by leaving the domain).
 pub fn apply_grain_contact_forces(
     grains: &mut GrainPopulation,
     dt: f32,
@@ -215,26 +180,20 @@ fn contact_sub_step(
     grid_res: usize,
     grid: &crate::grid::Grid,
 ) {
-    // Real, clean per-grain normal correction BEFORE any contact resolution
-    // -- see `GrainPopulation::clean_wall_normal_velocity`'s own doc for why
-    // this must run first: the grid's own per-cell boundary correction is
-    // noisy (kernel-support-vs-cell-boundary mismatch), and everything
-    // downstream needs a physically clean velocity to react to correctly.
+    // Per-grain normal correction before any contact resolution (see
+    // `GrainPopulation::clean_wall_normal_velocity`): the grid's per-cell
+    // boundary correction is blurred by the kernel, and everything below
+    // needs a clean velocity.
     grains.clean_wall_normal_velocity(boundaries, grid_res);
     let (mut forces, mut torques) = grains.resolve_contact_forces(dt);
-    // Real grain-vs-boundary contact -- see `GrainPopulation::
-    // resolve_wall_contact_forces`'s own doc for why this is a SEPARATE
-    // call, not folded into grain-grain contact above: without it, a grain
-    // resting on the ground has no mechanism to ever start rolling from
-    // rest (found live 2026-08-21).
+    // Grain-vs-boundary contact, separate from grain-grain contact (see
+    // `GrainPopulation::resolve_wall_contact_forces`): without it a grain on
+    // the ground never starts rolling.
     let (wall_forces, wall_torques) = grains.resolve_wall_contact_forces(boundaries, grid_res, dt);
-    // Real grain-vs-CONTINUUM-terrain contact -- see `GrainPopulation::
-    // resolve_terrain_contact_forces`'s own doc: closes the real,
-    // root-caused gap where a grain resting on a real MPM terrain
-    // material (not a `BoundaryCondition`) got zero rolling resistance.
-    // Real, disclosed opt-in (`with_terrain_contact`) -- zero cost for
-    // every population that never calls it, same convention as the wall
-    // contact call above.
+    // Grain-vs-continuum-terrain contact (see `GrainPopulation::
+    // resolve_terrain_contact_forces`): a grain on an MPM terrain (not a
+    // `BoundaryCondition`) otherwise gets no rolling resistance. Opt-in
+    // (`with_terrain_contact`), free otherwise.
     let (terrain_forces, terrain_torques) = grains.resolve_terrain_contact_forces(grid, dt);
     for i in 0..forces.len() {
         forces[i] += wall_forces[i] + terrain_forces[i];
@@ -245,16 +204,12 @@ fn contact_sub_step(
         grain.spin += (torques[idx] / grain.moment_of_inertia()) * dt;
         grain.orientation += grain.spin * dt;
         let mut new_pos = grain.x + grain.v * dt;
-        // Real, radius-aware backstop (2026-08-21, found live: a grain on a
-        // sloped ramp visibly sinking into it while staying stuck near the
-        // top instead of rolling -- confirmed via a direct trace,
-        // `grain.x.y` FROZEN bit-for-bit across 2000+ steps while
-        // `grain.v.y` grew unboundedly negative underneath it, root-caused
-        // to the generic, ordinary-PARTICLE `clamp_particle_position`
-        // hardcoding a "+1" vertical clearance and ignoring both the
-        // grain's own real radius and a sloped surface's own tilt). See
-        // `BoundaryCondition::clamp_grain_position`'s own doc -- each
-        // boundary now owns its own correct grain backstop end to end.
+        // Radius-aware backstop, owned by each boundary
+        // (`BoundaryCondition::clamp_grain_position`): the particle clamp
+        // (`clamp_particle_position`) assumes a "+1" vertical clearance,
+        // ignoring the grain's radius and a slope's tilt, and froze a grain
+        // on a ramp (`grain.x.y` unchanged for 2000+ steps while `grain.v.y`
+        // grew negative).
         for boundary in boundaries {
             new_pos = boundary.clamp_grain_position(new_pos, grain.radius, grid_res);
         }
@@ -283,13 +238,10 @@ mod tests {
 
     #[test]
     fn grain_feels_gravity_through_the_shared_grid_not_its_own_integration() {
-        // Real proof the coupling mechanism itself works: a grain at rest,
-        // scattered into an otherwise-empty grid, should pick up EXACTLY
-        // the grid's own gravity-integrated velocity after a round trip --
-        // not because the grain integrated gravity itself (it didn't;
-        // `gather_grid_to_grains` only reads from the grid), but because
-        // the shared grid mechanism (`update_velocities`) is the same one
-        // ordinary MPM particles already use.
+        // A grain at rest in an otherwise empty grid picks up exactly the
+        // grid's gravity-integrated velocity after a round trip, through the
+        // grid's `update_velocities` (particles' mechanism), not by
+        // integrating gravity itself (`gather_grid_to_grains` only reads).
         let mut grid = Grid::new(32);
         let mut pop =
             GrainPopulation::new(vec![Grain::new(Vec2::new(16.0, 16.0), 1.0, 1.0)], config());
@@ -372,23 +324,15 @@ mod tests {
         }
     }
 
-    /// Real, decisive isolation for the STILL-explosive real 80-grain test
-    /// (`tests/grains_grid_coupling.rs`, uses real `Simulation::step()`,
-    /// already confirmed to clear the grid correctly every substep --
-    /// unlike this file's OWN earlier 2-grain test, which had a genuine,
-    /// separate, now-fixed test-harness bug, see
-    /// `does_grid_coupling_add_spurious_energy...`'s own doc). That 2-grain
-    /// test proves grain-grain contact through the grid is energy-safe.
-    /// This test isolates the other real, shared mechanism every grain
-    /// demo touches: a `BoundaryCondition`'s own grid-velocity effect
-    /// (`apply_to_grid_velocity`, e.g. `FrictionBoundary`'s Coulomb-wall
-    /// reflection) -- run manually here (this module can't call
-    /// `solver::projection::apply_boundary_conditions_to_grid`, `pub(super)`
-    /// to a different module tree) via the SAME real trait method it
-    /// itself calls, on a SINGLE spinning grain (no other grain, no
-    /// `contact_law` involved at all -- already proven stable without a
-    /// boundary present, see `diag_isolated_spinning_grain...` above),
-    /// sitting overlapped into a real `FrictionBoundary`'s own zone.
+    /// Isolates a boundary's grid-velocity effect (`apply_to_grid_velocity`,
+    /// e.g. `FrictionBoundary`'s Coulomb wall) on a single spinning grain
+    /// overlapping a `FrictionBoundary`'s zone, with no other grain and no
+    /// contact law (the lone grain is stable without a boundary, see
+    /// `a_lone_spinning_grain_on_a_node_gains_no_velocity`). Calls the trait
+    /// method directly, since `solver::projection::
+    /// apply_boundary_conditions_to_grid` is `pub(super)` elsewhere. The
+    /// two-grain test proves grain-grain contact through the grid adds no
+    /// energy.
     #[test]
     fn diag_spinning_grain_against_a_real_friction_boundary() {
         let mut grid = Grid::new(32);
@@ -550,25 +494,18 @@ mod tests {
         );
     }
 
-    /// Real, targeted test for the ACTUAL launch mechanism found 2026-08-20
-    /// in the real 80-grain test's own fine-grained trace: the launch
-    /// happened at `active_contacts=16` -- the highest coordination number
-    /// anywhere in that whole run, right after a dense settling moment.
-    /// Every earlier isolation test here maxed out at 4-8 grains in a
-    /// single row/two rows (coordination number 1-4 per grain) and stayed
-    /// stable -- this is the first test with a genuinely DENSE 2D-packed
-    /// cluster (5x4=20 grains, touching in both axes, so interior grains
-    /// have real coordination number 4), matching the real trigger
-    /// condition directly instead of guessing at smaller ingredients.
+    /// A dense cluster (5x4 = 20 grains touching in both axes, interior
+    /// coordination number 4): the 80-grain test launched at
+    /// `active_contacts = 16`, its highest coordination, right after a dense
+    /// settling moment, while rows of 4-8 grains (coordination 1-4) stayed
+    /// stable.
     #[test]
     fn diag_dense_packed_cluster_settling_under_gravity_and_boundary() {
         let mut grid = Grid::new(48);
         let boundary = crate::boundary::FrictionBoundary::new(2, 0.7);
-        // Real, EXACT match to the actual 80-grain test's own calibrated
-        // config -- an earlier version of this test used the generic
-        // module-level `config()` helper instead (10x stiffer stiffness,
-        // flat 50.0 damping, friction=0.5) and passed cleanly, but that
-        // wasn't a real apples-to-apples reproduction of the trigger.
+        // The 80-grain test's calibrated config, not the module `config()`
+        // helper (10x stiffer, flat 50.0 damping, friction 0.5), which passed
+        // but does not reproduce the trigger.
         let m_eff = 1.0 * 0.5;
         const DAMPING_RATIO: f32 = 0.6;
         let critical_damping = |k: f32| 2.0 * (k * m_eff).sqrt() * DAMPING_RATIO;
@@ -712,27 +649,18 @@ mod tests {
             .sum()
     }
 
-    /// Real, decisive, cheap isolation for a 2026-08-20 finding: an 80-grain
-    /// column collapse with rotation-aware scatter (see
-    /// `scatter_grains_to_grid`'s own doc) explodes -- grains launching to
-    /// v~14, spin~10 -- even with dt already confirmed converged (halving
-    /// it moved the result <1%) and a real CFL bound added (confirmed
-    /// non-binding: dt was already far finer than needed). That rules out
-    /// resolution as the cause, leaving a real, structural energy-
-    /// conservation question: does the grid-coupled path add spurious
-    /// energy for a real 2-grain contact that the SAME contact_law,
-    /// stepped standalone (no grid), does not?
+    /// Does the grid-coupled path add energy to a 2-grain contact that the
+    /// same contact law stepped standalone does not? An 80-grain column with
+    /// rotation-aware scatter (see `scatter_grains_to_grid`) exploded (v ~14,
+    /// spin ~10) with dt converged (halving it moved the result <1%) and a
+    /// non-binding CFL bound, which leaves energy conservation.
     ///
-    /// Two touching grains, one given real initial spin, zero gravity
-    /// (isolates the contact/coupling exchange from any falling), same
-    /// `ContactLawConfig` both paths use unmodified. All three damping
-    /// ratios are positive -- an isolated 2-body real DEM contact has no
-    /// energy source, so total KE (translational + rotational) must be
-    /// non-increasing on the STANDALONE path (pure `GrainPopulation::step`,
-    /// proven correct, 2,000,000-step-verified elsewhere) for a real,
-    /// trustworthy baseline. Grid-coupled runs the SAME grains through
+    /// Two touching grains, one spinning, no gravity, the same
+    /// `ContactLawConfig` on both paths. All damping ratios are positive, so
+    /// kinetic energy (translational and rotational) must not increase on the
+    /// standalone path (`GrainPopulation::step`); the grid-coupled path runs
     /// `scatter -> grid_update(gravity=0) -> gather -> apply_grain_contact_forces`,
-    /// mirroring `Simulation::step`'s own real substep order exactly.
+    /// `Simulation::step`'s substep order.
     #[test]
     fn does_grid_coupling_add_spurious_energy_to_a_real_two_grain_contact() {
         let cfg = ContactLawConfig {
@@ -814,15 +742,15 @@ mod tests {
             total_ke(&standalone),
             total_ke(&coupled)
         );
-        // The two grains start 0.1 overlapped -- a real, deliberate compressed
+        // The two grains start 0.1 overlapped -- a deliberate compressed
         // normal spring, storing real elastic PE that legitimately converts to
         // KE as they push apart (standalone_max_ke=15.19 vs ke0=6.25, confirmed
         // real and bounded, not a bug: total mechanical energy, KE+PE, is what
         // damping actually bounds, not KE alone -- this test's own earlier,
         // stricter "KE must never exceed ke0" assumption was simply wrong about
-        // the physics, not about the coupling). The real, decisive comparison
+        // the physics, not about the coupling). The decisive comparison
         // is RELATIVE: same grains, same config, same starting PE -- does the
-        // grid-coupled path stay within the same real, bounded, finite range
+        // grid-coupled path stay within the same bounded, finite range
         // the proven standalone path does, or does it diverge unboundedly.
         assert!(
             coupled_max_ke <= standalone_max_ke * 2.0,

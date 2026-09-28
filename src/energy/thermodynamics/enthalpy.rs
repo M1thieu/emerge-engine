@@ -1,37 +1,26 @@
-//! Real enthalpy method for phase-change (Stefan) problems -- Voller & Cross
+//! Enthalpy method for phase-change (Stefan) problems -- Voller & Cross
 //! 1981 ("Accurate solutions of moving boundary problems using the enthalpy
 //! method," Int. J. Heat Mass Transfer 24(3):545-556) and Voller &
 //! Swaminathan 1991 ("General source-based method for solidification phase
 //! change," Numerical Heat Transfer B 19(2):175-189).
 //!
-//! Real motivating gap (GitHub issue #7): `Simulation::apply_phase_transition`
-//! already debits a real, energy-conserving latent-heat jump
-//! (`temperature -= latent_heat / heat_capacity`, see that function's own
-//! "Stefan condition" roadmap doc) at the INSTANT a threshold fires -- but
-//! the transition itself is still a discrete switch, not a continuous mushy
-//! zone. The enthalpy method's own real idea: track enthalpy `H` (total
-//! thermal energy per unit mass) as the state variable instead of
-//! temperature `T` -- T and phase_fraction are then both DERIVED from H,
-//! and the derivation is naturally continuous: absorbing energy while
-//! `T == t_transition` doesn't raise T further, it raises phase_fraction
-//! instead, until the whole latent-heat band has been crossed.
+//! `Simulation::apply_phase_transition` debits the latent heat
+//! (`temperature -= latent_heat / heat_capacity`) at the instant a threshold
+//! fires, a discrete switch (issue #7). The enthalpy method tracks `H`
+//! (thermal energy per unit mass) instead of `T`, and derives T and the
+//! phase fraction from it: energy absorbed at `T == t_transition` raises the
+//! phase fraction, not T, until the latent-heat band is crossed.
 //!
-//! Real, disclosed first-increment scope: one shared specific heat `cp` on
-//! both sides of the transition (distinct `cp_solid`/`cp_liquid` is a real
-//! refinement the method supports, not implemented here). This is the
-//! numerical core only -- wiring it into `Particle`/`WithLatentHeat` so a
-//! scene's own materials use it automatically is real further work, not
-//! done here; see this module's own tests for how the three regions relate,
-//! and `crate::solver::particles::apply_phase_transition`'s doc for the
-//! discrete-jump mechanism this generalizes.
+//! One specific heat `cp` on both sides of a single transition (distinct
+//! `cp_solid`/`cp_liquid` is a refinement the method supports); the chained
+//! form below has one `cp` per phase. This is the numerical core; see the
+//! tests for how the regions relate and
+//! `crate::solver::particles::apply_phase_transition` for the discrete jump.
 
-/// Real, forward enthalpy relation H(T) -- see this module's own doc for the
-/// three-region shape. Only valid for `T <= t_transition` (ordinary sensible
-/// heat) or `T` representing a FULLY melted state (`phase_fraction == 1`);
-/// it cannot represent a mushy intermediate on its own, since a single T
-/// doesn't determine phase_fraction in that band -- H does. Use this to seed
-/// H from a known, single-phase starting temperature (e.g. at spawn), not to
-/// track an ongoing melt.
+/// Forward relation H(T), valid for `T <= t_transition` (sensible heat) or a
+/// fully melted state (`phase_fraction == 1`): in the mushy band one T does
+/// not determine the phase fraction, H does. For seeding H from a known
+/// single-phase temperature (at spawn), not for tracking a melt.
 pub fn enthalpy_from_temperature(t: f32, cp: f32, latent_heat: f32, t_transition: f32) -> f32 {
     debug_assert!(cp > 0.0, "specific heat capacity must be positive");
     if t <= t_transition {
@@ -41,12 +30,10 @@ pub fn enthalpy_from_temperature(t: f32, cp: f32, latent_heat: f32, t_transition
     }
 }
 
-/// Real inverse of the enthalpy relation: recovers `(temperature,
-/// phase_fraction)` from enthalpy `h` alone. `phase_fraction` is in `[0, 1]`
-/// -- `0.0` fully solid, `1.0` fully liquid, `(0.0, 1.0)` a real mushy-zone
-/// particle mid-melt with `temperature` PINNED at `t_transition` (the real
-/// physical behavior: adding heat to a melting substance raises how much of
-/// it has melted, not its temperature, until melting completes).
+/// Inverse relation: `(temperature, phase_fraction)` from enthalpy `h`.
+/// `phase_fraction` is 0.0 fully solid, 1.0 fully liquid, in between a
+/// particle mid-melt with `temperature` pinned at `t_transition` (heat added
+/// to a melting substance melts more of it, not warms it).
 pub fn temperature_and_phase_fraction_from_enthalpy(
     h: f32,
     cp: f32,
@@ -66,12 +53,9 @@ pub fn temperature_and_phase_fraction_from_enthalpy(
     }
 }
 
-/// Real per-phase thermal properties for a chained solid<->liquid<->gas
-/// enthalpy relation (e.g. ice<->water<->steam) -- see
-/// `chained_state_from_enthalpy`'s own doc for the full picture. Real,
-/// disclosed first-increment scope, same as this module's single-
-/// transition functions above: one `cp` per PHASE (not per-temperature),
-/// the standard simplification this whole method already makes.
+/// Per-phase thermal properties for a chained solid<->liquid<->gas enthalpy
+/// relation (ice<->water<->steam), see `chained_state_from_enthalpy`: one `cp`
+/// per phase, not per temperature.
 #[derive(Debug, Clone, Copy)]
 pub struct PhaseChainProperties {
     pub cp_solid: f32,
@@ -102,17 +86,11 @@ pub enum PhaseState {
     Gas,
 }
 
-/// Real, chained generalization of `temperature_and_phase_fraction_from_
-/// enthalpy` across TWO consecutive real latent-heat transitions (melting
-/// then boiling) instead of one -- the real ice<->water<->steam picture
-/// this module's own top-of-file doc flagged as "real further work, not
-/// implemented here" when it only handled a single transition. Same real
-/// method (Voller & Cross 1981), same monotonic-in-H structure, extended
-/// to 5 real regions instead of 3: solid, melting band, liquid, boiling
-/// band, gas. `H` is referenced to `T=0K` (`H=cp_solid*T` below melting),
-/// matching `enthalpy_from_temperature`'s own convention exactly, so a
-/// solid-region value from that simpler function is bit-identical to this
-/// one's.
+/// `temperature_and_phase_fraction_from_enthalpy` chained across two
+/// latent-heat transitions (melting, then boiling): five regions (solid,
+/// melting band, liquid, boiling band, gas), monotonic in H (Voller & Cross
+/// 1981). `H` is referenced to `T = 0 K` (`H = cp_solid*T` below melting), as
+/// in `enthalpy_from_temperature`, so solid-region values agree bit for bit.
 pub fn chained_state_from_enthalpy(props: &PhaseChainProperties, h: f32) -> (f32, PhaseState) {
     debug_assert!(props.cp_solid > 0.0 && props.cp_liquid > 0.0 && props.cp_gas > 0.0);
     debug_assert!(props.boiling_point_k > props.melting_point_k);
@@ -139,12 +117,10 @@ pub fn chained_state_from_enthalpy(props: &PhaseChainProperties, h: f32) -> (f32
     }
 }
 
-/// Real inverse of `chained_state_from_enthalpy`, for a KNOWN single-phase
-/// state (mirrors `enthalpy_from_temperature`'s own "not for an ongoing
-/// melt" caveat -- a single `(temperature, PhaseState)` pair doesn't
-/// determine a unique H inside a mushy/boiling band on its own unless
-/// `fraction` is given explicitly). Used to seed H once, from a real
-/// starting temperature, not to track an ongoing transition.
+/// Inverse of `chained_state_from_enthalpy` for a known single-phase state:
+/// inside a band a `(temperature, PhaseState)` pair does not determine H
+/// unless `fraction` is given. For seeding H once from a starting
+/// temperature, not for tracking a transition.
 pub fn chained_enthalpy_from_temperature(
     props: &PhaseChainProperties,
     temperature: f32,
@@ -170,9 +146,8 @@ pub fn chained_enthalpy_from_temperature(
 mod chained_enthalpy_tests {
     use super::*;
 
-    // Real water/ice/steam values, same sourcing as `enthalpy_tests`'
-    // own constants plus the demo's own cited steam cp (NIST steam
-    // tables, saturated vapor near 100C, 1 atm).
+    // Water/ice/steam values as in `enthalpy_tests`, plus the demo's steam cp
+    // (NIST steam tables, saturated vapour near 100 C, 1 atm).
     fn water_chain() -> PhaseChainProperties {
         PhaseChainProperties {
             cp_solid: 2090.0,  // ice, J/(kg*K), CRC Handbook at 0C
@@ -185,7 +160,7 @@ mod chained_enthalpy_tests {
         }
     }
 
-    /// Real round-trip in each of the 3 single-phase regions.
+    /// Round trip in each of the 3 single-phase regions.
     #[test]
     fn round_trips_in_each_single_phase_region() {
         let props = water_chain();
@@ -208,8 +183,8 @@ mod chained_enthalpy_tests {
         }
     }
 
-    /// Real continuity check at the melting-band boundary: entering the
-    /// liquid region must start EXACTLY at the melting point, no jump.
+    /// Continuity at the melting-band boundary: the liquid region starts
+    /// exactly at the melting point.
     #[test]
     fn liquid_region_starts_exactly_at_melting_point() {
         let props = water_chain();
@@ -219,8 +194,8 @@ mod chained_enthalpy_tests {
         assert_eq!(state, PhaseState::Liquid);
     }
 
-    /// Real continuity check at the boiling-band boundary: entering the
-    /// gas region must start EXACTLY at the boiling point, no jump.
+    /// Continuity at the boiling-band boundary: the gas region starts exactly
+    /// at the boiling point.
     #[test]
     fn gas_region_starts_exactly_at_boiling_point() {
         let props = water_chain();
@@ -262,10 +237,9 @@ mod chained_enthalpy_tests {
         );
     }
 
-    /// Real monotonicity across the FULL 5-region chain -- the same
-    /// physical-state-not-arbitrary-lookup requirement
-    /// `temperature_and_phase_fraction_are_monotonic_in_enthalpy` checks
-    /// for the single-transition case, extended to the full real range.
+    /// Monotonic across the full 5-region chain, as
+    /// `temperature_and_phase_fraction_are_monotonic_in_enthalpy` checks for
+    /// one transition.
     #[test]
     fn temperature_is_monotonic_non_decreasing_across_the_full_chain() {
         let props = water_chain();
@@ -281,10 +255,8 @@ mod chained_enthalpy_tests {
         }
     }
 
-    /// Real energetic-consistency check: the total energy absorbed
-    /// crossing BOTH bands must equal the sum of the two real cited
-    /// latent heats exactly, by construction -- not silently scaled or
-    /// dropped anywhere in the chained derivation.
+    /// The energy absorbed crossing both bands equals the sum of the two
+    /// latent heats exactly.
     #[test]
     fn crossing_both_bands_absorbs_exactly_the_sum_of_both_real_latent_heats() {
         let props = water_chain();
@@ -307,8 +279,8 @@ mod enthalpy_tests {
     const LATENT_HEAT: f32 = 334_000.0; // ice->water, J/kg, real value (already used elsewhere)
     const T_TRANSITION: f32 = 273.15; // 0 C in Kelvin
 
-    /// Real round-trip check below the transition: H(T) then back must
-    /// recover the same T with phase_fraction=0 (still fully solid).
+    /// Round trip below the transition: H(T) and back gives the same T with
+    /// phase_fraction = 0.
     #[test]
     fn round_trips_below_transition() {
         let t = 250.0;
@@ -322,8 +294,8 @@ mod enthalpy_tests {
         );
     }
 
-    /// Real round-trip check above the transition (fully melted): H(T) then
-    /// back must recover the same T with phase_fraction=1.
+    /// Round trip above the transition (fully melted): H(T) and back gives the
+    /// same T with phase_fraction = 1.
     #[test]
     fn round_trips_above_transition() {
         let t = 300.0;
@@ -356,10 +328,8 @@ mod enthalpy_tests {
         );
     }
 
-    /// Real monotonicity check: as more energy (H) is added, temperature and
-    /// phase_fraction must never DECREASE -- the physical requirement that
-    /// this relation actually represents an energy state, not an arbitrary
-    /// lookup. Sampled across all three regions.
+    /// As H grows, temperature and phase_fraction never decrease (the relation
+    /// is an energy state, not a lookup). Sampled across all three regions.
     #[test]
     fn temperature_and_phase_fraction_are_monotonic_in_enthalpy() {
         let mut prev_t = f32::MIN;
@@ -381,14 +351,10 @@ mod enthalpy_tests {
         }
     }
 
-    /// Real energetic-consistency check connecting this module to the
-    /// EXISTING discrete-jump mechanism (`apply_phase_transition`'s
-    /// `temperature -= latent_heat / heat_capacity`): crossing the ENTIRE
-    /// mushy zone (h_solidus to h_liquidus) must correspond to exactly
-    /// `latent_heat` joules absorbed per kg, by construction -- the same
-    /// real energy quantity the existing threshold mechanism already debits
-    /// in one instantaneous step. This method just spreads that same real
-    /// energy over a continuous band instead of a single substep.
+    /// Crossing the whole mushy zone (h_solidus to h_liquidus) absorbs exactly
+    /// `latent_heat` J/kg, the energy `apply_phase_transition` debits in one
+    /// step (`temperature -= latent_heat / heat_capacity`), here spread over a
+    /// band.
     #[test]
     fn crossing_the_full_mushy_zone_absorbs_exactly_latent_heat() {
         let h_solidus = CP * T_TRANSITION;

@@ -4,8 +4,7 @@
 // `Particle::activation`/`activation_dir` between steps.
 
 /// Liquid Time-constant Network (LNN) -- Hasani, Lechner, Amini, Rus, Grosu,
-/// "Liquid Time-constant Networks" (arXiv preprint 2020; published AAAI 2021,
-/// not NeurIPS as an earlier version of this comment said).
+/// "Liquid Time-constant Networks" (arXiv preprint 2020; published AAAI 2021).
 ///
 /// Continuous-time recurrent ODE neuron model:
 ///   dx/dt = −x/τ + σ(W·x + b) · (A − x)
@@ -165,17 +164,15 @@ impl Lnn {
         );
 
         let n = n_rings * n_per_ring;
-        // HONEST DISCLOSURE (audit 2026-08-15): `tau=0.5` at `period=1.0` is a
-        // free parameter tuned empirically against this engine's sustained-wave
-        // regression below, not a value derived from CPG literature. Ijspeert's
-        // 2008 review covers different oscillator equations, and the LTC model
-        // of Hasani et al. (AAAI 2021) defines tau as a model parameter; neither
-        // supplies a mapping from a requested period to tau for this equation.
-        // The proportional scaling is likewise an uncalibrated convenience.
-        // Only period=1.0 is deeply verified (and used by real call sites);
-        // other periods require independent calibration before being presented
-        // as physically meaningful -- the same honesty convention used for
-        // `FORAGING_RECOVERY_RATE` elsewhere in this codebase.
+        // `tau=0.5` at `period=1.0` is a free parameter tuned against this
+        // engine's sustained-wave regression below, not derived from CPG
+        // literature: Ijspeert's 2008 review covers other oscillator
+        // equations, and the LTC model of Hasani et al. (AAAI 2021) defines tau
+        // as a model parameter; neither maps a requested period to tau for
+        // this equation. The proportional scaling is likewise uncalibrated.
+        // Only period=1.0 is verified (and used by callers); other periods
+        // need their own calibration before being treated as physically
+        // meaningful.
         const EMPIRICAL_TAU_AT_UNIT_PERIOD: f32 = 0.5;
         let tau_val = (EMPIRICAL_TAU_AT_UNIT_PERIOD * period).max(1e-3);
         let tau = vec![tau_val; n];
@@ -183,56 +180,32 @@ impl Lnn {
         // see the amplitude rewrite note below for why this changed from 2.0.
         let amplitude = vec![4.0f32; n];
 
-        // 2026-07-05 REWRITE (was: excite=3.0/inhibit=-2.0/self_inhib=-0.5,
-        // tau=period/(2*pi), amplitude=2.0). The OLD topology looked
-        // reasonable and passed its own test at the time, but that test only
-        // ran 50 steps at dt=0.01 (0.5 simulated seconds) and only checked
-        // that SOMETHING moved -- it never checked SUSTAINED oscillation.
-        // Real finding: the old topology
-        // converges to a fully-synchronized fixed point (oscillation DIES,
-        // every neuron settles to an identical constant) within ~20 steps at
-        // dt=0.1, regardless of external bias -- driving zero real locomotion
-        // for the entire time this was in use.
+        // Topology from a systematic parameter sweep, verified two ways a
+        // variance check alone cannot: (1) the wave survives 10,000 steps;
+        // (2) phase coherence, by cross-correlating neuron 0 against neuron 1
+        // over a range of lags: a traveling wave peaks at a consistent nonzero
+        // lag (segment 1 repeats segment 0, slightly later), which
+        // synchronized flickering or incoherent noise would not. On the
+        // bilateral 2-ring/4-per-ring configuration callers use: peak
+        // correlation 1.000 at cross_coupling 0/0.5/1.0, sustained past 10,000
+        // steps, with a ~25% peak-to-peak activation swing (a 1% swing would
+        // be alive but useless for visible locomotion).
         //
-        // This rewrite was found via a real systematic parameter sweep (not
-        // hand-picked), then deep-verified two ways an "alive" variance check
-        // alone can't catch: (1) survival to 10,000 steps, not 50 or 2000 --
-        // real long-horizon stability; (2) genuine phase COHERENCE, via
-        // cross-correlating neuron 0 against neuron 1 across a range of
-        // lags -- a real traveling wave peaks at a consistent nonzero lag
-        // (proof segment 1 is doing what segment 0 did, slightly later), not
-        // just nonzero variance (which synchronized flickering or incoherent
-        // noise would also produce). Measured on the actual bilateral
-        // 2-ring/4-per-ring configuration real code uses (not just an
-        // isolated ring): peak correlation 1.000 at cross_coupling 0/0.5/1.0,
-        // sustained past 10,000 steps, with a real ~25% peak-to-peak
-        // activation swing (checked explicitly -- a technically-alive-but-1%-
-        // swing wave would be real but useless for visible locomotion).
+        // The resulting period (~9.6 s for 4-per-ring at period=1.0) is slower
+        // than a fast animal's gait but suits the earthworm/lamprey-style
+        // peristaltic crawl this controller drives (see `world::creature` in
+        // LP): earthworm peristaltic waves are slow.
         //
-        // The resulting real oscillation period (~9.6s for a 4-per-ring at
-        // period=1.0) is slower than a fast animal's gait, but genuinely
-        // appropriate here: this controller drives an earthworm/lamprey-style
-        // PERISTALTIC crawl (see `world::creature`'s doc in LP), and real
-        // earthworm peristaltic waves are themselves slow -- this is not a
-        // compromise forced by the fix, it is the physically-realistic regime
-        // for this creature type.
-        //
-        // Connection STRUCTURE (excite-next / inhibit-antiphase, still real
-        // and cited: Getting 1989, "Emerging principles governing the
-        // operation of neural networks"; Ijspeert 2008, "Central pattern
-        // generators for locomotion control in animals and robots", Neural
-        // Networks 21:642) is unchanged. What changed: self-inhibition
-        // REMOVED (was -0.5, now 0.0 -- the sweep found self-inhibition
-        // specifically was part of what collapsed the ring to synchrony), and
-        // inhibit now matches excite in magnitude (was 3.0/-2.0 asymmetric).
-        // HONEST DISCLOSURE (audit 2026-08-15): the magnitudes below are free
-        // parameters tuned empirically against this engine's sustained-wave
-        // regression, not literature-calibrated synaptic strengths. Published
-        // CPG models use different state equations and normalizations, so their
-        // numerical weights do not define a transferable range for this LNN.
-        // Keep these values labelled as engine calibration unless this exact
-        // equation is independently calibrated -- the same honesty convention
-        // used for `FORAGING_RECOVERY_RATE` elsewhere in this codebase.
+        // Connection structure, excite-next / inhibit-antiphase: Getting 1989,
+        // "Emerging principles governing the operation of neural networks";
+        // Ijspeert 2008, "Central pattern generators for locomotion control in
+        // animals and robots", Neural Networks 21:642. Self-inhibition is 0.0
+        // (the sweep found a self-inhibition of -0.5 collapses the ring to a
+        // synchronized fixed point within ~20 steps at dt=0.1), and inhibit
+        // matches excite in magnitude. The magnitudes are free parameters
+        // tuned against the sustained-wave regression, not literature
+        // synaptic strengths: published CPG models use other state equations
+        // and normalizations, so their weights do not transfer to this LNN.
         const EMPIRICAL_EXCITATORY_WEIGHT: f32 = 6.0;
         const EMPIRICAL_INHIBITORY_WEIGHT: f32 = -6.0;
         let mut weights = vec![0.0f32; n * n];
@@ -292,17 +265,13 @@ fn sigmoid(x: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// Real, permanent regression for the 2026-07-05 CPG rewrite. The OLD
-    /// topology looked alive under a 50-step/dt=0.01 check but converged to a
-    /// fully-synchronized fixed point (oscillation DIES) within ~20 steps at
-    /// the dt=0.1 real gameplay actually runs at -- this exact kind of gap is
-    /// why "alive after N steps" is not a sufficient test. This test checks
-    /// what actually matters: does the oscillation SURVIVE 10,000 steps (not
-    /// 50), and is it a genuine COHERENT traveling wave (real sequential
-    /// phase lag between segments), not just nonzero noise or synchronized
-    /// flickering? Checked on the real bilateral 2-ring/4-per-ring
-    /// configuration actual code uses (`basic_creature` demo, LP's creature),
-    /// not just an isolated ring.
+    /// Sustained, coherent oscillation: "alive after N steps" is not enough
+    /// (a ring can look alive over 50 steps at dt=0.01 and still collapse to a
+    /// synchronized fixed point within ~20 steps at dt=0.1). Checks that the
+    /// oscillation survives 10,000 steps and is a coherent traveling wave
+    /// (sequential phase lag between segments), not noise or synchronized
+    /// flickering, on the bilateral 2-ring/4-per-ring configuration callers
+    /// use (`basic_creature` demo, LP's creature).
     #[test]
     fn coupled_traveling_wave_sustains_a_real_long_horizon_traveling_wave() {
         let dt = 0.1;
@@ -327,7 +296,7 @@ mod tests {
             .map(|s| s.iter().sum::<f32>() / s.len() as f32)
             .collect();
 
-        // 1. Real, sustained variance -- not a dead, frozen oscillator.
+        // 1. Sustained variance -- not a dead, frozen oscillator.
         let total_var: f32 = series
             .iter()
             .zip(&mean)
@@ -363,7 +332,7 @@ mod tests {
              would be synchronized flickering or incoherent noise, not real peristalsis."
         );
 
-        // 3. Real, usable amplitude -- not technically-alive-but-imperceptible.
+        // 3. Usable amplitude -- not technically-alive-but-imperceptible.
         let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
         for h in &history {
             min = min.min(h[0]);
@@ -379,10 +348,9 @@ mod tests {
 
     #[test]
     fn traveling_wave_oscillates_at_realistic_gameplay_dt() {
-        // Real gameplay runs at dt~=0.1 (LP's physics substep scale), not the
-        // old test's dt=0.01 -- checked over 50 steps only proves SOMETHING
-        // moved initially; the real long-horizon guarantee lives in
-        // `coupled_traveling_wave_sustains_a_real_long_horizon_traveling_wave`.
+        // Gameplay runs at dt~=0.1 (LP's physics substep scale). A short run
+        // only proves something moved initially; the long-horizon guarantee
+        // is `coupled_traveling_wave_sustains_a_real_long_horizon_traveling_wave`.
         let mut lnn = Lnn::traveling_wave(4, 1.0);
         let first: Vec<f32> = lnn.activations().collect();
         for _ in 0..50 {

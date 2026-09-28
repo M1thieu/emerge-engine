@@ -23,7 +23,7 @@ pub const WIEN_DISPLACEMENT: f64 = 2.897_771_955e-3;
 ///
 /// Returns 0 for non-physical inputs and in the deep Wien tail, where the
 /// exponent overflows `f64` long before the value is representable -- the
-/// emitted power there is below `f64::MIN_POSITIVE` and genuinely negligible,
+/// emitted power there is below `f64::MIN_POSITIVE` and negligible,
 /// not clipped for convenience.
 pub fn planck_spectral_radiance(wavelength_m: f64, temperature_k: f64) -> f64 {
     if !wavelength_m.is_finite()
@@ -120,7 +120,7 @@ mod tests {
     }
 
     /// The sun's photosphere (5772 K) peaks in the visible, near green-yellow.
-    /// A real, checkable number rather than a self-consistency test.
+    /// A checkable number rather than a self-consistency test.
     #[test]
     fn solar_peak_lands_in_the_visible_band() {
         let peak_nm = wien_peak_wavelength_m(5772.0) * 1.0e9;

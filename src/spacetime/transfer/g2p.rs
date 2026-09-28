@@ -164,11 +164,11 @@ pub fn g2p_velocity_vjp(x: Vec2, d_loss_d_new_v: Vec2) -> [[Vec2; 3]; 3] {
 
 /// Analytic adjoint of G2P's APIC affine matrix (`velocity_gradient`)
 /// computation w.r.t. the 9 grid velocities -- the piece `g2p_velocity_vjp`
-/// deliberately left open, now closed. Real, externally cross-checked: this
+/// deliberately left open, now closed. Externally cross-checked: this
 /// exact term appears in ChainQueen's own hand-written CUDA backward pass
 /// (`backward.cu`, `P2G_backward`'s "(C)" comment) as
 /// `invD * N * grad_C_next[alpha][beta] * dpos[beta]` -- confirms both that
-/// this term is genuinely needed (not paranoia) and, since it algebraically
+/// this term is needed (not paranoia) and, since it algebraically
 /// matches the independently-derived formula below once ChainQueen's `invD`
 /// is read as this codebase's `KERNEL_D_INVERSE`, that the derivation is
 /// right. `apic_blend` is an emerge-specific extra factor ChainQueen's own
@@ -276,7 +276,7 @@ pub fn gather_grid_to_particles(
     // update_particle`/`BoundaryCondition::post_g2p_particle` used to need
     // `&mut Particles` -- the WHOLE struct -- per call). Now both take a
     // `ParticleUpdateCtx` (disjoint per-field borrows of just this particle's
-    // own state), so the whole thing runs as one parallel loop -- real, measured
+    // own state), so the whole thing runs as one parallel loop -- measured
     // win: the plasticity/SVD update is the single most expensive per-particle
     // math in the solver, and it was serial before this.
     //
@@ -294,7 +294,7 @@ pub fn gather_grid_to_particles(
     // avoids an 18-way nested `.zip()` (unreadable, error-prone to extend).
     // SAFETY: `(0..active_count).into_par_iter()` is an IndexedParallelIterator
     // -- every index in range is visited by exactly one task, so every pointer
-    // offset below is to a genuinely distinct particle's own memory. Same
+    // offset below is to a distinct particle's own memory. Same
     // "unique indices never alias" argument `Grid::active_cells_mut` already
     // uses for the identical problem (many disjoint mutable borrows driven by
     // a known-unique index set).
@@ -321,15 +321,12 @@ pub fn gather_grid_to_particles(
     // wraps a material this way, same zero-cost property as contact above.
     let mixture_active = grid.has_mixture_activity();
 
-    // Same real, measured lesson as P2G tonight (see
-    // `transfer::p2g::scatter_particles_to_grid`'s own doc): rayon's default
-    // chunking splits far more, far smaller tasks than a naive
-    // one-per-core assumption. This loop has no per-chunk accumulator to
-    // allocate (direct unique-pointer writes, not a fold/reduce), so the
-    // failure mode that broke P2G's dense-buffer attempt doesn't apply --
-    // but fewer/larger chunks still cuts rayon's own task-scheduling
-    // overhead. Measure before trusting, same discipline as every change
-    // tonight.
+    // Fewer, larger rayon chunks than the default split, as in P2G (see
+    // `transfer::p2g::scatter_particles_to_grid`): rayon's default makes far
+    // more, far smaller tasks than one per core. There is no per-chunk
+    // accumulator here (direct unique-pointer writes, not fold/reduce), so
+    // P2G's dense-buffer failure mode does not apply, but larger chunks still
+    // cut task-scheduling overhead. Re-measure before changing.
     let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
     let clamp_count: usize = (0..active_count)
         .into_par_iter()
@@ -370,7 +367,7 @@ pub fn gather_grid_to_particles(
                 // velocity_gradient=0 instead of gathering from the grid, so a
                 // pinned particle never moves and never accumulates local strain
                 // from being dragged -- while its own mass/stress still scattered
-                // into P2G normally, so it acts as a real, immovable anchor other
+                // into P2G normally, so it acts as a immovable anchor other
                 // bodies push against (the standard technique for static/bedrock
                 // geometry in deformable-body sims). Position is deliberately left
                 // completely untouched, not just re-clamped to itself, avoiding any
@@ -415,7 +412,7 @@ pub fn gather_grid_to_particles(
                         } else {
                             // Free-surface velocity extrapolation: empty nodes
                             // take THIS particle's own velocity, not ~zero --
-                            // see `velocity_at_or_extrapolated`'s own doc for
+                            // see `velocity_at_or_extrapolated`'s doc for
                             // the measurement and the citation.
                             grid.velocity_at_or_extrapolated(
                                 cell_pos,
@@ -478,9 +475,8 @@ pub fn gather_grid_to_particles(
                 *ctx.x = new_pos;
             }
 
-            // Plasticity update + boundary post-hooks, now inline in the same
-            // parallel task (used to be a forced-sequential second pass -- see
-            // this function's own top doc). Runs unconditionally, even for a
+            // Plasticity update + boundary post-hooks, inline in the same
+            // parallel task (see this function's doc). Runs unconditionally, even for a
             // pinned particle above: its kinematic x/v/velocity_gradient are
             // frozen, but its stress/plastic state must keep evolving normally
             // (matches the pinned branch's own "acts as a real anchor" comment).

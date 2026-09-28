@@ -20,7 +20,7 @@ use glam::Vec2;
 /// Deliberately generic, not tied to any one creature or body: this attaches to
 /// the grid's contact resolution as a whole (the existing binary grip/rest
 /// split, see `ContactCell` doc), so ANY body that opts particles into
-/// `Particle::contact_group != 0` gets the same real, scalable mechanism for
+/// `Particle::contact_group != 0` gets the same scalable mechanism for
 /// free -- living or non-living, any body plan, matching every other primitive
 /// in this engine (materials, force fields, boundaries) being creature-agnostic.
 ///

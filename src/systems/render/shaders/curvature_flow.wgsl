@@ -58,7 +58,7 @@
 // **N-material extension, single-phase path only**: the 2-phase mechanism
 // above doesn't scale further -- `fs_main_dual_phase`'s own bind group is
 // already at the WebGPU-guaranteed minimum of 8 storage buffers (see its
-// own doc), so a 3rd hand-duplicated buffer set would break portability.
+// doc), so a 3rd hand-duplicated buffer set would break portability.
 // Instead, `splat_density_main` now ALSO scatters each particle's mass
 // into its own `material_id % 16` slot of a flat per-cell array,
 // `surface_material_mass` (`surface_res² × 16`, one extra storage buffer
@@ -89,7 +89,7 @@
 // to a bounded range before use, the same fix production systems use
 // (clamp F's singular values). This is a different, MPM-specific
 // technique from Yu & Turk 2013's neighbor-PCA anisotropic kernels (the
-// classic SPH approach, cited in render_plan's own doc) -- that needs a
+// classic SPH approach, cited in render_plan's doc) -- that needs a
 // neighbor search this splat pass doesn't have; this reuses state MPM
 // particles already carry for free instead.
 
@@ -131,16 +131,11 @@ struct SurfaceParams {
     // disabled: clear/splat skip the extra 16-slot-per-cell atomic work
     // entirely (zero cost). 1 = enabled. Always 0 on the dual-phase path.
     material_mass_enabled: u32,
-    // Real simulation timestep (`SimConfig::dt`, the SAME value the solver
-    // itself steps with -- not a render-frame time, which this pass has no
-    // way to know and which is the wrong physical quantity anyway: what
-    // matters for a real motion-stretch footprint is how far the particle
-    // moved during the physics step that produced its CURRENT `v`, not how
-    // long the screen took to redraw). Used only by `splat_density_main`'s
-    // real velocity-stretch extension (see that function's own doc) --
-    // every other pass sharing this struct ignores the field, same existing
-    // convention `phase_filter_material_id`/`material_mass_enabled` already
-    // use for pass-specific fields.
+    // Simulation timestep (`SimConfig::dt`, the step the solver takes, not
+    // a render-frame time): a motion-stretch footprint depends on how far
+    // the particle moved during the physics step that produced its `v`.
+    // Only `splat_density_main`'s velocity stretch reads it; other passes
+    // sharing this struct ignore it.
     dt: f32,
     // Splat kernel width in PHYSICS-GRID CELLS, for `splat_density_main`
     // only. 1.0 reproduces the original behaviour exactly (the full MPM
@@ -176,10 +171,9 @@ struct SurfaceRenderParams {
     tx: f32,
     sy: f32,
     ty: f32,
-    // Real light direction, sourced from `SimConfig::light_dir` via
-    // `Renderer::set_light_dir` -- see `grid_volume.wgsl`'s own
-    // `GridVolumeParams::light_dir` doc for why this replaced a value
-    // hardcoded separately in each fragment shader.
+    // Light direction from `SimConfig::light_dir` via
+    // `Renderer::set_light_dir` (see `GridVolumeParams::light_dir` in
+    // `grid_volume.wgsl`).
     light_dir: vec2<f32>,
     surface_res: u32,
     mass_floor: f32,
@@ -189,11 +183,9 @@ struct SurfaceRenderParams {
     // N-material extension (see module doc). Was _pad1: f32, an unused pad
     // field -- same offset, same size, struct stays 48 bytes.
     material_mass_enabled: u32,
-    // Real per-cell mass scale this scene's densities are expressed in --
-    // the SAME value `BandHysteresisParams` already carries. `fs_main`
-    // divides by it before quantizing, so the band range below is a
-    // dimensionless "how many reference cell-masses deep" instead of an
-    // absolute mass. Was half of `_pad2`; struct stays 48 bytes.
+    // Per-cell mass scale of this scene's densities (the value
+    // `BandHysteresisParams` carries). `fs_main` divides by it before
+    // quantizing, so bands count reference cell-masses, not absolute mass.
     reference_cell_mass: f32,
     // Floor on optical depth for edge color, in those same dimensionless
     // band units. Was the other half of `_pad2`.
@@ -229,7 +221,7 @@ struct PhysicalRenderParams {
 // const directly) and `grid_volume.wgsl`'s own copy (a separate shader
 // module, same constraint).
 // Implicit out-of-plane bulge of the reconstructed surface, used to build
-// a 3-D normal from a 2-D density gradient. A real, tuned stand-in (no true
+// a 3-D normal from a 2-D density gradient. A tuned stand-in (no true
 // 3-D surface exists here), not a measured quantity -- see `fs_main`'s own
 // Fresnel block for the full reasoning. Module scope because both the
 // legacy shading path and the SI radiative-transfer branch need it.
@@ -243,7 +235,7 @@ const BSPLINE_OUTER_SCALE:  f32 = 0.5;
 const CELL_CENTER_OFFSET:   f32 = 0.5;
 const DENSITY_ATOMIC_SCALE: f32 = 1000000.0;
 // Deliberately smaller fixed-point scale than DENSITY_ATOMIC_SCALE for the
-// temperature atomic (see `surface_temp_atomic`'s own doc): the quantity
+// temperature atomic (see `surface_temp_atomic`'s doc): the quantity
 // accumulated is `w * mass * temperature`, not `w * mass` -- temperature
 // (up to `grid_volume.wgsl`'s own ~5000K blackbody-normalization ceiling)
 // multiplies the same per-particle mass contribution DENSITY_ATOMIC_SCALE
@@ -298,7 +290,7 @@ fn regularize_deformation(f: mat2x2<f32>) -> mat2x2<f32> {
 fn inverse2x2(f: mat2x2<f32>) -> mat2x2<f32> {
     let det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
     // NOT `sign(det) * max(abs(det), eps)` -- `sign(0.0)` is 0.0 in WGSL
-    // (IEEE convention), which would leave a genuine zero divisor for an
+    // (IEEE convention), which would leave a zero divisor for an
     // exactly-degenerate (rank-deficient) `f` -- a real edge case
     // `regularize_deformation`'s own length clamp does NOT rule out (it
     // bounds magnitude, not whether the two columns are parallel).
@@ -315,23 +307,17 @@ fn inverse2x2(f: mat2x2<f32>) -> mat2x2<f32> {
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
 @group(0) @binding(1) var<storage, read_write> surface_atomic: array<atomic<i32>>;
 @group(0) @binding(2) var<uniform> splat_params: SurfaceParams;
-// Real mass-weighted temperature scatter, same fixed-point atomic technique
-// as `surface_atomic` above (WebGPU has no atomic<f32>). Accumulates
-// `w * mass * temperature` at the same indices/weights as the density
-// scatter below -- `fs_main` recovers a real mass-weighted average
-// temperature by dividing this by the settled density, the SAME real
-// blackbody-emission gap `grid_volume.wgsl` already closed (see that
-// shader's own doc for the formula reused verbatim here). Single-phase
-// `fs_main` only -- `fs_main_dual_phase` is deliberately NOT wired to this
-// (see Pass 3b's own bind group: it's already at the real, confirmed
-// WebGPU-guaranteed minimum of 8 storage buffers per fragment stage, adding
-// a 9th would exceed that guarantee).
+// Mass-weighted temperature scatter, fixed-point atomics like
+// `surface_atomic` (WebGPU has no atomic<f32>): accumulates `w * mass *
+// temperature` at the density splat's indices and weights, and `fs_main`
+// divides by the settled density for the mass-weighted temperature
+// (formula as in `grid_volume.wgsl`). Single-phase `fs_main` only: Pass
+// 3b's bind group is already at WebGPU's guaranteed minimum of 8 storage
+// buffers per fragment stage.
 @group(0) @binding(3) var<storage, read_write> surface_temp_atomic: array<atomic<i32>>;
-// Real volume-preserving correction (see "Pass 1d" doc below): the TRUE
-// total particle mass (ground truth, known directly from real physics, not
-// derived from the splat kernel) accumulated once per real particle here --
-// what the settled surface SHOULD sum to before curvature-flow's own real
-// shrinkage bias distorts it.
+// Volume-preserving correction (Pass 1d): the true total particle mass,
+// accumulated once per particle from the particles themselves, which the
+// settled surface should still sum to after curvature flow's shrinkage.
 @group(0) @binding(4) var<storage, read_write> pre_total_atomic: array<atomic<i32>>;
 // Cleared here too (needs zeroing every frame like the others above), but
 // filled by a separate later pass (`post_total_reduce_main`) after the
@@ -340,7 +326,7 @@ fn inverse2x2(f: mat2x2<f32>) -> mat2x2<f32> {
 // N-material extension (see module doc): flat per-cell array, 16 slots per
 // surface cell, one particle's mass lands in its own `material_id % 16`
 // slot. Read back in `fs_main` as plain `array<f32>` for ordering
-// comparisons only -- same real, already-shipped bit-reinterpretation
+// comparisons only -- same already-shipped bit-reinterpretation
 // `grid_volume.wgsl`'s own `material_mass` already relies on.
 @group(0) @binding(6) var<storage, read_write> surface_material_mass_atomic: array<atomic<i32>>;
 // Yu & Turk 2013 anisotropic-kernel support: per-PHYSICS-grid-cell weighted
@@ -427,7 +413,7 @@ fn splat_moments_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if cy < 0 || cy >= res { continue; }
             let centre = vec2<f32>(f32(cx) + CELL_CENTER_OFFSET, f32(cy) + CELL_CENTER_OFFSET);
             // Offset of this particle from the cell centre -- the frame every
-            // moment below is accumulated in (see the buffer's own doc).
+            // moment below is accumulated in (see the buffer's doc).
             let d = p.x - centre;
             let w = bspline_w(d.x) * bspline_w(d.y);
             if w <= 0.0 { continue; }
@@ -585,52 +571,32 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         && p.material_id != u32(splat_params.phase_filter_material_id) {
         return;
     }
-    // Real ground-truth total mass for THIS phase -- once per particle
-    // thread (not once per kernel-touched cell below), see
-    // `pre_total_atomic`'s own doc.
+    // Ground-truth total mass for this phase, once per particle thread (not
+    // once per touched cell below), see `pre_total_atomic`.
     atomicAdd(&pre_total_atomic[0], i32(round(p.mass * TOTAL_ATOMIC_SCALE)));
     // Particle position, converted from physics-grid units into the finer
     // surface buffer's own coordinate system (same origin, finer spacing).
     let scale = f32(splat_params.surface_res) / f32(splat_params.grid_res);
     let sp = p.x * scale;
 
-    // `bspline_w`'s 0.5/1.5 cutoffs are expressed in GRID-cell units --
-    // reusing them directly against SURFACE-cell offsets shrinks the
-    // kernel's reach by a factor of `scale` (e.g. at scale=3 a nominal
-    // "1.5 grid-cell" radius becomes only 0.5 grid-cells wide, smaller than
-    // typical particle spacing, so neighboring footprints never overlap).
-    // Divide the surface-space offset by `scale` before calling `bspline_w`
-    // so its cutoffs stay meaningful in grid-unit distance regardless of
-    // `surface_res`.
+    // `bspline_w`'s 0.5/1.5 cutoffs are in grid-cell units; used directly on
+    // surface-cell offsets they would shrink the kernel by `scale` (at
+    // scale=3 a 1.5-cell radius becomes 0.5 grid cells, below the particle
+    // spacing), so the offset is divided by `scale` first.
     //
-    // Anisotropic extension (see module doc): the offset is ALSO
-    // transformed through the particle's own regularized, inverted `F`
-    // before the kernel is evaluated -- when `F` is identity this reduces
-    // to exactly the isotropic case above (bit-for-bit unchanged).
-    // `max_stretch` widens the scatter loop's radius to cover the
-    // (potentially larger, in a stretched direction) footprint this
-    // implies -- a fixed isotropic radius is only correct when F==identity.
+    // Anisotropy: the offset also goes through the particle's regularized,
+    // inverted `F` (identity F gives exactly the isotropic case), and
+    // `max_stretch` widens the scatter radius to cover the stretched
+    // footprint.
     //
-    // Real velocity-stretch extension (2026-08-11): a SECOND, complementary
-    // anisotropy source composed with F above -- F captures ACCUMULATED
-    // shape change (already real), this captures INSTANTANEOUS motion (a
-    // fast splash droplet stretching along its own flight path, distinct
-    // from any shape deformation it's separately undergoing). Real, cited
-    // technique (Codrops Feb-2025 WebGPU fluid renderer; "Real-time
-    // deformable droplet rendering," 2025 preprint -- both drive particle
-    // deformation from velocity, not just accumulated shape).
-    //
-    // `stretch_factor` is a real, DERIVED dimensionless ratio, not a tuned
-    // constant: `|v|*dt` is the real physical distance (grid units) this
-    // particle moved during the physics step that produced its current
-    // `v` (`splat_params.dt` is `SimConfig::dt`, threaded through from the
-    // real solver, not a render-frame time); dividing by
-    // BSPLINE_OUTER_LIMIT (the kernel's own real half-width, already
-    // defined above) gives "how many kernel-radii did it travel this
-    // step" -- a particle moving less than one kernel-radius (the common
-    // CFL-limited case) gets a near-1.0 factor, negligible extra stretch;
-    // a genuinely fast splash droplet gets real, visible elongation along
-    // its own velocity.
+    // Velocity stretch, composed with F: F carries accumulated shape
+    // change, this carries instantaneous motion, a fast droplet stretching
+    // along its flight path (Codrops 2025 WebGPU fluid renderer; "Real-time
+    // deformable droplet rendering", 2025 preprint). `stretch_factor` is
+    // derived: `|v| dt` (grid units moved during the physics step,
+    // `splat_params.dt` is `SimConfig::dt`) over BSPLINE_OUTER_LIMIT, the
+    // kernel's half-width, i.e. kernel radii travelled per step. A CFL-bound
+    // particle gets a factor near 1; a fast droplet visibly elongates.
     let speed = length(p.v);
     var stretch_factor = 1.0;
     var v_dir = vec2<f32>(1.0, 0.0);
@@ -639,12 +605,8 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         stretch_factor = 1.0 + (speed * splat_params.dt) / BSPLINE_OUTER_LIMIT;
     }
     let v_perp = vec2<f32>(-v_dir.y, v_dir.x);
-    // Real, area-preserving anisotropic stretch matrix -- eigen-
-    // decomposition form: eigenvector `v_dir` with eigenvalue
-    // `stretch_factor` (elongate along real motion), eigenvector `v_perp`
-    // with eigenvalue `1/stretch_factor` (compress perpendicular, same
-    // real convention any anisotropic Gaussian/kernel construction uses to
-    // avoid inflating the kernel's own total footprint area).
+    // Area-preserving stretch: eigenvalue `stretch_factor` along `v_dir`,
+    // `1/stretch_factor` along `v_perp`, so the footprint area is unchanged.
     let motion_col0 = stretch_factor * v_dir.x * v_dir + (1.0 / stretch_factor) * v_perp.x * v_perp;
     let motion_col1 = stretch_factor * v_dir.y * v_dir + (1.0 / stretch_factor) * v_perp.y * v_perp;
     let motion_stretch = mat2x2<f32>(motion_col0, motion_col1);
@@ -708,7 +670,7 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // Converts the fixed-point atomic splat buffer into the first plain-f32
-// ping-pong buffer -- a real, separate pass (not folded into splat itself)
+// ping-pong buffer -- a separate pass (not folded into splat itself)
 // because multiple particles race-write the same atomic cell; only once
 // every particle's contribution has landed is the value stable to read
 // back as a real float.
@@ -716,14 +678,11 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(1) var<storage, read_write> surface_float_out: array<f32>;
 @group(0) @binding(2) var<uniform> convert_params: SurfaceParams;
 @group(0) @binding(3) var<storage, read_write> raw_splat_history: array<f32>;
-// Real mass-weighted temperature: settled fixed-point atomic in, plain f32
-// out. Deliberately NO neighborhood-clamped persistence treatment (unlike
-// `raw_splat_history` above) -- that machinery exists specifically to fight
-// DENSITY flicker at the visible/invisible decision boundary; temperature
-// only ever feeds an additive emission term with no discard/threshold of
-// its own, so a plain per-frame conversion (same simplicity as `grid_
-// volume.wgsl`'s own temperature handling, which also applies no smoothing)
-// is the honest, sufficient treatment here.
+// Mass-weighted temperature: settled fixed-point atomic in, plain f32 out.
+// No neighbourhood-clamped history (unlike `raw_splat_history`): that
+// fights density flicker at the visible/invisible threshold, and
+// temperature only feeds an additive emission term with no threshold of
+// its own (`grid_volume.wgsl` applies no smoothing either).
 @group(0) @binding(4) var<storage, read> surface_temp_atomic_ro: array<atomic<i32>>;
 @group(0) @binding(5) var<storage, read_write> surface_temp_float_out: array<f32>;
 
@@ -756,8 +715,8 @@ fn convert_atomic_to_float_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cy = i32(idx / res);
 
     let fresh_raw = sample_atomic_density(cx, cy);
-    // Real neighborhood value-range (4-neighbor cross) from THIS frame's
-    // own fresh splat -- the safety bound the history gets clamped into.
+    // Neighbourhood value range (4-neighbour cross) of this frame's fresh
+    // splat: the bound the history is clamped into.
     let n0 = sample_atomic_density(cx - 1, cy);
     let n1 = sample_atomic_density(cx + 1, cy);
     let n2 = sample_atomic_density(cx, cy - 1);
@@ -788,58 +747,29 @@ fn sample_in(cx: i32, cy: i32) -> f32 {
     return surface_in[u32(cy) * iter_params.surface_res + u32(cx)];
 }
 
-// Real, fixed pseudo-timestep per iteration -- this is a GEOMETRIC
-// smoothing PDE (van der Laan et al. 2009), not a dynamics equation, so
-// there is no physical dt to derive; several iterations/frame at a small
-// step build up genuine curvature-driven blob-merging without needing to
-// solve the PDE to convergence in one step (same real "several iterations
-// per frame" approach the paper itself uses).
+// Fixed pseudo-timestep per iteration: this is a geometric smoothing PDE
+// (van der Laan et al. 2009), not dynamics, so there is no physical dt.
+// Several iterations per frame at a small step, as the paper does.
 const CURVATURE_PSEUDO_DT: f32 = 0.15;
 // Regularizes kappa's denominator `(grad_sq + GRAD_EPSILON)^1.5` against the
-// true singularity at grad_sq=0. The value below is NOT "small for realism";
-// it is derived from a real numerical-stability requirement, and the old
-// 1.0e-3 was the actual root cause of this engine's white-noise/flicker
-// defect over a fluid's interior -- confirmed 2026-08-14 by a direct,
-// line-for-line CPU port of this exact update rule (see
-// `curvature_flow_grad_epsilon_is_numerically_stable` in `tests.rs`).
-//
-// In a near-flat region (real density gradient ~0, only splat sampling noise
-// present -- exactly the fluid's interior, see `render::mod`'s own N_eff
-// analysis of that noise), grad_sq is itself tiny, so at 1.0e-3 the
-// denominator is dominated by GRAD_EPSILON and kappa becomes noise divided
-// by a near-constant near-zero epsilon -- an enormous, effectively random
-// swing every iteration, clamped only by MAX_KAPPA. Measured: 12 iterations
-// at 1.0e-3 grow a synthetic flat field's noise VARIANCE by 357x (unstable
-// amplification, not smoothing), and a synthetic sharp corner GROWS instead
-// of rounding (0.1 -> 0.205) -- matching this file's own prior note that
-// live measurement found 15x-35x total-mass GROWTH here, the opposite of
-// mean curvature flow's real shrinking bias, i.e. direct independent
-// confirmation of the same instability from a different measurement.
-//
-// 0.1 was chosen, not merely "larger": the same probe shows it is the
-// smallest value with a real (not borderline) stability margin -- variance
-// ratio 0.97 after 12 iterations, vs. 0.99 (essentially neutral, no margin)
-// at 0.03 -- while a real sharp corner still rounds meaningfully (26%
-// pulled toward its neighbors, 0.1 -> 0.074), unlike 1.0+ where the same
-// regularization goes far enough to make the pass nearly inert (<2%
-// change). This is the actual job CURVATURE_ITERATIONS exists for (blob-
-// merging/corner-rounding, this file's own doc), so suppressing noise by
-// suppressing curvature entirely would be trading one defect for another.
+// singularity at grad_sq = 0. In a near-flat region (a fluid's interior,
+// only splat sampling noise) grad_sq is tiny, so a small epsilon turns
+// kappa into noise over a near-zero constant. Measured on a line-for-line
+// CPU port (`curvature_flow_grad_epsilon_is_numerically_stable` in
+// `tests.rs`): at 1.0e-3, 12 iterations grow a flat field's noise variance
+// 357x and a sharp corner grows (0.1 -> 0.205) instead of rounding. 0.1 is
+// the smallest value with a real margin (variance ratio 0.97 after 12
+// iterations, 0.99 at 0.03) that still rounds a corner (0.1 -> 0.074); at
+// 1.0 and above the pass barely changes anything (<2%).
 const GRAD_EPSILON: f32 = 0.1;
-// Real, disclosed numerical safeguard: κ's denominator (Dx²+Dy²)^1.5
-// genuinely approaches zero in near-flat regions (no real particle density
-// gradient there), which can make κ blow up despite GRAD_EPSILON -- a
-// known real failure mode of curvature flow (render_plan's own doc:
-// "a real failure mode ... if the iteration count/step size is wrong").
-// Clamping κ's magnitude directly is a standard, disclosed practical
-// safeguard for exactly this, not an invented physics term.
+// κ's denominator (Dx²+Dy²)^1.5 approaches zero in near-flat regions, so κ
+// can still blow up despite GRAD_EPSILON, a known failure mode of curvature
+// flow; clamping |κ| is the standard safeguard.
 //
-// Do not lower MAX_KAPPA to bound sparse-region flicker: tightening this
-// clamp also washes out the well-conditioned main-body smoothing (density
-// can't build back up to its old settled interior values within the fixed
-// iteration count, and color depth floors at EDGE_COLOR_REFERENCE_DEPTH,
-// so shallow density reads pale everywhere). A sparse-region fix needs a
-// different lever than a blanket clamp tightening across the whole field.
+// Do not lower MAX_KAPPA to bound sparse-region flicker: it also washes out
+// the main-body smoothing (density cannot build back to its settled
+// interior values within the fixed iteration count, and color depth floors
+// at EDGE_COLOR_REFERENCE_DEPTH, so shallow density reads pale everywhere).
 const MAX_KAPPA: f32 = 4.0;
 
 @compute @workgroup_size(8, 8, 1)
@@ -856,10 +786,8 @@ fn curvature_iterate_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dxy = (sample_in(cx + 1, cy + 1) - sample_in(cx + 1, cy - 1)
              - sample_in(cx - 1, cy + 1) + sample_in(cx - 1, cy - 1)) * 0.25;
 
-    // Real mean curvature of the level sets of D -- the standard closed-
-    // form curvature of an implicit function in 2D (van der Laan et al.
-    // 2009's own `∇·(∇D/|∇D|)`, which IS this formula, not an approximation
-    // of it):
+    // Mean curvature of the level sets of D, the closed form of van der Laan
+    // et al. 2009's `∇·(∇D/|∇D|)` in 2D:
     //   κ = (Dxx·Dy² − 2·Dx·Dy·Dxy + Dyy·Dx²) / (Dx²+Dy²)^1.5
     let grad_sq = dx * dx + dy * dy;
     let denom = pow(grad_sq + GRAD_EPSILON, 1.5);
@@ -875,60 +803,23 @@ fn curvature_iterate_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ── Pass 1d: volume-preserving correction ────────────────────────────────────
 //
-// Mean curvature flow -- the PDE `curvature_iterate_main` above solves -- is
-// a smoothing equation with a well-known bias: it shrinks whatever it
-// smooths over enough iterations (same family as curve-shortening flow,
-// which shrinks any closed curve toward a point given enough steps unless
-// something counteracts it). The established fix in the differential-
-// geometry literature is VOLUME-PRESERVING mean curvature flow,
-// `V = -H + lambda(t)`, where `lambda(t)` is a Lagrange multiplier chosen
-// every instant to hold total enclosed volume/mass constant.
+// Mean curvature flow shrinks what it smooths (like curve-shortening flow).
+// Volume-preserving mean curvature flow, `V = -H + lambda(t)`, adds a
+// Lagrange multiplier that holds total mass constant. Here it is applied
+// once, after `CURVATURE_ITERATIONS`, instead of continuously:
+// `post_total_reduce_main` sums the settled field and `volume_correct_main`
+// rescales it by `lambda`.
 //
-// Simplification: the true PDE applies that correction CONTINUOUSLY, every
-// infinitesimal step. This applies it ONCE, after `CURVATURE_ITERATIONS`
-// (a fixed, small number of discrete smoothing steps, not an evolution to a
-// true steady state) finishes -- same end goal (the settled total matches
-// the pre-smoothing total), enforced at the end instead of continuously.
-// `post_total_reduce_main` sums the settled result; `volume_correct_main`
-// would rescale it by `pre_total/post_total` (the discrete, single-shot
-// analogue of `lambda(t)`).
-//
-// REAL ROOT CAUSE FOUND (2026-08-14): the "15x-35x total-mass GROWTH" this
-// pass was disabled for was never a real curvature-flow defect. `pre_total`
-// is a real MASS total (accumulated from real per-particle mass during the
-// splat, resolution-independent -- a properly normalized kernel's weights
-// sum to 1 regardless of how finely the surface grid samples it).
-// `post_reduce_total` below is a RAW SUM of per-cell DENSITY VALUES across
-// every surface cell -- but each surface cell's own AREA is
-// `1/(surface_res/grid_res)^2` of a physics cell's area (the surface grid
-// samples `surface_res/grid_res` times finer per axis), and a raw sum of
-// density VALUES is not mass unless weighted by each cell's own area.
-// Comparing the two directly, as the original design did, was comparing two
-// different physical quantities -- confirmed by a real sweep
-// (`curvature_flow_mass_growth_scales_with_iteration_count`,
-// `systems::render::tests`): dividing the raw post-total by
-// `(surface_res/grid_res)^2` recovers a total within ~3% of the real
-// particle mass, at every iteration count tested (2 through 12) -- not the
-// ~34x this pass's own disabling comment recorded. See
-// [[curvature_flow_mass_growth_x34_partially_investigated_2026-08-14]] in
-// project memory for the full investigation, including the two OTHER real
-// hypotheses (flat-region noise, zero-floor clamp asymmetry) that were
-// tested and ruled out before this one was found.
-//
-// RE-ENABLED with the real, area-corrected Lagrange multiplier
-// (`V = -H + lambda(t)`'s discrete, single-shot analogue -- see this pass's
-// own top doc): `lambda = pre_total / (raw_post_total / multiplier^2)`.
-// Because the area correction already recovers ~97% of true mass on its
-// own, `lambda` sits close to 1.0 -- NOT the ~1/34 factor the original,
-// un-area-corrected comparison would have implied, which is precisely what
-// would have crushed small/thin objects below `mass_floor` (the reason this
-// pass was disabled in the first place). `LAMBDA_CLAMP_RANGE` is a real,
-// disclosed safety bound (not overriding the real math, just refusing to
-// apply an implausibly large correction if some future scene's residual
-// drift turns out to be larger than the ~3% measured here) -- a single
-// global scalar still can't handle drift that's spatially non-uniform
-// across small vs large objects, so a large clamped lambda is a signal to
-// investigate further, not silently trust.
+// `pre_total` is a mass (per-particle mass, resolution-independent);
+// `post_reduce_total` is a raw sum of per-cell densities over surface cells
+// whose area is `1/(surface_res/grid_res)^2` of a physics cell, so it must be
+// divided by that before comparing: `lambda = pre_total / (raw_post_total /
+// multiplier^2)`. Measured (`curvature_flow_mass_growth_scales_with_
+// iteration_count`), the area-corrected total is within ~3% of the particle
+// mass at 2 to 12 iterations, so `lambda` stays near 1. `LAMBDA_CLAMP_RANGE`
+// refuses an implausibly large correction: one global scalar cannot fix
+// drift that differs between small and large objects, so a clamped lambda
+// is a signal to investigate.
 const LAMBDA_MIN: f32 = 0.5;
 const LAMBDA_MAX: f32 = 2.0;
 
@@ -955,7 +846,7 @@ fn volume_correct_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let pre_total = f32(atomicLoad(&volume_correct_pre_total[0])) / TOTAL_ATOMIC_SCALE;
     let raw_post_total = f32(atomicLoad(&volume_correct_post_total[0])) / TOTAL_ATOMIC_SCALE;
-    // Real structural factor, not tuned -- see this pass's own top doc.
+    // Structural factor, not tuned -- see this pass's top doc.
     let multiplier = f32(volume_correct_params.surface_res) / f32(volume_correct_params.grid_res);
     let area_corrected_post_total = raw_post_total / (multiplier * multiplier);
 
@@ -1038,61 +929,33 @@ fn temp_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     temp_diffuse_out[out_idx] = center + DIFFUSION_ALPHA * DIFFUSION_DT * laplacian;
 }
 
-// ── Pass 1e: light diffusion (real subsurface glow) ──────────────────────────
+// ── Pass 1e: light diffusion (subsurface glow) ───────────────────────────────
 //
-// Real diffusion approximation to radiative light transport -- NOT Jensen,
-// Marschner, Levoy & Hanrahan 2001's analytic dipole shortcut. Verified
-// (web search, this session) that the dipole model's own multiple-scattering
-// term IS this same diffusion approximation: the paper combines "an exact
-// solution for single scattering with a dipole point source diffusion
-// approximation for multiple scattering" (SIGGRAPH 2001, "A Practical Model
-// for Subsurface Light Transport" -- history.siggraph.org/learning/
-// a-practical-model-for-subsurface-light-transport-by-jensen-marschner-levoy-
-// and-hanrahan/, graphics.stanford.edu/papers/bssrdf/). This pass solves
-// that SAME underlying diffusion PDE directly, numerically, instead of the
-// dipole's analytic closed-form shortcut for it -- the identical
-// mathematical form as `temp_diffuse_main` above (diffusion is diffusion;
-// only the source/sink terms differ):
+// The diffusion approximation to radiative light transport, solved
+// numerically. Jensen, Marschner, Levoy & Hanrahan 2001 ("A Practical Model
+// for Subsurface Light Transport") combine exact single scattering with a
+// dipole point-source solution of this same diffusion equation for multiple
+// scattering; this pass solves the PDE directly instead of using the
+// dipole's closed form, in the same form as `temp_diffuse_main`:
 //
 //   dPhi/dt = D * laplacian(Phi) - sigma_a * Phi + Q
 //
-// Phi = light fluence (energy density), a REAL, PERSISTENT field (evolves
-// across frames like the wave field above, not recomputed from scratch --
-// light diffusion is a genuine continuous-time process, the same real
-// justification the wave field's own doc already gives for its own
-// persistence). Q = the real blackbody emission STRENGTH already computed
-// in `fs_main` (`t_norm*t_norm`, before the heat() color mapping) -- scoped
-// to a single representative intensity channel for now, not full per-
-// wavelength RGB diffusion (a real, disclosed simplification: true light
-// diffuses at a different rate per wavelength, same real mechanism the
-// column-depth fix's own sigma_a-per-channel Beer-Lambert already models
-// for direct transmission; this pass does not yet extend that to the
-// diffuse term).
+// Phi is the light fluence, a persistent field evolving across frames like
+// the wave field. Q is the blackbody emission strength `fs_main` computes
+// (`t_norm*t_norm`), one representative intensity channel: light diffuses
+// at a different rate per wavelength, which this does not model yet.
 //
-// D = 1/(3*(sigma_a+sigma_s)) is the standard diffusion coefficient from
-// radiative transport theory (the same real quantity the dipole model
-// itself starts from, before ITS analytic shortcut) -- verified (web
-// search, this session) against the general photon-diffusion literature:
-// D = v_E/(3*(kappa_tr+kappa_a)), the standard heuristic form for scattering
-// + absorbing media (see e.g. "Photon diffusion coefficient in scattering
-// and absorbing media," J. Opt. Soc. Am. A 23(5):1106, pubmed.ncbi.nlm.nih.
-// gov/16642188/) -- real, per-material data already in
-// `light_optics.slots[material_slot]` (the SAME real OpticalTable every
-// other real pass in this file already uses), not a guessed constant.
+// D = 1/(3*(sigma_a+sigma_s)), the standard photon diffusion coefficient
+// ("Photon diffusion coefficient in scattering and absorbing media",
+// J. Opt. Soc. Am. A 23(5):1106), from per-material data in
+// `light_optics.slots[material_slot]`.
 //
-// MIN_EXTINCTION is a real, DERIVED stability floor, not a tuned guess:
-// explicit 2D FTCS diffusion needs D*dt/dx^2 <= 1/4 (the identical von
-// Neumann bound `temp_diffuse_main` above already cites); solving for the
-// (sigma_a+sigma_s) floor that keeps THIS pass's own LIGHT_DIFFUSE_DT
-// stable: D_max*LIGHT_DIFFUSE_DT <= 0.25 => D_max <= 0.25/LIGHT_DIFFUSE_DT
-// => 1/(3*MIN_EXTINCTION) <= 0.25/LIGHT_DIFFUSE_DT
-// => MIN_EXTINCTION >= LIGHT_DIFFUSE_DT/(3*0.25) = LIGHT_DIFFUSE_DT/0.75.
-// At LIGHT_DIFFUSE_DT=0.1, MIN_EXTINCTION=0.1333 -- shown worked, not
-// picked by feel. Real materials already in this project (water's own mean
-// sigma_a ~0.131, see render_plan.md's own sigma_a table, Pope & Fry 1997)
-// sit close to or above this floor even before adding any real scattering,
-// so it's a rarely -- not routinely -- binding safety net, same category as
-// MAX_KAPPA above.
+// MIN_EXTINCTION is the stability floor of explicit 2D FTCS diffusion,
+// D*dt/dx^2 <= 1/4 (the bound `temp_diffuse_main` cites):
+// 1/(3*MIN_EXTINCTION) <= 0.25/LIGHT_DIFFUSE_DT, so MIN_EXTINCTION >=
+// LIGHT_DIFFUSE_DT/0.75 = 0.1333 at LIGHT_DIFFUSE_DT = 0.1. Water's mean
+// sigma_a (~0.131, Pope & Fry 1997) already sits near it before any
+// scattering, so it rarely binds.
 const LIGHT_DIFFUSE_DT: f32 = 0.1;
 const MIN_EXTINCTION: f32 = 0.1333;
 
@@ -1213,7 +1076,7 @@ fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Pass 2's curvature calc) is nonzero at any object's edge PERMANENTLY,
 // whether anything is moving or not, keeping the wave field rippling
 // forever even on a fully-settled body. Forcing on the temporal density
-// delta is zero when density is genuinely static and nonzero exactly when
+// delta is zero when density is static and nonzero exactly when
 // something is actually happening.
 //
 // Numerical damping (WAVE_DAMPING < 1) is standard practice for explicit
@@ -1221,15 +1084,10 @@ fn light_diffuse_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // an invented physical effect.
 struct WaveStepParams {
     surface_res: u32,
-    // Real, generic (see `Renderer::set_wave_force_coeff`'s own doc): a
-    // material's free surface only propagates waves like this if it
-    // genuinely behaves like a fluid (`MaterialModel::
-    // owns_deformation_volume_state()`, the SAME real property this engine
-    // already uses everywhere else to mean "true fluid" -- not a per-
-    // material-ID special case). 0.0 (inert, the default) for anything
-    // that never opts in with a real value derived from that property --
-    // a rigid/frictional granular pile has no physical mechanism to
-    // propagate this kind of wave, so it must not get one by accident.
+    // Only a material that behaves like a fluid
+    // (`MaterialModel::owns_deformation_volume_state()`) propagates surface
+    // waves (see `Renderer::set_wave_force_coeff`); 0.0, the default, for
+    // anything else, so a granular pile never gets waves by accident.
     wave_force_coeff: f32,
     // Two plain scalars, NOT `vec2<u32>` -- WGSL gives `vec2<T>` the
     // ALIGNMENT of `vec4<T>` (16 bytes) via the same rule as elsewhere in
@@ -1292,8 +1150,8 @@ fn wave_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             + sample_wave_cur(cx, cy + 1) + sample_wave_cur(cx, cy - 1) - 4.0 * cur;
     let cfl2 = (WAVE_C * WAVE_DT) * (WAVE_C * WAVE_DT);
 
-    // Real temporal disturbance -- see this pass's own top doc for why this
-    // replaced a spatial-gradient forcing term that never actually settled.
+    // Temporal disturbance -- see this pass's top doc for why it replaced a
+    // spatial-gradient forcing that never settled.
     let density_now = sample_wave_density(cx, cy);
     let density_prev = sample_wave_density_prev(cx, cy);
     let force = wave_params.wave_force_coeff * abs(density_now - density_prev);
@@ -1332,7 +1190,7 @@ struct VisibilityParams {
 // `EDGE_COLOR_REFERENCE_DEPTH`/`DEPTH_BANDS` elsewhere in this file), not a
 // physical value. `grid_volume.wgsl`'s own `GRID_VISIBILITY_HIGH_FACTOR`/
 // `GRID_VISIBILITY_LOW_FACTOR` is the SAME Schmitt-trigger technique ported
-// to a separate shader module (that file's own doc says so) -- if this pair
+// to a separate shader module (that file's doc says so) -- if this pair
 // ever gets retuned after a live flicker report, that copy needs the
 // identical change, since WGSL has no cross-module const sharing to do it
 // for us.
@@ -1405,12 +1263,10 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if cx >= i32(band_params.surface_res) || cy >= i32(band_params.surface_res) { return; }
     let idx = u32(cy) * band_params.surface_res + u32(cx);
 
-    // NORMALISED by the real full-cell mass (2026-08-13). The band width is
-    // 1/4 of a FULL CELL; as an absolute number (0.25) it assumed cells weigh
-    // order 1-4. This scene's cells weigh ~0.1, i.e. the entire fluid fits
-    // inside band 0 and the Schmitt trigger has nothing to grip -- while any
-    // cell that momentarily crossed 0.25 jumped a whole band, which is the
-    // visible flicker. Same fix, same reason, as `mass_floor`.
+    // Normalised by the full-cell mass. The band width is 1/4 of a full cell;
+    // as an absolute number (0.25) it assumed cells weigh 1-4, while cells of
+    // ~0.1 put the whole fluid in band 0 and any cell crossing 0.25 jumped a
+    // whole band (flicker). Same reason as `mass_floor`.
     let ref_mass = max(band_params.reference_cell_mass, 1.0e-6);
     let raw_mass = clamp(band_density_in[idx] / ref_mass, 0.0, 4.0);
     let band_width = 1.0 / BAND_HYSTERESIS_DEPTH_BANDS;
@@ -1420,10 +1276,8 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var new_value = current_value;
     if raw_mass < lower_bound || raw_mass >= upper_bound {
-        // Real, solid move outside the current band's (widened) range --
-        // adopt whatever band the raw mass naturally falls into now, same
-        // formula `fs_main`'s own (non-hysteresis) DEPTH_BANDS quantizer
-        // uses.
+        // A move outside the current band's widened range: adopt the band
+        // the raw mass falls into, with `fs_main`'s DEPTH_BANDS quantizer.
         new_value = floor(raw_mass * BAND_HYSTERESIS_DEPTH_BANDS) / BAND_HYSTERESIS_DEPTH_BANDS;
     }
     band_state[idx] = new_value;
@@ -1437,23 +1291,17 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(3) var<storage, read> wave_field: array<f32>;
 @group(0) @binding(4) var<storage, read> visibility_field: array<f32>;
 @group(0) @binding(5) var<storage, read> band_field: array<f32>;
-// Real mass-weighted temperature, single-phase `fs_main` only -- see
-// `surface_temp_atomic`'s own doc for why `fs_main_dual_phase` (Pass 3b)
-// deliberately does NOT get this (already at the real 8-storage-buffer
-// WebGPU-guaranteed minimum).
+// Mass-weighted temperature, single-phase `fs_main` only (see
+// `surface_temp_atomic`: Pass 3b is at the 8-storage-buffer minimum).
 @group(0) @binding(6) var<storage, read> surface_temp_final: array<f32>;
-// N-material extension (see module doc), single-phase only -- same buffer
-// `splat_density_main` scattered into, read here for `dominant_material`'s
-// ordering comparisons only.
-// Real i32 (NOT bit-reinterpreted as f32), read plainly -- see
-// `dominant_material`'s own doc for why.
+// N-material extension (see module doc), single-phase only: the buffer
+// `splat_density_main` scattered into, read for `dominant_material`'s
+// comparisons. Read as i32, not reinterpreted as f32 (see
+// `dominant_material`).
 @group(0) @binding(7) var<storage, read> surface_material_mass: array<i32>;
-// Real diffused light fluence (see Pass 1e's own doc, `light_diffuse_main`)
-// -- single-phase only, real headroom confirmed before adding this: this
-// bind group only used 6 of the real 8-storage-buffer WebGPU-guaranteed
-// minimum before this field (the "already at the limit" note above is
-// about `fs_main_dual_phase`'s OWN separate, tighter bind group, not this
-// one).
+// Diffused light fluence (Pass 1e, `light_diffuse_main`), single-phase
+// only: this bind group uses 6 of the 8 guaranteed storage buffers (the
+// limit note above is about `fs_main_dual_phase`'s own bind group).
 @group(0) @binding(8) var<storage, read> surface_light_phi: array<f32>;
 @group(0) @binding(11) var<uniform> physical_render: PhysicalRenderParams;
 
@@ -1536,10 +1384,9 @@ fn blended_optical_slot(cx: i32, cy: i32) -> vec4<f32> {
         accum += m * optics.slots[s];
     }
     if total_mass <= 0.0 {
-        // No real per-slot data reached this cell (raw splat footprint is
-        // narrower than the smoothed visible silhouette, see module doc) --
-        // real, disclosed fallback to the caller-chosen slot, same as the
-        // v1 behavior when N-material tracking is off entirely.
+        // No per-slot data reached this cell (the raw splat footprint is
+        // narrower than the smoothed silhouette, see module doc): fall back to
+        // the caller-chosen slot, as with N-material tracking off.
         return optics.slots[render_params.material_slot % 16u];
     }
     return accum / total_mass;
@@ -1560,7 +1407,7 @@ fn heat(t: f32) -> vec4<f32> {
 // position lands directly in this buffer's own coordinate units with no
 // extra conversion needed. Shared by both fragment entry points below so
 // they can't independently drift the way the Rust-side `cursor_grid`/
-// `set_camera` pair once did (see `Renderer::screen_to_grid`'s own doc).
+// `set_camera` pair once did (see `Renderer::screen_to_grid`'s doc).
 fn ndc_to_surface_pos(ndc: vec2<f32>, tx: f32, sx: f32, ty: f32, sy: f32) -> vec2<f32> {
     return vec2<f32>((ndc.x - tx) / sx, (ndc.y - ty) / sy);
 }
@@ -1615,7 +1462,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // blocky visibility grid instead of the smooth density falloff, reading
     // as small single-cell "hair" spikes. Bilinearly blend visibility
     // exactly like every other field in this shader: only discard where
-    // ALL 4 corners agree the region is genuinely invisible (still skips
+    // ALL 4 corners agree the region is invisible (still skips
     // dead space for performance); otherwise fold the smooth blend into
     // alpha below so the silhouette edge follows the same continuous
     // falloff as the density it's gating.
@@ -1643,8 +1490,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // so the edge reads as solid material color right up to where alpha
     // fades it, not a pale intermediate tone -- which is exactly where its
     // default now comes from, rather than a value picked by eye. Uses the
-    // file-scope `DEPTH_BANDS` (see its own doc), not a local redeclaration.
-    // N-material extension (see `blended_optical_slot`'s own doc):
+    // file-scope `DEPTH_BANDS` (see its doc), not a local redeclaration.
+    // N-material extension (see `blended_optical_slot`'s doc):
     // mass-fraction-weighted blend per cell when enabled, v1 fallback (one
     // caller-chosen slot) otherwise.
     var optical_slot: vec4<f32> = optics.slots[render_params.material_slot % 16u];
@@ -1652,42 +1499,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         optical_slot = blended_optical_slot(nx_c, ny_c);
     }
     let sigma_a = optical_slot.rgb;
-    // Real fix already applied HERE (2026-08-10, comment corrected to match
-    // -- this used to describe a nearest-cell `band_field[vis_idx]` lookup
-    // that no longer exists in this function): quantized straight from the
-    // SAME bilinear `mass` the alpha/silhouette above already uses, so
-    // there's no second, coarser-grid source to go stale relative to it.
-    // The still-real, still-open version of this tradeoff (hysteresis's
-    // anti-flicker benefit vs bilinear's anti-staleness benefit, unresolved
-    // because nobody has visually confirmed which reads better) lives in
-    // `shade_phase`'s dual-phase path below, which still uses the
-    // nearest-cell hysteresis band field -- NOT touched, needs real visual
-    // verification before choosing, not another blind swap.
+    // Quantized from the same bilinear `mass` the alpha/silhouette uses, so
+    // no coarser second source goes stale against it. The dual-phase path
+    // (`shade_phase`) still uses the nearest-cell hysteresis band field; which
+    // of the two reads better has not been compared on screen.
     //
-    // Normalized by the scene's real reference cell mass BEFORE quantizing.
-    // Without this the band range is an absolute mass, so a physically
-    // calibrated water cell (~0.1) lands in band 0 for every pixel while a
-    // dense material saturates at the top -- and cells straddling a band
-    // edge flip level frame to frame, which is what reads as flicker. It
-    // also makes this quantizer actually agree with the band-hysteresis
-    // pass, which already normalizes the same way (its own
-    // `BAND_HYSTERESIS_DEPTH_BANDS` is documented as having to match this
-    // one, and silently did not).
-    // Real physics fix (2026-08-15): Beer-Lambert (`transmitted` below) is the
-    // exact solution of the radiative-transfer equation for pure absorption,
-    // dI/dz = -sigma_a * I (see e.g. Chandrasekhar 1950, "Radiative
-    // Transfer") -- already the real law this engine cites elsewhere
-    // (prep_instances.wgsl's ByPhysics mode). The DEPTH_BANDS quantization
-    // this used to feed into that law (`floor(...) * DEPTH_BANDS) /
-    // DEPTH_BANDS`) was a real, separate, disclosed ARTISTIC choice (flat
-    // cel-shaded look, same reasoning as grid_volume.wgsl's fs_main) that
-    // belongs to color/silhouette styling, not the physics term -- stair-
-    // stepping the input to `exp(-sigma_a*depth)` put jumps into the actual
-    // absorption law with no physical basis. Use the real, continuous,
-    // already-physically-calibrated mass ratio (same ref_mass normalization,
-    // same edge floor as before) for the transmission physics instead --
-    // DEPTH_BANDS/discrete banding stays exactly where it belongs, driving
-    // the cel-shaded color elsewhere in this file, untouched by this fix.
+    // Normalized by the reference cell mass before quantizing: as an absolute
+    // mass, a water cell (~0.1) lands in band 0 everywhere, a dense material
+    // saturates, and cells at a band edge flip every frame. The band-
+    // hysteresis pass normalizes the same way (`BAND_HYSTERESIS_DEPTH_BANDS`
+    // must match this).
+    //
+    // Beer-Lambert (`transmitted` below) is the exact solution of radiative
+    // transfer for pure absorption, dI/dz = -sigma_a I (Chandrasekhar 1950,
+    // "Radiative Transfer"), so it takes the continuous mass ratio; the
+    // DEPTH_BANDS quantization is a styling choice (cel shading, as in
+    // grid_volume.wgsl) and only drives color, never the absorption law.
     let ref_mass = max(render_params.reference_cell_mass, 1.0e-6);
     let depth_continuous = clamp(mass / ref_mass, 0.0, 4.0);
     let optical_depth = max(depth_continuous, render_params.edge_reference_depth);
@@ -1705,13 +1532,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         ((m10 - m00) + (m11 - m01)) * 0.5,
         ((m01 - m00) + (m11 - m10)) * 0.5,
     );
-    // Real propagating wave field folded into the shading normal -- the
-    // SAME bilinear-corner finite-difference gradient technique as `grad`
-    // above, just against the persistent wave height buffer instead of the
-    // density buffer. `WAVE_SHADING_WEIGHT` scales the wave gradient up
-    // (its own magnitude is naturally small relative to density) so the
-    // real propagating ripple is actually perceptible in the shading, not
-    // real physics silently underneath a dominant static shape gradient.
+    // Wave field folded into the shading normal, the same bilinear-corner
+    // finite-difference gradient as `grad` on the wave height buffer.
+    // `WAVE_SHADING_WEIGHT` scales it up: its magnitude is small next to the
+    // density gradient, and the ripple would otherwise not show.
     let w00 = sample_wave_render(bx, by);
     let w10 = sample_wave_render(bx + 1, by);
     let w01 = sample_wave_render(bx, by + 1);
@@ -1734,7 +1558,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let grad_len = length(grad);
     // Computed early (normally lives right before `return` below, next to
     // `alpha`) so the Fresnel block can use it -- see `fresnel_interior`'s
-    // own doc just below for why.
+    // doc just below for why.
     let edge_margin = max(render_params.mass_floor * 1.5, 1.0e-4);
     var lit = with_scattering;
     if grad_len > 1.0e-5 {
@@ -1760,63 +1584,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             wave_highlight = with_scattering * wave_diffuse * WAVE_HIGHLIGHT_STRENGTH;
         }
 
-        // Real, angle-dependent Fresnel reflectance (Schlick 1994
-        // approximation) -- 2026-08-10, found live: `OpticalTable.specular`
-        // (`optics.specular[slot].x`, real per-material R0, Schlick's own
-        // near-normal-incidence reflectance) was already uploaded but NEVER
-        // READ anywhere in this shader -- `prep_instances.wgsl`'s own
-        // ByPhysics path adds R0 as a flat constant too, missing the actual
-        // view-angle dependence that IS Schlick's whole point (that struct
-        // field's own doc already names this exact gap: "NOT a full
-        // view-angle-dependent Fresnel term"). This is that missing term,
-        // added ADDITIVELY on top of the existing cel-shaded diffuse base
-        // (same layering convention `wave_highlight` above already
-        // established: a real, continuous, physically-derived signal riding
-        // on top of the stylized flat-banded shading, not replacing it --
-        // matches this project's own "no decor, everything caused by real
-        // physics" standard without reversing the deliberate cel-shading
-        // choice `grid_volume.wgsl`'s own doc explains).
+        // Angle-dependent Fresnel reflectance (Schlick 1994) from the
+        // per-material R0 (`optics.specular[slot].x`), added on top of the
+        // cel-shaded diffuse base like `wave_highlight`.
         //
-        // `grad` is only a 2D (screen-space) gradient of a density field --
-        // no explicit 3rd (depth) axis exists in this 2D engine to measure a
-        // real view angle against. Reconstructed the standard bump-mapping
-        // way (same real technique the billboard-sphere depth trick in
-        // Sebastian Lague's "Coding Adventure: Rendering Fluids" uses):
-        // treat the density field as a height field and synthesize an
-        // implicit z-component from FRESNEL_HEIGHT_SCALE, a real, tuned (not
-        // measured) constant standing in for "how much the reconstructed
-        // surface bulges toward the camera" -- honestly a simplification
-        // (no true 3D surface exists here), not a claim of measured
-        // geometry. `cos_theta = normal.z` because the (orthographic, 2D)
-        // camera's view direction is exactly (0,0,1) in this same local
-        // convention -- grazing angles (steep 2D density gradient) push
-        // cos_theta toward 0 and Schlick's term toward 1 (near-total
-        // reflection); a flat/calm region (near-zero gradient) keeps
-        // cos_theta near 1, mostly R0 -- the real "look straight down, see
-        // through; look near the edge, see a mirror" effect.
+        // `grad` is a 2D density gradient; the surface normal is
+        // reconstructed the bump-mapping way, treating density as a height
+        // field with an implicit z from FRESNEL_HEIGHT_SCALE, a tuned
+        // stand-in for how much the surface bulges toward the camera (there
+        // is no 3D surface). The orthographic view direction is (0,0,1), so
+        // `cos_theta = normal.z`: a steep gradient gives a grazing angle and
+        // near-total reflection, a calm region mostly R0.
         let normal3 = normalize(vec3<f32>(-grad, FRESNEL_HEIGHT_SCALE));
         let cos_theta = clamp(normal3.z, 0.0, 1.0);
         let r0 = optics.specular[render_params.material_slot % 16u].x;
         let fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_theta, 5.0);
-        // Real bug found live 2026-08-10 (user: "y a des artifacts autour
-        // des rendus"): `grad` is the SAME density gradient used for both
-        // (a) real interior surface/wave curvature (what Fresnel is meant
-        // to react to) AND (b) the silhouette's own alpha falloff -- and
-        // `grad` is UNAVOIDABLY steepest exactly at that falloff band (that
-        // IS what an edge is), so every fluid blob got a bright white rim
-        // traced along its own silhouette, all the time, not just at real
-        // grazing angles. Gate the Fresnel blend by the SAME interior-vs-
-        // edge signal `alpha` below already computes (just evaluated here,
-        // slightly wider, so it fully rolls off just BEFORE alpha starts
-        // fading rather than exactly overlapping it) -- keeps real Fresnel
-        // variation from interior wave undulations, removes the artifact
-        // ring at the domain-cutoff edge, which was never a real surface
-        // angle to begin with.
+        // `grad` is also steepest at the silhouette's own alpha falloff (that
+        // is what an edge is), which gave every blob a white rim. The Fresnel
+        // blend is gated by the interior-vs-edge signal `alpha` computes
+        // (evaluated slightly wider, so it rolls off before alpha fades):
+        // interior waves keep their Fresnel variation, the edge ring goes.
         let fresnel_interior = smoothstep(render_params.mass_floor, render_params.mass_floor + edge_margin * 3.0, mass);
         // Reflection color: no real environment capture exists in this 2D
         // engine to sample a true reflected scene from, so this uses a
-        // simple, disclosed, brightened-toward-white version of the
-        // surface's own already-lit color -- a real, standard cheap stand-in
+        // simple, brightened-toward-white version of the
+        // surface's own already-lit color -- a standard cheap stand-in
         // for "reflects ambient sky/environment light" other stylized water
         // shaders use absent a real cubemap, not an invented color.
         let fresnel_reflection = mix(shaded, vec3<f32>(1.0, 1.0, 1.0), 0.6);
@@ -1835,26 +1627,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         physical_render.emission.x,
     );
 
-    // Real diffused subsurface glow (Pass 1e, `light_diffuse_main`) --
-    // DISTINCT from the local `emission` term just above: emission is the
-    // direct blackbody glow of THIS cell's own temperature; this is real
-    // light that has diffused in from nearby hot cells, genuinely visible
-    // even where local temperature itself is low (a cool cell right next
-    // to an ember should show real bleed-in glow, not a hard cutoff at the
-    // ember's own silhouette). Bilinear-sampled across the SAME 4 corners
-    // `mass`/`avg_temp` already use above, same real anti-blockiness
-    // reasoning.
+    // Diffused subsurface glow (Pass 1e): light that diffused in from nearby
+    // hot cells, visible where the local temperature is low, unlike the
+    // local `emission` above. Bilinear over the same 4 corners as
+    // `mass`/`avg_temp`.
     //
-    // Colour comes from the blackbody that emitted this light, not from the
-    // fluence: `phi` is a radiant fluence, and treating its magnitude as if
-    // it were a temperature is what the previous `heat(0.5 + phi*0.5)` did.
-    // That also made the glow non-monotonic -- as `phi` grew, the ramp moved
-    // toward red and the green channel FELL, so a steadily brightening scene
-    // could render dimmer. The emitter's temperature here is the diffused
-    // temperature field (Pass 1d), which is what the surrounding matter is
-    // actually at. Disclosed simplification, unchanged: `phi` is one channel,
-    // so this spreads a single intensity rather than diffusing each
-    // wavelength at its own rate.
+    // Its colour comes from the blackbody that emitted it: `phi` is a
+    // radiant fluence, not a temperature, so the emitter's temperature is
+    // the diffused temperature field (Pass 1d). (Mapping `phi` onto the heat
+    // ramp made the glow non-monotonic: as it grew, green fell.) `phi` is
+    // one channel, so a single intensity spreads, not each wavelength at its
+    // own rate.
     let lp00 = sample_light_phi_final(bx, by);
     let lp10 = sample_light_phi_final(bx + 1, by);
     let lp01 = sample_light_phi_final(bx, by + 1);
@@ -1875,13 +1658,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // discard-only gate.
     let alpha = density_alpha * visibility_blend;
     if physical_render.spatial.z > 0.5 {
-        // Real SI radiative transfer -- absorption, single scattering and
-        // Fresnel together (`radiative_transfer.inc.wgsl`), not transmission
-        // alone. This path has a genuine surface normal from the density
-        // gradient, so Fresnel is view-angle dependent here: look straight
-        // down and the water is clear, look along it and it is a mirror.
-        // Emission and the diffused subsurface glow stay additive on top,
-        // since both are light the matter itself supplies.
+        // SI radiative transfer: absorption, single scattering and Fresnel
+        // together (`radiative_transfer.inc.wgsl`). This path has a surface
+        // normal from the density gradient, so Fresnel depends on the view
+        // angle: clear looking straight down, a mirror looking along it.
+        // Emission and the diffused glow stay additive, light the matter
+        // itself supplies.
         let relative_density = max(mass / max(render_params.reference_cell_mass, 1.0e-12), 0.0);
         let view_length_m = physical_render.spatial.y
             / max(abs(physical_render.camera_direction.z), 1.0e-6);
@@ -1910,15 +1692,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 @group(0) @binding(2) var<uniform> render_params_a: SurfaceRenderParams;
 @group(0) @binding(3) var<uniform> render_params_b: SurfaceRenderParams;
 @group(0) @binding(4) var<uniform> dual_optics: OpticalTable;
-// Real, persistent per-phase wave/hysteresis state -- SAME techniques as
-// `fs_main`'s own Pass 2b/2c/2d above, ported here so the dual-phase path
-// gets the identical proven flicker fixes instead of the raw, unstabilized
-// mass/DEPTH_BANDS math it shipped with originally. 8 storage buffers
-// total in this fragment stage (2 final + 2 wave + 2 visibility + 2 band)
-// -- right at, not over, the WebGPU-guaranteed minimum
-// `maxStorageBuffersPerShaderStage` of 8; verified by the real headless
-// test device (default limits) actually running this pipeline, not just
-// assumed compatible.
+// Persistent per-phase wave/hysteresis state, the techniques of `fs_main`'s
+// Pass 2b/2c/2d applied to the dual-phase path. 8 storage buffers in this
+// fragment stage (2 final + 2 wave + 2 visibility + 2 band), exactly
+// WebGPU's guaranteed `maxStorageBuffersPerShaderStage`; the headless test
+// device (default limits) runs this pipeline.
 @group(0) @binding(5) var<storage, read> phase_a_wave_field: array<f32>;
 @group(0) @binding(6) var<storage, read> phase_b_wave_field: array<f32>;
 @group(0) @binding(7) var<storage, read> phase_a_visibility_field: array<f32>;
@@ -1942,16 +1720,12 @@ fn sample_wave_phase(buf_is_a: bool, cx: i32, cy: i32, surface_res: u32) -> f32 
     return phase_b_wave_field[idx];
 }
 
-// Real, honest bilinear color+mass for ONE phase -- packs `(lit.rgb, mass)`
-// into the return value (mass rides in `.a`, NOT a real alpha yet; the
-// caller computes the real smoothstep-edge alpha itself, only for
-// whichever phase actually wins the pixel -- see `fs_main_dual_phase`).
-// `mass` is what decides which phase is actually in front at this pixel
-// (real winner-take-all by local density, the SAME "dominant material
-// wins" convention `grid_volume.wgsl` already established, just applied to
-// two independently-smoothed surfaces instead of one shared field -- see
-// module doc's own VOF/phase-fraction citation for why independent fields
-// are the real, correct choice here, not a shared blended one).
+// Bilinear color and mass for one phase: returns `(lit.rgb, mass)` (mass in
+// `.a`, not an alpha; the caller computes the edge alpha only for the phase
+// that wins the pixel, see `fs_main_dual_phase`). `mass` decides which
+// phase is in front: winner-take-all by local density, as in
+// `grid_volume.wgsl`, applied to two independently smoothed surfaces (see
+// the module doc's VOF/phase-fraction citation for why they stay separate).
 fn shade_phase(
     buf_is_a: bool,
     surf_pos: vec2<f32>,
@@ -1974,31 +1748,19 @@ fn shade_phase(
     // Depth quantized, specular removed -- see `grid_volume.wgsl`'s own
     // fs_main for the full doc, and `fs_main`'s own copy of this constant
     // above for the edge-color-floor reasoning. Uses the file-scope
-    // `DEPTH_BANDS` (see its own doc) -- same value as `fs_main` by
+    // `DEPTH_BANDS` (see its doc) -- same value as `fs_main` by
     // construction now, not by convention.
     let slot = p.material_slot % 16u;
     let sigma_a = optics.slots[slot].rgb;
-    // Real port (2026-08-10) of `fs_main`'s own already-shipped choice:
-    // quantize straight from the SAME bilinear `mass` the silhouette/alpha
-    // above already uses, instead of a NEAREST-cell hysteresis-stabilized
-    // lookup (`phase_a_band_field`/`phase_b_band_field`, still declared,
-    // now unused here) that goes stale relative to that bilinear field at
-    // a moving boundary -- the exact real bug this file's own module doc
-    // already named. Real, disclosed, NOT fully resolved trade-off: the
-    // hysteresis pass was real anti-flicker protection too (its own doc:
-    // "stops re-crossing a band boundary every frame from ordinary density
-    // jitter") -- whether bilinear-staleness or hysteresis-flicker reads
-    // worse has never been visually confirmed either way, only ported here
-    // for real consistency with `fs_main`'s own already-made choice, not
-    // because this one was independently proven better. Revert to the
-    // `select(...)` line above if live use shows real flicker regression.
+    // As in `fs_main`: quantized from the same bilinear `mass` as the
+    // silhouette instead of the nearest-cell hysteresis band
+    // (`phase_a_band_field`/`phase_b_band_field`, now unused here), which goes
+    // stale against it at a moving boundary. The hysteresis did fight
+    // flicker, and which reads better has not been compared on screen;
+    // revert to the `select(...)` line above if flicker returns.
     //
-    // Same reference-cell-mass normalization as `fs_main` above, for the
-    // same reason -- see that copy's own doc. Same real-physics fix
-    // (2026-08-15) also ported here: continuous mass ratio feeds the real
-    // Beer-Lambert law directly, DEPTH_BANDS quantization (an artistic
-    // choice) no longer distorts the physics term -- see `fs_main`'s own
-    // longer comment for the full citation/reasoning.
+    // Same reference-mass normalization and continuous Beer-Lambert input as
+    // `fs_main` (see its comment).
     let ref_mass = max(p.reference_cell_mass, 1.0e-6);
     let depth_continuous = clamp(mass / ref_mass, 0.0, 4.0);
     let optical_depth = max(depth_continuous, p.edge_reference_depth);
@@ -2011,8 +1773,8 @@ fn shade_phase(
     let with_scattering = mix(transmitted, scatter_glow, clamp(albedo, vec3(0.0), vec3(1.0)));
 
     let grad = vec2<f32>(((m10 - m00) + (m11 - m01)) * 0.5, ((m01 - m00) + (m11 - m10)) * 0.5);
-    // Real, persistent wave field for THIS phase -- same bilinear-corner
-    // gradient technique as `fs_main`'s own wave highlight above.
+    // Persistent wave field for this phase, the bilinear-corner gradient of
+    // `fs_main`'s wave highlight.
     let w00 = sample_wave_phase(buf_is_a, bx, by, p.surface_res);
     let w10 = sample_wave_phase(buf_is_a, bx + 1, by, p.surface_res);
     let w01 = sample_wave_phase(buf_is_a, bx, by + 1, p.surface_res);
@@ -2070,11 +1832,9 @@ fn fs_main_dual_phase(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Real hysteresis-stabilized visible/invisible decision, per phase --
-    // same nearest-cell lookup and same real fix as `fs_main`'s own Pass
-    // 2c, replacing a flat `mass < mass_floor` comparison on EACH phase's
-    // raw density (the same single-threshold flip-flop `fs_main` already
-    // fixed, just previously left unfixed here).
+    // Hysteresis-stabilized visibility per phase, the nearest-cell lookup of
+    // `fs_main`'s Pass 2c instead of a flat `mass < mass_floor` on each
+    // phase's raw density.
     let nx = i32(round(surf_pos.x - 0.5));
     let ny = i32(round(surf_pos.y - 0.5));
     let nx_c = clamp(nx, 0, i32(render_params_a.surface_res) - 1);
@@ -2091,14 +1851,11 @@ fn fs_main_dual_phase(in: VsOut) -> @location(0) vec4<f32> {
     let mass_a = shaded_a.a;
     let mass_b = shaded_b.a;
 
-    // Real winner-take-all AMONG VISIBLE phases: whichever visible phase has
-    // more real local density at THIS pixel wins -- not a blend (a real
-    // sand/water interface is a hard boundary, blending would render a
-    // physically wrong translucent mixing zone at every contact point). A
-    // phase hysteresis has decided is NOT visible must never win just
-    // because its raw, un-stabilized mass happens to compare higher --
-    // that would silently undo the whole point of the visibility check
-    // above.
+    // Winner-take-all among visible phases: the visible phase with more
+    // local density wins. Not a blend: a sand/water interface is a hard
+    // boundary, and blending would render a translucent mixing zone at
+    // every contact. A phase hysteresis marked invisible never wins on its
+    // raw mass, or the visibility check would be undone.
     let a_wins = a_visible && (!b_visible || mass_a >= mass_b);
     if a_wins {
         let edge_margin = max(render_params_a.mass_floor * 1.5, 1.0e-4);

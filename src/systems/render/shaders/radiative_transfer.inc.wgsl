@@ -6,7 +6,7 @@
 // paths agree by construction.
 //
 // What this replaced: a contract branch that computed transmission only.
-// Absorption was measured and honest, but the scattering and reflection
+// Absorption was measured and but the scattering and reflection
 // terms of the legacy dimensionless path were simply dropped, so enabling
 // real SI optics cost a scene its subsurface glow and its specular. Those
 // terms exist here in SI, driven by the contract's own declared incident

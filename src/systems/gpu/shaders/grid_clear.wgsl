@@ -1,13 +1,12 @@
 // Grid clear -- zero cells before each P2G pass.
 //
-// GPU sparse grid Phase 1 (see mpm_technique_survey memory note): dispatch one workgroup per
-// POTENTIAL active-block slot (NUM_BLOCKS, fixed worst-case size -- no indirect dispatch yet,
-// that's Phase 3), with an early-return guard for slots beyond how many blocks are actually
-// active this frame. The few workgroups that proceed clear only their own block's real cell
-// range, not the whole grid_res² grid -- this is where the actual win comes from. P2G,
-// grid_update, and G2P are untouched by this phase; they still index the (still dense) grid
-// buffer exactly as before. Only which cells get zeroed changes, never the value written once
-// a cell is touched -- same physics, less wasted work.
+// GPU sparse grid: one workgroup per potential active-block slot of this substep's and
+// the previous substep's lists (fixed worst-case size, no indirect dispatch), with an
+// early return for slots beyond the number of active blocks. The workgroups that proceed
+// clear only their own block's cells, not the whole grid_res² grid. Clearing the previous
+// list too gives a block that just went inactive one more clear, so its last P2G
+// contribution does not linger. The grid buffer stays dense; only which cells are zeroed
+// changes.
 //
 // Must run before P2G every substep so the atomic scatter starts from zero.
 //

@@ -50,7 +50,7 @@ impl Elastoplastic {
     /// - `Ductile`               → `VonMisesMaterial`
     /// - `Brittle`               → `RankineMaterial`
     /// - `CamClay`               → `NaccMaterial` (CPU-only, see that
-    ///   material's own doc -- GPU construction rejects it)
+    ///   material's doc -- GPU construction rejects it)
     pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
         use PlasticityModel::*;
         match self.model {
@@ -190,13 +190,13 @@ impl FluidGranular {
         // dt^2/(rho*dx^2) conversion here "would double-scale it". This
         // used to call `scale_stress(self.bulk_modulus_pa / GAMMA, ...)`,
         // the exact same abandoned path the WCSPH diagnostic test was
-        // caught using (see that test's own doc) -- real, live bug, not
+        // caught using (see that test's doc) -- live bug, not
         // just a test issue: it made every `FluidGranular`-dispatched mud/
         // wet-terrain material's bulk pressure orders of magnitude too
         // soft to resist compression. `lambda`/`mu` above stay on
         // `scale_lame` correctly -- that term is added to the SAME
         // F-based corotated elastic stress space every other solid
-        // material uses, a genuinely different (and correctly scaled)
+        // material uses, a different (and correctly scaled)
         // pipeline from the density-ratio EOS pressure below.
         let eos = self.bulk_modulus_pa / GAMMA;
         // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
@@ -214,15 +214,13 @@ impl FluidGranular {
             min_plastic_jacobian: 0.2,
             max_plastic_jacobian: 3.0,
             pressure_floor: 0.0,
-            // Same real, disclosed damping convention as `GranularFluidMaterial::
-            // saturated_loam` (see that field's own doc on the struct) --
-            // `FluidGranular` itself doesn't yet expose a distinct viscosity
-            // input, so this generic SI-driven dispatch path uses the same
-            // 0.3*mu default rather than silently shipping zero damping here too.
+            // Same damping convention as `GranularFluidMaterial::saturated_loam`
+            // (see that field's doc on the struct): `FluidGranular` has no
+            // viscosity input yet, so this uses the same 0.3*mu default rather
+            // than zero damping.
             dynamic_viscosity: 0.3 * mu,
-            // Real correction -- see `GranularFluidMaterial::saturated_loam`'s
-            // own note: scales with THIS scene's own real (SI-derived)
-            // eos_stiffness, not mu.
+            // Scales with this material's eos_stiffness, not mu (see
+            // `GranularFluidMaterial::saturated_loam`).
             bulk_viscosity: 0.5 * eos,
         })
     }
@@ -336,12 +334,9 @@ mod particle_mass_tests {
     /// same SI-kg -> grid-unit factor `mass_from` itself applies -- no
     /// duplication risk between the two `particle_mass` call sites.
     ///
-    /// Real fix, 2026-08-27: `expected` used to compare directly against
-    /// `particle_mass`'s raw SI-kg return, which stopped matching once
-    /// `mass_from` (src/spacetime/solver/config/spawn.rs) started converting
-    /// that SI mass into grid units as part of the grid-density root fix
-    /// (85ee103) -- a units mismatch in the TEST, not an engine bug (same
-    /// family as the 6 tests already recalibrated for that fix in 9ad1dbd).
+    /// `expected` goes through the same SI-kg -> grid-unit conversion as
+    /// `mass_from` (src/spacetime/solver/config/spawn.rs), not
+    /// `particle_mass`'s raw SI-kg return.
     #[test]
     fn mass_from_matches_direct_call() {
         let config = earth_config();
@@ -406,11 +401,10 @@ mod particle_mass_tests {
         assert!((from_fluid - expected_elastic).abs() < 1e-9);
     }
 
-    /// `PlasticityModel::CamClay` dispatch (wired 2026-09-08, closing the gap
-    /// `NaccProps`'s own doc used to disclose) must produce the exact same
-    /// `NaccMaterial` as calling `NaccMaterial::from_physical` directly --
-    /// no double conversion, no dropped fields, same pattern this file's own
-    /// `Brittle`/`Ductile`/`Granular` arms already prove out.
+    /// `PlasticityModel::CamClay` dispatch must produce the same
+    /// `NaccMaterial` as calling `NaccMaterial::from_physical` directly: no
+    /// double conversion, no dropped fields, as the `Brittle`/`Ductile`/
+    /// `Granular` arms check.
     #[test]
     fn camclay_dispatch_matches_direct_nacc_from_physical() {
         use crate::materials::NaccMaterial;

@@ -20,7 +20,7 @@ impl GpuSimulation {
     /// Generates particles CPU-side, appends to the internal mirror, recomputes
     /// initial volumes for just the new group (local-only, same technique CPU's
     /// `Simulation::add_body` already uses -- see `estimate_particle_volumes_local`'s
-    /// own doc), then uploads the new particles.
+    /// doc), then uploads the new particles.
     ///
     /// GPU buffer growth is amortized (Vec-style doubling), not exact-fit every call:
     /// when the new total still fits within `particle_capacity`, this is a sub-range
@@ -28,9 +28,7 @@ impl GpuSimulation {
     /// rebuild. Only the rarer call that exceeds capacity pays the full
     /// reallocate + reupload-everything + rebuild-bind-groups cost, and it grows
     /// capacity generously (`max(new total, capacity * 2)`) so subsequent spawns
-    /// stay on the fast path. Was unconditionally full-cost every call before
-    /// 2026-08-27 (issue #6) -- LP calling this per creature/terrain-chunk spawn
-    /// paid O(total particle count) every time regardless of how many were new.
+    /// stay on the fast path (issue #6: LP spawns per creature and terrain chunk).
     ///
     /// Returns the index range the new particles occupy in the internal mirror.
     /// LP uses this as `creature_id → particle_range` for ownership tracking.
@@ -102,7 +100,7 @@ impl GpuSimulation {
         }
 
         self.particle_count = n;
-        // Re-arm the sleep-warmup window (see `last_spawn_frame`'s own doc) so
+        // Re-arm the sleep-warmup window (see `last_spawn_frame`'s doc) so
         // freshly-spawned particles get the same "don't sleep-score yet" grace
         // period the initial construction batch got, instead of sleep_threshold
         // applying at v=0 on their very first substep.
@@ -121,7 +119,7 @@ impl GpuSimulation {
     /// (e.g. LP's ecology calling `sense_local`/`centroid`/`phenotype` per creature per
     /// frame). Readback completion in `step.rs` does NOT call this directly anymore --
     /// it just marks `spatial_hash_dirty`, deferring the rebuild to the first query that
-    /// actually needs it (see `spatial_hash`'s own doc in `mod.rs` for why).
+    /// actually needs it (see `spatial_hash`'s doc in `mod.rs` for why).
     pub(super) fn rebuild_spatial_hash(&mut self) {
         let positions: Vec<glam::Vec2> = self.particles.iter().map(|p| p.x).collect();
         self.spatial_hash
@@ -137,9 +135,9 @@ impl GpuSimulation {
     /// == DEAD)`). Unlike CPU's in-place `Vec::retain`, this reallocates every
     /// per-particle GPU buffer to the smaller size and re-uploads -- the exact
     /// same reallocate-and-reupload pattern `spawn_region` already uses to grow,
-    /// just shrinking instead. Real, same-cost-class operation, not free -- don't
+    /// just shrinking instead. Same-cost-class operation, not free -- don't
     /// call every frame for large removals any more than you'd call `spawn_region`
-    /// every frame (see that method's own doc).
+    /// every frame (see that method's doc).
     ///
     /// Calls `sync_particles_blocking` first: the predicate needs genuinely
     /// current particle state (e.g. current temperature for an evaporation rule),
@@ -200,10 +198,9 @@ impl GpuSimulation {
         }
         // If an async readback is in-flight, the staging buffer may be mapped or pending map.
         // Wait for it to complete, then consume it to unmap the staging buffer before reuse.
-        // Real fix (2026-07-05, issue #10): must distinguish Ok/Err here -- the old
-        // code called finish_readback (which calls get_mapped_range) on EITHER, but
-        // a failed map has nothing valid to extract; only abandon_readback (unmap
-        // only) is safe on Err. See GpuBuffers::abandon_readback's doc.
+        // Ok and Err differ: `finish_readback` calls get_mapped_range, which a
+        // failed map has nothing valid for; only `abandon_readback` (unmap only)
+        // is safe on Err (issue #10, see GpuBuffers::abandon_readback).
         if let Some(flag) = self.pending_readback.take() {
             self.device.poll(wgpu::PollType::wait_indefinitely()).ok();
             match flag.lock().ok().and_then(|mut g| g.take()) {
@@ -230,7 +227,7 @@ impl GpuSimulation {
     /// mirror as whatever the last async/full sync delivered. For callers that only need
     /// a small, known subset of particles current every frame (e.g. a handful of live
     /// creatures inside a much larger terrain/water scene) instead of the whole buffer --
-    /// see `GpuBuffers::readback_ranges_blocking`'s own doc for why this is cheaper than
+    /// see `GpuBuffers::readback_ranges_blocking`'s doc for why this is cheaper than
     /// repeated full syncs, not just "less data" but batched into one CPU↔GPU round-trip.
     /// Ranges may overlap or be given in any order; each is written independently.
     pub fn sync_particle_ranges_blocking(&mut self, ranges: &[std::ops::Range<usize>]) {

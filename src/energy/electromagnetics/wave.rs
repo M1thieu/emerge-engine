@@ -1,10 +1,8 @@
 //! Electromagnetic plane waves and optical material properties.
 //!
-//! Pure-Rust, no ECS. Ported from `crates/energy/src/electromagnetism/interactions.rs`.
-//! Split from the old unified `electromagnetics/` module 2026-07-11: wave
-//! propagation and optical `MaterialProperties` are radiative energy
-//! transfer (Energy domain); point-charge/current force-application math is
-//! `forces::electromagnetics`.
+//! Pure Rust, no ECS. Wave propagation and optical `MaterialProperties` are
+//! radiative energy transfer (Energy domain); point-charge/current force
+//! math is `forces::electromagnetics`.
 
 use crate::forces::electromagnetics::{ElectricField, MagneticField};
 use glam::Vec2;
@@ -43,16 +41,11 @@ impl ElectromagneticWave {
 
     /// E and B fields at `position` and `time`.
     ///
-    /// Real fix, 2026-08-21: B used to be built from an in-plane `m_dir`
-    /// vector (rotating `e_dir` a further 90°, which lands ANTIPARALLEL to
-    /// the propagation direction) -- that makes the wave LONGITUDINAL, the
-    /// opposite of this function's own doc claim ("E and B are transverse to
-    /// the propagation direction"). Real fix: in 2D, B is the out-of-plane
-    /// scalar (see `MagneticField`'s own doc), genuinely transverse to a
-    /// propagation direction that only ever lives in the plane -- E, B,
-    /// and the propagation direction are mutually perpendicular exactly as a
-    /// real EM wave requires, once B is allowed to point out of the page
-    /// instead of being forced back into it.
+    /// In 2D, B is the out-of-plane scalar (see `MagneticField`), so E (in
+    /// plane, perpendicular to propagation), B (out of plane) and the
+    /// in-plane propagation direction are mutually perpendicular, a
+    /// transverse wave. An in-plane B would have to lie along the
+    /// propagation direction, making the wave longitudinal.
     pub fn get_fields_at(&self, position: Vec2, time: f32) -> (ElectricField, MagneticField) {
         let proj = self.direction.dot(position);
         let phi = self.wave_number * proj - 2.0 * std::f32::consts::PI * self.frequency * time

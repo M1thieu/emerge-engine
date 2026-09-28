@@ -6,7 +6,7 @@ use super::{FxU32BuildHasher, Grid, flat_index};
 use crate::materials::{MAX_MIXTURE_PHASES, MixturePhase};
 
 /// N-phase mixture coupling cell (generalizes Tampubolon et al. 2017's 2-phase
-/// Darcy drag -- see `MixturePhase`'s own doc). Only allocated at nodes touched
+/// Darcy drag -- see `MixturePhase`'s doc). Only allocated at nodes touched
 /// by at least one mixture-phase particle (via `WithMixturePhase`) -- a scene
 /// that never wraps a material this way never allocates a single one of these.
 ///
@@ -92,38 +92,35 @@ impl Grid {
     /// field), same pipeline position as `resolve_contact`.
     ///
     /// Exact linear solve, not an iterative approximation: implicit
-    /// backward-Euler pairwise drag between every present phase pair, one
-    /// shared scalar `drag_coefficient` (k) for every pair -- a real, disclosed
-    /// simplification vs. the paper's own permeability/porosity-derived field,
-    /// same simplification the original 2-phase code already made. Per real
-    /// mixture theory (Truesdell), phase `i`'s momentum balance is:
+    /// backward-Euler pairwise drag between every present phase pair, with one
+    /// shared scalar `drag_coefficient` (k) for every pair, a simplification
+    /// of the paper's permeability/porosity-derived field. In mixture theory
+    /// (Truesdell), phase `i`'s momentum balance is:
     ///   m_i (v_i' - v_i)/dt = sum_{j != i} k (v_j' - v_i')
-    /// which rearranges into one linear system per velocity COMPONENT (x, y
-    /// decouple -- drag is isotropic) over exactly the phases with real mass
-    /// present at this node, `M v' = rhs`:
+    /// which rearranges into one linear system per velocity component (x, y
+    /// decouple, drag is isotropic) over the phases with mass present at this
+    /// node, `M v' = rhs`:
     ///   M_ii = m_i + dt*k*(count of other present phases)
     ///   M_ij = -dt*k                                  (i != j, both present)
     ///   rhs_i = m_i * v_i
-    /// `M` is symmetric and strictly diagonally dominant for any real positive
-    /// masses/k (each `m_i > 0` on top of the row's other positive terms) --
-    /// guaranteed SPD, guaranteed invertible, solved directly via Gaussian
-    /// elimination with no pivoting needed (see `solve_present_phases`). With
-    /// exactly 2 phases present this reduces to the original closed-form 2x2
-    /// solve exactly (`det = 1+a+b` after dividing by `m_s`/`m_f` respectively)
-    /// -- checked directly by a regression test, not just asserted. Momentum
-    /// is exactly conserved by construction, verified by a real test.
+    /// `M` is symmetric and strictly diagonally dominant for positive masses
+    /// and k (each `m_i > 0` on top of the row's other terms), hence SPD and
+    /// invertible, solved by Gaussian elimination without pivoting (see
+    /// `solve_present_phases`). With exactly 2 phases it reduces to the 2x2
+    /// closed form (`det = 1+a+b` after dividing by `m_s`/`m_f`), checked by
+    /// a regression test. Momentum is conserved by construction, also tested.
     ///
     /// Fewer than 2 phases present at a node: no correction, every resolved
-    /// velocity just reads the ordinary total field, matching
-    /// `resolve_contact`'s own "no real second field" fallback.
+    /// velocity reads the ordinary total field, like `resolve_contact`'s
+    /// fallback without a second field.
     ///
     /// `cell_width`/`pressure_iterations` feed `project_mixture_incompressibility`
-    /// (see `mixture::pressure`'s own doc, which stays 2-phase-only -- NOT part
-    /// of this generalization): the drag solve above conserves momentum but
-    /// never enforces the mixture's incompressibility constraint, so under
-    /// sustained/confined loading (e.g. water settled into sand) the violation
-    /// compounds silently over hundreds of steps until velocities blow past
-    /// the CFL bound. `pressure_iterations == 0` skips the projection entirely.
+    /// (see `mixture::pressure`, which stays 2-phase only): the drag solve
+    /// conserves momentum but does not enforce the mixture's
+    /// incompressibility, so under sustained or confined loading (e.g. water
+    /// settled into sand) the violation compounds over hundreds of steps until
+    /// velocities pass the CFL bound. `pressure_iterations == 0` skips the
+    /// projection entirely.
     pub fn resolve_mixture_coupling(
         &mut self,
         dt: f32,
@@ -184,7 +181,7 @@ impl Grid {
 
 /// Builds and solves the `n_present`x`n_present` drag-coupling system for one
 /// node's present phases (`present[0..n_present]`, global phase indices) --
-/// see `resolve_mixture_coupling`'s own doc for the derivation. Returns the
+/// see `resolve_mixture_coupling`'s doc for the derivation. Returns the
 /// resolved velocity for each LOCAL index in `present`.
 fn solve_present_phases(
     cell: &MixtureCell,
@@ -259,7 +256,7 @@ fn gaussian_eliminate(
 // `pub(super)` so `resolve_mixture_coupling` above can call it) -- a distinct
 // algorithm (Zhao & Choo 2020 / Bridson Chorin-style projection) from the
 // momentum-exchange drag coupling in this file -- lives in pressure.rs, along
-// with its own private helpers and its own test. See that file's own doc.
+// with its own private helpers and its own test. See that file's doc.
 mod pressure;
 
 #[cfg(test)]
@@ -270,7 +267,7 @@ mod mixture_coupling_tests {
     /// White-box: constructs a single mixture-active node with known solid/fluid
     /// mass+momentum directly (bypassing P2G), so the resolved velocities can be
     /// checked against the exact closed-form solve `resolve_mixture_coupling`'s
-    /// own doc derives (backward-Euler drag exchange reduces to a 2x2 linear
+    /// doc derives (backward-Euler drag exchange reduces to a 2x2 linear
     /// system, solved directly) -- not just "runs without crashing."
     fn setup(m_s: f32, v_s0: Vec2, m_f: f32, v_f0: Vec2) -> Grid {
         let mut grid = Grid::new(8);
@@ -361,9 +358,8 @@ mod mixture_coupling_tests {
 
     #[test]
     fn drag_pulls_phases_toward_a_shared_velocity_not_apart() {
-        // Real, qualitative physical sanity check: whatever the exact numbers,
-        // drag must reduce the RELATIVE speed between phases, never increase it
-        // (that would mean the coupling is doing something backwards).
+        // Whatever the exact numbers, drag must reduce the relative speed
+        // between phases, never increase it.
         let (m_s, m_f) = (3.0_f32, 3.0_f32);
         let (v_s0, v_f0) = (Vec2::new(0.0, 0.0), Vec2::new(5.0, 0.0));
         let dt = 0.1_f32;
@@ -429,12 +425,10 @@ mod mixture_coupling_tests {
 
     #[test]
     fn three_phase_momentum_is_exactly_conserved() {
-        // Real 3-phase node, deliberately non-round masses/velocities/k (not
-        // nice numbers) -- a singular or ill-conditioned 3x3 system would
-        // produce NaN/Inf or a non-conserving result here, so a finite,
-        // conserved result is real, empirical proof the solve (and the
-        // diagonally-dominant/SPD claim behind skipping pivoting) holds for
-        // more than 2 phases, not just asserted from the derivation.
+        // 3-phase node with non-round masses, velocities and k: a singular or
+        // ill-conditioned 3x3 system would give NaN/Inf or a non-conserving
+        // result, so a finite, conserved result checks the solve (and the
+        // SPD claim behind skipping pivoting) beyond 2 phases.
         let m = [5.3_f32, 1.7_f32, 2.9_f32];
         let v0 = [
             Vec2::new(1.1, -0.4),

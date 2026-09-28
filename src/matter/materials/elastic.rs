@@ -79,16 +79,13 @@ impl NeoHookeanMaterial {
     }
 
     /// Construct from Young's modulus E and Poisson's ratio ν -- **grid units,
-    /// NOT real Pascals** (real disclosure added 2026-09-05, found migrating
-    /// `basic_jellies.rs`/`basic_membrane.rs`/`sand_ngf_collapse.rs` to real
-    /// SI): calls [`lame_from_young`] directly, which never touches
-    /// `dx_meters` or density -- `young_modulus` here is dimensionally
-    /// identical to a raw grid-unit `lambda`/`mu` guess despite the name, and
-    /// a value borrowed from another engine (e.g. wgsparkl) will NOT
-    /// reproduce that engine's real behavior here since neither side is
-    /// actually SI-scaled. For a real, correctly SI-to-grid-converted
-    /// material, use [`Self::from_physical`] (needs a `&SimConfig` and real
-    /// `rho_kg_m3`) or the `Elastic{..}.material(&config)` property API.
+    /// not pascals**: calls [`lame_from_young`] directly, which never touches
+    /// `dx_meters` or density, so `young_modulus` here is dimensionally a raw
+    /// grid-unit `lambda`/`mu` guess despite the name, and a value borrowed
+    /// from another engine (e.g. wgsparkl) will not reproduce that engine's
+    /// behavior, since neither side is SI-scaled. For an SI material use
+    /// [`Self::from_physical`] (needs a `&SimConfig` and `rho_kg_m3`) or the
+    /// `Elastic{..}.material(&config)` property API.
     /// Canonical grid-unit values: E = 5e6, ν = 0.2 (wgsparkl elasticity2 --
     /// stiff soft solid, same caveat applies to their own number).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
@@ -210,7 +207,7 @@ impl MaterialModel for NeoHookeanMaterial {
 
     fn kirchhoff_stress(&self, particles: &Particles, i: usize) -> Mat2 {
         let f = particles.deformation_gradient[i];
-        // Clamp, don't zero -- see `j_min`'s own doc.
+        // Clamp, don't zero -- see `j_min`'s doc.
         let j = f.determinant().max(self.j_min);
 
         // Thermal modulus scaling: λ_eff = λ·(1 + α·T), same for µ.
@@ -274,11 +271,9 @@ impl MaterialModel for NeoHookeanMaterial {
     }
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
-        // Exact matrix exponential, not forward Euler -- see
-        // `deformation_increment_exp`'s own doc for the real O(dt^2)
-        // volumetric ratchet this removes (found+fixed 2026-09,
-        // NoCompression/VonMises, now rolled out here on the same basis:
-        // every tensor-F material shares the identical exposure).
+        // Exact matrix exponential, not forward Euler: see
+        // `deformation_increment_exp` for the O(dt^2) volumetric ratchet
+        // Euler causes in every tensor-F material.
         let (f_new, carried) = advance_deformation_gradient(
             *ctx.deformation_gradient,
             dt * *ctx.velocity_gradient,
@@ -314,7 +309,7 @@ impl MaterialModel for NeoHookeanMaterial {
             cohesion_coeff: self.damage_softening_rate,
             dynamic_viscosity: self.viscosity,
             // Same GPU param slot `ViscoelasticMaterial` already uses for its
-            // own `j_min` -- see this field's own doc.
+            // own `j_min` -- see this field's doc.
             volume_ratio_min: self.j_min,
             ..Default::default()
         }

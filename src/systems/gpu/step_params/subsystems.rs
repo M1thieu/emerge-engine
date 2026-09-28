@@ -2,7 +2,7 @@
 //! reaction-diffusion, ASFLIP, and material-mass render accumulation. Each
 //! follows the same `enabled`/`disabled()` gate convention -- 0 skips every
 //! pass for that subsystem entirely, zero cost, byte-identical to before the
-//! subsystem existed. Split out of `step_params.rs`, see that module's own doc
+//! subsystem existed. Split out of `step_params.rs`, see that module's doc
 //! comment for the full file map.
 
 /// Grid-based Fourier heat diffusion -- GPU mirror of `ThermalDiffusion`/`ThermalConfig`
@@ -17,7 +17,7 @@
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuThermalParams {
     /// Thermal diffusivity α = k / (c_p · dx²), grid-units²/s -- see
-    /// `ThermalConfig::alpha_grid`'s own doc for the real derivation/units.
+    /// `ThermalConfig::alpha_grid`'s doc for the real derivation/units.
     pub alpha: f32,
     /// Ambient/boundary temperature -- empty cells and Newton cooling both relax toward this.
     pub ambient: f32,
@@ -89,7 +89,7 @@ const _: () = assert!(core::mem::size_of::<GpuResourceParams>() == 32);
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuAsflipParams {
-    /// Blend factor [0, 1] -- see `SimConfig::asflip_blend`'s own doc for the real
+    /// Blend factor [0, 1] -- see `SimConfig::asflip_blend`'s doc for the real
     /// derivation and the ~0.97 reference value (`nepluno/pyasflip`).
     pub blend: f32,
     /// 0 = ASFLIP disabled (default) -- skips the snapshot write and the fused G2P+
@@ -119,9 +119,9 @@ const _: () = assert!(core::mem::size_of::<GpuAsflipParams>() == 16);
 pub const MAX_RENDER_MATERIAL_SLOTS: u32 = 16;
 
 /// Opt-in per-cell per-material mass accumulator for `ColorMode::GridVolume`'s
-/// material-aware coloring (see `grid_volume.wgsl`'s own doc). 0 = disabled
-/// (default) -- P2G skips the extra atomic scatter entirely, zero cost, byte-
-/// identical to before this existed, same gate convention as `GpuAsflipParams`.
+/// material-aware coloring (see `grid_volume.wgsl`'s doc). 0 = disabled
+/// (default) -- P2G skips the extra atomic scatter entirely, same gate
+/// convention as `GpuAsflipParams`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterialMassParams {
@@ -142,17 +142,16 @@ impl GpuMaterialMassParams {
 /// field order and types must match exactly (WGSL uniform buffers use the
 /// same std140-style layout rules bytemuck's `Pod` derive already assumes
 /// elsewhere in this file). Real GPU port of the CPU-proven Chorin-style
-/// incompressibility pressure projection, see that shader's own module doc.
+/// incompressibility pressure projection, see that shader's module doc.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuFluidPressureParams {
-    /// Real reference fluid cell mass (`rest_density * spacing^2`, this
-    /// material's own grid units) -- Rust already knows this exactly from
-    /// the material/spawn setup, avoiding a GPU-side reduction pass purely
-    /// to recover what the CPU equivalent (`pressure.rs`'s own `mass_avg`)
-    /// computes analytically. Used only for the free-surface classification
-    /// threshold (`reference_cell_mass * 0.3`, matching CPU's own
-    /// `mass_avg * 0.3` convention).
+    /// Reference fluid cell mass: a full cell's rest mass in this material's
+    /// grid units (`rest_density`, cell area 1), set from the CPU side. CPU's
+    /// `pressure.rs` averages `mass_avg` live over active cells; matching
+    /// that on GPU would need a reduction pass. Used only for the free-surface
+    /// classification threshold (`reference_cell_mass * 0.3`, as CPU's
+    /// `mass_avg * 0.3`).
     pub reference_cell_mass: f32,
     pub _pad: [f32; 3],
 }

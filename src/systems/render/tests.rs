@@ -18,10 +18,9 @@ fn headless_device() -> (wgpu::Device, wgpu::Queue) {
         .expect("failed to create device")
 }
 
-/// Real subsurface scattering must actually change ByPhysics's output, not be
-/// dead-stored data -- two materials with identical absorption but different
-/// `sigma_s` must render differently (see prep_instances.wgsl's ByPhysics
-/// branch for the real single-scattering-albedo derivation this mirrors).
+/// Subsurface scattering changes ByPhysics's output: two materials with the
+/// same absorption and different `sigma_s` render differently (see
+/// prep_instances.wgsl's ByPhysics branch for the single-scattering albedo).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn scattering_changes_by_physics_color() {
@@ -46,8 +45,7 @@ fn scattering_changes_by_physics_color() {
     );
 }
 
-/// Real specular Fresnel reflectance must actually change ByPhysics's output --
-/// same check as scattering, for the R0 term.
+/// Specular Fresnel reflectance changes ByPhysics's output, the R0 term.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn specular_r0_changes_by_physics_color() {
@@ -74,7 +72,7 @@ fn specular_r0_changes_by_physics_color() {
 
 /// `Renderer::new` must succeed and the (now auto-uploading) optical setters
 /// must not panic with the extended (scattering + specular) `OpticalTable`
-/// layout -- a real, end-to-end check that the WGSL struct and Rust struct
+/// layout -- a end-to-end check that the WGSL struct and Rust struct
 /// stayed in sync (a mismatch here would show up as a wgpu validation panic,
 /// not a silent bug).
 #[test]
@@ -1149,14 +1147,11 @@ fn render_surface_reconstruction_survives_end_to_end() {
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 }
 
-/// Real correctness check, not just "didn't panic": after the real splat +
-/// convert + 12x curvature-iterate passes, the settled surface buffer
-/// (`surface_a_buf`, per `CURVATURE_ITERATIONS` being even) must show real,
-/// substantially higher density near the actual particle cluster than far
-/// away from it -- confirms the whole pipeline genuinely reconstructs a
-/// density field from real particle positions, not just producing uniform
-/// noise or an all-zero buffer that would otherwise still pass the
-/// survives-end-to-end smoke test above.
+/// After the splat, convert and 12 curvature-iterate passes, the settled
+/// buffer (`surface_a_buf`, `CURVATURE_ITERATIONS` being even) has
+/// substantially higher density near the particle cluster than far from it:
+/// the pipeline reconstructs a density field, not uniform noise or zeros
+/// (which the end-to-end smoke test above would still pass).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn render_surface_reconstruction_produces_real_density_near_particles() {
@@ -1170,7 +1165,7 @@ fn render_surface_reconstruction_produces_real_density_near_particles() {
 
     let grid_res = 32u32;
     let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
-    // Small, tight cluster near the grid center -- real, unambiguous "here"
+    // Small, tight cluster near the grid center -- unambiguous "here"
     // vs. the grid corners, which this scene never populates at all.
     let particles = build_particles(
         &config,
@@ -1228,9 +1223,8 @@ fn render_surface_reconstruction_produces_real_density_near_particles() {
         (surface_res * surface_res) as usize,
     );
 
-    // Real particle cluster sits at grid position (16, 16) -- convert to
-    // this buffer's own finer coordinate units (same scale the shader
-    // itself uses: surface_res/grid_res).
+    // The particle cluster sits at grid position (16, 16), converted to this
+    // buffer's finer units (surface_res/grid_res, as in the shader).
     let scale = surface_res as f32 / grid_res as f32;
     let center = (16.0 * scale) as i32;
     let center_idx = (center as u32 * surface_res + center as u32) as usize;
@@ -1249,14 +1243,11 @@ fn render_surface_reconstruction_produces_real_density_near_particles() {
     );
 }
 
-/// Real correctness check for the two-phase extension: two SPATIALLY
-/// SEPARATE material clusters must each settle real density in their OWN
-/// phase buffer and stay near-zero in the OTHER phase's buffer -- proving
-/// `phase_filter_material_id` genuinely partitions particles by material,
-/// not just running the same unfiltered splat twice. Real, disclosed
-/// technique this guards: the VOF-style independent-phase-fields design
-/// (see `curvature_flow.wgsl`'s own "two-phase extension" doc) only works
-/// if the filter itself is correct.
+/// Two-phase extension: two separate material clusters each settle density
+/// in their own phase buffer and stay near zero in the other's, so
+/// `phase_filter_material_id` partitions particles by material instead of
+/// running one unfiltered splat twice (the independent-phase-field design of
+/// `curvature_flow.wgsl`'s "two-phase extension" depends on it).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn dual_phase_reconstruction_keeps_two_materials_in_their_own_phase_buffer() {
@@ -1270,7 +1261,7 @@ fn dual_phase_reconstruction_keeps_two_materials_in_their_own_phase_buffer() {
 
     let grid_res = 32u32;
     let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
-    // Two real, spatially separate clusters -- far enough apart (8 vs 24 on
+    // Two spatially separate clusters -- far enough apart (8 vs 24 on
     // a 32-cell grid) that neither's real B-spline splat reach can touch
     // the other's territory, isolating the filter itself as the only thing
     // under test.
@@ -1379,14 +1370,11 @@ fn dual_phase_reconstruction_keeps_two_materials_in_their_own_phase_buffer() {
     );
 }
 
-/// Real correctness check for the N-material extension (single-phase path,
-/// see `curvature_flow.wgsl`'s own doc): 3 spatially separate material
-/// clusters sharing ONE smoothed density field must each render their OWN
-/// configured `OpticalTable` color at their own location -- proving
-/// `dominant_material` genuinely resolves per-cell color from the real
-/// per-cell mass array, not just the single caller-chosen `material_slot`
-/// fallback (the exact bug this shipped to fix: 3 real materials in
-/// `basic_jellies_gpu.rs` all rendering as one undifferentiated color).
+/// N-material extension (single-phase path, see `curvature_flow.wgsl`): 3
+/// separate clusters sharing one smoothed density field each render their
+/// own `OpticalTable` colour, so `dominant_material` reads the per-cell mass
+/// array, not the `material_slot` fallback (3 materials in
+/// `basic_jellies_gpu.rs` rendered as one colour).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn n_material_surface_reconstruction_colors_each_material_distinctly() {
@@ -1400,7 +1388,7 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
 
     let grid_res = 32u32;
     let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
-    // Three real, spatially separate clusters (11 grid cells apart, disk
+    // Three spatially separate clusters (11 grid cells apart, disk
     // radius 2.0) -- far enough that the shared curvature-smoothed field
     // still resolves 3 distinct dominant-material regions instead of one
     // blended blob.
@@ -1581,7 +1569,7 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
          as blue-dominant: best={:?} at ({cx},{cy})",
         px_c
     );
-    // The 3 winning locations must be genuinely different regions (not all
+    // The 3 winning locations must be different regions (not all
     // the same handful of pixels), proving 3 spatially distinct dominant-
     // material resolutions, not one lucky pixel satisfying all 3 channel
     // checks by coincidence.
@@ -1603,17 +1591,12 @@ fn n_material_surface_reconstruction_colors_each_material_distinctly() {
     );
 }
 
-/// Real correctness check for the blended (mass-fraction-weighted) N-material
-/// resolver -- see `curvature_flow.wgsl`'s `blended_optical_slot` doc. Two
-/// CLOSE clusters (unlike the well-separated ones above) whose real B-spline
-/// splat footprints genuinely overlap: at least one surface cell must end up
-/// with nonzero mass in BOTH materials' slots, and this test verifies the
-/// blend formula directly against the raw buffer -- not the rendered pixel
-/// (tone-mapping/quantization downstream makes pixel-level assertions
-/// fragile, per this file's own `n_material_...` test above) -- so a real
-/// mixed-material cell resolves to a genuine WEIGHTED AVERAGE of both
-/// materials' optics, strictly between the two pure values, not a coin-flip
-/// winner.
+/// Blended (mass-fraction-weighted) N-material resolver (see
+/// `curvature_flow.wgsl`'s `blended_optical_slot`): two close clusters whose
+/// splat footprints overlap leave at least one surface cell with mass in
+/// both slots, and the blend formula is checked on the raw buffer (pixel
+/// assertions are fragile after tone mapping and quantization): a mixed cell
+/// resolves to a weighted average strictly between the two pure optics.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
@@ -1629,7 +1612,7 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
     let config = SimConfig::standard(grid_res as usize, 0.1, glam::Vec2::new(0.0, -0.3));
     // Two clusters close enough (4 grid cells apart, disk radius 3.0 --
     // particle placement itself overlaps by construction) that their real
-    // B-spline splat footprints genuinely share cells -- unlike the well-
+    // B-spline splat footprints share cells -- unlike the well-
     // separated clusters in the distinctness test above, which deliberately
     // avoid overlap.
     let mut particles = build_particles(
@@ -1700,26 +1683,24 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
         (surface_res * surface_res * MAX_RENDER_MATERIAL_SLOTS) as usize,
     );
 
-    // Real optics, same values written above -- red=[3,0,0,0], green=[0,3,0,0]
-    // (sigma_s/specular default to 0 for both, only sigma_a set).
+    // The optics written above: red=[3,0,0,0], green=[0,3,0,0] (sigma_s and
+    // specular default to 0, only sigma_a set).
     let slot_red = [3.0f32, 0.0, 0.0, 0.0];
     let slot_green = [0.0f32, 3.0, 0.0, 0.0];
 
     // Search the whole per-cell mass array for a cell where BOTH slot 0 and
-    // slot 1 have real, substantial mass -- proof the two footprints
-    // genuinely overlap at this scene geometry, not just adjacent.
+    // slot 1 have substantial mass -- proof the two footprints
+    // overlap at this scene geometry, not just adjacent.
     let cell_count = (surface_res * surface_res) as usize;
     let mut found = false;
     for cell in 0..cell_count {
         let base = cell * MAX_RENDER_MATERIAL_SLOTS as usize;
         let m0 = mm[base];
         let m1 = mm[base + 1];
-        // Real, disclosed: these are fixed-point-accumulated masses read
-        // back via bit-reinterpreted f32 (see `blended_optical_slot`'s own
-        // doc for why this is safe for ordering/proportionality but stays
-        // in the IEEE 754 DENORMAL range, ~1e-39 scale, not "normal-
-        // looking" numbers) -- a `> 0.01` threshold would never fire
-        // against real data. `> 0.0` is the correct real-nonzero-mass test.
+        // These fixed-point masses are read back as bit-reinterpreted f32 (see
+        // `blended_optical_slot`: fine for ordering and proportion) and sit in
+        // the IEEE 754 denormal range (~1e-39), so `> 0.01` would never fire;
+        // `> 0.0` tests nonzero mass.
         if m0 > 0.0 && m1 > 0.0 {
             found = true;
             let total = m0 + m1;
@@ -1727,7 +1708,7 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
                 .map(|c| (m0 * slot_red[c] + m1 * slot_green[c]) / total)
                 .collect();
             // The blended red channel must be strictly between pure-green's
-            // (0.0) and pure-red's (3.0) values -- a genuine weighted
+            // (0.0) and pure-red's (3.0) values -- a weighted
             // average, not a winner-take-all snap to either pure value.
             assert!(
                 expected[0] > 0.0 && expected[0] < 3.0,
@@ -1744,7 +1725,7 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
                 expected[1]
             );
             // A cell with MORE red mass must lean more toward red than a
-            // cell with LESS red mass -- the weighting is real, not just
+            // cell with LESS red mass -- the weighting is not just
             // "average of the two extremes regardless of ratio". Checked
             // via the closed-form ratio directly rather than a second
             // sampled cell (deterministic, no dependence on scene geometry
@@ -1767,14 +1748,11 @@ fn n_material_blend_produces_real_weighted_average_at_a_mixed_cell() {
     );
 }
 
-/// Real correctness check for the anisotropic splat extension (see
-/// `curvature_flow.wgsl`'s "Anisotropic splat extension" doc): a single
-/// particle whose real `deformation_gradient` is stretched 2.5x along x
-/// must splat a wider density footprint along x than along the unstretched
-/// y axis, at the SAME offset distance from the particle. An isotropic
-/// (F=identity) control particle at the same position must show no such
-/// bias -- proving the asymmetry comes from F, not from a directional bug
-/// in the splat loop itself.
+/// Anisotropic splat (see `curvature_flow.wgsl`): a particle whose
+/// `deformation_gradient` is stretched 2.5x along x splats a wider footprint
+/// along x than along y at the same offset. An identity-F control at the
+/// same position shows no such bias, so the asymmetry comes from F and not
+/// from the splat loop.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn anisotropic_splat_widens_footprint_along_stretched_axis() {
@@ -1902,16 +1880,12 @@ fn anisotropic_splat_widens_footprint_along_stretched_axis() {
     );
 }
 
-/// Real proof for the 2026-08-11 velocity-stretch extension: a fast-moving
-/// particle (F=identity, no shape deformation at all) must ALSO splat a
-/// wider footprint along its own velocity direction than perpendicular to
-/// it -- the same real signature `anisotropic_splat_widens_footprint_
-/// along_stretched_axis` proves for F, now proven for the independent,
-/// composed velocity source. A stationary (v=0) control at the same
-/// position must show no such bias, and `dt=0.0` must also show no bias
-/// (real, disclosed no-op case every pre-existing test in this file relies
-/// on for `dt: 0.1` not to change their own unrelated assertions when their
-/// particles happen to be at rest).
+/// Velocity stretch: a fast particle with F = identity also splats wider
+/// along its velocity than across it (the signature
+/// `anisotropic_splat_widens_footprint_along_stretched_axis` shows for F). A
+/// stationary control shows no bias, and neither does `dt = 0.0`, the no-op
+/// the other tests in this file rely on (their `dt: 0.1` must not change
+/// them while their particles rest).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn velocity_stretch_widens_footprint_along_motion_direction() {
@@ -1999,7 +1973,7 @@ fn velocity_stretch_widens_footprint_along_motion_direction() {
 
     // speed*dt/BSPLINE_OUTER_LIMIT = 22.5*0.1/1.5 = 1.5 -> stretch_factor=2.5,
     // matching the F-based test's own real 2.5x for a direct, consistent
-    // comparison. 22.5 grid-units/s is a real, plausible fast-splash speed
+    // comparison. 22.5 grid-units/s is a plausible fast-splash speed
     // for this engine (live-measured max speeds during violent impacts have
     // reached 100-450+ grid-units/s elsewhere in this project).
     let moving = render_single_cluster(glam::Vec2::new(22.5, 0.0), 0.1);
@@ -2021,10 +1995,8 @@ fn velocity_stretch_widens_footprint_along_motion_direction() {
          motion, no stretch: x={stat_x} y={stat_y}"
     );
 
-    // Real no-op check: the SAME fast velocity, but dt=0.0 (no real physics
-    // step behind this v yet) must also show zero bias -- confirms the
-    // extension is truly inert without real dt, not just coincidentally
-    // small for THIS velocity.
+    // The same fast velocity with dt = 0.0 (no physics step behind it) shows
+    // zero bias: the extension is inert without dt, not merely small here.
     let fast_but_dt_zero = render_single_cluster(glam::Vec2::new(22.5, 0.0), 0.0);
     let zero_dt_x = fast_but_dt_zero[idx(offset, 0)];
     let zero_dt_y = fast_but_dt_zero[idx(0, offset)];
@@ -2035,15 +2007,11 @@ fn velocity_stretch_widens_footprint_along_motion_direction() {
     );
 }
 
-/// Real GPU end-to-end check for the "optical parity" port (subsurface
-/// scattering + Fresnel specular, ported from `prep_instances.wgsl`'s
-/// ByPhysics mode into `grid_volume.wgsl`'s own `fs_main`): unlike
-/// ByPhysics, this render path has no CPU-side shortcut
-/// (`Renderer::particle_color`) to unit-test against, so this renders a
-/// real particle cluster through the real GPU pipeline twice -- once with
-/// scattering/specular off, once with real tissue/water-scale values -- and
-/// reads back an actual rendered pixel to confirm the color genuinely
-/// changes, not just that the shader compiles.
+/// GPU end-to-end check of the scattering and Fresnel port from
+/// `prep_instances.wgsl`'s ByPhysics into `grid_volume.wgsl`'s `fs_main`.
+/// With no CPU shortcut (`Renderer::particle_color`) for this path, a cluster
+/// is rendered twice, scattering and specular off and then at tissue/water
+/// values, and a pixel is read back to show the colour changes.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_volume_scattering_and_specular_change_rendered_color() {
@@ -2149,18 +2117,12 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
     );
 }
 
-/// Real regression check: `grid_volume.wgsl` previously had NO per-pixel
-/// temperature (only mass was ever scattered to this buffer), so `fs_main`
-/// could never render blackbody thermal emission -- a real, disclosed gap
-/// found via a side-by-side comparison against `ByPhysics`, which already
-/// had this. Fixed by scattering a mass-WEIGHTED
-/// temperature into the buffer's previously-unused channel 0. This test
-/// manually constructs the `grid_int` buffer directly (same real layout
-/// `grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds`
-/// above already uses: 4 u32 slots/cell, mass at offset 2) rather than running
-/// a real simulation, so it can hold mass identical and temperature different
-/// across the two renders -- an end-to-end proof the shader itself now uses
-/// the channel, not just that it compiles.
+/// `grid_volume.wgsl` renders blackbody emission from a mass-weighted
+/// temperature scattered into the buffer's channel 0. The `grid_int` buffer
+/// is built by hand (the layout of
+/// `grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds`:
+/// 4 u32 slots per cell, mass at offset 2) so mass stays equal and
+/// temperature differs between the two renders.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_volume_blackbody_emission_brightens_hot_cells() {
@@ -2252,16 +2214,10 @@ fn grid_volume_blackbody_emission_brightens_hot_cells() {
     );
 }
 
-/// Real regression/proof for the 2026-08-11 column-depth attenuation fix:
-/// before this, `optical_depth` only ever reflected LOCAL density at one
-/// pixel, so a shallow puddle and a deep lake rendered nearly identically at
-/// the same local mass -- a real, missing effect (real water genuinely gets
-/// darker/bluer with depth, Pope & Fry 1997, the exact citation this
-/// project's own sigma_a table already uses). Two scenes, IDENTICAL local
-/// mass at the query cell (isolating this from the pre-existing local-
-/// density banding) -- only what sits ABOVE that cell differs: a thin band
-/// (shallow) vs a tall column all the way to the domain edge (deep). The
-/// deep scene must render measurably darker at the same query point.
+/// Column-depth attenuation: water darkens with depth (Pope & Fry 1997, the
+/// source of the sigma_a table), so with the same local mass at the query
+/// cell a tall column above it (deep) renders darker than a thin band
+/// (shallow). Only what lies above the cell differs.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
@@ -2308,10 +2264,8 @@ fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
         queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
 
         let mut r = Renderer::new(&device, 1, fmt);
-        // Real, non-trivial water-like sigma_a (Pope & Fry 1997 table, same
-        // constants this project's own render_plan.md already cites) --
-        // needs a real absorption coefficient for column depth to visibly
-        // matter; a near-zero sigma_a would barely change with any depth.
+        // A water-like sigma_a (Pope & Fry 1997, as in render_plan.md): with a
+        // near-zero absorption depth would barely matter.
         r.set_optical_params(&queue, 0, [0.35, 0.033, 0.011]);
         r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
 
@@ -2359,15 +2313,11 @@ fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
     );
 }
 
-/// Real regression check for the 2026-07-31 fix: `dominant_material` used
-/// to compare `material_mass` bit-reinterpreted directly as `f32` --
-/// confirmed BROKEN on real hardware (this GPU flushes the resulting
-/// denormal floats to zero in the fragment shader), and confirmed
-/// previously UNTESTED: every existing `material_mass_enabled: true` call
-/// site in this file's own test suite set it `false`. This is the first
-/// real end-to-end proof `material_mass_enabled: true` actually works --
-/// two grid halves with different dominant material slots must render
-/// their own distinct configured color, not both default to slot 0.
+/// `dominant_material` reads `material_mass` as i32: read as bit-reinterpreted
+/// f32, this GPU flushes the denormal values to zero in the fragment shader.
+/// Two grid halves with different dominant slots render their own colours,
+/// not both slot 0 (every other call site here sets
+/// `material_mass_enabled: false`).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_volume_dominant_material_colors_regions_distinctly() {
@@ -2629,9 +2579,8 @@ fn diagnose_curvature_flow_edge_hair_pixels() {
     );
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 
-    // Real raw density (`surface_a_buf`, post-curvature-flow) along the
-    // SAME row -- to know the real interior depth magnitude directly
-    // instead of inferring it from color.
+    // Raw density (`surface_a_buf`, after curvature flow) along the same row,
+    // to read the interior depth directly instead of from colour.
     let surface_res = r.surface_res;
     let mass_values = readback_f32_blocking(
         &device,
@@ -2666,19 +2615,12 @@ fn diagnose_curvature_flow_edge_hair_pixels() {
     }
 }
 
-/// Real regression check for the 2026-07-31 curvature-flow blackbody port:
-/// `curvature_flow.wgsl`'s single-phase `fs_main` previously had no per-pixel
-/// temperature at all (module doc: "Blackbody emission is NOT ported"), so a
-/// hot particle cluster rendered in Surface mode looked identical to a cold
-/// one. Fixed by scattering real mass-weighted temperature into a new
-/// dedicated buffer (`surface_temp_atomic`/`surface_temp_final`), the same
-/// real formula `grid_volume.wgsl`'s own fix already uses. Unlike that
-/// shader's own test (which manually constructs the grid buffer), this
-/// source is real particles -- two independent `GpuSimulation`s built from
-/// the identical spawn region, differing ONLY in `particles.temperature`,
-/// prove the shader genuinely reads real per-particle temperature through
-/// the whole splat/convert/curvature-flow pipeline, not just a hardcoded
-/// color.
+/// Surface mode renders blackbody emission from a mass-weighted temperature
+/// (`surface_temp_atomic`/`surface_temp_final`, the formula of
+/// `grid_volume.wgsl`). Built from particles, not a hand-made buffer: two
+/// `GpuSimulation`s from the same spawn region, differing only in
+/// `particles.temperature`, so the temperature reaches the pixel through
+/// splat, convert and curvature flow.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
@@ -2762,26 +2704,15 @@ fn curvature_flow_blackbody_emission_brightens_hot_cluster() {
     );
 }
 
-/// Real proof for the 2026-08-11 light-diffusion extension (`curvature_
-/// flow.wgsl`'s "Pass 1e"): `light_diffuse_main`'s fluence field Phi is
-/// PERSISTENT across frames (see that pass's own doc for why -- the real
-/// diffusion PDE genuinely needs real time to build up spatial spread, same
-/// justification the wave field already established). Real, isolating
-/// signature: render the exact SAME static, unchanging particle scene
-/// (fixed temperature, zero velocity -- nothing else in this pipeline
-/// changes frame-to-frame for an unmoving scene except the wave field,
-/// which itself stays flat here since its own forcing term is the
-/// density's TEMPORAL change, zero for a static scene) repeatedly through
-/// the SAME `Renderer` instance. A HOT scene's rendered brightness at the
-/// SAME pixel must genuinely INCREASE from frame 1 to frame 30 as Phi
-/// accumulates -- real temporal accumulation, not a one-shot local effect.
-/// A COLD (ambient) scene must show only a SMALL FRACTION of that drift --
-/// rules out unrelated frame-to-frame noise (float accumulation, wave-field
-/// residue) as the explanation. Not literally zero: `light_diffuse_main`'s
-/// own emission strength is Stefan-Boltzmann's `(T/T_ref)^4`, so 293K
-/// genuinely emits a real, tiny, always-on amount -- about 11000x weaker
-/// than 3000K at the default 3000K exposure anchor. An ambient body still
-/// radiates, it just radiates far less, and `T^4` says how much less.
+/// Light diffusion (`curvature_flow.wgsl`'s Pass 1e) accumulates across
+/// frames: its fluence Phi persists, since diffusion needs time to spread.
+/// The same static scene (fixed temperature, zero velocity; the wave field
+/// stays flat because its forcing is the density's change) is rendered
+/// repeatedly through one `Renderer`. A hot scene's brightness at a pixel
+/// rises from frame 1 to frame 30; an ambient scene drifts by only a small
+/// fraction of that, ruling out frame-to-frame noise. Not zero: the emission
+/// goes as Stefan-Boltzmann's `(T/T_ref)^4`, so 293 K still radiates, ~11000x
+/// less than 3000 K at the default 3000 K anchor.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
@@ -2886,18 +2817,12 @@ fn light_diffusion_builds_up_real_glow_over_multiple_frames() {
     );
 }
 
-/// Real correctness + stability check for the 2026-07-31 thermal-diffusion
-/// PDE (`curvature_flow.wgsl`'s "Pass 1c", `temp_avg_main`/`temp_diffuse_
-/// main`): two adjacent clusters, one hot (3000K) one ambient (293K),
-/// touching at a real shared boundary -- a genuinely sharp initial
-/// temperature discontinuity, exactly the kind of input an explicit
-/// diffusion stencil can misbehave on if the disclosed Fourier-number
-/// stability bound (`DIFFUSION_ALPHA*DIFFUSION_DT <= 0.25`) were wrong. Reads
-/// the real settled `surface_temp_float_buf` directly (not just a rendered
-/// pixel) to check the two things that actually matter for a newly-added
-/// explicit PDE step: it stays finite everywhere (no blow-up), and the hot
-/// side is genuinely warmer than the cold side (the diffusion recovered real
-/// temperature, not noise).
+/// Thermal diffusion (`curvature_flow.wgsl`'s Pass 1c, `temp_avg_main`/
+/// `temp_diffuse_main`): a hot (3000 K) and an ambient (293 K) cluster
+/// touching, a sharp temperature step, the input an explicit stencil
+/// misbehaves on if its Fourier bound (`DIFFUSION_ALPHA*DIFFUSION_DT <=
+/// 0.25`) were wrong. Reads `surface_temp_float_buf`: finite everywhere, and
+/// the hot side warmer than the cold side.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn curvature_flow_thermal_diffusion_stays_finite_and_separates_hot_from_cold() {
@@ -3045,25 +2970,16 @@ fn readback_i32_total(device: &wgpu::Device, queue: &wgpu::Queue, buf: &wgpu::Bu
     value
 }
 
-/// Real measurement AND a real correctness check, now that `curvature_flow
-/// .wgsl`'s "Pass 1d" volume-preserving correction (the discrete/practical
-/// analogue of the real volume-preserving mean curvature flow equation
-/// `V = -H + lambda(t)`) is RE-ENABLED (2026-08-14, see that pass's own top
-/// doc). The original "15x-35x growth" this pass was disabled for was never
-/// a real curvature-flow defect -- it was comparing a real mass total
-/// against a raw, un-area-weighted sum of density values over a
-/// `surface_res_multiplier`x finer grid, silently comparing two different
-/// physical quantities (confirmed via a real iteration-count sweep,
-/// `curvature_flow_mass_growth_scales_with_iteration_count`, in this same
-/// file). Once the correction's own Lagrange multiplier accounts for that
-/// area factor, it sits close to 1.0, not the crushing ~1/34 the original,
-/// un-corrected comparison implied -- exactly the fix for the small/thin-
-/// object-invisibility regression that got this pass disabled in the first
-/// place. `corrected_total` is still read back as a raw (not area-weighted)
-/// sum, matching how `pre_total`/`raw_post_total` are also raw sums here --
-/// so it is compared against `true_particle_mass_sum * multiplier^2`, the
-/// same real structural factor the shader itself uses, not a second,
-/// independently-tuned tolerance.
+/// Volume-preserving correction (`curvature_flow.wgsl`'s Pass 1d, the discrete
+/// form of `V = -H + lambda(t)`): the 15x-35x mass growth once measured came
+/// from comparing a mass total with a raw, unweighted sum of densities on a
+/// `surface_res_multiplier`x finer grid (see
+/// `curvature_flow_mass_growth_scales_with_iteration_count`). With the area
+/// factor in the Lagrange multiplier it sits near 1.0, not ~1/34, which would
+/// have made small and thin objects vanish. `corrected_total` is read back as
+/// a raw sum like `pre_total`/`raw_post_total`, so it is compared with
+/// `true_particle_mass_sum * multiplier^2`, the shader's structural factor,
+/// not a separate tolerance.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn curvature_flow_volume_correction_matches_true_particle_mass() {
@@ -3192,16 +3108,10 @@ fn curvature_flow_volume_correction_matches_true_particle_mass() {
     );
 }
 
-/// Real diagnostic (2026-08-14), NOT an assertion -- see
-/// [[curvature_flow_mass_growth_x34_partially_investigated_2026-08-14]] in
-/// project memory. Two synthetic hypotheses for the ~34x total-mass growth
-/// measured above were tested and ruled out on IDEALIZED fields (uniform
-/// flat noise, a clean analytic disk); this instead sweeps the REAL engine's
-/// own iteration count on the SAME real particle-splat scene the sibling
-/// test above uses, to see whether the growth is roughly per-iteration
-/// linear (as the clean-disk probe's own decay was) or concentrated in the
-/// first transition from raw splat to first-smoothed -- real data for
-/// narrowing the search, not a synthetic guess.
+/// Diagnostic, not an assertion: sweeps the engine's curvature iteration
+/// count on the particle-splat scene above, to see whether the total-mass
+/// growth scales with iterations or appears at the first smoothing step
+/// (flat-noise and clean-disk hypotheses were ruled out on idealized fields).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn curvature_flow_mass_growth_scales_with_iteration_count() {
@@ -3277,21 +3187,13 @@ fn curvature_flow_mass_growth_scales_with_iteration_count() {
         let raw_post_total = readback_i32_total(&device, &queue, &r.post_total_atomic_buf) as f32
             / TOTAL_ATOMIC_SCALE;
 
-        // Real hypothesis test (2026-08-14), not yet confirmed: `pre_total`
-        // is accumulated from real per-particle mass during the splat
-        // (resolution-independent -- a properly normalized kernel's weights
-        // sum to 1 regardless of how finely the surface grid samples it).
-        // `raw_post_total` is a RAW SUM of per-cell density VALUES across
-        // every surface cell -- but each surface cell's own AREA is
-        // `1/surface_res_multiplier^2` of a physics cell's area (the surface
-        // grid is `surface_res_multiplier`x finer per axis), and nowhere in
-        // `post_total_reduce_main`/`convert_atomic_to_float_main` is that
-        // area ever multiplied back in. A raw sum of density VALUES is not
-        // mass unless weighted by each cell's own area -- comparing it
-        // directly to a true mass total, as the sibling test does, silently
-        // compares two different physical quantities. If this is the real
-        // explanation, dividing by `surface_res_multiplier^2` should recover
-        // something close to `pre_total`.
+        // `pre_total` comes from per-particle mass during the splat
+        // (resolution-independent: a normalized kernel's weights sum to 1).
+        // `raw_post_total` is a raw sum of per-cell densities, and each surface
+        // cell's area is `1/surface_res_multiplier^2` of a physics cell's,
+        // never multiplied back in by `post_total_reduce_main`/
+        // `convert_atomic_to_float_main`. Dividing by `surface_res_multiplier^2`
+        // should recover about `pre_total`.
         let multiplier = r.surface_res_multiplier() as f32;
         let area_corrected = raw_post_total / (multiplier * multiplier);
         eprintln!(
@@ -3306,13 +3208,10 @@ fn curvature_flow_mass_growth_scales_with_iteration_count() {
     }
 }
 
-/// Real correctness check for the wave-equation surface enhancement (see
-/// `curvature_flow.wgsl`'s own "Pass 2b" doc): calling
-/// `render_surface_reconstruction` repeatedly (simulating several real
-/// frames) with a real particle cluster present must genuinely excite the
-/// wave field away from its all-zero initial state, and it must stay
-/// finite across many steps -- proving the real damping (`WAVE_DAMPING`)
-/// actually bounds it rather than letting continuous forcing blow it up.
+/// Wave-equation surface (`curvature_flow.wgsl`'s Pass 2b): repeated calls to
+/// `render_surface_reconstruction` with a cluster present excite the wave
+/// field away from zero, and it stays finite across many steps (`WAVE_DAMPING`
+/// bounds it under continuous forcing).
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn wave_field_is_excited_by_real_density_and_stays_bounded() {
@@ -3337,15 +3236,11 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
             .spacing(0.5)
             .material(0),
     );
-    // Real fix: the wave field only ever excites for materials that
-    // genuinely behave like a fluid (`owns_deformation_volume_state()`,
-    // see `Renderer::set_wave_force_coeff`'s own doc) -- `NeoHookeanMaterial`
-    // (an elastic SOLID) correctly returns `false` for that, so the
-    // original version of this test was asserting a real physics feature
-    // fires for a material class it structurally never applies to. Real
-    // production scenes (`examples/cpu/basic_fluids.rs`,
-    // `examples/gpu/basic_sand_grid_gpu.rs`) both gate this the same way,
-    // with the same real coefficient (0.35) -- matched here, not invented.
+    // Waves only excite for a material that behaves like a fluid
+    // (`owns_deformation_volume_state()`, see `Renderer::set_wave_force_coeff`);
+    // `NeoHookeanMaterial`, a solid, does not. The coefficient 0.35 is the one
+    // `examples/cpu/basic_fluids.rs` and `examples/gpu/basic_sand_grid_gpu.rs`
+    // use with the same gate.
     let material = NewtonianFluidMaterial::low_viscosity(1.0, 1.0);
     let registry = MaterialRegistry::with_default(Box::new(material));
     let sim =
@@ -3354,10 +3249,8 @@ fn wave_field_is_excited_by_real_density_and_stays_bounded() {
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
-    // Real, deliberate opt-in (see `WaveStepParams::wave_force_coeff`'s own
-    // doc in `curvature_flow.wgsl`) -- defaults to inert (0.0), must be set
-    // explicitly by whoever owns the scene, exactly as real production
-    // examples already do for this same material class.
+    // Opt-in (see `WaveStepParams::wave_force_coeff` in `curvature_flow.wgsl`):
+    // inert at 0.0 unless the scene sets it, as the examples do.
     assert!(
         material.owns_deformation_volume_state(),
         "test material must actually be a real fluid, or this whole test proves nothing"
@@ -3456,10 +3349,9 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
             .spacing(0.5)
             .material(0),
     );
-    // Real fix -- same root cause as `wave_field_is_excited_by_real_
-    // density_and_stays_bounded`'s own doc: a real fluid material, plus the
-    // real, deliberate `set_wave_force_coeff` opt-in below, matching real
-    // production usage (`basic_fluids.rs`/`basic_sand_grid_gpu.rs`).
+    // A fluid material and the `set_wave_force_coeff` opt-in below, as in
+    // `wave_field_is_excited_by_real_density_and_stays_bounded` and the
+    // examples.
     let material = NewtonianFluidMaterial::low_viscosity(1.0, 1.0);
     let registry = MaterialRegistry::with_default(Box::new(material));
     let sim =
@@ -3515,7 +3407,7 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
     let surface_res = r.surface_res;
     let cell_count = (surface_res * surface_res) as usize;
 
-    // Past the initial one-time excitation burst (real, expected -- a body
+    // Past the initial one-time excitation burst (expected -- a body
     // appearing IS a real disturbance), but still early in the real
     // WAVE_DAMPING=0.996 decay curve.
     const EARLY_FRAME: u32 = 10;
@@ -3550,14 +3442,10 @@ fn curvature_flow_wave_field_decays_once_density_stops_changing() {
     );
 }
 
-/// Real correctness check for the hysteresis (Schmitt-trigger) visibility
-/// fix (see `curvature_flow.wgsl`'s own "Pass 2c" doc): a cell whose
-/// density hovers in the AMBIGUOUS gap between the low and high hysteresis
-/// thresholds must NOT flip state -- it stays whatever it already was.
-/// Directly dispatches `visibility_step_main` against a controlled,
-/// synthetic density value (bypassing the real particle-splat pipeline,
-/// which can't easily be forced to hover in one exact gap across several
-/// frames) to isolate the hysteresis logic itself.
+/// Hysteresis (Schmitt trigger) visibility (`curvature_flow.wgsl`'s Pass 2c):
+/// a cell whose density hovers between the low and high thresholds keeps its
+/// state. Dispatches `visibility_step_main` on a synthetic density, since the
+/// particle splat cannot be held in that gap for several frames.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds() {
@@ -3660,7 +3548,7 @@ fn visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds() {
 
 /// Same real hysteresis technique as `visibility_hysteresis_does_not_
 /// flicker_in_the_gap_between_thresholds` above, ported to `grid_volume.
-/// wgsl`'s `grid_visibility_step_main` (see that shader's own doc). The
+/// wgsl`'s `grid_visibility_step_main` (see that shader's doc). The
 /// only structural difference: this pass reads mass out of the solver's
 /// own P2G grid-cell layout (4 u32 slots/cell, mass at offset 2, via
 /// `bitcast<f32>`), not a plain f32 density array -- the test buffer below
@@ -3899,21 +3787,12 @@ fn surface_reconstruction_does_not_flicker_over_many_deterministic_frames() {
 // ── curvature_iterate_main numerical stability ──────────────────────────────
 //
 // A line-for-line CPU port of `curvature_flow.wgsl`'s `curvature_iterate_main`
-// -- same formula, same constants -- so this test measures the real update
-// rule directly rather than an approximation of it. Exists because the
-// shipped `GRAD_EPSILON=1.0e-3` was a real, root-cause bug (fixed 2026-08-14):
-// in a near-flat region (a fluid's interior, where the true density gradient
-// is ~0 and all that remains is the splat's own sampling noise) the
-// denominator `(grad_sq + GRAD_EPSILON)^1.5` was dominated by that tiny
-// epsilon, so kappa became noise divided by a near-zero constant -- an
-// enormous, effectively random swing every iteration, bounded only by
-// MAX_KAPPA. 12 iterations at the old value grew a synthetic flat field's
-// noise variance 357x and made a synthetic sharp corner GROW instead of
-// round (0.1 -> 0.205) -- independently matching this file's own prior note
-// (`curvature_flow_volume_correction_matches_true_particle_mass`'s
-// neighbour, see the disabled volume-correction pass's doc) that live
-// measurement found 15x-35x total-mass GROWTH here, the opposite of mean
-// curvature flow's real shrinking bias.
+// (same formula, same constants), so the update rule itself is measured. At
+// `GRAD_EPSILON = 1.0e-3`, in a near-flat region (a fluid's interior, only
+// splat noise) the denominator `(grad_sq + GRAD_EPSILON)^1.5` is dominated by
+// epsilon and kappa becomes noise over a near-zero constant, bounded only by
+// MAX_KAPPA: 12 iterations grew a flat field's noise variance 357x and a sharp
+// corner grew (0.1 -> 0.205) instead of rounding.
 mod curvature_iterate_stability {
     /// Mirrors `curvature_flow.wgsl`'s `CURVATURE_PSEUDO_DT`, `MAX_KAPPA`,
     /// and `GRAD_EPSILON` -- all three are WGSL-only (shader compile-time
@@ -4066,13 +3945,11 @@ mod curvature_iterate_stability {
     }
 }
 
-/// Regression test for the 2026-08-14 cursor-offset bug: `cursor_grid()`'s
-/// naive `screen_pos / window_size * grid_res` assumed the grid fills the
-/// window edge to edge, while `set_camera` actually letterboxes/pillarboxes
-/// to preserve aspect ratio -- agreed only when the window was square.
-/// `screen_to_grid` is the exact algebraic inverse instead; checked against
-/// real geometric invariants here rather than re-deriving the same formula
-/// (which would just duplicate a bug into its own test).
+/// `cursor_grid()`'s `screen_pos / window_size * grid_res` assumed the grid
+/// fills the window, while `set_camera` letterboxes or pillarboxes to keep
+/// the aspect ratio (they agreed only for a square window). `screen_to_grid`
+/// is the exact inverse; checked against geometric invariants rather than a
+/// re-derived formula, which would copy a bug into its test.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn screen_to_grid_is_exact_inverse_of_set_camera_at_any_aspect_ratio() {
@@ -4126,14 +4003,10 @@ fn screen_to_grid_is_exact_inverse_of_set_camera_at_any_aspect_ratio() {
     );
 }
 
-/// Real regression test for a live-reported bug (2026-09-15): an example
-/// drew a screen-space overlay marker using its OWN hand-derived copy of
-/// this exact projection, which silently drifted from what `set_camera`
-/// actually uploaded. `grid_to_screen`/`grid_distance_to_pixels` are the
-/// real fix (a single source of truth for BOTH directions) -- checked here
-/// as an exact round-trip against `screen_to_grid` at several aspect
-/// ratios, not re-derived independently (which would just duplicate a bug
-/// into its own test, same discipline as the sibling test above).
+/// `grid_to_screen`/`grid_distance_to_pixels`, the one source for both
+/// directions (a hand-derived copy of the projection drifted from what
+/// `set_camera` uploaded), round-trip exactly with `screen_to_grid` at several
+/// aspect ratios, without re-deriving the formula.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_to_screen_is_exact_inverse_of_screen_to_grid_at_any_aspect_ratio() {
@@ -4160,9 +4033,9 @@ fn grid_to_screen_is_exact_inverse_of_screen_to_grid_at_any_aspect_ratio() {
         }
     }
 
-    // A real, independently-checkable invariant for the radius conversion:
+    // A independently-checkable invariant for the radius conversion:
     // the camera is isotropic (grid cells always render as true squares, see
-    // `set_camera`'s own doc), so a distance measured along the Y axis via
+    // `set_camera`'s doc), so a distance measured along the Y axis via
     // `screen_to_grid` must match `grid_distance_to_pixels`'s own conversion
     // of that same real grid distance, exactly.
     r.set_camera(&queue, grid_res, 300, 100, 0.6, true);
@@ -4177,14 +4050,10 @@ fn grid_to_screen_is_exact_inverse_of_screen_to_grid_at_any_aspect_ratio() {
     );
 }
 
-/// Real regression test for the live-reported DPI bug (2026-09-15, "still
-/// misaligned after the projection fix" on a 125%-scaled Windows display):
-/// a UI overlay fed PHYSICAL pixels into a toolkit (egui) that draws in
-/// LOGICAL points is off by exactly the display's own scale factor.
-/// `grid_to_screen_points`/`grid_distance_to_points` are the real, versatile
-/// -by-design fix -- checked here at several real scale factors (100%, the
-/// 125% that actually exposed the bug, and 200%), not just the one that
-/// happened to be on hand at debug time.
+/// A UI overlay fed physical pixels into a toolkit (egui) that draws in
+/// logical points is off by the display's scale factor.
+/// `grid_to_screen_points`/`grid_distance_to_points` are checked at 100%,
+/// 125% (the scale that showed it) and 200%.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn grid_to_screen_points_divides_out_the_real_dpi_scale_factor() {
@@ -4227,14 +4096,11 @@ fn grid_to_screen_points_divides_out_the_real_dpi_scale_factor() {
     );
 }
 
-/// Real pore-fluid index-matching darkening (`Renderer::set_refractive_
-/// index`) must actually reduce scattering as a particle's own
-/// `scalar_field` saturates toward 1.0 -- the real, generic (not
-/// sand-specific) wet-material mechanism. Uses real quartz sand's
-/// refractive index (~1.5) and pushes saturation from bone-dry to fully
-/// saturated on the SAME material slot, checking color genuinely changes
-/// and that it's darkening (approaching the material's own absorption-only
-/// color), not brightening.
+/// Pore-fluid index matching (`Renderer::set_refractive_index`) reduces
+/// scattering as a particle's `scalar_field` saturates toward 1.0 (the
+/// generic wet-material mechanism). With quartz sand's index (~1.5) and
+/// saturation from dry to full on one slot, the colour changes and darkens
+/// toward the absorption-only colour.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn wetness_darkens_by_physics_color_via_refractive_index() {
@@ -4296,14 +4162,12 @@ fn wetness_darkening_is_inert_without_refractive_index_opt_in() {
     );
 }
 
-/// DIAGNOSTIC: user reported real, live lag (24-27fps) after wiring
-/// `render_surface_reconstruction` into `basic_sand_grid_gpu.rs` for the
-/// first time (2026-08-26). Measures the REAL, isolated per-call GPU cost
-/// of each render path (Particles/GridVolume/Surface) on the exact same
-/// scene, device.poll-synced so the timing reflects real completed GPU
-/// work, not just submission -- answers "is this the technique's own
-/// already-known cost, or something specifically wrong with the sand
-/// wiring" with real numbers instead of guessing.
+/// Diagnostic: the isolated per-call GPU cost of each render path
+/// (Particles/GridVolume/Surface) on the same scene, synced with
+/// device.poll so it measures completed GPU work. Built when
+/// `basic_sand_grid_gpu.rs` dropped to 24-27 fps with
+/// `render_surface_reconstruction`, to separate the technique's cost from the
+/// wiring.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 fn diag_surface_reconstruction_real_cost_vs_grid_volume_and_particles() {
@@ -4423,11 +4287,9 @@ fn diag_surface_reconstruction_real_cost_vs_grid_volume_and_particles() {
         )
     );
 
-    // Real sweep: `surface_res_multiplier` is the documented "single biggest
-    // quality/cost dial" (cost scales with its SQUARE); `curvature_
-    // iterations` is van der Laan et al. 2009's own "several per frame,
-    // scene-dependent" knob. Both already real, public, sourced API --
-    // measuring real cost at each combination instead of guessing one.
+    // Sweep of `surface_res_multiplier` (the biggest quality/cost dial, cost
+    // goes with its square) and `curvature_iterations` (van der Laan et al.
+    // 2009's "several per frame"), measured at each combination.
     for mult in [2u32, 3, 4] {
         r.set_surface_res_multiplier(mult);
         measure!(

@@ -70,7 +70,7 @@ pub struct SimConfig {
     /// Use `Vec2::new(x, y)` for angled or planetary gravity. Typical: `Vec2::new(0.0, -9.81)`.
     pub gravity: Vec2,
     /// Direction light is sensed as coming FROM, for `rod::Phototropism`
-    /// (see that struct's own doc). A FIXED, externally-set vector, NOT a
+    /// (see that struct's doc). A FIXED, externally-set vector, NOT a
     /// real solar/orbital model -- `emerge`/LP work at continuum scale, no
     /// day/night sun-angle system exists (the existing `day_night_thermal_gpu`
     /// demo is a pure scalar ambient-temperature oscillation with no light
@@ -151,138 +151,89 @@ pub struct SimConfig {
     /// advances once per `step()` (the diffusion operators run at their own
     /// stable rate, see `Simulation::step`), so re-testing them 18x per frame
     /// re-reads identical inputs 17 times. It is NOT true for a rule keyed on
-    /// something that genuinely varies per substep (velocity, position), which
+    /// something that varies per substep (velocity, position), which
     /// is exactly why this is a caller's choice rather than a silent change.
     ///
     /// Live-measured on `basic_fluids_gui.rs` (2912 particles, ~18 substeps):
     /// the phase-rule scan was ~3400-4300 us of a ~29000 us step (~12%).
     pub phase_rules_once_per_step: bool,
-    /// PROACTIVE companion to `fluid_step_retry_enabled` (2026-08-08): a strict fluid
-    /// particle within `boundary_thickness` cells of any wall (the SAME zone the slip
-    /// clamp already treats specially -- no new distance invented) gets its own CFL
-    /// material-timestep contribution computed with `material_cfl_coefficient` divided by
-    /// this factor.
+    /// Tightens the CFL of strict fluid particles within `boundary_thickness`
+    /// cells of a wall (the zone the slip clamp treats specially): their
+    /// material-timestep contribution uses `material_cfl_coefficient`
+    /// divided by this factor.
     ///
-    /// **Second use: also tightens the gravity-CFL bound (`cfl.rs`) for the same
-    /// near-wall strict-fluid particles.** This is the one that actually matters once `SimConfig::
-    /// fluid_pressure_iterations > 0` (`eos_stiffness=0`): the ORIGINAL acoustic-only
-    /// tightening above is structurally INERT there (confirmed live, bit-identical
-    /// results at scale=5 vs scale=20 vs disabled -- `NewtonianFluidMaterial::
-    /// timestep_bound`'s acoustic term is `c2=0` whenever `eos_stiffness=0`, so dividing
-    /// `material_cfl_coefficient` by anything changes nothing). The gravity bound is the
-    /// one bound still genuinely ACTIVE and PREDICTIVE for an eos-less fluid at rest, so
-    /// tightening THAT one, for near-wall particles specifically, is what actually helps.
-    /// On the wall-contact column scene (fluid already touching a wall at spawn,
-    /// spanning nearly the full domain), combined with `fluid_pressure_iterations=1`,
-    /// it lets all 120 frames complete without non-finite state. That run is not
-    /// physically valid: J sits at the [0.5, 2.0] safety clamp from about frame 20
-    /// (see the pressure projection entry in `KNOWN_LIMITATIONS.md`).
+    /// It also tightens the gravity CFL bound (`cfl.rs`) for the same
+    /// particles, the use that matters with `fluid_pressure_iterations > 0`
+    /// (`eos_stiffness = 0`): there the acoustic term of
+    /// `NewtonianFluidMaterial::timestep_bound` is zero, so the first use
+    /// changes nothing (bit-identical at 5, 20 or off), while the gravity
+    /// bound stays active and predictive at rest. With
+    /// `fluid_pressure_iterations = 1` it lets the wall-contact column (fluid
+    /// touching a wall at spawn, nearly full height) complete 120 frames
+    /// without non-finite state. That run is not physically valid: J sits at
+    /// the [0.5, 2.0] safety clamp from about frame 20 (see the pressure
+    /// projection entry in `KNOWN_LIMITATIONS.md`).
     ///
-    /// `1.0` (default) = no scaling on either bound, byte-identical to before this field
-    /// existed.
+    /// `1.0` (default) = no scaling on either bound.
     pub fluid_near_wall_cfl_scale: f32,
-    /// Gates the ORIGINAL acoustic-CFL use of `fluid_near_wall_cfl_scale` on ACTUAL
-    /// compression, not just wall proximity alone -- required fix, 2026-08-08: a
-    /// distance-only trigger fires for ANY fluid resting near a wall, including a calm
-    /// puddle sitting on an ordinary floor (the floor IS a wall) -- meaning realistically
-    /// every settled water scene would pay the extra cost forever, not just during a
-    /// brief compression event. Live-confirmed: exactly this caused a sustained 3-5fps
-    /// crawl in `basic_fluids_gui.rs` once the water settled, not a transient slowdown.
+    /// Gates the acoustic-CFL use of `fluid_near_wall_cfl_scale` on actual
+    /// compression, not wall proximity alone: a distance-only trigger fires for
+    /// any fluid resting on a floor, and a settled `basic_fluids_gui.rs` crawled
+    /// at 3-5 fps.
     ///
-    /// **Does NOT gate the newer gravity-CFL use above** -- that one is deliberately
-    /// PREDICTIVE (see its own doc): a compression-based gate is reactive by definition
-    /// (needs `J` to have already drifted before it can fire), which is exactly what
-    /// fails at the critical first substep, before anything has moved yet. Set this to
-    /// `0.0` when using `fluid_near_wall_cfl_scale` for its gravity-bound effect (the
-    /// verified `fluid_pressure_projection_gui.rs` demo does exactly this).
+    /// It does not gate the gravity-CFL use, which must be predictive: a
+    /// compression gate needs J to have drifted first, which fails at the first
+    /// substep. Set this to `0.0` when using `fluid_near_wall_cfl_scale` for
+    /// the gravity bound (as `fluid_pressure_projection_gui.rs` does).
     ///
-    /// Real water's physical compressibility is negligible (bulk modulus ~2.2 GPa) -- ANY
-    /// sustained J deviation past a percent or so is already far outside real water
-    /// physics, so `0.01` (1%, the default) is a real, disclosed, measured threshold for
-    /// the acoustic-bound use case, not an arbitrary cutoff pretending to be derived from
-    /// a closed form.
+    /// Water's bulk modulus (~2.2 GPa) makes any sustained J deviation past
+    /// about a percent unphysical, so `0.01` (1%, the default) is a measured
+    /// threshold for the acoustic use, not a closed-form one.
     ///
-    /// **FALLBACK ONLY (2026-08-11) for materials with no acoustic term**
-    /// (`MaterialModel::rest_acoustic_c2() == None`, e.g. `eos_stiffness=0.0`
-    /// pressure-projection fluids). Any material WITH a real Tait EOS uses
-    /// `fluid_near_wall_compression_mach_margin` instead (see that field's
-    /// own doc) -- a fixed 1% is only correct for the SPECIFIC EOS stiffness
-    /// it happened to be measured against; a deliberately softened EOS (real,
-    /// disclosed accuracy/perf trade, `basic_fluids_gpu.rs`'s own doc) has a
-    /// much larger NORMAL compression range by design, so this absolute
-    /// threshold trips almost permanently for such a material -- root-caused
-    /// live: `near_wall=true` continuously, forcing `fluid_near_wall_cfl_scale`'s
-    /// 20x tightening on essentially every substep regardless of whether a
-    /// genuine impact was happening (1346 substeps/frame measured, ~20x more
-    /// than the acoustic term alone would need).
+    /// Fallback only, for materials without an acoustic term
+    /// (`MaterialModel::rest_acoustic_c2() == None`, e.g. `eos_stiffness = 0.0`
+    /// projection fluids). A material with a Tait EOS uses
+    /// `fluid_near_wall_compression_mach_margin`: a fixed 1% fits one EOS
+    /// stiffness, and a softened EOS (`basic_fluids_gpu.rs`) compresses more
+    /// in normal flow, so this threshold tripped on nearly every substep (1346
+    /// substeps per frame, ~20x what the acoustic term needs).
     pub fluid_near_wall_compression_threshold: f32,
-    /// Real replacement (2026-08-11) for `fluid_near_wall_compression_threshold`'s
-    /// acoustic-bound use, for any material with a genuine Tait EOS
-    /// (`MaterialModel::rest_acoustic_c2() == Some(c2_rest)`). Compares
-    /// `|J-1|` not to a fixed absolute percentage, but to
-    /// `(last_max_particle_speed / sqrt(c2_rest))² *
-    /// fluid_near_wall_compression_mach_margin` -- i.e. the compression THIS
-    /// material's OWN acoustic stiffness would predict as normal at the
-    /// scene's actual current flow speed, times a margin.
+    /// Near-wall compression gate for a material with a Tait EOS
+    /// (`MaterialModel::rest_acoustic_c2() == Some(c2_rest)`): compares `|J-1|`
+    /// with `(last_max_particle_speed / sqrt(c2_rest))² *
+    /// fluid_near_wall_compression_mach_margin`, the compression this EOS
+    /// predicts as normal at the scene's current flow speed, times a margin.
     ///
-    /// Grounded in the standard WCSPH relation `Ma² ≈ Δρ` (density variation
-    /// ≈ squared Mach number; Monaghan 1994, Morris et al. 1997) -- the same
-    /// relation this engine's own `weakly_compressible` constructor already
-    /// uses to size `eos_stiffness` from a target `c_ref_m_s`. Applying it
-    /// HERE too, dynamically, from the scene's actual measured speed rather
-    /// than a single a-priori guess made once at material-construction time,
-    /// is the real fix for the same class of self-defeating trap
-    /// `basic_fluids_gpu.rs`'s own doc history narrates: softening the EOS to
-    /// afford more substeps only works if the near-wall gate's OWN threshold
-    /// scales with that same softening, not a threshold borrowed from a
-    /// stiffer reference EOS. Directly informed by Zhang et al., "A variable
-    /// speed of sound formulation for weakly compressible SPH" (UCSPH,
-    /// arXiv:2310.04139), whose own time-dependent sound-speed update rule
-    /// (`c_s(n+1) = max(10·v_max(n), ...)`, recomputed from the ACTUAL
-    /// measured flow state every step rather than a static a-priori bound) is
-    /// built on the identical Ma²≈Δρ relation -- adapted here to the
-    /// near-wall gate specifically rather than the base EOS stiffness itself,
-    /// since making the EOS's own `eos_stiffness` field dynamic would require
-    /// per-substep material mutation, a materially larger change deferred as
-    /// a real, disclosed follow-up rather than rushed tonight.
+    /// Grounded in the WCSPH relation `Ma² ≈ Δρ` (Monaghan 1994; Morris et
+    /// al. 1997), which `weakly_compressible` uses to size `eos_stiffness`.
+    /// Applied here from the measured speed, so the gate scales with a
+    /// softened EOS instead of borrowing a stiffer EOS's threshold. Informed
+    /// by Zhang et al., "A variable speed of sound formulation for weakly
+    /// compressible SPH" (arXiv:2310.04139), whose sound speed follows the
+    /// measured flow (`c_s(n+1) = max(10·v_max(n), ...)`) on the same
+    /// relation; adapted to the gate, since a dynamic `eos_stiffness` would
+    /// need per-substep material mutation.
     ///
-    /// No published number exists for THIS margin specifically (this exact
-    /// near-wall-gate application is this engine's own construction, not a
-    /// technique the cited paper itself describes) -- `2.0` (default) is a
-    /// disclosed engineering choice, not a physics constant: it means the
-    /// gate fires once local compression exceeds DOUBLE what the current
-    /// flow speed already predicts as normal for this EOS, a round,
-    /// minimal-but-clearly-distinguishing margin above 1.0 (which would fire
-    /// on literally any compression at all, defeating the gate's purpose the
-    /// same way the old absolute 1% did for a soft EOS).
+    /// No published value exists for this margin (the application is this
+    /// engine's): `2.0` (default) fires once compression exceeds twice what
+    /// the flow speed predicts; 1.0 would fire on any compression.
     pub fluid_near_wall_compression_mach_margin: f32,
     /// Per-substep admissible `|ln(J_new/J_old)|` for a strict fluid particle before
-    /// `fluid_step_retry_enabled` rejects and retries that substep. NOT the general
-    /// `deformation_gradient_cfl_bound` safety margin (`cfl_coefficient`, ~0.5) -- tested
-    /// directly against this session's repro and it never once fired: the real failure
-    /// mode is many small, individually-under-50%, systematically-same-direction
-    /// per-substep changes accumulating over hundreds of substeps, not one large jump.
-    /// Calibrate empirically against a real repro before changing, same discipline as
-    /// `eos_stiffness`'s own tuning -- this is disclosed as measured, not derived from a
-    /// closed-form bound, precisely because no such closed form caught the real failure.
+    /// `fluid_step_retry_enabled` rejects and retries that substep. Not the
+    /// general `deformation_gradient_cfl_bound` margin (`cfl_coefficient`,
+    /// ~0.5), which never fired on the failing scene: the failure is many
+    /// small, same-direction changes accumulating over hundreds of substeps,
+    /// not one jump. Measured, not derived; calibrate against a reproduction
+    /// before changing it.
     pub fluid_step_retry_threshold: f32,
-    // REMOVED (2026-09-17): `fluid_regional_substepping_gpu_enabled` and
-    // `fluid_regional_substepping_fine_tier_margin` used to live here. The
-    // real implementation behind them was part of the strict-fluid/DCT-
-    // pressure/retry rewrite (`57b83dc`, 2026-08-13) that was wholesale
-    // reverted the next day (`gpu_fluid_stable`'s own ignore doc, 2026-08-14)
-    // for unrelated reasons -- the config fields survived that revert with
-    // no code left to read them, becoming an inert switch that looked like
-    // a feature but did nothing. A real feasibility check
-    // (`examples/gpu/regional_substep_feasibility_check.rs`, 2026-09-17)
-    // also confirmed the technique's own precondition -- a genuinely calm
-    // region existing next to a violent one -- does not hold on this
-    // engine's real fluid scenes anyway (0% of populated blocks classified
-    // "calm" through the whole violent window on both DamBreak and
-    // DropletImpact). See `KNOWN_LIMITATIONS.md` entry 2. If this is
-    // rebuilt for real, base it on Fang, Hu, Hu & Jiang, "A Temporally
-    // Adaptive Material Point Method with Regional Time Stepping," SCA
-    // 2018, on a scene where the precondition actually holds.
+    // No regional substepping switches: the implementation they gated is gone,
+    // and `examples/gpu/regional_substep_feasibility_check.rs` found its
+    // precondition, a calm region beside a violent one, absent from the fluid
+    // scenes (0% of populated blocks calm through the violent window, on both
+    // DamBreak and DropletImpact). See `KNOWN_LIMITATIONS.md` entry 2. A
+    // rebuild should follow Fang, Hu, Hu & Jiang, "A Temporally Adaptive
+    // Material Point Method with Regional Time Stepping," SCA 2018, on a scene
+    // where the precondition holds.
     /// APIC affine-matrix blend [0, 1].
     /// 1.0 = full APIC (angular-momentum-conserving, taichi default).
     /// 0.0 = pure PIC (maximum numerical dissipation, fastest settling).
@@ -296,33 +247,19 @@ pub struct SimConfig {
     /// lower this blend as a substitute for a violated acoustic/viscous CFL
     /// condition or an unmodelled free surface/cavitation problem.
     pub apic_blend: f32,
-    /// Emergency projection ceiling for solid/plastic AND strict fluid states.
-    ///
-    /// Originally solid-only ("strict WC-MPM fluid materials never use this:
-    /// their `J` is evolved by the continuity equation and an inadmissible
-    /// state is reported rather than rescaled" -- the old doc here). Real,
-    /// measured gap found 2026-08-09: the "report rather than rescale"
-    /// design assumed corruption always shows up as ONE bad substep large
-    /// enough for `fluid_step_retry_enabled` to catch and roll back. A
-    /// pressure-projection scene (eos_stiffness=0, no elastic backstop
-    /// resisting drift at all) instead showed `J` drifting steadily in the
-    /// SAME direction for hundreds of individually-under-threshold substeps
-    /// -- min_j 0.72 -> 0.0000154 over 120 frames, density_ratio hitting
-    /// 64,916x, with `fluid_step_retry_threshold` never once firing because
-    /// no single substep's own change was ever large enough. Same class of
-    /// gap `fluid_step_retry_threshold`'s own doc already named ("many
-    /// small, individually-under-50%... accumulating... not one large
-    /// jump") but in the OPPOSITE (compression, not expansion) direction,
-    /// and with no per-substep backstop at all until now. Applied every
-    /// substep now (see `do_substep`'s pre-P2G pass), not just at retry
-    /// exhaustion -- a real, generous safety ceiling (50x volume), not a
-    /// physical bound (real water's actual bulk modulus permits ~1%), so it
-    /// never touches a legitimately-behaving scene, only a genuinely
-    /// runaway one. See `j_min` for the symmetric floor.
+    /// Emergency projection ceiling for solid/plastic and strict fluid states,
+    /// applied every substep (`do_substep`'s pre-P2G pass). A strict fluid's
+    /// retry only catches one bad substep; under pressure projection
+    /// (`eos_stiffness = 0`, no elastic backstop) J drifted one way over
+    /// hundreds of small substeps (min_j 0.72 -> 0.0000154 over 120 frames,
+    /// density ratio 64,916x) without `fluid_step_retry_threshold` firing. A
+    /// generous safety ceiling (50x volume, water's bulk modulus allows ~1%),
+    /// not a physical bound, so it never touches a well-behaved scene. See
+    /// `j_min` for the floor.
     pub j_max: f32,
     /// Symmetric floor to `j_max` (`1.0/j_max` by convention, same 50x
     /// magnitude) -- the compression-direction half of the same real gap
-    /// `j_max`'s own doc describes. Applied every substep for strict fluids
+    /// `j_max`'s doc describes. Applied every substep for strict fluids
     /// alongside `j_max`, not just at retry exhaustion.
     pub j_min: f32,
     /// Speed below which a passive (activation == 0) particle becomes eligible for sleep.
@@ -358,7 +295,7 @@ pub struct SimConfig {
     /// "dynamic relaxation"; MPM formulation per Beuth, Benz, Vermeer, Coetzee,
     /// Bonnier & van den Berg 2007, "Formulation and Application of a Quasi-
     /// Static Material Point Method," NUMOG X -- used in production geotechnical
-    /// MPM, e.g. Anura3D). Real, material-agnostic fix for the mismatch an
+    /// MPM, e.g. Anura3D). Material-agnostic fix for the mismatch an
     /// explicit-dynamic MPM solver has with an inherently quasi-static problem
     /// (a granular pile creeping toward equilibrium): damps the component of
     /// each grid cell's velocity change THIS substep (a real proxy for applied
@@ -368,7 +305,7 @@ pub struct SimConfig {
     /// mechanism already available via `ViscoelasticMaterial`). Self-gating by
     /// construction: a cell with zero velocity has nothing to oppose (zero
     /// damping), and steady DIRECTED motion (a creature walking, a fluid
-    /// splash) barely engages it -- only genuine wobble/settling does. Lives at
+    /// splash) barely engages it -- only wobble/settling does. Lives at
     /// the grid level, not inside any one material's constitutive law, so
     /// every material benefits once enabled, not just granular ones.
     /// 0.0 = disabled (default) -- no velocity snapshot taken, byte-identical
@@ -378,78 +315,46 @@ pub struct SimConfig {
     /// 2017, "Multi-species simulation of porous sand and water mixtures" --
     /// Darcy-style momentum exchange between materials wrapped in different
     /// `MixturePhase` slots, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
-    /// NOT the paper's own permeability-derived `c_E` directly -- this is a first,
-    /// simplified scalar-coefficient version; mapping to real soil permeability/
-    /// porosity is real, disclosed future work, not attempted yet).
+    /// not the paper's permeability-derived `c_E`; mapping it to soil
+    /// permeability and porosity is future work).
     /// 0.0 = disabled (default) -- `Grid::has_mixture_activity()` gates the extra
     /// P2G scatter and the whole resolve pass, zero cost for every scene that
     /// doesn't use `WithMixturePhase`, matching `asflip_blend`'s own convention.
     pub mixture_drag_coefficient: f32,
     /// Jacobi iterations for the mixture incompressibility pressure projection
-    /// (`Grid::project_mixture_incompressibility`, see its own doc for the full
-    /// derivation and citations). Real fix for a real, root-caused instability:
-    /// the drag coupling above conserves momentum but never enforces the
-    /// mixture's actual incompressibility constraint, so under sustained/
-    /// confined loading (water settled into sand) the violation compounds
-    /// silently over hundreds of steps until velocities blow past the CFL
-    /// bound. 0 = disabled (default) -- byte-identical to the original
-    /// momentum-only coupling, matching every other opt-in field's convention.
-    /// Real, disclosed caveat: this is an approximate, real-time-affordable
-    /// Jacobi solve, not an exact Poisson solve -- pick this value by measuring
-    /// against your actual scene's long-settle behavior (a settled, confined
-    /// liquid is the documented worst case for a low iteration count), not by
-    /// assuming a small fixed count is free.
+    /// (`Grid::project_mixture_incompressibility`, see its doc for the
+    /// derivation and citations). The drag coupling conserves momentum but does
+    /// not enforce the mixture's incompressibility, so under sustained confined
+    /// loading (water settled into sand) the violation grows until velocities
+    /// pass the CFL bound. 0 = disabled (default). An approximate Jacobi solve,
+    /// not an exact Poisson solve: measure the count against the scene's
+    /// long-settle behaviour (a settled, confined liquid is the worst case).
     pub mixture_pressure_iterations: u32,
-    /// Number of OUTER correction passes per substep for STRICT (single-
-    /// phase, non-mixture) fluid incompressibility pressure projection
-    /// (`Grid::project_fluid_incompressibility`, see its own doc). Meant to
-    /// remove the sustained-wall-contact stability limit: a stiff Tait EOS
-    /// (`eos_stiffness`) needs a tiny acoustic-CFL-bound timestep to stay
-    /// stable, and even the tightest near-wall CFL scale tested was too slow
-    /// for sustained contact (a settled puddle against a wall/floor). A real
-    /// Chorin-style pressure projection (Bridson; the same family already
-    /// proven in this codebase for the two-phase mixture case, see
-    /// `mixture_pressure_iterations`'s own doc), solved EXACTLY via a
-    /// discrete cosine transform (Stam 1999), enforces incompressibility as a
-    /// solved constraint instead of an explicit stiff spring -- set the
-    /// fluid's own `eos_stiffness` to 0.0 (already a legal, asserted-
-    /// permitted value, see `fluid_state::tait_pressure`'s own `>= 0.0`
-    /// contract) when using this, so the two mechanisms don't double-count
-    /// the same pressure.
+    /// Number of outer correction passes per substep for strict (single-phase,
+    /// non-mixture) fluid incompressibility pressure projection
+    /// (`Grid::project_fluid_incompressibility`). A stiff Tait EOS needs a tiny
+    /// acoustic-CFL step, too slow for sustained wall contact; a Chorin-style
+    /// projection (Bridson; the family of `mixture_pressure_iterations`), solved
+    /// exactly by a discrete cosine transform (Stam 1999), enforces
+    /// incompressibility as a constraint instead. Set the fluid's
+    /// `eos_stiffness` to 0.0 with it (allowed, see
+    /// `fluid_state::tait_pressure`'s `>= 0.0` contract) so the pressure is not
+    /// counted twice.
     ///
-    /// NOT literal Jacobi iterations any more (the DCT solve is exact, not
-    /// iterative) -- this is the OUTER repeat count: `project_fluid_
-    /// incompressibility` is called this many times in a row per substep,
-    /// each pass re-measuring the (hopefully smaller) residual divergence
-    /// after the previous pass and correcting again. Real, standard
-    /// technique (the same principle PISO/SIMPLE-family incompressible-flow
-    /// solvers use: a single projection is only a first-order splitting of a
-    /// genuinely violent state). 1 is a reasonable default once enabled; more
-    /// passes measurably delay and shrink the known remaining failure mode
-    /// below, at a real, linear extra cost per pass.
+    /// The DCT solve is exact; this is the outer repeat count, each pass
+    /// re-measuring the residual divergence and correcting again (as in
+    /// PISO/SIMPLE solvers: one projection is a first-order splitting of a
+    /// violent state). 1 is a reasonable default once enabled.
     ///
-    /// **Real, honest, disclosed remaining limitation (Round 9, confirmed by
-    /// FOUR independent real attempts, not guessed)**: for the single
-    /// hardest known scene (fluid spanning nearly the full domain height,
-    /// already touching a wall at spawn), this projection does NOT fully
-    /// eliminate a rare failure mode where one particle's own volume ratio
-    /// `J` drifts to an extreme value near a true wall, eventually collapsing
-    /// the substep budget or crashing outright. Confirmed NOT a solver-
-    /// quality artifact: Gauss-Seidel (no spectral basis, can't "ring")
-    /// converges to the SAME extreme pressure the DCT solve does, proving
-    /// it's the true solution of the constant-density-simplified equation
-    /// for that input, not a numerical hallucination. More outer passes
-    /// delay it (5 passes: stable ~16 frames; 10 passes: ~34 frames; 20
-    /// passes: ~29 frames at much higher cost) but do not eliminate it. The
-    /// real, structural cause: the UNIFORM-density simplification (needed to
-    /// make the exact DCT solve tractable, see `Grid::
-    /// project_fluid_incompressibility`'s own doc) cannot represent a
-    /// genuinely non-uniform, hard-packed compression event at a wall
-    /// corner -- the correct fix needs a VARIABLE-density formulation done
-    /// properly (real per-cell mass, with the free-surface unbounded-alpha
-    /// problem solved structurally, e.g. `apic2d`'s own real variational
-    /// solid-fraction boundary weighting -- `tmp/apic2d/apic2d/fluidsim.cpp`,
-    /// not yet ported), a genuinely separate, larger undertaking.
+    /// Limitation: for fluid spanning nearly the full height and touching a
+    /// wall at spawn, one particle's J still drifts to an extreme near the
+    /// wall and eventually exhausts the substep budget or crashes. Gauss-Seidel
+    /// converges to the same extreme pressure as the DCT, so it is the true
+    /// solution of the uniform-density equation for that input. More passes
+    /// delay it (5: ~16 frames; 10: ~34; 20: ~29 at much higher cost) without
+    /// removing it. A fix needs a variable-density formulation with the free
+    /// surface handled structurally (e.g. apic2d's solid-fraction weights,
+    /// `tmp/apic2d/apic2d/fluidsim.cpp`).
     ///
     /// Not only the wall case: a falling droplet with no wall anywhere also
     /// drives J to the clamp, at frame 1 at full gravity and at frame 6-7 at
@@ -459,28 +364,19 @@ pub struct SimConfig {
     /// classification by mass thresholds at walls) are listed in the
     /// pressure projection entry of `KNOWN_LIMITATIONS.md`. Off by default.
     ///
-    /// Real, disclosed scope limit: when this is nonzero,
-    /// `Simulation::step`'s strict-fluid assertions additionally require
-    /// EVERY particle in the scene to be a strict fluid (`owns_deformation_
-    /// volume_state() == true`) -- a scene mixing fluid with sand/solid bodies
-    /// on the same grid is not yet supported here (would need per-cell
-    /// fluid-fraction tracking, the same kind of bookkeeping
-    /// `mixture_cells` already does for the porous case, just not built for
-    /// this non-porous case -- deliberately out of scope until a real scene
-    /// needs it, not a hidden gap).
+    /// When nonzero, `Simulation::step` requires every particle to be a strict
+    /// fluid (`owns_deformation_volume_state() == true`): fluid mixed with sand
+    /// or solids on one grid would need per-cell fluid-fraction bookkeeping
+    /// like `mixture_cells`, not built for this case.
     pub fluid_pressure_iterations: u32,
 
-    /// Real, opt-in P2G spatial-sort (2026-08-10) -- see `spatial_sort_order`/
-    /// `scatter_particles_to_grid_sorted` (`spacetime::transfer::p2g`) for the
-    /// full real motivation (Gao et al. 2018 SIGGRAPH Asia: periodic particle
-    /// reordering for cache/hashmap locality; this engine's OWN GPU path
-    /// already does the equivalent via `particle_sort.wgsl`'s indirection
-    /// array). Default `false` -- zero behavior/cost change for every
-    /// existing scene. NOT proven universally beneficial yet: real,
-    /// disclosed tradeoff is an O(N log N) sort every step against a
-    /// real-but-scene-dependent P2G cache-locality win; only enable after
-    /// measuring on the actual target scene, same "prove it, don't guess"
-    /// discipline as every other perf lever in this engine.
+    /// Opt-in P2G spatial sort (see `spatial_sort_order`/
+    /// `scatter_particles_to_grid_sorted` in `spacetime::transfer::p2g`):
+    /// periodic particle reordering for cache and hashmap locality (Gao et al.
+    /// 2018, SIGGRAPH Asia), what the GPU path does with `particle_sort.wgsl`'s
+    /// indirection array. Default `false`. It costs an O(N log N) sort every
+    /// step against a scene-dependent locality gain; enable it after measuring
+    /// on the target scene.
     pub spatial_sort_enabled: bool,
 
     // ── Physical unit scaling ──────────────────────────────────────────────────
@@ -491,29 +387,18 @@ pub struct SimConfig {
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
     pub dx_meters: f32,
 
-    /// Real, opt-in implicit (Newton-CG) grid-velocity update -- see
-    /// `spacetime::solver::implicit_corotated`'s own module doc for the
-    /// full method (Klar 2016 operator split: implicit elastic solve using
-    /// the shared Corotated elastic branch, then the material's own real,
-    /// unmodified plastic return-mapping applied once at the end). Default
-    /// `false` -- zero behavior change for every existing scene.
+    /// Opt-in implicit (Newton-CG) grid-velocity update (see
+    /// `spacetime::solver::implicit_corotated`: Klar 2016 operator split, an
+    /// implicit elastic solve on the shared Corotated branch, then each
+    /// material's plastic return mapping once). Default `false`.
     ///
-    /// Only engages for a substep where EVERY active particle's material
-    /// uses that shared elastic branch (`DruckerPrager`, `Corotated`,
-    /// `VonMises`, `Rankine`, `DruckerPragerMuI`) and no rods, grains,
-    /// multi-field contact, or mixture coupling are active in the scene --
-    /// a real, disclosed v1 scope limit (see the eligibility check itself),
-    /// not a silent partial application. `do_substep` falls back to the
-    /// normal explicit pipeline, byte-identical to today, whenever this
-    /// check fails -- so turning this on for a scene it doesn't yet support
-    /// is always safe, just inert.
-    ///
-    /// Real, measured evidence this is worth having (2026-09-10, standalone
-    /// `tests/scratch_implicit_mpm_stage3_drucker_prager_multi_particle.rs`
-    /// before this field existed): 10.3x wall-clock speedup at basic_sand's
-    /// own real ~2016-particle, ~2247-substep-per-frame scale, real
-    /// operator-split plastic-correction error under 1% at far coarser
-    /// correction frequency than that.
+    /// Engages only for a substep where every active particle's material uses
+    /// that branch (`DruckerPrager`, `Corotated`, `VonMises`, `Rankine`,
+    /// `DruckerPragerMuI`) and no rods, grains, multi-field contact or mixture
+    /// coupling are active; otherwise, or when the solve does not converge,
+    /// `do_substep` runs the explicit pipeline, so it is always safe to turn on.
+    /// At `basic_sand`'s scale it currently always falls back (see that
+    /// module's status section).
     pub implicit_corotated_elastic: bool,
 }
 
@@ -713,7 +598,7 @@ impl SimConfig {
 }
 
 // `SpawnRegion` (initial particle layout) + its `SpawnShape` mask and fluent
-// builder methods live in spawn.rs -- see that file's own doc comment.
+// builder methods live in spawn.rs -- see that file's doc comment.
 // Re-exported here so every existing `crate::solver::config::SpawnRegion`/
 // `SpawnShape` path (and the crate-root `emerge::SpawnRegion`/`SpawnShape`
 // re-export in lib.rs) keeps resolving unchanged.

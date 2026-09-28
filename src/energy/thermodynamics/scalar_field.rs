@@ -56,7 +56,7 @@ use crate::{
 /// Signature for `ScalarDiffusionField::source` -- factored into its own
 /// alias (clippy's own complexity threshold, not just cosmetic) once the
 /// resolved-material parameter joined the particle/phi pair. See `source`'s
-/// own doc for what each argument is for.
+/// doc for what each argument is for.
 pub type ScalarFieldSource = fn(&Particle, f32, &dyn MaterialModel) -> f32;
 
 pub struct ScalarDiffusionField {
@@ -82,27 +82,23 @@ pub struct ScalarDiffusionField {
     /// Use for fire emitting heat, creatures emitting pheromone, Turing patterns, etc.
     pub source: Option<ScalarFieldSource>,
 
-    /// PIC/FLIP-style transfer blend, real and established (Zhu & Bridson
-    /// 2005; standard in production fluid solvers, commonly ~0.95 FLIP/0.05
-    /// PIC -- see Bridson, *Fluid Simulation for Computer Graphics*, already
-    /// cited elsewhere in this engine; this engine's own `apic_blend`
-    /// applies the identical idea to velocity transfer already).
+    /// PIC/FLIP-style transfer blend (Zhu & Bridson 2005; production fluid
+    /// solvers commonly use ~0.95 FLIP/0.05 PIC, see Bridson, *Fluid
+    /// Simulation for Computer Graphics*). `apic_blend` applies the same idea
+    /// to velocity transfer.
     ///
-    /// `1.0` (default) = pure delta transfer ("FLIP-like"): a particle's own
+    /// `1.0` (default) = pure delta transfer ("FLIP-like"): a particle's
     /// stored value plus the grid-computed change, preserving per-particle
-    /// heterogeneity -- exactly this field's original, only behavior, so
-    /// every existing heat/pheromone/nutrient scene is byte-identical.
+    /// heterogeneity.
     /// `0.0` = pure absolute transfer ("PIC-like"): a particle simply takes
     /// the local grid average, discarding its own prior value -- damped,
     /// stable, no nullspace noise.
     ///
-    /// Real motivating case: a passive reader (e.g. sand) co-located with an
-    /// aggressive, persistent source (e.g. water) can accumulate the SAME
-    /// grid-computed delta the source itself gets every substep, with
-    /// nothing of its own to counterbalance it -- the exact nullspace-noise
-    /// failure FLIP is documented to have. A lower blend trades some of the
-    /// "preserve my own value" property for the stability a passive
-    /// participant actually needs.
+    /// A passive reader (e.g. sand) co-located with a persistent source (e.g.
+    /// water) can receive the same grid delta as the source every substep
+    /// with nothing of its own to counterbalance it, FLIP's documented
+    /// nullspace-noise failure. A lower blend gives up some of "keep my own
+    /// value" for the stability a passive participant needs.
     pub blend: f32,
 
     /// Fraction of the explicit diffusion step's stability limit each pass
@@ -289,7 +285,7 @@ impl ScalarDiffusionField {
             self.config.diffusivity * sub_dt,
             self.config.ambient,
         );
-        // Decay pulls toward zero (not ambient -- a real, deliberate
+        // Decay pulls toward zero (not ambient -- a deliberate
         // difference from ThermalDiffusion's Newton cooling, see module doc),
         // by the exact solution of `dphi/dt = -lambda phi`. The linear form
         // `1 - lambda dt` it replaces went negative past `lambda dt = 1`.
@@ -300,7 +296,7 @@ impl ScalarDiffusionField {
             }
         }
 
-        // --- G2P: gather back to particles, PIC/FLIP-blended (see `blend`'s own doc) ---
+        // --- G2P: gather back to particles, PIC/FLIP-blended (see `blend`'s doc) ---
         // grid_work = φ_new, grid_norm = φ_old.
         for pi in 0..particles.len() {
             let p_ref = particles.get(pi);
@@ -347,14 +343,11 @@ mod pic_flip_blend_tests {
     use crate::materials::{DruckerPragerMaterial, NewtonianFluidMaterial};
     use glam::Vec2;
 
-    /// Real regression test for `blend` itself, at the hardest case on
-    /// purpose: sand and water EXACTLY co-located (every pair sharing one
-    /// position), not just spatially nearby -- the worst-case scenario for
-    /// FLIP's nullspace-noise failure (see `blend`'s own doc), since a
-    /// passive reader here gets the identical grid delta the source itself
-    /// gets, every substep, with nothing of its own to counterbalance it.
-    /// At a real PIC-leaning blend, the passive material must still pick up
-    /// genuine positive saturation instead of drifting negative.
+    /// `blend` at its hardest case: sand and water exactly co-located (every
+    /// pair at one position), where a passive reader gets the source's grid
+    /// delta every substep with nothing to counterbalance it (see `blend`).
+    /// At a PIC-leaning blend, the passive material must still pick up
+    /// positive saturation instead of drifting negative.
     #[test]
     fn low_blend_gives_stable_positive_transfer_even_at_exact_colocation() {
         let mut registry = MaterialRegistry::with_default(Box::new(
@@ -365,10 +358,8 @@ mod pic_flip_blend_tests {
             Box::new(NewtonianFluidMaterial::low_viscosity(4.0, 10.0)),
         );
 
-        // Real spatial spread (a small block, not a singular point) -- two
-        // particles sharing one exact position is a degenerate edge case
-        // (no meaningful gradient for the Laplacian to act on), not a
-        // realistic test of spatial diffusion between two bodies.
+        // A small block, not a single point: two particles at one exact
+        // position give the Laplacian no gradient to act on.
         let mut raw = Vec::new();
         for bx in 0..4 {
             for by in 0..4 {

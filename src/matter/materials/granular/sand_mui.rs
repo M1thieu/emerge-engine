@@ -35,28 +35,21 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 ///
 /// Reference: Cicoira, Blatny, Li, Trottet & Gaume 2022, "Towards a predictive
 /// multi-phase model for alpine mass movements and process cascades," Engineering
-/// Geology 310:106866 (Blatny is a co-author, not first author -- an earlier
-/// version of this comment misattributed it); the µ(I) functional form itself
-/// traces to Jop, Forterre & Pouliquen 2006, Nature 441:727-730. Also:
-/// matter/src/simulation/plasticity.cpp DPMui.
+/// Geology 310:106866; the µ(I) functional form traces to Jop, Forterre &
+/// Pouliquen 2006, Nature 441:727-730. Also: matter/src/simulation/plasticity.cpp
+/// DPMui.
 /// Canonical parameters: µ₁=tan(20.9°), µ₂=tan(32.8°), I₀=0.279, d=1mm, ρₛ=2500 kg/m³
 /// → Q = 0.279 / (0.001 · √2500) ≈ 5.58.
 ///
-/// Tier-0 status (2026-09, real decision, not silently deprioritized): kept
-/// out of the actively-supported Tier-0 set for now. This is a real,
-/// distinct, valid closure (a genuine local µ(I) rheology, cheap, with its
-/// own GPU path) -- NOT superseded by `granular::sand`'s own NGF (nonlocal
-/// granular fluidity) extension, which is a different closure entirely
-/// (diffuses a fluidity field rather than solving this material's own
-/// quadratic for the plastic multiplier) that happens to cover a related
-/// but distinct real physical regime (size effects, shear bands, slow
-/// zones near flow/no-flow boundaries where a strictly local rheology is
-/// known to fail). The honest reason this stays deprioritized: zero real
-/// interactive example and the existing accuracy test
-/// (`mu_i_rheology_column_collapse_natural_arrest_check`) has no assert,
-/// pure printout -- under-validated, not incorrect. Revisit if a real use
-/// case needs the cheap local closure specifically (no extra grid-field
-/// coupling to wire up) rather than NGF's own real cost.
+/// # Status
+/// Outside the Tier-0 set: no interactive example yet. A distinct closure
+/// from `granular::sand`'s NGF (nonlocal granular fluidity) extension: a
+/// local µ(I) rheology, cheap, with its own GPU path, solving its own
+/// quadratic for the plastic multiplier, whereas NGF diffuses a fluidity
+/// field to cover size effects, shear bands and slow zones where a strictly
+/// local rheology fails. The slow column-collapse test
+/// (`mu_i_rheology_column_collapse_natural_arrest_check`) checks the
+/// `dense_packed` pile arrests within 3° of its 30° static angle.
 #[derive(Debug, Clone, Copy)]
 pub struct MuIRheologyMaterial {
     /// Rest density in grid units (`rho / reference density`, the same
@@ -94,15 +87,12 @@ impl MuIRheologyMaterial {
     }
 
     /// Construct from Young's modulus E and Poisson's ratio ν (same API as DruckerPragerMaterial).
-    /// **Grid units, NOT real Pascals** (real disclosure added 2026-09-05,
-    /// same finding as `NeoHookeanMaterial::from_young_modulus`'s own doc):
-    /// calls [`lame_from_young`] directly, never touches `dx_meters`/
-    /// density. For a real, correctly SI-to-grid-converted material, build
-    /// an [`Elastoplastic`](crate::materials::Elastoplastic) with
+    /// **Grid units, not pascals**: calls [`lame_from_young`] directly and
+    /// never touches `dx_meters` or density. For an SI material build an
+    /// [`Elastoplastic`](crate::materials::Elastoplastic) with
     /// `model: PlasticityModel::GranularRateDependent { friction_angle_deg, dilatancy_angle_deg }`
-    /// and call its `.material(&config)` (real dispatch, see that method's
-    /// own doc) -- `Self::from_physical` exists but its `GranularProps`
-    /// input type is crate-internal, not constructible from outside.
+    /// and call its `.material(&config)` (`Self::from_physical` exists, but
+    /// its `GranularProps` input is crate-internal).
     pub fn from_young_modulus(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self::new(lambda, mu)
@@ -123,12 +113,10 @@ impl MuIRheologyMaterial {
     }
 
     /// Dense-packed: higher static + dynamic friction, larger µ₂-µ₁ gap.
-    /// mu_static/mu_dynamic = tan(30°)/tan(40°) -- within the standard real range for
-    /// dense granular material internal friction angle (~35-45° peak, textbook soil
-    /// mechanics, e.g. Lambe & Whitman 1969), unlike `small_grain`/`large_grain` above
-    /// which cite Cicoira et al. 2022 directly for their specific values -- flagged
-    /// here (audit 2026-07-17) as a real, plausible range but not yet tied to that same
-    /// specific paper's own dense-packing numbers.
+    /// mu_static/mu_dynamic = tan(30°)/tan(40°), within the usual range of
+    /// internal friction angle for dense granular material (~35-45° peak,
+    /// Lambe & Whitman 1969). Unlike `small_grain`/`large_grain`, these
+    /// values are not taken from Cicoira et al. 2022.
     pub fn dense_packed(young_modulus: f32, poisson_ratio: f32) -> Self {
         let (lambda, mu) = lame_from_young(young_modulus, poisson_ratio);
         Self {
@@ -171,11 +159,11 @@ impl MaterialModel for MuIRheologyMaterial {
         Some((self.lambda, self.mu))
     }
 
-    /// See `MaterialModel::current_friction_coefficient`'s own doc (MIBF,
+    /// See `MaterialModel::current_friction_coefficient`'s doc (MIBF,
     /// Blatny & Gaume 2025). Unlike `DruckerPragerMaterial`, `friction_
     /// hardening` already stores the ready-to-use current mu(I) ratio
     /// directly (`init_particle`/`update_particle` below) -- no conversion
-    /// needed, this is the real, exact coefficient with zero extra cost.
+    /// needed, this is the exact coefficient with zero extra cost.
     fn current_friction_coefficient(&self, particles: &Particles, i: usize) -> Option<f32> {
         Some(particles.friction_hardening[i])
     }
@@ -402,7 +390,7 @@ mod marginal_yield_tests {
         // enough shear to exceed mu_static*p_trial. First version used
         // eps_x=-0.05,eps_y=0.05 (zero net trace), which hit the p_trial<=0
         // tension-cutoff branch instead of real yield -- fixed by using
-        // asymmetric values with genuine net compression.
+        // asymmetric values with net compression.
         let eps_x = -0.08_f32;
         let eps_y = 0.02_f32;
         let sigma = Vec2::new(eps_x.exp(), eps_y.exp());
@@ -462,9 +450,8 @@ mod marginal_yield_tests {
     }
 }
 
-/// Real correctness check for `MaterialModel::current_friction_
-/// coefficient` (MIBF, Blatny & Gaume 2025) -- see that trait method's own
-/// doc and this material's own override.
+/// Checks `MaterialModel::current_friction_coefficient` (MIBF, Blatny &
+/// Gaume 2025) -- see that trait method's doc and this material's override.
 #[cfg(test)]
 mod current_friction_coefficient_tests {
     use super::*;

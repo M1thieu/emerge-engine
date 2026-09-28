@@ -1,66 +1,51 @@
-//! Cosserat (micropolar) granular kinematics -- real grain-scale rolling
-//! resistance, the confirmed root cause of `DruckerPragerMaterial`'s
-//! self-arrest gap (see memory: sand collapse never naturally stops under
-//! plain Coulomb/DP friction; real angle-of-repose literature attributes
-//! this to rolling friction, not damping -- a scalar sliding-friction model
-//! has no notion of rolling at all).
+//! Cosserat (micropolar) granular kinematics: grain-scale rolling
+//! resistance. Under plain Coulomb/DP friction a sand collapse never stops by
+//! itself; the angle-of-repose literature attributes arrest to rolling
+//! friction, not damping, and a scalar sliding-friction model has no
+//! rolling.
 //!
 //! # Status: kinematics + elastic constitutive relation only
-//! This module deliberately does NOT yet close the loop into
-//! `DruckerPragerMaterial`'s stress/yield computation. A full Cosserat
-//! coupling needs a genuine second grid-level balance (linear momentum AND
-//! angular momentum/couple-stress, `div(m) + e:σ = 0`) -- a real physics
-//! channel, not a shortcut. Faking that with a local relaxation instead of
-//! the real spatial balance would be exactly the "cheat with a PDE" this
-//! project explicitly rejects. What's implemented here is the real,
-//! independently-testable piece: the micro-curvature kinematics and the
-//! real elastic couple-stress relation, verified against the cited
-//! reference. Closing the loop (feeding this into an actual stress/yield
-//! coupling) is real, disclosed future work -- see
-//! `project_grain_scale_rolling_resistance_two_real_paths` in memory.
+//! Not coupled into `DruckerPragerMaterial`'s stress and yield: a full
+//! Cosserat coupling needs a second grid-level balance (angular momentum and
+//! couple stress, `div(m) + e:σ = 0`), and a local relaxation in its place
+//! would be a shortcut, not that balance. Implemented here: the
+//! micro-curvature kinematics and the elastic couple-stress relation,
+//! checked against the reference. The coupling is future work.
 //!
-//! # Real citation
+//! # Citation
 //! de Borst, R., Sabet, S.A. and Hageman, T. (2022), "Non-associated
 //! Cosserat plasticity", International Journal of Mechanical Sciences,
 //! 230, 107535, <https://doi.org/10.1016/j.ijmecsci.2022.107535> (open
 //! access, CC-BY-NC-ND). Foundational theory: Cosserat & Cosserat (1909);
 //! shear-band regularization application: de Borst (1991).
 //!
-//! # The real equations (2D, this project's own notation)
-//! A Cosserat continuum carries a micro-rotation field ω_c (a scalar in 2D
-//! -- rotation about the out-of-plane axis) that is NOT slaved to the
-//! ordinary velocity gradient's antisymmetric part, unlike classical
-//! continuum mechanics. Its spatial gradient is the micro-curvature:
+//! # Equations (2D)
+//! A Cosserat continuum carries a micro-rotation ω_c (a scalar in 2D,
+//! rotation about the out-of-plane axis) not slaved to the antisymmetric
+//! part of the velocity gradient. Its gradient is the micro-curvature:
 //! ```text
 //! κ = ∇ω_c        (κ_x = ∂ω_c/∂x, κ_y = ∂ω_c/∂y)
 //! ```
-//! work-conjugate to a couple-stress vector `m` (moment per unit area, 2D
-//! reduction of the general 3D couple-stress tensor). The cited paper's own
-//! planar reduction of the general elastic relation (their eq. 36-38, after
-//! the out-of-plane cancellation that occurs for genuinely 2D deformation)
-//! is a direct proportionality through a real internal length scale `l`
-//! (tied to physical grain size) and a coupling modulus `alpha`:
+//! work-conjugate to a couple-stress vector `m` (moment per unit area, the 2D
+//! reduction of the 3D couple-stress tensor). The paper's planar reduction of
+//! the elastic relation (eq. 36-38, after the out-of-plane terms cancel) is a
+//! proportionality through an internal length `l` (grain size) and a coupling
+//! modulus `alpha`:
 //! ```text
 //! m = alpha * l^2 * κ
 //! ```
-//! The same paper reports the shear-band width predicted by this model is
-//! real and citable: roughly 15-20 times `l`, i.e. `l` is not a free numerical
-//! knob -- it is set by the real grain diameter, same convention already used
-//! by `GranularFluidityField`'s own `grain_diameter_m`.
+//! The paper puts the predicted shear-band width at roughly 15-20 times `l`,
+//! so `l` is set by the grain diameter (the convention of
+//! `GranularFluidityField`'s `grain_diameter_m`), not tuned.
 
 /// Central-difference micro-curvature (`κ = ∇ω_c`) from a grid-scattered
-/// micro-rotation field. Same column-major indexing (`idx = x*grid_res+y`)
-/// and Dirichlet-at-domain-edge convention as
-/// `energy::thermodynamics::stencil::laplacian_step`, so this can reuse the
-/// exact same P2G-scatter/gather scaffolding once wired into a live field --
-/// not invented independently.
+/// micro-rotation field, with the column-major indexing (`idx =
+/// x*grid_res+y`) of `energy::thermodynamics::stencil::laplacian_step`, so it
+/// can reuse the same scatter/gather scaffolding.
 ///
-/// Real, standard second-order central difference: `∂ω/∂x ≈ (ω(x+1,y) −
-/// ω(x−1,y)) / (2·dx)`. Off-grid neighbors at the domain edge use a
-/// one-sided difference instead of assuming an ambient value (unlike
-/// `laplacian_step`'s Dirichlet boundary) -- curvature has no natural
-/// "ambient" value the way temperature does, so a one-sided estimate is the
-/// real, honest choice at the edge, not an arbitrary substitute.
+/// Second-order central difference, `∂ω/∂x ≈ (ω(x+1,y) − ω(x−1,y)) / (2·dx)`,
+/// one-sided at the domain edge (curvature has no ambient value to assume,
+/// unlike temperature in `laplacian_step`'s Dirichlet boundary).
 pub fn micro_curvature_2d(
     grid_omega: &[f32],
     grid_res: usize,
@@ -90,15 +75,13 @@ pub fn micro_curvature_2d(
     glam::Vec2::new(kappa_x, kappa_y)
 }
 
-/// Real elastic couple-stress relation (de Borst, Sabet & Hageman 2022, the
-/// planar reduction of their eq. 36-38): `m = alpha * l^2 * κ`.
+/// Elastic couple-stress relation (de Borst, Sabet & Hageman 2022, planar
+/// reduction of eq. 36-38): `m = alpha * l^2 * κ`.
 ///
-/// `length_scale_m` is the real internal length scale `l` -- physically the
-/// grain diameter (same real quantity `GranularFluidityConfig::
-/// grain_diameter_m` already uses), NOT a free numerical fitting knob.
-/// `coupling_modulus` is `alpha`, a real elastic modulus with units of
-/// stress (couple-stress `m` then comes out in stress·length units, the
-/// genuine dimensional form of a moment per unit area).
+/// `length_scale_m` is the internal length `l`, physically the grain
+/// diameter (as `GranularFluidityConfig::grain_diameter_m`), not a fitting
+/// knob. `coupling_modulus` is `alpha`, in stress units, so `m` comes out in
+/// stress·length, a moment per unit area.
 pub fn elastic_couple_stress_2d(
     curvature: glam::Vec2,
     coupling_modulus: f32,
@@ -112,11 +95,8 @@ mod tests {
     use super::*;
     use glam::Vec2;
 
-    /// Real analytic check: for ω_c(x,y) = 2x + 3y (a plane, exact constant
-    /// gradient everywhere), the central-difference stencil must reproduce
-    /// the exact analytic gradient (2, 3) at every interior point -- no
-    /// truncation error at all for a linear function, since central
-    /// differences are exact for polynomials up to degree 1.
+    /// For ω_c(x,y) = 2x + 3y (a plane), central differences reproduce the
+    /// gradient (2, 3) exactly at every interior point (exact for degree 1).
     #[test]
     fn curvature_matches_analytic_gradient_of_a_linear_field() {
         const RES: usize = 8;
@@ -141,7 +121,7 @@ mod tests {
     }
 
     /// A uniform (constant) micro-rotation field has zero curvature
-    /// everywhere -- real, necessary check: no differential rotation, no
+    /// everywhere -- necessary check: no differential rotation, no
     /// micro-curvature, matching κ=∇ω_c's own definition directly.
     #[test]
     fn uniform_field_has_zero_curvature() {
@@ -155,7 +135,7 @@ mod tests {
         }
     }
 
-    /// Real, direct check of the cited formula: m = alpha * l^2 * κ.
+    /// Checks the cited formula: m = alpha * l^2 * κ.
     #[test]
     fn elastic_couple_stress_matches_the_cited_formula_directly() {
         let kappa = Vec2::new(0.02, -0.015);
@@ -166,7 +146,7 @@ mod tests {
         assert!((m - expected).length() < 1e-9 * expected.length().max(1.0));
     }
 
-    /// Zero curvature must give zero couple-stress -- a real, necessary
+    /// Zero curvature must give zero couple-stress -- a necessary
     /// property of the linear elastic relation (no differential rotation
     /// between neighboring material points means no torque resisting it).
     #[test]
@@ -175,17 +155,11 @@ mod tests {
         assert_eq!(m, Vec2::ZERO);
     }
 
-    /// Real sanity-of-scale check: at a real grain diameter (0.3mm) and a
-    /// modulus of the same real order of magnitude as this project's own
-    /// sand Young's modulus (~1e5-1e7 Pa range, see `DruckerPragerMaterial`
-    /// presets), a real, physically plausible curvature (order 1 rad/m,
-    /// i.e. micro-rotation changing by about a radian per meter -- a
-    /// genuinely large but not absurd shear-localization scenario) should
-    /// give a couple-stress magnitude much smaller than the ordinary
-    /// Cauchy stress scale (order alpha itself) -- consistent with couple-
-    /// stress effects being a real but small correction at grain scale, not
-    /// a dominant term, matching the cited paper's own framing (couple
-    /// stresses matter for localization WIDTH, not bulk stress magnitude).
+    /// Scale check: at a 0.3 mm grain and a modulus of the order of the sand
+    /// presets' Young's modulus (~1e5-1e7 Pa), a large but plausible curvature
+    /// (~1 rad/m) gives a couple stress far below the Cauchy stress scale
+    /// (~alpha): couple stresses set the localization width, not the bulk
+    /// stress, as the paper frames them.
     #[test]
     fn couple_stress_is_a_small_correction_at_real_grain_scale() {
         let kappa = Vec2::new(1.0, 0.0);

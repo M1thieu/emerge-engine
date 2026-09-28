@@ -7,7 +7,7 @@ use std::mem;
 
 use bytemuck::{Pod, Zeroable};
 
-/// Mirrors `grid_volume.wgsl`'s `GridVolumeParams` -- see that shader's own doc for
+/// Mirrors `grid_volume.wgsl`'s `GridVolumeParams` -- see that shader's doc for
 /// the real technique (samples the solver's own P2G mass field directly instead of
 /// per-particle splats).
 #[repr(C)]
@@ -17,9 +17,8 @@ pub(super) struct GridVolumeParams {
     pub(super) tx: f32,
     pub(super) sy: f32,
     pub(super) ty: f32,
-    /// Real light direction, sourced from `Renderer::set_light_dir` -- see
-    /// that method's own doc for why this replaced a value hardcoded
-    /// separately (and inconsistently) in each fragment shader.
+    /// Light direction, from `Renderer::set_light_dir` (one value for every
+    /// fragment shader).
     pub(super) light_dir: [f32; 2],
     pub(super) grid_res: u32,
     pub(super) mass_floor: f32,
@@ -41,7 +40,7 @@ pub struct GpuRenderParams<'a> {
     pub particle_count: usize,
     pub output_view: &'a wgpu::TextureView,
     pub clear: bool,
-    /// See `RenderConfig::interp_alpha`'s own doc.
+    /// See `RenderConfig::interp_alpha`'s doc.
     pub interp_alpha: f32,
 }
 
@@ -85,16 +84,13 @@ pub(super) struct RenderConfig {
     pub(super) mode: u32,
     pub(super) particle_count: u32,
     pub(super) vel_scale: f32,
-    /// Render-time position blend factor for the "Fix Your Timestep" (Gaffer
-    /// 2004) GPU interpolation path -- `mix(prev_positions[id], p.x,
-    /// interp_alpha)` in `prep_instances.wgsl`. `1.0` (the CPU-path
-    /// `basic_fluids.rs`/`snake_on_terrain.rs` convention when no snapshot has
-    /// been taken) means "use the current position unblended," byte-identical
-    /// to this field's former role as unused padding. Real fix for the
-    /// "sudden acceleration" symptom root-caused 2026-09-15: every GPU demo
-    /// already runs `FixedStepController` real-time-decoupled stepping but
-    /// none interpolated the leftover fractional step, so uneven real
-    /// per-step cost showed up as uneven position jumps on screen.
+    /// Render-time position blend factor for "Fix Your Timestep" (Gaffer
+    /// 2004) interpolation: `mix(prev_positions[id], p.x, interp_alpha)` in
+    /// `prep_instances.wgsl`. `1.0` (the CPU-path convention when no snapshot
+    /// has been taken) uses the current position unblended. The GPU demos step
+    /// with `FixedStepController`; without interpolating the leftover
+    /// fractional step, uneven per-step cost shows as uneven position jumps
+    /// on screen.
     pub(super) interp_alpha: f32,
 }
 const _: () = assert!(mem::size_of::<RenderConfig>() == 16);
@@ -170,11 +166,10 @@ pub(super) struct SurfaceParams {
     /// Always 0 on the dual-phase path -- its own 2-phase filter above is
     /// a different, unrelated mechanism.
     pub(super) material_mass_enabled: u32,
-    /// Real simulation timestep (`SimConfig::dt`) -- see `curvature_flow.
-    /// wgsl`'s own `SurfaceParams::dt` doc for why this is the real
-    /// physical quantity `splat_density_main`'s velocity-stretch extension
-    /// needs, not a render-frame time. Ignored by every other pass sharing
-    /// this struct.
+    /// Simulation timestep (`SimConfig::dt`), used by `splat_density_main`'s
+    /// velocity-stretch extension (see `curvature_flow.wgsl`'s
+    /// `SurfaceParams::dt`); a physical time, not a render-frame time. Ignored
+    /// by the other passes sharing this struct.
     pub(super) dt: f32,
     /// Splat kernel width in physics-grid cells -- see `curvature_flow.
     /// wgsl`'s own `SurfaceParams::splat_width_cells` doc. 1.0 = original
@@ -216,7 +211,7 @@ pub(super) struct LightDiffuseParams {
 }
 const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 32);
 
-/// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the real, persistent
+/// Mirrors `curvature_flow.wgsl`'s `WaveStepParams` -- the persistent
 /// (across frames) 2D wave-equation pass's own uniform. See that shader's
 /// own "Pass 2b" doc for the real technique (same cited numerical scheme as
 /// `energy::acoustics::WaveEquation2D`, reimplemented for this GPU-resident
@@ -225,7 +220,7 @@ const _: () = assert!(mem::size_of::<LightDiffuseParams>() == 32);
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct WaveStepParams {
     pub(super) surface_res: u32,
-    /// See `curvature_flow.wgsl`'s own `WaveStepParams` doc -- real, generic,
+    /// See `curvature_flow.wgsl`'s own `WaveStepParams` doc -- generic,
     /// derived from `MaterialModel::owns_deformation_volume_state()` by the
     /// caller, not a per-material-ID special case. 0.0 (default) = inert.
     pub(super) wave_force_coeff: f32,
@@ -267,7 +262,7 @@ const _: () = assert!(mem::size_of::<GridVisibilityParams>() == 16);
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct BandHysteresisParams {
     pub(super) surface_res: u32,
-    /// Mass of one fully-occupied cell -- see the shader's own doc. 1.0
+    /// Mass of one fully-occupied cell -- see the shader's doc. 1.0
     /// reproduces the previous absolute-threshold behaviour exactly.
     pub(super) reference_cell_mass: f32,
     pub(super) _pad1: u32,
@@ -279,7 +274,7 @@ const _: () = assert!(mem::size_of::<BandHysteresisParams>() == 16);
 /// extraction/composite fragment pass's own params. `sx/tx/sy/ty` are the
 /// SAME orthographic-projection math `CameraParams` uses, but computed
 /// against `surface_res`, not the physics `grid_res` -- see
-/// `Renderer::render_surface_reconstruction`'s own doc.
+/// `Renderer::render_surface_reconstruction`'s doc.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct SurfaceRenderParams {
@@ -288,7 +283,7 @@ pub(super) struct SurfaceRenderParams {
     pub(super) sy: f32,
     pub(super) ty: f32,
     /// Same real light direction as `GridVolumeParams::light_dir` -- see
-    /// `Renderer::set_light_dir`'s own doc.
+    /// `Renderer::set_light_dir`'s doc.
     pub(super) light_dir: [f32; 2],
     pub(super) surface_res: u32,
     pub(super) mass_floor: f32,
@@ -296,16 +291,15 @@ pub(super) struct SurfaceRenderParams {
     /// v1 behavior for every existing caller.
     pub(super) material_slot: u32,
     /// N-material extension, single-phase path only (see `SurfaceParams`'s
-    /// own doc for the mechanism). Was `_pad1: f32`, an unused pad field --
+    /// doc for the mechanism). Was `_pad1: f32`, an unused pad field --
     /// same offset, same size, `SurfaceRenderParams` stays 48 bytes.
     pub(super) material_mass_enabled: u32,
-    /// Real per-cell mass scale this scene's densities are expressed in, same
-    /// value `BandHysteresisParams` already carries -- see `Renderer::
-    /// set_grid_reference_cell_mass`. `fs_main` divides by it before
-    /// quantizing depth into bands, which is what makes the band range a
-    /// dimensionless "how many reference cell-masses deep is this" rather than
-    /// an absolute mass that only happens to be right for one material.
-    /// Was one half of `_pad2` -- same offset, same size, struct stays 48 bytes.
+    /// Per-cell mass scale the scene's densities are expressed in, the value
+    /// `BandHysteresisParams` carries (see
+    /// `Renderer::set_grid_reference_cell_mass`). `fs_main` divides by it
+    /// before quantizing depth into bands, so the band range is a
+    /// dimensionless "how many reference cell-masses deep" rather than an
+    /// absolute mass that fits only one material.
     pub(super) reference_cell_mass: f32,
     /// Floor on optical depth for edge color, in the SAME dimensionless band
     /// units as the quantizer above (see `Renderer::set_edge_reference_depth`).
@@ -327,7 +321,7 @@ pub struct SurfaceReconstructionSource<'a> {
     pub grid_res: u32,
     /// Which `OpticalTable` slot colors the whole reconstructed surface
     /// when `material_mass_enabled` is false -- real v1 fallback, see this
-    /// method's own doc.
+    /// method's doc.
     pub material_slot: u32,
     /// N-material extension: when true, `fs_main` ignores `material_slot`
     /// and colors each pixel from its cell's own majority-mass material
@@ -335,16 +329,15 @@ pub struct SurfaceReconstructionSource<'a> {
     /// `dominant_material`, see `curvature_flow.wgsl`'s doc). Opt-in --
     /// false costs nothing beyond a 4-byte placeholder buffer.
     pub material_mass_enabled: bool,
-    /// Real simulation timestep (`SimConfig::dt`) -- feeds `splat_density_
-    /// main`'s real velocity-stretch extension (see `curvature_flow.wgsl`'s
-    /// own `SurfaceParams::dt` doc for the full physical grounding). Pass
-    /// the same `dt` the `Simulation` this scene came from was constructed
-    /// with.
+    /// Simulation timestep (`SimConfig::dt`) for `splat_density_main`'s
+    /// velocity-stretch extension (see `curvature_flow.wgsl`'s
+    /// `SurfaceParams::dt`). Pass the `dt` the scene's `Simulation` was
+    /// constructed with.
     pub dt: f32,
 }
 
 /// Bundles `render_surface_reconstruction_dual_phase`'s args (see that
-/// method's own doc, and `curvature_flow.wgsl`'s "two-phase extension" doc
+/// method's doc, and `curvature_flow.wgsl`'s "two-phase extension" doc
 /// for the real technique) -- two independently-smoothed surfaces sharing
 /// one particle buffer, filtered by `material_id`. `material_id` doubles as
 /// the `OpticalTable` color slot for its own phase, same real convention
@@ -355,9 +348,8 @@ pub struct DualPhaseSurfaceSource<'a> {
     pub grid_res: u32,
     pub material_id_a: u32,
     pub material_id_b: u32,
-    /// Real simulation timestep (`SimConfig::dt`) -- same real velocity-
-    /// stretch extension as `SurfaceReconstructionSource::dt` (see that
-    /// field's own doc), since this path shares the exact same
+    /// Simulation timestep (`SimConfig::dt`), as
+    /// `SurfaceReconstructionSource::dt`: this path shares the same
     /// `splat_density_main` compute shader.
     pub dt: f32,
 }
@@ -371,7 +363,7 @@ pub(super) struct OpticalTable {
     /// range, Jacques 2013, a legitimate simplification for that reason).
     pub(super) slots: [[f32; 4]; 16],
     /// .x = specular Fresnel base reflectance R0 (Schlick 1994 approximation),
-    /// rest padding. Real, cited, but bounded: this renderer has no surface-normal
+    /// rest padding. Cited, but bounded: this renderer has no surface-normal
     /// estimation (it tints particle instances, doesn't raytrace a reconstructed
     /// surface), so this is a constant near-normal-incidence reflectance, NOT a
     /// full view-angle-dependent Fresnel term -- honestly a simplification, not a

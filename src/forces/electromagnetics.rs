@@ -1,13 +1,11 @@
 //! Electric and magnetic field-query math -- the Forces half of `electromagnetics::`.
 //!
-//! Pure-Rust, no ECS. Ported from `crates/energy/src/electromagnetism/fields.rs`.
-//! Split from the old unified `electromagnetics/` module 2026-07-11: this is
-//! point-charge/current FORCE-application math (Forces domain); wave
+//! Pure Rust, no ECS. Point-charge/current force math (Forces domain); wave
 //! propagation and optical material properties are `energy::electromagnetics`.
 //!
-//! Dormant/experimental: not yet wired into the solver's `Field` trait (see
-//! `forces::fields::em`'s doc for the real, wired-in `UniformElectricField`,
-//! which reimplements F=qE standalone rather than calling into this module).
+//! Dormant/experimental: not wired into the solver's `Field` trait (see
+//! `forces::fields::em` for the wired-in `UniformElectricField`, which
+//! implements F=qE on its own rather than calling into this module).
 //!
 //! # Reference
 //! - Coulomb's law: E = k·q / r²
@@ -63,20 +61,14 @@ impl ElectricField {
     }
 }
 
-/// Magnetic field AT a point in 2D space -- a (pseudo)scalar, not a vector.
+/// Magnetic field at a point in 2D space: a (pseudo)scalar, not a vector.
 ///
-/// Real fix, 2026-08-21: an earlier version stored this as a `Vec2`, treating
-/// B like an in-plane field the same shape as E. That's physically wrong for
-/// genuine 2D electromagnetism, not a simplification of the 3D case -- in
-/// 2+1 dimensions the magnetic field IS the out-of-plane (z) pseudoscalar
-/// component; there is no in-plane B at all (Kirk T. McDonald, "Electrodynamics
-/// in 1 and 2 Spatial Dimensions," Princeton, http://kirkmcd.princeton.edu/examples/2dem.pdf
-/// -- the standard reference for exactly this question). Confirmed the bug
-/// concretely, not just by citation: for a current element along +x and a
-/// field point along +y from it, real Biot-Savart gives B purely along +z
-/// (zero in-plane component) -- the old `Vec2` code instead returned an
-/// in-plane vector, which isn't a smaller B, it's a field pointing in a
-/// direction real physics says has none.
+/// In 2+1-dimensional electromagnetism the magnetic field is the out-of-plane
+/// (z) pseudoscalar component; there is no in-plane B (Kirk T. McDonald,
+/// "Electrodynamics in 1 and 2 Spatial Dimensions", Princeton,
+/// http://kirkmcd.princeton.edu/examples/2dem.pdf). For a current element
+/// along +x and a field point along +y from it, Biot-Savart gives B purely
+/// along +z.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MagneticField {
     /// Out-of-plane (z) component, Tesla. Positive = out of the page (+z,

@@ -122,7 +122,7 @@ fn force_switch(dist: f32, cutoff: f32, switch_on: f32) -> f32 {
 fn update_cell(cx: u32, cy: u32, res: u32) {
     // Main-grid mass/momentum are summed as real f32 bit patterns by p2g's
     // `atomic_add_f32_grid` (exact, no fixed-point quantum -- see that
-    // function's own doc), so reading them is a plain bitcast.
+    // function's doc), so reading them is a plain bitcast.
     let base4 = (cy * res + cx) * 4u;
     let mass  = bitcast<f32>(grid_int[base4 + 2u]);
 
@@ -286,7 +286,7 @@ fn grid_update_main(
         // Unlike grid_clear (whose write is always the same constant zero, so two
         // workgroups racing on it are harmless), grid_update computes each cell's velocity
         // via several read-modify-write steps -- two workgroups doing that concurrently on
-        // the same non-atomic `grid_int` cells is a genuine data race. A block active BOTH
+        // the same non-atomic `grid_int` cells is a data race. A block active BOTH
         // this substep and last substep appears in BOTH lists, so skip it here if it's
         // already in the CURRENT list -- its own current-list workgroup already handles it;
         // only a block PURELY in the grace-period list (deactivated this substep) needs

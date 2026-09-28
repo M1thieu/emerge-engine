@@ -43,7 +43,7 @@ impl GpuSimulation {
     /// Iterate over (index, &Particle) pairs within `radius` grid-cells of `center`.
     /// Reads the internal CPU particle mirror -- one frame behind GPU when strided.
     /// O(candidates) via the internal spatial hash, not O(N) -- see `spatial_hash`
-    /// field's own doc for why this matters at real scale (many creatures/queries
+    /// field's doc for why this matters at real scale (many creatures/queries
     /// per frame against a large terrain+water buffer).
     pub fn particles_near(
         &self,

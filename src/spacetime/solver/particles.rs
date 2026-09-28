@@ -61,7 +61,7 @@ pub struct HydrostaticState {
 
 impl Simulation {
     /// Puts every particle into hydrostatic equilibrium under the current
-    /// gravity, so a body spawned "at rest" genuinely starts at rest.
+    /// gravity, so a body spawned "at rest" starts at rest.
     ///
     /// Particles are created at uniform density, which is not an
     /// equilibrium state: a real column of fluid is held up by the pressure
@@ -125,80 +125,47 @@ impl Simulation {
         }
     }
 
-    /// Real, shared phase-transition logic -- the single place both
-    /// `phase_transition` (this file) and the per-substep `add_phase_rule`
-    /// evaluation (`solver::step`) apply a material change, so the two
-    /// can never drift apart on what a transition actually does.
+    /// Shared phase-transition logic: the one place where both
+    /// `phase_transition` and the per-substep `add_phase_rule` evaluation
+    /// (`solver::step`) change a particle's material, so the two cannot
+    /// drift apart.
     ///
-    /// Real fix (2026-08-14) for a genuine "spring" artifact live-reported
-    /// on a fluid->solid transition (e.g. the water->ice freeze rule): a
-    /// particle arriving from a material with no real rest-shape memory (a
-    /// fluid's `F` only ever encodes volume ratio, `sqrt(J)*I` -- see
-    /// `NewtonianFluidMaterial`'s own doc) into a material that interprets
-    /// `F` as elastic strain away from a rest configuration (any solid) had
-    /// its leftover, almost-never-exactly-1.0 `J` misread as real elastic
-    /// strain -- generating a spurious restoring stress that visibly
-    /// oscillates instead of the particle freezing smoothly into its
-    /// current shape. `MaterialModel::init_particle`'s default is a no-op
-    /// and no existing solid material touches `deformation_gradient` there
-    /// (confirmed by reading `CorotatedMaterial::init_particle` and the
-    /// trait default), so nothing rebaselined it before this fix.
+    /// Rebaselines the elastic reference to the particle's current shape. A
+    /// fluid's `F` only encodes volume ratio (`sqrt(J)*I`, see
+    /// `NewtonianFluidMaterial`), while a solid reads `F` as strain away from
+    /// a rest configuration; a leftover `J != 1` would be read as elastic
+    /// strain and oscillate as a spurious restoring stress instead of the
+    /// particle freezing smoothly into place. A phase change alters the
+    /// material's structure, so strain relative to the old phase's reference
+    /// has no meaning in the new one: the new zero-strain reference is where
+    /// the particle is at the instant of transition. Applied here, once, for
+    /// every material rather than per solid.
     ///
-    /// Real physical justification, not a workaround: a genuine phase
-    /// transition (water becoming ice, rock becoming lava) changes the
-    /// material's actual physical structure, so whatever elastic strain
-    /// existed relative to the OLD phase's reference configuration has no
-    /// meaning in the NEW phase -- the new phase's zero-strain reference is
-    /// wherever the particle physically IS at the instant of transition.
-    /// Standard treatment for phase-transforming materials in computational
-    /// solid mechanics, applied generically here rather than as a per-solid-
-    /// material patch (this project's own standing preference for a single
-    /// reusable mechanism over duplicated per-material boilerplate).
+    /// Volume and density stay continuous: `initial_volume` is rebaselined to
+    /// the current volume, not the spawn volume, so only the elastic strain
+    /// memory is cleared. A material whose `init_particle` then redefines
+    /// volume/density from its own rest density (e.g.
+    /// `NewtonianFluidMaterial` on melting) does so on purpose: most materials
+    /// change density when they melt or freeze.
     ///
-    /// Deliberately volume/density-CONTINUOUS, not a reset to some default:
-    /// `initial_volume` is rebaselined to the particle's CURRENT volume (not
-    /// its original spawn volume), so there is no discontinuous size jump
-    /// at the instant of transition -- only the ELASTIC STRAIN memory is
-    /// cleared, not the particle's real physical size. A material whose own
-    /// `init_particle` subsequently redefines volume/density from ITS OWN
-    /// rest_density (e.g. `NewtonianFluidMaterial`, for a melting
-    /// transition) is free to do so -- that is a real, physically expected
-    /// density change on phase transition (most real materials change
-    /// density when they melt/freeze too), not a bug this rebaseline
-    /// introduces.
+    /// ## Toward a Stefan-condition treatment
     ///
-    /// ## Real, disclosed roadmap toward a genuine Stefan-condition treatment
+    /// Phase change here (and in every `add_phase_rule` predicate, e.g.
+    /// "water freezes below 273K") is an instantaneous per-particle threshold,
+    /// with no transformation rate. The governing condition for a moving phase
+    /// boundary is the Stefan condition, `L * rho * v_interface = -[k *
+    /// grad(T)]`: the interface moves at a speed set by the jump in heat flux
+    /// across it. A threshold switch is its `v_interface -> infinity` limit.
     ///
-    /// This function (and every `add_phase_rule` predicate, e.g. "water
-    /// freezes below 273K") implements phase change as an instantaneous,
-    /// per-particle THRESHOLD -- a particle flips the instant its own local
-    /// temperature crosses a fixed point, with no notion of how fast that
-    /// transformation should actually happen. The real, governing PDE this
-    /// approximates is the Stefan condition for a moving phase boundary:
-    /// `L * rho * v_interface = -[k * grad(T)]` -- the interface velocity is
-    /// set by the JUMP in heat flux across it, i.e. by how much MORE energy
-    /// is leaving one side than entering the other. A threshold switch is
-    /// exactly that condition's zeroth-order limit (`v_interface ->
-    /// infinity`, the phase change treated as instantaneous once enough
-    /// energy has crossed the threshold at all, regardless of RATE) -- a
-    /// real, named simplification, not an unexamined one.
-    ///
-    /// What is ALREADY real and load-bearing in that equation, today: `L`
-    /// (latent heat, debited below from `MaterialModel::latent_heat()`) and
-    /// `k`/`grad(T)` (real thermal conductivity and gradient, already
-    /// computed every substep by `ThermalDiffusion`, see
-    /// `energy::thermodynamics::diffusion`). The missing piece is using
-    /// `grad(T)` at the moment of transition to RATE-LIMIT the transition
-    /// itself, instead of switching materials outright once `L` has been
-    /// debited -- the real next increment, not attempted here. This is
-    /// disclosed so it can be picked up as a genuine PDE-consistency
-    /// upgrade to this exact function later, without re-deriving where the
-    /// gap is.
+    /// `L` (debited below from `MaterialModel::latent_heat()`) and
+    /// `k`/`grad(T)` (computed every substep by `ThermalDiffusion`, see
+    /// `energy::thermodynamics::diffusion`) already exist. Not done: using
+    /// `grad(T)` at the moment of transition to rate-limit the transition
+    /// instead of switching material once `L` has been debited.
     pub(super) fn apply_phase_transition(&mut self, i: usize, new_material_id: u32) {
-        // Captured BEFORE being overwritten below -- `MaterialModel::
-        // latent_heat`'s own real, general multi-source extension
-        // (2026-08-23) needs to know which material this particle is
-        // transitioning FROM, not just which one it's arriving at.
+        // Captured before being overwritten below: `MaterialModel::
+        // latent_heat` needs the material this particle is transitioning
+        // from, not only the one it arrives at.
         let from_material_id = self.particles.material_id[i];
         self.particles.material_id[i] = new_material_id;
 
@@ -219,15 +186,12 @@ impl Simulation {
             self.particles.temperature[i] -= latent_heat / thermal.config.heat_capacity;
         }
 
-        // Real, general engine hook (added 2026-08-18, see `MaterialModel::
-        // init_particle_from_transition`'s own doc for the full story):
-        // defaults to `init_particle` unchanged for every material that
-        // doesn't override it -- zero behavior change for water->ice and
-        // every other existing phase-transition demo. A material whose own
-        // rest state differs dramatically from what it might be
-        // transitioning FROM (water->steam, `IdealGasMaterial`) overrides this
-        // instead, to honor the real, continuous rebaseline just above
-        // rather than blindly recomputing from `mass/rest_density`.
+        // Defaults to `init_particle` for every material that does not
+        // override it (see `MaterialModel::init_particle_from_transition`). A
+        // material whose rest state differs sharply from what it transitions
+        // from (water->steam, `IdealGasMaterial`) overrides it to keep the
+        // continuous rebaseline above instead of recomputing from
+        // `mass/rest_density`.
         let mut p = self.particles.get(i);
         self.materials
             .get(new_material_id)
@@ -239,7 +203,7 @@ impl Simulation {
     ///
     /// Rebaselines each transitioned particle's elastic reference state to
     /// its current physical configuration and calls the new material's own
-    /// `init_particle` -- see `apply_phase_transition`'s own doc for the
+    /// `init_particle` -- see `apply_phase_transition`'s doc for the
     /// real reasoning (this is not a cosmetic reset: without it, a solid
     /// material arriving from a fluid's leftover volumetric state visibly
     /// springs/oscillates instead of freezing smoothly). Otherwise a
@@ -382,18 +346,14 @@ impl Simulation {
         self.particles.retain(|p| !predicate(p));
         let removed = before - self.particles.len();
         if removed > 0 {
-            // Real, confirmed bug fix (2026-08-19, found chasing the new
-            // grain-enrichment work): retain() compacts the array, shifting
-            // which particle sits at which physical index -- but the
-            // spatial hash caches particle INDICES from before the
-            // compaction (`ensure_spatial_hash_fresh`'s own doc: rebuilt
-            // only when `step()` marks it dirty). Without this, a spatial
-            // query (`particles_near`/`region_state`/`count_near`) called
-            // AFTER a removal but BEFORE the next `step()` would silently
-            // use stale indices -- pointing at the wrong particle, or past
-            // the now-shorter array. Real risk for any caller doing
-            // multiple region-based removals/enrichments in sequence
-            // without a `step()` between them, not just a theoretical gap.
+            // `retain()` compacts the array and shifts particle indices, but the
+            // spatial hash caches indices from before the compaction and is
+            // rebuilt only when `step()` marks it dirty (see
+            // `ensure_spatial_hash_fresh`). Without marking it here, a
+            // `particles_near`/`region_state`/`count_near` call after a
+            // removal and before the next `step()` would read stale indices,
+            // pointing at the wrong particle or past the shorter array (e.g.
+            // several region removals or enrichments in a row).
             self.spatial_hash_dirty.set(true);
             // retain() compacted the array -- all physical indices in tag_index are stale.
             // Rebuild from scratch and re-establish the sleep partition.
@@ -421,38 +381,25 @@ impl Simulation {
         removed
     }
 
-    /// Real, oracle-triggered continuum -> discrete conversion (the
-    /// "enrichment" direction of Hybrid Grains, Yue, Smith, Chen,
-    /// Chantharayukhonthorn, Kamrin & Grinspun, ACM TOG 2018): converts
-    /// every active particle within `radius` of `center` matching
-    /// `predicate` into ONE new discrete `Grain`, added to
-    /// `grain_populations[population_idx]`. Real conserved-quantity merge
-    /// (not an ad-hoc spawn): summed mass, mass-weighted momentum (gives
-    /// the new grain's real velocity), mass-weighted position (real
-    /// center of mass -- this is a NEW body, unlike `grain_absorb_particles`'s
-    /// existing-grain case, so there is no prior position to keep), and
-    /// real 2D area-based radius (`new_area = sum(particle.volume)`,
-    /// `radius = sqrt(area/pi)`, the SAME `Particle::volume` convention
-    /// this engine already uses everywhere else for a particle's own 2D
-    /// footprint). Consumed particles are REMOVED via `remove_particles`
-    /// (this file's own tag-then-remove pattern), not hacked to near-zero
-    /// mass. Returns the new grain's index within that population, or
-    /// `None` if nothing in range matched `predicate` (no grain spawned
-    /// from nothing).
+    /// Oracle-triggered continuum -> discrete conversion, the "enrichment"
+    /// direction of Hybrid Grains (Yue, Smith, Chen, Chantharayukhonthorn,
+    /// Kamrin & Grinspun, ACM TOG 2018). Converts every active particle
+    /// within `radius` of `center` matching `predicate` into one new discrete
+    /// `Grain` in `grain_populations[population_idx]`, conserving summed mass
+    /// and mass-weighted momentum (the grain's velocity) and placing it at the
+    /// mass-weighted centre (a new body, unlike `grain_absorb_particles`,
+    /// which keeps an existing grain's position). Radius from the 2D area,
+    /// `area = sum(particle.volume)`, `radius = sqrt(area/pi)`. Consumed
+    /// particles are removed with `remove_particles`. Returns the new grain's
+    /// index in that population, or `None` if nothing in range matched.
     ///
-    /// Real, disclosed scope: this is the ENRICHMENT half of the real
-    /// pipeline (`grains::oracle::needs_discrete_treatment` decides WHERE
-    /// this should fire -- typically a thin, low-packing-fraction free-
-    /// surface cell, exactly the regime this project's whole sand
-    /// investigation found continuum-only mechanisms structurally cannot
-    /// hold a real repose angle in, see `dem_rolling_resistance_real_
-    /// repose_angle_success` memory). The reverse direction
-    /// (HOMOGENIZATION -- converting a settled/re-densified grain back into
-    /// continuum particles) is real, separate, cited work (Christoffersen
-    /// et al. 1981's discrete-to-continuum stress mapping, per the paper's
-    /// own method) and is NOT implemented here -- this function alone does
-    /// not make grains ever convert back, a real, honest gap for whoever
-    /// builds that side next.
+    /// Only enrichment: `grains::oracle::needs_discrete_treatment` decides
+    /// where it fires (typically a thin, low-packing-fraction free-surface
+    /// cell, where continuum-only sand does not hold a repose angle). The
+    /// reverse direction, homogenization (a settled grain back into continuum
+    /// particles, via Christoffersen et al. 1981's discrete-to-continuum
+    /// stress mapping as the paper does), is not implemented: grains never
+    /// convert back.
     pub fn enrich_region_into_grain(
         &mut self,
         population_idx: usize,
@@ -674,9 +621,8 @@ impl Simulation {
         let sleeping_count = old_len - old_active;
 
         // Stamp the tag (new particles still at [old_len..new_len]). The
-        // material's own `init_particle` used to run here too, BEFORE the
-        // volume estimate below, and that one ordering was the whole of a
-        // measured bug: see the estimate's own comment further down.
+        // material's `init_particle` runs after the volume estimate below,
+        // not here: see the estimate's comment for why the order matters.
         let mat_id = spawn.material_id;
         for i in old_len..new_len {
             self.particles.user_tag[i] = tag;
@@ -720,11 +666,11 @@ impl Simulation {
         // must produce the same body. They did not. `new` estimates and is
         // then followed by `with_default_material`, which reinitialises
         // every particle, so a material that sets its own initial volume
-        // has the last word there. Here `init_particle` used to run first,
-        // so the estimate had the last word instead, and a free-surface
+        // has the last word there. If `init_particle` ran first here, the
+        // estimate would have the last word instead, and a free-surface
         // particle's estimated volume is up to 2.56 times its packing
         // volume. Initial volume multiplies stress directly, so those
-        // particles pushed that much too hard.
+        // particles would push that much too hard.
         //
         // Measured on three IDENTICAL columns in one world
         // (`tests/scratch_bingham_column_volume_loss.rs`): the body `new`
@@ -801,7 +747,7 @@ mod hydrostatic_tests {
             mass_override: Some(rest_density * spacing * spacing),
             ..SpawnRegion::for_sim(&config)
         };
-        // Stiffness sized so the pool is genuinely weakly compressible at this
+        // Stiffness sized so the pool is weakly compressible at this
         // depth: too soft and the "equilibrium" is a 37% squash, which is not
         // what the Tait equation is for.
         let water = NewtonianFluidMaterial::new(rest_density, 0.001, 1.0e5, 7.0);

@@ -66,7 +66,7 @@ mod tests {
     }
 
     /// Net acceleration (solver gravity + this field) for a particle of density `rho`,
-    /// per the field's own doc comment: g·(ρ_fluid/ρ − 1).
+    /// per the field's doc comment: g·(ρ_fluid/ρ − 1).
     fn net_with_gravity(field: &BuoyancyField, gravity: Vec2, rho: f32) -> Vec2 {
         let soa = particle_with_density(rho);
         gravity + field.acceleration(&soa, 0)

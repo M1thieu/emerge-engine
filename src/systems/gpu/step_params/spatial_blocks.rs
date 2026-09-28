@@ -1,16 +1,15 @@
 //! Spatial-block partition constants (P2G-sort/active-block detection, and the
 //! separate finer contact-point partition) plus the contact-debug and
 //! directional-grip uniforms that reference them -- split out of
-//! `step_params.rs`, see that module's own doc comment for the full file map.
+//! `step_params.rs`, see that module's doc comment for the full file map.
 
-/// Spatial-block bucket geometry for the particle_sort histogram AND the
-/// active-block detection it now also feeds (GPU sparse grid, Phase 1 -- see
-/// `mpm_technique_survey` memory note). Single Rust-side source of truth: must
-/// match `NUM_BLOCKS_PER_DIM`/`NUM_BLOCKS` in `particle_sort.wgsl` and
-/// `grid_clear.wgsl` exactly. Re-deriving from `grid_res` at runtime is not an
-/// option -- this sizes `block_counts`/`active_block_ids`, both allocated once
-/// at `GpuBuffers::new()`, so it must be a fixed compile-time constant, same
-/// class as `MAX_FORCE_FIELDS`.
+/// Spatial-block bucket geometry for the particle_sort histogram and the
+/// active-block detection it feeds (GPU sparse grid). Single Rust-side source
+/// of truth: must match `NUM_BLOCKS_PER_DIM`/`NUM_BLOCKS` in
+/// `particle_sort.wgsl` and `grid_clear.wgsl` exactly. Not derived from
+/// `grid_res` at runtime: it sizes `block_counts`/`active_block_ids`, both
+/// allocated once in `GpuBuffers::new()`, so it is a fixed compile-time
+/// constant, like `MAX_FORCE_FIELDS`.
 pub const NUM_BLOCKS_PER_DIM: usize = 16;
 pub const NUM_BLOCKS: usize = NUM_BLOCKS_PER_DIM * NUM_BLOCKS_PER_DIM; // 256
 
@@ -70,7 +69,7 @@ const _: () = assert!(core::mem::size_of::<ContactDebugParams>() == 16);
 /// (`src/spacetime/grid/mod.rs`). Always uploaded, every substep contact is active:
 /// `mu_easy == mu_resist` (both set to `SimConfig::contact_friction` when no directional
 /// bias is in play) makes `resolve_direction_aware` (`resolve_contact.wgsl`) reduce
-/// exactly to plain symmetric Coulomb friction -- see that function's own doc for why
+/// exactly to plain symmetric Coulomb friction -- see that function's doc for why
 /// this is ONE code path, not two. Field order: `easy_direction` first (8-byte
 /// alignment), matching `ContactDebugParams`' own convention.
 #[repr(C)]

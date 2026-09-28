@@ -39,7 +39,7 @@ pub struct RatchetFrictionBoundary {
     // spurious crawl drift. The caller sets mu_easy==mu_resist (symmetric, no
     // ratchet effect) whenever there's no steering intent, and restores the
     // asymmetric values only while actively steered -- same "no bias without
-    // input" principle `set_easy_direction`'s own doc establishes for direction.
+    // input" principle `set_easy_direction`'s doc establishes for direction.
     mu_easy_bits: std::sync::atomic::AtomicU32,
     mu_resist_bits: std::sync::atomic::AtomicU32,
 }

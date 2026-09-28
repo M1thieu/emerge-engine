@@ -1,5 +1,5 @@
 //! Core per-substep step params -- split out of `step_params.rs`, see that
-//! module's own doc comment for the full file map.
+//! module's doc comment for the full file map.
 
 use crate::solver::config::SimConfig;
 

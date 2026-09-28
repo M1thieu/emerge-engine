@@ -56,19 +56,16 @@ const SURFACE_SPLAT_WG: u32 = 64;
 /// `(N*grid_res)^2` f32 cells through every pass (splat, convert,
 /// curvature-iterate, thermal diffusion, wave, visibility, band-hysteresis).
 const SURFACE_RES_MULTIPLIER: u32 = 6;
-/// Real, fixed EVEN iteration count -- keeping this even means the settled
-/// result always lands in the SAME buffer (`surface_a`) regardless of N,
-/// avoiding a runtime-conditional final bind group (see
-/// `render_surface_reconstruction`'s own doc). 12 is within van der Laan et
-/// al. 2009's own "several iterations per frame" range.
+/// Fixed even iteration count, so the settled result always lands in
+/// `surface_a` and the final bind group needs no runtime branch (see
+/// `render_surface_reconstruction`). 12 is within van der Laan et al.
+/// 2009's "several iterations per frame".
 const CURVATURE_ITERATIONS: u32 = 12;
 /// Number of flat depth bands `curvature_flow.wgsl` quantizes optical depth
-/// into -- must stay equal to that file's own (file-scope) `DEPTH_BANDS`,
-/// which as of 2026-08-14 is itself the single source of truth for
-/// `fs_main`/`shade_phase`/`band_hysteresis_step_main` all agreeing with
-/// each other; this Rust copy and `grid_volume.wgsl`'s own separate copy
-/// are the two that still have to be kept in sync by hand (no cross-
-/// language/cross-shader-module const sharing exists to do it for us).
+/// into; must equal that file's file-scope `DEPTH_BANDS` (which `fs_main`,
+/// `shade_phase` and `band_hysteresis_step_main` share) and
+/// `grid_volume.wgsl`'s copy. WGSL and Rust cannot share the constant, so
+/// these two are kept in sync by hand.
 const DEPTH_BANDS: f32 = 4.0;
 /// Scalars stored per physics-grid cell by the Yu & Turk moments pass
 /// (`[m0, m1x, m1y, m2xx, m2xy, m2yy]`) -- must match `MOMENTS_PER_CELL` in
@@ -108,16 +105,11 @@ const TARGET_EFFECTIVE_NEIGHBORS: f32 = 20.0;
 /// that is actually visible: a rendered fluid IS its boundary. Budgeting for
 /// the truncated case would cost `sqrt(2)` in width.
 ///
-/// Tried live 2026-08-13 at `2.0` (giving `splat_width_cells ≈ 1.74`): the
-/// interior-only derivation (this factor at `1.0`, width ≈ 1.23) had already
-/// been confirmed to smooth the bulk with no reported instability; ADDING
-/// this factor is what triggered a live-reported regression -- a gap opening
-/// at the free surface, worsening as `surface_res_multiplier` was raised
-/// further, on top of an already-raised value. Reverted to `1.0` (a no-op)
-/// pending a proper visual diagnosis of that interaction; the boundary-
-/// deficiency reasoning above may still be correct, but is not re-applied
-/// blind after one regression already came from stacking it on other raised
-/// sliders untested. See `set_particle_spacing_cells`'s own doc.
+/// Set to `1.0` (no-op): at `2.0` (`splat_width_cells ≈ 1.74`, against ≈ 1.23
+/// interior-only) a gap opened at the free surface, growing with
+/// `surface_res_multiplier`, when stacked on other raised settings. Not
+/// re-applied until that interaction is diagnosed on screen; see
+/// `set_particle_spacing_cells`.
 const BOUNDARY_TRUNCATION_FACTOR: f32 = 1.0;
 /// Surface-reconstruction visibility/edge-alpha threshold, as a fraction of
 /// [`Renderer::set_grid_reference_cell_mass`]. The B-spline splat here can
@@ -132,18 +124,14 @@ const BOUNDARY_TRUNCATION_FACTOR: f32 = 1.0;
 const SURFACE_MASS_FLOOR_FRACTION: f32 = 0.07;
 /// Default [`Renderer::set_edge_reference_depth`].
 ///
-/// The shader's own doc gives a LOWER bound of one interior depth-band step
-/// (`1.0 / DEPTH_BANDS`), and that bound was tried live on 2026-08-13. It is
-/// correct as a bound and wrong as a default: unpinning optical depth this far
-/// makes the per-particle density ripple drive colour directly, and the fluid
-/// surface renders as blue speckle over white rather than a solid body. The
-/// ripple is pre-existing -- a high floor was flattening it out of sight, not
-/// preventing it -- and the real fix for it is the neighbourhood-fitted splat
-/// kernel in `render::anisotropy`, not this knob.
-///
-/// So this stays high enough to keep shading flat until that lands, at which
-/// point lowering it becomes worth retrying. Adjustable via
-/// [`Renderer::set_edge_reference_depth`].
+/// The shader's doc gives a LOWER bound of one interior depth-band step
+/// (`1.0 / DEPTH_BANDS`). It is correct as a bound and wrong as a default:
+/// unpinning optical depth that far makes the per-particle density ripple
+/// drive colour directly, and the surface renders as blue speckle over white
+/// rather than a solid body. The ripple is pre-existing -- a high floor
+/// flattens it out of sight -- and its fix is the neighbourhood-fitted splat
+/// kernel in `render::anisotropy`, not this knob. Lowering this is worth
+/// retrying once that lands.
 const DEFAULT_EDGE_REFERENCE_DEPTH: f32 = 3.0;
 const _: () = assert!(
     CURVATURE_ITERATIONS.is_multiple_of(2),
@@ -162,7 +150,7 @@ pub enum ColorMode {
     ByThermal = 4,
     ByActivation = 5,
     /// Generic second scalar carrier (resource/grass level, pheromone, nutrients).
-    /// See `Particle::scalar_field`'s own doc. Distinct wire value (6, not the next
+    /// See `Particle::scalar_field`'s doc. Distinct wire value (6, not the next
     /// unused slot after ByActivation's implicit WGSL else-branch) so the GPU shader's
     /// existing fallback `else` can keep meaning ByActivation without renumbering it.
     ByScalarField = 6,
@@ -173,7 +161,7 @@ pub enum ColorMode {
     /// activity, which `ByVolume` (det(F)) misses and pressure no longer
     /// masks. CPU render path only for now (`Renderer::render`,
     /// which owns the real `&Particles`/`MaterialRegistry` needed to compute
-    /// it) -- see `Renderer::set_stress_field`'s own doc for the real,
+    /// it) -- see `Renderer::set_stress_field`'s doc for the real,
     /// disclosed reason the GPU shader path doesn't have this yet.
     ByStress = 7,
 }
@@ -253,7 +241,7 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer, // VERTEX | COPY_DST -- drawn as per-instance attributes
     storage_instances: wgpu::Buffer, // STORAGE | COPY_SRC -- compute write target (GPU path)
     /// Pre-step position snapshot for GPU render interpolation -- see
-    /// `snapshot_particle_positions`'s own doc.
+    /// `snapshot_particle_positions`'s doc.
     prev_positions_buf: wgpu::Buffer,
     snapshot_pipeline: wgpu::ComputePipeline,
     snapshot_bgl: wgpu::BindGroupLayout,
@@ -281,12 +269,10 @@ pub struct Renderer {
     grid_volume_pipeline: wgpu::RenderPipeline,
     grid_volume_bgl: wgpu::BindGroupLayout,
     grid_volume_params_buf: wgpu::Buffer,
-    /// Real, persistent (across frames) hysteresis visible/invisible state
-    /// for the grid-native render path -- the SAME technique as
-    /// `visibility_buf` above (see `curvature_flow.wgsl`'s "Pass 2c" doc),
-    /// ported to `grid_volume.wgsl`'s own `mass_floor` discard. Separate
-    /// buffer/resolution tracking since this operates at `grid_res`, not
-    /// `surface_res`.
+    /// Persistent hysteresis visible/invisible state for the grid-native
+    /// path: the `visibility_buf` technique (`curvature_flow.wgsl`'s Pass 2c)
+    /// applied to `grid_volume.wgsl`'s `mass_floor` discard, at `grid_res`
+    /// instead of `surface_res`.
     grid_visibility_step_pipeline: wgpu::ComputePipeline,
     grid_visibility_step_bgl: wgpu::BindGroupLayout,
     grid_visibility_buf: wgpu::Buffer,
@@ -301,27 +287,21 @@ pub struct Renderer {
     /// clippy's argument-count lint.
     cached_ortho: (f32, f32, f32, f32),
     cached_grid_res: u32,
-    /// Real light direction for `render_grid_volume`/`render_surface_
-    /// reconstruction`(`_dual_phase`)'s Lambertian + specular shading -- set
-    /// via `set_light_dir`, defaults to the same value those shaders used
-    /// to hardcode directly (so behavior is unchanged until a caller
-    /// explicitly wires in a real value, e.g. `SimConfig::light_dir`).
+    /// Light direction for `render_grid_volume`/`render_surface_
+    /// reconstruction`(`_dual_phase`)'s Lambertian and specular shading, set
+    /// via `set_light_dir` (e.g. from `SimConfig::light_dir`); defaults to the
+    /// value those shaders used to hardcode.
     light_dir: (f32, f32),
 
     /// Mass of ONE fully-occupied grid cell in the caller's own units, used to
     /// scale the grid-volume/surface density thresholds. Defaults to `1.0`,
-    /// which reproduces the previous hardcoded absolute thresholds exactly.
+    /// which reproduces the old absolute thresholds.
     ///
-    /// Real bug this exists to fix (2026-08-13): those thresholds (e.g.
-    /// `grid_volume.rs`'s `mass_floor = 0.15`) were absolute constants written
-    /// against a scene whose "per occupied cell mass is order 0.5-4" (that
-    /// file's own comment). A physically-calibrated scene has no reason to land
-    /// in that range -- `basic_fluids_gui.rs` uses the REAL water density
-    /// `rho0 = 1000 kg/m^3 * dx^2 = 0.1` grid units, so a *completely full*
-    /// cell weighs 0.1, i.e. LESS than the 0.15 floor. Every cell was therefore
-    /// discarded and the fluid rendered as near-empty, while the raw-particle
-    /// mode showed it perfectly -- the three render modes visibly disagreeing
-    /// about where the fluid was.
+    /// Absolute thresholds (e.g. `grid_volume.rs`'s `mass_floor = 0.15`)
+    /// assumed cells of mass 0.5-4. Real water at 1 cm cells is
+    /// `rho0 = 1000 kg/m^3 * dx^2 = 0.1` grid units, so a full cell weighed
+    /// less than the floor and the fluid rendered as near empty while the
+    /// particle mode showed it.
     ///
     /// Callers should pass their fluid's `rest_density * cell_area` (in grid
     /// units, cell_area = 1). Thresholds then mean "this fraction of a full
@@ -332,7 +312,7 @@ pub struct Renderer {
     /// `CURVATURE_ITERATIONS`. Settable via `set_curvature_iterations` so a
     /// caller can trade surface smoothness against cost instead of being stuck
     /// with one compile-time value: van der Laan et al. 2009 only prescribes
-    /// "several iterations per frame", and the right number genuinely depends
+    /// "several iterations per frame", and the right number depends
     /// on the scene -- a thin sheet of fast water wants more smoothing than a
     /// settled pool, and a perf-bound scene wants fewer.
     ///
@@ -352,27 +332,17 @@ pub struct Renderer {
     /// visibility, band hysteresis). At the default 6 with a 64-cell physics
     /// grid that is a 384x384 field -- ~147k cells per pass. Halving it to 3
     /// quarters that; raising it sharpens the surface at 4x the cost per step
-    /// up. The right value genuinely depends on the scene and the perf budget,
+    /// up. The right value depends on the scene and the perf budget,
     /// which is exactly why it should not be baked in.
     surface_res_multiplier: u32,
 
     /// Propagating-wave excitation strength for the Surface path's Pass 2b
-    /// (real wave PDE, `∂²h/∂t² = c²∇²h`, CFL 1928-stable explicit scheme --
-    /// see `curvature_flow.wgsl`'s own doc). Defaults to `0.0` (inert): a
-    /// material's free surface only genuinely propagates waves like this if
-    /// it behaves like a real fluid, and that is a REAL, ALREADY-GENERIC
-    /// property this engine tracks (`MaterialModel::
-    /// owns_deformation_volume_state()`, the same test `sand_water_
-    /// saturation.rs`'s own moisture-source classification already uses) --
-    /// not a per-material-ID special case a caller has to remember to flip.
-    /// Real, correct use: derive this from that property at scene setup
-    /// (`registry.owns_deformation_volume_state(material_id)`), not a
-    /// hand-picked "is this demo about sand or water" guess. `0.35` is
-    /// this engine's own existing tuned value for real fluid scenes
-    /// (`basic_fluids.rs`) -- preserved exactly, now real opt-in instead
-    /// of an unconditional constant every material silently inherited,
-    /// including ones (a settled granular pile) with no physical
-    /// mechanism to support this kind of wave at all.
+    /// (the wave PDE `∂²h/∂t² = c²∇²h`, CFL-stable explicit scheme -- see
+    /// `curvature_flow.wgsl`). Defaults to `0.0` (inert): only a material
+    /// that behaves like a fluid propagates such waves, so derive it at scene
+    /// setup from `registry.owns_deformation_volume_state(material_id)` (the
+    /// test `sand_water_saturation.rs` uses to classify moisture sources),
+    /// not per demo. `0.35` is `basic_fluids.rs`'s tuned value for fluids.
     wave_force_coeff: f32,
 
     /// Width of ONE particle's surface splat, in physics-grid cells.
@@ -431,46 +401,39 @@ pub struct Renderer {
     /// Fixed-point atomic splat target (see `curvature_flow.wgsl`'s own
     /// `clear_surface_main`/`splat_density_main` doc).
     surface_atomic_buf: wgpu::Buffer,
-    /// Real mass-weighted temperature: fixed-point atomic scatter target +
-    /// converted plain-f32 buffer `fs_main` samples for blackbody emission
-    /// -- see `surface_temp_atomic`'s own doc in the shader. Single-phase
-    /// only (grown/reused by phase A of the dual-phase path too, same as
-    /// `surface_atomic_buf` itself -- see that field's own sharing note
-    /// below); phase B gets its own separate pair.
+    /// Mass-weighted temperature: fixed-point atomic scatter target and the
+    /// converted f32 buffer `fs_main` samples for blackbody emission (see
+    /// `surface_temp_atomic` in the shader). Shared by phase A of the
+    /// dual-phase path like `surface_atomic_buf`; phase B has its own pair.
     surface_temp_atomic_buf: wgpu::Buffer,
     surface_temp_float_buf: wgpu::Buffer,
-    /// Real volume-preserving correction (`curvature_flow.wgsl`'s "Pass
-    /// 1d"): `pre_total_atomic_buf` accumulates the TRUE ground-truth
-    /// particle mass during splat; `post_total_atomic_buf` sums the settled
-    /// (post-curvature-flow) density; `volume_correct_pipeline` rescales
-    /// the settled result by their ratio. Both are single-element (4-byte)
-    /// buffers, NEVER grown with `surface_res` (a global scalar per phase,
-    /// not a per-cell field).
+    /// Volume-preserving correction (`curvature_flow.wgsl`'s Pass 1d):
+    /// `pre_total_atomic_buf` accumulates the particle mass during the splat,
+    /// `post_total_atomic_buf` sums the settled density, and
+    /// `volume_correct_pipeline` rescales by their ratio. Single-element
+    /// buffers (one scalar per phase), never grown with `surface_res`.
     post_total_reduce_pipeline: wgpu::ComputePipeline,
     post_total_reduce_bgl: wgpu::BindGroupLayout,
     volume_correct_pipeline: wgpu::ComputePipeline,
     volume_correct_bgl: wgpu::BindGroupLayout,
     pre_total_atomic_buf: wgpu::Buffer,
     post_total_atomic_buf: wgpu::Buffer,
-    /// Real 2D thermal-diffusion PDE on the recovered temperature field
-    /// (`curvature_flow.wgsl`'s "Pass 1c") -- `temp_avg_pipeline` divides by
-    /// final settled density once, `temp_diffuse_pipeline` then runs one
-    /// real heat-equation step. `surface_temp_b_buf` is the ping-pong
-    /// partner: avg writes into it, diffuse reads it and writes the result
-    /// back into `surface_temp_float_buf` (the buffer `fs_main` already
-    /// reads), so no render-bind-group change was needed for this addition.
+    /// 2D heat equation on the recovered temperature field
+    /// (`curvature_flow.wgsl`'s Pass 1c): `temp_avg_pipeline` divides by the
+    /// settled density once, `temp_diffuse_pipeline` runs one step.
+    /// `surface_temp_b_buf` is the ping-pong partner: avg writes it, diffuse
+    /// reads it and writes back into `surface_temp_float_buf`, the buffer
+    /// `fs_main` reads.
     temp_avg_pipeline: wgpu::ComputePipeline,
     temp_avg_bgl: wgpu::BindGroupLayout,
     temp_diffuse_pipeline: wgpu::ComputePipeline,
     temp_diffuse_bgl: wgpu::BindGroupLayout,
     surface_temp_b_buf: wgpu::Buffer,
-    /// Real diffusion approximation to light transport (`curvature_flow.
-    /// wgsl`'s "Pass 1e") -- see that entry point's own doc for the full
-    /// real derivation. `light_phi_bufs` are the two ping-pong buffers (see
-    /// their own doc in `buffers.rs`); `light_frame_index` alternates which
-    /// one is "current" (read) vs "next" (write) each frame, the same real
-    /// role `wave_frame_index` plays for the (second-order) wave field,
-    /// just a simpler 2-way rotation for this first-order equation.
+    /// Diffusion approximation to light transport (`curvature_flow.wgsl`'s
+    /// Pass 1e). `light_phi_bufs` are two ping-pong buffers (see
+    /// `buffers.rs`); `light_frame_index` alternates read and write each
+    /// frame, a 2-way rotation for this first-order equation where the wave
+    /// field needs 3.
     light_diffuse_pipeline: wgpu::ComputePipeline,
     light_diffuse_bgl: wgpu::BindGroupLayout,
     light_phi_bufs: [wgpu::Buffer; 2],
@@ -488,7 +451,7 @@ pub struct Renderer {
     /// three buffers when a caller's `grid_res` needs a bigger one.
     surface_res: u32,
 
-    /// N-material extension (see `curvature_flow.wgsl`'s own doc),
+    /// N-material extension (see `curvature_flow.wgsl`'s doc),
     /// single-phase path only: flat `surface_res² × MAX_RENDER_MATERIAL_
     /// SLOTS` per-cell mass array, same real technique as `grid_volume.
     /// wgsl`'s own `material_mass`. Grown LAZILY by `ensure_surface_
@@ -509,18 +472,12 @@ pub struct Renderer {
     /// constructor's 4-byte placeholder, never opted into.
     surface_material_mass_res: u32,
 
-    /// Real, persistent (across frames, unlike everything else in this
-    /// section) 2D wave-equation height field -- see `curvature_flow.wgsl`'s
-    /// own "Pass 2b" doc. THREE physical buffers, not two: wgpu's usage-
-    /// scope validator rejects binding the SAME buffer as both read-only
-    /// and read_write within one dispatch, even when the actual access
-    /// pattern is index-disjoint and logically hazard-free (confirmed via a
-    /// real validation error when a 2-buffer aliasing scheme was tried
-    /// first) -- a genuine leapfrog integrator only ever needs u(t) and
-    /// u(t-dt) to read, but writing u(t+dt) needs a THIRD distinct slot to
-    /// satisfy wgpu's conservative rule. `wave_frame_index` rotates which
-    /// of the 3 buffers plays which of the 3 roles (current/previous/next)
-    /// each call -- see that method's own doc for the exact rotation.
+    /// Persistent 2D wave-equation height field (`curvature_flow.wgsl`'s
+    /// Pass 2b). Three buffers, not two: wgpu's usage-scope validation
+    /// rejects one buffer bound read-only and read_write in the same
+    /// dispatch even when access is index-disjoint, so writing u(t+dt) next
+    /// to u(t) and u(t-dt) needs a third slot. `wave_frame_index` rotates the
+    /// roles (current/previous/next) each call.
     wave_step_pipeline: wgpu::ComputePipeline,
     wave_step_bgl: wgpu::BindGroupLayout,
     wave_bufs: [wgpu::Buffer; 3],
@@ -537,53 +494,49 @@ pub struct Renderer {
     /// buffer is a zero placeholder then) -- reading it as "previous
     /// density" on that first frame would read density appearing from
     /// nothing as false motion. Seeded (prev := now, force = 0) before the
-    /// first `wave_step` dispatch instead; see that call site's own doc.
+    /// first `wave_step` dispatch instead; see that call site's doc.
     wave_prev_seeded: bool,
-    /// Phase B's own `wave_prev_seeded` -- see its own doc.
+    /// Phase B's own `wave_prev_seeded` -- see its doc.
     phase_b_wave_prev_seeded: bool,
 
-    /// Real, persistent (across frames) hysteresis visible/invisible state
-    /// -- see `curvature_flow.wgsl`'s own "Pass 2c" doc. A SINGLE buffer
-    /// (no rotation needed, unlike the wave field: this pass only ever
-    /// reads/writes its OWN index, no neighbor stencil, so there's no
-    /// wgpu usage-scope conflict to avoid).
+    /// Persistent hysteresis visible/invisible state (`curvature_flow.wgsl`'s
+    /// Pass 2c). One buffer: the pass reads and writes only its own index, so
+    /// there is no usage-scope conflict to rotate around.
     visibility_step_pipeline: wgpu::ComputePipeline,
     visibility_step_bgl: wgpu::BindGroupLayout,
     visibility_buf: wgpu::Buffer,
     visibility_params_buf: wgpu::Buffer,
 
-    /// Real, persistent hysteresis color-band state -- see `curvature_
-    /// flow.wgsl`'s own "Pass 2d" doc. Same single-buffer, no-rotation
-    /// shape as `visibility_buf` (self-index only, downstream/one-way of
-    /// the density field, never fed back into it).
+    /// Persistent hysteresis color-band state (`curvature_flow.wgsl`'s Pass
+    /// 2d): one buffer like `visibility_buf`, downstream of the density field
+    /// and never fed back into it.
     band_hysteresis_step_pipeline: wgpu::ComputePipeline,
     band_hysteresis_step_bgl: wgpu::BindGroupLayout,
     band_state_buf: wgpu::Buffer,
     band_hysteresis_params_buf: wgpu::Buffer,
 
-    /// Real, persistent RAW splat density history for neighborhood-
-    /// clamped temporal smoothing -- see `convert_atomic_to_float_main`'s
-    /// own doc (Lottes 2011 / Karis 2014 TAA technique, adapted to a
-    /// scalar field).
+    /// Persistent raw splat density history for neighbourhood-clamped
+    /// temporal smoothing (see `convert_atomic_to_float_main`; the Lottes
+    /// 2011 / Karis 2014 TAA technique on a scalar field).
     raw_splat_history_buf: wgpu::Buffer,
 
-    // ── Two-phase extension (see curvature_flow.wgsl's own doc) ────────────
+    // ── Two-phase extension (see curvature_flow.wgsl's doc) ────────────
     /// A second, fully independent set of splat/ping-pong buffers for
     /// "phase B" -- `render_surface_reconstruction_dual_phase` runs the
     /// SAME clear/splat/convert/iterate pipelines twice, once into phase A's
     /// existing `surface_*_buf` fields above and once into these, so each
-    /// phase gets its own real, independently-smoothed surface (see the
+    /// phase gets its own independently-smoothed surface (see the
     /// shader's own VOF/phase-fraction citation for why that's the correct
     /// choice, not a shared blended field).
     phase_b_atomic_buf: wgpu::Buffer,
     /// Phase B's own temperature atomic/float pair -- see `surface_temp_
-    /// atomic_buf`'s own doc. Written every dual-phase frame for symmetry
+    /// atomic_buf`'s doc. Written every dual-phase frame for symmetry
     /// with phase A's scatter, but NOT read by `fs_main_dual_phase` (no
-    /// binding for it there -- see that entry point's own doc for why).
+    /// binding for it there -- see that entry point's doc for why).
     phase_b_temp_atomic_buf: wgpu::Buffer,
     phase_b_temp_float_buf: wgpu::Buffer,
     /// Phase B's own volume-preserving-correction totals -- see
-    /// `pre_total_atomic_buf`'s own doc.
+    /// `pre_total_atomic_buf`'s doc.
     phase_b_pre_total_atomic_buf: wgpu::Buffer,
     phase_b_post_total_atomic_buf: wgpu::Buffer,
     phase_b_a_buf: wgpu::Buffer,
@@ -605,7 +558,7 @@ pub struct Renderer {
     /// `mass_floor`, identical for both phases every frame.
     phase_b_wave_bufs: [wgpu::Buffer; 3],
     /// Phase B's own previous-density copy -- see `wave_density_prev_buf`'s
-    /// own doc.
+    /// doc.
     phase_b_wave_density_prev_buf: wgpu::Buffer,
     phase_b_visibility_buf: wgpu::Buffer,
     phase_b_band_state_buf: wgpu::Buffer,
@@ -615,38 +568,28 @@ pub struct Renderer {
     scratch: Vec<InstanceData>,
     color_mode: ColorMode,
     vel_scale: f32,
-    /// Per-particle value for `ColorMode::ByStress`, computed ONCE per
-    /// frame by the caller (typically `MaterialRegistry::von_mises_stress_field`,
-    /// which owns both the real `&Particles` and the material dispatch
-    /// `Renderer` deliberately does not depend on) and handed in via
-    /// `set_stress_field` -- the SAME real "caller precomputes real
-    /// material-derived data, Renderer just visualizes it" pattern already
-    /// established by `sigma_a`/`sigma_s`/`specular_r0` below for
-    /// `ColorMode::ByPhysics`. Indexed by particle position in the SAME
-    /// iteration order `render`'s own loop uses -- stale/empty (falls back
-    /// to 0.0 per particle) if the caller never opts in, matching every
-    /// other real, disclosed "inert unless explicitly set" convention this
-    /// renderer already uses (e.g. `wave_force_coeff`).
+    /// Per-particle value for `ColorMode::ByStress`, computed once per frame
+    /// by the caller (typically `MaterialRegistry::von_mises_stress_field`,
+    /// which has the particles and the material dispatch `Renderer` does not
+    /// depend on) and handed in via `set_stress_field`, like
+    /// `sigma_a`/`sigma_s`/`specular_r0` for `ColorMode::ByPhysics`. Indexed
+    /// in `render`'s particle order; reads 0.0 per particle if never set.
     stress_field: Vec<f32>,
-    /// Real display scale for `ColorMode::ByStress` -- stress magnitudes
-    /// vary by orders of magnitude across materials' own real stiffness
-    /// scales, so this is caller-set (mirrors `vel_scale`'s own role for
-    /// `ByVelocity`), not a fixed physical constant.
+    /// Display scale for `ColorMode::ByStress`: stress magnitudes span orders
+    /// of magnitude across materials, so the caller sets it (like `vel_scale`
+    /// for `ByVelocity`).
     stress_scale: f32,
     sigma_a: [[f32; 3]; 16],
     /// Reduced scattering coefficient per material slot (single scalar -- see
-    /// `OpticalTable`'s own doc for why this isn't per-channel).
+    /// `OpticalTable`'s doc for why this isn't per-channel).
     sigma_s: [f32; 16],
     /// Specular Fresnel base reflectance R0 per material slot (see `OpticalTable`'s
-    /// own doc for the real-but-bounded caveat).
+    /// doc for the real-but-bounded caveat).
     specular_r0: [f32; 16],
-    /// Real refractive index of the DRY solid/grain per material slot -- see
-    /// `set_refractive_index`'s own doc for the physical mechanism this
-    /// drives (pore-fluid index-matching darkening, generic across every
-    /// material and every scalar field, not sand-specific). `1.0` (air's own
-    /// index, the default) means "no solid contrast" -- `particle_color`
-    /// treats that as inert, byte-identical to before this field existed,
-    /// until a scene opts in with a real value.
+    /// Refractive index of the dry solid/grain per material slot (see
+    /// `set_refractive_index`: pore-fluid index matching darkens wet
+    /// material, for any material and scalar field). `1.0`, air, means no
+    /// contrast and leaves `particle_color` unchanged.
     refractive_index: [f32; 16],
     /// Per-material volumetric luminous source, `W/m^3` -- see
     /// `MaterialModel::luminous_emission_w_m3`. Zero everywhere until a
@@ -790,21 +733,13 @@ impl Renderer {
             // scatter dispatch (`surface_reconstruction.rs`) and the fit
             // itself (`splat_density_main`), so `0.0` makes the whole Yu &
             // Turk path -- moments buffer, scatter, gather, eigendecompose --
-            // fully inert, byte-identical to before it existed.
+            // fully inert.
             //
-            // Re-enabled 2026-08-14 at full strength, ALONE -- the real
-            // white-noise cause (GRAD_EPSILON instability in the later
-            // curvature-flow smoothing pass, see that constant's own doc) is
-            // now fixed and tested, and this is a single, isolated variable:
-            // `BOUNDARY_TRUNCATION_FACTOR` stays at its reverted `1.0`
-            // no-op, and `set_particle_spacing_cells` stays un-wired in the
-            // demo -- neither of the two things that were stacked together
-            // when this last regressed live is reintroduced here. This is
-            // also independently named, not just by this session's own
-            // Yu & Turk work: Sebastian Lague's "Coding Adventure: Rendering
-            // Fluids" names anisotropic particle rendering as the direct fix
-            // for the same "bubbly"/blobby surface symptom seen here, from a
-            // fully separate screen-space fluid renderer.
+            // At full strength, alone: `BOUNDARY_TRUNCATION_FACTOR` stays at
+            // 1.0 and `set_particle_spacing_cells` stays unwired in the demo,
+            // the two changes that regressed together before. Anisotropic
+            // particle rendering is also the fix Sebastian Lague's "Coding
+            // Adventure: Rendering Fluids" names for the same blobby surface.
             anisotropy_strength: 1.0,
             surface_clear_pipeline,
             surface_clear_bgl,
@@ -1012,12 +947,9 @@ impl Renderer {
     /// position, from the SAME cached projection `set_camera` last uploaded.
     /// For a caller drawing a screen-space overlay (a UI marker for a
     /// non-`Particle` object, say) at a world/grid position: use this
-    /// instead of re-deriving the ortho formula independently, which can
-    /// silently drift out of sync with what `set_camera` actually did (real
-    /// bug this fixes, 2026-09-15: an example's own hand-rolled duplicate
-    /// projection put its obstacle marker at the wrong screen position).
-    /// `width`/`height` must match whatever was last passed to
-    /// `set_camera`.
+    /// instead of re-deriving the ortho formula, which can drift out of sync
+    /// with what `set_camera` did. `width`/`height` must match whatever was
+    /// last passed to `set_camera`.
     pub fn grid_to_screen(&self, grid_x: f32, grid_y: f32, width: u32, height: u32) -> (f32, f32) {
         let (sx, tx, sy, ty) = self.cached_ortho;
         let ndc_x = grid_x * sx + tx;
@@ -1031,7 +963,7 @@ impl Renderer {
     /// pixels, from the same cached projection. `set_camera` always keeps
     /// grid cells isotropic (a circle in grid space renders as a circle,
     /// never an ellipse, regardless of window aspect), so the y-axis scale
-    /// alone gives the real, correct pixels-per-grid-unit conversion for
+    /// alone gives the correct pixels-per-grid-unit conversion for
     /// any direction.
     pub fn grid_distance_to_pixels(&self, distance: f32, height: u32) -> f32 {
         let (_, _, sy, _) = self.cached_ortho;
@@ -1041,18 +973,11 @@ impl Renderer {
     /// `grid_to_screen`, converted into UI/LOGICAL points instead of
     /// physical pixels -- the units a UI toolkit (egui and friends) actually
     /// draws in. `width`/`height` are still the PHYSICAL size last passed to
-    /// `set_camera` (that projection genuinely operates in physical space);
-    /// `pixels_per_point` is the display's own real DPI scale factor (egui:
+    /// `set_camera` (that projection operates in physical space);
+    /// `pixels_per_point` is the display's DPI scale factor (egui:
     /// `Context::pixels_per_point()`, 1.0 at 100% OS scaling, 1.25 at 125%,
-    /// etc.).
-    ///
-    /// Real, disclosed reason this exists as its own method rather than
-    /// leaving `caller_result / pixels_per_point` as a one-line convention:
-    /// a live-reported bug (2026-09-15) came from exactly that omission in
-    /// one example, on a machine running 125% Windows scaling -- correct at
-    /// 100% scaling, silently wrong everywhere else. "Versatile by design"
-    /// means the DPI-correct path is the one with the obvious name, not a
-    /// step every future UI-overlay caller has to remember on their own.
+    /// etc.). Dividing by it by hand is easy to forget and only shows at
+    /// non-100% scaling, so the DPI-correct path is the one with the name.
     pub fn grid_to_screen_points(
         &self,
         grid_x: f32,
@@ -1067,7 +992,7 @@ impl Renderer {
     }
 
     /// `grid_distance_to_pixels`, converted into UI/LOGICAL points -- see
-    /// `grid_to_screen_points`'s own doc for the real DPI reasoning this
+    /// `grid_to_screen_points`'s doc for the real DPI reasoning this
     /// shares.
     pub fn grid_distance_to_points(
         &self,
@@ -1078,20 +1003,17 @@ impl Renderer {
         self.grid_distance_to_pixels(distance, height) / pixels_per_point.max(1.0e-6)
     }
 
-    /// Real light direction for `render_grid_volume`/surface-reconstruction
-    /// shading, sourced from wherever the caller's own real light lives --
-    /// LP callers should pass `SimConfig::light_dir` (the SAME real value
-    /// already driving `rod::Phototropism`), not invent a separate one.
-    /// Replaces a value each fragment shader used to hardcode independently
-    /// (and inconsistently with the sim's own real light direction).
+    /// Light direction for `render_grid_volume`/surface-reconstruction
+    /// shading; LP callers should pass `SimConfig::light_dir`, the value that
+    /// drives `rod::Phototropism`, not a separate one.
     /// Set the mass of one fully-occupied grid cell, so the grid-volume and
     /// surface density thresholds mean "fraction of a full cell" rather than
-    /// an absolute number -- see `grid_reference_cell_mass`'s own doc for the
-    /// real bug this fixes. Pass the fluid's `rest_density` (grid units).
-    /// Leaving it unset (1.0) preserves the previous behavior exactly.
+    /// an absolute number -- see `grid_reference_cell_mass`. Pass the
+    /// fluid's `rest_density` (grid units). Unset (1.0) keeps the absolute
+    /// thresholds.
     /// Set the curvature-flow smoothing pass count (clamped to an even value
     /// in `2..=64`). Higher = smoother, rounder surface at higher cost; lower
-    /// = cheaper and more faceted. See `curvature_iterations`' own doc.
+    /// = cheaper and more faceted. See `curvature_iterations`' doc.
     pub fn set_curvature_iterations(&mut self, iterations: u32) {
         let clamped = iterations.clamp(2, 64);
         // Round DOWN to even -- odd would settle the result in `surface_b`
@@ -1106,7 +1028,7 @@ impl Renderer {
 
     /// Set how much finer the surface-reconstruction grid is than the physics
     /// grid (clamped to `1..=12`). Cost scales with the SQUARE of this -- see
-    /// `surface_res_multiplier`'s own doc.
+    /// `surface_res_multiplier`'s doc.
     ///
     /// Forces the surface buffers to be reallocated on the next surface
     /// render, so it is safe to LOWER this too (the grow-only capacity check
@@ -1128,7 +1050,7 @@ impl Renderer {
     }
 
     /// Set the Surface path's propagating-wave excitation strength -- see
-    /// `wave_force_coeff`'s own doc for the real mechanism and why this
+    /// `wave_force_coeff`'s doc for the real mechanism and why this
     /// should be DERIVED from `MaterialModel::owns_deformation_volume_
     /// state()` at the call site, not hand-picked per scene. `0.0` (the
     /// default) is inert; `0.35` is this engine's own real fluid-tuned
@@ -1139,7 +1061,7 @@ impl Renderer {
 
     /// Set the per-particle surface splat width, in physics-grid cells
     /// (clamped to `0.05..=4.0`). `1.0` is the full MPM B-spline support and
-    /// the default. See `splat_width_cells`' own doc -- this applies to ANY
+    /// the default. See `splat_width_cells`' doc -- this applies to ANY
     /// particle material, not just fluids.
     pub fn set_splat_width_cells(&mut self, width: f32) {
         if width.is_finite() {
@@ -1223,7 +1145,7 @@ impl Renderer {
 
     /// Sets the edge-colour optical-depth floor, in dimensionless band units
     /// (multiples of `grid_reference_cell_mass`). See `edge_reference_depth`'s
-    /// own doc for what moving it trades off in each direction.
+    /// doc for what moving it trades off in each direction.
     ///
     /// Upper bound is the band range itself: at or above it, the floor would
     /// win the `max` for every pixel and flatten the shading entirely, which
@@ -1444,17 +1366,12 @@ impl Renderer {
         self.vel_scale = s;
     }
 
-    /// Real per-particle von Mises stress data for `ColorMode::ByStress`
-    /// (see `stress_field`'s own doc for the full mechanism/citation) --
-    /// caller computes this once per frame via
-    /// `MaterialRegistry::von_mises_stress_field(&particles)` and hands it
-    /// in here BEFORE calling `render`, same real "precompute, then
-    /// visualize" convention `write_optical_table` already established for
-    /// `ByPhysics`. A length mismatch against the real particle count is
-    /// NOT an error here (the field is read by index, out-of-range reads
-    /// fall back to 0.0 in `particle_color`) -- callers that resize their
-    /// particle set without recomputing the field just see stale/inert
-    /// coloring for the newly-added particles, not a panic.
+    /// Per-particle von Mises stress for `ColorMode::ByStress` (see
+    /// `stress_field`): compute it once per frame with
+    /// `MaterialRegistry::von_mises_stress_field(&particles)` and hand it in
+    /// before `render`. A length mismatch is not an error: out-of-range reads
+    /// give 0.0 in `particle_color`, so newly added particles just show
+    /// inert colouring until the field is recomputed.
     pub fn set_stress_field(&mut self, values: Vec<f32>) {
         self.stress_field = values;
     }
@@ -1502,7 +1419,7 @@ impl Renderer {
     /// Reduced scattering coefficient for `slot` -- see `OpticalTable`'s doc for
     /// what this represents physically (real subsurface scattering, single-
     /// scattering approximation) and its real citation (Jacques 2013). Auto-
-    /// uploads immediately -- see `set_optical_params`'s own doc for why.
+    /// uploads immediately -- see `set_optical_params`'s doc for why.
     pub fn set_optical_scattering(&mut self, queue: &wgpu::Queue, slot: usize, sigma_s: f32) {
         self.sigma_s[slot % 16] = sigma_s;
         self.upload_optical_params(queue);
@@ -1511,39 +1428,30 @@ impl Renderer {
     /// Specular Fresnel base reflectance R0 for `slot` -- see `OpticalTable`'s doc
     /// for the real-but-bounded caveat (constant near-normal reflectance, no
     /// surface-normal-dependent angle term). Auto-uploads immediately -- see
-    /// `set_optical_params`'s own doc for why.
+    /// `set_optical_params`'s doc for why.
     pub fn set_specular_r0(&mut self, queue: &wgpu::Queue, slot: usize, r0: f32) {
         self.specular_r0[slot % 16] = r0;
         self.upload_optical_params(queue);
     }
 
-    /// Real refractive index of `slot`'s DRY solid/grain (e.g. quartz sand
-    /// ~1.5, standard mineral optics) -- drives real pore-fluid index-
-    /// matching darkening in `ColorMode::ByPhysics`, generic across every
-    /// material and every scalar field a scene wires to `Particle::
-    /// scalar_field` (moisture, or any other saturating quantity), NOT a
-    /// sand-specific hardcoded effect.
+    /// Refractive index of `slot`'s dry solid/grain (quartz sand ~1.5),
+    /// driving pore-fluid index-matching darkening in `ColorMode::ByPhysics`
+    /// for any material and any scalar field wired to
+    /// `Particle::scalar_field` (moisture or another saturating quantity).
     ///
-    /// Real mechanism (2 independent sources, 2026-08-26): wet porous
-    /// materials darken because pore fluid's own refractive index (water:
-    /// 1.33, standard optics reference e.g. Hecht "Optics") sits closer to
-    /// the solid grain's index than air's (1.0) does, reducing the real
-    /// index MISMATCH that drives light scattering at each grain-fluid
-    /// interface -- "Measuring and Modeling the Effect of Surface Moisture
-    /// on the Spectral Reflectance of Coastal Beach Sand" (Sadeghi et al.,
-    /// PMC4226492) measures exactly this for real beach sand; Lagarde 2013
-    /// ("Water drop 3a: Physically based wet surfaces") is the standard
-    /// real-time-rendering treatment of the same mechanism. Scattering
-    /// power depends on the SQUARE of the index mismatch (standard optics
-    /// result), so the reduced-scattering ratio at full saturation is
-    /// `((n_solid - n_water) / (n_solid - n_air))^2` -- see `color.rs`'s
-    /// `particle_color` for where this is actually evaluated, interpolated
-    /// by the particle's own `scalar_field` in [0, 1].
+    /// Wet porous materials darken because the pore fluid's index (water
+    /// 1.33, Hecht "Optics") is closer to the grain's than air's (1.0), which
+    /// reduces the mismatch that scatters light at each interface: measured
+    /// on beach sand by Sadeghi et al. ("Measuring and Modeling the Effect of
+    /// Surface Moisture on the Spectral Reflectance of Coastal Beach Sand",
+    /// PMC4226492), treated for real-time rendering by Lagarde 2013 ("Water
+    /// drop 3a: Physically based wet surfaces"). Scattering goes with the
+    /// square of the mismatch, so the ratio at full saturation is
+    /// `((n_solid - n_water) / (n_solid - n_air))^2`, interpolated by the
+    /// particle's `scalar_field` in [0, 1] in `color.rs`'s `particle_color`.
     ///
-    /// `1.0` (default, same as air) means zero contrast, i.e. inert: no
-    /// wetness-darkening for any material that never calls this. GPU render
-    /// path (`prep_instances.wgsl`) does not yet mirror this -- CPU-path
-    /// only for now, a real scoped follow-up, not silently half-done.
+    /// `1.0` (default, same as air) means no contrast. The GPU render path
+    /// (`prep_instances.wgsl`) does not mirror this yet; CPU path only.
     pub fn set_refractive_index(&mut self, slot: usize, n: f32) {
         self.refractive_index[slot % 16] = n;
     }
@@ -1561,18 +1469,16 @@ impl Renderer {
     /// Snapshots the current GPU-resident particle positions for the render-
     /// interpolation path -- call once per render-frame's physics-step batch,
     /// BEFORE stepping (mirrors the CPU `basic_fluids.rs` `prev_x` convention:
-    /// skip when `steps==0`, the last real snapshot stays valid since nothing
+    /// skip when `steps==0`, the last snapshot stays valid since nothing
     /// moved). Pass the resulting `FixedStepController::interpolation_alpha()`
     /// to `render_gpu`'s own `alpha` param afterward.
     ///
-    /// Real fix for the "sudden acceleration" symptom root-caused 2026-09-15
-    /// (see `RenderConfig::interp_alpha`'s own doc): every GPU demo already
-    /// runs `FixedStepController` real-time-decoupled stepping, but until this
-    /// existed, none interpolated the leftover fractional step -- uneven real
-    /// per-step cost showed up directly as uneven position jumps on screen.
-    /// Zero CPU readback (matches `render_gpu`'s own "zero-readback" contract):
-    /// a tiny compute pass extracts `Particle::x` into a tightly-packed
-    /// GPU-resident buffer, `prep_instances.wgsl` blends against it later.
+    /// GPU demos step on `FixedStepController`; without interpolating the
+    /// leftover fractional step, uneven per-step cost showed as uneven
+    /// position jumps ("sudden acceleration", see
+    /// `RenderConfig::interp_alpha`). No CPU readback: a small compute pass
+    /// copies `Particle::x` into a packed GPU buffer that
+    /// `prep_instances.wgsl` blends against.
     pub fn snapshot_particle_positions(
         &mut self,
         device: &wgpu::Device,
@@ -1633,7 +1539,7 @@ impl Renderer {
     /// (render exactly the current GPU particle state), or a real
     /// `FixedStepController::interpolation_alpha()` reading -- combined with a
     /// prior same-frame `snapshot_particle_positions` call -- to smooth motion
-    /// between fixed physics steps. See that method's own doc.
+    /// between fixed physics steps. See that method's doc.
     pub fn render_gpu(
         &mut self,
         device: &wgpu::Device,
@@ -1866,7 +1772,7 @@ impl Renderer {
 
 // particle_color (the CPU-path per-particle color computation) is split into
 // color.rs alongside the rest of the "Color helpers" section below -- see
-// that file's own doc comment.
+// that file's doc comment.
 mod color;
 use color::write_optical_table;
 

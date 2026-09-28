@@ -250,7 +250,7 @@ impl Node {
             // Quadrupole correction (Hernquist 1987 multipole expansion of the
             // gravitational potential, truncated at 2nd order) -- rho = pos - com is
             // the field point relative to the cluster's own COM, the natural frame
-            // the expansion is derived in (rho = -r_vec; see `QuadProps`'s own doc
+            // the expansion is derived in (rho = -r_vec; see `QuadProps`'s doc
             // for the tensor itself). a_quad = G(Q*rho)/r^5 - (5G/2)(rho.Q.rho)*rho/r^7,
             // using the SAME softened `norm_s` as the monopole term above so the
             // correction never diverges as r->0 either.
@@ -569,19 +569,18 @@ mod quadrupole_tests {
         }
     }
 
-    /// Real, hand-derived reference check (Hernquist 1987 quadrupole expansion of the
-    /// gravitational potential), not just "the tree runs without panicking". Two equal
-    /// masses at (±1,0) form a real, nonzero quadrupole about their own center of mass
-    /// (a DIPOLE about the true COM is impossible by definition -- Σm(x−com)=0 always --
-    /// so this is the simplest configuration with a genuinely nonzero next-order moment,
-    /// not a degenerate edge case). A third, massless probe far away on the same axis
-    /// queries the pair through Barnes-Hut (theta=1.0 so the pair-node is definitely
-    /// treated as "far enough"; the probe has mass=0 so `prepare()`'s own mass>0 filter
-    /// keeps it out of the tree entirely, avoiding self-interaction edge cases).
+    /// Hand-derived reference check (Hernquist 1987 quadrupole expansion of the
+    /// gravitational potential). Two equal masses at (±1,0) have a nonzero
+    /// quadrupole about their centre of mass (a dipole about the COM is zero by
+    /// definition, Σm(x−com)=0), the simplest configuration with a nonzero
+    /// next-order moment. A massless probe far away on the same axis queries the
+    /// pair through Barnes-Hut (theta=1.0 so the pair node counts as far; mass=0
+    /// keeps the probe out of the tree through `prepare()`'s mass>0 filter,
+    /// avoiding self-interaction).
     ///
-    /// Verifies monopole+quadrupole lands within ~1e-6 of the exact two-body direct sum,
-    /// and -- the actual point of adding quadrupole moments at all -- more than 100x
-    /// closer than the monopole-only prediction (same total mass at the exact COM) gets.
+    /// Monopole+quadrupole lands within ~1e-6 of the exact two-body direct sum,
+    /// and more than 100x closer than the monopole-only prediction (same total
+    /// mass at the exact COM).
     #[test]
     fn quadrupole_correction_beats_monopole_only_against_exact_two_body_sum() {
         let d = 1.0_f32;
