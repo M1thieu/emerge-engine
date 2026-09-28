@@ -38,18 +38,13 @@
 //! ```
 //!
 //! So the volume is gained at the body's outline, three to eighteen times
-//! faster than inside it. The obvious suspect is the gather dropping nodes
-//! there: `Grid::is_extrapolated` excludes a node that received no scatter,
-//! and dropping nodes breaks the kernel's zero-first-moment identity, which
-//! is exactly what makes the affine gather blind to a rigid translation.
+//! faster than inside it. The obvious suspect was the gather dropping
+//! nodes there (an exclusion of unscattered nodes, since removed), which
+//! would break the kernel's zero-first-moment identity.
 //!
-//! COUNTED, and it is not that. Instrumenting the branch over this sweep:
-//! 0 extrapolated nodes of 418,714,560 gathered. The path never fires,
-//! because P2G inserts every in-bounds node of a particle's own stencil, so
-//! a particle always gathers from a complete one. The exclusion machinery
-//! (`included_gx`/`included_gy` and the column discard beneath it) is
-//! therefore inert in the current tree, which is worth its own issue but is
-//! not this. The invariant it was protecting is kept as a real test,
+//! COUNTED, and it is not that: 0 excluded nodes of 418,714,560 gathered
+//! over this sweep, because P2G inserts every in-bounds node of a
+//! particle's own stencil. The invariant is kept as a real test,
 //! `a_rigid_translation_reads_no_velocity_gradient`, which reads 4.4e-7 on a
 //! drifting block.
 //!

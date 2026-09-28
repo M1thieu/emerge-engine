@@ -136,12 +136,6 @@ pub struct NewtonianFluidMaterial {
     /// isotropically -- sufficient for cohesion/droplet stability, not for curvature-driven
     /// flow (e.g. Rayleigh-Plateau instability). 0.0 = disabled.
     pub surface_tension_coeff: f32,
-    /// Per-step velocity decay: v *= (1 − settling_damping · dt).
-    ///
-    /// Damps residual sloshing and slow plastic creep without affecting fast flow.
-    /// 0.0 = off (default). 0.05–0.2 for water, 0.1–0.5 for mud/viscous fluids.
-    /// Implemented in the GPU shader via the `dp_h0` slot (unused for fluids).
-    pub settling_damping: f32,
 }
 
 impl NewtonianFluidMaterial {
@@ -168,7 +162,6 @@ impl NewtonianFluidMaterial {
             thermal_viscosity_coeff: 0.0,
             bulk_viscosity: 0.0,
             surface_tension_coeff: 0.0,
-            settling_damping: 0.0,
         }
     }
 
@@ -564,9 +557,6 @@ impl MaterialModel for NewtonianFluidMaterial {
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
-        if self.settling_damping > 0.0 {
-            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
-        }
         // Real, disclosed 2026-08-04 fix: `stress_volume`/`timestep_bound` both
         // read `particles.volume`/`density` -- but until now this material never
         // wrote either. Both were left entirely to `estimate_particle_volumes`'s
@@ -655,7 +645,6 @@ impl MaterialModel for NewtonianFluidMaterial {
             pressure_floor: self.pressure_floor,
             specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             bulk_viscosity: self.bulk_viscosity,
-            dp_h0: self.settling_damping, // fluid repurposes dp_h0 for settling damping (DP unused)
             owns_deformation_volume_state: self.owns_deformation_volume_state() as u32,
             ..Default::default()
         }

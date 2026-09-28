@@ -765,12 +765,6 @@ fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
         let sqrtJ = sqrt(J_fluid);
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
 
-        // Settling damping: v *= (1 − k·dt). Damps gravity-wave sloshing and slow creep.
-        // k = dp_h0 (repurposed -- dp_h0..dp_h3 are DP-only, unused for fluid model 1).
-        if mat.dp_h0 > 0.0 {
-            p.v *= 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
-        }
-
         // GPU/CPU parity fix (2026-08-15): derive density/volume ANALYTICALLY
         // from this already-clamped J, matching CPU's fluid.rs::update_particle
         // exactly (`density = (rest_density/j).max(min_density).min(2*rest_density)`,

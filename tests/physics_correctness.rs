@@ -10015,13 +10015,11 @@ fn yield_stress_columns_slump_in_order_of_their_yield_stress() {
 /// divergence that a rigid translation alone produced. A material's volume
 /// book would then integrate that faithfully, forever.
 ///
-/// The gather has a path that drops nodes: `Grid::is_extrapolated` excludes
-/// a node that received no scatter. Measured, that path does not fire -- 0
-/// nodes of 418,714,560 gathered over a settling-slab run -- because P2G
-/// inserts every in-bounds node of a particle's own stencil, so a particle
-/// always gathers from a complete one. This test is the numerical statement
-/// of the identity that makes the whole scheme translation-blind, and the
-/// guard that would catch a future change to either half of it.
+/// P2G inserts every in-bounds node of a particle's own stencil, and the
+/// same particles gather, so a particle always gathers from a complete
+/// stencil. This test is the numerical statement of the identity that
+/// makes the whole scheme translation-blind, and the guard that would catch
+/// a future change to either half of it.
 #[test]
 fn a_rigid_translation_reads_no_velocity_gradient() {
     const GRID: usize = 32;

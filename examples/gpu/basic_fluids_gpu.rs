@@ -735,21 +735,6 @@ fn make_sim_data(
     // via RenderMode::Surface (curvature-flow reconstruction) whether the
     // "disintegration" judged from raw point-cloud rendering is even a
     // real physics defect, before adding any more force terms.
-    // `settling_damping` was tried at 0.1 (2026-08-13) alongside the
-    // restored J clamp + pressure_floor -- live-measured, that COMBINATION
-    // over-damped the scene entirely (reported: "doesn't even move"). Left
-    // off (0.0, the constructor default) pending a real, isolated re-test of
-    // clamp+pressure_floor alone before adding this back in.
-    //
-    // 2026-08-14: root-caused instead -- the GPU solver's post-`cac544b`
-    // strict-fluid/DCT-pressure/retry rewrite (`dcefbaf`) was the actual
-    // source of the sustained instability this demo showed all session
-    // (full account: [[project session notes]]), not a missing damping
-    // term. The GPU solver internals are reverted to their pre-`dcefbaf`
-    // state (proven live: 60fps steady, J bounded, real settling, on a
-    // HARDER two-material scene than this one) -- this constant stays off,
-    // pending whatever the rebuilt strict-fluid contract needs once that
-    // work resumes.
     let registry = MaterialRegistry::with_default(Box::new(water));
 
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);

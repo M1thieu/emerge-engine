@@ -383,25 +383,6 @@ pub fn gather_grid_to_particles(
                 let weights = quadratic_weights(*ctx.x);
                 let mut new_v = Vec2::ZERO;
                 let mut b = Mat2::ZERO;
-                // Real, second fix to the same free-surface mechanism (2026-09-16,
-                // found chasing a razor-thin-layer collapse where EVERY depth band
-                // read as expanded, not just the free surface): excluding a single
-                // extrapolated node from `b` (above) is correct when the OTHER rows/
-                // columns still span real spatial variation -- but when an entire row
-                // (both cells above AND below, e.g. a layer thinner than the kernel's
-                // own support radius) is excluded, only one row of real data survives,
-                // and every surviving cell then shares the SAME dist.y. A derivative
-                // needs at least two distinct sample positions along an axis; summing
-                // `w*v*dist.y` over cells that all share one dist.y is not a gradient,
-                // it's a spurious `velocity * constant-offset` cross term that gets
-                // fed into `C`'s corresponding column as if it were real -- this reads
-                // as a permanent, non-physical divergence bias, matching the observed
-                // "every band reads expanded, never compressed" signature exactly.
-                // Tracked per-axis: an axis needs >=2 distinct included (non-
-                // extrapolated) offsets to be trusted; otherwise that whole column of
-                // `b` is discarded rather than kept as a numerical artifact.
-                let mut included_gx = [false; 3];
-                let mut included_gy = [false; 3];
 
                 // Iterating the weight arrays rather than `0..3` keeps the loop
                 // honest about what it walks -- the quadratic B-spline stencil --
@@ -418,13 +399,6 @@ pub fn gather_grid_to_particles(
                         // this substep. Both helpers fall back to the ordinary total
                         // velocity where no contact exists at that node, so this is exact
                         // everywhere, not just near contact.
-                        // Set only on the plain free-surface path below -- an assumed,
-                        // spatially-uniform stand-in carries no real spatial-derivative
-                        // information (a constant field has zero gradient), so it must
-                        // still count toward `new_v` but is excluded from `b`. See
-                        // `Grid::is_extrapolated`'s own doc for the full derivation and
-                        // the settling-bias measurement that motivated this.
-                        let mut extrapolated = false;
                         let node_v = if contact_active {
                             if contact_group != 0 {
                                 grid.grip_velocity_at(cell_pos)
@@ -443,7 +417,6 @@ pub fn gather_grid_to_particles(
                             // take THIS particle's own velocity, not ~zero --
                             // see `velocity_at_or_extrapolated`'s own doc for
                             // the measurement and the citation.
-                            extrapolated = grid.is_extrapolated(cell_pos);
                             grid.velocity_at_or_extrapolated(
                                 cell_pos,
                                 *ctx.v,
@@ -454,22 +427,9 @@ pub fn gather_grid_to_particles(
                         };
                         let weighted_velocity = node_v * weight;
                         new_v += weighted_velocity;
-                        if !extrapolated {
-                            included_gx[gx] = true;
-                            included_gy[gy] = true;
-                            let term = Mat2::from_cols(
-                                weighted_velocity * dist.x,
-                                weighted_velocity * dist.y,
-                            );
-                            b += term;
-                        }
+                        b +=
+                            Mat2::from_cols(weighted_velocity * dist.x, weighted_velocity * dist.y);
                     }
-                }
-                if included_gx.iter().filter(|&&c| c).count() < 2 {
-                    b.x_axis = Vec2::ZERO;
-                }
-                if included_gy.iter().filter(|&&c| c).count() < 2 {
-                    b.y_axis = Vec2::ZERO;
                 }
 
                 // ASFLIP (Fei, Guo, Wu, Huang, Gao 2021, "Revisiting Integration in the

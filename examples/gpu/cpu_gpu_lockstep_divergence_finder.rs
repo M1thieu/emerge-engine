@@ -74,10 +74,6 @@ fn make_water() -> NewtonianFluidMaterial {
         .unwrap_or(1.0);
     let mut water = NewtonianFluidMaterial::new(WATER_RHO_GRID, 1.0e-3, 104.0, 3.0);
     water.bulk_viscosity = 3.0 * 1.0e-3 * damping_mult;
-    water.settling_damping = std::env::var("SETTLING_DAMPING")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.0);
     water
 }
 

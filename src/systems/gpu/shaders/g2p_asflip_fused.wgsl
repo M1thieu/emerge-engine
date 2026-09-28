@@ -484,10 +484,8 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else {
         let is_grip = p.contact_group != 0u;
         let contact_active = step_params.contact_active != 0u;
-        // Real, second fix to the same free-surface mechanism (2026-09-16) --
-        // see g2p.wgsl's g2p_main and CPU's `Grid::is_extrapolated` for the
-        // full derivation. A wall (out-of-bounds) cell is real directional
-        // information, so it counts as included, matching CPU exactly.
+        // Same rule as g2p_gather.inc.wgsl: a node below NUM_FLOOR mass is
+        // left out of B, a wall (out-of-bounds) cell counts.
         var included_di = array<bool, 3>(false, false, false);
         var included_dj = array<bool, 3>(false, false, false);
 
@@ -520,11 +518,8 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let is_touched = cell.mass > NUM_FLOOR;
                 let cell_v = select(extrap_v, touched_v, is_touched);
 
-                // Free-surface velocity-gradient bias fix (2026-09-16) -- see g2p.wgsl's
-                // g2p_main (non-ASFLIP twin) and CPU's `Grid::is_extrapolated` for the
-                // full derivation. An extrapolated node contributes to new_v but not to
-                // the affine gradient (b_col0/b_col1); scoped to the plain (non-contact)
-                // path only, matching CPU and g2p_main exactly.
+                // An extrapolated node contributes to new_v but not to the
+                // affine gradient; plain (non-contact) path only.
                 let excluded_from_gradient = !is_touched && !contact_active;
 
                 new_v       += w * cell_v;
@@ -689,12 +684,6 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         J_fluid = clamp(J_fluid, FLUID_J_MIN, fluid_j_max);
         let sqrtJ = sqrt(J_fluid);
         new_F = mat2x2<f32>(vec2<f32>(sqrtJ, 0.0), vec2<f32>(0.0, sqrtJ));
-
-        if mat.dp_h0 > 0.0 {
-            let damp = 1.0 - clamp(mat.dp_h0 * dt, 0.0, 0.5);
-            p.v *= damp;
-            v_position *= damp;
-        }
     }
 
     let J_trial = det2(new_F);

@@ -63,9 +63,6 @@ pub struct BinghamFluidMaterial {
     /// Surface tension coefficient γ -- adds γ·J·I to Kirchhoff stress.
     /// See `NewtonianFluidMaterial::surface_tension_coeff` for details.
     pub surface_tension_coeff: f32,
-    /// Per-step velocity decay: v *= (1 − settling_damping · dt).
-    /// Same as `NewtonianFluidMaterial::settling_damping`. 0.0 = off.
-    pub settling_damping: f32,
     /// Physical second (bulk) viscosity ζ, same real term as
     /// `NewtonianFluidMaterial::bulk_viscosity` (see that field's own doc --
     /// Litovitz & Davis, ~3x shear viscosity for water-like liquids). NOT
@@ -130,7 +127,6 @@ impl BinghamFluidMaterial {
             min_density: 1.0e-6,
             min_volume: 1.0e-6,
             surface_tension_coeff: 0.0,
-            settling_damping: 0.0,
             bulk_viscosity: 0.0,
             shear_modulus: 0.0,
             specific_heat_j_kg_k: 0.0,
@@ -352,9 +348,6 @@ impl BinghamFluidMaterial {
         };
 
         *ctx.deformation_gradient = reconstruct_f(u, sigma_new, vt);
-        if self.settling_damping > 0.0 {
-            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
-        }
         let j = ctx.deformation_gradient.determinant().max(MIN_J);
         let volume = (ctx.initial_volume * j).max(1.0e-9);
         *ctx.volume = volume;
@@ -515,9 +508,6 @@ impl MaterialModel for BinghamFluidMaterial {
         let s = j.sqrt();
         *ctx.deformation_gradient =
             glam::Mat2::from_cols(glam::Vec2::new(s, 0.0), glam::Vec2::new(0.0, s));
-        if self.settling_damping > 0.0 {
-            *ctx.v *= 1.0 - (self.settling_damping * dt).min(0.5);
-        }
         let density = (self.rest_density / j)
             .max(self.min_density)
             .min(self.rest_density * 2.0);
@@ -578,7 +568,6 @@ impl MaterialModel for BinghamFluidMaterial {
             compression_limit: self.yield_stress,
             volume_ratio_max: 2.0,
             pressure_floor: self.pressure_floor,
-            dp_h0: self.settling_damping,
             bulk_viscosity: self.bulk_viscosity,
             mu: self.shear_modulus,
             specific_heat_j_kg_k: self.specific_heat_j_kg_k,

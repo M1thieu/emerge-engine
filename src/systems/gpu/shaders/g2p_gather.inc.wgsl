@@ -145,16 +145,10 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
     // never populated -- reading them here would be reading stale/garbage data, not just an
     // unnecessary read. Falls back to the plain grid velocity in that case, same as CPU.
     let contact_active = step_params.contact_active != 0u;
-    // Real, second fix to the same free-surface mechanism (2026-09-16, CPU
-    // mirror: see `spacetime/transfer/g2p.rs`'s own doc for the full
-    // derivation, found chasing a razor-thin-layer collapse where EVERY
-    // depth band read as expanded, not just the free surface). An axis
-    // needs >=2 distinct sampled offsets to yield a real derivative; a wall
-    // (out-of-bounds) cell is REAL directional information (a genuine
-    // physical boundary value, unlike an assumed-uniform extrapolated
-    // node) so it counts as included here, matching CPU's own
-    // `is_extrapolated` (which returns `false`, i.e. "not extrapolated",
-    // for out-of-bounds cells) exactly.
+    // A node below NUM_FLOOR mass counts as untouched here and is left out
+    // of B; an axis needs >= 2 included offsets to give a derivative. A
+    // wall (out-of-bounds) cell is a real boundary value and counts. The
+    // CPU has no such nodes: it gathers only nodes its own P2G created.
     var included_di = array<bool, 3>(false, false, false);
     var included_dj = array<bool, 3>(false, false, false);
 
@@ -187,23 +181,10 @@ fn g2p_gather(p_idx: u32, pp: ptr<function, Particle>) {
             let is_touched = cell.mass > NUM_FLOOR;
             let cell_v = select(extrap_v, touched_v, is_touched);
 
-            // Free-surface velocity-gradient bias fix (2026-09-16, CPU mirror:
-            // `Grid::is_extrapolated` in spacetime/grid/mod.rs). An extrapolated node's
-            // value is an assumed, spatially-uniform stand-in ("this neighbourhood is in
-            // unopposed free fall") -- correct only in true free fall, where the kernel's
-            // own zero-first-moment identity makes a uniform value contribute exactly
-            // zero to B anyway. The instant a particle is resting/settling instead
-            // (gravity balanced by contact/pressure, real touched neighbours near zero)
-            // while only part of its stencil is extrapolated, this same assumed value
-            // keeps growing every substep while real neighbours correctly stay near
-            // zero -- a synthetic difference across the stencil that reads as spurious
-            // divergence. A constant field has zero gradient by construction, so this
-            // node still counts toward `new_v` (a real velocity value is still needed to
-            // advect the particle) but is excluded from B (the gradient accumulation).
-            // Scoped to the plain path only, matching CPU exactly: a contact-active
-            // node's `touched_v` is already defaulted to the ordinary total velocity by
-            // resolve_contact.wgsl wherever no real contact field exists there -- a
-            // different, already-safe fallback this fix must not also touch.
+            // An extrapolated value is an assumed uniform stand-in with no
+            // gradient: it counts toward `new_v` but not toward B. Plain path
+            // only: a contact-active node's `touched_v` already falls back to
+            // the total velocity in resolve_contact.wgsl.
             let excluded_from_gradient = !is_touched && !contact_active;
 
             new_v       += w * cell_v;
