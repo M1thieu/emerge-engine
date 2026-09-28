@@ -405,7 +405,7 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// (default) opts out: a scene containing it takes the explicit substep.
     ///
     /// Checked for the five overriding materials
-    /// (`tests/scratch_implicit_mpm_stage2_shared_elastic_branch_check.rs`):
+    /// (`tests/probes/implicit_mpm_stage2_shared_elastic_branch_check.rs`):
     /// DruckerPrager, VonMises, Rankine and MuIRheology call
     /// `corotated_elastic_stress` directly and require `elastic_viscosity ==
     /// 0.0` (a Kelvin-Voigt rate term is not modelled); Corotated requires

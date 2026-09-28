@@ -209,8 +209,9 @@ shard past its 45-minute limit in the debug profile are marked
 runs them in the quick profile; the exact list lives in
 `.github/workflows/slow-tests.yml` and can be run locally the same way.
 
-**Diagnostic probes** (`tests/scratch_*.rs`) are kept for reruns and are all
-ignored; run one with `--ignored --nocapture` and its name.
+**Diagnostic probes** (`tests/probes/`, one test binary with a module per
+probe) are kept for reruns and are all ignored; run one with
+`cargo test --test probes <module>:: -- --ignored --nocapture`.
 
 ---
 

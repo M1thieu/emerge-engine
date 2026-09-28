@@ -75,7 +75,7 @@ impl CursorContact {
 /// (`CursorContact::traction_pa`) instead of assuming it.
 ///
 /// A push `P` shears the material at about `P / 2`, so it yields a
-/// material near `P = 2 tau_0`: `tests/scratch_bingham_cursor_yield.rs`.
+/// material near `P = 2 tau_0`: `tests/probes/bingham_cursor_yield.rs`.
 pub struct CursorTraction {
     radius: f32,
     rho_kg_m3: f32,

@@ -98,7 +98,7 @@ fn deformation_increment_exp_with_det(dt_velocity_gradient: Mat2) -> (Mat2, f32)
 /// increment is a thousandth of that, so each step loses a fixed
 /// FRACTION of its increment to absorption and the smallest increments
 /// vanish outright. Measured with no solver and no grid
-/// (`tests/scratch_fluid_j_rounding.rs`), against an f64 replica of the
+/// (`tests/probes/fluid_j_rounding.rs`), against an f64 replica of the
 /// same update that holds J at exactly 1.000000: f32 walked to 0.999468
 /// at a divergence of 0.2 per second, and at the finest increment it
 /// froze completely, 0.000 drift, J stuck.
@@ -147,7 +147,7 @@ pub(crate) fn carried_volume_ratio(volume: f32, initial_volume: f32) -> f32 {
 /// product `exp(dt L) F` is not: in f32 each step loses about a tenth of
 /// an ULP of determinant, always the same way. Measured on one particle
 /// driven by a prescribed oscillation of zero trace, with no solver, no
-/// grid and no gravity (`tests/scratch_f_rounding_horizon.rs`), where
+/// grid and no gravity (`tests/probes/f_rounding_horizon.rs`), where
 /// `ln det F` must stay at zero: after 900 000 steps it reads -2.8e-3
 /// with the plain product and +3e-14 when the same formula runs in f64,
 /// so the gap is precision, not the scheme. A body that keeps

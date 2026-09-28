@@ -19,7 +19,7 @@ use glam::{IVec2, Mat2, Vec2};
 /// At 64 cells they did, and each column's shape was set by its neighbours
 /// rather than its yield stress. The width is derived from how far each
 /// column spreads ALONE on this scene's gripping floor
-/// (`tests/scratch_bingham_isolated_slump.rs`): see `COLUMN_X`. A wider
+/// (`tests/probes/bingham_isolated_slump.rs`): see `COLUMN_X`. A wider
 /// tank costs nothing measurable, since the grid is sparse
 /// (`BINGHAM_PROBE_GRID` in `bingham_cost_probe`), and the camera frames
 /// the material rather than the tank.
@@ -187,7 +187,7 @@ pub fn make_sim(
         // thin-layer inversion read five to ten times low. Coulomb friction
         // at mu = 1 grips where mu * rho * g * h exceeds the base shear;
         // while the deposits spread, 7 to 9 percent of the loaded floor
-        // nodes still slide (`tests/scratch_bingham_isolated_slump.rs`). A
+        // nodes still slide (`tests/probes/bingham_isolated_slump.rs`). A
         // declared approximation of no-slip, not no-slip.
         .with_boundary(Box::new(FrictionBoundary::new(
             config.boundary_thickness,
@@ -266,7 +266,7 @@ pub struct Reading {
 /// Declared: slower than a tenth of a millimetre a second, a deposit is at
 /// rest. The deposits that do stop ring down through a few hundredths of a
 /// millimetre a second within two and a half seconds
-/// (`tests/scratch_bingham_isolated_slump.rs`), well under it.
+/// (`tests/probes/bingham_isolated_slump.rs`), well under it.
 pub const AT_REST_M_S: f32 = 1.0e-4;
 /// Declared: faster than a centimetre a second, five cells a second at this
 /// grid, a deposit is still slumping and its shape is no reading at all.

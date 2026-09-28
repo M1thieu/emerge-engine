@@ -2,7 +2,7 @@
 //! (`spacetime::solver::implicit_corotated`), the opt-in Newton-CG big step
 //! in `Simulation::step`. Standalone Newton-CG correctness and cost are
 //! checked against finite differences and wall-clock in
-//! `tests/scratch_implicit_mpm_stage3_drucker_prager_multi_particle.rs`; this
+//! `tests/probes/implicit_mpm_stage3_drucker_prager_multi_particle.rs`; this
 //! file checks the production wiring (eligibility gating, `Simulation`/
 //! `SpawnRegion` setup, boundary conditions, G2P/plasticity fusion).
 

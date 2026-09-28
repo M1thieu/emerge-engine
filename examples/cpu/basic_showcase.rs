@@ -70,7 +70,7 @@ fn make_sim() -> Simulation {
         // Real fix (2026-09-06): the real E=15 MPa sand above needs real
         // substep headroom under CFL -- same value already empirically
         // verified for the identical citation/grid/dx in basic_sand.rs
-        // (`tests/scratch_basic_sand_probe.rs`: confirmed zero dropped
+        // (`tests/probes/basic_sand_probe.rs`: confirmed zero dropped
         // simulated time at this cap).
         max_substeps_per_step: 3000,
         recompute_density_each_step: true,

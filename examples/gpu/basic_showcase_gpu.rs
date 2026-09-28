@@ -40,7 +40,7 @@ const SPACING: f32 = 0.7;
 // dt^2-free `lame_from_si`.
 //
 // Real fix (2026-09-17), root-caused this scene's own live ~0.5fps
-// (`tests/scratch_basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`:
+// (`tests/probes/basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`:
 // sand alone needs 2623 of the ~2629 substeps this frame's dt demands,
 // versus 5 for the elastic body and 1 for the fluid -- sand is the entire
 // cost here). Not a guessed softening: the SAME paper this E already cites
@@ -50,7 +50,7 @@ const SPACING: f32 = 0.7;
 // disclosed cost (15.8% mean error on excavation forward force, versus
 // -0.5% for the validated 15 MPa case) -- their own number, not derived
 // here. Confirmed via the same real `timestep_bound` function
-// (`tests/scratch_basic_showcase_probe.rs::basic_showcase_sand_substep_cost_at_published_relaxed_modulus`):
+// (`tests/probes/basic_showcase_probe.rs::basic_showcase_sand_substep_cost_at_published_relaxed_modulus`):
 // this drops sand's own need from 1777 to 178 substeps, a real ~10x
 // reduction matching `dt ~ 1/sqrt(E)`. This is a player-driven engine demo,
 // not a sand-accuracy validation scene (that stays on the full E=15MPa

@@ -163,7 +163,7 @@ fn make_sim(p: &Params) -> Simulation {
     // elasticity under large/fast deformation, not something this migration
     // introduced (NeoHookean and Viscoelastic, both fully nonlinear
     // hyperelastic, were unaffected at the same drop height). Swept
-    // empirically (`tests/scratch_basic_jellies_probe.rs`): height 25 still
+    // empirically (`tests/probes/basic_jellies_probe.rs`): height 25 still
     // inverts 330+ particles, height 15 inverts zero while still showing
     // substantial deformation (J ranges 0.001-1.3, not a trivial
     // settle). CorotatedMaterial's own large-deformation robustness stays a

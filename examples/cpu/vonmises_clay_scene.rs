@@ -1,5 +1,5 @@
 //! The clay scene, shared by `basic_vonmises` and its headless probe
-//! (`tests/scratch_vonmises_clay.rs`), so what the demo's header says is
+//! (`tests/probes/vonmises_clay.rs`), so what the demo's header says is
 //! measured on the demo's own scene. Every item here is used by both
 //! includers.
 

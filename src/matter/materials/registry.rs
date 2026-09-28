@@ -261,7 +261,7 @@ impl MaterialRegistry {
     /// reaches `yield_stress`, so it reads `sqrt(3) yield_stress`. A view
     /// that means "at yield" asks each material for its own criterion
     /// (`VonMisesMaterial::yield_ratio`), which one display scale cannot
-    /// replace (`tests/scratch_stress_view_before_after.rs`).
+    /// replace (`tests/probes/stress_view_before_after.rs`).
     pub fn von_mises_stress_field(&self, particles: &Particles) -> Vec<f32> {
         (0..particles.len())
             .map(|i| {

@@ -45,7 +45,7 @@ mod gui_common;
 /// by it): even once visibly static, `max|J-1|` keeps drifting slowly and
 /// apparently unboundedly (measured: ~0.02 -> ~0.22 over 600s at the real
 /// default stiffness) -- confirmed via a controlled probe
-/// (`tests/scratch_membrane_gravity_probe.rs`) to be driven by STIFFNESS
+/// (`tests/probes/membrane_gravity_probe.rs`) to be driven by STIFFNESS
 /// (more CFL-forced substeps per simulated second means more discrete P2G/
 /// G2P transfer events per second, each contributing the same tiny
 /// per-substep volumetric residual this file's own `cundall_damping` doc

@@ -3,7 +3,7 @@
 //! Positions advance by `x += v dt` in f32, which rounds to the nearest
 //! representable value. When an increment is below half the spacing of
 //! f32 values around `x` (half an ulp), that axis does not move at all. On
-//! a loaded rod scene (`tests/scratch_rod_load_ab.rs`) particles moving at
+//! a loaded rod scene (`tests/probes/rod_load_ab.rs`) particles moving at
 //! 1e-3 cells/s under a 7.4e-5 s substep had increments 17 to 20 times below
 //! half an ulp at y = 25 and never moved, while their velocity followed the
 //! rod beneath them.

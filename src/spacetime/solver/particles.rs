@@ -673,7 +673,7 @@ impl Simulation {
         // particles would push that much too hard.
         //
         // Measured on three IDENTICAL columns in one world
-        // (`tests/scratch_bingham_column_volume_loss.rs`): the body `new`
+        // (`tests/probes/bingham_column_volume_loss.rs`): the body `new`
         // started with held mean J = 0.99907 while the two this function
         // added crushed to 0.94304, worst particle 0.603 against 0.986.
         // Six material families set their own volume this way and all six

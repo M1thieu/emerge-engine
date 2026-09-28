@@ -158,7 +158,7 @@ fn main() {
 /// traction measured under the cursor of 3950 to 5080 Pa. The earlier
 /// scene's 0.787 m/s natural peak was the slip floor mostly: the 2 Pa column
 /// alone peaks at 0.762 on a slip floor and 0.662 on this one
-/// (`tests/scratch_bingham_isolated_slump.rs`).
+/// (`tests/probes/bingham_isolated_slump.rs`).
 fn peak_speeds(dt: f32, peak_natural: &[f32; 3]) {
     let assumed = (2.0 * 9.81 * COLUMN_CELLS.y as f32 * DX_M).sqrt();
     let sound = (bulk_modulus_pa() / RHO_KG_M3).sqrt();

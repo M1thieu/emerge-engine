@@ -79,7 +79,7 @@ fn make_sim() -> Simulation {
         // real substep headroom under CFL -- the old 12 silently dropped
         // simulated time instead of crashing (see `step.rs`'s "honest
         // accounting" doc). Measured directly at real full gravity
-        // (`tests/scratch_basic_sand_probe.rs`): 2000 still dropped ~11.6%
+        // (`tests/probes/basic_sand_probe.rs`): 2000 still dropped ~11.6%
         // of each step's simulated time; the solver actually uses 2263 once
         // given enough headroom, so 3000 leaves real margin, confirmed
         // zero time dropped.

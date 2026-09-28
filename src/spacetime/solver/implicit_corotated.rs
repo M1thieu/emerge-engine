@@ -231,7 +231,7 @@ impl ImplicitProblem {
             // spurious `F^-T` factor, since it pairs with the material
             // gradient, not a spatial one. With it, a settled pile diverged 8+
             // grid cells from the explicit baseline in one frame
-            // (`tests/scratch_implicit_corotated_wiring_diagnostic.rs`'s
+            // (`tests/probes/implicit_corotated_wiring_diagnostic.rs`'s
             // multi-frame trajectory comparison). Finite-difference checks
             // cannot catch this: they verify the JVP against its own residual
             // formula, not the formula against this engine's force convention.

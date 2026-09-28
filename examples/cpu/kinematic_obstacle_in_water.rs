@@ -25,7 +25,7 @@ use glam::{IVec2, Vec2};
 ///
 /// The underlying reaction-impulse mechanism is the exact same real physics
 /// already verified headless in
-/// `tests/scratch_kinematic_reactive_obstacle_water_verify.rs` (mass
+/// `tests/probes/kinematic_reactive_obstacle_water_verify.rs` (mass
 /// conserved, obstacle decelerates on contact, reaction hits zero
 /// out of contact) -- this demo drives that same mechanism from live cursor
 /// input instead of a scripted initial velocity.

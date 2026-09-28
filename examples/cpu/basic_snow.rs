@@ -66,7 +66,7 @@ fn make_sim() -> Simulation {
         // substep headroom under CFL -- the old 20 silently dropped
         // simulated time instead of crashing (see `step.rs`'s "honest
         // accounting" doc). Measured directly during a real snowball
-        // collision (`tests/scratch_basic_snow_probe.rs`): 3000 still
+        // collision (`tests/probes/basic_snow_probe.rs`): 3000 still
         // dropped ~54% of each step's simulated time; the solver actually
         // settles around 6590-6600 once given enough headroom, so 8000
         // leaves real margin, confirmed zero time dropped. Disclosed

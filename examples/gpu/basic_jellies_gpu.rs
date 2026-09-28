@@ -113,7 +113,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // exposed via the same `.with_boundary()` builder CPU uses, which
         // is why the first check missed it). Directly re-verified: the
         // blob falls, hits the floor, and bounces
-        // (`tests/scratch_gpu_boundary_recheck.rs`, min_y 40 -> 2.49 -> 6.1
+        // (`tests/probes/gpu_boundary_recheck.rs`, min_y 40 -> 2.49 -> 6.1
         // -> 9.4 over 20s). The 20000 value itself still stands (matches
         // the CPU twin's own proven-safe margin), just not for the reason
         // previously written here.

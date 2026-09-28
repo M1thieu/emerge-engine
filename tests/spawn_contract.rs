@@ -97,7 +97,7 @@ fn both_spawn_paths_give_a_body_the_same_initial_volume() {
 /// estimate would have the last word there, and at a free surface it
 /// inflates a particle's volume up to 2.56 times.
 ///
-/// With that order mismatch (`tests/scratch_bingham_column_volume_loss.rs`)
+/// With that order mismatch (`tests/probes/bingham_column_volume_loss.rs`)
 /// the same column carries a mean 0.250000 through `Simulation::new` and
 /// 0.280036 through `add_body`, worst particle 0.640000, and three
 /// identical columns in one world end at mean J 0.99907, 0.94304 and
@@ -171,7 +171,7 @@ fn a_fluid_body_is_the_same_whichever_path_adds_it() {
 /// The bar is 35 % because this column is a coarse discretisation of a
 /// continuum, not because 14 % was accepted on faith. The same physical
 /// column, 6 by 12 cm, was run at three cell sizes
-/// (`tests/scratch_column_convergence.rs`):
+/// (`tests/probes/column_convergence.rs`):
 ///
 /// ```text
 ///   cell size   particles   measured    analytic   off by

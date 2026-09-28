@@ -128,7 +128,7 @@ const GRAIN_MASS: f32 = 1.0;
 // paths refuse once their cap is hit. `POUR_COOLDOWN_FRAMES` throttles a held
 // mouse button to a real trickle (a few drops/sec), not one every frame.
 //
-// Measured (2026-09-09) via `tests/scratch_grain_freeze_hitch_
+// Measured (2026-09-09) via `tests/probes/grain_freeze_hitch_
 // investigation.rs::grain_count_scaling_at_shipped_sim_speed`: the old 400
 // cap let a fully-poured pile (80 base + 400 = 480 grains) drop to 32.8fps,
 // silently breaking this project's own 45-60fps floor -- the `sim_speed`
@@ -543,7 +543,7 @@ impl State {
             logger,
             pour_mode: false,
             pour_cooldown: 0,
-            // Measured (2026-09-09) via `tests/scratch_grain_freeze_
+            // Measured (2026-09-09) via `tests/probes/grain_freeze_
             // hitch_investigation.rs::sim_speed_sweep_for_45_60fps_floor`:
             // 25 (the old value) cost 1.19ms/step on this real 80-grain
             // scene -> 28.3fps steady-state, under this project's own

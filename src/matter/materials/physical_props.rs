@@ -443,7 +443,7 @@ pub struct BinghamProps {
     /// meets no restoring force while compression meets the full one, and
     /// any symmetric noise in the divergence ratchets volume upward. That
     /// was measured: every expanded particle in every slab of
-    /// `tests/scratch_thin_layer_volume_drift.rs` had its pressure deleted.
+    /// `tests/probes/thin_layer_volume_drift.rs` had its pressure deleted.
     pub cavitation_pressure_pa: f32,
 }
 
@@ -477,7 +477,7 @@ impl BinghamProps {
     /// file.
     ///
     /// What makes it usable anyway is that it barely matters:
-    /// `tests/scratch_thin_layer_volume_drift.rs` sweeps this floor and
+    /// `tests/probes/thin_layer_volume_drift.rs` sweeps this floor and
     /// finds the slab behaves much the same anywhere from -280 to -2800 Pa,
     /// a factor of ten.
     pub const ENTRAINED_AIR_NUCLEUS_RADIUS_M: f32 = 500.0e-6;

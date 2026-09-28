@@ -24,7 +24,7 @@ use emerge::particle::Particle;
 ///
 /// Each holds its own weight (`make_sim` checks it before the scene starts,
 /// 10 to 38 times over at this size). Measured headless on this scene
-/// (`tests/scratch_vonmises_clay.rs`), after a 10 cm drop at 1.4 m/s: the
+/// (`tests/probes/vonmises_clay.rs`), after a 10 cm drop at 1.4 m/s: the
 /// three spread to 17.8, 16.1 and 14.9 cells wide from 13.5, with largest
 /// accumulated plastic strains of 0.50, 0.31 and 0.19, keep their volume,
 /// and come to rest without bouncing, none left at yield. No damping of any

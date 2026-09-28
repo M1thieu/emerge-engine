@@ -100,7 +100,7 @@ mod gui_common;
 ///
 /// The floor grips. On a frictionless one the thin-layer reading comes out
 /// five to ten times low, because without basal shear the material spreads
-/// too far to be a slump test at all (`tests/scratch_bingham_isolated_slump.rs`).
+/// too far to be a slump test at all (`tests/probes/bingham_isolated_slump.rs`).
 ///
 /// The grip leaves a mark of its own, at the floor. The lowest quarter of
 /// each slumped deposit ends about one percent dilated, a volume ratio of
@@ -110,12 +110,12 @@ mod gui_common;
 /// the grip, not the wall: the 60 Pa column alone, its particles within a
 /// cell and a half of the floor, ends at 1.016 on this floor and 0.9995 on a
 /// slip one, and the dilation appears during the impact, in the first fifth
-/// of a second, then stays frozen (`tests/scratch_bingham_isolated_slump.rs`).
+/// of a second, then stays frozen (`tests/probes/bingham_isolated_slump.rs`).
 /// So the mean volume ratio above one, 1.0044 and 1.0033, is that bottom
 /// layer, not the deposits. In every band, the bottom one included, the
 /// vertical stress carries the weight overhead to within 14 percent in the
 /// middle deposit and 10 in the right; the left one, three cells thick, is
-/// too thin to split that finely (`tests/scratch_bingham_deposit_state.rs`).
+/// too thin to split that finely (`tests/probes/bingham_deposit_state.rs`).
 /// Why a gripping floor stretches the layer it grips is not established:
 /// issue #44.
 ///
@@ -216,7 +216,7 @@ const DT_S_DEFAULT: f32 = 0.001;
 /// this way starts keeping a permanent deformation between `P = 1` and `2`
 /// times its own yield stress, at the same multiple for 2, 60 and 1200 Pa
 /// to within one step of the measured grid
-/// (`tests/scratch_bingham_cursor_yield.rs`), lower than the `2 tau_0` the
+/// (`tests/probes/bingham_cursor_yield.rs`), lower than the `2 tau_0` the
 /// mean shear `P / 2` alone would suggest. So 300 Pa yields the middle
 /// column and stays far under the right one's 1200. The slumped columns
 /// sit on their own yield surface already, so in this scene a much weaker
@@ -308,7 +308,7 @@ struct State {
     /// `von_mises_stress_field`, takes the plane-stress von Mises of the full
     /// stress, where a pure pressure reads as its own magnitude; on these
     /// deposits that painted their weight, not their shear
-    /// (`tests/scratch_bingham_deposit_state.rs`).
+    /// (`tests/probes/bingham_deposit_state.rs`).
     show_stress: bool,
     /// The region the camera frames: the stage the slump ends on, grown
     /// only if a push carries material off it, never shrunk; reset with the

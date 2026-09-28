@@ -122,7 +122,7 @@ impl Grid {
         // air cells next to the body, which the solve keeps as unknowns (see
         // the surface classification below). J still hit the [0.5, 2.0]
         // clamp on the falling-droplet gate
-        // (`tests/scratch_falling_droplet_pressure_projection_check.rs`).
+        // (`tests/probes/falling_droplet_pressure_projection_check.rs`).
         // Computing the divergence on fluid cells only removes that source
         // but exposes further defects of this solve; the measured list is in
         // the pressure projection entry of `KNOWN_LIMITATIONS.md`.

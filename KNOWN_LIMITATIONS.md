@@ -327,7 +327,7 @@ its own to explain or calm that particular runaway.
 continuity equation, `det(exp(dt C)) = exp(dt tr C)`, and rescales the
 product onto it, instead of letting f32 round-off decide it. What is left
 after that, measured on the anchored body of
-`tests/scratch_no_compression_drift_horizon.rs` at one substep of 4.37 ms
+`tests/probes/no_compression_drift_horizon.rs` at one substep of 4.37 ms
 (the same substep the adaptive loop picks), mean `J - 1` over the body:
 
 | substeps | tension-only, before | tension-only, after | ordinary elastic, after |
@@ -456,7 +456,7 @@ radial return with a Perzyna viscous overstress) is purely elastic below its
 yield stress: the viscosity only acts once the material flows. So a block
 loaded under its yield and released has nothing to take the energy out, and
 it rebounds and rings indefinitely. Seen directly in
-`tests/scratch_bingham_cursor_yield.rs`: in zero gravity a 1200 Pa block
+`tests/probes/bingham_cursor_yield.rs`: in zero gravity a 1200 Pa block
 pushed at half its yield and released keeps oscillating, which is what gives
 that row its higher floor, 0.15 mm of apparent change of shape at x0.5
 against 0.006 for the 60 Pa block.
@@ -482,7 +482,7 @@ between a particle and its neighbours by 0.075 on average, against a spread
 of 0.168 across the whole deposit; the demo's stress view shows it as
 stripes. It is not the gripping floor: 0.070 on a slip floor against 0.074,
 and strongest in the top band, not the bottom one
-(`tests/scratch_bingham_deposit_state.rs`, `the_stripes_on_each_floor`).
+(`tests/probes/bingham_deposit_state.rs`, `the_stripes_on_each_floor`).
 Cause not established; no issue yet.
 
 ### GPU snow hardens differently at a body's edge
@@ -498,7 +498,7 @@ almost certainly the same defect:
   trail).
 - The parity matrix leaves snow as its one remaining gap: under uniaxial
   compression the two paths end 9.8e-2 apart in position and 2.5 in
-  velocity. `tests/scratch_snow_gpu_gap.rs` narrows it: both sides run
+  velocity. `tests/probes/snow_gpu_gap.rs` narrows it: both sides run
   ONE identical substep, after which the hardening and density fields
   part at the body's EDGE while the middle stays identical to the digit.
   Worst particle on CPU carries hardening 2.158 at density 0.255, on GPU

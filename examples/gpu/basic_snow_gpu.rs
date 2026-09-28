@@ -78,7 +78,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // Real fix (2026-09-06): the real E=1.4e5 Pa snow above needs real
         // substep headroom under CFL -- same value already empirically
         // verified for the identical citation/grid/dx/collision geometry in
-        // basic_snow.rs's CPU twin (`tests/scratch_basic_snow_probe.rs`:
+        // basic_snow.rs's CPU twin (`tests/probes/basic_snow_probe.rs`:
         // 3000 still dropped ~54% of simulated time during the real
         // snowball collision, 8000 confirmed zero time dropped).
         max_substeps_per_step: 8000,
