@@ -5516,7 +5516,9 @@ fn directional_contact_grip_is_real_and_direction_aware() {
 
     assert!(
         easy_speed > 1.0,
-        "BUG: sliding in the easy direction should keep real speed (low mu_easy=0.05) --          got mean v_x={easy_speed:.4} (started at 3.0). If this is ~0, the directional          grip isn't reaching the real contact resolver at all."
+        "BUG: sliding in the easy direction should keep real speed (low mu_easy=0.05) -- \
+         got mean v_x={easy_speed:.4} (started at 3.0). If this is ~0, the directional \
+         grip isn't reaching the real contact resolver at all."
     );
     assert_coulomb_loss("resisted", resist_speed, -3.0, 0.9);
 }

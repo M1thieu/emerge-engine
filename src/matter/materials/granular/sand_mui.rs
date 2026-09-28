@@ -272,6 +272,9 @@ impl MaterialModel for MuIRheologyMaterial {
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::DruckerPragerMuI as u32,
+            // Contact sizes particles from it (see `MaterialModel::rest_density`);
+            // 0 = unknown. No solid stress branch reads this slot.
+            rest_density: self.rest_density.unwrap_or(0.0),
             lambda: self.lambda,
             mu: self.mu,
             // Reuse DP slots for µ(I) params (CPU-only for now).

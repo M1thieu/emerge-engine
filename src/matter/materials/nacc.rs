@@ -698,6 +698,9 @@ impl MaterialModel for NaccMaterial {
         let lambda = self.kappa - self.mu;
         MaterialParams {
             model: ConstitutiveModel::NeoHookean as u32,
+            // Contact sizes particles from it (see `MaterialModel::rest_density`);
+            // 0 = unknown. No solid stress branch reads this slot.
+            rest_density: self.rest_density.unwrap_or(0.0),
             lambda,
             mu: self.mu,
             hardening_exponent: self.hardening_factor,

@@ -33,6 +33,9 @@ pub struct MaterialParams {
 
     // --- Fluid (Tait EOS + Newtonian viscosity) ---
     /// Reference density ρ₀ at rest. Tait EOS pressure is zero when ρ = ρ₀.
+    /// Solids built from SI fill it too, for multi-field contact to size a
+    /// particle as `mass / rest_density` (0 = unknown, contact then uses
+    /// `initial_volume`); no solid stress branch reads it.
     pub rest_density: f32,
     /// Bulk modulus k in the Tait EOS: p = k·((ρ/ρ₀)^γ − 1).
     pub eos_stiffness: f32,

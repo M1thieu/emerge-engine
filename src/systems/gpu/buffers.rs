@@ -412,7 +412,9 @@ impl GpuBuffers {
         // Fixed size, independent of grid_res -- see MAX_CONTACT_POINTS_PER_BLOCK's doc
         // for why this is bucketed per its own dedicated NUM_CONTACT_BLOCKS partition
         // (finer than NUM_BLOCKS, the unrelated P2G-sort partition), not per exact node.
-        let contact_points_bytes = (NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK * 16) as u64;
+        // Two vec4 per point: position, label and undeformed half size, then
+        // the inverse deformation gradient (see `gather_contact_points_main`).
+        let contact_points_bytes = (NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK * 32) as u64;
         let contact_points = make_buffer(
             device,
             "mpm_contact_points",

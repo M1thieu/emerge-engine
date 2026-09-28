@@ -1,7 +1,7 @@
 // Multi-field contact resolution (GPU port). Ports `Grid::resolve_contact`/
 // `fit_contact_normal_lr` (src/spacetime/grid/mod.rs, CPU) to WGSL -- Bardenhagen 2001 +
-// Nairn 2020 LR normal fit + velocity-floor Baumgarte stabilization (not the earlier
-// unconditional-additive form, which causes long-horizon energy injection).
+// Nairn, Hammerquist and Smith 2020: LR normal fit, and contact only where the bodies
+// approach and their particles' deformed edges touch (no Baumgarte term, issue #49).
 //
 // Point-cloud storage is bucketed per coarse BLOCK, not per exact grid node (per-node
 // sizing scales as `grid_res² × capacity` and OOMs -- see `MAX_CONTACT_POINTS_PER_BLOCK`'s
@@ -123,7 +123,12 @@ fn substep_dt() -> f32 {
 // than assumed from the algebra alone.
 fn solve3x3(m: mat3x3<f32>, rhs: vec3<f32>, out: ptr<function, vec3<f32>>) -> bool {
     let det = determinant(m);
-    if abs(det) <= 1.1920929e-7 { // f32::EPSILON
+    // Relative to the diagonal product, as CPU's `solve3x3`: an absolute bound
+    // stopped the fit before convergence on separable clouds (issue #49). The
+    // second test is Rust's `!det.is_normal()`: zero, subnormal or not finite.
+    let diagonal = abs(m[0][0] * m[1][1] * m[2][2]);
+    if abs(det) <= 1.1920929e-7 * diagonal // f32::EPSILON
+        || !(abs(det) >= 1.17549435e-38 && abs(det) <= 3.40282347e38) {
         return false;
     }
     var result: vec3<f32>;
@@ -313,7 +318,11 @@ fn gather_local_points(node_pos: vec2<f32>, res: u32, out_points: ptr<function, 
             let base = block * MAX_POINTS_PER_BLOCK;
             for (var i: u32 = 0u; i < count; i++) {
                 if n >= MAX_LOCAL_POINTS { return n; }
-                let pt = contact_points[base + i];
+                let slot = base + i;
+                let head = contact_points[2u * slot];
+                // The fit reads position and label; `w` carries the point's
+                // slot so `resolve_cell` can read its edge data back.
+                let pt = vec4<f32>(head.xyz, bitcast<f32>(slot));
                 let rel = pt.xy - node_pos;
                 // Real, confirmed-via-derivation fix (2026-09-15): CPU's exact
                 // port (`Grid::add_contact_point`, via `gather_contact_point_
@@ -386,8 +395,8 @@ fn resolve_direction_aware(v_rel: vec2<f32>, n: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(0.0, 0.0);
 }
 
-// Exact port of Grid::resolve_contact (CPU), including the velocity-floor Baumgarte
-// form (see this file's top doc for why, not the unconditional-additive version).
+// Exact port of Grid::resolve_contact (CPU): edge-touch detection, the Coulomb
+// correction against the wall normal `-n`, and the small nodal mass bound.
 // Dispatched the same active-block-bounded way as grid_update_main (one workgroup per
 // block slot, grid-stride loop over the block's real cell range).
 fn resolve_cell(cx: u32, cy: u32, res: u32) {
@@ -433,33 +442,36 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     // matches CPU's "outward: away from grip" convention.
     let n = -fit.xy;
     let v_rel_before = v_grip - v_cm;
-    var v_rel = resolve_direction_aware(v_rel_before, n);
+    var v_rel = v_rel_before;
 
-    // Baumgarte position correction (velocity-floor form) --
-    // reuses the SAME local point cloud already gathered for the fit.
-    var max_grip_proj = -3.4e38;
-    var min_rest_proj = 3.4e38;
+    // Contact exists only where the bodies touch (Nairn, Hammerquist and
+    // Smith 2020, eq. 15, 22-25), as CPU's `Grid::resolve_contact`: the
+    // separation between their deformed edges along `n`,
+    // `min_rest(X.n - R_p) - max_grip(X.n + R_p)`, is negative. `R_p` is the
+    // point's undeformed half size over `|F_p^-1 n|` (eq. 25), both written by
+    // `gather_contact_points_main`, read back through the slot in `w`.
+    var max_grip_edge = -3.4e38;
+    var min_rest_edge = 3.4e38;
     for (var i: u32 = 0u; i < n_local; i++) {
         let pt = local_points[i];
+        let slot = bitcast<u32>(pt.w);
+        let half_size = contact_points[2u * slot].w;
+        let inverse_f4 = contact_points[2u * slot + 1u];
+        let inverse_f = mat2x2<f32>(inverse_f4.xy, inverse_f4.zw);
+        let reach = half_size / max(length(inverse_f * n), 1.17549435e-38);
         let proj = dot(pt.xy, n);
         if pt.z > 0.0 {
-            max_grip_proj = max(max_grip_proj, proj);
+            max_grip_edge = max(max_grip_edge, proj + reach);
         } else if pt.z < 0.0 {
-            min_rest_proj = min(min_rest_proj, proj);
+            min_rest_edge = min(min_rest_edge, proj - reach);
         }
     }
-    if max_grip_proj > -3.0e38 && min_rest_proj < 3.0e38 {
-        let gap = min_rest_proj - max_grip_proj;
-        if gap < 0.0 {
-            let correction_rate = 2.0;
-            let max_correction_speed = 0.5 * step_params.grid_cell_size; // matches CPU exactly
-            let correction_speed = min(correction_rate * (-gap), max_correction_speed);
-            let v_n = dot(v_rel, n);
-            let target_vn = -correction_speed;
-            if v_n > target_vn {
-                v_rel += n * (target_vn - v_n);
-            }
-        }
+    let touching = min_rest_edge - max_grip_edge < 0.0;
+
+    // Approaching (eq. 14) is the Coulomb correction's own test. It takes
+    // the wall's outward normal, from the rest body into the grip body: `-n`.
+    if touching {
+        v_rel = resolve_direction_aware(v_rel_before, -n);
     }
 
     // Small nodal mass (Bardenhagen et al. 2001, eq. 17-22), exactly as CPU's

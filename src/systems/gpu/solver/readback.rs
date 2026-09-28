@@ -122,13 +122,15 @@ impl GpuSimulation {
     }
 
     /// Test/diagnostic readback of the full contact point-cloud buffer (GPU port) --
-    /// `NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK` `vec4<f32>` entries
-    /// (position.x, position.y, label, unused), flat-indexed
-    /// `block * MAX_CONTACT_POINTS_PER_BLOCK + slot`. Only the first
+    /// `NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK` points of 8 floats
+    /// each: (position.x, position.y, label, undeformed half size) then the
+    /// inverse deformation gradient by columns, point
+    /// `block * MAX_CONTACT_POINTS_PER_BLOCK + slot` starting at 8 times that
+    /// index. Only the first
     /// `min(count, MAX_CONTACT_POINTS_PER_BLOCK)` entries per block (per
     /// `contact_point_counts_blocking`) are meaningful; the rest are stale/unused.
     pub fn contact_points_blocking(&self) -> Vec<f32> {
-        let floats = NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK * 4;
+        let floats = NUM_CONTACT_BLOCKS * MAX_CONTACT_POINTS_PER_BLOCK * 8;
         self.buffers.readback_f32_blocking(
             &self.device,
             &self.queue,

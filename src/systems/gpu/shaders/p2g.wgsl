@@ -812,5 +812,17 @@ fn gather_contact_points_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let slot_in_block = atomicAdd(&contact_point_counts[block], 1u);
     if slot_in_block >= MAX_POINTS_PER_BLOCK { return; }
     let slot = block * MAX_POINTS_PER_BLOCK + slot_in_block;
-    contact_points[slot] = vec4<f32>(p.x.x, p.x.y, label, 0.0);
+    // Where the particle's deformed edge sits (Nairn, Hammerquist and Smith
+    // 2020, eq. 25), as CPU's `gather_contact_point_cloud`: its undeformed half
+    // size, from `mass / rest_density` when the material knows its density
+    // (`initial_volume` otherwise, see `MaterialModel::rest_density`), and the
+    // inverse of its deformation gradient. Two vec4 per point.
+    let mat = materials[p.material_id];
+    let area = select(p.initial_volume, p.mass / mat.rest_density, mat.rest_density > 0.0);
+    let half_size = 0.5 * sqrt(max(area, 0.0));
+    let f = p.deformation_gradient;
+    let inverse_f = mat2x2<f32>(vec2<f32>(f[1][1], -f[0][1]), vec2<f32>(-f[1][0], f[0][0]))
+        * (1.0 / determinant(f));
+    contact_points[2u * slot] = vec4<f32>(p.x.x, p.x.y, label, half_size);
+    contact_points[2u * slot + 1u] = vec4<f32>(inverse_f[0], inverse_f[1]);
 }

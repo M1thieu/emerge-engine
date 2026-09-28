@@ -1433,6 +1433,9 @@ impl MaterialModel for DruckerPragerMaterial {
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::DruckerPrager as u32,
+            // Contact sizes particles from it (see `MaterialModel::rest_density`);
+            // 0 = unknown. No solid stress branch reads this slot.
+            rest_density: self.rest_density.unwrap_or(0.0),
             lambda: self.lambda,
             mu: self.mu,
             dp_h0: self.friction_angle,

@@ -209,6 +209,9 @@ impl MaterialModel for CorotatedMaterial {
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Corotated as u32,
+            // Contact sizes particles from it (see `MaterialModel::rest_density`);
+            // 0 = unknown. No solid stress branch reads this slot.
+            rest_density: self.rest_density.unwrap_or(0.0),
             lambda: self.lambda,
             mu: self.mu,
             thermal_expansion: self.thermal_expansion,

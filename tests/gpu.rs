@@ -3681,7 +3681,7 @@ mod gpu_tests {
                 any_block_populated = true;
             }
             for slot in 0..count {
-                let base = (block * MAX_CONTACT_POINTS_PER_BLOCK + slot) * 4;
+                let base = (block * MAX_CONTACT_POINTS_PER_BLOCK + slot) * 8;
                 let label = points[base + 2];
                 if label > 0.0 {
                     saw_grip_label = true;
@@ -3843,7 +3843,7 @@ mod gpu_tests {
     }
 
     /// Multi-field contact (GPU port): sanity check for `resolve_contact_main` (the
-    /// Coulomb + velocity-floor Baumgarte correction pass). Over a multi-step resting
+    /// edge-touch test, Coulomb correction and small-mass bound). Over a multi-step resting
     /// scenario, every resolved velocity the pass produces must stay finite and bounded
     /// -- no NaN/Inf, no runaway magnitude -- before it's trusted to drive G2P.
     #[test]
@@ -3913,43 +3913,18 @@ mod gpu_tests {
     /// velocity and measured after a short window. At friction=0 it must keep real
     /// speed (free slip); at friction=3 it must decelerate to near the floor's rest
     /// speed (real Coulomb stick). This is the test that actually proves the whole GPU
-    /// port chain (P2G scatter -> point gather -> Newton fit -> Coulomb + Baumgarte ->
-    /// G2P routing) works end to end, not just that each piece looks right in
-    /// isolation.
+    /// port chain (P2G scatter -> point gather -> Newton fit -> edge-touch test and
+    /// Coulomb -> G2P routing) works end to end, not just that each piece looks right
+    /// in isolation.
     ///
-    /// Real, honest status (2026-09-15): a genuine bug was found and FIXED here --
-    /// `resolve_contact.wgsl`'s `gather_local_points` filtered candidate points to
-    /// `|rel| < 1.5` grid cells, TIGHTER than CPU's own exact 3x3-cell inclusion
-    /// (`base_cell = floor(position)`, included cells `base_cell +- 1`), whose real
-    /// worst-case reach approaches (never reaches) 2.0 cells -- confirmed via direct
-    /// derivation, not guessed. On a REGULAR particle lattice (this test's own
-    /// `spacing=0.5`), that tighter cutoff excluded points in a spatially CONSISTENT
-    /// pattern, not random noise, producing a measurably tilted fitted contact normal
-    /// (~12-20 degrees off vertical at a flat, symmetric interface) and a catastrophic
-    /// symptom: at friction=0 the block's mean v_x went NEGATIVE (-0.806, started at
-    /// +3.0), not just "stuck near zero." Widened to `< 2.0` (matching CPU's real reach
-    /// exactly) -- confirmed via the full `tests/gpu.rs` suite (78 other tests, 0
-    /// regressions) that this is a safe, general engine fix, not scene-specific.
-    ///
-    /// What's NOT fully closed: after the fix, 3 independent full-scene runs (each
-    /// itself averaged over 3 trials, see `TRIALS` below) measured slip_speed at
-    /// 0.944-0.990 -- consistently just under this test's own `> 1.0` bar, not random
-    /// noise around a safely-passing mean. A real, small residual gap vs CPU remains,
-    /// most likely the SAME disclosed LR-fit statistical fragility already documented
-    /// on the sibling `gpu_directional_grip_is_direction_aware` test just below (not
-    /// separately confirmed here). Per this codebase's own standing rule on that
-    /// sibling test -- do not tune a threshold to force a green result -- this stays
-    /// `#[ignore]`d rather than being passed by loosening `1.0`/`0.5`. The catastrophic
-    /// reversal is real and fixed; the remaining few-percent gap is real and open.
+    /// History: `gather_local_points` once filtered points to `|rel| < 1.5` cells,
+    /// tighter than CPU's 3x3-cell inclusion (reach approaching 2.0); on a regular
+    /// lattice that tilted the fitted normal and sent the frictionless block
+    /// backwards (-0.806 from +3.0). Widened to `< 2.0`, the gap that remained (0.944
+    /// to 0.990 against the 1.0 bar) closed with the rebuilt contact of issue #49 and
+    /// this rig matched to the CPU one: 2.984 slip and 0.475 stick, identical to four
+    /// decimals over three runs.
     #[test]
-    #[ignore = "real shader bug found+fixed (gather_local_points' point-inclusion \
-                radius, 1.5->2.0, see doc above) closed the catastrophic negative-\
-                velocity failure, but a small residual gap remains (measured \
-                0.944-0.990 vs this test's own 1.0 bar, 3 averaged-trial runs) -- \
-                likely the same disclosed LR-fit fragility as \
-                gpu_directional_grip_is_direction_aware. Do not tune the threshold to \
-                pass; needs the same per-node instrumentation that test's own doc \
-                asks for."]
     fn gpu_multi_field_contact_produces_real_coulomb_slip_and_stick() {
         if !gpu_available() {
             return;
@@ -3974,7 +3949,10 @@ mod gpu_tests {
                 SpawnRegion {
                     spacing: 0.5,
                     box_size: IVec2::new(6, 6),
-                    box_center: Vec2::new(32.0, 11.6),
+                    // Edge to edge on the slab, as the CPU test: the rebuilt
+                    // contact (issue #49) does not undo an overlap it is given,
+                    // and this block was spawned 3.4 cells inside the slab.
+                    box_center: Vec2::new(32.0, 13.0),
                     material_id: 0,
                     ..SpawnRegion::for_sim(&config)
                 },
@@ -3992,13 +3970,18 @@ mod gpu_tests {
             let floor_spawn = SpawnRegion {
                 spacing: 0.5,
                 box_size: IVec2::new(48, 8),
-                box_center: Vec2::new(32.0, 8.0),
+                // Resting on the floor, as the CPU test (it started 2 cells up).
+                box_center: Vec2::new(32.0, 6.0),
                 material_id: floor_mat_id.id(),
                 ..SpawnRegion::for_sim(solver.config())
             };
             solver.spawn_region(floor_spawn);
 
-            for _ in 0..300 {
+            // Gravity rises over the first 200 steps, as the CPU test: switched
+            // on at once, the undamped slab and block ring and the block lifts.
+            let g = solver.config().gravity;
+            for step in 0..300 {
+                solver.set_gravity(g * (step as f32 / 200.0).min(1.0));
                 solver.step_frame();
             }
             solver.sync_particles_blocking();
@@ -4037,6 +4020,9 @@ mod gpu_tests {
         let slip_speed = (0..TRIALS).map(|_| run(0.0)).sum::<f32>() / TRIALS as f32;
         let stick_speed = (0..TRIALS).map(|_| run(3.0)).sum::<f32>() / TRIALS as f32;
 
+        println!(
+            "slip {slip_speed:.4}, stick {stick_speed:.4}, mean v_x over {TRIALS} trials from 3.0"
+        );
         assert!(
             slip_speed > 1.0,
             "BUG: at zero friction the block should keep real horizontal velocity (free \
@@ -4054,28 +4040,16 @@ mod gpu_tests {
     }
 
     /// GPU counterpart to CPU's `directional_contact_grip_is_real_and_direction_aware`
-    /// (`tests/physics_correctness.rs`): `GpuSimulation::set_grip_direction`/
-    /// `set_grip_friction` reach `resolve_contact.wgsl`'s `grip_params` uniform
-    /// correctly (verified by direct inspection). What this can't yet assert as
-    /// pass/fail: CPU shows clean, strong separation (easy=2.45, resist=0.50, ratio
-    /// 0.20) every run; GPU shows the same correct sign but a run-to-run unstable ratio
-    /// (0.73, 0.51, 0.83 across 3 runs) -- a fixed threshold would either test nothing
-    /// or fail for unrelated reasons.
+    /// (`tests/physics_correctness.rs`), same rig and same bar: the resisted slide
+    /// loses Coulomb's `mu g t` within 5 percent. `GpuSimulation::set_grip_direction`/
+    /// `set_grip_friction` reach `resolve_contact.wgsl`'s `grip_params` uniform.
     ///
-    /// Likely (not confirmed) root cause: the same statistically-fragile LR normal fit
-    /// documented in `Grid::resolve_contact`'s doc (`src/spacetime/grid/mod.rs`) -- a
-    /// physically meaningless perturbation can swing the converged plane by tens of
-    /// degrees, which changes the tangent and the easy/resist classification per node.
-    /// Confirming this needs per-node instrumentation on the real `resolve_cell` pass,
-    /// not attempted here.
-    ///
-    /// `#[ignore]`d honestly: the sign is real and correct, the magnitude is not yet
-    /// reliable enough to assert on. Do not tune a threshold to force this green.
+    /// On the old contact the easy-to-resisted ratio swung from 0.51 to 0.83 between
+    /// runs. With the rebuilt contact (issue #49) and the CPU rig (a flat block edge to
+    /// edge on a resting slab): resisted 0.8069 lost against Coulomb's 0.8100, easy
+    /// 0.0465 against 0.0450 (CPU: 5.3 percent over, until XPIC(m)), within 3e-4
+    /// between runs.
     #[test]
-    #[ignore = "real, correctly-signed directional effect but run-to-run UNSTABLE ratio \
-                (measured 0.51-0.83 across 3 runs vs CPU's consistent 0.20) -- likely the \
-                same LR-fit statistical fragility already documented in \
-                Grid::resolve_contact's doc, not confirmed. Do not tune to pass."]
     fn gpu_directional_grip_is_direction_aware() {
         if !gpu_available() {
             return;
@@ -4091,6 +4065,8 @@ mod gpu_tests {
                 min_dt: 0.001,
                 max_substeps_per_step: 128,
                 project_invalid_state: true,
+                // Same legacy calibration as the CPU test.
+                grid_density: 4.0,
                 ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
             };
 
@@ -4099,8 +4075,11 @@ mod gpu_tests {
                 &config,
                 SpawnRegion {
                     spacing: 0.5,
-                    box_size: IVec2::new(6, 6),
-                    box_center: Vec2::new(32.0, 11.6),
+                    // Flat and edge to edge on the slab, as the CPU test: a
+                    // square block tips at mu_resist 0.9, and the rebuilt
+                    // contact (issue #49) does not undo an overlap it is given.
+                    box_size: IVec2::new(12, 3),
+                    box_center: Vec2::new(32.0, 11.5),
                     material_id: 0,
                     ..SpawnRegion::for_sim(&config)
                 },
@@ -4120,13 +4099,17 @@ mod gpu_tests {
             let floor_spawn = SpawnRegion {
                 spacing: 0.5,
                 box_size: IVec2::new(48, 8),
-                box_center: Vec2::new(32.0, 8.0),
+                // Resting on the floor, as the CPU test.
+                box_center: Vec2::new(32.0, 6.0),
                 material_id: floor_mat_id.id(),
                 ..SpawnRegion::for_sim(solver.config())
             };
             solver.spawn_region(floor_spawn);
 
-            for _ in 0..300 {
+            // Gravity rises over the first 200 steps, as the CPU test.
+            let g = solver.config().gravity;
+            for step in 0..300 {
+                solver.set_gravity(g * (step as f32 / 200.0).min(1.0));
                 solver.step_frame();
             }
             solver.sync_particles_blocking();
@@ -4155,12 +4138,17 @@ mod gpu_tests {
              -- got mean v_x={easy_speed:.4} (started at 3.0). If this is ~0, \
              set_grip_direction/set_grip_friction aren't reaching resolve_contact.wgsl."
         );
+        // Same bar as the CPU test: the resisted slide loses Coulomb's `mu g t`
+        // (0.9 x 0.3 x 3 s) within 5 percent.
+        let lost = 3.0 - resist_speed.abs();
+        let coulomb = 0.9 * 0.3 * 150.0 * 0.02f32;
+        println!(
+            "easy {easy_speed:.4} from +3.0, resisted {resist_speed:.4} from -3.0, \
+             lost {lost:.4} against Coulomb {coulomb:.4}"
+        );
         assert!(
-            resist_speed.abs() < easy_speed.abs() * 0.35,
-            "BUG: resisted sliding should lose far more speed than easy sliding retains --\
-             got easy={easy_speed:.4} (from +3.0) vs resist={resist_speed:.4} (from -3.0). \
-             If these are close in magnitude, the GPU grip API isn't actually \
-             direction-aware."
+            (lost - coulomb).abs() <= 0.05 * coulomb,
+            "resisted sliding lost {lost:.4} of its speed, Coulomb gives {coulomb:.4}"
         );
     }
 
@@ -4172,8 +4160,7 @@ mod gpu_tests {
     /// class of hidden long-horizon issue. Exact same scene as the CPU test (terrain
     /// 100x12 @ DruckerPragerMaterial::cohesionless(133.3,0.333), snake 36x4 @
     /// NeoHookeanMaterial(13,26), GRID=128, DT=0.1, 16,000 purely passive steps) --
-    /// symmetric friction (GPU has no DirectionalContactGrip equivalent yet, immaterial
-    /// for a passive settle).
+    /// symmetric friction, as the CPU test's 0.5/0.5 grip.
     #[test]
     fn gpu_drucker_prager_volumetric_floor_holds_over_long_passive_settle() {
         if !gpu_available() {
@@ -4259,9 +4246,8 @@ mod gpu_tests {
             min_j_terrain > 0.55,
             "BUG: sand terrain compressed/inverted past its real physical floor over a \
              long passive settle on GPU -- got min_j_terrain={min_j_terrain:.4}. Matches \
-             CPU's own long-horizon test bar (>0.55) -- if this fails, GPU has its own \
-             version of the Baumgarte long-horizon energy-injection bug that CPU already \
-             found and fixed."
+             CPU's own long-horizon test bar (>0.55) -- if this fails, GPU contact \
+             injects energy over a long horizon, as the old Baumgarte term did on CPU."
         );
     }
 
