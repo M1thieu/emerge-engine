@@ -283,17 +283,16 @@ fn make_sim_data(
         // already use, ported here directly rather than another hand-picked
         // constant.
         gravity: Vec2::new(0.0, -981.0 * 0.003),
-        // No `fluid_near_wall_cfl_scale` (engine default 1.0). It used to be
-        // 20.0 here, a 20x smaller timestep for fluid near a wall, added
-        // against wall-contact blow-ups (J up to 34653) that were really two
-        // GPU bugs: fixed-point P2G atomics dropping small momentum
-        // contributions, and the driver misreading `C[1][1]` in the J update
-        // (see `trace2` in `particles_update.wgsl`). With both fixed, all
-        // three patterns match their CPU twin without it
-        // (`fragmentation_check_{cpu,gpu}.rs`, PATTERN=dam|drop|vortex).
-        // Keeping it cost ~20x the substeps once water touched a wall (~400
-        // vs ~21 per frame), and the vortex came out damped (peak speed ~9
-        // vs the CPU reference's ~22).
+        // No `fluid_near_wall_cfl_scale` (engine default 1.0). A 20x smaller
+        // near-wall timestep is not needed: the wall-contact blow-ups (J up
+        // to 34653) it would guard against were two GPU bugs, fixed-point P2G
+        // atomics dropping small momentum contributions and the driver
+        // misreading `C[1][1]` in the J update (see `trace2` in
+        // `particles_update.wgsl`). Without it, the dam, drop and vortex
+        // patterns match their CPU twin; with it (20.0), the substep count
+        // rises ~20x once water touches a wall (~400 vs ~21 per frame) and
+        // the vortex comes out damped (peak speed ~9 vs the CPU reference's
+        // ~22).
         // `fluid_regional_substepping_gpu_enabled` used to be set here.
         // REMOVED (2026-09-17): every "re-tested, no benefit" note this
         // field once carried was, in fact, toggling a config flag with no
@@ -591,8 +590,7 @@ fn make_sim_data(
     // round trip 4*depth/c = 40/55.8 -- so the water bounced on its own
     // compressibility like a jelly. At the real v_max, all three patterns
     // stay coherent (0 isolated particles over 150 frames), J stays within
-    // +-6%, mean J holds at 0.999 with no oscillation
-    // (`fragmentation_check_gpu.rs`, GRAV_SIZING env). Cost: ~60 substeps/
+    // +-6%, mean J holds at 0.999 with no oscillation. Cost: ~60 substeps/
     // frame instead of ~21.
     const COLUMN_HEIGHT_CELLS: f32 = 52.0;
     let v_max_grid = (2.0 * config.gravity.length() * COLUMN_HEIGHT_CELLS).sqrt();
@@ -730,11 +728,10 @@ fn make_sim_data(
     // wrong for a macroscopic (cm-to-meter scale) splash, where real
     // surface tension is known to be negligible anyway (its natural length
     // scale is the capillary length, ~2.7mm for water -- millimeter, not
-    // centimeter/meter, scale). See fluid_thin_layer_diag_gpu.rs or
-    // HANDOFF_fluid_gpu_thin_layer_bug.md for the next real step: verify
-    // via RenderMode::Surface (curvature-flow reconstruction) whether the
-    // "disintegration" judged from raw point-cloud rendering is even a
-    // real physics defect, before adding any more force terms.
+    // centimeter/meter, scale). Before adding force terms, check with
+    // RenderMode::Surface (curvature-flow reconstruction) whether the
+    // "disintegration" judged from raw point-cloud rendering is a physics
+    // defect at all.
     let registry = MaterialRegistry::with_default(Box::new(water));
 
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);

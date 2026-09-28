@@ -20,8 +20,7 @@
 //!    deviator.
 //! 2. The thin left deposit looks torn, with holes. It is about three cells
 //!    thick, at the edge of what the method resolves. This counts isolated
-//!    particles with the criterion `examples/cpu/fragmentation_check_cpu.rs`
-//!    already uses (nearest neighbour more than four spacings away) and the
+//!    particles (nearest neighbour more than four spacings away) and the
 //!    largest nearest-neighbour distance.
 //! 3. The demo's stress view (`V`) coloured by `von_mises_stress_field`,
 //!    which takes the plane-stress von Mises of the FULL stress, pressure
