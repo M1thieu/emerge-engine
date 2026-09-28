@@ -50,11 +50,15 @@ pub fn heat_radiation(
     emissivity: f32,
     view_factor: f32,
 ) -> f32 {
+    // `T_h^4 - T_c^4` factored: subtracting the two fourth powers cancels
+    // most of f32's digits near equilibrium (0.27 percent off at 1 mK
+    // apart at 300 K, growing as the gap shrinks).
+    let (hot, cold) = (hot_temp_k, cold_temp_k);
     STEFAN_BOLTZMANN
         * emissivity
         * area_m2
         * view_factor
-        * (hot_temp_k.powi(4) - cold_temp_k.powi(4))
+        * ((hot - cold) * (hot + cold) * (hot * hot + cold * cold))
 }
 
 /// Reversible entropy change ΔS = Q/T -- J/K.
@@ -134,6 +138,22 @@ mod tests {
     fn radiation_is_zero_at_thermal_equilibrium() {
         // Equal temperatures → no net radiative exchange.
         assert!(heat_radiation(300.0, 300.0, 1.0, 0.9, 1.0).abs() < 1e-9);
+    }
+
+    /// Near equilibrium the net exchange is small next to either `T^4`; it
+    /// must match the same difference taken in f64 (it was 0.27 percent off
+    /// at 1 mK apart before the difference was factored).
+    #[test]
+    fn radiation_near_equilibrium_matches_f64() {
+        for d in [1.0e-3f32, 1.0e-2, 1.0e-1] {
+            let q = heat_radiation(300.0 + d, 300.0, 1.0, 1.0, 1.0) as f64;
+            let hot = (300.0f32 + d) as f64;
+            let exact = STEFAN_BOLTZMANN as f64 * (hot.powi(4) - 300.0f64.powi(4));
+            assert!(
+                (q / exact - 1.0).abs() < 1.0e-5,
+                "dT {d}: {q:.6e} W against {exact:.6e}"
+            );
+        }
     }
 
     #[test]

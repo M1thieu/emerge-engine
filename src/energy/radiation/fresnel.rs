@@ -36,10 +36,12 @@ pub fn fresnel_r0_dielectric(n_outside: f32, n_inside: f32) -> f32 {
 /// Schlick's angular approximation to the Fresnel reflectance.
 ///
 /// `R(theta) = R0 + (1 - R0) * (1 - cos theta)^5`, where `theta` is measured
-/// from the surface normal. Exact at normal incidence, exact at grazing
-/// (both go to 1), and within ~1% of the full Fresnel equations between --
-/// which is why it is the standard choice in real-time rendering rather than
-/// a shortcut taken here.
+/// from the surface normal. Exact at normal incidence and at grazing (both
+/// go to 1). Between, against the full unpolarized Fresnel equations, it is
+/// off by at most 0.059 in reflectance for air to water (at 84 degrees,
+/// where the exact value is 0.525) and 0.035 for air to glass (n 1.52, at
+/// 85 degrees): close enough to be the standard choice in real-time
+/// rendering, not exact.
 pub fn schlick_reflectance(r0: f32, cos_theta: f32) -> f32 {
     let cos_theta = cos_theta.clamp(0.0, 1.0);
     let one_minus = 1.0 - cos_theta;

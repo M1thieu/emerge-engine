@@ -25,21 +25,21 @@
 //! - Wyman, Sloan, Shirley, "Simple Analytic Approximations to the CIE XYZ
 //!   Color Matching Functions", Journal of Computer Graphics Techniques 2(2),
 //!   2013 -- the multi-lobe Gaussian fit used by [`cie_1931_observer`].
-//! - Kim, Garcia-Hansen, Moon, Lee, "Design of Advanced Color Temperature
+//! - Kang, Moon, Hong, Lee, Cho, Kim, "Design of Advanced Color Temperature
 //!   Control System for HDTV Applications", Journal of the Korean Physical
-//!   Society 41(6), 2002 -- the cubic-spline Planckian locus used by
+//!   Society 41(6):865-871, 2002 -- the cubic-spline Planckian locus used by
 //!   [`blackbody_linear_srgb_locus_fit`], valid over 1667 K to 25000 K.
 //! - IEC 61966-2-1 (sRGB) -- the XYZ to linear-RGB matrix, D65 white point.
 
 use super::blackbody::planck_spectral_radiance;
 
-/// Lowest temperature the Kim 2002 locus fit is defined for. Below this the
+/// Lowest temperature the Kang 2002 locus fit is defined for. Below this the
 /// fit is evaluated at its own lower bound: a blackbody there is a deep
 /// orange-red whose chromaticity barely moves, while its radiance has already
 /// fallen by orders of magnitude under `T^4`, so the visible error is
 /// dominated by the brightness term, not the hue.
 pub const LOCUS_FIT_MIN_K: f32 = 1667.0;
-/// Highest temperature the Kim 2002 locus fit is defined for.
+/// Highest temperature the Kang 2002 locus fit is defined for.
 pub const LOCUS_FIT_MAX_K: f32 = 25_000.0;
 
 /// CIE 1931 2-degree standard observer colour matching functions.
@@ -194,7 +194,7 @@ pub fn blackbody_linear_srgb(temperature_k: f32) -> [f32; 3] {
     chromaticity_to_linear_srgb(blackbody_chromaticity_xy(f64::from(temperature_k)))
 }
 
-/// Exposure-normalized linear sRGB of a blackbody, via Kim et al. 2002's
+/// Exposure-normalized linear sRGB of a blackbody, via Kang et al. 2002's
 /// closed-form Planckian locus.
 ///
 /// This is the exact CPU mirror of `blackbody.inc.wgsl`'s `blackbody_srgb`.

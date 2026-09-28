@@ -286,7 +286,7 @@ fn render_gpu_survives_scattering_and_specular_end_to_end() {
 /// to linear before comparison against the CPU's own Planck integration.
 ///
 /// Tolerance 0.06 per channel covers three stacked approximations that are
-/// each documented where they live: the Kim 2002 locus fit against real
+/// each documented where they live: the Kang 2002 locus fit against real
 /// Planck (tested separately at 0.03), 8-bit quantization, and the shader's
 /// f32 arithmetic against the CPU's f64.
 #[test]

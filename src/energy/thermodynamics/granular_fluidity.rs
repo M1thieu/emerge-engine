@@ -9,7 +9,7 @@
 //!
 //! # Physics
 //! `g` (granular fluidity) relates plastic shear strain rate to the stress
-//! ratio: `γ̇ = g·μ`. Governed by (Henann & Kamrin 2014, arXiv:1408.5205,
+//! ratio: `γ̇ = g·μ`. Governed by (Kamrin & Henann 2015, arXiv:1408.5205,
 //! eq. 6 -- the dynamical form, verified via `pdftotext` against the real
 //! PDF, not recalled from memory):
 //! ```text
@@ -230,7 +230,7 @@ impl GranularFluidityField {
         //
         // Two simpler approaches were rejected:
         // 1. Seeding `g` directly to this ODE's own analytic equilibrium
-        //    (g_eq = linear_coeff/(b*sqrt(P/rho_s)*d), Henann & Kamrin 2014
+        //    (g_eq = linear_coeff/(b*sqrt(P/rho_s)*d), Kamrin & Henann 2015
         //    eq. 4's "g_loc") the first time a cell crosses `mu_s`: that
         //    equilibrium itself DIVERGES as P->0 (division by sqrt(P)) --
         //    exactly the real, low-confinement regime this whole mechanism

@@ -6,7 +6,7 @@
 // particle, a hot cell and a hot surface the same colour.
 //
 // A fragment shader cannot integrate Planck's law against the CIE observer
-// per pixel, so this evaluates Kim et al. 2002's closed-form Planckian locus
+// per pixel, so this evaluates Kang et al. 2002's closed-form Planckian locus
 // instead. `spectrum::locus_fit_matches_planck_integration` is the test that
 // keeps the two within 0.03 per channel over 1667-9000 K; every coefficient
 // below is the exact counterpart of one in
@@ -21,7 +21,7 @@
 // Stefan-Boltzmann constant -- W/(m^2 K^4). Same value as
 // `energy::thermodynamics::transfer::STEFAN_BOLTZMANN`.
 const BLACKBODY_STEFAN_BOLTZMANN: f32 = 5.6703744e-8;
-// Kim et al. 2002's fit is defined over this range. Below it a blackbody's
+// Kang et al. 2002's fit is defined over this range. Below it a blackbody's
 // chromaticity has nearly stopped moving while its radiance has already
 // collapsed under T^4, so clamping the hue costs far less than the
 // brightness term already does.

@@ -1,6 +1,6 @@
 //! A single growing dielectric-breakdown leader channel -- Niemeyer,
-//! Pietronero & Wiesmann 1984 ("Fractal dimension of dielectric breakdown in
-//! three dimensions," J. Phys. A: Math. Gen. 17), the real, named, cited
+//! Pietronero & Wiesmann 1984 ("Fractal Dimension of Dielectric Breakdown,"
+//! Phys. Rev. Lett. 52, 1033, planar discharges), the real, named, cited
 //! model this entire family of phenomena (lightning, electrochemical
 //! deposition, viscous fingering, mineral dendrites) is built on -- verified
 //! independently against a real reference implementation

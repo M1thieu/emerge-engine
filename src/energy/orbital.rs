@@ -38,7 +38,8 @@ use glam::Vec2;
 /// Earth's axial tilt (obliquity of the ecliptic), IAU J2000 reference value.
 pub const EARTH_AXIAL_TILT_DEG: f32 = 23.44;
 
-/// Real tropical year length in days.
+/// Year length in days: the Julian year, exactly 365.25 days (not the
+/// tropical year, which is slightly shorter).
 pub const EARTH_YEAR_DAYS: f32 = 365.25;
 
 /// Solar declination (the sun's angle above/below the equatorial plane) for a

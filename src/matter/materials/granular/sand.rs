@@ -780,7 +780,7 @@ impl DruckerPragerMaterial {
     /// residual as cumulative shear strain grows), not a bug to eliminate.
     ///
     /// # Nonlocal Granular Fluidity coupling (`ngf_enabled`, real, disclosed synthesis)
-    /// Henann & Kamrin's real coupling (arXiv:1408.5205 eq. 4) is
+    /// Kamrin & Henann's real coupling (arXiv:1408.5205 eq. 4) is
     /// rate-explicit: `γ̇ = g·μ` -- plastic flow proceeds at a finite RATE set
     /// by the local fluidity `g`, not instantaneously the moment the yield
     /// surface is touched. This return mapping is instead rate-INDEPENDENT
