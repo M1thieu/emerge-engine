@@ -15,7 +15,7 @@
 //
 //   1. `clear_surface_main` + `splat_density_main`: scatter each particle's
 //      mass onto the finer buffer using the same quadratic B-spline kernel
-//      (Steffen & Kirby 2008) P2G already uses for the physics grid, at a
+//      (Steffen, Kirby & Berzins 2008) P2G already uses for the physics grid, at a
 //      different resolution. Uses the same fixed-point atomic-add
 //      technique `p2g.wgsl` uses (WebGPU has no atomic<f32>).
 //   2. `curvature_iterate_main`: one thread per surface cell, the standard

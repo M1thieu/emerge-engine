@@ -4241,7 +4241,7 @@ fn wetness_darkens_by_physics_color_via_refractive_index() {
     let (device, queue) = headless_device();
     let mut r = Renderer::new(&device, 16, wgpu::TextureFormat::Rgba8UnormSrgb);
     r.set_color_mode(ColorMode::ByPhysics);
-    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]); // real sand absorption (Sherman & Waite 1985)
+    r.set_optical_params(&queue, 0, [0.18, 0.22, 0.55]); // illustrative sand absorption, unsourced
     r.set_optical_scattering(&queue, 0, 8.0);
     r.set_refractive_index(0, 1.5); // real quartz refractive index (Hecht, "Optics")
 

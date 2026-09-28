@@ -43,7 +43,10 @@ const LABELS: &[(u32, &str)] = &[(MAT_LOOSE, "loose"), (MAT_DENSE, "dense")];
 // setup in `State::new` (`Renderer::set_particle_spacing_cells`) -- one
 // source of truth so the two can't drift out of sync.
 const PARTICLE_SPACING_CELLS: f32 = 0.5;
-// Real measured sand absorption (Sherman & Waite 1985, iron-oxide quartz sand).
+// Illustrative sand absorption (1/m), ochre because blue is absorbed most: not
+// a measured value, no source found. Sherman & Waite 1985 (Am. Mineral.
+// 70:1262), once cited here, gives spectra of pure iron-oxide minerals, not
+// an absorption coefficient for sand.
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
 /// The three real rendering paths, cycled with G -- same modes/order as

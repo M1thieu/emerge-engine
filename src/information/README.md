@@ -13,7 +13,7 @@ What senses, decides, and remembers **in** the simulated world -- not tooling th
 ## Core API
 
 - `control::Lnn` -- Liquid Time-constant Network locomotion controller. A genome/weight vector is itself information; this is a real in-world decision-making system, not an authoring tool.
-- `measures` [feature = "experimental"] -- Shannon entropy (discrete + continuous k-NN, Kraskov et al. 2004), mutual information (discrete + continuous k-NN, conditional), KL divergence. Applied to real simulated quantities (spatial/kinetic/phase distributions), O(N).
+- `measures` [feature = "experimental"] -- discrete Shannon entropy of spatial, kinetic and phase distributions, local mutual information between two phases, and KL divergence, Jensen-Shannon divergence, cross-entropy and total variation between distributions. All histogram-based, O(N); there is no continuous (k-NN) estimator.
 
 ## Scope & Limits
 

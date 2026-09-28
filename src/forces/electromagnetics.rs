@@ -15,8 +15,10 @@
 
 use glam::Vec2;
 
-/// Coulomb constant k = 1/(4πε₀) in SI units (N·m²/C²).
-pub const COULOMB_CONSTANT: f32 = 8.99e9;
+/// Coulomb constant k = 1/(4πε₀) in SI units (N·m²/C²), from
+/// ε₀ = 8.8541878188e-12 F/m (CODATA 2022, NIST). Was 8.99e9, 0.03 percent
+/// high.
+pub const COULOMB_CONSTANT: f32 = 8.987_552e9;
 /// μ₀/(4π) in SI units (T·m/A).
 pub const MAGNETIC_CONSTANT_DIV_4PI: f32 = 1e-7;
 
