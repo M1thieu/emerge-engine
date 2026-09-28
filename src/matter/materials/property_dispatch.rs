@@ -177,32 +177,24 @@ impl NoCompression {
 impl FluidGranular {
     /// Dispatches to `GranularFluidMaterial` -- Tait EOS pressure + corotated deviatoric + SVD plasticity.
     pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        use super::physical_props::scale_lame;
+        Box::new(self.granular_fluid_material(config))
+    }
+
+    fn granular_fluid_material(&self, config: &crate::SimConfig) -> GranularFluidMaterial {
+        use super::physical_props::{scale_lame, scale_stress};
         // Tait EOS polytropic exponent -- Cole 1948, "Underwater Explosions"; standard
         // in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
         let (lambda, mu) = scale_lame(self.e_pa, self.nu, self.rho_kg_m3, config);
-        // Real fix 2026-08-11: this EOS/bulk-pressure term is the SAME
-        // density-ratio Tait pressure `NewtonianFluidMaterial`/
-        // `BinghamFluidMaterial` use (`p = k*((rho/rho0)^gamma - 1)`, see
-        // `GranularFluidMaterial::kirchhoff_stress`) -- their own
-        // `from_physical` doc says applying `scale_stress`'s legacy
-        // dt^2/(rho*dx^2) conversion here "would double-scale it". This
-        // used to call `scale_stress(self.bulk_modulus_pa / GAMMA, ...)`,
-        // the exact same abandoned path the WCSPH diagnostic test was
-        // caught using (see that test's doc) -- live bug, not
-        // just a test issue: it made every `FluidGranular`-dispatched mud/
-        // wet-terrain material's bulk pressure orders of magnitude too
-        // soft to resist compression. `lambda`/`mu` above stay on
-        // `scale_lame` correctly -- that term is added to the SAME
-        // F-based corotated elastic stress space every other solid
-        // material uses, a different (and correctly scaled)
-        // pipeline from the density-ratio EOS pressure below.
-        let eos = self.bulk_modulus_pa / GAMMA;
-        // See `NewtonianFluidMaterial::from_physical`'s doc -- rest_density
-        // must match `particles.density[i]`'s real units, not an extra `/dt_seconds^2`.
-        let rho_grid = self.rho_kg_m3 * config.dx_meters * config.dx_meters;
-        Box::new(GranularFluidMaterial {
+        // The EOS pressure (`p = k*((rho/rho0)^gamma - 1)`, see
+        // `GranularFluidMaterial::kirchhoff_stress`) converts exactly as
+        // `NewtonianFluidMaterial::from_physical` does: the stiffness through
+        // `scale_stress` at this material's density, the rest density as a
+        // ratio to the scene's reference density, the unit
+        // `particles.density[i]` comes out in.
+        let eos = scale_stress(self.bulk_modulus_pa / GAMMA, self.rho_kg_m3, config);
+        let rho_grid = self.rho_kg_m3 / config.reference_density_kg_m3;
+        GranularFluidMaterial {
             mu,
             lambda,
             rest_density: rho_grid,
@@ -222,7 +214,7 @@ impl FluidGranular {
             // Scales with this material's eos_stiffness, not mu (see
             // `GranularFluidMaterial::saturated_loam`).
             bulk_viscosity: 0.5 * eos,
-        })
+        }
     }
 
     /// See `Elastic::particle_mass`.
@@ -468,5 +460,25 @@ mod particle_mass_tests {
             },
         };
         assert!((ep.particle_mass(spacing, &config) - expected_mass).abs() < 1e-9);
+    }
+
+    /// `FluidGranular`'s EOS converts like the Newtonian fluid's: the same bulk
+    /// modulus and density give the same grid stiffness and rest density, so
+    /// mud and water in one scene read `particles.density` in one unit.
+    #[test]
+    fn fluid_granular_eos_converts_like_newtonian_fluid() {
+        let config = earth_config();
+        let mud = FluidGranular::saturated_loam_preset();
+        let granular = mud.granular_fluid_material(&config);
+        let fluid = NewtonianFluidMaterial::from_physical(
+            &NewtonianFluid {
+                rho_kg_m3: mud.rho_kg_m3,
+                eta_pa_s: 1.0e-3,
+                bulk_modulus_pa: mud.bulk_modulus_pa,
+            },
+            &config,
+        );
+        assert_eq!(granular.eos_stiffness, fluid.eos_stiffness);
+        assert_eq!(granular.rest_density, fluid.rest_density);
     }
 }
