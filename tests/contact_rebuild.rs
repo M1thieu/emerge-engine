@@ -66,6 +66,16 @@
 //!    stuck together still ring in shear (up to 2 cells/s) without sliding.
 //! 6. Directional grip: easy and resisted directions decelerate at
 //!    `mu_easy g` and `mu_resist g` within 5 percent.
+//!
+//!    Open, written as the two directional tests of
+//!    `tests/physics_correctness.rs` (a flat 12 by 3 block: a square one
+//!    tips at `mu` 0.9). The resisted direction (`mu` 0.9) is within 1.5
+//!    percent. The easy one (`mu` 0.05) is 5.3 percent above Coulomb and
+//!    ignored: the converged LR normal leans inward at a body's corners,
+//!    the approach test (eq. 14) corrects only the nodes leaning against the
+//!    motion, and the block pitches nose up. The paper names that edge error
+//!    and its remedy, XPIC(m) noise reduction (section 4.1); this criterion
+//!    waits for it.
 //! 7. `tests/physics_correctness.rs`: the DP floor tests (the elastic
 //!    control's rest body no longer crushed; today its smallest J is 0.0136),
 //!    `multi_field_contact_produces_real_coulomb_slip_and_stick`,
