@@ -3,16 +3,15 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// Real Newton's cradle -- a direct, targeted proof of concept for the SAME
-/// grain-grain DEM contact (`resolve_contact_pair`, `GrainPopulation`)
-/// already proven correct earlier tonight (momentum-correlation test,
-/// falling-impact test, both real and passing) but never shown off in its
-/// own clean, canonical scene. Deliberately has NO terrain/boundary at all
-/// -- every grain hangs in open space from its own fixed anchor -- so this
-/// demo is completely isolated from tonight's separate `HeightmapBoundary`
-/// ramp-contact work; it stands or falls purely on the grain-grain contact
-/// law, the part of this system with the longest, most-verified track
-/// record.
+/// Newton's cradle at real scale and gravity: five chrome steel balls of
+/// 1 cm radius on 14 cm strings, as discs of unit depth through the 2D
+/// grain contract (`Grain::from_si`, `GrainPopulation::new_disc`, the line
+/// contact of `materials::granular::disc_contact`). Deliberately has NO
+/// terrain or boundary: every grain hangs in open space from its own fixed
+/// anchor, so the demo stands or falls on the grain-grain contact law.
+/// Chrome steel is nearly perfectly elastic, so momentum passes through the
+/// row and only the end ball swings out, with very little visible decay:
+/// that is the physically right result, not a missing damping.
 ///
 /// # The "string" is a real, standard, disclosed technique
 /// This engine has no rigid-joint/constraint solver, so each grain's
@@ -30,13 +29,11 @@ mod gui_common;
 /// exactly like a real cradle's own effectively-inextensible wires.
 ///
 ///   cargo run --example grain_newtons_cradle --features render
-use emerge::fields::LinearDragField;
 use emerge::grains::population::GrainPopulation;
-use emerge::materials::granular::grain_contact_law::{
-    HertzianContactConfig, critical_timestep_hertzian,
-};
+use emerge::materials::granular::disc_contact::{DiscContactConfig, DiscElastic};
 use emerge::particle::{Grain, Particle};
 use emerge::render::{ColorMode, Renderer};
+use emerge::{Elastic, SimConfig};
 use glam::{Mat2, Vec2};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -71,7 +68,11 @@ use winit::window::{Window, WindowId};
 /// a standalone `GrainPopulation` that `SimConfig::gravity` plays for a
 /// grid-coupled `Simulation` -- same convention, just not wrapped in a
 /// config struct this demo has no other use for.
-const GRAVITY: Vec2 = Vec2::new(0.0, -0.3);
+const GRAVITY: Vec2 = Vec2::new(0.0, -9.81 / DX_M);
+
+/// One cell is 1 cm: the balls' 1 cm radius is one cell and the geometry in
+/// cells is the demo's own. Gravity above is the real 9.81 m/s^2.
+const DX_M: f32 = 0.01;
 
 /// Pure rendering-space coordinate convention (camera framing, cursor-to-
 /// world mapping) -- no MPM grid exists anymore, this just keeps the same
@@ -79,7 +80,6 @@ const GRAVITY: Vec2 = Vec2::new(0.0, -0.3);
 const RENDER_SPACE: usize = 40;
 const N_GRAINS: usize = 5;
 const GRAIN_RADIUS: f32 = 1.0;
-const GRAIN_MASS: f32 = 1.0;
 const STRING_LENGTH: f32 = 14.0;
 const ANCHOR_Y: f32 = 34.0;
 const ANCHOR_START_X: f32 = 13.0;
@@ -94,78 +94,55 @@ const SIGMA_STRING: [f32; 3] = [0.700, 0.700, 0.700];
 /// decoration.
 const STRING_SAMPLES: usize = 10;
 
-/// Real, cited damping ratio -- used only for the ROLLING channel below,
-/// which stays the same linear elastic-plastic EPSD spring the Hertzian
-/// model reuses unchanged (see `HertzianContactConfig`'s own doc). The
-/// real, standard formula relating a linear spring's damping ratio to a
-/// physical coefficient of restitution `e` -- found in the already-cited
-/// reference implementation `tmp/GeoTaichi/src/dem/contact/HertzMindlin.py`
-/// (`restitution = -log(e) / sqrt(pi^2 + log(e)^2)`).
-fn damping_ratio_from_restitution(e: f32) -> f32 {
-    let ln_e = e.ln();
-    -ln_e / (std::f32::consts::PI * std::f32::consts::PI + ln_e * ln_e).sqrt()
-}
-
-/// Real Hertzian (nonlinear) contact -- switched from the linear model
-/// 2026-08-21 after a direct diagnostic (`tests/grains_grid_coupling.rs::
-/// diag_newtons_cradle_middle_grain_speed_vs_damping_ratio`) found a real,
-/// measured limitation: even with a cited, near-elastic damping ratio, the
-/// LINEAR spring's constant stiffness let momentum linger at middle
-/// grains rather than pass cleanly through as a real solitary wave
-/// (Nesterenko 2001) -- and neither damping ratio NOR a 10x stiffness bump
-/// fixed it (see `HertzianContactConfig`'s own doc for the full real
-/// citation chain, `tmp/GeoTaichi/src/physics_model/contact_model/
-/// HertzMindlinModel.py`). The immediate post-collision transient IS now
-/// correct with Hertzian contact (`diag_newtons_cradle_first_collision_
-/// immediate_aftermath`); the whole row still synchronizes over MANY swing
-/// cycles regardless (real coupled-oscillator physics, Huygens 1665 -- five
-/// equal-length pendulums in ongoing contact converge to shared motion
-/// given enough time no matter how elastic/stiff the coupling is).
-fn hertzian_config() -> HertzianContactConfig {
-    let m_eff = GRAIN_MASS * 0.5;
-    let rolling_stiffness = 5.0e2;
-    let rolling_damping_ratio = damping_ratio_from_restitution(RESTITUTION);
-    HertzianContactConfig {
-        // Real Hertzian formula, STYLIZED magnitude (same order as the
-        // linear model's own `normal_stiffness` elsewhere in this
-        // codebase) -- real steel E~200 GPa would force an impractically
-        // fine dt at this engine's own grid-unit scale.
-        effective_young_modulus: 1.0e4,
-        effective_shear_modulus: 0.8e4,
-        restitution: RESTITUTION,
-        friction: (35.0_f32).to_radians().tan(),
-        rolling_stiffness,
-        rolling_damping: 2.0 * (rolling_stiffness * m_eff).sqrt() * rolling_damping_ratio,
-        rolling_friction: 0.02,
+/// Chrome steel, AISI 52100: the alloy Hoover Precision's chrome steel
+/// balls are made of ("All sizes and grades are manufactured from AISI Type
+/// 52100 steel", hooverprecision.com/chrball.htm, archived April 2000),
+/// the balls of the impact table cited at `RESTITUTION`. Young's modulus
+/// 29.5e6 psi (203.4 GPa) and density 0.283 lb/in^3 (7833 kg/m^3) from
+/// that same page; Carpenter's CarTech 52100 datasheet gives 29.0e3 ksi
+/// (199.9 GPa) and 0.2830 lb/in^3. Poisson's ratio 0.29 as stated for
+/// hardened 52100 on makeitfrom.com ("Hardened 52100 Chromium Steel",
+/// with E 190 GPa and 7.8 g/cm^3), inside the 0.27 to 0.30 AZoM gives for
+/// AISI 52100 (azom.com, article 6704). CarTech states no Poisson's ratio;
+/// its E over twice its modulus of rigidity, minus one, would give 0.208,
+/// but a ratio taken from two separately rounded moduli amplifies their
+/// error, so it is not used.
+fn steel() -> Elastic {
+    Elastic {
+        e_pa: 203.4e9,
+        nu: 0.29,
+        rho_kg_m3: 7833.0,
     }
 }
 
-/// Real, measured restitution fix (2026-08-22): `e=0.95` (an earlier,
-/// generic "steel-like" pick) was real but too LOSSY for a demo meant to
-/// show many clean cycles -- a strike's pulse crosses MULTIPLE pairwise
-/// sub-collisions (grain0-1, 1-2, 2-3, 3-4, etc., derived analytically
-/// this session), so even a modest per-pair loss compounds fast, and
-/// releasing MORE than one ball together compounds it even faster (more
-/// simultaneous sub-collisions per strike).
-///
-/// Real, PUBLISHED confirmation this is genuine physics, not a bug: Ochoa
-/// & Kittel-style "Rocking Newton's Cradle" (American Journal of Physics,
-/// peer-reviewed) -- "the movement of all balls in phase results from
-/// viscoelastic dissipation in the impacts," and "Stokes damping
-/// constantly removes energy from the system, causing ball amplitudes to
-/// eventually diminish to zero" in a REAL physical cradle too. No finite
-/// restitution keeps a multi-ball cradle clean FOREVER -- the long-horizon
-/// settling job belongs to `AIR_DRAG_RATE` below, not to this constant.
-///
-/// Real, MEASURED material data (2026-08-22, replacing the earlier `0.999`
-/// tuned-to-buy-viewing-time pick): dry chrome steel (AISI 52100) -- the
-/// real bearing-steel alloy actual Newton's cradles are made from --
-/// measures a restitution coefficient of 0.99 in published granular-impact
-/// literature; general Newton's-cradle steel-ball measurements are cited
-/// as "greater than 0.95." `0.99` is that real, citable number, not a
-/// value picked because it happened to run long enough. Referenced by
-/// `hertzian_config` above (const declaration order doesn't matter in
-/// Rust at module scope).
+/// The unit conversion the 2D grain contract needs (cell size and
+/// reference density); this demo has no MPM grid.
+fn units() -> SimConfig {
+    SimConfig::earth(RENDER_SPACE, DX_M, 1.0 / 60.0)
+}
+
+/// Steel balls in line contact: `RESTITUTION`, sliding friction 0.54 (the
+/// same impact table: chrome steel on chrome steel, 0.54 +- 0.05), and no
+/// rolling resistance (none measured; head-on strikes barely spin the
+/// balls).
+fn contact_config() -> DiscContactConfig {
+    DiscContactConfig::new(
+        DiscElastic::from_si(&steel(), &units()),
+        RESTITUTION,
+        0.54,
+        0.0,
+        0.0,
+        0.0,
+    )
+}
+
+/// Chrome steel on chrome steel: 1.00 +- 0.01, measured on 3.18 mm balls
+/// (Hoover Precision, 7.83 g/cm^3) in the impact results table of M. Y.
+/// Louge's granular flow laboratory at Cornell ("Fall 1999 Impact Parameter
+/// Chart", grainflowresearch.mae.cornell.edu/impact/data). Cited as that
+/// table, not as Foerster, Louge, Chang and Allia 1994, which predates the
+/// chart: the page does not say which row came from which paper. 0.99 sits
+/// within its uncertainty and keeps a little loss per strike.
 const RESTITUTION: f32 = 0.99;
 
 /// Real, measured gap fraction (of grain radius) between EVERY adjacent
@@ -217,11 +194,7 @@ fn pulled_position(i: usize, pull_deg: f32) -> Vec2 {
 /// through `Simulation`/the MPM grid). Returns the population and its own
 /// real, contact-law-derived stable timestep.
 fn make_population(pull_deg: f32, pull_count: usize) -> (GrainPopulation, f32) {
-    let cfg = hertzian_config();
-    let m_eff = GRAIN_MASS * 0.5;
-    let dt_crit = critical_timestep_hertzian(m_eff, GRAIN_RADIUS, &cfg);
-    let dt = (dt_crit * 0.2).min(0.02);
-
+    let units = units();
     let grains: Vec<Grain> = (0..N_GRAINS)
         .map(|i| {
             let pos = if i < pull_count {
@@ -229,12 +202,12 @@ fn make_population(pull_deg: f32, pull_count: usize) -> (GrainPopulation, f32) {
             } else {
                 rest_position(i)
             };
-            Grain::new(pos, GRAIN_RADIUS, GRAIN_MASS)
+            Grain::from_si(pos, GRAIN_RADIUS * DX_M, &steel(), &units)
         })
         .collect();
-    let population = GrainPopulation::new_hertzian(grains, cfg).with_grain_field(
-        LinearDragField::new(Vec2::ZERO, AIR_DRAG_RATE, LinearDragField::ALL_MATERIALS),
-    );
+    let population = GrainPopulation::new_disc(grains, contact_config());
+    // The contacts' own stable step, at the fraction the materials use.
+    let dt = population.contact_step_limit() * units.material_cfl_coefficient;
     (population, dt)
 }
 
@@ -257,47 +230,6 @@ fn apply_string_constraints(population: &mut GrainPopulation) {
     }
 }
 
-/// Real linear velocity-relaxation damping toward still air, attached to
-/// the population in `make_population` as a real `LinearDragField`
-/// (`GrainField` impl, `src/forces/fields/drag.rs`) instead of a
-/// hand-rolled per-demo function -- `GrainPopulation::step` applies every
-/// `grain_fields` entry on top of gravity and contact forces every
-/// substep, so this IS the engine's own real drag mechanism (`dv/dt =
-/// -k*(v-target)`), not a reimplementation of it. A SEPARATE real
-/// mechanism from the per-collision inelastic loss (`RESTITUTION`) above:
-/// restitution alone only delays the onset of shared/in-phase motion, it
-/// never settles the system to rest -- real, published confirmation this
-/// missing piece is genuine physics, not a guess: "Rocking Newton's
-/// Cradle" (American Journal of Physics, peer-reviewed) attributes a REAL
-/// cradle's eventual graceful settling specifically to what it calls
-/// "Stokes damping," citing aerodynamic drag AND pivot/wire friction as
-/// its two real external-damping sources.
-///
-/// Checked, NOT assumed, which of those two actually dominates at this
-/// scale (2026-08-22): plugging a real Newton's-cradle ball (~1.1 cm
-/// radius, steel density 7850 kg/m^3 -> ~45 g) and real air viscosity
-/// (1.81e-5 Pa*s) into the textbook single-sphere Stokes-drag rate
-/// `k = 6*pi*mu*r/m` gives k ~ 8e-5 /s -- an ~3-hour decay timescale,
-/// roughly 1000x too weak to explain a real cradle visibly settling in
-/// minutes. Real aerodynamic drag on a fast-swinging macroscopic ball is
-/// also outside Stokes' own low-Reynolds-number validity range anyway
-/// (Re ~ v*d/nu ~ 2000-3000 at a real collision speed, versus Stokes'
-/// Re <~ 1) -- see `materials::stokes_drag_rate_from_si` for where that
-/// formula genuinely DOES apply (fine grains in wind, not a fist-sized
-/// pendulum ball). So the real dominant mechanism for THIS system is
-/// pivot/wire friction, not air resistance -- this engine has no explicit
-/// joint-friction model, but linear velocity relaxation is the same real,
-/// standard mathematical form real viscous-pivot-damping models use, so
-/// `LinearDragField` is reused for it rather than invented from scratch.
-/// `AIR_DRAG_RATE` itself is calibrated to the real, observable order of
-/// magnitude of how long an actual physical cradle takes to fully stop
-/// (several minutes, not seconds and not hours) rather than the
-/// inapplicable air-viscosity formula above -- chosen so a single swing
-/// cycle (~10-20 sim-time-units here) is barely touched, but a real,
-/// unattended ~10-minute session (~600+ sim-time-units) settles the row
-/// to a graceful stop instead of degrading into indefinite shared jitter.
-const AIR_DRAG_RATE: f32 = 0.01;
-
 struct State {
     gfx: gui_common::Gfx,
     population: GrainPopulation,
@@ -305,20 +237,13 @@ struct State {
     renderer: Renderer,
     pull_deg: f32,
     pull_count: usize,
-    /// Real, honest per-grain peak `|v|` reached since the last reset --
-    /// live instantaneous `|v|` alone is misleading once the row has been
-    /// swinging for many cycles, since Huygens (1665) coupled-oscillator
-    /// synchronization (real, documented, correctly out of scope -- see
-    /// `hertzian_config`'s own doc) dominates the LONG-horizon picture and
-    /// buries the actual first-strike signal this demo exists to show
-    /// (found live 2026-08-21: a snapshot at step=16500 showed only small,
-    /// synchronized-wave speeds, not the real post-collision peak). This
-    /// tracks the SAME real quantity `tests/grains_grid_coupling.rs`'s own
-    /// verification tests measure (late-window peak speed after first
-    /// contact), so what's on screen matches what was actually verified.
+    /// Per-grain peak `|v|` since the last reset: many swings later the live
+    /// `|v|` no longer shows the first strike, which is what the demo is
+    /// for.
     peak_speed: [f32; N_GRAINS],
     paused: bool,
-    sim_speed: u32,
+    /// Simulated seconds per displayed second.
+    time_scale: f32,
     step: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
@@ -327,7 +252,10 @@ struct State {
 }
 
 const NUDGE_RADIUS: f32 = 3.0;
-const NUDGE_STRENGTH: f32 = 4.0;
+/// Speed a nudge adds, in cells/s (0.5 m/s).
+const NUDGE_STRENGTH: f32 = 50.0;
+/// Displayed frame time the physics advances by, times `time_scale`.
+const FRAME_S: f32 = 1.0 / 60.0;
 
 impl State {
     async fn new(window: Arc<Window>) -> Self {
@@ -365,7 +293,7 @@ impl State {
             pull_count,
             peak_speed: [0.0; N_GRAINS],
             paused: false,
-            sim_speed: 45,
+            time_scale: 0.25,
             step: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
@@ -415,18 +343,19 @@ impl State {
         self.step = 0;
         self.peak_speed = [0.0; N_GRAINS];
         println!(
-            "RESET pull_deg={:.1} pull_count={} dt={} sim_speed={}",
-            self.pull_deg, self.pull_count, self.dt, self.sim_speed
+            "RESET pull_deg={:.1} pull_count={} dt={} time_scale={}",
+            self.pull_deg, self.pull_count, self.dt, self.time_scale
         );
     }
 
     fn update_and_render(&mut self, window: &Window) {
         if !self.paused {
-            for _ in 0..self.sim_speed {
+            let steps = (self.time_scale * FRAME_S / self.dt).ceil() as u32;
+            for _ in 0..steps {
                 self.population.step(GRAVITY, self.dt);
                 apply_string_constraints(&mut self.population);
                 self.step += 1;
-                if self.step.is_multiple_of(2000) {
+                if self.step.is_multiple_of(200_000) {
                     let v: Vec<f32> = self
                         .population
                         .grains
@@ -513,7 +442,7 @@ impl State {
         let fps = self.last_fps;
         let step = self.step;
         let mut paused = self.paused;
-        let mut sim_speed = self.sim_speed;
+        let mut time_scale = self.time_scale;
         let mut pull_deg = self.pull_deg;
         let mut pull_count = self.pull_count;
         let mut do_reset = false;
@@ -543,8 +472,9 @@ impl State {
                     );
                     for (i, s) in speeds.iter().enumerate() {
                         ui.label(format!(
-                            "grain {i}: |v|={s:.3}   peak={:.3}",
-                            self.peak_speed[i]
+                            "grain {i}: |v|={:.3} m/s   peak={:.3} m/s",
+                            s * DX_M,
+                            self.peak_speed[i] * DX_M
                         ));
                     }
                     ui.separator();
@@ -552,8 +482,8 @@ impl State {
                     ui.add(egui::Slider::new(&mut pull_deg, 0.0..=60.0).suffix(" deg"));
                     ui.label("Balls lifted together:");
                     ui.add(egui::Slider::new(&mut pull_count, 1..=N_GRAINS - 1));
-                    ui.label("Sim speed (physics steps/frame):");
-                    ui.add(egui::Slider::new(&mut sim_speed, 1..=60));
+                    ui.label("Time scale (x real time):");
+                    ui.add(egui::Slider::new(&mut time_scale, 0.01..=1.0).logarithmic(true));
                     ui.separator();
                     ui.checkbox(&mut paused, "Paused (or SPACE)");
                     if ui.button("Reset").clicked() {
@@ -564,7 +494,7 @@ impl State {
                 });
         });
         self.paused = paused;
-        self.sim_speed = sim_speed;
+        self.time_scale = time_scale;
         self.pull_deg = pull_deg;
         self.pull_count = pull_count;
         if (pull_deg - pull_before).abs() > 1.0e-6 || pull_count != pull_count_before || do_reset {
