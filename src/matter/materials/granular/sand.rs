@@ -48,8 +48,8 @@ pub const WATER_SURFACE_TENSION_N_M: f32 = 0.072;
 /// caller's own `lambda`/`mu` used, since `cohesion_bonus_pa` adds this
 /// straight into the same stress space those occupy: raw `lame_from_young`
 /// lambda/mu pairs with this assigned RAW; density-normalized
-/// `SimConfig::lame_from_si_physical_cfg` lambda/mu pairs with
-/// `SimConfig::stress_from_si_physical`. `examples/cpu/sand_water_saturation.rs`'s
+/// `SimConfig::lame_from_si` lambda/mu pairs with
+/// `SimConfig::stress_from_si`. `examples/cpu/sand_water_saturation.rs`'s
 /// real call site uses the density-normalized family throughout -- this is
 /// NOT a case needing the raw-passthrough fix; see
 /// `rankine::q_factor_elastic_viscosity_pa_s`'s own doc for which real call

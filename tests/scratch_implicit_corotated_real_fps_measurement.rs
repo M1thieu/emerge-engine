@@ -24,7 +24,7 @@ fn make_sand(phi_deg: f32) -> DruckerPragerMaterial {
     // Same real SI stiffness as basic_sand.rs itself (E=15MPa, nu=0.3),
     // not a toy value -- the whole point is measuring the REAL scene's cost.
     let config = SimConfig::earth(GRID, 0.01, 0.016);
-    let (lambda, mu) = config.lame_from_si_physical_cfg(15.0e6, 0.3, 1600.0);
+    let (lambda, mu) = config.lame_from_si(15.0e6, 0.3, 1600.0);
     let mut m = DruckerPragerMaterial::new(lambda, mu);
     m.friction_angle = phi_deg.to_radians();
     m

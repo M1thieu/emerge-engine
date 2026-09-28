@@ -860,66 +860,10 @@ pub fn lame_from_young(young_modulus: f32, poisson_ratio: f32) -> (f32, f32) {
     (lambda, mu)
 }
 
-/// Convert SI Young's modulus and Poisson's ratio to emerge grid-unit Lamé parameters.
-///
-/// In the solver, velocity is in cells/s and stress is applied as:
-///   `f_particle = vol_solver * sigma_solver * kernel`
-/// The correct non-dimensionalization gives:
-///   `λ_grid = λ_SI · dt² / (ρ₀ · dx²)`
-///
-/// Pair with `SimConfig::earth()`. Do NOT also set a particle mass: mass is
-/// derived from `SimConfig::grid_density` (default 1.0) and the region's own
-/// spacing, which is what keeps the gravity/stiffness ratio independent of how
-/// finely the region is discretized.
-///
-/// # Example -- soft tissue (E ≈ 5 kPa, ν = 0.45, ρ = 1000 kg/m³, 1 cm/cell)
-/// ```rust,no_run
-/// # extern crate emerge_engine as emerge;
-/// use emerge::lame_from_si;
-/// let (lambda, mu) = lame_from_si(5_000.0, 0.45, 1000.0, 0.01, 0.1);
-/// // lambda ≈ 1552, mu ≈ 172 -- ready for NeoHookeanMaterial or ViscoelasticMaterial
-/// ```
+/// SI Young's modulus and Poisson's ratio to grid Lamé parameters:
+/// `lambda_SI / (rho dx^2)`, the squared elastic wave speed in cells/s, the
+/// same at every timestep.
 pub fn lame_from_si(
-    young_modulus_pa: f32,
-    poisson_ratio: f32,
-    rest_density_kg_m3: f32,
-    dx_meters: f32,
-    dt_seconds: f32,
-) -> (f32, f32) {
-    let (lambda_si, mu_si) = lame_from_young(young_modulus_pa, poisson_ratio);
-    let scale = dt_seconds * dt_seconds / (rest_density_kg_m3 * dx_meters * dx_meters);
-    (lambda_si * scale, mu_si * scale)
-}
-
-/// Dimensionally-correct SI -> grid Lame conversion. Prefer this over
-/// [`lame_from_si`] for any new scene.
-///
-/// `scale = 1 / (rho * dx^2)`, with **no `dt` factor** -- the solver's
-/// velocity is cells/SECOND (fixed by [`gravity_to_grid`]'s own contract:
-/// `v += gravity * sub_dt` with `sub_dt` in real seconds), so a converted
-/// stiffness must not depend on the timestep. The result is exactly the
-/// squared elastic wave speed in cells/s: `c_grid^2 = (E/rho)/dx^2`.
-///
-/// # Why this exists separately (real, measured, 2026-08-24)
-/// [`lame_from_si`] carries an extra `dt^2`, which makes grid stiffness
-/// depend on the timestep. Measured directly, zero gravity, identical
-/// physical initial condition and identical simulated elapsed time: peak
-/// elastic rebound speed came out 58.4 / 7.77 / 0.276 cells/s at
-/// dt = 0.1 / 0.01 / 0.001. A physical result must be dt-INDEPENDENT; a
-/// 200x spread is a unit mismatch, not discretization error. Under gravity
-/// the same bug reads as "everything crushes far too violently": an elastic
-/// column that analytically compresses `rho*g*h/E` = 0.02% compressed
-/// 6-100% instead, 300-4900x too much, and worse at smaller dt. With this
-/// function the stiffness is identical at every dt and the strain matches
-/// the analytic value to ~1.7x.
-///
-/// Kept as a SEPARATE function rather than fixing `lame_from_si` in place:
-/// every currently-tuned scene was calibrated against the old conversion,
-/// so changing it globally re-breaks all of them at once (tried, reverted).
-/// Migrate scenes to this one at a time -- and when a scene switches, its
-/// `gravity_fraction` fudge should be deleted in the same change, because
-/// that fudge exists to compensate for exactly this bug.
-pub fn lame_from_si_physical(
     young_modulus_pa: f32,
     poisson_ratio: f32,
     rest_density_kg_m3: f32,
@@ -934,17 +878,16 @@ pub fn lame_from_si_physical(
 ///
 /// In the solver `v += gravity * sub_dt` where sub_dt is in real seconds,
 /// so gravity must be in [cells/s²] = g_SI / dx_meters.
-/// The `dt_seconds` parameter is unused but kept for API compatibility.
 ///
 /// # Example -- Earth gravity at 1 cm/cell
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// use emerge::gravity_to_grid;
 /// use glam::Vec2;
-/// let g = gravity_to_grid(Vec2::new(0.0, -9.81), 0.01, 0.1);
+/// let g = gravity_to_grid(Vec2::new(0.0, -9.81), 0.01);
 /// // g ≈ Vec2::new(0.0, -981.0) cells/s²
 /// ```
-pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32, _dt_seconds: f32) -> glam::Vec2 {
+pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32) -> glam::Vec2 {
     g_si / dx_meters
 }
 
@@ -983,47 +926,23 @@ pub(crate) fn von_neumann_richtmyer_q(
     if q.is_finite() { q } else { 0.0 }
 }
 
-/// Real single-sphere Stokes drag rate (Stokes 1851), converted from SI to
-/// the engine's own `LinearDragField::drag_coefficient` convention (units
-/// 1/time). `F = 6*pi*mu*r*v` gives `dv/dt = -(6*pi*mu*r/m)*v`, so
-/// `k_SI = 6*pi*mu*r/m` [1/s]; converting to grid-time units follows the
-/// SAME non-dimensionalization family as `lame_from_si`/`stress_from_si`
-/// above, just for a pure rate (1/time only, no mass or length dimension
-/// of its own to cancel): `k_grid = k_SI * dt_seconds`.
+/// Single-sphere Stokes drag rate (Stokes 1851) for
+/// `LinearDragField::drag_coefficient` (1/s, the solver's own time unit):
+/// `F = 6 pi mu r v` gives `dv/dt = -(6 pi mu r / m) v`.
 ///
-/// # Validity -- check this before using
-/// Stokes' law is only exact for LOW Reynolds number (`Re = rho*v*d/mu
-/// <~ 1`, creeping/laminar flow) -- real, correctly-scoped uses are fine
-/// dust or sand grains in a gentle wind (sub-millimeter radius, low
-/// speed), matching `LinearDragField`'s own doc precedent (real aeolian
-/// sand-transport literature). It is the WRONG formula for a fist-sized
-/// object moving at real everyday speeds: a real Newton's-cradle-scale
-/// steel ball (~1 cm radius) swinging at ~1 m/s sits at `Re ~ 2000-3000`,
-/// where real drag is actually quadratic (form drag), not linear -- this
-/// was checked directly for that case (2026-08-22,
-/// `examples/grain_newtons_cradle_gui.rs`) and found to underpredict a
-/// real cradle's observed damping by roughly 1000x. Compute
-/// `rho_air * velocity * (2.0*radius_m) / dynamic_viscosity_pa_s` yourself
-/// and confirm it's `<~ 1` before trusting this function's output as the
-/// dominant real damping mechanism for a given scene.
+/// Only valid at low Reynolds number (`Re = rho_air v 2r / mu <~ 1`), e.g.
+/// fine dust or sand grains in a gentle wind. A 1 cm ball at 1 m/s sits at
+/// `Re ~ 2000-3000`, where drag is quadratic (form drag), not this.
 ///
 /// # Example -- fine dust grain in air (r=50 micron, m=6.5e-10 kg, 20 C air)
 /// ```rust,no_run
 /// # extern crate emerge_engine as emerge;
 /// use emerge::materials::stokes_drag_rate_from_si;
-/// let k_grid = stokes_drag_rate_from_si(5.0e-5, 6.5e-10, 1.81e-5, 1.0);
-/// // dt_seconds = 1.0 (grid time unit = 1 real second) -- ready for
-/// // LinearDragField::drag_coefficient / GrainField drag.
-/// # let _ = k_grid;
+/// let k = stokes_drag_rate_from_si(5.0e-5, 6.5e-10, 1.81e-5);
+/// # let _ = k;
 /// ```
-pub fn stokes_drag_rate_from_si(
-    radius_m: f32,
-    mass_kg: f32,
-    dynamic_viscosity_pa_s: f32,
-    dt_seconds: f32,
-) -> f32 {
-    let k_si = 6.0 * std::f32::consts::PI * dynamic_viscosity_pa_s * radius_m / mass_kg;
-    k_si * dt_seconds
+pub fn stokes_drag_rate_from_si(radius_m: f32, mass_kg: f32, dynamic_viscosity_pa_s: f32) -> f32 {
+    6.0 * std::f32::consts::PI * dynamic_viscosity_pa_s * radius_m / mass_kg
 }
 
 #[cfg(test)]

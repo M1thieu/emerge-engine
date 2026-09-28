@@ -66,7 +66,7 @@ const JELLY_DENSITY_KG_M3: f32 = 1000.0;
 // size, which is the whole point of showing a Viscoelastic material here.
 const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 
-/// Real SI -> grid Lame conversion (`lame_from_si_physical_cfg`, no `dt^2`
+/// Real SI -> grid Lame conversion (`lame_from_si`, no `dt^2`
 /// pollution -- see that function's own doc). Deliberately NOT
 /// `{Neo,Cor,Viscoelastic}Material::from_young_modulus`: that family calls
 /// `lame_from_young` directly, which never touches `dx_meters`/density at
@@ -74,7 +74,7 @@ const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 /// real Pascals despite the name (a real, disclosed, separate gap in that
 /// API, found migrating this file -- not fixed here).
 fn jelly_lame(config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si_physical_cfg(
+    config.lame_from_si(
         JELLY_YOUNG_MODULUS_PA,
         JELLY_POISSON_RATIO,
         JELLY_DENSITY_KG_M3,
@@ -82,7 +82,7 @@ fn jelly_lame(config: &SimConfig) -> (f32, f32) {
 }
 
 fn jelly_visc_grid(config: &SimConfig) -> f32 {
-    config.visc_from_si_physical(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3)
+    config.visc_from_si(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3)
 }
 
 impl Params {

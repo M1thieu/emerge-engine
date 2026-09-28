@@ -301,8 +301,8 @@ fn main() {
     // which IS properly SI-derived in this same file. Real cavitation onset
     // for water in practice (dissolved-gas nucleation, the standard
     // engineering figure, not the much higher pure-degassed lab value) is
-    // ~-0.1 MPa = -100,000 Pa gauge. Converted through `stress_from_si_
-    // physical` (the SAME conversion `eos_stiffness` itself uses elsewhere
+    // ~-0.1 MPa = -100,000 Pa gauge. Converted through `stress_from_si`
+    // (the SAME conversion `eos_stiffness` itself uses elsewhere
     // in this engine), that lands orders of magnitude more negative than
     // this demo's own derated `eos_stiffness` (~104) -- meaning real water,
     // properly scaled, essentially NEVER cavitates from ordinary splashing
@@ -315,8 +315,7 @@ fn main() {
     // every checkpoint through frame 2000.
     const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
     const WATER_RHO_SI_KG_M3: f32 = 1000.0;
-    water.pressure_floor =
-        config.stress_from_si_physical(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
     println!(
         "fluid_thin_layer_diag_gpu: water_tait_b_pa={:.3}  (CPU twin derives 52.0 Pa via its own, DIFFERENT COLUMN_HEIGHT_CELLS scaling -- see this file's own doc)",
         water_tait_b_pa

@@ -3507,7 +3507,7 @@ fn sand_q_stays_bounded_once_settled() {
 /// `mass_from` converts SI kilograms into the grid units `mass_override` is in.
 /// It must NOT equal `ParticleMass::particle_mass` -- the two differ by
 /// `reference_density_kg_m3 * dx_meters^2`, the same factor
-/// `lame_from_si_physical` divides stress by. What survives is the density
+/// `lame_from_si` divides stress by. What survives is the density
 /// RATIO, which is the whole point: it is what lets two materials in one scene
 /// differ in inertia and not only in stiffness.
 #[test]

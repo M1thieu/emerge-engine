@@ -134,7 +134,7 @@ fn main() {
     const WATER_EOS_POWER: f32 = 3.0;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
     // Matches the real viscosity-unit fix now in basic_fluids_gpu.rs.
-    let water_dynamic_viscosity = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let water_dynamic_viscosity = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_dynamic_viscosity,
@@ -144,8 +144,7 @@ fn main() {
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
     const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
     const WATER_RHO_SI_KG_M3: f32 = 1000.0;
-    water.pressure_floor =
-        config.stress_from_si_physical(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);

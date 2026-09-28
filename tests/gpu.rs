@@ -1969,26 +1969,21 @@ mod gpu_tests {
         if !gpu_available() {
             return;
         }
-        // Full IRL calibration: earth() + lame_from_si, with particle mass left
-        // to `SimConfig::grid_density`. RHO is the reference density, so the
-        // derived `grid_density * spacing^2` is already the right grid mass --
-        // assigning the SI kilogram value here instead used to make the region
-        // 1/spacing^2 too heavy relative to its own stiffness.
-        // Soft gel (5 kPa, ν=0.45, ρ=1000 kg/m³) at 1cm/cell under Earth gravity.
-        // J must stay > 0 (no collapse) and positions must be finite.
-        const CELL_M: f32 = 0.01;
-        const DT: f32 = 0.1;
-        const RHO: f32 = 1000.0;
-
-        let config = SimConfig {
-            max_substeps_per_step: 20,
-            ..SimConfig::earth(32, CELL_M, DT)
+        // A soft gel (5 kPa, nu 0.45, 1000 kg/m^3) built from SI at 1 cm cells
+        // under Earth gravity, particle mass left to `SimConfig::grid_density`
+        // (1000 kg/m^3 is the reference density). J must stay > 0 (no
+        // collapse) and positions finite.
+        let config = SimConfig::earth(32, 0.01, 1.0 / 60.0);
+        let gel = emerge::Elastic {
+            e_pa: 5_000.0,
+            nu: 0.45,
+            rho_kg_m3: 1000.0,
         };
-
-        let (lambda, mu) = emerge::lame_from_si(5_000.0, 0.45, RHO, CELL_M, DT);
         let particles = spawn_disk(&config, Vec2::splat(16.0), 0);
         let registry =
-            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(lambda, mu)));
+            MaterialRegistry::with_default(Box::new(<NeoHookeanMaterial as emerge::FromSI<
+                emerge::Elastic,
+            >>::from_physical(&gel, &config)));
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
         for _ in 0..30 {
             solver.step_frame();
@@ -3474,7 +3469,6 @@ mod gpu_tests {
             -expected_g
         );
         assert_eq!(config.dx_meters, 0.01);
-        assert_eq!(config.dt_seconds, 0.05);
     }
 
     /// Forces the D3D12 WARP (software) adapter -- the same backend windows-latest CI

@@ -553,18 +553,9 @@ impl Simulation {
     /// frame costs and the simulated time it shows, at identical
     /// per-substep fidelity. It buys frame rate and slower motion, not
     /// accuracy in either direction. Total work for a given simulated
-    /// duration is unchanged.
-    ///
-    /// `dt_seconds` moves with it so the legacy, timestep-dependent SI
-    /// conversions stay self-consistent. A material built through the
-    /// `*_from_si_physical` family is unaffected either way: that family
-    /// deliberately does not read `dt_seconds`. A material built through
-    /// the older `*_from_si` family was scaled once at construction and
-    /// will NOT rescale, so change this before building such a material,
-    /// or rebuild it afterwards.
+    /// duration is unchanged. SI material conversions do not read it.
     pub const fn set_step_duration(&mut self, dt_seconds: f32) {
         self.config.dt = dt_seconds;
-        self.config.dt_seconds = dt_seconds;
     }
 
     /// Live-tunable Cundall (1982) non-viscous damping coefficient, same

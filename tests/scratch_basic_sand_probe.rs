@@ -30,7 +30,7 @@ fn make_sim(max_substeps_per_step: usize, gravity_fraction: f32) -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= gravity_fraction;
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

@@ -32,7 +32,7 @@ fn make_sim(max_substeps_per_step: usize) -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let (sand_lambda, sand_mu) = config.lame_from_si_physical_cfg(
+    let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,
@@ -114,7 +114,7 @@ fn basic_showcase_real_sand_stiffness_settles() {
 /// How much would a genuinely coarser grid (same real domain size, same real
 /// sand pile size, fewer/bigger cells) actually buy us? `elastic_wave_dt`'s
 /// dt bound scales linearly with `dx_meters` once lambda/mu come from
-/// `lame_from_si_physical_cfg` (which divides by `rho*dx_meters^2`, so the
+/// `lame_from_si` (which divides by `rho*dx_meters^2`, so the
 /// resulting wave speed scales as `1/dx_meters`, and `dt = cfl/c` scales as
 /// `dx_meters`) -- this sweep confirms that scaling holds for the REAL
 /// function, not a hand-derived guess, and reports the real substep count
@@ -200,7 +200,7 @@ fn lame_at_dx(
 ) -> (f32, f32) {
     let mut cfg = *config;
     cfg.dx_meters = dx_meters;
-    cfg.lame_from_si_physical_cfg(e_pa, nu, rho_kg_m3)
+    cfg.lame_from_si(e_pa, nu, rho_kg_m3)
 }
 
 /// Root-cause which of the 3 materials in this scene actually drives the
@@ -232,7 +232,7 @@ fn basic_showcase_substep_cost_breakdown_by_material() {
     // so calling it directly on freshly-built values (not through the
     // registry, which only exposes this as `pub(crate)`) is exact, not an
     // approximation.
-    let (sand_lambda, sand_mu) = config.lame_from_si_physical_cfg(
+    let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

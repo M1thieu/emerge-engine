@@ -60,7 +60,6 @@ fn sun_pos() -> Vec2 {
 fn astronomical_config() -> SimConfig {
     SimConfig {
         dx_meters: DX_METERS as f32,
-        dt_seconds: DT_SECONDS as f32,
         ..SimConfig::standard(GRID_RES, DT_SECONDS as f32, Vec2::ZERO)
     }
 }
@@ -191,7 +190,6 @@ const MARS_DISTANCE_M: f64 = 228.0e9;
 fn measure_kepler_error_at_dt(dt_seconds: f32) -> (f32, f32, f32) {
     let config = SimConfig {
         dx_meters: DX_METERS as f32,
-        dt_seconds,
         ..SimConfig::standard(GRID_RES, dt_seconds, Vec2::ZERO)
     };
     let sun_pos = sun_pos();
@@ -342,7 +340,6 @@ fn measure_kepler_error_at_dx(dx_meters: f64) -> f32 {
     let dt_seconds = 3600.0f32;
     let config = SimConfig {
         dx_meters: dx_meters as f32,
-        dt_seconds,
         ..SimConfig::standard(2048, dt_seconds, Vec2::ZERO)
     };
     let sun_pos = Vec2::new(1024.0, 1024.0);
@@ -543,7 +540,6 @@ const FULL_SYSTEM_GRID_RES: usize = 4096;
 fn full_system_config() -> SimConfig {
     SimConfig {
         dx_meters: FULL_SYSTEM_DX_METERS as f32,
-        dt_seconds: 3600.0,
         ..SimConfig::standard(FULL_SYSTEM_GRID_RES, 3600.0, Vec2::ZERO)
     }
 }

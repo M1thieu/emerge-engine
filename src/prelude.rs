@@ -117,13 +117,7 @@ pub use crate::{
     collect_snapshot_particles_only,
     evaluate_stability,
     gravity_to_grid,
-
     lame_from_si,
-    // Real, dt-independent SI->grid conversion -- prefer this over
-    // `lame_from_si` for any new scene (see its own doc for the measured
-    // dt^2 bug in the older sibling above, kept only for scenes already
-    // tuned against it).
-    lame_from_si_physical,
     lame_from_young,
     log_frame_full,
     log_frame_gpu,

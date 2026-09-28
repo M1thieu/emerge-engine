@@ -86,7 +86,7 @@ fn main() {
 
     let v_max_grid = (2.0 * config.gravity.length() * COLUMN_HEIGHT_CELLS).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
-    let visc = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let visc = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         visc,
@@ -94,7 +94,7 @@ fn main() {
         3.0,
     );
     water.bulk_viscosity = 3.0 * visc;
-    water.pressure_floor = config.stress_from_si_physical(-100_000.0, 1000.0);
+    water.pressure_floor = config.stress_from_si(-100_000.0, 1000.0);
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim =

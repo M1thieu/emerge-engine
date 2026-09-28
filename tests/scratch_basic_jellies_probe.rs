@@ -28,12 +28,12 @@ fn make_sim(max_substeps_per_step: usize, gravity_fraction: f32, drop_y: f32) ->
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= gravity_fraction;
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         JELLY_YOUNG_MODULUS_PA,
         JELLY_POISSON_RATIO,
         JELLY_DENSITY_KG_M3,
     );
-    let visc = config.visc_from_si_physical(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
+    let visc = config.visc_from_si(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
     println!("[jellies-probe] lambda={lambda} mu={mu} visc={visc}");
     let spawn = |c: Vec2, mat| SpawnRegion {
         spacing: 0.5,

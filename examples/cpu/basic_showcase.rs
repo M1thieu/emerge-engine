@@ -35,7 +35,7 @@ const SPACING: f32 = 0.7;
 // unsourced grid-unit guess. Same real dry-sand citation already used and
 // verified for `basic_sand.rs`/`sand_ngf_collapse.rs` (Haeri & Skonieczny
 // 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through
-// the dt^2-free `lame_from_si_physical_cfg`.
+// the dt^2-free `lame_from_si`.
 const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
 const SAND_DENSITY_KG_M3: f32 = 1600.0;
@@ -90,7 +90,7 @@ fn make_sim() -> Simulation {
     // verification (does it still feel controllable), not just a headless
     // stability probe -- real follow-up work, not silently dropped.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let (sand_lambda, sand_mu) = config.lame_from_si_physical_cfg(
+    let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

@@ -125,7 +125,7 @@ fn main() {
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     const WATER_EOS_POWER: f32 = 3.0;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
-    let water_dynamic_viscosity = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let water_dynamic_viscosity = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_dynamic_viscosity,
@@ -133,7 +133,7 @@ fn main() {
         WATER_EOS_POWER,
     );
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
-    water.pressure_floor = config.stress_from_si_physical(-100_000.0, 1000.0);
+    water.pressure_floor = config.stress_from_si(-100_000.0, 1000.0);
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);

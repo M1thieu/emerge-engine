@@ -114,7 +114,7 @@ fn run(dt: f32) {
     );
     let v_max_grid = (2.0 * 0.3 * 52.0f32).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
-    let water_viscosity = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let water_viscosity = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_viscosity,
@@ -122,7 +122,7 @@ fn run(dt: f32) {
         3.0,
     );
     water.bulk_viscosity = 3.0 * water_viscosity;
-    water.pressure_floor = config.stress_from_si_physical(-100_000.0, 1000.0);
+    water.pressure_floor = config.stress_from_si(-100_000.0, 1000.0);
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim = GpuSimulation::with_device(

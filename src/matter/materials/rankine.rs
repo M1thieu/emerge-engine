@@ -46,15 +46,15 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// `elastic_viscosity * d_dev` directly into the same stress tensor those
 /// build: raw `lame_from_young`/`from_young_modulus` lambda/mu (density-
 /// agnostic) pairs with this value assigned RAW, unconverted; density-
-/// normalized `lame_from_si_physical`/`SimConfig::lame_from_si_physical_cfg`
-/// lambda/mu pairs with `SimConfig::visc_from_si_physical(eta, rho)`. Mixing
-/// the two is wrong either direction.
+/// normalized `lame_from_si` lambda/mu pairs with
+/// `SimConfig::visc_from_si(eta, rho)`. Mixing the two is wrong either
+/// direction.
 ///
 /// Real, disclosed regression found+fixed 2026-08-29: `RankineMaterial::ice`'s
 /// real call sites (`examples/cpu/phase_states_gui.rs`,
 /// `phase_states_headless.rs`) build `lambda`/`mu` via `ice()` ->
 /// `from_young_modulus` -> raw `lame_from_young`, but were WRONGLY paired
-/// with `SimConfig::visc_from_si_physical`, an ~917x-too-small division
+/// with `SimConfig::visc_from_si`, an ~917x-too-small division
 /// (ice's real density ~917 kg/m^3, dx=1 in that scene) that belongs only
 /// with the OTHER (density-normalized) lambda/mu family. Confirmed wrong
 /// three ways: (1) dimensionally inconsistent with `ice()`'s own raw,
@@ -154,8 +154,8 @@ pub struct RankineMaterial {
     pub softening_rate: f32,
     /// Real Kelvin-Voigt viscous damping on the deviatoric elastic strain
     /// rate (SI Pa.s, converted with the SAME convention `lambda`/`mu` used
-    /// -- raw if they came from `lame_from_young`, `SimConfig::visc_from_si_physical`
-    /// if from `lame_from_si_physical` -- see `q_factor_elastic_viscosity_pa_s`'s
+    /// -- raw if they came from `lame_from_young`, `SimConfig::visc_from_si`
+    /// if from `lame_from_si` -- see `q_factor_elastic_viscosity_pa_s`'s
     /// own doc) -- same mechanism, same formula, as
     /// `DruckerPragerMaterial::elastic_viscosity`. Zero cost, zero behavior
     /// change at `0.0` (every preset's default, same convention as sand).

@@ -112,13 +112,13 @@ const SAND_DENSITY_KG_M3: f32 = 1600.0;
 const SAND_POROSITY_LOOSE: f32 = 0.4792;
 
 /// Built from REAL SI values through the dimensionally-correct conversion
-/// (`lame_from_si_physical_cfg`), not raw grid numbers. That is what lets
+/// (`lame_from_si`), not raw grid numbers. That is what lets
 /// this scene run at genuine 9.81 m/s^2 with no `gravity_fraction` fudge:
 /// stiffness and gravity land in one consistent unit system, so the ratio
 /// that actually decides whether a pile holds its shape (`rho*g*h/E`) comes
 /// out physically correct on its own instead of being hand-tuned.
 fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,
@@ -135,7 +135,7 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         SAND_POROSITY_LOOSE,
         0.0, // water on clean quartz: fully wetting
     );
-    let saturation_cohesion_coeff = config.stress_from_si_physical(cohesion_pa, SAND_DENSITY_KG_M3);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, SAND_DENSITY_KG_M3);
     // Real small-strain Kelvin-Voigt damping -- see
     // `small_strain_elastic_viscosity_pa_s`'s own doc (Seed & Idriss 1970 +
     // Darendeli 2001, zeta 0.5%-2% for clean sand). Below the Drucker-Prager
@@ -152,8 +152,7 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
             shear_modulus_pa,
             0.005,
         );
-    let elastic_viscosity =
-        config.visc_from_si_physical(elastic_viscosity_pa_s, SAND_DENSITY_KG_M3);
+    let elastic_viscosity = config.visc_from_si(elastic_viscosity_pa_s, SAND_DENSITY_KG_M3);
     DruckerPragerMaterial {
         // Real quartz critical-state friction angle (Bolton 1986, "The
         // strength and dilatancy of sands," Geotechnique 36(1):65-78) --
@@ -204,14 +203,14 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
 /// directly: that constructor runs plain `lame_from_young` internally, with
 /// no SI-to-grid conversion -- correct for a caller who's already in grid
 /// units, but this scene's other materials (see `make_sand`) go through
-/// `config.lame_from_si_physical_cfg`, the dimensionally-correct path. Real
-/// SI here, `lame_from_si_physical_cfg`-converted like everything else in
+/// `config.lame_from_si`, the dimensionally-correct path. Real
+/// SI here, `lame_from_si`-converted like everything else in
 /// this file, then the rest of `saturated_loam`'s own disclosed shape
 /// values (eos_stiffness/hardening_exponent/compression_limit/etc, and the
 /// anti-elastic-bounce viscosity terms scaled off THIS material's own
 /// correctly-converted mu/eos_stiffness) copied over unchanged.
 fn make_mixture(config: &SimConfig) -> GranularFluidMaterial {
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA * 0.5,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

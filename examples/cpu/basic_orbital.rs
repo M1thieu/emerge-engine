@@ -56,7 +56,6 @@ fn make_sim() -> Simulation {
     let sun_pos = glam::Vec2::splat(GRID as f32 / 2.0);
     let config = SimConfig {
         dx_meters: DX_METERS as f32,
-        dt_seconds: DT_SECONDS as f32,
         gravity: glam::Vec2::ZERO,
         ..SimConfig::standard(GRID, DT_SECONDS as f32, glam::Vec2::ZERO)
     };

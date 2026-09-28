@@ -388,13 +388,9 @@ fn make_sim() -> (
             ICE_QUALITY_FACTOR_Q_TEMPERATE,
             ICE_Q_REFERENCE_FREQUENCY_HZ,
         );
-        // Real, disclosed fix (2026-08-29): assigned raw SI Pa.s directly,
-        // no SimConfig conversion -- lambda/mu here come from raw,
-        // density-agnostic lame_from_young, and kirchhoff_stress adds
-        // elastic_viscosity*d_dev straight into that same raw-Pa stress, so
-        // dividing by rho*dx^2 first (the old `visc_from_si_physical` call)
-        // made this ~917x too weak. See
-        // `q_factor_elastic_viscosity_pa_s`'s own doc for the full writeup.
+        // Raw SI Pa.s, unconverted: lambda/mu here are raw
+        // `lame_from_young` values in the same stress tensor (see
+        // `q_factor_elastic_viscosity_pa_s`).
         println!("ice elastic_viscosity: {elastic_viscosity_pa_s:.6} Pa.s (SI, raw)");
         RankineMaterial {
             elastic_viscosity: elastic_viscosity_pa_s,

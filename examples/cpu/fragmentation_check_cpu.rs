@@ -98,7 +98,7 @@ fn main() {
         .unwrap_or(0.3);
     let v_max_grid = (2.0 * grav_sizing * 52.0f32).sqrt();
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
-    let water_viscosity = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let water_viscosity = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_viscosity,
@@ -106,7 +106,7 @@ fn main() {
         3.0,
     );
     water.bulk_viscosity = 3.0 * water_viscosity;
-    water.pressure_floor = config.stress_from_si_physical(-100_000.0, 1000.0);
+    water.pressure_floor = config.stress_from_si(-100_000.0, 1000.0);
 
     // PATTERN (env: dam | drop | vortex, default dam) -- the same three
     // geometries as basic_fluids_gpu.rs and fragmentation_check_gpu.rs.

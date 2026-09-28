@@ -269,7 +269,7 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // caller. Real cavitation onset for water in practice
         // (dissolved-gas nucleation, the standard engineering figure, not
         // the much higher pure-degassed lab value) is ~-100,000 Pa gauge --
-        // converted through the SAME `scale_stress`/`stress_from_si_physical`
+        // converted through the SAME `scale_stress`/`stress_from_si`
         // pipeline `eos` itself just used above, at THIS material's own
         // real `props.rho_kg_m3`, not assumed water.
         const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
@@ -785,7 +785,7 @@ mod si_construction_tests {
             bulk_modulus_pa: 1000.0 * 20.0 * 20.0,
         };
         let si = NewtonianFluidMaterial::from_physical(&props, &cfg);
-        let expected = cfg.stress_from_si_physical(-100_000.0, props.rho_kg_m3);
+        let expected = cfg.stress_from_si(-100_000.0, props.rho_kg_m3);
         assert!(
             (si.pressure_floor - expected).abs() < 1.0e-6,
             "from_physical: pressure_floor={} -- expected {expected} (real cavitation \

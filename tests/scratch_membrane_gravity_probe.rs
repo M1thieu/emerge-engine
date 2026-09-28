@@ -6,7 +6,7 @@
 //! file's own doc comment on `gravity_fraction`.
 //!
 //! EXTENDED (2026-09-05, real-SI migration): after switching to a real,
-//! sourced bat-wing-membrane stiffness via `lame_from_si_physical_cfg`, this
+//! sourced bat-wing-membrane stiffness via `lame_from_si`, this
 //! probe caught a NEW real finding -- max|J-1| grows apparently unboundedly
 //! (not a bounded settle) at real gravity with the new, much stiffer
 //! material, roughly two orders of magnitude faster than the old
@@ -24,7 +24,7 @@ const ANCHOR_MARGIN: f32 = 0.4;
 
 // Mirrors `examples/cpu/basic_membrane.rs`'s own `MEMBRANE_*` constants and
 // `membrane_lame` -- real bat-wing-membrane-skin SI values (Swartz & Groves,
-// low-strain tangent modulus), converted through `lame_from_si_physical_cfg`
+// low-strain tangent modulus), converted through `lame_from_si`
 // (no dt^2 pollution), not the old unsourced `lambda=2000.0, mu=4000.0`.
 const MEMBRANE_YOUNG_MODULUS_PA: f32 = 5.0e4;
 const MEMBRANE_POISSON_RATIO: f32 = 0.45;
@@ -150,7 +150,7 @@ fn run_probe(
 #[ignore = "temporary manual probe, not a regression test"]
 fn membrane_scene_at_full_gravity_fraction() {
     let si_config = SimConfig::earth(GRID, 0.01, DT);
-    let (lambda, mu) = si_config.lame_from_si_physical_cfg(
+    let (lambda, mu) = si_config.lame_from_si(
         MEMBRANE_YOUNG_MODULUS_PA,
         MEMBRANE_POISSON_RATIO,
         MEMBRANE_DENSITY_KG_M3,
@@ -174,7 +174,7 @@ fn membrane_scene_at_full_gravity_fraction() {
 #[ignore = "temporary manual probe, not a regression test"]
 fn membrane_scene_new_stiffness_old_gravity() {
     let si_config = SimConfig::earth(GRID, 0.01, DT);
-    let (lambda, mu) = si_config.lame_from_si_physical_cfg(
+    let (lambda, mu) = si_config.lame_from_si(
         MEMBRANE_YOUNG_MODULUS_PA,
         MEMBRANE_POISSON_RATIO,
         MEMBRANE_DENSITY_KG_M3,

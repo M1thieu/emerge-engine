@@ -23,7 +23,7 @@ fn make_sim(max_substeps_per_step: usize) -> Simulation {
         max_substeps_per_step,
         ..SimConfig::standard(GRID, DT, Vec2::ZERO)
     };
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         BODY_YOUNG_MODULUS_PA,
         BODY_POISSON_RATIO,
         BODY_DENSITY_KG_M3,

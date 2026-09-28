@@ -71,7 +71,7 @@ pub struct SpawnRegion {
     /// Note the units: this is NOT the SI kilogram mass
     /// `rho_kg_m3 * (spacing * dx_meters)^2` that `ParticleMass::particle_mass`
     /// returns. The two differ by exactly `rho * dx_meters^2` -- the same
-    /// factor `lame_from_si_physical` divides stress by -- so passing an SI
+    /// factor `lame_from_si` divides stress by -- so passing an SI
     /// mass in here directly is a unit mismatch. `.mass_from(&props, &config)`
     /// applies that conversion for you and uses this region's own `spacing`;
     /// prefer it over `.mass()`.
@@ -159,7 +159,7 @@ impl SpawnRegion {
     /// `ParticleMass::particle_mass` reports real SI kilograms, so this divides
     /// by `reference_density_kg_m3 * dx_meters^2` to land in the grid units the
     /// solver actually integrates -- the same conversion
-    /// `lame_from_si_physical` applies to stress. What survives the division is
+    /// `lame_from_si` applies to stress. What survives the division is
     /// the density RATIO: a region of water at `spacing` gets exactly
     /// `spacing^2`, and denser materials get proportionally more.
     pub fn mass_from(mut self, props: &impl crate::ParticleMass, config: &SimConfig) -> Self {

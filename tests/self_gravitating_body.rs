@@ -47,15 +47,7 @@ const GRID_RES: usize = 512;
 /// Real dynamical (free-fall) timescale for this body is ~sqrt(R^3/(G*M))
 /// ~ 8.7 real hours at this scene's actual (2D-arealdensity-derived) total
 /// mass -- 20s/step lets 2000 steps (40,000s ~ 11h) cover a real, meaningful
-/// fraction of that. NOTE: `dt_seconds` must be set explicitly and equal to
-/// the nominal `dt` passed to `SimConfig::standard` -- `lame_from_si` (the
-/// real SI-to-grid conversion `Elastoplastic::material` uses under the
-/// hood) reads `config.dt_seconds`, which `SimConfig::default()` sets to
-/// 1.0, NOT whatever nominal `dt` is passed separately. A first version of
-/// this test forgot this and left `dt_seconds` at its 1.0 default while
-/// using `dt=0.01` -- a real, caught, 100x mismatch feeding a squared term
-/// (~10,000x too-stiff material), which is exactly why the body appeared
-/// completely frozen (bit-identical energy/radius after 2000 steps).
+/// fraction of that.
 const DT_SECONDS: f64 = 20.0;
 
 fn make_body() -> Simulation {
@@ -64,7 +56,6 @@ fn make_body() -> Simulation {
 
     let config = SimConfig {
         dx_meters: DX_METERS as f32,
-        dt_seconds: DT_SECONDS as f32,
         gravity: Vec2::ZERO, // real microgravity -- self-gravity IS the only gravity here
         ..SimConfig::standard(GRID_RES, DT_SECONDS as f32, Vec2::ZERO)
     };

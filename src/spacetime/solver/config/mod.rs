@@ -89,8 +89,8 @@ pub struct SimConfig {
     /// A spawn's actual particle mass is `grid_density * spacing^2`, because a
     /// lattice at `spacing` cells carries `1/spacing^2` particles per cell.
     ///
-    /// It is a density, not a mass, for a dimensional reason. `lame_from_si_
-    /// physical` converts SI stress to grid units by dividing by
+    /// It is a density, not a mass, for a dimensional reason. `lame_from_si`
+    /// converts SI stress to grid units by dividing by
     /// `rho_kg_m3 * dx_meters^2`; the MPM grid update accelerates a node by
     /// `f/m`, i.e. by `sigma_grid / rho_grid`. Those two agree only when
     /// `rho_grid == 1`. Carrying a per-PARTICLE mass here instead made the
@@ -484,17 +484,12 @@ pub struct SimConfig {
     pub spatial_sort_enabled: bool,
 
     // ── Physical unit scaling ──────────────────────────────────────────────────
-    // Default 1.0 = simulation units (no scaling). Set these to enable SI-calibrated materials.
-    // Use `lame_from_si` / `gravity_to_grid` in `materials::utils` to convert SI values.
+    // Default 1.0 = simulation units (no scaling). Set these to enable SI-calibrated materials
+    // (`FromSI::from_physical`, or `lame_from_si` / `gravity_to_grid` in `materials::utils`).
     /// Physical length of one grid cell in meters. Default 1.0 (grid units).
     ///
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
     pub dx_meters: f32,
-    /// Physical duration of one simulation time unit in seconds. Default 1.0.
-    ///
-    /// Typically set to match `config.dt` in physical seconds.
-    /// Gravity: `gravity = Vec2::new(0.0, -9.81) * dt_seconds^2 / dx_meters`.
-    pub dt_seconds: f32,
 
     /// Real, opt-in implicit (Newton-CG) grid-velocity update -- see
     /// `spacetime::solver::implicit_corotated`'s own module doc for the
@@ -568,7 +563,6 @@ impl Default for SimConfig {
             fluid_pressure_iterations: 0,
             spatial_sort_enabled: false,
             dx_meters: 1.0,
-            dt_seconds: 1.0,
             implicit_corotated_elastic: false,
         }
     }
@@ -602,8 +596,8 @@ impl SimConfig {
 
     /// Earth-scale simulation preset.
     ///
-    /// Derives gravity and unit scaling from real physical constants so that
-    /// material parameters passed via `lame_from_si` produce correct behaviour.
+    /// Sets gravity and the unit scale from the cell size, so materials built
+    /// from SI values (`FromSI::from_physical`, `lame_from_si`) match it.
     ///
     /// # Arguments
     /// * `grid_res`    -- number of cells per side
@@ -626,86 +620,32 @@ impl SimConfig {
         let g_solver = 9.81 / cell_m;
         Self {
             dx_meters: cell_m,
-            dt_seconds: dt,
             ..Self::standard(grid_res, dt, Vec2::new(0.0, -g_solver))
         }
     }
 
     // ── SI conversion helpers ─────────────────────────────────────────────────
+    // Grid stress is SI stress over `rho dx^2` (a squared speed in cells/s),
+    // never dt-dependent. Pair stress and viscosity conversions only with
+    // Lamé parameters from `lame_from_si`: the same `rho dx^2` must divide
+    // every term added into one stress tensor.
 
-    /// Convert SI Young's modulus (Pa) + Poisson ratio to grid-unit Lamé parameters.
-    ///
-    /// Equivalent to `lame_from_si(e_pa, nu, rho, self.dx_meters, self.dt_seconds)`.
-    /// Requires `earth()` or explicit `dx_meters`/`dt_seconds` to be meaningful.
-    pub fn lame_from_si_cfg(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
-        crate::materials::lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters, self.dt_seconds)
+    /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters,
+    /// through [`crate::materials::lame_from_si`] at this config's `dx_meters`.
+    pub fn lame_from_si(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
+        crate::materials::lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters)
     }
 
-    /// Dimensionally-correct SI -> grid Lame conversion for this config.
-    /// Prefer this over [`Self::lame_from_si_cfg`] for any new scene -- see
-    /// [`crate::materials::lame_from_si_physical`] for the measured evidence
-    /// (the older path's `dt^2` makes stiffness timestep-dependent, which is
-    /// what makes real gravity crush everything and forces each demo to
-    /// carry its own `gravity_fraction` fudge).
-    ///
-    /// Deliberately does NOT read `self.dt_seconds`: a converted stiffness
-    /// must not depend on the timestep.
-    pub fn lame_from_si_physical_cfg(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
-        crate::materials::lame_from_si_physical(e_pa, nu, rho_kg_m3, self.dx_meters)
-    }
-
-    /// Dimensionally-correct SI stress -> grid conversion: `p_SI / (rho *
-    /// dx^2)`, which is exactly the squared wave speed in cells/s. Prefer
-    /// over [`Self::stress_from_si`] for any new scene; see
-    /// [`crate::materials::lame_from_si_physical`] for why the older one's
-    /// `dt^2` is wrong.
-    ///
-    /// Real, disclosed correction (2026-08-29): pair this ONLY with lambda/mu
-    /// that came from [`Self::lame_from_si_physical_cfg`] (the SAME `rho*dx^2`
-    /// division) -- a material whose lambda/mu instead came from the raw,
-    /// density-agnostic `lame_from_young`/`from_young_modulus` family must
-    /// get its cohesion/tensile-strength/viscosity assigned raw SI too, not
-    /// run through this. Mixing the two (raw lambda/mu + this conversion on
-    /// a term added into the SAME stress tensor) was exactly the bug found
-    /// and fixed in `RankineMaterial::ice`'s real call sites this session --
-    /// see `q_factor_elastic_viscosity_pa_s`'s own doc for the full writeup.
-    pub fn stress_from_si_physical(&self, pa: f32, rho_kg_m3: f32) -> f32 {
+    /// SI stress or pressure (Pa) to grid units: `p / (rho dx^2)`.
+    pub fn stress_from_si(&self, pa: f32, rho_kg_m3: f32) -> f32 {
         pa / (rho_kg_m3 * self.dx_meters * self.dx_meters)
     }
 
-    /// Dimensionally-correct SI dynamic viscosity -> grid conversion:
-    /// `eta_SI / (rho * dx^2)`, i.e. kinematic viscosity in cells^2/s.
-    ///
-    /// Derived from how viscosity is consumed (`fluid.rs`: `stress +=
-    /// eff_viscosity * strain_dev`, strain rate in 1/s, grid stress in
-    /// cells^2/s^2). The older [`Self::visc_from_si`] is
-    /// `eta * rho * dx^2 / dt^3` -- it multiplies by `rho` and `dx^2` where
-    /// it must divide, and carries a spurious `dt^3`.
-    ///
-    /// Real, disclosed correction (2026-08-29): same pairing rule as
-    /// [`Self::stress_from_si_physical`]'s own doc -- only pair this with
-    /// lambda/mu from [`Self::lame_from_si_physical_cfg`], never with the
-    /// raw `lame_from_young`/`from_young_modulus` family.
-    pub fn visc_from_si_physical(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
-        eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
-    }
-
-    /// Convert SI stress or pressure (Pa) to grid units.
-    ///
-    /// Use for: yield stress, tensile strength, eos_stiffness, surface tension.
-    /// Scale: `p_grid = p_SI · dt² / (ρ · dx²)`
-    pub fn stress_from_si(&self, pa: f32, rho_kg_m3: f32) -> f32 {
-        pa * self.dt_seconds * self.dt_seconds / (rho_kg_m3 * self.dx_meters * self.dx_meters)
-    }
-
-    /// Convert SI dynamic viscosity (Pa·s) to grid units.
-    ///
-    /// Viscosity multiplies the velocity gradient (units: 1/step in grid space), so its
-    /// non-dimensionalization has one extra factor of dt versus stress:
-    /// `η_grid = η_SI · ρ · dx² / dt³`
+    /// SI dynamic viscosity (Pa s) to grid units: `eta / (rho dx^2)`, the
+    /// kinematic viscosity in cells^2/s (grid stress += viscosity * strain
+    /// rate in 1/s).
     pub fn visc_from_si(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
-        eta_pa_s * rho_kg_m3 * self.dx_meters * self.dx_meters
-            / (self.dt_seconds * self.dt_seconds * self.dt_seconds)
+        eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
     }
 
     /// Validate solver-side numerical and domain constraints.

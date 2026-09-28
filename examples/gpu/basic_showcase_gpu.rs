@@ -37,7 +37,7 @@ const SPACING: f32 = 0.7;
 // unsourced grid-unit guess -- same citation as `basic_showcase.rs`'s CPU
 // twin and `basic_sand.rs` (Haeri & Skonieczny 2022, arXiv:2111.01523,
 // Table 2, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3), through the
-// dt^2-free `lame_from_si_physical_cfg`.
+// dt^2-free `lame_from_si`.
 //
 // Real fix (2026-09-17), root-caused this scene's own live ~0.5fps
 // (`tests/scratch_basic_showcase_probe.rs::basic_showcase_substep_cost_breakdown_by_material`:
@@ -163,7 +163,7 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
     // That needs live interactive verification, not just a headless
     // stability probe -- real follow-up work, not silently dropped.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let (sand_lambda, sand_mu) = config.lame_from_si_physical_cfg(
+    let (sand_lambda, sand_mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

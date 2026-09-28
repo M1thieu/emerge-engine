@@ -211,7 +211,7 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     // Real Stomakhin 2013 citation, same as basic_snow_gpu.rs -- was the
     // stale raw 1389.0/2083.0 that file no longer uses.
-    let (snow_lambda, snow_mu) = config.lame_from_si_physical_cfg(
+    let (snow_lambda, snow_mu) = config.lame_from_si(
         SNOW_YOUNG_MODULUS_PA,
         SNOW_POISSON_RATIO,
         SNOW_DENSITY_KG_M3,
@@ -219,12 +219,12 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
     let snow = StomakhinMaterial::new(snow_lambda, snow_mu, 7.0, 0.025, 0.0075, 0.6, 20.0); // basic_snow_gpu
     // Real soft-tissue citation, same as basic_jellies_gpu.rs -- was the
     // stale raw 10.0/15.0/0.15 that file no longer uses.
-    let (tissue_lambda, tissue_mu) = config.lame_from_si_physical_cfg(
+    let (tissue_lambda, tissue_mu) = config.lame_from_si(
         TISSUE_YOUNG_MODULUS_PA,
         TISSUE_POISSON_RATIO,
         TISSUE_DENSITY_KG_M3,
     );
-    let tissue_visc = config.visc_from_si_physical(TISSUE_VISCOSITY_PA_S, TISSUE_DENSITY_KG_M3);
+    let tissue_visc = config.visc_from_si(TISSUE_VISCOSITY_PA_S, TISSUE_DENSITY_KG_M3);
     let tissue = ViscoelasticMaterial::new(tissue_lambda, tissue_mu, tissue_visc); // basic_jellies_gpu
     let mut reg = MaterialRegistry::with_default(Box::new(jelly));
     reg.insert(SAND_ID, Box::new(sand));

@@ -148,7 +148,7 @@ fn main() {
     let c_ref_m_s = 10.0 * v_max_grid * config.dx_meters;
     const WATER_EOS_POWER: f32 = 3.0;
     let water_tait_b_pa = 1000.0 * c_ref_m_s * c_ref_m_s / WATER_EOS_POWER;
-    let water_dynamic_viscosity = config.visc_from_si_physical(1.0e-3, 1000.0);
+    let water_dynamic_viscosity = config.visc_from_si(1.0e-3, 1000.0);
     let mut water = NewtonianFluidMaterial::new(
         WATER_RHO_GRID,
         water_dynamic_viscosity,
@@ -160,7 +160,7 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(-100_000.0);
-    water.pressure_floor = config.stress_from_si_physical(pressure_floor_pa, 1000.0);
+    water.pressure_floor = config.stress_from_si(pressure_floor_pa, 1000.0);
     let eos_power_override: Option<f32> =
         std::env::var("EOS_POWER").ok().and_then(|s| s.parse().ok());
     if let Some(power) = eos_power_override {

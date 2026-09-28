@@ -64,12 +64,12 @@ mod gpu_probe {
             gravity: Vec2::new(0.0, -0.3),
             ..SimConfig::earth(GRID, 0.01, DT)
         };
-        let (lambda, mu) = config.lame_from_si_physical_cfg(
+        let (lambda, mu) = config.lame_from_si(
             JELLY_YOUNG_MODULUS_PA,
             JELLY_POISSON_RATIO,
             JELLY_DENSITY_KG_M3,
         );
-        let visc = config.visc_from_si_physical(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
+        let visc = config.visc_from_si(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
         println!("[jellies-gpu-probe] lambda={lambda} mu={mu} visc={visc}");
         let mass_grid = (JELLY_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
         let blob = |cx: f32, mat: u32, seed: u32| SpawnRegion {

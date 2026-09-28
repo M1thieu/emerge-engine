@@ -90,7 +90,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         gravity: Vec2::new(0.0, -0.08),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SNOW_YOUNG_MODULUS_PA,
         SNOW_POISSON_RATIO,
         SNOW_DENSITY_KG_M3,

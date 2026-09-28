@@ -37,22 +37,9 @@ mod gui_common;
 /// this asymmetrically; that contrast IS the demo.
 ///
 /// Stiffness (`MEMBRANE_YOUNG_MODULUS_PA` et al., see `membrane_lame`) is a
-/// real, sourced bat-wing-membrane-skin value, converted through the
-/// dimensionally-correct `lame_from_si_physical_cfg` path -- NOT the earlier
-/// `lambda=2000.0, mu=4000.0` hand-picked "reads as a taut tendon" guess
-/// (superseded 2026-09-05, real SI-unit migration; see `MEMORY.md`'s
-/// `lame_from_si_physical` writeup for why that guess existed: the OLD
-/// SI->grid conversion had a `dt^2` bug that made real Earth gravity crush
-/// or collapse ANY correctly-sourced stiffness, forcing every scene
-/// including this one to hide it behind an unphysical `gravity_fraction`
-/// fudge). Real, measured result of the fix, same scene, same pin, same
-/// spawn: the OLD stiffness under REAL gravity (`gravity_fraction=1.0`)
-/// collapses to `|J-1|~1.0` (NoCompressionMaterial's own permanent-dilation
-/// failure mode) and crashes into the floor within ~6 simulated seconds;
-/// the NEW real stiffness under the SAME real gravity settles to a visibly
-/// static equilibrium almost immediately (`max_speed` under 0.001 cells/s
-/// by t=1s) and stays there -- this is the actual scene this material was
-/// always supposed to run, not a specially-detuned demo.
+/// sourced bat-wing-membrane-skin value converted through `lame_from_si`;
+/// under real gravity the membrane settles to a static equilibrium
+/// (`max_speed` under 0.001 cells/s by t=1s).
 ///
 /// Real, disclosed residual (found by this same migration, not introduced
 /// by it): even once visibly static, `max|J-1|` keeps drifting slowly and
@@ -185,13 +172,10 @@ const MEMBRANE_POISSON_RATIO: f32 = 0.45;
 // 1050 kg/m3), close to water as real soft tissue generally is.
 const MEMBRANE_DENSITY_KG_M3: f32 = 1100.0;
 
-/// Real SI -> grid Lame conversion (`lame_from_si_physical_cfg`, no `dt^2`
-/// pollution -- see that function's own doc for the measured 200x
-/// dt-dependence bug in the older `lame_from_si`). Requires `config` to
-/// already carry the real `dx_meters` this scene spawns at (`SimConfig::
-/// earth`'s own contract).
+/// SI -> grid Lamé conversion; `config` must carry the `dx_meters` this
+/// scene spawns at.
 fn membrane_lame(config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si_physical_cfg(
+    config.lame_from_si(
         MEMBRANE_YOUNG_MODULUS_PA,
         MEMBRANE_POISSON_RATIO,
         MEMBRANE_DENSITY_KG_M3,
@@ -306,12 +290,8 @@ impl State {
     async fn new(window: Arc<Window>) -> Self {
         let gfx = gui_common::Gfx::new(&window).await;
         let size = window.inner_size();
-        // Real SI bat-wing-membrane stiffness (see `membrane_lame`'s own
-        // doc), converted through the dimensionally-correct
-        // `lame_from_si_physical_cfg` path -- not a hand-picked grid-unit
-        // guess ("read as a taut tendon" reasoning; superseded 2026-09-05).
-        // Needs a throwaway config just for `dx_meters`/`dt_seconds`;
-        // `make_sim` below builds its own equivalent config internally.
+        // SI bat-wing-membrane stiffness (see `membrane_lame`); the config
+        // here only supplies `dx_meters`, `make_sim` builds its own.
         let si_config = SimConfig::earth(GRID, 0.01, DT);
         let (lambda, mu) = membrane_lame(&si_config);
         let mut sim = make_sim(lambda, mu);

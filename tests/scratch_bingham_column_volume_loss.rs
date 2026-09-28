@@ -1213,7 +1213,7 @@ fn the_audit_sag_and_the_slab_stress_on_both_scenes() {
                 initial_velocity_scale: 0.0,
                 ..SpawnRegion::for_sim(&config)
             };
-            let (lambda, mu) = config.lame_from_si_physical_cfg(young, poisson, rho);
+            let (lambda, mu) = config.lame_from_si(young, poisson, rho);
             let material = NeoHookeanMaterial::new(lambda, mu);
             let mut sim = Simulation::new(config, spawn)
                 .with_default_material(Box::new(material))

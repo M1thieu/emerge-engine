@@ -3986,7 +3986,7 @@ fn scalar_diffusion_conserves_total_heat_dense() {
 /// should reach v = g·t after time t (no drag). We use `earth()` + real g so the expected
 /// velocity is derived from SI physics, not a tuned constant.
 ///
-/// This test proves that `SimConfig::earth()` + `lame_from_si_cfg()` produce a sim
+/// This test proves that `SimConfig::earth()` + `lame_from_si()` produce a sim
 /// whose timescale maps correctly to real seconds.
 #[test]
 fn earth_gravity_freefall_velocity_matches_gt() {
@@ -4134,11 +4134,10 @@ fn earth_gravity_freefall_velocity_matches_gt() {
 /// over 100x the real signal). `#[ignore]`d honestly rather than asserting
 /// something not actually demonstrated -- same discipline as the sand
 /// repose-angle gaps in this file.
-#[ignore = "density settles at ~1.3x rest_density (not the ~1.003x real hydrostatic \
-            equilibrium needs), and this EOS's 7th-power nonlinearity amplifies that into \
-            ~500x pressure overshoot -- real, needs geostatic pre-stress init, not a quick \
-            fix. See doc comment for the two real bugs already found+fixed along the way \
-            (rest_density's erroneous /dt^2 factor, min_dt too coarse for the corrected CFL)."]
+#[ignore = "not rerun since its expected pressure moved to the material's own SI \
+            conversion (the one used before carried an extra dt^2, 1e-4 here, so the \
+            recorded ~500x overshoot is not a measurement); its spawn also passes an SI \
+            kilogram mass as grid mass, 10x too light (see SpawnRegion::mass_override)"]
 #[test]
 fn hydrostatic_pressure_matches_rho_g_h() {
     let dx_m = 0.01_f32;

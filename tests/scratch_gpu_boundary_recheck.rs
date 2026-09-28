@@ -55,8 +55,8 @@ mod gpu_check {
             "[boundary-recheck] boundary_thickness={}",
             config.boundary_thickness
         );
-        let (lambda, mu) = config.lame_from_si_physical_cfg(500.0, 0.45, 1000.0);
-        let visc = config.visc_from_si_physical(1.0, 1000.0);
+        let (lambda, mu) = config.lame_from_si(500.0, 0.45, 1000.0);
+        let visc = config.visc_from_si(1.0, 1000.0);
         let mass_grid = (1000.0 / config.reference_density_kg_m3) * 0.5 * 0.5;
         let blob = |cx: f32, mat: u32, seed: u32| SpawnRegion {
             spacing: 0.5,

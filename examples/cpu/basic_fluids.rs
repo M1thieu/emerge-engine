@@ -291,10 +291,10 @@ fn make_sim() -> Simulation {
     // now. `fluid.rs`'s own stress law (`stress += eff_viscosity *
     // strain_dev`, strain rate in 1/s grid-time) needs `eff_viscosity` in
     // grid units, and this engine already has the dimensionally-correct
-    // conversion for exactly this (`SimConfig::visc_from_si_physical`,
+    // conversion for exactly this (`SimConfig::visc_from_si`,
     // `eta_SI/(rho*dx^2)`, doc'd against this exact consumption pattern).
     // Must pair with the SAME density-normalized family `pressure_floor`
-    // below already uses (`stress_from_si_physical`) -- mixing raw and
+    // below already uses (`stress_from_si`) -- mixing raw and
     // density-normalized conventions in the same stress tensor is wrong
     // (see `q_factor_elastic_viscosity_pa_s`'s own doc for a real, prior
     // instance of exactly that mistake, ~917x error, a different material).
@@ -305,7 +305,7 @@ fn make_sim() -> Simulation {
     const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
     const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
     let water_dynamic_viscosity =
-        config.visc_from_si_physical(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
+        config.visc_from_si(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
     let mut water = NewtonianFluidMaterial::new(
         0.1,
         water_dynamic_viscosity,
@@ -317,8 +317,8 @@ fn make_sim() -> Simulation {
     // (constructor default -0.1) was never run through this engine's own
     // SI-to-grid conversion pipeline, unlike `water_tait_b_pa` just above.
     // Real cavitation onset for water in practice (dissolved-gas nucleation)
-    // is ~-100,000 Pa gauge -- converted through the same `stress_from_si_
-    // physical` pipeline `eos_stiffness` itself uses, this lands orders of
+    // is ~-100,000 Pa gauge -- converted through the same `stress_from_si`
+    // pipeline `eos_stiffness` itself uses, this lands orders of
     // magnitude more negative than this demo's own derated `eos_stiffness`,
     // matching that real water essentially never cavitates from ordinary
     // splashing. Applied here too for consistency even though CPU never
@@ -326,8 +326,7 @@ fn make_sim() -> Simulation {
     // backend-independent.
     const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
     const WATER_RHO_SI_KG_M3: f32 = 1000.0;
-    water.pressure_floor =
-        config.stress_from_si_physical(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {

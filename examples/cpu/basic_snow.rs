@@ -77,7 +77,7 @@ fn make_sim() -> Simulation {
         max_substeps_per_step: 8000,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SNOW_YOUNG_MODULUS_PA,
         SNOW_POISSON_RATIO,
         SNOW_DENSITY_KG_M3,

@@ -1,7 +1,7 @@
 //! Diagnostic-only (2026-09-11): the passing settled-pile correctness test
 //! uses `lame_from_young(6e5, 0.3)` (grid-native units) with 64 particles;
 //! the failing real `basic_sand`-scale measurement uses
-//! `lame_from_si_physical_cfg(15e6, 0.3, 1600.0)` (real SI, converted) with
+//! `lame_from_si(15e6, 0.3, 1600.0)` (real SI, converted) with
 //! 1008 particles -- two variables changed at once (stiffness AND scene
 //! size), in two different unit conventions. Isolates which actually
 //! breaks Newton convergence by using the SAME two concrete (lambda, mu)
@@ -66,7 +66,7 @@ fn probe(label: &str, lambda: f32, mu: f32, box_size: IVec2) {
 fn isolate_stiffness_vs_particle_count() {
     let (soft_lambda, soft_mu) = lame_from_young(6.0e5, 0.3);
     let config = SimConfig::earth(GRID, 0.01, 0.016);
-    let (real_lambda, real_mu) = config.lame_from_si_physical_cfg(15.0e6, 0.3, 1600.0);
+    let (real_lambda, real_mu) = config.lame_from_si(15.0e6, 0.3, 1600.0);
     println!(
         "soft (correctness test): lambda={soft_lambda:.3e} mu={soft_mu:.3e}; \
          real (fps test): lambda={real_lambda:.3e} mu={real_mu:.3e}"

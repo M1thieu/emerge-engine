@@ -59,7 +59,7 @@ const DIG_RADIUS: f32 = 4.0;
 // an unsourced grid-unit guess. Real dry sand -- same real citation already
 // used and verified tonight for `sand_ngf_collapse.rs` (Haeri & Skonieczny
 // 2022 Table 1, Excavation case: E=15 MPa, nu=0.3, rho=1600 kg/m3) -- through
-// the dt^2-free `lame_from_si_physical_cfg`. Loose/dense differ only by
+// the dt^2-free `lame_from_si`. Loose/dense differ only by
 // their real friction angle (20 deg loose, 40 deg dense -- both inside the
 // real geotechnical range for sand packing states), not by stiffness.
 const SAND_YOUNG_MODULUS_PA: f32 = 15.0e6;
@@ -92,7 +92,7 @@ fn make_sim() -> Simulation {
         material_cfl_coefficient: 0.7,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let (lambda, mu) = config.lame_from_si_physical_cfg(
+    let (lambda, mu) = config.lame_from_si(
         SAND_YOUNG_MODULUS_PA,
         SAND_POISSON_RATIO,
         SAND_DENSITY_KG_M3,

@@ -46,7 +46,7 @@
 //! finite and monotonic, far outside the theory.
 
 /// The elastic constants of one body in a contact, in the engine's own
-/// stress units (see `SimConfig::stress_from_si_physical`).
+/// stress units (see `SimConfig::stress_from_si`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DiscElastic {
     /// Young's modulus.
@@ -63,8 +63,7 @@ impl DiscElastic {
     /// its mass from `Grain::from_si` agree.
     pub fn from_si(elastic: &crate::Elastic, config: &crate::SimConfig) -> Self {
         Self {
-            young_modulus: config
-                .stress_from_si_physical(elastic.e_pa, config.reference_density_kg_m3),
+            young_modulus: config.stress_from_si(elastic.e_pa, config.reference_density_kg_m3),
             poisson_ratio: elastic.nu,
         }
     }

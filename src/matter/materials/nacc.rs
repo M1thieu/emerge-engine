@@ -135,10 +135,7 @@ pub struct NaccMaterial {
 /// this codebase (`PhysicalRenderContractParams`, `ContactKinematics`,
 /// `SubstepScene`/`SubstepBounds`) for a constructor where several
 /// same-typed adjacent parameters make transposition a real, silent risk
-/// (swapping `friction`/`cohesion` compiles without a hint). Additive only,
-/// same "new sibling, don't rename in place" precedent as `lame_from_si`
-/// vs `lame_from_si_physical` -- `new` stays exactly as-is for every
-/// already-tuned call site.
+/// (swapping `friction`/`cohesion` compiles without a hint).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NaccMaterialParams {
     pub mu: f32,
@@ -1177,10 +1174,9 @@ mod from_si_tests {
     use crate::matter::materials::physical_props::Elastic;
     use crate::solver::config::SimConfig;
 
-    /// Real, dt-independent SI conversion -- the same closed-form check
-    /// `lame_from_si_physical`'s own tests use: identical physical setup at
-    /// two different `dt_seconds` must produce byte-identical grid mu/kappa,
-    /// since a converted stiffness must never depend on the timestep.
+    /// Identical physical setup at two different frame steps must produce
+    /// byte-identical grid mu/kappa: a converted stiffness never depends on
+    /// the timestep.
     #[test]
     fn from_physical_is_dt_independent() {
         let props = NaccProps {
@@ -1200,10 +1196,10 @@ mod from_si_tests {
         let config_b = SimConfig::earth(64, 0.01, 0.001);
         let mat_a = NaccMaterial::from_physical(&props, &config_a);
         let mat_b = NaccMaterial::from_physical(&props, &config_b);
-        assert_eq!(mat_a.mu, mat_b.mu, "mu must not depend on dt_seconds");
+        assert_eq!(mat_a.mu, mat_b.mu, "mu must not depend on the timestep");
         assert_eq!(
             mat_a.kappa, mat_b.kappa,
-            "kappa must not depend on dt_seconds"
+            "kappa must not depend on the timestep"
         );
         assert_eq!(mat_a.friction, props.friction);
         assert_eq!(mat_a.cohesion, props.cohesion);

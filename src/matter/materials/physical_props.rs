@@ -560,43 +560,25 @@ impl BinghamProps {
 
 // ── Scaling helpers (pub(super) -- used by material impls) ─────────────────────
 //
-// Real fix (2026-09-05): this module's own doc calls itself "the entry point
-// for all material construction," but these three helpers were still routed
-// through the `dt^2`-polluted `lame_from_si_cfg`/`stress_from_si`/
-// `visc_from_si` family (see `lame_from_si_physical`'s own doc for the
-// measured 200x dt-dependence this causes) -- confirmed live in LP's own
-// `materials.rs` comment (`CREATURE_ACTIVE_STRESS_FRACTION_OF_MU`'s doc):
-// "scaled through `lame_from_si`) overpowered the actual elastic stiffness
-// by orders of magnitude and blew up the simulation ... within ~15 steps."
-// Every one of `Elastic`/`Elastoplastic`/`Viscoelastic`/`Fluid`/
-// `FluidGranular`'s real material families went through this bug via
-// `.material(&config)`, not just the raw `lame_from_si_cfg` call sites
-// found and migrated one scene at a time elsewhere. Fixed at the actual
-// entry point instead: all three now route through the dt-independent
-// `_physical` conversions, which MUST move together, never mixed with the
-// old family -- `stress_from_si_physical`/`visc_from_si_physical`'s own doc
-// name the exact bug (RankineMaterial::ice, this session) that mixing them
-// causes.
+// All three divide by `rho dx^2` (see `SimConfig::stress_from_si`), so they
+// move together and never mix with raw grid-unit Lamé parameters.
 
-/// Scale SI stress (Pa) to grid units: `p_grid = p_SI / (ρ · dx²)`, the
-/// dt-independent conversion (see this module's own migration note above).
+/// Scale SI stress (Pa) to grid units: `p_grid = p_SI / (ρ · dx²)`.
 #[inline]
 pub(super) fn scale_stress(pa: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.stress_from_si_physical(pa, rho)
+    config.stress_from_si(pa, rho)
 }
 
-/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI / (ρ · dx²)`, the
-/// dt-independent conversion (see this module's own migration note above).
+/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI / (ρ · dx²)`.
 #[inline]
 pub(super) fn scale_visc(eta: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.visc_from_si_physical(eta, rho)
+    config.visc_from_si(eta, rho)
 }
 
-/// Scale SI Young's modulus to grid Lamé parameters, the dt-independent
-/// conversion (see this module's own migration note above).
+/// Scale SI Young's modulus to grid Lamé parameters: `λ_SI / (ρ · dx²)`.
 #[inline]
 pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si_physical_cfg(e_pa, nu, rho)
+    config.lame_from_si(e_pa, nu, rho)
 }
 
 // ── Reference SI values used in unit tests below ─────────────────────────────
@@ -685,7 +667,8 @@ mod _ref {
         yield_stress_pa: Some(100.0),
     };
 
-    /// Verify all reference presets construct successfully -- catches API breakage.
+    /// Every reference preset builds, and a particle of it at rest
+    /// (F = I, spawned through `init_particle`) carries no stress.
     #[test]
     fn all_presets_build() {
         use crate::solver::config::SimConfig;
