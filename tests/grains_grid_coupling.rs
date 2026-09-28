@@ -1599,6 +1599,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
 /// surface sits well above `FrictionBoundary`'s own thickness=2 zone (so
 /// that mechanism stays present as a backstop but never actually engages).
 #[test]
+#[ignore = "probe for #28: prints the collapse spread against a compliant floor, no pass criterion"]
 fn grain_column_with_compliant_dem_floor_instead_of_rigid_boundary() {
     const RADIUS: f32 = 1.0;
     const MASS: f32 = 1.0;

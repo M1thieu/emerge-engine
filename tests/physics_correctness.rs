@@ -6954,6 +6954,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
 /// `EMERGE_DIAG_FLOOR_FIX` print hook (`sand.rs`'s `update_particle`,
 /// `#[cfg(test)]`-gated) as the counting signal, piped through stdout.
 #[test]
+#[ignore = "probe: the engagement count is read by grepping its EMERGE_DIAG_FLOOR_FIX output, no pass criterion"]
 fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
     unsafe {
         std::env::set_var("EMERGE_DIAG_FLOOR_FIX", "1");

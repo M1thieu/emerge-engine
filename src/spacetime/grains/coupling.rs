@@ -309,16 +309,11 @@ mod tests {
         );
     }
 
+    /// A lone spinning grain on a grid node gains no velocity from its own
+    /// scatter/gather round trip: the full stencil's first moment
+    /// `sum(w d)` is zero, so the spin's momentum cancels.
     #[test]
-    fn diag_isolated_spinning_grain_at_exact_node_position_self_interaction() {
-        // TEMP DIAGNOSTIC (2026-08-20): the 2-grain explosion (see
-        // `does_grid_coupling_add_spurious_energy...`) happened at step=2
-        // with a grain sitting almost exactly on an integer grid coordinate
-        // (15.99995, 15.99997), 1.9 units from its only neighbor -- likely
-        // OUTSIDE this grain's own 3x3 kernel reach (radius 1.5 cells), so
-        // the two grains may not even share a grid node. Testing whether a
-        // SINGLE isolated spinning grain, alone on the grid, explodes purely
-        // from its own scatter/gather round trip at an on-node position.
+    fn a_lone_spinning_grain_on_a_node_gains_no_velocity() {
         let mut grid = Grid::new(64);
         let mut pop = GrainPopulation::new(
             vec![Grain {
@@ -340,30 +335,16 @@ mod tests {
                 pop.grains[0].spin,
                 pop.grains[0].v.length()
             );
+            assert_eq!(pop.grains[0].v, Vec2::ZERO, "step {step}");
         }
     }
 
-    /// Real, decisive test for a 2026-08-20 hypothesis: the isolated-grain
-    /// self-cancellation proof above (`v` stays exactly 0 forever) relies on
-    /// the kernel's own zero-first-moment property, `sum(weight*cell_dist) =
-    /// 0` -- true for a FULL, untruncated 3x3 stencil, but `add_mass_momentum`
-    /// silently drops any node outside `[0, resolution)` (`flat_index`
-    /// returns `None`), and `Grid::velocity_at` returns `Vec2::ZERO` for a
-    /// negative index too -- so a grain close enough to y=0 that its stencil
-    /// reaches y=-1 scatters/gathers against an ASYMMETRICALLY TRUNCATED
-    /// kernel, breaking that exact cancellation. Real motivation: the
-    /// 80-grain isolation test's own fine-grained energy trace showed
-    /// `max_spin` FROZEN at a fixed value for 420,000+ steps while
-    /// `max_speed` climbed in a perfectly LINEAR, unbounded ramp -- exactly
-    /// the signature of a small, constant, never-canceling per-step bias,
-    /// not a feedback explosion.
+    /// The cancellation above needs the full stencil: a node below y = 0 is
+    /// dropped, and a grain whose stencil reaches it gathers a bias every
+    /// step. `FrictionBoundary(2)` clamps positions to y >= 1.0, so from
+    /// there up the spin must still give no velocity; below it is printed.
     #[test]
-    fn diag_isolated_spinning_grain_near_domain_edge_truncated_kernel() {
-        // Sweeps y across exactly the range a real `FrictionBoundary(thickness=2)`
-        // clamp allows (`clamp_position_inside_grid`'s own `min =
-        // thickness.saturating_sub(1) = 1.0`) and just below it, to find the
-        // REAL safe/unsafe boundary precisely -- does the clamp's own margin
-        // actually keep the kernel stencil non-negative, or is there a gap.
+    fn a_spinning_grain_inside_the_boundary_clamp_keeps_its_full_stencil() {
         for y0 in [0.4f32, 0.9, 0.99, 1.0, 1.01, 1.5] {
             let mut grid = Grid::new(64);
             let mut pop = GrainPopulation::new(
@@ -385,6 +366,9 @@ mod tests {
                 pop.grains[0].v,
                 pop.grains[0].v.length()
             );
+            if y0 >= 1.0 {
+                assert_eq!(pop.grains[0].v, Vec2::ZERO, "y0 = {y0}");
+            }
         }
     }
 
@@ -450,20 +434,11 @@ mod tests {
         );
     }
 
-    /// Real, hand-rolled control (2026-08-20): a lone grain sliding on a
-    /// `FrictionBoundary`, driven through the raw scatter/gravity/boundary/
-    /// gather calls directly (bypassing `Simulation` entirely), decays under
-    /// real Coulomb friction matching the analytic `mu*g*T` prediction
-    /// almost exactly -- proof `apply_coulomb_wall` itself is correct. This
-    /// was the baseline that isolated a SEPARATE, real bug one level up:
-    /// the same scenario driven through the real `Simulation::step()`
-    /// pipeline instead showed a dead-constant, non-decaying velocity (see
-    /// `diag_single_sliding_grain_through_real_solver_step_should_decelerate`
-    /// in `tests/grains_grid_coupling.rs` for the root cause and fix --
-    /// `Simulation::add_boundary_condition` was silently stacking a user's
-    /// boundary underneath a hidden zero-friction default).
+    /// A lone grain sliding on a `FrictionBoundary`, through the raw
+    /// scatter/boundary/gather calls, slows by Coulomb's `mu g T`: its final
+    /// speed is within 1 percent of the start speed of `v0 - mu g T`.
     #[test]
-    fn diag_isolated_sliding_grain_on_friction_boundary_should_decelerate() {
+    fn a_grain_sliding_on_a_friction_boundary_slows_by_mu_g_t() {
         let mut grid = Grid::new(32);
         let boundary = crate::boundary::FrictionBoundary::new(2, 0.7);
         let mut pop = GrainPopulation::new(
@@ -497,6 +472,13 @@ mod tests {
             }
         }
         println!("FINAL v={:?}", pop.grains[0].v);
+        let v0 = 2.0;
+        let expected = v0 - 0.7 * gravity.y.abs() * 40000.0 * dt;
+        assert!(
+            (pop.grains[0].v.x - expected).abs() <= 0.01 * v0,
+            "final v.x {} against v0 - mu g T = {expected}",
+            pop.grains[0].v.x
+        );
     }
 
     /// Both individual mechanisms above (grain-grain contact through the

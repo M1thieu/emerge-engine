@@ -670,18 +670,43 @@ mod _ref {
     /// Every reference preset builds, and a particle of it at rest
     /// (F = I, spawned through `init_particle`) carries no stress.
     #[test]
-    fn all_presets_build() {
+    fn all_presets_build_stress_free_at_rest() {
+        use crate::matter::particle::{Particle, Particles};
         use crate::solver::config::SimConfig;
-        use glam::Vec2;
-        let config = SimConfig::standard(64, 0.05, Vec2::NEG_Y * 0.3);
-        let _ = SOFT_ELASTIC.material(&config);
-        let _ = SOFT_VISCOELASTIC.material(&config);
-        let _ = COHESIONLESS_GRANULAR.material(&config);
-        let _ = LOW_DENSITY_GRANULAR.material(&config);
-        let _ = SOFT_DUCTILE.material(&config);
-        let _ = STIFF_BRITTLE.material(&config);
-        let _ = LOW_VISCOSITY_FLUID.material(&config);
-        let _ = VISCOPLASTIC_FLUID.material(&config);
-        let _ = FluidGranular::saturated_loam_preset().material(&config);
+        let config = SimConfig::earth(64, 0.01, 1.0 / 60.0);
+        let materials = [
+            ("soft elastic", SOFT_ELASTIC.material(&config)),
+            ("soft viscoelastic", SOFT_VISCOELASTIC.material(&config)),
+            (
+                "cohesionless granular",
+                COHESIONLESS_GRANULAR.material(&config),
+            ),
+            (
+                "low density granular",
+                LOW_DENSITY_GRANULAR.material(&config),
+            ),
+            ("soft ductile", SOFT_DUCTILE.material(&config)),
+            ("stiff brittle", STIFF_BRITTLE.material(&config)),
+            ("low viscosity fluid", LOW_VISCOSITY_FLUID.material(&config)),
+            ("viscoplastic fluid", VISCOPLASTIC_FLUID.material(&config)),
+            (
+                "saturated loam",
+                FluidGranular::saturated_loam_preset().material(&config),
+            ),
+        ];
+        for (name, material) in &materials {
+            let mut p = Particle::zeroed();
+            p.mass = 0.25;
+            p.initial_volume = 0.25;
+            p.volume = 0.25;
+            p.density = 1.0;
+            material.init_particle(&mut p);
+            let tau = material.kirchhoff_stress(&Particles::from(vec![p]), 0);
+            println!("{name}: tau at rest {tau:?}");
+            assert!(
+                tau.to_cols_array().iter().all(|t| t.abs() <= 1.0e-6),
+                "{name}: stress at rest {tau:?}"
+            );
+        }
     }
 }
