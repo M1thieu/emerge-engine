@@ -19,6 +19,12 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Reference: Stomakhin et al. 2013, §4.2. Identical in sparkl, taichi128, Genesis.
 #[derive(Debug, Clone, Copy)]
 pub struct StomakhinMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// Hardening exponent. Higher = more stiffness gain as snow compacts.
@@ -53,6 +59,7 @@ impl StomakhinMaterial {
         max_plastic_jacobian: f32,
     ) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             hardening_exponent,
@@ -107,11 +114,18 @@ impl FromSI<SnowProps> for StomakhinMaterial {
             props.elastic.rho_kg_m3,
             config,
         );
-        Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)
+        Self {
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)
+        }
     }
 }
 
 impl MaterialModel for StomakhinMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Snow
     }

@@ -16,6 +16,12 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Also the elastic component of Drucker-Prager (Klar et al. 2016).
 #[derive(Debug, Clone, Copy)]
 pub struct CorotatedMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// Thermal modulus scale: µ_eff = µ·h·(1 + thermal_expansion·T), same for λ.
@@ -68,6 +74,7 @@ impl CorotatedMaterial {
     /// the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             thermal_expansion: 0.0,
@@ -92,11 +99,18 @@ impl CorotatedMaterial {
 impl FromSI<Elastic> for CorotatedMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
         let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
-        Self::new(lambda, mu)
+        Self {
+            rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu)
+        }
     }
 }
 
 impl MaterialModel for CorotatedMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Corotated
     }

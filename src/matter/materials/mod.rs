@@ -383,6 +383,19 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
         self.init_particle(particle)
     }
 
+    /// Rest density in grid units (`rho / SimConfig::reference_density_kg_m3`,
+    /// the scale `SpawnRegion::mass_from` gives mass), or `None` when the
+    /// material does not know it (grid-unit constructors). Multi-field
+    /// contact sizes a particle's undeformed domain as `mass / rest_density`:
+    /// the lattice area it was spawned with. `initial_volume` cannot stand in
+    /// for it on solids, whose kernel-density estimate inflates it at a free
+    /// surface (up to 2.5 times the lattice area on a body's edge rows), and
+    /// contact would then touch before the edges meet. With `None`, contact
+    /// falls back to `initial_volume`.
+    fn rest_density(&self) -> Option<f32> {
+        None
+    }
+
     /// Whether `update_particle` does real work on the CPU.
     ///
     /// Return `false` if plasticity is fully handled on GPU (default).
@@ -654,6 +667,9 @@ macro_rules! forward_material_model_common {
         }
         fn needs_cpu_update(&self) -> bool {
             self.inner.needs_cpu_update()
+        }
+        fn rest_density(&self) -> Option<f32> {
+            self.inner.rest_density()
         }
         fn gpu_unsupported_reason(&self) -> Option<&'static str> {
             self.inner.gpu_unsupported_reason()

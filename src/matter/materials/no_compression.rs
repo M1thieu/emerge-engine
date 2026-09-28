@@ -54,6 +54,12 @@ use crate::particle::Particles;
 /// carries tension.
 #[derive(Debug, Clone, Copy)]
 pub struct NoCompressionMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
 }
@@ -63,7 +69,11 @@ impl NoCompressionMaterial {
     /// Pascals. Prefer the [`FromSI`] impl on this type (via `Elastic`
     /// properties) for a real SI-to-grid conversion.
     pub const fn new(lambda: f32, mu: f32) -> Self {
-        Self { lambda, mu }
+        Self {
+            rest_density: None,
+            lambda,
+            mu,
+        }
     }
 
     /// Principal Kirchhoff stress from the relaxed Hencky energy.
@@ -95,11 +105,18 @@ impl NoCompressionMaterial {
 impl FromSI<Elastic> for NoCompressionMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
         let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
-        Self::new(lambda, mu)
+        Self {
+            rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu)
+        }
     }
 }
 
 impl MaterialModel for NoCompressionMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::NoCompression
     }

@@ -59,6 +59,12 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// coupling to wire up) rather than NGF's own real cost.
 #[derive(Debug, Clone, Copy)]
 pub struct MuIRheologyMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// µ₁ = tan(φ_static). Quasi-static friction at vanishing shear rate.
@@ -78,6 +84,7 @@ impl MuIRheologyMaterial {
     /// (µ₁=tan20.9°, µ₂=tan32.8°, Q=5.58 for 1mm sand grains).
     pub fn new(lambda: f32, mu: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             mu_static: 20.9_f32.to_radians().tan(),
@@ -145,12 +152,17 @@ impl FromSI<GranularProps> for MuIRheologyMaterial {
         Self {
             mu_static: props.friction_angle_deg.to_radians().tan(),
             mu_dynamic: (props.friction_angle_deg + 12.0).to_radians().tan(),
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)
         }
     }
 }
 
 impl MaterialModel for MuIRheologyMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::DruckerPragerMuI
     }

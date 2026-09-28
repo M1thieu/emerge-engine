@@ -35,6 +35,12 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// - Reconstituted (remoulded) clay: hardening_factor ξ ≈ 1–5
 #[derive(Debug, Clone, Copy)]
 pub struct NaccMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     /// Shear modulus µ.
     pub mu: f32,
     /// Bulk modulus κ. Note: λ (Lamé) = κ − µ (2D plane-strain relation, not
@@ -150,6 +156,7 @@ impl NaccMaterial {
     /// risk of transposing the two same-typed adjacent parameters.
     pub fn new(mu: f32, kappa: f32, friction: f32, cohesion: f32, hardening_factor: f32) -> Self {
         Self {
+            rest_density: None,
             mu,
             kappa,
             friction,
@@ -536,6 +543,7 @@ impl FromSI<NaccProps> for NaccMaterial {
         // Real Cam-Clay hardening exponent, v / (lambda - kappa).
         let hardening = (1.0 + props.void_ratio) / (props.compression_index - props.swelling_index);
         let mut material = Self::new(mu, kappa, props.friction, props.cohesion, hardening);
+        material.rest_density = Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3);
         material.initial_preconsolidation =
             scale_stress(props.preconsolidation_pa, props.elastic.rho_kg_m3, config);
         material
@@ -548,6 +556,10 @@ fn reconstruct(u: Mat2, sigma: Vec2, vt: Mat2) -> Mat2 {
 }
 
 impl MaterialModel for NaccMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Nacc
     }

@@ -27,6 +27,12 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// `κ` is accumulated into `Particle::friction_hardening` each substep.
 #[derive(Debug, Clone, Copy)]
 pub struct VonMisesMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// Initial yield stress σ_Y₀ in simulation stress units (same scale as λ/µ),
@@ -78,6 +84,7 @@ impl VonMisesMaterial {
     /// Perfect plasticity (no hardening).
     pub const fn new(lambda: f32, mu: f32, yield_stress: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             yield_stress,
@@ -91,6 +98,7 @@ impl VonMisesMaterial {
     pub fn with_hardening(lambda: f32, mu: f32, yield_stress: f32, hardening_modulus: f32) -> Self {
         assert!(hardening_modulus >= 0.0, "hardening_modulus must be ≥ 0");
         Self {
+            rest_density: None,
             lambda,
             mu,
             yield_stress,
@@ -159,11 +167,18 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
         // sqrt(3/2), about 1.22, times too high.
         let yield_frobenius = (2.0f32 / 3.0).sqrt() * props.yield_stress_pa;
         let yield_stress = scale_stress(yield_frobenius, props.elastic.rho_kg_m3, config);
-        Self::new(lambda, mu, yield_stress)
+        Self {
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu, yield_stress)
+        }
     }
 }
 
 impl MaterialModel for VonMisesMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::VonMises
     }

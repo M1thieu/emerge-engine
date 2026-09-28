@@ -35,6 +35,12 @@ use crate::particle::{ParticleUpdateCtx, Particles};
 /// MPM viscoelastic: Stomakhin et al. 2014, §3 (foam); Fang et al. 2019 (MPM-DEM).
 #[derive(Debug, Clone, Copy)]
 pub struct ViscoelasticMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// Kelvin-Voigt viscosity η (Pa·s in SI, sim-units²/s at emerge scale).
@@ -57,6 +63,7 @@ impl ViscoelasticMaterial {
     /// the common gotcha and the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32, viscosity: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             viscosity,
@@ -103,11 +110,18 @@ impl FromSI<Viscoelastic> for ViscoelasticMaterial {
             config,
         );
         let visc = scale_visc(props.eta_pa_s, props.elastic.rho_kg_m3, config);
-        Self::new(lambda, mu, visc)
+        Self {
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu, visc)
+        }
     }
 }
 
 impl MaterialModel for ViscoelasticMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Viscoelastic
     }

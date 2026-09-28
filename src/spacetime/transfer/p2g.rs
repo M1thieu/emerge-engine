@@ -450,7 +450,12 @@ pub fn spatial_sort_order(
 /// no-op, not even a loop iteration, for every scene that never sets
 /// `Particle::contact_group` -- the same zero-cost-when-unused property as the rest of
 /// this feature.
-pub fn gather_contact_point_cloud(particles: &Particles, grid: &mut Grid, active_count: usize) {
+pub fn gather_contact_point_cloud(
+    particles: &Particles,
+    grid: &mut Grid,
+    materials: &MaterialRegistry,
+    active_count: usize,
+) {
     if !grid.has_contact_activity() {
         return;
     }
@@ -462,10 +467,17 @@ pub fn gather_contact_point_cloud(particles: &Particles, grid: &mut Grid, active
             -1.0
         };
         // Where the particle's deformed edge sits (Nairn, Hammerquist and Smith
-        // 2020, eq. 25): its undeformed half size, from the area it was given,
-        // and the inverse of its deformation gradient.
+        // 2020, eq. 25): its undeformed half size and the inverse of its
+        // deformation gradient. The undeformed area is `mass / rest_density`
+        // when the material knows its density (see
+        // `MaterialModel::rest_density` for why not `initial_volume`).
         let inverse_deformation = particles.deformation_gradient[i].inverse();
-        let half_size = 0.5 * particles.initial_volume[i].max(0.0).sqrt();
+        let undeformed_area = materials
+            .get(particles.material_id[i])
+            .rest_density()
+            .filter(|&rho| rho > 0.0)
+            .map_or(particles.initial_volume[i], |rho| particles.mass[i] / rho);
+        let half_size = 0.5 * undeformed_area.max(0.0).sqrt();
         let weights = quadratic_weights(x);
         for gx in 0i32..3 {
             for gy in 0i32..3 {

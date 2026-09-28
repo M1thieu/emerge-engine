@@ -764,7 +764,12 @@ impl Simulation {
         // `gather_contact_point_cloud` doc) -- must run after the above, since
         // contact-active nodes aren't fully known until every grip particle's mass
         // has been scattered. No-op when `contact_group` is unused anywhere.
-        gather_contact_point_cloud(&self.particles, &mut self.grid, self.active_count);
+        gather_contact_point_cloud(
+            &self.particles,
+            &mut self.grid,
+            &self.materials,
+            self.active_count,
+        );
         // Rod -> grid scatter, same P2G pass, same shared `Grid` -- BEFORE the
         // wake pass below so a rod touching settled sand/fluid wakes it with
         // zero new code (the wake scan just sees active cells the rod itself

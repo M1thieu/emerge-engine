@@ -175,7 +175,7 @@ fn criterion1_a_perfect_interface_behaves_as_one_body() {
 /// Criterion 2: the resting block's first motion against the time the
 /// moving block's edge reaches it. `offset` shifts both blocks so the gap
 /// closes on a grid line (0.0) or mid-cell (0.5).
-fn contact_time(offset: f32) -> (f32, f32) {
+fn contact_time(offset: f32) -> (usize, f32, f32) {
     const CELLS: i32 = 8;
     const HEIGHT: i32 = 6;
     const GAP_CELLS: f32 = 1.5;
@@ -211,18 +211,18 @@ fn contact_time(offset: f32) -> (f32, f32) {
     let low_edge = low.clone().map(|i| p.x[i].y).fold(f32::MIN, f32::max) + SPACING * 0.5;
     let high_edge = high.clone().map(|i| p.x[i].y).fold(f32::MAX, f32::min) - SPACING * 0.5;
     let expected = (high_edge - low_edge) / SPEED_CELLS_S;
-    let mut onset = f32::NAN;
+    let mut onset = 0;
     for frame in 1..=400 {
         sim.step();
         let p = sim.particles();
         let n = low.len() as f32;
         let vy = low.clone().map(|i| p.v[i].y).sum::<f32>() / n;
         if vy < -0.01 * SPEED_CELLS_S {
-            onset = frame as f32 * frame_dt;
+            onset = frame;
             break;
         }
     }
-    (onset, expected)
+    (onset, expected, frame_dt)
 }
 
 /// Criterion 2.
@@ -231,10 +231,17 @@ fn contact_time(offset: f32) -> (f32, f32) {
 fn criterion2_contact_starts_when_the_edges_meet() {
     let mut failures = Vec::new();
     for (label, offset) in [("grid line", 0.0), ("mid-cell", 0.5)] {
-        let (onset, expected) = contact_time(offset);
-        println!("{label}: resting block moves at {onset:.4} s, edges meet at {expected:.4} s");
-        if !(onset - expected).abs().le(&1.0e-3) {
-            failures.push(format!("{label}: {onset:.4} s against {expected:.4} s"));
+        let (onset, expected, frame_dt) = contact_time(offset);
+        // Both on the frame clock. In seconds, f32 puts the meeting time
+        // (0.1 s) and the frame (1 ms) 5e-8 of a frame off exact, enough to
+        // fail a one-frame bound the onset meets exactly.
+        let meet = (expected / frame_dt).round() as usize;
+        println!(
+            "{label}: resting block moves at frame {onset} ({:.4} s), edges meet at {expected:.4} s",
+            onset as f32 * frame_dt
+        );
+        if onset.abs_diff(meet) > 1 {
+            failures.push(format!("{label}: frame {onset} against {meet}"));
         }
     }
     assert!(failures.is_empty(), "{failures:?}");

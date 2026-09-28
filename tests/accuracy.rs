@@ -5598,6 +5598,7 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
     let inertial_q = 5.58f32; // this material's own real default (new()'s own doc)
     let dt = 0.02f32;
     let mat = MuIRheologyMaterial {
+        rest_density: None,
         lambda,
         mu: mu_shear,
         mu_static,

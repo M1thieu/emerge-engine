@@ -137,6 +137,12 @@ pub const ICE_Q_REFERENCE_FREQUENCY_HZ: f32 = 136.0;
 /// sparkl `RankinePlasticity` (Rust open-source reference, Apache-2.0).
 #[derive(Debug, Clone, Copy)]
 pub struct RankineMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// Maximum tensile principal Kirchhoff stress (compressive stress is unlimited).
@@ -174,6 +180,7 @@ impl RankineMaterial {
     /// common gotcha and the real SI conversion path).
     pub const fn new(lambda: f32, mu: f32, tensile_strength: f32, softening_rate: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             tensile_strength,
@@ -364,7 +371,10 @@ impl FromSI<BrittleProps> for RankineMaterial {
             config,
         );
         let ts = scale_stress(props.tensile_strength_pa, props.elastic.rho_kg_m3, config);
-        Self::new(lambda, mu, ts, props.softening_rate)
+        Self {
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
+            ..Self::new(lambda, mu, ts, props.softening_rate)
+        }
     }
 }
 
@@ -386,6 +396,10 @@ impl RankineMaterial {
 }
 
 impl MaterialModel for RankineMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Rankine
     }

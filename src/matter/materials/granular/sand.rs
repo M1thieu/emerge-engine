@@ -138,6 +138,12 @@ static NGF_CAP_SEVERITY_SUM_X1E6: std::sync::atomic::AtomicU64 =
 /// Drucker-Prager elastoplastic sand. Ref: Klar et al. 2016.
 #[derive(Debug, Clone, Copy)]
 pub struct DruckerPragerMaterial {
+    /// Rest density in grid units (`rho / reference density`, the same
+    /// scale `SpawnRegion::mass_from` gives mass), when built from SI
+    /// properties; `None` for grid-unit constructors. Contact reads it to
+    /// size a particle's undeformed domain, see
+    /// [`MaterialModel::rest_density`].
+    pub rest_density: Option<f32>,
     pub lambda: f32,
     pub mu: f32,
     /// φ₀: Initial friction angle (radians). Dry sand ≈ 35° = 0.611 rad. (Klar 2016 h₀)
@@ -595,6 +601,7 @@ impl DruckerPragerMaterial {
     /// Use [`from_young_modulus`](Self::from_young_modulus) if you prefer E/ν inputs.
     pub const fn new(lambda: f32, mu: f32) -> Self {
         Self {
+            rest_density: None,
             lambda,
             mu,
             friction_angle: 35.0_f32.to_radians(),
@@ -993,12 +1000,17 @@ impl FromSI<GranularProps> for DruckerPragerMaterial {
         Self {
             friction_angle: props.friction_angle_deg.to_radians(),
             dilatancy_angle: props.dilatancy_angle_deg.to_radians(),
+            rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)
         }
     }
 }
 
 impl MaterialModel for DruckerPragerMaterial {
+    fn rest_density(&self) -> Option<f32> {
+        self.rest_density
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::DruckerPrager
     }
