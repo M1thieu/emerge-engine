@@ -174,7 +174,7 @@ fn make_table() -> CavitatingEosTable {
 /// Three columns of one water, differing only in temperature. Unlike the
 /// boiling scene next door, every column rests at the liquid reference
 /// density, so the spacing and the deformation gradient agree at spawn
-/// without either being moved (see `cavitating_eos`'s own module doc for
+/// without either being moved (see `cavitating_eos`'s module doc for
 /// what has to be set when they do not).
 fn make_sim(
     gravity_fraction: f32,

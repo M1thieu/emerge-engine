@@ -6,9 +6,9 @@
 //!
 //!   tau(F) = 2*mu*(F-R)*F^T + lambda*(J-1)*J*I,  R = polar_decomposition_2d(F)
 //!
-//! The real, closed-form 2D polar decomposition this engine actually uses
+//! The closed-form 2D polar decomposition this engine actually uses
 //! (`utils::polar_decomposition_2d`): R = M/||M||, M = [[x,-y],[y,x]],
-//! x = F00+F11 (trace), y = F01-F10. A real, tractable, exact derivative
+//! x = F00+F11 (trace), y = F01-F10. A tractable, exact derivative
 //! (not a generic SVD-based polar-decomposition-derivative formula from the
 //! literature, which is more complex and not what this engine implements):
 //!
@@ -46,7 +46,7 @@ fn polar_decomposition_2d(f: Mat2) -> Mat2 {
     }
 }
 
-/// Real analytic JVP of `polar_decomposition_2d` -- see this file's own doc
+/// Real analytic JVP of `polar_decomposition_2d` -- see this file's doc
 /// for the derivation.
 fn polar_decomposition_2d_jvp(f: Mat2, df: Mat2) -> Mat2 {
     let x = f.x_axis.x + f.y_axis.y;
@@ -152,7 +152,7 @@ fn stage2_corotated_polar_decomposition_jvp_h_convergence_diagnostic() {
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn stage2_corotated_polar_decomposition_jvp_matches_finite_difference() {
     let h = 1.0e-4f32;
-    // Real, disclosed metric fix: pure relative error blows up when the
+    // Disclosed metric fix: pure relative error blows up when the
     // analytic quantity itself is small (a genuine, small dR for some
     // direction/state combos, not an error) -- use max(analytic_norm,
     // ABS_FLOOR) as the denominator, same "don't divide by near-zero"

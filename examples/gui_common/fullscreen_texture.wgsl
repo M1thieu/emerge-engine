@@ -1,6 +1,6 @@
 // Minimal fullscreen-triangle texture blit -- the standard way to display
 // any CPU- or compute-rasterized 2D field that isn't already MPM particle
-// or grid data (see basic_energy.rs's own doc for why this scene needs its
+// or grid data (see basic_energy.rs's doc for why this scene needs its
 // own render path instead of reusing render_particles/grid_volume/
 // curvature_flow, all of which are genuinely MPM-specific).
 //
@@ -17,7 +17,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> VertexOutput {
     var out: VertexOutput;
-    // Real, standard fullscreen-triangle trick (was WRONG before -- the
+    // Standard fullscreen-triangle trick (was WRONG before -- the
     // previous formula produced an ordinary triangle inscribed in clip
     // space, not one large enough to cover the whole viewport, which is
     // exactly the "black triangle" bug found live 2026-08-27). The correct

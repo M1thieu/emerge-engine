@@ -20,18 +20,18 @@ use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// already semi-implicit/symplectic-Euler by construction -- the same real
 /// structural property, not a new addition.
 ///
-/// Real, disclosed limitations:
+/// Disclosed limitations:
 ///   - Real LINEAR distance scale (not logarithmic) -- Mercury sits ~78x
 ///     closer than Neptune, so inner planets cluster tightly near the Sun.
 ///     Every real solar-system diagram is "not to scale" for exactly this
 ///     reason; this one IS to scale, which is why it looks this way.
-///   - Real, found-not-hidden precision limit: at this domain's scale
+///   - Found-not-hidden precision limit: at this domain's scale
 ///     (needed to fit Neptune's real orbit), the Sun's own tiny wobble
 ///     velocity produces a per-step position increment below f32's local
-///     precision -- confirmed in `tests/orbital_mechanics.rs`'s own doc
+///     precision -- confirmed in `tests/orbital_mechanics.rs`'s doc
 ///     (`sun_velocity_responds_to_real_mutual_gravity`): velocity responds
 ///     correctly to real gravity, position does not visibly accumulate the
-///     wobble at this scale/timeframe. A real, structural float-precision
+///     wobble at this scale/timeframe. A structural float-precision
 ///     constraint, not a physics bug.
 ///   - Real orbital phase is arbitrary (planets spread at even angles, not
 ///     a real ephemeris snapshot) -- real distances/masses/speeds throughout.
@@ -44,7 +44,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// dx sized so Neptune's real orbit fits with margin -- same real, measured
+/// dx sized so Neptune's real orbit fits with margin -- same measured
 /// choice as `tests/orbital_mechanics.rs`'s full-system section.
 const DX_METERS: f64 = 2.0e9;
 const GRID: usize = 4096;
@@ -113,7 +113,7 @@ fn make_sim() -> Simulation {
         planet_momentum += mass_kg as f32 * vel;
     }
     // Barycentric frame: Sun's velocity exactly cancels total planet momentum
-    // (real, standard N-body initial-condition technique).
+    // (standard N-body initial-condition technique).
     solver.particles_mut().v[0] = -planet_momentum / SUN_MASS_KG as f32;
 
     solver

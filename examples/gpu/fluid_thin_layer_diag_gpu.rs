@@ -71,7 +71,7 @@ fn print_depth_stratification(frame: u64, particles: &[Particle], mat: u32) {
 /// compounds that bias multiplicatively every substep (exp(x) > 1+x for
 /// x != 0), which would explain the bulk collapse. Restricts to
 /// "settled" particles (|v| < threshold) so this measures the SPURIOUS
-/// bias, not real motion's own genuine divergence.
+/// bias, not real motion's own divergence.
 fn print_settled_divergence_bias(frame: u64, particles: &[Particle], mat: u32) {
     const SETTLED_SPEED_THRESHOLD: f32 = 0.1;
     let mut div_sum = 0f64;
@@ -278,7 +278,7 @@ fn main() {
     // amplified harder by a stiffer EOS (dp/drho ~ B) -- RESULT: made things
     // FAR worse, not better. `J` hit the 2.0 clamp by step 30 (full
     // blowup), versus hundreds-to-thousands of frames with the original,
-    // stiffer value. Real, decisive, if negative, finding: GPU's solver is
+    // stiffer value. Decisive, if negative, finding: GPU's solver is
     // on a much thinner stability margin than CPU for the identical
     // physical setup -- reducing stiffness to match CPU (which handles that
     // exact value fine for 2000+ frames) removes whatever margin was

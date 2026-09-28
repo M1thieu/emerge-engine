@@ -7,11 +7,11 @@ mod gui_common;
 /// gamma=1.4), same temperature, five different densities, scattered
 /// around a sealed box with real gaps of vacuum between them. No gravity
 /// by default, no scripted push: each pocket's own pressure (p=p0*(rho/
-/// rho0)^gamma, isentropic -- see `IdealGasMaterial`'s own doc for why NOT
+/// rho0)^gamma, isentropic -- see `IdealGasMaterial`'s doc for why NOT
 /// the naive isothermal p=rho*R*T) is what drives it to expand into its
 /// neighbors and the empty space around it, then settle.
 ///
-/// Real, disclosed simplification: this is 5 separately-released pockets
+/// Disclosed simplification: this is 5 separately-released pockets
 /// interacting, not a single continuous atmosphere -- filling the WHOLE
 /// domain with one smoothly-varying density field would need a real
 /// procedural spawn (per-particle density from a noise/field function),
@@ -29,7 +29,7 @@ mod gui_common;
 /// The panel's density spread slider rescales all five ratios around 1.0
 /// together and rebuilds the scene, so the same real 5-config parametric
 /// proof can be swept live instead of only read from the source. Ambient
-/// temperature and gravity are likewise real, live SI inputs, not paint.
+/// temperature and gravity are likewise live SI inputs, not paint.
 ///
 ///   LMB push  RMB pull  V real-optics  R reset  Q quit
 ///   cargo run --example basic_gas --features "render"
@@ -51,10 +51,10 @@ const AMBIENT_RHO_KG_M3: f32 = 1.2;
 const N_POCKETS: usize = 5;
 // (material_id, box_center, disk_radius, density_ratio_vs_ambient at
 // spread=1.0 -- see `pocket_ratio` for how the live spread slider scales
-// these). Real, disclosed tuning: checked for real non-overlap with a
+// these). Disclosed tuning: checked for real non-overlap with a
 // >=2-cell gap between every pair (e.g. pockets 0 and 1 are 32 cells
 // apart, radii sum 16; pocket 4 sits 22.6 cells from each corner pocket,
-// radii sum <=17) so each pocket starts as a genuinely separate release.
+// radii sum <=17) so each pocket starts as a separate release.
 const POCKETS: [(u32, Vec2, f32, f32); N_POCKETS] = [
     (0, Vec2::new(16.0, 48.0), 8.0, 0.6),
     (1, Vec2::new(48.0, 48.0), 8.0, 4.0),
@@ -65,7 +65,7 @@ const POCKETS: [(u32, Vec2, f32, f32); N_POCKETS] = [
 
 /// Scales a pocket's base ratio around ambient (1.0) by `spread`: at
 /// spread=1.0 this is the base ratio unchanged, at spread=0.0 every pocket
-/// is ambient (no parametric proof, a real, honest degenerate case worth
+/// is ambient (no parametric proof, a honest degenerate case worth
 /// being able to see), at spread=2.0 the density contrast doubles.
 fn pocket_ratio(base_ratio: f32, spread: f32) -> f32 {
     1.0 + (base_ratio - 1.0) * spread
@@ -98,7 +98,7 @@ fn real_air_optical_params(spacing: f32, dx_meters: f32) -> ([f32; 3], f32) {
 
 /// All five pockets, live parameters folded in. `temperature_k` and
 /// `density_spread` are the two real SI knobs this scene now exposes at
-/// runtime; `gravity_fraction` adds a real, optional isotropic-collapse
+/// runtime; `gravity_fraction` adds a optional isotropic-collapse
 /// regime on top of the pressure-driven one.
 fn make_sim(temperature_k: f32, density_spread: f32, gravity_fraction: f32) -> Simulation {
     let config = SimConfig {
@@ -107,7 +107,7 @@ fn make_sim(temperature_k: f32, density_spread: f32, gravity_fraction: f32) -> S
         // compressible liquid's (air's own real ~343 m/s adiabatic sound
         // speed vs. water's deliberately-slowed WCSPH ~10x-v_max
         // reference). This version's widest ratio is 4.0x vs 0.6x = 6.7:1
-        // peak-to-peak, so the cap is raised as a real, disclosed safety
+        // peak-to-peak, so the cap is raised as a disclosed safety
         // margin matching the phase-transition demo's own steam settings.
         max_substeps_per_step: 200,
         gravity: Vec2::new(0.0, -9.81 * gravity_fraction),
@@ -117,7 +117,7 @@ fn make_sim(temperature_k: f32, density_spread: f32, gravity_fraction: f32) -> S
     // `SimConfig::particle_mass` default regardless of its own material's
     // real density -- correct for one material, silently wrong the moment
     // two+ materials with different `rho_kg_m3` share a sim (see
-    // `SpawnRegion::mass_override`'s own doc). Real areal-density formula,
+    // `SpawnRegion::mass_override`'s doc). Real areal-density formula,
     // same one every `ParticleMass` impl in `physical_props.rs` uses:
     // `rho_kg_m3 * (spacing * dx_meters)^2`.
     let mass_for = |rho_kg_m3: f32| rho_kg_m3 * (SPACING * config.dx_meters).powi(2);
@@ -140,7 +140,7 @@ fn make_sim(temperature_k: f32, density_spread: f32, gravity_fraction: f32) -> S
         mass_override: Some(mass_for(AMBIENT_RHO_KG_M3 * ratio0)),
         initial_velocity_scale: 0.0,
         rng_seed: 11,
-        // Same real, already-established reasoning as basic_sand.rs: a
+        // Same already-established reasoning as basic_sand.rs: a
         // perfectly regular spawn lattice is a grid-crossing artifact with
         // quadratic B-spline MPM kernels.
         position_jitter: 0.3,
@@ -288,7 +288,7 @@ impl State {
             self.fps_frames = 0;
         }
         if self.frame.is_multiple_of(120) {
-            // Real, machine-checkable settling signal per pocket (not just
+            // Machine-checkable settling signal per pocket (not just
             // eyeballed): avg_J should climb off 1.0 as each pocket
             // expands, then plateau once it reaches equilibrium with its
             // neighbors -- the isentropic EOS's own real self-limiting
@@ -313,7 +313,7 @@ impl State {
         // draws a particle's on-screen quad straight from its real
         // deformation gradient F -- correct for a solid/liquid where the
         // shape change IS the signal, but gas here reaches J up to ~18
-        // (real, visible in the printed diagnostics above), so F-driven
+        // (visible in the printed diagnostics above), so F-driven
         // quads would billboard to ~4x their rest size and paint one
         // solid overlapping blob, hiding the actual particle cloud. Real
         // sim state (`particles.deformation_gradient`, J, pressure) is

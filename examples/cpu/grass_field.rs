@@ -285,7 +285,7 @@ impl State {
         }
         if self.telemetry_timer.elapsed().as_secs_f32() >= 1.0 {
             // Light "sensing" hook: how much grass sits within a radius of the
-            // creature right now -- a real, already-existing engine query
+            // creature right now -- a already-existing engine query
             // (`count_near`), not new infra. Demonstrates the sensing/cover use
             // case cheaply alongside the movement/bending one.
             let n = self.body_range.len().max(1) as f32;

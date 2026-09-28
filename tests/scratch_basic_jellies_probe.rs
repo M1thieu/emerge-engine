@@ -131,7 +131,7 @@ fn basic_jellies_real_si_stiffness_drop_y15_long_horizon() {
 #[ignore = "temporary manual probe, not a regression test"]
 fn basic_jellies_real_si_stiffness_drop_height_sweep() {
     // Original scene drop height (50) inverted ~370 Corotated particles.
-    // Sweep down to find where a real, correctly-stiff soft-tissue material
+    // Sweep down to find where a correctly-stiff soft-tissue material
     // stops producing a hard enough impact to invert the linearized
     // corotational model.
     run_probe("drop_y=50_original", 50.0);

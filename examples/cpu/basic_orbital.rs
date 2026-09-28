@@ -5,12 +5,12 @@ use emerge::fields::GravityWellField;
 use emerge::render::{ColorMode, Renderer};
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SpawnRegion};
 /// `basic_orbital.rs` (Sun + Earth + Mars, real `GravityWellField` gravity)
-/// with a real, live egui panel -- same pattern as `basic_fluids.rs`: a
+/// with a live egui panel -- same pattern as `basic_fluids.rs`: a
 /// speed slider (steps-per-frame, NOT `dt_seconds` -- keeps the validated
 /// integration accuracy fixed regardless of playback speed) and a live real
 /// day/year readout.
 ///
-/// Real, measured accuracy tuning (2026-08-11, see `tests/orbital_mechanics.rs`
+/// Measured accuracy tuning (2026-08-11, see `tests/orbital_mechanics.rs`
 /// for the full sweep data): `DX_METERS`/`GRID` below were chosen from a real
 /// grid-resolution sweep, not guessed -- Kepler's third law (T^2 ~ a^3,
 /// checked headless between Earth and Mars) holds within 0.09% at this scale,
@@ -27,7 +27,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// 1 grid cell = 250,000 km -- the real, measured (not guessed) choice from
+/// 1 grid cell = 250,000 km -- the measured (not guessed) choice from
 /// `tests/orbital_mechanics.rs`'s own grid-resolution sweep: puts Earth's
 /// orbital radius at ~598 grid units, where Kepler's third law measured
 /// 0.09% error (vs. 0.36% at the original, 4x coarser scale).
@@ -104,7 +104,7 @@ fn make_sim() -> Simulation {
 
     // Sun is fixed (restricted two-body problem, see module doc) -- pin it
     // so it stays put and visible without feeling its own gravity well.
-    // Real, permanent regression proof this actually holds:
+    // Permanent regression proof this actually holds:
     // `tests/orbital_mechanics.rs::pinned_sun_stays_exactly_fixed_while_earth_orbits`.
     solver.particles_mut().pinned[0] = 1;
 
@@ -133,7 +133,7 @@ struct State {
     /// Real steps-per-frame, NOT a `dt_seconds` change -- keeps the
     /// validated 0.09% Kepler-law accuracy fixed regardless of playback
     /// speed (accuracy was proven dt-independent in this scene, but
-    /// changing dt would still be a real, separate physics change; a
+    /// changing dt would still be a separate physics change; a
     /// steps-per-frame multiplier is purely a playback-speed control).
     steps_per_frame: u32,
     paused: bool,

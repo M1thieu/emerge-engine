@@ -10,7 +10,7 @@ mod gui_common;
 /// GUI boilerplate. One demo, real mode switch between them.
 ///
 /// **Pre-shaped mode**: a pile built ALREADY at 30 deg (zero initial
-/// velocity) -- tests whether it HOLDS. Real, tested recipe
+/// velocity) -- tests whether it HOLDS. Tested recipe
 /// (`tests/accuracy.rs::unconfined_pile_with_cundall_damping_reaches_
 /// real_repose_angle`, found 2026-07-26): the engine's own self-consistent
 /// Drucker-Prager return mapping (unconditional default) + `apic_blend=
@@ -35,7 +35,7 @@ mod gui_common;
 /// `sand_collapse_relaxation_long_horizon_plateau_check`).
 ///
 /// **Grains mode** (added 2026-08-03): the same real question, answered by
-/// real, individually-simulated DISCRETE grains (`spacetime::grains`)
+/// individually-simulated DISCRETE grains (`spacetime::grains`)
 /// instead of a continuum material -- each grain has its own position,
 /// velocity, spin, and persistent elastic contact springs (Cundall & Strack
 /// 1979 / Luding 2008 / Ai et al. 2011), coupled to a real sand terrain bed
@@ -50,8 +50,8 @@ mod gui_common;
 /// verified (`tests/grains_repose_angle.rs`, extended to 200,000 steps
 /// specifically to rule out an early-snapshot false positive -- the same
 /// discipline that caught Cosserat's own false positive earlier this
-/// session): the pile genuinely arrests, flat from step 80,000 to 200,000,
-/// at a real, bounded ~1.43x the Lajeunesse-predicted runout -- not the
+/// session): the pile arrests, flat from step 80,000 to 200,000,
+/// at a bounded ~1.43x the Lajeunesse-predicted runout -- not the
 /// literal 1.0x target, a real disclosed remaining calibration gap, not a
 /// bug.
 ///
@@ -92,19 +92,19 @@ const GRID: usize = 128;
 const FLOOR: f32 = 2.0;
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
 
-// Pre-shaped mode's own real, tested geometry.
+// Pre-shaped mode's own tested geometry.
 const PRESHAPED_DT: f32 = 0.016;
 const TARGET_ANGLE_DEG: f32 = 30.0;
 const PRESHAPED_HEIGHT_CELLS: f32 = 12.0;
 
-// Collapse mode's own real, tested geometry (matches
+// Collapse mode's own tested geometry (matches
 // `sand_angle_of_repose_is_physical`'s column, different DT).
 const COLLAPSE_DT: f32 = 0.1;
 
-// Grains mode: real, individually-simulated discrete-element grains
+// Grains mode: individually-simulated discrete-element grains
 // (`spacetime::grains`) instead of a continuum Drucker-Prager material --
-// the real, live demonstration of tonight's rolling-torque-sign +
-// rolling_damping fixes (see this file's own module doc, "REAL FIXES,
+// the live demonstration of tonight's rolling-torque-sign +
+// rolling_damping fixes (see this file's module doc, "REAL FIXES,
 // 2026-08-03" section below). Real column geometry matches `tests/
 // grains_repose_angle.rs::run_collapse`'s own already-validated 4-wide/
 // 10-tall shape (same real Lajeunesse et al. 2004 comparison convention
@@ -128,7 +128,7 @@ const GRAIN_MASS: f32 = 1.0;
 // paths refuse once their cap is hit. `POUR_COOLDOWN_FRAMES` throttles a held
 // mouse button to a real trickle (a few drops/sec), not one every frame.
 //
-// Real, measured (2026-09-09) via `tests/scratch_grain_freeze_hitch_
+// Measured (2026-09-09) via `tests/scratch_grain_freeze_hitch_
 // investigation.rs::grain_count_scaling_at_shipped_sim_speed`: the old 400
 // cap let a fully-poured pile (80 base + 400 = 480 grains) drop to 32.8fps,
 // silently breaking this project's own 45-60fps floor -- the `sim_speed`
@@ -147,8 +147,8 @@ const GRAINS_MARKER_MAT_ID: u32 = 1; // distinct palette slot from the terrain's
 // The first version here had this backwards (high red-absorption, low
 // blue-absorption), which rendered as pale blue-white instead of the
 // intended warm orange -- confirmed by cross-checking against `SIGMA_SAND`'s
-// own real, already-proven tan/beige result (low R/G, high B = warm sandy
-// tone). Low R, moderate G, high B-absorption here gives a real, distinct
+// own already-proven tan/beige result (low R/G, high B = warm sandy
+// tone). Low R, moderate G, high B-absorption here gives a distinct
 // warm terracotta/orange.
 const SIGMA_GRAIN: [f32; 3] = [0.100, 0.300, 0.800];
 const GRAINS_ACCENT_MAT_ID: u32 = 3; // small rolling-indicator dot, distinct palette slot again
@@ -160,15 +160,15 @@ const SIGMA_ACCENT: [f32; 3] = [0.900, 0.900, 0.900]; // high absorption in ever
 /// real-SI-calibrated E=1e7 Pa stiffness (`tests/grains_repose_angle.rs`),
 /// which would need a punishingly fine forced substep dt once genuinely
 /// coupled to a real MPM grid and its own adaptive CFL -- same real
-/// "disclosed, non-literal calibration" precedent this whole grain effort
+/// "non-literal calibration" precedent this whole grain effort
 /// already uses (effective grain diameter, coarse-grained mass), not a
 /// different physics model. Carries the real 2026-08-03 fixes in full: the
-/// rolling-torque sign (`contact_law.rs`'s own module doc) and
+/// rolling-torque sign (`contact_law.rs`'s module doc) and
 /// `rolling_damping` (new field, same role as `normal_damping`/
 /// `tangential_damping`) -- both sign/formula corrections, fully exercised
 /// regardless of the specific stiffness scale chosen.
 fn grain_contact_config() -> ContactLawConfig {
-    // Real, corrected damping (2026-08-19): the flat `5.0` below (still
+    // Corrected damping (2026-08-19): the flat `5.0` below (still
     // present until this edit) was NOT a real critical-damping-ratio --
     // measured directly: at this scene's own m_eff=GRAIN_MASS*0.5=0.5 and
     // normal_stiffness=1e4, true critical damping is `2*sqrt(k*m_eff)` =
@@ -177,13 +177,13 @@ fn grain_contact_config() -> ContactLawConfig {
     // already established for the pure-physics validation scene. Found by
     // directly comparing this demo's live per-frame diagnostics log
     // against the validated headless result -- this scene settled at a
-    // real, genuine plateau (~0.58x, confirmed flat across the log, not a
+    // plateau (~0.58x, confirmed flat across the log, not a
     // still-collapsing transient) but at a DIFFERENT number from either
     // the old stale claim (~1.43x) or the validated result (~1.05-1.13x),
     // because only `rolling_friction` had been ported over, not this real
     // damping derivation. Fixed here using the SAME real 60%-critical
     // convention, applied to THIS scene's own (deliberately softer,
-    // real-time-tuned, see this fn's own doc) stiffness scale directly --
+    // real-time-tuned, see this fn's doc) stiffness scale directly --
     // NOT routed through `ContactLawConfig::dry_sand`, which assumes real
     // SI stiffness and would reintroduce the punishingly-fine-dt problem
     // this scene's own softened stiffness exists to avoid.
@@ -201,7 +201,7 @@ fn grain_contact_config() -> ContactLawConfig {
         tangential_damping: critical_damping(tangential_stiffness),
         rolling_damping: critical_damping(rolling_stiffness),
         friction: (35.0_f32).to_radians().tan(), // real, cited dry-sand friction angle, Klar et al. 2016
-        // rolling_friction=0.20: real, calibrated value from the pure-physics
+        // rolling_friction=0.20: calibrated value from the pure-physics
         // validation scene (`tests/grains_repose_angle.rs`'s own
         // `diag_calibrated_rolling_friction_long_horizon_check`, 2026-08-19,
         // real long-horizon match to Lajeunesse et al. 2004 at this same
@@ -210,7 +210,7 @@ fn grain_contact_config() -> ContactLawConfig {
         // artifact -- see that test file's own `diag_dt_convergence_study`).
         // Dimensionless, not stiffness-scale-dependent like kn/kt/kr above,
         // so it transfers directly -- NOT independently re-verified in THIS
-        // specific softer/grid-coupled scene, a real, disclosed gap if this
+        // specific softer/grid-coupled scene, a disclosed gap if this
         // demo's own long-horizon behavior is ever measured again.
         rolling_friction: 0.20,
     }
@@ -226,7 +226,7 @@ impl SmallRng {
     }
 }
 
-/// Real, loose "poured" column -- same real jitter+polydispersity
+/// Loose "poured" column -- same real jitter+polydispersity
 /// discipline as `tests/grains_repose_angle.rs::build_column` (a perfectly
 /// regular lattice has no physical asymmetry to trigger real lateral
 /// collapse at all, confirmed the hard way earlier this session).
@@ -272,7 +272,7 @@ fn measure_angle_deg(xs: &[Vec2]) -> (f32, f32, f32) {
     // returned its untouched sentinel (f32::MIN, not a real height),
     // observed live via the NDJSON log (`height=-3.4e38`, `angle_deg=-90`).
     // `max_by`'s `Option` return makes "nothing matched" explicit; falling
-    // back to the pile's own overall max y (a real, sensible answer: the
+    // back to the pile's own overall max y (a sensible answer: the
     // tallest particle anywhere) instead of a fixed band's sentinel.
     let height = xs
         .iter()
@@ -296,7 +296,7 @@ fn measure_angle_deg(xs: &[Vec2]) -> (f32, f32, f32) {
 fn make_sim(mode: Mode) -> Simulation {
     match mode {
         Mode::PreShaped => {
-            // Exact real, tested recipe -- `tests/accuracy.rs::
+            // Exact tested recipe -- `tests/accuracy.rs::
             // unconfined_pile_with_cundall_damping_reaches_real_repose_
             // angle`, reproduced parameter-for-parameter.
             let config = SimConfig {
@@ -334,7 +334,7 @@ fn make_sim(mode: Mode) -> Simulation {
             solver
         }
         Mode::Collapse => {
-            // Real, swept, confirmed value -- see this file's own top doc.
+            // Swept, confirmed value -- see this file's own top doc.
             let config = SimConfig {
                 max_substeps_per_step: 64,
                 apic_blend: 0.6,
@@ -349,7 +349,7 @@ fn make_sim(mode: Mode) -> Simulation {
                 ..SpawnRegion::for_sim(&config)
             };
             let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
-            // Real, calibrated tonight (2026-08-02): edge-triggered elastic-strain
+            // Calibrated tonight (2026-08-02): edge-triggered elastic-strain
             // reset, grounded in Cundall 1982's kinetic-damping peak-reset --
             // fires once per particle on a real strain-rate falling edge, matching
             // the proven F-only-reset target bit-for-bit (29.6deg) instead of the
@@ -360,20 +360,20 @@ fn make_sim(mode: Mode) -> Simulation {
                 .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)))
         }
         Mode::Grains => {
-            // Real, individually-simulated discrete grains resting on a
+            // Individually-simulated discrete grains resting on a
             // real sand terrain bed, both coupled through the SAME shared
-            // MPM grid (`grains::coupling`) -- a genuinely flat
-            // `FrictionBoundary` floor (real, not the giant-circle
+            // MPM grid (`grains::coupling`) -- a flat
+            // `FrictionBoundary` floor (not the giant-circle
             // approximation the pure-physics validation's own standalone
-            // harness needed -- see this file's own module doc for the
+            // harness needed -- see this file's module doc for the
             // real bug that caused, and the real fix that closed, tonight's
             // "still creeping" false alarm).
-            // Real, computed (not guessed) grain-safe substep bound, used as
+            // Computed (not guessed) grain-safe substep bound, used as
             // this scene's own `dt` from construction -- `choose_substep_dt`
             // doesn't yet know about grain contact stiffness at all (a real,
             // disclosed gap, see `contact_law::critical_timestep`'s own
             // doc), so nothing else would subdivide a coarser frame dt down
-            // for the grains automatically. 20% of critical: real, standard
+            // for the grains automatically. 20% of critical: standard
             // DEM safety margin.
             let cfg = grain_contact_config();
             let m_eff = GRAIN_MASS * 0.5;
@@ -409,7 +409,7 @@ fn make_sim(mode: Mode) -> Simulation {
                 )));
 
             let terrain_top_y = terrain_center_y + GRAINS_TERRAIN_HEIGHT_CELLS as f32 * 0.5;
-            // Real, derived (not guessed) minimal spawn clearance above the terrain --
+            // Derived (not guessed) minimal spawn clearance above the terrain --
             // was a flat `+1.0`, visibly a whole grain-diameter of empty air before any
             // grain starts falling. `build_grain_column`'s own worst case: max jitter
             // `jy` = 0.5*0.3*spacing = 0.5*0.3*(2.6*GRAIN_RADIUS) ≈ 0.39, max grain
@@ -428,7 +428,7 @@ fn make_sim(mode: Mode) -> Simulation {
     }
 }
 
-/// Real, live runout measurement for `Mode::Grains` -- same real Lajeunesse
+/// Live runout measurement for `Mode::Grains` -- same real Lajeunesse
 /// et al. 2004 comparison convention `measure_angle_deg` already uses for
 /// the continuum modes, computed directly off the grains' own current,
 /// physically-simulated positions.
@@ -492,7 +492,7 @@ impl State {
         // own dense spacing=0.25 fill), not just the starting mode's count.
         // Grains mode's own extra headroom (TWO marker particles per real
         // grain -- the main body plus the small rolling-indicator accent
-        // dot, see the render loop's own doc) is added on top since those
+        // dot, see the render loop's doc) is added on top since those
         // aren't real `Particles` the solver itself ever reports a length
         // for.
         let collapse_particle_count = make_sim(Mode::Collapse).particles().len();
@@ -543,14 +543,14 @@ impl State {
             logger,
             pour_mode: false,
             pour_cooldown: 0,
-            // Real, measured (2026-09-09) via `tests/scratch_grain_freeze_
+            // Measured (2026-09-09) via `tests/scratch_grain_freeze_
             // hitch_investigation.rs::sim_speed_sweep_for_45_60fps_floor`:
             // 25 (the old value) cost 1.19ms/step on this real 80-grain
             // scene -> 28.3fps steady-state, under this project's own
             // standing 45-60fps floor. 12 measures 61.3fps AND stays at
             // ~1.04x real-time (barely different playback speed from 25's
             // own 1.00x) -- a pure demo-pacing win, zero dt/physics change
-            // (see this field's own doc above: each step is exactly as
+            // (see this field's doc above: each step is exactly as
             // fine as the safety margin demands either way).
             sim_speed: 12,
             pour_rng: SmallRng(0xFEED_1234_5678_u64),
@@ -566,8 +566,8 @@ impl State {
             .set_camera(&self.gfx.queue, GRID as u32, w, h, 0.7, true);
     }
 
-    /// Real, aspect-ratio-correct cursor-to-grid mapping -- see
-    /// `gui_common::cursor_to_grid`'s own doc for the real bug this
+    /// Aspect-ratio-correct cursor-to-grid mapping -- see
+    /// `gui_common::cursor_to_grid`'s doc for the real bug this
     /// centralization exists to stop from recurring per-example.
     fn cursor_grid(&self) -> Vec2 {
         gui_common::cursor_to_grid(
@@ -602,13 +602,13 @@ impl State {
     /// clicking anywhere near the existing pile (the natural place to want
     /// to add sand) planted new material OVERLAPPING it. A DEM contact
     /// spring or MPM cell's stress response to a sudden large initial
-    /// overlap is real, correct physics for that overlap -- both are stiff
+    /// overlap is correct physics for that overlap -- both are stiff
     /// repulsive responses -- so the "explosion" wasn't a broken contact law,
-    /// it was creating a real, severe initial-condition violation every drop.
+    /// it was creating a severe initial-condition violation every drop.
     /// Real fix: use the cursor's x, but scan existing material within a
     /// small x-window and drop from just above its current highest point (or
     /// the cursor's own y, whichever is higher) -- same real "pour from
-    /// above" convention `build_grain_column`'s own doc already establishes,
+    /// above" convention `build_grain_column`'s doc already establishes,
     /// just centered on the cursor instead of a fixed column center.
     ///
     /// Grains adds one real discrete `Grain`; PreShaped/Collapse add a small
@@ -697,7 +697,7 @@ impl State {
 
     fn update_and_render(&mut self, window: &Window) {
         // Push/pull only affects ordinary MPM particles (`apply_radial_impulse`
-        // scans the particle SoA directly) -- real, disclosed scope limit in
+        // scans the particle SoA directly) -- disclosed scope limit in
         // Grains mode: grains aren't ordinary `Particles`, so this is a no-op
         // there rather than something that looks like it should work but
         // silently doesn't.
@@ -723,12 +723,12 @@ impl State {
                 .apply_radial_impulse(self.cursor_grid(), PUSH_RADIUS_CELLS, mag);
         }
         if !self.paused {
-            // Grains mode's own real, computed grain-safe `dt` (see
+            // Grains mode's own computed grain-safe `dt` (see
             // `make_sim`'s `Mode::Grains` arm) is much finer than the other
             // two modes' -- real settling there needs tens of thousands of
             // substeps, so a single `step()` per rendered frame would take
             // many real minutes just to watch it settle. `sim_speed`
-            // steps/frame is a real, disclosed pacing choice (not a physics
+            // steps/frame is a disclosed pacing choice (not a physics
             // change -- each individual step is exactly as fine as the
             // safety-margin calculation demands), matching this project's
             // own established "physics fidelity is never cut for demo
@@ -761,7 +761,7 @@ impl State {
         // already uses for its own steer input. Grains mode measures the
         // same real quantity (lateral runout vs the real Lajeunesse
         // prediction) off the grains' own physically-simulated positions
-        // instead of particle positions -- `measure_grain_runout`'s own doc.
+        // instead of particle positions -- `measure_grain_runout`'s doc.
         let (height, half_w, angle) = measure_angle_deg(&self.sim.particles().x);
         let (grain_r, grain_r_pred, grain_max_speed, grain_contacts) = if self.mode == Mode::Grains
         {
@@ -819,7 +819,7 @@ impl State {
         // marker carries zero physics of its own, it's a rendering proxy
         // for real state. Isotropic scale (a circle, not an oriented
         // ribbon -- grains have no preferred axis), matching each grain's
-        // own real, individually-polydisperse radius.
+        // own individually-polydisperse radius.
         if self.mode == Mode::Grains {
             let mut all: Vec<Particle> = self.sim.particles().iter().collect();
             for grain in &self.sim.grain_populations()[0].grains {
@@ -835,12 +835,12 @@ impl State {
                 p.deformation_gradient = Mat2::from_diagonal(Vec2::splat(scale));
                 all.push(p);
 
-                // Real, visible rolling cue: a small accent dot offset from
+                // Visible rolling cue: a small accent dot offset from
                 // the grain's own center by `grain.orientation` (the real,
                 // integrated rotation angle -- see `Grain::orientation`'s
-                // own doc, added 2026-08-03 specifically because a plain
+                // doc, added 2026-08-03 specifically because a plain
                 // rotating circle has no visible cue at all). As the grain
-                // genuinely rolls, this dot visibly orbits its parent --
+                // rolls, this dot visibly orbits its parent --
                 // the actual physical rotation tonight's rolling-resistance
                 // fixes are about, made visible for the first time.
                 let mut accent = Particle::zeroed();

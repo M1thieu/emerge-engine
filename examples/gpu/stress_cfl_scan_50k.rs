@@ -2,7 +2,7 @@ extern crate emerge_engine as emerge;
 
 /// Real-time, vsync-paced verification of the CFL-scan fix at the actual 0.1.0 target scene
 /// (~50k DP-sand particles, grid_res=320, dt=1/60) -- built specifically to check whether the
-/// real, paced interactive case behaves like the synthetic tight-loop headless benchmarks
+/// paced interactive case behaves like the synthetic tight-loop headless benchmarks
 /// (which showed wild 16-919ms per-frame variance, almost certainly a benchmark-pattern
 /// artifact, not a real-use problem). Prints live FPS every 2 seconds.
 ///
@@ -44,7 +44,7 @@ struct State {
 fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation {
     let config = SimConfig {
         max_substeps_per_step: 4,
-        // Default 0.5 is a real, conservative CFL safety margin (matches Klar/sparkl's typical
+        // Default 0.5 is a conservative CFL safety margin (matches Klar/sparkl's typical
         // usage). 0.7 is still inside the literature's normal range (commonly 0.3-1.0
         // depending on scheme) -- a modest, principled relaxation, not an extreme gamble. Real
         // per-frame GPU cost scales ~linearly with substep count (3 substeps for this stiff

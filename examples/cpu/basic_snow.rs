@@ -6,7 +6,7 @@ mod gui_common;
 use egui_wgpu::ScreenDescriptor;
 /// `basic_snow.rs` (two real snowballs colliding -- Stomakhin 2013 snow
 /// plasticity, soft powder vs packed snow, packed snow fractures into loose
-/// granular on hard impact via a real phase transition) with a real, live
+/// granular on hard impact via a real phase transition) with a live
 /// egui panel -- same pattern as `basic_sand.rs`: real gravity slider
 /// (1.0 = genuine IRL 9.81 m/s²) and push/pull strength. Materials, the
 /// collision setup, and the fracture mechanic are unchanged from
@@ -47,7 +47,7 @@ const DIG_RADIUS: f32 = 4.0;
 
 // Real fix (2026-09-05): was `StomakhinMaterial::new(1389.0, 2083.0, ..)`,
 // an unsourced grid-unit guess. Real snow -- `StomakhinMaterial::from_
-// young_modulus`'s own doc cites this exact E/nu as "Canonical... matches
+// young_modulus`'s doc cites this exact E/nu as "Canonical... matches
 // MPM2D reference and sparkl snow demos" (Stomakhin et al. 2013 -- the same
 // value real-time MPM snow demos in other engines use, not just a textbook
 // number). Density: real fresh/settled snow order of magnitude (a real
@@ -69,8 +69,8 @@ fn make_sim() -> Simulation {
         // collision (`tests/scratch_basic_snow_probe.rs`): 3000 still
         // dropped ~54% of each step's simulated time; the solver actually
         // settles around 6590-6600 once given enough headroom, so 8000
-        // leaves real margin, confirmed zero time dropped. Real, disclosed
-        // cost: this is a genuinely heavy substep count for an interactive
+        // leaves real margin, confirmed zero time dropped. Disclosed
+        // cost: this is a heavy substep count for an interactive
         // demo -- whether E=1.4e5 is practical at this resolution for
         // real-time framerate (vs. needing a coarser dx or an implicit
         // solver) is an open question, not resolved here.

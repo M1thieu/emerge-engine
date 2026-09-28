@@ -1,4 +1,4 @@
-//! Real, direct measurement of `sand_repose_angle.rs`'s own actual shipped
+//! Direct measurement of `sand_repose_angle.rs`'s own actual shipped
 //! Grains-mode substep count -- NOT a hand-picked/reconstructed config.
 //! Every constant/config value here is copied VERBATIM from that example's
 //! own real source (`GRID`, `FLOOR`, `GRAIN_RADIUS`, `GRAIN_MASS`,
@@ -142,7 +142,7 @@ fn make_grains_mode_sim_sized(
     solver
 }
 
-/// Real, direct measurement -- reports the ACTUAL `last_substeps()` the
+/// Direct measurement -- reports the ACTUAL `last_substeps()` the
 /// real shipped scene's own `Simulation::step()` produces, and the real
 /// wall-clock cost per call, settling the ~11 vs ~3504 discrepancy with
 /// real data instead of a hand recomputation on either side.
@@ -151,7 +151,7 @@ fn make_grains_mode_sim_sized(
 fn real_shipped_grains_mode_substep_count_and_cost() {
     let mut solver = make_grains_mode_sim();
     // sim_speed=12 real solver.step() calls per rendered frame, the demo's
-    // own real, currently-shipped pacing (see that file's own `sim_speed`
+    // own currently-shipped pacing (see that file's own `sim_speed`
     // field doc) -- warm up a few frames first (initial settling transient),
     // then measure.
     for _ in 0..12 * 3 {
@@ -179,7 +179,7 @@ fn real_shipped_grains_mode_substep_count_and_cost() {
     );
 }
 
-/// Real, direct measurement of whether substep count OR per-substep O(n^2)
+/// Direct measurement of whether substep count OR per-substep O(n^2)
 /// contact-detection cost becomes the binding constraint as grain count
 /// grows PAST the shipped demo's current 180-grain (80 base + 100 pour cap)
 /// ceiling -- using the SAME real stiffness/mass/radius/damping values as
@@ -190,7 +190,7 @@ fn real_shipped_grains_mode_substep_count_and_cost() {
 #[ignore = "perf diagnostic, run explicitly with --release --ignored --nocapture"]
 fn real_grain_count_scaling_substep_and_fps_sweep() {
     // (r0, h0, grid_res, terrain_half_width_cells) -- grid_res/terrain held
-    // COMPLETELY FIXED across every case (real, deliberate control): an
+    // COMPLETELY FIXED across every case (deliberate control): an
     // earlier version of this sweep scaled the domain up alongside grain
     // count, which also grows the terrain's own MPM particle count
     // (1920->4800) -- a real confound caught before trusting the result,

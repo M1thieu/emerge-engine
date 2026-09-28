@@ -50,7 +50,7 @@ struct Params {
     gravity_fraction: f32,
 }
 
-// Real, sourced soft elastic tissue -- the same E/nu/rho this engine's own
+// Sourced soft elastic tissue -- the same E/nu/rho this engine's own
 // `physical_props.rs` module doc already uses as its canonical "Soft elastic
 // solid" example (`SOFT_ELASTIC` in that file's own unit tests). All three
 // materials share it deliberately: this demo compares CONSTITUTIVE LAWS
@@ -61,17 +61,17 @@ const JELLY_POISSON_RATIO: f32 = 0.45;
 const JELLY_DENSITY_KG_M3: f32 = 1000.0;
 // Real water dynamic viscosity order of magnitude (~1e-3 Pa*s at 20C) reads
 // as inertia-dominated, not visibly damped, at this demo's scale -- glycerin
-// (~1 Pa*s, a real, commonly cited reference fluid) is the real substance
+// (~1 Pa*s, a commonly cited reference fluid) is the real substance
 // whose damping is actually visible on a human timescale for a body this
 // size, which is the whole point of showing a Viscoelastic material here.
 const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 
 /// Real SI -> grid Lame conversion (`lame_from_si`, no `dt^2`
-/// pollution -- see that function's own doc). Deliberately NOT
+/// pollution -- see that function's doc). Deliberately NOT
 /// `{Neo,Cor,Viscoelastic}Material::from_young_modulus`: that family calls
 /// `lame_from_young` directly, which never touches `dx_meters`/density at
 /// all -- its `young_modulus` parameter is not actually convertible back to
-/// real Pascals despite the name (a real, disclosed, separate gap in that
+/// real Pascals despite the name (a separate gap in that
 /// API, found migrating this file -- not fixed here).
 fn jelly_lame(config: &SimConfig) -> (f32, f32) {
     config.lame_from_si(
@@ -128,7 +128,7 @@ fn make_sim(p: &Params) -> Simulation {
         min_dt: 0.01,
         // Real fix (2026-09-05): default stiffness migrated from a raw,
         // unsourced grid-unit guess (lambda=10, mu=20) to a real SI
-        // material (see `jelly_lame`'s own doc) -- the corrected, much
+        // material (see `jelly_lame`'s doc) -- the corrected, much
         // stiffer real value needs real substep headroom under CFL (measured
         // directly, see this file's own migration note in project memory).
         max_substeps_per_step: 20000,
@@ -159,15 +159,15 @@ fn make_sim(p: &Params) -> Simulation {
     // at the real SI stiffness above, it produced a ~3 m/s impact that
     // inverted ~370 of 784 CorotatedMaterial particles (deformation gradient
     // collapsing to the MIN_J clamp and staying there, not a transient
-    // spike) -- a real, known limitation of linearized corotational
+    // spike) -- a known limitation of linearized corotational
     // elasticity under large/fast deformation, not something this migration
     // introduced (NeoHookean and Viscoelastic, both fully nonlinear
     // hyperelastic, were unaffected at the same drop height). Swept
     // empirically (`tests/scratch_basic_jellies_probe.rs`): height 25 still
     // inverts 330+ particles, height 15 inverts zero while still showing
-    // real, substantial deformation (J ranges 0.001-1.3, not a trivial
+    // substantial deformation (J ranges 0.001-1.3, not a trivial
     // settle). CorotatedMaterial's own large-deformation robustness stays a
-    // real, separate, disclosed gap -- not fixed here.
+    // separate, disclosed gap -- not fixed here.
     const DROP_Y: f32 = 15.0;
     let mut solver = Simulation::new(config, spawn(Vec2::new(14.0, DROP_Y), MAT_NEO))
         .with_default_material(Box::new(NeoHookeanMaterial::new(p.neo_lambda, p.neo_mu)))
@@ -377,7 +377,7 @@ impl State {
                     ui.separator();
                     // Real fix (2026-09-05): ranges widened by ~2 orders of
                     // magnitude to actually cover the real SI-derived default
-                    // (see `jelly_lame`'s own doc) -- the old 1..=200/1..=400
+                    // (see `jelly_lame`'s doc) -- the old 1..=200/1..=400
                     // ranges couldn't even represent the corrected value.
                     ui.colored_label(egui::Color32::from_rgb(240, 133, 69), "NeoHookean");
                     ui.add(egui::Slider::new(&mut p.neo_lambda, 100.0..=50_000.0).text("lambda"));

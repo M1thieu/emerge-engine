@@ -1,11 +1,10 @@
-//! Real integration coverage for `SimConfig::implicit_corotated_elastic`
-//! (`spacetime::solver::implicit_corotated`) -- the opt-in Newton-CG
-//! big-step wired into `Simulation::step` 2026-09-10. Standalone Newton-CG
-//! correctness/perf were already verified against finite differences and
-//! real wall-clock measurement in `tests/scratch_implicit_mpm_stage3_
-//! drucker_prager_multi_particle.rs`; this file checks the actual
-//! production wiring (eligibility gating, real `Simulation`/`SpawnRegion`
-//! setup, boundary conditions, G2P/plasticity fusion) instead.
+//! Integration coverage for `SimConfig::implicit_corotated_elastic`
+//! (`spacetime::solver::implicit_corotated`), the opt-in Newton-CG big step
+//! in `Simulation::step`. Standalone Newton-CG correctness and cost are
+//! checked against finite differences and wall-clock in
+//! `tests/scratch_implicit_mpm_stage3_drucker_prager_multi_particle.rs`; this
+//! file checks the production wiring (eligibility gating, `Simulation`/
+//! `SpawnRegion` setup, boundary conditions, G2P/plasticity fusion).
 
 extern crate emerge_engine as emerge;
 use emerge::materials::DruckerPragerMaterial;
@@ -100,25 +99,19 @@ fn max_drift(a: &Simulation, b: &Simulation) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
-/// The real target regime for this feature (project memory: sand's actual
-/// fps problem is CFL pinned tiny by ELASTIC STIFFNESS, not particle
-/// speed -- an already-settled, barely-moving pile pays the same substep
-/// cost as a violent one). Settle purely via EXPLICIT first (so this
-/// never depends on the implicit path's own earlier behavior), then fork:
-/// one continues explicit, one switches to implicit from that identical,
-/// verified-good state.
+/// The target regime: sand's frame cost comes from a CFL step pinned small by
+/// elastic stiffness, not particle speed, so a settled, barely moving pile
+/// pays the same substep cost as a violent one. Settles with explicit steps
+/// first (so this does not depend on the implicit path), then forks from that
+/// identical state: one branch stays explicit, one switches to implicit.
 ///
-/// Real fix that made this pass (2026-09-11), after seven earlier
-/// independently-motivated fixes each left it essentially unchanged: the
-/// wall-adjacent grid DOFs were being perturbed by the free Newton search
-/// and corrected only ONCE, after the fact -- inadequate for a pile that
-/// needs its floor's reaction force in CONTINUOUS balance against gravity
-/// every substep. Freezing wall-adjacent DOFs during the free search
-/// (`ImplicitProblem::wall_frozen`, the same "essential boundary
-/// conditions live on grid DOFs" principle `Particle::pinned` already
-/// uses) dropped measured drift from ~5.7-8.0 (chaotic) to a stable ~0.5
-/// grid cells -- the same order as two isolated, non-touching particles
-/// integrated by different methods, not a remaining bug.
+/// Wall-adjacent grid DOFs are frozen during the free Newton search
+/// (`ImplicitProblem::wall_frozen`, "essential boundary conditions live on
+/// grid DOFs", as `Particle::pinned` does): a pile needs its floor reaction
+/// in continuous balance with gravity every substep, which a single
+/// after-the-fact correction does not give. With it, drift is a stable ~0.5
+/// grid cells (versus ~5.7-8.0, chaotic, without), the order of two isolated
+/// non-touching particles integrated by different methods.
 #[test]
 fn implicit_matches_explicit_for_an_already_settled_pile() {
     let mut explicit = make_sim_at(false, 10.0);
@@ -144,19 +137,15 @@ fn implicit_matches_explicit_for_an_already_settled_pile() {
     );
 }
 
-/// Real, disclosed, remaining limitation (2026-09-11): a VIOLENT impact
-/// (dropped from height, real gravity ~981 cells/s^2) still diverges more
-/// than the settled case above -- freezing wall-adjacent DOFs during the
-/// free search (the fix that solved the settled case) also means the
-/// solver cannot represent a real ELASTIC BOUNCE at first contact (that
-/// needs actual force to build up and reverse velocity at the wall, which
-/// freezing precludes by construction, not merely reduces). Real, measured
-/// improvement from the same fix (9.7 -> 3.5 grid cells over 20 frames),
-/// not a regression -- but a genuinely different, harder problem
-/// (contact-aware implicit integration, a real active research topic --
-/// see `implicit_corotated`'s own module doc for the literature this
-/// engine already cites) than the settled-equilibrium case, not something
-/// to paper over with a looser tolerance on this same scenario.
+/// Known limitation: a violent impact (dropped from height, gravity ~981
+/// cells/s^2) diverges more than the settled case. Freezing wall-adjacent DOFs
+/// during the free search means the solver cannot represent an elastic
+/// bounce at first contact (force has to build up and reverse velocity at the
+/// wall, which freezing prevents). The freeze still reduced the divergence
+/// (9.7 -> 3.5 grid cells over 20 frames), but contact-aware implicit
+/// integration is a harder, open research problem (see `implicit_corotated`'s
+/// module doc for the literature), not something to hide with a looser
+/// tolerance here.
 #[test]
 fn violent_impact_diverges_more_than_settled_pile_a_real_disclosed_limitation() {
     let mut explicit = make_sim(false);
@@ -176,7 +165,7 @@ fn violent_impact_diverges_more_than_settled_pile_a_real_disclosed_limitation() 
 /// A scene using a feature the v1 implicit path doesn't model (multi-field
 /// contact) must fall back to the normal explicit substep loop instead of
 /// silently mis-simulating it -- the real safety property `implicit_
-/// corotated`'s own doc promises.
+/// corotated`'s doc promises.
 #[test]
 fn ineligible_scene_falls_back_cleanly_and_still_runs() {
     let mut sim = make_sim(true);

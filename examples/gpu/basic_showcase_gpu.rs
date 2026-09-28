@@ -46,7 +46,7 @@ const SPACING: f32 = 0.7;
 // cost here). Not a guessed softening: the SAME paper this E already cites
 // publishes its own "relaxed Young's modulus" variant at E=0.15 MPa (100x
 // softer), Table 2's own footnote calling it done "for significant
-// computational efficiency yet acceptable accuracy," with a real, measured,
+// computational efficiency yet acceptable accuracy," with a measured,
 // disclosed cost (15.8% mean error on excavation forward force, versus
 // -0.5% for the validated 15 MPa case) -- their own number, not derived
 // here. Confirmed via the same real `timestep_bound` function
@@ -55,7 +55,7 @@ const SPACING: f32 = 0.7;
 // reduction matching `dt ~ 1/sqrt(E)`. This is a player-driven engine demo,
 // not a sand-accuracy validation scene (that stays on the full E=15MPa
 // citation in `basic_sand.rs`/`basic_sand_grid_gpu.rs`, untouched) -- the
-// real, published, disclosed accuracy cost is the right trade for THIS
+// published, disclosed accuracy cost is the right trade for THIS
 // scene's own purpose.
 const SAND_YOUNG_MODULUS_PA: f32 = 0.15e6;
 const SAND_POISSON_RATIO: f32 = 0.3;
@@ -104,7 +104,7 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
         // -- 500 keeps real margin over that measured baseline for live
         // player-driven impulses (arrow keys, LMB/RMB) without paying for
         // 3000's old, no-longer-needed headroom. See `SAND_YOUNG_MODULUS_PA`'s
-        // own doc for the full real citation and measurement.
+        // doc for the full real citation and measurement.
         max_substeps_per_step: 500,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
@@ -139,7 +139,7 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
             material_id: FLUID_ID,
             // Without this, mass falls back to `config.particle_mass` (1.0),
             // completely decoupled from the material's own rest_density=0.1
-            // -- a real, separate gap found 2026-08-08 alongside the SI fix
+            // -- a separate gap found 2026-08-08 alongside the SI fix
             // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
             // derivation used everywhere else.
             mass_override: Some(0.1 * SPACING * SPACING),
@@ -159,7 +159,7 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
     // NOT migrated to real SI tonight, unlike `sand`/`fluid` below --
     // deliberate, same reasoning as `basic_showcase.rs`'s CPU twin: this
     // body is player-driven (arrow keys), and a real E-Pa stiffness would
-    // genuinely change how it responds to the same drive-impulse magnitude.
+    // change how it responds to the same drive-impulse magnitude.
     // That needs live interactive verification, not just a headless
     // stability probe -- real follow-up work, not silently dropped.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
@@ -172,13 +172,13 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
     // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
     // stiffness for the same compression; confirmed by a real crash in
     // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let mut reg = MaterialRegistry::with_default(Box::new(elastic));
     reg.insert(SAND_ID, Box::new(sand));

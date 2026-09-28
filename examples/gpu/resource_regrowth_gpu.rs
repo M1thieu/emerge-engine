@@ -4,7 +4,7 @@ extern crate emerge_engine as emerge;
 /// GPU-ported 2026-07-17) combined with `saturating_uptake` consumption (same
 /// composition CPU's `resource_field_depletes_near_consumer_then_regrows` proves).
 /// A field of "grass" starts at full resource (bright); a stationary consumer
-/// depletes nearby resource at a real, rate-limited pace via `particles_near` +
+/// depletes nearby resource at a rate-limited pace via `particles_near` +
 /// `saturating_uptake` (external, same as the trophic predation demo -- the GPU port
 /// itself only owns the real regrowth PDE, not the consumption rule, matching CPU's
 /// own scope split). Watch resource dim near the consumer, then hold Space to stop

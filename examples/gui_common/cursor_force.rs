@@ -1,5 +1,5 @@
-//! Real, shared cursor-driven radial force -- extracted for the exact
-//! reason `gui_common::mod`'s own doc cites for `Gfx`/`cursor_to_grid`: a
+//! Shared cursor-driven radial force -- extracted for the exact
+//! reason `gui_common::mod`'s doc cites for `Gfx`/`cursor_to_grid`: a
 //! bug fixed in one hand-rolled copy of this plumbing does not reach the
 //! other copies. Confirmed live, 2026-08-26: `sand_water_saturation.rs`
 //! shared ONE force value between LMB push and RMB pull/lift -- fine for
@@ -13,7 +13,7 @@
 //! This crosses `gui_common`'s own stated boundary ("deliberately NOT in
 //! scope: panel content... differs enough per example") on purpose: this
 //! block is NOT panel content, it is the exact kind of "genuinely
-//! identical, not just similar" mechanics that module's own doc says
+//! identical, not just similar" mechanics that module's doc says
 //! justifies extending its scope.
 //!
 //! Deliberately keeps push and pull as SEPARATE strengths in the type
@@ -34,14 +34,14 @@ use glam::Vec2;
 pub struct CursorForce {
     pub radius: f32,
     /// Strength for `apply(.., pulling: false)` -- disturbing/shoving a
-    /// settled pile. Real, measured default that works well: 3.0.
+    /// settled pile. Measured default that works well: 3.0.
     pub push_strength: f32,
     /// Strength for `apply(.., pulling: true)` -- lifting a chunk AGAINST
     /// its own weight and the surrounding material's confinement, a
     /// physically harder task than push. Needs meaningfully more force to
-    /// achieve real separation -- see this module's own doc for the
+    /// achieve real separation -- see this module's doc for the
     /// measured 0.097-cells-of-nothing failure at push-strength values.
-    /// Real, measured default that works well: 7.0.
+    /// Measured default that works well: 7.0.
     pub pull_strength: f32,
 }
 
@@ -55,7 +55,7 @@ impl CursorForce {
     }
 
     /// Applies one substep's worth of the force to every particle within
-    /// `radius` of `cursor`, `dv = (F/m) * dt` -- mass genuinely resists
+    /// `radius` of `cursor`, `dv = (F/m) * dt` -- mass resists
     /// acceleration, matching how gravity itself is applied.
     pub fn apply(&self, particles: &mut Particles, cursor: Vec2, g: f32, dt: f32, pulling: bool) {
         let (weight, sign) = if pulling {

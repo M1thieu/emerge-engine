@@ -13,7 +13,7 @@ mod gui_common;
 /// friction, not a `Weight` lookup; jelly squishes and springs back because of
 /// real NeoHookean elasticity, not a hardcoded "solid" flag.
 ///
-/// Five real, already-shipped material presets (reused verbatim from
+/// Five already-shipped material presets (reused verbatim from
 /// `basic_showcase_gpu`/`basic_snow_gpu`/`basic_jellies_gpu` -- no new invented
 /// constants): NeoHookean jelly, Drucker-Prager sand, Newtonian water, Stomakhin
 /// snow, Kelvin-Voigt viscoelastic tissue.
@@ -30,30 +30,30 @@ mod gui_common;
 /// (water -> vanishes above boiling, real evaporation, not tracked as a gas phase).
 /// Both engine calls now apply a REAL latent-heat energy debit
 /// (`MaterialModel::latent_heat`, `ΔT = latent_heat/heat_capacity`) -- melting
-/// genuinely cools the surrounding material, freezing genuinely warms it, real
+/// cools the surrounding material, freezing warms it, real
 /// energy conservation, not a free material swap. This required two engine
 /// fixes: `GpuSimulation::phase_transition` had no latent-heat accounting at
 /// all (CPU-only before), and neither `phase_transition` nor a GPU
 /// `remove_particles` existed in a form safe to call from live/interactive
 /// code. Ambient is set below freezing (260K) so anything not actively heated
-/// genuinely drifts back toward frozen via the same real Newton-cooling term
+/// drifts back toward frozen via the same real Newton-cooling term
 /// `day_night_thermal_gpu` already proved -- the "cold reverses it" half of the ask
 /// is the PDE's own behavior, not a separate mechanism.
 ///
-/// Grid cells are set to a real, small, disclosed physical scale (2cm/cell, a
+/// Grid cells are set to a small, disclosed physical scale (2cm/cell, a
 /// hand-sized snowball) rather than literal room-scale (1m/cell): real thermal
-/// diffusion at 1m/cell is far too slow to watch live (that's genuinely how slow
+/// diffusion at 1m/cell is far too slow to watch live (that's how slow
 /// real conduction is) -- shrinking the domain's physical scale is a legitimate
 /// modeling choice every discretized simulation makes, not a fudge to the physics
-/// itself (conductivity/heat_capacity stay real, unmodified SI values).
+/// itself (conductivity/heat_capacity stay unmodified SI values).
 ///
 /// Known, disclosed limitation: `GpuSimulation::spawn_region` fully reallocates
 /// every per-particle GPU buffer and rebuilds the bind-group pool on each call
-/// (see its own doc). Painting is therefore rate-limited to one small clump
+/// (see its doc). Painting is therefore rate-limited to one small clump
 /// every few frames while the mouse is held, not a true continuous stream --
-/// a real, deliberate interaction-rate choice given that cost, not a hidden
+/// a deliberate interaction-rate choice given that cost, not a hidden
 /// hack. A streaming/incremental-append spawn path would remove this limit but
-/// is real, separate, future engine work.
+/// is separate, future engine work.
 ///
 ///   click a material in the panel, or press 1-5  |  LMB paint  |  R reset  |  Q quit
 ///   cargo run --example material_sandbox_gpu --features "gpu render"
@@ -77,7 +77,7 @@ use winit::window::{Window, WindowId};
 const GRID: usize = 64;
 const DT: f32 = 0.1;
 // `spawn_region` fully reallocates every per-particle GPU buffer + rebuilds the
-// bind-group pool per call (real, disclosed cost -- see its own doc). A real fix
+// bind-group pool per call (disclosed cost -- see its doc). A real fix
 // is giving it capacity headroom so repeated small spawns amortize instead of
 // reallocating every time, but that's core-engine work touching every shader's
 // buffer-size assumption, not a "slight" example-level change. This cap is the
@@ -120,14 +120,14 @@ const SIGMA_WATER: [f32; 3] = [0.85, 0.25, 0.07]; // render_physics (real: water
 // as a frozen constant would silently go stale if that scale ever changes.
 const WATER_ABSORPTION_PER_METER: [f32; 3] = [0.34, 0.044, 0.0044];
 
-// Beer-Lambert here is per ONE PARTICLE's own depth (prep_instances.wgsl's own doc:
+// Beer-Lambert here is per ONE PARTICLE's own depth (prep_instances.wgsl's doc:
 // "depth=1 particle"), so the real shader-space sigma_a is the real m^-1 value
 // scaled by however many real meters one particle actually represents at THIS
 // scene's live scale -- computed from `config.dx_meters`, not a frozen literal, so
 // it stays correct if the scene's scale ever changes.
 //
 // HONEST FINDING, not a bug to fix: at this demo's real scale (dx_meters=0.01,
-// SimConfig::earth), this comes out genuinely tiny (~0.0034/0.00044/0.00004) --
+// SimConfig::earth), this comes out tiny (~0.0034/0.00044/0.00004) --
 // real water at 1cm of real depth IS nearly perfectly transparent, true physics,
 // not a rendering gap. This engine is 2D (a face-on cross-section, no camera-ray-
 // through-volume axis), so there's no real depth-ACCUMULATION technique (like 3D
@@ -141,7 +141,7 @@ fn real_water_sigma_a(dx_meters: f32) -> [f32; 3] {
 const SIGMA_TISSUE: [f32; 3] = [0.05, 0.55, 0.60]; // render_physics (SIGMA_TISSUE)
 // No established value exists elsewhere in this codebase for snow specifically -- low,
 // roughly-neutral absorption (real snow is near-white, dominated by scattering not
-// absorption) with a faint blue bias (real, well-known snow/ice optical trend: red
+// absorption) with a faint blue bias (well-known snow/ice optical trend: red
 // absorbs marginally faster than blue). A reasonable physically-motivated estimate,
 // not a literature citation -- same honesty bar as this project's other disclosed,
 // non-literature-sourced presets.
@@ -156,7 +156,7 @@ const FREEZE_POINT_K: f32 = 272.15; // 1K hysteresis -- avoids flicker exactly a
 const BOIL_POINT_K: f32 = 373.15;
 const LATENT_HEAT_FUSION: f32 = 334.0; // water, kJ/kg-equivalent in this engine's units
 // HEAT_CAPACITY, COOLING_RATE, CONDUCTIVITY, CELL_SIZE_M commented out below alongside
-// attach_thermal_gpu -- real, temporary, disclosed disable, see that call site's doc.
+// attach_thermal_gpu -- temporary, disclosed disable, see that call site's doc.
 // const HEAT_CAPACITY: f32 = 4182.0; // water, J/(kg*K)
 const AMBIENT_K: f32 = 260.0; // below freezing -- world starts cold
 // Painted water must start above freezing (room temp) -- at world AMBIENT_K
@@ -201,13 +201,13 @@ fn make_registry(config: &SimConfig) -> MaterialRegistry {
     // `low_viscosity()`, not a raw constructor -- real water viscosity (1.0e-3,
     // Becker & Teschner 2007) and Tait EOS exponent (7.0, Cole 1948).
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
     // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
     // stiffness for the same compression; confirmed by a real crash in
     // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     // Real Stomakhin 2013 citation, same as basic_snow_gpu.rs -- was the
     // stale raw 1389.0/2083.0 that file no longer uses.
@@ -247,11 +247,11 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     let config = SimConfig {
         min_dt: 0.005,
         // Real fix (2026-09-07): snow/tissue below are now real SI (see
-        // make_registry's own doc) -- matches basic_jellies_gpu.rs's own
+        // make_registry's doc) -- matches basic_jellies_gpu.rs's own
         // proven-necessary value for the same soft-tissue citation (that
         // file's real impact test needed this; not independently re-probed
         // for this scene's own painting/multi-material interaction, so
-        // treated as the same real, disclosed uncertainty that file has).
+        // treated as the same disclosed uncertainty that file has).
         max_substeps_per_step: 20_000,
         recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
@@ -359,17 +359,17 @@ struct State {
     last_instant: std::time::Instant,
     /// Real max temperature within Heat-tool range of the cursor, refreshed at the same
     /// cadence as the phase-transition scan (not every frame -- a blocking readback every
-    /// frame is a real, avoidable cost). Direct numeric feedback for the real thing
+    /// frame is a avoidable cost). Direct numeric feedback for the real thing
     /// `ByPhysics`'s emission glow is too subtle to show at this demo's 260-373K range
     /// (that glow term is normalized to 5000K, a lava/molten-metal scale) -- clear textual
-    /// proof that heat is genuinely accumulating, not just the sudden melt/boil jump.
+    /// proof that heat is accumulating, not just the sudden melt/boil jump.
     near_cursor_max_temp: f32,
     /// Toggle with M -- swaps water's optics between the demo's artistic
     /// exaggeration (`SIGMA_WATER`) and the literal real-physics value, computed
     /// live via `real_water_sigma_a` (properly derived from Pope & Fry 1997 -- see
-    /// that function's own doc). Real, live demonstration that real water at this
+    /// that function's doc). Live demonstration that real water at this
     /// engine's actual 1cm/particle scale is nearly transparent, not the vivid
-    /// blue every other demo shows -- both are honest, just answering different
+    /// blue every other demo shows -- both are just answering different
     /// questions ("looks nice" vs "what would this really look like").
     real_water_optics: bool,
     /// Toggle with G -- compares grid-volume rendering (continuous solid look,
@@ -427,7 +427,7 @@ impl State {
         // the first G keypress (see the KeyG handler below) so splat mode (the
         // default) stays cheap.
         //
-        // Water settling slowly here is genuine gravity-driven thin-film
+        // Water settling slowly here is gravity-driven thin-film
         // spreading for a real low-viscosity fluid, not an instability --
         // artificially damping the residual settling velocity (tried via
         // LinearDragField, reverted) makes perfectly healthy fluid *read* as
@@ -486,7 +486,7 @@ impl State {
             near_cursor_max_temp: AMBIENT_K,
             real_water_optics: false,
             grid_volume_mode: false,
-            // Real, measured (2026-09-10): `standard(DT, 60.0)` is a 6x
+            // Measured (2026-09-10): `standard(DT, 60.0)` is a 6x
             // playback multiplier (`simulation_speed = 60*DT = 6.0`). With
             // 1120 real stiff-sand particles each `step_frame()` costs ~20
             // CFL substeps (`min_dt=0.005` against `DT=0.1`), and at 6x the
@@ -573,7 +573,7 @@ impl State {
                     // build_particles defaults temperature to 0.0 -- freshly painted
                     // matter must start at a real temperature, not absolute zero.
                     // Water specifically starts at real room temperature (see
-                    // WATER_PAINT_TEMP_K's own doc -- the cold AMBIENT_K instantly
+                    // WATER_PAINT_TEMP_K's doc -- the cold AMBIENT_K instantly
                     // froze it into snow before it could ever flow); every other
                     // material still starts at the world's real cold ambient.
                     let start_temp = if material_id == WATER_ID {
@@ -596,7 +596,7 @@ impl State {
                 self.sim.apply_radial_impulse(self.cursor_grid(), 5.0, mag);
             }
             Mode::Heat if self.lmb && self.frame > 0 => {
-                // A real, disclosed external heat source (like a torch) -- NOT part of
+                // A disclosed external heat source (like a torch) -- NOT part of
                 // the diffusion PDE itself, exactly the same "real source feeding a real
                 // field" composition already used by resource_regrowth_gpu's consumer.
                 // The PDE (attach_thermal_gpu) is what then spreads this into the pile.
@@ -783,7 +783,7 @@ impl State {
                     ui.label(format!(
                         "melt {MELT_POINT_K:.0}K  boil {BOIL_POINT_K:.0}K  ambient {AMBIENT_K:.0}K"
                     ));
-                    // Real, direct numeric feedback: the material's own optical glow
+                    // Direct numeric feedback: the material's own optical glow
                     // (ByPhysics) is normalized to a 5000K lava/molten-metal scale, far too
                     // coarse to show visually across this scene's real 260-373K span --
                     // real user-observed confusion ("snow doesn't seem affected by

@@ -24,7 +24,7 @@
 //! these scratch diagnostics), extended to also read
 //! `effective_friction_angle_deg()` over the LAST portion of the run
 //! (after `pop.reset_stress_accum()` clears out the violent collapse's own
-//! transient impact forces) -- a genuine settled/quasi-static contact-force
+//! transient impact forces) -- a settled/quasi-static contact-force
 //! reading, not a noisy read across the whole collapse trajectory.
 
 extern crate emerge_engine as emerge;
@@ -154,9 +154,9 @@ fn run_to_geometric_and_contact_phi_seeded(
 /// over an ADAPTIVE "active settling" window: the accumulator resets the
 /// first time the population's own max grain speed drops below `HIGH_FRAC`
 /// of its own running peak speed (past the violent initial collapse, into
-/// genuine quasi-static creep), then keeps accumulating until max speed
+/// quasi-static creep), then keeps accumulating until max speed
 /// drops below `LOW_FRAC` of that peak (captured reading, before the
-/// population goes fully dormant) -- real, per-seed-adaptive thresholds,
+/// population goes fully dormant) -- per-seed-adaptive thresholds,
 /// not a hand-picked fixed step count (which would differ per seed's own
 /// settling timeline). A real friction angle is conventionally measured
 /// from an actively-loading/yielding state, not full rest -- this tests
@@ -251,7 +251,7 @@ fn run_to_geometric_and_contact_phi_active_window_seeded(
         .to_degrees();
     // Falls back to a fully-settled read (window never closed -- e.g. the
     // population never dropped below LOW_FRAC within `steps`) so this
-    // never silently reports None just from a timing miss; real, disclosed
+    // never silently reports None just from a timing miss; disclosed
     // fallback, not hidden.
     let phi = captured_phi.or_else(|| pop.effective_friction_angle_deg());
     (geometric_angle, phi, window_start_step, window_end_step)
@@ -343,7 +343,7 @@ fn contact_derived_phi_matches_real_geometric_repose_angle_gate() {
 
 /// Hypothesis-2 gate: does reading the contact-force accumulator during an
 /// ADAPTIVE active-settling window (see
-/// `run_to_geometric_and_contact_phi_active_window_seeded`'s own doc)
+/// `run_to_geometric_and_contact_phi_active_window_seeded`'s doc)
 /// instead of a fully-settled tail recover the real 23.87deg geometric
 /// baseline? Same pre-committed +/-5deg tolerance, same 5-seed discipline,
 /// same `rolling_friction=2.00` (deliberately unchanged from the failed
@@ -432,10 +432,10 @@ fn contact_derived_phi_during_active_settling_matches_geometric_repose_angle_gat
     );
 }
 
-/// Real, cheap (single seed, short run) debugging probe -- NOT a gate,
+/// Cheap (single seed, short run) debugging probe -- NOT a gate,
 /// just a diagnostic. Both real gates above measured a suspiciously EXACT
 /// 90.00deg (hypothesis-2's own run: zero variance across 5 seeds), which
-/// is itself worth doubting: a real settled pile with genuine lateral
+/// is itself worth doubting: a real settled pile with lateral
 /// spreading (this project's own geometric-angle measurements, 16-25deg,
 /// confirm real spreading did occur) shouldn't generically produce a
 /// perfectly uniaxial stress state. `effective_friction_angle_deg`'s own
@@ -443,7 +443,7 @@ fn contact_derived_phi_during_active_settling_matches_geometric_repose_angle_gat
 /// past 1.0 (e.g. `sigma3` slightly negative from real discrete-sum noise,
 /// not truly zero) -- this reads `principal_stresses()` directly (added
 /// this session specifically for this check) to see the RAW sigma1/sigma3
-/// before any clamping, distinguishing a genuine physical plateau from a
+/// before any clamping, distinguishing a physical plateau from a
 /// numerical artifact. Cheap: 30k steps (not 400k), one seed -- a
 /// diagnostic read, not a statistically-powered gate.
 #[test]
@@ -534,22 +534,22 @@ fn diag_raw_principal_stresses_reveal_clamp_artifact_or_real_degeneracy() {
 /// disclosed elevated/physically-implausible calibration (a proxy for
 /// missing true grain-shape geometry, see
 /// `project_grain_clump_shape_scoped_2026-09-09`) the reason the contact
-/// network comes out genuinely uniaxial (confirmed real, not a clamp
+/// network comes out uniaxial (confirmed not a clamp
 /// artifact, by `diag_raw_principal_stresses_reveal_clamp_artifact_or_
 /// real_degeneracy` above -- sigma3 measured at -0.000001 over 2M+ real
 /// samples)? Sweeps `rolling_friction` in [0.0, 0.20 (this project's own
 /// separately-calibrated, more realistic value, `grains_repose_angle.rs`),
-/// 2.00] x 2 seeds (a real, disclosed narrowing pass, not the full 5-seed
+/// 2.00] x 2 seeds (a disclosed narrowing pass, not the full 5-seed
 /// gate rigor -- this is a trend check, not a final verdict) using the
 /// same active-settling-window read as hypothesis 2. NOT asserting a fixed
 /// PASS bar against 23.87deg (that target was calibrated FOR
 /// rolling_friction=2.00's own specific column geometry -- a different
-/// rolling_friction genuinely changes the real geometric angle too, so
+/// rolling_friction changes the real geometric angle too, so
 /// comparing against the same fixed external number would not be a fair
 /// test). Instead reports, per config: does `principal_stresses()` show a
-/// real, non-degenerate sigma3 (not pinned near zero), and does
+/// non-degenerate sigma3 (not pinned near zero), and does
 /// `effective_friction_angle_deg()` move away from 90deg and track this
-/// SAME run's own geometric angle -- a real, honest trend check.
+/// SAME run's own geometric angle -- a honest trend check.
 #[test]
 #[ignore = "hypothesis-1 trend check for the Hybrid Grains Phase 0 investigation -- run \
             explicitly with --release --ignored --nocapture (moderate: 6 runs, 400k steps each)"]

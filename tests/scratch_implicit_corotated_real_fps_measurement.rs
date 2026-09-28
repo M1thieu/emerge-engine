@@ -57,7 +57,7 @@ fn make_sim(implicit: bool) -> Simulation {
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn real_fps_settled_pile_explicit_vs_implicit() {
-    // Settle purely via explicit first -- the real, verified-correct
+    // Settle purely via explicit first -- the verified-correct
     // regime. 60 frames is enough for a compact box-spawned pile at this
     // scale to stop actively flowing under its own weight.
     let mut settling = make_sim(false);
@@ -75,7 +75,7 @@ fn real_fps_settled_pile_explicit_vs_implicit() {
 
     // Fork into two fresh sims from the SAME construction, settle both
     // identically via explicit (so the comparison starts from the same
-    // real, physically-settled state), then measure real wall-clock
+    // physically-settled state), then measure real wall-clock
     // Simulation::step() cost for each path from there.
     let mut explicit = make_sim(false);
     let mut implicit = make_sim(false);

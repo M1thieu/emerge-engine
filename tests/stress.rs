@@ -48,7 +48,7 @@ fn assert_all_finite_and_stable(sim: &Simulation, label: &str) {
 // threshold against a distinct target material) and steps long enough for rules whose
 // threshold is below the actual particle temperature to fire. Asserts every particle stays
 // finite/stable AND that at least one rule actually transitioned particles (rules aren't dead
-// code -- the per-substep evaluation in `add_phase_rule` is genuinely exercised).
+// code -- the per-substep evaluation in `add_phase_rule` is exercised).
 
 #[test]
 fn phase_rule_count_stress() {

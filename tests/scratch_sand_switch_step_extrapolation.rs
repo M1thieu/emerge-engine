@@ -1,4 +1,4 @@
-//! Real, direct extrapolation of `tests/accuracy.rs::post_event_relax_
+//! Direct extrapolation of `tests/accuracy.rs::post_event_relax_
 //! switch_step_long_horizon_convergence_comparison`'s own established
 //! trend (switch_step=800/1500/3000 -> 65.6/58.6/50.4deg, monotonically
 //! DECREASING with larger switch_step) -- does pushing switch_step further
@@ -104,12 +104,12 @@ fn switch_step_extrapolation_toward_real_repose_angle() {
 }
 
 /// Same scene, extended checkpoint schedule (out to 300,000 total steps
-/// instead of 100,000) -- real, necessary follow-up: `switch_step=20000`'s
+/// instead of 100,000) -- necessary follow-up: `switch_step=20000`'s
 /// own trajectory did NOT settle within the original 100k-step horizon
 /// (36.6 -> 35.7 -> 30.3 -> 32.8 -> 38.7deg, still moving at the last
 /// checkpoint), which means `switch_step=10000`'s apparent clean plateau
 /// (36.7 -> 36.2 -> 36.2deg) could just as easily be a temporary lull that
-/// resumes drifting given more time, not a genuine stable equilibrium.
+/// resumes drifting given more time, not a stable equilibrium.
 /// Zero randomness in this scene (`position_jitter=0.0` by construction),
 /// so this is a real extension of the SAME deterministic trajectory, not a
 /// repeat of an already-known result.
@@ -165,7 +165,7 @@ fn switch_step_10000_holds_at_a_genuinely_long_horizon() {
 /// switch_step=10000 lands near the real target while its immediate
 /// neighbors look wildly different, that is a sign of fragility/coincidence
 /// (matching this same investigation's own switch_step=20000 finding --
-/// non-monotonic, noisy behavior nearby), not a genuine usable region.
+/// non-monotonic, noisy behavior nearby), not a usable region.
 #[test]
 #[ignore = "real, long-running neighborhood-robustness sweep -- run explicitly with --ignored"]
 fn switch_step_neighborhood_around_10000_is_checked_for_robustness() {

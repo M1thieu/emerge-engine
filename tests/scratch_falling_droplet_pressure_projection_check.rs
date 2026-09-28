@@ -4,8 +4,8 @@
 //! body -- free-surface Dirichlet boundaries on every side at once, no
 //! wall touching anywhere.
 //!
-//! Real, disclosed context: this exact solver has a known, unresolved
-//! "wall-free-pool instability" (`pressure.rs`'s own doc: a RESTING pool
+//! Disclosed context: this exact solver has a known, unresolved
+//! "wall-free-pool instability" (`pressure.rs`'s doc: a RESTING pool
 //! with free-surface on its entire perimeter spikes to max_speed 100-250
 //! on the very first step, reproducible with zero seed velocity). The
 //! only diagnostic that ever reproduced it (`git show
@@ -24,7 +24,7 @@
 //! on the very first step, every time, regardless of iteration count.
 //! This rules out "not enough solver passes" as the cause (1 pass fails
 //! exactly as badly as 8) and confirms the wall-free-pool bug (or a
-//! closely related variant of it) reproduces on a genuinely falling,
+//! closely related variant of it) reproduces on a falling,
 //! isolated droplet, not just a resting pool.
 //!
 //! **Real fix attempted the same day, also failed, reverted.** Root-caused
@@ -39,7 +39,7 @@
 //! validated wall-contact scene -- that specific claim was later corrected
 //! (`fluid_pressure_projection.rs`'s own GUI actually validates at
 //! `gravity_fraction: 0.003`, ~333x gentler; re-tested at the CORRECT
-//! gravity, the original unmodified code is genuinely stable there). The
+//! gravity, the original unmodified code is stable there). The
 //! fix itself was still reverted regardless, since it never solved this
 //! gate's own real problem. See `falling_droplet_at_validated_derated_gravity`
 //! below: even at that same correct, gentle gravity, `J` still hits the
@@ -54,7 +54,7 @@
 //!
 //! Config mirrors `examples/cpu/fluid_pressure_projection.rs`'s own
 //! already-proven pattern exactly (same solver settings that produced a
-//! real, verified ~30fps on this engine's hardest WALL-CONTACT scene) --
+//! verified ~30fps on this engine's hardest WALL-CONTACT scene) --
 //! the only variable changed is the scene geometry itself (isolated
 //! falling blob instead of a wall-touching column).
 
@@ -83,7 +83,7 @@ fn falling_droplet_with_no_wall_contact_stays_physically_bounded() {
         fluid_near_wall_compression_threshold: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    // Real, full earth gravity from `SimConfig::earth` (9.81 m/s² / cell_m)
+    // Full earth gravity from `SimConfig::earth` (9.81 m/s² / cell_m)
     // -- matches the ORIGINAL wall-free-pool bug's own reproduction
     // (`diag_vortex_projection_headless.rs`, also full undreated gravity).
     // CORRECTION (2026-09-17): `fluid_pressure_projection.rs`'s own real

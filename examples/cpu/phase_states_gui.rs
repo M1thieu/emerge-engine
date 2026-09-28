@@ -19,30 +19,30 @@ use egui_wgpu::ScreenDescriptor;
 /// clamped to `MAX_HEAT_RATE_K_PER_S`), the same real "external heat
 /// source" technique `phase_states_headless.rs`/`material_sandbox_gpu.rs`
 /// already use, just closed-loop on the slider's own target instead of an
-/// open-loop scripted ramp. Real, disclosed architecture (2026-08-29,
-/// see `water_phase_chain`'s own doc): that rate now drives a real
+/// open-loop scripted ramp. Disclosed architecture (2026-08-29,
+/// see `water_phase_chain`'s doc): that rate now drives a real
 /// per-particle ENTHALPY state (Voller & Cross 1981 enthalpy method),
 /// not temperature directly -- material transitions and latent heat are
 /// both derived from that, not from `add_phase_rule`/`WithLatentHeat`
 /// (this demo no longer uses either).
 ///
 /// Real materials: `RankineMaterial::ice()` (real brittle-fracture ice,
-/// scaled stiffness -- see that preset's own doc and
+/// scaled stiffness -- see that preset's doc and
 /// `ICE_YOUNG_MODULUS_SCALED_PA` below for why) for the solid,
 /// `CavitatingFluidMaterial` (Lyu, Sun, Colagrossi & Zhang 2023's real
-/// three-branch cavitation EOS, genuinely temperature-coupled -- see
-/// `cavitating_eos`'s own doc) for the liquid, `BoilingMixtureMaterial`
+/// three-branch cavitation EOS, temperature-coupled -- see
+/// `cavitating_eos`'s doc) for the liquid, `BoilingMixtureMaterial`
 /// (real Homogeneous Equilibrium Model mixture, driven directly by the
 /// enthalpy method's own `boiling_fraction` -- see that material's own
-/// doc) for a particle genuinely mid-boil, `IdealGasMaterial`
+/// doc) for a particle mid-boil, `IdealGasMaterial`
 /// (isentropic ideal-gas EOS) for the gas.
 ///
-/// Real, disclosed history: this demo used `NewtonianFluidMaterial` (a
+/// Disclosed history: this demo used `NewtonianFluidMaterial` (a
 /// flat `pressure_floor`) for water, then `IsothermalCavitatingFluidMaterial`
 /// (fixed-reference-temperature cavitation), then the genuinely
 /// temperature-coupled `CavitatingFluidMaterial` for ALL of water
 /// (including the boiling plateau) -- water near freezing and water near
-/// boiling genuinely had different real cavitation onsets, not one fixed
+/// boiling had different real cavitation onsets, not one fixed
 /// reference curve, but live-testing that version surfaced a real,
 /// quantitatively confirmed bug: a particle held at the real boiling
 /// latent-heat plateau let its own MECHANICAL vapor fraction run
@@ -52,8 +52,8 @@ use egui_wgpu::ScreenDescriptor;
 /// (2026-09-01) closes that: `PhaseState::Boiling` now gets its own real
 /// material whose mechanical equilibrium is driven directly by the SAME
 /// `fraction` the enthalpy method already tracks -- see that material's
-/// own doc for the real citations (Collier & Thome's mixture density,
-/// Wallis's mixture sound speed). Real, disclosed remaining limitation,
+/// doc for the real citations (Collier & Thome's mixture density,
+/// Wallis's mixture sound speed). Disclosed remaining limitation,
 /// unchanged: the coupling is still one-directional (`x_H -> mechanical
 /// state`) -- a real mechanical deviation from equilibrium doesn't pay
 /// latent heat back into the enthalpy state. `phase_states_headless.rs`
@@ -67,11 +67,11 @@ use egui_wgpu::ScreenDescriptor;
 /// `basic_snow.rs`'s own `gravity_fraction` convention) plus real
 /// Archimedes buoyancy (same formula as `BuoyancyField`) for STEAM ONLY,
 /// applied manually each frame so it stays exactly in sync with the live
-/// gravity slider -- see `update_and_render`'s own comment for why steam
-/// specifically (a real, disclosed bug was found and fixed live: applying
+/// gravity slider -- see `update_and_render`'s comment for why steam
+/// specifically (a disclosed bug was found and fixed live: applying
 /// this to every particle gave the starting ice block a net upward nudge
 /// before any water/steam even existed). Ice and water both just fall
-/// under plain gravity; steam genuinely rises once it exists. Spawned as
+/// under plain gravity; steam rises once it exists. Spawned as
 /// a narrow column near the bottom of a tall-ish domain so there's real
 /// room above for steam to actually rise into.
 ///
@@ -107,26 +107,26 @@ const PUSH_STRENGTH_MAX: f32 = 30.0;
 const ICE_ID: u32 = 0;
 const WATER_ID: u32 = 1;
 const STEAM_ID: u32 = 2;
-/// Real, genuinely mid-boil material (2026-09-01, external review's own
+/// Mid-boil material (2026-09-01, external review's own
 /// "minimum honest enthalpy->mechanical" fix) -- see
-/// `emerge::BoilingMixtureMaterial`'s own doc for the real bug this
+/// `emerge::BoilingMixtureMaterial`'s doc for the real bug this
 /// closes (mechanical vapor fraction running independent of the
 /// enthalpy method's own thermal vapor fraction) and
-/// `material_id_for_phase_state`'s own doc for how this replaces the old
+/// `material_id_for_phase_state`'s doc for how this replaces the old
 /// majority-vote `WATER_ID`/`STEAM_ID` split.
 const BOILING_ID: u32 = 3;
 
 // Real water phase-change constants -- identical to phase_states_headless.rs,
-// see that file's own doc for the full real-value sourcing.
+// see that file's doc for the full real-value sourcing.
 const MELTING_POINT_K: f32 = 273.15;
 const BOILING_POINT_K: f32 = 373.15;
 const FUSION_LATENT_HEAT_J_KG: f32 = 334_000.0;
 const VAPORIZATION_LATENT_HEAT_J_KG: f32 = 2_257_000.0;
 const WATER_HEAT_CAPACITY_J_KG_K: f32 = 4182.0;
-// Real, disclosed fix (2026-08-29, first milestone of the real
+// Disclosed fix (2026-08-29, first milestone of the real
 // solid<->liquid<->gas cycle plan): the demo used to pay only 1/20th of
 // the real latent heats and jump temperature instantly on transition --
-// real, disclosed, but never a genuine closed thermodynamic cycle. Real
+// but never a closed thermodynamic cycle. Real
 // fix: `energy::thermodynamics::enthalpy::chained_state_from_enthalpy`
 // (Voller & Cross 1981 enthalpy method, extended to two consecutive real
 // transitions) tracks enthalpy as the primary thermal state instead, so
@@ -137,12 +137,12 @@ const WATER_HEAT_CAPACITY_J_KG_K: f32 = 4182.0;
 const ICE_HEAT_CAPACITY_J_KG_K: f32 = 2090.0; // real, CRC Handbook at 0C
 const STEAM_HEAT_CAPACITY_J_KG_K: f32 = 2080.0; // real, NIST steam tables near 100C, 1 atm
 
-// Real, disclosed geometry (2026-08-29, Milestone 2): the spawn column
+// Disclosed geometry (2026-08-29, Milestone 2): the spawn column
 // (see `make_sim`'s own `spawn`) is centered at y=GRID*0.22=14.08 with a
 // real height of `box_size.y*spacing`=10*0.5=5.0, so it spans
 // y in [11.58, 16.58]. The heating plate covers the bottom 40% of that
 // real span (11.58 + 0.4*5.0 = 13.58) -- enough real ice mass sits
-// directly on it to genuinely start melting and subsiding (exposing more
+// directly on it to start melting and subsiding (exposing more
 // ice to the plate as it does, the same way a real ice block melts from
 // a hot surface underneath it), while still leaving real column ABOVE it
 // with no direct heat source -- the real vertical DeltaT this scene
@@ -161,22 +161,22 @@ fn water_phase_chain() -> emerge::thermodynamics::PhaseChainProperties {
     }
 }
 
-/// Real, disclosed simplification, UNCHANGED for melting (2026-08-29): a
+/// Disclosed simplification, UNCHANGED for melting (2026-08-29): a
 /// particle mid-MELT still shows whichever real phase holds the MAJORITY
 /// of its own latent-heat band (`fraction < 0.5` keeps the colder
-/// identity, `>= 0.5` switches) -- a genuine mushy-solid mechanical model
-/// (partial-melt stiffness softening) is real, separate, still-unscoped
+/// identity, `>= 0.5` switches) -- a mushy-solid mechanical model
+/// (partial-melt stiffness softening) is separate, still-unscoped
 /// future work, not attempted here. The 0.5 cutoff itself is still a real
 /// coarse-graining choice, not something uniquely derived from physics.
 ///
-/// Real, disclosed IMPROVEMENT for boiling (2026-09-01, external review):
+/// Disclosed IMPROVEMENT for boiling (2026-09-01, external review):
 /// the old majority-vote split here (`WATER_ID` below 0.5, `STEAM_ID`
 /// above) is GONE -- it let a particle's own mechanical vapor fraction
 /// (implicit in its density/`J` under whichever pure-phase material held
 /// it) drift completely independent of `fraction` itself, a real,
-/// quantitatively confirmed bug (see `BoilingMixtureMaterial`'s own doc).
+/// quantitatively confirmed bug (see `BoilingMixtureMaterial`'s doc).
 /// Every `PhaseState::Boiling` particle, regardless of `fraction`, now
-/// gets the real, genuinely mixture-aware `BOILING_ID` -- `fraction`
+/// gets the mixture-aware `BOILING_ID` -- `fraction`
 /// itself still drives that material's own mechanical response directly
 /// (via `Particle::friction_hardening`, written every substep below), so
 /// there is no longer a discrete threshold to cross mid-band at all.
@@ -199,11 +199,11 @@ fn material_id_for_phase_state(state: emerge::thermodynamics::PhaseState) -> u32
 
 // Real, DERIVED ice stiffness (2026-08-29) -- found live: the previous
 // value (5.0e5 Pa) was carried over VERBATIM from phase_states_headless.rs,
-// whose own doc says it was "verified working there" -- but that scene uses
+// whose doc says it was "verified working there" -- but that scene uses
 // ZERO gravity by explicit design (isolates the thermal cycle from settling
 // dynamics), so it has no real impact/fall velocities to resist at all. THIS
 // scene deliberately adds real gravity for real settling/chimney dynamics
-// (see make_sim's own doc), and never re-derived the stiffness for that.
+// (see make_sim's doc), and never re-derived the stiffness for that.
 // Exact same bug class as the water EOS fix just above/before this in the
 // session: a constant proven fine for a less-demanding sibling scene,
 // silently insufficient for a more demanding one.
@@ -216,8 +216,8 @@ fn material_id_for_phase_state(state: emerge::thermodynamics::PhaseState) -> u32
 // margin rule used for water (target wave speed = 10*v_max, same spirit as
 // Monaghan 1994's stiffness-margin rule, generalized from fluids to an
 // elastic solid's own wave speed): `E = rho*(10*v_max)^2 = 917*180^2 =
-// 2.971e7 Pa` -- a real, derived correction (~59x stiffer), still ~303x
-// softer than real ice (E=9.0 GPa, RankineMaterial::ice's own doc), the
+// 2.971e7 Pa` -- a derived correction (~59x stiffer), still ~303x
+// softer than real ice (E=9.0 GPa, RankineMaterial::ice's doc), the
 // same category of practical/CFL compromise as the ORIGINAL 253x reduction
 // -- just actually re-derived for this scene's real dynamics instead of
 // inherited from one that never had any.
@@ -227,7 +227,7 @@ const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 2.971e7;
 // watched the ice column visibly SQUASH under its own weight, standing
 // still, no impact involved. `RankineMaterial::ice()` computes tensile
 // strength as a FIXED RATIO of whatever `young_modulus` it's given
-// (`E * 1.1e-4`, see that function's own doc -- a real, correctly-derived
+// (`E * 1.1e-4`, see that function's doc -- a correctly-derived
 // ratio, but calibrated for the REAL, unscaled E=9.0 GPa, where it lands
 // exactly on the real cited range: 9.0e9*1.1e-4 = 0.99 MPa, matching
 // Petrovic 2003's 0.7-3.1 MPa). Passing the numerically-practical, SCALED
@@ -241,7 +241,7 @@ const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 2.971e7;
 // before any impact. Real fix: compute tensile strength from the REAL,
 // UNSCALED E, independent of whatever E is used for the elastic response,
 // and override it via struct-update syntax (the same pattern this
-// preset's own doc already prescribes for `elastic_viscosity`). Verified:
+// preset's doc already prescribes for `elastic_viscosity`). Verified:
 // 990,000 Pa gives a 22x margin over the real self-weight stress.
 const ICE_TENSILE_STRENGTH_REAL_PA: f32 = 9.0e9 * 1.1e-4;
 
@@ -251,23 +251,23 @@ const WATER_RHO_KG_M3: f32 = 1000.0;
 const STEAM_RHO_KG_M3: f32 = WATER_RHO_KG_M3 / 6.0;
 const STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K: f32 = 101_325.0 / (STEAM_RHO_KG_M3 * BOILING_POINT_K);
 const ICE_RHO_KG_M3: f32 = 917.0;
-/// Real, disclosed EFFECTIVE reference (2026-09-02, external review's own
+/// Disclosed EFFECTIVE reference (2026-09-02, external review's own
 /// correction to an earlier overclaiming doc here) for steam buoyancy once
 /// no real water/boiling-mixture neighbor is left nearby -- see the
-/// buoyancy loop's own doc for why this exists. Honest framing, stated
+/// buoyancy loop's doc for why this exists. Honest framing, stated
 /// plainly rather than implied: this is `~333 kg/m^3`, NOT real ambient
-/// air's own SI density (~1.2 kg/m^3) -- only the real, well-known,
+/// air's own SI density (~1.2 kg/m^3) -- only the well-known,
 /// directly-checkable RATIO between standard ambient air (~1.204 kg/m^3,
 /// sea level, ~20C) and real saturated steam at 100C (~0.598 kg/m^3, air
 /// ~2.01x denser, standard atmospheric reference values e.g. NIST/ISA) is
 /// preserved, applied to THIS demo's own compressed `STEAM_RHO_KG_M3`
-/// scale (see that constant's own doc) rather than real steam's density.
+/// scale (see that constant's doc) rather than real steam's density.
 /// An EFFECTIVE ambient-medium model, not a real one: no actual air exists
 /// in this scene to receive the opposite momentum, entrain, or mix with
 /// the rising steam -- this constant only sets the ONE-SIDED force a steam
 /// particle feels, real Newton's-third-law reciprocity is not modeled.
 /// `STEAM_RISE_DRAG_COEFFICIENT` (this file's own buoyancy loop) is the
-/// same kind of effective placeholder -- a real, disclosed number, not
+/// same kind of effective placeholder -- a disclosed number, not
 /// derived from any real drag-law/geometry citation. Blocked on a real
 /// surrounding-medium representation (an actual ambient density/velocity
 /// field steam could exchange momentum with) -- not attempted here.
@@ -284,7 +284,7 @@ const AMBIENT_AIR_RHO_KG_M3: f32 = STEAM_RHO_KG_M3 * 2.0;
 // resists, and once it finally does, the "spring" has stored far more energy
 // than it should have. Standard weakly-compressible rule (Monaghan 1994;
 // Becker & Teschner 2007, both already cited in `NewtonianFluidMaterial::
-// weakly_compressible`'s own doc): `c_ref = 10 * v_max`, limiting density
+// weakly_compressible`'s doc): `c_ref = 10 * v_max`, limiting density
 // variation to ~1%. `v_max` derived from Torricelli for THIS scene's real
 // geometry (free-fall from the ice column's own top, `box_center.y +
 // box_size.y*spacing*0.5` = 14.08+2.5 = 16.58m above the floor at y=0) --
@@ -295,13 +295,13 @@ const AMBIENT_AIR_RHO_KG_M3: f32 = STEAM_RHO_KG_M3 * 2.0;
 // off by ~36x, the same order of magnitude as the 2026-08-13 case (~100x).
 const WATER_C_REF_M_S: f32 = 180.0;
 
-// Real, disclosed model choice: the mixture band's own effective acoustic
-// speed -- see `cavitating_eos`'s own module doc ("parameter honesty")
+// Disclosed model choice: the mixture band's own effective acoustic
+// speed -- see `cavitating_eos`'s module doc ("parameter honesty")
 // for why this is NOT a fixed water property, just this demo's own choice
 // (same value `real_test_params()` uses, for the same reason above).
 const WATER_EOS_C_MIN_M_S: f32 = 1.0;
 
-// Real, simple proportional heater/cooler -- see this file's own top doc
+// Simple proportional heater/cooler -- see this file's own top doc
 // for why a target-temperature slider is more intuitive than a raw rate
 // dial. Clamped so the real per-substep instant latent-heat jump (see
 // phase_states_headless.rs's own "structural issue" doc) can never be
@@ -316,7 +316,7 @@ fn make_sim() -> (
     BoilingMixtureMaterial,
     IdealGasMaterial,
 ) {
-    // Real, disclosed change from phase_states_headless.rs's own gravity=ZERO
+    // Disclosed change from phase_states_headless.rs's own gravity=ZERO
     // (chosen there specifically to isolate the thermal cycle from settling
     // dynamics): THIS demo wants exactly the settling dynamics -- gas rising,
     // liquid pooling, solid sinking, a real "chimney" behavior that can only
@@ -335,7 +335,7 @@ fn make_sim() -> (
         // non-owning branch), and the only other guard,
         // `assert_owned_deformation_state`, runs once per FRAME (substep 0
         // only) and panics rather than repairs. That's exactly the
-        // documented failure class this flag's own doc names: "many
+        // documented failure class this flag's doc names: "many
         // individually-small, consistently-signed changes... can walk J
         // past the assert's absolute [j_min, j_max] band over the course of
         // a frame's ~150 substeps without any single step ever looking
@@ -343,7 +343,7 @@ fn make_sim() -> (
         // volume_ratio ceiling over exactly that many substeps, fps
         // collapsing in lockstep, ending in a silent crash (NaN reaching
         // the renderer before the next frame's assert could ever catch it).
-        // This is real, general, already-tested machinery (built
+        // This is general, already-tested machinery (built
         // 2026-08-08/09, see `SimConfig::fluid_step_retry_enabled`'s own
         // doc), not a new bandaid -- this demo just never turned it on. The
         // one documented caveat (rollback doesn't restore rods/grains/a
@@ -358,7 +358,7 @@ fn make_sim() -> (
 
     // Real Kelvin-Voigt damping (Bentley & Kohnen 1976 / Peters et al. 2012
     // cited Q for cold ice -- see `RankineMaterial::elastic_viscosity`'s and
-    // `q_factor_elastic_viscosity_pa_s`'s own docs): without this, ice has
+    // `q_factor_elastic_viscosity_pa_s`'s docs): without this, ice has
     // NO energy dissipation below its fracture threshold and bounces near-
     // elastically off the ground under this scene's own real gravity --
     // confirmed live 2026-08-28, the "bounces and breaks a little" hybrid.
@@ -376,7 +376,7 @@ fn make_sim() -> (
     // a tuning knob -- ~11x more real dissipation per cycle (Q is inversely
     // related to damping).
     const ICE_QUALITY_FACTOR_Q_TEMPERATE: f32 = 65.0;
-    // Real, disclosed architecture change (2026-08-29): latent heat is no
+    // Disclosed architecture change (2026-08-29): latent heat is no
     // longer paid via `WithLatentHeat`/`WithLatentHeatTable`'s instant
     // per-transition jump -- `water_phase_chain`'s enthalpy tracking in
     // `update_and_render` is now the single authoritative source for both
@@ -399,16 +399,16 @@ fn make_sim() -> (
         }
     };
     let water = {
-        // Real, disclosed upgrade (2026-08-31, external review's own 7-step
-        // production-closure order): water now genuinely responds to its
+        // Disclosed upgrade (2026-08-31, external review's own 7-step
+        // production-closure order): water now responds to its
         // OWN live temperature instead of one fixed reference -- the real
         // point of tonight's whole T-dependent closure. `MELTING_POINT_K`
-        // is the real, natural `t_min_k`: the coldest real liquid-water
+        // is the natural `t_min_k`: the coldest real liquid-water
         // state this demo ever has. `CavitatingEosTable::build` derives
         // its own real `t_max_k` internally (`t_liquid_closure_max`, just
         // below the true boiling point) and picks its own node count by
         // real measured interpolation error -- see `CavitatingEosTable`'s
-        // own doc, nothing here to size by hand.
+        // doc, nothing here to size by hand.
         let table = CavitatingEosTable::build(
             WATER_RHO_KG_M3,
             WATER_C_REF_M_S,
@@ -418,8 +418,8 @@ fn make_sim() -> (
             WATER_EOS_C_MIN_M_S,
             MELTING_POINT_K,
         );
-        // Real, disclosed choice (not an arbitrary flat number -- see
-        // `CavitatingFluidMaterial::volume_ratio_max`'s own doc): full
+        // Disclosed choice (not an arbitrary flat number -- see
+        // `CavitatingFluidMaterial::volume_ratio_max`'s doc): full
         // internal vaporization corresponds to `J~=rho_l_ref/rho_v_ref=6.0`
         // for this scene's own reference densities; this demo's own
         // discrete enthalpy-driven swap to `STEAM_ID` is expected to fire
@@ -427,12 +427,12 @@ fn make_sim() -> (
         // with headroom past it.
         CavitatingFluidMaterial::new(table, config.dx_meters, 1.0e-3, 0.5, 8.0)
     };
-    // Real, genuinely mid-boil mixture material (2026-09-01, external
+    // Mid-boil mixture material (2026-09-01, external
     // review's own "minimum honest enthalpy->mechanical" fix) -- built
     // from `water`'s own table, so `BOILING_ID`'s liquid-side reference
-    // matches `WATER_ID`'s exactly (real, guaranteed continuity at the
+    // matches `WATER_ID`'s exactly (guaranteed continuity at the
     // `x=0` handoff, not just intended -- see `BoilingMixtureMaterial::
-    // from_table`'s own doc). Same real `dx_meters`/`volume_ratio_max=8.0`
+    // from_table`'s doc). Same real `dx_meters`/`volume_ratio_max=8.0`
     // as `water` -- full vaporization's own real equilibrium `J` is
     // `rho_l_ref/rho_v_ref=6.0` (WATER_RHO_KG_M3/STEAM_RHO_KG_M3), so the
     // same headroom already sized for `water` covers this material too.
@@ -441,7 +441,7 @@ fn make_sim() -> (
     let steam = {
         // Real fix (2026-08-28): `IdealGasMaterial` had zero resistance
         // to over-EXPANSION (only compression -- see that field's own
-        // doc). Real, cited magnitude: `water_vapor_bulk_viscosity_pa_s`
+        // doc). Cited magnitude: `water_vapor_bulk_viscosity_pa_s`
         // (Cramer 2012).
         let bulk_viscosity =
             emerge::matter::materials::gas::water_vapor_bulk_viscosity_pa_s(STEAM_VISCOSITY_PA_S);
@@ -458,7 +458,7 @@ fn make_sim() -> (
         }
     };
 
-    // Real, disclosed limitation (2026-08-29): spatial `ThermalDiffusion`
+    // Disclosed limitation (2026-08-29): spatial `ThermalDiffusion`
     // (Fourier conduction between neighboring particles) directly mutates
     // `temperature`, which now conflicts with `enthalpy` being the sole
     // authoritative thermal state -- running both would let spatial
@@ -466,7 +466,7 @@ fn make_sim() -> (
     // plateau the enthalpy state says it should still be on. Disabled here
     // rather than left half-correct; folding spatial conduction INTO the
     // enthalpy update (diffusing `m*h`, not `T`, exactly Voller-Cross's own
-    // real method) is real, separate follow-up work, not silently dropped.
+    // real method) is separate follow-up work, not silently dropped.
 
     // Real "chimney" geometry: narrow column, spawned low in a tall domain --
     // real gravity keeps it from spreading sideways, and there's real room
@@ -487,18 +487,18 @@ fn make_sim() -> (
         .with_default_material(Box::new(ice))
         .with_material(WATER_ID, Box::new(water.clone()))
         .with_material(STEAM_ID, Box::new(steam))
-        // Real, disclosed ordering requirement (found live): `MaterialRegistry`
+        // Disclosed ordering requirement (found live): `MaterialRegistry`
         // requires contiguous IDs registered IN NUMERIC ORDER (0,1,2,3,...),
         // not just distinct values -- `BOILING_ID=3` must therefore be
         // registered AFTER `STEAM_ID=2`, not before it.
         .with_material(BOILING_ID, Box::new(boiling))
-        // Real, required constraint, not a style choice: this scene has a
+        // Required constraint, not a style choice: this scene has a
         // strict fluid (`owns_deformation_volume_state()==true`, both
         // `NewtonianFluidMaterial` and `CavitatingFluidMaterial`
         // declare this), and only SlipBoundary declares itself compatible
         // with that -- FrictionBoundary's post-G2P particle mutation isn't
         // a declared fluid traction/no-penetration condition (see
-        // BoundaryCondition::is_strict_wc_mpm_fluid_compatible's own doc,
+        // BoundaryCondition::is_strict_wc_mpm_fluid_compatible's doc,
         // conservative default false). Confirmed live: FrictionBoundary
         // panicked immediately on startup.
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
@@ -518,12 +518,12 @@ fn make_sim() -> (
     // triggered velocity spike (65+ grid-units/s within ~1s of melting):
     // `mass_override` above (`mass_for`) assumes every ice particle has the
     // SAME nominal volume (`spacing^2`), but the spawn's own volume
-    // measurement (real, correct for a solid with no analytical rest
+    // measurement (correct for a solid with no analytical rest
     // volume -- see
-    // `fluid.rs`'s own doc on why STRICT fluids override this instead)
+    // `fluid.rs`'s doc on why STRICT fluids override this instead)
     // measures each particle's REAL volume via a kernel-density estimate,
     // which is legitimately LARGER for particles near the ice block's own
-    // free surface (fewer neighbors within the kernel = a real, lower local
+    // free surface (fewer neighbors within the kernel = a lower local
     // density reading). Combined, every edge particle ends up with the
     // WRONG density (measured live: 573 kg/m^3 instead of ice's real 917)
     // -- not a rare fluke, a systematic bias hitting every surface particle
@@ -536,7 +536,7 @@ fn make_sim() -> (
     // particle. Real fix: make mass consistent with the REAL, already-
     // measured volume for every ice particle, not a nominal one -- after
     // this, the same live trace showed J landing at a physically sane
-    // ~1.09 (ice genuinely occupies ~9% more volume than the same mass of
+    // ~1.09 (ice occupies ~9% more volume than the same mass of
     // water, matching 1000/917 exactly) instead of 1.745.
     for i in 0..solver.particles().len() {
         let particles = solver.particles_mut();
@@ -560,7 +560,7 @@ fn initial_enthalpy(count: usize) -> Vec<f32> {
     vec![h; count]
 }
 
-/// Real, blocking full-texture RGBA8 readback -- generalizes the same real,
+/// Blocking full-texture RGBA8 readback -- generalizes the same real,
 /// already-proven `readback_pixel`/`copy_texture_to_buffer` pattern
 /// `src/systems/render/tests.rs` uses for single-pixel test verification
 /// (staging buffer -> copy -> poll -> map_async -> poll -> read -> unmap),
@@ -618,19 +618,19 @@ fn read_full_frame_rgba(
     tight
 }
 
-/// Real, disclosed capture aid (2026-09-02): headless-friendly GIF/frame
+/// Disclosed capture aid (2026-09-02): headless-friendly GIF/frame
 /// export for the funding dossiers, opt-in via `PHASE_STATES_CAPTURE_DIR`
-/// (see `State::new`'s own doc for the full env-var contract) -- zero cost,
+/// (see `State::new`'s doc for the full env-var contract) -- zero cost,
 /// zero behavior change for every normal run. Renders into a SEPARATE,
 /// dedicated offscreen texture (not the live swapchain -- surface textures
 /// aren't guaranteed `COPY_SRC`-capable across backends) with real
 /// `COPY_SRC` usage, so it can be read back to CPU and appended as raw
 /// RGBA8 frames to ONE continuous stream file -- `ffmpeg -f rawvideo`
-/// (already a real, present tool on this machine, not bundled here) reads
+/// (already a present tool on this machine, not bundled here) reads
 /// ONE concatenated stream, not a numbered image sequence (that's the
-/// `image2` demuxer's own convention, a real, disclosed distinction found
+/// `image2` demuxer's own convention, a disclosed distinction found
 /// live -- an earlier version of this wrote numbered per-frame files and
-/// `-f rawvideo` genuinely could not read them without a separate manual
+/// `-f rawvideo` could not read them without a separate manual
 /// concatenation step first).
 struct CaptureState {
     file: std::fs::File,
@@ -657,7 +657,7 @@ struct State {
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
     target_temperature: f32,
-    /// Real, disclosed fix (2026-08-31, external review): the heating
+    /// Disclosed fix (2026-08-31, external review): the heating
     /// PLATE's own real state, separate from `target_temperature` (the
     /// slider's own SETPOINT). The plate has real thermal inertia and
     /// ramps toward the setpoint at a bounded rate (see the ramp logic
@@ -672,7 +672,7 @@ struct State {
     /// `HEAT_GAIN*(plate_temperature-particle_temperature)`, the standard
     /// Newton's-law-of-cooling contact form -- self-limiting by
     /// construction (a particle above `plate_temperature` gets COOLED
-    /// back toward it, exactly like real contact with a real, finite-
+    /// back toward it, exactly like real contact with a finite-
     /// temperature heating element).
     plate_temperature: f32,
     real_gravity: Vec2,
@@ -690,7 +690,7 @@ struct State {
     fps_frames: u64,
     last_fps: f32,
     /// Real per-particle enthalpy state (2026-08-29) -- see `water_phase_
-    /// chain`'s own doc. The single authoritative thermal state;
+    /// chain`'s doc. The single authoritative thermal state;
     /// `particles.temperature` is DERIVED from this every frame, not the
     /// other way around.
     enthalpy: Vec<f32>,
@@ -700,9 +700,9 @@ struct State {
     steam_material: IdealGasMaterial,
     /// TEMPORARY diagnostic (2026-08-30): which water particle held `detF`
     /// max last sample, to check whether the live drift is one persisting
-    /// particle or a rotating cast -- see the tracking block's own doc.
+    /// particle or a rotating cast -- see the tracking block's doc.
     water_jmax_prev_idx: Option<usize>,
-    /// Real, disclosed capture aid -- see `CaptureState`'s own doc. `None`
+    /// Disclosed capture aid -- see `CaptureState`'s doc. `None`
     /// (default, every normal run) unless `PHASE_STATES_CAPTURE_DIR` is set.
     capture: Option<CaptureState>,
 }
@@ -745,7 +745,7 @@ impl State {
             view_formats: vec![],
         };
         surface.configure(&device, &sc);
-        // Real, disclosed capture aid (2026-09-02): opt-in via
+        // Disclosed capture aid (2026-09-02): opt-in via
         // `PHASE_STATES_CAPTURE_DIR` (a real directory path -- created if it
         // doesn't exist). `PHASE_STATES_CAPTURE_FRAMES` (default 150) sets
         // how many frames to capture; `PHASE_STATES_CAPTURE_STRIDE`
@@ -755,7 +755,7 @@ impl State {
         // self-terminating, non-interactive capture run, no manual
         // intervention needed. Writes ONE continuous raw RGBA8 stream
         // (`frames.raw`, matching `ffmpeg -f rawvideo`'s own real
-        // single-stream contract, see `CaptureState`'s own doc) plus one
+        // single-stream contract, see `CaptureState`'s doc) plus one
         // `format.txt` sidecar recording the real detected pixel
         // format/size, since the swapchain's own format is picked
         // dynamically (`fmt` above) and ffmpeg needs to be told the exact
@@ -879,7 +879,7 @@ impl State {
             target_temperature: 250.0,
             plate_temperature: 250.0,
             real_gravity,
-            // Real, measured reason to KEEP this low, not a preventive
+            // Measured reason to KEEP this low, not a preventive
             // guess (2026-09-02, external review's own proposed decisive
             // experiment, run to completion): a one-way heat-up at real
             // gravity=1.0 is fine (no explosion, no fps collapse, see
@@ -895,7 +895,7 @@ impl State {
             // entirely, not a transient lag. Root cause (confirmed by
             // reading, not guessed): the per-particle heat-exchange loop
             // below only applies to particles with `x.y <=
-            // HEATING_PLATE_TOP_Y` (2026-08-29's own real, disclosed fix
+            // HEATING_PLATE_TOP_Y` (2026-08-29's own disclosed fix
             // for enabling convection -- a uniform, spatially-blind heat
             // source gives zero vertical DeltaT, hence zero Rayleigh
             // number, hence no real convection possible at all). At real
@@ -913,8 +913,8 @@ impl State {
             // momentum OR heat with) -- a real ambient-medium
             // representation would fix both symptoms at once, not
             // attempted here. Reverted to the original 0.01 default with
-            // this real, measured reason on record -- see
-            // `PHASE_STATES_AUTO_CYCLE_PERIOD_S`'s own doc for how to
+            // this measured reason on record -- see
+            // `PHASE_STATES_AUTO_CYCLE_PERIOD_S`'s doc for how to
             // reproduce this finding directly.
             gravity_fraction: script.as_ref().map_or(0.01, |s| s.gravity(0.01)),
             cursor_pos: [0.0; 2],
@@ -961,14 +961,14 @@ impl State {
     }
 
     fn update_and_render(&mut self, window: &Window) {
-        // Real, live-adjustable gravity -- see this struct's own
+        // Live-adjustable gravity -- see this struct's own
         // real_gravity/gravity_fraction doc and the gravity slider below.
         let live_gravity = self.real_gravity * self.gravity_fraction;
         self.sim.set_gravity(live_gravity);
 
-        // Real, simple proportional heater/cooler driving toward the
-        // slider's own target -- see HEAT_GAIN's own doc.
-        // Real, temporary verification aid (2026-08-28): drives the SAME
+        // Simple proportional heater/cooler driving toward the
+        // slider's own target -- see HEAT_GAIN's doc.
+        // Temporary verification aid (2026-08-28): drives the SAME
         // real target-temperature slider programmatically instead of
         // requiring a live human drag, so the gas bulk-viscosity fix can be
         // verified via logged data with nobody at the keyboard. Not wired
@@ -976,7 +976,7 @@ impl State {
         if let Ok(target) = std::env::var("PHASE_STATES_AUTO_HEAT") {
             self.target_temperature = target.parse().unwrap_or(400.0);
         }
-        // Real, temporary verification aid (2026-08-29): the default
+        // Temporary verification aid (2026-08-29): the default
         // `gravity_fraction=0.01` is far gentler than the full real gravity
         // (fraction=1.0) the water/ice stiffness fixes above were derived
         // against -- this overrides it once at startup so the derived fixes
@@ -987,7 +987,7 @@ impl State {
         {
             self.gravity_fraction = g;
         }
-        // Real, temporary verification aid (2026-08-28): the auto-heat var
+        // Temporary verification aid (2026-08-28): the auto-heat var
         // above jumps the SLIDER TARGET instantly, which every past test
         // tonight used -- but a real human dragging the slider takes real
         // time to do that, and `MAX_HEAT_RATE_K_PER_S` alone doesn't capture
@@ -995,7 +995,7 @@ impl State {
         // 80K/s rate cap from frame one either way). This ramps the target
         // itself at a deliberate-but-real human pace instead, to test
         // whether the still-open compression cascade after the (now-fixed)
-        // melt-transition bug is a genuine engine issue or an artifact of
+        // melt-transition bug is a engine issue or an artifact of
         // instant, unrealistic heating.
         if let Ok(rate) = std::env::var("PHASE_STATES_REALISTIC_HEAT_RATE_K_PER_S")
             && let Ok(ramp_rate) = rate.parse::<f32>()
@@ -1010,16 +1010,16 @@ impl State {
                     (self.target_temperature + ramp_rate * dt).min(ramp_target);
             }
         }
-        // Real, disclosed verification aid (2026-09-02, external review's
+        // Disclosed verification aid (2026-09-02, external review's
         // own proposed decisive experiment). The other AUTO_HEAT variants
-        // above only ever heat -- this drives a real, repeating BIDIRECTIONAL
+        // above only ever heat -- this drives a repeating BIDIRECTIONAL
         // triangle-wave target (heat to `PHASE_STATES_AUTO_HEAT` or 420K
         // over the first half of `PHASE_STATES_AUTO_CYCLE_PERIOD_S` real sim
         // seconds, cool back to 250K over the second half). Used to test
         // whether `gravity_fraction=1.0` could become this demo's own
         // default through repeated full phase cycles (ice<->water<->
-        // boiling<->steam, both directions) -- real, measured result: it
-        // FAILS at real gravity (see `gravity_fraction`'s own doc above for
+        // boiling<->steam, both directions) -- measured result: it
+        // FAILS at real gravity (see `gravity_fraction`'s doc above for
         // the exact mechanism found), so the default stayed at 0.01.
         // Kept as a real reproduction tool for that finding (e.g. combined
         // with `PHASE_STATES_GRAVITY_FRACTION=1.0` to see the freeze
@@ -1052,12 +1052,12 @@ impl State {
             .sum::<f32>()
             / n_f;
         let dt = self.sim.config().dt;
-        // Real, disclosed fix (2026-08-31, external review): the plate's
+        // Disclosed fix (2026-08-31, external review): the plate's
         // own real state ramps toward the slider's SETPOINT
         // (`target_temperature`) at a bounded rate -- real thermal
         // inertia, same proportional-controller form as before, just
         // driven off the plate's own state now instead of (wrongly) the
-        // population's global average. See `plate_temperature`'s own doc
+        // population's global average. See `plate_temperature`'s doc
         // for the real bug this fixes (an already-overheated particle
         // used to keep receiving positive heat as long as the GLOBAL
         // average stayed under target).
@@ -1074,12 +1074,12 @@ impl State {
             );
         }
 
-        // Real, disclosed change (2026-08-29, Milestone 1 of the real
+        // Disclosed change (2026-08-29, Milestone 1 of the real
         // solid<->liquid<->gas cycle plan): the proportional
         // controller still targets a K/s rate (the same intuitive slider
         // as before), but now applies it as a real ENERGY rate
         // (`dH = cp*rate*dt`), not a direct temperature increment --
-        // this is what makes a genuine plateau happen at each real
+        // this is what makes a plateau happen at each real
         // transition: the same real energy keeps flowing in during a
         // plateau, it just raises `phase_fraction` instead of `T`, exactly
         // like a real heating element under a pot of already-boiling
@@ -1089,7 +1089,7 @@ impl State {
         // this particle is actually in -- no more instant jump, no more
         // scaled-down latent heat, no more arbitrary hysteresis margin.
         //
-        // Real, disclosed fix (2026-08-31, external review): the rate
+        // Disclosed fix (2026-08-31, external review): the rate
         // driving each particle's own `dH` is now a LOCAL contact flux
         // (`HEAT_GAIN*(plate_temperature-particle_temperature)`, standard
         // Newton's-law-of-cooling form), not one shared rate computed
@@ -1098,12 +1098,12 @@ impl State {
         // doc for the real bug this fixes. Self-limiting by construction:
         // a particle at or above `plate_temperature` gets zero or
         // negative flux, exactly like real contact with a real heating
-        // element at a real, finite temperature.
+        // element at a finite temperature.
         let phase_chain = water_phase_chain();
         {
             let particles = self.sim.particles_mut();
             for i in 0..particles.len() {
-                // Real, disclosed change (2026-08-29, Milestone 2): only
+                // Disclosed change (2026-08-29, Milestone 2): only
                 // particles within the real "heating plate" region (the
                 // bottom of the domain) receive DIRECT energy -- everything
                 // above must warm via real bulk transport (particles
@@ -1130,7 +1130,7 @@ impl State {
                     self.enthalpy[i],
                 );
                 particles.temperature[i] = new_t;
-                // Real, disclosed fix (2026-09-01, external review): writes
+                // Disclosed fix (2026-09-01, external review): writes
                 // the SAME `fraction` that `material_id_for_phase_state`
                 // (below) uses to decide `BOILING_ID` directly into
                 // `Particle::friction_hardening` -- `BoilingMixtureMaterial`'s
@@ -1182,7 +1182,7 @@ impl State {
         }
 
         // Real Archimedes buoyancy (same formula as BuoyancyField, see that
-        // struct's own doc), applied ONLY to steam -- real, disclosed bug
+        // struct's doc), applied ONLY to steam -- disclosed bug
         // fix (2026-08-28, found live): applying this to every particle
         // unconditionally gave the STARTING ice block (rho=917, slightly
         // less than the water reference 1000) a net upward nudge from
@@ -1197,42 +1197,42 @@ impl State {
         // solver's own plain gravity, exactly as a real solid/liquid does
         // until something actually needs to float through them.
         {
-            // Real, disclosed medium-selection (2026-08-31, external
+            // Disclosed medium-selection (2026-08-31, external
             // review; extended 2026-09-02, and again 2026-09-02 with an
             // honest downgrade to this doc's own earlier language): the
             // steam buoyancy formula below models an Archimedes density
             // contrast against an EFFECTIVE reference medium --
             // submerged-body-in-water when real water/boiling-mixture
             // neighbors are still nearby, an effective ambient-air stand-in
-            // once they're not (see `AMBIENT_AIR_RHO_KG_M3`'s own doc for
+            // once they're not (see `AMBIENT_AIR_RHO_KG_M3`'s doc for
             // exactly what that stand-in is and is not). Confirmed-live bug
             // this original gate fixed (2026-08-31): applying the WATER-
             // relative formula unconditionally kept targeting a real,
             // nonzero rise velocity (e.g. ~13.6 grid-units/s at 431K)
             // regardless of local water fraction, continuing to drive
             // dispersion/CFL cost even deep inside an all-steam region.
-            // Real, disclosed follow-up bug (2026-09-02, found live): that
+            // Disclosed follow-up bug (2026-09-02, found live): that
             // first fix over-corrected -- cutting buoyancy to EXACTLY ZERO
             // once no water/boiling neighbor remained means the WHOLE
             // population loses lift simultaneously the instant it fully
             // vaporizes (confirmed live: steam(n=240) at frame ~4200 in a
             // real headless run, buoyancy gate cutting scene-wide from that
-            // frame on) -- real, structural, not a transient. This closes
+            // frame on) -- structural, not a transient. This closes
             // that specific demo-visible symptom (a fully-vaporized steam
-            // parcel now keeps a genuinely nonzero, much weaker thermal
+            // parcel now keeps a nonzero, much weaker thermal
             // lift instead of freezing in place), but is honestly an
             // EFFECTIVE DEMO CLOSURE, not real simulated ambient air --
             // blocked on a real surrounding-medium representation (see
-            // `AMBIENT_AIR_RHO_KG_M3`'s own doc). Computed via an immutable
+            // `AMBIENT_AIR_RHO_KG_M3`'s doc). Computed via an immutable
             // pass BEFORE acquiring the
             // mutable particle borrow below (`count_near` needs
             // `&Simulation`) -- one entry per particle (0 for anything
             // that isn't steam), same radius this file's own same-
             // material-neighbor diagnostics already use.
             const BUOYANCY_NEIGHBOR_RADIUS: f32 = 3.0;
-            // Real, disclosed fix (2026-09-01): counts BOILING_ID neighbors
+            // Disclosed fix (2026-09-01): counts BOILING_ID neighbors
             // too, not just WATER_ID -- a steam particle rising directly out
-            // of a genuinely mid-boil mixture (real, common now that
+            // of a mid-boil mixture (common now that
             // `BOILING_ID` exists) is still surrounded by a real condensed
             // medium this gate's own Archimedes formula assumes; counting
             // only pure liquid would undercount right at a real boiling
@@ -1255,14 +1255,14 @@ impl State {
 
             let particles = self.sim.particles_mut();
             let count = particles.len();
-            // Real, root-cause fix (2026-08-28): a first attempt ADDED the
+            // Root-cause fix (2026-08-28): a first attempt ADDED the
             // buoyancy kick then weakly decayed it (`v += kick; v *= 1-k*dt`)
             // -- WRONG, because the full, instantaneous kick (up to ~120x
             // base gravity as steam expands and `rho` shrinks toward this
             // material's own volume-ratio ceiling) lands FIRST, and a ~7.5%/
             // frame decay can never catch a spike that large before the
             // solver's own CFL scan reacts to it (confirmed live: fps still
-            // collapsed identically with that fix in place). Real, correct
+            // collapsed identically with that fix in place). Correct
             // form: relax DIRECTLY toward the analytical terminal velocity
             // where drag exactly balances buoyancy (`k*v_terminal = a`, the
             // same real force-balance every rising-bubble/vapor-parcel
@@ -1282,7 +1282,7 @@ impl State {
             // over-expands (J up) gets LESS dense, which under the old formula
             // made it MORE buoyant, which pushed it (and, via the resulting
             // local velocity-gradient divergence, its neighbors) to expand
-            // further -- a real, unbounded positive feedback loop, entirely
+            // further -- a unbounded positive feedback loop, entirely
             // independent of temperature or heating rate, exactly matching what
             // was measured live.
             //
@@ -1303,7 +1303,7 @@ impl State {
                 if particles.material_id[i] != STEAM_ID {
                     continue;
                 }
-                // Real medium selection -- see this block's own doc above:
+                // Real medium selection -- see this block's doc above:
                 // submerged-in-water Archimedes while real condensed-phase
                 // neighbors remain, ambient-air Archimedes once they don't.
                 // Never zero: a steam particle always has SOME real medium
@@ -1342,7 +1342,7 @@ impl State {
             // Real beta (thermal expansion coefficient): water's own beta
             // is strongly temperature-dependent (CRC Handbook / NIST water
             // data) -- ~2.1e-4/K near 20C, ~4.6e-4/K near 50C, ~7.5e-4/K
-            // near 100C. A single constant is a real, disclosed
+            // near 100C. A single constant is a disclosed
             // simplification (same convention as this demo's own single-cp-
             // per-phase choice) -- picked at ~50C (323K), roughly the
             // middle of this scene's real liquid-water range.
@@ -1373,7 +1373,7 @@ impl State {
             }
         }
 
-        // Real cursor push/pull -- same real, already-proven mechanism
+        // Real cursor push/pull -- same already-proven mechanism
         // basic_snow.rs/basic_fluids.rs already use (a normal velocity-space
         // impulse, not restricted by any of the strict-WC-MPM-fluid checks
         // above -- those only gate pinning/contact/mixture/sleep/boundary/
@@ -1419,13 +1419,13 @@ impl State {
             }
         }
 
-        // Real, temporary diagnostic (2026-08-28) -- checking a live "sizes
+        // Temporary diagnostic (2026-08-28) -- checking a live "sizes
         // don't hold / everything rotates" report against the actual per-
         // particle deformation gradient, not a visual guess. Prints the max
         // |off-diagonal| of F split by material: fluid/gas materials
         // unconditionally re-diagonalize F to a pure isotropic scale every
         // substep (`update_particle`, confirmed by direct code read), so a
-        // nonzero water/steam value here would be real, hard evidence of an
+        // nonzero water/steam value here would be hard evidence of an
         // engine bug -- a zero value would mean the reported "rotation" is
         // real bulk circulation (gravity+buoyancy+cursor), not a per-
         // particle rendering artifact.
@@ -1466,13 +1466,13 @@ impl State {
             // Real diagnostic (2026-08-29): direct user correction -- the
             // deformation-gradient offdiag check above (proven zero all
             // night) only rules out a particle's OWN shape twisting; it says
-            // nothing about the velocity FIELD genuinely swirling as a
-            // group, which is a real, distinct quantity (vorticity, the
+            // nothing about the velocity FIELD swirling as a
+            // group, which is a distinct quantity (vorticity, the
             // antisymmetric half of the velocity gradient -- divergence,
             // tracked above via trace(C), is the symmetric half). A rising,
             // expanding parcel creating real vorticity around itself is
             // correct physics in reality too (a real bubble wake), so this
-            // is a genuine open question, not an assumed bug: is what looks
+            // is a open question, not an assumed bug: is what looks
             // like "rotation" at liftoff real fluid vorticity, or the visual
             // signature of several particles being ejected in different
             // directions from the same crowded spot at once (the real
@@ -1593,7 +1593,7 @@ impl State {
             // engaged there; that material (and its floor) is gone from
             // this demo now (see this file's own top doc), so the real
             // question it can still answer is whether this same particle
-            // is genuinely under real tension (`pressure_gauge<0`) --
+            // is under real tension (`pressure_gauge<0`) --
             // exactly the state the cavitation EOS's own mixture/vapor
             // branches exist to handle correctly instead of flooring.
             if let Some((max_idx, max_j)) = particles
@@ -1608,7 +1608,7 @@ impl State {
                 // `rest_density_grid = rho_l_ref*dx^2`, so this real SI
                 // density is exactly `rho_l_ref/max_j` -- `dx` cancels,
                 // same derivation `CavitatingFluidMaterial`'s own private
-                // `real_density_si` uses internally. Real, live-temperature
+                // `real_density_si` uses internally. Live-temperature
                 // reconstruction (2026-08-31): reads THIS particle's own
                 // `temperature`, not a fixed reference -- the whole real
                 // point of the T-dependent closure.
@@ -1644,15 +1644,15 @@ impl State {
                 );
                 self.water_jmax_prev_idx = Some(max_idx);
             }
-            // TEMPORARY diagnostic (2026-09-01): the real, direct check on
+            // TEMPORARY diagnostic (2026-09-01): the direct check on
             // `BoilingMixtureMaterial`'s own core claim -- a genuinely
             // mid-boil particle's mechanical `J` should track the real
             // mass-fraction equilibrium `J_eq(x)=1+(rho_l_ref/rho_v_ref-1)*x`
-            // this material's own doc derives, not run free the way the
+            // this material's doc derives, not run free the way the
             // old bug let it (the live symptom this whole fix answers:
             // `J=5.988` at `x_H<0.5`, i.e. `J` nearly at the FULL-vapor
             // equilibrium while barely a third boiled). `J/J_eq->1` here is
-            // the real, direct confirmation the fix is doing its job.
+            // the direct confirmation the fix is doing its job.
             if let Some((max_idx, max_j)) = particles
                 .iter()
                 .enumerate()
@@ -1665,7 +1665,7 @@ impl State {
                 let j_eq = self.boiling_material.j_eq(x);
                 let stress = self.boiling_material.kirchhoff_stress(particles, max_idx);
                 let pressure_gauge = -stress.x_axis.x;
-                // Real, disclosed diagnostic (2026-09-01, external review's
+                // Disclosed diagnostic (2026-09-01, external review's
                 // own decisive test #1): `J/J_eq != 1` is not automatically
                 // a bug -- a column under real gravity needs real internal
                 // pressure to hold its own weight, and this material's own
@@ -1674,7 +1674,7 @@ impl State {
                 // compares it against a direct hydrostatic estimate
                 // (`p ~= rho*g*(y_surface-y)`) at this particle's own real
                 // depth -- if the orders of magnitude agree, the residual is
-                // real physics, not drift. `y_surface` is the real, live
+                // real physics, not drift. `y_surface` is the live
                 // top of the condensed-phase column THIS frame (max y over
                 // ICE_ID/WATER_ID/BOILING_ID -- steam excluded, it's not
                 // part of the hydrostatic medium).
@@ -1729,7 +1729,7 @@ impl State {
             {
                 let p = particles.get(max_idx);
                 let temperature = p.temperature.max(1.0);
-                // Real, exact mechanical-equilibrium J (p_gauge=0): from
+                // Exact mechanical-equilibrium J (p_gauge=0): from
                 // `p0=rho0*R*T` (live-T, matches `kirchhoff_stress`'s own
                 // formula) and the isentropic relation
                 // `p_abs=p0*(rho/rho0)^gamma`, solving `p_abs=reference_
@@ -1772,7 +1772,7 @@ impl State {
             }
             // TEMPORARY diagnostic (2026-08-28): direct instrumentation
             // (`EMERGE_CFL_DIAGNOSE=2`, see `cfl::diagnose_worst_particle_
-            // cfl_term`'s own doc) found particle #15 specifically is the
+            // cfl_term`'s doc) found particle #15 specifically is the
             // globally-worst-constrained particle in ~66% of 15123 real
             // samples -- not a diffuse steam-population effect, one
             // particular particle in an escalating runaway. Tracking its
@@ -1784,7 +1784,7 @@ impl State {
             // that paper's own specific derived bound didn't turn out to
             // be the binding term here).
         }
-        // Real, decisive instrumentation (2026-09-02, external review's own
+        // Decisive instrumentation (2026-09-02, external review's own
         // recommended go/no-go gate before scoping any two-way mechanical/
         // thermal closure for `BoilingMixtureMaterial`): the single-worst-
         // particle `[boiling-jmax]` trace above answers "is there SOME live
@@ -1797,7 +1797,7 @@ impl State {
         // absolute, inverts the real IAPWS-IF97 Region 4 saturation curve
         // to get that pressure's own saturation temperature
         // (`water_saturation_temperature_from_pressure_k`, see that
-        // function's own doc), and reports `delta_T_sat = T_sat(p_abs) -
+        // function's doc), and reports `delta_T_sat = T_sat(p_abs) -
         // BOILING_POINT_K` as median/p10/p90 AND sign -- never just
         // `max(J)` the way the single-particle trace does, per that
         // review's own explicit instruction. Also bins by depth (shallow/
@@ -1813,7 +1813,7 @@ impl State {
         // /vaporization_latent_heat` -- the vapor-quality change this
         // pressure residual WOULD cause if mechanical and thermal states
         // were coupled, without actually coupling them (this material
-        // stays one-directional; see its own module doc). With this
+        // stays one-directional; see its module doc). With this
         // engine's real constants (`WATER_HEAT_CAPACITY_J_KG_K=4182`,
         // `VAPORIZATION_LATENT_HEAT_J_KG=2_257_000`), `epsilon_x_equiv
         // ~= 0.00185/K` -- 1K of `delta_T_sat` is ~0.185% quality, 10K is
@@ -1977,11 +1977,11 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // Real, disclosed capture aid -- see `CaptureState`'s own doc.
+        // Disclosed capture aid -- see `CaptureState`'s doc.
         // Renders a SECOND time into the dedicated offscreen capture
         // texture (not the swapchain view above) so the readback below has
         // a real `COPY_SRC`-capable source. Self-terminates once
-        // `target_frames` is reached -- a real, non-interactive, fully
+        // `target_frames` is reached -- a non-interactive, fully
         // automatic capture run.
         if let Some(cap) = &mut self.capture
             && cap.captured < cap.target_frames
@@ -2063,7 +2063,7 @@ impl State {
                     ui.label(format!(
                         "Target temperature (melt={MELTING_POINT_K:.0}K, boil={BOILING_POINT_K:.0}K):"
                     ));
-                    // Real, disclosed ceiling (2026-09-02): 600K, not an
+                    // Disclosed ceiling (2026-09-02): 600K, not an
                     // arbitrary round number -- comfortably under water's
                     // real IAPWS-IF97 critical point (647.096K,
                     // `water_saturation::WATER_CRITICAL_POINT_K`), past

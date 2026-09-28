@@ -11,7 +11,7 @@ mod gui_common;
 /// real scene).
 ///
 /// Scene: a small block hanging from a single fixed point at the top, like
-/// a pendant/plumb line. Getting here took real, live debugging across
+/// a pendant/plumb line. Getting here took live debugging across
 /// several rejected scene designs (a both-ends cable that couldn't build
 /// tension before tearing; a resting pile that was structurally metastable
 /// -- see git history/session notes for the full blow-by-blow) -- but the
@@ -25,7 +25,7 @@ mod gui_common;
 /// built around it. Fixed at the source in `no_compression.rs` (real
 /// `F_new=(I+dt*C)*F_old` integration, the same formula NeoHookean/
 /// Corotated use in their own overrides), with new regression tests there.
-/// Every scene-design problem hit along the way was a real, secondary
+/// Every scene-design problem hit along the way was a secondary
 /// symptom of that same underlying bug, not independent issues.
 ///
 /// The point of THIS material specifically: push it (LMB) and it goes
@@ -41,7 +41,7 @@ mod gui_common;
 /// under real gravity the membrane settles to a static equilibrium
 /// (`max_speed` under 0.001 cells/s by t=1s).
 ///
-/// Real, disclosed residual (found by this same migration, not introduced
+/// Disclosed residual (found by this same migration, not introduced
 /// by it): even once visibly static, `max|J-1|` keeps drifting slowly and
 /// apparently unboundedly (measured: ~0.02 -> ~0.22 over 600s at the real
 /// default stiffness) -- confirmed via a controlled probe
@@ -55,7 +55,7 @@ mod gui_common;
 /// old stiffness at real gravity (drifts to `|J-1|=1.0` in seconds, a
 /// completely different, much faster failure). Real but low practical
 /// severity for THIS interactive demo (a user's own LMB/RMB strain events
-/// dwarf it within seconds) -- filed as a real, open, low-priority residual
+/// dwarf it within seconds) -- filed as a open, low-priority residual
 /// for the engine broadly, not fixed here.
 ///
 ///   cargo run --example basic_membrane --features render
@@ -153,7 +153,7 @@ const ANCHOR_MARGIN: f32 = 0.4;
 /// chitin): elastic modulus at biologically realistic LOW strain is
 /// "extremely... compliant" (<0.1 MPa), an order of magnitude softer than
 /// its own higher-strain plateau (3-30 MPa) once the collagen network
-/// straightens out. `NoCompressionMaterial`'s own doc lists "membranes
+/// straightens out. `NoCompressionMaterial`'s doc lists "membranes
 /// (wings, fins...)" as a real intended use case -- a bat patagium is a
 /// direct match: real biological tissue loaded in tension by the wing
 /// skeleton, going slack/wrinkling exactly like this material's own
@@ -234,9 +234,9 @@ fn make_sim(lambda: f32, mu: f32) -> Simulation {
 }
 
 /// Real Dirichlet/kinematic anchor -- `Particle::pinned` (see that field's
-/// own doc), the engine's actual, already-tested mechanism for exactly
+/// doc), the engine's actual, already-tested mechanism for exactly
 /// this ("the standard technique for static/bedrock geometry in
-/// deformable-body sims" -- G2P's own doc). Set ONCE, here, not re-applied
+/// deformable-body sims" -- G2P's doc). Set ONCE, here, not re-applied
 /// every frame: G2P itself forces `v=0`/`velocity_gradient=0` for a pinned
 /// particle DURING its own gather from then on, every substep, forever --
 /// this is NOT the same as this scene's own first (buggy) attempt, which
@@ -245,7 +245,7 @@ fn make_sim(lambda: f32, mu: f32) -> Simulation {
 /// G2P knew for the whole substep (contributing to and reading a real,
 /// unconstrained gravity-driven velocity field), with only their FINAL x/v
 /// silently discarded and replaced afterward -- so `deformation_gradient`
-/// integrated as if genuinely free-falling the entire time, real strain
+/// integrated as if free-falling the entire time, real strain
 /// never accumulated, and the "anchor" was pinned in name only. Confirmed
 /// directly: `deformation_gradient.determinant()` stayed EXACTLY 1.0000
 /// forever, even for the free particle spatially closest to the "anchor".
@@ -390,8 +390,8 @@ impl State {
             // Real IRL default (2026-09-05, real-SI migration) -- the OLD
             // 0.0002 default existed only to compensate for the OLD
             // `lambda=2000/mu=4000` grid-unit guess collapsing under real
-            // gravity (see the struct's own doc for the measured
-            // before/after). With the real, sourced stiffness now in
+            // gravity (see the struct's doc for the measured
+            // before/after). With the sourced stiffness now in
             // `membrane_lame`, real Earth gravity settles to a genuine
             // static equilibrium on its own -- no fudge needed. The slider
             // stays a real feature (explore lower/zero gravity), just no
@@ -488,7 +488,7 @@ impl State {
 
         self.sim.step();
 
-        // Real, always-on (not just capture-mode) diagnostic -- user-
+        // Always-on (not just capture-mode) diagnostic -- user-
         // requested, live: prints real bounding-box/velocity state every
         // 60 frames during normal interactive play too, not just headless
         // capture, so a live "it detaches" report can be read straight

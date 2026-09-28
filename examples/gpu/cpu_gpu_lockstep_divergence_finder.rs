@@ -13,7 +13,7 @@ extern crate emerge_engine as emerge;
 /// FORCED, IDENTICAL, non-adaptive timestep schedule (`adaptive_timestep:
 /// false`, fixed `dt`, `max_substeps_per_step: 1` -- exactly one substep
 /// per `step_frame`/`step_n(1)` call on both sides, so any divergence is
-/// attributable to a genuine backend difference, not a different substep
+/// attributable to a backend difference, not a different substep
 /// schedule). Scans every particle every step for the first one where
 /// CPU's and GPU's own computed `div(v)` disagree beyond a real
 /// tolerance, reporting the exact step, particle, and full local state.

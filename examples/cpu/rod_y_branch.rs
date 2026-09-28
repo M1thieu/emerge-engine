@@ -41,7 +41,7 @@ fn main() {
     let ei = young_modulus_pa * width_m.powi(3) * thickness_m / 12.0;
 
     // Geometry: a 6cm trunk rising straight up, then a 4cm branch peeling
-    // off at 40 degrees from vertical at the junction -- a real, plausible
+    // off at 40 degrees from vertical at the junction -- a plausible
     // branching angle (illustrative geometry, not a species-specific
     // citation).
     let trunk_start = Vec2::new(32.0, 4.0);
@@ -61,7 +61,7 @@ fn main() {
 
     // Critical damping sized off the trunk's own segment (same convention
     // RodMaterial::critical_damping already uses for a single rod) -- a
-    // real, disclosed simplification since the network has two different
+    // disclosed simplification since the network has two different
     // segment lengths (trunk vs branch); this is the same-order-of-
     // magnitude damping the blade itself uses.
     let trunk_seg_m = trunk_height_m / (n_trunk_points as f32 - 1.0);

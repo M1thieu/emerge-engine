@@ -12,7 +12,7 @@ mod gui_common;
 /// depends on how fast it is shearing, through the inertial number I
 /// (grain diameter times shear rate, scaled by the confining pressure).
 /// Slow, quasi-static flow feels the STATIC friction angle; fast, inertial
-/// flow feels a HIGHER, DYNAMIC one -- the material genuinely resists more
+/// flow feels a HIGHER, DYNAMIC one -- the material resists more
 /// per unit stress the harder you push it, the opposite of a viscous
 /// fluid thinning out. This is the mu(I) rheology (Jop, Forterre & Pouliquen,
 /// Nature 441, 2006; the DPMui model this material implements is Cicoira
@@ -36,8 +36,8 @@ mod gui_common;
 /// demo. Everything else comes through the engine's real SI dispatch
 /// (`Elastoplastic` + `PlasticityModel::GranularRateDependent`), so the
 /// friction angle and elastic modulus are real degrees and real pascals;
-/// Q itself is not yet part of that dispatch (a real, disclosed engine gap
-/// -- see `MuIRheologyMaterial::from_young_modulus`'s own doc), so it is
+/// Q itself is not yet part of that dispatch (a disclosed engine gap
+/// -- see `MuIRheologyMaterial::from_young_modulus`'s doc), so it is
 /// set directly on the constructed material afterward.
 ///
 /// # What to watch
@@ -88,7 +88,7 @@ const YOUNG_MODULUS_PA: f32 = 15.0e6;
 const POISSON_RATIO: f32 = 0.3;
 const DENSITY_KG_M3: f32 = 1600.0;
 // Same real friction angle for all three columns -- held fixed so Q is
-// genuinely the only independent variable.
+// the only independent variable.
 const FRICTION_ANGLE_DEG: f32 = 30.0;
 
 // Cicoira et al.'s own two cited endpoints, plus their real midpoint.
@@ -121,7 +121,7 @@ fn make_sim(gravity_fraction: f32) -> Simulation {
     };
     let build = |q: f32| {
         let mut m = MuIRheologyMaterial::from_physical(&props, &config);
-        // Real, disclosed override: Q is not yet part of the SI dispatch
+        // Disclosed override: Q is not yet part of the SI dispatch
         // (see this file's own header doc), so it is set directly here --
         // same convention as setting `.optics` after `from_physical` on a
         // fluid material. `mu_static`/`mu_dynamic` came through the real

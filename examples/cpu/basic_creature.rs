@@ -193,7 +193,7 @@ fn make_sim() -> (
     let body_left = body_center.x - body_len / 2.0;
     // Bilayer fiber arch: bottom-half particles in each segment get a fiber
     // leaning one diagonal way, top-half get the mirrored diagonal -- the shared
-    // per-group CPG activation then produces a genuine bending moment through
+    // per-group CPG activation then produces a bending moment through
     // the material's own F*A*F^T active-stress term, not an external nudge.
     //
     // Alternating segments mirror which way they curl relative to their
@@ -201,7 +201,7 @@ fn make_sim() -> (
     // alternates segmental contraction sides down the body, not a uniform curl
     // everywhere.
     //
-    // Genuinely slower than injecting velocity directly would be -- real
+    // Slower than injecting velocity directly would be -- real
     // undulatory crawlers are slow. wave_speed (up/down arrow) is the correct
     // way to go faster, since it speeds up the same physical gait cycle.
     const FIBER_DIAG: f32 = 3.0;
@@ -444,7 +444,7 @@ impl State {
             //
             // Muscle activation (and the CPG clock) only run while steer != 0.0
             // -- RatchetFrictionBoundary's default easy_direction otherwise gives
-            // an "unbiased" CPG a real, dominant crawl direction from frame 1, so
+            // an "unbiased" CPG a dominant crawl direction from frame 1, so
             // a resting body needs this gate to actually stay at rest.
             if self.steer != 0.0 {
                 let new_dir_sign = if self.steer >= 0.0 { 1.0 } else { -1.0 };

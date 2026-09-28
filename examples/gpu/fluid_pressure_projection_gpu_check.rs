@@ -58,7 +58,7 @@ fn main() {
         fluid_pressure_iterations: 1,
         fluid_near_wall_cfl_scale: 20.0,
         fluid_near_wall_compression_threshold: 0.0,
-        // Real, validated gravity for this exact scene -- its own CPU GUI
+        // Validated gravity for this exact scene -- its own CPU GUI
         // starts at gravity_fraction: 0.003, NOT full earth gravity.
         gravity: Vec2::new(0.0, -981.0 * 0.003),
         ..SimConfig::earth(GRID, 0.01, dt)

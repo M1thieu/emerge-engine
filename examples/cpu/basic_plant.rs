@@ -53,7 +53,7 @@ const MAT_STALK: u32 = 0;
 // they don't exist "unstressed" and then sag.
 const STALK_HEIGHT: i32 = 4;
 // Root: pin the bottom portion of the stalk (not a razor-thin single row --
-// see `make_sim`'s own doc for why a knife-edge anchor concentrates the
+// see `make_sim`'s doc for why a knife-edge anchor concentrates the
 // whole bending moment at one point). Matches the exact pin band used in
 // every diagnostic test above (y <= stalk_bottom + 1.0).
 const ROOT_HEIGHT: f32 = 10.0;
@@ -104,15 +104,15 @@ fn make_sim(wind_enabled: bool) -> Simulation {
     // max_substeps_per_step scales with stiffness under CFL (~ sqrt(stiffness/
     // density)) -- kept conservative rather than re-tuned down for headroom.
     //
-    // Real, measured (2026-09-10): this demo's own real fps is 23-26, even
+    // Measured (2026-09-10): this demo's own real fps is 23-26, even
     // with the stalk sitting at rest (Jmin=Jmax=1.0, max_v~0.0004) -- a live
     // per-phase timing check confirmed the cost is `sim.step()` itself
     // (~38ms/frame), NOT rendering (acquire+render+present together stay
     // under 2ms). `min_dt=0.0007` against `DT=0.1` forces ~143 substeps
     // EVERY frame regardless of how visually calm the scene is, because the
     // real elastic stiffness (chosen for correct static-equilibrium physics,
-    // see `eta`'s own doc below) drives a genuinely small CFL-safe dt --
-    // the SAME real, disclosed stiffness-forces-many-substeps class already
+    // see `eta`'s doc below) drives a small CFL-safe dt --
+    // the SAME disclosed stiffness-forces-many-substeps class already
     // found for `basic_sand.rs`/`basic_showcase.rs` tonight, not a render/UI
     // bug (an earlier hypothesis, now corrected). Real fix is the same
     // Stage 3 implicit-MPM plasticity work those two need -- not chased
@@ -251,7 +251,7 @@ impl State {
         let logger = FrameLogger::open(&log_path).unwrap();
         println!("per-frame diagnostics log: {}", log_path.display());
 
-        // Same sizing as `fire_spread.rs`'s own bridge buffers (real, verified
+        // Same sizing as `fire_spread.rs`'s own bridge buffers (verified
         // pattern) -- 16 material slots is far more than this single-material
         // scene needs, but matches the shared shader's expected layout exactly.
         const RENDER_MATERIAL_SLOTS: u64 = 16;
@@ -298,7 +298,7 @@ impl State {
     }
 
     /// Rebuilds `grid_bridge_buf`/`material_mass_bridge_buf` from the CPU
-    /// solver's current state -- see those fields' own doc for the real,
+    /// solver's current state -- see those fields' doc for the real,
     /// disclosed cost. Identical technique to `fire_spread.rs`'s own bridge.
     fn upload_grid_volume_bridge(&self) {
         const SLOTS: usize = 16;
@@ -379,7 +379,7 @@ impl State {
         self.frame += 1;
         self.fps_frames += 1;
 
-        // Real, direct evidence of bending + recovery: how far the stalk's
+        // Direct evidence of bending + recovery: how far the stalk's
         // topmost particles have drifted horizontally from the root's own x
         // position, not just a visual impression.
         let particles = self.sim.particles();

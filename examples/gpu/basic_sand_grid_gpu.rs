@@ -4,8 +4,8 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 /// GPU Drucker-Prager sand, with all three real rendering paths this engine
-/// offers (see `RenderMode`'s own doc): per-particle, the solver's own P2G
-/// mass field (`Renderer::render_grid_volume` -- real, already-shipped
+/// offers (see `RenderMode`'s doc): per-particle, the solver's own P2G
+/// mass field (`Renderer::render_grid_volume` -- already-shipped
 /// MPM-native technique, see `render-pipeline-plan` memory), and real
 /// curvature-flow surface reconstruction (`Renderer::
 /// render_surface_reconstruction`, van der Laan et al. 2009 -- the SAME
@@ -90,7 +90,7 @@ struct State {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    /// Real, live gravity control -- same pattern as `basic_sand.rs`'s own
+    /// Live gravity control -- same pattern as `basic_sand.rs`'s own
     /// `real_gravity`/`gravity_fraction` (`set_gravity` already existed in
     /// the engine, `GpuSimulation::set_gravity`; this is just wiring a
     /// slider to it, closing the gap this file's own `make_sim_data` doc
@@ -137,7 +137,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> (GpuSimu
         &config,
         spawn(Vec2::new(47.0, 40.0), MAT_DENSE, 22),
     ));
-    // Real, derived: this scene's own actual per-particle mass (post grid-
+    // Derived: this scene's own actual per-particle mass (post grid-
     // density fix -- see project memory "GRID DENSITY ROOT FIX" -- particle
     // mass now comes from real grid density, not a global constant) times
     // real particles-per-cell from this scene's own `spacing` above
@@ -194,7 +194,7 @@ impl State {
         let (mut sim, grid_reference_cell_mass) = make_sim_data(Arc::new(device), Arc::new(queue));
         // Real per-cell material tracking, needed by the grid-volume path to
         // pick each cell's dominant material (loose vs dense) -- see
-        // grid_volume.wgsl's own doc.
+        // grid_volume.wgsl's doc.
         sim.attach_grid_material_render_gpu();
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
@@ -202,7 +202,7 @@ impl State {
         renderer.set_optical_params(sim.queue(), MAT_LOOSE as usize, SIGMA_SAND);
         renderer.set_optical_params(sim.queue(), MAT_DENSE as usize, SIGMA_SAND);
         // Real bug, same one `basic_fluids.rs`/`basic_fluids_gpu.rs` already hit and
-        // fixed once (see those files' own comments): `grid_reference_cell_mass`
+        // fixed once (see those files' comments): `grid_reference_cell_mass`
         // defaults to 1.0, an old "cells weigh order 0.5-4" convention. This
         // scene's real full-cell mass sits far below that default, so
         // GridVolume/Surface's mass_floor (a FRACTION of this value) was being
@@ -213,7 +213,7 @@ impl State {
         renderer.set_grid_reference_cell_mass(grid_reference_cell_mass);
         // TRIED live 2026-08-26, REVERTED: `Renderer::set_particle_spacing_cells`
         // (widens the splat kernel to hit a target effective-neighbor count --
-        // see that fn's own doc) was meant to fix grain/flicker/depop on sparse
+        // see that fn's doc) was meant to fix grain/flicker/depop on sparse
         // particles, matching the exact symptom `basic_fluids.rs` also hit once.
         // Live result here was worse, not better: this scene ALSO has real
         // velocity-based anisotropic stretch active (every material gets it,
@@ -221,19 +221,19 @@ impl State {
         // extension" doc), and the two compose multiplicatively on splat
         // radius (`radius = BSPLINE_OUTER_LIMIT * scale * max_stretch *
         // splat_w` in `splat_density_main`) -- widening `splat_w` on top of an
-        // already motion-elongated kernel merged genuinely separate, isolated
+        // already motion-elongated kernel merged separate, isolated
         // particles into a single wrong blob/streak (live-confirmed via
         // screenshot: Particles mode showed correctly scattered dots; Surface
         // mode showed one blob plus a comet-tailed smear) AND cost measurably
         // more per frame, worse at higher push/pull speed (bigger
         // `max_stretch`). Exactly the same "don't stack independently-
-        // justified changes blind" lesson `basic_fluids.rs`'s own comment
+        // justified changes blind" lesson `basic_fluids.rs`'s comment
         // already recorded for a different pair of changes. Reverted pending
         // a real fix that accounts for the composition (e.g. capping combined
         // radius growth, or making the two share one budget) rather than
         // widening the base kernel independently of what motion-stretch is
         // already doing to it.
-        // Real, measured (2026-08-26): the engine's default surface_res_
+        // Measured (2026-08-26): the engine's default surface_res_
         // multiplier=6 costs 47.6ms/call on this exact scene (headless GPU
         // timing, `diag_surface_reconstruction_real_cost_vs_grid_volume_
         // and_particles`) -- render alone caps ~21fps, before physics. This
@@ -241,10 +241,10 @@ impl State {
         // with its SQUARE), NOT `curvature_iterations` (measured flat,
         // 45-47ms whether 4 or 8 -- not the real lever here). mult=3 costs
         // 8.95ms (5.3x cheaper) while the surface grid (64*3=192) is still
-        // 3x finer than the raw 64-cell physics grid -- a real, disclosed
+        // 3x finer than the raw 64-cell physics grid -- a disclosed
         // resolution trade, not a free lunch, but a favorable one.
         renderer.set_surface_res_multiplier(3);
-        // Real, derived (not left silent): a settled granular pile has no
+        // Derived (not left silent): a settled granular pile has no
         // physical mechanism to propagate the Surface path's free-surface
         // wave PDE the way a real fluid does -- `owns_deformation_volume_
         // state()` is the same real property `basic_fluids.rs` uses to
@@ -361,7 +361,7 @@ impl State {
         let steps = self.stepper.steps_for_frame(frame_delta);
         self.max_steps_seen = self.max_steps_seen.max(steps);
         // Real GPU render-interpolation snapshot ("Fix Your Timestep", Gaffer
-        // 2004 -- see `Renderer::snapshot_particle_positions`'s own doc). Taken
+        // 2004 -- see `Renderer::snapshot_particle_positions`'s doc). Taken
         // ONCE per batch, before any step in it runs, so `render_gpu`'s later
         // blend is against the state from BEFORE this frame's physics, not a
         // partially-advanced one. Skipped when `steps==0` (most frames at a
@@ -424,7 +424,7 @@ impl State {
                 // scoped to this render mode only, matching the CPU
                 // `basic_fluids.rs` precedent -- `GridVolume`/`Surface` build
                 // their own independent P2G/reconstruction bridge buffers, a
-                // real, disclosed, separate follow-up, not done here.
+                // separate follow-up, not done here.
                 self.renderer.render_gpu(
                     self.sim.device(),
                     self.sim.queue(),
@@ -455,7 +455,7 @@ impl State {
             }
         }
 
-        // --- egui panel: real, live gravity control (see `real_gravity`/
+        // --- egui panel: live gravity control (see `real_gravity`/
         // `gravity_fraction`'s own field doc) ---
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;

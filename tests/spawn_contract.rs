@@ -92,16 +92,16 @@ fn both_spawn_paths_give_a_body_the_same_initial_volume() {
 /// failed. Both paths estimate a new body's volume from its packing, then
 /// run the material's `init_particle`, and an elastic law's `init_particle`
 /// leaves the volume alone, so the estimate stands in both and they agree.
-/// A fluid's `init_particle` sets `mass / rest_density` instead, and
-/// `add_body` used to run it BEFORE the estimate while `Simulation::new`
-/// ran it after. So in `add_body` the estimate had the last word, and at a
-/// free surface the estimate inflates a particle's volume up to 2.56 times.
+/// A fluid's `init_particle` sets `mass / rest_density` instead, so both
+/// paths must run it after the estimate: if `add_body` ran it before, the
+/// estimate would have the last word there, and at a free surface it
+/// inflates a particle's volume up to 2.56 times.
 ///
-/// Measured before the fix (`tests/scratch_bingham_column_volume_loss.rs`):
-/// the same column carried a mean 0.250000 through `Simulation::new` and
+/// With that order mismatch (`tests/scratch_bingham_column_volume_loss.rs`)
+/// the same column carries a mean 0.250000 through `Simulation::new` and
 /// 0.280036 through `add_body`, worst particle 0.640000, and three
-/// identical columns in one world ended at mean J 0.99907, 0.94304 and
-/// 0.94441 depending only on which path had added them.
+/// identical columns in one world end at mean J 0.99907, 0.94304 and
+/// 0.94441 depending only on which path added them.
 ///
 /// It has to be a yield-stress fluid WITH a storage modulus. A Newtonian
 /// fluid and a purely viscous Bingham one both declare they own their

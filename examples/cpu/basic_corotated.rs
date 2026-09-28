@@ -9,7 +9,7 @@ mod gui_common;
 ///
 /// A corotated elastic material has no yield surface at all. Hit it as
 /// hard as you like, it deforms, then returns to its exact original shape.
-/// That is the real, defining difference from `basic_vonmises.rs`'s ductile
+/// That is the defining difference from `basic_vonmises.rs`'s ductile
 /// metal or clay, which permanently dents once pushed past its yield
 /// stress. A hard plastic ruler, a stiff gel, a rubber block: none of them
 /// keep a dent.

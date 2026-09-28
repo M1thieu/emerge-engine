@@ -138,7 +138,7 @@ fn mirror(sim: &Simulation, slot: u32, axis: f64) -> Mirror {
 }
 
 /// Worst sideways drift of the centre of mass, and worst spin while the
-/// body is still genuinely moving, over the run; then the final extents.
+/// body is still moving, over the run; then the final extents.
 struct Report {
     drift_max_mm: f64,
     drift_end_mm: f64,

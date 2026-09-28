@@ -1,24 +1,16 @@
-//! The real moment-of-truth test: does pure grain-grain elastic-plastic
-//! rolling resistance (Cundall & Strack 1979 / Luding 2008 / Ai et al. 2011)
-//! hold a genuine, LONG-HORIZON-stable angle of repose from an unstable
-//! collapsing column -- the exact question every rate-dependent continuum
-//! mechanism already tried this session (Cundall damping, KE-peak switches,
-//! Cosserat curvature coupling) failed to answer, because they all fade to
-//! zero at rest. Same long-horizon discipline that caught Cosserat's own
-//! false positive (Lajeunesse et al. 2004 comparison, checked at multiple
-//! step counts, not just an early snapshot).
+//! Does grain-grain elastic-plastic rolling resistance (Cundall & Strack
+//! 1979 / Luding 2008 / Ai et al. 2011) hold a long-horizon-stable angle of
+//! repose from a collapsing column? Rate-dependent continuum mechanisms
+//! (Cundall damping, kinetic-energy-peak switches, Cosserat curvature
+//! coupling) fade to zero at rest and do not. Results are checked at several
+//! step counts against Lajeunesse et al. 2004, not at one early snapshot.
 //!
-//! Real, disclosed scope: pure grains only (no continuum coupling in THIS
-//! test -- that's `grains::coupling`'s own, separately-tested concern), an
-//! effective/coarse-grained grain radius (not literal ~0.15mm dry-sand
-//! grain size -- same honest simulation-scale compromise this project's own
-//! NGF/Cosserat work already made, disclosed not hidden), and a real,
-//! disclosed FIXED substep dt derived from `contact_law::critical_timestep`
-//! rather than the adaptive MPM substep chooser (which doesn't yet know
-//! about grain contact stiffness at all -- a real, disclosed gap, not
-//! silently worked around; folding grain stability into the adaptive
-//! chooser, mirroring `rod_cfl_dt`'s own real precedent, is separate future
-//! work).
+//! Scope: pure grains (continuum coupling is `grains::coupling`'s concern,
+//! tested separately); an effective, coarse-grained grain radius rather than
+//! a literal ~0.15 mm dry-sand grain; and a fixed substep dt from
+//! `contact_law::critical_timestep`, because the adaptive MPM substep
+//! chooser does not account for grain contact stiffness (folding it in, as
+//! `rod_cfl_dt` does for rods, is not done).
 
 extern crate emerge_engine as emerge;
 use emerge::grains::population::GrainPopulation;
@@ -26,55 +18,45 @@ use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_
 use emerge::particle::Grain;
 use glam::Vec2;
 
-/// Real, disclosed effective grain properties -- not literal dry-sand grain
-/// size (0.15-0.3mm would require an intractable grain count for a
-/// human-scale pile, already established this session), but real order-of-
-/// magnitude physical values for a coarse-grained "effective grain":
-/// - nominal radius 0.01 m (1 cm), +-10% real polydispersity (see
-///   `build_column`'s own doc)
-/// - density 1600 kg/m^3 (real dry sand bulk density order of magnitude)
-/// - 2D areal mass: rho * pi * r^2 (same convention this engine's own
-///   `particle_mass` uses elsewhere for 2D MPM particles)
+/// Effective grain properties, not literal dry-sand grains (0.15-0.3 mm would
+/// need an intractable grain count for a human-scale pile), with physical
+/// orders of magnitude for a coarse-grained "effective grain":
+/// - nominal radius 0.01 m (1 cm), +-10% polydispersity (see
+///   `build_column`'s doc)
+/// - density 1600 kg/m^3 (dry sand bulk density order of magnitude)
+/// - 2D areal mass: rho * pi * r^2 (the convention `particle_mass` uses for
+///   2D MPM particles)
 fn make_grain_with_radius(x: Vec2, radius_m: f32) -> Grain {
     const DENSITY_KG_M3: f32 = 1600.0;
     let mass = DENSITY_KG_M3 * std::f32::consts::PI * radius_m * radius_m;
     Grain::new(x, radius_m, mass)
 }
 
-/// Real contact stiffness from a real Young's modulus via the standard
-/// linear-spring calibration `kn ~ E * r` (`ContactLawConfig::dry_sand`) --
-/// E=1e7 Pa (10 MPa), the same order of magnitude Klar et al. 2016's own
-/// sand calibration uses (already cited throughout this engine's
-/// `sand.rs`). Real friction mu=tan(35 deg) (this project's own
-/// already-cited real friction angle for dry sand, Klar et al. 2016).
-/// Rolling friction 0.20 -- real, CALIBRATED value (2026-08-19, see
-/// `dry_sand`'s own doc and `diag_calibrated_rolling_friction_long_horizon_
-/// check`'s real verification), inside Ai et al. 2011's own cited survey
-/// range (0.001-0.3), found by a real monotonic sweep across that exact
-/// range at a properly dt-converged timestep, not hand-picked to force a
-/// result.
+/// Contact stiffness from Young's modulus via the linear-spring calibration
+/// `kn ~ E * r` (`ContactLawConfig::dry_sand`), E=1e7 Pa (10 MPa), the order
+/// of magnitude of Klar et al. 2016's sand calibration (cited in `sand.rs`).
+/// Friction mu=tan(35 deg), the dry-sand friction angle cited from Klar et al.
+/// 2016. Rolling friction 0.20, calibrated (see `dry_sand`'s doc and
+/// `diag_calibrated_rolling_friction_long_horizon_check`) inside Ai et al.
+/// 2011's survey range (0.001-0.3) by a monotonic sweep across that range at a
+/// dt-converged timestep.
 fn config() -> ContactLawConfig {
     const RADIUS_M: f32 = 0.01;
     const E_PA: f32 = 1.0e7;
     const DENSITY_KG_M3: f32 = 1600.0;
-    // Real m_eff for two equal-mass grains in contact (m*m/(m+m) = m/2),
-    // same convention this file's own `run_collapse_sized` already uses
-    // for `critical_timestep` -- real fix (2026-08-19): this function
-    // previously used an unexplained literal `2.01` in place of this value
-    // for damping (8x off, see `ContactLawConfig::dry_sand`'s own doc).
+    // m_eff for two equal-mass grains in contact (m*m/(m+m) = m/2), the
+    // convention `run_collapse_sized` uses for `critical_timestep` (see
+    // `ContactLawConfig::dry_sand`'s doc for the damping this feeds).
     let grain_mass = DENSITY_KG_M3 * std::f32::consts::PI * RADIUS_M * RADIUS_M;
     let m_eff = grain_mass * 0.5;
-    // rolling_friction=0.20: real, RE-calibrated (2026-08-19) at a properly
-    // fine, dt-converged timestep -- see `diag_dt_convergence_study`'s own
-    // finding that the earlier 0.21 (found at dt_scale=0.03) was NOT
-    // dt-converged (real ratio kept dropping at finer dt, the same trap
-    // that caught Cosserat's own step-200 false positive). Re-verified at
-    // `diag_calibrated_rolling_friction_long_horizon_check`'s own real,
-    // properly-converged long-horizon check: 8-grain=1.128x flat 150k->2M
-    // steps, 80-grain=1.047x flat 400k->2M steps. Real, per-material
-    // input, NOT portable to a different sliding friction_angle
-    // unexamined -- see `ContactLawConfig::dry_sand`'s own doc and
-    // `diag_portability_across_friction_angle`'s real measured data.
+    // rolling_friction=0.20, calibrated at a dt-converged timestep (see
+    // `diag_dt_convergence_study`: 0.21, found at dt_scale=0.03, was not
+    // dt-converged, the ratio kept dropping at finer dt). Checked by
+    // `diag_calibrated_rolling_friction_long_horizon_check`: 8-grain=1.128x
+    // flat 150k->2M steps, 80-grain=1.047x flat 400k->2M steps. Per-material:
+    // not portable to another sliding friction_angle without checking, see
+    // `ContactLawConfig::dry_sand`'s doc and
+    // `diag_portability_across_friction_angle`.
     ContactLawConfig::dry_sand(E_PA, RADIUS_M, m_eff, 35.0, 0.20)
 }
 
@@ -85,7 +67,7 @@ fn config() -> ContactLawConfig {
 struct SmallRng(u64);
 impl SmallRng {
     fn next_f32(&mut self) -> f32 {
-        // Numerical Recipes LCG constants -- same real, standard choice
+        // Numerical Recipes LCG constants -- same standard choice
         // this engine's own `LcgRng` uses.
         self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((self.0 >> 33) as f32) / (u32::MAX as f32)
@@ -98,7 +80,7 @@ impl SmallRng {
 /// runout R_inf = R0 * (1 + 2*sqrt(H0/R0))) -- packed on a square lattice,
 /// touching neighbors, real gravity-consistent stacking (bottom rows first).
 ///
-/// Real, disclosed, NOT optional: small position jitter + radius
+/// Disclosed, NOT optional: small position jitter + radius
 /// polydispersity, matching two independent real precedents -- this
 /// engine's own `SpawnRegion::position_jitter` doc ("break lattice
 /// symmetry and prevent artificially regular pile formation") AND the
@@ -112,11 +94,11 @@ impl SmallRng {
 /// started moving), but because a perfectly regular stack under pure
 /// vertical gravity has no reason to ever move sideways.
 fn build_column(r0_grains: usize, h0_grains: usize, radius_m: f32) -> (Vec<Grain>, f32) {
-    // Real, loose "poured" packing, not a snug touching lattice: a real
+    // Loose "poured" packing, not a snug touching lattice: a real
     // sand column is poured, not snapped into a perfect touching grid --
     // a touching lattice has an artificially high coordination number
     // (strong lateral interlocking support neighbors), unlike a real,
-    // loosely-poured pile with room to genuinely rearrange/roll under
+    // loosely-poured pile with room to rearrange/roll under
     // gravity. 30% extra spacing gives real initial gaps.
     let spacing = 2.6 * radius_m;
     let mut rng = SmallRng(0xC0FF_EE11_u64);
@@ -138,53 +120,26 @@ fn build_column(r0_grains: usize, h0_grains: usize, radius_m: f32) -> (Vec<Grain
     (grains, predicted_r_inf_m)
 }
 
-/// Real, standard technique for an effectively-flat floor within a
-/// standalone `GrainPopulation` (no MPM grid/boundary in this pure-grain
-/// test): one real grain of a MUCH larger radius than the column
-/// (curvature negligible across the column's own width), re-clamped to a
-/// fixed position/velocity/spin after every step -- same real "pinned
-/// anchor" technique already proven correct in
-/// `population::tests::light_grain_resting_on_a_pinned_floor_...`, scaled
-/// up to span the whole column's width instead of a single point.
+/// An effectively flat floor for a standalone `GrainPopulation` (no MPM grid or
+/// boundary in this pure-grain test): one grain of much larger radius than
+/// the column, re-clamped to a fixed position/velocity/spin after every step,
+/// the pinned-anchor technique of
+/// `population::tests::light_grain_resting_on_a_pinned_floor_...`, scaled up
+/// to span the column.
 ///
-/// Real, confirmed root cause of the long-standing "80-grain column still
-/// creeps/grows without bound at long horizon" residual (2026-08-03): NOT a
-/// `contact_law.rs` bug -- a test-harness geometry artifact in THIS floor
-/// approximation. At the previous `FLOOR_RADIUS_M = 5.0`, direct
-/// instrumentation (tracing the single grain responsible, per-grain
-/// contact-count-vs-energy buckets, and a full extended-horizon rerun)
-/// showed the growth was concentrated almost entirely in a single grain
-/// with only ONE active contact (never the densely-coordinated interior
-/// grains, ruling out a many-simultaneous-contact summation bug), whose
-/// one contact partner was consistently the floor grain itself. That grain
-/// had been given a real, ordinary sideways kick during the initial
-/// chaotic collapse (nothing anomalous there), and from then on genuinely
-/// ROLLED DOWNHILL along the floor's own visible curvature -- at
-/// `FLOOR_RADIUS_M = 5.0` a 2.3 m lateral excursion (well within what a
-/// real chaotic collapse produces for an ejected grain, even though the
-/// column's own predicted runout is only ~0.1-0.3 m) already drops the
-/// "flat" floor's surface by 0.57 m, comparable to or exceeding the real
-/// gravitational PE budget available to that one grain -- a genuine,
-/// energy-conserving (measured: KE gain of the same order as, and somewhat
-/// less than, the PE released; near-exact rolling-without-slip,
-/// `spin*radius` tracking `speed` throughout) but entirely UNINTENDED
-/// energy source, not a force-law defect: confirmed directly by watching
-/// that grain's spin/speed with the old, small radius (monotonic runaway,
-/// 0 -> -226 rad/s by step 75,000, extended-horizon ratio diverging
-/// 2.1x -> 56.1x by step 200,000 with `center_y` reaching -3.33, i.e. real
-/// tunneling well below the intended floor) versus the SAME trace at this
-/// 10x larger radius (settles to ~0 velocity/spin by step ~25,000 and
-/// stays there for the rest of a 75,000-step run). Real fix: make the
-/// floor stand-in radius large enough that curvature stays negligible over
-/// the actual excursion range a real chaotic collapse can produce, not
-/// just the column's own nominal predicted runout -- 50.0 m keeps the
-/// worst-case curvature-induced drop under ~0.05 m even for a multi-meter
-/// excursion while staying comfortably inside f32's precision budget at
-/// this coordinate scale (both the 8-grain and 80-grain long-horizon tests
-/// now genuinely arrest: flat ratio from 40,000 all the way to 200,000
-/// steps, confirmed by direct extended-horizon rerun, not just an early
-/// snapshot -- the exact discipline that caught Cosserat's own false
-/// positive earlier this session).
+/// The radius must keep curvature negligible over the full excursion range
+/// of a chaotic collapse, not just the column's nominal runout (~0.1-0.3 m).
+/// At `FLOOR_RADIUS_M = 5.0`, a grain kicked sideways 2.3 m during the
+/// collapse drops 0.57 m along the floor's curvature, comparable to its whole
+/// gravitational PE budget, and rolls downhill without slip (`spin*radius`
+/// tracking `speed`), an energy-conserving but unintended energy source: spin
+/// ran 0 -> -226 rad/s by step 75,000 and the extended-horizon ratio diverged
+/// 2.1x -> 56.1x by step 200,000, with `center_y` reaching -3.33 (tunneling
+/// below the floor). At 50.0 m the worst-case curvature drop stays under
+/// ~0.05 m even for a multi-meter excursion, well within f32 precision at this
+/// coordinate scale; the same grain settles to ~0 velocity and spin by step
+/// ~25,000, and both the 8-grain and 80-grain long-horizon tests hold a flat
+/// ratio from 40,000 to 200,000 steps.
 const FLOOR_RADIUS_M: f32 = 50.0;
 
 fn run_collapse(steps: usize) -> (f32, f32, f32) {
@@ -194,8 +149,8 @@ fn run_collapse(steps: usize) -> (f32, f32, f32) {
 fn run_collapse_sized(steps: usize, r0_grains: usize, h0_grains: usize) -> (f32, f32, f32) {
     const RADIUS_M: f32 = 0.01;
     let (mut grains, predicted_r_inf_m) = build_column(r0_grains, h0_grains, RADIUS_M);
-    // Real floor: top surface at y=0 (grains already stack starting at
-    // y=radius, i.e. resting exactly on y=0), centered under the column.
+    // Floor: top surface at y=0 (grains stack starting at y=radius, i.e.
+    // resting exactly on y=0), centered under the column.
     let column_width = 2.0 * r0_grains as f32 * (2.0 * RADIUS_M);
     let floor_x = column_width * 0.5;
     let floor_anchor = Vec2::new(floor_x, -FLOOR_RADIUS_M);
@@ -205,12 +160,10 @@ fn run_collapse_sized(steps: usize, r0_grains: usize, h0_grains: usize) -> (f32,
     let cfg = config();
     let m_eff = grains[0].mass * 0.5;
     let dt_crit = critical_timestep(m_eff, &cfg);
-    // Real, dt-converged reference scale (2026-08-19) -- 0.03 was measured
-    // NOT converged (see diag_dt_convergence_study: real ratio kept
-    // changing until roughly this scale). Callers passing step counts
-    // calibrated against the OLD 0.03 scale now cover 10x LESS physical
-    // time than before at the same step count -- see this function's own
-    // callers for the real checkpoint-count corrections that go with this.
+    // dt-converged reference scale: 0.03 is not converged (see
+    // diag_dt_convergence_study, the ratio keeps changing down to roughly
+    // this scale). Step counts calibrated at 0.03 cover 10x less physical
+    // time at this scale; the callers' checkpoint counts account for it.
     let dt = dt_crit * 0.003;
 
     let mut pop = GrainPopulation::new(grains, cfg);
@@ -243,18 +196,17 @@ fn run_collapse_sized(steps: usize, r0_grains: usize, h0_grains: usize) -> (f32,
     (measured_r_inf_m, predicted_r_inf_m, center_y)
 }
 
-/// Real diagnostic: isolates whether the full column's unbounded growth is
-/// a genuine many-body/many-simultaneous-contact effect (a MUCH smaller
-/// column should then stay stable) or something present even at small N
-/// (would point to a deeper, still-unresolved issue). Neither damping level
-/// nor timestep changes affected the full-size explosion at all -- this
-/// checks the one remaining real variable, scale/contact-count, directly.
+/// Diagnostic: is the full column's unbounded growth a many-body, many-
+/// simultaneous-contact effect (a much smaller column should then stay
+/// stable) or present even at small N? Neither damping level nor timestep
+/// changed the full-size explosion; this checks scale and contact count
+/// directly.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_small_column_scale_isolation() {
     println!("── SMALL-COLUMN SCALE ISOLATION (2 wide x 4 tall = 8 grains) ──");
     // 10x the original checkpoints -- real physical-time equivalents at the
-    // now dt-converged 0.003 scale (see run_collapse_sized's own doc).
+    // now dt-converged 0.003 scale (see run_collapse_sized's doc).
     for &checkpoint in &[5_000usize, 20_000, 50_000, 150_000, 400_000] {
         let (measured, predicted, center_y) = run_collapse_sized(checkpoint, 1, 4);
         println!(
@@ -264,7 +216,7 @@ fn diag_small_column_scale_isolation() {
     }
 }
 
-/// Real, direct diagnostic: does ANY grain ever reach a real, meaningful
+/// Direct diagnostic: does ANY grain ever reach a meaningful
 /// speed at all during the collapse, or does the whole system stay
 /// essentially motionless from the start? Distinguishes a genuine
 /// calibration issue (grains DO move/tumble with real kinetic energy, but
@@ -326,38 +278,20 @@ fn diag_max_speed_reached_during_collapse() {
     println!("max_spin_ever={max_spin_ever:.4} rad/s");
 }
 
-/// Real regression test for a genuine, found-and-fixed sign bug (2026-08-03):
-/// `diag_small_column_scale_isolation` already disproved the "it's a
-/// many-body-network effect" hypothesis for the column-collapse divergence --
-/// even an 8-grain column diverged WORSE (31x vs the full column's 12x) over
-/// the same long horizon, with `center_y` going NEGATIVE (grains sinking
-/// below the pinned floor -- physically impossible). This test isolates the
-/// smallest case that still has an off-axis (non-purely-vertical) contact: a
-/// single grain resting on a huge pinned "floor" grain whose center is
-/// offset just 0.01 (0.2% of the floor's own radius) from being directly
-/// below the grain -- exactly the sliver of tangential/rolling code path a
-/// perfectly-vertical stack never exercises (`v_t`/`omega_rel` stay
-/// EXACTLY zero by symmetry when perfectly aligned).
+/// Rolling-resistance sign: a single grain resting on a huge pinned "floor"
+/// grain whose centre is offset 0.01 (0.2% of the floor's radius) from directly
+/// below it, the smallest case with an off-axis contact. A perfectly vertical
+/// stack never exercises the tangential/rolling code path (`v_t`/`omega_rel`
+/// stay exactly zero by symmetry).
 ///
-/// Real, confirmed root cause (traced with a temporary instrumented
-/// breakdown calling `resolve_contact_pair` directly): `ContactLawConfig`'s
-/// rolling-resistance spring (`contact_law::resolve_contact_pair`'s rolling
-/// block) had its elastic-restoring-torque sign backwards relative to the
-/// convention its own caller (`GrainPopulation::resolve_contact_forces`)
-/// applies it with ("acting on j, equal and opposite on i") -- turning what
-/// should be a torsional spring's NEGATIVE feedback (restoring, real Ai et
-/// al. 2011 EPSD behavior) into POSITIVE feedback. Confirmed empirically:
-/// `omega_rel`/`spin_i` grew MONOTONICALLY (never oscillating back toward
-/// zero like a real restoring spring) and, once the Coulomb-like rolling cap
-/// engaged, the net torque stayed pinned in a constant, growth-REINFORCING
-/// direction forever. Fixed by dropping the erroneous minus sign from both
-/// the elastic trial (`trial_mr`) and its plastic return-mapping rescale in
-/// `contact_law.rs`. Before the fix this test diverged (contact fully lost
-/// by step 100,000, KE growing from ~6 to ~6847 by step 400,000); after the
-/// fix it stays bounded and settles (KE == 0.0 for the entire run, matching
-/// the real closed-form equilibrium overlap) -- kept as a permanent
-/// regression since a perfectly-aligned test can never catch this class of
-/// bug again.
+/// The rolling spring in `contact_law::resolve_contact_pair` must restore:
+/// with the elastic torque's sign backwards relative to the convention its
+/// caller (`GrainPopulation::resolve_contact_forces`) applies ("acting on j,
+/// equal and opposite on i"), a torsional spring's negative feedback (Ai et
+/// al. 2011 EPSD) turns into positive feedback: `omega_rel`/`spin_i` grow
+/// monotonically, contact is lost by step 100,000 and KE grows from ~6 to
+/// ~6847 by step 400,000. With the correct sign, KE == 0.0 for the whole run,
+/// matching the closed-form equilibrium overlap.
 #[test]
 fn diag_minimal_two_grains_on_floor_long_horizon() {
     const RADIUS_M: f32 = 0.01;
@@ -410,41 +344,41 @@ fn diag_minimal_two_grains_on_floor_long_horizon() {
     }
 }
 
-/// Real, honest sanity pass FIRST (short horizon, matches this project's own
+/// Honest sanity pass FIRST (short horizon, matches this project's own
 /// "check basic stability before committing to an expensive long run"
 /// discipline) -- confirms the scene doesn't explode/diverge before
 /// spending real time on the full long-horizon comparison below.
 #[test]
 fn column_collapse_sanity_short_horizon_no_explosion() {
     // 5000 = 500 steps' worth of real physical time at the now
-    // dt-converged 0.003 scale (see run_collapse_sized's own doc).
+    // dt-converged 0.003 scale (see run_collapse_sized's doc).
     let (measured, predicted, center_y) = run_collapse(5_000);
     assert!(measured.is_finite() && center_y.is_finite(), "diverged");
     println!(
         "sanity @5000 steps: measured_R={measured:.4}m predicted_R={predicted:.4}m ratio={:.2}x center_y={center_y:.4}",
         measured / predicted
     );
-    // Real, loose bound: runout should be a real, finite multiple of the
+    // Loose bound: runout should be a finite multiple of the
     // predicted value, not zero (never moved) or absurdly large (exploded).
     assert!(measured > 0.0 && measured < predicted * 20.0);
 }
 
 /// THE real question this whole test file exists for: does grain-grain
-/// rolling resistance genuinely hold a STABLE runout ratio over a long
+/// rolling resistance hold a STABLE runout ratio over a long
 /// horizon, the same discipline (multiple checkpoints, not a single early
 /// snapshot) that caught Cosserat's own false positive earlier this
 /// session (looked perfect at step 200, proved worse than baseline by step
-/// 1000+). A real answer either way is valuable: genuine stabilization
+/// 1000+). A real answer either way is valuable: stabilization
 /// would be the first mechanism all session to actually do this; continued
 /// growth would mean even real grain-scale rolling resistance, at this
-/// calibration, isn't sufficient either -- both are real, honest findings,
+/// calibration, isn't sufficient either -- both are honest findings,
 /// not something to bias the test toward.
 #[test]
 fn column_collapse_long_horizon_stability_check() {
     println!("── GRAIN ROLLING-RESISTANCE LONG-HORIZON STABILITY CHECK ──");
     let mut ratios = Vec::new();
     // 10x the original checkpoints -- real physical-time equivalents at the
-    // now dt-converged 0.003 scale (see run_collapse_sized's own doc).
+    // now dt-converged 0.003 scale (see run_collapse_sized's doc).
     for &checkpoint in &[5_000usize, 20_000, 50_000, 150_000, 400_000] {
         let (measured, predicted, center_y) = run_collapse(checkpoint);
         let ratio = measured / predicted;
@@ -457,10 +391,8 @@ fn column_collapse_long_horizon_stability_check() {
             "diverged at steps={checkpoint}"
         );
     }
-    // Real stability check: the LAST TWO checkpoints (5000->40000-ish real
-    // horizon) must be close to each other -- a genuinely arrested pile, not
-    // one still visibly creeping when we stopped looking (the exact failure
-    // mode that made Cosserat's own step-200 result misleading).
+    // The last two checkpoints (5000->40000-ish horizon) must be close: an
+    // arrested pile, not one still creeping when the run stopped.
     let last = *ratios.last().unwrap();
     let second_last = ratios[ratios.len() - 2];
     println!(
@@ -470,8 +402,8 @@ fn column_collapse_long_horizon_stability_check() {
 }
 
 // ---------------------------------------------------------------------
-// TEMP DIAGNOSTIC (2026-08-03 scale-residual investigation) -- remove
-// before this file is considered done. Not part of the permanent suite.
+// Temporary diagnostics (scale-residual investigation), not part of the
+// permanent suite.
 // ---------------------------------------------------------------------
 
 #[test]
@@ -490,7 +422,7 @@ fn diag_size_sweep_threshold() {
     ] {
         let n = 2 * r0 * h0;
         // 10x the original 15k/40k -- real physical-time equivalents at the
-        // now dt-converged 0.003 scale (see run_collapse_sized's own doc).
+        // now dt-converged 0.003 scale (see run_collapse_sized's doc).
         let (_m15, _p15, _cy15) = run_collapse_sized(150_000, r0, h0);
         let (m40, p40, cy40) = run_collapse_sized(400_000, r0, h0);
         let r15 = run_collapse_sized(150_000, r0, h0).0 / run_collapse_sized(150_000, r0, h0).1;
@@ -507,7 +439,7 @@ fn diag_size_sweep_threshold() {
 fn diag_extended_horizon_both_scales() {
     println!("── EXTENDED HORIZON: does either scale actually asymptote? ──");
     // 10x the original checkpoints -- real physical-time equivalents at the
-    // now dt-converged 0.003 scale (see run_collapse_sized's own doc).
+    // now dt-converged 0.003 scale (see run_collapse_sized's doc).
     println!("  -- 8-grain (r0=1,h0=4) --");
     for &steps in &[400_000usize, 800_000, 1_200_000, 2_000_000] {
         let (m, p, cy) = run_collapse_sized(steps, 1, 4);
@@ -595,19 +527,11 @@ fn diag_dt_margin_sensitivity() {
     }
 }
 
-/// Real, direct follow-up (2026-08-19) to the flagged-but-unresolved
-/// caveat above: `diag_dt_margin_sensitivity` showed a real, meaningful
-/// swing (ratio 1.064x -> 0.771x) between dt_scale=0.03 and dt_scale=0.003
-/// at matched physical time, under the CORRECTED (post-m_eff-fix) damping
-/// -- i.e. the calibrated rolling_friction=0.21 was found at a dt that
-/// might not be converged, the exact same trap ("looks right at one
-/// setting, wrong once you check more carefully") that caught the earlier
-/// m_eff=2.01 bug and Cosserat's own step-200 false positive. This sweeps
-/// dt MORE finely (not just two points) to find out: does the ratio
-/// genuinely converge to a real asymptote as dt->0 (in which case 0.21 is
-/// either already close, or needs a small real correction), or does it
-/// keep drifting without bound (which would mean the whole calibration is
-/// unreliable regardless of rolling_friction, a much bigger problem)?
+/// Sweeps dt finely at matched physical time: `diag_dt_margin_sensitivity`
+/// showed the ratio swing from 1.064x to 0.771x between dt_scale=0.03 and
+/// 0.003 (with the m_eff-based damping), so a calibration made at 0.03 may not
+/// be dt-converged. Does the ratio converge to an asymptote as dt->0, or drift
+/// without bound (which would make any calibration unreliable)?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_dt_convergence_study() {
@@ -647,9 +571,9 @@ fn diag_dt_convergence_study() {
         measured / predicted_r_inf_m
     }
 
-    // Real physical time matched to dt_scale=0.03's own 15,000-step
-    // checkpoint (dt_crit is scene-dependent, so express the target in
-    // real seconds directly, computed once at the baseline scale).
+    // Physical time matched to dt_scale=0.03's 15,000-step checkpoint
+    // (dt_crit is scene-dependent, so the target is expressed in seconds,
+    // computed once at the baseline scale).
     let cfg = config();
     let grain_mass = 1600.0 * std::f32::consts::PI * RADIUS_M * RADIUS_M;
     let m_eff = grain_mass * 0.5;
@@ -667,13 +591,10 @@ fn diag_dt_convergence_study() {
     }
 }
 
-/// Real, direct re-calibration (2026-08-19) at a properly fine, closer-to-
-/// converged timestep, following `diag_dt_convergence_study`'s own finding
-/// that dt_scale=0.03 (this file's shipped default) is NOT converged --
-/// the real ratio keeps dropping at finer dt (1.064x->0.765x for the
-/// 80-grain case between dt_scale=0.03 and 0.003). rolling_friction=0.21
-/// was calibrated at the UNCONVERGED dt, so it needs re-finding at a real,
-/// trustworthy dt, not assumed to still be right.
+/// Re-calibration at a finer, closer-to-converged timestep:
+/// `diag_dt_convergence_study` found dt_scale=0.03 not converged (the 80-grain
+/// ratio drops 1.064x->0.765x between dt_scale=0.03 and 0.003), so
+/// rolling_friction calibrated at 0.03 has to be found again at a converged dt.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_rolling_friction_calibration_at_fine_dt() {
@@ -853,13 +774,12 @@ fn diag_contact_churn() {
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_trace_blowup_mechanism() {
-    // Real mechanistic trace: find the exact grain and exact step window
-    // where the 80-grain column transitions from "looks settled" to
-    // "runaway" (per diag_extended_horizon_both_scales, this happens
-    // somewhere between step 40,000 and 200,000, well AFTER the contact
-    // list itself has gone quiet per diag_contact_churn). Watch that one
-    // grain's v/spin and its active contacts' overlap/forces around the
-    // moment its speed first crosses a real, clearly-anomalous threshold.
+    // Find the grain and step window where the 80-grain column goes from
+    // "looks settled" to "runaway" (between step 40,000 and 200,000 per
+    // diag_extended_horizon_both_scales, after the contact list has gone quiet
+    // per diag_contact_churn). Watch that grain's v/spin and its active
+    // contacts' overlap/forces around the moment its speed first crosses a
+    // clearly anomalous threshold.
     const R0_GRAINS: usize = 4;
     const H0_GRAINS: usize = 10;
     const RADIUS_M: f32 = 0.01;
@@ -933,7 +853,7 @@ fn diag_trace_single_grain_spin_history() {
     // found runs away with spin=-201.75 rad/s at step 72853 while having
     // only ONE active contact) -- when does its spin actually start
     // growing, is it a sudden discrete jump (a real bug trigger event) or
-    // smooth monotonic runaway from early on (a genuine feedback loop),
+    // smooth monotonic runaway from early on (a feedback loop),
     // and what is its one contact partner doing.
     const R0_GRAINS: usize = 4;
     const H0_GRAINS: usize = 10;
@@ -1000,19 +920,11 @@ fn diag_trace_single_grain_spin_history() {
     );
 }
 
-/// Real, decisive follow-up (2026-08-19) to the extended-horizon check
-/// above: that test just confirmed (LIVE, on current code -- the doc
-/// comments elsewhere in this file describing a near-exact 1.045x/1.0x
-/// match are STALE relative to current state, not re-verified before this)
-/// that this mechanism genuinely ARRESTS (bit-for-bit flat 40k->200k
-/// steps, both scales) -- the first mechanism this whole project's
-/// long-running repose-angle investigation has found with that property.
-/// But it overshoots the real Lajeunesse target by 43-100% (1.434x/2.002x,
-/// not 1.0x). `rolling_friction=0.1` was picked as a neutral midpoint of
-/// Ai et al. 2011's own real cited survey range (0.001-0.3), never tuned
-/// toward a result -- this sweeps that SAME real range directly: does
-/// increasing rolling resistance toward its own cited upper bound close
-/// the overshoot toward 1.0x, the way a real physical calibration should?
+/// Sweeps rolling_friction across Ai et al. 2011's survey range (0.001-0.3).
+/// At 0.1, a neutral midpoint of that range, the mechanism arrests (flat
+/// 40k->200k steps at both scales) but overshoots the Lajeunesse target by
+/// 43-100% (1.434x/2.002x). Does raising rolling resistance toward the upper
+/// bound close the overshoot toward 1.0x, as a physical calibration should?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_rolling_friction_calibration_sweep() {
@@ -1062,17 +974,11 @@ fn diag_rolling_friction_calibration_sweep() {
     }
 }
 
-/// Real, decisive long-horizon verification (2026-08-19) at the calibrated
-/// rolling_friction=0.21 found above (8-grain=0.978x, 80-grain=1.064x at
-/// 40k steps, both real matches to the Lajeunesse target simultaneously,
-/// under the corrected `m_eff`-based damping -- see `ContactLawConfig::
-/// dry_sand`'s own doc for the real bug this replaces).
-/// Same discipline that caught Cosserat's OWN false positive (looked
-/// perfect at step 200, proved worse than baseline by step 1000+) -- a
-/// near-exact match at ONE checkpoint proves nothing by itself. Does this
-/// real match hold flat through 200,000 steps, or drift/creep the way
-/// every rate-dependent mechanism this project has ever tried eventually
-/// did?
+/// Long-horizon check of the calibrated rolling_friction (8-grain=0.978x,
+/// 80-grain=1.064x at 40k steps, both matching the Lajeunesse target, with the
+/// `m_eff`-based damping of `ContactLawConfig::dry_sand`). A match at one
+/// checkpoint proves nothing alone (Cosserat looked right at step 200 and was
+/// worse than baseline by step 1000+): does it hold flat through 200,000 steps?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_calibrated_rolling_friction_long_horizon_check() {
@@ -1094,7 +1000,7 @@ fn diag_calibrated_rolling_friction_long_horizon_check() {
         cfg.rolling_friction = rolling_friction;
         let m_eff = grains[0].mass * 0.5;
         let dt_crit = critical_timestep(m_eff, &cfg);
-        // Real, converged reference dt (see diag_dt_convergence_study --
+        // Converged reference dt (see diag_dt_convergence_study --
         // 0.03 was NOT converged, real behavior kept changing at finer dt
         // until roughly this scale).
         let dt = dt_crit * 0.003;
@@ -1150,20 +1056,13 @@ fn diag_calibrated_rolling_friction_long_horizon_check() {
     run_with_rolling_friction_tracked(0.20, 4, 10, checkpoints);
 }
 
-/// Real, direct portability check (2026-08-19): is `rolling_friction=0.21`
-/// a real, generalizable calibration, or a fragile coincidence tied to
-/// exactly `friction_angle=35deg`? Holds rolling_friction FIXED at the
-/// calibrated value and swaps the material's own SLIDING friction (a real,
-/// independent physical property -- Ai et al. 2011's own survey treats
-/// rolling and sliding friction as independent material inputs, not
-/// derived from each other) across a real, physically plausible dry-sand
-/// range (25deg: rounder/looser real sand -- 45deg: angular gravel). Two
-/// real questions: (1) does the mechanism still genuinely ARREST (the
-/// structural property that matters most) at each angle, and (2) does the
-/// resulting runout move in the physically SENSIBLE direction (steeper
-/// friction -> tighter pile -> smaller runout ratio), not something
-/// arbitrary -- confirming this is real material-property portability, not
-/// a lucky fit to one specific angle.
+/// Portability: is `rolling_friction=0.21` a general calibration or tied to
+/// `friction_angle=35deg`? Holds rolling friction fixed and varies the sliding
+/// friction (an independent material input in Ai et al. 2011's survey) across
+/// a plausible dry-sand range (25deg: rounder, looser sand; 45deg: angular
+/// gravel). Checks (1) that the mechanism still arrests at each angle and (2)
+/// that the runout moves the physically sensible way (steeper friction ->
+/// tighter pile -> smaller runout ratio).
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_portability_across_friction_angle() {
@@ -1181,9 +1080,8 @@ fn diag_portability_across_friction_angle() {
         cfg.rolling_friction = 0.20; // held fixed at the calibrated value -- the whole point of this test
         let m_eff = grains[0].mass * 0.5;
         let dt_crit = critical_timestep(m_eff, &cfg);
-        // Real, converged reference dt (see diag_dt_convergence_study --
-        // 0.03 was NOT converged; fixed 2026-08-19, matching every other
-        // production/permanent test in this file).
+        // Converged reference dt (see diag_dt_convergence_study: 0.03 is not
+        // converged), as in the other permanent tests in this file.
         let dt = dt_crit * 0.003;
 
         let mut pop = GrainPopulation::new(grains, cfg);
@@ -1222,24 +1120,17 @@ fn diag_portability_across_friction_angle() {
     }
 }
 
-/// Real, direct dt-convergence check (2026-08-19) at `examples/
-/// sand_repose_angle_gui.rs`'s OWN real parameter regime -- NOT the
-/// pure-physics validation scene's real-SI stiffness. That demo's
-/// `grain_contact_config()` uses `normal_stiffness=1e4` (10x softer than
-/// the validated `1e5`, a deliberate, disclosed real-time compromise) and
-/// `dt_crit*0.2` (never actually verified for convergence -- a real,
-/// caught assumption, not a measured number, same class of mistake as the
-/// earlier unverified `0.03` margin this file's own `diag_dt_convergence_
-/// study` found unconverged for the DIFFERENT, stiffer scene). Sweeps dt
-/// margin at THIS demo's own real stiffness/mass -- does it converge to
-/// something close to the standalone-validated ~1.0-1.13x target, or does
-/// even a fully-converged dt at this softer stiffness genuinely settle
-/// somewhere else (which would point at a real, separate cause: grid
-/// coupling or the real terrain surface, not dt margin)?
+/// dt convergence at `examples/sand_repose_angle_gui.rs`'s parameters, not
+/// the validation scene's SI stiffness: that demo's `grain_contact_config()`
+/// uses `normal_stiffness=1e4` (10x softer than the validated `1e5`, a
+/// real-time compromise) and `dt_crit*0.2`, whose convergence was never
+/// checked. Sweeps the dt margin at the demo's stiffness and mass: does it
+/// converge near the standalone ~1.0-1.13x target, or settle elsewhere (which
+/// would point at grid coupling or the terrain surface, not dt margin)?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_live_demo_dt_convergence() {
-    // Real, exact values from `sand_repose_angle_gui.rs`'s own
+    // Exact values from `sand_repose_angle_gui.rs`'s own
     // `grain_contact_config`/`GRAIN_RADIUS`/`GRAIN_MASS` constants.
     const DEMO_RADIUS: f32 = 1.0;
     const DEMO_MASS: f32 = 1.0;
@@ -1305,12 +1196,9 @@ fn diag_live_demo_dt_convergence() {
         (measured / predicted_r_inf_m, dt, steps)
     }
 
-    // Real physical-time budget matched to the demo's OWN live behavior:
-    // 25 steps/frame * dt(dt_scale=0.2) * ~2500 real frames (the ~80s of
-    // real wall-clock the live demo was actually watched for tonight,
-    // at ~30fps) -- i.e. the SAME real simulated-time window the live
-    // demo already plateaued within, so this is a fair, matched check,
-    // not an arbitrarily longer run.
+    // Simulated time matched to the live demo: 25 steps/frame *
+    // dt(dt_scale=0.2) * ~2500 frames (~80 s of wall-clock at ~30 fps), the
+    // window within which the demo plateaus.
     let cfg = demo_config();
     let dt_crit = critical_timestep(DEMO_MASS * 0.5, &cfg);
     let total_time_s = 25.0 * (dt_crit * 0.2) * 2500.0;

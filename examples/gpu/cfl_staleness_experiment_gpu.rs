@@ -5,7 +5,7 @@ extern crate emerge_engine as emerge;
 /// Tests one specific hypothesis about the splash-disintegration bug
 /// (`HANDOFF_fluid_gpu_thin_layer_bug.md`): the GPU CFL scan (`systems/gpu/
 /// solver/step.rs`) computes ALL of its stability terms -- including the
-/// real, cited Sun/Shinar/Schroeder 2020 single-particle-instability bound
+/// cited Sun/Shinar/Schroeder 2020 single-particle-instability bound
 /// (`single_particle_instability_dt_bound`) -- exactly ONCE per rendered
 /// frame, from the particle state BEFORE any of that frame's substeps run,
 /// then reuses that one dt for up to `max_substeps_per_step` (1000)
@@ -13,7 +13,7 @@ extern crate emerge_engine as emerge;
 /// step.rs) re-runs the SAME formulas EVERY substep, using freshly-updated
 /// state. If a particle's danger (isolation / feedback growth) develops
 /// mid-frame -- exactly what a violent splash does -- GPU's one-shot scan
-/// cannot react until the NEXT frame, a real, mechanistic "blind window"
+/// cannot react until the NEXT frame, a mechanistic "blind window"
 /// CPU does not have, structurally distinct from anything about the
 /// formulas themselves being wrong.
 ///

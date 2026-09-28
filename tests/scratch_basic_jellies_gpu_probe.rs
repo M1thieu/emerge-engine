@@ -3,7 +3,7 @@
 //! real SI migration (soft-tissue E=500 Pa/nu=0.45/rho=1000, same citation
 //! as the CPU twin) for early instability on the GPU backend.
 //!
-//! Real, honest limitation found running this: the scene has NO boundary
+//! Honest limitation found running this: the scene has NO boundary
 //! condition at all (unlike the CPU twin's `SlipBoundary`), so the blob
 //! free-falls the entire 30s probe window and never hits anything -- J
 //! stays exactly 1.0 throughout. This confirms free-fall itself is stable,

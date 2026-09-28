@@ -14,7 +14,7 @@ use egui_wgpu::ScreenDescriptor;
 /// sets `rod.push_center` every frame, `push_strength` comes from the egui
 /// slider (0 = off), both read fresh by `advance_rod`
 /// on EVERY substep -- same persistent-forcing contract wind already had
-/// (see `Rod::push_center`'s own doc for the real one-shot-impulse bug this
+/// (see `Rod::push_center`'s doc for the real one-shot-impulse bug this
 /// replaced).
 ///
 /// egui panel (same wgpu-native egui already used by `material_sandbox_gpu`)
@@ -42,15 +42,15 @@ const HEIGHT_M: f32 = 0.10;
 // Blade B's own height, DISTINCT from blade A's (2026-07-28, user request):
 // at HEIGHT_M=0.10 with YOUNG_MODULUS_B=5e6, blade B's real Greenhill
 // critical height measures ~0.0965m -- over its own buckling threshold, so
-// "straight" is a genuinely unstable equilibrium and it can never return to
+// "straight" is a unstable equilibrium and it can never return to
 // 0 no matter what (see this file's own gravitropism-gate comment below).
-// Shortened to a real, clear margin UNDER that threshold so the SAME blade
+// Shortened to a clear margin UNDER that threshold so the SAME blade
 // (same stiffness comparison, same everything else) becomes a mechanically
 // sound stem again -- a direct, falsifiable test of that claim: if it now
 // settles back to 0 after a push, the buckling explanation is confirmed,
 // not just asserted.
 const HEIGHT_M_B: f32 = 0.08;
-// N=20 is the real, measured comfortable point (40+ fps, confirmed via the
+// N=20 is the measured comfortable point (40+ fps, confirmed via the
 // NDJSON logger's own fps field) -- N=40 measured at 14fps, too sluggish
 // for interactive use. Cost grows faster than quadratically with point
 // count (bending's omega scales steeper than axial's as l0 shrinks), so
@@ -81,13 +81,13 @@ const ROOT_THICKNESS_M: f32 = 0.002;
 // drifting copies, same reasoning as the width/thickness constants above.
 const BLADE_LINEAR_DENSITY_KG_PER_M: f32 = 0.01;
 const ROOT_LINEAR_DENSITY_KG_PER_M: f32 = 0.15;
-// Real, disclosed illustrative budget (see the root's own `Growth`
+// Disclosed illustrative budget (see the root's own `Growth`
 // construction below for the real finding this addresses) -- caps total
 // achievable growth well within the visible 0.24m world (24 cells * 0.01m)
 // regardless of real elapsed time.
 const ROOT_GROWTH_BUDGET_M: f32 = 0.08;
 // Shared with the ribbon-marker construction below (`deformation_gradient`
-// divides this back out to get the real, absolute grid-unit ellipse size
+// divides this back out to get the absolute grid-unit ellipse size
 // regardless of this scale factor) -- one value, not two independently-
 // drifting copies.
 const PARTICLE_SCALE: f32 = 0.6;
@@ -96,7 +96,7 @@ const WIND_SPEED_REAL_M_S: f32 = 0.05;
 const WIND_GUST_PERIOD_SECONDS: f32 = 4.0;
 const PUSH_RADIUS: f32 = 3.0;
 const DEFAULT_PUSH_STRENGTH: f32 = 400.0;
-// Real, deliberately soft yield stress (see `rod::plasticity` module doc for
+// Deliberately soft yield stress (see `rod::plasticity` module doc for
 // the real elastic-perfectly-plastic mechanism, Gere & Goodno) -- blade A's
 // own real cross-section (0.003m x 0.001m, same as `build_blade` below)
 // gives a real yield moment M_yield = sigma_yield*I/c at this stress.
@@ -106,7 +106,7 @@ const DEFAULT_PUSH_STRENGTH: f32 = 400.0;
 // the slider's top end (1000-2000, sustained ~0.5-1s+) visibly overpowers
 // it.
 const SIGMA_YIELD_A_PA: f32 = 4.0e4;
-// Real, cited fix (see `rod::plasticity` module doc's "Real, cited fix for
+// Cited fix (see `rod::plasticity` module doc's "Cited fix for
 // unbounded creep" section, Melan 1938/Koiter 1956 shakedown theory) for a
 // REAL bug this demo's own live testing found: without hardening, a hard
 // enough push drove blade A into a contorted enough shape that real gravity
@@ -118,7 +118,7 @@ const SIGMA_YIELD_A_PA: f32 = 4.0e4;
 // overload (gravity, a held push -- this demo's real case, not cyclic
 // loading) eventually shakes down to a stable shape instead of ratcheting
 // forever. `2.0x` the base yield moment per unit accumulated curvature is a
-// real, disclosed illustrative starting rate (like `Gravitropism`'s own
+// disclosed illustrative starting rate (like `Gravitropism`'s own
 // constants), not yet independently re-verified against a real material's
 // actual hardening curve.
 const HARDENING_MULTIPLE_A: f32 = 2.0;
@@ -126,7 +126,7 @@ const HARDENING_MULTIPLE_A: f32 = 2.0;
 /// Plant-only demo -- terrain/soil interaction is real and valuable but out of
 /// scope here (deferred to a separate "mixed" demo); this scene proves the
 /// PLANT itself: blade + root + gravitropism + gated growth, nothing else
-/// touching the grid. Gravity uses `SimConfig::earth`'s own real, unmodified
+/// touching the grid. Gravity uses `SimConfig::earth`'s own unmodified
 /// value (9.81/dx_meters) -- a -0.3 override elsewhere was specific to a
 /// DruckerPragerMaterial fix that doesn't apply with no sand present.
 fn make_sim() -> Simulation {
@@ -163,7 +163,7 @@ fn make_sim() -> Simulation {
 
     // Correction (2026-07-27): an earlier comment here claimed blade+root
     // "mutual coupling" prevents sleep in the composed scene -- checked
-    // against a real, live 224-second session log and it's false. Every rod
+    // against a live 224-second session log and it's false. Every rod
     // here uses implicit integration, which skips the shared-grid scatter/
     // gather entirely (see `step.rs`'s own `!rod.use_implicit_integration`
     // gate) -- so blade A, blade B, and the root are fully independent, no
@@ -201,7 +201,7 @@ fn make_sim() -> Simulation {
             // below), so once it settles into a real buckled equilibrium under
             // the SAME fraction, it locks down completely with nothing left to
             // keep it visibly alive. Lower fraction (0.05) for blade B lets a
-            // real, slow residual oscillation linger instead.
+            // slow residual oscillation linger instead.
             let (axial_critical, bending_critical) =
                 RodMaterial::modal_critical_damping(&rod_points, ea, ei);
             let axial_damping = axial_critical * damping_fraction;
@@ -235,11 +235,11 @@ fn make_sim() -> Simulation {
             // unstable equilibrium -- measured directly (2026-07-27), attaching
             // gravitropism to the over-critical blade B produces a sustained,
             // non-decaying oscillation instead of recovery, invariant across a
-            // 500x gain sweep. Real biology answers genuine structural buckling
+            // 500x gain sweep. Real biology answers structural buckling
             // with secondary growth (a thicker, stiffer stem), not gravitropism;
-            // see `tests/rod_gravitropism_whole_organ.rs`'s own module doc.
+            // see `tests/rod_gravitropism_whole_organ.rs`'s module doc.
             if rod.buckling_warning(9.81).is_none() {
-                // Real, deliberately SLOW correction rate (2026-07-27, tuned
+                // Deliberately SLOW correction rate (2026-07-27, tuned
                 // down from an initial 0.05/0.03 that felt mechanically
                 // insistent rather than plant-like): a real plant's
                 // gravitropic/phototropic reorientation happens over HOURS,
@@ -275,30 +275,30 @@ fn make_sim() -> Simulation {
             // linear_density_kg_per_m` directly and scales visible width by
             // its real sqrt(area) growth. (1) is addressed the same way
             // every other rate constant in this demo already is: a real,
-            // disclosed, sped-up-for-interactivity magnitude (matches
+            // sped-up-for-interactivity magnitude (matches
             // Gravitropism's own "hours, not seconds" disclosure just above),
-            // not a claim this is species-calibrated. Real, honest current
+            // not a claim this is species-calibrated. Honest current
             // status: `HEIGHT_M_B` was separately shortened
             // (2026-07-22/27) to sit UNDER blade B's own Greenhill critical
             // height, so under THIS demo's current configuration neither
             // blade is actually over-critical right now -- this is a
             // correctly-gated no-op most of the time, not a broken feature.
-            // It exists, is real, is tested (`secondary_growth.rs`'s own
+            // It exists, is is tested (`secondary_growth.rs`'s own
             // module tests + `mod.rs`'s
             // `sustained_bending_stress_raises_greenhill_height_above_
-            // actual_height`), and fires the moment a rod genuinely needs
+            // actual_height`), and fires the moment a rod needs
             // it.
             rod.secondary_growth = Some(SecondaryGrowth::new(0.02, 0.0, 0.02, 0.0));
             // Implicit (backward Euler) integration -- same physics, zero fidelity
             // cut (Baraff & Witkin 1998), real measured win: 1298 substeps/frame -> 1.
             rod.use_implicit_integration = true;
-            // Real, measured (2026-07-27, see `Rod::implicit_substeps`'s own
+            // Measured (2026-07-27, see `Rod::implicit_substeps`'s own
             // doc): ONE implicit step at the full 0.02s frame dt visibly
             // over-damps a push (backward Euler's own numerical damping at
             // that large a dt, on top of the physically-tuned 15%-of-critical
             // damping) -- measured directly: only 3 real tip-direction
             // reversals over 3s at 1 substep vs. 9 at 16, same physical
-            // damping ratio, same total time. 8 is a real, disclosed middle
+            // damping ratio, same total time. 8 is a disclosed middle
             // ground (visibly restores sway without needing the full 16 this
             // interactive demo's own frame budget can't always spare).
             rod.implicit_substeps = 16;
@@ -309,7 +309,7 @@ fn make_sim() -> Simulation {
     // blade B (already carries its own separate, deliberately-uncorrected
     // over-critical-buckling narrative -- mixing a second mechanism onto
     // that same blade would blur which effect explains what's on screen).
-    // Real, disclosed interaction: blade A's own active gravitropism/
+    // Disclosed interaction: blade A's own active gravitropism/
     // phototropism keep nudging `rest_curvature` toward upright regardless
     // of WHY it moved, so a plastic kink here is not permanent forever --
     // it appears instantly on overload, then heals back over the same slow,
@@ -348,7 +348,7 @@ fn make_sim() -> Simulation {
     let root_ea = 1.0e5 * ROOT_WIDTH_M * ROOT_THICKNESS_M;
     let root_ei = 1.0e5 * ROOT_WIDTH_M.powi(3) * ROOT_THICKNESS_M / 12.0;
     // NOT switched to `modal_critical_damping()` (unlike the blade above) --
-    // real, found regression (2026-07-27): for this root's real geometry (4
+    // found regression (2026-07-27): for this root's real geometry (4
     // points, 6mm long, l0=2mm), modal_critical_damping's bending value comes
     // out ~73000x the old local reference (vs ~1670x for the 20-point/10cm
     // blade) -- traced with a real per-frame instability trace (max speed
@@ -359,7 +359,7 @@ fn make_sim() -> Simulation {
     // curvature at that scale gets this stiff -- an inaccurate C matrix entry
     // is indistinguishable, numerically, from the file's own documented
     // failure mode ("getting the sign wrong... blows up with alternating
-    // sign and exponentially growing magnitude"). This is a real, separate,
+    // sign and exponentially growing magnitude"). This is a separate,
     // disclosed gap in the implicit solver's Jacobian precision for
     // very-short/few-point/soft rods, not something this example should
     // paper over by picking a smaller ad-hoc fraction -- staying on the old,
@@ -398,12 +398,12 @@ fn make_sim() -> Simulation {
     // force-balance gate (Bengough & Mullins 1990/1997, Lockhart 1965) AND a
     // real finite reserve budget (Deleens, Gregory, Bourdu 1984 -- see
     // `rod::growth` module doc's own "Real finite resource budget" section).
-    // Real, live-run finding (2026-07-29): this scene has no soil, so the
+    // Live-run finding (2026-07-29): this scene has no soil, so the
     // resistance gate above never actually engages (nothing to sense) --
     // combined with real point insertion, root growth ran completely
     // unbounded over a long unattended session (confirmed: 23cm and off the
     // visible 0.24m world after ~90 real minutes). ROOT_GROWTH_BUDGET_M is a
-    // real, disclosed illustrative choice (same calibration status as this
+    // disclosed illustrative choice (same calibration status as this
     // file's other rate constants) -- big enough to show several real
     // cell-division events over a normal few-minute session, small enough
     // to never leave the visible world regardless of how long the demo runs
@@ -541,7 +541,7 @@ impl State {
             cursor_pos: [0.0; 2],
             // Default OFF: continuous wind gusts keep the blade perpetually
             // disturbed -- W still toggles it on, but the default view should
-            // show the real, settled, anchored state.
+            // show the settled, anchored state.
             wind_enabled: false,
             wind_time: 0.0,
             wind_speed_m_s: WIND_SPEED_REAL_M_S,
@@ -651,7 +651,7 @@ impl State {
         }
         self.last_nearest_dist = nearest_dist;
 
-        // Temporary A/B toggle sync -- see `use_implicit`'s own doc.
+        // Temporary A/B toggle sync -- see `use_implicit`'s doc.
         for rod in self.sim.rods_mut().iter_mut().take(2) {
             rod.use_implicit_integration = self.use_implicit;
         }
@@ -732,7 +732,7 @@ impl State {
 
         // Build the visual buffer: real sand particles (their own real
         // material_id from the sim) + marker points for both rods, copied
-        // directly from their real, physically-simulated state -- the
+        // directly from their physically-simulated state -- the
         // markers carry zero physics of their own, they are a rendering
         // proxy for real state, not a stand-in simulation. Distinct
         // material_id per rod purely so the palette renders them in
@@ -748,7 +748,7 @@ impl State {
         // shape). Consecutive markers overlap enough (reach = 0.75x the
         // longer adjacent edge) to read as one continuous blade, not beads
         // on a string; the `/ PARTICLE_SCALE` cancels the renderer's own
-        // global particle-scale factor so this is the real, absolute
+        // global particle-scale factor so this is the absolute
         // grid-unit size regardless of that setting.
         let mut all = Vec::with_capacity(self.sim.particles().len() + 2 * N_POINTS + 8);
         all.extend(self.sim.particles().iter());
@@ -845,7 +845,7 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, &marker_particles, &view, true);
 
-        // --- egui panel: real, live push-strength slider ---
+        // --- egui panel: live push-strength slider ---
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
         let mut wind_enabled = self.wind_enabled;
@@ -856,7 +856,7 @@ impl State {
         let cursor_grid = self.cursor_grid();
         let nearest_dist = self.last_nearest_dist;
 
-        // Real, live per-rod state -- so what's happening (buckling risk,
+        // Live per-rod state -- so what's happening (buckling risk,
         // secondary growth's own progress, phototropism's real lean) is
         // directly visible in the demo itself instead of needing the NDJSON
         // log read back externally. All three numbers come straight off

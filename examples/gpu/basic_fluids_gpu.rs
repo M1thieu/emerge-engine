@@ -24,7 +24,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
-// Real, disclosed PLAYBACK speed, not a physics constant -- this demo's own
+// Disclosed PLAYBACK speed, not a physics constant -- this demo's own
 // `gravity: Vec2::new(0.0, -0.3)` (already disclosed as "deliberately weak
 // ... tuned for a calmer, more legible demo") and material viscosity were
 // tuned by eye while the pre-2026-07-30 fps-coupling bug was secretly
@@ -46,7 +46,7 @@ const PLAYBACK_SPEED: f32 = 6.0;
 // SPEED` specifically so exactly ~1 `step_frame()` call happens per
 // render frame at the target fps, regardless of what speed is dialed in.
 const RENDER_FPS_TARGET: f32 = 60.0;
-// Derived, not independently chosen -- see `RENDER_FPS_TARGET`'s own doc.
+// Derived, not independently chosen -- see `RENDER_FPS_TARGET`'s doc.
 // At PLAYBACK_SPEED=6.0 this evaluates to 0.1, the SAME value this demo
 // used before the 2026-07-30 pacing fix -- not a coincidence: that's
 // exactly the dt size this demo's materials/gravity were tuned against.
@@ -56,7 +56,7 @@ const LABELS: &[(u32, &str)] = &[(MAT_WATER, "water")];
 // Module scope (not local to `make_sim_data`, which only builds the sim, not
 // the renderer): `Renderer::set_grid_reference_cell_mass` needs this same
 // real SI value from `State::new`, a separate `impl` method -- see that call
-// site's own comment.
+// site's comment.
 const WATER_RHO_GRID: f32 = 0.1;
 
 /// Installs the scene's real optical description. There is one path, not a
@@ -117,11 +117,11 @@ struct State {
     /// Cycled with G: Particles -> GridVolume -> Surface -> Particles.
     /// GridVolume's real per-material accumulator is attached lazily on
     /// first switch INTO that mode (NOT eagerly at construction -- that
-    /// pattern caused a real, measured perf regression in
+    /// pattern caused a measured perf regression in
     /// material_sandbox_gpu, fixed same session).
     render_mode: RenderMode,
     /// Which spawn geometry is live -- switched with number keys, see
-    /// `Pattern`'s own doc. `reset()` re-spawns using this, not always
+    /// `Pattern`'s doc. `reset()` re-spawns using this, not always
     /// `DamBreak`, so switching pattern and resetting are the same action.
     pattern: Pattern,
     /// Converts real measured elapsed time into the correct number of physics
@@ -146,7 +146,7 @@ struct State {
 /// physics-grid density field (`render_grid_volume`), and the finer,
 /// resolution-independent curvature-flow surface reconstruction
 /// (`render_surface_reconstruction`, shipped 2026-07-29 -- see that
-/// method's own doc for the real technique).
+/// method's doc for the real technique).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RenderMode {
     Particles,
@@ -157,7 +157,7 @@ enum RenderMode {
 /// Which real fluid behaviour this scene proves, switched with the number
 /// keys (1-4) -- same material/config/render setup throughout, only the
 /// spawn geometry (and, for `Vortex`, the initial velocity field) changes.
-/// 4 is a reserved slot, not built yet -- see its own doc.
+/// 4 is a reserved slot, not built yet -- see its doc.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pattern {
     /// Classic dam-break: a tall column collapses sideways under gravity and
@@ -165,9 +165,9 @@ enum Pattern {
     /// scene.
     DamBreak,
     /// A small blob falls into a shallow, wide pool -- crown splash and
-    /// ripple propagation, a real, distinct behaviour from a collapsing
+    /// ripple propagation, a distinct behaviour from a collapsing
     /// column (Worthington-style droplet impact), proving the same solver
-    /// handles a genuinely different initial geometry, not just a bigger
+    /// handles a different initial geometry, not just a bigger
     /// dam-break.
     DropletImpact,
     /// A resting pool with a real `GravityWellField` "drain" pulling fluid
@@ -206,7 +206,7 @@ fn make_sim_data(
         // shipped) reported most of each frame's time as unadvanced.
         //
         // Raised 60 -> 150 (2026-09-16), matching `basic_fluids.rs`'s OWN
-        // value for this exact scene (see that file's own doc): GPU's CFL
+        // value for this exact scene (see that file's doc): GPU's CFL
         // scan was missing several real CPU-only terms (deformation-
         // gradient ODE bound, shock-viscosity compression correction,
         // single-particle instability bound, predictive near-wall
@@ -228,7 +228,7 @@ fn make_sim_data(
         // substeps/frame, never near this cap.
         max_substeps_per_step: 1000,
         // TESTED (2026-09-16): raised to `true` (engine default) to check
-        // whether the real, cited affine-speed CFL contribution
+        // whether the cited affine-speed CFL contribution
         // (`affine_cfl_speed_contribution`) would catch the growing
         // velocity-gradient instability traced on particle idx=1994 -- ZERO
         // effect: frames 1-12 (the entire seed-and-growth phase, C growing
@@ -248,7 +248,7 @@ fn make_sim_data(
         // 0.3, not 0.1 (2026-08-13) -- matches `basic_fluids.rs`'s own
         // change and the standard explicit CFL number range (0.2-0.4;
         // Monaghan 0.25-0.3 for SPH, MLS-MPM commonly 0.3-0.5). See that
-        // demo's own comment for the full reasoning: 0.1 was 3x more
+        // demo's comment for the full reasoning: 0.1 was 3x more
         // conservative than any cited solver, and the failure it was
         // protecting against traced to a too-soft EOS, not to C.
         // 0.4, not 0.3 (2026-09-19). Two sources for the number: Becker & Teschner
@@ -265,7 +265,7 @@ fn make_sim_data(
         // Costs ~52 substeps/frame instead of ~69. 0.5 was tested too and rejected: the
         // vortex's J goes to 1.43.
         material_cfl_coefficient: 0.4,
-        // Real, root-caused fix (2026-08-06, caught live by the user): the
+        // Root-caused fix (2026-08-06, caught live by the user): the
         // old `Vec2::new(0.0, -0.3)` (~3270x weaker than real IRL gravity,
         // g_grid~=981 via SimConfig::earth) left too little real driving
         // force to overcome this material's own EOS-pressure elastic-like
@@ -317,17 +317,17 @@ fn make_sim_data(
     // This calibrates quadrature mass and reference volume; the WC-MPM EOS
     // itself uses rho=rho0/J, never a kernel-density overwrite.
     // rest_density=0.1 for water, NOT the old 4.0 -- real SI fix, 2026-08-08,
-    // see basic_fluids.rs's own doc for the full derivation (`rho_grid =
+    // see basic_fluids.rs's doc for the full derivation (`rho_grid =
     // rho_kg_m3*dx_meters^2 = 1000*0.01^2 = 0.1` for real water at this
     // scene's scale).
     // 0.5 (2026-08-14) -- matches `basic_fluids.rs` exactly (4 PPC), was
     // 0.9 (~1.2 PPC) since a 45fps fix predating today's GPU solver revert.
-    // Real, measured win: denser sampling gives the velocity-divergence
+    // Measured win: denser sampling gives the velocity-divergence
     // estimate less room to spuriously spike (sub=19 steady vs the sparse
     // case's climb into the hundreds).
     const SPACING: f32 = 0.5;
     // WATER_RHO_GRID itself is module-scope now (renderer setup in `State::new`
-    // needs the same real value) -- see its own doc.
+    // needs the same real value) -- see its doc.
     const WATER_MASS: f32 = WATER_RHO_GRID * SPACING * SPACING;
     let water_region = |box_size: IVec2, box_center: Vec2| SpawnRegion {
         spacing: SPACING,
@@ -338,7 +338,7 @@ fn make_sim_data(
         ..SpawnRegion::for_sim(&config)
     };
     // Non-empty only for Vortex -- registered on `sim` after construction
-    // below, see that call site's own comment.
+    // below, see that call site's comment.
     let mut vortex_fields: Vec<GpuFieldEntry> = Vec::new();
     let particles = match pattern {
         Pattern::DamBreak => {
@@ -358,7 +358,7 @@ fn make_sim_data(
             // A shallow, wide pool near the floor plus a small blob well
             // above it -- same water material/mass, two spawn regions
             // instead of one. ~28 cell fall distance (blob bottom ~38 to
-            // pool top ~15) for a real, visible splash.
+            // pool top ~15) for a visible splash.
             let mut p = build_particles(
                 &config,
                 water_region(IVec2::new(50, 12), Vec2::new(32.0, 9.0)),
@@ -370,7 +370,7 @@ fn make_sim_data(
             p
         }
         Pattern::Vortex => {
-            // A real, contained whirlpool in the middle of a flat, resting
+            // A contained whirlpool in the middle of a flat, resting
             // pool -- same wide-rectangle-on-the-floor geometry as
             // DropletImpact, not a disk (tried, rejected: read as an
             // isolated blob, not "a sea with a vortex in it").
@@ -396,7 +396,7 @@ fn make_sim_data(
             // rotation (v = omega*r), which gives near-zero angular
             // momentum to particles near the center (L = r*(omega*r) ->0 as
             // r->0), so they fall in radially and get flung out hard on
-            // close approach (real, live-measured N-body slingshot, not a
+            // close approach (live-measured N-body slingshot, not a
             // tuning artifact). Free-vortex gives every particle real
             // angular momentum from the start, avoiding that. Still just an
             // initial condition (real vortices always start from some small
@@ -407,7 +407,7 @@ fn make_sim_data(
             // NO RadialConfinement -- tried, rejected: it pushes anything
             // beyond its radius inward unconditionally, so with a wide pool
             // it forcibly shoved ordinary resting water inward every
-            // substep (real, measured violence, |v| up to 100+). Every
+            // substep (measured violence, |v| up to 100+). Every
             // other pattern here already relies on gravity + floor + the
             // domain's slip boundary alone -- this one does too now.
             //
@@ -415,7 +415,7 @@ fn make_sim_data(
             // basic_orbital's Kepler test), this GPU port's
             // grid_update.wgsl application had no test coverage before this
             // session (tests/gpu.rs only exercised linear_drag/
-            // spatial_drag/radial_confinement) -- real, complete code, just
+            // spatial_drag/radial_confinement) -- complete code, just
             // newly live-exercised.
             //
             // KNOWN, DISCLOSED LIMIT (a real engine gap, not a demo bug):
@@ -441,7 +441,7 @@ fn make_sim_data(
             // way to get more visible margin around the same vortex; not
             // changed tonight.
             //
-            // PERF STATUS (2026-08-15, real, unresolved -- see memory
+            // PERF STATUS (2026-08-15, unresolved -- see memory
             // project_vortex_siphon_saga_2026-08-15.md for the full
             // account, not re-litigated here): this pattern live-measured
             // at 10-15fps steady state vs the other two patterns' 28-38fps.
@@ -453,7 +453,7 @@ fn make_sim_data(
             //     constants were tuned as a matched pair, not independent
             //     knobs).
             //  2. Narrowing POOL_BOX (54->44) for more wall clearance --
-            //     did NOT fix it either: the pool's own genuine outward
+            //     did NOT fix it either: the pool's own outward
             //     spread (not just its initial footprint) still reached
             //     both walls.
             // Root driver, real not guessed: the GPU CFL scan here has NO
@@ -466,7 +466,7 @@ fn make_sim_data(
             // substepping (already scoped as its own 5-8 day project) or a
             // fundamentally gentler mechanism -- not a quick constant
             // tweak. REVERTED to the last live-verified-stable values
-            // below; perf remains a real, disclosed, open problem.
+            // below; perf remains a open problem.
             const POOL_BOX: IVec2 = IVec2::new(54, 48);
             let pool_center = Vec2::new(32.0, 26.0);
             let drain_center = pool_center;
@@ -491,7 +491,7 @@ fn make_sim_data(
             // any reasonable basin radius, by design -- that's the calm
             // sea), it was forcibly shoving ordinary resting water inward
             // every substep, colliding with the undisturbed pool and
-            // producing real, measured violence (|v| up to 100+ within the
+            // producing measured violence (|v| up to 100+ within the
             // first ~20 frames). Every other pattern in this file (dam
             // break, droplet impact) already relies on gravity + the
             // floor + the domain's own slip boundary alone, with no
@@ -525,7 +525,7 @@ fn make_sim_data(
     // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     //
     // eos_stiffness=2.5, NOT 100 -- rest_density=0.1 (the real SI fix, see
-    // basic_fluids.rs's own doc) means `NewtonianFluidMaterial::timestep_bound`'s
+    // basic_fluids.rs's doc) means `NewtonianFluidMaterial::timestep_bound`'s
     // `c2 = eos_stiffness*eos_power*density_ratio^(power-1)/rest_density` is
     // now 40x larger at the OLD eos_stiffness=100 for any given compression --
     // confirmed 2026-08-08 by basic_fluids.rs's CPU twin actually crashing
@@ -600,7 +600,7 @@ fn make_sim_data(
     // SECOND real bug in the previous version: `NewtonianFluidMaterial::
     // weakly_compressible` hard-codes Cole 1948's gamma=7 internally
     // (`fluid.rs`: `const GAMMA: f32 = 7.0`) -- the EXACT exponent this
-    // file's own comment history (above) already measured as catastrophic on
+    // file's comment history (above) already measured as catastrophic on
     // this scene (c2 up to 6605 from `ratio^6` amplifying a modest J
     // excursion), which is why eos_power=3.0 was deliberately chosen over 7.0
     // in the first place. Calling `weakly_compressible` silently reintroduced
@@ -620,10 +620,10 @@ fn make_sim_data(
     // Must pair with the SAME density-normalized family `pressure_floor`
     // below already uses (`stress_from_si`) -- mixing raw and
     // density-normalized conventions in the same stress tensor is wrong
-    // (see `q_factor_elastic_viscosity_pa_s`'s own doc for a real, prior
+    // (see `q_factor_elastic_viscosity_pa_s`'s doc for a prior
     // instance of exactly that mistake, ~917x error, a different material).
     // Real effect here: raw 1.0e-3 was ~10x too weak (correct grid value
-    // 0.01) -- real, disclosed, but NOT the fix for the splash-disintegration
+    // 0.01) -- but NOT the fix for the splash-disintegration
     // instability (verified separately: even 10x more molecular viscosity is
     // far too small to explain or damp the observed C-matrix growth rate).
     const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
@@ -636,14 +636,14 @@ fn make_sim_data(
         water_tait_b_pa,
         WATER_EOS_POWER,
     );
-    // Real, sourced bulk (second) viscosity, 2026-08-12 -- `NewtonianFluidMaterial::new`
+    // Sourced bulk (second) viscosity, 2026-08-12 -- `NewtonianFluidMaterial::new`
     // hardcodes `bulk_viscosity: 0.0`, leaving this scene's Navier-Stokes stress tensor
     // (`fluid.rs`'s own `stress += 0.5*bulk_viscosity*div(v)*I`, standard and already
     // correctly implemented, just unused) with NO dissipation for volumetric
     // oscillation -- unlike `artificial_bulk_viscosity` just above it (von Neumann-
     // Richtmyer, correctly gated to compression-only: it's a SHOCK-capturing term,
     // real shocks only form under compression, so that gating is textbook-correct, not
-    // a bug). Bulk viscosity is the real, standard, SYMMETRIC (both compression and
+    // a bug). Bulk viscosity is the standard, SYMMETRIC (both compression and
     // expansion) dissipative term that damps acoustic ringing after a violent impact --
     // directly matching the literature (Denner et al. 2023, "acoustic damper term in
     // weakly-compressible SPH": dissipates the acoustic component of pressure oscillation
@@ -652,7 +652,7 @@ fn make_sim_data(
     // consistent with zero volumetric dissipation. Real value: water's bulk viscosity is
     // ~2.8-3.0x its shear (dynamic) viscosity (Litovitz & Davis; confirmed via
     // arxiv.org/pdf/1002.3029's acoustic-spectroscopy remeasurement, ratio ~3 across
-    // 7-50C) -- applied to the SAME real, now-correctly-SI-converted
+    // 7-50C) -- applied to the SAME now-correctly-SI-converted
     // `water_dynamic_viscosity` above (was `3.0 * 1.0e-3` raw, same unit bug).
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
     // This fluid IS water, so it declares water's own measured optical
@@ -686,7 +686,7 @@ fn make_sim_data(
     // REAL FIX (2026-09-16) -- root cause of the splash disintegrating into
     // permanently scattered droplets, found bisecting directly against a
     // known-good historical build (`b8b13cc`, 2026-08-13) at the user's own
-    // request. Confirmed via a real, adjacent-commit A/B (both patched with
+    // request. Confirmed via a adjacent-commit A/B (both patched with
     // the SAME pressure_floor+substep fixes above, isolating this variable
     // alone): `c32d86c` settles cleanly (mean bulk J=[0.92,1.06], 7 self-
     // correcting transient outliers over 900 frames); `f1fea23`, committed
@@ -705,10 +705,10 @@ fn make_sim_data(
     // `grep -rn "surface_tension_coeff\s*="` finding zero nonzero uses
     // anywhere in this engine's history).
     //
-    // Real, cited value, not a tuned constant: water's surface tension at
+    // Cited value, not a tuned constant: water's surface tension at
     // room temperature is gamma=0.0728 N/m (standard, widely-cited figure).
     // `NewtonianFluidMaterial::surface_tension_coeff` adds `gamma_grid*J` to
-    // the Kirchhoff stress directly (see fluid.rs's own doc), i.e. it needs
+    // the Kirchhoff stress directly (see fluid.rs's doc), i.e. it needs
     // PRESSURE units, not force-per-length. Surface tension physically
     // manifests as a pressure jump across a curved interface (Young-Laplace,
     // dp=gamma/R). This discretization cannot resolve any curvature radius
@@ -745,7 +745,7 @@ fn make_sim_data(
     // every spawn, which is every reset, so restarting really does restart
     // from a resting state.
     sim.settle_hydrostatic();
-    // Real, already-proven mechanism (`fluids_gpu_isolated_droplet_settles_with_damping`,
+    // Already-proven mechanism (`fluids_gpu_isolated_droplet_settles_with_damping`,
     // 2026-07-30): an isolated splash particle has no neighbors to form a real
     // deformation/velocity gradient against, so none of this material's stress-based
     // dissipation (shear/bulk/shock viscosity) can ever act on it -- P2G/G2P still
@@ -758,9 +758,9 @@ fn make_sim_data(
     // pattern at the same cited rate (0.1, within that investigation's documented
     // 0.05-0.2 water range).
     sim.add_force_field_gpu(GpuFieldEntry::linear_drag(Vec2::ZERO, 0.1, 1 << MAT_WATER));
-    // Vortex's real drain + basin -- see that match arm's own doc for the
+    // Vortex's real drain + basin -- see that match arm's doc for the
     // full physical account. Registered once here (persists every substep
-    // until cleared, see `add_force_field_gpu`'s own doc) since `sim` only
+    // until cleared, see `add_force_field_gpu`'s doc) since `sim` only
     // exists from this point on.
     for field in vortex_fields {
         sim.add_force_field_gpu(field);
@@ -776,7 +776,7 @@ fn make_sim_data(
     // `grid_cohesion_main_inner` doc for the full story), but DISABLED here.
     // The scene's actual runaway bug was root-caused and fixed elsewhere
     // (`fluid_state::force_stress_volume` -- the P2G force-scatter's own
-    // volume input was unbounded, a genuine stress*volume feedback loop;
+    // volume input was unbounded, a stress*volume feedback loop;
     // confirmed via a clean cohesion-OFF re-baseline that reproduced the
     // exact same runaway, then confirmed fixed the same way). Re-enabling
     // cohesion on top of that fix was tested directly: it reintroduces a
@@ -915,13 +915,13 @@ impl State {
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             render_mode: RenderMode::Particles,
-            // Vortex stays real, working code (see its own match-arm doc) --
+            // Vortex stays working code (see its own match-arm doc) --
             // just not reachable via the live Digit3 keypress (2026-08-15,
             // real perf gap: 10-15fps vs 28-38fps for patterns 1/2, not
             // ready for casual demo use). Still constructible for real dev
             // testing via this env var, same convention as
             // `EMERGE_DEBUG_PRESSURE` elsewhere this session -- keeps the
-            // variant genuinely used (not dead code) without forcing it on
+            // variant used (not dead code) without forcing it on
             // anyone running the demo normally.
             pattern: if std::env::var("EMERGE_VORTEX_DEBUG").is_ok() {
                 Pattern::Vortex
@@ -931,11 +931,11 @@ impl State {
             // NOT `::standard()` (2026-08-07 fix): that hardcodes a 64-step-
             // per-render catch-up cap, sized for cheap physics steps. Once
             // `SimConfig::max_substeps_per_step` needed raising to 150 for a
-            // correctly-stiff EOS (see make_sim_data's own doc), the two caps
+            // correctly-stiff EOS (see make_sim_data's doc), the two caps
             // compound: a slow step_frame() call falls behind real time, the
             // accumulator asks for MORE catch-up steps next render, each one
             // ALSO up to 150 substeps plus its own blocking GPU sync -- a
-            // real, measured scheduling death-spiral (confirmed live: fps
+            // measured scheduling death-spiral (confirmed live: fps
             // ratchets 4->2->1->0 while GPU usage pins), not physics cost.
             // Capping catch-up at 1 means a slow frame is visually slow
             // motion, never a compounding spiral.
@@ -1005,7 +1005,7 @@ impl State {
         let steps = self.stepper.steps_for_frame(frame_delta);
         self.max_steps_seen = self.max_steps_seen.max(steps);
         // Real GPU render-interpolation snapshot ("Fix Your Timestep", Gaffer
-        // 2004 -- see `Renderer::snapshot_particle_positions`'s own doc). Same
+        // 2004 -- see `Renderer::snapshot_particle_positions`'s doc). Same
         // fix already ported to `basic_sand_grid_gpu.rs`; this closes the gap
         // on the OTHER side of the exact demo family this feature was first
         // built for -- `basic_fluids.rs` (CPU) got the real fix back on
@@ -1052,7 +1052,7 @@ impl State {
                 // one field this investigation needs direct evidence on. J is
                 // structurally bounded by the GPU clamp [0.5,2.0] already, but
                 // density/volume are a SEPARATE, unguarded field on GPU -- this
-                // is the real, direct measurement the plan's Step 0 asked for.
+                // is the direct measurement the plan's Step 0 asked for.
                 if self.frame.is_multiple_of(30) {
                     let particles = self.sim.particles();
                     let (mut dmin, mut dmax, mut vmin, mut vmax) =
@@ -1217,7 +1217,7 @@ impl State {
                 // above) -- scoped to this render mode only, matching the CPU
                 // `basic_fluids.rs` precedent: GridVolume/Surface build their
                 // own independent P2G/reconstruction bridge buffers, a real,
-                // disclosed, separate follow-up, not done here.
+                // separate follow-up, not done here.
                 self.renderer.render_gpu(
                     self.sim.device(),
                     self.sim.queue(),

@@ -22,7 +22,7 @@ mod gui_common;
 /// not a soil-horizons bug (root-caused and fixed 2026-07-31: `eos_power=7` was the
 /// near-incompressible WATER value applied to a 40%-compressible preset, combined
 /// with a hardening-scale floor that let dilation soften the material below its own
-/// baseline stiffness -- a genuine unbounded positive feedback; see
+/// baseline stiffness -- a unbounded positive feedback; see
 /// `granular_fluid_saturated_loam_instability_found_2026-07-31` and its follow-up
 /// fix memory for the full writeup). Verified settling cleanly at this file's own
 /// `young_modulus=1200` before switching back -- the temporary `DruckerPragerMaterial
@@ -39,7 +39,7 @@ mod gui_common;
 /// 1.76-1.95 g/cm^3. Representative picks within/near each verified range, not
 /// universal constants -- real soil depth/density varies hugely by climate/parent
 /// material (Jenny's own thesis).
-/// Layer THICKNESS ratios (O thin, C thickest) are the real, uncontroversial
+/// Layer THICKNESS ratios (O thin, C thickest) are the uncontroversial
 /// qualitative ordering pedology gives -- exact depths vary by soil type/location,
 /// so these are representative proportions, not a literal profile.
 ///
@@ -97,7 +97,7 @@ const B_DENSITY_RATIO: f32 = 1.5;
 const C_DENSITY_RATIO: f32 = 1.8; // within the verified 1.76-1.95 glacial-till C-horizon range
 
 // Column geometry: bottom of C horizon sits just above the floor boundary; total
-// soil column depth is split across horizons using the real, uncontroversial
+// soil column depth is split across horizons using the uncontroversial
 // qualitative ordering (O thin, C thickest) -- see module doc for the caveat on
 // exact proportions.
 const COLUMN_HALF_WIDTH: i32 = 24;
@@ -466,7 +466,7 @@ impl State {
         // Real sag/absorption report, printed once right as the foot lifts --
         // compares the settled height AFTER release against both the original
         // baseline and the deepest point reached under load, so "how much
-        // recovered" and "how much stayed sunk" are both real, measured numbers.
+        // recovered" and "how much stayed sunk" are both measured numbers.
         if self.was_pressing && !self.pressing {
             if let Some(baseline) = self.press_baseline_height {
                 let recovered = self.surface_height_near(press_x);

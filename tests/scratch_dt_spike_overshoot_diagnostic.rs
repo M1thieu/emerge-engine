@@ -7,7 +7,7 @@
 //! picks dt from THIS substep's own pre-force particle velocities/stresses
 //! (confirmed by reading the source: `last_max_speed` is lagged but used
 //! ONLY for the fluid near-wall Mach gate, NOT the general velocity/material
-//! CFL bound -- that scan is fresh every substep). So a genuine spike can
+//! CFL bound -- that scan is fresh every substep). So a spike can
 //! only come from a FORCE applied within the substep (gravity + contact +
 //! constitutive stress) driving velocity past what the pre-force state's own
 //! CFL bound assumed -- the standard "explicit contact/collision timestep"
@@ -25,7 +25,7 @@ use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRe
 use glam::{IVec2, Vec2};
 
 /// Real post-substep CFL-safety check, reusing the EXACT same formula
-/// `SimConfig::cfl_coefficient`'s own doc gives (`dt <= cfl_coefficient *
+/// `SimConfig::cfl_coefficient`'s doc gives (`dt <= cfl_coefficient *
 /// cell_width / max_speed`), just evaluated AFTER the step instead of
 /// before -- if a substep's actual resulting speed needed a smaller dt than
 /// the one it was actually integrated with, `ratio > 1.0` proves the
@@ -81,7 +81,7 @@ fn sand_hard_impact_dt_overshoot_diagnostic() {
     // but a real "frame-spike" -- CFL correctly demands many more substeps
     // during a violent event, so a single `step()` call's WALL-CLOCK cost
     // spikes even though the physics itself stays admissible (matches the
-    // real, already-documented `basic_snow_gpu` regression from 2026-07-30:
+    // already-documented `basic_snow_gpu` regression from 2026-07-30:
     // a substep-count explosion collapsing fps 60->13-16). If real demos
     // gate substeps behind a `FixedStepController`'s `max_substeps_per_frame`,
     // a frame this expensive either stalls (visible pause) or, once it

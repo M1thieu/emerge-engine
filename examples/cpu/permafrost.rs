@@ -4,7 +4,7 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 /// Real permafrost freeze/thaw -- a block of ice-bonded soil (`NaccMaterial::kaolin`
-/// at 250x its own thawed stiffness) that genuinely softens once real ambient warming
+/// at 250x its own thawed stiffness) that softens once real ambient warming
 /// pushes it past the real freezing point (273.15K), same mechanism verified in
 /// `tests/solver.rs::permafrost_thaws_at_freezing_point_with_real_latent_heat_debit`
 /// and `frozen_ground_resists_a_strike_more_than_thawed_ground` -- this is the live,
@@ -630,7 +630,7 @@ mod tests {
     use super::*;
 
     /// Real regression check: the block spawns fully frozen, and warming the real
-    /// ambient past the real freezing point genuinely thaws it (material_id changes),
+    /// ambient past the real freezing point thaws it (material_id changes),
     /// not just a cosmetic temperature number -- proves the live demo's own
     /// `make_sim()`/phase-rule wiring works, not just the abstracted unit tests in
     /// `tests/solver.rs`.
@@ -641,7 +641,7 @@ mod tests {
         assert!(frozen0 > 0, "must start with frozen particles");
         assert_eq!(thawed0, 0, "must start with zero thawed particles");
 
-        // Real Fourier diffusion alone would take a genuinely unplayable amount of
+        // Real Fourier diffusion alone would take a unplayable amount of
         // sim-time to warm the block from ambient (this engine's own diffusion.rs
         // doc: real soil-scale conduction is ~18000s vs MPM's ~0.002s mechanical
         // CFL) -- directly setting particle temperature tests the actual thing that

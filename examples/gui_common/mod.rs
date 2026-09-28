@@ -26,7 +26,7 @@
 //!
 //! Examples that only need `cursor_to_grid` (not the full `Gfx` bootstrap)
 //! should point `#[path]` at `gui_common/coords.rs` instead of this file --
-//! see that submodule's own doc for why.
+//! see that submodule's doc for why.
 //!
 //! `cursor_force` (push/pull interaction) is likewise NOT re-exported here,
 //! for the same reason: unlike `cursor_to_grid`, not every `Gfx`-using
@@ -48,7 +48,7 @@ pub use coords::cursor_to_grid;
 /// egui context/state/renderer (real immediate-mode UI) -- NOT the
 /// `emerge::render::Renderer` (the particle renderer), which stays
 /// per-example since its camera setup (particle scale, aspect handling)
-/// is a real, scene-tuned parameter, not shared mechanics.
+/// is a scene-tuned parameter, not shared mechanics.
 pub struct Gfx {
     pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
@@ -61,7 +61,7 @@ pub struct Gfx {
 }
 
 impl Gfx {
-    /// Real, shared wgpu+egui bootstrap -- confirmed byte-for-byte identical
+    /// Shared wgpu+egui bootstrap -- confirmed byte-for-byte identical
     /// (module-doc's own finding) across every GUI example before this
     /// extraction, just independently duplicated.
     pub async fn new(window: &Arc<Window>) -> Self {
@@ -145,7 +145,7 @@ impl Gfx {
     }
 }
 
-/// Real, shared egui frame submit tail -- identical mechanics across every
+/// Shared egui frame submit tail -- identical mechanics across every
 /// GUI example (only the PANEL CONTENT closure differs per scene). Runs
 /// `build_ui`, tessellates, uploads textures, and submits a render pass
 /// drawing ON TOP of whatever `view` already holds (the scene's own

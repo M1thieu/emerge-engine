@@ -1,9 +1,9 @@
 //! TEMPORARY, not part of the real suite -- direct headless reproduction of
 //! `examples/cpu/basic_membrane.rs`'s scene (same lambda/mu, same spawn, same
 //! pin, same `SimConfig::earth`) to check what "gravity_fraction=1.0 explose"
-//! actually means: a genuine divergence (NaN/unbounded blowup), or the
+//! actually means: a divergence (NaN/unbounded blowup), or the
 //! dramatic-stretch-then-settle-near-the-floor already anticipated by that
-//! file's own doc comment on `gravity_fraction`.
+//! file's doc comment on `gravity_fraction`.
 //!
 //! EXTENDED (2026-09-05, real-SI migration): after switching to a real,
 //! sourced bat-wing-membrane stiffness via `lame_from_si`, this
@@ -87,7 +87,7 @@ fn pin_top_particles(sim: &mut Simulation) -> usize {
     count
 }
 
-/// Real, controlled probe: run the membrane scene at a given
+/// Controlled probe: run the membrane scene at a given
 /// (lambda, mu, gravity_fraction, max_substeps_per_step) combination for
 /// `seconds` of simulated time, logging max|J-1| at fixed checkpoints so
 /// two variants can be compared directly against each other, not just
@@ -209,7 +209,7 @@ fn membrane_scene_old_stiffness_full_gravity() {
 }
 
 /// Baseline: the ORIGINAL scene exactly as it shipped (old stiffness, old
-/// near-zero gravity fraction) -- the real number the file's own comment
+/// near-zero gravity fraction) -- the real number the file's comment
 /// (0.001884 @ 600s at cundall=0.0) should reproduce.
 #[test]
 #[ignore = "temporary manual probe, not a regression test"]

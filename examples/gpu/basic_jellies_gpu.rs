@@ -41,11 +41,11 @@ const LABELS: &[(u32, &str)] = &[
 // Real fix (2026-09-06): was NeoHookean(10,20)/Corotated(30,60)/
 // Viscoelastic(10,15,0.15) -- three DIFFERENT unsourced grid-unit guesses,
 // which undermines the demo's own point of comparing constitutive LAWS at
-// equal stiffness. Same real, cited soft-tissue reference as
+// equal stiffness. Same cited soft-tissue reference as
 // `basic_jellies.rs`'s CPU twin (E=500 Pa, nu=0.45, rho=1000 kg/m3 --
 // `physical_props.rs`'s own canonical example) for all three, plus real
 // glycerin viscosity (~1 Pa*s) for the Kelvin-Voigt dashpot -- see that
-// file's own doc for the full citation reasoning.
+// file's doc for the full citation reasoning.
 const JELLY_YOUNG_MODULUS_PA: f32 = 500.0;
 const JELLY_POISSON_RATIO: f32 = 0.45;
 const JELLY_DENSITY_KG_M3: f32 = 1000.0;
@@ -112,7 +112,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // `grid_update.wgsl` itself (`boundary_thickness`, default 2, not
         // exposed via the same `.with_boundary()` builder CPU uses, which
         // is why the first check missed it). Directly re-verified: the
-        // blob falls, hits the floor, and genuinely bounces
+        // blob falls, hits the floor, and bounces
         // (`tests/scratch_gpu_boundary_recheck.rs`, min_y 40 -> 2.49 -> 6.1
         // -> 9.4 over 20s). The 20000 value itself still stands (matches
         // the CPU twin's own proven-safe margin), just not for the reason
@@ -147,7 +147,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
     // Demo-only, illustrative temperature (real magma/lava range, ~1200-1300K) --
     // NOT a physical claim that this Corotated jelly IS lava, purely a live,
     // visible confirmation that Surface mode's new blackbody emission (see
-    // curvature_flow.wgsl's own doc) actually reads real per-particle
+    // curvature_flow.wgsl's doc) actually reads real per-particle
     // temperature end-to-end, not just passing in an automated pixel test.
     for p in hot_cor.iter_mut() {
         p.temperature = 1200.0;
@@ -212,7 +212,7 @@ impl State {
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
         // Distinct optics per material slot -- ByMaterial splat mode has its own
-        // separate hardcoded palette (real, but unrelated to the Beer-Lambert
+        // separate hardcoded palette (but unrelated to the Beer-Lambert
         // OpticalTable), so grid-volume mode's per-cell dominant-material coloring
         // (which reads THIS table, see grid_volume.wgsl's dominant_material) had
         // never been populated here -- every material silently fell back to the
@@ -231,7 +231,7 @@ impl State {
         // 0.0 (no visible effect at all, even after that shading math
         // shipped) until wired here, same real gap `basic_fluids_gpu.rs` had.
         //
-        // Magnitudes chosen the same corrected way that file's own doc now
+        // Magnitudes chosen the same corrected way that file's doc now
         // explains (NOT the original 4.0-5.0 first attempt, which would
         // have hit the exact same `albedo = sigma_s/(sigma_s+sigma_a)`
         // wash-out bug found+fixed there -- these materials' sigma_a values
@@ -318,7 +318,7 @@ impl State {
             // Two real problems from this, not one: (a) holding the button
             // longer keeps adding MORE total momentum without bound (a real
             // velocity ADD every frame, not a force integrated over time --
-            // the API is genuinely named "impulse," an instantaneous
+            // the API is named "impulse," an instantaneous
             // concept, but this call site re-triggered it continuously);
             // (b) the total momentum added for the SAME real-world hold
             // duration silently depended on framerate (60fps holds for 1s
@@ -327,13 +327,13 @@ impl State {
             // applies a bounded RATE (real velocity added per second),
             // framerate-independent, and no longer compounds without limit
             // the longer the button stays down. `IMPULSE_RATE_PER_SEC` is a
-            // real, disclosed, tuned constant (not cited -- there's no
+            // tuned constant (not cited -- there's no
             // physical law for "how strong should a game click feel"),
             // measured via real automated hold tests (PostMessage-driven
             // RMB hold on a fully-settled scene, reading back the demo's
             // own real diagnostic log), not guessed: 1.0 was too weak (a
             // real 2s hold barely moved anything, max_speed peaked ~0.04);
-            // 20.0 gave a real, moderate poke -- J stayed in [0.205,1.34]
+            // 20.0 gave a moderate poke -- J stayed in [0.205,1.34]
             // (recovers, doesn't collapse), max_speed peaked ~0.14,
             // non_finite=0 throughout.
             const IMPULSE_RATE_PER_SEC: f32 = 20.0;
@@ -355,7 +355,7 @@ impl State {
             self.sim.step_frame();
             self.frame += 1;
             // Gated per real simulation step, not per render call -- see
-            // `basic_fluids_gpu.rs`'s own doc for why (avoids re-printing
+            // `basic_fluids_gpu.rs`'s doc for why (avoids re-printing
             // the same "frame N" diagnostic when `steps` is 0 for several
             // consecutive render calls).
             if self.frame.is_multiple_of(60) {

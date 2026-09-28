@@ -107,7 +107,7 @@ fn run_one_substep_and_read_center_velocity(
 
     // Raw grid buffer readback -- 4 f32 per cell (momentum.x, momentum.y,
     // mass, pad), matching the WGSL `Cell` struct layout exactly (see
-    // `GpuBuffers::readback_f32_blocking`'s own doc, which this inlines
+    // `GpuBuffers::readback_f32_blocking`'s doc, which this inlines
     // since that method isn't part of GpuSimulation's public surface).
     let cell_count = GRID * GRID;
     let byte_count = (cell_count * 4 * std::mem::size_of::<f32>()) as u64;

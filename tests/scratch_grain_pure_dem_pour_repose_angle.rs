@@ -1,9 +1,9 @@
-//! The real, most direct test not yet tried in this entire investigation:
+//! The most direct test not yet tried in this entire investigation:
 //! does the ALREADY-VALIDATED pure DEM grain engine (real Cundall & Strack
 //! 1979 / Luding 2008 / Ai et al. 2011 elastic-plastic rolling resistance,
 //! `rolling_friction=2.00` at r0=8/h0=20/radius=0.01m -> 23.87deg,
 //! n=20-seed-converged, `scratch_grain_coarse_graining_check.rs`) hold a
-//! sane, non-degenerate angle of repose when built by real, incremental
+//! sane, non-degenerate angle of repose when built by incremental
 //! POURING (successive small batches dropped from a height) instead of a
 //! single instantaneous column collapse?
 //!
@@ -19,9 +19,9 @@
 //! sidestepping the whole "can we map discrete stress to a continuum
 //! friction angle" question entirely. If pure DEM (already proven to give
 //! a sane, real angle for a COLLAPSING column) also gives a sane angle
-//! when POURED, that is real, direct, decisive evidence that a pure-DEM
+//! when POURED, that is direct, decisive evidence that a pure-DEM
 //! (not hybrid, not continuum) sand mode is the real fix for scenes that
-//! specifically need genuine pouring/repose behavior -- Hybrid Grains'
+//! specifically need pouring/repose behavior -- Hybrid Grains'
 //! own cost-scoping question (keep grain counts bounded) becomes the only
 //! remaining real engineering problem, not "is DEM physics even right,"
 //! which this test answers directly.
@@ -38,7 +38,7 @@ fn make_grain_with_radius(x: Vec2, radius_m: f32) -> Grain {
     Grain::new(x, radius_m, mass)
 }
 
-/// Same real, already-validated recipe as `scratch_grain_coarse_graining_
+/// Same already-validated recipe as `scratch_grain_coarse_graining_
 /// check.rs::config` (rolling_friction is the ONE parameter that file's
 /// own real 20-seed convergence work calibrated for THIS radius/scale).
 fn config(radius_m: f32, rolling_friction: f32) -> ContactLawConfig {
@@ -90,7 +90,7 @@ fn measure_pile_shape(grains: &[Grain], radius_m: f32) -> PileShape {
     }
 }
 
-/// Real, incremental pour: batches of grains dropped from a real gap above
+/// Incremental pour: batches of grains dropped from a real gap above
 /// the pile's own current, live-measured surface height (matching the
 /// continuum pour tests' own `DROP_GAP_CELLS` real technique exactly, just
 /// in grain-radius units instead of MPM cells), letting each batch fall
@@ -136,7 +136,7 @@ fn pour_to_repose_angle_seeded(
             grains.push(make_grain_with_radius(Vec2::new(x, y), r));
         }
 
-        // Real, live pour loop -- one `GrainPopulation` rebuilt each pour
+        // Live pour loop -- one `GrainPopulation` rebuilt each pour
         // (cheap: `step`/`resolve_contact_forces` don't carry state this
         // function needs across the rebuild boundary other than grain
         // kinematics, which `grains` (the Vec) already preserves).
@@ -182,7 +182,7 @@ fn pour_to_repose_angle_seeded(
     measure_pile_shape(&real_grains, radius_m)
 }
 
-/// The real, decisive, single-seed check. Same total real grain-count
+/// The decisive, single-seed check. Same total real grain-count
 /// scale as the already-converged column-collapse baseline (320 grains:
 /// 20 pours x 16-grain batches = 320), same real calibration
 /// (`rolling_friction=2.00`, `radius_m=0.01`) already known to give
@@ -224,10 +224,10 @@ fn pure_dem_incremental_pour_reaches_a_real_repose_angle() {
     );
 }
 
-/// Real, statistically-honest follow-up to the single-seed result above --
+/// Statistically-honest follow-up to the single-seed result above --
 /// this marathon has already been burned TWICE trusting a single-seed
 /// granular measurement (a coarse-graining accuracy claim flipped sign
-/// from a promising single seed to a real, significant regression under
+/// from a promising single seed to a significant regression under
 /// proper n=20-seed statistics, see `project_grain_coarse_graining_real_
 /// speedup_validated_2026-09-13`) -- not repeating that mistake here just
 /// because the first seed looked good. Real n=10 seeds (each run is cheap,

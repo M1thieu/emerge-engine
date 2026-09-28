@@ -85,7 +85,7 @@ fn make_sim() -> Simulation {
     // NOT migrated to real SI tonight, unlike `sand`/`fluid` below --
     // deliberate, same reasoning as `basic_creature.rs`/`grass_field.rs`:
     // this body is player-driven (arrow keys, see `update_and_render`),
-    // and a real E-Pa stiffness would genuinely change how it responds to
+    // and a real E-Pa stiffness would change how it responds to
     // the same drive-impulse magnitude. That needs live interactive
     // verification (does it still feel controllable), not just a headless
     // stability probe -- real follow-up work, not silently dropped.
@@ -99,13 +99,13 @@ fn make_sim() -> Simulation {
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/4.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
     // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
     // stiffness for the same compression; confirmed by a real crash in
     // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     // Same density-consistency fix as basic_sand.rs: mass must share the
     // same real SAND_DENSITY_KG_M3 the stiffness above uses, not
@@ -133,7 +133,7 @@ fn make_sim() -> Simulation {
         material_id: FLUID_ID,
         // Without this, mass falls back to `config.particle_mass` (1.0),
         // completely decoupled from the material's own rest_density=0.1
-        // -- a real, separate gap found 2026-08-08 alongside the SI fix
+        // -- a separate gap found 2026-08-08 alongside the SI fix
         // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
         // derivation used everywhere else.
         mass_override: Some(0.1 * SPACING * SPACING),
@@ -277,7 +277,7 @@ impl State {
             let fps = self.fps_frames as f32 / self.fps_timer.elapsed().as_secs_f32();
             let substeps = self.sim.diagnostics_snapshot().substeps_last_step;
             // Keep the low end visible during the release FPS audit: rounding
-            // to an integer turns a genuinely measured sub-1 fps result into
+            // to an integer turns a measured sub-1 fps result into
             // an unhelpful bare `0`.
             println!("frame={} fps={:.2} substeps={substeps}", self.frame, fps);
             self.fps_timer = std::time::Instant::now();

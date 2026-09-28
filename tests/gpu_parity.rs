@@ -1,11 +1,10 @@
 //! CPU/GPU parity, law by law: does the GPU compute the same physics?
 //!
 //! The GPU suite next door is mostly stability checks: they catch a crash
-//! or a NaN, not a shader that quietly computes something else. Only two
-//! tests in it ever compared the two paths. This file is the matrix that
-//! phase 2 of the core plan asks for: every law the GPU will accept, run
-//! through the same three scenes on both paths from the same spawn, with
-//! the differences printed rather than summarised.
+//! or a NaN, not a shader that quietly computes something else. This file
+//! runs every law the GPU accepts through the same three scenes on both
+//! paths from the same spawn, with the differences printed rather than
+//! summarised.
 //!
 //! The three scenes are chosen so a mismatch points somewhere:
 //!
@@ -16,9 +15,9 @@
 //! - **hydrostatic column** stands a body on a floor under gravity, which
 //!   is where a plastic law's own damping and any dropped time show up.
 //!
-//! Every row also reports the substeps each side actually executed. Phase
-//! 1 added that counter for this reason: without it, a difference cannot
-//! be told apart from the GPU simply advancing less time.
+//! Every row also reports the substeps each side actually executed:
+//! without that, a difference cannot be told apart from the GPU simply
+//! advancing less time.
 //!
 //! Real hardware only, like the rest of the GPU suite: the software
 //! adapter CI runs on does not reproduce a real device's behaviour here.
@@ -33,9 +32,9 @@
 //! message, no backtrace and no validation warning -- a Rust panic would
 //! have printed one. Attributed by measurement rather than by argument:
 //! 2 aborts in 18 runs on the DX12 backend, 0 in 20 on Vulkan, with the
-//! matrix printing identical numbers on both, and the existing 52-test
-//! GPU suite never showing it. So it belongs to the DX12 teardown path,
-//! and this file must not be made to gate CI on that backend.
+//! matrix printing identical numbers on both, and the GPU suite never
+//! showing it. So it belongs to the DX12 teardown path, and this file must
+//! not be made to gate CI on that backend.
 //!
 //!   cargo test --test gpu_parity --features gpu -- --ignored --nocapture --test-threads=1
 extern crate emerge_engine as emerge;
@@ -53,7 +52,7 @@ mod parity {
     use pollster::block_on;
     use wgpu::InstanceDescriptor;
 
-    /// Same instance setup as `tests/gpu.rs` -- see that file's own comment
+    /// Same instance setup as `tests/gpu.rs` -- see that file's comment
     /// for why the DX12 compiler is pinned.
     fn create_instance() -> wgpu::Instance {
         wgpu::Instance::new(&InstanceDescriptor {

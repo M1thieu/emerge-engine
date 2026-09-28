@@ -1,4 +1,4 @@
-//! Real, direct test: does `post_event_relax_threshold` (the actual,
+//! Direct test: does `post_event_relax_threshold` (the actual,
 //! already-validated real fix for column-drop's own toppling/repose-angle
 //! problem, per `project_sand_angle_of_repose_and_mibf_2026-09-13` project
 //! memory) ALSO fix the SEPARATE, still-open poured-pile problem
@@ -6,7 +6,7 @@
 //! correction`, real measured result: 88.7deg non-toppling tower, ~2.25
 //! cells/pour growth, UNCHANGED by two separate Pradhana volume-gain fix
 //! attempts)? The existing real pour test never sets this field at all
-//! (defaults to 0.0, disabled) -- this is the one, real, most direct,
+//! (defaults to 0.0, disabled) -- this is the one, most direct,
 //! not-yet-tried lever for the ACTUAL observed symptom (a pile that never
 //! topples sideways), as opposed to the volume-gain mechanism (a real,
 //! separate, additive effect, not necessarily the DOMINANT one for why

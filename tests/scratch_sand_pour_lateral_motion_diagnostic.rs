@@ -1,4 +1,4 @@
-//! Real, direct diagnostic: WHY does the poured pile never spread
+//! Direct diagnostic: WHY does the poured pile never spread
 //! laterally? Six independent, real fix attempts (post_event_relax_
 //! threshold, switch_step-style damping timing, Pradhana v1/v2, MIBF, all
 //! combinations) have now measured ZERO effect on the real production pour
@@ -6,8 +6,8 @@
 //! Rather than guess a seventh mechanism, this directly instruments the
 //! REAL kinematics: does ANY particle ever develop meaningful LATERAL
 //! (x-direction) velocity during a pour, or is the material moving purely
-//! vertically the entire time (a real, direct, checkable fact, not an
-//! assumption)? Identical geometry/config to the real, established pour
+//! vertically the entire time (a direct, checkable fact, not an
+//! assumption)? Identical geometry/config to the established pour
 //! test.
 
 extern crate emerge_engine as emerge;
@@ -61,9 +61,9 @@ fn diag_lateral_motion_during_real_pour() {
         };
         let _ = solver.add_body(batch);
 
-        // Real, direct per-substep instrumentation for this pour's own
+        // Direct per-substep instrumentation for this pour's own
         // window -- step ONE substep at a time (not step_n) so we can see
-        // the real, immediate dynamics of THIS specific impact, not just
+        // the immediate dynamics of THIS specific impact, not just
         // the state after it's already settled.
         let mut max_abs_vx_this_pour = 0.0f32;
         let mut max_abs_vy_this_pour = 0.0f32;
@@ -86,7 +86,7 @@ fn diag_lateral_motion_during_real_pour() {
         let base_max = base_xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let base_half_width = ((base_max - base_min) * 0.5).max(0.0);
 
-        // Real, direct check: has ANY particle ever yielded at all?
+        // Direct check: has ANY particle ever yielded at all?
         // `friction_hardening` (q) starts at the material's own real
         // neutral-rest value (`friction_residual/hardening_peak`) and only
         // moves away from it via a real plastic (shear-yield or
@@ -96,11 +96,11 @@ fn diag_lateral_motion_during_real_pour() {
         let q = &solver.particles().friction_hardening;
         let q_min = q.iter().copied().fold(f32::INFINITY, f32::min);
         let q_max = q.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        // Real, known neutral-rest value for `from_young_modulus`'s own
+        // Known neutral-rest value for `from_young_modulus`'s own
         // default hardening params (`friction_residual/hardening_peak` =
         // 10deg/9deg), matching `init_particle`'s own real formula --
         // NOT read off particle 0 (which could itself already have
-        // yielded), a real, independently-computed reference value.
+        // yielded), a independently-computed reference value.
         const Q_NEUTRAL: f32 = 10.0 / 9.0;
         let n_yielded = q
             .iter()
@@ -115,7 +115,7 @@ fn diag_lateral_motion_during_real_pour() {
         );
     }
 
-    // Real, final direct check on a handful of individual particles near
+    // Final direct check on a handful of individual particles near
     // the surface and near the base -- their own real position history
     // isn't tracked here (would need per-particle IDs across add_body
     // calls, real future work if this diagnostic doesn't already answer

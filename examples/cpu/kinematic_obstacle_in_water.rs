@@ -7,12 +7,12 @@ use emerge::{
     SpawnRegion,
 };
 use glam::{IVec2, Vec2};
-/// Real, visible, INTERACTIVE solid-liquid two-way coupling: the mouse
+/// Visible, INTERACTIVE solid-liquid two-way coupling: the mouse
 /// cursor drives a `KinematicCircleBoundary` (a kinematically-driven
-/// obstacle, NOT a rigid body -- see that type's own doc for why this
+/// obstacle, NOT a rigid body -- see that type's doc for why this
 /// engine's "no rigid bodies" scope rule doesn't apply to it) through
 /// settled water via a real virtual spring-damper control law (see the
-/// `CONTROL_*` constants' own doc for the real derivation -- impedance
+/// `CONTROL_*` constants' doc for the real derivation -- impedance
 /// control, Hogan 1985, not a teleport-to-cursor hack). The obstacle's
 /// velocity every step sums TWO real forces: that spring pulling it toward
 /// the cursor, and the REAL, mass-weighted reaction impulse the water
@@ -26,7 +26,7 @@ use glam::{IVec2, Vec2};
 /// The underlying reaction-impulse mechanism is the exact same real physics
 /// already verified headless in
 /// `tests/scratch_kinematic_reactive_obstacle_water_verify.rs` (mass
-/// conserved, obstacle genuinely decelerates on contact, reaction hits zero
+/// conserved, obstacle decelerates on contact, reaction hits zero
 /// out of contact) -- this demo drives that same mechanism from live cursor
 /// input instead of a scripted initial velocity.
 ///
@@ -46,17 +46,17 @@ const OBSTACLE_RADIUS: f32 = 2.0;
 const OBSTACLE_MASS: f32 = 8.0;
 const PARTICLE_RENDER_DIAMETER: f32 = 0.9;
 // Real control law, not a teleport-to-cursor hack: the cursor sets a target
-// position, and the obstacle is pulled toward it by a genuine virtual
+// position, and the obstacle is pulled toward it by a virtual
 // spring-damper (impedance control -- Hogan 1985; the same principle every
 // force-feedback/haptic interface uses to let a human "feel" resistance
 // through a driven object). Because the spring force and the real water
 // reaction impulse are summed into the SAME velocity update, heavy
-// resistance genuinely displaces the obstacle away from the cursor (gets
+// resistance displaces the obstacle away from the cursor (gets
 // "carried by the forces"), and holding the cursor against that resistance
-// genuinely fights it back -- neither behavior is scripted separately, both
+// fights it back -- neither behavior is scripted separately, both
 // fall out of the one real force balance.
 //
-// Real, disclosed derivation, not an arbitrary gain: choosing a target
+// Disclosed derivation, not an arbitrary gain: choosing a target
 // settling time of `CONTROL_RESPONSE_PERIODS_OF_DT` physics steps gives a
 // real natural frequency omega=2*pi/(periods*DT), then k=m*omega^2 (simple
 // harmonic oscillator relation) and damping=2*sqrt(k*m)*ratio (critical-
@@ -85,17 +85,17 @@ struct State {
     obstacle_vel: Vec2,
     cursor_screen: [f32; 2],
     // Real spring/damping gains, derived once from `CONTROL_RESPONSE_
-    // PERIODS_OF_DT`/`CONTROL_DAMPING_RATIO` (see those constants' own doc)
+    // PERIODS_OF_DT`/`CONTROL_DAMPING_RATIO` (see those constants' doc)
     // -- not per-frame recomputed, they don't depend on anything that
     // changes.
     control_stiffness: f32,
     control_damping: f32,
     frame: u64,
     log_timer: std::time::Instant,
-    // Real, derived-from-the-actual-scene camera extent (see
-    // `camera_extent_for_aspect`'s own doc): computed ONCE at startup from
+    // Derived-from-the-actual-scene camera extent (see
+    // `camera_extent_for_aspect`'s doc): computed ONCE at startup from
     // the real settled-water bounding box + real obstacle travel room, using
-    // the window's OWN initial aspect. Real, live-reported bug fixed
+    // the window's OWN initial aspect. Live-reported bug fixed
     // 2026-09-15: this used to be RECOMPUTED on every resize using the
     // window's current aspect, which changes the vertical framing too, not
     // just the horizontal -- unlike every other example in this codebase,
@@ -119,7 +119,7 @@ struct State {
 /// (64 here) frames the whole simulation domain regardless of where the
 /// actual water+obstacle sit in it -- fine for a scene that fills its grid,
 /// but this one's real water pool only occupies a thin band near the
-/// bottom (see the real, live-reported bug this fixes: 2026-09-15,
+/// bottom (see the live-reported bug this fixes: 2026-09-15,
 /// screenshot showed a mostly-empty window over a sliver of water). This
 /// computes the smallest `grid_res` that still contains the real scene
 /// (vertical_need: real settled water height + splash/sky headroom;
@@ -367,18 +367,18 @@ impl State {
 
     /// Real two-way coupling: the obstacle's velocity update sums TWO real
     /// forces every step -- a virtual spring pulling it toward the cursor
-    /// (see the control constants' own doc) and the real reaction impulse
+    /// (see the control constants' doc) and the real reaction impulse
     /// the water exerts back on it (`take_reaction_impulse()`, Newton's
     /// third law). Neither is scripted around the other; "gets carried by
     /// the water" and "fighting back by moving the cursor harder" are both
     /// just this one force balance playing out differently depending on how
     /// hard the real water is pushing.
     fn update_and_render(&mut self, window: &Window) {
-        // Real, structural fix (2026-09-15, live-reported "no collision at
+        // Structural fix (2026-09-15, live-reported "no collision at
         // all"): a raw `screen_to_grid` reading can map to world space
         // outside the actual [0, GRID] physics domain (window edges, or the
         // camera's own real splash/travel headroom extending past it -- see
-        // `camera_extent_for_aspect`'s own doc) -- if the cursor sits there
+        // `camera_extent_for_aspect`'s doc) -- if the cursor sits there
         // and stops moving, the spring finds a real equilibrium exactly
         // there, off-grid, with zero possible reaction: not a bug in the
         // coupling itself, but a real trap this clamp closes at the
@@ -443,7 +443,7 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // Real, live-reported fix (2026-09-15): the particle renderer has
+        // Live-reported fix (2026-09-15): the particle renderer has
         // no notion of the obstacle at all -- it's a `BoundaryCondition`,
         // not a `Particle`, and can't be added as one without injecting
         // fake mass into the real MPM grid every frame (that would corrupt
@@ -456,7 +456,7 @@ impl State {
         // Real fix (2026-09-15): read the position straight from the
         // renderer's OWN cached projection, in the LOGICAL points a UI
         // toolkit actually draws in (`grid_to_screen_points`/
-        // `grid_distance_to_points` -- see their own doc for the real,
+        // `grid_distance_to_points` -- see their doc for the real,
         // live-reported DPI bug this closes at the API level, not just in
         // this one call site: physical-pixel variants exist too, but a UI
         // overlay should always reach for the `_points` ones).
@@ -548,7 +548,7 @@ impl ApplicationHandler for App {
         );
         // Real UX fix (2026-09-15, live-reported): the obstacle marker
         // lagging behind the OS cursor (the whole POINT of the real spring-
-        // damper control law -- see those constants' own doc) reads as
+        // damper control law -- see those constants' doc) reads as
         // "wrong" when a separate, always-on-target OS arrow is ALSO
         // visible right next to it. Hiding the OS cursor makes the red
         // circle the only visible pointer, so what's being steered and what

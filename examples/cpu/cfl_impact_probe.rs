@@ -19,7 +19,7 @@
 //!   gravity's) rising more than 10 percent of the drop energy above its
 //!   start: nothing in this scene can add energy;
 //! - the solver projecting any particle's state back to admissible
-//!   (`j_projection_count`), which its own doc calls divergence.
+//!   (`j_projection_count`), which its doc calls divergence.
 //!
 //! # What is printed
 //!

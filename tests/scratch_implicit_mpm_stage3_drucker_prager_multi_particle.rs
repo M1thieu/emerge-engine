@@ -5,7 +5,7 @@
 //! behind basic_sand's real 0.3fps -- using the operator-split strategy
 //! validated in `tests/scratch_implicit_mpm_stage3_operator_split_
 //! plasticity.rs`: Newton-CG solves the velocity field treating sand as
-//! ordinary Corotated elasticity (real, verified identical branch, see
+//! ordinary Corotated elasticity (verified identical branch, see
 //! `scratch_implicit_mpm_stage2_shared_elastic_branch_check.rs`), then the
 //! REAL, unmodified `DruckerPragerMaterial::update_particle` (public
 //! `MaterialModel` trait + public `ParticleUpdateCtx`, zero reimplementation
@@ -49,7 +49,7 @@ fn frob(a: Mat2, b: Mat2) -> f32 {
 /// EARLIER version of this file did exactly that and measured a genuine
 /// 0.03x "speedup" (53.8ms vs 1.6ms) -- not a plasticity or Newton-CG
 /// problem, a `Particles`-per-JVP-call allocation storm (~7000 calls/solve
-/// at this scale). A real, correctly-wired implicit solver would never
+/// at this scale). A correctly-wired implicit solver would never
 /// dispatch through the full material-registry/trait/SoA machinery inside
 /// its own inner CG loop either -- this direct formula is what that real
 /// wiring looks like, not a test-only shortcut.
@@ -129,7 +129,7 @@ fn first_piola_stress_jvp(mat: &DruckerPragerMaterial, f: Mat2, df: Mat2) -> Mat
 // exactly `m01=(psi0-psi1)/(sigma0-sigma1)` and `p01=(psi0+psi1)/
 // (sigma0+sigma1)`), then CLAMP any negative eigenvalue of either block to
 // zero before using it in Newton's linear system. This changes the LOCAL
-// MODEL Newton solves each iteration (a real, standard, cited
+// MODEL Newton solves each iteration (a standard, cited
 // approximation), not the converged root -- it is specifically designed to
 // make Newton/CG well-posed (no more indefinite blowups) without changing
 // what solution it converges to once it does.
@@ -211,7 +211,7 @@ fn make_pd_2x2(a00: f32, a01: f32, a11: f32) -> (f32, f32, f32) {
     )
 }
 
-/// Real, standard SPD-projected first-Piola JVP for Corotated's own energy
+/// Standard SPD-projected first-Piola JVP for Corotated's own energy
 /// (`Psi=mu*sum(sigma_i-1)^2+(lambda/2)*(J-1)^2`), Ziran's `dim==2`
 /// `SvdBasedIsotropicHelper` structure applied to that closed-form PsiHat.
 fn first_piola_stress_jvp_projected(mat: &DruckerPragerMaterial, f: Mat2, df: Mat2) -> Mat2 {
@@ -226,7 +226,7 @@ fn first_piola_stress_jvp_projected(mat: &DruckerPragerMaterial, f: Mat2, df: Ma
     let psi00 = 2.0 * mu + lambda * s1 * s1;
     let psi11 = 2.0 * mu + lambda * s0 * s0;
     let psi01 = lambda * (2.0 * j - 1.0);
-    // Robust closed forms (Ziran's own comment: m01 needs no clamp, p01's
+    // Robust closed forms (Ziran's comment: m01 needs no clamp, p01's
     // denominator does).
     let m01 = 2.0 * mu - lambda * (j - 1.0);
     let denom01 = (s0 + s1).max(1.0e-6);
@@ -401,7 +401,7 @@ impl MultiParticleProblem {
     /// Same real global accumulation as `jacobian_vector_product`, using
     /// the SPD-projected per-particle JVP instead of the raw (possibly
     /// indefinite) one -- the real fix for the confirmed Gauss-Newton
-    /// stagnation, see this file's own doc above
+    /// stagnation, see this file's doc above
     /// `first_piola_stress_jvp_projected`.
     fn jacobian_vector_product_projected(
         &self,
@@ -502,14 +502,14 @@ impl MultiParticleProblem {
 
     /// Same real CG as `conjugate_gradient_solve`, but solving the
     /// Levenberg-Marquardt-damped system `(J + lambda_lm*I) dv = b` instead
-    /// of the bare `J dv = b` -- a real, standard, well-known globalization
+    /// of the bare `J dv = b` -- a standard, well-known globalization
     /// technique (Nocedal & Wright ch.10-11's "regularized/damped Newton";
     /// the same trust-region surrogate Levenberg-Marquardt itself uses for
     /// nonlinear least squares) for exactly the failure mode measured above
     /// (plain Newton's line search exhausting every backtrack with no
     /// accepted step): for large enough `lambda_lm`, `(J+lambda_lm*I)^-1 b`
     /// tends toward `b/lambda_lm`, i.e. a small step along the residual's
-    /// own descent direction, which for a genuine root-finding residual is
+    /// own descent direction, which for a root-finding residual is
     /// guaranteed to reduce `|r|` for small enough step size -- unlike the
     /// bare Newton direction, which can point AWAY from any local decrease
     /// in `|r|` when the linearization is poor (the actual measured
@@ -962,7 +962,7 @@ fn stage3_dp_multi_particle_jvp_matches_finite_difference() {
     );
 }
 
-/// Real, disclosed diagnostic (kept, not deleted): a `dt/dt_crit` ratio
+/// Disclosed diagnostic (kept, not deleted): a `dt/dt_crit` ratio
 /// sweep from 200x down to 2x, all at this file's own real sand-magnitude
 /// stiffness, found real Newton-CG residual STUCK around 5-15 regardless of
 /// ratio, even at ratio=2 (barely above the explicit CFL floor, where a
@@ -973,11 +973,11 @@ fn stage3_dp_multi_particle_jvp_matches_finite_difference() {
 /// the LINE SEARCH exhausting all 20 backtracks without finding ANY
 /// accepted step, the same real "Gauss-Newton stagnation" already found and
 /// disclosed for the single-particle pilot
-/// (`scratch_implicit_mpm_stage1_grid_coupled_pilot.rs`'s own doc), now
+/// (`scratch_implicit_mpm_stage1_grid_coupled_pilot.rs`'s doc), now
 /// confirmed to also affect DruckerPrager's shared Corotated elastic branch
-/// at real sand stiffness in a genuinely coupled multi-particle system.
+/// at real sand stiffness in a coupled multi-particle system.
 /// See `stage3_dp_multi_particle_newton_cg_converges_at_real_sand_stiffness`
-/// and the wall-clock test below for the honest, `#[ignore]`d disclosure.
+/// and the wall-clock test below for the `#[ignore]`d disclosure.
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn diag_dp_multi_particle_ratio_sweep_for_convergence() {
@@ -1033,12 +1033,12 @@ fn diag_dp_multi_particle_ratio_sweep_for_convergence() {
 /// permanent regression guard below): initial r_norm=9.32e6, "stuck" final
 /// r_norm=11.09 -- a RELATIVE reduction of 1.19e-6 (six orders of
 /// magnitude), far better than Stage 1's own accepted 0.05 floor. Every
-/// real, standard Newton-solver convergence criterion (Nocedal & Wright's
+/// standard Newton-solver convergence criterion (Nocedal & Wright's
 /// own recommended `||r|| < tol * max(||r_0||, 1)`) is RELATIVE for exactly
 /// this reason -- comparing raw force units across a 70x stiffness range
-/// with a fixed absolute bound was the actual bug, not a genuine solver
+/// with a fixed absolute bound was the actual bug, not a solver
 /// limitation. The LM damping, warm-start, and SPD-Hessian-projection work
-/// above is real, cited, correctly-implemented globalization machinery
+/// above is cited, correctly-implemented globalization machinery
 /// (kept, not deleted) -- it just wasn't the fix this specific test needed.
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
@@ -1053,7 +1053,7 @@ fn stage3_dp_multi_particle_newton_cg_converges_at_real_sand_stiffness() {
             particle_specs.push((mat, f_n, 1.0f32, pos));
         }
     }
-    // Real, honest, FULL real-frame dt (2247x dt_crit at this material's
+    // Honest, FULL real-frame dt (2247x dt_crit at this material's
     // real sand-magnitude stiffness -- matches basic_sand's own real
     // measured substep count, `diag_dp_full_frame_ratio_with_relative_
     // tolerance` confirms this converges in 4 Newton iterations at
@@ -1069,7 +1069,7 @@ fn stage3_dp_multi_particle_newton_cg_converges_at_real_sand_stiffness() {
     let v_init = problem.v_n.clone();
     let r0 = problem.residual(&per_particle, &v_init);
     let r0_norm = r0.iter().map(|x| x.length_squared()).sum::<f32>().sqrt();
-    // Real, standard relative-or-absolute stopping tolerance (Nocedal &
+    // Standard relative-or-absolute stopping tolerance (Nocedal &
     // Wright): tight enough to demand real convergence, floored so a
     // near-zero initial residual doesn't demand an impossible absolute
     // precision.
@@ -1144,8 +1144,8 @@ fn diag_dp_relative_vs_absolute_residual() {
 fn stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit() {
     let mat = DruckerPragerMaterial::cohesionless(6.0e7, 0.3);
     let f_n = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(-0.01, 0.97));
-    // Real, full-frame dt (2247x dt_crit) -- see the convergence test
-    // above's own doc for why this is real and convergent, not the earlier
+    // Full-frame dt (2247x dt_crit) -- see the convergence test
+    // above's doc for why this is real and convergent, not the earlier
     // absolute-tolerance-bug "diverges" misdiagnosis.
     let dt = 0.05f32;
 
@@ -1205,7 +1205,7 @@ fn stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit() {
     // Real wall-clock: explicit path = the REAL, unmodified
     // `DruckerPragerMaterial::update_particle`, `n_substeps` times per
     // particle, under that particle's own converged velocity gradient held
-    // fixed for the substep sweep (real, disclosed simplification: this
+    // fixed for the substep sweep (disclosed simplification: this
     // measures the REAL per-call plasticity+stress cost at the REAL
     // required substep count, not a true shared-grid multi-particle P2G
     // pass -- the comparison this test cares about is per-particle
@@ -1244,25 +1244,25 @@ fn stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit() {
     );
 }
 
-/// Real, disclosed diagnostic trace (kept, not deleted): run with
+/// Disclosed diagnostic trace (kept, not deleted): run with
 /// `LM_DIAG=1 cargo test ... diag_dp_lm_single_ratio_trace -- --nocapture`
 /// to see every escalation step. Real finding: LM (`newton_solve_lm`) DOES
 /// help somewhat over plain `newton_solve` at ratio=25 (final r_norm 9.78 vs
-/// plain's 11.09 -- a real, if modest, measured improvement, confirming the
-/// vanilla-LM-prescription fix above was a genuine bug fix, not a no-op).
+/// plain's 11.09 -- a if modest, measured improvement, confirming the
+/// vanilla-LM-prescription fix above was a bug fix, not a no-op).
 /// But it CONFIRMS, rather than resolves, the deeper problem: after a fast
 /// initial drop (9.3e6 -> ~18 in 8 undamped steps), r_norm keeps inching
 /// down through escalating lambda (1 -> 4.4e19) and then goes PERFECTLY
 /// FLAT (r_trial_norm identical to 4 decimal digits across a 12-order-of-
 /// magnitude lambda range) -- this is NOT the earlier step-size-underflow
-/// artifact (that bug is fixed above, confirmed by the real, non-trivial
-/// intermediate progress before the plateau) -- it is a genuine stationary
+/// artifact (that bug is fixed above, confirmed by the non-trivial
+/// intermediate progress before the plateau) -- it is a stationary
 /// point of `|r|^2` (`J^T r ~ 0`, `r != 0`), the real Gauss-Newton
 /// stagnation failure mode, now confirmed structurally real for this
 /// problem rather than a line-search artifact. Escaping it needs a
 /// different initial guess (multi-start / warm-start from an explicit
 /// predictor step) or a reformulated (SVD/principal-stretch) elastic
-/// branch -- real, scoped, NOT done here.
+/// branch -- scoped, NOT done here.
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn diag_dp_lm_single_ratio_trace() {
@@ -1291,7 +1291,7 @@ fn diag_dp_lm_single_ratio_trace() {
     let r_norm_lm = r_lm.iter().map(|x| x.length_squared()).sum::<f32>().sqrt();
     println!("FINAL LM (flat v_n init): r_norm={r_norm_lm:.4e} iters={iters_lm}");
 
-    // Real, cheap, standard warm-start check: one small explicit Euler step
+    // Cheap, standard warm-start check: one small explicit Euler step
     // from v_n (using the REAL residual's own force terms) as the initial
     // guess instead of flat v_n -- a different starting basin might avoid
     // the local minimum found above.
@@ -1423,11 +1423,11 @@ fn diag_dp_full_frame_ratio_with_relative_tolerance() {
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
 fn diag_dp_speedup_scaling_with_particle_count() {
-    // Real, honest scale check: does the 22-23x speedup measured at 16
+    // Honest scale check: does the 22-23x speedup measured at 16
     // particles hold as particle count grows toward basic_sand's own real
     // ~2016-particle scene, or does Newton-CG's own per-solve cost grow
     // faster than explicit's linear-in-particle-count cost? This is the
-    // real, bounded next checkpoint before touching the real `step()`
+    // bounded next checkpoint before touching the real `step()`
     // pipeline (Stage 4) -- still zero risk to shipped code.
     let mat = DruckerPragerMaterial::cohesionless(6.0e7, 0.3);
     let f_n = Mat2::from_cols(Vec2::new(1.05, 0.02), Vec2::new(-0.01, 0.97));

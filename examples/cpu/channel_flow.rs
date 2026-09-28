@@ -5,7 +5,7 @@ use emerge::render::{ColorMode, Renderer};
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 /// Minimal real-forces proof: a real fluid material, no gravity-settling puddle, driven
-/// downstream by `LinearDragField` -- the drag/current force field (see its own doc
+/// downstream by `LinearDragField` -- the drag/current force field (see its doc
 /// comment for the real physics: Stokes drag / Rayleigh friction, the SAME technique
 /// that drives river currents and wind-blown sand in this engine).
 ///
@@ -63,13 +63,13 @@ fn make_sim() -> Simulation {
     // Real water: Cole 1948 Tait exponent (7.0) + real dynamic viscosity, not a
     // hand-picked 0.1/3.0 pair -- see NewtonianFluidMaterial::low_viscosity.
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     // eos_stiffness=0.25, NOT 10 -- rest_density shrinking 40x makes
     // `timestep_bound`'s c2 (sound-speed-squared) 40x larger at the old
     // stiffness for the same compression; confirmed by a real crash in
     // basic_fluids.rs's CPU twin. Rescaling stiffness by the same factor
     // (10*0.1/4.0=0.25) restores the original, already-stable c2 -- see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let spawn_water = SpawnRegion {
         spacing: 0.6,
@@ -79,7 +79,7 @@ fn make_sim() -> Simulation {
         initial_velocity_scale: 0.0,
         // Without this, mass falls back to `config.particle_mass` (1.0),
         // completely decoupled from the material's own rest_density=0.1
-        // -- a real, separate gap found 2026-08-08 alongside the SI fix
+        // -- a separate gap found 2026-08-08 alongside the SI fix
         // (see basic_fluids.rs's doc). m = rho0*spacing^2, same
         // derivation used everywhere else.
         mass_override: Some(0.1 * 0.6 * 0.6),

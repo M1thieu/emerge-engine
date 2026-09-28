@@ -12,12 +12,12 @@ mod scene;
 /// `tests/gpu.rs`) -- this is the first VISUAL look at that work, not just headless
 /// assertions.
 ///
-/// Real, disclosed limitation: GPU has no `DirectionalContactGrip` equivalent yet (see
+/// Disclosed limitation: GPU has no `DirectionalContactGrip` equivalent yet (see
 /// `GpuDirectionalGripParams`'s doc, `src/systems/gpu/step_params.rs`) -- friction is
 /// plain symmetric Coulomb at `SimConfig::contact_friction`, uploaded once, not
 /// live-adjustable per direction. So unlike the CPU version, there is NO steering input
 /// here (asymmetric grip is what makes net-directional crawling possible at all) --
-/// this scene only proves the OTHER real, already-verified claim: real CPG-driven
+/// this scene only proves the OTHER already-verified claim: real CPG-driven
 /// muscle activity pushing against real sand terrain, rendered live, at real GPU frame
 /// rates. Steering support is real future work once GPU's directional grip lands.
 ///
@@ -78,7 +78,7 @@ fn make_sim_data(
     queue: Arc<wgpu::Queue>,
 ) -> (GpuSimulation, std::ops::Range<usize>, Vec<u32>) {
     // GPU has no `DirectionalContactGrip` equivalent yet (see this file's own
-    // top-of-file doc) -- `contact_friction` is the real, disclosed stand-in,
+    // top-of-file doc) -- `contact_friction` is the disclosed stand-in,
     // layered on top of the shared base config rather than in it, since CPU's
     // own config doesn't use this field at all.
     let config = SimConfig {

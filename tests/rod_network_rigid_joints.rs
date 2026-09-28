@@ -1,19 +1,15 @@
-//! `rod::network` variable stiffness: proves a `RodNetwork` chain with
-//! alternating HIGH-`ei` "segment" vertices and LOW-`ei` "joint" vertices
-//! concentrates real bending curvature at the soft joints while the stiff
-//! segments stay nearly straight -- the actual mechanism a rigid-feeling
-//! multi-segment leg needs (coxa/femur/tibia stiff, the joints between them
-//! soft), using zero new engine code: `NetworkBendingVertex::ei` is already
-//! per-vertex (`network.rs`), this only proves what it already does under a
-//! real, checkable load.
+//! `rod::network` variable stiffness: a `RodNetwork` chain with alternating
+//! high-`ei` "segment" vertices and low-`ei` "joint" vertices concentrates
+//! bending curvature at the soft joints while the stiff segments stay nearly
+//! straight, the mechanism a rigid-feeling multi-segment leg needs
+//! (coxa/femur/tibia stiff, joints soft). `NetworkBendingVertex::ei` is
+//! already per vertex (`network.rs`); this checks what it does under a load.
 //!
-//! Real physics behind the prediction: standard Euler-Bernoulli beam theory,
-//! kappa = M/EI -- along an unbranched chain under a single end load, the
-//! bending moment M varies smoothly with arc length, so a sharp EI drop at a
-//! joint vertex must produce a correspondingly sharp curvature spike there,
-//! not a gradual blend. This is the same formula this engine's own
-//! `Rod::buckling_warning`/`RodMaterial::greenhill_critical_height_m` already
-//! rely on elsewhere, applied per-vertex instead of to a whole uniform rod.
+//! Euler-Bernoulli beam theory, kappa = M/EI: along an unbranched chain under
+//! a single end load the bending moment M varies smoothly with arc length,
+//! so a sharp EI drop at a joint vertex gives a sharp curvature spike there,
+//! not a gradual blend. The same formula behind `Rod::buckling_warning`/
+//! `RodMaterial::greenhill_critical_height_m`, applied per vertex.
 
 extern crate emerge_engine as emerge;
 use emerge::rod::{
@@ -85,7 +81,7 @@ fn joint_vertices_concentrate_curvature_far_more_than_stiff_segment_vertices() {
     let stiff_ei = 50.0_f32;
     let joint_ei = stiff_ei / 100.0; // real arthropod joints (arthrodial membrane) are
     // dramatically more compliant than the rigid cuticle segments (sclerites) they connect --
-    // qualitatively real, this specific ratio chosen for an unambiguous test, not calibrated to
+    // qualitatively this specific ratio chosen for an unambiguous test, not calibrated to
     // a measured species.
     let joint_vertex_indices = [3usize, 7usize]; // bending-vertex-array indices, not point indices
     let mut ei_per_vertex = vec![stiff_ei; n_points - 2];

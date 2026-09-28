@@ -3,7 +3,7 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// Real, dedicated close-up scene for grain rolling -- built 2026-08-21 after
+/// Dedicated close-up scene for grain rolling -- built 2026-08-21 after
 /// the user asked to actually SEE grains rolling with expected physics before
 /// trusting it, rather than trusting isolated unit-test assertions alone
 /// (three of which -- spin-contact, falling-impact, and a continuum-particle
@@ -11,13 +11,13 @@ mod gui_common;
 /// correct the same night; see `tests/grains_grid_coupling.rs` and
 /// `tests/particle_neighbor_momentum_transfer.rs`). The existing Grains mode
 /// in `sand_repose_angle.rs` has ~80 grains in a chaotic column collapse
-/// -- physically correct, but genuinely hard to visually track ONE grain's
+/// -- physically correct, but hard to visually track ONE grain's
 /// own rotation in that mess. This scene is the "ant-scale zoom" idea flagged
 /// back on 2026-08-03 and never built: few grains, camera zoomed in tight,
 /// nothing else competing for attention.
 ///
-/// # A real, versatile engine feature, not a demo trick
-/// Building this surfaced a real, general bug: `HeightmapBoundary` always
+/// # A versatile engine feature, not a demo trick
+/// Building this surfaced a general bug: `HeightmapBoundary` always
 /// used a fixed +Y surface normal regardless of slope -- a "sloped"
 /// heightmap LOOKED tilted but was physically just a staircase of flat
 /// horizontal blocks, so nothing ever pushed a body downhill on it (real
@@ -68,7 +68,7 @@ const SIGMA_TERRAIN: [f32; 3] = [0.550, 0.400, 0.220];
 /// approximation of it.
 const TERRAIN_SAMPLES_PER_CELL: usize = 2;
 
-/// Same real, already-proven-stable stiffness `sand_repose_angle.rs`
+/// Same already-proven-stable stiffness `sand_repose_angle.rs`
 /// uses -- not a fresh guess (see that file's own `grain_contact_config`
 /// doc for why real-SI stiffness would need a punishingly fine forced dt).
 ///
@@ -81,9 +81,9 @@ const TERRAIN_SAMPLES_PER_CELL: usize = 2;
 /// ramp fell, had a brief flicker of spin on impact, then went completely,
 /// permanently still (traced directly via `tests/grains_grid_coupling.rs`'s
 /// own `diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn`,
-/// exactly reproducing what was observed live). `0.02` is the real, much
+/// exactly reproducing what was observed live). `0.02` is the much
 /// lower rolling-resistance coefficient smooth, hard bodies (steel, glass)
-/// have -- confirmed via the SAME diagnostic to produce real, continuous,
+/// have -- confirmed via the SAME diagnostic to produce continuous,
 /// physically consistent rolling (velocity ratio v.y/v.x tracking
 /// -tan(incline) throughout, not launching or freezing).
 fn grain_contact_config() -> ContactLawConfig {
@@ -191,10 +191,10 @@ fn make_sim(incline_deg: f32) -> Simulation {
         boundary_thickness: 2,
         ..SimConfig::default()
     };
-    // Real, load-bearing choice, not an oversight: grid-level friction=0.0.
+    // Load-bearing choice, not an oversight: grid-level friction=0.0.
     // The grid's own per-cell boundary correction is noisy for a grain's own
     // kernel-spread momentum (see `GrainPopulation::clean_wall_normal_
-    // velocity`'s own doc, `src/spacetime/grains/population.rs`) -- the
+    // velocity`'s doc, `src/spacetime/grains/population.rs`) -- the
     // grid now owns NORMAL enforcement only; ALL real tangential/rolling
     // physics for grains comes from the new `resolve_wall_contact`
     // mechanism (real Coulomb friction still applied there, via
@@ -269,7 +269,7 @@ impl State {
         // dot), same real technique `sand_repose_angle.rs` already uses,
         // plus 2 terrain markers per grid column tracing the real ramp
         // surface (the actual `HeightmapBoundary::heights` this scene
-        // builds, not decoration -- see `terrain_markers`'s own doc).
+        // builds, not decoration -- see `terrain_markers`'s doc).
         let render_capacity = 2 * N_GRAINS + TERRAIN_SAMPLES_PER_CELL * GRID;
         let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
         // Zoomed in tight -- particle_scale=1.4 (well above the usual 0.6-0.9)
@@ -365,7 +365,7 @@ impl State {
 
         // Same real marker-particle rendering technique already proven in
         // `sand_repose_angle.rs`: grains aren't ordinary `Particle`s, so
-        // a zero-physics render proxy carries their real, physically
+        // a zero-physics render proxy carries their physically
         // simulated position/orientation straight through.
         let mut all: Vec<Particle> = terrain_markers(self.incline_deg);
         for grain in &self.sim.grain_populations()[0].grains {

@@ -1,4 +1,4 @@
-//! Real, controlled test of coarse-grained DEM (Lommen et al. 2014,
+//! Controlled test of coarse-grained DEM (Lommen et al. 2014,
 //! arxiv:1705.03850; Bierwisch, Kraft, Riedel & Moseler 2009) as a real,
 //! bounded lever for real-time grain populations, following the exact
 //! standing test convention this project's own `grains_repose_angle.rs`
@@ -7,7 +7,7 @@
 //! variable radius so a coarse-grained pile can be built and compared
 //! directly against its own fine-grained equivalent.
 //!
-//! Real, cited scaling law: density, Young's modulus, and friction
+//! Cited scaling law: density, Young's modulus, and friction
 //! coefficient stay CONSTANT; stiffness scales with the coarse-graining
 //! ratio alpha (already automatic via `dry_sand`'s own `kn = E*r`); damping
 //! stays correct automatically too (this engine's own critical-damping-
@@ -85,7 +85,7 @@ fn build_column_seeded(r0_grains: usize, h0_grains: usize, radius_m: f32, seed: 
 const FLOOR_RADIUS_M: f32 = 50.0;
 
 /// Real column-collapse-to-repose run, same real pinned-floor technique as
-/// `grains_repose_angle.rs::run_collapse_sized`. Returns the real, final
+/// `grains_repose_angle.rs::run_collapse_sized`. Returns the final
 /// angle of repose (height/base_half_width -> atan, same convention
 /// `sand_repose_angle.rs::measure_angle_deg` already uses for the live demo).
 fn run_to_repose_angle(
@@ -163,7 +163,7 @@ fn run_to_repose_angle_seeded(
         .to_degrees()
 }
 
-/// Real, direct comparison: same physical footprint (column width/height in
+/// Direct comparison: same physical footprint (column width/height in
 /// METERS held equal), fine-grained (radius=0.01m, r0=8/h0=20, 320 grains)
 /// vs coarse-grained (radius=0.02m, r0=4/h0=10, 80 grains -- exactly 1/4
 /// count, alpha=2 in this engine's own 2D area-scaling convention), SAME
@@ -187,14 +187,14 @@ fn coarse_graining_alpha_2_repose_angle_comparison() {
     );
 }
 
-/// Real, direct test at the ACTUALLY-CALIBRATED rolling_friction this
+/// Direct test at the ACTUALLY-CALIBRATED rolling_friction this
 /// project already found hits the real 30-35deg target at fine scale
 /// (`rolling_friction=2.00`, r0=8/h0=20/320 grains -> 28.55deg, per
 /// `project_grain_clump_shape_scoped_2026-09-09`, project memory) -- checks
 /// whether the SAME calibrated value still lands near target once
 /// coarse-grained (alpha=2, 80 grains), or whether the real "repose angle
 /// decreases with particle size" literature effect forces its own
-/// recalibration here. This is the real, complete answer to "does
+/// recalibration here. This is the complete answer to "does
 /// coarse-graining deliver BOTH real-time speed AND the correct physics
 /// together," not just the isolated small-delta check above.
 #[test]
@@ -215,9 +215,9 @@ fn coarse_graining_alpha_2_at_calibrated_rolling_friction() {
     );
 }
 
-/// Real, direct measurement of the ACTUAL fps/cost win from coarse-graining
+/// Direct measurement of the ACTUAL fps/cost win from coarse-graining
 /// at this same alpha=2 ratio -- the other half of the real question (does
-/// this genuinely deliver a real-time benefit, not just "fewer objects").
+/// this deliver a real-time benefit, not just "fewer objects").
 #[test]
 #[ignore = "perf diagnostic, run explicitly with --release --ignored --nocapture"]
 fn coarse_graining_alpha_2_real_wallclock_speedup() {
@@ -250,13 +250,13 @@ fn coarse_graining_alpha_2_real_wallclock_speedup() {
     }
 }
 
-/// Real, multi-seed convergence check -- a single seed's own result (this
+/// Multi-seed convergence check -- a single seed's own result (this
 /// file's earlier tests) is not a trustworthy basis for a real production
 /// decision, matching this project's own established "n seeds, check
 /// batch-to-batch convergence" discipline (the same discipline the
 /// original, memory-cited 28.55deg figure was built on, which this
 /// session's own single-seed run did not reproduce -- this settles whether
-/// that was real seed variance or something else). Real, honest report:
+/// that was real seed variance or something else). Honest report:
 /// mean, min, max, and standard deviation across seeds for BOTH fine and
 /// coarse, at the project's own already-calibrated rolling_friction=2.00.
 #[test]
@@ -309,7 +309,7 @@ fn coarse_graining_alpha_2_multi_seed_convergence_check() {
     let (fine_mean, fine_std, fine_sem, fine_min, fine_max) = stats(&fine_angles);
     let (coarse_mean, coarse_std, coarse_sem, coarse_min, coarse_max) = stats(&coarse_angles);
     let mean_delta = coarse_mean - fine_mean;
-    // Real, standard two-sample SEM combination (independent samples,
+    // Standard two-sample SEM combination (independent samples,
     // same n): SEM_delta = sqrt(SEM_fine^2 + SEM_coarse^2). A real,
     // honest significance check -- if |mean_delta| is smaller than ~2x
     // this combined SEM, the apparent difference is NOT distinguishable
@@ -332,10 +332,10 @@ fn coarse_graining_alpha_2_multi_seed_convergence_check() {
     );
 }
 
-/// Real, direct recalibration sweep -- the real 20-seed convergence check
+/// Direct recalibration sweep -- the real 20-seed convergence check
 /// found `rolling_friction=2.00` (calibrated for the FINE scale) causes a
-/// real, statistically significant ~6.78deg drop once coarse-grained
-/// (alpha=2), confirming the real, cited "repose angle decreases with
+/// statistically significant ~6.78deg drop once coarse-grained
+/// (alpha=2), confirming the cited "repose angle decreases with
 /// particle size at fixed rolling_friction" literature warning. This
 /// sweeps `rolling_friction` AT the coarse scale to find a real,
 /// re-calibrated value that recovers the fine-grained baseline, matching

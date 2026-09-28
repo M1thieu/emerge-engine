@@ -39,7 +39,7 @@
 //!   they sub-cycle to their own step and no longer clamp the mechanics.
 //! - Rewritten before gate 3 passed: "a rod goes implicit by itself when its
 //!   explicit step would fall below the rest of the scene's" is dropped. The
-//!   implicit rod is not coupled to the grid (its own doc), so switching a
+//!   implicit rod is not coupled to the grid (its doc), so switching a
 //!   stiff rod to it would have silently cut it off from the scene;
 //!   sub-cycling keeps the coupling. The implicit flag stays, set by hand.
 //! - A scene with none of these subsystems gives bit-identical results.

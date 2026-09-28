@@ -1,4 +1,4 @@
-//! Real, clean test of MIBF's own claim (Blatny & Gaume 2025, `tmp/
+//! Clean test of MIBF's own claim (Blatny & Gaume 2025, `tmp/
 //! ref_matter.md` sec.19): does making wall friction come from the sand's
 //! own real internal state -- instead of `FrictionBoundary`'s fixed 0.7 --
 //! move the dynamic-collapse angle of repose toward the real 30-35deg

@@ -70,8 +70,9 @@ pub struct SimSnapshot {
     /// Particles whose deformation state was projected back to admissible this step.
     /// Nonzero = explicit integration diverged; check dt, material params, or stiffness.
     pub j_projection_count: usize,
-    /// Legacy compatibility field for former max-substep time loss.
-    /// A solver step now advances the full requested time, so this is zero.
+    /// Simulated time the last step left unadvanced because it ran out of
+    /// `max_substeps_per_step`. Zero when the step covered its full `dt`; a
+    /// strict fluid panics instead of dropping time.
     pub sim_time_dropped: f32,
     /// Wall-clock time breakdown for the last `step()` call. All values in microseconds.
     /// Accumulated across all substeps -- divide by `substeps_last_step` for per-substep cost.

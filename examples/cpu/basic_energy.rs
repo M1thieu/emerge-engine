@@ -2,12 +2,12 @@ extern crate emerge_engine as emerge;
 
 /// First real, LIVE, WINDOWED application of `energy::electromagnetics`'s
 /// Laplace potential solver + dielectric-breakdown leader (Niemeyer,
-/// Pietronero & Wiesmann 1984) -- see that module's own doc for the full
+/// Pietronero & Wiesmann 1984) -- see that module's doc for the full
 /// real physics and citations.
 ///
 /// NOT MPM: unlike every other example in this engine, there are no
 /// `Particle`s and no MPM grid here at all. An energy FIELD (electric
-/// potential) is a genuinely different physical object from matter -- a
+/// potential) is a different physical object from matter -- a
 /// value exists at every point in space, including where there is no
 /// matter, so it is naturally represented as a plain 2D grid (Eulerian),
 /// never as discrete particles (Lagrangian). This scene's own render path
@@ -18,7 +18,7 @@ extern crate emerge_engine as emerge;
 /// read anything but MPM particle/grid state.
 ///
 /// REAL PHYSICS, NOT A DISPLAY-TUNED SPEED (fixed 2026-08-27 after a real,
-/// deserved correction): the physics runs at its own genuine speed, full
+/// deserved correction): the physics runs at its own speed, full
 /// stop -- the leader is grown to completion ONCE, instantly, before the
 /// window even opens, using the real cited stepped-leader speed (~1.5e5
 /// m/s, Rakov & Uman) and this scene's own real 1-meter-per-cell scale. The
@@ -31,7 +31,7 @@ extern crate emerge_engine as emerge;
 /// SEE animating in the window is a REPLAY of that already-completed real
 /// event, at an explicit, separately-labeled playback rate -- the exact
 /// same honest relationship a real high-speed camera has to slow-motion
-/// footage: the lightning bolt genuinely happened at real speed, it's the
+/// footage: the lightning bolt happened at real speed, it's the
 /// PROJECTOR that runs slow so a human eye can see it, never the event
 /// itself. `PLAYBACK_CELLS_PER_SECOND` is that projector rate, and it is
 /// never confused with, or substituted for, the real physical timing
@@ -50,7 +50,7 @@ const WIDTH: usize = 96;
 const HEIGHT: usize = 140;
 const CLOUD_POTENTIAL: f32 = 0.0;
 const GROUND_POTENTIAL: f32 = 1.0;
-// Real, named model parameter (Niemeyer-Pietronero-Wiesmann's own eta) --
+// Named model parameter (Niemeyer-Pietronero-Wiesmann's own eta) --
 // same value checked live tonight against the reference implementation
 // (github.com/diluuuu10/triggered-discharge, cloned in tmp/).
 const ETA: f32 = 2.5;
@@ -66,11 +66,11 @@ const LEADER_SPEED_M_S: f32 = 1.5e5;
 const CELL_METERS: f32 = 1.0;
 const REAL_SECONDS_PER_STEP: f32 = CELL_METERS / LEADER_SPEED_M_S;
 // Fixed, not time-derived: same seed every run means a reload (press R)
-// reproduces the EXACT same channel, byte for byte -- a real, checkable
+// reproduces the EXACT same channel, byte for byte -- a checkable
 // determinism test (LcgRng is a real deterministic PRNG, category 3 of
 // this session's own randomness discussion: looks complex, is fully
 // calculable from the seed, not real chaos). Change this to something
-// time-derived if a genuinely different channel per run is ever wanted --
+// time-derived if a different channel per run is ever wanted --
 // deliberately not done here, since reproducibility is the actual point.
 const RNG_SEED: u32 = 20260827; // 2026-08-27, the date this scene was built
 // Playback rate ONLY -- how many already-computed real cells the replay
@@ -95,8 +95,8 @@ struct State {
     texture: wgpu::Texture,
     // The real, ALREADY-COMPLETED result -- see this file's own top doc.
     // `field`'s final relaxed state is used as the background for the
-    // whole replay (a real, disclosed simplification: the potential field
-    // genuinely changes shape as the channel grows, but re-deriving and
+    // whole replay (a disclosed simplification: the potential field
+    // changes shape as the channel grows, but re-deriving and
     // storing every intermediate field snapshot just to animate the
     // background gradient would cost real memory for no change to what
     // this scene exists to show -- the channel's own real shape).
@@ -107,7 +107,7 @@ struct State {
     rgba: Vec<u8>,
 }
 
-/// Real physics, run to completion ONCE, at its own genuine speed -- see
+/// Real physics, run to completion ONCE, at its own speed -- see
 /// this file's own top doc for why there is no "simulation speed" dial at
 /// all. Shared by `State::new` and `State::reload` (a real reload must
 /// re-run the SAME physics, not just recreate GPU resources -- keeping
@@ -182,7 +182,7 @@ impl State {
         // Minimal, direct wgpu bootstrap -- deliberately NOT gui_common::Gfx,
         // which also bundles a real egui UI-panel setup no scene without an
         // on-screen panel or mouse interaction needs. Reusing it here would
-        // leave those real fields/functions genuinely unread by this binary
+        // leave those real fields/functions unread by this binary
         // (dead_code, the exact class of false-flag issue already found and
         // fixed once tonight for a different Gfx consumer) -- this scene
         // draws one fullscreen texture and nothing else, so it gets its own
@@ -224,8 +224,8 @@ impl State {
         };
         surface.configure(&device, &surface_config);
 
-        // Real, checkable fingerprint -- same seed (RNG_SEED, fixed, see its
-        // own doc) means this must be byte-identical across runs/reloads.
+        // Checkable fingerprint -- same seed (RNG_SEED, fixed, see its
+        // doc) means this must be byte-identical across runs/reloads.
         // Press R to reload and compare this line directly.
         let (field, channel_cells, _duration_s, _wall_time) = compute_leader();
 
@@ -342,14 +342,14 @@ impl State {
     }
 
     /// Real reload: re-runs the SAME real physics (see `compute_leader`'s
-    /// own doc) and resets the replay to its start, WITHOUT touching any
+    /// doc) and resets the replay to its start, WITHOUT touching any
     /// GPU resource (device/surface/texture/pipeline all stay exactly as
     /// they are). Real bug found live (2026-08-27): an earlier version of
     /// this reload rebuilt the entire `State`, including a brand new
     /// `wgpu::Instance`/adapter/device/surface for the SAME OS window while
     /// the old one was still alive -- wgpu rejected the resulting texture
     /// as invalid ("Texture::create_view ... Texture ... is invalid"), a
-    /// real, reproducible crash, not a hypothetical one. There is no real
+    /// reproducible crash, not a hypothetical one. There is no real
     /// reason a physics reload should ever need a new GPU context in the
     /// first place; this fixes the actual root cause (recreating far more
     /// than the reload needed) rather than papering over the crash.
@@ -476,8 +476,8 @@ impl ApplicationHandler for App {
                 if matches!(key, KeyCode::Escape | KeyCode::KeyQ) {
                     el.exit();
                 } else if key == KeyCode::KeyR {
-                    // Real, checkable determinism test -- RNG_SEED is fixed
-                    // (see its own doc), so this must print the exact same
+                    // Checkable determinism test -- RNG_SEED is fixed
+                    // (see its doc), so this must print the exact same
                     // fingerprint line every time, and the visible channel
                     // must be pixel-identical. See `State::reload`'s own
                     // doc for why this does NOT touch GPU resources.

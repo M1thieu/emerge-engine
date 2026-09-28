@@ -1,7 +1,7 @@
 //! Toy gradient-descent sanity check for `NeoHookeanMaterial::kirchhoff_stress_vjp`.
 //!
 //! Not a simulation demo -- this doesn't touch P2G/G2P/the solver at all. It's
-//! a real, visible proof that the analytic adjoint is USEFUL for optimization,
+//! a visible proof that the analytic adjoint is USEFUL for optimization,
 //! not just numerically correct against finite differences (which the unit
 //! tests in `src/matter/materials/elastic.rs` already establish).
 //!
@@ -64,7 +64,7 @@ fn frobenius_norm_sq(m: Mat2) -> f32 {
 fn main() {
     let mat = NeoHookeanMaterial::new(1000.0, 800.0);
 
-    // A real, physically-reasonable target: the stress produced by a modest
+    // A physically-reasonable target: the stress produced by a modest
     // stretch-plus-shear deformation, computed once and then "forgotten" --
     // gradient descent only ever sees tau_target, never the F that produced it.
     let hidden_f = Mat2::from_cols(Vec2::new(1.25, 0.15), Vec2::new(-0.08, 0.85));

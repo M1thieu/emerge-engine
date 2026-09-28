@@ -16,7 +16,7 @@ mod gui_common;
 ///
 /// Three identical blocks, same Young's modulus, same Poisson's ratio,
 /// same density, same drop. The ONLY difference is the dashpot viscosity
-/// eta, inside the real cited range this material's own doc gives for
+/// eta, inside the real cited range this material's doc gives for
 /// rubber dampers (100-10000 Pa.s):
 ///
 ///   LEFT    eta = 0 Pa.s     -- pure elastic, no damping (Corotated's own limit).

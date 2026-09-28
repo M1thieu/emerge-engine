@@ -1,7 +1,6 @@
-//! Real end-to-end check that `rod::plasticity` actually reaches a rod through
-//! the FULL `Simulation::step()` pipeline (both call sites in `step.rs`), not
-//! just the isolated unit-level `apply_bending_plasticity` calls already
-//! covered in `plasticity.rs`'s own tests.
+//! End-to-end check that `rod::plasticity` reaches a rod through the full
+//! `Simulation::step()` pipeline (both call sites in `step.rs`), beyond the
+//! unit-level `apply_bending_plasticity` calls tested in `plasticity.rs`.
 
 extern crate emerge_engine as emerge;
 use emerge::rod::{Rod, RodMaterial, RodPlasticity, build_straight_rod};
@@ -15,14 +14,14 @@ fn config(grid_res: usize) -> SimConfig {
     }
 }
 
-/// A cantilever rod, deliberately bent into a real, sharp, LOCALIZED kink at
+/// A cantilever rod, deliberately bent into a sharp, LOCALIZED kink at
 /// construction (not via a push -- direct control over the initial shape,
 /// so the test doesn't depend on getting `push_center`/`push_radius`
 /// falloff geometry exactly right). A smooth arc spread across many points
 /// was tried first and checked numerically to keep the per-vertex curvature
 /// far too small to reach any realistic yield moment even for a
 /// large-looking overall tip displacement -- concentrating the whole turn
-/// at one vertex is the real, correct way to get a genuinely large local
+/// at one vertex is the correct way to get a large local
 /// bending moment. `plasticity` is optional so both scenarios below share
 /// this exact setup, differing only in that one field.
 fn bent_cantilever(dx_meters: f32, plasticity: Option<RodPlasticity>) -> (Rod, Vec2) {
@@ -89,7 +88,7 @@ fn settle(dx_meters: f32, plasticity: Option<RodPlasticity>) -> (f32, Vec<f32>) 
     (offset, rest_curvature)
 }
 
-/// Real, physically meaningful claim: a rod bent into a sharp kink, well
+/// Physically meaningful claim: a rod bent into a sharp kink, well
 /// past its own real yield moment, must settle with a genuine PERMANENT bend
 /// substantially larger than the SAME rod/kink with no plasticity at all
 /// (which still keeps a small residual offset from real gravity sag alone --
@@ -99,7 +98,7 @@ fn settle(dx_meters: f32, plasticity: Option<RodPlasticity>) -> (f32, Vec<f32>) 
 fn overloaded_rod_stays_bent_substantially_more_than_the_same_rod_without_plasticity() {
     let dx_meters = 0.01;
 
-    // Real, deliberately low yield stress relative to E -- a soft, easily
+    // Deliberately low yield stress relative to E -- a soft, easily
     // yielded material (well below any real engineering material's own
     // yield-to-modulus ratio), chosen so the real 50-degree kink clearly
     // exceeds it, not tuned to look right.
@@ -115,8 +114,8 @@ fn overloaded_rod_stays_bent_substantially_more_than_the_same_rod_without_plasti
          anything real through the full step pipeline"
     );
 
-    // Real, independent confirmation: at least one interior vertex's own
-    // rest_curvature must be genuinely nonzero -- the actual mechanism, not
+    // Independent confirmation: at least one interior vertex's own
+    // rest_curvature must be nonzero -- the actual mechanism, not
     // just a position coincidence.
     assert!(
         plastic_rest_curvature.iter().any(|&k| k.abs() > 1.0e-4),

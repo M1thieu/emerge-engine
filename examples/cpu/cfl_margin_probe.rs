@@ -1,6 +1,6 @@
 //! What does the acoustic CFL safety factor actually cost, and buy?
 //!
-//! `SimConfig::material_cfl_coefficient` is 0.5, and its own doc says so
+//! `SimConfig::material_cfl_coefficient` is 0.5, and its doc says so
 //! plainly: "like any CFL number, it's a stability margin, not a measured
 //! material property". The registry already holds the one measurement
 //! that bounds it -- an isolated particle stays bounded up to 0.80 dx/c

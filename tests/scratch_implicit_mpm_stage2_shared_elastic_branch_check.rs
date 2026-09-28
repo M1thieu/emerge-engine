@@ -1,4 +1,4 @@
-//! Real, cheap consolidation: `src/matter/materials/utils.rs::
+//! Cheap consolidation: `src/matter/materials/utils.rs::
 //! corotated_elastic_stress` (verified via JVP/finite-difference/symmetry in
 //! `scratch_implicit_mpm_stage2_corotated_jvp.rs`) is the SAME shared
 //! function `DruckerPragerMaterial` (sand), `VonMisesMaterial`,
@@ -11,11 +11,11 @@
 //! materials (catches a wrong lambda/mu wiring or an accidental extra term,
 //! which a pure formula re-derivation wouldn't catch).
 //!
-//! **Real, disclosed scope limit, not swept under the rug**: this covers
+//! **Disclosed scope limit, not swept under the rug**: this covers
 //! only the ELASTIC branch (stress as a function of F on its own). The
 //! actual Stage 3 target (DruckerPrager sand's real-time problem) applies a
 //! PLASTIC return-mapping to F first (`update_particle`) -- the derivative
-//! of that composite map is a real, separate, harder question (Klar 2016's
+//! of that composite map is a separate, harder question (Klar 2016's
 //! own cited symmetry-breaking caveat, Simo & Taylor 1985's "consistent
 //! tangent operator" is the standard real fix) and is NOT checked here.
 //!

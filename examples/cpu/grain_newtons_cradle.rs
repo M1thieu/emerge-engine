@@ -13,7 +13,7 @@ mod gui_common;
 /// row and only the end ball swings out, with very little visible decay:
 /// that is the physically right result, not a missing damping.
 ///
-/// # The "string" is a real, standard, disclosed technique
+/// # The "string" is a standard, disclosed technique
 /// This engine has no rigid-joint/constraint solver, so each grain's
 /// pendulum string is a direct rigid DISTANCE CONSTRAINT applied after each
 /// physics step: position is projected back onto the fixed-radius circle
@@ -22,9 +22,9 @@ mod gui_common;
 /// technique this session's own `GrainPopulation::clean_wall_normal_
 /// velocity` already uses for wall contact, just applied to a string's own
 /// radial direction instead of a floor's normal. This is position-based
-/// dynamics (Jakobsen 2001), a real, standard, widely-used rigid-constraint
+/// dynamics (Jakobsen 2001), a standard, widely-used rigid-constraint
 /// technique -- not a hidden shortcut. Gravity, mass, and every collision
-/// response between grains are the engine's own real, unmodified physics;
+/// response between grains are the engine's own unmodified physics;
 /// only the "never stretches" string constraint is asserted directly,
 /// exactly like a real cradle's own effectively-inextensible wires.
 ///
@@ -42,7 +42,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// Real, disclosed engine limitation found live 2026-08-21: routing grains
+/// Disclosed engine limitation found live 2026-08-21: routing grains
 /// through the shared MPM grid (`Simulation`/`spacetime::grains::coupling`,
 /// P2G -> grid_update -> G2P before contact resolution) mixes momentum
 /// between CLOSE grains in a way that does NOT shrink with grid
@@ -145,7 +145,7 @@ fn contact_config() -> DiscContactConfig {
 /// within its uncertainty and keeps a little loss per strike.
 const RESTITUTION: f32 = 0.99;
 
-/// Real, measured gap fraction (of grain radius) between EVERY adjacent
+/// Measured gap fraction (of grain radius) between EVERY adjacent
 /// pair in the row -- the actual root-cause fix (found 2026-08-21,
 /// `tests/grains_grid_coupling.rs::
 /// newtons_cradle_two_ball_release_with_real_initial_gap_matches_
@@ -155,7 +155,7 @@ const RESTITUTION: f32 = 0.99;
 /// breaking real momentum-conserving "N-in-N-out matched" physics
 /// (confirmed via a real analytical sequential-collision cross-check;
 /// `contact_iterations` and stiffness sweeps up to 100,000x were both dead
-/// ends -- this genuinely was the root cause, not a resolution/stiffness
+/// ends -- this was the root cause, not a resolution/stiffness
 /// issue). Critically, this is NOT just about the released pair: the
 /// REST of the row starts at zero gap too, and every subsequent re-strike
 /// (the launched ball(s) swinging back) suffers the SAME smearing --
@@ -167,7 +167,7 @@ const RESTITUTION: f32 = 0.99;
 const RELEASE_GAP_FRACTION: f32 = 0.05;
 
 /// Anchor spacing is slightly WIDER than exact touching distance (`2 *
-/// radius`) -- see `RELEASE_GAP_FRACTION`'s own doc for why. Every grain
+/// radius`) -- see `RELEASE_GAP_FRACTION`'s doc for why. Every grain
 /// hangs from its own anchor at the same `STRING_LENGTH`, so this spacing
 /// alone gives every neighbor pair the same small real gap at rest.
 fn anchor(i: usize) -> Vec2 {
@@ -189,10 +189,10 @@ fn pulled_position(i: usize, pull_deg: f32) -> Vec2 {
     anchor(i) + STRING_LENGTH * Vec2::new(-theta.sin(), -theta.cos())
 }
 
-/// Builds the grain population directly (see `RENDER_SPACE`'s own doc for
+/// Builds the grain population directly (see `RENDER_SPACE`'s doc for
 /// why -- this demo drives `GrainPopulation` on its own instead of going
 /// through `Simulation`/the MPM grid). Returns the population and its own
-/// real, contact-law-derived stable timestep.
+/// contact-law-derived stable timestep.
 fn make_population(pull_deg: f32, pull_count: usize) -> (GrainPopulation, f32) {
     let units = units();
     let grains: Vec<Grain> = (0..N_GRAINS)
@@ -211,7 +211,7 @@ fn make_population(pull_deg: f32, pull_count: usize) -> (GrainPopulation, f32) {
     (population, dt)
 }
 
-/// Real rigid distance constraint -- see this file's own module doc for why
+/// Real rigid distance constraint -- see this file's module doc for why
 /// this is a legitimate, standard technique, not a hack. Run once per
 /// physics step, after `GrainPopulation::step()`, directly on each grain's
 /// own state.

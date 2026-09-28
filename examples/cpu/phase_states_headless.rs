@@ -7,7 +7,7 @@ use emerge::matter::materials::rankine::{
 /// phase cycle (ice -> water -> steam -> water -> ice), all three states
 /// driven by ONE mechanism in BOTH directions -- real temperature crossing
 /// real physical thresholds via `add_phase_rule`, evaluated automatically
-/// every substep, genuinely emergent (the rule only ever asks "what is
+/// every substep, emergent (the rule only ever asks "what is
 /// this particle's real temperature right now", never which direction the
 /// scene is currently heating/cooling in). Each transition debits/credits
 /// real thermal energy via `WithLatentHeat`/`WithLatentHeatTable`
@@ -16,19 +16,19 @@ use emerge::matter::materials::rankine::{
 /// condensing/freezing release it back (exothermic), at the real physical
 /// magnitude in both directions. Real materials per phase, not
 /// placeholders: `RankineMaterial::ice()` (real ice, 2026-08-28 -- see
-/// its own doc for why brittle fracture, not `StomakhinMaterial`'s snow-
+/// its doc for why brittle fracture, not `StomakhinMaterial`'s snow-
 /// specific compaction-hardening, is ice's real mechanical identity; real
 /// MPM+ice-fracture precedent exists in the literature, "Material point
 /// method for crushing and spalling ice simulation," Int. J. Fracture
 /// 2025) for the solid, `NewtonianFluidMaterial` (Tait EOS) for the
 /// liquid, `IdealGasMaterial` (isentropic ideal-gas EOS, recovered
 /// 2026-08-22 from the `contact-based-interaction` branch -- see
-/// `matter::materials::gas`'s own doc for the full recovery story) for
+/// `matter::materials::gas`'s doc for the full recovery story) for
 /// the gas.
 ///
 /// RESOLVED 2026-08-23 (full cycle) -- this file originally only drove the
 /// heating direction (ice->water->steam) and left the reverse transitions
-/// as real, disclosed future work; the engine mechanism (`WithLatentHeatTable`
+/// as disclosed future work; the engine mechanism (`WithLatentHeatTable`
 /// on water already declaring its real condensing-in energy) was built
 /// generally enough to support it from the start. This version drives BOTH
 /// directions in the same run: heat past both real thresholds, then
@@ -41,7 +41,7 @@ use emerge::matter::materials::rankine::{
 ///   vaporization -- ~6.75x fusion, matching the real physical ratio,
 ///   not independently tuned)
 ///
-/// RESOLVED 2026-08-23 (structural gap) -- real, general engine extension,
+/// RESOLVED 2026-08-23 (structural gap) -- general engine extension,
 /// not a demo workaround: `MaterialModel::latent_heat()` used to be ONE
 /// scalar PER MATERIAL (the energy cost of transitioning INTO that
 /// material), which could never represent water's own real, DIFFERENT
@@ -72,7 +72,7 @@ use emerge::matter::materials::rankine::{
 /// acoustic CFL bound far past what explicit integration can resolve,
 /// regardless of density ratio or substep budget (confirmed: neither
 /// helped even at their most conservative). Real fix: switch to DIRECT
-/// heat injection (the same real, disclosed "external heat source"
+/// heat injection (the same disclosed "external heat source"
 /// technique `examples/material_sandbox_gpu.rs` already uses for its own
 /// live "Heat" tool) instead of relying on passive ambient-driven
 /// diffusion -- this decouples the demo's own pacing from the thermal-
@@ -103,10 +103,10 @@ const VAPORIZATION_LATENT_HEAT_J_KG: f32 = 2_257_000.0; // endothermic into stea
 const WATER_HEAT_CAPACITY_J_KG_K: f32 = 4182.0; // real water, specific heat
 const ROOM_TEMPERATURE_K: f32 = 293.15;
 
-// Real, disclosed structural issue found while wiring up the REVERSE
+// Disclosed structural issue found while wiring up the REVERSE
 // transitions (2026-08-23): `Simulation::apply_phase_transition` pays a
 // latent heat as one INSTANT temperature jump on the substep of transition
-// (`temperature -= latent_heat/heat_capacity`), not the real, gradual,
+// (`temperature -= latent_heat/heat_capacity`), not the gradual,
 // constant-temperature absorption an actual phase change undergoes (a pot
 // of boiling water sits at 100C the WHOLE time it's boiling, it doesn't
 // instantly drop ~540K). At water's REAL latent heats, that instant jump
@@ -119,7 +119,7 @@ const ROOM_TEMPERATURE_K: f32 = 293.15;
 // real gas phase is ever observed -- confirmed by hand-calculation, not
 // assumed.
 //
-// Real, disclosed fix -- NOT a re-tune, a deliberate, documented scale:
+// Disclosed fix -- NOT a re-tune, a deliberate, documented scale:
 // both real latent heats are scaled down by the SAME factor (so the real
 // 6.75x fusion:vaporization ratio -- 2,257,000/334,000 -- is preserved
 // exactly, only the absolute magnitude changes), sized so both resulting
@@ -139,14 +139,14 @@ const FREEZING_LATENT_HEAT_SCALED_J_KG: f32 = -FUSION_LATENT_HEAT_SCALED_J_KG; /
 // it re-crosses it -- both real phenomenon (real water/steam CAN supercool/
 // superheat past the ideal thermodynamic boundary before nucleating the
 // reverse transition, a well-documented real effect, exaggerated in
-// magnitude here for numerical robustness) and the real, structural fix
+// magnitude here for numerical robustness) and the structural fix
 // for the instant-jump issue above: sized comfortably larger than BOTH
 // scaled jumps (~4.0K, ~27.0K) so neither melting nor boiling can ever
 // instantly satisfy its own reverse condition on the very next substep.
 const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 
-// Real ice stiffness (RankineMaterial::ice(), see its own doc): E=9.0 GPa,
-// real polycrystalline ice at -10C. Real, disclosed reduction needed here,
+// Real ice stiffness (RankineMaterial::ice(), see its doc): E=9.0 GPa,
+// real polycrystalline ice at -10C. Disclosed reduction needed here,
 // same "real formula, stylized magnitude" convention as
 // LATENT_HEAT_SCALE_FACTOR below (and Hertzian contact's own
 // effective_young_modulus): at the REAL 9 GPa, this material's elastic
@@ -160,21 +160,21 @@ const PHASE_HYSTERESIS_MARGIN_K: f32 = 40.0;
 // modulus ratio `RankineMaterial::ice` derives from (only the absolute E
 // magnitude changes, the physics relationship stays exact) and lands at
 // ~23.4 m/s -- under 2x this demo's existing baseline, comfortably inside
-// the current substep budget. Still genuinely brittle-fracture ice (not
+// the current substep budget. Still brittle-fracture ice (not
 // snow's compaction model), just not full real-world rigidity.
 const ICE_YOUNG_MODULUS_SCALED_PA: f32 = 5.0e5;
 
-// Real, direct external heat source rate (K/s) -- see this file's own
+// Direct external heat source rate (K/s) -- see this file's own
 // top-of-file "RESOLVED 2026-08-23 (numerical stability)" doc for why this
 // replaces passive ambient-diffusion heating as the real driver. Not
 // tuned for realism (no real blowtorch is rated in K/s onto a fixed
-// mass) -- a real, disclosed engineering choice sized to reach both
+// mass) -- a disclosed engineering choice sized to reach both
 // transitions within a reasonable headless step count.
 const HEAT_RATE_K_PER_S: f32 = 50.0;
 
 // Real steam properties (see `examples/basic_steam.rs`'s own recovered doc
 // for the full live-measured story of why rest density is scaled rather
-// than the full real ~1700x ratio -- same real, disclosed reasoning
+// than the full real ~1700x ratio -- same disclosed reasoning
 // reused here, not re-derived).
 const STEAM_ADIABATIC_INDEX: f32 = 1.33; // real, triatomic H2O
 const STEAM_VISCOSITY_PA_S: f32 = 1.26e-5; // real, saturated steam ~100C (NIST)
@@ -188,12 +188,12 @@ const STEAM_SPECIFIC_GAS_CONSTANT_J_KG_K: f32 = 101_325.0 / (STEAM_RHO_KG_M3 * B
 fn main() {
     let config = SimConfig {
         gravity: Vec2::ZERO, // isolate the thermal/phase cycle from settling dynamics
-        // Real, proven-stable budget -- matches `examples/basic_steam.rs`'s
+        // Proven-stable budget -- matches `examples/basic_steam.rs`'s
         // own exact value, confirmed directly (not assumed) to survive a
         // full water->steam transition at this file's own dx_meters below.
         max_substeps_per_step: 3000,
         // dx_meters=1.0: `examples/basic_steam.rs`'s own exact proven-
-        // stable scale for a real, strict-CFL fluid/gas pair -- see this
+        // stable scale for a strict-CFL fluid/gas pair -- see this
         // file's own top-of-file "RESOLVED 2026-08-23 (numerical
         // stability)" doc for the real chain of reasoning (literature-
         // confirmed explicit-MPM CFL limit, ruled out density ratio,
@@ -204,11 +204,11 @@ fn main() {
 
     let ice = WithLatentHeat::new(
         // Real brittle-fracture ice, not snow's compaction model -- see
-        // ICE_YOUNG_MODULUS_SCALED_PA's own doc for the real E and the
-        // real, disclosed reduction needed to keep this demo practical.
+        // ICE_YOUNG_MODULUS_SCALED_PA's doc for the real E and the
+        // disclosed reduction needed to keep this demo practical.
         // Real Kelvin-Voigt damping (Bentley & Kohnen 1976 / Peters et al.
         // 2012 cited Q for cold ice -- see `elastic_viscosity`'s and
-        // `q_factor_elastic_viscosity_pa_s`'s own docs): without this,
+        // `q_factor_elastic_viscosity_pa_s`'s docs): without this,
         // ice has NO energy dissipation below its fracture threshold and
         // bounces near-elastically off the ground under real gravity,
         // confirmed live 2026-08-28 in `phase_states_gui.rs`.
@@ -236,12 +236,12 @@ fn main() {
     // scene has zero gravity (no free-fall v_max to derive from, unlike
     // basic_steam.rs's own pool) -- the real velocity scale here instead
     // comes from phase-transition-driven volume change, not gravity, so
-    // 5 m/s is a real, disclosed, generously-safe engineering choice for
+    // 5 m/s is a generously-safe engineering choice for
     // a "gentle" flow regime rather than a derived value.
     //
-    // Real, per-source latent heat -- water is the destination of TWO
+    // Per-source latent heat -- water is the destination of TWO
     // physically distinct real transitions with different real energies,
-    // genuinely representable via `WithLatentHeatTable` (see this file's
+    // representable via `WithLatentHeatTable` (see this file's
     // own top-of-file doc, "RESOLVED 2026-08-23 (structural gap)"). This
     // run drives BOTH real incoming paths for real: melting-in (ICE_ID)
     // during the heating phase, condensing-in (STEAM_ID) during the
@@ -256,7 +256,7 @@ fn main() {
     let steam = WithLatentHeat::new(
         {
             // Real bulk viscosity (2026-08-28, see `IdealGasMaterial::
-            // bulk_viscosity`'s own doc, Cramer 2012) -- water vapor's real
+            // bulk_viscosity`'s doc, Cramer 2012) -- water vapor's real
             // dilatational damping, applied here too for the same real
             // physical reason even though this zero-gravity scene doesn't
             // exercise the buoyancy-driven instability that surfaced the
@@ -296,18 +296,18 @@ fn main() {
         config.grid_res,
     );
 
-    // Real, per-material mass -- WITHOUT this, every particle falls back
+    // Per-material mass -- WITHOUT this, every particle falls back
     // to `SimConfig`'s own generic default mass regardless of the real
     // density this scene actually wants, an internal inconsistency
     // confirmed live as a real root cause of an earlier "inconsistent J"
     // panic (`IdealGasMaterial::init_particle_from_transition` computing a
-    // real, huge `true_initial_volume = mass/rest_density` off a mass
+    // huge `true_initial_volume = mass/rest_density` off a mass
     // that was never real to begin with -- same real bug class
     // `examples/basic_steam.rs`'s own recovered doc already names).
     const ICE_RHO_KG_M3: f32 = 917.0; // real ice density (less dense than water -- why ice floats)
     let mass_for = |rho_kg_m3: f32| rho_kg_m3 * (0.5 * config.dx_meters).powi(2);
 
-    // Real, small object -- at dx_meters=1.0 a 16-cell box would be a real
+    // Small object -- at dx_meters=1.0 a 16-cell box would be a real
     // 16-METER ice block (the original reason this file went to an
     // ultra-fine dx_meters in the first place). A small box keeps the
     // real physical size sane (a few real meters) while direct heating
@@ -327,7 +327,7 @@ fn main() {
         .with_material(STEAM_ID, Box::new(steam))
         .with_thermal(thermal)
         .with_phase_rule(|p| {
-            // Real, genuinely bidirectional rule -- evaluated every
+            // Bidirectional rule -- evaluated every
             // substep, and it only ever asks "what is this particle's own
             // real temperature right now", never which direction the
             // scene is currently driving. Melting/boiling trigger AT the
@@ -402,7 +402,7 @@ fn main() {
             });
         if n == 0 { f32::NAN } else { sum / n as f32 }
     };
-    // Real, direct stability diagnostic (2026-08-28) -- catches the exact
+    // Direct stability diagnostic (2026-08-28) -- catches the exact
     // "gas cooling down explodes" symptom this run is meant to rule out: a
     // fabricated overcompression at the condensation front reads as a huge
     // Tait EOS pressure spike, which shows up here as a sudden max-speed
@@ -422,14 +422,14 @@ fn main() {
     let mut all_refrozen_at: Option<u64> = None;
     let dt = config.dt;
 
-    // Real, disclosed step budget -- heating alone reaches full boil in
+    // Disclosed step budget -- heating alone reaches full boil in
     // ~300 steps (verified in the earlier forward-only run); this budget
-    // gives real, generous room for the cooling phase to also cross both
+    // gives generous room for the cooling phase to also cross both
     // reverse thresholds PLUS the real hysteresis margin past each one.
     const MAX_STEPS: u64 = 6000;
 
     for step in 1..=MAX_STEPS {
-        // Real, direct external heat source -- same real technique
+        // Direct external heat source -- same real technique
         // `examples/material_sandbox_gpu.rs`'s own live "Heat" tool
         // already uses (a real source feeding the real thermal state,
         // not part of the diffusion PDE itself). See this file's own

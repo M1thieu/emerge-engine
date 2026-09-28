@@ -21,7 +21,7 @@ fn cantilever_with_optional_particles(with_particles: bool, steps: usize) -> (Op
         .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
 
     // span must stay small: self-weight tip deflection ~ L^4/EI, so a much longer span at
-    // this stiffness folds nearly flat (not a coupling bug, just genuine overload). 2.0
+    // this stiffness folds nearly flat (not a coupling bug, just overload). 2.0
     // hand-checks to ~8% of span, a visible sag without collapse.
     let span = 2.0;
     let n_points = 12usize;
@@ -121,7 +121,7 @@ fn loaded_solver() -> Simulation {
         .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
 
     // span must stay small: self-weight tip deflection ~ L^4/EI, so a much longer span at
-    // this stiffness folds nearly flat (not a coupling bug, just genuine overload). 2.0
+    // this stiffness folds nearly flat (not a coupling bug, just overload). 2.0
     // hand-checks to ~8% of span, a visible sag without collapse.
     let span = 2.0;
     let n_points = 12usize;

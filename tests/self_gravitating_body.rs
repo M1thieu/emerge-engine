@@ -1,28 +1,21 @@
-//! Real self-gravitating rubble-pile body: does a cluster of real regolith
-//! material, given ONLY mutual self-gravity (no external field, matching
-//! real microgravity/space conditions), stay gravitationally bound instead
-//! of dispersing? This is the real, structural step from "planets as pure
-//! point masses" (`tests/orbital_mechanics.rs`) toward planets made of
-//! actual matter -- reusing existing, already-tested tools exactly as
-//! intended: `NBodyGravityField`'s own doc names "planetary terrain,
-//! accretion disks" as its real use case, and `DruckerPragerMaterial`
-//! (cohesionless granular) is the same real material this engine already
-//! uses for sand/regolith elsewhere.
+//! Self-gravitating rubble-pile body: does a cluster of regolith, given only
+//! mutual self-gravity (no external field, as in microgravity), stay
+//! gravitationally bound instead of dispersing? The step from planets as
+//! point masses (`tests/orbital_mechanics.rs`) toward planets made of matter,
+//! with existing tools: `NBodyGravityField` (whose doc names "planetary
+//! terrain, accretion disks" as its use case) and `DruckerPragerMaterial`
+//! (cohesionless granular, as used for sand and regolith).
 //!
-//! Real, citable target: 101955 Bennu (OSIRIS-REx mission, NASA/real
-//! measured data) -- a genuine "rubble pile" asteroid held together almost
-//! entirely by self-gravity, negligible internal cohesion. Real measured
-//! values: mass 7.329e10 kg, mean radius ~245 m, bulk density ~1190 kg/m^3,
-//! escape velocity ~20 cm/s (Lauretta et al. 2019, "The unexpected
+//! Target: asteroid 101955 Bennu (OSIRIS-REx), a rubble pile held together
+//! almost entirely by self-gravity with negligible internal cohesion.
+//! Measured: mass 7.329e10 kg, mean radius ~245 m, bulk density ~1190
+//! kg/m^3, escape velocity ~20 cm/s (Lauretta et al. 2019, "The unexpected
 //! surface of asteroid (101955) Bennu", Nature).
 //!
-//! Real, disclosed simplification: the regolith's elastic modulus (E=5 MPa)
-//! and friction angle (35 deg) are a plausible LOOSE-granular-material
-//! range from general geotechnical/regolith literature (e.g. Apollo-era
-//! lunar regolith studies commonly cite friction angles in the 30-50 deg
-//! range), NOT a specific verified measurement for Bennu itself -- same
-//! honesty standard this crate already applies to `GranularFluidMaterial`'s
-//! own presets (real law, plausible-not-measured specific numbers).
+//! The regolith's elastic modulus (E=5 MPa) and friction angle (35 deg) are a
+//! plausible loose-granular range from general geotechnical/regolith
+//! literature (Apollo-era lunar regolith studies commonly cite friction
+//! angles of 30-50 deg), not a measurement for Bennu itself.
 
 #![cfg(feature = "experimental")]
 
@@ -34,7 +27,7 @@ use emerge::{
 };
 use glam::{IVec2, Vec2};
 
-/// Real OSIRIS-REx measured data (Lauretta et al. 2019, Nature).
+/// OSIRIS-REx measured data (Lauretta et al. 2019, Nature).
 const BENNU_MASS_KG: f64 = 7.329e10;
 const BENNU_RADIUS_M: f64 = 245.0;
 const BENNU_BULK_DENSITY_KG_M3: f64 = 1190.0;
@@ -44,10 +37,9 @@ const BENNU_BULK_DENSITY_KG_M3: f64 = 1190.0;
 const DX_METERS: f64 = 2.0;
 const GRID_RES: usize = 512;
 
-/// Real dynamical (free-fall) timescale for this body is ~sqrt(R^3/(G*M))
-/// ~ 8.7 real hours at this scene's actual (2D-arealdensity-derived) total
-/// mass -- 20s/step lets 2000 steps (40,000s ~ 11h) cover a real, meaningful
-/// fraction of that.
+/// The dynamical (free-fall) timescale is ~sqrt(R^3/(G*M)) ~ 8.7 hours at
+/// this scene's total mass (from the 2D areal density); 20 s/step lets 2000
+/// steps (40,000 s ~ 11 h) cover a meaningful fraction of it.
 const DT_SECONDS: f64 = 20.0;
 
 fn make_body() -> Simulation {
@@ -60,10 +52,8 @@ fn make_body() -> Simulation {
         ..SimConfig::standard(GRID_RES, DT_SECONDS as f32, Vec2::ZERO)
     };
 
-    // Real, SI-grounded construction (the already-validated `scale_lame`
-    // convention for solid/elastoplastic materials -- NOT the Tait-EOS
-    // fluid path fixed elsewhere tonight; this is a genuinely different,
-    // already-correct conversion pipeline).
+    // SI construction through `scale_lame`, the conversion for
+    // solid/elastoplastic materials (not the Tait-EOS fluid path).
     let regolith = Elastoplastic {
         elastic: Elastic {
             e_pa: 5.0e6,
@@ -80,8 +70,8 @@ fn make_body() -> Simulation {
     // Coarser than an initial attempt (3.0): that version, once the real
     // dt_seconds fix let real dynamics actually happen, ran far too long
     // (>30 real minutes, stopped) for a routine test -- 5236 particles of
-    // real elastoplastic self-gravitating dynamics is genuinely heavy.
-    // 8.0 cuts particle count ~7x (~750 particles), a real, disclosed
+    // real elastoplastic self-gravitating dynamics is heavy.
+    // 8.0 cuts particle count ~7x (~750 particles), a disclosed
     // resolution/cost tradeoff, not a physics change.
     const SPACING: f32 = 8.0;
     let mass_per_particle =
@@ -106,7 +96,7 @@ fn make_body() -> Simulation {
         .with_force_field(Box::new(NBodyGravityField::new(g_grid, SPACING * 0.5, 0.3)))
 }
 
-/// Real, standard astrophysical criterion for whether a system is
+/// Standard astrophysical criterion for whether a system is
 /// gravitationally bound: total energy (kinetic + gravitational potential)
 /// is negative. Computed directly, not assumed.
 fn total_energy(sim: &Simulation, g_grid: f64) -> f64 {
@@ -136,9 +126,9 @@ fn radius_of_gyration(sim: &Simulation) -> f32 {
     mean_sq.sqrt()
 }
 
-/// Real, quantitative proof: a real regolith body, given ONLY real mutual
+/// Quantitative proof: a real regolith body, given ONLY real mutual
 /// self-gravity, stays gravitationally bound (negative total energy,
-/// bounded spatial extent) rather than dispersing -- the real, standard
+/// bounded spatial extent) rather than dispersing -- the standard
 /// astrophysical signature of a self-gravitating rubble pile, not just
 /// "doesn't crash."
 #[test]
@@ -188,7 +178,7 @@ fn regolith_body_stays_gravitationally_bound_under_self_gravity() {
         e1 < 0.0,
         "should REMAIN gravitationally bound (negative total energy): {e1:.4e}"
     );
-    // Real, honest bound: extent shouldn't blow up (disperse) -- generous
+    // Honest bound: extent shouldn't blow up (disperse) -- generous
     // factor (not exact conservation) since real plastic/frictional
     // dissipation and settling are expected to shift it somewhat.
     assert!(

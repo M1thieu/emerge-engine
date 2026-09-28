@@ -1,4 +1,4 @@
-//! Real, direct re-verification: does `KinematicCircleBoundary`'s real
+//! Direct re-verification: does `KinematicCircleBoundary`'s real
 //! two-way reaction-impulse coupling (ported back into the current
 //! codebase 2026-09-14 from a stale, unmerged branch -- see
 //! `[[project_fluid_solid_coupling_real_root_cause_and_path_2026-08-15]]`,

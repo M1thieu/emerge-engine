@@ -19,7 +19,7 @@ use egui_wgpu::ScreenDescriptor;
 /// `basic_fluids.rs`: that demo's water->ice phase transition uses
 /// `NeoHookeanMaterial` (not a strict fluid), and `SimConfig::
 /// fluid_pressure_iterations` currently requires EVERY particle on the grid
-/// to be a strict fluid (see that field's own doc) -- freezing a single
+/// to be a strict fluid (see that field's doc) -- freezing a single
 /// water particle mid-run would violate that and panic. Water + mud here are
 /// BOTH strict fluids (`NewtonianFluidMaterial`/`BinghamFluidMaterial`), so
 /// no such conflict -- solo-maximal proof first, combining with the
@@ -55,38 +55,38 @@ fn make_sim() -> Simulation {
         // 150 -> 400 (2026-08-15): live-measured headless via
         // `diag_pressure_projection_timing`, this exact scene's real first-
         // contact violent transient (water starting ~2 cells from the wall)
-        // now genuinely needs slightly more than 150 substeps in its worst
+        // now needs slightly more than 150 substeps in its worst
         // single frame (~frame 20) before it settles -- confirmed bounded,
         // not divergent: a 2000-cap run completes all 120 frames without
         // NaN, recovering to ~15ms/frame right after the peak (avg 16.5 fps
         // over the run; J is clamped for most of it, see the file doc).
         // 400 gives real headroom over the observed peak without
-        // masking a genuine runaway the way an unbounded cap would (this
+        // masking a runaway the way an unbounded cap would (this
         // strict-fluid path still fails loud, see step.rs's own panic doc,
         // if 400 is ever insufficient).
         max_substeps_per_step: 400,
         material_cfl_coefficient: 0.1,
         cfl_include_affine_speed: false,
         fluid_pressure_iterations: 1,
-        // Real, verified fix for this exact hard geometry (see
-        // `SimConfig::fluid_near_wall_cfl_scale`'s own doc for the full
+        // Verified fix for this exact hard geometry (see
+        // `SimConfig::fluid_near_wall_cfl_scale`'s doc for the full
         // derivation): predictively tightens the gravity-CFL bound for
         // strict-fluid particles near a wall, BEFORE any compression has
         // happened (unlike the field's original acoustic-only tightening,
         // structurally inert once `eos_stiffness=0`). Verified headless:
         // this exact scene completes all 120 frames with no crash, no
-        // non-finite state (a real, honest, disclosed remaining slow drift
+        // non-finite state (a disclosed remaining slow drift
         // late in the run, not eliminated, but bounded).
         fluid_near_wall_cfl_scale: 20.0,
         fluid_near_wall_compression_threshold: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     // eos_stiffness = 0.0: the acoustic-CFL term this whole fix removes.
-    // Real, legal value (`fluid_state::tait_pressure`'s own `>= 0.0`
+    // Legal value (`fluid_state::tait_pressure`'s own `>= 0.0`
     // contract) -- incompressibility now comes from the grid-level pressure
     // projection, not from an explicit stiff spring.
     // rest_density=0.1, NOT the old 4.0 -- real SI fix, 2026-08-08, see
-    // basic_fluids.rs's own doc for the full derivation.
+    // basic_fluids.rs's doc for the full derivation.
     let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.0);
     let mud = BinghamFluidMaterial::new(4.0, 8.0, 0.0, 3.0, 4.0);
     const WATER_MASS: f32 = 0.1 * 0.6 * 0.6;

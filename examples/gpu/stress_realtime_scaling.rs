@@ -11,7 +11,7 @@ extern crate emerge_engine as emerge;
 /// because the regrowth stall (rebuilding the whole GpuSimulation every single frame) costs
 /// ~20-28ms on its own, regardless of how little is actually being simulated. This proves
 /// "grow via full recreation" cannot be a real runtime particle-creation mechanism at any
-/// frequency above occasional -- LP needs a genuine incremental add-particles GPU API.
+/// frequency above occasional -- LP needs a incremental add-particles GPU API.
 ///
 /// IMPORTANT CAVEAT (this is itself a finding, not just a benchmark detail): GpuSimulation has
 /// no "add particles to a running simulation" API. To grow the particle count, this example

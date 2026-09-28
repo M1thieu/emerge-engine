@@ -5,10 +5,10 @@ mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
 /// Live demo of the new `DruckerPragerMaterial::compaction_sensitivity`
-/// mechanic (real, single-phase/dry compaction: denser packing under real
+/// mechanic (single-phase/dry compaction: denser packing under real
 /// load -> higher friction, Bolton 1986's real relative-density-to-friction
 /// relation). Same GUI boilerplate as `basic_sand.rs` -- LMB push, RMB
-/// pull (`apply_radial_impulse`, already real, already existed) are the ONLY
+/// pull (`apply_radial_impulse`, already already existed) are the ONLY
 /// forcing here. No scripted/automatic event of any kind drives this scene --
 /// an earlier version of this file auto-injected a periodic velocity kick to
 /// exercise the mechanic without needing live mouse input, which is exactly
@@ -19,7 +19,7 @@ use egui_wgpu::ScreenDescriptor;
 ///
 /// `ColorMode::ByVolume` renders each particle by its own current volume
 /// ratio J = det(F) -- so wherever you actually compact it, that region
-/// visibly shifts color. Console prints a real, passive compaction readout
+/// visibly shifts color. Console prints a passive compaction readout
 /// every 2s (deep-bulk vs surface, same regions used in the engine-side
 /// diagnostic) -- reporting only, not driving anything.
 ///
@@ -39,11 +39,11 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.1;
-// Real, disclosed demo-visibility coefficient -- real compaction magnitude in
-// a settling pile is genuinely small (~1e-4 ln(J)) at this timescale, so this
+// Disclosed demo-visibility coefficient -- real compaction magnitude in
+// a settling pile is small (~1e-4 ln(J)) at this timescale, so this
 // is chosen large enough to see, not a claimed-calibrated real value. See
-// `DruckerPragerMaterial::compaction_sensitivity`'s own doc for the honest
-// scope (real, correctly-directed physics; simplified linear coefficient).
+// `DruckerPragerMaterial::compaction_sensitivity`'s doc for the honest
+// scope (correctly-directed physics; simplified linear coefficient).
 const COMPACTION_SENSITIVITY: f32 = 50.0;
 
 fn make_sim() -> Simulation {
@@ -117,7 +117,7 @@ struct State {
     log_timer: std::time::Instant,
 }
 
-/// Real, honest, PASSIVE measurement: mean ln(J) (J = det(deformation_gradient),
+/// Honest, PASSIVE measurement: mean ln(J) (J = det(deformation_gradient),
 /// each particle's own actual current volume ratio) in the deep bulk (most
 /// sustained load, if any real pushing has happened near/on it) vs the
 /// exposed surface -- negative = real compaction. Pure reporting, drives
@@ -282,7 +282,7 @@ impl State {
         self.sim.step();
 
         // Rescale the real J = det(F) into a visible [0,1] range for display
-        // only -- physics already ran above using the real, unscaled state;
+        // only -- physics already ran above using the unscaled state;
         // this only sets `scalar_field`, which no material reads back.
         // VISUAL_ZOOM chosen from what this scene actually produces (J stays
         // within roughly +/-1% of 1.0 -- see the passive log below), not an
@@ -304,7 +304,7 @@ impl State {
             self.fps_timer = std::time::Instant::now();
             self.fps_frames = 0;
         }
-        // Real, passive compaction readout every 2s -- reports whatever real
+        // Passive compaction readout every 2s -- reports whatever real
         // compaction has actually happened so far, drives nothing itself.
         if self.log_timer.elapsed().as_secs_f32() >= 2.0 {
             self.log_timer = std::time::Instant::now();

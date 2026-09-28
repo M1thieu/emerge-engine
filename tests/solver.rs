@@ -319,17 +319,12 @@ fn compressed_strict_fluid_generates_barotropic_momentum() {
     );
 }
 
-/// Real, deliberate contract as of 2026-08-10 (was: silently loop past
-/// `max_substeps_per_step` to always finish, guaranteeing zero dropped
-/// time -- that's what this test used to assert). `max_substeps_per_step`
-/// is now a hard, honest per-frame work budget for EVERY material (a
-/// runaway CFL collapse must not be free to make a single `step()` call
-/// take seconds, see that field's own doc) -- ordinary materials tolerate
-/// an honestly-tracked drop, but a strict WC-MPM fluid's own "no hidden
-/// corner-cuts" philosophy means it must fail LOUD instead of silently
-/// advancing less than the requested dt. Same real tradeoff every other
-/// strict-fluid safety check in this codebase already makes (see
-/// `check_j_range`/`assert_owned_deformation_state`).
+/// `max_substeps_per_step` is a hard per-step work budget for every
+/// material (a runaway CFL collapse must not make one `step()` take
+/// seconds, see that field's doc). Ordinary materials report the time they
+/// could not advance; a strict WC-MPM fluid must panic instead of advancing
+/// less than the requested dt, like the other strict-fluid checks
+/// (`check_j_range`/`assert_owned_deformation_state`).
 #[test]
 #[should_panic(expected = "could not advance the full requested dt")]
 fn strict_fluid_panics_rather_than_silently_drop_time_past_substep_budget() {
@@ -467,17 +462,11 @@ fn von_mises_yield_stays_finite() {
     }
 }
 
-/// Real regression/integration test, 2026-09-15: `MaterialRegistry::
-/// von_mises_stress_field` (the real, generic per-material stress computation
-/// `ColorMode::ByStress` reads from) was fully built and unit-tested against
-/// hand-computed stress tensors, but no caller outside this crate could ever
-/// reach it -- `Simulation` never exposed its `MaterialRegistry` at all. This
-/// checks the real, NOW-PUBLIC path end to end: a genuinely loaded (real
-/// gravity + real initial velocity, same scene shape as `von_mises_yield_
-/// stays_finite` above) `VonMisesMaterial` scene produces a real, finite,
-/// non-degenerate stress field via `sim.materials().von_mises_stress_field
-/// (sim.particles())` -- not just that the accessor compiles, but that it
-/// returns a real physical signal an example's renderer could actually use.
+/// `sim.materials().von_mises_stress_field(sim.particles())`, the stress
+/// `ColorMode::ByStress` reads, end to end through the public accessor: a
+/// loaded `VonMisesMaterial` scene (gravity and an initial velocity, the
+/// shape of `von_mises_yield_stays_finite` above) gives a finite,
+/// non-degenerate stress field a renderer can use.
 #[test]
 fn von_mises_stress_field_is_reachable_and_nonzero_under_real_load() {
     let vm = VonMisesMaterial::new(500.0, 200.0, 50.0);
@@ -683,14 +672,11 @@ fn phase_transition_switches_material_ids() {
     assert_eq!(fluid_count + jelly_count, solver.particles().len());
 }
 
-/// Real permafrost thaw -- reuses the SAME machinery already proven for
-/// combustion tonight (`add_phase_rule` + real `WithLatentHeat`), not new
-/// physics, just composing already-tested pieces for a new real phenomenon.
-/// Real freezing point 273.15K. Real water/ice latent heat of fusion, 334 (same value already used
-/// elsewhere in this file for water) -- honestly NOT scaled down by real
-/// permafrost's actual ice-content fraction (soil is an ice-BONDED mixture, not
-/// pure ice); a disclosed simplification, same spirit as `MixturePhase`'s own
-/// single-scalar-not-full-porosity-field disclosure.
+/// Permafrost thaw, composed from `add_phase_rule` and `WithLatentHeat` as for
+/// combustion. Freezing point 273.15 K; latent heat of fusion 334 (the water
+/// value used elsewhere in this file), not scaled by permafrost's ice-content
+/// fraction (soil is an ice-bonded mixture, not pure ice), a simplification
+/// like `MixturePhase`'s single scalar in place of a porosity field.
 #[test]
 fn permafrost_thaws_at_freezing_point_with_real_latent_heat_debit() {
     const FROZEN_ID: u32 = 0;
@@ -759,35 +745,26 @@ fn permafrost_thaws_at_freezing_point_with_real_latent_heat_debit() {
     }
 }
 
-/// Real mechanical difference, not just a renamed material: a frozen (ice-
-/// bonded, stiffer) block must resist the SAME downward strike more than the
-/// SAME soil once thawed -- verifies the freeze/thaw pair actually changes
-/// physical behavior, matching the real qualitative literature consensus
-/// (Andersland & Ladanyi, "Frozen Ground Engineering": frozen ground
-/// substantially stiffer than thawed, exact ratio soil/ice-content-dependent --
-/// composing two independently real citations, ~100 MPa unfrozen soil vs
-/// ~23-30 GPa frozen fine sand, gives an order-of-magnitude-plus real ratio; an
-/// 8x stiffness increase is used here instead, real direction preserved,
-/// magnitude reduced for explicit-MPM CFL practicality at this grid scale --
-/// same disclosed tradeoff as tonight's rock presets).
+/// A frozen (ice-bonded, stiffer) block resists the same downward strike more
+/// than the same soil once thawed, so the freeze/thaw pair changes mechanical
+/// behavior. Frozen ground is much stiffer than thawed, the exact ratio
+/// depending on soil and ice content (Andersland & Ladanyi, "Frozen Ground
+/// Engineering"; ~100 MPa unfrozen soil against ~23-30 GPa frozen fine sand is
+/// more than an order of magnitude). This test uses 8x: the direction is kept,
+/// the magnitude reduced so explicit MPM's CFL stays practical at this grid
+/// scale.
 #[test]
 fn frozen_ground_resists_a_strike_more_than_thawed_ground() {
     let config = small_solver_config(); // real default gravity -- see below for why
     let frozen_mat = NaccMaterial::kaolin(900.0 * 8.0, 0.3);
     let thawed_mat = NaccMaterial::kaolin(900.0, 0.3);
 
-    // NACC's elastic predictor bug fix (2026-07-31, `nacc.rs::update_particle`)
-    // exposed that this test's ORIGINAL zero-gravity setup was measuring a
-    // physically degenerate regime: real critical-state soil mechanics says a
-    // cohesionless/low-cohesion Cam-Clay material has ~zero shear capacity at
-    // zero confining pressure REGARDLESS of stiffness (same real fact already
-    // documented on `small_elastic_strain_is_not_projected` above) -- so
-    // "frozen vs thawed" barely differed once the material's stress genuinely
-    // engaged. Real fix: let the block settle under gravity first (builds real
-    // confining pressure / p0 pre-consolidation, the actual real-world
-    // precondition for "frozen ground" to mean anything mechanically), THEN
-    // measure displacement from that settled state -- matching how
-    // `permafrost.rs`'s live demo actually works (gravity always on).
+    // Settle under gravity first, then measure displacement from the settled
+    // state: a cohesionless or low-cohesion Cam-Clay material has ~zero shear
+    // capacity at zero confining pressure whatever its stiffness (critical-state
+    // soil mechanics, see `small_elastic_strain_is_not_projected`), so without
+    // gravity-built confinement frozen and thawed barely differ. `permafrost.rs`
+    // runs the same way (gravity always on).
     let displacement_after_strike = |mat: NaccMaterial| -> f32 {
         let mut solver =
             Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(mat));
@@ -1019,25 +996,23 @@ fn trophic_predation_depletes_prey_near_predator() {
     );
 }
 
-/// Real logistic growth (Verhulst 1838, `dφ/dt = r·φ·(1−φ/K)`) reused here as a resource
-/// field's regrowth source -- see `resource_regrowth_matches_logistic_curve`
-/// (tests/accuracy.rs) for the isolated proof this matches the real closed-form solution
-/// to <0.3% error. `R`/`K` here are test parameters, not a claimed real biological
-/// constant -- same honesty distinction as that test.
+/// Logistic growth (Verhulst 1838, `dφ/dt = r·φ·(1−φ/K)`) as a resource field's
+/// regrowth source -- see `resource_regrowth_matches_logistic_curve`
+/// (tests/accuracy.rs) for the isolated check against the closed-form solution
+/// (<0.3% error). `R`/`K` here are test parameters, not biological constants.
 const RESOURCE_R: f32 = 1.0;
 const RESOURCE_K: f32 = 1.0;
 fn resource_regrowth_source(_p: &Particle, phi: f32, _material: &dyn MaterialModel) -> f32 {
     RESOURCE_R * phi * (1.0 - phi / RESOURCE_K)
 }
 
-/// Real "grass gets eaten, then grows back" composition: a resource field
-/// (`ScalarDiffusionField`, `particle.temperature` as the carrier, real logistic-growth
-/// source) that a "consumer" depletes locally each frame via existing primitives
-/// (`particles_near` to find nearby resource particles, direct `particles_mut()`
-/// mutation to remove some -- the same composition pattern
-/// `trophic_predation_depletes_prey_near_predator` above already proved), THEN recovers
-/// via the field's own already-verified regrowth term once consumption stops. Proves
-/// both halves of a real depletable-and-renewable resource, not just one.
+/// "Grass gets eaten, then grows back": a resource field (`ScalarDiffusionField`,
+/// `particle.temperature` as the carrier, logistic-growth source) that a
+/// "consumer" depletes locally each frame through existing primitives
+/// (`particles_near` to find nearby resource particles, `particles_mut()` to remove
+/// some, as in `trophic_predation_depletes_prey_near_predator` above), then
+/// recovers through the field's regrowth term once consumption stops. Checks both
+/// halves of a depletable, renewable resource.
 #[test]
 fn resource_field_depletes_near_consumer_then_regrows() {
     const EAT_RADIUS: f32 = 3.0; // consumer's real, finite sensing/reach range
@@ -1046,7 +1021,7 @@ fn resource_field_depletes_near_consumer_then_regrows() {
     // flat per-step rate. A flat rate keeps consuming at full speed right up until the
     // resource hits zero (unrealistic -- real consumption slows as the resource thins),
     // and needed a `.max(0.0)` clamp to avoid going negative. Saturating uptake fixes
-    // both: rate naturally -> 0 as φ -> 0, so depletion genuinely decelerates near
+    // both: rate naturally -> 0 as φ -> 0, so depletion decelerates near
     // zero instead of being clamped there.
     const EAT_MAX_RATE: f32 = 1.0; // real max consumption rate (Δφ/s) at high resource density
     const EAT_HALF_SATURATION: f32 = 0.5; // test parameter, not a claimed biological constant
@@ -1248,7 +1223,7 @@ fn radial_confinement_keeps_particles_inside() {
 }
 
 /// `LinearDragField` (Stokes drag / Rayleigh friction toward a target flow velocity, see its
-/// doc comment for the real physics) has a real, analytically checkable prediction: with no
+/// doc comment for the real physics) has a analytically checkable prediction: with no
 /// other forces acting, velocity should relax as `v(t) = target + (v0 - target)*exp(-k*t)`.
 /// Uses a whole block of particles starting at rest (not just one) -- since every particle
 /// feels the identical field from identical initial velocity, the block translates rigidly
@@ -1350,7 +1325,7 @@ fn pinned_particles_stay_at_zero_velocity_under_force_fields() {
     );
 }
 
-/// Real, exact potential-flow solution: uniform stream `CYLINDER_U` (in +x) superposed
+/// Exact potential-flow solution: uniform stream `CYLINDER_U` (in +x) superposed
 /// with a doublet = flow around a circular cylinder of radius `CYLINDER_A` centered at
 /// the origin -- the classical, textbook-exact solution to 2D incompressible potential
 /// flow (Laplace's equation), confirmed against MIT 16.unified fluid mechanics lecture
@@ -1375,7 +1350,7 @@ fn potential_flow_around_cylinder(pos: Vec2) -> Vec2 {
     Vec2::new(u, v)
 }
 
-/// The real, defining boundary condition of this solution: flow cannot pass through the
+/// The defining boundary condition of this solution: flow cannot pass through the
 /// solid cylinder, so the RADIAL velocity component must be exactly zero everywhere on
 /// its surface (r=a) -- a genuine, checkable structural fact about this exact formula,
 /// not assumed. Checked at 10 angles around the full circle.
@@ -1605,15 +1580,13 @@ fn thermal_stability_dt_matches_the_cited_formula() {
     assert!(cfg.stability_dt() > 0.0);
 }
 
-/// Real regression guard: a `ThermalConfig` whose `grid_cell_size` is too
-/// small relative to its own conductivity/density/heat_capacity gives a
-/// stability bound smaller than the scene's own `dt` -- exactly the
-/// disclosed footgun `ThermalConfig::grid_cell_size`'s own doc describes
-/// (passing the wrong cell-size convention inflates `alpha_grid()` and used
-/// to blow explicit Euler into runaway temperatures). Heat now splits the
-/// time it is given into passes within its own stable step, so the same
-/// misconfiguration must stay finite and bounded. (It used to rely on the
-/// bound being folded into the mechanics substep, which did not bound the
+/// A `ThermalConfig` whose `grid_cell_size` is too small for its
+/// conductivity/density/heat_capacity has a stability bound below the scene's
+/// `dt` (the misconfiguration `ThermalConfig::grid_cell_size`'s doc warns
+/// about: the wrong cell-size convention inflates `alpha_grid()`, which drives
+/// explicit Euler into runaway temperatures). Heat splits the time it is given
+/// into passes within its own stable step, so this must stay finite and
+/// bounded. (Folding the bound into the mechanics substep does not bound the
 /// once-per-step heat update: `tests/subsystem_time_steps.rs`, gate 1.)
 #[test]
 fn thermal_misconfigured_grid_cell_size_stays_finite_under_adaptive_substep() {
@@ -1703,19 +1676,16 @@ fn thermal_uniform_temperature_stays_stable() {
     }
 }
 
-/// Real thermodynamic system-boundary taxonomy check (Wikipedia's own "Interactions
-/// of thermodynamic systems" classification: open/closed/thermally-isolated/
-/// mechanically-isolated/isolated, by which of mass flow/work/heat cross the
-/// boundary). Audited 2026-07-24: open (mass+work+heat, e.g. `basic_fluids_gui.rs`
-/// pouring+push/pull+freezing), closed (work+heat, no mass, e.g. `fire_spread.rs`),
-/// and thermally-isolated (work, no heat -- any demo without `with_thermal`) were
-/// all already real and demonstrated elsewhere. This is the one that was missing:
-/// a MECHANICALLY isolated system (heat crosses the boundary, work does NOT) --
-/// `Particle::pinned` forces v=0 at G2P regardless of any force acting on the
-/// particle (a real Dirichlet/kinematic anchor, not a coincidental "nothing pushed
-/// it"), while `ThermalDiffusion` has its own independent P2G/G2P pathway for
-/// temperature, unaffected by the mechanical pin. Real gravity is included
-/// specifically to prove work is being STRUCTURALLY blocked, not just absent.
+/// Thermodynamic system-boundary taxonomy ("Interactions of thermodynamic
+/// systems": open/closed/thermally-isolated/mechanically-isolated/isolated, by
+/// which of mass flow/work/heat cross the boundary). Open (e.g.
+/// `basic_fluids_gui.rs` pouring+push/pull+freezing), closed (e.g.
+/// `fire_spread.rs`) and thermally isolated (any demo without `with_thermal`)
+/// are shown elsewhere; this is the mechanically isolated case (heat crosses
+/// the boundary, work does not). `Particle::pinned` forces v=0 at G2P whatever
+/// force acts (a Dirichlet/kinematic anchor), while `ThermalDiffusion` has its
+/// own P2G/G2P pathway for temperature, unaffected by the pin. Gravity is on so
+/// work is blocked structurally, not merely absent.
 #[test]
 fn mechanically_isolated_system_conducts_heat_with_zero_mechanical_work() {
     let config = SimConfig {
@@ -1769,16 +1739,12 @@ fn mechanically_isolated_system_conducts_heat_with_zero_mechanical_work() {
         );
     }
 
-    // Real heat still crosses the boundary: temperature genuinely rose toward
-    // the hot ambient, unaffected by the mechanical pin. Real diffusion at
-    // this material/scale is genuinely slow (same lesson as this file's own
-    // sibling thermal tests -- matching real calibration, not inflating
-    // conductivity just to clear a bigger threshold): a real headless trace
-    // (2026-07-24) measured +0.0004K over the first 10 steps, identical
-    // whether pinned or not -- confirming pinning does NOT also block
-    // thermal diffusion, it's just genuinely this slow. A small, real,
-    // clearly-directional threshold is the honest bar here, not a dramatic
-    // temperature swing.
+    // Heat still crosses the boundary: temperature rose toward the hot
+    // ambient, unaffected by the mechanical pin. Diffusion at this material
+    // and scale is slow (as in the sibling thermal tests; conductivity is not
+    // inflated to clear a bigger threshold): +0.0004 K over the first 10 steps,
+    // the same pinned or not. So the bar is a small, clearly directional
+    // threshold, not a large temperature swing.
     let avg_temp: f32 = solver
         .particles()
         .iter()
@@ -1792,13 +1758,11 @@ fn mechanically_isolated_system_conducts_heat_with_zero_mechanical_work() {
     );
 }
 
-/// Real day-night/seasonal cycle composition: `Simulation::thermal_config_mut` (the one
-/// small new accessor added for this) lets a scene externally drive `ThermalConfig::
-/// ambient` over time, and the ALREADY-EXISTING Newton-cooling term (`dT/dt =
-/// -k_c*(T-ambient)`) does the rest -- no new physics, just the missing hook to reach it
-/// from outside the solver. Proves both directions: temperature genuinely tracks a "day"
-/// (hot) ambient, then genuinely tracks a "night" (cold) ambient after the SAME accessor
-/// changes it mid-run -- a real external oscillation, not a one-shot config value.
+/// Day-night/seasonal cycle: `Simulation::thermal_config_mut` lets a scene drive
+/// `ThermalConfig::ambient` over time, and the Newton-cooling term (`dT/dt =
+/// -k_c*(T-ambient)`) does the rest. Checks both directions: temperature tracks a
+/// "day" (hot) ambient, then a "night" (cold) ambient after the same accessor
+/// changes it mid-run.
 #[test]
 fn thermal_config_mut_drives_day_night_ambient_cycle() {
     let config = SimConfig {
@@ -1846,7 +1810,7 @@ fn thermal_config_mut_drives_day_night_ambient_cycle() {
     );
 
     // "Night": the SAME accessor now points ambient at a cold value -- proves this is a
-    // real, live, externally-driven oscillation, not a config value baked in at construction.
+    // live, externally-driven oscillation, not a config value baked in at construction.
     solver.thermal_config_mut().unwrap().ambient = night_ambient;
     solver.step_n(200);
     let mean_temp_night: f32 = solver
@@ -1866,13 +1830,12 @@ fn thermal_config_mut_drives_day_night_ambient_cycle() {
     );
 }
 
-/// Real Stefan-Boltzmann radiative loss (`ThermalConfig::emissivity`), isolated from
+/// Stefan-Boltzmann radiative loss (`ThermalConfig::emissivity`), isolated from
 /// spatial diffusion (`conductivity: 0.0`) and Newton cooling (`cooling_rate: 0.0`) so
-/// only the T^4 term acts. `heat_radiation`'s own T^4 scaling law is already unit-tested
-/// in `transfer.rs`; this proves the SOLVER WIRING: disabled by default (emissivity=0.0,
-/// matching `cooling_rate`'s existing 0.0-disables convention), and a hotter slab cools
-/// strictly faster with higher emissivity when enabled -- the real ordering a T^4 law
-/// must produce, not just "temperature goes down eventually".
+/// only the T^4 term acts. `heat_radiation`'s T^4 scaling law is unit-tested in
+/// `transfer.rs`; this checks the solver wiring: disabled by default (emissivity=0.0,
+/// like `cooling_rate`'s 0.0-disables convention), and a hotter slab cools strictly
+/// faster with higher emissivity when enabled, the ordering a T^4 law must produce.
 #[test]
 fn radiative_cooling_scales_with_emissivity() {
     let hot_temp = 1000.0_f32; // K, real fire-range temperature -- where T^4 actually matters
@@ -2268,8 +2231,7 @@ fn gpu_cpu_parity() {
     );
 }
 
-/// Tight single-substep cross-backend regression (external review, third
-/// pass -- wording corrected from an earlier, overclaiming draft): the
+/// Tight single-substep cross-backend regression: the
 /// soft-contact test below only proves bounded AGGREGATE agreement over
 /// hundreds of independently-integrated substeps -- it cannot rule out a
 /// real formula difference that a chaotic, contact-mediated trajectory
@@ -2718,19 +2680,18 @@ fn granular_fluid_gpu_cpu_single_substep_matches_with_imposed_compression() {
     );
 }
 
-/// **Not a parity test** -- external review correctly pushed back on the
-/// original name/framing here: bounded aggregate agreement over hundreds
+/// **Not a parity test**: bounded aggregate agreement over hundreds
 /// of independently-integrated, contact-mediated substeps is a real but
 /// WEAKER claim than constitutive parity (see the single-substep test
 /// above -- itself also a cross-backend regression check, not a strict
-/// constitutive-identity proof; see that test's own doc). `gpu_cpu_parity`
+/// constitutive-identity proof; see that test's doc). `gpu_cpu_parity`
 /// (the pre-existing test above both of these) never drives real
 /// plastic flow (mild gravity, NeoHookean, no yield surface at all), so it
 /// provably could not have caught the P0 #1 Von Mises bug (GPU projecting
 /// onto the PRE-hardening yield limit instead of the real post-hardening
 /// one). This scenario uses real hardening (`hardening_modulus > 0`, where
 /// the bug was invisible under perfect plasticity -- see
-/// `VonMisesMaterial::kirchhoff_stress`'s own doc) and a soft, sustained
+/// `VonMisesMaterial::kirchhoff_stress`'s doc) and a soft, sustained
 /// contact to drive the block past yield, then checks mean accumulated
 /// hardening (`kappa`, `Particle::friction_hardening`) stays within a
 /// real-but-loose bound between backends. A more violent version of this
@@ -2747,7 +2708,7 @@ fn von_mises_gpu_cpu_bounded_agreement_under_soft_contact() {
     let config = SimConfig {
         grid_res: 32,
         dt: 0.002,
-        // Real, disclosed test-design fix: GPU's own `step_frame` always
+        // Disclosed test-design fix: GPU's own `step_frame` always
         // computes a per-material CFL-restricted substep count (see
         // `gpu/solver/step.rs`'s CFL scan) regardless of this flag --
         // `adaptive_timestep` is only ever checked on the CPU path
@@ -2837,11 +2798,11 @@ fn von_mises_gpu_cpu_bounded_agreement_under_soft_contact() {
     // 400 independently-numerically-integrated substeps on each backend
     // (grid kernel evaluation order, atomic-scatter accumulation order) --
     // small per-step differences compound directionally rather than
-    // averaging out, so real, expected cross-implementation drift is
+    // averaging out, so expected cross-implementation drift is
     // measurably larger here than the CoM check above. 30% is loose enough
     // to absorb that (measured ~15% at these presets) but still tight
-    // enough to have clearly caught the original bug: pre-fix, GPU
-    // projected onto the stale pre-hardening limit every yielding substep,
+    // enough to catch a GPU projecting onto the pre-hardening limit every
+    // yielding substep,
     // a SYSTEMATIC bias compounding every step in the same direction, not
     // symmetric noise -- see `von_mises.rs`'s own closed-form single-step
     // test for the exact, tight (bit-level) proof of the formula itself;
@@ -2856,19 +2817,14 @@ fn von_mises_gpu_cpu_bounded_agreement_under_soft_contact() {
     );
 }
 
-/// Real, generic cross-backend regression: NeoHookean (2)/Corotated (3)/
-/// Viscoelastic (9) all had their CPU `update_particle` switched from
-/// forward-Euler to `deformation_increment_exp` in the same 2026-09 rollout
-/// as Von Mises (see that material's own single-substep test above for the
-/// full rationale/caveats -- same discipline applies here: this excludes a
-/// real formula mismatch between the Rust CPU helper and its separately
-/// hand-duplicated WGSL twin, it does not isolate the constitutive kernel
-/// from P2G/G2P transfer-layer differences). None of these three have a
-/// plastic projection to interact with the new kinematic step -- lower risk
-/// than Von Mises by construction, but the exponential integrator itself
-/// was never before exercised through a real P2G->G2P round trip on GPU at
-/// all, only in isolated CPU-only unit tests, so this is still real,
-/// previously-missing coverage, not a formality.
+/// Cross-backend check: NeoHookean (2)/Corotated (3)/Viscoelastic (9) use
+/// `deformation_increment_exp` on CPU, like Von Mises (see its single-substep
+/// test above for the rationale and caveats: this excludes a formula mismatch
+/// between the Rust CPU helper and its hand-duplicated WGSL twin, it does not
+/// isolate the constitutive kernel from P2G/G2P transfer differences). None of
+/// the three has a plastic projection, but this runs the exponential
+/// integrator through a P2G->G2P round trip on GPU, which the CPU-only unit
+/// tests do not.
 #[cfg(feature = "gpu")]
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
@@ -2950,16 +2906,16 @@ fn elastic_family_gpu_cpu_single_substep_matches_under_combined_shear_and_spin()
     check(ViscoelasticMaterial::new(500.0, 200.0, 0.0), "Viscoelastic");
 }
 
-/// **Open diagnostic, not a regression gate** (external review): the same
+/// **Open diagnostic, not a regression gate**: the same
 /// soft-contact scenario above at a MUCH more violent impact velocity
 /// (v0=-15 instead of -8) diverges far past any defensible tolerance --
 /// last measured mean kappa CPU=0.4471 vs GPU=0.3467 (~22% apart) after
 /// only 150 steps, worse than the soft-contact test's own 30% bound
 /// reaches even after 400. Root cause is NOT understood: it could be
-/// genuine chaos (CPU's serial P2G accumulation order vs GPU's atomic-
+/// chaos (CPU's serial P2G accumulation order vs GPU's atomic-
 /// scatter order diverging under a barely-resolved, near-instability
 /// impact -- plausible, since the single-substep test above proves the
-/// underlying FORMULA matches), or it could be a real, separate bug this
+/// underlying FORMULA matches), or it could be a separate bug this
 /// session didn't find. `#[ignore]`d rather than silently dropped, so the
 /// finding survives instead of vanishing the moment the soft-contact
 /// test's velocity got dialed back for stability. Not gated on any
@@ -3026,7 +2982,7 @@ fn diag_von_mises_gpu_cpu_diverges_under_violent_impact() {
 /// Tight single-substep cross-backend regression for P0 #2 (external
 /// review, third pass -- wording corrected from an earlier, overclaiming
 /// draft, same correction as `von_mises_gpu_cpu_single_substep_matches_
-/// with_imposed_shear`'s own doc): identical F=I and an identical imposed
+/// with_imposed_shear`'s doc): identical F=I and an identical imposed
 /// velocity gradient C on every particle, no gravity, no boundary contact,
 /// EXACTLY one substep. Bingham's own deviatoric-stress law reads
 /// `velocity_gradient` directly (not F-mediated the way Von Mises's yield
@@ -3112,11 +3068,11 @@ fn bingham_gpu_cpu_single_substep_matches_with_imposed_shear() {
 }
 
 /// **Not a parity test** -- same correction as `von_mises_gpu_cpu_bounded_
-/// agreement_under_soft_contact`'s own doc: bounded aggregate agreement
+/// agreement_under_soft_contact`'s doc: bounded aggregate agreement
 /// over many contact-mediated substeps is a real but weaker claim than
 /// constitutive parity (see the single-substep test above -- itself also
 /// a cross-backend regression check, not a strict constitutive-identity
-/// proof; see that test's own doc). Same reasoning otherwise, for P0 #2
+/// proof; see that test's doc). Same reasoning otherwise, for P0 #2
 /// (Bingham's deviatoric stress off by 2x, GPU/CPU discontinuity at
 /// `yield_s -> 0`).
 /// `gpu_cpu_parity` never drives real shear above `critical_shear_rate`,
@@ -3134,8 +3090,8 @@ fn bingham_gpu_cpu_bounded_agreement_under_soft_contact() {
     let config = SimConfig {
         grid_res: 32,
         dt: 0.002,
-        // Same real, disclosed fix as the Von Mises parity test above --
-        // see that test's own comment for the full mechanism.
+        // Same disclosed fix as the Von Mises parity test above --
+        // see that test's comment for the full mechanism.
         adaptive_timestep: true,
         gravity: Vec2::new(0.0, -20.0),
         ..SimConfig::default()
@@ -3145,7 +3101,7 @@ fn bingham_gpu_cpu_bounded_agreement_under_soft_contact() {
     // Same reasoning as the Von Mises test above: a coherent block in pure
     // freefall never develops real internal shear (nothing decelerates any
     // part of it relative to the rest), so spawn low and already moving
-    // fast toward the domain's own boundary wall to force a real, sustained
+    // fast toward the domain's own boundary wall to force a sustained
     // impact within this test's step budget.
     let mut cpu =
         Simulation::new(config, small_spawn_config(16.0)).with_default_material(Box::new(material));
@@ -3174,12 +3130,11 @@ fn bingham_gpu_cpu_bounded_agreement_under_soft_contact() {
     let cpu_spd: f32 = cpu.particles().iter().map(|p| p.v.length()).sum::<f32>() / n;
     let gpu_spd: f32 = gpu.particles().iter().map(|p| p.v.length()).sum::<f32>() / n;
 
-    // Real proof of finite strain: mean |J-1| (volumetric deformation),
-    // NOT mean speed -- a coherent block translating rigidly (e.g. still
-    // in transit toward the wall) has large mean speed with ZERO internal
-    // deformation, which would make the speed-parity check below pass
-    // trivially without ever exercising the deviatoric-stress formula
-    // P0 #2 fixed.
+    // Finite strain: mean |J-1| (volumetric deformation), not mean speed -- a
+    // coherent block translating rigidly (e.g. still in transit toward the
+    // wall) has large mean speed with zero internal deformation, which would
+    // make the speed-parity check below pass without exercising the
+    // deviatoric-stress formula.
     let cpu_j_deviation: f32 = cpu
         .particles()
         .iter()
@@ -3207,17 +3162,14 @@ fn bingham_gpu_cpu_bounded_agreement_under_soft_contact() {
     );
 }
 
-/// **Open diagnostic, not a regression gate** (external review) -- same
-/// reasoning as `diag_von_mises_gpu_cpu_diverges_under_violent_impact`'s
-/// own doc. Same scenario as the soft-contact test above at a MUCH more
-/// violent impact velocity (v0=-15 instead of -8): last measured mean
-/// speed CPU=5.7295 vs GPU=2.6227 (over 2x apart) after 150 steps. Root
-/// cause not understood -- plausibly genuine CPU-serial-vs-GPU-atomic-
-/// scatter chaos near a barely-resolved impact (the single-substep test
-/// above proves the underlying FORMULA matches), possibly a real, separate
-/// bug not found this session. Kept as a live, ignored finding rather than
-/// silently dropped when the soft-contact test's own velocity got dialed
-/// back for stability.
+/// **Open diagnostic, not a regression gate** -- same reasoning as
+/// `diag_von_mises_gpu_cpu_diverges_under_violent_impact`'s doc. Same scenario
+/// as the soft-contact test above at a much more violent impact velocity
+/// (v0=-15 instead of -8): last measured mean speed CPU=5.7295 vs GPU=2.6227
+/// (over 2x apart) after 150 steps. Root cause not understood: plausibly
+/// CPU-serial vs GPU-atomic-scatter chaos near a barely resolved impact (the
+/// single-substep test above shows the formula matches), possibly a separate
+/// bug. Kept as an ignored finding.
 #[cfg(feature = "gpu")]
 #[test]
 #[ignore = "open diagnostic: violent-impact CPU/GPU divergence, root cause not yet understood"]
@@ -3265,13 +3217,10 @@ fn diag_bingham_gpu_cpu_diverges_under_violent_impact() {
     );
 }
 
-/// Real regression guard (external review, direct response to the NACC
-/// finding): a construction-time guard checked against a synthetic
-/// `MaterialParams { model: 10, .. }` would NOT have caught the real bug
-/// here (`NaccMaterial::params()` deliberately uploads model 2, never 10)
-/// -- only registering the REAL material and constructing a real
-/// `GpuSimulation` around it proves the guard actually fires for the type
-/// it exists to catch.
+/// The GPU NACC guard fires for a registered `NaccMaterial` in a constructed
+/// `GpuSimulation`. A guard checked against a synthetic
+/// `MaterialParams { model: 10, .. }` would miss it, since
+/// `NaccMaterial::params()` uploads model 2, never 10.
 #[cfg(feature = "gpu")]
 #[test]
 #[should_panic(expected = "NaccMaterial")]
@@ -3591,7 +3540,7 @@ fn build_mixture_scene(drag_coefficient: f32) -> Simulation {
         .with_default_material(Box::new(solid))
         .with_material(1, Box::new(fluid));
     let _ = solver.add_body(fluid_spawn);
-    // Give every fluid particle a real, direct initial velocity relative to the
+    // Give every fluid particle a direct initial velocity relative to the
     // (still-at-rest) solid -- co-located from frame 0, no waiting for a fall.
     let particles = solver.particles_mut();
     let n = particles.material_id.len();
@@ -3603,53 +3552,12 @@ fn build_mixture_scene(drag_coefficient: f32) -> Simulation {
     solver
 }
 
-/// **Archived diagnostic:** the historical notes below predate strict
-/// WC-MPM state ownership and full-time adaptive stepping. They are retained
-/// for investigation provenance, not as a description of current behavior.
-///
-/// Real, permanent, OBSERVATIONAL diagnostic (not a pass/fail regression --
-/// see result below) for the `mixture_sand_water.rs` example's own
-/// `dropped`/min_dt-clamp finding (2026-08-04, see
-/// `mixture_sand_water_explosion_investigation` memory): mirrors that
-/// example's exact scene (same grid, spacing, box sizes, material params,
-/// `SlipBoundary`, gravity) headless, long horizon, tracking whether
-/// `sim_time_dropped` stays bounded as sustained settling compacts material
-/// against the floor.
-///
-/// Real bug found and fixed same session, kept regardless of the result
-/// below: `NewtonianFluidMaterial` never wrote `particles.density`/`volume`
-/// from its own bounded EOS formula each substep (see its `update_particle`)
-/// -- left entirely to `estimate_particle_volumes`'s grid-mass estimate,
-/// which has no ceiling on compaction (only `clamp_rarefied_volume`'s
-/// rarefaction ceiling). Unlike every plastic solid material (DP included),
-/// nothing corrected a drifting estimate back down. This is real, disclosed,
-/// physically-motivated (every other material already self-corrects this
-/// way) -- kept as a genuine improvement independent of whether it closes
-/// the issue below.
-///
-/// REAL, MEASURED RESULT with the fix applied (2026-08-04): does NOT close
-/// the issue. `dropped` still climbs past frame ~2100, reaching 59.8% of
-/// frame dt by frame 2189 -- worse than the pre-fix baseline's own 6.8%
-/// plateau at the OLD (tighter) substep budget, though a different config
-/// (96 substeps vs 32) makes the two not directly comparable. Honest
-/// conclusion: the missing fluid self-correction was a REAL bug (now fixed)
-/// but not the (or not the only) root cause of the dropped-time runaway --
-/// something else keeps demanding more substeps than any tested budget
-/// covers. Kept as `#[ignore]`d (not a CI-blocking regression for an
-/// unsolved, disclosed, open problem) -- re-enable the assert once the real
-/// root cause is found and fixed.
-/// Real isolation test, requested directly (2026-08-04): the geyser found
-/// live in `mixture_sand_water.rs` (sand erupting to 3-7x its settled pile
-/// height) was being chased inside the mixture pressure solve -- but that
-/// assumes the mixture coupling IS the cause. Before chasing that further:
-/// same sand block, same spawn geometry, same real long horizon, but ZERO
-/// water and ZERO mixture coupling. If this ALSO erupts, the bug is in
-/// `sand.rs`'s own single-material physics (most likely the volumetric-floor
-/// stress mechanism analyzed earlier tonight: `kirchhoff_stress`'s plain
-/// linear `lambda*(J-1)*J` term, evaluated at the real packing-limit floor
-/// J=0.6, was flagged as a plausible real-but-too-violent response) -- NOT
-/// the mixture pressure solve, which would mean tonight's new pressure-solve
-/// instrumentation is chasing the wrong file entirely.
+/// Isolation test for the geyser seen in `mixture_sand_water.rs` (sand erupting
+/// to 3-7x its settled pile height): same sand block, spawn geometry and long
+/// horizon, but zero water and zero mixture coupling. If this also erupts, the
+/// cause is in `sand.rs`'s single-material physics (a candidate:
+/// `kirchhoff_stress`'s linear `lambda*(J-1)*J` term evaluated at the
+/// packing-limit floor J=0.6), not in the mixture pressure solve.
 #[test]
 #[ignore = "diagnostic -- run manually, real long horizon"]
 fn diag_sand_only_no_mixture_long_horizon_erupts_or_not() {
@@ -3726,13 +3634,12 @@ fn strict_fluid_rejects_porous_mixture_coupling() {
     solver.step();
 }
 
-/// Real property-based classification, not a name check: a moisture source
-/// only if the particle's own material genuinely owns its deformation-volume
-/// state -- the exact condition `assert_strict_fluid_mode_is_supported`
-/// already uses to mean "behaves like a strict fluid" (`NewtonianFluidMaterial`
-/// overrides this to `true`; `DruckerPragerMaterial` never overrides it,
-/// stays at the trait's own `false` default). Bounded at phi=1.0 (real
-/// saturation degree convention) so a source particle doesn't inject forever.
+/// Property-based classification, not a name check: a moisture source only if
+/// the particle's material owns its deformation-volume state, the condition
+/// `assert_strict_fluid_mode_is_supported` uses for "behaves like a strict fluid"
+/// (`NewtonianFluidMaterial` returns `true`; `DruckerPragerMaterial` keeps the
+/// trait's `false` default). Bounded at phi=1.0 (saturation degree convention) so
+/// a source particle does not inject forever.
 fn strict_fluid_emits_saturation(_p: &Particle, phi: f32, material: &dyn MaterialModel) -> f32 {
     const SATURATION_RATE: f32 = 4.0; // phi/s -- fast enough to see real transfer in a short test
     if material.owns_deformation_volume_state() && phi < 1.0 {
@@ -3742,18 +3649,8 @@ fn strict_fluid_emits_saturation(_p: &Particle, phi: f32, material: &dyn Materia
     }
 }
 
-/// **Full pipeline, through the real solver, not the isolated formula**:
-/// water genuinely emits saturation (classified by real property, see
-/// `strict_fluid_emits_saturation`'s own doc), it diffuses across the shared
-/// grid to nearby sand (`ScalarDiffusionField`, the same generic mechanism
-/// already proven for heat/pheromone), and sand's own `cohesion_bonus_pa`
-/// hook (added earlier this session, `sand.rs`) reads it back. No
-/// `WithMixturePhase`/mixture-phase coupling involved -- this is the
-/// lighter, currently-unblocked path (see `strict_fluid_rejects_porous_
-/// mixture_coupling` above for why the heavier path isn't available yet).
-/// Sums `scalar_field` for every particle of a given material -- shared
-/// helper so the real assertions below read as what they check, not as
-/// repeated query boilerplate.
+/// Sums `scalar_field` for every particle of a given material, so the
+/// assertions below read as what they check.
 fn scalar_field_sum_for_material(solver: &Simulation, material_id: u32) -> f32 {
     solver
         .particles()
@@ -3765,6 +3662,12 @@ fn scalar_field_sum_for_material(solver: &Simulation, material_id: u32) -> f32 {
         .sum()
 }
 
+/// Full pipeline through the solver: water emits saturation (classified by
+/// property, see `strict_fluid_emits_saturation`), it diffuses across the shared
+/// grid to nearby sand (`ScalarDiffusionField`, the mechanism used for
+/// heat/pheromone), and sand's `cohesion_bonus_pa` hook (`sand.rs`) reads it back.
+/// No `WithMixturePhase` coupling: see `strict_fluid_rejects_porous_mixture_coupling`
+/// above for why that path is not available to strict fluids.
 #[test]
 fn water_saturates_nearby_sand_through_the_real_solver() {
     let config = SimConfig {
@@ -3823,7 +3726,7 @@ fn water_saturates_nearby_sand_through_the_real_solver() {
         config.grid_res,
     );
     field.source = Some(strict_fluid_emits_saturation);
-    // Real, disclosed blend toward PIC-like stability -- see `blend`'s own
+    // Disclosed blend toward PIC-like stability -- see `blend`'s own
     // doc. Sand is a purely passive reader here (no source of its own), the
     // exact case FLIP's nullspace-noise failure mode targets.
     field.blend = 0.3;
@@ -3845,10 +3748,9 @@ fn water_saturates_nearby_sand_through_the_real_solver() {
          the shared-grid diffusion -- got exactly 0.0, the wiring isn't working"
     );
 
-    // Real end-to-end proof, not just "some number changed": the water
-    // particles themselves must never have picked up saturation from
-    // THEMSELVES being classified as sand -- confirms the property check
-    // (not a name/id check) correctly excludes the source material too.
+    // The water particles must not pick up saturation from being classified
+    // as sand themselves: the property check (not a name/id check) excludes
+    // the source material too.
     assert!(
         scalar_field_sum_for_material(&solver, 1) > 0.0,
         "water particles emit into the shared grid too -- they should read \

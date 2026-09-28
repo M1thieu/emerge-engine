@@ -19,7 +19,7 @@ use emerge::particle::Particles;
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 
-/// Real, direct CPU/GPU comparison point: same depth-stratification helper
+/// Direct CPU/GPU comparison point: same depth-stratification helper
 /// as `fluid_thin_layer_diag_gpu.rs`'s own (bins particles into N_BANDS
 /// horizontal bands by current y, prints mean J/mean vy per band) -- ported
 /// to CPU's SoA `Particles` layout instead of GPU's AoS `&[Particle]`.

@@ -16,7 +16,7 @@ use egui_wgpu::ScreenDescriptor;
 ///     real 300-365C piloted range, combustion -18.5MJ/kg oven-dry wood).
 ///   - Paper: conductivity 0.05 W/(m*K) (cross-grain, real cited range ~0.05-0.07),
 ///     heat_capacity 1340 J/(kg*K) (cellulose/paper specific heat, real range
-///     ~1300-1500), density 100 kg/m3 -- real, but for LOOSELY CRUMPLED paper (what
+///     ~1300-1500), density 100 kg/m3 -- but for LOOSELY CRUMPLED paper (what
 ///     actually burns), not a pressed stack/cardboard (700-1200): air gaps between
 ///     sheets give real bulk density ~50-150 kg/m3, same reason snow's bulk density is
 ///     far below solid ice's. Paper's "catches fast" behavior is mostly a
@@ -27,8 +27,8 @@ use egui_wgpu::ScreenDescriptor;
 ///     Combustion -16MJ/kg (real cellulose/paper heat of combustion, range ~15-17MJ/kg).
 ///   - Stone (granite): conductivity 2.5 W/(m*K) (real granite range 2.0-3.5),
 ///     heat_capacity 790 J/(kg*K) (real granite range ~790-800), density 2700 kg/m3
-///     (real granite). Ignition point = f32::INFINITY -- honest, not an arbitrarily
-///     high finite number: rock is genuinely non-combustible, there is no real
+///     (real granite). Ignition point = f32::INFINITY -- not an arbitrarily
+///     high finite number: rock is non-combustible, there is no real
 ///     "ignition temperature" to cite, so the phase-rule condition structurally
 ///     never fires rather than merely being unlikely to.
 ///
@@ -67,7 +67,7 @@ const COOLING_RATE: f32 = 0.001;
 // Stefan-Boltzmann's T^4 term grows faster than this conduction-only spread mechanic
 // can compensate for right in the temperature range spread depends on -- a real
 // physical effect, but incompatible with keeping these demos' fire actually spreading.
-// Kept at 0.0 so the mechanic stays intact; the real, tested mechanism itself lives in
+// Kept at 0.0 so the mechanic stays intact; the tested mechanism itself lives in
 // `ThermalConfig::emissivity` for scenes where it's a good fit (e.g. lava cooling).
 const EMISSIVITY_DEMO_SCALE: f32 = 0.0;
 
@@ -91,7 +91,7 @@ struct FuelProps {
     ignition_k: f32,
     combustion_enthalpy: f32,
     /// Real cited emissivity (Incropera). Scaled by `EMISSIVITY_DEMO_SCALE` for
-    /// actual use in `ThermalConfig` -- see that constant's own doc.
+    /// actual use in `ThermalConfig` -- see that constant's doc.
     emissivity: f32,
     /// Beer-Lambert absorption coefficient sigma_a, NOT a direct RGB target --
     /// rendered color is `exp(-sigma_a)` per channel (higher sigma_a = more
@@ -107,7 +107,7 @@ impl FuelKind {
             FuelKind::Paper => FuelProps {
                 conductivity: 0.05,
                 heat_capacity: 1340.0,
-                // Real, but for LOOSELY CRUMPLED paper (what actually burns), not a
+                // But for LOOSELY CRUMPLED paper (what actually burns), not a
                 // pressed stack/cardboard -- air gaps between sheets give real bulk
                 // density ~50-150 kg/m^3, same reason snow's bulk density is far
                 // below solid ice's.
@@ -137,7 +137,7 @@ impl FuelKind {
                 conductivity: 2.5,
                 heat_capacity: 790.0,
                 density: 2700.0,
-                // Real, honest: rock is non-combustible -- no finite ignition
+                // Honest: rock is non-combustible -- no finite ignition
                 // temperature exists to cite, so the phase rule structurally
                 // never fires rather than merely being set improbably high.
                 ignition_k: f32::INFINITY,
@@ -190,11 +190,11 @@ fn make_sim(fuel_kind: FuelKind) -> Simulation {
     // on first landing; same grid-native stiffness tier as fire_spread.rs (real
     // GPa-scale stiffness is incompatible with this grid's CFL).
     let solid = ViscoelasticMaterial::new(100.0, 50.0, 100.0);
-    // Same grid-native tier as `solid` above -- this demo's real, cited
+    // Same grid-native tier as `solid` above -- this demo's cited
     // constants (module doc) are the THERMAL properties driving spread; ash
     // only needs to behave like loose granular debris post-combustion, not
     // match a specific real ash bulk-density/angle-of-repose measurement.
-    // `low_friction`'s own doc discloses it's grid-unit-only, not real Pa.
+    // `low_friction`'s doc discloses it's grid-unit-only, not real Pa.
     let ash = WithLatentHeat::new(
         DruckerPragerMaterial::low_friction(266.7, 0.333),
         fuel.combustion_enthalpy,

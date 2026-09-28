@@ -1,4 +1,4 @@
-//! The rod <-> MPM grid coupling in `Simulation::do_substep`: genuine two-way momentum
+//! The rod <-> MPM grid coupling in `Simulation::do_substep`: two-way momentum
 //! exchange through the shared grid, not parallel plumbing that happens to compile.
 
 extern crate emerge_engine as emerge;
@@ -89,7 +89,7 @@ fn cantilever_with_optional_particles(with_particles: bool, steps: usize) -> (Op
         .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
 
     // span must stay small: self-weight tip deflection ~ L^4/EI, so a much longer span at
-    // this stiffness folds nearly flat (not a coupling bug, just genuine overload). 2.0
+    // this stiffness folds nearly flat (not a coupling bug, just overload). 2.0
     // hand-checks to ~8% of span, a visible sag without collapse.
     let span = 2.0;
     let n_points = 12usize;
@@ -247,7 +247,7 @@ fn a_settled_free_rod_takes_one_substep_awake_or_asleep() {
 #[test]
 #[ignore = "issue #47: the particles resting on the loaded rod are frozen by f32 position rounding"]
 fn sleeping_rod_wakes_on_new_contact_and_still_reacts() {
-    // Settle with sleep enabled so it's genuinely asleep before contact.
+    // Settle with sleep enabled so it's asleep before contact.
     let mut solver = settled_cantilever(0.02, 3000);
     assert!(
         solver.rods()[0].sleeping,

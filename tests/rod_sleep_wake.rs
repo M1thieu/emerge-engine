@@ -1,13 +1,7 @@
-//! Real regression coverage (2026-07-29) for a genuine bug found live: a
-//! sleeping rod given only `wind_velocity` (no push) never woke up, in
-//! either integration path -- confirmed directly from the running
-//! `rod_blade_of_grass_gui` demo's own NDJSON log (`wind_on:1` sustained for
-//! 5800+ frames, zero movement) before the fix, and by the user re-toggling
-//! wind live after the fix (tip speed climbing frame over frame). This test
-//! exercises the same real `Simulation::step()` code path the demo does,
-//! not a hand-rolled repro, for both `use_implicit_integration` states since
-//! the bug existed independently in both wake-check sites
-//! (`src/spacetime/solver/step.rs`).
+//! A sleeping rod given only `wind_velocity` (no push) must wake up, in both
+//! integration paths (`use_implicit_integration` on and off: each has its own
+//! wake check in `src/spacetime/solver/step.rs`). Runs the same
+//! `Simulation::step()` path as the `rod_blade_of_grass_gui` demo.
 
 extern crate emerge_engine as emerge;
 use emerge::rod::{Rod, RodMaterial, build_straight_rod};
@@ -20,7 +14,7 @@ fn settled_sleeping_rod(use_implicit: bool) -> Simulation {
     let points = build_straight_rod(Vec2::new(16.0, 16.0), Vec2::new(16.0, 20.0), 5, 0.1, 1.0);
     let mut rod = Rod::new(points, material);
     rod.use_implicit_integration = use_implicit;
-    // Force the rod directly into the sleeping state a genuinely settled
+    // Force the rod directly into the sleeping state a settled
     // blade would reach on its own -- skips the real (but here irrelevant)
     // settle time, same shortcut this file's own sibling tests use for
     // sleep-adjacent behavior.

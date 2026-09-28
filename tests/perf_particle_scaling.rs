@@ -1,19 +1,16 @@
 extern crate emerge_engine as emerge;
 
-/// Real, permanent perf-scaling diagnostic (2026-08-04): direct user request
-/// for a grounded "how many particles/materials for a viable 60fps scene"
-/// table -- built from ACTUAL measured wall-clock step cost at several
-/// particle counts, not guessed/extrapolated from one data point. CPU-only,
-/// debug-mode (matches this project's own standing "debug only for dev"
-/// rule -- these numbers are the honest baseline, not an inflated release
-/// number). `#[ignore]`d (real wall-clock timing, not a correctness test --
-/// same convention as every other perf diagnostic in this project) --
-/// run manually: `cargo test --test perf_particle_scaling -- --ignored --nocapture`.
+/// Perf-scaling diagnostic: a "how many particles/materials for a viable
+/// 60 fps scene" table from measured wall-clock step cost at several particle
+/// counts, not extrapolated from one data point. CPU only, debug profile (the
+/// development baseline, not a release number). `#[ignore]`d (wall-clock
+/// timing, not a correctness test) -- run manually:
+/// `cargo test --test perf_particle_scaling -- --ignored --nocapture`.
 use emerge::{DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 use std::time::Instant;
 
-/// Real, single-material (sand alone) scaling curve -- the honest floor,
+/// Single-material (sand alone) scaling curve -- the honest floor,
 /// no mixture/multi-material overhead included.
 #[test]
 #[ignore = "real wall-clock perf diagnostic, run manually"]
@@ -39,8 +36,8 @@ fn diag_sand_single_material_particle_scaling() {
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
         let n = solver.particles().len();
 
-        // Real settle window (not timed) -- avoid measuring the initial
-        // free-fall/impact transient's own atypical substep count.
+        // Settle window (not timed): skips the initial free-fall/impact
+        // transient's atypical substep count.
         for _ in 0..20 {
             solver.step();
         }
@@ -56,10 +53,9 @@ fn diag_sand_single_material_particle_scaling() {
     }
 }
 
-/// Real two-material mixture scaling (sand+water, `WithMixturePhase`) at a
-/// couple of representative particle counts -- gives a real, measured
-/// multi-material overhead FACTOR to apply against the single-material
-/// curve above, instead of guessing how much combining materials costs.
+/// Two-material mixture scaling (sand+water, `WithMixturePhase`) at a couple
+/// of representative particle counts: a measured multi-material overhead
+/// factor to apply to the single-material curve above.
 #[test]
 #[ignore = "real wall-clock perf diagnostic, run manually"]
 fn diag_mixture_two_material_particle_scaling() {

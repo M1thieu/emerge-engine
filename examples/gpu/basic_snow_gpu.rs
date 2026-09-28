@@ -44,7 +44,7 @@ const LABELS: &[(u32, &str)] = &[
 // an unsourced grid-unit guess shared by both loose and packed variants --
 // same citation as `basic_snow.rs`'s CPU twin (Stomakhin 2013 canonical
 // snow, E=1.4e5/nu=0.2, matching `StomakhinMaterial::from_young_modulus`'s
-// own doc; rho=200 kg/m3, matching `physical_props.rs`'s own module-doc
+// doc; rho=200 kg/m3, matching `physical_props.rs`'s own module-doc
 // example). Loose/packed still differ only in real Stomakhin plasticity
 // parameters, not stiffness.
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
@@ -244,7 +244,7 @@ impl State {
             self.frame += 1;
             // Gated, not evaluated every step -- `phase_transition` does a real,
             // BLOCKING GPU->CPU sync internally (`sync_particles_blocking`, see
-            // its own doc), so calling it once per real simulation step (rather
+            // its doc), so calling it once per real simulation step (rather
             // than once per RENDER callback, the pre-2026-07-30 behavior) was a
             // genuine, self-inflicted cost multiplication once multiple steps
             // could happen per callback -- confirmed live: fps collapsed to
@@ -252,7 +252,7 @@ impl State {
             // showed BOTH `step_frame()` (~6ms) and `phase_transition()` alone
             // (~1ms) are individually cheap -- the real cost is the sync POINT
             // itself breaking CPU/GPU pipelining in the live interleaved
-            // render+compute loop (a real, well-known GPU perf pattern:
+            // render+compute loop (a well-known GPU perf pattern:
             // synchronization stalls cost far more in context than in
             // isolation). `is_multiple_of(15)`, matching `material_sandbox_
             // gpu`'s own already-proven gated-scan interval, not a fresh guess.

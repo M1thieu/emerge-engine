@@ -6,12 +6,12 @@
 //! basic_fluids_gpu.rs's own scene (real SI constructors vs the CPU
 //! sibling's raw-unit ones, no longer a fair comparison).
 //!
-//! The two backends' own Simulation-construction APIs genuinely differ
+//! The two backends' own Simulation-construction APIs differ
 //! (`Simulation::new` + builder methods vs `build_particles` +
 //! `MaterialRegistry::with_default` + `GpuSimulation::with_device`), and
 //! CPU's `DirectionalContactGrip` steering has no GPU equivalent yet (see
-//! `snake_on_terrain_gpu.rs`'s own doc) -- those stay separate per file,
-//! only the real, duplicated DATA moves here.
+//! `snake_on_terrain_gpu.rs`'s doc) -- those stay separate per file,
+//! only the duplicated DATA moves here.
 
 use emerge::{DruckerPragerMaterial, NeoHookeanMaterial, SimConfig, SpawnRegion};
 use glam::{IVec2, Vec2};
@@ -21,7 +21,7 @@ pub const GRID: usize = 128;
 // physics frame represents in real time, and the CPG has no independent
 // awareness of that. Splitting them (solver at 1/60, CPG still stepping by
 // an old larger DT) cycles the muscle faster than it was ever tuned for and
-// causes real, escalating instability.
+// causes escalating instability.
 pub const DT: f32 = 1.0 / 60.0;
 pub const MUSCLE_GROUPS: u32 = 8;
 pub const N_RINGS: usize = 2;
@@ -34,7 +34,7 @@ pub const FIBER_DIAG: f32 = 3.0;
 pub const BODY_LEN: f32 = 18.0;
 pub const BODY_CENTER: Vec2 = Vec2::new(64.0, 20.0);
 
-/// Real, shared base -- each backend layers its own real, disclosed
+/// Shared base -- each backend layers its own disclosed
 /// difference on top via struct-update syntax (GPU adds `contact_friction`
 /// since it has no `DirectionalContactGrip`; CPU doesn't need that field at
 /// all, its contact resolution goes through the grip instead).

@@ -2,7 +2,7 @@ extern crate emerge_engine as emerge;
 
 /// Real trophic/predation demo -- proves `saturating_uptake` (Holling Type II /
 /// Michaelis-Menten / Monod, added 2026-07-16 to replace a hardcoded "eat everyone
-/// within radius X, instantly" rule with a real, density-driven, continuously
+/// within radius X, instantly" rule with a density-driven, continuously
 /// rate-limited consumption law). Watch it visually: prey (green) near the predator
 /// (red) convert to eaten (dark grey) gradually over many frames, never all at once,
 /// because the conversion rate saturates with local prey density instead of being a
@@ -33,7 +33,7 @@ const SENSE_RADIUS: f32 = 6.0;
 const MAX_CONSUMPTION_RATE: f32 = 8.0; // prey/s at saturating (high) local density
 const HALF_SATURATION_DENSITY: f32 = 0.15; // prey per unit area, test-calibrated
 
-// Real, sourced soft biological tissue -- the same E/nu/rho this engine's own
+// Sourced soft biological tissue -- the same E/nu/rho this engine's own
 // `physical_props.rs` module doc uses as its canonical "soft elastic solid"
 // example, also used by `basic_jellies.rs`. Prey/predator/eaten are all the
 // same substance (predation here only recolors `material_id` for the

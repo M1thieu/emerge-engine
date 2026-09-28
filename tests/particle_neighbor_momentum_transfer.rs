@@ -1,26 +1,19 @@
-//! Real, direct diagnostic (2026-08-21) for a user-reported live observation:
-//! when two ordinary MPM particles/blocks meet, only the one that already had
-//! velocity seems to react -- the other doesn't seem to. Same class of
-//! question already investigated for DEM grains (see
-//! `tests/grains_grid_coupling.rs`'s own `spinning_grain_...`/
-//! `falling_grain_impact_...` tests, both confirmed real, working reaction),
-//! now checked for the CONTINUUM MPM path specifically, which has no pairwise
-//! contact springs at all -- momentum only ever moves between particles
-//! through the shared grid (P2G -> grid stress/update -> G2P), mediated by
-//! the material's own constitutive stress response to local compression.
+//! When two ordinary MPM blocks meet, does the one at rest react? For DEM
+//! grains this is checked in `tests/grains_grid_coupling.rs`
+//! (`spinning_grain_...`/`falling_grain_impact_...`); this file checks the
+//! continuum MPM path, which has no pairwise contact springs: momentum moves
+//! between particles only through the shared grid (P2G -> grid stress/update
+//! -> G2P), through the material's stress response to local compression.
 
 extern crate emerge_engine as emerge;
 use emerge::{NeoHookeanMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 
 /// Two small NeoHookean blocks, zero gravity (isolates the collision effect
-/// from settling): block A starts moving toward block B, which starts
-/// completely at rest. A realistic, non-overlapping starting gap (NOT
-/// touching at t=0 -- same lesson learned tonight from the pour-tool and
-/// grain-reaction tests: starting already-overlapping injects a real,
-/// unrelated initial-condition violation) -- A closes the gap under its own
-/// given velocity and the two blocks make real contact through the shared
-/// grid over the run.
+/// from settling): block A starts moving toward block B, which starts at
+/// rest. The blocks start apart, not touching (starting already overlapped
+/// injects an unrelated initial-condition violation); A closes the gap under
+/// its given velocity and the two make contact through the shared grid.
 #[test]
 fn moving_block_makes_a_resting_neighbor_block_react_through_the_grid() {
     let config = SimConfig {

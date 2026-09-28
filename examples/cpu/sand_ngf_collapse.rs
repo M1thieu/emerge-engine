@@ -8,11 +8,11 @@ use egui_wgpu::ScreenDescriptor;
 /// seconds/meters via `SimConfig::earth`), rendered live instead of measured
 /// headless.
 ///
-/// Two real, cited reference lines are drawn on screen at the Lajeunesse et
+/// Two cited reference lines are drawn on screen at the Lajeunesse et
 /// al. 2004 predicted final spread (`R_inf = r0*(1+2*sqrt(h0/r0))`, the same
 /// formula the headless test uses) -- real dry sand of this aspect ratio
 /// stops there. Watch the pile blow straight past both lines regardless of
-/// which mode is active: that is the real, still-open sand accuracy gap
+/// which mode is active: that is the still-open sand accuracy gap
 /// this whole effort exists to chip at. NGF (press N) measurably narrows the
 /// final spread vs baseline (press B) but nowhere near enough to stop at the
 /// lines -- do not expect a dramatic visual difference between the two
@@ -284,7 +284,7 @@ impl State {
         println!("reset: mode={:?}", mode);
     }
 
-    /// Real, live measurement -- same `max |x - center_x|` metric the
+    /// Live measurement -- same `max |x - center_x|` metric the
     /// headless Lajeunesse test uses, in cells.
     fn measured_spread_cells(&self) -> f32 {
         let xs = &self.sim.particles().x;
@@ -320,7 +320,7 @@ impl State {
         self.renderer
             .render(&self.device, &self.queue, self.sim.particles(), &view, true);
 
-        // Real, cited reference lines: where dry sand of this aspect ratio
+        // Cited reference lines: where dry sand of this aspect ratio
         // actually stops IRL (Lajeunesse et al. 2004). Grid-x -> screen-x
         // matches the camera mapping `Renderer::set_camera` itself uses
         // (linear, GRID cells across the viewport) -- computed against

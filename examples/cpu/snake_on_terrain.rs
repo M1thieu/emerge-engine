@@ -314,7 +314,7 @@ impl State {
         self.last_instant = now;
         if !self.paused {
             let steps = self.stepper.steps_for_frame(frame_delta);
-            // Snapshot BEFORE the batch -- see `prev_x`'s own doc. Skipped
+            // Snapshot BEFORE the batch -- see `prev_x`'s doc. Skipped
             // when `steps==0` (nothing moved, last snapshot stays valid).
             if steps > 0 {
                 self.prev_x.clone_from(&self.sim.particles().x);
@@ -367,7 +367,7 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        // Real render-interpolation (see `prev_x`'s own doc) -- same
+        // Real render-interpolation (see `prev_x`'s doc) -- same
         // contained swap-and-restore pattern as `basic_fluids.rs`.
         let alpha = self.stepper.interpolation_alpha();
         if alpha > 0.0 && self.prev_x.len() == self.sim.particles().len() {

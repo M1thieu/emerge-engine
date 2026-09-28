@@ -182,7 +182,7 @@ fn own_yield_diagnostics(materials: [VonMisesMaterial; 3]) -> DiagnosticsRegistr
 
 /// Per-material worst-case readout -- `friction_hardening` IS kappa
 /// (accumulated equivalent plastic strain) for this material, per
-/// `von_mises.rs`'s own doc ("kappa is accumulated into
+/// `von_mises.rs`'s doc ("kappa is accumulated into
 /// `Particle::friction_hardening` each substep"): how far each clay has
 /// flowed, not just how it looks.
 fn print_diagnostic(sim: &Simulation, frame: u64) {
@@ -396,11 +396,11 @@ impl State {
         let g = self.sim.config().gravity.length();
         let stress_test = std::env::var("VONMISES_STRESS_TEST").is_ok();
         if stress_test {
-            // Real, scripted stress test (same discipline as basic_membrane.rs's
+            // Scripted stress test (same discipline as basic_membrane.rs's
             // MEMBRANE_STRESS_TEST): settle first, then repeatedly PUSH each
             // blob in turn with real rest gaps between hits so kappa's
             // per-hit increment is directly readable -- this is the concrete
-            // test of this material's own doc claim ("dents a lot on the
+            // test of this material's doc claim ("dents a lot on the
             // FIRST hit, then visibly resists more on each subsequent hit"),
             // not just a generic robustness check.
             const SETTLE: u64 = 90;

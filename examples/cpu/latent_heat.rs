@@ -10,9 +10,9 @@ extern crate emerge_engine as emerge;
 /// real effect that slows down a freezing pond (latent heat release fights further
 /// cooling) instead of letting it crash straight to ambient temperature.
 ///
-/// Real, physically-forced scale choice, not an arbitrary demo number: real water's
+/// Physically-forced scale choice, not an arbitrary demo number: real water's
 /// thermal diffusivity (alpha=k/(rho*c_p)~1.434e-7 m^2/s) makes pure-conduction
-/// freezing genuinely take MONTHS across a 1-meter slab (tau~L^2/alpha) --
+/// freezing take MONTHS across a 1-meter slab (tau~L^2/alpha) --
 /// shrinking `dx_meters` (tau~dx^2) is the real fix to show freezing in any
 /// reasonable step count.
 ///
@@ -67,7 +67,7 @@ fn main() {
 
     // Grid-native mechanical placeholder, not a real water/ice elastic
     // modulus -- water has no meaningful shear modulus to cite, and this
-    // scene's real, physically-forced claims (module doc above) are entirely
+    // scene's physically-forced claims (module doc above) are entirely
     // thermal (alpha, dx_meters, latent heat). NeoHookean exists here only
     // so MPM particles have SOME cohesion; it isn't modeling real mechanics,
     // and the module doc's own note that elastic CFL doesn't gate this

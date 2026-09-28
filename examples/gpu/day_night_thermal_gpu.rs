@@ -25,7 +25,7 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 48;
 const DT: f32 = 0.1;
-// Real air-ish thermal constants (see ThermalConfig's own doc for reference values):
+// Real air-ish thermal constants (see ThermalConfig's doc for reference values):
 // conductivity ~0.5 (between air 0.025 and water 0.6 -- a damp-earth-like slab),
 // heat_capacity ~1000 J/(kg*K), grid_cell_size=1.0m (each cell is a real meter).
 const CONDUCTIVITY: f32 = 0.5;
@@ -195,7 +195,7 @@ impl State {
             // Real sinusoidal day-night cycle -- midpoint + amplitude*sin, phase chosen
             // so t=0 starts at night_ambient (matches the slab's own initial
             // temperature). Advanced once per real SIMULATION step (not render
-            // frame) so `elapsed` genuinely tracks simulated seconds against
+            // frame) so `elapsed` tracks simulated seconds against
             // `CYCLE_SECONDS`, regardless of render fps.
             self.elapsed += DT;
             let mid = (DAY_AMBIENT + NIGHT_AMBIENT) * 0.5;

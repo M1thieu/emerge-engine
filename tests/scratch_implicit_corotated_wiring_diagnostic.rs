@@ -192,7 +192,7 @@ fn diag_settled_pile_first_forked_step_velocity_field() {
 /// EACH OTHER by a similar magnitude? If yes, the "8+ cell drift" measured
 /// above is inherent chaotic sensitivity of a granular collapse (rayon
 /// parallel float-sum order, a known nondeterminism source, amplified by
-/// DP's genuinely chaotic collapse dynamics), not a bug specific to the
+/// DP's chaotic collapse dynamics), not a bug specific to the
 /// implicit path -- this determines whether the earlier findings mean
 /// anything at all about implicit_corotated's correctness.
 #[test]

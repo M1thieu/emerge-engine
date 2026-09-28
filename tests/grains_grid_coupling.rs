@@ -57,7 +57,7 @@ fn total_momentum(solver: &Simulation) -> Vec2 {
 /// unpinned single grain each get initial velocity and are left alone.
 /// Total momentum (particles + grain) must stay near its initial value --
 /// the same weak-conservation contract ordinary MPM particles already have,
-/// and the real, rigorous proof that grains genuinely exchange momentum
+/// and the rigorous proof that grains exchange momentum
 /// through the shared grid rather than living in parallel, disconnected
 /// bookkeeping.
 #[test]
@@ -96,8 +96,8 @@ fn grain_and_particles_momentum_conserved_zero_gravity() {
     );
 }
 
-/// Real, gravity-on test: a grain dropped above a bed of ordinary MPM
-/// particles must genuinely settle to rest ON TOP of them -- real support
+/// Gravity-on test: a grain dropped above a bed of ordinary MPM
+/// particles must settle to rest ON TOP of them -- real support
 /// from a DIFFERENT population through the shared grid, not falling
 /// through (would mean the coupling is one-way or broken) and not floating
 /// (would mean the grid never actually felt the grain's own mass/momentum).
@@ -119,7 +119,7 @@ fn grain_rests_on_a_bed_of_ordinary_particles_through_the_shared_grid() {
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(NeoHookeanMaterial::new(200.0, 400.0)));
 
-    // Real bed-surface height: the spawn box top edge.
+    // Bed-surface height: the spawn box top edge.
     let bed_top_y = 10.0 + 6.0 * 0.5 * 0.5; // box_center.y + half_box_height_in_grid_units
     let mut grain = Grain::new(Vec2::new(32.0, bed_top_y + 3.0), 0.75, 1.0);
     grain.v = Vec2::ZERO;
@@ -134,11 +134,10 @@ fn grain_rests_on_a_bed_of_ordinary_particles_through_the_shared_grid() {
     }
     let final_y = solver.grain_populations()[0].grains[0].x.y;
 
-    // Real physical bounds, not exact-value matching (a live coupled scene
-    // has real settling dynamics, not a closed form): the grain must have
-    // come down close to the bed surface (real support, not floating far
-    // above), and never tunneled deep below the bed's own spawn region
-    // (real support, not falling through).
+    // Physical bounds, not exact values (a coupled scene settles dynamically,
+    // with no closed form): the grain must come down close to the bed surface
+    // (supported, not floating far above) and never tunnel deep below the
+    // bed's spawn region (not falling through).
     assert!(
         final_y < bed_top_y + 2.0,
         "grain never came down onto the bed, final_y={final_y} bed_top_y={bed_top_y}"
@@ -149,50 +148,33 @@ fn grain_rests_on_a_bed_of_ordinary_particles_through_the_shared_grid() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21) for a user-reported live observation:
-/// watching the grains demo settle, one grain visibly touching/rolling
-/// against another did not seem to make the OTHER grain react at all.
+/// Does a grain touching or rolling against another make the other react?
 ///
-/// CONCLUSION (confirmed, not a bug): this test, its standalone control
-/// below, and a direct read of `resolve_contact_forces`
-/// (`forces[j] += force_on_j; forces[i] -= force_on_j`, same for torques --
-/// real Newton's-third-law action-reaction) all agree: contact reaction
-/// IS symmetric and DOES survive the real grid-coupled `Simulation::step()`
-/// pipeline (this test's own final numbers match the no-grid control to
-/// within numerical noise). The real, most likely explanation for what was
-/// observed live: in an actual settled pile, an individual pairwise
-/// reaction is real but genuinely SMALL relative to a grain's OTHER
-/// simultaneous contacts (a grain resting against several neighbors and the
-/// terrain at once has its motion dominated by all of them together, not
-/// legible as "reacting to that one specific neighbor"). Separately
-/// confirmed via direct code reading, a REAL and DIFFERENT gap: grain-vs-
-/// TERRAIN contact (a grain resting on the continuum sand bed, not on
-/// another grain) gets ZERO rolling-resistance damping -- `resolve_contact_
-/// pair`/`resolve_contact_forces` only ever run on grain-GRAIN pairs
-/// (confirmed via `population.rs`'s own contact-detection loop, grain-
-/// terrain momentum exchange goes through the grid-coupling mechanism
-/// instead, which has no rolling term at all). If what was actually watched
-/// was a grain resting mostly on terrain rather than on other grains, THAT
-/// is the real, still-open, unfixed gap -- not this pairwise mechanism.
+/// Yes: this test, its standalone control below, and `resolve_contact_forces`
+/// (`forces[j] += force_on_j; forces[i] -= force_on_j`, same for torques)
+/// agree that contact reaction is symmetric and survives the grid-coupled
+/// `Simulation::step()` pipeline (final numbers match the no-grid control to
+/// within numerical noise). In a settled pile a single pairwise reaction is
+/// small next to a grain's other simultaneous contacts, so it is hard to see
+/// by eye. Separately, grain-vs-terrain contact (a grain resting on the
+/// continuum sand bed) gets no rolling-resistance damping:
+/// `resolve_contact_pair`/`resolve_contact_forces` run on grain-grain pairs
+/// only (`population.rs`'s contact detection), and grain-terrain momentum goes
+/// through grid coupling, which has no rolling term.
 ///
 /// Minimal, isolated setup: two touching grains, zero gravity, no boundary,
 /// nothing else in the scene. Grain A starts spinning in place (spin=5.0,
-/// v=0); grain B starts completely at rest. B picks up real, nonzero spin
-/// and velocity as a direct result of A's contact, proportional to the
-/// (deliberately light) touch -- not a coincidence, matched almost exactly
-/// by the standalone no-grid control below.
+/// v=0); grain B starts at rest. B picks up nonzero spin and velocity from
+/// A's contact, proportional to the (deliberately light) touch, matched
+/// almost exactly by the standalone no-grid control below.
 #[test]
 fn spinning_grain_through_real_grid_coupled_pipeline_makes_its_contact_partner_react() {
-    // Real grain-safe dt (same convention every other grain scene in this
-    // codebase uses -- `sand_repose_angle_gui.rs`'s own Grains-mode setup,
-    // matched exactly): `choose_substep_dt` doesn't know about grain contact
-    // stiffness at all (a real, already-disclosed gap), so nothing
-    // automatically subdivides `zero_gravity_config`'s own flat dt=0.02 down
-    // for THIS test's stiffer contact_config(). Using that flat dt directly
-    // here first (before this fix) produced a real, dramatic explosion
-    // (B's v reaching ~14 units/step from a standing start) -- a genuine
-    // DEM critical-timestep violation of the test's OWN making, not a
-    // pipeline bug; recomputing it properly here is required, not optional.
+    // Grain-safe dt (the convention of `sand_repose_angle_gui.rs`'s Grains
+    // mode): `choose_substep_dt` does not account for grain contact stiffness,
+    // so nothing subdivides `zero_gravity_config`'s flat dt=0.02 for this
+    // test's stiffer contact_config(). At that flat dt the scene explodes (B's
+    // v reaching ~14 units/step from a standing start), a DEM
+    // critical-timestep violation, not a pipeline bug.
     let cfg = contact_config();
     let m_eff = 1.0 * 0.5; // matches grain mass=1.0 above, same m_eff convention as critical_timestep's own doc
     let dt_crit = critical_timestep(m_eff, &cfg);
@@ -204,9 +186,8 @@ fn spinning_grain_through_real_grid_coupled_pipeline_makes_its_contact_partner_r
     let mut solver = Simulation::empty(config);
 
     // Side-by-side along x, a light real touch (overlap=0.001, radius 1.0
-    // each, centers 1.999 apart -- NOT the 0.1 overlap an earlier version of
-    // this test used, which produced a genuine, unrelated explosion, see
-    // this test's own module doc) -- contact normal is +x, so A's own spin
+    // each, centers 1.999 apart; an overlap of 0.1 explodes, see the
+    // standalone control's doc) -- contact normal is +x, so A's own spin
     // creates a real tangential slip velocity at the shared contact point
     // (see `resolve_contact_pair`'s own `v_t` derivation), the same geometry
     // Ai et al. 2011's own rolling-friction tests use.
@@ -252,25 +233,16 @@ fn spinning_grain_through_real_grid_coupled_pipeline_makes_its_contact_partner_r
     );
 }
 
-/// Real control for the test above: the exact same 2-grain setup through the
-/// STANDALONE `GrainPopulation::step()` path (zero grid, zero `Simulation`)
-/// instead of the grid-coupled pipeline. Kept permanently, not thrown away --
-/// this is what proved the grid-coupled path introduces no discrepancy:
-/// both paths converge to matching final states (spin/velocity agreeing to
-/// within numerical noise), real evidence the grid round-trip doesn't dilute
-/// or misroute contact reaction, rather than an assumption.
+/// Control for the test above: the same 2-grain setup through the standalone
+/// `GrainPopulation::step()` path (no grid, no `Simulation`). Both paths reach
+/// matching final states (spin/velocity agreeing within numerical noise), so
+/// the grid round-trip does not dilute or misroute contact reaction.
 ///
-/// Real methodology note from building this (2026-08-21): the FIRST version
-/// of both this test and the one above used an initial overlap of 0.1 (grain
-/// centers 1.9 apart, radius 1.0 each) and produced a genuine, dramatic
-/// explosion (B reaching v=(12.35, 6.35) from a standing start). That was
-/// NOT a pipeline bug -- an overlap of 0.1 against `normal_stiffness=1e4`
-/// is a real, severe initial-condition violation (normal_force = kn*overlap
-/// = 1000 from the very first substep), the exact same class of mistake
-/// found and fixed the same night in `sand_repose_angle_gui.rs`'s own pour
-/// tool (spawning material overlapping existing material). Corrected to a
-/// realistic overlap of 0.001 -- both paths then agree closely, with small
-/// magnitude changes proportional to the light touch, not runaway growth.
+/// The initial overlap is 0.001. An overlap of 0.1 (centers 1.9 apart, radius
+/// 1.0 each) against `normal_stiffness=1e4` is a severe initial-condition
+/// violation (normal_force = kn*overlap = 1000 from the first substep) and
+/// explodes (B reaching v=(12.35, 6.35) from a standing start), the same
+/// mistake as spawning material overlapping existing material.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_standalone_control_same_two_grain_setup_no_grid() {
@@ -301,38 +273,24 @@ fn diag_standalone_control_same_two_grain_setup_no_grid() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21, follow-up to the spin-contact test
-/// above after the user sharpened the observation to something closer to a
-/// Newton's-cradle scenario): the earlier test used a LIGHT, lightly-
-/// touching spinning contact -- a real but deliberately weak signal. This
-/// tests the genuinely different regime actually described: a grain FALLING
-/// under real gravity onto a resting neighbor, checking whether the
-/// neighbor it lands on reacts at all -- through the real gravity-on,
-/// grid-coupled, `FrictionBoundary`-floor pipeline the actual demo runs.
+/// A grain falling under gravity onto a resting neighbor: does the neighbor
+/// react? The spin-contact test above uses a light, deliberately weak touch;
+/// this is a linear-momentum impact, through the gravity-on, grid-coupled,
+/// `FrictionBoundary`-floor pipeline the demo runs.
 ///
-/// CONFIRMED (real result, not assumed): B reacts substantially --
-/// max_speed=0.5642 reached right at impact (~step 2000-4000, matching A's
-/// own fall arriving), decaying back toward rest afterward as the floor's
-/// own friction re-settles it. This is a real, large, unambiguous reaction,
-/// not noise -- a second independent confirmation (after the spin-contact
-/// test) that the pairwise contact mechanism transmits real momentum to a
-/// neighbor correctly, this time for a genuine linear-momentum impact
-/// rather than a rolling/friction torque. Two real, different regimes, both
-/// confirmed working. The live "doesn't react" observation is increasingly
-/// likely either a rendering/visual-legibility issue (a real but small
-/// motion not reading as "reacting" by eye) or the real dense-pile dilution
-/// effect already named in the spin-contact test's own doc (many
-/// simultaneous contacts on one grain making any single neighbor's
-/// contribution hard to attribute), not a broken mechanism -- neither of
-/// those can be fully ruled out from an isolated 2-grain test, though.
+/// B reacts substantially: max_speed=0.5642 right at impact (~step
+/// 2000-4000, as A's fall arrives), decaying back toward rest as the floor's
+/// friction re-settles it. With the spin-contact test, two regimes confirm
+/// that pairwise contact transmits momentum to a neighbor. A reaction that
+/// looks absent in the live demo is then more likely small motion that does
+/// not read by eye, or dilution among many simultaneous contacts in a dense
+/// pile; an isolated 2-grain test cannot rule either out.
 ///
-/// Setup: grain B rests on a real `FrictionBoundary` floor, completely at
-/// rest. Grain A starts ~8 units directly above B with zero initial
-/// velocity -- it free-falls under real gravity, gaining real speed before
-/// impact. B's own MAXIMUM speed reached over the whole run is tracked (not
-/// just its final state -- a real transient impact response can decay back
-/// toward rest by the end of the run via floor friction, so checking only
-/// the final value could hide a genuine reaction that DID happen).
+/// Setup: grain B rests on a `FrictionBoundary` floor, completely at rest.
+/// Grain A starts ~8 units directly above B with zero initial velocity and
+/// free-falls under gravity before impact. B's maximum speed over the whole
+/// run is tracked, not only its final state: a transient impact response can
+/// decay back toward rest by the end of the run through floor friction.
 #[test]
 fn falling_grain_impact_makes_a_resting_neighbor_react() {
     let cfg = contact_config();
@@ -381,15 +339,12 @@ fn falling_grain_impact_makes_a_resting_neighbor_react() {
     );
 }
 
-/// Real, direct end-to-end proof of the grain-vs-wall rolling-torque fix
-/// (2026-08-21): a single grain resting on a real sloped `HeightmapBoundary`
-/// -- friction high enough that pure SLIDING would never move it (the exact
-/// live-observed "frozen on the ramp" scenario this fix was built for) --
-/// must now genuinely roll down under real gravity, through the full
-/// grid-coupled `Simulation::step()` pipeline, not just the isolated
-/// `resolve_wall_contact` unit math. Before this fix, `grain.spin` had NO
-/// mechanism at all to change from ground contact -- this test would have
-/// failed (the grain frozen at its spawn position forever).
+/// A single grain resting on a sloped `HeightmapBoundary`, with friction high
+/// enough that sliding alone would never move it, must roll down under
+/// gravity through the full grid-coupled `Simulation::step()` pipeline, not
+/// just the isolated `resolve_wall_contact` math. Without the wall rolling
+/// torque, `grain.spin` has no way to change from ground contact and the
+/// grain stays frozen at its spawn position.
 #[test]
 fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
     let cfg = ContactLawConfig {
@@ -415,15 +370,14 @@ fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
             }
         })
         .collect();
-    // Real, load-bearing choice, not an oversight: grid-level friction=0.0.
+    // Load-bearing choice, not an oversight: grid-level friction=0.0.
     // The grid's own `apply_to_grid_velocity` is a hard per-substep velocity
     // CLAMP, not a bounded force -- it runs every substep BEFORE grains ever
     // gather, so any nonzero grid-level friction re-zeros the tangential
     // velocity signal the new `resolve_wall_contact` spring needs to react
     // to, before it ever gets a chance to build up real tension/torque from
-    // it (confirmed the hard way: an earlier version of this test used
-    // friction=0.6 here too and the grain stayed frozen, for exactly this
-    // reason). The grid now owns NORMAL (no-penetration) enforcement only;
+    // it (with friction=0.6 here the grain stays frozen). The grid owns
+    // NORMAL (no-penetration) enforcement only;
     // ALL real tangential/rolling physics for grains comes from the new
     // `resolve_wall_contact` mechanism, which has its own real Coulomb
     // friction cap (`config.friction`, still 0.5 via `contact_config()`) --
@@ -441,25 +395,16 @@ fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
     };
     let mut solver = Simulation::empty(config).with_boundary(Box::new(boundary));
 
-    // Real, small drop -- not a magically-glued exact-rest spawn (2026-08-21,
-    // real methodology finding): a grain placed at EXACT static equilibrium
-    // (zero velocity AND zero spin, this test's own original setup) is a
-    // genuine stick/slip threshold case for the real elastic-plastic
-    // rolling-resistance spring this contact law uses (Ai et al. 2011
-    // EPSD) -- a small enough disturbance stays inside the spring's own
-    // STATIC (sub-Coulomb-cap) regime and fully decays back to rest,
-    // exactly like real static friction/rolling resistance below their own
-    // threshold. Confirmed directly: frozen bit-for-bit at the SAME fixed
-    // point regardless of `rolling_friction`'s value, a position-only
-    // x-jitter, OR a tiny (1e-3) initial spin -- none of those are large
-    // enough disturbances to cross the threshold into the KINETIC regime.
-    // No real grain scene in this codebase is ever glued into exact static
-    // equilibrium like this -- every other one (including this same file's
-    // own `diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn`,
-    // and the live `grain_rolling_closeup_gui.rs` demo) drops a grain a
-    // real, small distance onto the surface first, a real disturbance
-    // large enough to cross that threshold. Matching that same, already-
-    // established real convention here instead of an artificial edge case.
+    // A small drop rather than an exact-rest spawn: a grain placed at exact
+    // static equilibrium (zero velocity and zero spin) is a stick/slip
+    // threshold case for the elastic-plastic rolling-resistance spring (Ai et
+    // al. 2011 EPSD). A small disturbance stays in the spring's static
+    // (sub-Coulomb-cap) regime and decays back to rest, like static friction
+    // below its threshold: the grain stays frozen at the same point whatever
+    // `rolling_friction`, with an x-jitter or a tiny (1e-3) initial spin. The
+    // other grain scenes (`diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn`,
+    // the `grain_rolling_closeup_gui.rs` demo) drop the grain a small distance
+    // onto the surface, a disturbance large enough to cross the threshold.
     let start_x = 8.0;
     let start_y = 8.0 - (start_x - 4.0) * (5.0 / 18.0) + 1.0 + 0.3;
     let grain = Grain::new(Vec2::new(start_x, start_y), 1.0, 1.0);
@@ -500,35 +445,23 @@ fn grain_on_a_real_slope_rolls_down_from_rest_through_the_real_pipeline() {
     );
 }
 
-/// Real, isolating diagnostic (2026-08-21), built directly in response to
-/// the user's own instruction to check against a real reference/paper
-/// rather than keep hand-deriving: the test above shows a grain rolling
-/// down the real 15.5-degree ramp then coming to a genuine, sustained stop
-/// partway (confirmed via `EMERGE_DEBUG_GRAIN_PIPE` trace: velocity decays
-/// smoothly to ~1e-9 and stays there for the rest of a 20,000-step run,
-/// not a sudden freeze). Two competing explanations: (a) this is the SAME
-/// real rolling-resistance physics already calibrated and proven for sand's
-/// natural angle of repose (`dem_rolling_resistance_real_repose_angle_
-/// success`, `rolling_friction` capped moment, Ai et al. 2011 EPSD model)
-/// now correctly showing up for grain-vs-WALL contact too via
-/// `resolve_wall_contact` -- i.e. this ramp's 15.5 degrees is genuinely
-/// shallow enough, under THIS config's `rolling_friction=0.1`, for rolling
-/// resistance to eventually arrest it, exactly like a real ball settling
-/// below its repose angle; or (b) this is a residual grid-coupling
-/// artifact (leftover kernel-blending drag, the same bug class chased for
-/// days before tonight's `clean_wall_normal_velocity` fix).
+/// The test above shows a grain rolling down the 15.5-degree ramp and then
+/// stopping partway (with `EMERGE_DEBUG_GRAIN_PIPE`: velocity decays smoothly
+/// to ~1e-9 and stays there for a 20,000-step run). Either (a) rolling
+/// resistance arrests it, the Ai et al. 2011 EPSD capped moment
+/// (`rolling_friction`) calibrated for sand's repose angle, now acting on
+/// grain-vs-wall contact through `resolve_wall_contact`, 15.5 degrees being
+/// shallow enough under this config's `rolling_friction=0.1`, like a ball
+/// settling below its repose angle; or (b) a grid-coupling artifact (leftover
+/// kernel-blending drag, the bug class `clean_wall_normal_velocity` addresses).
 ///
-/// This test isolates (a) from (b) directly: the EXACT same ramp, grain,
-/// and `contact_config()` as the real pipeline test above, but run through
-/// `GrainPopulation`'s own wall-contact methods DIRECTLY (`resolve_wall_
-/// contact_forces` + `clean_wall_normal_velocity`, gravity applied by hand)
-/// -- zero `Simulation`, zero MPM grid, zero P2G/G2P, same "standalone
-/// control" discipline as `diag_standalone_control_same_two_grain_setup_
-/// no_grid` above. If this ALSO settles to a stop near the same distance,
-/// (a) is confirmed (real physics, not a bug) and the grid-coupled test's
-/// own assertions are the ones that need updating, not the physics. If it
-/// keeps accelerating forever instead, (b) is confirmed and the grid-
-/// coupling investigation must continue.
+/// Separates the two: the same ramp, grain and `contact_config()`, run through
+/// `GrainPopulation`'s wall-contact methods directly (`resolve_wall_
+/// contact_forces` + `clean_wall_normal_velocity`, gravity applied by hand),
+/// with no `Simulation`, grid or P2G/G2P, as
+/// `diag_standalone_control_same_two_grain_setup_no_grid` does. If this also
+/// stops near the same distance, (a) holds and the grid-coupled test's
+/// assertions are what need updating; if it keeps accelerating, (b) holds.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_standalone_wall_rolling_resistance_ramp_no_grid() {
@@ -592,19 +525,15 @@ fn diag_standalone_wall_rolling_resistance_ramp_no_grid() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21) for the user's own live observation:
-/// "once they fall on the flat ground, they slide rather than keeping the
-/// rotation afterwards." A genuinely rolling grain (v = radius*spin, zero
-/// slip at the contact point) reaching flat ground needs ZERO friction force
-/// to keep rolling at constant speed -- rolling resistance alone should
-/// slowly damp it, not instantly desync v from spin. If it visibly "slides"
-/// instead, the rolling constraint (v ~= radius*spin) must be breaking
-/// exactly at the ramp-to-flat transition -- this test builds that EXACT
-/// geometry (ramp descending then a flat landing, a real C1-discontinuous
-/// kink at the joint, matching `grain_rolling_closeup_gui.rs::build_heights`
-/// exactly) and logs the real slip quantity `v.x - radius*spin` (zero means
-/// pure rolling, nonzero means sliding) tightly around the crossing, not
-/// just a final pass/fail.
+/// A grain rolling onto flat ground ("slides rather than keeping the rotation
+/// afterwards"?). A rolling grain (v = radius*spin, zero slip at the contact
+/// point) needs zero friction force to keep rolling at constant speed;
+/// rolling resistance alone should damp it slowly, not desync v from spin at
+/// once. If it slides, the rolling constraint (v ~= radius*spin) breaks at the
+/// ramp-to-flat transition. Builds that geometry (a descending ramp then a flat
+/// landing, a C1-discontinuous kink at the joint, as
+/// `grain_rolling_closeup_gui.rs::build_heights`) and logs the slip
+/// `v.x - radius*spin` (zero means pure rolling) tightly around the crossing.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
@@ -698,22 +627,16 @@ fn diag_grain_crossing_ramp_to_flat_kink_slip_trace() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21) for the user's own live observation
-/// of `grain_rolling_closeup_gui.rs` at its default 22-degree incline: two
-/// grains visibly stuck near the TOP of the ramp, never getting going, while
-/// two others reached the bottom. This is a DIFFERENT claim than the
-/// already-confirmed "rolls a real distance, then genuinely settles" case
-/// above (`diag_standalone_wall_rolling_resistance_ramp_no_grid`) -- this
-/// scene uses `grain_contact_config()`-equivalent values (`rolling_
-/// friction=0.2`, double the earlier test's `0.1`) at a STEEPER 22-degree
-/// incline, not 15.5. Simple static-onset theory (tan(theta) > rolling_
-/// friction => a resting grain should start rolling) says tan(22)=0.404 is
-/// comfortably above 0.2, so onset SHOULD occur -- if it doesn't in a real,
-/// fine-grained trace, that's a genuine, distinct numerical issue, not
-/// physics. Logs v/spin/net tangential FORCE every single early step (not
-/// sampled) from a grain at rest, isolating impact/drop dynamics entirely --
-/// exactly the user's own question, "the velocity/force is supposed to
-/// accumulate elsewhere, why doesn't it."
+/// Grains starting at rest on `grain_rolling_closeup_gui.rs`'s default
+/// 22-degree incline: some stay stuck near the top. Unlike
+/// `diag_standalone_wall_rolling_resistance_ramp_no_grid` (rolls a distance,
+/// then settles), this uses `grain_contact_config()`-equivalent values
+/// (`rolling_friction=0.2`, double that test's `0.1`) on a steeper 22-degree
+/// incline. Static-onset theory (tan(theta) > rolling_friction => a resting
+/// grain starts rolling) gives tan(22)=0.404, well above 0.2, so onset should
+/// occur; if it does not, the issue is numerical, not physics. Logs v, spin
+/// and net tangential force every early step from a grain at rest, without
+/// impact or drop dynamics: where does the force go if not into motion?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_at_rest_on_22deg_ramp_does_force_actually_accumulate() {
@@ -762,7 +685,7 @@ fn diag_grain_at_rest_on_22deg_ramp_does_force_actually_accumulate() {
     };
     let mut solver = Simulation::empty(config).with_boundary(Box::new(boundary));
 
-    // Real, at REST (not dropped) -- eliminates any impact-bounce confound,
+    // At REST (not dropped) -- eliminates any impact-bounce confound,
     // isolates purely "can gravity's own torque spin this up from a clean
     // static start."
     let start_x = RAMP_START_X as f32 + 1.5;
@@ -806,14 +729,11 @@ fn diag_grain_at_rest_on_22deg_ramp_does_force_actually_accumulate() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21) mirroring `grain_rolling_closeup_
-/// gui.rs::make_sim`'s EXACT spawn convention -- a grain dropped from 1.5
-/// units above the ramp surface, not starting already at rest touching it.
-/// Built after the user reported the live demo "didn't roll neither slide"
-/// after the slop-margin fix (a real, different claim than the earlier
-/// "slides forever" bug this fix targeted) -- the earlier at-rest diagnostic
-/// above never exercised the initial IMPACT, so it can't answer whether the
-/// now-real friction/normal force is over-gripping on landing.
+/// `grain_rolling_closeup_gui.rs::make_sim`'s spawn: a grain dropped from 1.5
+/// units above the ramp surface, not starting at rest on it. The at-rest
+/// diagnostic above never exercises the initial impact, so it cannot show
+/// whether the friction/normal force over-grips on landing (the grain
+/// neither rolling nor sliding).
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn() {
@@ -904,16 +824,13 @@ fn diag_grain_dropped_onto_22deg_ramp_matches_live_demo_spawn() {
     );
 }
 
-/// Real, direct proof of the user's own explicit goal (2026-08-21): "prove
-/// correlations between grains" -- when several grains rest touching each
-/// other and one gets pushed, the push must genuinely propagate to its
-/// neighbor (real force correlation), not stay isolated to the grain that
-/// was pushed. Mirrors the live demo's own click-to-nudge feature exactly
-/// (a real impulse applied to one grain), through the real grid-coupled
-/// `Simulation::step()` pipeline, on a flat floor (friction=0.0, same real
-/// reason as the ramp tests -- the grid's own per-cell correction is noisy
-/// for a grain's kernel-spread momentum; `clean_wall_normal_velocity` +
-/// `resolve_wall_contact` now own that job).
+/// Force correlation between grains: when several grains rest touching and
+/// one is pushed, the push must reach its neighbor, not stay with the pushed
+/// grain. A single impulse on one grain, like the demo's click-to-nudge,
+/// through the grid-coupled `Simulation::step()` pipeline, on a flat floor
+/// (friction=0.0, as in the ramp tests: the grid's per-cell correction is
+/// noisy for a grain's kernel-spread momentum; `clean_wall_normal_velocity` +
+/// `resolve_wall_contact` handle the wall).
 #[test]
 fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
     let cfg = contact_config();
@@ -933,14 +850,13 @@ fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
 
     // Three grains in a real row, exactly touching (distance = 2*radius,
     // zero initial overlap -- no repulsive kick at t=0 to confound the
-    // result). Real, honest methodology note from building this test: an
-    // earlier version let them "settle" for 3000 steps first and expected
-    // them to STILL be touching afterward -- they weren't (any tiny initial
+    // result). Letting them "settle" for 3000 steps first does not keep
+    // them touching (any tiny initial
     // overlap gives a one-time repulsive kick, and cohesionless grains have
     // no attractive force to ever pull them back together on flat ground,
     // confirmed directly: the two end grains drifted apart at a constant
-    // coasting velocity, contacts=0 within 200 steps). That's real, correct
-    // physics, not a bug -- so the honest test is whether a push propagates
+    // coasting velocity, contacts=0 within 200 steps). That's correct
+    // physics, not a bug -- so the test is whether a push propagates
     // WHILE grains are actually touching, immediately, not after an
     // arbitrary wait with no cohesion to keep them adjacent.
     let spacing = 2.0;
@@ -951,9 +867,9 @@ fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
 
     let neighbor_v0 = solver.grain_populations()[0].grains[1].v;
 
-    // Real nudge: grain 0 (the end of the row) gets a real push toward its
-    // neighbors, same magnitude/mechanism as the demo's own `nudge_at_cursor`,
-    // applied immediately while genuinely touching grain 1.
+    // Nudge: grain 0 (the end of the row) gets a push toward its neighbors,
+    // the same magnitude and mechanism as the demo's `nudge_at_cursor`,
+    // applied immediately while touching grain 1.
     {
         let population = &mut solver.grain_populations_mut()[0];
         population.grains[0].v += Vec2::new(3.0, 0.0);
@@ -984,13 +900,13 @@ fn nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor() {
     );
 }
 
-/// Real, direct proof of `Simulation::enrich_region_into_grain` -- the
+/// Direct proof of `Simulation::enrich_region_into_grain` -- the
 /// continuum-to-discrete "enrichment" half of the Hybrid Grains pipeline
 /// (Yue, Smith, Chen, Chantharayukhonthorn, Kamrin & Grinspun, ACM TOG
 /// 2018). Real conservation check, not a "doesn't crash" smoke test: the
 /// new grain's mass, momentum, and 2D area must exactly match the sum of
 /// what the consumed particles carried, and every consumed particle must
-/// genuinely be gone from the continuum population afterward (not just
+/// be gone from the continuum population afterward (not just
 /// zeroed out in place).
 #[test]
 fn enrich_region_into_grain_conserves_mass_momentum_and_area() {
@@ -1004,7 +920,7 @@ fn enrich_region_into_grain_conserves_mass_momentum_and_area() {
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(NeoHookeanMaterial::new(20.0, 40.0)));
     {
-        // Real, known, nonzero velocity field so the merge has real
+        // Known, nonzero velocity field so the merge has real
         // momentum to conserve, not just mass.
         let particles = solver.particles_mut();
         for i in 0..particles.len() {
@@ -1055,10 +971,8 @@ fn enrich_region_into_grain_conserves_mass_momentum_and_area() {
     );
 }
 
-/// Real predicate-filtering check: particles OUTSIDE `radius` or failing
-/// `predicate` must be left untouched -- same real discipline
-/// `grain_absorb_particles`'s own precedent already established for the
-/// reverse direction.
+/// Particles outside `radius` or failing `predicate` must be left untouched,
+/// as `grain_absorb_particles` checks for the reverse direction.
 #[test]
 fn enrich_region_into_grain_respects_radius_and_predicate() {
     let config = zero_gravity_config(64);
@@ -1109,16 +1023,13 @@ fn enrich_region_into_grain_respects_radius_and_predicate() {
     }
 }
 
-/// Real, direct regression test for the spatial-hash-staleness bug found
-/// and fixed in `remove_particles` (2026-08-19): TWO enrichment calls back
-/// to back, with NO `step()` in between (the exact condition that exposes
-/// it -- the spatial hash only auto-refreshes on `step()`). Before the
-/// fix, the second call's `particles_near` used indices cached from BEFORE
-/// the first call's removal/compaction -- either missing the second
-/// block entirely, grabbing the wrong particles, or panicking on an
-/// out-of-range index. Three well-separated blocks: enrich the first two
-/// in immediate succession, confirm the third (never touched) survives
-/// untouched and the first two are both genuinely gone.
+/// Two enrichment calls back to back with no `step()` in between: the spatial
+/// hash refreshes on `step()`, so `remove_particles` must mark it stale, or the
+/// second call's `particles_near` uses indices cached before the first call's
+/// removal/compaction (missing the second block, grabbing the wrong particles,
+/// or indexing out of range). Three well-separated blocks: enrich the first
+/// two in immediate succession; the third, never touched, must survive and the
+/// first two must both be gone.
 #[test]
 fn enrich_region_into_grain_twice_in_a_row_without_a_step_between() {
     let config = zero_gravity_config(96);
@@ -1185,37 +1096,15 @@ fn enrich_region_into_grain_twice_in_a_row_without_a_step_between() {
     );
 }
 
-/// Real, decisive isolation test (2026-08-19): `examples/
-/// sand_repose_angle_gui.rs`'s own Grains mode settles at ~0.58x the
-/// Lajeunesse target -- but the SAME exact contact-law parameters, run
-/// standalone (no grid at all, `GrainPopulation::step` directly,
-/// `tests/grains_repose_angle.rs::diag_live_demo_dt_convergence`),
-/// converge to ~3.0-3.2x instead. Two real, distinct hypotheses for that
-/// huge gap: (a) grid coupling itself adds real numerical dissipation
-/// (pure-PIC `gather_grid_to_grains`, no affine/APIC correction), or (b)
-/// the real sand TERRAIN material the live demo's grains rest on (not
-/// present in the standalone test, which uses an idealized giant pinned
-/// floor GRAIN) is what's providing the extra resistance. This test
-/// isolates (a) from (b) directly: the SAME real column, run through the
-/// REAL shared MPM grid (genuine `Simulation::step()`, not a standalone
-/// `GrainPopulation::step` loop), but landing on a plain rigid
-/// `FrictionBoundary` -- NO terrain material present at all. If this
-/// result lands near the standalone ~3x, grid-coupling itself is NOT the
-/// real culprit (points at the terrain material). If it lands near the
-/// live demo's ~0.58x, grid-coupling/PIC dissipation IS the real culprit
-/// (independent of any terrain), and building a real APIC gather is the
-/// right next step.
-/// TEMP DIAGNOSTIC (2026-08-20): a hand-rolled scatter/gravity/boundary/
-/// gather loop (`diag_isolated_sliding_grain_on_friction_boundary_should_
-/// decelerate` in `coupling.rs`'s own tests) proved `apply_coulomb_wall`
-/// itself gives a lone sliding grain real, continuous friction decay
-/// (2.0 -> 0.81 over 40,000 steps, matching the analytic `mu*g*T` prediction
-/// almost exactly). But the real 1.25M-step column test shows a lone grain
-/// coasting at a genuinely CONSTANT velocity for 500,000+ steps once it
-/// escapes the pile. Same physics, different harness: this test drives the
-/// SAME single-sliding-grain scenario through the REAL `Simulation::step()`
-/// pipeline (not a hand-rolled loop) to find out whether the full substep
-/// pipeline -- not the friction law itself -- is what breaks the decay.
+/// A lone grain sliding on a `FrictionBoundary` through the full
+/// `Simulation::step()` pipeline must decelerate. A hand-rolled
+/// scatter/gravity/boundary/gather loop
+/// (`diag_isolated_sliding_grain_on_friction_boundary_should_decelerate` in
+/// `coupling.rs`'s tests) shows `apply_coulomb_wall` decaying a sliding grain
+/// continuously (2.0 -> 0.81 over 40,000 steps, matching the analytic
+/// `mu*g*T` prediction), while a grain escaping a 1.25M-step column coasted at
+/// constant velocity for 500,000+ steps. This drives the same scenario through
+/// the solver, to catch the pipeline (not the friction law) breaking the decay.
 #[test]
 fn diag_single_sliding_grain_through_real_solver_step_should_decelerate() {
     const RADIUS: f32 = 1.0;
@@ -1284,6 +1173,17 @@ fn diag_single_sliding_grain_through_real_solver_step_should_decelerate() {
     );
 }
 
+/// Grid coupling against terrain: `examples/sand_repose_angle_gui.rs`'s Grains
+/// mode settles at ~0.58x the Lajeunesse target, while the same contact-law
+/// parameters run standalone (no grid, `GrainPopulation::step`,
+/// `tests/grains_repose_angle.rs::diag_live_demo_dt_convergence`) converge to
+/// ~3.0-3.2x. Either (a) grid coupling adds numerical dissipation (a pure-PIC
+/// `gather_grid_to_grains` without affine correction), or (b) the sand terrain
+/// the demo's grains rest on (absent from the standalone test, which uses a
+/// giant pinned floor grain) adds the resistance. This runs the same column
+/// through the shared MPM grid (`Simulation::step()`) onto a plain rigid
+/// `FrictionBoundary`, with no terrain material: near the standalone ~3x points
+/// at the terrain, near ~0.58x points at grid coupling itself.
 #[test]
 fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
     const RADIUS: f32 = 1.0;
@@ -1293,7 +1193,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
 
     // Same real, NOT-optional convention `grains_repose_angle.rs::build_column`
     // already established and documented (position jitter + radius
-    // polydispersity, `SpawnRegion::position_jitter`'s own doc + the Hybrid
+    // polydispersity, `SpawnRegion::position_jitter`'s doc + the Hybrid
     // Grains paper's own disclosed practice): a perfectly regular, unjittered
     // lattice has no physical asymmetry to ever collapse/topple sideways at
     // all, confirmed there the hard way (froze in its initial shape for
@@ -1302,7 +1202,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
     // it was built to isolate: confirmed directly via
     // `diag_does_grain_contact_ever_fire_through_the_shared_grid`, which
     // showed the unjittered column landing and freezing with
-    // `active_contacts` genuinely nonzero (sustained pile pressure) but
+    // `active_contacts` nonzero (sustained pile pressure) but
     // `max_spin` at EXACTLY 0.0 for 400,000+ steps -- a perfectly symmetric
     // stack has no tangential/rolling contact component to ever produce
     // torque from, so nothing this file's own APIC/ordering fixes touch
@@ -1320,7 +1220,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
         // the real predicted spread (~66 units radius) -- starting near
         // an edge, or using too small a domain, would let the boundary
         // itself artificially clip the collapse, corrupting the measured
-        // runout (a real, separate confound from anything about grid
+        // runout (a separate confound from anything about grid
         // coupling/PIC dissipation).
         const CENTER_X: f32 = 160.0;
         const DENSITY: f32 = MASS / (std::f32::consts::PI * RADIUS * RADIUS);
@@ -1332,17 +1232,14 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
                 let jx = (rng.next_f32() - 0.5) * 0.3 * spacing;
                 let jy = (rng.next_f32() - 0.5) * 0.3 * spacing;
                 let x = col as f32 * spacing - column_width * 0.5 + CENTER_X + jx;
-                // Real, found-not-guessed match to the STANDALONE reference's
+                // Found-not-guessed match to the STANDALONE reference's
                 // own convention (`grains_repose_angle.rs::run_collapse_sized`:
                 // "grains already stack starting at y=radius, i.e. resting
                 // exactly on y=0"): resting near the boundary, NOT dropped
-                // from height. An earlier version of this test started grains
-                // 40 units above the boundary ("well above" it) -- a real,
-                // found confound: that free-fall injects real extra kinetic
-                // energy at first impact that the reference's own 3.0-3.2x
-                // number never had, making the two ratios not comparable in
-                // the first place, independent of anything about grid
-                // coupling. `boundary_thickness=2` below is this scene's own
+                // from height: starting 40 units above the boundary adds
+                // free-fall kinetic energy at first impact that the
+                // reference's 3.0-3.2x number never had, so the two ratios
+                // would not be comparable, whatever the grid coupling does. `boundary_thickness=2` below is this scene's own
                 // real floor zone -- rest just above it, matching a resting
                 // start.
                 let y = row as f32 * spacing + RADIUS + 2.0 + jy;
@@ -1382,23 +1279,17 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
         dt,
         min_dt: dt * 0.1, // real, must be <= dt -- default (1e-3) is coarser than this scene's own real grain-safe dt
         gravity: Vec2::new(0.0, -0.3), // same real value the live demo uses
-        // Real, now-required (2026-08-20): a spinning grain's rotational
-        // scatter can put far more speed on the grid than its own v.length()
-        // -- see `choose_substep_dt`'s own new grain CFL fold. Was `false`
-        // ("no other material present -- no CFL bound to adapt to") before
-        // grains carried real rotational momentum onto the grid; that
-        // assumption is what let a real column-collapse explode once spin
-        // grew large, confirmed directly.
+        // Required: a spinning grain's rotational scatter can put far more
+        // speed on the grid than its own v.length() (see `choose_substep_dt`'s
+        // grain CFL fold). Without adaptive stepping, a column collapse
+        // explodes once spin grows large.
         adaptive_timestep: true,
         boundary_thickness: 2,
-        // Real APIC (2026-08-20): grains now use `SimConfig::apic_blend`
-        // (SAME knob ordinary particles already use, default 1.0, real
-        // full APIC) via `gather_grid_to_grains` -- no explicit override
-        // needed here, `..SimConfig::default()` already gives apic_blend=1.0.
-        // This is what actually fixed the frozen-lattice result (proven:
-        // grid-coupled now tracks the true standalone reference almost
-        // point-for-point instead of staying frozen -- see memory
-        // grain_grid_coupling_frozen_column_deep_investigation_2026-08-20).
+        // Grains use `SimConfig::apic_blend` (the knob ordinary particles use,
+        // default 1.0, full APIC) in `gather_grid_to_grains`;
+        // `..SimConfig::default()` already gives apic_blend=1.0. With APIC the
+        // grid-coupled column tracks the standalone reference almost point for
+        // point; under pure PIC it stays frozen.
         ..SimConfig::default()
     };
     let (grains, predicted_r_inf) = make_column(2.6 * RADIUS);
@@ -1437,10 +1328,10 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
         let max_y = ys.iter().cloned().fold(f32::MIN, f32::max);
         // Index + value of the single farthest-from-center grain, plus its
         // own speed/spin -- to see whether this is a whole-pile spread or
-        // one runaway outlier (the exact shape of a real, already-documented
+        // one runaway outlier (the exact shape of a already-documented
         // historical bug in this codebase: one ejected grain rolling/
         // tunneling along a floor's own curvature, see `FLOOR_RADIUS_M`'s
-        // own doc in `grains_repose_angle.rs`).
+        // doc in `grains_repose_angle.rs`).
         let (far_idx, _) = pop
             .grains
             .iter()
@@ -1461,23 +1352,18 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
             far.spin
         );
     }
-    // Real long-horizon-stability checkpoints, not just a final snapshot --
-    // the same discipline that caught the Cosserat false positive earlier
-    // this investigation (looked settled at step 200, was worse than
-    // baseline by step 1000+). If 5.2x is still climbing at the final
-    // checkpoint, it's not a trustworthy number yet.
+    // Long-horizon checkpoints, not just a final snapshot (Cosserat looked
+    // settled at step 200 and was worse than baseline by step 1000+). If 5.2x
+    // is still climbing at the final checkpoint, it is not trustworthy yet.
     let checkpoints: Vec<usize> = (1..=5).map(|k| steps * k / 5).collect();
     let mut next_ckpt = 0;
     let mut spike_reported = false;
     let mut prev_max_speed = 0.0f32;
-    // Real, fine-grained energy trace: total KE (translational + rotational)
-    // every 2500 steps (~250 samples over the full run) -- to see the actual
-    // GROWTH CURVE shape (exponential runaway vs slow linear drift vs a
-    // handful of discrete jump events), not just 5 sparse checkpoints. The
-    // 2026-08-20 finding that motivated this: no single-step spike ever
-    // exceeds 5x growth, yet the ratio still climbs ~10x between checkpoints
-    // 1 and 2 -- meaning whatever's happening is gradual, and a fine trace
-    // is the real next step to see its actual shape before guessing further.
+    // Fine-grained energy trace: total KE (translational + rotational)
+    // every 2500 steps (~250 samples over the full run), to see the growth
+    // curve's shape (exponential runaway, slow linear drift, or a few discrete
+    // jumps) rather than 5 sparse checkpoints: no single-step spike exceeds 5x
+    // growth, yet the ratio climbs ~10x between checkpoints 1 and 2.
     const KE_SAMPLE_EVERY: usize = 2500;
     let mut edge_violation_reported = false;
     for step in 0..steps {
@@ -1488,7 +1374,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
             .iter()
             .map(|g| g.v.length())
             .fold(0.0f32, f32::max);
-        // Real, direct check of the clamp hypothesis: does ANY grain's
+        // Direct check of the clamp hypothesis: does ANY grain's
         // position ever actually violate the boundary clamp's own safe
         // margin (min=1.0 for thickness=2, confirmed exactly via
         // `diag_isolated_spinning_grain_near_domain_edge_truncated_kernel`)?
@@ -1573,31 +1459,26 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
 
     let ratio = measure_ratio(&solver.grain_populations()[0], predicted_r_inf);
     println!(
-        // Real target corrected 2026-08-20: the 2,000,000-step-verified standalone
-        // reference for this EXACT R0=4/H0=10 geometry is ~1.047x
-        // (`diag_calibrated_rolling_friction_long_horizon_check`,
-        // grains_repose_angle.rs), NOT 3.0-3.2x -- that figure was from a
-        // different test using the live demo's own distinct config. See
-        // memory (grain_grid_coupling_frozen_column_deep_investigation) for
-        // the full correction and why it matters.
+        // The 2,000,000-step-verified standalone reference for this R0=4/H0=10
+        // geometry is ~1.047x (`diag_calibrated_rolling_friction_long_horizon_check`,
+        // grains_repose_angle.rs), not 3.0-3.2x, which comes from a different
+        // test using the live demo's config.
         "── GRID-COUPLED, NO TERRAIN: ratio={ratio:.4}x (standalone~1.05x, live-demo~0.58x, steps={steps}) ──"
     );
     assert!(ratio.is_finite() && ratio > 0.0, "diverged or never moved");
 }
 
-/// Real, direct test of the leading hypothesis found 2026-08-20:
-/// `FrictionBoundary`'s own `apply_coulomb_wall` (`src/forces/boundary/mod.rs`)
-/// unconditionally ZEROES the entire into-wall velocity component every
-/// single substep a grain is in its zone -- a perfectly inelastic, instant,
-/// rigid catch. The standalone reference's own floor (`grains_repose_angle.rs`,
-/// a giant `radius=50.0, mass=1e9` grain, re-pinned every step) is instead a
-/// real, SOFT, compliant DEM spring-damper contact -- the SAME `contact_law`
-/// physics that governs every grain-grain contact, allowing genuine elastic
-/// rebound/rearrangement. This test is IDENTICAL to the decisive isolation
-/// test above (same column, same jitter, same `ContactLawConfig`, same dt)
-/// except the floor: a real compliant floor grain, positioned so its top
-/// surface sits well above `FrictionBoundary`'s own thickness=2 zone (so
-/// that mechanism stays present as a backstop but never actually engages).
+/// Floor compliance: `FrictionBoundary`'s `apply_coulomb_wall`
+/// (`src/forces/boundary/mod.rs`) zeroes the whole into-wall velocity component
+/// every substep a grain is in its zone, a perfectly inelastic, instant, rigid
+/// catch. The standalone reference's floor (`grains_repose_angle.rs`, a giant
+/// `radius=50.0, mass=1e9` grain re-pinned every step) is a soft, compliant DEM
+/// spring-damper contact, the `contact_law` physics of every grain-grain
+/// contact, which allows elastic rebound and rearrangement. Identical to the
+/// isolation test above (same column, jitter, `ContactLawConfig` and dt)
+/// except the floor: a compliant floor grain whose top sits well above
+/// `FrictionBoundary`'s thickness=2 zone (so that stays as a backstop but
+/// never engages).
 #[test]
 #[ignore = "probe for #28: prints the collapse spread against a compliant floor, no pass criterion"]
 fn grain_column_with_compliant_dem_floor_instead_of_rigid_boundary() {
@@ -1722,18 +1603,15 @@ fn grain_column_with_compliant_dem_floor_instead_of_rigid_boundary() {
     }
 }
 
-/// Real, TRUE standalone-from-t=0 control -- the missing test. Every
-/// standalone-vs-grid-coupled comparison built so far (the SPREAD COMPARISON
-/// in the replay test below, this test's own compliant-floor variant above)
-/// replayed an ALREADY-settled captured state through both paths, which only
-/// proves neither path escapes a jam once it exists -- it never actually
-/// answers whether the grid path REACHES that jam earlier/harder than
-/// standalone would from the SAME t=0 start. This test runs the EXACT SAME
-/// `make_column`-generated initial state (same seed, same geometry, same
-/// `RADIUS=1.0` grid-units convention this whole file uses -- NOT
-/// `grains_repose_angle.rs`'s own real-SI-meters convention, so this is a
-/// genuinely apples-to-apples comparison for the first time) through PURE
-/// `GrainPopulation::step` -- no `Simulation`, no grid, no boundary at all.
+/// Standalone-from-t=0 control. The other standalone vs grid-coupled
+/// comparisons (the spread comparison in the replay test below, the
+/// compliant-floor variant above) replay an already-settled captured state,
+/// which only shows neither path escapes a jam once it exists, not whether
+/// the grid path reaches it earlier or harder from the same start. This runs
+/// the same `make_column` initial state (same seed and geometry, the
+/// `RADIUS=1.0` grid-units convention of this file rather than
+/// `grains_repose_angle.rs`'s SI meters, so the comparison is like for like)
+/// through `GrainPopulation::step` alone: no `Simulation`, grid or boundary.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_true_standalone_from_t0_same_column_no_grid() {
@@ -1829,14 +1707,12 @@ fn diag_true_standalone_from_t0_same_column_no_grid() {
     }
 }
 
-/// Real, minimal, DETERMINISTIC reproduction: the exact 80-grain state
-/// captured (2026-08-20) from the decisive test above at step=163000,
-/// right before its own real launch event (step~163500-165000). Every
-/// synthetic reproduction tried before this (2-20 grains, dense packing,
-/// real drop/impact, exact real config) failed to trigger the growth --
-/// this replays the ACTUAL failing state directly, same config, same
-/// solver, so the mechanism can be dissected (remove grains, zero spins,
-/// etc.) without needing 163,000 steps of setup each time.
+/// Deterministic reproduction: the 80-grain state captured from the test above
+/// at step=163000, just before its launch event (step~163500-165000).
+/// Synthetic setups (2-20 grains, dense packing, drop/impact, the exact config)
+/// do not trigger the growth; replaying the failing state lets the mechanism
+/// be dissected (remove grains, zero spins, etc.) without 163,000 steps of
+/// setup each time.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_replay_captured_pre_launch_state() {
@@ -2688,7 +2564,7 @@ fn diag_replay_captured_pre_launch_state() {
         c: Mat2::ZERO,
     });
 
-    // Real, direct test of the open question this whole investigation ended
+    // Direct test of the open question this whole investigation ended
     // on: does the grid-coupling path itself add extra effective stability
     // beyond what `contact_law` alone provides? Same exact captured state,
     // same config, one copy through each path.
@@ -2752,27 +2628,18 @@ fn diag_replay_captured_pre_launch_state() {
     );
 }
 
-/// Real, direct diagnostic (2026-08-21) for the user's own live observation
-/// on `grain_newtons_cradle_gui.rs`: "normally only the end balls move, why
-/// does the rest?" A first pass (checking grain speeds tens/hundreds of
-/// thousands of steps after release) found something real but different:
-/// ALL 5 grains converge to nearly IDENTICAL speed at every late-time
-/// checkpoint, regardless of damping ratio (0.6 vs a cited e=0.95 value) or
-/// contact stiffness (1x vs 10x) -- neither knob fixed it. The real
-/// explanation: every grain hangs from an anchor at the SAME height on the
-/// SAME string length, so every grain has the EXACT SAME pendulum period.
-/// Five equal-period pendulums that stay in ongoing mutual contact are a
-/// textbook COUPLED-OSCILLATOR system -- they synchronize into shared
-/// motion given enough time, REGARDLESS of how elastic or stiff the
-/// coupling is (Huygens 1665's own famous coupled-clock observation is the
-/// same real phenomenon). That's real, correct physics for this exact
-/// geometry over many swing cycles -- not a bug -- but it means checking
-/// speeds long after release was measuring the wrong regime. The actual
-/// "cradle effect" (only the end ball moves) is a SHORT-TERM transient,
-/// right after the very FIRST collision, before repeated re-contact has
-/// had time to entrain the chain. This test isolates exactly that window:
-/// traces fine-grained speeds starting the moment grain 0 first touches
-/// grain 1, for a few thousand steps afterward.
+/// Newton's cradle (`grain_newtons_cradle_gui.rs`): "normally only the end balls
+/// move". Long after release all 5 grains converge to nearly identical speed,
+/// whatever the damping ratio (0.6 vs a cited e=0.95) or contact stiffness (1x
+/// vs 10x). Every grain hangs from an anchor at the same height on the same
+/// string length, so all have the same pendulum period, and equal-period
+/// pendulums in ongoing mutual contact are coupled oscillators that
+/// synchronize over time however elastic or stiff the coupling (Huygens
+/// 1665's coupled clocks). Correct physics over many swings, so late-time
+/// speeds measure the wrong regime: the cradle effect (only the end ball
+/// moves) is a short transient right after the first collision. This traces
+/// fine-grained speeds from the moment grain 0 first touches grain 1, for a
+/// few thousand steps.
 #[test]
 fn diag_newtons_cradle_first_collision_immediate_aftermath() {
     const N_GRAINS: usize = 5;
@@ -2885,14 +2752,13 @@ fn diag_newtons_cradle_first_collision_immediate_aftermath() {
     );
 }
 
-/// Real, falsifiable counterpart to the diagnostic above, now using the
-/// Hertzian (nonlinear) contact model `grain_newtons_cradle_gui.rs` itself
-/// switched to (2026-08-21) -- see `HertzianContactConfig`'s own doc for
-/// the full citation chain (Johnson 1985, Nesterenko 2001, Tsuji, Tanaka &
-/// Ishida 1992, cross-checked against `tmp/GeoTaichi/src/physics_model/
-/// contact_model/HertzMindlinModel.py`). Same exact geometry/string
-/// constraint as the linear diagnostic above, same 40-degree pull, same
-/// post-first-contact sampling window -- the real, direct A/B comparison.
+/// Falsifiable counterpart to the diagnostic above with the Hertzian
+/// (nonlinear) contact model `grain_newtons_cradle_gui.rs` uses -- see
+/// `HertzianContactConfig`'s doc for the citations (Johnson 1985, Nesterenko
+/// 2001, Tsuji, Tanaka & Ishida 1992, cross-checked against `tmp/GeoTaichi/src/
+/// physics_model/contact_model/HertzMindlinModel.py`). Same geometry and string
+/// constraint, same 40-degree pull, same post-first-contact window: a direct
+/// A/B comparison.
 #[test]
 fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
     const N_GRAINS: usize = 5;
@@ -2952,11 +2818,11 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
 
     let mut first_contact_step: Option<u32> = None;
     let mut max_overlap_seen = 0.0f32;
-    // Real, direct trace of the actual wave -- printing INSTANTANEOUS speed
+    // Direct trace of the actual wave -- printing INSTANTANEOUS speed
     // (not a running peak) revealed the real mechanism: a genuine
     // traveling pulse, each grain's own peak arriving measurably LATER
     // than its predecessor's (grain1 peaks ~+100 steps, grain2 ~+200,
-    // grain3 ~+300, grain4 ~+450 -- a real, textbook wavefront, not
+    // grain3 ~+300, grain4 ~+450 -- a textbook wavefront, not
     // simultaneous). A naive "peak anywhere in the window" comparison is
     // the wrong statistic: it conflates grain1's brief, LOCAL elastic
     // ring (0.535 at +100, already decaying to ~0.19 by +3500) with
@@ -3021,9 +2887,9 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
         0.1 * RADIUS
     );
 
-    // Real, honest, falsifiable check: once the initial elastic ringing
+    // Honest, falsifiable check: once the initial elastic ringing
     // has died down, the END grain should be the clear, sustained
-    // beneficiary -- genuinely faster than every grain still touching the
+    // beneficiary -- faster than every grain still touching the
     // row (1, 2, 3), not just faster than the struck grain (which is
     // trivially true, it dumped its momentum).
     let end_grain = late_window_speed[4];
@@ -3037,19 +2903,14 @@ fn diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low() {
     }
 }
 
-/// TEMP DIAGNOSTIC (2026-08-21): real, direct sweep of effective stiffness
-/// to measure whether pushing toward real steel's own rigidity actually
-/// closes the "middle grains still carry real, non-negligible sustained
-/// speed" gap -- the user's own live observation, confirmed real in
-/// `diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low`
-/// (middle grain 1 sustains ~40% of the end grain's own speed). Real
-/// physics reasoning being tested here: real steel's contact pulse crosses
-/// each ball in microseconds, far faster than any bulk pendulum motion can
-/// develop -- if that's the actual mechanism, pushing stiffness toward the
-/// real regime (not the stylized ~1e4 used so far) should shrink the
-/// middle/end sustained-speed ratio, not just shift the SAME ratio to a
-/// different absolute speed. Not a guess: measured directly, same
-/// late-window methodology as the test above.
+/// Temporary diagnostic: sweeps effective stiffness toward steel's to see
+/// whether that shrinks the middle grains' sustained speed
+/// (`diag_newtons_cradle_hertzian_first_collision_middle_grains_stay_low`: middle
+/// grain 1 keeps ~40% of the end grain's speed). A steel contact pulse crosses
+/// each ball in microseconds, far faster than bulk pendulum motion; if that is
+/// the mechanism, stiffness toward the real regime (rather than the stylized
+/// ~1e4) should shrink the middle/end ratio, not just rescale it. Same
+/// late-window method as the test above.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_stiffness_sweep_toward_rigid_limit() {
@@ -3160,16 +3021,13 @@ fn diag_newtons_cradle_stiffness_sweep_toward_rigid_limit() {
     }
 }
 
-/// TEMP DIAGNOSTIC (2026-08-21): isolates whether the STRING constraint
-/// (a real, but external, non-physical per-substep position/velocity
-/// override) is itself contributing to the middle grains' real, sustained
-/// speed -- or whether that's inherent to the contact law's own chain
-/// propagation, independent of the pendulum setup entirely. Five FREE
-/// grains (no string, no gravity, no boundary), touching in a row, grain 0
-/// given a real initial velocity -- the same real momentum-transfer
-/// mechanism `nudging_one_grain_in_a_touching_row_measurably_moves_its_
-/// neighbor` already proved works, but now measuring the SAME late-window
-/// middle/end ratio the cradle tests use, with zero string involvement.
+/// Temporary diagnostic: is the string constraint (an external per-substep
+/// position/velocity override) contributing to the middle grains' sustained
+/// speed, or is it the contact law's own chain propagation? Five free grains
+/// (no string, gravity or boundary) touching in a row, grain 0 given an
+/// initial velocity (the momentum transfer of
+/// `nudging_one_grain_in_a_touching_row_measurably_moves_its_neighbor`),
+/// measuring the cradle tests' late-window middle/end ratio.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_free_chain_no_string_middle_end_ratio() {
@@ -3186,14 +3044,11 @@ fn diag_free_chain_no_string_middle_end_ratio() {
     };
     let rolling_damping_ratio = damping_ratio_from_restitution(0.95);
 
-    // Real, direct test of the "simultaneous contact overlap" hypothesis
-    // (2026-08-21): if grain1-grain2's own contact genuinely overlaps in
-    // TIME with grain0-grain1's (because they start touching with ZERO
-    // gap, same as a real cradle at rest), a REAL initial GAP should force
-    // strictly SEQUENTIAL collisions instead (grain1 must fully cross the
-    // gap and finish absorbing grain0's push before it can even reach
-    // grain2) -- if that cleans up the ratio, the diagnosis is confirmed;
-    // if it doesn't, it's wrong and the real cause is elsewhere.
+    // "Simultaneous contact overlap" hypothesis: if grain1-grain2's contact
+    // overlaps in time with grain0-grain1's (they start touching with zero
+    // gap, as a cradle at rest), an initial gap forces sequential collisions
+    // (grain1 must cross the gap and finish absorbing grain0's push before it
+    // reaches grain2). If that cleans up the ratio, the diagnosis holds.
     let run = |gap_fraction: f32| -> [f32; N_GRAINS] {
         let cfg = HertzianContactConfig {
             effective_young_modulus: 1.0e4,
@@ -3251,17 +3106,13 @@ fn diag_free_chain_no_string_middle_end_ratio() {
     }
 }
 
-/// TEMP DIAGNOSTIC (2026-08-21): the most fundamental possible check --
-/// does a SINGLE, ISOLATED, head-on 2-grain Hertzian collision conserve
-/// momentum the way real 1D elastic-collision-with-restitution theory
-/// predicts at all? For equal masses m, coefficient of restitution e,
-/// grain0 moving at v0 into a resting grain1: real formula (real,
-/// standard, textbook 1D restitution collision) gives
+/// Temporary diagnostic: does a single, isolated, head-on 2-grain Hertzian
+/// collision match 1D restitution theory? For equal masses m, coefficient of
+/// restitution e, grain0 moving at v0 into a resting grain1:
 /// `v0' = (1-e)/2 * v0`, `v1' = (1+e)/2 * v0`. For v0=1.4, e=0.95:
-/// v0'~=0.035, v1'~=1.365 -- grain0 should end up NEAR ZERO. If this
-/// single-pair benchmark itself already leaks real velocity into grain0,
-/// the problem is in `resolve_contact_pair_hertzian` itself, not the
-/// chain/gap/string question at all.
+/// v0'~=0.035, v1'~=1.365, so grain0 should end near zero. If this single pair
+/// already leaks velocity into grain0, the problem is in
+/// `resolve_contact_pair_hertzian`, not the chain, gap or string.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_single_pair_hertzian_collision_matches_real_restitution_formula() {
@@ -3335,16 +3186,11 @@ fn diag_single_pair_hertzian_collision_matches_real_restitution_formula() {
     );
 }
 
-/// TEMP DIAGNOSTIC (2026-08-21): real, long-horizon trace of the EXACT
-/// `grain_newtons_cradle_gui.rs` scene (same anchors, same pull angle, same
-/// real `hertzian_config()`) run headless -- direct answer to the user's
-/// own live observation (grain4 spiking to 0.849, grain3 to 0.234 at some
-/// later point) via real printed numbers over MANY swing cycles, not a
-/// single screenshot. Real question being answered: are these spikes a
-/// genuine, periodic, EXPECTED "the far ball swings back and re-strikes
-/// the row, sending a new wave back" cycle (real cradle behavior -- a real
-/// cradle keeps clacking back and forth, it doesn't stop after one hit),
-/// or something growing/wrong.
+/// Temporary diagnostic: a long-horizon headless trace of the
+/// `grain_newtons_cradle_gui.rs` scene (same anchors, pull angle and
+/// `hertzian_config()`). Are late speed spikes (grain4 at 0.849, grain3 at 0.234)
+/// the expected cycle of the far ball swinging back and re-striking the row
+/// (a cradle keeps clacking back and forth), or something growing?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_live_demo_long_horizon_speed_trace() {
@@ -3429,17 +3275,13 @@ fn diag_live_demo_long_horizon_speed_trace() {
     println!("max_speed_ever_reached={max_speed_ever:?}");
 }
 
-/// Real, direct test of the MULTI-BALL cradle case (2026-08-21), never
-/// verified before tonight -- the user's own real-physics check (see this
-/// session's own web search: real conservation of momentum AND energy
-/// together forces exactly N balls out when N are released together,
-/// since sending fewer-but-faster balls would carry more kinetic energy
-/// for the same momentum). Grains 0 AND 1 pulled back TOGETHER (same pull
-/// angle, staying in mutual contact throughout -- a real "lift two balls
-/// together" setup, not two independent releases) and released as a real
-/// pair. If the physics is right, grains 3 AND 4 should end up as the
-/// real, clear beneficiaries (roughly matched speed to each other,
-/// clearly above grain 2), not just grain 4 alone.
+/// Multi-ball cradle: conservation of momentum and energy together force
+/// exactly N balls out when N are released together (fewer, faster balls
+/// would carry more kinetic energy for the same momentum). Grains 0 and 1 are
+/// pulled back together (same pull angle, staying in contact, like lifting two
+/// balls together) and released as a pair. Grains 3 and 4 should end up the
+/// clear beneficiaries (roughly matched speeds, clearly above grain 2), not
+/// grain 4 alone.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
@@ -3454,12 +3296,10 @@ fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
 
     let anchor = |i: usize| Vec2::new(ANCHOR_START_X + i as f32 * (2.0 * RADIUS), ANCHOR_Y);
     let rest_position = |i: usize| anchor(i) + Vec2::new(0.0, -STRING_LENGTH);
-    // Real "lift two balls together" position: grain i's own string is
-    // rotated by the SAME pull angle about ITS OWN anchor -- since both
-    // anchors are the same string length apart (2*radius, matching their
-    // resting spacing) and rotate by the identical angle, they stay in
-    // real mutual contact throughout the pull, exactly like an operator
-    // lifting two touching balls together in a real cradle.
+    // "Lift two balls together": grain i's string rotates by the same pull
+    // angle about its own anchor. Both anchors are 2*radius apart (the resting
+    // spacing) and rotate by the same angle, so the two grains stay in contact
+    // throughout the pull.
     let pulled_position = |i: usize, pull_deg: f32| {
         let theta = pull_deg.to_radians();
         anchor(i) + STRING_LENGTH * Vec2::new(-theta.sin(), -theta.cos())
@@ -3473,19 +3313,15 @@ fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
     let rolling_stiffness = 5.0e2;
     let rolling_damping_ratio = damping_ratio_from_restitution(0.95);
 
-    // Real, direct test of the compounded-simultaneity hypothesis
-    // (2026-08-21): the 2-ball release has grain0-grain1 ALREADY touching
-    // (zero relative velocity) when grain1 hits grain2 -- their own
-    // handoff and the grain1-grain2 handoff must happen almost exactly
-    // simultaneously (grain0-grain1 have no closing velocity to drive
-    // their own transfer UNTIL grain1 decelerates from hitting grain2),
-    // a genuinely more compounded instance of the same finite-stiffness
-    // simultaneous-contact-overlap issue the single-ball case showed
-    // (there, 1000x stiffness only took the ratio from 0.42 to 0.37). If
-    // that diagnosis is right, pushing stiffness further here should show
-    // real, measurable improvement (grain3/grain4 converging, grain2
-    // dropping toward zero) -- if it doesn't move at all, the cause is
-    // something else entirely and stiffness isn't the lever.
+    // Compounded-simultaneity hypothesis: in the 2-ball release grain0-grain1
+    // are already touching (zero relative velocity) when grain1 hits grain2, so
+    // their handoff and the grain1-grain2 handoff happen almost simultaneously
+    // (grain0-grain1 have no closing velocity until grain1 decelerates on
+    // grain2), a compounded case of the finite-stiffness contact overlap seen
+    // with one ball (there, 1000x stiffness only moved the ratio from 0.42 to
+    // 0.37). If so, more stiffness should help here (grain3/grain4 converging,
+    // grain2 dropping toward zero); if nothing moves, stiffness is not the
+    // lever.
     let run = |stiffness_scale: f32| -> [f32; N_GRAINS] {
         let cfg = HertzianContactConfig {
             effective_young_modulus: 1.0e4 * stiffness_scale,
@@ -3574,23 +3410,13 @@ fn diag_newtons_cradle_two_ball_release_real_conservation_check() {
     }
 }
 
-/// Real, direct sweep of `contact_iterations` (2026-08-21, re-measured
-/// 2026-09-09) -- proposed as the fix for the confirmed multi-body-chain bug
-/// above (see that test's own doc: stiffness alone, 1x-1000x, never
-/// converged). Same real two-ball-release scene, but stiffness is held
-/// FIXED at 1x (already shown to give the wrong physics at K=1) and
-/// `GrainPopulation::with_contact_iterations` is swept instead.
+/// Sweeps `GrainPopulation::with_contact_iterations` on the two-ball release,
+/// with stiffness fixed at 1x (stiffness alone, 1x-1000x, does not converge).
 ///
-/// **Re-measured 2026-09-09, real result: this does NOT fix it either.**
-/// grain3/grain4 ratio is flat at 0.6515-0.6517 across K=1..32 -- no
-/// convergence trend at all, unlike what this doc originally hypothesized
-/// (written before the sweep was ever run, a real "verify via logs" lapse
-/// this project's own standing rule exists to catch). Jacobi-per-sweep
-/// relaxation genuinely helps a chain converge WITHIN one substep's own
-/// linearization, but doesn't touch whatever is actually causing grain2's
-/// nonzero sustained speed here -- root cause still open, see
-/// `GrainPopulation::resolve_contact_forces`'s own doc for the real
-/// technique this measured and ruled out as the fix.
+/// Result: no fix. The grain3/grain4 ratio is flat at 0.6515-0.6517 across
+/// K=1..32. Jacobi-per-sweep relaxation helps a chain converge within one
+/// substep's linearization but does not touch what keeps grain2 moving here
+/// (see `GrainPopulation::resolve_contact_forces`'s doc).
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_newtons_cradle_two_ball_release_contact_iterations_sweep() {
@@ -3708,20 +3534,14 @@ fn diag_newtons_cradle_two_ball_release_contact_iterations_sweep() {
     }
 }
 
-/// Real, isolated re-test (2026-08-21) of the confirmed multi-body-chain
-/// bug, stripped of every harness confound (no MPM grid, no string
-/// constraint, no gravity) -- same technique that found the original
-/// Tsuji-damping bug (`diag_single_pair_hertzian_collision_matches_real_
-/// restitution_formula`). Grains 0+1 start ALREADY touching, moving
-/// together at a matched velocity toward a resting row 2-3-4 (radius 1,
-/// touching spacing) -- the exact real scenario the grid/string-based test
-/// measured as broken (grain2 not near-rest, grain3/grain4 not matched),
-/// but here using `GrainPopulation::step` directly (pure contact-law +
-/// semi-implicit Euler, no other machinery). If this ALSO reproduces the
-/// failure, the bug is confirmed to live in the core contact-resolution
-/// code itself, not the grid/string/gravity harness -- if it does NOT
-/// reproduce, the harness itself is implicated instead, a very different
-/// and important finding either way.
+/// The multi-body-chain failure without harness confounds (no MPM grid, string
+/// or gravity), like `diag_single_pair_hertzian_collision_matches_real_restitution_formula`.
+/// Grains 0+1 start touching, moving together at a matched velocity toward a
+/// resting row 2-3-4 (radius 1, touching spacing), through
+/// `GrainPopulation::step` directly (contact law + semi-implicit Euler only).
+/// If this reproduces the failure (grain2 not near rest, grain3/grain4 not
+/// matched), the cause is in the core contact resolution; if not, the harness
+/// is implicated.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_isolated_two_ball_release_no_grid_no_string() {
@@ -3795,42 +3615,27 @@ fn diag_isolated_two_ball_release_no_grid_no_string() {
     );
 }
 
-/// Real, permanent regression test for the multi-body-chain bug's actual
-/// root cause and fix (2026-08-21): the previous test above
-/// (`diag_isolated_two_ball_release_no_grid_no_string`) confirmed the bug
-/// reproduces with ZERO grid/string/gravity confounds -- pure contact-law
-/// behavior. Two dead-end hypotheses were tested and ruled out with real
-/// data before finding this: `contact_iterations` (Gauss-Seidel/Jacobi
-/// sweep count, 1-32, zero effect) and contact stiffness (1x-100,000x on
-/// Hertzian, 1x-1,000,000x on the independently-validated linear model,
-/// both flat/non-convergent, ruling out a Hertzian-specific bug too).
+/// Multi-body chain: with zero grid/string/gravity confounds
+/// (`diag_isolated_two_ball_release_no_grid_no_string`) the failure is pure
+/// contact-law behavior. Neither `contact_iterations` (1-32) nor contact
+/// stiffness (1x-100,000x Hertzian, 1x-1,000,000x on the linear model) changes
+/// it.
 ///
-/// Root cause, confirmed via a real analytical cross-check (hand-derived
-/// sequential 1D equal-mass restitution collisions, `v1'=(u1+u2-e(u1-u2))/2`,
-/// `v2'=(u1+u2+e(u1-u2))/2`, iterated event-by-event to convergence): grains
-/// touching at an EXACTLY zero gap make their own contact spring engage
-/// SIMULTANEOUSLY with the next collision, rather than SEQUENTIALLY as real
-/// physics (and any real touching pair, never at a mathematically exact
-/// zero gap) actually requires. Momentum was confirmed exactly conserved
-/// throughout even in the BROKEN case -- this was never a lost/double-
-/// counted-force bug, purely a momentum-DISTRIBUTION one caused by
-/// compound contact events overlapping in time instead of sequencing.
+/// Cause, from a hand-derived analytical cross-check (sequential 1D
+/// equal-mass restitution collisions, `v1'=(u1+u2-e(u1-u2))/2`,
+/// `v2'=(u1+u2+e(u1-u2))/2`, iterated event by event): grains touching at an
+/// exactly zero gap engage their contact springs simultaneously with the next
+/// collision instead of sequentially, as physics (and any real touching pair,
+/// never at an exactly zero gap) requires. Momentum stays exactly conserved:
+/// it is a momentum distribution error from overlapping contact events, not
+/// a lost or double-counted force.
 ///
-/// Critically, this is NOT just about the released pair: a first version of
-/// this fix (gap only between the two released grains) fixed the FIRST
-/// strike alone (ratio 0.65 -> 0.99) but a SECOND, simulated return strike
-/// (the launched balls swinging back and re-striking, standing in for the
-/// real string's return) still smeared -- because the REST of the row
-/// (grain1-2, 2-3, 3-4) still started at exactly zero gap too, the same
-/// root cause, just uncorrected there. Confirmed live 2026-08-21: "first
-/// strike looked ~right, but once the ball came back and re-struck,
-/// everything started blurring together."
-///
-/// Real, physically-honest fix (not a hack): give EVERY adjacent pair in
-/// the row a small but real gap (5% of radius) instead of exact contact --
-/// this is MORE physically honest than assuming a mathematically perfect
-/// zero gap everywhere, and lets every compound contact event sequence
-/// correctly, first strike AND every re-strike after it.
+/// Every adjacent pair in the row gets a small gap (5% of radius), not only
+/// the released pair: a gap between the two released grains alone fixes the
+/// first strike (ratio 0.65 -> 0.99) but a second strike (the launched balls
+/// swinging back) still smears, because grains 1-2, 2-3 and 3-4 start at zero
+/// gap too. With every gap, every compound contact event sequences
+/// correctly, first strike and re-strikes.
 #[test]
 fn newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes() {
     const N_GRAINS: usize = 5;
@@ -3874,7 +3679,7 @@ fn newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes() {
         .collect();
     let mut pop = GrainPopulation::new_hertzian(grains, cfg);
 
-    // Real, robust termination: require a genuine QUIET period (all pairs
+    // Robust termination: require a genuine QUIET period (all pairs
     // separated for many consecutive steps), not just "separated this
     // instant" -- with staggered real gaps, sub-events can finish and
     // briefly leave every gap positive again BEFORE the next sub-event
@@ -3921,13 +3726,11 @@ fn newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes() {
         v1[2]
     );
 
-    // Real second strike: reverse every grain's velocity (a real, standard
-    // elastic-return stand-in -- exact energy/momentum-symmetric, matching
-    // the "same speed, opposite direction" a real pendulum returns with at
-    // the same release height in the lossless limit) and let the row
-    // collide again from the other side. THE falsifiable question this
-    // test exists for: does the fix hold up on a re-strike, not just the
-    // first one.
+    // Second strike: reverse every grain's velocity (an elastic-return stand-in,
+    // energy- and momentum-symmetric, the "same speed, opposite direction" a
+    // pendulum returns with at the same height in the lossless limit) and let
+    // the row collide again from the other side. The fix must hold on a
+    // re-strike, not just the first one.
     for g in pop.grains.iter_mut() {
         g.v = -g.v;
     }
@@ -3960,30 +3763,20 @@ fn newtons_cradle_two_ball_release_with_real_gap_survives_repeated_strikes() {
     );
 }
 
-/// Real, permanent regression test for the long-horizon "everyone blurs
-/// together after several cycles" bug (2026-08-22, found live AFTER the
-/// grid-bypass fix above already made single strikes clean). Root cause,
-/// confirmed via a real, decisive comparison: `restitution=0.95` (an
-/// earlier, generic "steel-like" pick) is real but too LOSSY for repeated
-/// multi-body strikes -- a single strike's pulse crosses SEVERAL pairwise
-/// sub-collisions (grain0-1, 1-2, 2-3, 3-4, derived analytically this
-/// session), so even a modest per-pair energy loss compounds fast over
-/// many full cycles, and compounds FASTER for a two-ball release (this
-/// demo's own headline feature -- more simultaneous sub-collisions per
-/// strike than the single-ball case). Measured, TWO-ball release,
-/// restitution alone with no drag: e=0.95 held clean only to ~cycle 110
-/// before sustained drift; e=0.99 to ~158; e=0.995 to ~263; e=0.999 stayed
-/// clean through the full 300-cycle window. No finite restitution keeps
-/// this clean forever -- a real, physically honest fact (an inelastic
-/// pendulum isn't an infinite oscillator), not a bug, and not this
-/// constant's job: the demo's real, measured-material restitution
-/// (`e=0.99`, dry chrome steel AISI 52100) only needs to stay clean for a
-/// SHORT window near each release -- long-horizon settling is real Stokes/
-/// pivot drag's job (see `newtons_cradle_settles_gracefully_within_ten_
-/// minute_unattended_session` below), not restitution's. This test asserts
-/// the real, falsifiable near-term bound for the demo's actual shipped
-/// value (e=0.99): interval growth over 100 two-ball-release cycles (well
-/// short of its own measured ~158-cycle drift onset) must stay small.
+/// Long-horizon cradle: does the row blur together after several cycles?
+/// A strike's pulse crosses several pairwise sub-collisions (grain0-1, 1-2,
+/// 2-3, 3-4), so per-pair energy loss compounds over cycles, faster for a
+/// two-ball release (more sub-collisions per strike). Two-ball release,
+/// restitution alone, no drag: e=0.95 stays clean to ~cycle 110 before
+/// sustained drift; e=0.99 to ~158; e=0.995 to ~263; e=0.999 through the full
+/// 300-cycle window. No finite restitution stays clean forever (an inelastic
+/// pendulum is not an infinite oscillator), and that is not restitution's job:
+/// the demo's measured-material restitution (`e=0.99`, dry chrome steel AISI
+/// 52100) only needs to stay clean for a short window after each release;
+/// long-horizon settling is pivot/air drag's job (see
+/// `newtons_cradle_settles_gracefully_within_ten_minute_unattended_session`
+/// below). Asserts the near-term bound for e=0.99: interval growth over 100
+/// two-ball-release cycles (short of its ~158-cycle drift onset) stays small.
 #[test]
 fn newtons_cradle_high_restitution_keeps_strike_interval_stable_over_many_cycles() {
     const N_GRAINS: usize = 5;
@@ -4088,23 +3881,18 @@ fn newtons_cradle_high_restitution_keeps_strike_interval_stable_over_many_cycles
     );
 }
 
-/// Real, permanent regression test for the combined e=0.99 (real, measured
-/// dry chrome steel AISI 52100) + real linear pivot/air-damping fix
-/// (2026-08-22, see `examples/grain_newtons_cradle_gui.rs`'s own doc for
-/// the real Reynolds-number check on WHY this is pivot friction, not pure
-/// aerodynamic Stokes drag, at this ball scale). Restitution alone
-/// (however high) never eliminates the eventual "everyone in phase" blur
-/// -- confirmed both by this engine's own long-run measurements and by
-/// real published physics (AJP "Rocking Newton's Cradle": real cradles
-/// break up into shared motion from viscoelastic dissipation, then settle
-/// to rest via a real, separate damping mechanism). Drives the population
-/// through the SAME `GrainField`/`LinearDragField` mechanism the demo
-/// itself now uses (not a hand-rolled relax) for genuine fidelity. This
-/// asserts the user's own real requirement directly: over a real
-/// ~10-minute-equivalent unattended
-/// run, the row must end up SETTLED (small, decaying speeds), not stuck
-/// in indefinite shared jitter. Mirrors the demo's exact per-step order
-/// (contact -> string -> air drag).
+/// e=0.99 (measured dry chrome steel AISI 52100) together with linear
+/// pivot/air damping (see `examples/grain_newtons_cradle_gui.rs`'s doc for the
+/// Reynolds-number check showing this is pivot friction, not pure Stokes drag,
+/// at this ball scale). Restitution alone, however high, never removes the
+/// eventual "everyone in phase" blur, in this engine's long runs and in
+/// published physics (AJP "Rocking Newton's Cradle": real cradles break up
+/// into shared motion from viscoelastic dissipation, then settle to rest
+/// through a separate damping mechanism). Drives the population through the
+/// `GrainField`/`LinearDragField` mechanism the demo uses, in the demo's
+/// per-step order (contact -> string -> air drag). Over a ~10-minute
+/// equivalent unattended run, the row must end up settled (small, decaying
+/// speeds), not in indefinite shared jitter.
 #[test]
 fn newtons_cradle_settles_gracefully_within_ten_minute_unattended_session() {
     const N_GRAINS: usize = 5;
@@ -4160,8 +3948,8 @@ fn newtons_cradle_settles_gracefully_within_ten_minute_unattended_session() {
         LinearDragField::new(Vec2::ZERO, AIR_DRAG_RATE, LinearDragField::ALL_MATERIALS),
     );
 
-    // Real ~10-minute-equivalent step count: sim_speed=60 physics-steps
-    // per rendered frame * 60fps * 600 real seconds.
+    // ~10-minute-equivalent step count: sim_speed=60 physics steps per
+    // rendered frame * 60 fps * 600 s.
     let n_steps: u32 = 60 * 60 * 600;
 
     for step in 0..n_steps {

@@ -1,25 +1,19 @@
-//! Real solar-system-scale orbital mechanics: does emerge's EXISTING gravity
-//! machinery (`GravityWellField`, already real/tested at grid scale) produce
-//! genuine Keplerian motion when given real astronomical masses/distances?
+//! Solar-system-scale orbital mechanics: does the grid-scale gravity machinery
+//! (`GravityWellField`) produce Keplerian motion with astronomical masses and
+//! distances?
 //!
-//! Architecture, real and disclosed: the Sun is modeled as a FIXED
-//! `GravityWellField` source, not a moving particle -- the standard
-//! "restricted two-body problem" simplification (Sun's mass is ~333,000x
-//! Earth's, so the true barycenter sits well inside the Sun; treating it as
-//! fixed is a real, common approximation, not a hack). Earth is a real MPM
-//! particle carrying real SI mass, positioned at 1 real AU with a real
-//! circular-orbit velocity. Novel usage, disclosed: this engine's particles
-//! normally represent a differential mass element of a continuum body (fluid,
-//! elastic solid); here ONE particle represents an entire planet as an
-//! isolated point mass. P2G/G2P mass-transfer is linear in mass, so this is
-//! expected to work, but it's genuinely new territory for this engine, not a
-//! previously-verified usage pattern.
+//! The Sun is a fixed `GravityWellField` source, not a moving particle: the
+//! restricted two-body problem (the Sun is ~333,000x Earth's mass, so the
+//! barycenter sits well inside it). Earth is one MPM particle with its SI mass
+//! at 1 AU with a circular-orbit velocity. MPM particles normally represent a
+//! mass element of a continuum body; here one particle is a whole planet as a
+//! point mass. P2G/G2P mass transfer is linear in mass, so this is expected to
+//! work.
 //!
-//! Real reference data: NASA NSSDCA Planetary Fact Sheet
-//! (<https://nssdc.gsfc.nasa.gov/planetary/factsheet/>). Sun's standard
-//! gravitational parameter mu = G*M_sun = 1.32712e20 m^3/s^2 (measured
-//! directly/precisely, real astronomical constant -- more precise than
-//! multiplying separately-measured G and M_sun).
+//! Reference data: NASA NSSDCA Planetary Fact Sheet
+//! (<https://nssdc.gsfc.nasa.gov/planetary/factsheet/>). The Sun's standard
+//! gravitational parameter mu = G*M_sun = 1.32712e20 m^3/s^2 is measured
+//! directly, more precisely than G and M_sun separately.
 
 #![cfg(feature = "experimental")]
 
@@ -68,7 +62,7 @@ fn earth_radius_grid() -> f32 {
     (AU_M / DX_METERS) as f32
 }
 
-/// Real circular-orbit speed at radius `r_si` meters, in grid-units/s.
+/// Circular-orbit speed at radius `r_si` meters, in grid-units/s.
 fn circular_orbit_speed_grid(r_si: f64) -> f32 {
     let v_si = (MU_SUN_SI / r_si).sqrt();
     (v_si / DX_METERS) as f32
@@ -141,7 +135,7 @@ fn earth_holds_a_real_near_circular_orbit_over_a_short_arc() {
         .with_default_material(Box::new(NeoHookeanMaterial::new(1.0, 1.0)))
         .with_force_field(Box::new(sun_well(sun_pos)));
 
-    // Real tangential velocity for a counter-clockwise circular orbit.
+    // Tangential velocity for a counter-clockwise circular orbit.
     solver.particles_mut().v[0] = Vec2::new(0.0, v0);
 
     let r_vec0 = solver.particles().x[0] - sun_pos;
@@ -161,7 +155,7 @@ fn earth_holds_a_real_near_circular_orbit_over_a_short_arc() {
     let r1 = r_vec1.length();
     let l1 = r_vec1.x * p.v[0].y - r_vec1.y * p.v[0].x;
 
-    // Real, standard two-body invariant: specific angular momentum (r x v)
+    // Standard two-body invariant: specific angular momentum (r x v)
     // is conserved exactly for a pure central-force (gravity-only) orbit.
     let l_drift = (l1 - l0).abs() / l0.abs();
     assert!(
@@ -178,7 +172,7 @@ fn earth_holds_a_real_near_circular_orbit_over_a_short_arc() {
     );
 }
 
-/// Real Mars data, NASA NSSDCA Planetary Fact Sheet.
+/// Mars data, NASA NSSDCA Planetary Fact Sheet.
 const MARS_MASS_KG: f64 = 0.642e24;
 const MARS_DISTANCE_M: f64 = 228.0e9;
 
@@ -232,7 +226,7 @@ fn measure_kepler_error_at_dt(dt_seconds: f32) -> (f32, f32, f32) {
     let mut cumulative = [0.0f32, 0.0f32];
     let mut period_steps = [None::<usize>, None::<usize>];
 
-    // Real Mars period is ~687 days -- run a bit past that so both bodies
+    // Mars's period is ~687 days -- run a bit past that so both bodies
     // (Earth included, ~365 days) have a chance to complete a full orbit.
     let max_steps = (720.0 * 24.0 * 3600.0 / dt_seconds) as usize;
     for step in 0..max_steps {
@@ -266,32 +260,25 @@ fn measure_kepler_error_at_dt(dt_seconds: f32) -> (f32, f32, f32) {
         period_steps[1].expect("mars should complete an orbit within 720 days") as f32 * dt_seconds
             / 86400.0;
 
-    // Real Kepler's third law prediction: T_mars/T_earth = (a_mars/a_earth)^1.5.
+    // Kepler's third law: T_mars/T_earth = (a_mars/a_earth)^1.5.
     let predicted_ratio = (MARS_DISTANCE_M / AU_M).powf(1.5) as f32;
     let measured_ratio = mars_period_days / earth_period_days;
     let error = (measured_ratio - predicted_ratio).abs() / predicted_ratio;
     (earth_period_days, mars_period_days, error)
 }
 
-/// Real Kepler's third law: does simulating BOTH Earth and Mars (via the same
-/// fixed-Sun `GravityWellField`, independently, no inter-planet gravity --
-/// the same disclosed simplification as the tests above) reproduce the real
-/// T^2 ~ a^3 relationship? This is the strongest real correctness bar in this
-/// file: not just "doesn't blow up," but a precise, falsifiable, independent
-/// physical law neither planet's setup was tuned to satisfy directly -- it
-/// has to fall out of the real gravity + real integration alone.
+/// Kepler's third law: simulating Earth and Mars (each around the fixed-Sun
+/// `GravityWellField`, no inter-planet gravity, as above) must reproduce
+/// T^2 ~ a^3, a law neither setup was tuned to satisfy.
 ///
-/// Real, measured accuracy tuning (2026-08-11): the original `DX_METERS`
-/// (1e9, r_earth~150 grid units) gave 0.36% error, FLAT across a 16x
-/// `dt_seconds` sweep (`diag_kepler_error_vs_dt_sweep`) -- proof the error
-/// was spatial (MPM transfer kernel width vs. orbital radius in grid
-/// cells), not temporal integration accuracy. A grid-resolution sweep
-/// (`diag_kepler_error_vs_grid_resolution_sweep`) confirmed it: error
-/// dropped monotonically as orbital radius grew in grid-cell terms (0.36%
-/// -> 0.18% -> 0.09%). Current `DX_METERS`/`GRID_RES` (module consts) were
-/// chosen from that real data, hitting ~0.09% -- under the real 0.1%
-/// target. 0.15% below asserts real margin above the measured value without
-/// being loose enough to silently regress.
+/// Accuracy: at `DX_METERS = 1e9` (r_earth ~150 grid units) the error was
+/// 0.36%, flat across a 16x timestep sweep (`diag_kepler_error_vs_dt_sweep`),
+/// so the error is spatial (kernel width against orbital radius in cells),
+/// not temporal. A grid-resolution sweep
+/// (`diag_kepler_error_vs_grid_resolution_sweep`) showed it fall as the
+/// orbital radius grows in cells (0.36% -> 0.18% -> 0.09%). The module's
+/// `DX_METERS`/`GRID_RES` give ~0.09%, under a 0.1% target; the 0.15% bound
+/// below leaves margin without hiding a regression.
 #[test]
 fn earth_and_mars_orbital_periods_satisfy_keplers_third_law() {
     let (earth_period_days, mars_period_days, error) =
@@ -313,7 +300,7 @@ fn earth_and_mars_orbital_periods_satisfy_keplers_third_law() {
     );
 }
 
-/// Real, measured (not assumed) sweep: how does integration accuracy scale
+/// Measured (not assumed) sweep: how does integration accuracy scale
 /// with `dt_seconds`? Answers whether pushing toward a real 0.1% divergence
 /// target is achievable, and at what real substep-count cost.
 #[test]
@@ -329,7 +316,7 @@ fn diag_kepler_error_vs_dt_sweep() {
     }
 }
 
-/// Real, measured sweep of grid resolution (via `dx_meters`, which scales
+/// Measured sweep of grid resolution (via `dx_meters`, which scales
 /// the orbital radius in grid-CELL terms without changing real physical
 /// distances) -- tests the hypothesis the dt-sweep above pointed at: is the
 /// ~0.35% Kepler error a SPATIAL discretization effect (MPM's B-spline
@@ -432,15 +419,10 @@ fn diag_kepler_error_vs_grid_resolution_sweep() {
     }
 }
 
-/// Real, permanent regression: `Particle::pinned` (the restricted-two-body
-/// "fixed Sun" mechanism every test/demo in this file relies on) must hold
-/// the Sun EXACTLY fixed -- zero drift, zero residual velocity -- even while
-/// a real orbiting body sits nearby exerting no force back on it (gravity
-/// here is one-directional, from the well to particles, not mutual).
-/// Motivated by a real, live visual check (2026-08-11) that first looked
-/// like drift in a screenshot -- root-caused instead to a material/color
-/// mis-identification, not a real physics bug; this test is the permanent,
-/// precise version of that same check.
+/// `Particle::pinned` (the "fixed Sun" every test/demo in this file relies on)
+/// must hold the Sun exactly fixed, with zero drift and zero residual
+/// velocity, while an orbiting body sits nearby (gravity here is
+/// one-directional, from the well to particles, not mutual).
 #[test]
 fn pinned_sun_stays_exactly_fixed_while_earth_orbits() {
     let config = astronomical_config();
@@ -497,26 +479,20 @@ fn pinned_sun_stays_exactly_fixed_while_earth_orbits() {
     );
 }
 
-// -- True full N-body solar system (real mutual gravity, not restricted) --
+// -- Full N-body solar system (mutual gravity, not restricted) --
 //
-// Real, structural upgrade from everything above: the tests/demo up to this
-// point use a FIXED Sun (`GravityWellField`, restricted two-body problem) --
-// a real, standard, disclosed simplification, but not the "true" N-body
-// physics a real solar system has. This section switches to
-// `NBodyGravityField` (already real, tested, Barnes-Hut with a real
-// quadrupole correction -- Hernquist 1987) so EVERY body, Sun included,
-// gravitates every other body and is free to move. Real technique grounding
-// (WebSearch, 2026-08-11): symplectic integrators (Leapfrog, Wisdom-Holman/
-// WHFast -- REBOUND's own real N-body code) are the established real
-// technique for long-term solar-system stability specifically because they
-// don't leak energy over time. emerge's own MPM position/velocity update is
-// already semi-implicit/symplectic-Euler by construction (v then x, not a
-// naive explicit Euler) -- the SAME real structural property, not a
-// coincidence: it's why the earlier dt-sweep found zero accuracy
-// degradation at any timestep.
+// The tests above use a fixed Sun (`GravityWellField`, restricted two-body
+// problem). This section uses `NBodyGravityField` (Barnes-Hut with a
+// quadrupole correction, Hernquist 1987), so every body, the Sun included,
+// attracts every other and is free to move. Symplectic integrators
+// (Leapfrog, Wisdom-Holman/WHFast in REBOUND) are the standard for long-term
+// solar-system stability because they do not leak energy; the MPM
+// position/velocity update is symplectic Euler (v then x), the same
+// structural property, which is why the dt sweep above found no accuracy
+// loss at any timestep.
 use emerge::fields::NBodyGravityField;
 
-/// Real NASA NSSDCA Planetary Fact Sheet data: (name, mass_kg, semi_major_axis_m).
+/// NASA NSSDCA Planetary Fact Sheet data: (name, mass_kg, semi_major_axis_m).
 const PLANETS: [(&str, f64, f64); 8] = [
     ("Mercury", 0.330e24, 57.9e9),
     ("Venus", 4.87e24, 108.2e9),
@@ -529,7 +505,7 @@ const PLANETS: [(&str, f64, f64); 8] = [
 ];
 const SUN_MASS_KG: f64 = 1.9885e30;
 
-/// dx sized so Neptune's real orbit fits with margin. Real, disclosed accuracy
+/// dx sized so Neptune's real orbit fits with margin. Disclosed accuracy
 /// trade vs. the tighter inner-system tests above: at this coarser grid
 /// (Earth at only ~75 grid units instead of ~598), the per-body force
 /// resolution is worse -- this section verifies real CONSERVATION LAWS
@@ -618,11 +594,11 @@ fn total_energy(sim: &Simulation, g_grid: f32) -> f64 {
     ke + pe
 }
 
-/// Real correctness bar for TRUE N-body (mutual gravity): total linear
-/// momentum and total energy are real, exact conservation laws for an
-/// isolated gravitating system -- unlike Kepler's third law (which assumes
-/// negligible perturbation from other bodies), these must hold regardless of
-/// how much the planets perturb each other or the Sun.
+/// Correctness bar for full N-body (mutual gravity): total linear momentum
+/// and total energy are exact conservation laws for an isolated gravitating
+/// system. Unlike Kepler's third law (which assumes negligible perturbation
+/// from other bodies), they must hold however much the planets perturb each
+/// other or the Sun.
 #[test]
 fn full_solar_system_conserves_momentum_and_energy() {
     let mut solver = make_full_system();
@@ -645,9 +621,9 @@ fn full_solar_system_conserves_momentum_and_energy() {
          momentum scale {jupiter_momentum_scale:.3e}): {p0:?}"
     );
 
-    // Real 30-day window -- enough for the fastest body (Mercury, ~88-day
-    // period) to move substantially, without needing outer planets (Neptune,
-    // ~165-year period) to complete anything.
+    // 30-day window: enough for the fastest body (Mercury, ~88-day period)
+    // to move substantially, without the outer planets (Neptune, ~165-year
+    // period) completing anything.
     let steps = (30.0 * 24.0 * 3600.0 / 3600.0) as usize;
     for _ in 0..steps {
         solver.step();
@@ -685,30 +661,19 @@ fn full_solar_system_conserves_momentum_and_energy() {
     );
 }
 
-/// Real, well-known astronomical phenomenon: the Sun is not perfectly still
-/// -- Jupiter's mass (the dominant perturber, ~318x Earth's mass) pulls it
-/// into a real, measurable wobble around the system barycenter. If TRUE
-/// N-body is working, the Sun (unpinned here, unlike the restricted-problem
-/// tests above) should respond to real mutual gravity, not sit exactly
-/// static under zero net force.
+/// The Sun is not perfectly still: Jupiter (~318x Earth's mass) pulls it into
+/// a measurable wobble around the barycenter. With full N-body the Sun
+/// (unpinned here) must respond to mutual gravity.
 ///
-/// Real, honest finding (2026-08-11): checks VELOCITY change, not position
-/// displacement. A first version asserted position displacement and FAILED
-/// -- root-caused directly (not assumed): `v[0]` genuinely changes
-/// (confirmed, e.g. `(-1.14e-9, 7.07e-9) -> (-1.75e-9, 7.12e-9)` over 60
-/// days, real evidence the N-body force IS being computed and applied
-/// correctly), but `x[0]` stayed bit-identical. This domain's Sun sits at
-/// grid coordinate ~2047.5 (needed so Neptune's real orbit, ~2257 grid
-/// units, fits in the same scene) -- at that magnitude, f32's local ULP is
-/// ~2.4e-4, while the Sun's real per-step position increment here
-/// (v*dt ~ 2.5e-5) is genuinely BELOW that -- every individual step's
-/// contribution is silently absorbed by the much larger base coordinate.
-/// This is a real, structural single-precision-float limitation (the same
-/// domain can't simultaneously resolve Neptune's real distance AND the
-/// Sun's own tiny wobble at this timescale), not a physics bug and not
-/// fixable by running more steps (each step independently rounds to zero,
-/// so accumulation never starts). Velocity is the numerically robust real
-/// signal for this specific check.
+/// Checks velocity change, not position: `v[0]` changes (e.g.
+/// `(-1.14e-9, 7.07e-9) -> (-1.75e-9, 7.12e-9)` over 60 days) while `x[0]`
+/// stays bit-identical. The Sun sits at grid coordinate ~2047.5 (so Neptune's
+/// orbit, ~2257 grid units, fits in the scene), where f32's ULP is ~2.4e-4,
+/// while the Sun's per-step displacement here (v*dt ~ 2.5e-5) is below it:
+/// every step's increment is absorbed by the base coordinate, so more steps
+/// do not help. A single-precision limit (one domain cannot resolve both
+/// Neptune's distance and the Sun's wobble at this timescale), not a physics
+/// bug; velocity is the robust signal.
 #[test]
 fn sun_velocity_responds_to_real_mutual_gravity() {
     let mut solver = make_full_system();

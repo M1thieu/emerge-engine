@@ -32,7 +32,7 @@ pub const GRID: usize = 160;
 pub const DX_M: f32 = 0.002;
 
 /// Real yield stresses in pascals, spanning the three bands
-/// `BinghamFluidMaterial`'s own doc lists (biological 1-50, mud 50-500,
+/// `BinghamFluidMaterial`'s doc lists (biological 1-50, mud 50-500,
 /// lava 100-2000). Everything else about the three columns is identical.
 pub const YIELD_STRESS_PA: [f32; 3] = [2.0, 60.0, 1200.0];
 /// Position, not a baked-in yield stress: the panel's slider rescales all
@@ -102,8 +102,8 @@ pub fn make_config(gravity_fraction: f32, dt: f32) -> SimConfig {
         min_dt: 1.0e-5,
         // Real arithmetic, not a knob turned until it stopped complaining.
         // The acoustic CFL bound at this sound speed is ~74 us, so a 5 ms
-        // frame genuinely needs ~68 substeps, and the 64 default is a
-        // budget rather than a physics cap (see its own doc). 256 leaves
+        // frame needs ~68 substeps, and the 64 default is a
+        // budget rather than a physics cap (see its doc). 256 leaves
         // room for the compression transient at first contact, where the
         // Tait EOS raises the local sound speed above its rest value.
         max_substeps_per_step: 256,

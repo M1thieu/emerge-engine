@@ -12,7 +12,7 @@ mod gui_common;
 ///
 /// Stiffness is GRID-NATIVE, not literal SI Pa -- real GPa-scale rock stiffness is
 /// incompatible with explicit-MPM CFL at this grid resolution (same reason
-/// `fire_spread.rs`'s own doc gives for wood). The REAL RATIOS between rock types
+/// `fire_spread.rs`'s doc gives for wood). The REAL RATIOS between rock types
 /// are preserved from their cited GPa values (granite 30, sandstone 20,
 /// limestone 8, shale 27) so relative-stiffness honesty survives the rescale --
 /// only the absolute magnitude is adapted for demo practicality, same pattern
@@ -127,7 +127,7 @@ fn make_sim() -> Simulation {
 }
 
 /// Real per-material max damage report (`friction_hardening`, repurposed by
-/// `RankineMaterial` as damage -- see that struct's own doc).
+/// `RankineMaterial` as damage -- see that struct's doc).
 fn max_damage_by_material(sim: &Simulation) -> [f32; 4] {
     let particles = sim.particles();
     let mut result = [0.0f32; 4];
@@ -489,7 +489,7 @@ mod tests {
 
     /// Real regression check: all 4 blocks spawn distinctly, non-overlapping, and
     /// every particle carries the material_id its block's x-position implies --
-    /// proves the layout is real, not just "it compiles".
+    /// proves the layout is not just "it compiles".
     #[test]
     fn four_rock_blocks_spawn_with_correct_materials() {
         let sim = make_sim();

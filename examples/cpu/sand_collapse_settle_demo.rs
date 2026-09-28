@@ -3,12 +3,12 @@ extern crate emerge_engine as emerge;
 use egui_wgpu::ScreenDescriptor;
 /// Fully automatic, non-interactive proof demo for `post_event_relax_threshold`
 /// (the edge-triggered elastic-strain reset shipped 2026-08-02, see
-/// `sand.rs`'s own doc). No keypress required to see the real behavior --
+/// `sand.rs`'s doc). No keypress required to see the real behavior --
 /// this runs the exact SAME scene/config as `tests/accuracy.rs::
 /// post_event_relax_long_horizon_full_confirmation` (the test that held
 /// 29.6deg bit-for-bit through 100,000 steps headless), just rendered live
 /// with the phase transition (dynamics -> holding) triggered automatically
-/// by a real, measured kinetic-energy settle-detect instead of a fixed step
+/// by a measured kinetic-energy settle-detect instead of a fixed step
 /// count or a keypress.
 ///
 /// This is deliberately a column COLLAPSE (Lajeunesse 2004 / Klar et al.
@@ -252,7 +252,7 @@ impl State {
             // Automatic one-shot transition to the holding recipe, at the
             // exact same fixed step count the validated headless test uses
             // -- no keypress, and deliberately NOT gated on a measured
-            // settle condition (see `HOLD_ENGAGE_STEP`'s own doc for why).
+            // settle condition (see `HOLD_ENGAGE_STEP`'s doc for why).
             if self.phase == Phase::Falling && self.step >= HOLD_ENGAGE_STEP {
                 self.sim.set_apic_blend(0.05);
                 self.sim.set_cundall_damping(1.0);

@@ -11,7 +11,7 @@ extern crate emerge_engine as emerge;
 /// from step ~20 onward. This answers: does CPU's own proven solver, on the
 /// IDENTICAL scene, also hit that clamp (meaning the GPU port is faithfully
 /// reproducing an already-known CPU limitation), or does CPU stay bounded
-/// without pinning (meaning the GPU port has a real, separate bug)?
+/// without pinning (meaning the GPU port has a separate bug)?
 ///
 ///   cargo run --example fluid_pressure_projection_parity_check
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SpawnRegion};

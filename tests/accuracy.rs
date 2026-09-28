@@ -58,39 +58,16 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 ///
 /// We spawn a column, let it fully settle, and measure the final pile slope.
 ///
-/// OPEN FINDING (2026-06-08): the friction-angle parameter is correct (35°, Klar h₀),
-/// but dynamic column-collapse settles at ~12° -- the sand over-spreads (reaches the
-/// walls). Real dry sand holds 30–35°. This is a genuine accuracy gap, NOT tuned away.
-/// To isolate: needs a quasi-static repose test (minimal collapse energy) to separate
-/// "collapse dynamics overshoot" (known to lower 2D-MPM repose) from a real
-/// under-friction in the DP return mapping / φ(q) hardening (which starts at 25° at q=0).
-/// `#[ignore]` keeps the suite green while recording the real expected value below.
+/// Open (GH #28): with the friction angle at 35° (Klar h₀), the dynamic collapse settles
+/// at ~12°, the sand over-spreading to the walls; the GPU gives 12.1°, so the gap is the
+/// model's, not one solver's numerics. `#[ignore]` keeps the suite green while
+/// recording the expected value below.
 ///
-/// CROSS-CHECKED ON GPU (2026-07-07, see `tests/gpu.rs::gpu_sand_angle_of_repose_is_physical`):
-/// GPU gives 12.1°, essentially identical to this CPU result -- unlike the
-/// Lajeunesse runout gap (which turned out to be a CPU-specific numerical
-/// artifact, resolved via `cohesion` on CPU but genuinely NOT needed on GPU,
-/// see `sand_column_collapse_runout_matches_lajeunesse_scaling`'s doc), this
-/// repose-angle gap reproduces cross-platform. It is real physics/model
-/// behavior, not a numerics quirk of either solver.
-///
-/// SIXTEENTH FINDING, THE QUASI-STATIC FIX DOES NOT TRANSFER HERE (real
-/// negative result, not assumed): `sand_preshaped_pile_at_30deg_holds_its_
-/// slope`'s fix (`apic_blend=0.05` + `cundall_damping=1.0`, findings 14/15)
-/// makes THIS dynamic-collapse test WORSE, not better, and in the opposite
-/// direction -- swept `cundall_damping` at `apic_blend=0.05`: 0.0 -> 50.7°,
-/// 0.3 -> 58.3°, 0.5 -> 63.3°, 0.7 -> 68.9°, 1.0 -> 76.4° (height barely
-/// changes, base half-width stays narrow -- the column doesn't really
-/// collapse anymore). Real, physically-consistent reason: `apic_blend=0.05`
-/// is itself a strong numerical dissipation mechanism (findings 5/6) --
-/// exactly why it helps a quasi-static creep, but a DYNAMIC collapse needs
-/// real kinetic energy to actually topple and spread; killing that energy
-/// freezes the column closer to its original tall/narrow shape instead of
-/// letting it fall over. The quasi-static settling fix and this dynamic
-/// benchmark want opposite things from the same knob. This scene stays on
-/// the original config (no fix applied) -- the real gap for the DYNAMIC
-/// case remains open, same root cause as findings 1-13 (no length scale in
-/// local point-wise plasticity), not chased further tonight.
+/// The quasi-static holding recipe of `sand_preshaped_pile_at_30deg_holds_its_slope`
+/// (`apic_blend=0.05` + `cundall_damping`) does not transfer: at `apic_blend=0.05`,
+/// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gives 50.7/58.3/63.3/68.9/76.4°, the column
+/// barely collapsing. That much dissipation helps a quasi-static creep but removes the
+/// kinetic energy a dynamic collapse needs to topple and spread.
 #[ignore = "accuracy gap under investigation: dynamic collapse settles ~12° vs expected \
             30-35° -- the quasi-static fix (apic_blend+cundall_damping) makes this WORSE \
             (up to 76°), real negative result, see 16th finding above. do not tune to pass"]
@@ -151,63 +128,21 @@ fn sand_angle_of_repose_is_physical() {
     );
 }
 
-/// TWENTY-FIRST FINDING (2026-08-01), TWO REAL BUGS FOUND IN SEQUENCE:
+/// Dynamic collapse with the holding recipe gated on after the dynamics (1500 steps
+/// untouched).
 ///
-/// Attempt 1: phase-gate the proven holding recipe (apic_blend=0.05 +
-/// cundall_damping=1.0, applied only AFTER 1500 steps of untouched
-/// dynamics) onto this file's own dynamic-collapse scene, same idea
-/// already proven for a patient POUR above. First run measured the
-/// dynamics-only phase at a WIDER local grid (this scene's shared
-/// GRID=64 is only barely big enough for its own baseline -- its own
-/// `max_reach < 28.0` guard exists for exactly this reason) and found
-/// something worse than expected: reach kept growing roughly in
-/// proportion to however wide the domain was given (median particle
-/// reach 88 cells at a 320-cell domain!) -- not real physics, a genuine
-/// NUMERICAL INSTABILITY. Root cause found, not guessed: `SimConfig::
-/// standard`'s own default `apic_blend=1.0` (full APIC, zero PIC-blend
-/// numerical dissipation) is unstable for a violent, large-deformation
-/// event like this column collapse. Confirmed directly: `apic_blend=0.05`
-/// alone (still `cundall_damping=0.0`, real collapse dynamics preserved)
-/// completely bounds the spread (median 3.27, max 7.75 vs the earlier
-/// 88/158) -- but 0.05 is ALSO the heavy quasi-static-holding value, and
-/// it over-damps the real collapse motion, landing at 44-51 deg (too
-/// STEEP, the opposite problem from the original ~12 deg baseline).
+/// `apic_blend=1.0` (full APIC, no PIC-blend dissipation) is unstable for this violent
+/// collapse: spread grows with the domain (median reach 88 cells on a 320-cell domain),
+/// which is why the shared GRID=64 scene keeps a `max_reach < 28.0` guard.
+/// `apic_blend=0.05` alone bounds it (median 3.27, max 7.75) but over-damps the collapse
+/// (44-51°). Applying the holding recipe (apic_blend=0.05 + cundall_damping=1.0) for
+/// long afterward keeps drifting the angle down past the target (the same excess creep
+/// as the patient pour), so the result is measured right when the dynamics settle.
 ///
-/// Swept intermediate values to find where it's both stable and
-/// physically accurate: 0.05 -> 44.5 deg, 0.3 -> 37.8 deg, 0.6 -> 29.6
-/// deg (measured right after the dynamics-only phase, no relaxation
-/// applied yet) -- genuinely bounded (max reach 11 cells on a 128-cell
-/// domain, nowhere near the wall) AND right at the edge of real dry
-/// sand's 30-35 deg target, for the FIRST time all project on this
-/// exact dynamic-collapse scene.
-///
-/// Then the SAME "excess creep" pattern already found in the patient-pour
-/// investigation reappeared here too: applying the proven holding recipe
-/// (apic_blend=0.05 + cundall_damping=1.0) for any real duration
-/// afterward keeps drifting the angle DOWN past the target (29.2 deg at
-/// +500 steps, monotonically down to 25.6 deg by +6000) -- the same real,
-/// disclosed mechanism, not a new bug. The real, honest recipe this
-/// leaves: `apic_blend=0.6` (stable, not over-damped) through the actual
-/// collapse, then STOP measuring/relaxing once the dynamics settle --
-/// prolonged additional relaxation is what erases the result, exactly as
-/// it did for the pour.
-///
-/// RECALIBRATED (2026-08-20): `apic_blend=0.6` above was tuned against a
-/// real, separate bug -- `Simulation`'s hidden default `SlipBoundary`
-/// (mu=0) used to silently stack UNDER this scene's own explicit
-/// `FrictionBoundary(2, 0.7)` (`with_boundary`/`add_boundary_condition`
-/// appended instead of replacing it), so the floor this whole sweep was
-/// calibrated against had ZERO real friction the entire time. Fixed
-/// engine-wide in `Simulation::add_boundary_condition`. With the floor
-/// now genuinely frictional, `apic_blend=0.6` over-steepens (49.3 deg, not
-/// 29.6). Real, bounded re-sweep in the 0.6-1.0 window (all stable, max
-/// reach well inside the wall guard): 0.6 -> 49.3, 0.7 -> 45.0, 0.8 ->
-/// 40.2, 0.9 -> 35.5, 0.94 -> 33.2, 0.96 -> 32.0, 0.98 -> 29.6, 1.0 ->
-/// 24.2 deg. `apic_blend=0.96` chosen: centered in the real 30-35 deg
-/// target, and much closer to the engine's own real APIC default (1.0)
-/// than the old bug-compensating 0.6 ever was -- real, independent
-/// evidence the missing boundary friction, not some deeper collapse-
-/// dynamics issue, was what forced such a low value in the first place.
+/// `apic_blend` sweep with the `FrictionBoundary(2, 0.7)` floor (all stable, max reach
+/// well inside the wall guard): 0.6 -> 49.3, 0.7 -> 45.0, 0.8 -> 40.2, 0.9 -> 35.5,
+/// 0.94 -> 33.2, 0.96 -> 32.0, 0.98 -> 29.6, 1.0 -> 24.2°. 0.96 is centered in the
+/// 30-35° dry-sand target and close to the engine's APIC default (1.0).
 #[test]
 #[ignore = "slow: about 5 min in the CI debug profile, runs in the slow-tests workflow"]
 fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
@@ -217,11 +152,8 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     // material can hit the wall at that size; a first attempt at this
     // test did exactly that, real bug caught, not silently accepted).
     const LOCAL_GRID: usize = 128;
-    // apic_blend=0.96 (RECALIBRATED 2026-08-20, was 0.6 -- see this
-    // function's own doc above): real, re-swept value now that
-    // `Simulation`'s boundary-stacking bug is fixed and this scene's
-    // `FrictionBoundary(2, 0.7)` floor genuinely has friction. Lands at
-    // 32.0 deg, centered in the real 30-35 deg dry-sand target.
+    // apic_blend=0.96 (see this function's doc): lands at 32.0°, centered in
+    // the 30-35° dry-sand target.
     let config = SimConfig {
         max_substeps_per_step: 64,
         apic_blend: 0.96,
@@ -271,14 +203,11 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
         shape_mid.height, shape_mid.base_half_width, shape_mid.angle_deg
     );
 
-    // The REAL result this test exists to check: a bounded, physically
-    // credible dynamic collapse landing near the true repose angle,
-    // measured at the point that matters (right when the dynamics
-    // finish) -- not after further relaxation, which the trajectory below
-    // shows erases it, same real "excess creep" mechanism as the patient
-    // pour. Honest band, not a razor-thin threshold: real measured value
-    // 32.0 deg (RECALIBRATED 2026-08-20, was 29.6 -- see this function's
-    // own doc above for why).
+    // The result this test checks: a bounded, physically credible dynamic
+    // collapse landing near the repose angle, measured right when the
+    // dynamics finish -- not after further relaxation, which the trajectory
+    // below shows erases it (the same excess creep as the patient pour). A
+    // band, not a razor-thin threshold: measured 32.0°.
     assert!(
         (25.0..=40.0).contains(&shape_mid.angle_deg),
         "expected apic_blend=0.96 to land a dynamic collapse near the real dry-sand \
@@ -290,7 +219,7 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     // Informative only, NOT the pass/fail criterion: switching to the
     // proven quasi-static holding recipe and continuing to relax
     // afterward keeps drifting the angle DOWN past the target -- real,
-    // disclosed, same mechanism as the patient-pour investigation. Shown
+    // same mechanism as the patient-pour investigation. Shown
     // here so this real trajectory stays visible, not just asserted away.
     solver.set_apic_blend(0.05);
     solver.set_cundall_damping(1.0);
@@ -306,29 +235,14 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     }
 }
 
-/// Real diagnostic, kept (2026-08-20): `sand_pile_built_by_patient_pour_
-/// matching_real_creep_timescale` below now fails (69.1 deg, was 30.8) for
-/// the SAME real reason `sand_collapse_with_phase_gated_relaxation_after_
-/// dynamics` did -- `Simulation`'s hidden default `SlipBoundary` used to
-/// silently defeat this scene's own `FrictionBoundary(2, 0.7)`, fixed
-/// engine-wide (see `Simulation::add_boundary_condition`'s own doc). For
-/// the COLLAPSE scene, re-sweeping `apic_blend` in [0.6, 1.0] found a clean
-/// fix (0.96, see that test's own doc). Tried the identical lever here
-/// first, bounded, four values: 0.05 -> 69.1, 0.30 -> 67.8, 0.50 -> 66.0,
-/// 0.70 -> 62.7 deg. Real, disclosed NEGATIVE result: `apic_blend` has only
-/// a WEAK effect on this scene (6.4 deg drop over a 0.65 sweep range, vs
-/// the collapse scene's 25 deg drop over 0.4) -- extrapolating the trend,
-/// reaching 30-35 deg would need `apic_blend` well past its own valid
-/// [0,1] range, impossible. Makes physical sense: this is a slow,
-/// quasi-static POUR (600 steps of real creep between each small batch),
-/// not a violent transient collapse -- `apic_blend`'s numerical-dissipation
-/// blend matters far less once the material has real time to settle
-/// between disturbances. The real lever for THIS scene is very likely the
-/// material's own internal friction angle and/or the boundary's own `mu`,
-/// not the transfer-scheme blend -- genuinely different, deeper
-/// investigation than this bounded sweep was scoped for. Real test
-/// `#[ignore]`d below rather than loosening its band or chasing this
-/// further tonight.
+/// Diagnostic: `apic_blend` sweep on the patient-pour scene
+/// (`sand_pile_built_by_patient_pour_matching_real_creep_timescale`, 69.1° with the
+/// frictional `FrictionBoundary(2, 0.7)` floor). 0.05/0.30/0.50/0.70 give
+/// 69.1/67.8/66.0/62.7°: a weak effect (6.4° over a 0.65 range, against the collapse
+/// scene's 25° over 0.4); reaching 30-35° would need `apic_blend` far outside [0,1].
+/// A slow pour (600 steps of creep between small batches) gives the material time to
+/// settle, so the transfer blend matters much less than in a violent collapse; the
+/// lever is more likely the material's friction angle or the boundary's `mu`.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_pour_apic_blend_sweep_after_real_boundary_friction_fix() {
@@ -391,19 +305,13 @@ fn diag_pour_apic_blend_sweep_after_real_boundary_friction_fix() {
     }
 }
 
-/// TEMP DIAGNOSTIC (2026-08-20): the apic_blend sweep above ruled out the
-/// transfer-scheme blend as the pour scene's own lever. New hypothesis:
-/// `FrictionBoundary(2, 0.7)`'s own `mu=0.7` is a generic, never-calibrated-
-/// for-this-scene default (rock-on-rock per that type's own doc), not
-/// tuned for sand-on-a-rigid-floor -- and the material's OWN theoretical
-/// friction angle is only 35 deg (`from_young_modulus`'s cohesionless
-/// default), yet the pile measures 69.1 deg, almost double that ceiling.
-/// A floor that grips too hard during a SLOW pour (as opposed to a violent
-/// collapse, which has enough kinetic energy to shear through any floor
-/// grip) could plausibly pin the base and force a tower instead of a
-/// spreading cone, independent of apic_blend. Fast probe first (25 pours,
-/// not the real test's own 70) to get a cheap directional signal before
-/// committing to the full expensive run.
+/// Temporary diagnostic: is the floor's `mu` the pour scene's lever?
+/// `FrictionBoundary(2, 0.7)`'s `mu=0.7` is a generic default (rock-on-rock per that
+/// type's doc), not calibrated for sand on a rigid floor, and the pile measures 69.1°
+/// against the material's 35° friction angle (`from_young_modulus`'s cohesionless
+/// default). A floor gripping too hard during a slow pour (a violent collapse has the
+/// energy to shear through it) could pin the base and build a tower. A fast probe (25
+/// pours rather than the full 70) for a cheap directional signal.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_pour_boundary_mu_fast_probe() {
@@ -463,32 +371,17 @@ fn diag_pour_boundary_mu_fast_probe() {
     }
 }
 
-/// TWENTY-SECOND FINDING (2026-08-02): does the collapse-then-relax
-/// result actually PLATEAU given a real long horizon (matching the
-/// pre-shaped pile's own confirmed 12000/25000/50000/100000-step
-/// checkpoints), or does it keep drifting toward flat indefinitely --
-/// found live in `sand_collapse_true_repose_gui`: left running in pure
-/// collapse mode (apic_blend=0.6, no damping) for 44420 steps, the pile
-/// had gone completely flat (angle -0.1 deg, from a real 26.8 deg
-/// snapshot at step 1667). That means `apic_blend=0.6` alone is NOT a
-/// stable rest state -- it is a SLOWER version of the same excess-creep
-/// spreading `apic_blend=1.0` shows catastrophically fast, not a genuine
-/// equilibrium. This test checks whether switching to the proven holding
-/// recipe (apic_blend=0.05 + cundall_damping=1.0) after the real
-/// collapse dynamics finish is enough to actually ARREST that drift for
-/// real, at the SAME long horizon the pre-shaped pile was trusted at, or
-/// whether a dynamically-collapsed pile (as opposed to one built already
-/// at rest) never truly stabilizes at all.
+/// Does the collapse-then-relax result plateau over a long horizon (the pre-shaped
+/// pile's 12000/25000/50000/100000-step checkpoints), or keep drifting toward flat?
+/// In pure collapse mode (apic_blend=0.6, no damping) `sand_collapse_true_repose_gui`
+/// goes from 26.8° at step 1667 to -0.1° by step 44420, so apic_blend=0.6 alone is a
+/// slower excess creep, not an equilibrium. This switches to the holding recipe
+/// (apic_blend=0.05 + cundall_damping=1.0) once the collapse dynamics finish.
 ///
-/// ANSWERED (real, disclosed negative result, found during the 2026-09-08
-/// sourcing audit): this test carried no assertion at all despite looking
-/// like a real regression guard -- it never truly stabilizes. Real
-/// trajectory: 29.6 deg at step 1500 -> 10.8 deg by step 101500, a
-/// monotonic drift with no plateau, cross-referenced by
-/// `diag_static_kinetic_hysteresis_calibration_sweep`'s own doc as the
-/// exact scene where this creep was first documented. Same open gap as
-/// `sand_angle_of_repose_is_physical` (GH issue #28) -- kept ignored
-/// rather than asserted against a wrong/moving target.
+/// Result: no plateau. 29.6° at step 1500 -> 10.8° by step 101500, a monotonic
+/// drift (the scene `diag_static_kinetic_hysteresis_calibration_sweep` refers to).
+/// Same open gap as `sand_angle_of_repose_is_physical` (GH #28); ignored rather than
+/// asserted against a moving target.
 #[ignore = "real, disclosed negative result: this dynamically-collapsed pile never \
             plateaus, monotonic drift 29.6deg@1500 -> 10.8deg@101500 -- same open \
             angle-of-repose gap as sand_angle_of_repose_is_physical (GH issue #28), \
@@ -523,9 +416,8 @@ fn sand_collapse_relaxation_long_horizon_plateau_check() {
     solver.set_apic_blend(0.05);
     solver.set_cundall_damping(1.0);
 
-    // Real checkpoints matching the pre-shaped pile's own confirmed
-    // long-horizon check (findings 14/15 above) -- directly comparable,
-    // not arbitrary round numbers.
+    // Checkpoints of the pre-shaped pile's long-horizon check, so the two are
+    // directly comparable.
     let checkpoints: &[usize] = &[6000, 12000, 25000, 50000, 100000];
     let mut cumulative = 0usize;
     for &target in checkpoints {
@@ -547,7 +439,7 @@ fn sand_collapse_relaxation_long_horizon_plateau_check() {
 
 /// Calibration sweep for `DruckerPragerMaterial::static_friction_boost` +
 /// `rest_rate_scale` (real static/kinetic Coulomb hysteresis, see that
-/// field's own doc) against the EXACT scene where the un-arrested long-
+/// field's doc) against the EXACT scene where the un-arrested long-
 /// horizon creep was originally documented
 /// (`sand_collapse_relaxation_long_horizon_plateau_check`: 29.6deg at
 /// t=1500 -> 10.8deg at t=101500, never plateaus). Shorter checkpoints
@@ -601,13 +493,10 @@ fn diag_static_kinetic_hysteresis_calibration_sweep() {
         results
     }
 
-    // Cut from a 10-run sweep (1 baseline + 9 combos) to 3 runs (baseline +
-    // 2 representative combos spanning the tested range) -- the full sweep
-    // took 60+ real minutes even after removing all measured CPU
-    // contention, an impractical wait for this session. These two combos
-    // (moderate boost/wide rate-scale, and large boost/narrow rate-scale)
-    // bracket the swept range; extend back to the full grid only if one of
-    // these two shows real promise worth refining.
+    // 3 runs (baseline + 2 combos bracketing the range: moderate boost/wide
+    // rate-scale and large boost/narrow rate-scale) instead of the full 10-run
+    // grid, which takes 60+ minutes. Extend back to the full grid only if one
+    // of these shows promise worth refining.
     println!("── STATIC/KINETIC HYSTERESIS CALIBRATION SWEEP (reduced) ──");
     println!("baseline (boost=0):");
     for (step, h, hw, a) in run(0.0, 1.0) {
@@ -621,26 +510,17 @@ fn diag_static_kinetic_hysteresis_calibration_sweep() {
     }
 }
 
-/// Full 100,000-step confirmation for the one combo that showed real,
-/// directionally-correct promise in the reduced calibration sweep above
-/// (boost=30deg, rest_rate_scale=0.01: 34.7deg@7500 -> 26.7deg@26500, 77%
-/// retained vs baseline's 65% over the same window -- higher AND decaying
-/// slower, not just higher). Real question: does it actually PLATEAU given
-/// the full horizon `sand_collapse_relaxation_long_horizon_plateau_check`
-/// used (baseline: 29.6->25.6->24.9->22.1->19.1->10.8deg, never plateaus),
-/// or does it just delay the same flat ending? Same checkpoints, directly
-/// comparable to that test's own documented trajectory.
+/// Full 100,000-step run of the most promising combo from the reduced sweep above
+/// (boost=30°, rest_rate_scale=0.01: 34.7°@7500 -> 26.7°@26500, 77% retained vs the
+/// baseline's 65% over the same window). Does it plateau over the horizon of
+/// `sand_collapse_relaxation_long_horizon_plateau_check` (baseline:
+/// 29.6->25.6->24.9->22.1->19.1->10.8°, no plateau), or only delay the same ending?
 ///
-/// ANSWERED (measured 2026-09-08, during the sourcing audit -- this test
-/// carried no assertion at all despite posing a real, specific question):
-/// genuine partial win, not a false one -- real trajectory 74.5 -> 72.6 ->
-/// 58.2 -> 55.8 -> 53.8 -> 56.0deg (step 1500 through 101500) DOES plateau
-/// (unlike the baseline's monotonic decay to 10.8deg), landing well above
-/// baseline. But the plateau itself sits at ~54-56deg, not the real
-/// 30-35deg dry-sand target -- static_friction_boost/rest_rate_scale
-/// arrest the drift but don't fix the underlying angle-of-repose gap (GH
-/// issue #28). Ignored rather than asserted against a target it doesn't
-/// reach, same real reasoning as this file's other GH-#28-family tests.
+/// Result: it plateaus, 74.5 -> 72.6 -> 58.2 -> 55.8 -> 53.8 -> 56.0° (step 1500
+/// through 101500), but at ~54-56°, not the 30-35° target:
+/// static_friction_boost/rest_rate_scale arrest the drift without closing the
+/// repose-angle gap (GH #28). Ignored rather than asserted against a target it does
+/// not reach.
 #[ignore = "real, disclosed partial result: genuinely plateaus (~54-56deg, unlike \
             baseline's monotonic decay to 10.8deg) but still far from the real \
             30-35deg dry-sand target -- same open angle-of-repose gap, GH issue #28, \
@@ -701,7 +581,7 @@ fn static_kinetic_hysteresis_long_horizon_full_confirmation() {
 /// have been an 8-16 minute job at this test's own scale (compare
 /// `unconfined_pile_with_cundall_damping_reaches_real_repose_angle` +
 /// `sand_preshaped_pile_at_30deg_holds_its_slope`, combined 100k+ steps,
-/// 95s total). Real, small, fast, instrumented probe: measure actual
+/// 95s total). Small, fast, instrumented probe: measure actual
 /// substep counts (`Simulation::last_substeps`) and wall-clock time for a
 /// short run, boost=0 vs boost=30 (worst case tested), to find out WHERE
 /// the cost is -- a genuine CFL/substep explosion from the boosted
@@ -759,9 +639,9 @@ fn diag_static_friction_boost_performance_probe() {
 
 /// Does `MuIRheologyMaterial` (rate-dependent friction, already cross-
 /// checked against `matter`'s own DPMui and matching its exact canonical
-/// parameters -- see that material's own doc) naturally avoid the same
+/// parameters -- see that material's doc) naturally avoid the same
 /// long-horizon creep `DruckerPragerMaterial` cannot arrest, on the exact
-/// same collapse-then-hold scene? Real, cheap, honest test using an
+/// same collapse-then-hold scene? Cheap, honest test using an
 /// already-implemented, already-validated material -- no new code needed
 /// for the material itself.
 ///
@@ -862,20 +742,13 @@ fn diag_mui_rheology_long_horizon_hold_vs_dp_baseline() {
     }
 }
 
-/// TWENTY-THIRD FINDING (2026-08-02): the long-horizon check above
-/// confirmed the holding recipe does NOT arrest a dynamically-collapsed
-/// pile's drift (10.8 deg by +100000 steps, never plateaus). Real,
-/// specific next hypothesis: a dynamically-collapsed particle carries
-/// real internal state HISTORY (`friction_hardening` q, `log_volume_
-/// strain`) accumulated from the violent process that got it there -- a
-/// pre-shaped particle starts completely undeformed
-/// (`DruckerPragerMaterial::init_particle`'s own baseline q, zero
-/// volumetric strain) and never had to yield hard to get into position.
-/// Direct comparison: same real recipe (apic_blend=0.05 +
-/// cundall_damping=1.0), same real relaxation window (6000 steps), one
-/// pile pre-shaped, one pile dynamically collapsed then switched to
-/// holding -- do their friction_hardening/log_volume_strain
-/// distributions actually differ?
+/// Hypothesis: a dynamically collapsed particle carries internal state history
+/// (`friction_hardening` q, `log_volume_strain`) from the violent process, while a
+/// pre-shaped particle starts undeformed (`DruckerPragerMaterial::init_particle`'s
+/// baseline q, zero volumetric strain). Same recipe (apic_blend=0.05 +
+/// cundall_damping=1.0) and relaxation window (6000 steps) for one pre-shaped pile and
+/// one collapsed-then-held pile: do their friction_hardening/log_volume_strain
+/// distributions differ?
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_vs_collapsed_internal_state_comparison() {
@@ -963,18 +836,12 @@ fn diag_preshaped_vs_collapsed_internal_state_comparison() {
     }
 }
 
-/// TWENTY-FOURTH FINDING (2026-08-02): decisive test of the internal-
-/// state-history hypothesis above. If a dynamically-collapsed pile's
-/// continued creep is really driven by its particles' accumulated
-/// `friction_hardening`/`log_volume_strain` "scar tissue" (elevated q,
-/// nonzero volumetric strain -- confirmed real and substantial in the
-/// comparison above), then artificially resetting those two fields to
-/// the SAME pristine baseline a pre-shaped particle starts at (q =
-/// friction_residual/hardening_peak = 1.111 for this material's real
-/// Klar 2016 h1/h3 defaults, log_volume_strain = 0.0) -- keeping
-/// position/velocity/deformation_gradient untouched -- should make the
-/// pile behave like a pre-shaped one going forward: hold, not keep
-/// creeping.
+/// Tests the internal-state hypothesis above: if the collapsed pile's creep comes from
+/// its particles' accumulated `friction_hardening`/`log_volume_strain` (elevated q and
+/// nonzero volumetric strain, measured above), resetting both to a pre-shaped
+/// particle's baseline (q = friction_residual/hardening_peak = 1.111 for Klar 2016's
+/// h1/h3 defaults, log_volume_strain = 0.0) while keeping position, velocity and
+/// deformation_gradient should make the pile hold like a pre-shaped one.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_collapsed_pile_after_internal_state_reset() {
@@ -1002,7 +869,7 @@ fn diag_collapsed_pile_after_internal_state_reset() {
         shape_before_reset.angle_deg
     );
 
-    // The real, decisive intervention: reset internal history to the SAME
+    // The decisive intervention: reset internal history to the SAME
     // pristine baseline a pre-shaped particle starts at. Position,
     // velocity, deformation_gradient (hence volume/shape) all untouched.
     const BASELINE_Q: f32 = 1.111;
@@ -1029,21 +896,13 @@ fn diag_collapsed_pile_after_internal_state_reset() {
     }
 }
 
-/// TWENTY-FIFTH FINDING (2026-08-02): the internal-state hypothesis
-/// (friction_hardening/log_volume_strain) was cleanly falsified above --
-/// resetting it changed nothing. Real remaining candidate: actual
-/// particle POSITIONS/local packing. A pre-shaped pile is placed on a
-/// perfectly uniform lattice (`spacing: 0.25` everywhere); a
-/// dynamically-collapsed pile's particles arrive wherever the chaotic
-/// collapse left them -- real local density variation (clusters, gaps)
-/// that a point-wise constitutive law feels as genuine, persistent local
-/// stress imbalance, independent of any scalar hardening/strain
-/// bookkeeping. Direct measurement: nearest-neighbor distance
-/// distribution for both piles (same real recipe/duration as the
-/// internal-state comparison), same real spacing convention
-/// (`spacing: 0.25` cells for both spawns) -- if the collapsed pile's
-/// packing is measurably more irregular, that is real, direct support
-/// for the structural hypothesis.
+/// With the internal-state hypothesis falsified (resetting it changes nothing), the
+/// remaining candidate is particle positions and local packing: a pre-shaped pile sits
+/// on a uniform lattice (`spacing: 0.25`), a collapsed pile's particles wherever the
+/// collapse left them, with local density variation a point-wise constitutive law
+/// feels as persistent local stress imbalance. Measures the nearest-neighbor distance
+/// distribution of both piles (same recipe and duration as the internal-state
+/// comparison): a more irregular collapsed packing supports the structural hypothesis.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_vs_collapsed_packing_regularity() {
@@ -1103,14 +962,11 @@ fn diag_preshaped_vs_collapsed_packing_regularity() {
         solver
     };
 
-    // Real methodology check: the two piles were spawned at DIFFERENT
-    // spacings (0.25 pre-shaped, 0.5 collapsed -- each matching its own
-    // established real recipe). A raw nearest-neighbor distance
-    // comparison would be confounded by that alone, regardless of any
-    // real packing-irregularity difference -- normalize by each pile's
-    // own spawn spacing (a perfectly regular lattice at spacing `s` has
-    // nearest-neighbor distance exactly `s`, so this ratio is a fair,
-    // spacing-independent "how far from perfectly regular" measure).
+    // The two piles were spawned at different spacings (0.25 pre-shaped, 0.5
+    // collapsed, each its own recipe), so raw nearest-neighbor distances would
+    // differ for that reason alone. Normalize by each pile's spawn spacing (a
+    // regular lattice at spacing `s` has nearest-neighbor distance exactly `s`):
+    // a spacing-independent "how far from regular" measure.
     for (label, solver, spawn_spacing) in [
         ("PRE-SHAPED", &preshaped, 0.25f32),
         ("COLLAPSED", &collapsed, 0.5f32),
@@ -1147,17 +1003,12 @@ fn diag_preshaped_vs_collapsed_packing_regularity() {
     }
 }
 
-/// TWENTY-SIXTH FINDING (2026-08-02): sharp, cheap test found directly in
-/// the engine's own code -- `SpawnRegion::position_jitter`'s own doc
-/// comment: "0.2 is a good default for granular materials (sand, snow) to
-/// break lattice symmetry and prevent artificially regular pile
-/// formation." The proven, 100,000+-step-stable pre-shaped-pile recipe
-/// (`unconfined_pile_with_cundall_damping_reaches_real_repose_angle`) was
-/// spawned with ZERO jitter -- a perfectly regular lattice, against the
-/// engine's own documented convention. Does that PERFECT regularity
-/// matter for why it holds? Real, minimal, decisive test: same exact
-/// recipe, same real duration, ONLY difference is `position_jitter: 0.2`
-/// instead of the default 0.0.
+/// `SpawnRegion::position_jitter`'s doc recommends 0.2 for granular materials "to break
+/// lattice symmetry and prevent artificially regular pile formation", yet the
+/// 100,000+-step-stable pre-shaped-pile recipe
+/// (`unconfined_pile_with_cundall_damping_reaches_real_repose_angle`) spawns with zero
+/// jitter. Does that regularity matter for why it holds? Same recipe and duration, only
+/// `position_jitter: 0.2` instead of 0.0.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
@@ -1190,8 +1041,8 @@ fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
         (0.0..=height).contains(&dy) && dx <= hb * (1.0 - dy / height).max(0.0)
     });
 
-    // Real packing check right after spawn, before any dynamics -- confirm
-    // the jitter actually broke lattice regularity as intended.
+    // Packing check right after spawn, before any dynamics: the jitter must
+    // have broken lattice regularity.
     {
         let xs = &solver.particles().x;
         let n = xs.len();
@@ -1229,454 +1080,54 @@ fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
 /// real under-friction issue in the DP material's effective stable slope.
 ///
 /// Instead of dropping a tall column and measuring where the dynamic collapse settles
-/// (which gives ~12°, well below dry sand's real 30-35°), this pre-shapes a pile that
-/// is ALREADY at the target angle (30°) with zero initial velocity, then checks whether
-/// friction actually holds that slope.
+/// (which gives ~12°, well below dry sand's 30-35°), this pre-shapes a pile that is
+/// already at the target angle (30°) with zero initial velocity, then checks whether
+/// friction holds that slope.
 ///
-/// RESOLVED: the real fix (self-consistent return mapping + `apic_blend=0.05` +
-/// `cundall_damping=1.0`, see `confined_pile_with_cundall_damping_reaches_real_
-/// repose_angle`'s doc for the full derivation, findings 14/15 below) holds at
-/// THIS test's own GRID=64/DT=0.1 scale too, not just the 128/0.016 scale it
-/// was originally found at -- measured exactly 30.0°. Real cross-scale
-/// verification, not assumed. Below is the real investigation history that
-/// led there -- kept intact, not narration bloat, this is the actual
-/// methodology that found the fix.
+/// Holds with the recipe of `confined_pile_with_cundall_damping_reaches_real_repose_angle`
+/// (self-consistent return mapping + `apic_blend=0.05` + `cundall_damping=1.0`): exactly
+/// 30.0° at this test's GRID=64/DT=0.1 scale as well.
 ///
-/// ORIGINAL OPEN FINDING (2026-06-27): it does not [hold]. A 30°, zero-velocity pile creeps down to a
-/// genuine static equilibrium (velocity reaches exactly 0, not just "very slow") at
-/// ~5-8° -- far below both the target and the material's nominal 35° friction angle.
-/// This is NOT collapse-dynamics overshoot (there's no overshoot -- it starts at rest)
-/// and NOT a discretization/finite-size artifact (confirmed resolution-independent: same
-/// outcome at 2x height + 2x particle density). The conversion from Mohr-Coulomb
-/// friction angle to the Drucker-Prager cone (`alpha(q)`, Klar 2016 eq. 5) does not
-/// appear to preserve "this slope angle stays stable" the way the naive φ-equals-repose-
-/// angle assumption expects, at least in this 2D plane-strain setup. A real, deeper
-/// model-level question (needs an analytical infinite-slope stability derivation for 2D
-/// DP-MPM specifically, or comparing against Klar 2016's own validation geometry) -- not
-/// a quick code fix. `#[ignore]` keeps the suite green while recording the real finding.
+/// Without it the pile creeps to a static ~5-8°, resolution-independent (same at 2x
+/// height and 2x particle density). Ruled out on this scene or its laterally confined
+/// variant (`AabbConfinementField`):
+/// - dilatancy: 0/5/12/20/30° give 7.7/6.8/5.5/4.0/2.4° unconfined and
+///   21.8/21.2/20.2/18.9/17.2° confined, worse with more dilatancy either way, even
+///   though `sand.rs`'s `marginal_30deg_state_does_not_yield_for_35deg_friction`
+///   confirms the bare constitutive formula yields at the right angle;
+/// - cone matching: the inner (compression) Mohr-Coulomb-to-DP cone recommended for
+///   slope stability (Chen & Mizuno 1990; Abbo & Sloan 1995) gives 5.7° against the
+///   outer cone's 7.7°;
+/// - hardening: q = 1.12-2.90 (mean 1.375, phi = 36.8°) throughout the confined pile,
+///   surface and bulk alike (36.9° vs 36.8°), already above the 35° asymptote;
+/// - numerical coarseness in general: `cfl_coefficient` across 0.05-6.0 gives
+///   bit-identical results (on a near-static pile the stiffness bound always binds), and
+///   a low `max_substeps_per_step` only looked better because it dropped simulated time;
+/// - a G2P kernel-support renormalization at empty stencil cells: 0 of 24,450,000 G2P
+///   evaluations met the condition at this spacing (~16 particles per cell).
 ///
-/// SECOND REAL HYPOTHESIS TESTED AND FALSIFIED (2026-07-23): this scene uses
-/// `DruckerPragerMaterial::from_young_modulus` (dilatancy_angle=0.0, fully
-/// non-dilatant flow) -- real dense sand has Reynolds dilatancy (volume
-/// expansion under shear), and the engine already has a `.dilatant()`
-/// preset (12 degrees) this test never exercises. Swept dilatancy_angle
-/// directly on this exact scene (0/5/12/20/30 degrees): settled angle went
-/// 7.7 -> 6.8 -> 5.5 -> 4.0 -> 2.4 degrees -- MONOTONICALLY WORSE with more
-/// dilatancy, not better. (Likely mechanism: `update_particle`'s dilatancy
-/// term adds volumetric expansion proportional to EVERY plastic shear
-/// increment `dq`; a slowly-creeping quasi-static pile keeps accumulating
-/// small `dq` continuously, so more dilatancy just keeps loosening/
-/// expanding the material further with no compensating stiffening
-/// feedback, not the interlocking-resistance effect real dilatancy
-/// provides.)
+/// What moves the angle: lateral confinement (7.7° -> 21.8°) and, independently,
+/// `apic_blend` (unconfined, 1.0/0.7/0.4/0.1/0.05/0.0 -> 6.82/17.86/22.31/24.39/24.62/
+/// 21.15°; ASFLIP at `asflip_blend=0.97` collapses the pile to 1.14°). Both cap near
+/// 24.6° at GRID=128/DT=0.016; unconfined, the `apic_blend` gain is resolution-sensitive
+/// (12.07° at GRID=64/DT=0.1). `MuIRheologyMaterial::dense_packed` reaches 26.16°
+/// confined and 12.32° unconfined at GRID=64 (local µ(I) is ill-posed at low inertial
+/// number: Barker, Schaeffer, Bohorquez & Gray 2015, JFM 779:794-818). At surface
+/// particles the APIC affine reconstruction deviates ~26% (anisotropic) from a plain
+/// finite-difference read of the same grid velocities, against ~8% in the bulk, about
+/// 3.7% of the surface |C|: a small artifact, most of the surface behaviour is physics.
 ///
-/// Combined with the marginal-yield analytical test elsewhere in this repo
-/// (`sand.rs`'s own `marginal_30deg_state_does_not_yield_for_35deg_
-/// friction`, which already confirmed the bare constitutive formula predicts
-/// the correct yield angle in complete isolation, no grid/MPM involved at
-/// all), two real material-parameter hypotheses are now ruled out. The
-/// real gap most likely lives in the MPM grid-transfer layer itself (e.g.
-/// free-surface stress averaging, or how a slowly-creeping quasi-static
-/// state interacts with P2G/G2P) rather than any constitutive-model
-/// parameter -- a substantially different, larger investigation than
-/// sweeping material constants.
-///
-/// REAL ALTERNATIVE TESTED AND FALSIFIED (2026-07-23): hypothesized the code's
-/// `alpha(q)` implements the OUTER/tension-cone Mohr-Coulomb-to-DP matching
-/// (2*sin(phi)/(3-sin(phi)), the standard 3D formula per Klar 2016's own
-/// general-d parameterization), while geotechnical practice (Chen & Mizuno
-/// 1990; Abbo & Sloan 1995) recommends the INNER/compression-cone matching
-/// (2*sin(phi)/(3+sin(phi))) specifically for self-weight/slope-stability
-/// problems. Tested directly on this exact pre-shaped-pile scene (by solving
-/// for the outer-cone-equivalent friction angle that reproduces the inner
-/// cone's own alpha at phi=35deg, then running the real, unmodified material
-/// through it): baseline (current outer-cone code) settles at 7.7 degrees;
-/// the inner-cone alternative settles at 5.7 degrees -- WORSE, not better.
-/// This is consistent with the inner-cone formula's own smaller alpha at any
-/// given phi (less shear resistance, by construction) -- ruling out
-/// cone-matching CONVENTION as the cause. The real gap likely lives
-/// elsewhere: either the isotropic (Lode-angle-independent) DP cone itself
-/// is a poor approximation for a self-weight slope's real, position-varying
-/// stress state, or the friction_hardening (q) dynamics under sustained
-/// gravity loading, not just the phi-to-alpha conversion formula. Not yet
-/// investigated further.
-///
-/// THIRD REAL HYPOTHESIS TESTED AND FALSIFIED (2026-07-23): real Reynolds
-/// dilatancy only stabilizes a granular pile when the volume expansion it
-/// drives is resisted by real confinement (Terzaghi/Taylor stress-dilatancy
-/// theory) -- the free pile above has zero lateral confinement, which could
-/// explain hypothesis #2's monotonic-worse result independent of whether
-/// dilatancy itself is modeled correctly. Tested directly: same pile, same
-/// dilatancy sweep (0/5/12/20/30deg), but with a real `AabbConfinementField`
-/// pinned at the pile's OWN starting footprint (lateral only, top left free
-/// -- a real confined-base/open-top shear geometry). Result: confinement
-/// alone is a huge stabilizer (21.8deg at zero dilatancy, vs 7.7deg
-/// unconfined -- confirms lateral support, not dilatancy, is the dominant
-/// missing lever) but dilatancy STILL monotonically hurts even confined
-/// (21.8 -> 21.2 -> 20.2 -> 18.9 -> 17.2deg over the same 0->30deg sweep) --
-/// hypothesis #3 is ALSO falsified, dilatancy never reverses sign here. Real,
-/// actionable finding regardless: this scene's free/unconfined boundary
-/// condition itself is the largest single source of the angle-of-repose
-/// gap, separate from any material-parameter question. 21.8deg is still
-/// short of real dry sand's 30-35deg, so the gap is not fully closed, but
-/// confinement is now the strongest lead -- worth investigating why even a
-/// confined pile with the "more realistic" zero-dilatancy setting stalls at
-/// 21.8deg and not higher (candidates: friction_hardening saturation,
-/// isotropic-cone Lode-angle blindness noted above, or P2G/G2P free-surface
-/// stress averaging) before touching material constants again.
-///
-/// FOURTH REAL FINDING, MATERIAL-PARAMETER HYPOTHESES NOW CLOSED (2026-07-23):
-/// directly measured `friction_hardening` (q) on the confined zero-dilatancy
-/// pile above (best result, 21.8deg) instead of guessing. Result: q=1.12-2.90
-/// (mean 1.375) EVERYWHERE in the pile -- phi(mean q)=36.8deg, already ABOVE
-/// this scene's 35deg configured asymptote, well short of the peak (~48deg at
-/// q~6.1) but already exceeding real dry sand's 30-35deg target. Also checked
-/// whether the SURFACE (the topmost particle in each narrow x-column -- for
-/// this exact symmetric-triangle pile, that IS the exposed slope face) has
-/// systematically lower q than the bulk interior (a real, testable
-/// under-hardened-failure-zone hypothesis): surface phi(mean)=36.9deg vs bulk
-/// 36.8deg -- statistically identical, hypothesis FALSIFIED, no surface/bulk
-/// split.
-///
-/// This closes off friction-hardening tuning as a lever entirely: the local
-/// constitutive law is already granting MORE friction resistance than real
-/// dry sand needs, uniformly, including at the exact sliding surface, yet the
-/// macroscopic pile still only holds 21.8deg. The gap is therefore NOT a
-/// material-parameter question anymore (four hypotheses tested: cone
-/// convention, free dilatancy, confined dilatancy, surface-vs-bulk hardening
-/// -- all falsified or closed). It is either (a) a genuine local-vs-global
-/// gap: point-wise Drucker-Prager gets the LOCAL yield condition right but
-/// classical slope stability is a GLOBAL limit-equilibrium condition (Coulomb
-/// earth-pressure theory) that a point-wise flow rule doesn't automatically
-/// reproduce numerically, or (b) numerical dissipation/noise at a
-/// marginally-stable critical-state configuration (a pile at its own angle of
-/// repose sits exactly AT yield with zero safety margin by definition --
-/// MLS-MPM's kernel averaging/APIC affine-gradient approximation isn't exact
-/// at a sharp yield surface, so slow creep toward a lower angle over a long
-/// settle is plausible even with a "correct" friction angle). Neither
-/// investigated yet -- both are real numerics-level questions, not parameter
-/// sweeps, and a substantially different investigation from anything tried
-/// so far.
-///
-/// FIFTH REAL FINDING, PARTIAL WIN ON HYPOTHESIS (b) ABOVE (2026-07-24): tested
-/// numerical dissipation directly on the confined zero-dilatancy pile (best
-/// prior result, 21.8deg). First tried ASFLIP (Fei, Guo, Wu, Huang, Gao 2021,
-/// ACM TOG 40(4) -- LESS numerically dissipative than default APIC) expecting
-/// improvement -- result: `asflip_blend=0.97` COLLAPSED the pile to 1.14deg,
-/// the opposite direction. Correct reinterpretation: dissipation (numerical or
-/// physical) is stabilizing this marginally-stable configuration, not
-/// destabilizing it -- so swept the opposite direction instead, lowering
-/// `apic_blend` (toward pure PIC, MORE dissipative; already documented in
-/// `SimConfig::apic_blend`'s own doc comment as "tune down for materials that
-/// need to damp out"). Sweep `[1.0, 0.7, 0.4, 0.1, 0.0]` -> `[21.85, 23.37,
-/// 24.09, 24.62, 7.80]` degrees -- steady real improvement down to 0.1, then a
-/// sharp collapse at pure PIC (0.0). Refined sweep near the optimum `[0.15,
-/// 0.08, 0.05, 0.03, 0.02]` -> `[24.54, 24.62, 24.61, 24.62, 24.48]` -- a real,
-/// flat, reproducible plateau, not a lucky single point. Cross-checked against
-/// both cloned reference repos and the literature before trusting it: `bevy-mpm`
-/// independently documents the same APIC/PIC/FLIP dissipation spectrum
-/// (`transfer_scheme.rs`, unimplemented there); `sparkl` has no such dial at
-/// all (pure APIC only -- an honest negative data point, not a contradiction);
-/// PIC/FLIP blending as a granular/snow MPM stabilizer is itself a real,
-/// production precedent (Stomakhin et al. 2013 SIGGRAPH, "A material point
-/// method for snow simulation"), not an invented fudge factor. Best real result
-/// of the whole investigation: 24.6deg at `apic_blend`~0.03-0.10, up from
-/// 21.8deg via confinement alone -- cuts the gap to the real 30-35deg target by
-/// ~34%, but does not close it. `apic_blend` is a global `SimConfig` setting,
-/// not sand-specific -- shipping this as a default requires scoping it to
-/// granular materials/scenes specifically, not changing the engine-wide
-/// default, and hasn't been done yet.
-///
-/// SIXTH REAL FINDING, apic_blend IS THE DOMINANT LEVER, NOT A REFINEMENT ON
-/// CONFINEMENT (2026-07-25): re-ran the identical apic_blend sweep on the
-/// completely UNCONFINED pile (this test's own actual scene, zero
-/// `AabbConfinementField`) to check whether the fifth finding was a real,
-/// general granular-MPM lever or an artifact of interacting with confinement.
-/// Result: `[1.0, 0.7, 0.4, 0.1, 0.05, 0.0]` -> `[6.82, 17.86, 22.31, 24.39,
-/// 24.62, 21.15]` degrees. apic_blend ALONE, with NO confinement at all,
-/// reaches the same ~24.6deg ceiling the confined pile reaches -- a +17.8deg
-/// swing, an order of magnitude bigger than confinement's own +2.8deg
-/// contribution (21.8 -> 24.6). This reframes the whole investigation:
-/// numerical dissipation (candidate (b) from the fourth finding) is the
-/// PRIMARY real lever for this gap, not a secondary refinement layered on
-/// confinement -- confinement and apic_blend both help, largely
-/// independently, and land on the same real ceiling either way. One genuine
-/// wrinkle, noted not chased further: pure PIC's collapse is much milder
-/// unconfined (21.15deg) than confined (7.80deg) -- confinement and pure-PIC
-/// interact badly together specifically, a real but secondary effect.
-/// ~24.6deg now looks like a real, robust, apic_blend-driven ceiling for this
-/// exact material/scene combination, independent of the confinement choice --
-/// still short of the real 30-35deg target, the gap still not fully closed.
-///
-/// SEVENTH FINDING, REAL LITERATURE CHECK (2026-07-25): before pushing further,
-/// checked whether this whole gap is even a real, addressable phenomenon or an
-/// emerge-specific bug. It is real and independently documented elsewhere:
-/// Sordo, Rathje & Kumar 2022 (arXiv:2206.07169, a real dynamic-MPM granular-
-/// collapse implementation) explicitly reports "the final slope angle is
-/// smaller than the friction angle" and leans on damping to reach equilibrium
-/// -- the same shape as this finding. Fern & Soga 2016 (Acta Geotechnica
-/// 11(3):659-678) independently found constitutive-model choice materially
-/// controls deposit angle/energy dissipation in MPM column collapse. Klar et
-/// al. 2016 itself (the DP-MPM formulation used here) appears to be a
-/// qualitative/visual graphics paper with no quantitative repose-angle
-/// validation at all -- telling in itself. Real theoretical root cause:
-/// Mühlhaus & Vardoulakis 1987 (Géotechnique 37(3):271-283) -- local
-/// point-wise plasticity has NO built-in length scale, unlike real granular
-/// shear bands (finite thickness set by grain size); Kamrin & Koval 2012
-/// (PRL 108:178301) show local models predict a single universal repose
-/// angle independent of layer thickness, while real experiments show
-/// thickness-dependence -- a documented failure of local models exactly at
-/// marginal stability. The real fix in the literature (non-local/"granular
-/// fluidity" plasticity, a diffusive field with a grain-diameter length
-/// scale) has a real working MPM implementation (Haeri & Skonieczny 2022,
-/// arXiv:2111.01523, open code) reporting improved accuracy specifically in
-/// the quasi-static regime -- but this is genuinely new engine code (a new
-/// grid field + an extra nonlocal PDE solve per substep), not a parameter
-/// change, and hasn't been attempted here.
-///
-/// Real, important reframe found in the same literature check: multiple real
-/// sources (Zhou, Xu, Yu & Zulli 2002, Powder Technology 125:45-54, DEM;
-/// Chandra, Dunatunga & Kamrin 2026, Phys. Rev. Fluids, arXiv:2604.21448) show
-/// that correctly-modeled PHYSICAL damping (acting only on the elastic/wave
-/// component) should NOT move a pile's settled angle at all -- the angle
-/// stays governed purely by static friction regardless of damping level, by
-/// design, in their models. This means `apic_blend`'s large real effect here
-/// is likely NOT correctly-modeled physical damping -- it's circumstantial
-/// evidence of an uncharacterized P2G/G2P-level artifact specifically at the
-/// yield surface (consistent with the fourth finding's own unconfirmed
-/// hypothesis (b): "MLS-MPM's kernel averaging/APIC affine-gradient
-/// approximation isn't exact at a sharp yield surface"), which apic_blend's
-/// low-pass filtering happens to suppress as a side effect. Real, concrete,
-/// still-open numerics question, not a closed case.
-///
-/// Also checked: is 30-35deg even a fair target for an idealized
-/// point-particle continuum? Real monosized-sphere DEM (Zhou et al. 2002)
-/// caps out at ~23-24deg, well below 30-35 -- real angular sand needs
-/// shape/interlocking to reach 30-35deg (Fu et al. 2020). But Bolton 1986
-/// (Géotechnique 36(1):65-78), the standard geotechnical reference, gives
-/// real quartz sand's CRITICAL-STATE (loose, non-dilating) friction angle as
-/// ~33deg -- essentially the 30-35deg target itself -- and this test already
-/// uses `dilatancy_angle=0.0` (exactly that non-dilatant critical-state
-/// regime). Verdict: 30-35deg is a legitimate, Bolton-grounded target for
-/// this configuration, not an unfair idealized-vs-real mismatch. The gap is
-/// real and plausibly reflects a genuine local-continuum-vs-discrete-fabric
-/// limitation (tying back to the non-local-plasticity point above), not a
-/// bad benchmark.
-///
-/// EIGHTH FINDING, A REAL METHODOLOGY BUG CAUGHT AND FIXED MID-INVESTIGATION
-/// (2026-07-25): two parallel follow-up experiments (mu(I) rheology
-/// comparison, CFL/substep-cap sensitivity) both reproduced this scene using
-/// THIS test's own permanent constants (GRID=64, DT=0.1) instead of the
-/// GRID=128/DT=0.016 scale the fifth/sixth findings above actually used --
-/// an honest process gap (the original scene lived only in temp diagnostics,
-/// already deleted by the time the follow-ups ran, so they had to
-/// reconstruct it from this doc comment + the permanent test's own visible
-/// constants). Directly reconciled by rerunning DP confined at apic_blend=
-/// 0.05 at BOTH scales: GRID=128/DT=0.016 -> 26.34deg (consistent with the
-/// documented 24.6deg plateau, real run-to-run variance); GRID=64/DT=0.1 ->
-/// 23.70deg (also broadly consistent, a real but modest ~2.6deg
-/// resolution/timestep sensitivity for the CONFINED case). The UNCONFINED
-/// case is far more resolution-sensitive: GRID=64/DT=0.1 only reaches
-/// 12.07deg at apic_blend=0.05 (vs GRID=128/DT=0.016's 24.62deg, a real
-/// +12.5deg gap) even though both scales start from a similar apic_blend=1.0
-/// baseline (~6.8-7.7deg) -- confinement makes the apic_blend benefit robust
-/// across resolution; without confinement, the benefit's MAGNITUDE is itself
-/// resolution/timestep-sensitive, a real and previously-unknown wrinkle in
-/// its own right.
-///
-/// NINTH FINDING, mu(I) RHEOLOGY BEATS DP, CONFINED ONLY (2026-07-25): the
-/// engine's second real granular model, `MuIRheologyMaterial` (already
-/// implemented, GDR MiDi 2004 / Jop-Forterre-Pouliquen 2006), tested on the
-/// identical scene at GRID=64/DT=0.1 (same scale as the eighth finding's
-/// reconciliation, so directly comparable): CONFINED, `.dense_packed()`,
-/// apic_blend 0.05-0.10 -> 26.16deg -- beats DP's own apples-to-apples
-/// number at this same scale (23.70deg, eighth finding) by a real +2.5deg,
-/// the best result of the whole investigation. UNCONFINED: much worse than
-/// DP, caps at 12.32deg (DP unconfined at this scale: 12.07deg, essentially
-/// tied) -- apic_blend barely moves mu(I) unconfined (+5.3deg total vs DP's
-/// own +5.25deg at this scale, or +17.8deg at the finer GRID=128 scale).
-/// Real, literature-consistent (not directly instrumented) explanation:
-/// Barker, Schaeffer, Bohorquez & Gray 2015 (JFM 779:794-818) prove local
-/// mu(I) is mathematically ill-posed at low inertial number -- exactly the
-/// quasi-static, near-rest regime a settled pile sits in. Structurally,
-/// mu(I)'s flow rule always solves for nonzero shear rate once past yield
-/// (no rate-independent "hard stop" the way DP's return mapping provides),
-/// so a low-pressure unconfined region has no true static branch and keeps
-/// creeping -- plausibly why confinement (raising local pressure, moving
-/// material out of the marginal regime) matters far more for mu(I) than for
-/// DP. Verdict: mu(I) is not a drop-in fix (worse unconfined, still short of
-/// 30-35deg confined), but it independently confirms confinement is the
-/// physically load-bearing mechanism for this 2D free-surface scene, even
-/// more so than for DP.
-///
-/// TENTH FINDING, cfl_coefficient/max_substeps_per_step ARE STRUCTURALLY
-/// INERT HERE (2026-07-25): tested whether OTHER, independent sources of
-/// numerical coarseness show the same stabilizing pattern apic_blend showed
-/// (which would mean "any numerical error helps," a much broader and weaker
-/// claim than apic_blend being specifically special). Real, clean negative
-/// result on the UNCONFINED scene at GRID=64/DT=0.1: sweeping
-/// `cfl_coefficient` across a 120x range (0.05 to 6.0) at apic_blend=1.0
-/// gave BIT-IDENTICAL substep counts and angles (7.74deg) every time --
-/// `cfl.rs`'s own `cfl_bound` only lets `cfl_coefficient` act through
-/// `cfl_coefficient * cell_size / max_speed`, and this quasi-static creeping
-/// pile has near-zero velocity by construction, so that term is always
-/// enormous regardless of `cfl_coefficient` -- the material-stiffness bound
-/// is the sole binding constraint throughout. This is a resolution-
-/// independent, structural fact about the formula (which term wins a `min()`
-/// when one operand is always huge), not an empirical coincidence tied to
-/// this scene's scale -- not independently re-verified at GRID=128/DT=0.016,
-/// but there is no mechanism by which it could differ there.
-/// `max_substeps_per_step` initially looked promising (cap=2 roughly doubled
-/// the angle to 15.53deg) but this was CAUGHT as a real measurement artifact,
-/// not genuine coarseness: capping substeps discards unsimulated frame time
-/// every `step()` call rather than carrying it forward, so a low cap means
-/// far less real elapsed simulation time in the same number of `step()`
-/// calls -- the pile simply hadn't had time to creep down yet. Corrected by
-/// matching TRUE elapsed sim time exactly (16,665 `step()` calls at cap=2 to
-/// reach the same 150.0 time units as cap=64's 1500 calls): result reverts
-/// to 7.73deg, statistically identical to every other point. Combined test
-/// (apic_blend=0.05 + coarse cfl_coefficient=6.0) was bit-identical to
-/// apic_blend=0.05 alone -- confirms `cfl_coefficient` contributes literally
-/// nothing on top of `apic_blend`, not merely "saturates at a shared
-/// ceiling." Real conclusion: "numerical dissipation stabilizes this
-/// marginal configuration" (the fourth finding's candidate (b)) is TOO BROAD
-/// as originally stated -- it is specifically `apic_blend`'s own mechanism
-/// (how much sub-grid affine velocity gradient survives the P2G/G2P round
-/// trip), not a generic "more truncation error helps" truism. This sharpens
-/// (and is fully consistent with) the seventh finding's reframe: the real
-/// effect very likely traces to a specific P2G/G2P-level artifact at the
-/// yield surface, not to numerical coarseness in general.
-///
-/// ELEVENTH FINDING, A MORE MPM-NATIVE VERSION OF THE REAL FIX EXISTS
-/// (2026-07-25): deeper literature pass on the seventh finding's non-local-
-/// plasticity conclusion, specifically looking for a bridge more natural to
-/// a particle method than a separate diffusive grid PDE. Found one: Cosserat
-/// (micropolar) plasticity -- adds a genuine length scale (tied to grain
-/// size) the same way non-local fluidity does, but via a micro-rotation
-/// degree of freedom per material point plus a couple-stress term in the
-/// constitutive law, not a separate field/solve. Real, existing MPM
-/// implementations confirm this is buildable, not speculative: Elias et al.
-/// 2022, "A finite micro-rotation material point method for micropolar solid
-/// and fluid dynamics with three-dimensional evolving contacts and free
-/// surfaces" (real 3D MPM+Cosserat, handles free surfaces/contacts); a 2023
-/// paper extends this to an implicit MPM formulation for micropolar solids
-/// under large deformation. Real, older grounding for WHY this specific
-/// framing helps shear localization: Mühlhaus & Vardoulakis's own later work
-/// and independent micropolar-continuum studies show a Cosserat continuum
-/// gives correct shear-band-thickness dependence on the microstructural
-/// length scale, where classical (non-Cosserat) continuum plasticity
-/// famously does not. Conceptually closer to this engine's existing
-/// architecture than the grid-PDE approach: each particle already carries an
-/// affine velocity gradient (APIC's C matrix) and a deformation gradient --
-/// adding a micro-rotation/angular-velocity field and a couple-stress term
-/// is an extension of machinery already present, not a new subsystem
-/// alongside it (contrast with the seventh finding's non-local-fluidity
-/// route, which needs an entirely separate grid-based diffusive solve).
-///
-/// Also checked real DEM (discrete element method) literature as a
-/// completely different-category comparison point (no continuum
-/// approximation at all -- real per-grain contacts): confirms angle of
-/// repose is real and strongly sensitive to static/rolling friction
-/// coefficients (rising up to static~0.35/rolling~0.4 before diminishing
-/// returns; one calibrated study needed sliding=0.633/rolling=0.401 to match
-/// real material behavior), and particle shape is typically folded into the
-/// rolling-friction parameter rather than modeled as literal grain geometry.
-/// Confirms DEM CAN reach realistic repose angles, but requires its own real
-/// per-material calibration effort -- not a free validation that switching
-/// methods trivially solves this, and not applicable to emerge's continuum-
-/// MPM architecture directly (a fundamentally different simulation method,
-/// same category-level distinction as the seventh finding's local-vs-
-/// nonlocal point, just one step further in that direction).
-///
-/// Honest scope, not yet attempted: Cosserat/micropolar plasticity is real,
-/// concretely buildable, comparable in size to this engine's existing rod-
-/// solver addition (a new particle field, new constitutive-law terms, new
-/// P2G/G2P angular-momentum transfer) -- not a parameter change, a genuine
-/// future engineering project if this gap is prioritized for real closure
-/// rather than accepted at its current ~24-26deg ceiling.
-///
-/// TWELFTH FINDING, THE P2G/G2P ARTIFACT DIRECTLY MEASURED FOR THE FIRST TIME
-/// (2026-07-25): findings 7/10 only inferred an uncharacterized transfer-
-/// scheme artifact at the yield surface circumstantially (real damping
-/// shouldn't move repose angle, per the literature, yet apic_blend clearly
-/// does). Directly instrumented and measured it instead of inferring further.
-/// Confirmed mechanism (`transfer/g2p.rs`): `apic_blend` is one scalar
-/// multiply (`*vg = b * KERNEL_D_INVERSE * apic_blend`) applied IDENTICALLY
-/// to every particle regardless of position -- it cannot mechanically target
-/// the surface specifically. Measured surface (topmost particle per
-/// x-column) vs bulk particles mid-settle, both apic_blend=1.0 and 0.05:
-/// surface IS closer to yield and has larger/noisier velocity-gradient
-/// magnitude than bulk at both values -- but a plain non-APIC finite-
-/// difference read of the SAME grid velocities shows the identical ratio,
-/// meaning this part is genuine physics (real yielding concentrates at a
-/// free surface), not an APIC-specific defect. A real, small, previously-
-/// unconfirmed bias WAS found though: at apic_blend=1.0, surface particles'
-/// affine reconstruction shows ~26% systematic (anisotropic -- biased in x
-/// vs y) deviation from the naive grid read, vs only ~8% (near-pure noise)
-/// at bulk -- a genuine ~3x difference, directly measured, not inferred.
-/// Modest in absolute size though: ~3.7% of the surface's own |C| magnitude.
-///
-/// Revised verdict: findings 7/10's framing was partially right, not fully --
-/// most of "the surface behaves specially" is real physics a non-APIC
-/// baseline reproduces almost exactly; only a small, now-confirmed slice is a
-/// genuine reconstruction artifact. apic_blend's large real effect on
-/// settled ANGLE is best explained by its uniform (not surface-targeted)
-/// damping having an outsized effect on pile SHAPE specifically because real
-/// yielding concentrates at the free surface by construction -- not because
-/// the damping is secretly fixing something broken there. Practical
-/// implication: a small, targeted, honest fix (kernel-support/mass-weighted
-/// renormalization near incomplete stencils at free surfaces -- a real,
-/// known MPM free-surface consistency technique) is plausible and cheap to
-/// try, but too small on its own (measured at ~3.7% of the relevant
-/// quantity) to close the remaining ~5-10deg gap. The structural fix for
-/// THAT still points to the eleventh finding's Cosserat/non-local direction
-/// -- now resting on direct measurement rather than literature inference
-/// alone, real added confidence either way this investigation is closed for
-/// now (24-26deg ceiling, real known cause, real known candidate fixes, both
-/// deferred) or picked back up later.
-///
-/// THIRTEENTH FINDING, THE CHEAP FIX WAS ACTUALLY BUILT AND TESTED -- REAL
-/// NEGATIVE RESULT, NOT JUST THEORY (2026-07-25): rather than stop at "a
-/// small fix is plausible," implemented the twelfth finding's proposed
-/// kernel-support renormalization for real in `transfer/g2p.rs` -- detect
-/// stencil cells with zero grid mass (untouched by P2G this substep) and
-/// renormalize the affine matrix `b` (only `b`/`velocity_gradient`, NOT
-/// `new_v`, so position/momentum dynamics stay byte-identical -- a
-/// deliberately surgical, low-risk change). Full engine-wide test suite
-/// (all materials, all rod tests, momentum/mass-conservation tests) stayed
-/// green with the fix active -- confirmed safe. But the confined/unconfined
-/// pile scene's settled angle came back IDENTICAL to the pre-fix numbers at
-/// every apic_blend value tested. Verified this wasn't a fluke by adding
-/// real atomic-counter instrumentation directly in the G2P hot loop:
-/// **0 out of 24,450,000 G2P evaluations ever satisfied the renormalization
-/// condition**, across all four confined/unconfined x apic_blend=1.0/0.05
-/// configurations. The fix never once fired.
-///
-/// Real, honest reason (not guessed): this scene's particle spacing (0.25,
-/// ~16 particles per grid cell) is dense enough that even at the pile's
-/// sloped free surface, every cell in every particle's 3x3 kernel stencil
-/// always receives SOME nonzero mass from a neighboring surface particle --
-/// literal empty cells essentially never occur at this discretization. The
-/// real artifact the twelfth finding measured (~3.7% anisotropic bias) is a
-/// SOFT, continuous asymmetry-in-degree (some directions have less real mass
-/// support than others, not zero), not a hard "some cells are literally
-/// empty" effect -- a binary empty/non-empty threshold structurally cannot
-/// see it. Reverted the fix entirely (zero benefit, real per-particle
-/// overhead in universal G2P code used by every material in every scene --
-/// no reason to keep it).
-///
-/// This is the real answer to "can continuum be fixed with a small,
-/// well-motivated numerics patch": tried, verified safe, definitively did
-/// NOT engage, let alone help. Strengthens (does not merely repeat) the
-/// twelfth finding's conclusion: closing the remaining gap needs something
-/// that responds to a CONTINUOUS local asymmetry measure, not a binary
-/// empty-cell test -- which is exactly the kind of thing a real length-scale
-/// term (Cosserat/non-local plasticity, eleventh finding) provides and a
-/// simple kernel-support correction does not. The investigation's honest
-/// conclusion stands: 24-26deg is the real current ceiling for point-wise
-/// continuum plasticity at this scene; a genuine further improvement
-/// requires the structural (non-local/Cosserat) direction, not another
-/// numerics patch of this shape.
+/// Literature: MPM granular collapses commonly end below the friction angle and rely on
+/// damping (Sordo, Rathje & Kumar 2022, arXiv:2206.07169; Fern & Soga 2016, Acta
+/// Geotechnica 11(3):659-678). Local point-wise plasticity has no length scale
+/// (Mühlhaus & Vardoulakis 1987, Géotechnique 37(3):271-283), and local models predict
+/// one thickness-independent repose angle (Kamrin & Koval 2012, PRL 108:178301); the
+/// structural candidates are nonlocal granular fluidity (Haeri & Skonieczny 2022,
+/// arXiv:2111.01523) and Cosserat plasticity (Elias et al. 2022). Correctly modeled
+/// physical damping should not move a settled angle (Zhou, Xu, Yu & Zulli 2002, Powder
+/// Technology 125:45-54; Chandra, Dunatunga & Kamrin 2026, arXiv:2604.21448). 30-35° is
+/// a fair target: Bolton 1986 (Géotechnique 36(1):65-78) gives ~33° as quartz sand's
+/// critical-state friction angle, the non-dilatant regime used here.
 #[test]
 #[ignore = "slow: about 6 min in the CI debug profile, runs in the slow-tests workflow"]
 fn sand_preshaped_pile_at_30deg_holds_its_slope() {
@@ -1741,47 +1192,29 @@ fn sand_preshaped_pile_at_30deg_holds_its_slope() {
     );
 }
 
-/// FOURTEENTH FINDING, THE GAP ACTUALLY CLOSED (2026-07-26): after 13 findings
-/// characterizing WHY the pile above creeps to 5-8deg, three real, cited,
-/// disclosed mechanisms were combined and this is the first configuration all
-/// investigation that reaches the real 30-35deg dry-sand target, stably, over
-/// a long horizon (confirmed flat at 1500/3000/6000/12000 steps, zero drift):
+/// Confined pre-shaped pile held at the 30-35° dry-sand target, flat at
+/// 1500/3000/6000/12000 steps, with three mechanisms:
 ///
 /// 1. **Self-consistent (closest-point-projection) return mapping**
-///    (`DruckerPragerMaterial::project`, now the unconditional default): `alpha`
-///    is evaluated at the END-of-step hardening state `q + gamma` via fixed-
-///    point iteration, not frozen at the pre-step `q` -- real numerical rigor
-///    per Simo & Taylor 1985 (CMAME 48:101-118) and Simo & Hughes,
-///    *Computational Inelasticity* (1998), a genuine correctness improvement to
-///    the ALREADY-real DP constitutive law, not new physics. PDE-faithful: it
-///    doesn't add anything, it solves the model's own equations more exactly.
-/// 2. **apic_blend tuning** (0.05, findings 5/6/8/9/10): real, confinement-
-///    independent numerical-dissipation lever, previously characterized (via
-///    direct P2G/G2P measurement, 12th finding) as a uniform, non-targeted
-///    filter, not itself correctly-modeled physics.
-/// 3. **Cundall (1982/1987) local non-viscous damping**
-///    (`SimConfig::cundall_damping = 1.0`, its own natural ceiling): a real,
-///    disclosed, EXPLICITLY NON-PHYSICAL numerical convergence aid (dynamic
-///    relaxation) from the geotechnical-MPM literature (Beuth et al. 2007,
-///    NUMOG X; production use in Anura3D) -- damps velocity proportional to
-///    the FORCE just applied (not velocity itself), self-gating (zero effect
-///    at rest, negligible on genuinely directed motion), purpose-built for the
-///    exact mismatch this whole investigation kept finding: an explicit-
-///    dynamic MPM solver applied to an inherently quasi-static settling
-///    problem. Confirmed via a real sweep this is the dominant contributor
-///    (cundall alone: 20.43->25.46deg as it rises 0->0.9 at default apic_blend;
-///    combined with apic_blend=0.05: 26.34->29.48deg over the same range) --
-///    disclosed honestly, not hidden, per the user's own explicit "no cheating"
-///    bar: this is a real, well-precedented, production-grade numerical
-///    technique, not physics, layered ON TOP of the PDE-faithful fix above,
-///    never as a replacement for it.
+///    (`DruckerPragerMaterial::project`, the default): `alpha` is evaluated at the
+///    end-of-step hardening state `q + gamma` by fixed-point iteration, not frozen at
+///    the pre-step `q` (Simo & Taylor 1985, CMAME 48:101-118; Simo & Hughes,
+///    *Computational Inelasticity*, 1998). It solves the DP model's own equations more
+///    exactly; it adds no physics.
+/// 2. **apic_blend = 0.05**: a uniform numerical dissipation filter (see
+///    `sand_preshaped_pile_at_30deg_holds_its_slope`), not modeled physics.
+/// 3. **Cundall (1982/1987) local non-viscous damping** (`SimConfig::cundall_damping =
+///    1.0`, its ceiling): an explicitly non-physical convergence aid (dynamic
+///    relaxation) from geotechnical MPM (Beuth et al. 2007, NUMOG X; used in Anura3D).
+///    It damps velocity in proportion to the force just applied, so it has no effect at
+///    rest and little on directed motion, built for an explicit dynamic solver applied
+///    to a quasi-static settling problem. The dominant contributor: cundall alone
+///    20.43->25.46° as it rises 0->0.9 at the default apic_blend; with apic_blend=0.05,
+///    26.34->29.48° over the same range. A numerical technique layered on the
+///    return-mapping fix, not a replacement for it.
 ///
-/// Honest scope: this is the CONFINED scene (matches findings 5-13's own
-/// confined variant). `cundall_damping` is a global, opt-in `SimConfig` field
-/// (default 0.0, zero cost/behavior change for every other scene) -- this
-/// test opts in explicitly, it is not a new engine-wide default. The open
-/// question of whether confinement itself was load-bearing for this result
-/// is answered -- see the FIFTEENTH FINDING test immediately below: it is not.
+/// `cundall_damping` is an opt-in `SimConfig` field (default 0.0); this test opts in.
+/// Confinement is not needed (see the unconfined test below).
 #[test]
 #[ignore = "slow: about 5 min in the CI debug profile, runs in the slow-tests workflow"]
 fn confined_pile_with_cundall_damping_reaches_real_repose_angle() {
@@ -1841,10 +1274,9 @@ fn confined_pile_with_cundall_damping_reaches_real_repose_angle() {
     );
 }
 
-/// FIFTEENTH FINDING (2026-07-26): the exact same recipe closes the FREE,
-/// UNCONFINED pile too -- the original `sand_preshaped_pile_at_30deg_holds_its_slope`
-/// scene above, with zero `AabbConfinementField`. Swept `cundall_damping` at
-/// `apic_blend=0.05` on this geometry:
+/// The same recipe holds the free, unconfined pile (the scene of
+/// `sand_preshaped_pile_at_30deg_holds_its_slope`, no `AabbConfinementField`).
+/// `cundall_damping` sweep on this geometry:
 ///
 ///   apic=1.0, cundall=0.0 (self-consistent alone, no tuning) -> 6.82°
 ///   apic=0.05, cundall=0.0                                    -> 24.62°
@@ -1854,12 +1286,8 @@ fn confined_pile_with_cundall_damping_reaches_real_repose_angle() {
 ///   apic=0.05, cundall=0.9                                    -> 29.41°
 ///   apic=0.05, cundall=1.0                                    -> 30.04° (matches confined exactly)
 ///
-/// Confinement was never load-bearing -- the AabbConfinementField in the test
-/// above was there because that scene's own history (findings 5-13) built it
-/// in for other reasons, not because this fix depends on it. Also confirmed
-/// stable well past the confined test's own horizon: flat at 30.041° across
-/// 12000/25000/50000/100000 steps, zero drift -- a genuine fixed point, not a
-/// slow ongoing creep that happens to be small over 6000 steps.
+/// Flat at 30.041° across 12000/25000/50000/100000 steps: a fixed point, not a slow
+/// creep that happens to be small over 6000 steps.
 #[test]
 #[ignore = "slow: about 6 min in the CI debug profile, runs in the slow-tests workflow"]
 fn unconfined_pile_with_cundall_damping_reaches_real_repose_angle() {
@@ -1913,31 +1341,18 @@ fn unconfined_pile_with_cundall_damping_reaches_real_repose_angle() {
     );
 }
 
-/// SIXTEENTH FINDING (2026-08-01): the pre-shaped-pile recipe above
-/// (`apic_blend=0.05` + `cundall_damping=1.0`) is proven to HOLD a pile
-/// already in its final 30 deg shape. It is explicitly NOT proven to help a
-/// pile actually GET there from a violent collapse -- the opposite, in
-/// fact (the dynamic column-collapse test's own doc: this same damping
-/// makes a violent collapse WORSE, since it damps velocity, which is
-/// exactly what a falling/spreading column needs). Tested here: does a
-/// SLOW, INCREMENTAL pour (small batches of new particles added above the
-/// growing pile, each one given real settle time under the SAME recipe
-/// before the next batch lands -- a real hourglass/funnel, not a
-/// demolition) build a stable pile from nothing?
+/// Can a slow, incremental pour (small batches added above the growing pile, each given
+/// settle time under the holding recipe `apic_blend=0.05` + `cundall_damping=1.0`
+/// before the next lands) build a stable pile from nothing? The recipe holds a pile
+/// already in its final shape; it makes a violent collapse worse, since it damps the
+/// velocity a spreading column needs.
 ///
-/// REAL RESULT, NEGATIVE: no -- it builds a narrow 22-cell-tall TOWER at
-/// 85 deg, not a pile. Real, disclosed mechanism (not a bug): Cundall
-/// damping (Beuth et al. 2007) damps velocity in proportion to the force
-/// just applied, which is exactly what suppresses a freshly-landed grain's
-/// lateral toppling motion -- the same property that lets it hold an
-/// ALREADY-shaped pile rock-steady also prevents newly-poured grains from
-/// ever spreading sideways in the first place. They land and stick almost
-/// exactly where they fell. `#[ignore]`d honestly rather than loosening the
-/// height-safety assertion to force a pass -- the real, open question this
-/// leaves is whether damping needs to be applied only during a distinct
-/// "settle" phase (off while a batch is actively falling/impacting, on
-/// once it's still) rather than as one constant global value -- untested,
-/// real next hypothesis, not yet implemented.
+/// Result: no. It builds a narrow 22-cell-tall tower at 85°. Cundall damping (Beuth et
+/// al. 2007) damps velocity in proportion to the force just applied, which suppresses a
+/// freshly landed grain's lateral toppling: the property that holds a shaped pile also
+/// keeps poured grains from spreading. `#[ignore]`d rather than loosening the height
+/// assertion; the next hypothesis is damping only in a distinct settle phase (see the
+/// test below).
 #[ignore = "real negative result: slow pour under cundall_damping=1.0 builds an 85 \
             deg tower (h=22.8, base_half_width=1.9), not a pile -- damping suppresses \
             the lateral toppling a pour needs, same property that holds an \
@@ -1978,7 +1393,7 @@ fn sand_pile_built_by_slow_pour_holds_real_repose_angle() {
         .with_default_material(Box::new(sand))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    // Real, small funnel pour: a small box of new particles dropped from a
+    // Small funnel pour: a small box of new particles dropped from a
     // fixed height, given real settle time before the next batch, same
     // spirit as `basic_sand_gui.rs`'s own live pour mechanic (`add_body`
     // mid-run is the same public API, not new engine behavior).
@@ -2028,35 +1443,19 @@ fn sand_pile_built_by_slow_pour_holds_real_repose_angle() {
     );
 }
 
-/// SEVENTEENTH FINDING (2026-08-01), the sixteenth's own real, disclosed
-/// hypothesis actually tested: phase-gate Cundall damping instead of one
-/// constant value -- OFF (0.0) while each poured batch is actively
-/// falling/impacting (so it keeps the real kinetic energy a grain needs to
-/// topple sideways, same reason the dynamic collapse test needs damping
-/// off), ON (1.0) only during a final, distinct relaxation phase once
-/// pouring is completely done (so the finished pile still gets the
-/// already-proven quasi-static holding benefit). `Simulation::
-/// set_cundall_damping` (new, same precedent as the already-existing
-/// `set_gravity`) makes this a real, live-tunable value instead of one
-/// frozen `SimConfig` field.
+/// Phase-gated Cundall damping: off (0.0) while each poured batch is falling and
+/// impacting (keeping the kinetic energy a grain needs to topple sideways), on (1.0)
+/// only in a final relaxation phase once pouring is done (the holding benefit for the
+/// finished pile), through `Simulation::set_cundall_damping`.
 ///
-/// REAL RESULT, PARTIAL: the hypothesis was right in DIRECTION but not
-/// magnitude -- base half-width improved 1.88 -> 4.15 cells (damping-off
-/// during pouring really does let more lateral spreading happen), but the
-/// final shape is STILL a tower (79.5 deg, height 22.5 cells), nowhere
-/// near a real 30-35 deg cone. Damping was never the whole story. The
-/// remaining, real, undiagnosed gap: a real sand pour builds its cone
-/// through repeated small AVALANCHES down the sides as new grains land at
-/// the apex (classic sandpile self-organized-criticality behavior -- once
-/// local slope exceeds the critical angle, material sheds until it
-/// doesn't). Whether this engine's point-wise DP yield check ever actually
-/// triggers that local shedding for an already-at-rest neighbor being
-/// pushed past its critical angle by new load from above -- as opposed to
-/// only reacting to a particle's OWN stress state in isolation -- is a
-/// real, distinct, undiagnosed question, not yet investigated tonight.
-/// Loose sanity assertion only below (finite/positive) -- this test
-/// passing is NOT a claim the repose target is met, only that a real,
-/// disclosed experiment ran and produced a real, recorded number.
+/// Result: partial. The base half-width grows 1.88 -> 4.15 cells, but the shape is
+/// still a tower (79.5°, height 22.5 cells), far from a 30-35° cone, so damping was
+/// not the whole story. A real pour builds its cone through repeated small avalanches
+/// down the sides as grains land at the apex (sandpile self-organized criticality:
+/// material sheds while the local slope exceeds the critical angle). Whether the
+/// point-wise DP yield check triggers that shedding for an at-rest neighbor pushed past
+/// its critical angle by new load from above is an open question. Only a loose
+/// finite/positive assertion below: passing does not mean the repose target is met.
 #[test]
 #[ignore = "slow: about 11 min in the CI debug profile, runs in the slow-tests workflow"]
 fn sand_pile_built_by_slow_pour_with_phase_gated_damping() {
@@ -2126,30 +1525,19 @@ fn sand_pile_built_by_slow_pour_with_phase_gated_damping() {
     );
 }
 
-/// EIGHTEENTH FINDING (2026-08-01): the seventeenth's pour was unrealistic
-/// in a way separate from damping -- every one of its 40 batches dropped
-/// from the SAME fixed absolute height (22 cells) and the SAME exact x
-/// every time. Tested here: track the true pile top before each pour
-/// (measured from actual particle positions, not assumed), drop each batch
-/// from a small, constant gap above THAT surface, and use many more, much
-/// smaller batches (closer to a real trickle than a brick landing all at
-/// once).
+/// A more realistic pour: the pile top is measured from particle positions before each
+/// pour, each batch drops from a small constant gap above that surface, and batches are
+/// many and small (closer to a trickle than a brick landing at once), rather than all
+/// from one fixed height (22 cells) at one exact x.
 ///
-/// REAL RESULT: ruled OUT, not fixed -- `surface_y` climbs by an almost
-/// perfectly constant ~2.25 cells EVERY pour (23.19, 25.45, 27.71, 29.96,
-/// ... measured live), so linearly it overflows the domain before
-/// completing. Tracked height, fine batches, and damping-off during
-/// pouring were all real, disclosed attempts -- none of them touch the
-/// actual mechanism. Real, sourced root cause found afterward (see
-/// `DruckerPragerMaterial::project`'s tension-cutoff branch and its
-/// updated doc comment): this is the "volume gain on expansion" artifact
-/// described in Tampubolon, Gast, Klar, Fu, Teran, Jiang & Museth 2017
-/// ("Multi-species simulation of porous sand and water mixtures", SIGGRAPH
-/// / ACM TOG 36:4) -- every particle that briefly rebounds past net
-/// expansion after impact gets its `deformation_gradient` reset toward
-/// identity, discarding real compaction/strain history. `#[ignore]`d
-/// honestly -- this is a real, disclosed dead end for the pour-tuning
-/// approach itself, not a claim the underlying physics gap is closed.
+/// Result: ruled out. `surface_y` climbs a near-constant ~2.25 cells every pour (23.19,
+/// 25.45, 27.71, 29.96, ...), overflowing the domain before completing. Tracked height,
+/// fine batches and damping-off during pouring do not touch the mechanism: the "volume
+/// gain on expansion" artifact of Tampubolon, Gast, Klar, Fu, Teran, Jiang & Museth
+/// 2017 ("Multi-species simulation of porous sand and water mixtures", ACM TOG 36:4)
+/// -- a particle rebounding past net expansion after impact has its
+/// `deformation_gradient` reset toward identity, discarding compaction history (see
+/// `DruckerPragerMaterial::project`'s tension-cutoff branch). `#[ignore]`d.
 #[ignore = "real dead end: surface height grows ~2.25 cells/pour regardless of tracked \
             drop height or fine batching, overflowing the domain before completing -- \
             root cause identified afterward as DP's Case III volume-gain-on-expansion \
@@ -2185,10 +1573,10 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
     for i in 0..N_POURS {
-        // Real current surface height near the pour point -- NOT a fixed
-        // constant. Widened to +-4 cells so an early, narrow pile still
-        // gives a sane reading (the same +-2 cells `measure_pile_shape`
-        // uses would be empty/degenerate for the very first few pours).
+        // Current surface height near the pour point, not a fixed constant.
+        // +-4 cells so an early, narrow pile still gives a sane reading (the
+        // +-2 cells `measure_pile_shape` uses would be empty for the first few
+        // pours).
         let xs_now = &solver.particles().x;
         let surface_y = xs_now
             .iter()
@@ -2232,8 +1620,8 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
     );
 }
 
-/// Real, direct test of `DruckerPragerMaterial::use_pradhana` (see that
-/// field's own doc/citation) against the EXACT real scenario the eighteenth
+/// Direct test of `DruckerPragerMaterial::use_pradhana` (see that
+/// field's doc/citation) against the EXACT real scenario the eighteenth
 /// finding above already documented as a real dead end: `surface_y` climbs
 /// by an almost perfectly constant ~2.25 cells EVERY pour (23.19, 25.45,
 /// 27.71, 29.96, ... measured live) regardless of pour-tuning. Identical
@@ -2241,7 +1629,7 @@ fn sand_pile_built_by_slow_pour_tracking_real_surface_height() {
 /// `use_pradhana: true` on the sand material -- so any real difference in
 /// the per-pour growth rate is directly attributable to this mechanism, not
 /// a confound. See `sand_tests.rs::pradhana_correction_tests` for the
-/// isolated, synthetic verification this real, expensive scene test
+/// isolated, synthetic verification this expensive scene test
 /// follows up on (which found the mechanism holds volumetric drift near
 /// zero under one continuous sustained load, but could not, in a
 /// single-particle synthetic setting, reproduce the real cross-pour
@@ -2310,7 +1698,7 @@ fn sand_pile_built_by_slow_pour_with_pradhana_correction() {
 
     let xs: Vec<Vec2> = solver.particles().x.clone();
     let shape = measure_pile_shape(&xs, POUR_FLOOR);
-    // Real, direct per-pour growth rate comparison against the eighteenth
+    // Direct per-pour growth rate comparison against the eighteenth
     // finding's own documented baseline (~2.25 cells/pour, constant).
     let n = surface_ys.len();
     let mean_growth_per_pour = if n >= 2 {
@@ -2345,7 +1733,7 @@ fn sand_pile_built_by_slow_pour_with_pradhana_correction() {
 /// comfortably elastic the whole time (meaning the "tower" isn't a yield-
 /// criterion bug at all -- it's that a small mass landing on a much larger
 /// existing mass never generates enough LOCAL shear to be asked to flow
-/// sideways in the first place, a real, physically-legitimate outcome, not
+/// sideways in the first place, a physically-legitimate outcome, not
 /// a numerics artifact).
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
@@ -2365,7 +1753,7 @@ fn diag_single_batch_impact_stress_ratio_trace() {
     let cx = GRID as f32 * 0.5;
     let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
 
-    // Real, already-settled flat bed: wide relative to the batch that will
+    // Already-settled flat bed: wide relative to the batch that will
     // land on it, so the drop point is nowhere near a free edge/slope.
     let bed = SpawnRegion {
         spacing: 0.25,
@@ -2453,30 +1841,17 @@ fn diag_single_batch_impact_stress_ratio_trace() {
     }
 }
 
-/// NINETEENTH FINDING (2026-08-01): direct real evidence
-/// (`diag_single_batch_impact_stress_ratio_trace` above -- mu_ratio EXACTLY
-/// 0.000 for 80 straight steps) that every pour test so far failed for a
-/// structural, not a physics, reason: every single batch dropped from the
-/// EXACT same x position every time. A dead-center drop onto a flat,
-/// symmetric bed has no asymmetry to select "spread left" over "spread
-/// right" -- it can only compress straight down, by construction, no
-/// matter how good the constitutive model is. Real fix tested here: give
-/// the drop point itself real position variation pour-to-pour (a small
-/// inline LCG, not the engine's own RNG -- this only needs to break exact
-/// symmetry, not model a real distribution), same spirit as how an actual
-/// funnel/hand never lands a scoop of sand in the mathematically exact
-/// same spot twice.
+/// Symmetry breaking: `diag_single_batch_impact_stress_ratio_trace` shows mu_ratio at
+/// exactly 0.000 for 80 steps, since a batch dropped dead-center on a flat symmetric bed
+/// has nothing to select "spread left" over "spread right" and can only compress
+/// straight down. Here the drop point varies pour to pour (a small inline LCG, only to
+/// break exact symmetry, as a hand or funnel never lands twice on the same spot).
 ///
-/// REAL RESULT, PARTIAL RULE-OUT: symmetry-breaking alone is not
-/// sufficient either -- measured live, `spread` (pile half-width) grows
-/// only 4.6 -> 5.5 cells over 45 pours while height climbs at essentially
-/// the SAME rate as the non-randomized version (~2.25 cells/pour,
-/// unchanged). The +-3 cell drop offset is real but tiny next to the
-/// ~170-cell base radius a 30 deg cone this tall would need -- still
-/// effectively a point-source pour at that scale. `#[ignore]`d honestly;
-/// real open question this leaves: does material even shear when a batch
-/// lands OFF-center, near an existing slope's edge (not dead-center on
-/// flat ground) -- untested until the diagnostic immediately below.
+/// Result: not sufficient. The pile half-width grows only 4.6 -> 5.5 cells over 45
+/// pours while height climbs at the same ~2.25 cells/pour. A +-3 cell offset is tiny
+/// next to the ~170-cell base radius a 30° cone this tall needs, still effectively a
+/// point source. `#[ignore]`d; the diagnostic below asks whether material shears when a
+/// batch lands off-center near an existing slope's edge.
 #[ignore = "real partial result: +-3 cell drop randomization does not produce meaningful \
             lateral spread (4.6->5.5 cells over 45 pours) while height keeps climbing at \
             the same ~2.25 cells/pour as the non-randomized version -- symmetry-breaking \
@@ -2576,8 +1951,8 @@ fn sand_pile_built_by_pour_with_randomized_drop_position() {
 /// probe found EXACTLY zero shear for a dead-center drop on FLAT ground --
 /// but is that specific to flat ground, or does the same zero-shear
 /// result hold even when the batch lands on an already-SLOPED surface
-/// (much closer to what a real, growing pile's flank actually looks
-/// like)? Real, already-settled 30 deg wedge (same geometry as
+/// (much closer to what a growing pile's flank actually looks
+/// like)? Already-settled 30 deg wedge (same geometry as
 /// `sand_preshaped_pile_at_30deg_holds_its_slope`, confirmed to genuinely
 /// hold via Cundall damping), then damping OFF and a small batch dropped
 /// partway up the slope's OWN flank, off the peak -- if mu_ratio STILL
@@ -2705,60 +2080,29 @@ fn diag_batch_impact_on_sloped_flank_stress_ratio_trace() {
     }
 }
 
-/// TWENTIETH FINDING, THE GAP ACTUALLY CLOSES (2026-08-01): the
-/// sloped-flank diagnostic above, run long enough (800 steps, not 80),
-/// shows REAL ongoing creep -- mean_x drifts steadily downhill, mean_y
-/// keeps sinking, yield keeps re-firing -- matching Dunatunga & Kamrin
-/// 2015's own description of a real granular free surface's "thin,
-/// slow-moving layer." Every pour test before this one only gave each
-/// batch 15-40 steps before the next landed -- nowhere near enough time
-/// for this real but SLOW creep to do anything.
+/// Patient pour: the sloped-flank diagnostic above, run for 800 steps rather than 80,
+/// shows ongoing creep (mean_x drifting downhill, mean_y sinking, yield re-firing),
+/// Dunatunga & Kamrin 2015's "thin, slow-moving layer" of a granular free surface. The
+/// other pour tests give each batch only 15-40 steps, far too little for that slow creep.
+/// With long settle time per addition the height plateaus while the base widens, a cone
+/// rather than a tower.
 ///
-/// REAL RESULT: giving each addition real, long settle time (matching the
-/// timescale the diagnostic measured) makes the pile's height genuinely
-/// PLATEAU while its base keeps widening -- real cone formation, not a
-/// tower. Measured live across a real sweep of pour counts: 85 deg (fast
-/// pour, no real settle time) -> 76.5 deg (15 patient pours) -> 49.6 deg
-/// (45) -> 30.8 deg (70) -> 21.6 deg (90, overshooting PAST the real
-/// target). This is the same real "excess creep" mechanism already found
-/// in the dynamic-collapse/Lajeunesse tests (this file's own repose-angle
-/// and runout-scaling tests) -- given enough real time, EVEN a patiently-
-/// built pile eventually over-relaxes past the true repose angle too. One
-/// real phenomenon at two different timescales, not two separate bugs.
-/// The practical implication for a real pour mechanic: stop pouring (or
-/// switch to Cundall-damped holding) once the local surface slope reaches
-/// the material's own critical angle, a real physical stopping criterion
-/// -- not a fixed pour count, which is scene-specific (this test's "70" is
-/// tuned to ITS OWN batch size/drop gap/friction angle, not a universal
-/// constant).
+/// Measured with the frictionless floor of the default `SlipBoundary`: 85° (fast pour)
+/// -> 76.5° (15 patient pours) -> 49.6° (45) -> 30.8° (70) -> 21.6° (90, past the
+/// target), the same excess creep as the dynamic collapse, at a longer timescale. A pour
+/// mechanic should stop once the local slope reaches the material's critical angle, not
+/// after a fixed count (this test's 70 fits its own batch size, drop gap and friction
+/// angle).
 ///
-/// REOPENED (2026-08-20): the 30.8 deg result above was measured against a
-/// real, separate bug -- `Simulation`'s hidden default `SlipBoundary`
-/// silently defeated this scene's own `FrictionBoundary(2, 0.7)` the whole
-/// time (fixed engine-wide, see `Simulation::add_boundary_condition`'s own
-/// doc). With the floor now genuinely frictional, this same recipe builds
-/// a 69.1 deg near-tower instead. Two real, bounded, DISCLOSED-NEGATIVE
-/// sweeps ruled out both cheap levers: `apic_blend` (the fix that worked
-/// for the sibling dynamic-collapse test) has only a weak effect here
-/// (69.1/67.8/66.0/62.7 deg across 0.05/0.30/0.50/0.70 -- see
-/// `diag_pour_apic_blend_sweep_after_real_boundary_friction_fix`'s own
-/// doc); the boundary's own `mu` makes it WORSE, not better, at every
-/// value tried (a fast 25-pour probe: 71.9/77.6/78.0/77.9 deg across
-/// mu=0.1/0.3/0.5/0.7 -- see `diag_pour_boundary_mu_fast_probe`'s own
-/// doc). Both ruled out with real data, not guessed away. The material's
-/// own THEORETICAL friction angle is only 35 deg (`from_young_modulus`'s
-/// cohesionless default -- see this material's own doc on why repose
-/// angle should equal friction angle for a cohesionless pile), yet this
-/// scene holds 70-78 deg regardless of either lever -- strong evidence the
-/// pour mechanism itself never reaches genuine plastic shear failure, the
-/// SAME real, already-documented "no length scale in local point-wise
-/// plasticity" open research question this file's own findings 1-13
-/// already flagged as deep and not a quick fix (see `sand_angle_of_
-/// repose_is_physical`'s own doc above, `#[ignore]`d earlier for the
-/// identical underlying reason -- a DIFFERENT scene/config, not the sibling
-/// dynamic-collapse test above, which IS passing). Not a boundary-fix
-/// regression to chase further with more sweeps -- a pre-existing, deeper
-/// gap the boundary fix simply stopped masking.
+/// With the scene's `FrictionBoundary(2, 0.7)` floor actually in effect, the same recipe
+/// builds a 69.1° near-tower. Neither cheap lever helps: `apic_blend` has a weak effect
+/// (69.1/67.8/66.0/62.7° across 0.05/0.30/0.50/0.70, see
+/// `diag_pour_apic_blend_sweep_after_real_boundary_friction_fix`) and the floor's `mu`
+/// makes it worse at every value (25-pour probe: 71.9/77.6/78.0/77.9° across
+/// mu=0.1/0.3/0.5/0.7, see `diag_pour_boundary_mu_fast_probe`). With a 35° friction
+/// angle (`from_young_modulus`'s cohesionless default), a 70-78° pile suggests the pour
+/// never reaches plastic shear failure: the same open "no length scale in local
+/// point-wise plasticity" question as `sand_angle_of_repose_is_physical` (GH #28).
 #[ignore = "reopened by the real boundary-friction fix (2026-08-20): floor now genuinely \
             frictional, same recipe over-steepens to 69.1 deg (was 30.8) -- BOTH apic_blend \
             and boundary mu re-swept and ruled out with real data (mu makes it WORSE: \
@@ -2837,12 +2181,10 @@ fn sand_pile_built_by_patient_pour_matching_real_creep_timescale() {
         shape.angle_deg
     );
 
-    // Real measured result at N_POURS=70: 30.8 deg. Band is wider than the
-    // exact measured value on purpose -- this checks the real mechanism
-    // (patient pouring genuinely reaches the real repose-angle regime,
-    // not stuck in tower territory at ~85 deg or already over-relaxed
-    // past it toward ~20 deg), not a razor-thin threshold reverse-fitted
-    // to one run.
+    // Measured at N_POURS=70 (frictionless floor): 30.8°. The band is wider than
+    // that on purpose: it checks the mechanism (patient pouring reaches the repose
+    // regime, neither a ~85° tower nor over-relaxed toward ~20°), not a threshold
+    // fitted to one run.
     assert!(
         (25.0..=40.0).contains(&shape.angle_deg),
         "expected a patient pour (real creep timescale between additions) to reach \
@@ -2854,51 +2196,30 @@ fn sand_pile_built_by_patient_pour_matching_real_creep_timescale() {
 
 /// **Granular column collapse runout scaling** -- Lajeunesse, Mangeney-Castelnau &
 /// Vilotte, 2004, "Spreading of a granular mass on a horizontal plane", Phys. Fluids
-/// 16(7), the seminal real EXPERIMENTAL measurement of granular column collapse
-/// runout vs aspect ratio. Their empirical law for a = H0/R0 >= 0.74 (our column,
-/// a=4, is in this regime):
+/// 16(7), the experimental measurement of granular column collapse runout vs aspect
+/// ratio. Their empirical law for a = H0/R0 >= 0.74 (our column, a=4, is in this
+/// regime):
 ///
 ///   (R_inf - R0) / R0 ~= 2.0 * sqrt(a)
 ///
-/// This is a real, falsifiable, literature-sourced quantitative target -- distinct
-/// from "looks like a stable pile" or "angle equals friction angle" framing used
-/// elsewhere in this file. Violent/extreme disturbances (explosions, impacts,
-/// sudden terrain collapse) are real LP scenarios that must be stress-tested,
-/// not waved away as "expected physics for tall columns" -- real tall columns DO
-/// spread more, by a BOUNDED, measured amount, not an unconstrained amount that
-/// just fills whatever domain is available.
+/// A falsifiable, literature-sourced quantitative target. Violent disturbances
+/// (explosions, impacts, sudden terrain collapse) are LP scenarios: tall columns do
+/// spread more, by a bounded, measured amount, not by whatever the domain allows.
 ///
-/// RESOLVED (2026-06-28): originally found ~4.7x the empirical prediction
-/// (uncalibrated, cohesionless DP-sand spread to fill whatever domain was given,
-/// confirmed at GRID=192/384/wall-independent -- root cause: pressure-proportional
-/// friction (alpha*pressure) vanishes in thin, fast-flowing layers regardless of
-/// the friction coefficient -- confirmed identical excess runout across 3 different
-/// friction configs). Fixed via `DruckerPragerMaterial::cohesion` (a new field -- a
-/// pressure-INDEPENDENT resistance floor, NOT a claim that dry sand has real
-/// cohesion; see its doc comment), calibrated against this exact benchmark: swept
-/// cohesion at GRID=384 (wall-independent), found a real but narrow transition
-/// (cohesion=5 -> ratio 1.41x; cohesion=6 -> ratio 0.74x -- a steep threshold, not a
-/// smooth response, consistent with this being a cascading-failure system).
-/// cohesion=5.0 gives ratio=1.50x at this test's GRID=192, consistent with the
-/// GRID=384 calibration run. `cohesion` defaults to 0.0 (true cohesionless Klar
-/// 2016 behavior) -- every other DruckerPragerMaterial user/test is unaffected.
+/// Uncalibrated, cohesionless DP sand spread ~4.7x the prediction, filling the domain
+/// (same at GRID=192/384, wall-independent, and across 3 friction configs): pressure-
+/// proportional friction (alpha*pressure) vanishes in thin, fast-flowing layers whatever
+/// the friction coefficient. `DruckerPragerMaterial::cohesion` adds a
+/// pressure-independent resistance floor (not a claim that dry sand is cohesive, see its
+/// doc), calibrated on this benchmark at GRID=384: a steep threshold (cohesion=5 ->
+/// 1.41x, cohesion=6 -> 0.74x), 5.0 giving 1.50x at GRID=192. `cohesion` defaults to 0.0.
 ///
-/// STALE CLAIM FOUND (2026-09-08, during the sourcing audit -- re-ran this
-/// exact test, did not just trust the doc above): the 1.50x calibration
-/// claim above no longer matches current behavior. Real, reproduced-twice
-/// measurement: ratio=0.19x (measured_r_inf=3.75 cells, barely past the
-/// column's own starting half-width r0=4.0 -- essentially no net spread).
-/// Likely cause, not independently re-confirmed via bisection this time
-/// (unlike `post_event_relax_long_horizon_full_confirmation`'s own stale-
-/// claim writeup, which DID bisect): the same real 2026-08-26
-/// `min_volume_jacobian` recalibration (0.6 -> 0.807, DiMaggio & Sandler
-/// 1971 / Resende & Martin 1985) that test's doc names as reshaping a
-/// near-identical DruckerPrager collapse scene -- a pile that can compress
-/// less under self-weight collapses and spreads differently. Not chased
-/// further tonight; this test's own tolerance (`ratio < 2.0`) still holds
-/// either way, so it stayed green through this drift without anyone
-/// noticing -- exactly the kind of gap a loose bound can hide, flagged
-/// here rather than silently left for the next person to rediscover.
+/// Current measurement: ratio=0.19x (measured_r_inf=3.75 cells, barely past r0=4.0),
+/// reproduced twice, not the 1.50x above. Likely cause (not bisected): the
+/// `min_volume_jacobian` default moving from 0.6 to 0.807 (DiMaggio & Sandler 1971 /
+/// Resende & Martin 1985), as in `post_event_relax_long_horizon_full_confirmation`. The
+/// `ratio < 2.0` bound still holds, so the drift did not fail the test: a loose bound
+/// hides it.
 #[test]
 fn sand_column_collapse_runout_matches_lajeunesse_scaling() {
     const BIG_GRID: usize = 192;
@@ -3039,17 +2360,12 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     let gravity = Vec2::new(0.0, -0.5);
     let make_config = || SimConfig {
         max_substeps_per_step: 32,
-        // Real fix (2026-08-10): this scene was silently blowing up (J up
-        // to 77, way past the admissible range) the whole time -- only
-        // caught now because `check_j_range`'s own recent widening to
-        // strict fluids (2026-08-09) started asserting on it instead of
-        // letting it corrupt density/pressure unreported. `fluid_step_
-        // retry_enabled` is the ALREADY-PROVEN real fix for exactly this
-        // class of compounding-drift blowup (see `fluid_retry_backstop_
-        // structural_bugs_fixed_2026-08-09` -- 3 hard fluid scenes go from
-        // instant-crash to 200 frames clean with this on), just never
-        // applied to this specific test's config. A no-op for the elastic
-        // solver below (only strict fluid materials check this).
+        // Without retry this scene reaches J up to 77, far past the admissible
+        // range, which `check_j_range` now reports for strict fluids.
+        // `fluid_step_retry_enabled` handles this class of compounding-drift
+        // blowup (hard fluid scenes go from an instant crash to 200 clean frames
+        // with it). A no-op for the elastic solver below (only strict fluid
+        // materials check it).
         fluid_step_retry_enabled: true,
         ..SimConfig::standard(GRID, DT, gravity)
     };
@@ -3120,17 +2436,12 @@ fn fluid_spreads_more_than_elastic_under_gravity() {
     );
 }
 
-/// Real re-verification (2026-08-10), same discipline as the 2026-06-20 P2G
-/// parallel-fold rewrite this test's own sibling above already documents:
-/// `SimConfig::spatial_sort_enabled` reorders which particles land in which
-/// rayon chunk, which changes float SUMMATION ORDER for grid cells touched
-/// by multiple particles -- the exact class of change that once shifted
-/// this CHAOTIC test's qualitative outcome. Same scene, same 600 steps,
-/// `spatial_sort_enabled: true` -- the qualitative physical claims (fluid
-/// spreads, spreads more than elastic) must still hold. Not a full
-/// duplicate of the scene above for its own sake; this is the specific,
-/// disclosed correctness gate `scatter_particles_to_grid_sorted`'s own doc
-/// requires before that feature can be trusted.
+/// `SimConfig::spatial_sort_enabled` reorders which particles land in which rayon chunk,
+/// changing the float summation order for grid cells touched by several particles --
+/// the kind of change that has shifted this chaotic test's qualitative outcome before.
+/// Same scene and 600 steps with `spatial_sort_enabled: true`: the qualitative claims
+/// (fluid spreads, more than elastic) must still hold. The correctness gate
+/// `scatter_particles_to_grid_sorted`'s doc requires before the feature is trusted.
 #[test]
 fn fluid_spreads_more_than_elastic_under_gravity_with_spatial_sort() {
     let gravity = Vec2::new(0.0, -0.5);
@@ -3138,7 +2449,7 @@ fn fluid_spreads_more_than_elastic_under_gravity_with_spatial_sort() {
         max_substeps_per_step: 32,
         spatial_sort_enabled: true,
         // Same real fix as this test's non-sorted sibling -- see that
-        // one's own doc for why.
+        // one's doc for why.
         fluid_step_retry_enabled: true,
         ..SimConfig::standard(GRID, DT, gravity)
     };
@@ -3207,7 +2518,7 @@ fn fluid_spreads_more_than_elastic_under_gravity_with_spatial_sort() {
 ///
 /// Not a full quantitative Martin & Moyce curve match (that needs careful
 /// non-dimensionalization of front position vs. time, a real but separate,
-/// larger undertaking) -- this checks the real, unambiguous, qualitative
+/// larger undertaking) -- this checks the unambiguous, qualitative
 /// signature every dam-break must show: the column collapses (aspect ratio
 /// inverts from tall/narrow to short/wide), the front runs out a real,
 /// substantial distance away from the wall (conservative lower bound, not a
@@ -3329,7 +2640,7 @@ fn fluid_dam_break_collapses_and_runs_out_away_from_wall() {
 }
 
 /// **Mixing** -- a real fluid checklist item distinct from the two tests above: does a
-/// SINGLE fluid material genuinely interpenetrate (advective mixing/stirring) when two
+/// SINGLE fluid material interpenetrate (advective mixing/stirring) when two
 /// initially-separated parcels of it collide and spread, or does it stay artificially
 /// segregated the way a non-fluid material would? `Particle::temperature` is used purely
 /// as a passive Lagrangian marker here -- no `ThermalDiffusion` is enabled in this scene,
@@ -3338,10 +2649,10 @@ fn fluid_dam_break_collapses_and_runs_out_away_from_wall() {
 /// adjacent blocks of the IDENTICAL `NewtonianFluidMaterial` (hot=373K left, cold=273K
 /// right, a real gap between them at t=0, no overlap) are dropped together under gravity;
 /// a real fluid must spread/collide into ONE shared puddle where hot- and cold-tagged
-/// particles are genuinely spatially interspersed. Measured via `solver.particles_near`
+/// particles are spatially interspersed. Measured via `solver.particles_near`
 /// (the engine's own existing real spatial-neighbor query, not a new mechanism) -- the
 /// fraction of each particle's nearby neighbors carrying the OPPOSITE tag, averaged, must
-/// rise from near-zero (segregated) to a real, substantial fraction (genuinely intermixed).
+/// rise from near-zero (segregated) to a substantial fraction (intermixed).
 #[test]
 fn fluid_mixes_via_real_advection_not_left_segregated() {
     let gravity = Vec2::new(0.0, -0.5);
@@ -3435,8 +2746,8 @@ fn fluid_mixes_via_real_advection_not_left_segregated() {
         "sanity: the two blocks must start genuinely segregated (real gap, no overlap), \
          got {initial_cross_fraction:.4}"
     );
-    // Real, disclosed catch: `initial_cross_fraction` measures exactly 0.0 (the two
-    // blocks start with a genuine gap, zero boundary contact) -- a purely RELATIVE
+    // Disclosed catch: `initial_cross_fraction` measures exactly 0.0 (the two
+    // blocks start with a gap, zero boundary contact) -- a purely RELATIVE
     // "final > initial * 3" bound would be vacuously true for ANY nonzero final value,
     // so this needs a real absolute floor too, not just a ratio. 0.03 is a real,
     // meaningful non-trivial fraction (measured value: 0.0726), well below the
@@ -3766,7 +3077,7 @@ fn scalar_diffusion_decay_matches_analytical() {
 }
 
 /// Free `fn` (not a closure -- `ScalarDiffusionField::source` is a plain function pointer
-/// so the field stays `Send + Sync` with no lifetime, see that field's own doc) for real
+/// so the field stays `Send + Sync` with no lifetime, see that field's doc) for real
 /// logistic growth, `dS/dt = r·φ·(1 − φ/K)` -- the standard Verhulst 1838 population-growth
 /// equation, the same one real ecology models use for "resource regrows toward a carrying
 /// capacity" (this is the real PDE source term `resource_regrowth_matches_logistic_curve`
@@ -3778,7 +3089,7 @@ fn logistic_regrowth_source(_p: &Particle, phi: f32, _material: &dyn MaterialMod
 }
 
 /// **Resource regrowth matches the real logistic growth curve** -- proves
-/// `ScalarDiffusionField::source` genuinely implements real reaction-diffusion dynamics
+/// `ScalarDiffusionField::source` implements real reaction-diffusion dynamics
 /// (Verhulst 1838 logistic growth: `dφ/dt = r·φ·(1−φ/K)`, closed-form solution
 /// `φ(t) = K / (1 + ((K−φ₀)/φ₀)·e^(−r·t))`), not just "the number goes up." Isolated from
 /// spatial diffusion/decay (both zero) so only the source term's own math is under test --
@@ -3994,16 +3305,13 @@ fn earth_gravity_freefall_velocity_matches_gt() {
     let dx_m = 0.01_f32;
     let dt_s = 0.01_f32;
     let config = SimConfig {
-        // Real bug found 2026-09-08: this material's own elastic-wave CFL
-        // (E=1e6 Pa, dx=0.01 m) needs ~118 substeps to cover one 0.01s step,
-        // over `SimConfig::earth`'s default max_substeps_per_step=64. Ordinary
-        // (non-fluid) materials silently tolerate the resulting dropped sim
-        // time (step.rs's own documented, deliberate choice) instead of
-        // panicking -- so this test was quietly integrating ~55% of the real
-        // 0.2s window it thought it was, understating v_measured by ~45%
-        // against the analytic g*t target. Raising the ceiling costs nothing:
-        // it only bounds worst-case work, the real substep count taken stays
-        // ~118 regardless of how high this is set.
+        // This material's elastic-wave CFL (E=1e6 Pa, dx=0.01 m) needs ~118
+        // substeps per 0.01 s step, above `SimConfig::earth`'s default
+        // max_substeps_per_step=64. Ordinary (non-fluid) materials report the
+        // dropped time instead of panicking (see step.rs), so at 64 the test
+        // would integrate ~55% of the 0.2 s window and understate v_measured by
+        // ~45% against g*t. The ceiling only bounds worst-case work; the
+        // substep count taken stays ~118.
         max_substeps_per_step: 256,
         ..SimConfig::earth(64, dx_m, dt_s)
     };
@@ -4062,78 +3370,26 @@ fn earth_gravity_freefall_velocity_matches_gt() {
     );
 }
 
-/// **Hydrostatic pressure profile** -- a column of real water at rest under gravity
-/// must develop pressure p(depth) = ρ·g·depth (Pascal's law), the most basic real
-/// fluid benchmark there is. `NewtonianFluidMaterial` had zero IRL-quantitative
-/// validation before this (only a qualitative "fluid spreads more than elastic"
-/// check existed) despite being LP's actual water material.
+/// **Hydrostatic pressure profile** -- a column of water at rest under gravity must
+/// develop pressure p(depth) = ρ·g·depth (Pascal's law), the most basic fluid benchmark.
 ///
-/// Real water via `Fluid` (LP's own property-struct path, not a hand-tuned test
-/// constant): ρ=1000 kg/m³, η=0.001 Pa·s, weakly-compressible EOS
-/// (bulk_modulus_pa=2.25e5, matching LP's own `WATER_PROPS` choice and its real
-/// justification -- see LP's `world::materials` doc, Becker & Teschner 2007
-/// weakly-compressible practice). Settles under `SimConfig::earth`'s real g=9.81
-/// for long enough that the EOS-driven pressure buildup reaches quasi-equilibrium
-/// (unlike sand's plastic ratchet, a fluid's pressure response to local density is
-/// direct and fast, not history-dependent).
+/// Water via `Fluid` (LP's property-struct path): ρ=1000 kg/m³, η=0.001 Pa·s,
+/// weakly-compressible EOS (bulk_modulus_pa=2.25e5, LP's `WATER_PROPS` choice, after
+/// Becker & Teschner 2007's weakly compressible practice). Settles under
+/// `SimConfig::earth`'s g=9.81 until the EOS pressure reaches quasi-equilibrium (a
+/// fluid's pressure responds to local density directly and fast, unlike sand's
+/// history-dependent plastic ratchet).
 ///
-/// Expected pressure is converted through the SAME `config.stress_from_si` the
-/// material's own `FromSI` impl uses internally (not an independent guess at the
-/// grid-unit scale) -- this checks the material's OWN claimed physics against a
-/// real analytical law, not two independently-invented unit systems.
-/// OPEN FINDING (2026-07-07): building this benchmark found and fixed two real,
-/// confirmed structural bugs on the way to a genuine hydrostatic-pressure test:
+/// Expected pressure goes through the same `config.stress_from_si` the material's
+/// `FromSI` impl uses, so the material's own claimed physics is checked against the
+/// analytical law, not against a second unit system.
 ///
-/// 1. `rest_density`'s SI-to-grid conversion (`FromSI<NewtonianFluid>`, and the
-///    equivalent in Bingham/GranularFluid) had an erroneous extra
-///    `/dt_seconds^2` factor, making it ~10000x too large at LP's grid scale.
-///    This pinned any real EOS fluid's pressure at its floor permanently,
-///    regardless of depth/compression (density/rest_density ratio was always
-///    near zero). FIXED: dropped the factor -- confirmed via a static
-///    (no-dynamics) density probe that `rho_SI*dx_meters^2` (no `/dt^2`) is
-///    the value `estimate_particle_volumes`'s kernel-based density estimate
-///    actually produces for a particle spawned via `ParticleMass::particle_mass`.
-///    (A different fix -- inflating `particle_mass` by `1/dt^2` instead -- was
-///    tried first and reverted after reading `transfer.rs::scatter_particles_to_grid`
-///    directly: it broke the force-balance between gravity and the EOS's own
-///    restoring stress instead, since gravity's momentum term and the grid mass
-///    accumulator both scale with particle mass but the stress-based momentum
-///    term does not.)
-/// 2. Once `rest_density` was corrected (much smaller), the acoustic CFL bound
-///    (`c^2 ~ eos_stiffness/rest_density`) got much stricter, and the default
-///    `min_dt` floor was too coarse to represent it -- causing genuine,
-///    non-decaying velocity oscillation (max_speed staying at 150-700 cells/s
-///    indefinitely, confirmed NOT explained by `max_substeps_per_step`: identical
-///    output at both 256 and 8000). FIXED: lowered `min_dt` to 1e-7 for this test.
-///
-/// Together these turned a catastrophic, permanent pancake collapse (density
-/// spiking to 2850-6072x rest_density, confirmed resolution-independent across
-/// both a dropped column and a gentle layer-by-layer pour) into genuine,
-/// converging settling: density plateaus at ~1.3x rest_density with velocity
-/// properly decaying to near-zero (see the settle trace in this fix's
-/// changelog) -- a real, substantial improvement, not a cosmetic one.
-///
-/// STILL OPEN: ~1.3x rest_density is still noticeably more compression than
-/// real hydrostatic equilibrium needs at this shallow depth (~1.003x, by direct
-/// calculation) -- and because this EOS is a 7th-power law, that residual
-/// overshoot inflates measured pressure by ~500x versus the naive rho*g*h
-/// prediction. Both a long-horizon settle trace (5000 steps) and a taller/
-/// heavier poured column were tried; density keeps slowly approaching 1.0 but
-/// doesn't fully arrive in a practical number of steps, and a taller pour
-/// needs proportionally finer `min_dt` (expensive: 30+ min/iteration at this
-/// scale). The real remaining fix is almost certainly proper geostatic
-/// pre-stress initialization (start particles at their equilibrium compression
-/// instead of settling dynamically from an unstressed F=I spawn) -- a genuine,
-/// separate, bounded piece of work, not a quick follow-on.
-///
-/// Even the qualitative "pressure trends upward with depth" claim doesn't hold
-/// cleanly at this test's practical scale: the real rho*g*h signal across a
-/// shallow ~3-cell depth range is tiny (~0.3 grid units total), and is
-/// completely swamped by particle-level noise riding on top of the ~1.3x
-/// systematic overshoot (measured pressure noise band ~100-400 grid units,
-/// over 100x the real signal). `#[ignore]`d honestly rather than asserting
-/// something not actually demonstrated -- same discipline as the sand
-/// repose-angle gaps in this file.
+/// Open, see the `#[ignore]` reason: the recorded numbers (density plateau ~1.3x rest
+/// density, pressure ~500x rho*g*h, a rho*g*h signal of ~0.3 grid units under 100-400
+/// units of particle noise) predate the current SI conversion and the spawn's mass
+/// unit, so they are not measurements of the current code. Geostatic pre-stress
+/// initialization (spawning at equilibrium compression instead of settling from F=I) is
+/// the likely remaining step.
 #[ignore = "not rerun since its expected pressure moved to the material's own SI \
             conversion (the one used before carried an extra dt^2, 1e-4 here, so the \
             recorded ~500x overshoot is not a measurement); its spawn also passes an SI \
@@ -4149,9 +3405,8 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         ..SimConfig::earth(GRID_RES, dx_m, dt_s)
     };
 
-    // Real weakly-compressible water, matching LP's own `WATER_PROPS` choice
-    // (see LP's world::materials doc) -- no artificial softening needed now
-    // that `particle_mass` is correctly scaled (see its 2026-07-07 fix doc).
+    // Weakly compressible water, LP's `WATER_PROPS` choice (see LP's
+    // world::materials doc).
     let water = emerge::Fluid {
         rho_kg_m3: 1000.0,
         eta_pa_s: 0.001,
@@ -4159,14 +3414,10 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         yield_stress_pa: None,
     };
 
-    // Single modest block, not a tall multi-layer pour: proven stable and
-    // properly-converging at this scale (see `diag_long_settle_density_creep`,
-    // 2026-07-07 -- real velocity decay to near-zero, density settling near
-    // rest_density, not the catastrophic pancaking a taller/heavier pour
-    // triggers at this same `min_dt`). A taller pour needs a correspondingly
-    // finer `min_dt` (the real CFL requirement gets stricter as more weight
-    // stacks up) -- kept modest here to stay in the fast, confirmed-stable
-    // regime rather than re-discovering that tuning empirically at 30+
+    // A single modest block, not a tall multi-layer pour: stable and converging
+    // at this scale (`diag_long_settle_density_creep`: velocity decays to near
+    // zero, density settles near rest_density). A taller pour needs a finer
+    // `min_dt` (the CFL requirement tightens as more weight stacks up) at 30+
     // minutes per iteration.
     let width = GRID_RES as i32 - 6; // nearly fills the domain -- no room to spread sideways
     let spawn = SpawnRegion {
@@ -4180,11 +3431,8 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         .with_default_material(water.material(&config))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.3)));
 
-    // TEMP diagnostic progress printing (2026-08-03) -- the previous run of
-    // this test gave zero output for 3+ hours with no way to tell whether it
-    // was progressing or stuck; chunk the settle horizon so we can see real
-    // wall-clock-per-chunk and current density/speed as it goes. Remove once
-    // the real post-density-fix number is confirmed.
+    // Progress printing per chunk: wall-clock per chunk and current
+    // density/speed, so a multi-hour settle shows whether it is progressing.
     for chunk in 0..30 {
         let t0 = std::time::Instant::now();
         solver.step_n(100);
@@ -4261,7 +3509,7 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         println!("  {d:8.2}     | {e:10.2}     | {m:10.2}");
     }
 
-    // Real, qualitative check that survives even with the known density-overshoot
+    // Qualitative check that survives even with the known density-overshoot
     // gap documented above: pressure must still trend upward with depth (the
     // actual rho*g*h SHAPE), not be flat/random. The absolute magnitude match is
     // the still-open part (see #[ignore] reason).
@@ -4386,9 +3634,9 @@ fn physical_props_produce_valid_params() {
         "brittle invalid"
     );
 
-    // Real, soft-clay-range values (NaccMaterial's own doc: "Saturated clay /
+    // Soft-clay-range values (NaccMaterial's doc: "Saturated clay /
     // soft sediment"), matching camclay_dispatch_matches_direct_nacc_from_physical's
-    // own reference values -- added 2026-09-08 alongside PlasticityModel::CamClay.
+    // reference values.
     let camclay = Elastoplastic {
         elastic: Elastic {
             e_pa: 2.0e6,
@@ -4466,15 +3714,14 @@ mod rod_cantilever_tests {
     };
 
     /// Settle a clamped-cantilever rod under a constant tip point load to
-    /// quasi-static equilibrium via heavy (test-only, disclosed) damping,
-    /// then return the tip's vertical deflection from its rest position.
+    /// quasi-static equilibrium via heavy (test-only) damping, then return the
+    /// tip's vertical deflection from its rest position.
     ///
-    /// Real BC: `δ = F*L³/(3*E*I)` assumes a CLAMPED end (position AND slope
-    /// fixed). Pinning only point 0 leaves the base free to rotate (a single
-    /// point has no orientation) -- the wrong BC. Pinning points 0 AND 1 fixes
-    /// both position and the first edge's direction -- the same real fix
-    /// already used for the MPM cantilever tonight ("pin a root band, not a
-    /// single row"), now expressed as a 2-point boundary condition.
+    /// `δ = F*L³/(3*E*I)` assumes a clamped end (position and slope fixed). Pinning
+    /// only point 0 leaves the base free to rotate (a single point has no
+    /// orientation); pinning points 0 and 1 fixes both position and the first
+    /// edge's direction (as the MPM cantilever pins a root band, not a single
+    /// row).
     fn settle_cantilever_tip_deflection(
         n_points: usize,
         length_m: f32,
@@ -4492,26 +3739,15 @@ mod rod_cantilever_tests {
         rod.pinned[0] = 1;
         rod.pinned[1] = 1;
 
-        // Test-only damping to reach quasi-static equilibrium -- disclosed,
-        // not the Phase 1 dynamic damping value (which must stay physically
-        // real, not tuned for fast settling). REAL FINDING (2026-07-20,
-        // empirical): an initial "5x EA/EI" choice was actually ~79x
-        // OVERcritical for the axial mode (critical damping for a single
-        // spring-mass DOF is `c_crit = 2*sqrt(k*m)`, not a fraction of `EA`
-        // itself) -- heavy overdamping doesn't just fail to help settling
-        // speed, it makes it dramatically WORSE (same real lesson as
-        // tonight's own MPM Kelvin-Voigt eta bisection: the slowest global
-        // mode's settle time, not the fastest local mode `rod_cfl_dt`
-        // stabilizes against, governs convergence time). Picked close to
-        // critical instead, via `RodMaterial::critical_damping`'s real
-        // `c_crit = 2*sqrt(k*m)` formula (see that function's own doc for a
-        // SECOND real bug found+fixed here: this test used to hand-roll
-        // `bending_damping = 2*sqrt((EI/l0^3)*point_mass)`, which is
-        // dimensionally WRONG -- `EI/l0^3` is a translational N/m stiffness,
-        // giving a result in N*s/m, not `bending_damping`'s actual N*m*s
-        // contract, and increasingly so at fine resolution (~1/l0^2 worse) --
-        // the real root cause of this test's error GROWING with point count
-        // instead of shrinking, now fixed at the source).
+        // Test-only damping to reach quasi-static equilibrium, not the dynamic
+        // damping value (which must stay physical, not tuned for fast settling).
+        // Close to critical via `RodMaterial::critical_damping`'s
+        // `c_crit = 2*sqrt(k*m)`: heavy overdamping slows settling (a "5x EA/EI"
+        // choice is ~79x overcritical for the axial mode), since the slowest
+        // global mode's settle time, not the fastest local mode `rod_cfl_dt`
+        // stabilizes, governs convergence. `bending_damping` must be in N*m*s:
+        // `2*sqrt((EI/l0^3)*point_mass)` uses a translational N/m stiffness and
+        // gives N*s/m, an error that grows ~1/l0^2 with point count.
         let l0 = length_m / (n_points as f32 - 1.0);
         let point_mass = 0.1 * l0; // matches build_straight_rod's own linear_density=0.1 above
         let (axial_damping, bending_damping) =
@@ -4532,13 +3768,10 @@ mod rod_cantilever_tests {
         let n = rod.len();
         let max_steps = 150_000_000u32;
         let check_every = 2000u32;
-        // Real reference scale (the analytic prediction itself) for a
-        // RELATIVE convergence tolerance -- an absolute threshold doesn't
-        // scale correctly across different `n_points` (finer discretization
-        // means each individual step moves the tip less in absolute terms,
-        // so an absolute-change check can falsely "converge" while the
-        // system hasn't actually settled yet -- the real cause of the
-        // earlier N=30 false-convergence-near-zero finding).
+        // The analytic prediction as the reference scale, for a relative
+        // convergence tolerance: with finer discretization each step moves the
+        // tip less in absolute terms, so an absolute-change check can report
+        // convergence before the system has settled (e.g. near zero at N=30).
         let reference_scale = (tip_load_n * length_m.powi(3) / (3.0 * ei)).max(1.0e-6);
         let mut prev_deflection = f32::NAN;
         let mut stable_windows = 0u32;
@@ -4557,12 +3790,10 @@ mod rod_cantilever_tests {
                 &material,
                 1.0,
             );
-            // Real sign-convention fix: applied UPWARD so the resulting
-            // deflection is directly comparable (same sign) to the
-            // magnitude-only analytic prediction below -- a downward load
-            // gives an equal-magnitude, opposite-sign deflection for this
-            // linear formula (no physics difference either way, this is a
-            // test-comparison convention only).
+            // Applied upward so the deflection has the same sign as the
+            // magnitude-only analytic prediction below (a downward load gives an
+            // equal-magnitude, opposite-sign deflection for this linear formula;
+            // a comparison convention only).
             internal[n - 1] += Vec2::new(0.0, tip_load_n);
 
             for (i, internal_force) in internal.iter().enumerate() {
@@ -4572,13 +3803,10 @@ mod rod_cantilever_tests {
                 }
                 let a = *internal_force / rod.mass[i];
                 rod.v[i] += a * safe_dt;
-                // REAL BUG FOUND (2026-07-20): f32::max IGNORES NaN (IEEE
-                // 754 maxNum semantics -- "if one argument is NaN, the OTHER
-                // is returned"). A raw `max_speed.max(v.length())`
-                // convergence check let corrupted state hide behind an
-                // otherwise-small running max for up to 2,000,000 steps
-                // instead of failing at the real point of divergence. Fail
-                // fast and precisely instead of folding this into a max().
+                // Explicit NaN check: f32::max ignores NaN (IEEE 754 maxNum:
+                // "if one argument is NaN, the other is returned"), so a running
+                // `max_speed.max(v.length())` would hide corrupted state for up to
+                // 2,000,000 steps instead of failing where it diverges.
                 assert!(
                     rod.v[i].is_finite() && rod.x[i].is_finite(),
                     "rod state went non-finite at step {step}, point {i}: v={:?} x={:?} \
@@ -4594,13 +3822,11 @@ mod rod_cantilever_tests {
                 rod.x[i] += rod.v[i] * safe_dt;
             }
 
-            // Real convergence criterion: the TIP DEFLECTION itself has
-            // stopped changing RELATIVE to the expected physical scale, for
-            // several CONSECUTIVE windows in a row (not just one -- a
-            // single quiet window can trigger falsely while the system is
-            // still near its unmoved starting position, before it has
-            // picked up real momentum toward equilibrium; this was the real
-            // cause of the earlier N=30 false-convergence-near-zero result).
+            // Convergence: the tip deflection has stopped changing relative to
+            // the expected physical scale, for several consecutive windows (a
+            // single quiet window can trigger while the system is still near its
+            // starting position, before it has picked up momentum toward
+            // equilibrium, e.g. near zero at N=30).
             if step % check_every == 0 {
                 let deflection = rod.x[n - 1].y;
                 if prev_deflection.is_finite()
@@ -4626,25 +3852,15 @@ mod rod_cantilever_tests {
         rod.x[n - 1].y - 0.0 // rest y was 0.0 (straight horizontal rod)
     }
 
-    /// **Real analytic validation**: a clamped cantilever's tip deflection
-    /// under a point load matches the textbook Euler-Bernoulli formula
-    /// `δ = F*L³/(3*E*I)` exactly (Timoshenko & Goodier, "Theory of
-    /// Elasticity" -- standard beam-bending result). This is the direct proof
-    /// that the discrete curvature/bending-force formulas in `forces.rs` are
-    /// physically correct, not just internally self-consistent.
+    /// **Analytic validation**: a clamped cantilever's tip deflection under a point load
+    /// matches the Euler-Bernoulli formula `δ = F*L³/(3*E*I)` (Timoshenko & Goodier,
+    /// "Theory of Elasticity"), so the discrete curvature/bending-force formulas in
+    /// `forces.rs` are physically correct, not only self-consistent.
     ///
-    /// `n_points=40`, not the original `15`: REAL FINDING (2026-07-20), cross-
-    /// checked via an independent Newton static-equilibrium solve of the same
-    /// force formula (bypassing dynamic settling entirely) -- this discrete
-    /// curvature/clamped-BC formulation converges to Euler-Bernoulli at
-    /// roughly first order in point spacing (error empirically ~20.5% at
-    /// N=8, ~10.5% at N=15, ~5.2% at N=30, ~2.6% at N=60 -- each doubling of N
-    /// roughly halves the error), a genuine, expected discretization
-    /// property, NOT a bug -- `N=15`'s true error is ~10.5%, well above this
-    /// test's 5% analytic-accuracy bar regardless of settling quality, so
-    /// `N=15` was simply too coarse for this bar. `N=40` measures ~3.9% with
-    /// real margin (verified via this same settling path after the real
-    /// `RodMaterial::critical_damping` unit-bug fix above).
+    /// `n_points=40`: an independent Newton static-equilibrium solve of the same force
+    /// formula shows first-order convergence to Euler-Bernoulli in point spacing (error
+    /// ~20.5% at N=8, ~10.5% at N=15, ~5.2% at N=30, ~2.6% at N=60), an expected
+    /// discretization property. N=15 is too coarse for the 5% bar; N=40 measures ~3.9%.
     #[test]
     fn cantilever_tip_deflection_matches_euler_bernoulli() {
         let length_m = 1.0f32;
@@ -4663,9 +3879,8 @@ mod rod_cantilever_tests {
         );
     }
 
-    /// Real secondary check: relative error to the analytic formula should
-    /// *shrink* as point count increases -- proves this is measuring genuine
-    /// convergence to the PDE limit, not a lucky single sample at one
+    /// The relative error to the analytic formula must shrink as point count
+    /// increases: convergence to the PDE limit, not a lucky sample at one
     /// resolution.
     #[test]
     fn cantilever_deflection_error_shrinks_with_resolution() {
@@ -4691,7 +3906,7 @@ mod rod_cantilever_tests {
 
 /// FOURTH real hypothesis for the un-arrested long-horizon creep (after
 /// internal-scalar-state reset, packing-jitter, and static/kinetic
-/// hysteresis -- all three real, disclosed, cleanly falsified). The
+/// hysteresis -- all three cleanly falsified). The
 /// scalar-state reset (`diag_collapsed_pile_after_internal_state_reset`)
 /// reset `friction_hardening`/`log_volume_strain` but explicitly left
 /// `deformation_gradient` -- each particle's own actual elastic strain
@@ -4741,7 +3956,7 @@ fn diag_collapsed_pile_after_full_tensor_state_reset() {
     // Full reset: deformation_gradient -> identity (zero elastic strain,
     // matching a fresh SpawnRegion particle exactly), PLUS the same
     // scalar reset the earlier (falsified) hypothesis used. Positions/
-    // velocities untouched -- the real, chaotic, irregular collapse
+    // velocities untouched -- the chaotic, irregular collapse
     // geometry stays exactly as the dynamics left it.
     {
         let particles = solver.particles_mut();
@@ -4849,10 +4064,10 @@ fn diag_collapsed_pile_after_deformation_gradient_only_reset() {
 }
 
 /// Calibration for `DruckerPragerMaterial::elastic_relaxation_rate` (real
-/// stress-relaxation mechanism, see that field's own doc) against the same
+/// stress-relaxation mechanism, see that field's doc) against the same
 /// scene the tensor-reset diagnostic proved CAN hold perfectly (29.5deg,
 /// bit-for-bit frozen) when `deformation_gradient` is forcibly reset. This
-/// tests whether a GRADUAL, real, ongoing relaxation (not a one-time
+/// tests whether a GRADUAL, ongoing relaxation (not a one-time
 /// reset) achieves the same real arrest. Reduced checkpoints (6000/25000,
 /// not the full 100000) to triangulate a real rate before committing to
 /// an expensive full-length confirmation, same discipline as the
@@ -4926,8 +4141,8 @@ fn diag_elastic_relaxation_calibration_sweep() {
 /// too slow to matter before natural relaxation gets there first. This
 /// tests whether a rate fast enough to reach near-identity within the
 /// first few dozen/hundred substeps (functionally mimicking an instant
-/// reset) reproduces the ablation's real win, instead of assuming the
-/// mechanism's FORM was wrong.
+/// reset) reproduces the ablation's result, before concluding the
+/// mechanism's form is wrong.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_elastic_relaxation_aggressive_rate_sweep() {
@@ -4987,16 +4202,13 @@ fn diag_elastic_relaxation_aggressive_rate_sweep() {
     }
 }
 
-/// Calibration for `DruckerPragerMaterial::post_event_relax_threshold` --
-/// the EDGE-TRIGGERED mechanism, grounded in Cundall 1982's kinetic-damping
-/// peak-reset and confirmed in isolation
-/// (`diag_post_event_relax_isolated_edge_detection_check`) to fire exactly
-/// once per falling edge. This is the real test: does firing automatically
-/// on detected quiescence (instead of at a hand-picked step count)
-/// reproduce the F-only-reset ablation's real win
-/// (`diag_collapsed_pile_after_deformation_gradient_only_reset`, 29.6deg
-/// bit-for-bit frozen)? Same reduced-checkpoint discipline as every sweep
-/// tonight before an expensive full-length confirmation.
+/// Calibration for `DruckerPragerMaterial::post_event_relax_threshold`, the
+/// edge-triggered mechanism after Cundall 1982's kinetic-damping peak reset, which
+/// fires exactly once per falling edge
+/// (`diag_post_event_relax_isolated_edge_detection_check`). Does firing on detected
+/// quiescence (instead of at a hand-picked step count) reproduce the F-only-reset
+/// ablation's result (`diag_collapsed_pile_after_deformation_gradient_only_reset`,
+/// 29.6°, bit-for-bit frozen)? Reduced checkpoints before an expensive full-length run.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_post_event_relax_calibration_sweep() {
@@ -5055,36 +4267,17 @@ fn diag_post_event_relax_calibration_sweep() {
     }
 }
 
-/// Full 100,000-step confirmation for `post_event_relax_threshold=0.001`.
+/// Full 100,000-step run for `post_event_relax_threshold=0.001`.
 ///
-/// STALE CLAIM CORRECTED (2026-08-27): this doc used to claim a 29.6deg
-/// real, exact match to the F-only-reset target. Re-ran this exact test
-/// twice tonight (separate processes) and got a bit-for-bit reproducible
-/// 58.6deg both times -- NOT 29.6deg. Root-caused, not assumed: `git log
-/// -S` on this test's own introducing commit shows `e4e1736` (2026-08-26,
-/// "capillary cohesion, elastic viscosity damping, real compression cap")
-/// landed AFTER the 29.6deg number was recorded, and recalibrated
-/// `DruckerPragerMaterial`'s default `min_volume_jacobian` from an
-/// unsourced 0.6 to a real, sourced 0.807 (DiMaggio & Sandler 1971 /
-/// Resende & Martin 1985 -- 19.3% max volumetric strain instead of an
-/// unsourced 40%). This test builds its sand via `from_young_modulus`,
-/// which picks up that new default automatically -- a pile that can
-/// compress less under its own weight settles differently. Real,
-/// legitimate physics change, not a bug, not caused by anything else
-/// tonight, not floating-point/chaos non-determinism (ruled out directly:
-/// bit-identical across two separate process runs). See
-/// `post_event_relax_switch_step_long_horizon_convergence_comparison`
-/// (same file) for the fuller picture: switch_step=800/1500/3000 converge
-/// to three genuinely different long-horizon plateaus (65.6/58.6/50.4deg),
-/// none near the real ~30deg target -- the real angle-of-repose gap
-/// (GH issue #28) is still open, this is just the honest current baseline
-/// instead of a stale one.
-///
-/// Found during the 2026-09-08 sourcing audit: this test carried no
-/// assertion at all despite the doc above stating a specific, reproducible
-/// number (58.6deg) -- never actually checked. Ignored rather than
-/// asserted against a wrong/moving target, same real open gap as
-/// `sand_angle_of_repose_is_physical` (GH issue #28).
+/// Measures 58.6°, bit-for-bit reproducible across separate processes (not the 29.6°
+/// of the F-only-reset target). `DruckerPragerMaterial`'s `min_volume_jacobian`
+/// default is 0.807 (19.3% maximum volumetric strain, DiMaggio & Sandler 1971 /
+/// Resende & Martin 1985); `from_young_modulus` picks it up, and a pile that compresses
+/// less under its own weight settles differently. See
+/// `post_event_relax_switch_step_long_horizon_convergence_comparison`: switch_step
+/// 800/1500/3000 converge to 65.6/58.6/50.4°, none near ~30°. The angle-of-repose gap
+/// (GH #28) is open; ignored rather than asserted against a moving target, like
+/// `sand_angle_of_repose_is_physical`.
 #[ignore = "real, disclosed negative result: reproducible 58.6deg (bit-for-bit \
             across separate runs), far from the real 30-35deg dry-sand target -- \
             same open angle-of-repose gap as sand_angle_of_repose_is_physical \
@@ -5138,26 +4331,15 @@ fn post_event_relax_long_horizon_full_confirmation() {
     }
 }
 
-/// Is the `switch_step=1500` trigger (`sand_collapse_settle_demo.rs`, and
-/// the test above) a tuned magic number that only produces a real-looking
-/// angle at that EXACT value, or is the result robust across a real range
-/// of switch timings? Direct, falsifiable test of that question, prompted
-/// by a real user challenge ("no hardcode will get tolerated only IRL
-/// principles") rather than assumed. If the held angle is only sane near
-/// 1500 and garbage elsewhere, that's a genuine cherry-picked-constant
-/// problem, not a robust fix.
+/// Is `switch_step=1500` (`sand_collapse_settle_demo.rs` and the test above) a number
+/// that only gives a plausible angle at that exact value, or is the result robust
+/// across switch timings? If the held angle is sane only near 1500, the fix rests on a
+/// cherry-picked constant.
 ///
-/// SUPERSEDED (found during the 2026-09-08 sourcing audit): this test
-/// carried no assertion, and its own real finding -- a monotonic,
-/// NOT-converged relationship at this reduced 5000-step hold -- was already
-/// the exact motivation for writing
-/// `post_event_relax_switch_step_long_horizon_convergence_comparison`
-/// (see that test's own doc), which answers the real question this one
-/// only partially probed, at the full converged horizon. Kept as a real,
-/// disclosed intermediate diagnostic rather than asserted -- the reduced
-/// horizon here genuinely doesn't distinguish "hasn't converged yet" from
-/// "converges to a different value", which is exactly why the follow-up
-/// test exists.
+/// Intermediate diagnostic: at this reduced 5000-step hold the relationship is
+/// monotonic and not converged, which cannot tell "not converged yet" from "converges
+/// elsewhere"; `post_event_relax_switch_step_long_horizon_convergence_comparison`
+/// answers that at the full horizon.
 #[ignore = "intermediate diagnostic, superseded by \
             post_event_relax_switch_step_long_horizon_convergence_comparison's own \
             full-horizon answer -- real findings preserved in this test's own doc \
@@ -5200,23 +4382,14 @@ fn post_event_relax_switch_step_sensitivity() {
     }
 }
 
-/// Real follow-up to `post_event_relax_switch_step_sensitivity` above, per
-/// that test's own "real next step" note (2026-08-26 issue #28 comment):
-/// that sweep only held each switch_step for a fixed 5000 steps and found a
-/// monotonic, NOT-converged relationship (higher switch_step -> lower held
-/// angle, none near the real ~29.6 deg target). Two real, distinct
-/// explanations were left open: (a) 5000 steps just never converges
-/// regardless of switch_step, or (b) switch_step itself sets a genuinely
-/// different converged value, not just convergence SPEED. This test tells
-/// them apart directly: run several switch_step values to the SAME long
-/// horizon (100,000 steps total, matching
-/// `post_event_relax_long_horizon_full_confirmation`'s own proven-converged
-/// checkpoint schedule) and compare their trajectories. If every
-/// switch_step's angle keeps falling and lands near the same ~29.6 deg by
-/// 100,000 steps, that's (a) -- switch_step only affects how fast you get
-/// there, not where you end up (a real, safe, non-hardcoded conclusion). If
-/// they plateau at genuinely different angles, that's (b) -- switch_step is
-/// a real, load-bearing physical parameter, not just a convenience knob.
+/// Follow-up to `post_event_relax_switch_step_sensitivity`, whose fixed 5000-step hold
+/// shows a monotonic, unconverged relationship (higher switch_step -> lower held angle,
+/// none near ~29.6°). Either (a) 5000 steps never converge whatever switch_step, or (b)
+/// switch_step sets a different converged value, not only the convergence speed. Runs
+/// several switch_step values to the same 100,000-step horizon (the checkpoint schedule
+/// of `post_event_relax_long_horizon_full_confirmation`): a common value near ~29.6°
+/// means (a), switch_step only sets the speed; different plateaus mean (b), switch_step
+/// is a load-bearing physical parameter.
 #[test]
 #[ignore = "research probe: 3 x 101 000 steps, over 2 h in the quick profile; its measured answer is recorded below, rerun by hand"]
 fn post_event_relax_switch_step_long_horizon_convergence_comparison() {
@@ -5278,19 +4451,12 @@ fn post_event_relax_switch_step_long_horizon_convergence_comparison() {
         final_angles.push(trajectory.last().unwrap().1);
     }
 
-    // Real, definitive answer to this test's own question (measured
-    // 2026-09-08, reproducible: 65.6/58.6/50.4 deg for switch_step=
-    // 800/1500/3000): the three switch_step values converge to three
-    // GENUINELY DIFFERENT long-horizon plateaus, not the same value at
-    // different speeds -- hypothesis (b) from this test's own doc,
-    // confirmed. `post_event_relax_threshold` firing at a different
-    // simulation time hands the material a genuinely different internal
-    // state (friction_hardening / log_volume_strain) to relax from, not
-    // just a time-shifted copy of the same trajectory. None of the three
-    // land near the real 30-35deg target (same open GH issue #28 gap as
-    // `post_event_relax_long_horizon_full_confirmation`) -- this assert
-    // guards the DIFFERENTIATION itself (a real, load-bearing parameter),
-    // not the absolute accuracy, which stays a disclosed open gap.
+    // Measured 65.6/58.6/50.4° for switch_step=800/1500/3000: three different
+    // long-horizon plateaus, hypothesis (b). `post_event_relax_threshold`
+    // firing at a different time hands the material a different internal state
+    // (friction_hardening / log_volume_strain) to relax from, not a time-shifted
+    // copy of one trajectory. None is near 30-35° (GH #28); this asserts the
+    // differentiation (a load-bearing parameter), not the absolute accuracy.
     let max_angle = final_angles.iter().cloned().fold(f32::MIN, f32::max);
     let min_angle = final_angles.iter().cloned().fold(f32::MAX, f32::min);
     assert!(
@@ -5303,16 +4469,10 @@ fn post_event_relax_switch_step_long_horizon_convergence_comparison() {
     );
 }
 
-/// Real alternative to a step-count trigger at all: does the SAME fix hold
-/// up with ONE constant, real, cited damping regime (Cundall 1982 kinetic
-/// damping, cundall_damping=1.0) active from t=0 -- no numerical mode
-/// switch, no magic step count whatsoever? If the column still collapses
-/// naturally (doesn't freeze rigid in its unstable starting shape) and
-/// settles near the same real angle, that is a strictly more defensible,
-/// zero-hardcoded-trigger version of this demo/test. If it instead freezes
-/// the column in its tall, obviously-unstable starting shape, that's a
-/// real, honest reason a switch is needed -- reported either way, not
-/// assumed.
+/// Instead of a step-count trigger: one constant, cited damping regime (Cundall 1982
+/// kinetic damping, cundall_damping=1.0) from t=0, no mode switch. If the column still
+/// collapses and settles near the same angle, that is a switch-free version of this
+/// demo/test; if it freezes in its tall unstable starting shape, a switch is needed.
 #[test]
 #[ignore = "slow: about 22 min in the CI debug profile, runs in the slow-tests workflow"]
 fn post_event_relax_constant_damping_from_start_no_switch() {
@@ -5356,14 +4516,9 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
         final_angle_deg = shape.angle_deg;
     }
 
-    // Real, measured, definitive answer to this test's own question
-    // (2026-09-08): constant cundall_damping=1.0 from t=0 freezes the
-    // column completely rigid at its initial 76.4 deg unstable shape --
-    // angle/height/half-width bit-identical from step 0 through step
-    // 20000, it never collapses at all. This is the "real, honest reason a
-    // switch is needed" branch this test's own doc named as the other
-    // possible outcome -- assert it directly instead of leaving the
-    // conclusion unverified.
+    // Measured: constant cundall_damping=1.0 from t=0 freezes the column rigid
+    // at its initial 76.4° unstable shape (angle/height/half-width
+    // bit-identical from step 0 through step 20000), so a switch is needed.
     assert!(
         (final_angle_deg - initial_angle_deg).abs() < 1.0,
         "expected constant damping from t=0 to freeze the column rigid (no switch \
@@ -5374,17 +4529,17 @@ fn post_event_relax_constant_damping_from_start_no_switch() {
     );
 }
 
-/// Real, deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
+/// Deeper alternative to a hand-picked switch step: `MuIRheologyMaterial`
 /// (Cicoira et al. 2022 / Jop-Forterre-Pouliquen 2006, already in this engine,
-/// never tested against THIS scene) makes friction genuinely rate-dependent
+/// never tested against THIS scene) makes friction rate-dependent
 /// (mu(I) = mu_static + (mu_dynamic-mu_static)/(Q*sqrt(p)/gamma_dot + 1)) --
-/// a real, local, continuously-computed constitutive law, not a global timer.
+/// a local, continuously-computed constitutive law, not a global timer.
 /// ONE constant material + ONE constant numerical config for the entire run
 /// (apic_blend=0.6 kept -- already independently established as the numerical-
 /// stability floor for ANY violent collapse, material-agnostic, not a target-
 /// angle tuning knob; cundall_damping=0, i.e. no artificial global damping at
 /// all). If this arrests near a real angle and HOLDS long-horizon on its own,
-/// that is a genuine fix. If it just slides like plain DP, that's a real,
+/// that is a fix. If it just slides like plain DP, that's a real,
 /// honest negative result too -- reported either way.
 #[test]
 #[ignore = "slow: over 44 min in the CI debug profile, runs in the slow-tests workflow"]
@@ -5416,14 +4571,12 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
     let mut cumulative = 0usize;
     let mut angle_at_25000 = 0.0f32;
     let mut angle_at_50000 = 0.0f32;
-    // Real Tier-0 phase-range check: `friction_hardening` is this material's
-    // own repurposed field for the CURRENT mu(I) value (see
-    // MuIRheologyMaterial's own doc). Sampling its max at the violent early
-    // collapse (high real shear rate -- mu(I) should sit near mu_dynamic=
-    // tan(40deg)) versus the arrested end state (near-zero real shear rate
-    // -- mu(I) should relax toward mu_static=tan(30deg)) is the actual,
-    // distinctive rate-dependent static<->flowing regime this material
-    // exists for, not just "does it arrest at a plausible angle."
+    // Phase-range check: `friction_hardening` holds this material's current
+    // mu(I) (see MuIRheologyMaterial's doc). Its max during the violent early
+    // collapse (high shear rate, mu(I) near mu_dynamic=tan(40°)) versus the
+    // arrested end state (near-zero shear rate, relaxing toward
+    // mu_static=tan(30°)) is the rate-dependent static<->flowing regime this
+    // material exists for, beyond arresting at a plausible angle.
     let mut max_mu_i_at_1500 = 0.0f32;
     let mut max_mu_i_at_50000 = 0.0f32;
     for &target in &[1500usize, 3000, 6000, 12000, 25000, 50000] {
@@ -5451,12 +4604,12 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
                 sum_mu_i += particles.friction_hardening[i];
             }
             let mean_mu_i = sum_mu_i / particles.len() as f32;
-            // Real, honest reconsideration: MAX across all particles is the
-            // wrong statistic for "has the BULK genuinely transitioned" --
+            // Honest reconsideration: MAX across all particles is the
+            // wrong statistic for "has the BULK transitioned" --
             // it picks out whichever single particle has the highest local
             // shear rate (a boundary-friction particle, a still-settling
             // grain), which can stay elevated even once the pile's bulk is
-            // genuinely at rest. MEAN reflects the aggregate state the
+            // at rest. MEAN reflects the aggregate state the
             // repose-angle measurement itself is already averaging over.
             println!(
                 "  step {target:7} : mu(I) across particles: mean={mean_mu_i:.4} max={max_mu_i:.4}"
@@ -5472,13 +4625,10 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
         }
     }
 
-    // Real Tier-0 asserts, closing this test's own long-standing "pure
-    // printout, no pass/fail" gap. Values below are the REAL, measured
-    // result of this exact run, not tuned targets picked to pass:
-    // dense_packed's real mu_static=tan(30deg) citation (Lambe & Whitman
-    // 1969) predicts a natural repose angle near 30deg -- this run measured
-    // 29.5-29.6deg, essentially exact, with NO artificial global damping
-    // (cundall_damping=0.0) and no step-count switch of any kind.
+    // Measured, not tuned targets: dense_packed's mu_static=tan(30°) (Lambe &
+    // Whitman 1969) predicts a repose angle near 30°; this run measures
+    // 29.5-29.6°, with no global damping (cundall_damping=0.0) and no
+    // step-count switch.
     assert!(
         (angle_at_50000 - 30.0).abs() < 3.0,
         "mu(I) rheology's natural arrest angle must land near its own real \
@@ -5491,12 +4641,12 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
          step 50000 -- angle at 25000={angle_at_25000:.2} deg, at 50000={angle_at_50000:.2} deg"
     );
 
-    // Real, honest finding, NOT asserted on here: mean mu(I) across the
+    // Honest finding, NOT asserted on here: mean mu(I) across the
     // whole pile barely moves between the violent early collapse and the
     // arrested end state (measured directly: 0.7336 -> 0.7360, essentially
     // flat) even though the repose angle DOES converge correctly to the
     // real mu_static-predicted value above. A whole-pile mean mixes genuinely
-    // static bulk grains with real, persistent local creep/boundary-friction
+    // static bulk grains with persistent local creep/boundary-friction
     // particles that never fully reach gamma_dot=0 -- a noisy, indirect
     // proxy for testing rate-dependence, not a rigorous one. The real,
     // rigorous, closed-form version of this check (impose a known shear
@@ -5514,14 +4664,14 @@ fn mu_i_rheology_column_collapse_natural_arrest_check() {
     );
 }
 
-/// Real, fast, closed-form Tier-0 phase-range check for `MuIRheologyMaterial`
+/// Fast, closed-form Tier-0 phase-range check for `MuIRheologyMaterial`
 /// -- the rigorous version of the diagnostic above. Imposes a KNOWN trial
-/// deformation state (a real, controlled compression + shear) and checks
+/// deformation state (a controlled compression + shear) and checks
 /// two things directly: (1) the resulting mu(I) matches the material's own
 /// documented quadratic return-mapping formula (re-typed here independently
 /// from the formula, not copy-pasted from `sand_mui.rs`, to actually catch
 /// an implementation bug rather than just echo it), within tight numerical
-/// tolerance; (2) a real, physically-required qualitative fact: mu(I) for a
+/// tolerance; (2) a physically-required qualitative fact: mu(I) for a
 /// small excess-over-yield shear (near-static) must be strictly less than
 /// mu(I) for a large excess-over-yield shear (well into flow) -- the actual
 /// static<->flowing distinction this material exists for, verified directly
@@ -5538,7 +4688,7 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
         p
     }
 
-    /// Real, self-contained 2x2 singular values -- `sand_mui.rs`'s own
+    /// Self-contained 2x2 singular values -- `sand_mui.rs`'s own
     /// `svd2`/`hencky_strains` are `pub(crate)`, not reachable from this
     /// external integration test, so this is typed fresh from the real
     /// definition (singular values of F = sqrt(eigenvalues of F^T*F)),
@@ -5605,7 +4755,7 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
         inertial_q,
     };
 
-    // Real, controlled trial states: a slight isotropic compression (real
+    // Controlled trial states: a slight isotropic compression (real
     // positive pressure, required for the yield branch to engage at all)
     // plus two different shear severities -- small (near yield) vs large
     // (well past yield). Swept empirically, not guessed, to land one case
@@ -5629,9 +4779,8 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
         // call must have used, from the SAME real inputs, to predict what
         // mu(I) the formula itself says should come out.
         // The law integrates `F` by the exact exponential, not by forward
-        // Euler, so this reference has to as well: it used to read
-        // `(I + dt C) F` and drifted from the real answer in the fourth
-        // digit once the law was corrected (0.580554 against 0.580323).
+        // Euler, so this reference has to as well: `(I + dt C) F` drifts from
+        // the law's answer in the fourth digit (0.580554 against 0.580323).
         // For this scene's own `C`, a pure shear with zero diagonal, the
         // matrix exponential is exactly `[[cosh a, sinh a], [sinh a, cosh
         // a]]` with `a = dt * severity` -- a closed form in its own right,
@@ -5665,7 +4814,7 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
         real_mu_i_by_case.push(real_mu_i);
     }
 
-    // Real, direct, physically-required qualitative check, reusing the SAME
+    // Direct, physically-required qualitative check, reusing the SAME
     // two real_mu_i values just computed above (not recomputed -- avoids
     // redundant work for the same real cases): mu(I) must genuinely
     // increase from near-yield to far-past-yield shear, and the near-yield
@@ -5687,14 +4836,11 @@ fn mu_i_rheology_rate_dependence_matches_the_real_formula() {
     );
 }
 
-/// Real Tier-0 cursor-interaction test for `MuIRheologyMaterial` -- the
-/// last of the 4 criteria (real IRL behavior + phase range covered above by
-/// the closed-form formula test, extreme stress covered by the violent
-/// column collapse). Same real primitive `basic_sand.rs`/`basic_plant.rs`
-/// already use (`apply_radial_impulse`), applied to a real settled pile of
-/// this material, confirming the engine's own interaction API actually
-/// works with mu(I) rheology -- not assumed just because it works for
-/// plain Drucker-Prager sand.
+/// Cursor interaction with `MuIRheologyMaterial`: `apply_radial_impulse` (the primitive
+/// `basic_sand.rs`/`basic_plant.rs` use) on a settled pile of this material, so the
+/// interaction API is checked with µ(I) rheology, not only with Drucker-Prager sand.
+/// The last of the 4 criteria (behavior and phase range are covered by the closed-form
+/// formula test, extreme stress by the violent column collapse).
 #[test]
 fn mu_i_rheology_survives_a_real_cursor_push() {
     let config = SimConfig {
@@ -5714,7 +4860,7 @@ fn mu_i_rheology_survives_a_real_cursor_push() {
         .with_default_material(Box::new(sand))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    // Real settle phase before interacting.
+    // Settle phase before interacting.
     solver.step_n(500);
     for p in solver.particles().iter() {
         assert!(
@@ -5727,8 +4873,8 @@ fn mu_i_rheology_survives_a_real_cursor_push() {
         xs.iter().copied().sum::<Vec2>() / xs.len() as f32
     };
 
-    // Real interactive push -- same primitive/magnitude convention as
-    // basic_sand.rs's own LMB push.
+    // Interactive push -- same primitive/magnitude convention as
+    // basic_sand.rs's LMB push.
     let push_center = Vec2::new(GRID as f32 * 0.5, FLOOR + 2.0);
     solver.apply_radial_impulse(push_center, 5.0, 8.0);
     solver.step_n(200);
@@ -5759,20 +4905,12 @@ fn mu_i_rheology_survives_a_real_cursor_push() {
     );
 }
 
-/// Direct real-data check on a lead found by re-reading Klar et al. 2016 in
-/// full (2026-08-03): their own hardening law (already correctly implemented
-/// here as `hardening_peak`/`hardening_decay`/`friction_residual`, same
-/// formula, same citation) makes the friction angle rise to a peak then
-/// relax to a residual ASYMPTOTE (35deg for every DP preset used tonight) as
-/// accumulated plastic strain `q` grows -- real critical-state soil-mechanics
-/// behavior, not a gap. Nobody has actually measured, during a real plain
-/// collapse (Klar defaults, NO post_event_relax hack, NO artificial global
-/// damping switch), whether `q` (`friction_hardening`) ever reaches the
-/// saturation range (`q_max = 5/hardening_decay = 25` for these defaults)
-/// where phi(q) actually gets close to that 35deg asymptote, or whether it
-/// stays low the whole time -- meaning the real hardening this engine
-/// already implements correctly never actually gets a chance to engage
-/// during a fast collapse. Measuring directly instead of guessing further.
+/// Does `friction_hardening` q reach its saturation range during a plain collapse (Klar
+/// defaults, no post_event_relax, no damping switch)? Klar et al. 2016's hardening law
+/// (`hardening_peak`/`hardening_decay`/`friction_residual`) makes the friction angle
+/// rise to a peak then relax to a residual asymptote (35° for every DP preset here) as q
+/// grows, critical-state behavior. If q stays low (`q_max = 5/hardening_decay = 25` for
+/// these defaults) phi(q) never approaches that asymptote during a fast collapse.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_hardening_state_saturation_during_plain_collapse() {
@@ -5825,10 +4963,10 @@ fn diag_hardening_state_saturation_during_plain_collapse() {
 /// damping resets at a DETECTED PEAK in the system's own total kinetic
 /// energy (KE rises during collapse, peaks, then falls -- damping/holding
 /// engages once KE has fallen to `fallback_fraction` of that measured peak).
-/// This is a real, physically-measured event, not a magic number for the
+/// This is a physically-measured event, not a magic number for the
 /// TIMING -- `fallback_fraction` itself is still a free parameter, so this
 /// sweeps it too: if the resulting angle is robust across a real range of
-/// fallback_fraction, that's genuine evidence the peak-detection is doing
+/// fallback_fraction, that's evidence the peak-detection is doing
 /// real work, not just relocating the same hardcode to a different knob.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
@@ -5885,22 +5023,14 @@ fn diag_ke_peak_triggered_switch_sensitivity() {
     }
 }
 
-/// Real correction to `post_event_relax_constant_damping_from_start_no_switch`
-/// above: that test used `cundall_damping=1.0`, which `Grid::apply_cundall_
-/// damping`'s own formula shows caps the damping magnitude at `coefficient *
-/// |dv|` -- at coefficient=1.0 this cancels the ENTIRE force-driven velocity
-/// change every substep, including gravity's own steady pull, which is why
-/// the column froze rigid (a degenerate edge case, not a fair test of
-/// "constant real damping"). Real DEM/geotechnical literature studies this
-/// coefficient in the 0.5-0.9 range and reports the technique as a real,
-/// disclosed numerical convergence aid (not itself physical, same honest
-/// category as this engine's own `cohesion` field) whose FINAL equilibrium
-/// is reported as not very sensitive to the exact value in that range --
-/// unlike the switch-timing sensitivity found earlier tonight. Testing a
-/// real coefficient sweep, ONE constant value each from t=0, `apic_blend`
-/// held fixed at the already-established-stable 0.6 (isolating cundall_
-/// damping's own effect, not conflating it with a transfer-scheme change
-/// like the earlier, confounded test did).
+/// Corrects `post_event_relax_constant_damping_from_start_no_switch`: `Grid::
+/// apply_cundall_damping` caps the damping magnitude at `coefficient * |dv|`, so at
+/// coefficient=1.0 it cancels the whole force-driven velocity change every substep,
+/// gravity included, which is why that column froze (a degenerate case). DEM and
+/// geotechnical literature use 0.5-0.9 and describe the technique as a numerical
+/// convergence aid (not physical, like this engine's `cohesion` field) whose final
+/// equilibrium is not very sensitive to the value in that range. Sweeps one constant
+/// value from t=0, with `apic_blend` fixed at 0.6 to isolate cundall_damping's effect.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_constant_realistic_cundall_coefficient_sweep() {
@@ -5946,13 +5076,11 @@ fn diag_constant_realistic_cundall_coefficient_sweep() {
     }
 }
 
-/// Calibration for `DruckerPragerMaterial::hardening_relaxation_rate` --
-/// the CORRECTLY-targeted mechanism per this session's own long-horizon
-/// measurement (`diag_j_and_plastic_memory_drift_long_horizon`: elastic F
-/// stays at rest the whole time, `friction_hardening`/`log_volume_strain`
-/// are the ones persistently elevated and still growing). Same reduced-
-/// checkpoint discipline as the (falsified) elastic-relaxation sweep above,
-/// before committing to an expensive full-length confirmation.
+/// Calibration for `DruckerPragerMaterial::hardening_relaxation_rate`, targeting what
+/// drifts over the long horizon (`diag_j_and_plastic_memory_drift_long_horizon`: the
+/// elastic F stays at rest while `friction_hardening`/`log_volume_strain` stay elevated
+/// and keep growing). Reduced checkpoints, as in the elastic-relaxation sweep above,
+/// before an expensive full-length run.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_hardening_relaxation_calibration_sweep() {
@@ -6072,18 +5200,12 @@ fn diag_real_strain_rate_norm_during_holding_phase() {
     }
 }
 
-/// Real long-horizon check of WHICH per-particle state actually drifts
-/// during natural (un-reset) creep: elastic volumetric state (J =
-/// det(deformation_gradient), public field, no material-internal access
-/// needed) vs the plastic memory (`friction_hardening` q,
-/// `log_volume_strain`). A short (~500-step) live sample already showed J
-/// sitting at ~1.0 (elastic volume already relaxed) while q had drifted
-/// far from its baseline (1.111) at several particles -- but that sample
-/// only covered the first ~500 holding steps; `diag_collapsed_pile_after_
-/// internal_state_reset` (q+lvs reset alone, no F reset) ran to 12000 steps
-/// and was falsified, so this checks whether J itself drifts away from 1
-/// at THAT longer horizon too (the short sample may simply have been too
-/// early to see it).
+/// Which per-particle state drifts during natural (un-reset) creep: the elastic volume
+/// (J = det(deformation_gradient)) or the plastic memory (`friction_hardening` q,
+/// `log_volume_strain`)? A ~500-step sample shows J at ~1.0 while q drifts far from its
+/// 1.111 baseline at several particles, but only over the first ~500 holding steps;
+/// `diag_collapsed_pile_after_internal_state_reset` (q and log_volume_strain reset, F
+/// kept) ran 12000 steps and was falsified, so this checks J at that longer horizon.
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_j_and_plastic_memory_drift_long_horizon() {
@@ -6273,16 +5395,16 @@ fn diag_post_event_relax_isolated_edge_detection_check() {
     }
 }
 
-/// Real, fast, targeted diagnostic -- NOT another full 45-pour run. The
+/// Fast, targeted diagnostic -- NOT another full 45-pour run. The
 /// full `sand_pile_built_by_slow_pour_with_pradhana_correction` measured
 /// ZERO real difference from the unfixed baseline (2.266 vs ~2.25
 /// cells/pour), despite `use_pradhana`'s own isolated, hand-driven
-/// `update_particle` test showing a real, clean fix. Before concluding the
+/// `update_particle` test showing a clean fix. Before concluding the
 /// MECHANISM itself is wrong, this checks the more basic, real
 /// possibility: is `eps_pl_vol_pradhana` even reaching nonzero values
 /// through the REAL G2P pipeline (rayon-parallel `MutFieldPtrs`/`ctx_at`
 /// hot path), which the isolated test bypasses entirely (it calls
-/// `update_particle` directly on a hand-built `Particles`)? A real, fast
+/// `update_particle` directly on a hand-built `Particles`)? A fast
 /// (few pours, no long settle) run, reporting how many particles have a
 /// nonzero flag and what fraction of a full population currently sits in
 /// tension-cutoff.

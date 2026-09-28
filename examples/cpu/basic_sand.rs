@@ -3,15 +3,15 @@ extern crate emerge_engine as emerge;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
 
-/// `basic_sand.rs` with a real, live egui panel (same wgpu-native egui
+/// `basic_sand.rs` with a live egui panel (same wgpu-native egui
 /// already used by `rod_blade_and_root.rs`/`material_sandbox_gpu`):
 /// same push/pull cursor interaction as every other sand example (LMB push,
 /// RMB pull, `apply_radial_impulse`), POURING (holding P spawns a small
 /// trickle of new sand particles at the cursor via `Simulation::add_body`),
-/// and a real, live GRAVITY slider (1.0 = genuine IRL 9.81 m/s², via
+/// and a live GRAVITY slider (1.0 = genuine IRL 9.81 m/s², via
 /// `Simulation::set_gravity` -- both already existed in the engine).
 ///
-/// Real, disclosed limit: the renderer's instance buffer is sized with a
+/// Disclosed limit: the renderer's instance buffer is sized with a
 /// fixed extra headroom (`POUR_BUDGET`) at startup (wgpu buffers don't
 /// resize live) -- pouring stops once that budget is spent, not a silent
 /// overflow.
@@ -43,7 +43,7 @@ const DT: f32 = 0.1;
 const MAT_LOOSE: u32 = 0;
 const MAT_DENSE: u32 = 1;
 const SIGMA_SAND: [f32; 3] = [0.180, 0.220, 0.550];
-// Real, disclosed cap on how much new sand pouring can add beyond the
+// Disclosed cap on how much new sand pouring can add beyond the
 // initial ~2016 particles -- the renderer's wgpu instance buffer is
 // allocated once at startup, not resizable live.
 const POUR_BUDGET: usize = 2000;
@@ -84,7 +84,7 @@ fn make_sim() -> Simulation {
         // given enough headroom, so 3000 leaves real margin, confirmed
         // zero time dropped.
         max_substeps_per_step: 3000,
-        // No gravity override here -- `earth()`'s own real, correctly-converted
+        // No gravity override here -- `earth()`'s own correctly-converted
         // IRL gravity (9.81 m/s² / dx_meters) stands, exposed live via the
         // GUI's gravity slider below (see `State::real_gravity`/`gravity_fraction`).
         //
@@ -140,7 +140,7 @@ struct State {
     last_cursor_grid: Vec2,
     // Real IRL gravity (9.81 m/s², converted via `earth()`'s own real
     // dx_meters-based formula) captured once at construction -- the slider
-    // scales THIS real value, so 1.0 always means genuinely real gravity,
+    // scales THIS real value, so 1.0 always means real gravity,
     // not an arbitrary tuned number.
     real_gravity: Vec2,
     gravity_fraction: f32,
@@ -159,7 +159,7 @@ impl State {
         // Real IRL gravity, captured before anything ever overrides it --
         // `earth()`'s own real conversion, not a tuned constant.
         let real_gravity = sim.config().gravity;
-        // Real extra headroom for pouring -- see POUR_BUDGET's own doc.
+        // Real extra headroom for pouring -- see POUR_BUDGET's doc.
         let render_capacity = sim.particles().len() + POUR_BUDGET;
         let mut renderer = Renderer::new(&gfx.device, render_capacity, gfx.format);
         // particle_scale=0.9, not the usual 0.6: particles are seeded at
@@ -228,7 +228,7 @@ impl State {
     }
 
     fn update_and_render(&mut self, window: &Window) {
-        // Real, live gravity control -- `gravity_fraction=1.0` is genuine
+        // Live gravity control -- `gravity_fraction=1.0` is genuine
         // IRL gravity (`real_gravity`, captured from `earth()`'s own real
         // conversion), not an arbitrary tuned constant. `Simulation::
         // set_gravity` already existed in the engine (lifecycle.rs) -- no
@@ -266,7 +266,7 @@ impl State {
         // SpawnRegion dropped at the cursor each frame while held, capped by
         // POUR_BUDGET so the (fixed-size) render buffer never overflows.
         if self.pouring && self.poured_count < POUR_BUDGET {
-            // Real, found-live bug (2026-08-04): pouring with the cursor near
+            // Found-live bug (2026-08-04): pouring with the cursor near
             // the window edge maps to a grid position close enough to the
             // domain boundary that `POUR_BOX` no longer fits inside the
             // spawnable region -- `add_body` then hits `validate_for_sim`'s

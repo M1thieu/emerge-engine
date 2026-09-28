@@ -111,7 +111,7 @@ fn basic_showcase_real_sand_stiffness_settles() {
     run_probe("substeps=3000", 3000, 300);
 }
 
-/// How much would a genuinely coarser grid (same real domain size, same real
+/// How much would a coarser grid (same real domain size, same real
 /// sand pile size, fewer/bigger cells) actually buy us? `elastic_wave_dt`'s
 /// dt bound scales linearly with `dx_meters` once lambda/mu come from
 /// `lame_from_si` (which divides by `rho*dx_meters^2`, so the
@@ -153,14 +153,14 @@ fn basic_showcase_sand_substep_cost_vs_dx_meters_sweep() {
     }
 }
 
-/// Real, published, PROVEN alternative to guessing a softer stiffness:
+/// Published, PROVEN alternative to guessing a softer stiffness:
 /// Haeri & Skonieczny 2022 (the SAME paper already cited for
 /// SAND_YOUNG_MODULUS_PA=15MPa, arXiv:2111.01523) publish their own
 /// "relaxed Young's modulus" variant at E=0.15 MPa (100x softer), used
 /// explicitly "for significant computational efficiency," their Table 2's
 /// own footnote calling it "yet acceptable accuracy." They report a real,
 /// measured cost for it: 15.8% mean error on excavation forward force,
-/// versus -0.5% for the real, validated 15 MPa case. This is not a guess --
+/// versus -0.5% for the validated 15 MPa case. This is not a guess --
 /// it is the literal number the authors of our own citation already
 /// published and used for exactly this performance reason.
 #[test]

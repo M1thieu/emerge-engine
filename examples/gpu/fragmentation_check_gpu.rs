@@ -4,14 +4,14 @@ extern crate emerge_engine as emerge;
 /// ("ça se casse en l'air", it breaks apart while still airborne) that
 /// contradicted this session's own bounding-box-based ext/J readings.
 ///
-/// Real, honest admission this diagnostic exists to correct: a bounding
+/// Honest admission this diagnostic exists to correct: a bounding
 /// box's width/height growing is EXACTLY what both a healthy puddle spread
 /// AND a violent scatter into separate droplets look like in that metric --
 /// it cannot tell the two apart. This measures something that CAN: for
 /// every particle, the distance to its own nearest neighbor. A coherent
 /// fluid body has every particle within roughly 1-2x its own spacing of a
 /// neighbor; real fragmentation shows up as particles whose nearest
-/// neighbor is suddenly, genuinely far away.
+/// neighbor is suddenly, far away.
 ///
 /// Also the per-stage GPU profiler this session's perf work was driven by
 /// (`PROFILE=1`): per-stage begin/end timestamps of the frame's last substep,

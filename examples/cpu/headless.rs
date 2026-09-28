@@ -125,7 +125,7 @@ fn main() {
         // default of 64 caused a WARN[time_dropped] health status, silently
         // simulating ~2% of the requested real time per step instead of
         // crashing -- see `step.rs`'s "honest accounting" doc). Real dry
-        // sand genuinely needs this many substeps under explicit MPM at this
+        // sand needs this many substeps under explicit MPM at this
         // resolution; this is the disclosed real cost of a correct SI value,
         // not a bug -- an implicit solver is the real long-term fix for
         // materials this stiff (see project memory's stiff-solver research).

@@ -4,7 +4,7 @@ extern crate emerge_engine as emerge;
 mod gui_common;
 
 use egui_wgpu::ScreenDescriptor;
-/// Real, live egui GUI for `GranularFluidMaterial` -- the tier-0
+/// Live egui GUI for `GranularFluidMaterial` -- the tier-0
 /// "solo-maximal pass" this material was still missing (added to the tier-0
 /// list 2026-08-02, never individually stress-tested since: see
 /// `project_ecosystem_slice_roadmap_2026-07-22.md`'s own note). Mirrors
@@ -20,11 +20,11 @@ use egui_wgpu::ScreenDescriptor;
 /// bulk viscosities supply dissipation; this demo never applies global
 /// settling/Cundall damping as a substitute for constitutive physics.
 ///
-/// Honest disclosure carried over from the material's own doc: the
+/// Honest disclosure carried over from the material's doc: the
 /// constitutive LAW (Tait EOS + corotated elastic + SVD plasticity) is real
 /// and cited (Dunatunga & Kamrin 2015); these three presets' specific shape
 /// parameters are hand-tuned illustrative values, not measured geotechnical
-/// data (see `GranularFluidMaterial::saturated_loam`'s own doc).
+/// data (see `GranularFluidMaterial::saturated_loam`'s doc).
 ///
 ///   cargo run --example basic_granular_fluid --features render
 use emerge::render::{ColorMode, Renderer};
@@ -73,15 +73,15 @@ fn make_sim() -> Simulation {
         position_jitter: 0.3,
         ..SpawnRegion::for_sim(&config)
     };
-    // Real, disclosed correction (2026-08-06, caught live by the user):
+    // Disclosed correction (2026-08-06, caught live by the user):
     // spawning at y=40 (same ~30-unit drop `basic_sand.rs` also uses)
-    // exposed a real, measured impact-stability gap -- unlike sand,
+    // exposed a measured impact-stability gap -- unlike sand,
     // GranularFluidMaterial's own numerics bounce substantially on a hard
     // impact even with real viscosity added (see `dynamic_viscosity`/
     // `bulk_viscosity` on the material itself). This demo's own point is
     // cursor push/pull/dig/pour interaction, not impact-stress-testing a
     // free fall this material was never shown to handle as well as sand --
-    // spawning close to the floor sidesteps a real, disclosed, still-open
+    // spawning close to the floor sidesteps a still-open
     // gap rather than hiding it.
     let mut solver = Simulation::new(config, spawn(Vec2::new(16.0, 12.0), MAT_LOAM, 11))
         .with_default_material(Box::new(GranularFluidMaterial::saturated_loam(600.0, 0.3)))

@@ -13,8 +13,8 @@ pub struct StabilityThresholds {
     pub max_out_of_bounds_particles: usize,
     pub max_invalid_physical_particle_values: usize,
     pub max_non_finite_values: usize,
-    /// Legacy compatibility threshold for former dropped simulation time.
-    /// Current solvers advance the requested time, so the measured field is zero.
+    /// Max simulated time a step may leave unadvanced when it runs out of
+    /// `max_substeps_per_step` (see `SimSnapshot::sim_time_dropped`).
     pub max_sim_time_dropped: f32,
     /// Legacy compatibility threshold for removed G2P velocity clipping.
     pub max_vel_clamp_count: usize,
