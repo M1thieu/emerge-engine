@@ -185,6 +185,35 @@ pub fn apply_grain_contact_forces(
     boundaries: &[Box<dyn BoundaryCondition>],
     grid_res: usize,
     grid: &crate::grid::Grid,
+    stability_fraction: f32,
+) {
+    // Sub-cycled to the contacts' own step (`contact_step_limit`) instead of
+    // clamping the mechanics substep: with a real mineral's stiffness a
+    // minimum would collapse the whole scene's step. Each sub-step takes at
+    // most `stability_fraction` of the limit, the fraction the materials
+    // take of theirs; the grid's action already reached the grains' velocity
+    // (`gather_grid_to_grains`) and stays fixed over the substep.
+    let limit = grains.contact_step_limit() * stability_fraction;
+    let substeps = if limit.is_finite() && limit > 0.0 {
+        (dt / limit).ceil().max(1.0) as usize
+    } else {
+        1
+    };
+    grains.set_last_contact_substeps(substeps);
+    let h = dt / substeps as f32;
+    for _ in 0..substeps {
+        contact_sub_step(grains, h, boundaries, grid_res, grid);
+    }
+}
+
+/// One contact sub-step of `apply_grain_contact_forces`: contacts resolved,
+/// then velocity, spin and position advanced over `dt`.
+fn contact_sub_step(
+    grains: &mut GrainPopulation,
+    dt: f32,
+    boundaries: &[Box<dyn BoundaryCondition>],
+    grid_res: usize,
+    grid: &crate::grid::Grid,
 ) {
     // Real, clean per-grain normal correction BEFORE any contact resolution
     // -- see `GrainPopulation::clean_wall_normal_velocity`'s own doc for why
@@ -402,7 +431,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid, 1.0);
             let speed = pop.grains[0].v.length();
             max_speed = max_speed.max(speed);
             if step < 5 || speed > 50.0 {
@@ -457,7 +486,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 1.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid, 1.0);
             if step % 2000 == 0 {
                 println!(
                     "step={step} x={:?} v={:?} |v|={:.6}",
@@ -517,7 +546,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid, 1.0);
             let speed = pop
                 .grains
                 .iter()
@@ -615,7 +644,7 @@ mod tests {
                 }
             }
             gather_grid_to_grains(&mut pop, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid);
+            apply_grain_contact_forces(&mut pop, dt, &[], grid_res, &grid, 1.0);
             let speed = pop
                 .grains
                 .iter()
@@ -768,7 +797,7 @@ mod tests {
             scatter_grains_to_grid(&coupled, &mut grid);
             grid.update_velocities(dt, Vec2::ZERO);
             gather_grid_to_grains(&mut coupled, &grid, 0.0, 0.0, None);
-            apply_grain_contact_forces(&mut coupled, dt, &[], 64, &grid);
+            apply_grain_contact_forces(&mut coupled, dt, &[], 64, &grid, 1.0);
             let ke_after = total_ke(&coupled);
             if spike_step.is_none() && ke_after > ke_before * 10.0 && ke_after > 100.0 {
                 spike_step = Some(step);

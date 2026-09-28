@@ -24,11 +24,12 @@ use glam::{Mat2, Vec2};
 
 use crate::forces::boundary::BoundaryCondition;
 use crate::forces::fields::GrainField;
-use crate::matter::materials::granular::disc_contact::DiscContactConfig;
+use crate::matter::materials::granular::disc_contact::{self, DiscContactConfig};
 use crate::matter::materials::granular::grain_contact_law::{
     ContactLawConfig, ContactSpring, GrainContactState, HertzianContactConfig,
-    resolve_contact_pair, resolve_contact_pair_disc, resolve_contact_pair_hertzian,
-    resolve_wall_contact, resolve_wall_contact_disc, resolve_wall_contact_hertzian,
+    critical_timestep_hertzian, resolve_contact_pair, resolve_contact_pair_disc,
+    resolve_contact_pair_hertzian, resolve_wall_contact, resolve_wall_contact_disc,
+    resolve_wall_contact_hertzian,
 };
 use crate::matter::particle::Grain;
 
@@ -126,6 +127,9 @@ pub struct GrainPopulation {
     /// `resolve_terrain_contact_forces`'s own doc for the real mechanism
     /// this unlocks.
     terrain_contact_config: Option<(f32, f32)>,
+    /// How many contact sub-steps the last grid-coupled substep took (see
+    /// `grains::coupling::apply_grain_contact_forces`); 0 before any.
+    last_contact_substeps: usize,
 }
 
 /// Real outer product `a (x) b` as a 2x2 matrix (`M*v = a*(b.dot(v))` for
@@ -158,6 +162,7 @@ impl GrainPopulation {
             stress_accum: Mat2::ZERO,
             stress_accum_samples: 0,
             terrain_contact_config: None,
+            last_contact_substeps: 0,
         }
     }
 
@@ -175,6 +180,7 @@ impl GrainPopulation {
             stress_accum: Mat2::ZERO,
             stress_accum_samples: 0,
             terrain_contact_config: None,
+            last_contact_substeps: 0,
         }
     }
 
@@ -192,7 +198,90 @@ impl GrainPopulation {
             stress_accum: Mat2::ZERO,
             stress_accum_samples: 0,
             terrain_contact_config: None,
+            last_contact_substeps: 0,
         }
+    }
+
+    /// The largest step this population's contacts stay stable at: its
+    /// contact model's stiffest contact on its lightest grain, through
+    /// `disc_contact::critical_step` (the explicit limit of a damped
+    /// oscillator, `omega dt <= 2 (sqrt(1 + zeta^2) - zeta)`). Linear: the
+    /// normal, tangential and rolling springs with their own dashpots.
+    /// Hertzian: `critical_timestep_hertzian`, its own worst-case bound. 2D
+    /// contract: the line contact's tangent stiffness never exceeds
+    /// `1 / sum_i (1 / (pi E_i'))` (see `disc_contact`), `pi E' / 2` between
+    /// two discs on their reduced mass `m / 2` and `pi E'` against a wall on
+    /// `m`, one frequency `sqrt(pi E' / m)`; the tangential spring is
+    /// `tangential_ratio` of it. `INFINITY` without grains.
+    pub fn contact_step_limit(&self) -> f32 {
+        let lightest = self
+            .grains
+            .iter()
+            .map(|g| g.mass)
+            .fold(f32::INFINITY, f32::min);
+        if !lightest.is_finite() {
+            return f32::INFINITY;
+        }
+        let smallest = self
+            .grains
+            .iter()
+            .map(|g| g.radius)
+            .fold(f32::INFINITY, f32::min);
+        let least_inertia = self
+            .grains
+            .iter()
+            .map(Grain::moment_of_inertia)
+            .fold(f32::INFINITY, f32::min);
+        // A spring with its dashpot, on an effective mass (or inertia).
+        let channel = |stiffness: f32, damping: f32, mass: f32| {
+            if stiffness <= 0.0 {
+                return f32::INFINITY;
+            }
+            let zeta = damping / (2.0 * (stiffness * mass).sqrt());
+            disc_contact::critical_step(stiffness, mass, zeta)
+        };
+        match &self.config {
+            ContactModel::Linear(cfg) => {
+                let m_eff = 0.5 * lightest;
+                channel(cfg.normal_stiffness, cfg.normal_damping, m_eff)
+                    .min(channel(
+                        cfg.tangential_stiffness,
+                        cfg.tangential_damping,
+                        m_eff,
+                    ))
+                    .min(channel(
+                        cfg.rolling_stiffness,
+                        cfg.rolling_damping,
+                        0.5 * least_inertia,
+                    ))
+            }
+            ContactModel::Hertzian(cfg) => {
+                critical_timestep_hertzian(0.5 * lightest, smallest, cfg).min(channel(
+                    cfg.rolling_stiffness,
+                    cfg.rolling_damping,
+                    0.5 * least_inertia,
+                ))
+            }
+            ContactModel::Disc2D(cfg) => {
+                let stiffness = std::f32::consts::PI
+                    * cfg.elastic.plane_strain_modulus()
+                    * cfg.tangential_ratio().max(1.0);
+                disc_contact::critical_step(stiffness, lightest, cfg.damping_ratio).min(channel(
+                    cfg.rolling_stiffness,
+                    cfg.rolling_damping,
+                    0.5 * least_inertia,
+                ))
+            }
+        }
+    }
+
+    /// How many contact sub-steps the last grid-coupled substep took.
+    pub const fn last_contact_substeps(&self) -> usize {
+        self.last_contact_substeps
+    }
+
+    pub(crate) const fn set_last_contact_substeps(&mut self, substeps: usize) {
+        self.last_contact_substeps = substeps;
     }
 
     /// Opts this population into K real iterative-relaxation sweeps per
@@ -1358,7 +1447,7 @@ mod tests {
     fn a_disc_contract_grain_rests_at_the_line_contacts_overlap() {
         use crate::matter::materials::granular::disc_contact::{self, ContactSide};
         let (grain, config) = soft_disc_contract(0.1);
-        let g = 981.0; // 9.81 m/s^2 at 1 mm cells
+        let g = 9810.0; // 9.81 m/s^2 at 1 mm cells
         let bottom = Grain {
             x: Vec2::new(0.0, -grain.radius),
             ..grain
