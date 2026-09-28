@@ -527,13 +527,18 @@ manual test on real hardware and must not gate CI on DX12.
 
 ### Not audited yet
 
-Rendering (`systems/render`); the radiation and optics code (its tests were
-read, not the code); rod biology (growth, gravitropism, networks,
-plasticity); electromagnetics and acoustics; orbital mechanics; the
-information measures; the remaining thermodynamics (granular fluidity,
-Cosserat field, water saturation); diagnostics; the particle store; the
-grip, ratchet, heightmap and kinematic-obstacle boundaries; a law-by-law
-re-read of the 17 materials.
+Rendering (`systems/render`); rod biology (growth, gravitropism, networks,
+plasticity); diagnostics; the particle store; the grip, ratchet, heightmap
+and kinematic-obstacle boundaries; a law-by-law re-read of the 17
+materials.
+
+Given a lighter pass only (formulas and constants against their sources,
+citations, f32 precision traps; not every code path): radiation and optics,
+electromagnetics and acoustics, orbital mechanics, the information
+measures, and the thermodynamics outside the core audit. It found #51 (the
+granular fluidity's pressure factor is inverted) and #52 (heat diffusion
+loses sub-kelvin increments in f32), and leaves one question: the Cosserat
+field's stability bound does not reduce to seconds in the units it states.
 
 ### Found during the core audit, outside the current plan
 
