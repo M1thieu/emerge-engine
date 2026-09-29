@@ -25,20 +25,20 @@ together. Water and sand differ only by which equation describes their
 internal stress.
 
 The method is the Material Point Method, specifically MLS-MPM (Hu et al.
-2018), the same family of solver used in visual effects and in computational
+2018, [doi:10.1145/3197517.3201293](https://doi.org/10.1145/3197517.3201293)), the same family of solver used in visual effects and in computational
 geomechanics.
 
 ## Why it is built this way
 
 **The physics is meant to be real, not merely convincing.** Every material
 model comes from published literature and names its source in the code. Snow
-follows Stomakhin et al. 2013, sand follows Drucker-Prager as formulated by
-Klar et al. 2016, dense granular flow follows the mu(I) rheology of Jop,
-Forterre and Pouliquen 2006.
+follows [Stomakhin et al. 2013](https://doi.org/10.1145/2461912.2461948), sand follows Drucker-Prager as
+formulated by [Klar et al. 2016](https://doi.org/10.1145/2897824.2925906), dense granular flow follows the
+mu(I) rheology of [Jop, Forterre and Pouliquen 2006](https://doi.org/10.1038/nature04801).
 
 **Constants are measured, not chosen to look nice.** Water's colour comes
-from its real absorption spectrum -- 140 laboratory measurements from Pope &
-Fry 1997 -- which is why it is nearly clear in a glass and deep blue at
+from its real absorption spectrum -- 140 laboratory measurements from [Pope &
+Fry 1997](https://doi.org/10.1364/AO.36.008710) -- which is why it is nearly clear in a glass and deep blue at
 thirty metres, without anyone tuning a colour. Thermal emission comes from
 Planck's law read through the CIE 1931 standard observer, so a hot body goes
 red, then orange, then white, as real hot bodies do.
@@ -204,7 +204,7 @@ Ten force fields, six boundary conditions -- mix and match, all optional, zero c
 | `activation` | `f32` | [0,1] active-matter drive (muscle contraction) |
 | `activation_dir` | `Vec2` | muscle fiber direction, material frame |
 | `muscle_group_id` | `u32` | tags a subset of particles for independent activation control -- same continuum, different control group |
-| `contact_group` | `u32` | 0 = ordinary particle; nonzero = opts into multi-field frictional contact (Bardenhagen 2001 + Nairn/Hammerquist/Smith 2020). Zero-cost when unused |
+| `contact_group` | `u32` | 0 = ordinary particle; nonzero = opts into multi-field frictional contact ([Bardenhagen 2001](https://doi.org/10.3970/cmes.2001.002.509) + [Nairn/Hammerquist/Smith 2020](https://doi.org/10.1016/j.cma.2020.112859)). Zero-cost when unused |
 | `sleeping` | `u32` | active/sleeping partition flag |
 | `internal_pressure` | `f32` | pre-stress pressure (already SI-converted to grid units) |
 | `pinned` | `u32` | real Dirichlet anchor -- forces v=0, velocity_gradient=0 every substep in G2P |
@@ -213,13 +213,13 @@ Ten force fields, six boundary conditions -- mix and match, all optional, zero c
 
 - **`MaterialModel::activation_scale()`** -- scaling coefficient for activation-driven deviatoric stress. Muscle/active-matter hook. Default 0.0 (opt-in per material).
 - **`MaterialModel::pressure_scale()`** -- scaling coefficient for internal pre-stress. Turgor-pressure-style hook (any internally-pressurized body, not plant-specific). Default 0.0.
-- **`MixturePhase`** (`SOLID`/`FLUID`) -- two-phase mixture coupling role (Tampubolon et al. 2017, Darcy drag between interpenetrating granular/fluid phases).
+- **`MixturePhase`** (`SOLID`/`FLUID`) -- two-phase mixture coupling role ([Tampubolon et al. 2017](https://doi.org/10.1145/3072959.3073651), Darcy drag between interpenetrating granular/fluid phases).
 - **`WithLatentHeat<M>` / `WithMixturePhase<M>` / `WithPreStress<M>`** -- delegating wrapper structs that bolt one extra behavior onto any `MaterialModel` without rewriting it.
 - **`add_phase_rule(Fn(&Particle) -> Option<u32>)`** -- automatic material_id transition evaluated every substep (freezing, melting, evaporation).
 - **`ScalarDiffusionField`** -- generic diffusion field (heat, pheromone, nutrients, morphogen). Reaction-diffusion (Gray-Scott/Turing) ready via its `source` closure.
 - **Sleep/wake** -- flag-based active/sleeping partition, not memory compaction. Particles: `SimConfig::sleep_threshold`, per-particle swap into a sleeping tail. Rods: see [Rod solver](#rod-solver) above.
 - **Adaptive substeps** -- `Simulation::step()` always advances exactly `config.dt`, internally split into as many CFL-safe substeps as needed. Not a tuning knob -- real physics.
-- **`Lnn`** (`information::control::lnn`) -- Liquid Time-constant Network CPG (Hasani et al. 2020), a standalone locomotion controller. Does not participate in the substep loop; writes into `activation`/`activation_dir` between steps.
+- **`Lnn`** (`information::control::lnn`) -- Liquid Time-constant Network CPG ([Hasani et al. 2020](https://arxiv.org/abs/2006.04439)), a standalone locomotion controller. Does not participate in the substep loop; writes into `activation`/`activation_dir` between steps.
 - **`spacetime::diff`** -- separate, hand-derived-adjoint forward+reverse MLS-MPM implementation for gradient-based offline controller training. Not used at real-time/play time.
 
 ## API reference
@@ -292,14 +292,14 @@ Windowed examples (everything except `headless` and `validate_materials`) need `
 
 | Module | Paper |
 |---|---|
-| MLS-APIC transfer | Hu et al. 2018, *A Moving Least Squares Material Point Method* |
-| NeoHookean / Corotated | Stomakhin et al. 2012, *Energetically Consistent Invertible Elasticity* |
-| Snow | Stomakhin et al. 2013, *A Material Point Method for Snow Simulation* |
-| Sand | Klar et al. 2016, *Drucker-Prager Elastoplasticity for Sand Animation* |
-| µ(I)-rheology | Dunatunga & Kamrin 2015, *Continuum modelling and simulation of granular flow* |
+| MLS-APIC transfer | Hu et al. 2018, [*A Moving Least Squares Material Point Method with Displacement Discontinuity and Two-Way Rigid Body Coupling*](https://doi.org/10.1145/3197517.3201293) |
+| NeoHookean / Corotated | Stomakhin et al. 2012, [*Energetically Consistent Invertible Elasticity*](https://doi.org/10.2312/SCA/SCA12/025-032) |
+| Snow | Stomakhin et al. 2013, [*A Material Point Method for Snow Simulation*](https://doi.org/10.1145/2461912.2461948) |
+| Sand | Klar et al. 2016, [*Drucker-Prager Elastoplasticity for Sand Animation*](https://doi.org/10.1145/2897824.2925906) |
+| µ(I)-rheology | Dunatunga & Kamrin 2015, [*Continuum modelling and simulation of granular flows through their many phases*](https://doi.org/10.1017/jfm.2015.383) |
 | Surface tension | Stomakhin et al. 2014, *Augmented MPM for cloth and soft bodies* |
-| N-body gravity | Barnes & Hut 1986, *A hierarchical O(N log N) force-calculation algorithm* |
-| Rod (Cosserat) | Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, *Discrete Elastic Rods* |
+| N-body gravity | Barnes & Hut 1986, [*A hierarchical O(N log N) force-calculation algorithm*](https://doi.org/10.1038/324446a0) |
+| Rod (Cosserat) | Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, [*Discrete Elastic Rods*](https://doi.org/10.1145/1360612.1360662) |
 
 ## Contributing
 
