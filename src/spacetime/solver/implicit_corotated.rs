@@ -803,7 +803,7 @@ impl ImplicitProblem {
         const RADIUS_MAX: f32 = 1.0e8;
         const RADIUS_MIN: f32 = 1.0e-12;
         const MAX_RADIUS_RETRIES: usize = 80;
-        let diag = std::env::var("EMERGE_IMPLICIT_DIAG").is_ok();
+        let diag = crate::diagnostics::research_switch("EMERGE_IMPLICIT_DIAG").is_some();
 
         // Gauss-Newton trust region for the nonlinear equation
         // `residual(v) = 0` (Nocedal & Wright 2nd ed. ch.10; Moré 1978), not
@@ -1061,7 +1061,7 @@ impl Simulation {
             wall_frozen,
         };
 
-        // Diagnostic, opt-in through an env var like `EMERGE_CFL_DIAGNOSE`.
+        // Diagnostic, opt-in through the `EMERGE_IMPLICIT_DIAG` research switch.
         // Built for a settled DruckerPrager pile drifting from the explicit
         // baseline although each solve converged, fixed by
         // `ImplicitProblem::wall_frozen` (regression test
@@ -1069,7 +1069,7 @@ impl Simulation {
         // `tests/implicit_corotated_substep.rs`). A violent impact still
         // diverges more (`violent_impact_diverges_more_than_settled_pile_a_
         // real_disclosed_limitation`).
-        let diag = std::env::var("EMERGE_IMPLICIT_DIAG").is_ok();
+        let diag = crate::diagnostics::research_switch("EMERGE_IMPLICIT_DIAG").is_some();
         if diag {
             let r0_norm = problem
                 .residual(&v_n)

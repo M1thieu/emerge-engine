@@ -75,9 +75,11 @@ pub mod prelude;
 // Solver core
 pub use grid::{Cell, DirectionalContactGrip, Grid};
 pub use particle::{Particle, Particles};
+pub use solver::Simulation;
 pub use solver::config::{SimConfig, SpawnRegion, SpawnShape};
 pub use solver::handle::{MaterialHandle, ParticleGroup};
-pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport, Simulation};
+#[cfg(any(test, feature = "research-diagnostics"))]
+pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport};
 
 // Materials
 pub use materials::{

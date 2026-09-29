@@ -377,7 +377,7 @@ impl Scene {
     /// A text picture of the particles, printed when `EMERGE_GATE_MAPS` is
     /// set.
     fn print_map(&self, label: &str) {
-        if std::env::var("EMERGE_GATE_MAPS").is_err() {
+        if crate::diagnostics::research_switch("EMERGE_GATE_MAPS").is_none() {
             return;
         }
         let mut particles = Particles::default();

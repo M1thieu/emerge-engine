@@ -1,5 +1,8 @@
-//! TEMPORARY accepted-substep impulse ledger for the structural wall-bounce
-//! investigation. Opt-in only; remove once the boundary mechanism is settled.
+//! Accepted-substep impulse ledger from the structural wall-bounce
+//! investigation, kept as a tested oracle (the four ledger tests of
+//! `tests/physics_correctness.rs`). Compiled only for unit tests or with the
+//! `research-diagnostics` feature; enabled per simulation with
+//! `Simulation::enable_boundary_impulse_diagnostic`.
 
 use glam::{DVec2, Vec2};
 
@@ -17,17 +20,6 @@ pub enum BoundaryImpulseExperiment {
 }
 
 impl BoundaryImpulseExperiment {
-    pub(crate) fn from_env() -> Option<Self> {
-        let value = std::env::var("EMERGE_DIAG_BOUNDARY_IMPULSE").ok()?;
-        match value.to_ascii_lowercase().as_str() {
-            "baseline" | "a" => Some(Self::Baseline),
-            "traction" | "b" => Some(Self::TractionAwareRelease),
-            "deep" | "c" => Some(Self::DeepQuadraticBand),
-            "both" | "d" => Some(Self::TractionAwareDeepBand),
-            _ => None,
-        }
-    }
-
     const fn traction_aware(self) -> bool {
         matches!(
             self,
@@ -789,8 +781,8 @@ pub(crate) fn apply_experimental_lower_wall(
 }
 
 impl Simulation {
-    /// TEMPORARY explicit opt-in used by the controlled structural-bounce test.
-    /// Normal users remain on the exact production path.
+    /// Turns on the structural-boundary impulse ledger for this simulation, in
+    /// `mode`; used by the four ledger tests of `tests/physics_correctness.rs`.
     pub fn enable_boundary_impulse_diagnostic(&mut self, mode: BoundaryImpulseExperiment) {
         self.boundary_impulse_diagnostic = Some(BoundaryImpulseDiagnostic::new(mode));
     }

@@ -259,8 +259,9 @@ impl Simulation {
             self.last_timing.cfl_us += t_cfl.elapsed().as_micros() as u64;
             // Diagnostic, see `diagnose_worst_particle_cfl_term`: opt-in
             // through `EMERGE_CFL_DIAGNOSE` (`all` scans every particle,
-            // `<material_id>` one material), free otherwise.
-            if let Ok(spec) = std::env::var("EMERGE_CFL_DIAGNOSE") {
+            // `<material_id>` one material) in a `research-diagnostics`
+            // build, compiled out otherwise (see `research_switch`).
+            if let Some(spec) = crate::diagnostics::research_switch("EMERGE_CFL_DIAGNOSE") {
                 let filter = if spec.eq_ignore_ascii_case("all") {
                     None
                 } else {
@@ -280,11 +281,12 @@ impl Simulation {
                 }
             }
             // Diagnostic, see `transfer::diagnose_particle_node_material_
-            // sources`: opt-in through an env var. Tests whether a tracked
+            // sources`: opt-in through `EMERGE_TRACK_PARTICLE_NODES` in a
+            // `research-diagnostics` build. Tests whether a tracked
             // particle's runaway velocity comes from a neighbour of another
             // material sharing its P2G/G2P nodes, which same-material
             // neighbour counts cannot see.
-            if let Ok(spec) = std::env::var("EMERGE_TRACK_PARTICLE_NODES")
+            if let Some(spec) = crate::diagnostics::research_switch("EMERGE_TRACK_PARTICLE_NODES")
                 && let Ok(tracked_index) = spec.parse::<usize>()
                 && tracked_index < self.active_count
             {
@@ -336,6 +338,7 @@ impl Simulation {
             let actual_dt = self.do_substep_with_retry(sub_dt);
             // The retry loop leaves only its final attempt in `pending`; fold
             // it into the public diagnostic report here, after acceptance.
+            #[cfg(any(test, feature = "research-diagnostics"))]
             if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic {
                 diagnostic.accept_pending();
             }
@@ -681,9 +684,10 @@ impl Simulation {
         }
         self.last_timing.p2g_us += t0.elapsed().as_micros() as u64;
 
-        // TEMPORARY structural-boundary diagnostic. Reconstructs the same
+        // Structural-boundary ledger (research diagnostic). Reconstructs the same
         // particle P2G terms with this retry attempt's exact `sub_dt`; the
         // outer loop accepts only the final attempt's pending ledger.
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if self.boundary_impulse_diagnostic.is_some() {
             let components = crate::transfer::diagnose_grid_p2g_components(
                 &self.particles,
@@ -704,7 +708,7 @@ impl Simulation {
         // after the P2G scatter, with the `sub_dt` it used. Stores the
         // pre-grid-update decomposition; `trace_final`/`dt_used` are filled
         // in after G2P below.
-        if let Ok(spec) = std::env::var("EMERGE_TRACK_BOUNDARY_BIAS")
+        if let Some(spec) = crate::diagnostics::research_switch("EMERGE_TRACK_BOUNDARY_BIAS")
             && let Ok(tracked_index) = spec.parse::<usize>()
             && tracked_index < self.active_count
         {
@@ -840,6 +844,7 @@ impl Simulation {
                 None
             };
         let grid_res = self.grid.resolution();
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
             && let Some(ledger) = &mut diagnostic.pending
         {
@@ -861,6 +866,7 @@ impl Simulation {
                 &mut self.friction_heat_debt,
             );
         }
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
             && let Some(ledger) = &mut diagnostic.pending
         {
@@ -889,6 +895,7 @@ impl Simulation {
             self.config.material_cfl_coefficient,
             self.contact_grip.as_deref(),
         );
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
             && let Some(ledger) = &mut diagnostic.pending
         {
@@ -953,6 +960,7 @@ impl Simulation {
         // application. Overwriting them here supplies the actual Dirichlet
         // reaction that the old post-G2P-only particle reset could not.
         self.grid.apply_pinned_node_constraints();
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if let Some(diagnostic) = &mut self.boundary_impulse_diagnostic
             && let Some(ledger) = &mut diagnostic.pending
         {
@@ -964,6 +972,7 @@ impl Simulation {
                 - ledger.grid_momentum_after_wall_f64
                 - ledger.contact_impulse_f64;
         }
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if self.boundary_impulse_diagnostic.is_some() {
             let mass_closure = super::boundary_diagnostics::measure_g2p_mass_closure(self);
             let Some(diagnostic) = &mut self.boundary_impulse_diagnostic else {
@@ -1012,6 +1021,7 @@ impl Simulation {
                 cosserat_curvature: &self.cosserat_curvature[..cosserat_len],
             },
         );
+        #[cfg(any(test, feature = "research-diagnostics"))]
         if self.boundary_impulse_diagnostic.is_some() {
             let particle_momentum_end = super::boundary_diagnostics::particle_momentum(self);
             let particle_momentum_end_f64 =

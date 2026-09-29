@@ -40,6 +40,11 @@ render = ["gpu"]
 # Experimental physics modules: acoustics, EM, information theory.
 # Not part of the guaranteed public API -- no concrete LP use yet.
 experimental = []
+# Research instruments kept as tested oracles, never in a default build: the
+# structural-boundary impulse ledger, and the solver's trace switches
+# (EMERGE_CFL_DIAGNOSE and the other EMERGE_* variables), which a build
+# without this feature never reads.
+research-diagnostics = []
 
 [dev-dependencies]
 pollster = "0.3"

@@ -202,15 +202,16 @@ impl Grid {
             }
         };
 
-        // Opt-in diagnostic, env-gated (`EMERGE_DIAG_MIXTURE_PRESSURE`, free
-        // when unset, like `sand.rs`'s `EMERGE_DIAG_FLOOR_FIX`), kept to inspect
+        // Opt-in diagnostic behind the `EMERGE_DIAG_MIXTURE_PRESSURE` research
+        // switch (debug builds with `research-diagnostics`), kept to inspect
         // the mobility `k` in a consolidated region: whether `k` goes extreme
         // where several adjacent cells all hold tiny water mass (harmonic-mean
         // faces only bound a mismatch between neighbours). Built for sand
         // erupting to 3-7x its pile height once water consolidated at the
         // bottom in `mixture_sand_water.rs`.
         #[cfg(debug_assertions)]
-        let diag_enabled = std::env::var("EMERGE_DIAG_MIXTURE_PRESSURE").is_ok();
+        let diag_enabled =
+            crate::diagnostics::research_switch("EMERGE_DIAG_MIXTURE_PRESSURE").is_some();
         #[cfg(debug_assertions)]
         if diag_enabled {
             let max_k = mobility.values().cloned().fold(0.0f32, f32::max);

@@ -3,9 +3,10 @@
 //! `lame_from_si(15e6, 0.3, 1600.0)` (SI, converted) with 1008 particles, so two
 //! variables change at once (stiffness and scene size). Uses each test's two concrete
 //! (lambda, mu) pairs, varied independently against scene size, to find which one
-//! breaks Newton convergence.
+//! breaks Newton convergence. The Newton trace (`EMERGE_IMPLICIT_DIAG`) prints only in
+//! a `research-diagnostics` build:
 //!
-//! `cargo test --release --test probes implicit_stiffness_vs_scale_isolation:: -- --nocapture`
+//! `cargo test --release --features research-diagnostics --test probes implicit_stiffness_vs_scale_isolation:: -- --nocapture`
 
 use emerge::materials::{DruckerPragerMaterial, lame_from_young};
 use emerge::{SimConfig, Simulation, SlipBoundary, SpawnRegion};

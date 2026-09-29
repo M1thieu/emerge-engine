@@ -1393,7 +1393,7 @@ impl State {
                     p.v.length(),
                 );
             }
-            // Temporary diagnostic: with `EMERGE_CFL_DIAGNOSE=2` (see
+            // Diagnostic: with `EMERGE_CFL_DIAGNOSE=2` in a `research-diagnostics` build (see
             // `cfl::diagnose_worst_particle_cfl_term`), particle #15 is the most
             // constrained particle in ~66% of 15123 samples, one particle in an
             // escalating runaway rather than a diffuse steam effect. Tracks its state:

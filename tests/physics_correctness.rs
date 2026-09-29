@@ -19,18 +19,21 @@ use emerge::{
     ThermalStatsPlugin, collect_snapshot,
 };
 use emerge::{
-    BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BoundaryImpulseExperiment,
-    CavitatingEosParams, CavitatingEosTable, CavitatingFluidMaterial, CorotatedMaterial,
-    DruckerPragerMaterial, FromSI, GranularFluidMaterial, IsothermalCavitatingFluidMaterial,
-    MaterialRegistry, MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial,
-    NewtonianFluidMaterial, NoCompressionMaterial, RankineMaterial, SimConfig, Simulation,
-    SpawnRegion, StomakhinMaterial, ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
+    BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, CavitatingEosParams,
+    CavitatingEosTable, CavitatingFluidMaterial, CorotatedMaterial, DruckerPragerMaterial, FromSI,
+    GranularFluidMaterial, IsothermalCavitatingFluidMaterial, MaterialRegistry,
+    MuIRheologyMaterial, NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial,
+    NoCompressionMaterial, RankineMaterial, SimConfig, Simulation, SpawnRegion, StomakhinMaterial,
+    ViscoelasticMaterial, VonMisesMaterial, WithPreStress,
 };
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
 // branches that also add to that block -- keeps independent PRs conflict-free.
 use emerge::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary, SlipBoundary};
 use glam::{IVec2, Mat2, Vec2};
+// The structural-boundary ledger exists only in a `research-diagnostics` build.
+#[cfg(feature = "research-diagnostics")]
+use emerge::BoundaryImpulseExperiment;
 
 // â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -2344,6 +2347,7 @@ fn hydrostatic_test_scene_unprestressed_full(
 /// historical 20-cell-wide column, this body spans the domain between the two
 /// outer `SlipBoundary` side walls, so hydrostatic pressure has a lateral wall
 /// reaction instead of physically spreading through two free vertical faces.
+#[cfg(feature = "research-diagnostics")]
 fn confined_hydrostatic_test_scene_unprestressed() -> (Simulation, f32, f32, f32, f32, f32) {
     const REST_DENSITY: f32 = 4.0;
     const EOS_POWER: f32 = 7.0;
@@ -3037,6 +3041,7 @@ fn fluid_geostatic_prestress_isothermal_cavitating_vs_newtonian_ab() {
 /// geostatic initialization; only the diagnostic wall branch differs.
 #[test]
 #[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+#[cfg(feature = "research-diagnostics")]
 fn fluid_geostatic_structural_boundary_impulse_ledger_2x2() {
     const CHECKPOINTS: [usize; 11] = [0, 1, 2, 5, 10, 50, 100, 200, 400, 1_000, 5_000];
     let modes = [
@@ -3145,6 +3150,7 @@ fn fluid_geostatic_structural_boundary_impulse_ledger_2x2() {
 /// quadratic P2G stencil, with the sourced deep wall band (`y<=2`) carrying
 /// the reaction and the top particle row fixed at zero gauge pressure. This
 /// is diagnostic initialization only, not a production solver.
+#[cfg(feature = "research-diagnostics")]
 fn apply_discrete_vertical_geostatic_equilibrium(
     solver: &mut Simulation,
     _rest_density: f32,
@@ -3302,6 +3308,7 @@ fn apply_discrete_vertical_geostatic_equilibrium(
 /// needs no `#[allow(clippy::too_many_arguments)]`, same real fix (group
 /// arguments that always travel together into one struct) already used by
 /// `PhasePipelineBuffers` in `surface_reconstruction.rs`.
+#[cfg(feature = "research-diagnostics")]
 struct HydrostaticRowParams {
     grid_res: usize,
     gravity_y: f64,
@@ -3310,6 +3317,7 @@ struct HydrostaticRowParams {
     first_free_grid_row: usize,
 }
 
+#[cfg(feature = "research-diagnostics")]
 fn discrete_vertical_force_norm(
     particles: &Particles,
     particle_row: &[usize],
@@ -3357,6 +3365,7 @@ fn discrete_vertical_force_norm(
         .sum()
 }
 
+#[cfg(feature = "research-diagnostics")]
 fn solve_dense_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
     let n = b.len();
     for k in 0..n {
@@ -3398,6 +3407,7 @@ fn solve_dense_linear_system(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> 
 
 #[test]
 #[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+#[cfg(feature = "research-diagnostics")]
 fn fluid_geostatic_structural_boundary_impulse_ledger_discrete_equilibrium_2x2() {
     const CHECKPOINTS: [usize; 9] = [0, 1, 2, 5, 10, 50, 100, 200, 1_000];
     let modes = [
@@ -3476,6 +3486,7 @@ fn fluid_geostatic_structural_boundary_impulse_ledger_discrete_equilibrium_2x2()
 /// exact discrete vertical-force initialization.
 #[test]
 #[ignore = "long-running diagnostic experiment; run exactly with --ignored --nocapture"]
+#[cfg(feature = "research-diagnostics")]
 fn fluid_geostatic_confined_boundary_impulse_ledger_2x2() {
     const CHECKPOINTS: [usize; 9] = [0, 1, 2, 5, 10, 50, 100, 200, 1_000];
     let modes = [
@@ -3620,6 +3631,7 @@ fn fluid_geostatic_confined_boundary_impulse_ledger_2x2() {
 /// runtime rather than information.
 #[test]
 #[ignore = "very long-running diagnostic experiment (four 200-second trajectories)"]
+#[cfg(feature = "research-diagnostics")]
 fn fluid_geostatic_confined_boundary_impulse_ledger_long_horizon() {
     const CHECKPOINTS: [usize; 7] = [0, 1, 10, 1_000, 2_500, 5_000, 10_000];
     let modes = [
@@ -6498,9 +6510,10 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
 /// partial damping; if it fires constantly, grains freeze mid-motion over and over and
 /// sand reads as sticking or clumping (cohesion and elastic_viscosity are ruled out as
 /// causes). Counts through the `EMERGE_DIAG_FLOOR_FIX` print hook (`sand.rs`'s
-/// `update_particle`, `#[cfg(test)]`-gated), piped through stdout.
+/// `update_particle`), piped through stdout. The hook exists only in a
+/// `research-diagnostics` build: run with `--features research-diagnostics`.
 #[test]
-#[ignore = "probe: the engagement count is read by grepping its EMERGE_DIAG_FLOOR_FIX output, no pass criterion"]
+#[ignore = "probe: the engagement count is read by grepping its EMERGE_DIAG_FLOOR_FIX output (needs --features research-diagnostics), no pass criterion"]
 fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
     unsafe {
         std::env::set_var("EMERGE_DIAG_FLOOR_FIX", "1");

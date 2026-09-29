@@ -22,12 +22,13 @@ pub use friction_heat::{gather_friction_heat_to_particles, grid_kinetic_energy};
 pub use g2p::{
     G2PParams, f_update_vjp, g2p_affine_vjp, g2p_velocity_vjp, gather_grid_to_particles,
 };
+#[cfg(any(test, feature = "research-diagnostics"))]
+pub use p2g::{GridNodeP2GComponents, diagnose_grid_p2g_components};
 pub use p2g::{
-    GridNodeP2GComponents, NodeMaterialSource, P2GParticleState, TrackedNodeBreakdown,
-    diagnose_grid_p2g_components, diagnose_particle_divergence_decomposition,
-    diagnose_particle_node_material_sources, gather_contact_point_cloud, p2g_position_vjp,
-    p2g_stress_vjp, scatter_particle_mass, scatter_particles_to_grid,
-    scatter_particles_to_grid_sorted, spatial_sort_order,
+    NodeMaterialSource, P2GParticleState, TrackedNodeBreakdown,
+    diagnose_particle_divergence_decomposition, diagnose_particle_node_material_sources,
+    gather_contact_point_cloud, p2g_position_vjp, p2g_stress_vjp, scatter_particle_mass,
+    scatter_particles_to_grid, scatter_particles_to_grid_sorted, spatial_sort_order,
 };
 
 // The two test modules' `use super::*;` see every item re-exported above

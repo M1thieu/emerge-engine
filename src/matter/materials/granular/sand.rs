@@ -1074,11 +1074,11 @@ impl MaterialModel for DruckerPragerMaterial {
             // damping only brought 731 down to 215).
             let _ = sigma_before_floor;
             let v_local_damped = Vec2::ZERO;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "research-diagnostics"))]
             {
                 let v_before = *ctx.v;
                 let v_after = u * v_local_damped;
-                if std::env::var("EMERGE_DIAG_FLOOR_FIX").is_ok() {
+                if crate::diagnostics::research_switch("EMERGE_DIAG_FLOOR_FIX").is_some() {
                     println!(
                         "  [floor-fix] v_before={v_before:?} v_after={v_after:?} rescale={rescale:.4}"
                     );

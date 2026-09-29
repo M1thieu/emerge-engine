@@ -1,4 +1,5 @@
 pub mod body_state;
+#[cfg(any(test, feature = "research-diagnostics"))]
 mod boundary_diagnostics;
 mod cfl;
 pub mod config;
@@ -13,6 +14,7 @@ pub mod spatial_hash;
 mod step;
 
 pub use body_state::{BodyState, body_state_of, region_body_state_of};
+#[cfg(any(test, feature = "research-diagnostics"))]
 pub use boundary_diagnostics::{
     AcceptedBoundaryImpulseLedger, BoundaryImpulseExperiment, BoundaryImpulseReport,
     BoundaryNodeImpulseLedger,
@@ -153,17 +155,19 @@ pub struct Simulation {
     /// further substeps. `None` = no hold active (always, in scenes that
     /// never enable the feature).
     fluid_sticky_fine_dt: Option<(f32, u32)>,
-    /// Temporary diagnostic, `EMERGE_TRACK_BOUNDARY_BIAS` (see
+    /// Research diagnostic, `EMERGE_TRACK_BOUNDARY_BIAS` (see
     /// `transfer::diagnose_particle_divergence_decomposition`). Set by
     /// `do_substep` right after P2G with the `dt` that scatter used, filled
     /// with the final `tr(C)` at the end of the same call, then printed by
     /// `do_substep_with_retry` after its retry loop exits, so it reflects the
-    /// accepted attempt. `None` unless the env var is set. Fields:
+    /// accepted attempt. `None` unless that switch is set in a
+    /// `research-diagnostics` build (see `research_switch`). Fields:
     /// `(tracked_index, trace_translation, trace_affine, trace_stress,
     /// trace_final, dt_used)`.
     pending_divergence_diagnostic: Option<(usize, f32, f32, f32, f32, f32)>,
-    /// TEMPORARY, opt-in structural wall-bounce impulse ledger. `None` is the
-    /// default and preserves the normal hot path exactly.
+    /// Structural wall-bounce impulse ledger (`boundary_diagnostics`), set by
+    /// `enable_boundary_impulse_diagnostic`; absent from a default build.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     boundary_impulse_diagnostic: Option<boundary_diagnostics::BoundaryImpulseDiagnostic>,
     /// Max particle speed measured by the previous `choose_substep_dt` call
     /// (lagged one substep: a substep's max speed is known only after its CFL

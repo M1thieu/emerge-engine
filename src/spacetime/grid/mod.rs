@@ -26,7 +26,9 @@ mod pressure;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 
-use glam::{DVec2, IVec2, Vec2};
+#[cfg(any(test, feature = "research-diagnostics"))]
+use glam::DVec2;
+use glam::{IVec2, Vec2};
 
 use contact::ContactCellMap;
 pub use directional_grip::DirectionalContactGrip;
@@ -570,17 +572,19 @@ impl Grid {
         self.dirty.iter().filter_map(move |idx| cells.get(idx))
     }
 
-    /// Sum raw P2G momentum before normalization. TEMPORARY structural-boundary
-    /// impulse-ledger helper; callers must use this only while `Cell::momentum`
-    /// still stores mass times velocity.
+    /// Sum of raw P2G momentum before normalization, for the structural-boundary
+    /// impulse ledger; valid only while `Cell::momentum` still stores mass times
+    /// velocity.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn raw_momentum_sum(&self) -> Vec2 {
         self.active_cells().map(|cell| cell.momentum).sum()
     }
 
-    /// Deterministic f64 accumulation companion used only by the temporary
-    /// structural-boundary impulse ledger. Cell storage remains the f32
-    /// solver state; this isolates global reduction/cancellation error from
-    /// transfer error without changing dynamics.
+    /// Deterministic f64 accumulation companion for the structural-boundary
+    /// impulse ledger. Cell storage remains the f32 solver state; this isolates
+    /// global reduction/cancellation error from transfer error without
+    /// changing dynamics.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn raw_momentum_sum_f64(&self) -> DVec2 {
         (0..self.resolution * self.resolution).fold(DVec2::ZERO, |sum, index| {
             self.cells
@@ -589,8 +593,9 @@ impl Grid {
         })
     }
 
-    /// Sum `m_i v_i` after grid normalization/force updates. TEMPORARY
-    /// structural-boundary impulse-ledger helper.
+    /// Sum `m_i v_i` after grid normalization/force updates, for the
+    /// structural-boundary impulse ledger.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn velocity_field_momentum_sum(&self) -> Vec2 {
         self.active_cells()
             .map(|cell| cell.mass * cell.momentum)
@@ -599,6 +604,7 @@ impl Grid {
 
     /// Deterministic f64 global sum of the f32 nodal state. See
     /// `raw_momentum_sum_f64`; this is a diagnostic side channel only.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn velocity_field_momentum_sum_f64(&self) -> DVec2 {
         (0..self.resolution * self.resolution).fold(DVec2::ZERO, |sum, index| {
             self.cells.get(&(index as u32)).map_or(sum, |cell| {
@@ -631,12 +637,14 @@ impl Grid {
         })
     }
 
-    /// TEMPORARY structural-boundary diagnostic access by flat index.
+    /// Cell access by flat index, for the structural-boundary impulse ledger.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn cell_at_index_mut(&mut self, index: usize) -> Option<&mut Cell> {
         self.cells.get_mut(&(index as u32))
     }
 
-    /// TEMPORARY structural-boundary diagnostic velocity lookup by flat index.
+    /// Velocity lookup by flat index, for the structural-boundary impulse ledger.
+    #[cfg(any(test, feature = "research-diagnostics"))]
     pub(crate) fn velocity_at_index(&self, index: usize) -> Vec2 {
         self.cells
             .get(&(index as u32))

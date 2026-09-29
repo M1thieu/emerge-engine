@@ -9,9 +9,9 @@ use crate::solver::config::KERNEL_D_INVERSE;
 
 use super::{combined_kirchhoff_stress, combined_kirchhoff_stress_from};
 
-/// TEMPORARY investigation-only decomposition of one grid node's real P2G
-/// contribution. Built only when the structural-boundary impulse diagnostic is
-/// enabled; ordinary stepping never allocates this grid-sized buffer.
+/// Decomposition of one grid node's P2G contribution, for the
+/// structural-boundary impulse ledger (research diagnostic).
+#[cfg(any(test, feature = "research-diagnostics"))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GridNodeP2GComponents {
     pub mass: f32,
@@ -31,7 +31,7 @@ pub struct GridNodeP2GComponents {
 /// This intentionally mirrors `scatter_one_into` term for term and is called
 /// from inside the substep with that attempt's own `dt`. Rod/grain scatters
 /// are outside its scope; the controlled boundary experiment contains neither.
-/// Remove with the structural-bounce investigation instrumentation.
+#[cfg(any(test, feature = "research-diagnostics"))]
 pub fn diagnose_grid_p2g_components(
     particles: &Particles,
     materials: &MaterialRegistry,

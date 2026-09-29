@@ -21,3 +21,16 @@ pub use snapshot::{
     RodSnapshot, SiSnapshot, SimSnapshot, StepTiming, collect_rod_snapshot, collect_snapshot,
     collect_snapshot_particles_only,
 };
+
+/// Reads the research-diagnostic switch `name` (an `EMERGE_*` environment
+/// variable) from the environment. Always `None` in a build without the
+/// `research-diagnostics` feature (unit tests aside), so a default build
+/// never reads the environment and every trace it guards is dead code.
+#[inline]
+pub(crate) fn research_switch(name: &str) -> Option<String> {
+    if cfg!(any(test, feature = "research-diagnostics")) {
+        std::env::var(name).ok()
+    } else {
+        None
+    }
+}

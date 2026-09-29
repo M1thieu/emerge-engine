@@ -139,9 +139,9 @@ impl Grid {
             }
         }
 
-        // Debug output for the wall-free-pool investigation, gated behind an
-        // env var so it costs nothing normally.
-        if std::env::var("EMERGE_DEBUG_PRESSURE").is_ok() {
+        // Debug output for the wall-free-pool investigation, behind the
+        // `EMERGE_DEBUG_PRESSURE` research switch (compiled out of a default build).
+        if crate::diagnostics::research_switch("EMERGE_DEBUG_PRESSURE").is_some() {
             let (mut rmin, mut rmax) = (f32::MAX, f32::MIN);
             for &v in &rhs {
                 rmin = rmin.min(v);
@@ -336,9 +336,9 @@ impl Grid {
             }
         }
 
-        // TEMP DEBUG (see the matching block near `rhs`'s own computation
-        // above -- same env-var gate, same removal plan).
-        if std::env::var("EMERGE_DEBUG_PRESSURE").is_ok() {
+        // Debug output, same `EMERGE_DEBUG_PRESSURE` switch as the block that
+        // prints `rhs` above.
+        if crate::diagnostics::research_switch("EMERGE_DEBUG_PRESSURE").is_some() {
             let (mut pmin, mut pmax) = (f32::MAX, f32::MIN);
             for &v in &pressure {
                 pmin = pmin.min(v);
