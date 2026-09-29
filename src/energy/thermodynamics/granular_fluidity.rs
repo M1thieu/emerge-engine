@@ -9,12 +9,19 @@
 //!
 //! # Physics
 //! `g` (granular fluidity) relates plastic shear strain rate to the stress
-//! ratio: `γ̇ = g·μ`. Governed by (Kamrin & Henann 2015, arXiv:1408.5205,
-//! eq. 6 -- the dynamical form, verified via `pdftotext` against the real
-//! PDF, not recalled from memory):
+//! ratio: `γ̇ = g·μ`. Governed by (Kamrin & Henann 2015, Soft Matter 11,
+//! 179-185, doi:10.1039/c4sm01838a; equations as numbered in the arXiv
+//! preprint 1408.5205v1, read from its PDF), eq. 6, the dynamical form:
 //! ```text
-//! t0 · ∂g/∂t = A²d²·∇²g − (μs−μ)·g − b·√(P/ρs)·d·g·|g|
+//! t0 · ∂g/∂t = A²d²·∇²g − (μs−μ)·g − b·μ·√(ρs·d²/P)·g²
 //! ```
+//! whose local steady state is eq. 4 with the linear `μ_loc(I) = μs + b·I`:
+//! ```text
+//! g_loc(μ, P) = (μ−μs)/(b·μ) · √(P/(ρs·d²))
+//! ```
+//! Fluidity vanishes with the confining pressure: no confinement, no flow
+//! cooperation. (Issue #51: an earlier version had the square root inverted
+//! and `μ` missing, so its `g_loc` diverged as `1/√P` at the free surface.)
 //! `A` = nonlocal amplitude, `d` = grain diameter, `μs` = static friction
 //! coefficient, `ρs` = grain density, `t0` = a microscopic grain-inertial
 //! relaxation timescale, `b` a rate-dependence constant (same convention as
@@ -76,15 +83,6 @@ pub struct GranularFluidityConfig {
     /// Microscopic grain-inertial relaxation timescale `t0` \[s\]. Real,
     /// cited value 1e-4s (Haeri & Skonieczny 2022, Table 1).
     pub t0_s: f32,
-    /// Minimum pressure \[Pa\] fed to the reaction term's `1/sqrt(P)` factor.
-    /// The equation's analytic equilibrium, `g_eq = linear_coeff/(b*sqrt(P/
-    /// rho_s)*d)`, diverges as `P -> 0`: a cell at ~1e-3 Pa gives `g_eq` in
-    /// the tens of millions even under an exact closed-form integration, so
-    /// the singularity is the equation's, not the numerics'. Granular
-    /// material at a free surface still carries some confining pressure from
-    /// its own weight (as `DruckerPragerMaterial::cohesion` documents); the
-    /// floor is one grain's hydrostatic self-weight, `rho_s * g_accel * d`.
-    pub pressure_floor_pa: f32,
 }
 
 impl GranularFluidityConfig {
@@ -101,9 +99,9 @@ impl GranularFluidityConfig {
 /// A persistent, grid-coupled granular fluidity field.
 pub struct GranularFluidityField {
     pub config: GranularFluidityConfig,
-    /// Reads a particle's current (pressure, stress ratio) pair, in the
-    /// same grid-unit stress convention the coupled material's own yield
-    /// check already uses.
+    /// Reads a particle's current (pressure in Pa, stress ratio) pair. The
+    /// pressure must be SI: the reaction term combines it with `ρs` in
+    /// kg/m³ and `d` in m. The ratio is dimensionless.
     pub pressure_and_ratio: fn(&crate::particle::Particle) -> (f32, f32),
 
     grid_res: usize,
@@ -215,48 +213,36 @@ impl GranularFluidityField {
             0.0,
         );
 
-        // --- React: the two extra NGF terms -- EXACT closed-form
-        // integration, not explicit Euler (two simpler approaches were
-        // tried and rejected -- see below). ---
-        // t0*dg/dt = (mu-mu_s)*g - b*sqrt(P/rho_s)*d*g*|g|   (already
+        // --- React: the two local NGF terms of eq. 6, integrated exactly ---
+        // t0*dg/dt = (mu-mu_s)*g - b*mu*sqrt(rho_s*d^2/P)*g^2 (already
         // diffused this step; this is the remaining reaction contribution).
         //
-        // Two simpler approaches were rejected:
-        // 1. Seeding `g` directly to this ODE's own analytic equilibrium
-        //    (g_eq = linear_coeff/(b*sqrt(P/rho_s)*d), Kamrin & Henann 2015
-        //    eq. 4's "g_loc") the first time a cell crosses `mu_s`: that
-        //    equilibrium itself DIVERGES as P->0 (division by sqrt(P)) --
-        //    exactly the low-confinement regime this whole mechanism
-        //    targets, not an edge case. A cell at real pressure ~1e-3 Pa
-        //    produces a seed of ~16 MILLION.
-        // 2. Seeding a small epsilon instead, then advancing via EXPLICIT
-        //    EULER each substep: correct in principle, but this ODE's own
-        //    linear growth rate (`linear_coeff/t0`) is fast relative to a
-        //    real substep dt at the literal cited `t0=1e-4s` -- explicit
-        //    Euler either understates growth badly (material re-freezes
-        //    elastically before `g` can rise fast enough, flinging
-        //    particles to a boundary clamp) or, at a smaller `t0`, wildly
-        //    OVERSHOOTS (`g` reaching 3.5e16 -- at which point the
-        //    rate-limiter's `.min()` against the unlimited self-consistent
-        //    gamma always picks one side or the other, silently defeating
-        //    the entire coupling).
+        // For g >= 0 this is the logistic equation `dg/dt = r*g*(1-g/g_loc)`
+        // with `r = (mu-mu_s)/t0`, `c = b*mu*d*sqrt(rho_s/P)/t0` and
+        // `g_loc = r/c` (eq. 4). The substitution `u = 1/g` turns it into the
+        // linear `du/dt = -r*u + c`, solved exactly: `u(t) = c/r + (u0 -
+        // c/r)*exp(-r*t)`. Exact for any `dt`: explicit Euler at the cited
+        // `t0 = 1e-4 s` either lagged the growth or overshot it by orders of
+        // magnitude.
         //
-        // Instead: restricted to g>=0 (the physical domain), this ODE is
-        // EXACTLY the logistic equation `dg/dt = r*g*(1-g/g_eq)` with
-        // `r=linear_coeff/t0`, `g_eq=r/c`, `c=b*sqrt(P/rho_s)*d/t0` -- which
-        // has a standard closed-form solution via the substitution
-        // `u=1/g` (turns the nonlinear ODE into the LINEAR one `du/dt =
-        // -r*u + c`, solved exactly): `u(t)=c/r+(u0-c/r)*exp(-r*t)`. This
-        // is UNCONDITIONALLY STABLE -- correct for any `dt`, any `t0`, by
-        // construction (it's the exact solution, not a finite-difference
-        // approximation), so no further ad-hoc parameter recalibration of
-        // `t0` is needed to avoid either failure mode above.
+        // A cell with no material has no local rheology, so it only diffuses
+        // (the fluidity is not forced to zero around the material; the paper
+        // takes a zero gradient at a free surface). A material cell at zero
+        // pressure has an infinite `c`: its fluidity relaxes to `g_loc = 0`.
         let cfg = self.config;
         const BOOTSTRAP_SEED: f32 = 1.0e-6; // still needed: u=1/g is singular at g=0
         for i in 0..n {
             let g_prev = self.grid_work[i];
+            if self.grid_mass[i] <= 1e-10 {
+                self.grid_work[i] = g_prev.max(0.0);
+                continue;
+            }
             let mu = self.grid_mu[i];
-            let pressure = self.grid_p[i].max(cfg.pressure_floor_pa);
+            let pressure = self.grid_p[i];
+            if pressure <= 0.0 {
+                self.grid_work[i] = 0.0;
+                continue;
+            }
             let linear_coeff = mu - cfg.mu_s; // >0 once locally past static friction
 
             // g=0 is a STABLE fixed point whenever linear_coeff<=0 --
@@ -272,9 +258,7 @@ impl GranularFluidityField {
 
             let t0 = cfg.t0_s.max(1e-12);
             let r = linear_coeff / t0;
-            let c = cfg.b
-                * (pressure / cfg.grain_density_kg_m3.max(1e-6)).sqrt()
-                * cfg.grain_diameter_m
+            let c = cfg.b * mu * cfg.grain_diameter_m * (cfg.grain_density_kg_m3 / pressure).sqrt()
                 / t0;
 
             let u0 = 1.0 / g;
@@ -283,7 +267,11 @@ impl GranularFluidityField {
             } else {
                 u0 + c * sub_dt // r=0 special case: du/dt=c exactly, linear in t
             };
-            self.grid_work[i] = if u_new > 1e-12 { 1.0 / u_new } else { 0.0 };
+            self.grid_work[i] = if u_new.is_finite() && u_new > 1e-12 {
+                1.0 / u_new
+            } else {
+                0.0
+            };
         }
 
         self.grid_g.copy_from_slice(&self.grid_work);
@@ -350,7 +338,6 @@ mod tests {
             nonlocal_amplitude: 0.48,
             b: 0.278,
             t0_s: 1.0e-4,
-            pressure_floor_pa: 0.0, // these unit tests use large, non-degenerate pressures directly
         }
     }
 
@@ -407,11 +394,10 @@ mod tests {
 
     #[test]
     fn g_bootstraps_away_from_zero_once_mu_exceeds_mu_s() {
-        // mu=0.90 > mu_s=0.70: g=0 is a real but UNSTABLE fixed point here --
-        // without the seeding fix this stays at exactly 0.0 forever under
-        // forward-Euler. Confirm it actually grows, and converges toward
-        // this reaction ODE's own real equilibrium
-        // g_eq = (mu-mu_s) / (b*sqrt(P/rho_s)*d).
+        // mu=0.90 > mu_s=0.70: g=0 is an unstable fixed point here, and a
+        // zero start with no seed would stay at 0 forever. Confirm g grows
+        // and converges toward eq. 4's local fluidity
+        // g_loc = (mu-mu_s)/(b*mu) * sqrt(P/(rho_s*d^2)).
         let cfg = test_config();
         let pressure = 1.0e5f32;
         let mu = 0.90f32;
@@ -422,19 +408,17 @@ mod tests {
             test_particle_at(Vec2::new(4.0, 4.0)),
             test_particle_at(Vec2::new(4.0, 4.0)),
         ]);
-        // Growing from a small epsilon seed (real fix -- see `apply`'s own
-        // doc for why a direct jump to g_eq is wrong) takes real elapsed
-        // time: dg/dt ~ linear_coeff*g/t0 near g~0 is exponential growth,
-        // so t_converge ~ t0/linear_coeff * ln(g_eq/seed). Here that's
-        // ~1e-4/0.2 * ln(385/1e-6) ~ 9.9ms -- run comfortably past that
-        // (30ms), well inside the stability bound at this dx/t0/A/d
-        // (~0.24s, `stability_dt_matches_the_cited_formula_directly`).
+        // Growing from the small seed takes time: near g ~ 0 the growth is
+        // exponential at rate (mu-mu_s)/t0, so t_converge ~ t0/(mu-mu_s) *
+        // ln(g_loc/seed) ~ 1e-4/0.2 * ln(1.7e4/1e-6) ~ 12 ms. Run 30 ms, well
+        // inside the stability bound at this dx/t0/A/d (~0.24 s,
+        // `stability_dt_matches_the_cited_formula_directly`).
         let mut out = vec![0.0; 4];
         for _ in 0..3000 {
             field.apply(&particles, 1.0e-5, 0.01, &mut out);
         }
-        let g_eq = (mu - cfg.mu_s)
-            / (cfg.b * (pressure / cfg.grain_density_kg_m3).sqrt() * cfg.grain_diameter_m);
+        let g_eq = (mu - cfg.mu_s) / (cfg.b * mu)
+            * (pressure / (cfg.grain_density_kg_m3 * cfg.grain_diameter_m.powi(2))).sqrt();
         assert!(out[0] > 0.0, "g should have bootstrapped away from zero");
         let relative_error = (out[0] - g_eq).abs() / g_eq;
         assert!(
@@ -442,5 +426,48 @@ mod tests {
             "g={} should have converged near g_eq={g_eq} (rel. error {relative_error})",
             out[0]
         );
+    }
+
+    /// A grid full of material at one pressure and stress ratio settles, in
+    /// its interior, to eq. 4's local fluidity at every pressure, and the
+    /// fluidity vanishes as the pressure does (issue #51: the inverted
+    /// square root made it diverge as `1/sqrt(P)` instead). The pressure is
+    /// carried on `internal_pressure` so one plain fn reads it.
+    #[test]
+    fn steady_local_fluidity_matches_eq_4_down_to_zero_pressure() {
+        let cfg = test_config();
+        let mu = 0.90f32;
+        const RES: usize = 16;
+        for pressure in [0.0f32, 1.0e-3, 1.0, 1.0e2, 1.0e5] {
+            let mut field = GranularFluidityField::new(cfg, |p| (p.internal_pressure, 0.90), RES);
+            let mut particles = Vec::new();
+            for i in 0..2 * RES {
+                for j in 0..2 * RES {
+                    let mut p =
+                        test_particle_at(Vec2::new(0.25 + 0.5 * i as f32, 0.25 + 0.5 * j as f32));
+                    p.internal_pressure = pressure;
+                    particles.push(p);
+                }
+            }
+            let particles = Particles::from(particles);
+            let mut out = vec![0.0; particles.len()];
+            for _ in 0..3000 {
+                field.apply(&particles, 1.0e-5, 0.01, &mut out);
+            }
+            let center = RES / 2 * RES + RES / 2;
+            let g = field.grid_g[center];
+            let g_loc = (mu - cfg.mu_s) / (cfg.b * mu)
+                * (pressure / (cfg.grain_density_kg_m3 * cfg.grain_diameter_m.powi(2))).sqrt();
+            println!("P = {pressure} Pa: g = {g}, eq. 4 g_loc = {g_loc}");
+            if pressure == 0.0 {
+                assert_eq!(g, 0.0, "no confinement, no fluidity");
+            } else {
+                let relative_error = (g - g_loc).abs() / g_loc;
+                assert!(
+                    relative_error < 1.0e-3,
+                    "P = {pressure} Pa: g = {g} against eq. 4's {g_loc} (rel. error {relative_error})"
+                );
+            }
+        }
     }
 }

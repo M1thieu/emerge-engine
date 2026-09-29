@@ -11,12 +11,11 @@ use egui_wgpu::ScreenDescriptor;
 /// Two cited reference lines are drawn on screen at the Lajeunesse et
 /// al. 2004 predicted final spread (`R_inf = r0*(1+2*sqrt(h0/r0))`, the same
 /// formula the headless test uses) -- real dry sand of this aspect ratio
-/// stops there. Watch the pile blow straight past both lines regardless of
-/// which mode is active: that is the still-open sand accuracy gap
-/// this whole effort exists to chip at. NGF (press N) measurably narrows the
-/// final spread vs baseline (press B) but nowhere near enough to stop at the
-/// lines -- do not expect a dramatic visual difference between the two
-/// modes, the measured effect is ~3% tighter, not a fix.
+/// stops there. The headless test of this scene (`ngf_lajeunesse_runout_
+/// diagnostic`, 200 steps) measures the final spread at 0.73x of that
+/// prediction, the same with NGF (press N) as with the baseline (press B)
+/// since the reaction term was corrected (issue #51); the gap to the lines
+/// is the still-open sand accuracy question.
 ///
 ///   cargo run --example sand_ngf_collapse --features render
 use emerge::render::{ColorMode, Renderer};
@@ -100,7 +99,6 @@ fn ngf_pressure_and_ratio(p: &Particle) -> (f32, f32) {
 fn ngf_config() -> GranularFluidityConfig {
     const EFFECTIVE_GRAIN_DIAMETER_M: f32 = 0.008;
     const GRAIN_DENSITY_KG_M3: f32 = 2583.0;
-    let pressure_floor_pa = GRAIN_DENSITY_KG_M3 * 9.81 * EFFECTIVE_GRAIN_DIAMETER_M;
     GranularFluidityConfig {
         mu_s: 0.70,
         grain_diameter_m: EFFECTIVE_GRAIN_DIAMETER_M,
@@ -108,7 +106,6 @@ fn ngf_config() -> GranularFluidityConfig {
         nonlocal_amplitude: 0.48,
         b: 0.278,
         t0_s: 1.0e-4,
-        pressure_floor_pa,
     }
 }
 

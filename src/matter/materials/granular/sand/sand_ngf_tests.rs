@@ -2,6 +2,15 @@
 //! `DruckerPragerMaterial`: the repose-angle undershoot, substep-count
 //! sensitivity and long-horizon hold and creep, kept apart from the
 //! material's core suite (`sand_tests.rs`).
+//!
+//! Every NGF figure quoted in this file before the fix of issue #51 (the
+//! 0.47x Lajeunesse undershoot and the diagnostics built to explain it) was
+//! measured with the reaction term's pressure factor inverted, which made
+//! the fluidity grow without bound where the pressure is lowest. With the
+//! term as the source writes it, the 200-step Lajeunesse column gives the
+//! same runout with NGF on as off (14.56 cells, 0.73x at 1x resolution;
+//! 0.787x at 2x), so those diagnostics describe the old term, not the
+//! current field.
 
 use super::*;
 
@@ -75,28 +84,20 @@ mod ngf_verification_tests {
         // keep their cited, dimensionless values; `d`'s magnitude is a
         // simulation-scale calibration, not a grain size (like `cohesion`).
         //
-        // The converged ratio (~0.47-0.48x) still undershoots the Lajeunesse
-        // target of 1.0x by about half, no longer resolution-dependent (see
-        // the diagnostic tests in this module).
+        // That sweep, and the ~0.47-0.48x ratio it converged to, were measured
+        // with the inverted reaction term of issue #51 (see the module doc).
+        // After the fix, NGF on gives the baseline's runout (0.728x at 1x,
+        // 0.787x at 2x), so this `d` no longer has the basis it was chosen
+        // on; recalibrating it is open work.
         const EFFECTIVE_GRAIN_DIAMETER_M: f32 = 0.008;
         const GRAIN_DENSITY_KG_M3: f32 = 2583.0;
-        // Even with the exact closed-form reaction fix (see
-        // `GranularFluidityField::apply`'s doc), the equation's own
-        // analytic equilibrium diverges as real pressure -> 0: a
-        // real cell at ~1e-3 Pa gives a mathematically-correct g_eq in the
-        // TENS OF MILLIONS even under exact integration. Real,
-        // physically-motivated floor (same justification `cohesion` already
-        // documents): one grain's own hydrostatic self-weight,
-        // rho_s * g_accel * d.
-        let pressure_floor_pa = GRAIN_DENSITY_KG_M3 * 9.81 * EFFECTIVE_GRAIN_DIAMETER_M;
         GranularFluidityConfig {
             mu_s: 0.70, // = tan(35 deg), matches this material's own friction_angle
             grain_diameter_m: EFFECTIVE_GRAIN_DIAMETER_M,
             grain_density_kg_m3: GRAIN_DENSITY_KG_M3,
             nonlocal_amplitude: 0.48,
             b: 0.278,
-            t0_s: 1.0e-4, // real, cited value again -- the closed-form reaction fix (see `GranularFluidityField::apply`'s own doc) removes the need for ad-hoc recalibration
-            pressure_floor_pa,
+            t0_s: 1.0e-4, // cited value; the exact reaction integration (see `GranularFluidityField::apply`) needs no recalibration
         }
     }
 
@@ -212,11 +213,6 @@ mod ngf_verification_tests {
             .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
         let mut cfg = ngf_config();
         cfg.grain_diameter_m = grain_diameter_m;
-        // Pressure floor scales with the swept d, same real hydrostatic
-        // self-weight justification `ngf_config` itself documents --
-        // otherwise a smaller/larger d would be tested against a floor
-        // calibrated for 8mm, confounding the sweep.
-        cfg.pressure_floor_pa = cfg.grain_density_kg_m3 * 9.81 * grain_diameter_m;
         let field = GranularFluidityField::new(cfg, ngf_pressure_and_ratio, grid);
         solver = solver.with_granular_fluidity(field);
 
