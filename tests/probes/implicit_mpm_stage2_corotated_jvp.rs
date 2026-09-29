@@ -1,6 +1,6 @@
 //! Stage 2 of the staged implicit-MPM probes (Corotated): the derive, verify, then
 //! check-symmetry method Stage 0 used for NeoHookean, applied to `CorotatedMaterial`'s
-//! formula (`src/matter/materials/corotated.rs`):
+//! formula (`src/matter/materials/solid/corotated.rs`):
 //!
 //!   tau(F) = 2*mu*(F-R)*F^T + lambda*(J-1)*J*I,  R = polar_decomposition_2d(F)
 //!

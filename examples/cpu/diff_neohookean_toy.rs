@@ -3,7 +3,7 @@
 //! Not a simulation demo -- this doesn't touch P2G/G2P/the solver at all. It's
 //! a visible proof that the analytic adjoint is USEFUL for optimization,
 //! not just numerically correct against finite differences (which the unit
-//! tests in `src/matter/materials/elastic.rs` already establish).
+//! tests in `src/matter/materials/solid/elastic.rs` already establish).
 //!
 //! Task: given a target Kirchhoff stress tensor, use gradient descent on the
 //! deformation gradient F (starting from the identity, i.e. undeformed) to

@@ -2,26 +2,19 @@ pub mod bingham;
 pub mod boiling_mixture;
 pub mod cavitating_eos;
 pub mod cavitating_fluid;
-pub mod corotated;
-pub mod elastic;
 pub mod fluid;
 pub mod gas;
 pub mod granular;
 pub mod granular_fluid;
-pub mod nacc;
-pub mod no_compression;
 pub mod optical;
 pub mod params;
 pub mod physical_props;
 mod property_dispatch;
-pub mod rankine;
 pub mod registry;
 pub mod rod_material;
-pub mod snow;
+pub mod solid;
 pub(crate) mod svd;
 pub mod utils;
-pub mod viscoelastic;
-pub mod von_mises;
 
 pub use physical_props::{
     BinghamProps, BrittleProps, DuctileProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
@@ -36,26 +29,26 @@ pub use cavitating_fluid::{
     CavitatingFluidMaterial, CavitatingFluidMaterialParams, IsothermalCavitatingFluidMaterial,
     IsothermalCavitatingFluidMaterialParams,
 };
-pub use corotated::CorotatedMaterial;
-pub use elastic::NeoHookeanMaterial;
 pub use fluid::NewtonianFluidMaterial;
 pub use gas::{IdealGasMaterial, IdealGasPhysicalParams};
 pub use granular::sand::DruckerPragerMaterial;
 pub use granular::sand_mui::MuIRheologyMaterial;
 pub use granular_fluid::GranularFluidMaterial;
-pub use nacc::{NaccMaterial, NaccMaterialParams};
-pub use no_compression::NoCompressionMaterial;
 pub use params::MaterialParams;
-pub use rankine::RankineMaterial;
 pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
 pub use rod_material::RodMaterial;
-pub use snow::StomakhinMaterial;
+pub use solid::corotated::CorotatedMaterial;
+pub use solid::elastic::NeoHookeanMaterial;
+pub use solid::nacc::{NaccMaterial, NaccMaterialParams};
+pub use solid::no_compression::NoCompressionMaterial;
+pub use solid::rankine::RankineMaterial;
+pub use solid::snow::StomakhinMaterial;
+pub use solid::viscoelastic::ViscoelasticMaterial;
+pub use solid::von_mises::VonMisesMaterial;
 pub use utils::{
     elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
     rankine_damage_estimate, stokes_drag_rate_from_si,
 };
-pub use viscoelastic::ViscoelasticMaterial;
-pub use von_mises::VonMisesMaterial;
 
 use glam::Mat2;
 

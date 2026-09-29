@@ -45,7 +45,7 @@ use egui_wgpu::ScreenDescriptor;
 /// moves at 0.09 m/s, and the strongest push throws it at 75.7 m/s, Mach
 /// 0.42 against the sized 0.1.
 use emerge::grid::kernel::quadratic_weights;
-use emerge::matter::materials::rankine::{
+use emerge::matter::materials::solid::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
 };
 use emerge::render::{ColorMode, Renderer};

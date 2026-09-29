@@ -581,7 +581,7 @@ field's stability bound does not reduce to seconds in the units it states.
   in the draw pass or in quads about 2 pixels wide at that scale; which one
   is not known. Both stay ignored with that reason.
 - The Cam-Clay soil model carries four disclosed approximations, all in
-  `src/matter/materials/nacc.rs`:
+  `src/matter/materials/solid/nacc.rs`:
   - Its elastic response uses a constant bulk modulus. Real Cam-Clay
     stiffness is proportional to the pressure (`K = v p / kappa`), so a
     soil near a free surface is modelled far too stiff elastically.

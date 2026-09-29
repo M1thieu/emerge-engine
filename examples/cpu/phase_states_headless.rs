@@ -1,6 +1,6 @@
 extern crate emerge_engine as emerge;
 
-use emerge::matter::materials::rankine::{
+use emerge::matter::materials::solid::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, ICE_QUALITY_FACTOR_Q, q_factor_elastic_viscosity_pa_s,
 };
 /// Headless run of the full bidirectional solid <-> liquid <-> gas cycle
