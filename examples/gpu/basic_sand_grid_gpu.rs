@@ -379,6 +379,7 @@ impl State {
                         grid: self.sim.grid_buffer(),
                         material_mass: self.sim.material_mass_buffer(),
                         material_mass_enabled: true,
+                        grid_res: self.sim.config().grid_res as u32,
                     },
                     &view,
                     true,

@@ -11,10 +11,9 @@ use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource}
 
 impl Renderer {
     /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
-    /// doc for the technique). Requires `set_camera` to have been called
-    /// first (same as `render_gpu` needs for its own bind group) -- reuses the
-    /// identical cached orthographic projection/grid_res so both modes line up on
-    /// screen without re-deriving them.
+    /// doc for the technique), through the camera `set_camera` or
+    /// `set_camera_region` last set, so it lines up with the other modes. The
+    /// grid's resolution comes from `source.grid_res`.
     pub fn render_grid_volume(
         &mut self,
         device: &wgpu::Device,
@@ -24,7 +23,7 @@ impl Renderer {
         clear: bool,
     ) {
         let (sx, tx, sy, ty) = self.cached_ortho;
-        let grid_res = self.cached_grid_res;
+        let grid_res = source.grid_res;
         self.ensure_grid_visibility_capacity(device, grid_res);
         // A fraction of the caller's full-cell mass (see
         // `Renderer::grid_reference_cell_mass`, default 1.0): a cell needs

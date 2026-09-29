@@ -264,6 +264,7 @@ fn render_mode(
                 grid: sim.grid_buffer(),
                 material_mass: sim.material_mass_buffer(),
                 material_mass_enabled: true,
+                grid_res: sim.config().grid_res as u32,
             },
             view,
             true,

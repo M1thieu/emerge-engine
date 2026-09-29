@@ -291,7 +291,6 @@ pub struct Renderer {
     /// view, clear) instead of repeating width/height/grid_res, keeping it under
     /// clippy's argument-count lint.
     cached_ortho: (f32, f32, f32, f32),
-    cached_grid_res: u32,
     /// Light direction for `render_grid_volume`/`render_surface_
     /// reconstruction`(`_dual_phase`)'s Lambertian and specular shading, set
     /// via `set_light_dir` (e.g. from `SimConfig::light_dir`); defaults to the
@@ -726,7 +725,6 @@ impl Renderer {
             grid_visibility_params_buf,
             grid_visibility_res: 1,
             cached_ortho: (1.0, 0.0, 1.0, 0.0),
-            cached_grid_res: 1,
             light_dir: (-0.5, 0.7),
             grid_reference_cell_mass: 1.0,
             curvature_iterations: CURVATURE_ITERATIONS,
@@ -877,7 +875,6 @@ impl Renderer {
         let (sx, tx, sy, ty) =
             Self::region_projection(Vec2::ZERO, Vec2::splat(grid_res as f32), width, height);
         self.cached_ortho = (sx, tx, sy, ty);
-        self.cached_grid_res = grid_res;
         queue.write_buffer(
             &self.camera_buffer,
             0,

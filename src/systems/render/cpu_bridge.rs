@@ -105,6 +105,7 @@ impl CpuRenderBridge {
             grid: &self.grid_buf,
             material_mass: &self.material_mass_buf,
             material_mass_enabled: true,
+            grid_res: self.grid_res as u32,
         }
     }
 

@@ -55,6 +55,9 @@ pub struct GridVolumeSource<'a> {
     /// whether the shader actually reads it.
     pub material_mass: &'a wgpu::Buffer,
     pub material_mass_enabled: bool,
+    /// Resolution of the grid in `grid` (`SimConfig::grid_res`): the grid is
+    /// `grid_res * grid_res` cells whatever the camera frames.
+    pub grid_res: u32,
 }
 
 #[repr(C)]
