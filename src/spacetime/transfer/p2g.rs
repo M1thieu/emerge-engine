@@ -156,11 +156,8 @@ fn merge_cell_maps(a: &mut CellMap, b: CellMap) {
 /// against `fluid_spreads_more_than_elastic_under_gravity` (600 steps,
 /// asserting `ar_fluid_final > ar_elastic_final`) and the full suite.
 ///
-/// Contact (`Particle::contact_group`) and mixture (`WithMixturePhase`)
-/// scatter stay in a separate serial second pass: both are opt-in features
-/// few scenes use. Particles using them get
-/// `combined_kirchhoff_stress`/`stress_volume` computed a second time (same
-/// pure functions, same result).
+/// Pinned nodes and the contact, mixture and friction scatters follow in a
+/// serial second pass, `scatter_second_pass`.
 pub fn scatter_particles_to_grid(
     particles: &Particles,
     grid: &mut Grid,
@@ -199,74 +196,7 @@ pub fn scatter_particles_to_grid(
             a
         });
     grid.merge_cells(local_map);
-
-    for i in 0..active_count {
-        // Essential boundary conditions are constraints on grid DOFs, not a
-        // post-G2P particle reset. Mark every node receiving nonzero support
-        // from a pinned material point; the solver enforces these nodes after
-        // all grid forces and immediately before G2P.
-        if particles.pinned[i] != 0 {
-            let weights = quadratic_weights(particles.x[i]);
-            for gx in 0..3 {
-                for gy in 0..3 {
-                    if weights.wx[gx] * weights.wy[gy] > 0.0 {
-                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
-                        grid.mark_pinned_node(cell_pos);
-                    }
-                }
-            }
-        }
-
-        let contact_group = particles.contact_group[i];
-        let material = materials.get(particles.material_id[i]);
-        let mixture_phase = material.mixture_phase();
-        let friction_coefficient =
-            materials.current_friction_coefficient(particles.material_id[i], particles, i);
-        if contact_group == 0 && mixture_phase.is_none() && friction_coefficient.is_none() {
-            continue;
-        }
-
-        let x = particles.x[i];
-        let mass_i = particles.mass[i];
-        let v_i = particles.v[i];
-        let c_i = particles.velocity_gradient[i];
-
-        let stress = combined_kirchhoff_stress(material, particles, i);
-        let stress_coeff = -material.stress_volume(particles, i) * KERNEL_D_INVERSE * dt;
-        if material.owns_deformation_volume_state() {
-            assert!(
-                stress.x_axis.is_finite() && stress.y_axis.is_finite() && stress_coeff.is_finite(),
-                "strict WC-MPM particle {i} produced an unrepresentable stress impulse; reduce the timestep or use a pressure solver"
-            );
-        }
-
-        let weights = quadratic_weights(x);
-        for gx in 0..3 {
-            for gy in 0..3 {
-                let weight = weights.wx[gx] * weights.wy[gy];
-                let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
-                let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
-                let momentum = weight
-                    * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
-                // Additive second scatter for multi-field contact (Bardenhagen 2001) --
-                // see `Particle::contact_group` doc.
-                if contact_group != 0 {
-                    grid.add_grip_mass_momentum(cell_pos, weight * mass_i, momentum);
-                }
-                // Additive second scatter for two-phase mixture coupling (Tampubolon
-                // et al. 2017) -- see `WithMixturePhase`/`MixturePhase` doc.
-                if let Some(phase) = mixture_phase {
-                    grid.add_mixture_mass_momentum(cell_pos, phase, weight * mass_i, momentum);
-                }
-                // Additive second scatter for Material-Induced Boundary Friction
-                // (Blatny & Gaume 2025) -- see `MaterialModel::
-                // current_friction_coefficient`'s doc.
-                if let Some(mu) = friction_coefficient {
-                    grid.add_friction_mass(cell_pos, weight * mass_i, mu);
-                }
-            }
-        }
-    }
+    scatter_second_pass(particles, grid, materials, dt, active_count);
 }
 
 /// Opt-in spatial-sort variant of `scatter_particles_to_grid`'s dense first
@@ -313,7 +243,33 @@ pub fn scatter_particles_to_grid_sorted(
             a
         });
     grid.merge_cells(local_map);
+    scatter_second_pass(particles, grid, materials, dt, active_count);
+}
 
+/// The serial pass after the parallel `CellMap` scatter, shared by
+/// `scatter_particles_to_grid` and its sorted variant.
+///
+/// Marks the grid nodes a pinned particle supports: essential boundary
+/// conditions are constraints on grid DOFs, not a post-G2P particle reset,
+/// and the solver enforces these nodes after all grid forces and immediately
+/// before G2P.
+///
+/// Then adds the extra per-field scatters a particle opts into: multi-field
+/// contact (Bardenhagen 2001, `Particle::contact_group`), a mixture phase
+/// (Tampubolon et al. 2017, `WithMixturePhase`), and material-induced
+/// boundary friction (Blatny & Gaume 2025,
+/// `MaterialModel::current_friction_coefficient`). Contact and mixture take
+/// the particle's momentum, so they recompute its stress (the same pure
+/// functions as the parallel pass, the same result). Friction takes only
+/// each node's mass share, so a particle carrying friction alone skips that
+/// recompute: every Drucker-Prager or mu(I) sand particle, each substep.
+fn scatter_second_pass(
+    particles: &Particles,
+    grid: &mut Grid,
+    materials: &MaterialRegistry,
+    dt: f32,
+    active_count: usize,
+) {
     for i in 0..active_count {
         if particles.pinned[i] != 0 {
             let weights = quadratic_weights(particles.x[i]);
@@ -326,15 +282,24 @@ pub fn scatter_particles_to_grid_sorted(
                 }
             }
         }
-    }
 
-    for i in 0..active_count {
         let contact_group = particles.contact_group[i];
         let material = materials.get(particles.material_id[i]);
         let mixture_phase = material.mixture_phase();
         let friction_coefficient =
             materials.current_friction_coefficient(particles.material_id[i], particles, i);
-        if contact_group == 0 && mixture_phase.is_none() && friction_coefficient.is_none() {
+        if contact_group == 0 && mixture_phase.is_none() {
+            if let Some(mu) = friction_coefficient {
+                let mass_i = particles.mass[i];
+                let weights = quadratic_weights(particles.x[i]);
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let weight = weights.wx[gx] * weights.wy[gy];
+                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        grid.add_friction_mass(cell_pos, weight * mass_i, mu);
+                    }
+                }
+            }
             continue;
         }
 
