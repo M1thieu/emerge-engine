@@ -50,9 +50,16 @@ const DIG_RADIUS: f32 = 4.0;
 fn make_sim() -> Simulation {
     // Dissipation is supplied only by the material's declared shear/bulk
     // viscosity. No global settling or Cundall damping is enabled here.
+    //
+    // The presets' stiffness keeps the stable substep near DT/31: measured
+    // 31 to 32 substeps a step at rest, at real and double gravity, and
+    // while pouring. With a material that owns its volume state, as
+    // `GranularFluidMaterial` does, `Simulation::step` panics rather than
+    // drop simulated time, so the budget must cover that; 40 leaves room
+    // for impacts.
     let config = SimConfig {
         boundary_thickness: 3,
-        max_substeps_per_step: 12,
+        max_substeps_per_step: 40,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
 
