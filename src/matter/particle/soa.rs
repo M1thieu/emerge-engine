@@ -57,6 +57,15 @@ pub struct Particles {
 
     // ── Extended -- cold ───────────────────────────────────────────────────────
     pub temperature: Vec<f32>,
+    /// The part of each temperature increment, in kelvin, that the f32
+    /// addition to `temperature` rounded away, carried into the next
+    /// increment (see `add_temperature`). Near 300 K the spacing between f32
+    /// values is 3.05e-5 K, so a conduction or cooling step smaller than half
+    /// of it would otherwise be lost every time. SoA only, like
+    /// `eps_pl_vol_pradhana`: the GPU `Particle` has no spare bytes. Always
+    /// smaller than half that spacing, so readers of `temperature` alone lose
+    /// nothing visible.
+    pub temperature_residual: Vec<f32>,
     pub user_tag: Vec<u32>,
     pub activation: Vec<f32>,
     pub activation_dir: Vec<Vec2>,
@@ -178,6 +187,7 @@ impl Particles {
             log_volume_strain: Vec::new(),
             eps_pl_vol_pradhana: Vec::new(),
             temperature: Vec::new(),
+            temperature_residual: Vec::new(),
             user_tag: Vec::new(),
             activation: Vec::new(),
             activation_dir: Vec::new(),
@@ -208,6 +218,7 @@ impl Particles {
             log_volume_strain: Vec::with_capacity(cap),
             eps_pl_vol_pradhana: Vec::with_capacity(cap),
             temperature: Vec::with_capacity(cap),
+            temperature_residual: Vec::with_capacity(cap),
             user_tag: Vec::with_capacity(cap),
             activation: Vec::with_capacity(cap),
             activation_dir: Vec::with_capacity(cap),
@@ -310,6 +321,7 @@ impl Particles {
         // correction, the physically-correct initial condition.
         self.eps_pl_vol_pradhana.push(0.0);
         self.temperature.push(p.temperature);
+        self.temperature_residual.push(0.0);
         self.user_tag.push(p.user_tag);
         self.activation.push(p.activation);
         self.activation_dir.push(p.activation_dir);
@@ -346,6 +358,7 @@ impl Particles {
         self.log_volume_strain.swap(a, b);
         self.eps_pl_vol_pradhana.swap(a, b);
         self.temperature.swap(a, b);
+        self.temperature_residual.swap(a, b);
         self.user_tag.swap(a, b);
         self.activation.swap(a, b);
         self.activation_dir.swap(a, b);
@@ -379,6 +392,21 @@ impl Particles {
         }
     }
 
+    /// Adds `delta` kelvin to particle `i`'s temperature without losing the
+    /// part an f32 addition at that temperature rounds away: that part is
+    /// kept in `temperature_residual` and added with the next increment
+    /// (compensated summation). Use it for every small, repeated heat
+    /// exchange (conduction, cooling); a plain `+=` drops any increment under
+    /// half the f32 spacing at the particle's temperature.
+    #[inline]
+    pub fn add_temperature(&mut self, i: usize, delta: f32) {
+        let increment = delta + self.temperature_residual[i];
+        let before = self.temperature[i];
+        let after = before + increment;
+        self.temperature_residual[i] = increment - (after - before);
+        self.temperature[i] = after;
+    }
+
     /// Collect all particles into a `Vec<Particle>` (for GPU upload / diagnostics).
     pub fn to_vec(&self) -> Vec<Particle> {
         (0..self.len()).map(|i| self.get(i)).collect()
@@ -399,10 +427,11 @@ impl Particles {
             if pred(&p) {
                 if write != read {
                     self.set(write, p);
-                    // sleeping/eps_pl_vol_pradhana are not part of the AoS
-                    // Particle view -- copy explicitly.
+                    // sleeping, eps_pl_vol_pradhana and temperature_residual
+                    // are not part of the AoS Particle view -- copy explicitly.
                     self.sleeping[write] = self.sleeping[read];
                     self.eps_pl_vol_pradhana[write] = self.eps_pl_vol_pradhana[read];
+                    self.temperature_residual[write] = self.temperature_residual[read];
                 }
                 write += 1;
             }
@@ -422,6 +451,7 @@ impl Particles {
         self.log_volume_strain.truncate(write);
         self.eps_pl_vol_pradhana.truncate(write);
         self.temperature.truncate(write);
+        self.temperature_residual.truncate(write);
         self.user_tag.truncate(write);
         self.activation.truncate(write);
         self.activation_dir.truncate(write);

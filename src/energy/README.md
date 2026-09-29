@@ -22,7 +22,7 @@ of the light, not a decision of the drawing code.
 
 ## Scope & Limits
 
-- `ThermalDiffusion` and `ScalarDiffusionField` document their own CFL stability bound (`dt ≤ dx²/4α`) but do not runtime-enforce it -- a known, disclosed gap, not silently worked around. `GranularFluidityField`'s bound is enforced through the adaptive substep chooser instead, since it's plausibly binding rather than "never the bottleneck."
+- `ThermalDiffusion` and `ScalarDiffusionField` keep their explicit stability bound (`dt ≤ dx²/4α`) themselves: `apply` splits the time it is given into equal passes within `stability_fraction` of it. `ThermalDiffusion` also adds each increment through `Particles::add_temperature`, so conduction at room temperature is not lost to f32 rounding (issue #52). `GranularFluidityField`'s bound is enforced through the adaptive substep chooser instead, since it's plausibly binding rather than "never the bottleneck."
 - `acoustics`/`electromagnetics` are feature-gated experimental, not part of the LP-stable API.
 
 ## Status
