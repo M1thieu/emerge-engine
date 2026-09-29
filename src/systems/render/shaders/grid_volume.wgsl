@@ -422,6 +422,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // 8 stays clean while keeping the stylization.
         const LIGHT_BANDS: f32 = 8.0;
         let diffuse = floor(diffuse_raw * LIGHT_BANDS) / LIGHT_BANDS;
+        // `normal_dir` keeps only the gradient's direction, so inside a
+        // uniform body a sub-percent P2G ripple would get the same full
+        // shading as a real edge, pointing wherever the ripple does. The
+        // Lambertian term is weighted by the gradient's size against the
+        // steepest a free surface can give: there, node mass follows the
+        // cumulative of P2G's quadratic B-spline (`kernel::axis_weights`),
+        // so two nodes a cell apart differ by at most the kernel's mass
+        // within one cell of its peak, the integral of 3/4 - u^2 over
+        // [-1/2, 1/2] = 2/3 of a full cell. Full shading at an edge, next
+        // to none for a ripple.
+        const FREE_SURFACE_CELL_STEP: f32 = 2.0 / 3.0;
+        let surface_weight = clamp(
+            grad_len / max(FREE_SURFACE_CELL_STEP * params.reference_cell_mass, 1.0e-12),
+            0.0,
+            1.0,
+        );
         // Ambient floor (0.6) plus a Lambertian term (0.4*diffuse) keeps the
         // shape visible on the unlit side while still shading from the real
         // gradient.
@@ -432,7 +448,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // ordinary terrain/water. `OpticalTable::specular` (R0) stays wired
         // for `prep_instances.wgsl`'s ByPhysics particle mode, which has no
         // gradient/normal to build a lobe from and is unrelated to this path.
-        lit = clamp(with_scattering * (0.6 + 0.4 * diffuse), vec3(0.0), vec3(1.0));
+        lit = clamp(
+            with_scattering * mix(1.0, 0.6 + 0.4 * diffuse, surface_weight),
+            vec3(0.0),
+            vec3(1.0),
+        );
     }
 
     // Additive blackbody glow on top of the (possibly cel-shaded) lit color --
