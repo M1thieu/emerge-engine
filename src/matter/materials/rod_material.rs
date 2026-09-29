@@ -1,5 +1,10 @@
 use crate::particle::RodPoints;
 
+/// First root of the cantilever frequency equation `cos(bL)*cosh(bL) = -1`,
+/// `beta_1*L` (Blevins 1979 / Rao, *Mechanical Vibrations*), the same value
+/// as the first entry of `energy::acoustics::modal`'s table.
+const CANTILEVER_FIRST_MODE_BETA_L: f32 = 1.8751;
+
 /// SI rod material parameters. `EA`/`EI` use the same `E` (Young's modulus)
 /// and `I` (second moment of area, `I ~ width^3` for a rectangular section)
 /// as the Greenhill self-buckling analysis
@@ -154,7 +159,7 @@ impl RodMaterial {
         let axial_damping = 2.0 * m_modal_axial * omega_axial;
 
         // ── Bending: real mode shape, numerically integrated ──
-        const BETA_L: f32 = 1.8751; // same real constant energy::acoustics::modal uses
+        const BETA_L: f32 = CANTILEVER_FIRST_MODE_BETA_L;
         let b = BETA_L / length_m;
         let sigma = (BETA_L.sinh() - BETA_L.sin()) / (BETA_L.cosh() + BETA_L.cos());
         let phi = |x: f32| -> f32 {
@@ -213,7 +218,7 @@ impl RodMaterial {
             return 0.0;
         }
         let mu = total_mass_kg / length_m;
-        const BETA_L: f32 = 1.8751; // same real constant used throughout this module
+        const BETA_L: f32 = CANTILEVER_FIRST_MODE_BETA_L;
         let omega = (BETA_L * BETA_L) * (ei / (mu * length_m.powi(4))).sqrt();
         if omega <= 0.0 {
             return 0.0;

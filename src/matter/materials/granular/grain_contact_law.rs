@@ -143,9 +143,11 @@ impl ContactLawConfig {
         // ratios are an engineering choice, not a measured or cited value.
         let kt = 0.8 * kn;
         let kr = kn * grain_radius_m * grain_radius_m * 0.1;
-        // ~60% of critical damping per channel, on each channel's own
-        // stiffness: dry sand grains are lossy colliders (restitution
-        // commonly cited around 0.5 or lower).
+        // 60% of critical damping per channel, on each channel's own
+        // stiffness. For the normal linear spring-dashpot this is a
+        // restitution coefficient e = exp(-pi*zeta/sqrt(1-zeta^2)) ~= 0.09:
+        // strongly dissipative, an engineering choice, not a measured sand
+        // value.
         const DAMPING_RATIO: f32 = 0.6;
         let critical_damping = |k: f32| 2.0 * (k * m_eff_kg).sqrt() * DAMPING_RATIO;
         Self {

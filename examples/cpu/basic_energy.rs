@@ -45,7 +45,7 @@ const REAL_SECONDS_PER_STEP: f32 = CELL_METERS / LEADER_SPEED_M_S;
 // Fixed seed: a reload (press R) reproduces the exact same channel, byte for byte, a
 // checkable determinism test (LcgRng is a deterministic PRNG: complex-looking, fully
 // determined by the seed). Make it time-derived for a different channel per run.
-const RNG_SEED: u32 = 20260827; // 2026-08-27, the date this scene was built
+const RNG_SEED: u32 = 20260827; // any fixed seed; this one reads as a date
 // Playback rate ONLY -- how many already-computed real cells the replay
 // reveals per real second on screen. This is the "projector speed," never
 // the simulation's own clock (see this file's own top doc) -- the leader

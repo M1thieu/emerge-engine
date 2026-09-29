@@ -50,7 +50,7 @@ fn make_sim() -> Simulation {
     let half_base = height / target_angle.to_radians().tan();
     let config = SimConfig {
         max_substeps_per_step: 64,
-        apic_blend: 0.05, // real, found-optimal granular stabilizer (tonight's own work)
+        apic_blend: 0.05, // tuned granular stabilizer
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
     let cx = GRID as f32 * 0.5;

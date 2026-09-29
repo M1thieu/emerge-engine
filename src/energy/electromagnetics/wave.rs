@@ -7,8 +7,8 @@
 use crate::forces::electromagnetics::{ElectricField, MagneticField};
 use glam::Vec2;
 
-/// Speed of light in vacuum (m/s).
-pub const C: f32 = 299_792_458.0;
+/// Speed of light in vacuum (m/s), `radiation::SPEED_OF_LIGHT` in `f32`.
+pub const C: f32 = crate::energy::radiation::SPEED_OF_LIGHT as f32;
 
 /// A plane electromagnetic wave propagating in 2D.
 ///

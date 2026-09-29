@@ -1272,7 +1272,7 @@ fn grain_column_through_shared_grid_onto_rigid_boundary_no_terrain() {
         rolling_friction: 0.20,
     };
     let dt_crit = critical_timestep(m_eff, &cfg);
-    let dt = dt_crit * 0.01; // TEMP dt-convergence probe (2026-08-20): halved from 0.02, checking whether the grid-coupled path shows the SAME dt-sensitivity the true-standalone control just did
+    let dt = dt_crit * 0.01; // Halved from 0.02: does the grid-coupled path show the dt-sensitivity of the standalone control?
 
     let config = SimConfig {
         grid_res: 320, // real headroom for the ~66-unit predicted spread, centered at x=160 -- see make_column's own doc
@@ -1673,7 +1673,7 @@ fn diag_true_standalone_from_t0_same_column_no_grid() {
         rolling_friction: 0.20,
     };
     let dt_crit = critical_timestep(m_eff, &cfg);
-    let dt = dt_crit * 0.005; // TEMP dt-convergence probe (2026-08-20): halved again from 0.01
+    let dt = dt_crit * 0.005; // Halved again from 0.01, same dt-sensitivity check.
     let gravity = Vec2::new(0.0, -0.3);
 
     let mut pop = GrainPopulation::new(grains, cfg);
