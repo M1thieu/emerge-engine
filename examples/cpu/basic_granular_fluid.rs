@@ -2,6 +2,8 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 use egui_wgpu::ScreenDescriptor;
 /// Live egui GUI for `GranularFluidMaterial`, with `basic_sand.rs`'s conventions: LMB/RMB
@@ -20,9 +22,10 @@ use egui_wgpu::ScreenDescriptor;
 /// `GranularFluidMaterial::saturated_loam`).
 ///
 ///   cargo run --example basic_granular_fluid --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{GranularFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -32,6 +35,14 @@ use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
 const DT: f32 = 0.05;
+/// Particle pitch of the spawned bodies and of the pour, in grid cells.
+const SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid: 4x, as
+/// `basic_fluids.rs` at the same grid and spacing. Measured on an integrated
+/// Radeon (Vulkan) at t = 15 s: 6 ms per render at 2x, 8 ms at 3x, 11 ms at
+/// 4x, beside a 30 to 50 ms solver step; 2x shows square blocks inside the
+/// bodies.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 const MAT_LOAM: u32 = 0;
 const MAT_CLAY: u32 = 1;
 const MAT_CYTO: u32 = 2;
@@ -43,7 +54,6 @@ const SIGMA_LOAM: [f32; 3] = [0.470, 0.620, 0.980]; // target ~(0.62,0.54,0.375)
 const SIGMA_CLAY: [f32; 3] = [0.560, 0.560, 0.690]; // target ~(0.57,0.57,0.50) tan-grey
 const SIGMA_CYTO: [f32; 3] = [0.220, 0.280, 0.260]; // target ~(0.80,0.76,0.77) pale translucent
 const POUR_BUDGET: usize = 2000;
-const POUR_SPACING: f32 = 0.5;
 const POUR_BOX: IVec2 = IVec2::new(2, 1);
 const DIG_RADIUS: f32 = 4.0;
 
@@ -64,7 +74,7 @@ fn make_sim() -> Simulation {
     };
 
     let spawn = |c: Vec2, mat, seed| SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(16, 14),
         box_center: c,
         material_id: mat,
@@ -120,6 +130,11 @@ struct State {
     fps_frames: u64,
     last_fps: f32,
     pour_seed: u32,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -169,6 +184,12 @@ impl State {
         renderer.set_optical_params(&queue, MAT_LOAM as usize, SIGMA_LOAM);
         renderer.set_optical_params(&queue, MAT_CLAY as usize, SIGMA_CLAY);
         renderer.set_optical_params(&queue, MAT_CYTO as usize, SIGMA_CYTO);
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell, which holds 1/SPACING^2 of this scene's
+        // particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -189,7 +210,7 @@ impl State {
         );
 
         println!(
-            "basic_granular_fluid: {} particles  |  LMB push  RMB pull  D toggle dig  hold P to pour  R reset  Q quit",
+            "basic_granular_fluid: {} particles  |  LMB push  RMB pull  D toggle dig  hold P to pour  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -219,6 +240,8 @@ impl State {
             fps_frames: 0,
             last_fps: 0.0,
             pour_seed: 1000,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -278,7 +301,7 @@ impl State {
                 .clamp(domain_min, domain_max.max(domain_min));
             self.pour_seed += 1;
             let spawn = SpawnRegion {
-                spacing: POUR_SPACING,
+                spacing: SPACING,
                 box_size: POUR_BOX,
                 box_center: cursor,
                 material_id: self.pour_material,
@@ -308,11 +331,43 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), &view, true)
+            }
+            RenderMode::GridVolume => {
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: loam, clay and poured cytoplasm
+                // each keep their own optics slot where the surfaces meet.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.surface_source(MAT_LOAM, true, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let mut push_strength = self.push_strength;
         let mut gravity_fraction = self.gravity_fraction;
         let mut digging = self.digging;
@@ -329,6 +384,7 @@ impl State {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("fps={fps:.0}  particles={n_particles}"));
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
                     ui.separator();
                     ui.label("Gravity (1.0 = real IRL 9.81 m/s²):");
                     ui.add(egui::Slider::new(&mut gravity_fraction, 0.0..=2.0));
@@ -349,7 +405,7 @@ impl State {
                             .desired_width(200.0),
                     );
                     ui.separator();
-                    ui.label("LMB push  RMB pull  D toggle dig  hold P to pour  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  D dig  hold P pour  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -465,6 +521,10 @@ impl ApplicationHandler for App {
                 match key {
                     KeyCode::KeyP => s.pouring = pressed,
                     KeyCode::KeyD if pressed => s.digging = !s.digging,
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyR if pressed => {
                         let sim = make_sim();
