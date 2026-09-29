@@ -15,14 +15,13 @@ mod gui_common;
 /// real range ("start around 0.5-5.0").
 ///
 /// Rendering: per-particle splat by default (`ColorMode::ByPhysics`); G
-/// toggles grid-volume mode (`Renderer::render_grid_volume`), using
-/// `fire_spread.rs`'s own CPU-`Simulation` bridging pattern (no GPU-resident
-/// grid the way `GpuSimulation` has, so the bridge buffers are rebuilt from
-/// the CPU solver each frame).
+/// toggles grid-volume mode (`Renderer::render_grid_volume`), fed by a
+/// `CpuRenderBridge` rebuilt from the CPU solver each frame (the CPU
+/// `Simulation` has no GPU-resident grid the way `GpuSimulation` has).
 ///
 ///   cargo run --example basic_plant --features render
 use emerge::fields::LinearDragField;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     FrameLogger, SimConfig, Simulation, SlipBoundary, SpawnRegion, ViscoelasticMaterial,
     per_material_stats,
@@ -92,11 +91,9 @@ struct State {
     base_x: f32,
     last_tip_offset: f32,
     logger: FrameLogger,
-    /// CPU-`Simulation` grid-volume render bridge (G toggles back to splats) --
-    /// same pattern as `fire_spread.rs`'s bridge. Rebuilt from the CPU solver's
-    /// `Grid`/`Particles` each frame; reuses the shared GPU render path/shader.
-    grid_bridge_buf: wgpu::Buffer,
-    material_mass_bridge_buf: wgpu::Buffer,
+    /// GPU buffers for the grid-volume mode (G toggles back to splats),
+    /// rebuilt from the CPU solver's `Grid`/`Particles` each frame.
+    render_bridge: CpuRenderBridge,
     grid_volume_mode: bool,
 }
 
@@ -245,22 +242,7 @@ impl State {
         let logger = FrameLogger::open(&log_path).unwrap();
         println!("per-frame diagnostics log: {}", log_path.display());
 
-        // Same sizing as `fire_spread.rs`'s own bridge buffers (verified
-        // pattern) -- 16 material slots is far more than this single-material
-        // scene needs, but matches the shared shader's expected layout exactly.
-        const RENDER_MATERIAL_SLOTS: u64 = 16;
-        let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_plant_grid_bridge"),
-            size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_plant_material_mass_bridge"),
-            size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         Self {
             surface,
@@ -280,8 +262,7 @@ impl State {
             base_x,
             last_tip_offset: 0.0,
             logger,
-            grid_bridge_buf,
-            material_mass_bridge_buf,
+            render_bridge,
             // grid_volume.wgsl indexes its density buffer by `params.grid_res`,
             // the same value `set_camera` uses for the display zoom window --
             // decoupling DISPLAY_GRID from the GRID breaks that indexing
@@ -289,38 +270,6 @@ impl State {
             // default.
             grid_volume_mode: false,
         }
-    }
-
-    /// Rebuilds `grid_bridge_buf`/`material_mass_bridge_buf` from the CPU
-    /// solver's current state -- see those fields' doc for the real,
-    /// disclosed cost. Identical technique to `fire_spread.rs`'s own bridge.
-    fn upload_grid_volume_bridge(&self) {
-        const SLOTS: usize = 16;
-        let grid = self.sim.grid();
-        let mut dense = vec![0f32; GRID * GRID * 4];
-        for y in 0..GRID {
-            for x in 0..GRID {
-                let idx = y * GRID + x;
-                dense[idx * 4 + 2] = grid.mass_at(IVec2::new(x as i32, y as i32));
-            }
-        }
-        self.queue
-            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense));
-
-        let mut material_mass = vec![0f32; GRID * GRID * SLOTS];
-        let particles = self.sim.particles();
-        for i in 0..particles.x.len() {
-            let p = particles.x[i];
-            let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let cy = (p.y.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let slot = (particles.material_id[i] as usize) % SLOTS;
-            material_mass[(cy * GRID + cx) * SLOTS + slot] += particles.mass[i];
-        }
-        self.queue.write_buffer(
-            &self.material_mass_bridge_buf,
-            0,
-            bytemuck::cast_slice(&material_mass),
-        );
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -450,15 +399,12 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         if self.grid_volume_mode {
-            self.upload_grid_volume_bridge();
+            self.render_bridge
+                .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
             self.renderer.render_grid_volume(
                 &self.device,
                 &self.queue,
-                GridVolumeSource {
-                    grid: &self.grid_bridge_buf,
-                    material_mass: &self.material_mass_bridge_buf,
-                    material_mass_enabled: true,
-                },
+                self.render_bridge.grid_volume_source(),
                 &view,
                 true,
             );

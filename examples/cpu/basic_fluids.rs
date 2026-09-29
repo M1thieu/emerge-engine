@@ -4,7 +4,6 @@ extern crate emerge_engine as emerge;
 mod scripted;
 
 use egui_wgpu::ScreenDescriptor;
-use emerge::Particle;
 /// Newtonian water dam-break with a live egui panel, the pattern of
 /// `basic_sand.rs`/`basic_snow.rs`: a gravity slider (1.0 = Earth's 9.81 m/s²),
 /// push/pull, and directional-drag digging (the mechanism of `basic_sand.rs`: a
@@ -34,7 +33,7 @@ use emerge::Particle;
 /// at real gravity (`EMERGE_SCRIPT_GRAVITY=1`) the water is crushed to half
 /// its volume (J at its 0.5 floor) and lies two rows deep.
 use emerge::materials::MaterialModel;
-use emerge::render::{ColorMode, GridVolumeSource, Renderer, SurfaceReconstructionSource};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
     FixedStepConfig, FixedStepController, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
@@ -50,13 +49,9 @@ use winit::window::{Window, WindowId};
 
 /// The three rendering paths this demo can show, cycled with G, in the modes and
 /// order of `basic_fluids_gpu.rs`. That demo renders from GPU-resident buffers
-/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`) already laid out for
-/// `render_grid_volume`/`render_surface_reconstruction`; the CPU solver has none, so
-/// `grid_bridge_buf`/`material_mass_bridge_buf`/`particle_bridge_buf` below rebuild
-/// and upload a snapshot each frame (the bridging `fire_spread.rs` uses for its
-/// `GridVolume` mode, see `upload_grid_volume_bridge`, plus a particle-buffer bridge
-/// for `Surface` mode: `Particle` is `repr(C)`/`Pod`, so it is a direct
-/// `bytemuck::cast_slice` upload of `sim.particles().iter().collect()`).
+/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`); the CPU solver has none, so
+/// `render_bridge` (`CpuRenderBridge`) rebuilds and uploads them each frame one of
+/// the GPU-read modes is shown.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RenderMode {
     Particles,
@@ -326,19 +321,7 @@ struct State {
     prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
     render_mode: RenderMode,
-    grid_bridge_buf: wgpu::Buffer,
-    material_mass_bridge_buf: wgpu::Buffer,
-    particle_bridge_buf: wgpu::Buffer,
-    /// Persistent scratch for the per-frame CPU->GPU render bridges.
-    ///
-    /// Reused rather than built with `vec![]`/`collect()` each frame, which at
-    /// this scene's size would churn ~373 KB (Surface: 2912 particles x 128 B)
-    /// or ~320 KB (GridVolume: 64x64x4 + 64x64x16 f32) of allocate-fill-free
-    /// per frame; the contents are fully rewritten each time, so the output is
-    /// bit-identical with no allocator traffic.
-    bridge_particles: Vec<Particle>,
-    bridge_dense: Vec<f32>,
-    bridge_material_mass: Vec<f32>,
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -482,29 +465,8 @@ impl State {
         renderer.set_optical_scattering(&queue, MAT_ICE as usize, 0.06);
         renderer.set_specular_r0(&queue, MAT_ICE as usize, 0.05);
 
-        // CPU->GPU render bridges for RenderMode::GridVolume/Surface -- see
-        // RenderMode's doc for why these exist (no persistent GPU buffer
-        // on the CPU `Simulation` path). Sized once at particle-count-fixed
-        // scene setup, matching `fire_spread.rs`'s own grid-bridge precedent.
-        const RENDER_MATERIAL_SLOTS: u64 = 16;
-        let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_grid_bridge"),
-            size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_material_mass_bridge"),
-            size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let particle_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("basic_fluids_particle_bridge"),
-            size: (sim.particles().len() * std::mem::size_of::<Particle>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        // GPU buffers for RenderMode::GridVolume/Surface -- see RenderMode's doc.
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -576,75 +538,8 @@ impl State {
             }),
             last_instant: std::time::Instant::now(),
             render_mode: RenderMode::Particles,
-            grid_bridge_buf,
-            material_mass_bridge_buf,
-            particle_bridge_buf,
-            bridge_particles: Vec::new(),
-            bridge_dense: Vec::new(),
-            bridge_material_mass: Vec::new(),
+            render_bridge,
         }
-    }
-
-    /// Rebuilds `grid_bridge_buf`/`material_mass_bridge_buf` from the CPU
-    /// solver's current state and uploads them -- same disclosed
-    /// approximation as `fire_spread.rs`'s own bridge (simplified nearest-
-    /// cell scatter, not P2G's full quadratic B-spline kernel; good enough
-    /// for dominant-material color selection, not a physics-accuracy claim).
-    /// Only called when `render_mode == GridVolume`, so every other mode
-    /// (including the default) pays zero extra cost.
-    fn upload_grid_volume_bridge(&mut self) {
-        const SLOTS: usize = 16;
-        let grid = self.sim.grid();
-        // Reused across frames -- see `bridge_dense`'s doc.
-        self.bridge_dense.clear();
-        self.bridge_dense.resize(GRID * GRID * 4, 0.0);
-        let dense = &mut self.bridge_dense;
-        for y in 0..GRID {
-            for x in 0..GRID {
-                let idx = y * GRID + x;
-                dense[idx * 4 + 2] = grid.mass_at(IVec2::new(x as i32, y as i32));
-            }
-        }
-        self.queue
-            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense[..]));
-
-        let particles = self.sim.particles();
-        self.bridge_material_mass.clear();
-        self.bridge_material_mass.resize(GRID * GRID * SLOTS, 0.0);
-        let material_mass = &mut self.bridge_material_mass;
-        for i in 0..particles.x.len() {
-            let p = particles.x[i];
-            let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let cy = (p.y.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let slot = (particles.material_id[i] as usize) % SLOTS;
-            material_mass[(cy * GRID + cx) * SLOTS + slot] += particles.mass[i];
-        }
-        self.queue.write_buffer(
-            &self.material_mass_bridge_buf,
-            0,
-            bytemuck::cast_slice(&material_mass[..]),
-        );
-    }
-
-    /// Rebuilds `particle_bridge_buf` from the CPU solver's particles and uploads it,
-    /// for `RenderMode::Surface`. `Particle` is `repr(C)`/`Pod` (see its struct doc),
-    /// so this is a direct `bytemuck::cast_slice` of the AoS view `Particles::iter()`
-    /// produces. Only called when `render_mode == Surface`. The surface uses
-    /// `render_surface_reconstruction`'s N-material path (`material_mass_enabled`),
-    /// which colors each cell from its per-material mass, so water and ice stay
-    /// distinct; the dual-phase path knows only 2 material IDs
-    /// (`material_id_a`/`material_id_b`, see `DualPhaseSurfaceSource`).
-    fn upload_particle_bridge(&mut self) {
-        // No ice->water remap: render_surface_reconstruction's material_mass_enabled
-        // path colors every material_id (water/ice) from its own per-cell
-        // mass, so all 3 stay visually distinct instead of collapsing to one slot.
-        self.bridge_particles.clear();
-        self.bridge_particles.extend(self.sim.particles().iter());
-        self.queue.write_buffer(
-            &self.particle_bridge_buf,
-            0,
-            bytemuck::cast_slice(&self.bridge_particles),
-        );
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -921,42 +816,36 @@ impl State {
                 }
             }
             RenderMode::GridVolume => {
-                self.upload_grid_volume_bridge();
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
                 self.renderer.render_grid_volume(
                     &self.device,
                     &self.queue,
-                    GridVolumeSource {
-                        grid: &self.grid_bridge_buf,
-                        material_mass: &self.material_mass_bridge_buf,
-                        material_mass_enabled: true,
-                    },
+                    self.render_bridge.grid_volume_source(),
                     view,
                     true,
                 );
             }
             RenderMode::Surface => {
-                self.upload_particle_bridge();
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
                 // N-material per-cell coloring (`material_mass_enabled`), not
                 // dual-phase: dual-phase handles exactly 2 materials, and ice and
                 // water must stay distinct (each with its own `OpticalTable` slot).
                 // `surface_material_mass` is built from each particle's own
                 // `material_id` with the density splat's quadratic B-spline kernel
-                // (finer than the nearest-cell approximation
-                // `upload_grid_volume_bridge` uses for `GridVolume`). The trade: one
+                // (finer than the nearest-cell approximation `CpuRenderBridge`
+                // uses for `GridVolume`). The trade: one
                 // shared density/smoothing field, not two independently smoothed
                 // surfaces, so materials can blend slightly where they touch, the
                 // reason dual-phase exists.
                 self.renderer.render_surface_reconstruction(
                     &self.device,
                     &self.queue,
-                    SurfaceReconstructionSource {
-                        particle_buf: &self.particle_bridge_buf,
-                        particle_count: self.sim.particles().len(),
-                        grid_res: GRID as u32,
-                        material_slot: MAT_WATER,
-                        material_mass_enabled: true,
-                        dt: DT,
-                    },
+                    self.render_bridge.surface_source(MAT_WATER, true, DT),
                     view,
                     true,
                 );

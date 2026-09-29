@@ -30,7 +30,7 @@ use egui_wgpu::ScreenDescriptor;
 ///     ignition temperature to cite, so the phase-rule condition never fires.
 ///
 ///   cargo run --example fire_spread --features "render"
-use emerge::render::{ColorMode, GridVolumeSource, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::thermodynamics::{ThermalConfig, ThermalDiffusion};
 use emerge::{
     DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, ViscoelasticMaterial,
@@ -233,8 +233,9 @@ struct State {
     last_fps: f32,
     log_timer: std::time::Instant,
     burned_count: usize,
-    grid_bridge_buf: wgpu::Buffer,
-    material_mass_bridge_buf: wgpu::Buffer,
+    /// GPU buffers for the grid-volume mode, with the mass-weighted
+    /// temperature its thermal emission reads.
+    render_bridge: CpuRenderBridge,
     grid_volume_mode: bool,
 }
 
@@ -315,19 +316,7 @@ impl State {
             sim.particles().len()
         );
 
-        const RENDER_MATERIAL_SLOTS: u64 = 16;
-        let grid_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fire_spread_grid_bridge"),
-            size: (GRID * GRID * 4 * std::mem::size_of::<f32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let material_mass_bridge_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fire_spread_material_mass_bridge"),
-            size: (GRID as u64 * GRID as u64 * RENDER_MATERIAL_SLOTS) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let render_bridge = CpuRenderBridge::new(&device, GRID).with_temperature(true);
 
         Self {
             surface,
@@ -348,50 +337,9 @@ impl State {
             last_fps: 0.0,
             log_timer: std::time::Instant::now(),
             burned_count: 0,
-            grid_bridge_buf,
-            material_mass_bridge_buf,
+            render_bridge,
             grid_volume_mode: false,
         }
-    }
-
-    fn upload_grid_volume_bridge(&self) {
-        const SLOTS: usize = 16;
-        let grid = self.sim.grid();
-        let mut dense = vec![0f32; GRID * GRID * 4];
-        for y in 0..GRID {
-            for x in 0..GRID {
-                let idx = y * GRID + x;
-                dense[idx * 4 + 2] = grid.mass_at(IVec2::new(x as i32, y as i32));
-            }
-        }
-        // Mass-weighted temperature scattered into channel 0 (nearest cell, the P2G
-        // convention of `ThermalDiffusion`), so `grid_volume.wgsl` can show
-        // per-pixel temperature (its blackbody term): the CPU solver keeps no
-        // per-cell temperature. Grid-cell mass is computed above.
-        let particles = self.sim.particles();
-        for i in 0..particles.x.len() {
-            let p = particles.x[i];
-            let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let cy = (p.y.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let idx = cy * GRID + cx;
-            dense[idx * 4] += particles.mass[i] * particles.temperature[i];
-        }
-        self.queue
-            .write_buffer(&self.grid_bridge_buf, 0, bytemuck::cast_slice(&dense));
-
-        let mut material_mass = vec![0f32; GRID * GRID * SLOTS];
-        for i in 0..particles.x.len() {
-            let p = particles.x[i];
-            let cx = (p.x.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let cy = (p.y.round() as i32).clamp(0, GRID as i32 - 1) as usize;
-            let slot = (particles.material_id[i] as usize) % SLOTS;
-            material_mass[(cy * GRID + cx) * SLOTS + slot] += particles.mass[i];
-        }
-        self.queue.write_buffer(
-            &self.material_mass_bridge_buf,
-            0,
-            bytemuck::cast_slice(&material_mass),
-        );
     }
 
     fn resize(&mut self, w: u32, h: u32) {
@@ -497,15 +445,12 @@ impl State {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         if self.grid_volume_mode {
-            self.upload_grid_volume_bridge();
+            self.render_bridge
+                .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
             self.renderer.render_grid_volume(
                 &self.device,
                 &self.queue,
-                GridVolumeSource {
-                    grid: &self.grid_bridge_buf,
-                    material_mass: &self.material_mass_bridge_buf,
-                    material_mass_enabled: true,
-                },
+                self.render_bridge.grid_volume_source(),
                 &view,
                 true,
             );

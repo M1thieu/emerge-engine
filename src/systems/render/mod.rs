@@ -185,6 +185,11 @@ use buffers::RenderBuffers;
 // grid_volume.rs -- see that file's doc.
 mod grid_volume;
 
+// Buffers a CPU `Simulation` needs to use the grid-volume and surface paths,
+// which read GPU-resident state -- see that file's doc.
+mod cpu_bridge;
+pub use cpu_bridge::CpuRenderBridge;
+
 // Shared SI optical contract and analytic reference solutions.  Kept
 // independent of any particular GPU path so particle, grid-volume, and
 // reconstructed-surface rendering cannot silently choose different units.
