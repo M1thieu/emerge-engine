@@ -1,7 +1,11 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
+
 use emerge::fields::LinearDragField;
-use emerge::render::{ColorMode, Renderer};
+use emerge::materials::optical::pure_water;
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::{IVec2, Vec2};
 /// Minimal real-forces proof: a real fluid material, no gravity-settling puddle, driven
@@ -15,7 +19,13 @@ use glam::{IVec2, Vec2};
 /// material for wind-blown sand instead of masking to water; not built as a second demo
 /// here, this scene exists to prove the ONE new mechanism, not every dressing of it.
 ///
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. The water carries pure water's measured absorption
+/// (`materials::optical::pure_water`, which cites its source), so every
+/// view colours it the same way.
+///
 ///   cargo run --example channel_flow --features "render"
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -28,6 +38,12 @@ const DT: f32 = 0.1;
 const MAT_WATER: u32 = 0;
 const CURRENT_SPEED: f32 = 4.0;
 const DRAG_COEFFICIENT: f32 = 1.5;
+/// Particle pitch of the pool, in grid cells.
+const SPACING: f32 = 0.6;
+/// Surface grid resolution as a multiple of the physics grid. Measured on an
+/// integrated Radeon (Vulkan): 6 to 7 ms per render at 4x, 4 ms at 2x,
+/// inside this 60 fps demo's frame either way.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -44,6 +60,11 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 fn make_sim() -> Simulation {
@@ -66,9 +87,10 @@ fn make_sim() -> Simulation {
     // `timestep_bound`'s c2 (sound speed squared) is 40x larger at a given stiffness and
     // compression, so the stiffness is scaled by the same factor (10*0.1/4.0=0.25) to
     // keep the same c2.
-    let water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
+    let mut water = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
+    water.optics = Some(pure_water());
     let spawn_water = SpawnRegion {
-        spacing: 0.6,
+        spacing: SPACING,
         box_size: IVec2::new(20, 16),
         box_center: Vec2::new(14.0, 12.0),
         material_id: MAT_WATER,
@@ -76,7 +98,7 @@ fn make_sim() -> Simulation {
         // Mass set explicitly, m = rho0*spacing^2 with the material's
         // rest_density=0.1 (see basic_fluids.rs), rather than the scene's grid
         // density.
-        mass_override: Some(0.1 * 0.6 * 0.6),
+        mass_override: Some(0.1 * SPACING * SPACING),
         ..SpawnRegion::for_sim(&config)
     };
     let current = LinearDragField::new(
@@ -131,9 +153,15 @@ impl State {
         let sim = make_sim();
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.adopt_material_optics(&queue, sim.materials());
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell, which holds 1/SPACING^2 particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
         println!(
-            "channel_flow: {} water particles  |  LinearDragField pushes downstream at target_v=({CURRENT_SPEED},0)  |  R reset  Q quit",
+            "channel_flow: {} water particles  |  LinearDragField pushes downstream at target_v=({CURRENT_SPEED},0)  |  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -146,6 +174,8 @@ impl State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -182,8 +212,38 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), &view, true)
+            }
+            RenderMode::GridVolume => {
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
+                // One material, so one optics slot colours the whole surface.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.surface_source(MAT_WATER, false, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
         output.present();
     }
 }
@@ -218,6 +278,10 @@ impl ApplicationHandler for App {
                 ..
             } => match key {
                 KeyCode::Escape | KeyCode::KeyQ => el.exit(),
+                KeyCode::KeyG => {
+                    s.render_mode = s.render_mode.next();
+                    println!("render mode: {}", s.render_mode.label());
+                }
                 KeyCode::KeyR => {
                     s.sim = make_sim();
                     s.frame = 0;
