@@ -417,12 +417,12 @@ impl MaterialModel for BinghamFluidMaterial {
         // it was lost from the CPU path by the same wholesale revert.
         let gradient = particles.velocity_gradient[i];
         let div_v_true = gradient.x_axis.x + gradient.y_axis.y;
-        let j_now = crate::materials::fluid::volume_j(
+        let j_now = crate::materials::liquid::fluid::volume_j(
             particles.initial_volume[i],
             particles.volume[i],
             "BinghamFluidMaterial",
         );
-        let q = crate::materials::fluid::artificial_bulk_viscosity(
+        let q = crate::materials::liquid::fluid::artificial_bulk_viscosity(
             self.eos_stiffness,
             self.eos_power,
             self.rest_density,

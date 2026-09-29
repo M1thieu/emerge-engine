@@ -215,7 +215,7 @@ by default inside the two constructors meant to build this material
 correctly from real SI values in the first place. Anyone using the
 "proper" real-unit constructor, not just the two demo files we had
 already patched by hand, would have silently reintroduced the exact same
-bug. Fixed at the source (`src/matter/materials/fluid.rs`), so every
+bug. Fixed at the source (`src/matter/materials/liquid/fluid.rs`), so every
 future user of this material gets the correct value automatically. A real
 existing test, built specifically to show this same old flaw next to a
 newer alternative material, stopped showing the flaw once this landed. It

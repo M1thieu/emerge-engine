@@ -1,11 +1,10 @@
-pub mod bingham;
 pub mod boiling_mixture;
 pub mod cavitating_eos;
 pub mod cavitating_fluid;
-pub mod fluid;
 pub mod gas;
 pub mod granular;
 pub mod granular_fluid;
+pub mod liquid;
 pub mod optical;
 pub mod params;
 pub mod physical_props;
@@ -22,18 +21,18 @@ pub use physical_props::{
     Viscoelastic,
 };
 
-pub use bingham::BinghamFluidMaterial;
 pub use boiling_mixture::BoilingMixtureMaterial;
 pub use cavitating_eos::{CavitatingEosParams, CavitatingEosTable};
 pub use cavitating_fluid::{
     CavitatingFluidMaterial, CavitatingFluidMaterialParams, IsothermalCavitatingFluidMaterial,
     IsothermalCavitatingFluidMaterialParams,
 };
-pub use fluid::NewtonianFluidMaterial;
 pub use gas::{IdealGasMaterial, IdealGasPhysicalParams};
 pub use granular::sand::DruckerPragerMaterial;
 pub use granular::sand_mui::MuIRheologyMaterial;
 pub use granular_fluid::GranularFluidMaterial;
+pub use liquid::bingham::BinghamFluidMaterial;
+pub use liquid::fluid::NewtonianFluidMaterial;
 pub use params::MaterialParams;
 pub use registry::{MAX_MATERIAL_SLOTS, MaterialRegistry};
 pub use rod_material::RodMaterial;
