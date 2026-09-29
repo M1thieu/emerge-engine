@@ -52,13 +52,13 @@ answers only part of this each time, and says so.
 
 **Sources, quoted, in order.**
 - Klar, Gast, Pradhana, Fu, Schroeder, Jiang and Teran, *"Drucker-Prager
-  Elastoplasticity for Sand Animation,"* SIGGRAPH 2016: "For most of our
+  Elastoplasticity for Sand Animation,"* SIGGRAPH 2016 ([doi:10.1145/2897824.2925906](https://doi.org/10.1145/2897824.2925906)): "For most of our
   examples, explicit is more efficient... For stiff examples, implicit
   becomes advisable." Their own implicit treatment is "implicit in
   plasticity... not implicit in hardening or friction," a disclosed
   partial scope, not a general answer.
 - Fang, Hu, Hu and Jiang, *"A Temporally Adaptive Material Point Method
-  with Regional Time Stepping,"* SCA 2018, Section 8: "it is not always
+  with Regional Time Stepping,"* SCA 2018 ([doi:10.1111/cgf.13524](https://doi.org/10.1111/cgf.13524)), Section 8: "it is not always
   the preferred choice especially for cases where stiff materials occupy
   the main portion of a scene... We look forward to exploring mixed
   implicit-explicit integration schemes (IMEX) with regional time
@@ -66,7 +66,7 @@ answers only part of this each time, and says so.
   combination that would close their own gap and call it future work.
   We found no paper since, including theirs, that has done it.
 - Daviet, *"Mixed Material Point Methods for Stiff Elastoplasticity,"*
-  NVIDIA, ACM TOG 45(4), 2026, the most recent and most general attempt
+  NVIDIA, ACM TOG 45(4), 2026 ([doi:10.1145/3811345](https://doi.org/10.1145/3811345)), the most recent and most general attempt
   (a separate mixed stress field solved as a convex optimization),
   states plainly: "the performance advantage of implicit over explicit
   time integration thus reduces as the grid resolution increases." Not a
@@ -105,7 +105,8 @@ One real, published lever DOES help within this same explicit approach,
 for scenes where a small, disclosed accuracy loss is acceptable. Haeri and
 Skonieczny, *"Three-dimensional granular flow continuum modeling via
 material point method with hyperelastic nonlocal granular fluidity,"*
-Computer Methods in Applied Mechanics and Engineering 394 (2022), the same
+Computer Methods in Applied Mechanics and Engineering 394 (2022)
+([doi:10.1016/j.cma.2022.114904](https://doi.org/10.1016/j.cma.2022.114904)), the same
 paper behind our sand's stiffness citation, publish their own softened
 version of that same material (a tenth of a percent of the original
 stiffness), built for exactly this speed reason, reporting their own real,
@@ -139,7 +140,7 @@ in the code changes that; it is the equation.
 | water (dam break, droplet, vortex) | 1.75 m/s, set by the WCSPH rule `c >= 10*v_max` | 52 | 50-56 fps |
 | sand, jellies | relaxed published stiffness (see above) | low tens | 60 fps |
 | multi-material showcase | sand-dominated | ~264, x4 sim steps per rendered frame | ~10-12 fps |
-| snow | 26.5 m/s (`E = 1.4e5 Pa`, `rho = 200`, Stomakhin 2013) | ~880, x4 per rendered frame | 1-2 fps |
+| snow | 26.5 m/s (`E = 1.4e5 Pa`, `rho = 200`, Stomakhin 2013, [doi:10.1145/2461912.2461948](https://doi.org/10.1145/2461912.2461948)) | ~880, x4 per rendered frame | 1-2 fps |
 
 Snow is the honest worst case: its real, cited stiffness is fifteen times
 water's effective sound speed here, so it needs roughly fifteen times the
@@ -268,7 +269,8 @@ its own to explain or calm that particular runaway.
   apart from the step, which does not call it: a staggered grid, a liquid
   level set from the particles, solid face weights, a ghost-fluid free
   surface and a MIC(0) conjugate gradient (Bridson and Muller-Fischer 2007
-  course notes; Batty, Bertails and Bridson 2007; Zhu and Bridson; `apic2d`
+  course notes, [doi:10.1145/1281500.1281681](https://doi.org/10.1145/1281500.1281681); Batty, Bertails and Bridson
+  2007, [doi:10.1145/1276377.1276502](https://doi.org/10.1145/1276377.1276502); Zhu and Bridson; `apic2d`
   as the reference code). Its stop criteria, in `grid/mac/gates.rs`, were
   committed before its code and allowed two failed runs; both runs failed,
   so the attempt stopped there. The four gate scenes and the four probes
@@ -312,9 +314,10 @@ its own to explain or calm that particular runaway.
   physical time at 256, 1024 and 4096 steps (the exact answer is 1.0):
   smaller steps mean more artificial damping. ASFLIP, available through
   `asflip_blend`, does not fix it: 0.53 at blend 0.5, and at blend 0.97 it
-  creates energy (1.16 at 4096 steps). Candidates: PolyPIC (Fu et al. 2017),
+  creates energy (1.16 at 4096 steps). Candidates: PolyPIC (Fu et al. 2017,
+  [doi:10.1145/3130800.3130878](https://doi.org/10.1145/3130800.3130878)),
   which lowers the loss per transfer without changing the order, and an
-  energy-momentum consistent implicit MPM (Love and Sulsky 2006), which
+  energy-momentum consistent implicit MPM (Love and Sulsky 2006, [doi:10.1002/nme.1512](https://doi.org/10.1002/nme.1512)), which
   conserves energy by construction at the cost of an implicit solve. The
   energy lost per step will be published next to the CFL safety factor.
 - **3D.** The code is 2D throughout (about 2,400 `Vec2`, 840 `Mat2` and 250
@@ -451,7 +454,8 @@ The invariant it protects is kept as a test,
 
 ### A yield-stress fluid below its yield rings forever
 
-`BinghamFluidMaterial`'s elastoviscoplastic branch (Saramito 2007, as a
+`BinghamFluidMaterial`'s elastoviscoplastic branch (Saramito 2007,
+[doi:10.1016/j.jnnfm.2007.04.004](https://doi.org/10.1016/j.jnnfm.2007.04.004), as a
 radial return with a Perzyna viscous overstress) is purely elastic below its
 yield stress: the viscosity only acts once the material flows. So a block
 loaded under its yield and released has nothing to take the energy out, and
@@ -462,7 +466,7 @@ that row its higher floor, 0.15 mm of apparent change of shape at x0.5
 against 0.006 for the 60 Pa block.
 
 It is also a departure from the model this branch cites. Woodbridge, Fonte
-and Juel (arXiv 2609.12229, 2026, a yield-stress spreading study built on
+and Juel ([arXiv 2609.12229](https://arxiv.org/abs/2609.12229), 2026, a yield-stress spreading study built on
 the Saramito family) describe it as: "Below yield, the material behaves as a
 linear viscoelastic solid". The dissipation below yield comes from a solvent
 viscosity acting at all stresses, which this radial-return version keeps
