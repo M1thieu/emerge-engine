@@ -14,7 +14,7 @@ use emerge::render::{
 };
 use emerge::{
     FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation, MaterialRegistry,
-    NewtonianFluidMaterial, Particle, SimConfig, SpawnRegion, build_particles,
+    NewtonianFluidMaterial, SimConfig, SpawnRegion, build_particles,
 };
 use glam::{IVec2, Vec2};
 use winit::application::ApplicationHandler;
@@ -510,9 +510,6 @@ fn make_sim_data(
     for field in vortex_fields {
         sim.add_force_field_gpu(field);
     }
-    // Profiling: measure the per-pass GPU breakdown on this scene
-    // (`enable_profiling`/`last_pass_timings_ns`).
-    sim.enable_profiling();
     // Grid-mediated cohesion (CSF, see `grid_update.wgsl`'s
     // `grid_cohesion_main_inner`), disabled. It applies its force to grid momentum
     // in its own pass, bypassing `fluid_state::force_stress_volume`'s cap (which
@@ -526,37 +523,6 @@ fn make_sim_data(
     // the WC-MPM stress, prescribed gravity, and geometric wall conditions.
 
     sim
-}
-
-/// Shared diagnostic line for a single traced or outlier particle (MIN_J_OUTLIER and
-/// OUTLIER below).
-fn print_particle_trace(
-    label: &str,
-    idx: usize,
-    p: &Particle,
-    neighbors_tight: usize,
-    neighbors_wide: usize,
-) {
-    let j = p.deformation_gradient.determinant();
-    println!(
-        "  {label} idx={idx} x=({:.3},{:.3}) v=({:.3},{:.3}) |v|={:.3} \
-         F=[{:.3},{:.3};{:.3},{:.3}] J={j:.4} volume={:.6} initial_volume={:.6} \
-         density={:.4} mass={:.6} neighbors(r=1.5)={neighbors_tight} \
-         neighbors(r=3.0)={neighbors_wide}",
-        p.x.x,
-        p.x.y,
-        p.v.x,
-        p.v.y,
-        p.v.length(),
-        p.deformation_gradient.x_axis.x,
-        p.deformation_gradient.y_axis.x,
-        p.deformation_gradient.x_axis.y,
-        p.deformation_gradient.y_axis.y,
-        p.volume,
-        p.initial_volume,
-        p.density,
-        p.mass,
-    );
 }
 
 impl State {
@@ -644,8 +610,8 @@ impl State {
             fps_frames: 0,
             render_mode: RenderMode::Particles,
             // Vortex is not on a keypress (10-15 fps against 28-38 for patterns 1
-            // and 2, see its match arm), but stays constructible through this env
-            // var for development, like `EMERGE_DEBUG_PRESSURE`.
+            // and 2, see its match arm), but stays constructible through the
+            // `EMERGE_VORTEX_DEBUG` environment variable for development.
             pattern: if std::env::var("EMERGE_VORTEX_DEBUG").is_ok() {
                 Pattern::Vortex
             } else {
@@ -735,16 +701,11 @@ impl State {
         for _ in 0..steps {
             self.sim.step_frame();
             self.frame += 1;
-            // Gated per real SIMULATION step, not per render call -- `steps`
-            // can be 0 for several consecutive render frames right after
-            // startup (the accumulator hasn't crossed `DT` of real time
-            // yet), which used to make `self.frame` sit at the same value
-            // across many renders and re-print the same "frame N" diagnostic
-            // repeatedly. Checking it here instead means it fires exactly
-            // once every 60 simulated frames, matching what the log is
-            // actually meant to sample (simulation state, not render cadence).
-            if self.frame.is_multiple_of(1) {
-                // TEMPORARY: re-verifying after cleanup, per user's direct challenge
+            // Gated per simulation step, not per render call: `steps` can be 0
+            // for several consecutive render frames right after startup (the
+            // accumulator has not crossed `DT` of real time yet), which would
+            // re-print the same frame. Fires once every 60 simulated frames.
+            if self.frame.is_multiple_of(60) {
                 log_frame_gpu(self.frame, DT, self.sim.particles(), LABELS, 1);
                 let snap = self.sim.diagnostics_snapshot();
                 println!(
@@ -755,118 +716,6 @@ impl State {
                     snap.substeps_last_step,
                     snap.cfl_number,
                 );
-                // Diagnostic: water density/volume range every frame. J is bounded
-                // by the GPU clamp [0.5,2.0], but density and volume are separate,
-                // unguarded fields on the GPU, and the MIN_J_OUTLIER/OUTLIER traces
-                // below (gated on substeps>2000 or max_speed>20) do not fire here.
-                if self.frame.is_multiple_of(30) {
-                    let particles = self.sim.particles();
-                    let (mut dmin, mut dmax, mut vmin, mut vmax) =
-                        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-                    for p in particles.iter().filter(|p| p.material_id == MAT_WATER) {
-                        dmin = dmin.min(p.density);
-                        dmax = dmax.max(p.density);
-                        vmin = vmin.min(p.volume);
-                        vmax = vmax.max(p.volume);
-                    }
-                    println!(
-                        "  DENSITY_VOLUME water: density=[{dmin:.4},{dmax:.4}] (rest={WATER_RHO_GRID:.4}) volume=[{vmin:.6},{vmax:.6}]"
-                    );
-                }
-                // TEMPORARY: regional-substepping plan's Step 0 measurement
-                // -- sparse (every 10 frames), since per-pass GPU profiling
-                // readback itself blocks and would distort the very timing
-                // being measured if done every frame.
-                if self.frame.is_multiple_of(10) {
-                    let (cfl_scan_ns, encode_ns, wait_ns, readback_ns, total_ns) =
-                        self.sim.last_cpu_timings_ns();
-                    println!(
-                        "  TIMING cfl_scan={cfl_scan_ns:.0}ns encode={encode_ns:.0}ns wait={wait_ns:.0}ns readback={readback_ns:.0}ns total={total_ns:.0}ns"
-                    );
-                    if let Some(passes) = self.sim.last_pass_timings_ns() {
-                        for (label, ns) in passes {
-                            println!("    PASS {label}: {ns:.0}ns");
-                        }
-                    }
-                }
-                // TEMPORARY: hunting the "settled fluid still burns 5000+
-                // substeps/frame" mystery -- gated on substep count, NOT
-                // speed, since the earlier speed-gated OUTLIER trace below
-                // never fires during these frames (max_speed is low, 1-2.3,
-                // while sub spikes to 5000+). Hypothesis: the acoustic-CFL
-                // term (max_c2, Tait EOS stiffness ~ ratio^(power-1)) is
-                // pinned high by ONE particle stuck at a low, unchanging J
-                // (min J was observed flat at ~0.21-0.22 across many
-                // consecutive frames in an earlier run's log, not decaying
-                // back toward 1 -- looks like a static wedge, not a
-                // transient compression wave settling).
-                if snap.substeps_last_step > 2000 {
-                    let particles = self.sim.particles();
-                    if let Some((idx, p)) = particles
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| p.material_id == MAT_WATER)
-                        .min_by(|(_, a), (_, b)| {
-                            a.deformation_gradient
-                                .determinant()
-                                .total_cmp(&b.deformation_gradient.determinant())
-                        })
-                    {
-                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_WATER);
-                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_WATER);
-                        print_particle_trace(
-                            "MIN_J_OUTLIER",
-                            idx,
-                            p,
-                            neighbors_tight,
-                            neighbors_wide,
-                        );
-                    }
-                }
-                // TEMPORARY: trace the exact outlier particle mechanism
-                if snap.max_particle_speed > 20.0 {
-                    let particles = self.sim.particles();
-                    if let Some((idx, p)) = particles
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| p.material_id == MAT_WATER)
-                        .max_by(|(_, a), (_, b)| a.v.length().total_cmp(&b.v.length()))
-                    {
-                        let neighbors_tight = self.sim.count_near(p.x, 1.5, MAT_WATER);
-                        let neighbors_wide = self.sim.count_near(p.x, 3.0, MAT_WATER);
-                        print_particle_trace("OUTLIER", idx, p, neighbors_tight, neighbors_wide);
-                        // TEMPORARY: dump the outlier's own 9-cell G2P gather
-                        // stencil directly (same base/window g2p.wgsl uses:
-                        // floor(p.x) +/- 1) to see which cell(s) actually
-                        // feed the spike, and whether their values look like
-                        // real physics or a stale/misread buffer.
-                        let grid_res = self.sim.config().grid_res;
-                        let cells = self.sim.grid_cells_blocking();
-                        let base_x = p.x.x.floor() as i32;
-                        let base_y = p.x.y.floor() as i32;
-                        for dj in -1..=1 {
-                            for di in -1..=1 {
-                                let cx = base_x + di;
-                                let cy = base_y + dj;
-                                if cx < 0
-                                    || cy < 0
-                                    || cx >= grid_res as i32
-                                    || cy >= grid_res as i32
-                                {
-                                    println!("    cell({di:+},{dj:+}) OUT_OF_BOUNDS");
-                                    continue;
-                                }
-                                let idx = ((cy as usize) * grid_res + (cx as usize)) * 4;
-                                println!(
-                                    "    cell({di:+},{dj:+}) [{cx},{cy}] mom_or_vel=({:.4},{:.4}) mass={:.6}",
-                                    cells[idx],
-                                    cells[idx + 1],
-                                    cells[idx + 2],
-                                );
-                            }
-                        }
-                    }
-                }
             }
         }
         self.fps_frames += 1;
