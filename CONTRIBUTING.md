@@ -30,9 +30,9 @@ not an implementation layer:
 src/
   matter/            particle/ (Particle, repr(C) 128 B GPU-uploadable · Grain ·
                      RodPoints · Particles SoA)
-    materials/        MaterialModel trait · registry · 14 material models ·
-                      granular/ (sand, sand_mui, cosserat, grain_contact_law,
-                      scale_contract -- grouped by active research thread)
+    materials/        MaterialModel trait · registry · SI conversions ·
+                      optical data · one folder per state of matter:
+                      solid/ · liquid/ · gas/ · granular/ · mixture/
   spacetime/          the actual solver
     solver/            Simulation · SimConfig · SpawnRegion · spatial hash ·
                        body_state (BodyState aggregation)
@@ -69,9 +69,12 @@ Feature flags: `gpu` | `render` (requires `gpu`) | `experimental`
 
 A new material requires changes in four places:
 
-### 1. `src/matter/materials/<name>.rs`
+### 1. `src/matter/materials/<state>/<name>.rs`
 
-Implement the `MaterialModel` trait:
+Put the file in the folder of the state its law describes (`solid/`,
+`liquid/`, `gas/`, `granular/` or `mixture/`; each folder's `mod.rs` says what
+belongs there), declare it in that `mod.rs`, and implement the
+`MaterialModel` trait:
 
 All methods have default implementations (an elastic-only material can override just
 `kirchhoff_stress`). The signatures below are exact, copied directly from the trait's

@@ -1,3 +1,9 @@
+//! Material models. Each constitutive law lives in the folder of the state
+//! of matter it describes: `solid`, `liquid`, `gas`, `granular`, `mixture`.
+//! The files at this level are shared by all of them: the `MaterialModel`
+//! trait and `MaterialRegistry`, parameters, SI conversions and property
+//! dispatch, optical data, the rod material, SVD and utilities.
+
 pub mod gas;
 pub mod granular;
 pub mod liquid;
