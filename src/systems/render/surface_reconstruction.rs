@@ -78,6 +78,10 @@ impl Renderer {
         );
 
         let (sx, tx, sy, ty) = self.surface_render_projection(grid_res, surface_res);
+        let free_surface_step = self.grid_reference_cell_mass
+            * free_surface_cell_step(
+                surface_res as f32 / grid_res.max(1) as f32 * self.splat_width_cells,
+            );
 
         queue.write_buffer(
             &self.surface_render_params_buf,
@@ -98,6 +102,8 @@ impl Renderer {
                 material_mass_enabled: material_mass_enabled as u32,
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
+                free_surface_step,
+                _pad: [0; 3],
             }),
         );
 
@@ -1118,6 +1124,10 @@ impl Renderer {
 
         // Identical for both phases -- they share one camera/surface_res.
         let (sx, tx, sy, ty) = self.surface_render_projection(grid_res, surface_res);
+        let free_surface_step = self.grid_reference_cell_mass
+            * free_surface_cell_step(
+                surface_res as f32 / grid_res.max(1) as f32 * self.splat_width_cells,
+            );
 
         queue.write_buffer(
             &self.surface_render_params_buf,
@@ -1134,6 +1144,8 @@ impl Renderer {
                 material_mass_enabled: 0,
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
+                free_surface_step,
+                _pad: [0; 3],
             }),
         );
         queue.write_buffer(
@@ -1151,6 +1163,8 @@ impl Renderer {
                 material_mass_enabled: 0,
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
+                free_surface_step,
+                _pad: [0; 3],
             }),
         );
 

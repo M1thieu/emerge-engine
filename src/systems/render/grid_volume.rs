@@ -5,9 +5,9 @@
 //! paths (`render_gpu`/`render_slice`) and from curvature-flow surface
 //! reconstruction.
 
-use super::Renderer;
 use super::color::write_optical_table;
 use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource};
+use super::{Renderer, free_surface_cell_step};
 
 impl Renderer {
     /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
@@ -46,7 +46,10 @@ impl Renderer {
                 mass_floor,
                 material_mass_enabled: source.material_mass_enabled as u32,
                 reference_cell_mass: self.grid_reference_cell_mass,
-                _pad2: [0.0, 0.0],
+                // The grid volume reads the physics grid itself: one cell
+                // per physics cell.
+                free_surface_step: self.grid_reference_cell_mass * free_surface_cell_step(1.0),
+                _pad2: 0.0,
             }),
         );
         queue.write_buffer(

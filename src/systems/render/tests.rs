@@ -4420,3 +4420,36 @@ fn a_cursor_reads_back_the_point_a_region_camera_drew() {
         );
     }
 }
+
+/// `free_surface_cell_step` is the quadratic B-spline's mass inside one cell
+/// centred on its peak, for the kernel `grid::kernel::axis_weights`
+/// evaluates, stretched by the splat width: checked against a numerical
+/// integral of that kernel.
+#[test]
+fn free_surface_cell_step_is_the_kernels_central_mass() {
+    // N(u) from the kernel's own weights: the centre weight within half a
+    // cell, an outer weight beyond it.
+    let n = |u: f32| {
+        let a = u.abs();
+        if a <= 0.5 {
+            crate::grid::kernel::axis_weights(a)[1]
+        } else if a < 1.5 {
+            crate::grid::kernel::axis_weights(a - 1.0)[0]
+        } else {
+            0.0
+        }
+    };
+    for splat_cells in [0.5f32, 1.0, 2.0, 3.0, 4.0] {
+        let h = 0.5 / splat_cells;
+        let steps = 20_000;
+        let du = 2.0 * h / steps as f32;
+        let integral: f32 = (0..steps).map(|i| n(-h + (i as f32 + 0.5) * du) * du).sum();
+        let step = free_surface_cell_step(splat_cells);
+        assert!(
+            (step - integral).abs() < 1.0e-4,
+            "splat width {splat_cells}: {step} against the kernel's {integral}"
+        );
+    }
+    // The physics grid's own value, `grid_volume.wgsl`'s constant.
+    assert!((free_surface_cell_step(1.0) - 2.0 / 3.0).abs() < 1.0e-6);
+}

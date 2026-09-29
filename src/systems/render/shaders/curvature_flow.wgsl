@@ -190,6 +190,14 @@ struct SurfaceRenderParams {
     // Floor on optical depth for edge color, in those same dimensionless
     // band units. Was the other half of `_pad2`.
     edge_reference_depth: f32,
+    // Steepest mass difference between neighbouring surface cells across a
+    // straight free surface, in this buffer's mass units (Rust's
+    // `free_surface_cell_step`). The Lambertian term is weighted by the
+    // density gradient against it.
+    free_surface_step: f32,
+    _pad_a: u32,
+    _pad_b: u32,
+    _pad_c: u32,
 }
 
 struct OpticalTable {
@@ -1562,15 +1570,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let edge_margin = max(render_params.mass_floor * 1.5, 1.0e-4);
     var lit = with_scattering;
     if grad_len > 1.0e-5 {
-        let normal_dir = -grad / grad_len;
         let light_dir = normalize(render_params.light_dir);
-        let diffuse_raw = clamp(dot(normal_dir, light_dir), 0.0, 1.0);
-        // Cel-shading (NPR technique) -- see `grid_volume.wgsl`'s own
-        // fs_main for the full doc. LIGHT_BANDS=8: fewer bands (4) amplify
-        // surface detail into visible posterization noise.
-        const LIGHT_BANDS: f32 = 8.0;
-        let diffuse = floor(diffuse_raw * LIGHT_BANDS) / LIGHT_BANDS;
-        let shaded = with_scattering * (0.6 + 0.4 * diffuse);
+        // Cel-shaded Lambertian base, shared with the grid-volume path
+        // (`cel_lighting.inc.wgsl`), weighted by the gradient's size so a
+        // density ripple inside a body is not shaded like its edge.
+        let shaded = with_scattering
+            * cel_lambert(grad, render_params.light_dir, render_params.free_surface_step);
 
         let wave_len = length(wave_grad);
         var wave_highlight = vec3<f32>(0.0, 0.0, 0.0);
@@ -1784,14 +1789,9 @@ fn shade_phase(
     let grad_len = length(grad);
     var lit = with_scattering;
     if grad_len > 1.0e-5 {
-        let normal_dir = -grad / grad_len;
         let light_dir = normalize(p.light_dir);
-        let diffuse_raw = clamp(dot(normal_dir, light_dir), 0.0, 1.0);
-        // Cel-shading (NPR technique) -- see `grid_volume.wgsl`'s own
-        // fs_main for the full doc.
-        const LIGHT_BANDS: f32 = 8.0;
-        let diffuse = floor(diffuse_raw * LIGHT_BANDS) / LIGHT_BANDS;
-        let shaded = with_scattering * (0.6 + 0.4 * diffuse);
+        // Same shared cel-shaded base as `fs_main`.
+        let shaded = with_scattering * cel_lambert(grad, p.light_dir, p.free_surface_step);
 
         // Wave motion as a separate, small, CONTINUOUS highlight, NOT fed
         // into the quantized `diffuse` above -- same wave/light-band

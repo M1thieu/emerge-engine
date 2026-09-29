@@ -21,8 +21,9 @@ const SNAPSHOT_SHADER: &str = include_str!("shaders/snapshot_positions.wgsl");
 
 // `blackbody.inc.wgsl` is prepended to every shader that renders thermal
 // emission, so the particle, grid and surface paths share one implementation
-// of `energy::radiation`'s colour instead of three drifting copies.
-// `concat!` over `include_str!` keeps these `const`, with no runtime string
+// of `energy::radiation`'s colour instead of three drifting copies, and
+// `cel_lighting.inc.wgsl` gives the grid and surface paths one copy of their
+// cel-shaded lighting. `concat!` over `include_str!` keeps these `const`, with no runtime string
 // work -- the same shared-source idea as the compute side's `.inc.wgsl`
 // files, which concatenate at pipeline build time instead.
 const PREP_SHADER: &str = concat!(
@@ -33,11 +34,13 @@ const PREP_SHADER: &str = concat!(
 const GRID_VOLUME_SHADER: &str = concat!(
     include_str!("shaders/blackbody.inc.wgsl"),
     include_str!("shaders/radiative_transfer.inc.wgsl"),
+    include_str!("shaders/cel_lighting.inc.wgsl"),
     include_str!("shaders/grid_volume.wgsl")
 );
 const CURVATURE_FLOW_SHADER: &str = concat!(
     include_str!("shaders/blackbody.inc.wgsl"),
     include_str!("shaders/radiative_transfer.inc.wgsl"),
+    include_str!("shaders/cel_lighting.inc.wgsl"),
     include_str!("shaders/curvature_flow.wgsl")
 );
 /// Default thermal-emission exposure anchor, in kelvin -- the temperature
@@ -122,6 +125,29 @@ const BOUNDARY_TRUNCATION_FACTOR: f32 = 1.0;
 /// turn-on threshold -- not a flicker, a guaranteed miss. `0.07` leaves
 /// headroom on both sides of the ~0.14 ceiling.
 const SURFACE_MASS_FLOOR_FRACTION: f32 = 0.07;
+
+/// The largest mass difference, as a fraction of a full cell, between two
+/// neighbouring cells across a straight free surface, for a splat kernel
+/// spread over `splat_cells` cells per physics cell.
+///
+/// Across such a surface the density follows the cumulative of the
+/// quadratic B-spline (`grid::kernel::axis_weights`), stretched by
+/// `splat_cells`, so neighbouring cells differ by at most the kernel's mass
+/// inside one cell centred on its peak: the integral of the B-spline over
+/// `[-h, h]`, `h = 1 / (2 * splat_cells)`. At 1 (the physics grid) that is
+/// 2/3, what the grid-volume path uses. Curvature flow moves
+/// level sets by their curvature, zero along a straight edge, so the
+/// surface pass does not lower this bound there.
+fn free_surface_cell_step(splat_cells: f32) -> f32 {
+    let h = 0.5 / splat_cells.max(1.0e-3);
+    if h <= 0.5 {
+        2.0 * (0.75 * h - h * h * h / 3.0)
+    } else if h < 1.5 {
+        2.0 / 3.0 + (1.0 - (1.5 - h).powi(3)) / 3.0
+    } else {
+        1.0
+    }
+}
 /// Default [`Renderer::set_edge_reference_depth`].
 ///
 /// The shader's doc gives a LOWER bound of one interior depth-band step

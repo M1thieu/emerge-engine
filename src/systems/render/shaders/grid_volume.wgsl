@@ -35,7 +35,10 @@ struct GridVolumeParams {
     mass_floor: f32,
     material_mass_enabled: u32,
     reference_cell_mass: f32,
-    _pad2: vec2<f32>,
+    // Steepest mass difference between neighbouring cells across a straight
+    // free surface (Rust's `free_surface_cell_step`), for `cel_lambert`.
+    free_surface_step: f32,
+    _pad2: f32,
 }
 
 struct OpticalTable {
@@ -397,63 +400,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // sensitivity to small input noise, at the cost of a slightly softer
     // edge overall.
     //
-    // Surface normal from the finite-difference gradient of the bilinear density
-    // corners (standard volume-rendering technique). Gradient points toward
-    // increasing mass; outward normal is its negative. Lambertian shading from
-    // `light_dir`.
+    // Density gradient from the bilinear corners (standard volume-rendering
+    // technique), pointing toward increasing mass; `cel_lambert`
+    // (`cel_lighting.inc.wgsl`) shades it, weighted by its size against
+    // `free_surface_step` (Rust's `free_surface_cell_step` on the physics
+    // grid).
+    //
+    // No specular lobe here, deliberately: a continuous BRDF highlight
+    // reads as "lit 3D surface," the opposite of the cel-shaded flat-2D
+    // look -- flat cel-shaded 2D games don't render one on ordinary
+    // terrain/water. `OpticalTable::specular` (R0) stays wired for
+    // `prep_instances.wgsl`'s ByPhysics particle mode, which has no
+    // gradient/normal to build a lobe from and is unrelated to this path.
     let grad = vec2<f32>(
         ((m10 - m00) + (m11 - m01)) * 0.5,
         ((m01 - m00) + (m11 - m10)) * 0.5,
     );
-    let grad_len = length(grad);
-    var lit = with_scattering;
-    if grad_len > 1.0e-5 {
-        let normal_dir = -grad / grad_len;
-        let light_dir = normalize(params.light_dir);
-        let diffuse_raw = clamp(dot(normal_dir, light_dir), 0.0, 1.0);
-        // Cel-shading (toon-shading NPR technique): quantize N.L into a
-        // handful of discrete bands instead of a smooth continuous gradient,
-        // to match this engine's non-photoreal 2D style target instead of
-        // reading as photoreal 3D lighting -- still driven by the real
-        // gradient/normal data, not a fake flat color.
-        //
-        // LIGHT_BANDS=8: fewer bands (4) amplify a fluid surface's genuine
-        // small-scale curvature detail into visible posterization noise;
-        // 8 stays clean while keeping the stylization.
-        const LIGHT_BANDS: f32 = 8.0;
-        let diffuse = floor(diffuse_raw * LIGHT_BANDS) / LIGHT_BANDS;
-        // `normal_dir` keeps only the gradient's direction, so inside a
-        // uniform body a sub-percent P2G ripple would get the same full
-        // shading as a real edge, pointing wherever the ripple does. The
-        // Lambertian term is weighted by the gradient's size against the
-        // steepest a free surface can give: there, node mass follows the
-        // cumulative of P2G's quadratic B-spline (`kernel::axis_weights`),
-        // so two nodes a cell apart differ by at most the kernel's mass
-        // within one cell of its peak, the integral of 3/4 - u^2 over
-        // [-1/2, 1/2] = 2/3 of a full cell. Full shading at an edge, next
-        // to none for a ripple.
-        const FREE_SURFACE_CELL_STEP: f32 = 2.0 / 3.0;
-        let surface_weight = clamp(
-            grad_len / max(FREE_SURFACE_CELL_STEP * params.reference_cell_mass, 1.0e-12),
-            0.0,
-            1.0,
-        );
-        // Ambient floor (0.6) plus a Lambertian term (0.4*diffuse) keeps the
-        // shape visible on the unlit side while still shading from the real
-        // gradient.
-        //
-        // No specular lobe here, deliberately: a continuous BRDF highlight
-        // reads as "lit 3D surface," the opposite of the cel-shaded flat-2D
-        // look above -- flat cel-shaded 2D games don't render one on
-        // ordinary terrain/water. `OpticalTable::specular` (R0) stays wired
-        // for `prep_instances.wgsl`'s ByPhysics particle mode, which has no
-        // gradient/normal to build a lobe from and is unrelated to this path.
-        lit = clamp(
-            with_scattering * mix(1.0, 0.6 + 0.4 * diffuse, surface_weight),
-            vec3(0.0),
-            vec3(1.0),
-        );
-    }
+    let lit = clamp(
+        with_scattering * cel_lambert(grad, params.light_dir, params.free_surface_step),
+        vec3(0.0),
+        vec3(1.0),
+    );
 
     // Additive blackbody glow on top of the (possibly cel-shaded) lit color --
     // same additive placement `prep_instances.wgsl`'s ByPhysics mode uses

@@ -25,7 +25,10 @@ pub(super) struct GridVolumeParams {
     pub(super) material_mass_enabled: u32,
     /// Full-cell mass used to form the dimensionless density ratio rho/rho0.
     pub(super) reference_cell_mass: f32,
-    pub(super) _pad2: [f32; 2],
+    /// Steepest mass difference between neighbouring cells across a straight
+    /// free surface (see `free_surface_cell_step`), for `cel_lambert`.
+    pub(super) free_surface_step: f32,
+    pub(super) _pad2: f32,
 }
 const _: () = assert!(mem::size_of::<GridVolumeParams>() == 48);
 
@@ -308,8 +311,15 @@ pub(super) struct SurfaceRenderParams {
     /// units as the quantizer above (see `Renderer::set_edge_reference_depth`).
     /// Was the other half of `_pad2`.
     pub(super) edge_reference_depth: f32,
+    /// Steepest mass difference between neighbouring surface cells across a
+    /// straight free surface, in the same units as the surface's own mass
+    /// (see `free_surface_cell_step`). `fs_main` and `shade_phase` weight
+    /// their Lambertian term by the density gradient against it, so a
+    /// density ripple inside a body is not shaded like an edge.
+    pub(super) free_surface_step: f32,
+    pub(super) _pad: [u32; 3],
 }
-const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 48);
+const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 64);
 
 /// Bundles `render_surface_reconstruction`'s buffer/scene args -- same real
 /// precedent as `GridVolumeSource` above (a struct instead of a suppressed
