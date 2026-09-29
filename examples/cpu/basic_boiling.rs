@@ -4,6 +4,8 @@ extern crate emerge_engine as emerge;
 mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 /// What boiling does to room.
 ///
@@ -112,13 +114,14 @@ mod gui_common;
 /// not against realism: the substeps this water's own sound speed needs
 /// per simulated second are the same either way.
 ///
-///   LMB push  RMB pull  V vapour view  R reset  Q quit
+///   LMB push  RMB pull  V vapour view  G render mode  R reset  Q quit
 ///   cargo run --release --example basic_boiling --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     BoilingMixtureMaterial, CavitatingEosTable, SimConfig, Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Mat2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -133,6 +136,15 @@ const FLOOR_CELLS: f32 = 3.0;
 const COLUMN_CELLS: IVec2 = IVec2::new(10, 10);
 const COLUMN_X: [f32; 3] = [14.0, 32.0, 50.0];
 const COLUMN_LABEL: [&str; 3] = ["left", "mid", "right"];
+/// Particle pitch of the unboiled liquid, in grid cells; a boiled column is
+/// laid down wider (see `make_sim`).
+const LIQUID_SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid: 4x, as
+/// `basic_cavitation.rs` at the same grid and spacing. Measured on an
+/// integrated Radeon (Vulkan): 7 to 8 ms per render with the columns at
+/// rest, 14 to 35 ms once a hard boil throws the water across the whole
+/// tank.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 
 /// Simulated time advanced per rendered frame, live-adjustable in the
 /// panel. A viewing choice, not a physics one: every constant stays real
@@ -206,12 +218,11 @@ fn make_sim(
     let material = make_material();
     // Every particle carries the liquid's own mass whatever its column: the
     // quality changes how far apart they sit, not how heavy they are.
-    let liquid_spacing = 0.5_f32;
-    let particle_mass = RHO_L_KG_M3 * (liquid_spacing * DX_M).powi(2);
+    let particle_mass = RHO_L_KG_M3 * (LIQUID_SPACING * DX_M).powi(2);
     let spawn = |slot: usize| {
         let stretch = material.j_eq(QUALITY[slot]).sqrt();
         SpawnRegion {
-            spacing: liquid_spacing * stretch,
+            spacing: LIQUID_SPACING * stretch,
             box_size: IVec2::new(
                 (COLUMN_CELLS.x as f32 * stretch).round() as i32,
                 (COLUMN_CELLS.y as f32 * stretch).round() as i32,
@@ -318,6 +329,11 @@ struct State {
     last_fps: f32,
     /// Paints each particle by how much of it has boiled.
     show_vapour: bool,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -330,6 +346,15 @@ impl State {
         let mut renderer = Renderer::new(&gfx.device, sim.particles().len(), gfx.format);
         renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell of the unboiled liquid, which holds
+        // 1/LIQUID_SPACING^2 particles; a boiled column holds fewer and
+        // reads thinner.
+        renderer.set_grid_reference_cell_mass(
+            sim.particles().mass[0] / (LIQUID_SPACING * LIQUID_SPACING),
+        );
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&gfx.device, GRID);
 
         println!(
             "basic_boiling: {} particles, 3 columns of one water, same mass per particle",
@@ -339,7 +364,7 @@ impl State {
             "  rho_l={RHO_L_KG_M3} kg/m3, rho_v={RHO_V_KG_M3:.1} kg/m3 (a declared 6:1, not steam's real 1673:1), c_l={C_L_M_S} m/s"
         );
         println!("  only the boiled fraction differs: {QUALITY:?}");
-        println!("  LMB push  RMB pull  V vapour view  R reset  Q quit");
+        println!("  LMB push  RMB pull  V vapour view  G render mode  R reset  Q quit");
 
         Self {
             gfx,
@@ -360,6 +385,8 @@ impl State {
             fps_frames: 0,
             last_fps: 0.0,
             show_vapour: false,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -465,13 +492,45 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render(
-            &self.gfx.device,
-            &self.gfx.queue,
-            self.sim.particles(),
-            &view,
-            true,
-        );
+        match self.render_mode {
+            RenderMode::Particles => self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                self.sim.particles(),
+                &view,
+                true,
+            ),
+            RenderMode::GridVolume => {
+                self.render_bridge.upload_grid(
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                    self.sim.grid(),
+                );
+                self.renderer.render_grid_volume(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                );
+                // One material, so one optics slot colours the whole surface.
+                self.renderer.render_surface_reconstruction(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge
+                        .surface_source(0, false, self.step_seconds),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let fps = self.last_fps;
         let mut gravity_fraction = self.gravity_fraction;
@@ -532,7 +591,7 @@ impl State {
                     ui.separator();
                     ui.label("The more a column has boiled, the softer it is.");
                     ui.label("V = vapour view: how much of each particle boiled.");
-                    ui.label("LMB push  RMB pull  V vapour  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  V vapour  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -605,6 +664,10 @@ impl ApplicationHandler for App {
                     KeyCode::KeyR if pressed => {
                         s.reset();
                         println!("reset");
+                    }
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
                     }
                     KeyCode::KeyV if pressed => {
                         s.show_vapour = !s.show_vapour;
