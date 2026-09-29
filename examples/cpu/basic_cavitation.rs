@@ -4,6 +4,8 @@ extern crate emerge_engine as emerge;
 mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 /// Why hot water tears under a gentler pull.
 ///
@@ -97,13 +99,15 @@ mod gui_common;
 /// water per second of wall clock while being pulled, 15 times slower than
 /// life, and 0.116 at rest.
 ///
-///   LMB push  RMB pull  P grip and pull  V pressure view  R reset  Q quit
+///   LMB push  RMB pull  P grip and pull  V pressure view  G render mode
+///   R reset  Q quit
 ///   cargo run --release --example basic_cavitation --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     CavitatingEosTable, CavitatingFluidMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -118,6 +122,13 @@ const COLUMN_CELLS: IVec2 = IVec2::new(10, 10);
 const COLUMN_X: [f32; 3] = [14.0, 32.0, 50.0];
 const COLUMN_Y: f32 = 32.0;
 const COLUMN_LABEL: [&str; 3] = ["left", "mid", "right"];
+/// Particle pitch in grid cells.
+const SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid: 4x, as
+/// `basic_fluids.rs` at the same grid and spacing. Measured on an integrated
+/// Radeon (Vulkan), at rest and under the grip: 3.9 to 5.3 ms per render at
+/// 2x, 5.5 to 5.8 ms at 4x, so the finer grid costs little here.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 
 /// Simulated time advanced per rendered frame, live-adjustable in the
 /// panel. A viewing choice, not a physics one: every constant stays real
@@ -184,9 +195,9 @@ fn make_sim(
     let config = make_config(gravity_fraction, step_seconds);
     let material =
         CavitatingFluidMaterial::new(make_table(), DX_M, WATER_VISCOSITY_PA_S, J_MIN, J_MAX);
-    let particle_mass = RHO_L_KG_M3 * (0.5 * DX_M).powi(2);
+    let particle_mass = RHO_L_KG_M3 * (SPACING * DX_M).powi(2);
     let spawn = |slot: usize| SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: COLUMN_CELLS,
         box_center: Vec2::new(COLUMN_X[slot], COLUMN_Y),
         material_id: 0,
@@ -267,6 +278,11 @@ struct State {
     last_fps: f32,
     /// Paints each particle by how close it is to its own floor.
     show_pressure: bool,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -279,6 +295,11 @@ impl State {
         let mut renderer = Renderer::new(&gfx.device, sim.particles().len(), gfx.format);
         renderer.set_camera(&gfx.queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell, which holds 1/SPACING^2 particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&gfx.device, GRID);
 
         println!(
             "basic_cavitation: {} particles, 3 columns of one water, only the temperature differs",
@@ -291,7 +312,9 @@ impl State {
                 eos.p_v_gauge_pa
             );
         }
-        println!("  LMB push  RMB pull  P grip and pull  V pressure view  R reset  Q quit");
+        println!(
+            "  LMB push  RMB pull  P grip and pull  V pressure view  G render mode  R reset  Q quit"
+        );
 
         Self {
             gfx,
@@ -314,6 +337,8 @@ impl State {
             fps_frames: 0,
             last_fps: 0.0,
             show_pressure: false,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -431,15 +456,48 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render(
-            &self.gfx.device,
-            &self.gfx.queue,
-            self.sim.particles(),
-            &view,
-            true,
-        );
+        match self.render_mode {
+            RenderMode::Particles => self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                self.sim.particles(),
+                &view,
+                true,
+            ),
+            RenderMode::GridVolume => {
+                self.render_bridge.upload_grid(
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                    self.sim.grid(),
+                );
+                self.renderer.render_grid_volume(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                );
+                // One material, so one optics slot colours the whole surface.
+                self.renderer.render_surface_reconstruction(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge
+                        .surface_source(0, false, self.step_seconds),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let mut gravity_fraction = self.gravity_fraction;
         let mut temperature_shift = self.temperature_shift;
         let mut step_seconds = self.step_seconds;
@@ -464,6 +522,7 @@ impl State {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("fps={fps:.0}  particles={n_particles}"));
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
                     ui.label(format!(
                         "{:.2} ms of physics per frame",
                         step_seconds * 1000.0
@@ -513,7 +572,7 @@ impl State {
                     ui.label("Pull strength:");
                     ui.add(egui::Slider::new(&mut pull_strength, 0.0..=15.0));
                     ui.separator();
-                    ui.label("LMB push  RMB pull  P grip  V pressure  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  P grip  V pressure  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -600,8 +659,17 @@ impl ApplicationHandler for App {
                         s.reset();
                         println!("reset");
                     }
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::KeyV if pressed => {
                         s.show_pressure = !s.show_pressure;
+                        // The pressure colouring is drawn on the particle
+                        // splats.
+                        if s.show_pressure {
+                            s.render_mode = RenderMode::Particles;
+                        }
                         s.renderer.set_color_mode(if s.show_pressure {
                             ColorMode::ByStress
                         } else {
