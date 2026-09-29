@@ -212,7 +212,7 @@ impl Grid {
         // small-but-nonzero-grip-mass nodes). Everything above this floor falls through to
         // the "no confident normal" branch below instead, which does correct,
         // uncontaminated per-field separation without a Coulomb correction.
-        const MIN_MASS_FRACTION: f32 = 1.0e-6;
+        const MIN_NODE_MASS: f32 = 1.0e-6;
         // Frictional dissipation found here is collected and written after the
         // loop: the loop already borrows `contact_dirty` and `contact_cells`.
         // Empty whenever nothing rubs, so a contact-free scene allocates nothing.
@@ -232,7 +232,7 @@ impl Grid {
             let grip_mass = contact.grip_mass;
             let grip_momentum = contact.grip_momentum;
             let rest_mass = total.mass - grip_mass;
-            if grip_mass <= MIN_MASS_FRACTION || rest_mass <= MIN_MASS_FRACTION {
+            if grip_mass <= MIN_NODE_MASS || rest_mass <= MIN_NODE_MASS {
                 // No real second field at this node (e.g. a grip particle's kernel edge
                 // with negligible weight) -- both sides just read the ordinary total
                 // field, identical to no contact resolution ever happening here.

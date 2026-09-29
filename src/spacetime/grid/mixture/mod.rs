@@ -129,7 +129,8 @@ impl Grid {
         cell_width: f32,
         pressure_iterations: u32,
     ) {
-        const MIN_MASS_FRACTION: f32 = 1.0e-6;
+        // Division guard: a phase with less node mass than this counts as absent.
+        const MIN_NODE_MASS: f32 = 1.0e-6;
         if drag_coefficient <= 0.0 {
             // Disabled: every phase just reads the ordinary total velocity --
             // matches every other opt-in system's "true default is a no-op".
@@ -154,7 +155,7 @@ impl Grid {
             let mut present = [0usize; MAX_MIXTURE_PHASES];
             let mut n_present = 0usize;
             for p in 0..MAX_MIXTURE_PHASES {
-                if cell.mass[p] > MIN_MASS_FRACTION {
+                if cell.mass[p] > MIN_NODE_MASS {
                     present[n_present] = p;
                     n_present += 1;
                 }

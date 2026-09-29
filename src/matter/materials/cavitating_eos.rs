@@ -752,6 +752,9 @@ fn solve_mixture_band(
          the reference densities, do not force a solve"
     );
 
+    // The tolerance sits under f32 resolution at these magnitudes, so the
+    // bisection runs to machine precision within `MAX_ITERATIONS` (run only
+    // when parameters or the temperature table are built).
     const MAX_ITERATIONS: u32 = 200;
     const TOLERANCE: f32 = 1.0e-9;
     for _ in 0..MAX_ITERATIONS {
@@ -923,6 +926,8 @@ fn t_liquid_closure_max(inputs: EosBranchInputs, t_min_k: f32, t_max_k: f32) -> 
     );
     let mut lo = t_min_k;
     let mut hi = t_max_k;
+    // 0.1 mK, far finer than the closure's accuracy: about 20 halvings of a
+    // 100 K bracket, well inside `MAX_ITERATIONS`.
     const MAX_ITERATIONS: u32 = 60;
     const TOLERANCE_K: f32 = 1.0e-4;
     for _ in 0..MAX_ITERATIONS {
@@ -1302,8 +1307,7 @@ impl CavitatingEosTable {
 mod tests {
     use super::*;
     use crate::energy::thermodynamics::water_saturation::water_saturation_pressure_pa;
-
-    const STANDARD_ATMOSPHERE_PA: f32 = 101_325.0;
+    use crate::materials::gas::STANDARD_ATMOSPHERE_PA;
 
     /// Test configuration: `rho_l_ref` water's rest density, `c_l` this
     /// engine's `WATER_C_REF_M_S` (`phase_states_gui.rs`), `gamma_l` 7.0

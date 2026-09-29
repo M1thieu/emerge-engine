@@ -111,11 +111,11 @@ use super::solid::{FaceWeights, box_container, face_weights, sample_centres, sam
 use super::transfer::{faces_to_particles, particles_to_faces};
 use super::{ProjectionSettings, project, travel_limited_dt};
 use crate::diagnostics::{OCCUPANCY_BANDS, scene_map};
+use crate::fields::EARTH_GRAVITY_M_S2;
 use crate::materials::utils::advance_log_volume_ratio;
 use crate::particle::{Particle, Particles};
 use crate::solver::LcgRng;
 
-const EARTH_GRAVITY: f32 = 9.81;
 const FRAME: f32 = 1.0 / 60.0;
 /// The fluid material's own J bounds (`NewtonianFluidMaterial::update_particle`).
 const J_BOUNDS: (f32, f32) = (0.5, 2.0);
@@ -186,7 +186,7 @@ impl Scene {
         Self {
             layout,
             cell_m,
-            gravity: Vec2::new(0.0, -g_fraction * EARTH_GRAVITY / cell_m),
+            gravity: Vec2::new(0.0, -g_fraction * EARTH_GRAVITY_M_S2 / cell_m),
             tank,
             weights: face_weights(&layout, &corners),
             corners,

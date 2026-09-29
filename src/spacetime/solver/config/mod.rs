@@ -490,7 +490,7 @@ impl SimConfig {
     /// * `dt`          -- frame time step in simulation seconds (e.g. `0.05`)
     ///
     /// # Derived values
-    /// `gravity_solver = 9.81 / cell_m` cells/s² (downward, −Y).
+    /// `gravity_solver = EARTH_GRAVITY_M_S2 / cell_m` cells/s² (downward, −Y).
     ///
     /// # Example
     /// ```rust,no_run
@@ -500,9 +500,9 @@ impl SimConfig {
     /// let config = SimConfig::earth(64, 0.01, 0.05);
     /// ```
     pub fn earth(grid_res: usize, cell_m: f32, dt: f32) -> Self {
-        // g [cells/s²] = 9.81 [m/s²] / cell_m [m/cell]
-        // Derived from v += gravity * sub_dt where sub_dt is in real seconds.
-        let g_solver = 9.81 / cell_m;
+        // g [cells/s²] = g [m/s²] / cell_m [m/cell], since v += gravity * sub_dt
+        // with sub_dt in seconds.
+        let g_solver = crate::fields::EARTH_GRAVITY_M_S2 / cell_m;
         Self {
             dx_meters: cell_m,
             ..Self::standard(grid_res, dt, Vec2::new(0.0, -g_solver))

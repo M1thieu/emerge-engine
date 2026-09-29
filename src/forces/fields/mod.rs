@@ -32,5 +32,5 @@ pub use drag::{LinearDragField, SpatialDragField};
 pub use em::UniformElectricField;
 pub use force_field::Field;
 pub use grain_field::GrainField;
-pub use gravity::GravityWellField;
+pub use gravity::{EARTH_GRAVITY_M_S2, GravityWellField};
 pub use n_body::NBodyGravityField;

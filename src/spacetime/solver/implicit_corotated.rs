@@ -64,15 +64,17 @@ use crate::materials::utils::{
 use crate::materials::utils::{corotated_elastic_stress, corotated_elastic_stress_jvp};
 use crate::transfer::{G2PParams, gather_grid_to_particles};
 
-/// Max Newton iterations and relative tolerance: the values of
+/// Max Newton iterations and relative tolerance: the values of the probe
 /// `stage3_dp_multi_particle_real_wall_clock_speedup_vs_real_explicit` at
 /// basic_sand's scale.
 const MAX_NEWTON_ITERS: usize = 150;
+/// Newton converges once the residual falls below this fraction of
+/// `max(r0_norm, |ext_force|)` (see `newton_solve`).
+const RELATIVE_TOLERANCE: f32 = 1.0e-3;
 /// `steihaug_cg`'s own iteration budget, separate from `MAX_NEWTON_ITERS`:
 /// the outer Newton loop is expensive, the inner matrix-free CG cheap, and
 /// sharing one budget starved CG on basic_sand-scale problems.
 const MAX_CG_ITERS: usize = 400;
-const RELATIVE_TOLERANCE: f32 = 1.0e-3;
 /// Line-search admissibility floor on `det(F)` -- see `ImplicitProblem::
 /// min_deformed_j`'s doc. Comfortably above `corotated_elastic_
 /// stress`'s `MIN_J=1e-6` hard-zero clamp (that discontinuity is exactly
@@ -795,6 +797,9 @@ impl ImplicitProblem {
         let ext_force_norm = self.free_mass_normalized_norm(&self.ext_force);
         let scale = r0_norm.max(ext_force_norm).max(1.0e-12);
 
+        // Trust-region radius cap and give-up floor: 1e-12 is the low end of
+        // the step window measured to improve the residual (see below); 1e8
+        // only keeps repeated doubling finite.
         const RADIUS_MAX: f32 = 1.0e8;
         const RADIUS_MIN: f32 = 1.0e-12;
         const MAX_RADIUS_RETRIES: usize = 80;

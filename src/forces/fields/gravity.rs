@@ -17,6 +17,11 @@ use super::cutoff::smooth_cutoff;
 use crate::fields::{FADE_ONSET_RATIO, Field};
 use crate::particle::Particles;
 
+/// Earth's surface gravitational acceleration in m/s², the value
+/// `SimConfig::earth` converts to grid units (standard gravity, 9.80665 m/s²,
+/// to three significant figures).
+pub const EARTH_GRAVITY_M_S2: f32 = 9.81;
+
 /// Gravitational acceleration from one or more point-mass sources.
 ///
 /// Intended for macro-scale bodies (celestial bodies, large terrain features) that

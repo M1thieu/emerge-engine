@@ -99,6 +99,7 @@ impl Grid {
         cell_width: f32,
         pressure_iterations: u32,
     ) {
+        // Division guard on per-phase node mass (as `MIN_NODE_MASS` in the drag solve).
         const MIN_MASS: f32 = 1.0e-6;
         let h = cell_width.max(1.0e-6);
 

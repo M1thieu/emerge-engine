@@ -46,6 +46,7 @@ pub fn position_resolution(
     velocities: impl IntoIterator<Item = Vec2>,
     dt: f32,
 ) -> PositionResolution {
+    // In half-ulps: see `PositionResolution::coarse`.
     const COARSE: f32 = 20.0;
     let (mut moving, mut frozen, mut lost, mut coarse) = (0usize, 0usize, 0usize, 0usize);
     let (mut total, mut erased) = (0.0f64, 0.0f64);

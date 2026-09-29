@@ -486,6 +486,8 @@ impl MaterialModel for NewtonianFluidMaterial {
         material_cfl: f32,
         viscous_cfl: f32,
     ) -> f32 {
+        // Floor on density / rest_density: keeps `ratio.powf(eos_power - 1.0)`
+        // finite for `eos_power < 1` at a vanishing density.
         const MIN_DENSITY_RATIO: f32 = 1.0e-6;
         let density = density.max(self.min_density);
         let ratio = (density / self.rest_density.max(self.min_density)).max(MIN_DENSITY_RATIO);

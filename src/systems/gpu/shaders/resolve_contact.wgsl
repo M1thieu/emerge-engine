@@ -72,7 +72,8 @@ const NUM_BLOCKS: u32 = 256u;
 // grid_update.wgsl's BLOCK_THREADS_PER_DIM (see its doc); the grid-stride loops below
 // cover larger blocks.
 override BLOCK_THREADS_PER_DIM: u32 = 16u;
-const MIN_MASS_FRACTION: f32 = 1.0e-6;
+// Division guard on grip/rest node mass, the value of the CPU `resolve_contact`.
+const MIN_NODE_MASS: f32 = 1.0e-6;
 
 @group(0) @binding(1)  var<storage, read_write> grid:                    array<Cell>;
 @group(0) @binding(3)  var<uniform>             step_params:             StepParams;
@@ -402,7 +403,7 @@ fn resolve_cell(cx: u32, cy: u32, res: u32) {
     resolved_grip_v[idx] = total.momentum;
     resolved_rest_v[idx] = total.momentum;
 
-    if grip_mass <= MIN_MASS_FRACTION || rest_mass <= MIN_MASS_FRACTION {
+    if grip_mass <= MIN_NODE_MASS || rest_mass <= MIN_NODE_MASS {
         return;
     }
 
