@@ -4,6 +4,8 @@ extern crate emerge_engine as emerge;
 mod cursor_traction;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 /// The slump test: why ketchup stays in the bottle.
 ///
@@ -149,9 +151,10 @@ mod gui_common;
 #[path = "bingham_slump_scene.rs"]
 mod bingham_slump_scene;
 use bingham_slump_scene::*;
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{BinghamFluidMaterial, MaterialModel, Simulation};
 use glam::Vec2;
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -313,6 +316,11 @@ struct State {
     view: (Vec2, Vec2),
     /// Whether each column's collapse is over, for its reading.
     watches: [SlumpWatch; 3],
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -334,6 +342,18 @@ impl State {
         // Optical coefficients read straight off the materials, so nothing
         // about the colour is typed into this file.
         let declared = renderer.adopt_material_optics(&gfx.queue, sim.materials());
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell, which holds 1/SPACING^2 of this scene's
+        // particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        // Surface grid at 2x the physics grid, one surface cell per particle
+        // footprint at this spacing. The surface covers the whole 160-cell
+        // domain, so its cost dominates the frame: measured on an integrated
+        // Radeon (Vulkan) at t = 0.6 s, 11 ms per render at 2x, 26 ms at 3x,
+        // 39 ms at 4x (the 4x of `basic_fluids.rs`, whose grid is 64), for
+        // edges only slightly finer.
+        renderer.set_surface_res_multiplier(2);
+        let render_bridge = CpuRenderBridge::new(&gfx.device, GRID);
 
         println!(
             "basic_bingham: {} particles, 3 columns, {declared} carrying a measured absorption spectrum",
@@ -343,7 +363,7 @@ impl State {
             "  same rho={RHO_KG_M3} kg/m3, eta={ETA_PA_S} Pa.s, K={:.0} Pa -- only tau_0 differs: {YIELD_STRESS_PA:?} Pa",
             bulk_modulus_pa(),
         );
-        println!("  LMB push  RMB pull  V shear / own yield  R reset  Q quit");
+        println!("  LMB push  RMB pull  G render mode  V shear / own yield  R reset  Q quit");
 
         Self {
             gfx,
@@ -365,6 +385,8 @@ impl State {
             show_stress: false,
             view,
             watches: Default::default(),
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -470,15 +492,49 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render(
-            &self.gfx.device,
-            &self.gfx.queue,
-            self.sim.particles(),
-            &view,
-            true,
-        );
+        match self.render_mode {
+            RenderMode::Particles => self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                self.sim.particles(),
+                &view,
+                true,
+            ),
+            RenderMode::GridVolume => {
+                self.render_bridge.upload_grid(
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                    self.sim.grid(),
+                );
+                self.renderer.render_grid_volume(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: each column keeps its own optics
+                // slot where the surfaces blend.
+                self.renderer.render_surface_reconstruction(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge
+                        .surface_source(0, true, self.step_seconds),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let mut gravity_fraction = self.gravity_fraction;
         let mut yield_scale = self.yield_scale;
         let mut step_seconds = self.step_seconds;
@@ -509,6 +565,7 @@ impl State {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("fps={fps:.0}  particles={n_particles}"));
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
                     // The slow-motion factor is computed from the fps this
                     // run is ACTUALLY reaching, not from an assumed 60: the
                     // label used to divide by 60 while the line above it
@@ -651,8 +708,16 @@ impl ApplicationHandler for App {
                         s.reset();
                         println!("reset");
                     }
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::KeyV if pressed => {
                         s.show_stress = !s.show_stress;
+                        // The shear colouring is drawn on the particle splats.
+                        if s.show_stress {
+                            s.render_mode = RenderMode::Particles;
+                        }
                         s.renderer.set_color_mode(if s.show_stress {
                             ColorMode::ByStress
                         } else {

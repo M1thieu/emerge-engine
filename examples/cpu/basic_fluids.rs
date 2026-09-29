@@ -1,5 +1,7 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 #[path = "../gui_common/scripted.rs"]
 mod scripted;
 
@@ -40,24 +42,13 @@ use emerge::{
     Simulation, SlipBoundary, SpawnRegion, WithLatentHeat,
 };
 use glam::{IVec2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
-
-/// The three rendering paths this demo can show, cycled with G, in the modes and
-/// order of `basic_fluids_gpu.rs`. That demo renders from GPU-resident buffers
-/// (`GpuSimulation::grid_buffer()`/`particle_buffer()`); the CPU solver has none, so
-/// `render_bridge` (`CpuRenderBridge`) rebuilds and uploads them each frame one of
-/// the GPU-read modes is shown.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RenderMode {
-    Particles,
-    GridVolume,
-    Surface,
-}
 
 // No foam/spray (Ihmsen-simplified trapped-air potential with Spray/Foam secondary
 // particles): its render and perf cost is not worth carrying while the core
@@ -320,7 +311,11 @@ struct State {
     // the per-step cost varies, since the renderer draws the last completed step.
     prev_x: Vec<Vec2>,
     last_instant: std::time::Instant,
+    /// Which render path draws the frame, cycled with G, in the order of
+    /// `basic_fluids_gpu.rs`.
     render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read (the CPU solver
+    /// keeps none), rebuilt on the frames those modes are shown.
     render_bridge: CpuRenderBridge,
 }
 
@@ -904,11 +899,7 @@ impl State {
             .filter(|p| p.material_id == MAT_ICE)
             .count();
         let mut reset = false;
-        let render_mode_label = match self.render_mode {
-            RenderMode::Particles => "particles",
-            RenderMode::GridVolume => "grid-volume",
-            RenderMode::Surface => "curvature-flow surface",
-        };
+        let render_mode_label = self.render_mode.label();
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::Window::new("Fluids")
                 .default_pos([10.0, 10.0])
@@ -1077,13 +1068,7 @@ impl ApplicationHandler for App {
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyD if pressed => s.digging = !s.digging,
-                    KeyCode::KeyG if pressed => {
-                        s.render_mode = match s.render_mode {
-                            RenderMode::Particles => RenderMode::GridVolume,
-                            RenderMode::GridVolume => RenderMode::Surface,
-                            RenderMode::Surface => RenderMode::Particles,
-                        };
-                    }
+                    KeyCode::KeyG if pressed => s.render_mode = s.render_mode.next(),
                     KeyCode::KeyR if pressed => {
                         let sim = make_sim();
                         s.real_gravity = sim.config().gravity;
