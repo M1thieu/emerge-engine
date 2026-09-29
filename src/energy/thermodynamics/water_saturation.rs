@@ -6,7 +6,7 @@
 //! (`p_abs <= p_sat(T)`, far below atmospheric below 373.15 K: water sustains
 //! real tension before cavitating). This supplies the `p_sat(T)` a cavitation
 //! closure needs; see
-//! `matter::materials::cavitating_fluid::IsothermalCavitatingFluidMaterial`.
+//! `matter::materials::mixture::cavitating_fluid::IsothermalCavitatingFluidMaterial`.
 //!
 //! # IAPWS-IF97 Region 4 (saturation-pressure equation)
 //!
