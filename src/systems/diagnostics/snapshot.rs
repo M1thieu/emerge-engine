@@ -63,10 +63,6 @@ pub struct SimSnapshot {
     pub active_count: usize,
     /// Sleeping particles (excluded from this step's physics).
     pub sleeping_count: usize,
-    /// Legacy compatibility counter for former G2P velocity clipping.
-    /// The solver no longer clips velocity, so this remains zero; CFL is met
-    /// by substepping or an inadmissible state is reported.
-    pub vel_clamp_count: usize,
     /// Particles whose deformation state was projected back to admissible this step.
     /// Nonzero = explicit integration diverged; check dt, material params, or stiffness.
     pub j_projection_count: usize,

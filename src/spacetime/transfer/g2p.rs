@@ -245,10 +245,6 @@ pub fn f_update_vjp(c: Mat2, f_old: Mat2, dt: f32, d_loss_d_f_new: Mat2) -> (Mat
 }
 
 /// G2P: read grid velocities back into particles, advance state, apply boundaries.
-///
-/// The return value is retained for source compatibility with the old
-/// `last_vel_clamp_count` diagnostic. The solver no longer clips velocities,
-/// so it is always zero.
 pub fn gather_grid_to_particles(
     particles: &mut Particles,
     grid: &Grid,
@@ -257,7 +253,7 @@ pub fn gather_grid_to_particles(
     boundaries: &[Box<dyn BoundaryCondition>],
     materials: &MaterialRegistry,
     params: G2PParams,
-) -> usize {
+) {
     let G2PParams {
         apic_blend,
         active_count,
@@ -328,10 +324,10 @@ pub fn gather_grid_to_particles(
     // P2G's dense-buffer failure mode does not apply, but larger chunks still
     // cut task-scheduling overhead. Re-measure before changing.
     let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
-    let clamp_count: usize = (0..active_count)
+    (0..active_count)
         .into_par_iter()
         .with_min_len(min_len)
-        .map(|i| {
+        .for_each(|i| {
             let contact_group = contact_groups[i];
             let pinned = pinned_flags[i];
             let material_id = material_ids[i];
@@ -484,10 +480,5 @@ pub fn gather_grid_to_particles(
             for boundary in boundaries.iter() {
                 boundary.post_g2p_particle(&mut ctx, grid_res, dt);
             }
-
-            0
-        })
-        .sum();
-
-    clamp_count
+        });
 }

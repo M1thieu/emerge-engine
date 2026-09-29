@@ -112,7 +112,6 @@ impl Simulation {
         self.substep_index_in_frame = 0;
         let mut remaining = self.config.dt;
         let mut substeps_taken = 0;
-        self.last_vel_clamp_count = 0;
         self.last_j_projection_count = 0;
         self.last_timing = crate::diagnostics::StepTiming::default();
         // Computed ONCE here, reused by every substep below -- see
@@ -980,7 +979,7 @@ impl Simulation {
         let t2 = std::time::Instant::now();
         let g_len = self.active_count.min(self.granular_fluidity_g.len());
         let cosserat_len = self.active_count.min(self.cosserat_curvature.len());
-        self.last_vel_clamp_count += gather_grid_to_particles(
+        gather_grid_to_particles(
             &mut self.particles,
             &self.grid,
             sub_dt,

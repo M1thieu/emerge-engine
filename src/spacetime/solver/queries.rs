@@ -21,7 +21,6 @@ impl Simulation {
             self.last_step_dt,
             self.last_substeps,
         );
-        snap.vel_clamp_count = self.last_vel_clamp_count;
         snap.j_projection_count = self.last_j_projection_count;
         snap.sim_time_dropped = self.last_sim_time_dropped;
         snap.active_count = self.active_count;

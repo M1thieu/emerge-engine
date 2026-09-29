@@ -1159,7 +1159,7 @@ impl Simulation {
         // solved, boundary-corrected grid and applies each particle's plastic
         // return mapping (`MaterialModel::update_particle`) as the explicit
         // path does; this call is Klar 2016's operator-split plastic step.
-        self.last_vel_clamp_count += gather_grid_to_particles(
+        gather_grid_to_particles(
             &mut self.particles,
             &self.grid,
             dt,

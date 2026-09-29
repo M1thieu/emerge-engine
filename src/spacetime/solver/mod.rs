@@ -175,7 +175,6 @@ pub struct Simulation {
     last_max_particle_speed: f32,
     last_step_dt: f32,
     last_substeps: usize,
-    last_vel_clamp_count: usize,
     last_j_projection_count: usize,
     last_sim_time_dropped: f32,
     last_timing: crate::diagnostics::StepTiming,

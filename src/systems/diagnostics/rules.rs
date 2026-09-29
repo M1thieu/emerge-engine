@@ -16,8 +16,6 @@ pub struct StabilityThresholds {
     /// Max simulated time a step may leave unadvanced when it runs out of
     /// `max_substeps_per_step` (see `SimSnapshot::sim_time_dropped`).
     pub max_sim_time_dropped: f32,
-    /// Legacy compatibility threshold for removed G2P velocity clipping.
-    pub max_vel_clamp_count: usize,
     /// Max J projections per frame. Each projection = explicit integration diverged.
     pub max_j_projection_count: usize,
 }
@@ -58,7 +56,6 @@ impl Default for StabilityThresholds {
             max_invalid_physical_particle_values: 0,
             max_non_finite_values: 0,
             max_sim_time_dropped: 1e-6,
-            max_vel_clamp_count: 0,
             max_j_projection_count: 0,
         }
     }
@@ -76,11 +73,9 @@ pub struct StabilityStatus {
     pub out_of_bounds_violation: bool,
     pub invalid_physical_state_violation: bool,
     pub non_finite_violation: bool,
-    /// Legacy compatibility signal for dropped-time detection (always false in
-    /// the current full-time substep path).
+    /// The step left more simulated time unadvanced than
+    /// `max_sim_time_dropped` (see `SimSnapshot::sim_time_dropped`).
     pub sim_time_dropped_violation: bool,
-    /// Legacy compatibility signal for removed G2P velocity clipping.
-    pub vel_clamp_violation: bool,
     /// J went negative and was projected back -- explicit integration diverged.
     pub j_projection_violation: bool,
 }
@@ -98,7 +93,6 @@ impl StabilityStatus {
             && !self.invalid_physical_state_violation
             && !self.non_finite_violation
             && !self.sim_time_dropped_violation
-            && !self.vel_clamp_violation
             && !self.j_projection_violation
     }
 
@@ -136,9 +130,6 @@ impl StabilityStatus {
         }
         if self.sim_time_dropped_violation {
             labels.push("time_dropped");
-        }
-        if self.vel_clamp_violation {
-            labels.push("vel_clamp");
         }
         if self.j_projection_violation {
             labels.push("j_proj");
@@ -208,7 +199,6 @@ pub fn evaluate_stability(
             > thresholds.max_invalid_physical_particle_values,
         non_finite_violation: non_finite_total > thresholds.max_non_finite_values,
         sim_time_dropped_violation: snapshot.sim_time_dropped > thresholds.max_sim_time_dropped,
-        vel_clamp_violation: snapshot.vel_clamp_count > thresholds.max_vel_clamp_count,
         j_projection_violation: snapshot.j_projection_count > thresholds.max_j_projection_count,
     }
 }

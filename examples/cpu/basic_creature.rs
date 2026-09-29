@@ -332,7 +332,7 @@ impl State {
 
         println!(
             "f{:<5} fps={:>3.0} | sub={:>2}/{} eff_dt={:.4} dropped={:.4} cfl={:.2} vmax={:.2} \
-             | J=[{:.3},{:.3}] velclamp={} Jproj={} oob={} nan_p={} nan_g={} \
+             | J=[{:.3},{:.3}] Jproj={} oob={} nan_p={} nan_g={} \
              | centroid=({:.1},{:.1}) drift=({:+.3},{:+.3}) extent=({:.1}x{:.1}) \
              | act mean={:.2} max={:.2} | massErr={:.1e} momErr={:.1e}",
             self.frame,
@@ -345,7 +345,6 @@ impl State {
             snap.max_particle_speed,
             snap.min_deformation_j,
             snap.max_deformation_j,
-            snap.vel_clamp_count,
             snap.j_projection_count,
             snap.out_of_bounds_particles,
             snap.non_finite_particle_values,

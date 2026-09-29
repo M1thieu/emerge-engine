@@ -247,9 +247,6 @@ pub fn log_frame_full(
         format!("WARN[{}]", health.issue_labels().join(","))
     };
     let mut extras = String::new();
-    if snapshot.vel_clamp_count > 0 {
-        extras.push_str(&format!("  vel_clamp={}", snapshot.vel_clamp_count));
-    }
     if snapshot.j_projection_count > 0 {
         extras.push_str(&format!("  j_proj={}", snapshot.j_projection_count));
     }

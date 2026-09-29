@@ -100,9 +100,6 @@ impl FrameLogger {
         }
 
         // Optional warn fields -- only when non-zero.
-        if snap.vel_clamp_count > 0 {
-            line.push_str(&format!(",\"vel_clamp\":{}", snap.vel_clamp_count));
-        }
         if snap.j_projection_count > 0 {
             line.push_str(&format!(",\"j_proj\":{}", snap.j_projection_count));
         }
