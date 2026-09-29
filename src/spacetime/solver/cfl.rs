@@ -334,9 +334,10 @@ pub(crate) fn choose_substep_dt(
 /// CFL tightenings (shock-viscosity augmentation, single-particle
 /// instability, a reverted retry bound) each changed nothing.
 ///
-/// Sequential and separate from the production fold, with its formulas
-/// copied so the parallel hot path stays untouched; the copies must be kept
-/// in sync by hand.
+/// Sequential and separate from the production fold, calling the same bound
+/// helpers (`shock_viscosity_dt_bound`, `single_particle_instability_dt_bound`,
+/// `deformation_gradient_ode_dt_bound`) at `material_cfl_coefficient`, without
+/// the near-wall scaling; only the live acoustic term is an inline copy.
 pub(crate) fn diagnose_worst_particle_cfl_term(
     config: &SimConfig,
     particles: &Particles,
@@ -371,64 +372,35 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
             worst_term = "material_timestep_bound(acoustic/viscous)";
         }
 
-        if grad_norm.is_finite()
-            && grad_norm > f32::EPSILON
-            && materials.owns_deformation_volume_state(particles.material_id[i])
-            && let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
-            && c2_rest.is_finite()
-            && c2_rest > f32::EPSILON
+        let owns_volume = materials.owns_deformation_volume_state(particles.material_id[i]);
+        let rest_acoustic_c2 = materials.rest_acoustic_c2(particles.material_id[i]);
+        let params = materials.get(particles.material_id[i]).params();
+        if let Some(shock_dt) = shock_viscosity_dt_bound(
+            grad_norm,
+            owns_volume,
+            rest_acoustic_c2,
+            params.eos_power,
+            config.grid_cell_size,
+            config.material_cfl_coefficient,
+        ) && shock_dt < worst_dt
         {
-            let weak_shock_gamma = materials.get(particles.material_id[i]).params().eos_power;
-            if weak_shock_gamma.is_finite() && weak_shock_gamma > 0.0 {
-                let c0_quadratic = (weak_shock_gamma + 1.0) * 0.25;
-                let c_eff = c2_rest.sqrt() + 2.0 * c0_quadratic * config.grid_cell_size * grad_norm;
-                if c_eff.is_finite() && c_eff > f32::EPSILON {
-                    let shock_dt = config.material_cfl_coefficient * config.grid_cell_size / c_eff;
-                    if shock_dt.is_finite() && shock_dt > 0.0 && shock_dt < worst_dt {
-                        worst_dt = shock_dt;
-                        worst_i = Some(i);
-                        worst_term = "shock_viscosity_augmented_acoustic";
-                    }
-                }
-            }
+            worst_dt = shock_dt;
+            worst_i = Some(i);
+            worst_term = "shock_viscosity_augmented_acoustic";
         }
 
-        if materials.owns_deformation_volume_state(particles.material_id[i]) {
-            let rest_density = materials
-                .get(particles.material_id[i])
-                .params()
-                .rest_density;
-            let j = particles.volume[i] / particles.initial_volume[i];
-            // Copy of `choose_substep_dt`'s bound, with the `lambda=rho0*c0^2`
-            // stiffness term (see that copy); kept in sync by hand.
-            if let Some(c2_rest) = materials.rest_acoustic_c2(particles.material_id[i])
-                && rest_density.is_finite()
-                && rest_density > 0.0
-                && j.is_finite()
-                && j > 0.0
-                && c2_rest.is_finite()
-                && c2_rest > f32::EPSILON
-            {
-                const QUADRATIC_SPLINE_K: f32 = 6.0;
-                const DIMENSION_D: f32 = 2.0;
-                let kd = QUADRATIC_SPLINE_K * DIMENSION_D;
-                let lambda = rest_density * c2_rest;
-                let kd_lambda = kd * lambda;
-                let single_particle_dt = if j <= 1.0 {
-                    (config.grid_cell_size / (2.0 - j)) * (2.0 * rest_density / kd_lambda).sqrt()
-                } else {
-                    config.grid_cell_size
-                        * (rest_density * (j + 1.0) / (j * j * j * kd_lambda)).sqrt()
-                };
-                if single_particle_dt.is_finite()
-                    && single_particle_dt > 0.0
-                    && single_particle_dt < worst_dt
-                {
-                    worst_dt = single_particle_dt;
-                    worst_i = Some(i);
-                    worst_term = "single_particle_instability";
-                }
-            }
+        let j = particles.volume[i] / particles.initial_volume[i];
+        if let Some(single_particle_dt) = single_particle_instability_dt_bound(
+            owns_volume,
+            params.rest_density,
+            j,
+            rest_acoustic_c2,
+            config.grid_cell_size,
+        ) && single_particle_dt < worst_dt
+        {
+            worst_dt = single_particle_dt;
+            worst_i = Some(i);
+            worst_term = "single_particle_instability";
         }
 
         // Live density- and temperature-aware acoustic term, a copy of
@@ -447,12 +419,7 @@ pub(crate) fn diagnose_worst_particle_cfl_term(
             }
         }
 
-        let deformation_coefficient = config.cfl_coefficient.min(0.5);
-        let deformation_dt = if grad_norm.is_finite() && grad_norm > f32::EPSILON {
-            deformation_coefficient / grad_norm
-        } else {
-            f32::INFINITY
-        };
+        let deformation_dt = deformation_gradient_ode_dt_bound(grad_norm, config.cfl_coefficient);
         if deformation_dt.is_finite() && deformation_dt > 0.0 && deformation_dt < worst_dt {
             worst_dt = deformation_dt;
             worst_i = Some(i);
