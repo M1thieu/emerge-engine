@@ -1631,7 +1631,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // for "reflects ambient sky/environment light" other stylized water
         // shaders use absent a cubemap, not an invented color.
         let fresnel_reflection = mix(shaded, vec3<f32>(1.0, 1.0, 1.0), 0.6);
-        let with_fresnel = mix(shaded, fresnel_reflection, fresnel * fresnel_interior);
+        // Matter that holds its shape skips it, for `cel_lambert`'s reason:
+        // its density ramp is the kernel's width, so the normal built from
+        // it tilts where the body's face is flat, and the reflection drew a
+        // pale ring inside every solid's edge.
+        let fresnel_weight = fresnel * fresnel_interior * (1.0 - clamp(holds_shape, 0.0, 1.0));
+        let with_fresnel = mix(shaded, fresnel_reflection, fresnel_weight);
 
         lit = clamp(with_fresnel + wave_highlight, vec3(0.0), vec3(1.0));
     }
