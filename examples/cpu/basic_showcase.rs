@@ -338,7 +338,8 @@ impl State {
                 self.renderer.render_surface_reconstruction(
                     &self.device,
                     &self.queue,
-                    self.render_bridge.surface_source(FLUID_ID, true, DT),
+                    self.render_bridge
+                        .surface_source(FLUID_ID, true, self.sim.mean_substep_dt()),
                     &view,
                     true,
                 );

@@ -172,10 +172,9 @@ pub(super) struct SurfaceParams {
     /// Always 0 on the dual-phase path -- its own 2-phase filter above is
     /// a different, unrelated mechanism.
     pub(super) material_mass_enabled: u32,
-    /// Simulation timestep (`SimConfig::dt`), used by `splat_density_main`'s
-    /// velocity-stretch extension (see `curvature_flow.wgsl`'s
-    /// `SurfaceParams::dt`); a physical time, not a render-frame time. Ignored
-    /// by the other passes sharing this struct.
+    /// Interval the velocity stretch measures motion over, the solver's mean
+    /// substep duration (see `SurfaceReconstructionSource::dt`). Ignored by
+    /// the other passes sharing this struct.
     pub(super) dt: f32,
     /// Splat kernel width in physics-grid cells -- see `curvature_flow.
     /// wgsl`'s own `SurfaceParams::splat_width_cells` doc. 1.0 = original
@@ -342,10 +341,13 @@ pub struct SurfaceReconstructionSource<'a> {
     /// `dominant_material`, see `curvature_flow.wgsl`'s doc). Opt-in --
     /// false costs nothing beyond a 4-byte placeholder buffer.
     pub material_mass_enabled: bool,
-    /// Simulation timestep (`SimConfig::dt`) for `splat_density_main`'s
-    /// velocity-stretch extension (see `curvature_flow.wgsl`'s
-    /// `SurfaceParams::dt`). Pass the `dt` the scene's `Simulation` was
-    /// constructed with.
+    /// Interval `splat_density_main`'s velocity stretch measures motion
+    /// over: pass the solver's `mean_substep_dt()` (`Simulation` or
+    /// `GpuSimulation`). The explicit CFL keeps a particle's motion over one
+    /// substep within about a cell, which is what keeps the stretch modest.
+    /// The frame `SimConfig::dt` spans many substeps: fast matter then
+    /// moves dozens of kernel radii per interval and every kernel hits the
+    /// stretch cap, which drew expanding gas as spiked starbursts.
     pub dt: f32,
 }
 
@@ -361,7 +363,7 @@ pub struct DualPhaseSurfaceSource<'a> {
     pub grid_res: u32,
     pub material_id_a: u32,
     pub material_id_b: u32,
-    /// Simulation timestep (`SimConfig::dt`), as
+    /// The solver's mean substep duration, as
     /// `SurfaceReconstructionSource::dt`: this path shares the same
     /// `splat_density_main` compute shader.
     pub dt: f32,

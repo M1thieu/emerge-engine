@@ -456,7 +456,8 @@ impl State {
                 self.renderer.render_surface_reconstruction(
                     &self.device,
                     &self.queue,
-                    self.render_bridge.surface_source(MAT_WATER, false, DT),
+                    self.render_bridge
+                        .surface_source(MAT_WATER, false, self.sim.mean_substep_dt()),
                     &view,
                     true,
                 );

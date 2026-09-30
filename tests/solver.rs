@@ -2007,6 +2007,29 @@ fn radiative_cooling_without_a_slice_thickness_panics() {
     solver.step();
 }
 
+/// `mean_substep_dt` is 0 before any step, and after one it times the
+/// substep count back to the simulated time the step advanced.
+#[test]
+fn mean_substep_dt_splits_the_advanced_step_over_its_substeps() {
+    let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)));
+    assert_eq!(
+        solver.mean_substep_dt(),
+        0.0,
+        "no step, no measured interval"
+    );
+    solver.step();
+    let substeps = solver.last_substeps();
+    assert!(substeps >= 1);
+    let advanced = solver.mean_substep_dt() * substeps as f32;
+    let dt = small_solver_config().dt;
+    assert!(
+        (advanced - dt).abs() < 1.0e-5 * dt,
+        "{substeps} substeps of {} s advanced {advanced} s of a {dt} s step",
+        solver.mean_substep_dt()
+    );
+}
+
 // --- LP integration API tests ---
 
 #[test]

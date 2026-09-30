@@ -601,10 +601,11 @@ fn splat_density_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // change, this carries instantaneous motion, a fast droplet stretching
     // along its flight path (Codrops 2025 WebGPU fluid renderer; "Real-time
     // deformable droplet rendering", 2025 preprint). `stretch_factor` is
-    // derived: `|v| dt` (grid units moved during the physics step,
-    // `splat_params.dt` is `SimConfig::dt`) over BSPLINE_OUTER_LIMIT, the
-    // kernel's half-width, i.e. kernel radii travelled per step. A CFL-bound
-    // particle gets a factor near 1; a fast droplet visibly elongates.
+    // derived: `|v| dt` (grid units moved during one solver substep,
+    // `splat_params.dt` is the solver's mean substep duration) over
+    // BSPLINE_OUTER_LIMIT, the kernel's half-width, i.e. kernel radii
+    // travelled per substep. A CFL-bound particle gets a factor near 1; a
+    // fast droplet visibly elongates.
     let speed = length(p.v);
     var stretch_factor = 1.0;
     var v_dir = vec2<f32>(1.0, 0.0);

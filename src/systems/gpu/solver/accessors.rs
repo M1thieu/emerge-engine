@@ -229,6 +229,20 @@ impl GpuSimulation {
         self.last_substeps
     }
 
+    /// Mean duration of the last read-back frame's substeps: the simulated time it
+    /// advanced over the substeps it took, 0.0 before any step. The
+    /// explicit CFL bounds how far matter moves in one substep, so this is
+    /// the interval over which a particle's motion stays within about a
+    /// cell, what the surface view's velocity stretch measures motion over
+    /// (`SurfaceReconstructionSource::dt`). The frame `dt` spans many
+    /// substeps and is not that interval.
+    pub fn mean_substep_dt(&self) -> f32 {
+        if self.last_substeps == 0 {
+            return 0.0;
+        }
+        (self.config.dt - self.last_sim_time_dropped).max(0.0) / self.last_substeps as f32
+    }
+
     /// Simulated time the GPU could not advance in that same frame, because the
     /// encoded substeps ran out before the frame's time did.
     pub fn last_sim_time_dropped(&self) -> f32 {

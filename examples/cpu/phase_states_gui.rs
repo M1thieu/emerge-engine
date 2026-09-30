@@ -577,7 +577,7 @@ fn draw_frame(
             renderer.render_surface_reconstruction(
                 device,
                 queue,
-                bridge.surface_source(ICE_ID, true, sim.config().dt),
+                bridge.surface_source(ICE_ID, true, sim.mean_substep_dt()),
                 target,
                 true,
             );

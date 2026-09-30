@@ -372,7 +372,8 @@ impl State {
                 self.renderer.render_surface_reconstruction(
                     &self.gfx.device,
                     &self.gfx.queue,
-                    self.render_bridge.surface_source(3, true, DT),
+                    self.render_bridge
+                        .surface_source(3, true, self.sim.mean_substep_dt()),
                     &view,
                     true,
                 );

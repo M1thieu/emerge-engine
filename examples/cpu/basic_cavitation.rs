@@ -489,7 +489,7 @@ impl State {
                     &self.gfx.device,
                     &self.gfx.queue,
                     self.render_bridge
-                        .surface_source(0, false, self.step_seconds),
+                        .surface_source(0, false, self.sim.mean_substep_dt()),
                     &view,
                     true,
                 );

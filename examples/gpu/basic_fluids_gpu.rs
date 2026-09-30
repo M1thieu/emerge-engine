@@ -762,7 +762,7 @@ impl State {
                         grid_res: GRID as u32,
                         material_slot: MAT_WATER,
                         material_mass_enabled: false,
-                        dt: DT,
+                        dt: self.sim.mean_substep_dt(),
                     },
                     &view,
                     true,

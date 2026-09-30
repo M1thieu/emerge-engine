@@ -362,7 +362,8 @@ impl State {
                 self.renderer.render_surface_reconstruction(
                     &self.device,
                     &self.queue,
-                    self.render_bridge.surface_source(MAT_LOAM, true, DT),
+                    self.render_bridge
+                        .surface_source(MAT_LOAM, true, self.sim.mean_substep_dt()),
                     &view,
                     true,
                 );

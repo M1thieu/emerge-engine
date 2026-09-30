@@ -134,8 +134,8 @@ impl CpuRenderBridge {
 
     /// The source for `Renderer::render_surface_reconstruction`, reading
     /// what the last `upload_particles` wrote. `material_slot` colours the
-    /// surface when `material_mass_enabled` is off; `dt` is the scene's
-    /// `SimConfig::dt`.
+    /// surface when `material_mass_enabled` is off; `dt` is the solver's
+    /// `Simulation::mean_substep_dt` (see `SurfaceReconstructionSource::dt`).
     pub fn surface_source(
         &self,
         material_slot: u32,
