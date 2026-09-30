@@ -4,7 +4,10 @@ extern crate emerge_engine as emerge;
 mod cursor_force;
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 use cursor_force::CursorForce;
+use render_mode::RenderMode;
 
 /// Live demo of moisture diffusion driving a phase transition
 /// into a mixture material: water poured onto a loose sand pile
@@ -41,8 +44,14 @@ use cursor_force::CursorForce;
 /// its normal color, wet sand lights up, so the diffusion itself is
 /// visible, not just its downstream mechanical effect.
 ///
+/// G cycles the view: particles (the moisture colouring), the grid-volume
+/// view, the curvature-flow surface. The poured water carries pure water's
+/// measured absorption (`materials::optical::pure_water`); the sand and the
+/// mixture declare no measured optics and keep the renderer's default.
+///
 ///   cargo run --example sand_water_saturation --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::materials::optical::pure_water;
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
     DruckerPragerMaterial, GranularFluidMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
@@ -80,7 +89,10 @@ const PENDULAR_REGIME_CEILING: f32 = 0.3;
 // sand pile -- same reason `basic_sand.rs`'s own POUR_BUDGET exists: the
 // renderer's wgpu instance buffer is allocated once, not resizable live.
 const POUR_BUDGET: usize = 800;
-const POUR_SPACING: f32 = 0.5;
+/// Particle pitch of the sand pile and of the pour, in grid cells.
+const SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 const POUR_BOX: IVec2 = IVec2::new(2, 1);
 
 /// The CANONICAL MPM sand parameters, taken from the reference
@@ -211,7 +223,7 @@ fn make_sim() -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     let sand_spawn = SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(30, 16),
         box_center: Vec2::new(32.0, 38.0),
         material_id: MAT_SAND,
@@ -220,6 +232,8 @@ fn make_sim() -> Simulation {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
+    let mut water = NewtonianFluidMaterial::low_viscosity(config.grid_density, 10.0);
+    water.optics = Some(pure_water());
     Simulation::new(config, sand_spawn)
         .with_default_material(Box::new(make_sand(&config)))
         // rest_density is the density the SOLVER measures, which is a ratio
@@ -227,13 +241,7 @@ fn make_sim() -> Simulation {
         // `grid_density` exactly. Read it from the config rather than writing a
         // literal: the old hardcoded 4.0 was really `1/spacing^2` in disguise
         // and silently became wrong the moment the spawn was refined.
-        .with_material(
-            MAT_WATER,
-            Box::new(NewtonianFluidMaterial::low_viscosity(
-                config.grid_density,
-                10.0,
-            )),
-        )
+        .with_material(MAT_WATER, Box::new(water))
         .with_material(MAT_MIXTURE, Box::new(make_mixture(&config)))
         .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
         // The mixture transition this scene demonstrates -- see
@@ -323,6 +331,11 @@ struct State {
     fps_frames: u64,
     solve_micros: u64,
     last_fps: f32,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -337,9 +350,16 @@ impl State {
         // ByScalarField, not ByPhysics -- the whole point of this demo is
         // watching moisture actually spread, not just the material split.
         renderer.set_color_mode(ColorMode::ByScalarField);
+        renderer.adopt_material_optics(&gfx.queue, sim.materials());
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell of the sand pile, which holds 1/SPACING^2
+        // particles (particle 0 is sand).
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&gfx.device, GRID);
 
         println!(
-            "sand_water_saturation: {} particles  |  LMB push  RMB pull  hold P to pour water  R reset  Q quit",
+            "sand_water_saturation: {} particles  |  LMB push  RMB pull  hold P to pour water  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         println!(
@@ -367,6 +387,8 @@ impl State {
             fps_frames: 0,
             solve_micros: 0,
             last_fps: 0.0,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -415,7 +437,7 @@ impl State {
                 .clamp(domain_min, domain_max.max(domain_min));
             self.pour_seed += 1;
             let spawn = SpawnRegion {
-                spacing: POUR_SPACING,
+                spacing: SPACING,
                 box_size: POUR_BOX,
                 box_center: cursor,
                 material_id: MAT_WATER,
@@ -477,15 +499,48 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer.render(
-            &self.gfx.device,
-            &self.gfx.queue,
-            self.sim.particles(),
-            &view,
-            true,
-        );
+        match self.render_mode {
+            RenderMode::Particles => self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                self.sim.particles(),
+                &view,
+                true,
+            ),
+            RenderMode::GridVolume => {
+                self.render_bridge.upload_grid(
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                    self.sim.grid(),
+                );
+                self.renderer.render_grid_volume(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: sand, water and the mixture keep
+                // their own optics slot where the surfaces meet.
+                self.renderer.render_surface_reconstruction(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.surface_source(MAT_SAND, true, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let mut push_weights = self.cursor_force.push_strength;
         let mut pull_weights = self.cursor_force.pull_strength;
         let n_particles = self.sim.particles().len();
@@ -517,7 +572,8 @@ impl State {
                     ui.label("the pile -- the wet region should hold its shape");
                     ui.label("while the dry region keeps flowing.");
                     ui.separator();
-                    ui.label("LMB push  RMB pull  hold P to pour  R reset  Q quit");
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
+                    ui.label("LMB push  RMB pull  hold P to pour  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -588,6 +644,10 @@ impl ApplicationHandler for App {
                 let pressed = key_state == ElementState::Pressed;
                 match key {
                     KeyCode::KeyP => s.pouring = pressed,
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyR if pressed => {
                         let mut sim = make_sim();
