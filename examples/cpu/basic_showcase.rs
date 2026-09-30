@@ -2,20 +2,30 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
-use emerge::render::{ColorMode, Renderer};
+use emerge::materials::optical;
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     DruckerPragerMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
     SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Vec2};
+use render_mode::RenderMode;
 /// CPU three-material showcase -- sand terrain, fluid pool, elastic blob.
 ///
 ///   Mat 0  NeoHookean elastic (blue)  -- creature body, arrow-key drive
 ///   Mat 1  Sand Drucker-Prager (gold) -- terrain
 ///   Mat 2  Newtonian fluid  (cyan)    -- water pool
 ///
-///   ^v<>  drive elastic blob  |  LMB push  RMB pull  |  R reset  Q quit
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. In those two views the water is coloured from its measured
+/// absorption (`optical::pure_water`, Pope & Fry 1997); the sand and the
+/// elastic blob declare no optics and show grey, drawn flat because they
+/// hold their shape.
+///
+///   ^v<>  drive elastic blob  |  LMB push  RMB pull  |  G render  R reset  Q quit
 ///   cargo run --example basic_showcase --features "render"
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -30,6 +40,11 @@ const ELASTIC_ID: u32 = 0;
 const SAND_ID: u32 = 1;
 const FLUID_ID: u32 = 2;
 const SPACING: f32 = 0.7;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
+/// The water's rest density in grid units (`rho * dx^2` for water at
+/// `dx = 0.01`, see `make_sim`), which is also its mass per full cell.
+const WATER_REST_DENSITY_GRID: f32 = 0.1;
 
 // Dry sand (Haeri & Skonieczny 2022 Table 1, Excavation case: E=15 MPa, nu=0.3,
 // rho=1600 kg/m3, as `basic_sand.rs`/`sand_ngf_collapse.rs`) through `lame_from_si`.
@@ -59,6 +74,11 @@ struct State {
     frame: u64,
     fps_timer: std::time::Instant,
     fps_frames: u64,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 fn make_sim() -> Simulation {
@@ -95,7 +115,8 @@ fn make_sim() -> Simulation {
     // `timestep_bound`'s c2 (sound speed squared) is 40x larger at a given stiffness and
     // compression, so the stiffness is scaled by the same factor (10*0.1/4.0=0.25) to
     // keep the same c2.
-    let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
+    let mut fluid = NewtonianFluidMaterial::low_viscosity(WATER_REST_DENSITY_GRID, 0.25);
+    fluid.optics = Some(optical::pure_water());
     // Same density-consistency fix as basic_sand.rs: mass must share the
     // same real SAND_DENSITY_KG_M3 the stiffness above uses, not
     // `config.grid_density`'s unrelated bare default.
@@ -123,7 +144,7 @@ fn make_sim() -> Simulation {
         // Mass set explicitly, m = rho0*spacing^2 with the material's
         // rest_density=0.1 (see basic_fluids.rs), rather than the scene's grid
         // density.
-        mass_override: Some(0.1 * SPACING * SPACING),
+        mass_override: Some(WATER_REST_DENSITY_GRID * SPACING * SPACING),
         ..SpawnRegion::for_sim(&config)
     });
     let _ = solver.add_body(SpawnRegion {
@@ -178,8 +199,19 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // Marks the materials that hold their shape (a nonzero shear
+        // modulus), which the grid-volume and surface modes draw flat, and
+        // picks up the water's measured optics.
+        renderer.adopt_material_optics(&queue, sim.materials());
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell. The water is the lightest of the three
+        // bodies per cell, so measuring against it keeps all three above
+        // the visibility floor.
+        renderer.set_grid_reference_cell_mass(WATER_REST_DENSITY_GRID);
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
         println!(
-            "showcase: {} particles  |  ^v<> drive blob  LMB push  RMB pull  R reset  Q quit",
+            "showcase: {} particles  |  ^v<> drive blob  LMB push  RMB pull  G render  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -199,6 +231,8 @@ impl State {
             frame: 0,
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -277,8 +311,39 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), &view, true)
+            }
+            RenderMode::GridVolume => {
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: each body keeps its own optics slot
+                // where the surfaces meet.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.surface_source(FLUID_ID, true, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
         output.present();
     }
 }
@@ -325,6 +390,10 @@ impl ApplicationHandler for App {
                         s.sim = make_sim();
                         s.frame = 0;
                         println!("reset");
+                    }
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
                     }
                     KeyCode::ArrowUp => s.arrow_up = pressed,
                     KeyCode::ArrowDown => s.arrow_down = pressed,
