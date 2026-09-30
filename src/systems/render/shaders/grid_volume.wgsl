@@ -358,8 +358,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // point (Pope & Fry 1997, the source of the water sigma_a table), not from
     // a camera ray. `accumulate_column_depth` marches up to the free surface
     // summing mass, discretizing tau = integral sigma_a*rho ds along y.
-    let column_depth = accumulate_column_depth(bx, by);
-    let depth_banded = floor(clamp(mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
+    //
+    // Both depths count full cells, mass over `reference_cell_mass`, as the
+    // visibility floor and the SI branch's `relative_density` do: in raw mass
+    // a scene of 1 m cells (about 900 per cell) saturated every column black,
+    // and water at about 0.1 per cell barely darkened with depth.
+    let ref_mass = max(params.reference_cell_mass, 1.0e-12);
+    let column_depth = accumulate_column_depth(bx, by) / ref_mass;
+    let depth_banded = floor(clamp(mass / ref_mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
     let column_banded = floor(clamp(column_depth, 0.0, 16.0) * DEPTH_BANDS) / DEPTH_BANDS;
     let optical_depth = max(max(depth_banded, column_banded), EDGE_COLOR_REFERENCE_DEPTH);
     let transmitted = exp(-sigma_a * optical_depth);
