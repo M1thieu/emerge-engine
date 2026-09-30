@@ -15,10 +15,10 @@ use crate::particle::Particles;
 /// `gravity` should match `SimConfig::gravity` exactly.
 ///
 /// # IRL calibration
-/// For water (ρ₀ = 1000 kg/m³):
-/// - Wood (ρ ≈ 600 kg/m³): floats at ~60% submerged -- buoyancy_ratio ≈ 0.67
-/// - Steel (ρ ≈ 7800 kg/m³): sinks -- buoyancy_ratio ≈ 0.13
-/// - Ice (ρ ≈ 917 kg/m³): floats at ~8% above surface -- buoyancy_ratio ≈ 1.09
+/// For water (ρ₀ = 1000 kg/m³), the ratio `ρ_fluid/ρ` this field applies:
+/// - Wood (ρ ≈ 600 kg/m³): ρ_fluid/ρ ≈ 1.67, floats ~60% submerged
+/// - Steel (ρ ≈ 7800 kg/m³): ρ_fluid/ρ ≈ 0.13, sinks
+/// - Ice (ρ ≈ 917 kg/m³): ρ_fluid/ρ ≈ 1.09, floats ~8% above the surface
 ///
 /// In grid units, set `fluid_density` to match your fluid material's `rest_density`.
 #[derive(Debug, Clone, Copy)]
