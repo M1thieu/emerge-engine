@@ -18,7 +18,7 @@ use super::{FxU32BuildHasher, Grid, flat_index};
 /// must not have its average pulled toward a wrong value by mass that
 /// never reported a coefficient at all.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct FrictionCell {
+pub(crate) struct FrictionCell {
     /// Dual-phase field, same convention as `Cell::momentum`: during P2G,
     /// the accumulated `weight*mass_i*coefficient` sum; after
     /// `normalize_friction()`, the true mass-weighted average coefficient.
@@ -26,7 +26,32 @@ pub(super) struct FrictionCell {
     friction_mass: f32,
 }
 
-pub(super) type FrictionCellMap = HashMap<u32, FrictionCell, FxU32BuildHasher>;
+/// Sparse friction storage keyed by flat index. `pub(crate)` so parallel
+/// P2G can build thread-local accumulators, as with `CellMap`.
+pub(crate) type FrictionCellMap = HashMap<u32, FrictionCell, FxU32BuildHasher>;
+
+/// Adds one particle's `weight*mass` share at node `idx` to a friction
+/// accumulator: the same sums `Grid::add_friction_mass` keeps, for a
+/// thread-local map that `Grid::merge_friction_cells` folds in later.
+pub(crate) fn accumulate_friction(
+    map: &mut FrictionCellMap,
+    idx: u32,
+    weight_mass: f32,
+    coefficient: f32,
+) {
+    let cell = map.entry(idx).or_default();
+    cell.friction += weight_mass * coefficient;
+    cell.friction_mass += weight_mass;
+}
+
+/// Folds `b` into `a`: the reduction step for per-thread friction maps.
+pub(crate) fn merge_friction_maps(a: &mut FrictionCellMap, b: FrictionCellMap) {
+    for (idx, cell) in b {
+        let entry = a.entry(idx).or_default();
+        entry.friction += cell.friction;
+        entry.friction_mass += cell.friction_mass;
+    }
+}
 
 impl Grid {
     /// Accumulate one particle's mass-weighted friction contribution during
@@ -51,6 +76,25 @@ impl Grid {
                     friction: weight_mass * coefficient,
                     friction_mass: weight_mass,
                 });
+            }
+        }
+    }
+
+    /// Adds a friction accumulator built off the grid (the parallel P2G
+    /// pass's per-thread maps, reduced) into the grid's own, keeping the
+    /// dirty list as `add_friction_mass` does.
+    pub(crate) fn merge_friction_cells(&mut self, local: FrictionCellMap) {
+        for (idx, cell) in local {
+            match self.friction_cells.entry(idx) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let existing = e.get_mut();
+                    existing.friction += cell.friction;
+                    existing.friction_mass += cell.friction_mass;
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    self.friction_dirty.push(idx);
+                    e.insert(cell);
+                }
             }
         }
     }

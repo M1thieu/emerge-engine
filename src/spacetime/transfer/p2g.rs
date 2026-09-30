@@ -2,7 +2,9 @@ use glam::{IVec2, Mat2, Vec2};
 use rayon::prelude::*;
 
 use crate::grid::kernel::{axis_weights_derivative, quadratic_weights};
-use crate::grid::{CellMap, Grid, flat_index};
+use crate::grid::{
+    CellMap, FrictionCellMap, Grid, accumulate_friction, flat_index, merge_friction_maps,
+};
 use crate::materials::registry::MaterialRegistry;
 use crate::particle::Particles;
 use crate::solver::config::KERNEL_D_INVERSE;
@@ -246,7 +248,7 @@ pub fn scatter_particles_to_grid_sorted(
     scatter_second_pass(particles, grid, materials, dt, active_count);
 }
 
-/// The serial pass after the parallel `CellMap` scatter, shared by
+/// The pass after the parallel `CellMap` scatter, shared by
 /// `scatter_particles_to_grid` and its sorted variant.
 ///
 /// Marks the grid nodes a pinned particle supports: essential boundary
@@ -263,6 +265,13 @@ pub fn scatter_particles_to_grid_sorted(
 /// functions as the parallel pass, the same result). Friction takes only
 /// each node's mass share, so a particle carrying friction alone skips that
 /// recompute: every Drucker-Prager or mu(I) sand particle, each substep.
+///
+/// Those friction-only particles are the bulk of a sand scene, and their
+/// scatter is an additive reduction (`sum(w*m*mu)`, `sum(w*m)` per node),
+/// so it runs as a parallel fold/reduce like the main scatter, with the
+/// same consequence: the summation order at shared nodes changes, so the
+/// node coefficient can differ in its last bits from a serial sum. The rest
+/// (pinned nodes, contact, mixture) stays serial.
 fn scatter_second_pass(
     particles: &Particles,
     grid: &mut Grid,
@@ -270,6 +279,40 @@ fn scatter_second_pass(
     dt: f32,
     active_count: usize,
 ) {
+    let resolution = grid.resolution();
+    let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
+    let friction: FrictionCellMap = (0..active_count)
+        .into_par_iter()
+        .with_min_len(min_len)
+        .fold(FrictionCellMap::default, |mut acc, i| {
+            if particles.contact_group[i] == 0
+                && materials
+                    .get(particles.material_id[i])
+                    .mixture_phase()
+                    .is_none()
+                && let Some(mu) =
+                    materials.current_friction_coefficient(particles.material_id[i], particles, i)
+            {
+                let mass_i = particles.mass[i];
+                let weights = quadratic_weights(particles.x[i]);
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let weight = weights.wx[gx] * weights.wy[gy];
+                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        if let Some(idx) = flat_index(cell_pos, resolution) {
+                            accumulate_friction(&mut acc, idx, weight * mass_i, mu);
+                        }
+                    }
+                }
+            }
+            acc
+        })
+        .reduce(FrictionCellMap::default, |mut a, b| {
+            merge_friction_maps(&mut a, b);
+            a
+        });
+    grid.merge_friction_cells(friction);
+
     for i in 0..active_count {
         if particles.pinned[i] != 0 {
             let weights = quadratic_weights(particles.x[i]);
@@ -286,22 +329,12 @@ fn scatter_second_pass(
         let contact_group = particles.contact_group[i];
         let material = materials.get(particles.material_id[i]);
         let mixture_phase = material.mixture_phase();
-        let friction_coefficient =
-            materials.current_friction_coefficient(particles.material_id[i], particles, i);
         if contact_group == 0 && mixture_phase.is_none() {
-            if let Some(mu) = friction_coefficient {
-                let mass_i = particles.mass[i];
-                let weights = quadratic_weights(particles.x[i]);
-                for gx in 0..3 {
-                    for gy in 0..3 {
-                        let weight = weights.wx[gx] * weights.wy[gy];
-                        let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
-                        grid.add_friction_mass(cell_pos, weight * mass_i, mu);
-                    }
-                }
-            }
+            // Friction-only or plain: scattered above, or nothing to add.
             continue;
         }
+        let friction_coefficient =
+            materials.current_friction_coefficient(particles.material_id[i], particles, i);
 
         let x = particles.x[i];
         let mass_i = particles.mass[i];

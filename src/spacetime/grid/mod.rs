@@ -32,7 +32,7 @@ use glam::{IVec2, Vec2};
 
 use contact::ContactCellMap;
 pub use directional_grip::DirectionalContactGrip;
-use friction::FrictionCellMap;
+pub(crate) use friction::{FrictionCellMap, accumulate_friction, merge_friction_maps};
 use mixture::MixtureCellMap;
 
 /// FxHash-style hasher for the grid's `u32` flat-index keys.
