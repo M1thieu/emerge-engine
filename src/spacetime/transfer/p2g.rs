@@ -413,6 +413,15 @@ pub fn spatial_sort_order(
 /// no-op, not even a loop iteration, for every scene that never sets
 /// `Particle::contact_group` -- the same zero-cost-when-unused property as the rest of
 /// this feature.
+///
+/// Most particles in a contact scene touch no contact-active node (a whole
+/// sand bed around one body), yet each one used to pay for its inverse
+/// deformation and nine hash lookups serially: 25% of a substep on
+/// `tests/probes/contact_cost.rs`'s scene. The lookups now run in parallel
+/// over contiguous particle chunks, read-only, and only particles with a hit
+/// compute their extent. The hits are appended serially in chunk order, so
+/// every node receives its points in exactly the particle order the serial
+/// loop gave it, and the normal fit sees the same input.
 pub fn gather_contact_point_cloud(
     particles: &Particles,
     grid: &mut Grid,
@@ -422,33 +431,75 @@ pub fn gather_contact_point_cloud(
     if !grid.has_contact_activity() {
         return;
     }
-    for i in 0..active_count {
-        let x = particles.x[i];
-        let label = if particles.contact_group[i] != 0 {
-            1.0
-        } else {
-            -1.0
-        };
-        // Where the particle's deformed edge sits (Nairn, Hammerquist and Smith
-        // 2020, eq. 25): its undeformed half size and the inverse of its
-        // deformation gradient. The undeformed area is `mass / rest_density`
-        // when the material knows its density (see
-        // `MaterialModel::rest_density` for why not `initial_volume`).
-        let inverse_deformation = particles.deformation_gradient[i].inverse();
-        let undeformed_area = materials
-            .get(particles.material_id[i])
-            .rest_density()
-            .filter(|&rho| rho > 0.0)
-            .map_or(particles.initial_volume[i], |rho| particles.mass[i] / rho);
-        let half_size = 0.5 * undeformed_area.max(0.0).sqrt();
-        let weights = quadratic_weights(x);
-        for gx in 0i32..3 {
-            for gy in 0i32..3 {
-                let cell_pos = weights.base_cell + IVec2::new(gx - 1, gy - 1);
-                grid.add_contact_point(cell_pos, x, label, inverse_deformation, half_size);
+    let chunk = (active_count / (rayon::current_num_threads() * 2)).max(1);
+    let chunk_count = active_count.div_ceil(chunk);
+    let grid_view: &Grid = grid;
+    let hits: Vec<Vec<ContactPointHit>> = (0..chunk_count)
+        .into_par_iter()
+        .map(|c| {
+            let mut out = Vec::new();
+            for i in c * chunk..((c + 1) * chunk).min(active_count) {
+                let x = particles.x[i];
+                let weights = quadratic_weights(x);
+                let mut extent = None;
+                for gx in 0i32..3 {
+                    for gy in 0i32..3 {
+                        let cell_pos = weights.base_cell + IVec2::new(gx - 1, gy - 1);
+                        if !grid_view.is_contact_node(cell_pos) {
+                            continue;
+                        }
+                        let (inverse_deformation, half_size) =
+                            *extent.get_or_insert_with(|| particle_extent(particles, materials, i));
+                        out.push(ContactPointHit {
+                            cell_pos,
+                            position: x,
+                            label: if particles.contact_group[i] != 0 {
+                                1.0
+                            } else {
+                                -1.0
+                            },
+                            inverse_deformation,
+                            half_size,
+                        });
+                    }
+                }
             }
-        }
+            out
+        })
+        .collect();
+    for hit in hits.into_iter().flatten() {
+        grid.add_contact_point(
+            hit.cell_pos,
+            hit.position,
+            hit.label,
+            hit.inverse_deformation,
+            hit.half_size,
+        );
     }
+}
+
+/// One point `gather_contact_point_cloud` appends to a contact node.
+struct ContactPointHit {
+    cell_pos: IVec2,
+    position: Vec2,
+    label: f32,
+    inverse_deformation: Mat2,
+    half_size: f32,
+}
+
+/// Where a particle's deformed edge sits (Nairn, Hammerquist and Smith 2020,
+/// eq. 25): the inverse of its deformation gradient and its undeformed half
+/// size. The undeformed area is `mass / rest_density` when the material knows
+/// its density (see `MaterialModel::rest_density` for why not
+/// `initial_volume`).
+fn particle_extent(particles: &Particles, materials: &MaterialRegistry, i: usize) -> (Mat2, f32) {
+    let inverse_deformation = particles.deformation_gradient[i].inverse();
+    let undeformed_area = materials
+        .get(particles.material_id[i])
+        .rest_density()
+        .filter(|&rho| rho > 0.0)
+        .map_or(particles.initial_volume[i], |rho| particles.mass[i] / rho);
+    (inverse_deformation, 0.5 * undeformed_area.max(0.0).sqrt())
 }
 
 /// Analytic adjoint of P2G's stress→force scatter contribution w.r.t. the

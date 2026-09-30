@@ -66,6 +66,14 @@ impl Grid {
         }
     }
 
+    /// Whether `cell_pos` is a contact-active node this substep, the cells
+    /// `add_contact_point` appends to. Read-only, so a parallel pass can ask
+    /// before deciding what to append.
+    pub(crate) fn is_contact_node(&self, cell_pos: IVec2) -> bool {
+        flat_index(cell_pos, self.resolution)
+            .is_some_and(|idx| self.contact_cells.contains_key(&idx))
+    }
+
     /// Appends one labeled particle position (`+1.0` grip / `-1.0` rest) to
     /// `cell_pos`'s contact point cloud, for the logistic-regression normal fit
     /// (`fit_contact_normal_lr`). Only pushes into a cell that ALREADY exists in
