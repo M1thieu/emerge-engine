@@ -366,7 +366,8 @@ impl Quadtree {
 /// - Use `GravityWellField` instead for fixed point-mass sources -- much cheaper.
 ///
 /// # Parameters
-/// - `gravitational_constant`: G in simulation units. Tune to your scale.
+/// - `gravitational_constant`: G in grid units, converted from SI as
+///   `GravityWellField::gravitational_constant` describes.
 /// - `softening`: Plummer ε (grid cells). Prevents divergence as r→0. Typ. 0.5–2.0.
 /// - `theta`: Barnes-Hut opening angle. Must be in (0, 1].
 ///   0.5 = a common trade-off value in practice; lower = more accurate; higher = faster.
