@@ -10,7 +10,8 @@ use crate::energy::thermodynamics::STEFAN_BOLTZMANN;
 
 /// Planck constant h -- J.s (exact by definition since 2019).
 pub const PLANCK: f64 = 6.626_070_15e-34;
-/// Speed of light in vacuum c -- m/s (exact by definition).
+/// Speed of light in vacuum c -- m/s, exact by definition of the metre:
+/// 299 792 458 (NIST CODATA, physics.nist.gov/cgi-bin/cuu/Value?c).
 pub const SPEED_OF_LIGHT: f64 = 2.997_924_58e8;
 /// Boltzmann constant k_B -- J/K (exact by definition since 2019).
 pub const BOLTZMANN: f64 = 1.380_649e-23;

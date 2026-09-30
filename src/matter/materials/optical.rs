@@ -226,6 +226,12 @@ pub fn snow(grain_radius_m: f32, ice_volume_fraction: f32) -> OpticalCoefficient
 /// value is flat across the three bands because there is no absorption
 /// feature in the visible to give it a colour.
 ///
+/// The value itself is not from a measurement: silica datasets tabulate an
+/// extinction coefficient `k` of zero across the visible (below what they
+/// resolve), so the true figure is smaller still. It stands as a small
+/// placeholder until a measured bulk-quartz absorption is found; at any
+/// value this small, sand's colour is set by its scattering, not by this.
+///
 /// What this deliberately does NOT model: the faint yellow of most beach
 /// sand, which comes from iron-oxide coatings on the grains, not from the
 /// quartz. Modelling that needs hematite/goethite absorption data this

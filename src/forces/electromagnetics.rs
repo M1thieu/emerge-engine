@@ -17,7 +17,10 @@ use glam::Vec2;
 /// ε₀ = 8.8541878188e-12 F/m (CODATA 2022, NIST). Was 8.99e9, 0.03 percent
 /// high.
 pub const COULOMB_CONSTANT: f32 = 8.987_552e9;
-/// μ₀/(4π) in SI units (T·m/A).
+/// μ₀/(4π) in SI units (T·m/A). μ₀ = 1.256 637 061 27(20) e-6 N/A² (CODATA
+/// 2022, NIST, physics.nist.gov/cgi-bin/cuu/Value?mu0), so μ₀/(4π) =
+/// 0.999 999 999 87 e-7: no longer exactly 1e-7 since the 2019 SI
+/// redefinition, but the difference is below f32 resolution.
 pub const MAGNETIC_CONSTANT_DIV_4PI: f32 = 1e-7;
 
 /// Electric field vector at a point in 2D space.

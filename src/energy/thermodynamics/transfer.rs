@@ -7,7 +7,9 @@
 //!
 //! All inputs/outputs are SI. The caller converts to/from simulation units.
 
-/// Stefan–Boltzmann constant σ -- W/(m²·K⁴).
+/// Stefan–Boltzmann constant σ -- W/(m²·K⁴): 5.670 374 419... e-8, exact
+/// since the 2019 SI redefinition (NIST CODATA,
+/// physics.nist.gov/cgi-bin/cuu/Value?sigma), written to f32 precision.
 pub const STEFAN_BOLTZMANN: f32 = 5.670_374_4e-8;
 
 /// Thermal diffusivity α = k / (ρ·c_p) -- m²/s.
