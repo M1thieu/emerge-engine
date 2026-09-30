@@ -2,6 +2,8 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/mod.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 /// CPU ideal-gas EOS -- five real dry-air pockets (287.05 J/(kg*K),
 /// gamma=1.4), same temperature, five different densities, scattered
@@ -31,11 +33,17 @@ mod gui_common;
 /// proof can be swept live instead of only read from the source. Ambient
 /// temperature and gravity are likewise live SI inputs, not paint.
 ///
-///   LMB push  RMB pull  V real-optics  R reset  Q quit
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. The last two always shade with the real air coefficients
+/// below, so like the V view they show almost nothing but where the gas
+/// is: clean air absorbs nothing and scatters very little.
+///
+///   LMB push  RMB pull  V real-optics  G render mode  R reset  Q quit
 ///   cargo run --example basic_gas --features "render"
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{IdealGasMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion};
 use glam::Vec2;
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -49,6 +57,8 @@ const SPACING: f32 = 0.5;
 const DX_METERS: f32 = 1.0; // grid<->SI identity scale, see make_sim's own doc
 const AMBIENT_RHO_KG_M3: f32 = 1.2;
 const N_POCKETS: usize = 5;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 // (material_id, box_center, disk_radius, density_ratio_vs_ambient at
 // spread=1.0 -- see `pocket_ratio` for how the live spread slider scales
 // these). Disclosed tuning: checked for real non-overlap with a
@@ -182,6 +192,11 @@ struct State {
     density_spread: f32,
     gravity_fraction: f32,
     click_mach_fraction: f32,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -205,9 +220,15 @@ impl State {
             renderer.set_optical_params(&gfx.queue, mat as usize, sigma_a);
             renderer.set_optical_scattering(&gfx.queue, mat as usize, sigma_s);
         }
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell of ambient air: `mass_for` (see `make_sim`)
+        // at the ambient density over one particle's `SPACING^2` of a cell.
+        renderer.set_grid_reference_cell_mass(AMBIENT_RHO_KG_M3 * DX_METERS * DX_METERS);
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&gfx.device, GRID);
 
         println!(
-            "gas: {} particles  |  LMB push  RMB pull  V real-optics  R reset  Q quit",
+            "gas: {} particles  |  LMB push  RMB pull  V real-optics  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -226,6 +247,8 @@ impl State {
             density_spread,
             gravity_fraction,
             click_mach_fraction: 0.5,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -316,15 +339,48 @@ impl State {
             })
             .collect();
         let render_particles = emerge::Particles::from(render_particles);
-        self.renderer.render(
-            &self.gfx.device,
-            &self.gfx.queue,
-            &render_particles,
-            &view,
-            true,
-        );
+        match self.render_mode {
+            RenderMode::Particles => self.renderer.render(
+                &self.gfx.device,
+                &self.gfx.queue,
+                &render_particles,
+                &view,
+                true,
+            ),
+            RenderMode::GridVolume => {
+                self.render_bridge.upload_grid(
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                    self.sim.grid(),
+                );
+                self.renderer.render_grid_volume(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: each pocket keeps its own optics
+                // slot where the surfaces meet.
+                self.renderer.render_surface_reconstruction(
+                    &self.gfx.device,
+                    &self.gfx.queue,
+                    self.render_bridge.surface_source(3, true, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let n_particles = self.sim.particles().len();
         let mut temperature_k = self.temperature_k;
         let mut density_spread = self.density_spread;
@@ -339,6 +395,7 @@ impl State {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("fps={fps:.0}  particles={n_particles}"));
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
                     ui.separator();
                     ui.label("Ambient temperature (K):");
                     if ui
@@ -362,7 +419,7 @@ impl State {
                     ui.label("Mat 0 rarefied  Mat 1 dense  Mat 2 moderate");
                     ui.label("Mat 3 ambient   Mat 4 very dense");
                     ui.separator();
-                    ui.label("LMB push  RMB pull  V real-optics  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  V real-optics  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -432,6 +489,10 @@ impl ApplicationHandler for App {
                 KeyCode::KeyR => {
                     s.reset();
                     println!("reset");
+                }
+                KeyCode::KeyG => {
+                    s.render_mode = s.render_mode.next();
+                    println!("render mode: {}", s.render_mode.label());
                 }
                 KeyCode::KeyV => {
                     s.real_optics = !s.real_optics;
