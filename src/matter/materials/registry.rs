@@ -384,13 +384,6 @@ impl MaterialRegistry {
         self.materials.iter().any(|m| m.needs_cpu_update())
     }
 
-    /// Returns true if any registered material consumes a per-substep
-    /// kernel-density measurement. Strict WC-MPM liquids own `rho=rho0/J`
-    /// instead and therefore return false.
-    pub fn any_needs_density_recompute(&self) -> bool {
-        self.materials.iter().any(|m| m.needs_density_recompute())
-    }
-
     /// Returns true when a registered material owns a strict conservative
     /// volume/density state. The GPU backend uses this to turn numerical
     /// admissibility failures into a synchronous, observable failed step

@@ -27,7 +27,6 @@ fn all_accounted(t: &StepTiming) -> u64 {
         + t.spatial_hash_us
         + t.phase_sleep_us
         + t.project_us
-        + t.density_us
 }
 
 fn print_timing(t: &StepTiming, step: u64, substeps: usize) {
@@ -35,7 +34,7 @@ fn print_timing(t: &StepTiming, step: u64, substeps: usize) {
     println!(
         "  timing step={step:3}  total={:.2}ms  \
          p2g={:.2}  grid={:.2}  g2p={:.2}  cfl={:.2}  \
-         hash={:.2}  phase={:.2}  project={:.2}  density={:.2}  other={:.2}  sub={substeps}",
+         hash={:.2}  phase={:.2}  project={:.2}  other={:.2}  sub={substeps}",
         t.total_us as f64 / 1000.0,
         t.p2g_us as f64 / 1000.0,
         t.grid_update_us as f64 / 1000.0,
@@ -44,7 +43,6 @@ fn print_timing(t: &StepTiming, step: u64, substeps: usize) {
         t.spatial_hash_us as f64 / 1000.0,
         t.phase_sleep_us as f64 / 1000.0,
         t.project_us as f64 / 1000.0,
-        t.density_us as f64 / 1000.0,
         other as f64 / 1000.0,
     );
 }
@@ -89,11 +87,6 @@ fn print_timing_full(t: &StepTiming, substeps: usize) {
         "  project      : {:.3} ms  ({:.1}%)",
         ms(t.project_us),
         pct(t.project_us)
-    );
-    println!(
-        "  density      : {:.3} ms  ({:.1}%)",
-        ms(t.density_us),
-        pct(t.density_us)
     );
     println!(
         "  fields       : {:.3} ms  ({:.1}%)",

@@ -420,10 +420,6 @@ impl MaterialModel for IdealGasMaterial {
         true
     }
 
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
-
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Gas as u32,

@@ -598,14 +598,6 @@ impl MaterialModel for BinghamFluidMaterial {
 
         dt_bound
     }
-
-    /// `false`, as `NewtonianFluidMaterial::needs_density_recompute` (see its
-    /// doc): this material owns `rho = rho0/J` through `init_particle` /
-    /// `update_particle` and declares it via `owns_deformation_volume_state`,
-    /// so a kernel-density gather would be computed and discarded.
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]

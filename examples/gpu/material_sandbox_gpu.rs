@@ -215,7 +215,6 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         // (for its impact test); not probed separately for this scene's painting
         // and multi-material interaction.
         max_substeps_per_step: 20_000,
-        recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_sand.rs's

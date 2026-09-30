@@ -139,7 +139,6 @@ fn make_sim() -> Simulation {
         min_dt: 1.0e-4,
         max_substeps_per_step: 400,
         gravity: Vec2::new(0.0, -0.3),
-        recompute_density_each_step: false,
         cfl_include_affine_speed: false,
         ..SimConfig::earth(GRID, 0.01, DT)
     };

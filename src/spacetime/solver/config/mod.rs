@@ -81,10 +81,6 @@ pub struct SimConfig {
     pub light_dir: Vec2,
     pub boundary_thickness: usize,
     pub default_initial_volume: f32,
-    /// Request a kernel-density measurement for materials that consume one.
-    /// Strict WC-MPM liquids keep their constitutive `rho=rho0/J` state and
-    /// are excluded even when this is enabled.
-    pub recompute_density_each_step: bool,
     /// Base grid density: particle mass PER CELL AREA, not per particle.
     /// A spawn's actual particle mass is `grid_density * spacing^2`, because a
     /// lattice at `spacing` cells carries `1/spacing^2` particles per cell.
@@ -438,7 +434,6 @@ impl Default for SimConfig {
             light_dir: Vec2::new(0.0, 1.0),
             boundary_thickness: 2,
             default_initial_volume: 1.0,
-            recompute_density_each_step: false,
             grid_density: 1.0,
             reference_density_kg_m3: 1000.0,
             max_substeps_per_step: 64,

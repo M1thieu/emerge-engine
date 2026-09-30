@@ -28,7 +28,6 @@ use crate::rod::{
     apply_gravitropism, apply_growth, apply_phototropism, apply_secondary_growth,
     gather_grid_to_rod, rod_touches_grid_mass, scatter_rod_to_grid, step_rod_implicit,
 };
-use crate::solver::density::estimate_particle_volumes;
 use crate::transfer::{
     G2PParams, gather_contact_point_cloud, gather_grid_to_particles, scatter_particles_to_grid,
     scatter_particles_to_grid_sorted, spatial_sort_order,
@@ -618,21 +617,6 @@ impl Simulation {
             }
         }
         self.last_timing.project_us += t_pre.elapsed().as_micros() as u64;
-
-        // Optional kernel density gather for materials that use it.  Strict
-        // WC-MPM fluids still scatter mass for this diagnostic field, but retain
-        // their constitutive rho=rho0/J and V=V0J state.
-        let t_density = std::time::Instant::now();
-        if self.config.recompute_density_each_step || self.materials.any_needs_density_recompute() {
-            estimate_particle_volumes(
-                &mut self.particles,
-                &mut self.grid,
-                Some(&self.materials),
-                self.active_count,
-                false,
-            );
-        }
-        self.last_timing.density_us += t_density.elapsed().as_micros() as u64;
 
         // ── P2G ──────────────────────────────────────────────────────────────
         let t0 = std::time::Instant::now();

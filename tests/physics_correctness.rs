@@ -127,10 +127,7 @@ fn mass_is_conserved_corotated() {
 
 #[test]
 fn mass_is_conserved_fluid() {
-    let config = SimConfig {
-        recompute_density_each_step: true,
-        ..zero_gravity_config(32)
-    };
+    let config = zero_gravity_config(32);
     let mut solver = Simulation::new(config, center_spawn(32, 6))
         .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.1, 10.0, 4.0)));
 
@@ -5916,7 +5913,6 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
     let config = SimConfig {
         min_dt: 1.0e-6,
         max_substeps_per_step: 20000,
-        recompute_density_each_step: true,
         cfl_include_affine_speed: false,
         fluid_step_retry_enabled: true,
         ..SimConfig::earth(64, DX, DT)

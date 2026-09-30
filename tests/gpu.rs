@@ -2864,9 +2864,8 @@ mod gpu_tests {
 
     /// Per-pass GPU timing for a pure fluid scene at ~50k particles. Fluids are core
     /// LP content, and `gpu_profile_passes_at_50k` above profiles NeoHookean only.
-    /// `NewtonianFluidMaterial::needs_density_recompute()` adds per-substep work (the
-    /// Tait EOS needs current density every substep, unlike an elastic solid); this
-    /// measures whether that, or anything else fluid-specific, costs noticeably.
+    /// This measures whether anything fluid-specific (the Tait EOS, the
+    /// strict volume state) costs noticeably.
     #[test]
     #[ignore = "perf diagnostic (not correctness) -- 50k-particle fluid profiling pass, multi-minute under software backends (WARP/lavapipe); run manually when investigating perf, not routine CI"]
     fn gpu_profile_fluid_passes_at_50k() {
@@ -3289,7 +3288,6 @@ mod gpu_tests {
         const WATER_ID: u32 = 2;
         let config = SimConfig {
             max_substeps_per_step: 8,
-            recompute_density_each_step: true,
             ..SimConfig::standard(GRID_RES, 0.1, Vec2::new(0.0, -0.3))
         };
 

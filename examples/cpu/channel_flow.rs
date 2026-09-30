@@ -71,7 +71,6 @@ fn make_sim() -> Simulation {
     let config = SimConfig {
         min_dt: 1.0e-3,
         max_substeps_per_step: 8,
-        recompute_density_each_step: true,
         cfl_include_affine_speed: false,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at

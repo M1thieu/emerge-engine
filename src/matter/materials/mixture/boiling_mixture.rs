@@ -386,10 +386,6 @@ impl MaterialModel for BoilingMixtureMaterial {
         true
     }
 
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
-
     /// Not wired for the GPU yet, as `CavitatingFluidMaterial`.
     ///
     /// `eos_power` is `self.gamma_l`, as in `CavitatingFluidMaterial::params()`

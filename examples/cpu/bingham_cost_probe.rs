@@ -145,7 +145,6 @@ fn main() {
             t.spatial_hash_us,
             t.phase_sleep_us,
             t.project_us,
-            t.density_us,
             t.retry_snapshot_us,
             t.total_us,
         ]

@@ -26,7 +26,6 @@ fn make_sim(max_substeps_per_step: usize) -> Simulation {
     let config = SimConfig {
         min_dt: 0.005,
         max_substeps_per_step,
-        recompute_density_each_step: true,
         gravity: Vec2::new(0.0, -0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };

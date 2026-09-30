@@ -269,10 +269,6 @@ impl MaterialModel for IsothermalCavitatingFluidMaterial {
         true
     }
 
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
-
     /// CPU-only: on the GPU this material would upload as a plain Tait
     /// fluid, so `GpuSimulation` refuses it (`gpu_unsupported_reason`).
     ///
@@ -563,10 +559,6 @@ impl MaterialModel for CavitatingFluidMaterial {
 
     fn owns_deformation_volume_state(&self) -> bool {
         true
-    }
-
-    fn needs_density_recompute(&self) -> bool {
-        false
     }
 
     /// Not wired for the GPU yet, as `IsothermalCavitatingFluidMaterial`.

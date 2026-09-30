@@ -160,8 +160,6 @@ pub struct StepTiming {
     pub phase_sleep_us: u64,
     /// `project_invalid_state` admissibility scan (O(N) pre-P2G, only when standard config).
     pub project_us: u64,
-    /// Density recompute via P2G volume estimation (only when fluid materials present).
-    pub density_us: u64,
     /// `do_substep_with_retry`'s `self.particles.clone()` snapshot, taken once
     /// per attempt (up to `FLUID_STEP_RETRY_LIMIT+1`, worst case 17x) whenever
     /// `SimConfig::fluid_step_retry_enabled` is on, whether or not that

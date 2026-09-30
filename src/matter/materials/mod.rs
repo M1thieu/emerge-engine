@@ -366,16 +366,6 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
         None
     }
 
-    /// Whether this material consumes an optional kernel-density measurement.
-    ///
-    /// This is for models whose constitutive law explicitly uses that sampled
-    /// field. Strict WC-MPM liquids do *not*: their EOS state is
-    /// `rho = rho0 / J`, owned together with `V = V0 J`; see
-    /// `owns_deformation_volume_state` below. Default: false.
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
-
     /// Whether this material owns density and current volume through its
     /// deformation state.  Such materials must not have those values replaced
     /// by a kernel-density gather, whose free-surface bias is a measurement
@@ -609,9 +599,6 @@ macro_rules! forward_material_model_common {
         }
         fn gpu_unsupported_reason(&self) -> Option<&'static str> {
             self.inner.gpu_unsupported_reason()
-        }
-        fn needs_density_recompute(&self) -> bool {
-            self.inner.needs_density_recompute()
         }
         fn owns_deformation_volume_state(&self) -> bool {
             self.inner.owns_deformation_volume_state()

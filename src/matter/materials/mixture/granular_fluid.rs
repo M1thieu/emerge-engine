@@ -392,10 +392,6 @@ impl MaterialModel for GranularFluidMaterial {
 
         dt_bound
     }
-
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]

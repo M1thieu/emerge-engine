@@ -701,10 +701,9 @@ impl State {
                     + t.spatial_hash_us
                     + t.phase_sleep_us
                     + t.project_us
-                    + t.density_us
                     + t.retry_snapshot_us;
                 eprintln!(
-                    "SPIKE frame={} step={:.1}ms subs={} cfl={:.3} | p2g={} grid_update={} (pressure={}) g2p={} cfl_sel={} project={} spatial_hash={} phase_sleep={} fields={} thermal={} density={} retry_snap={} | accounted={} total={} MISSING={}",
+                    "SPIKE frame={} step={:.1}ms subs={} cfl={:.3} | p2g={} grid_update={} (pressure={}) g2p={} cfl_sel={} project={} spatial_hash={} phase_sleep={} fields={} thermal={} retry_snap={} | accounted={} total={} MISSING={}",
                     self.frame,
                     step_ms,
                     snap.substeps_last_step,
@@ -719,7 +718,6 @@ impl State {
                     t.phase_sleep_us,
                     t.fields_us,
                     t.thermal_us,
-                    t.density_us,
                     t.retry_snapshot_us,
                     accounted,
                     t.total_us,

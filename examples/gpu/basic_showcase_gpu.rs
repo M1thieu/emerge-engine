@@ -90,7 +90,6 @@ fn make_sim(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimulation
         // 500: margin over the ~178 substeps the relaxed sand needs (see
         // `SAND_YOUNG_MODULUS_PA`), for player-driven impulses (arrow keys, LMB/RMB).
         max_substeps_per_step: 500,
-        recompute_density_each_step: true,
         // Deliberately weak, NOT real IRL gravity (real g_grid ~= 981 via
         // SimConfig::earth) -- tuned down for a calmer, more legible demo at
         // this grid scale. Disclosed, deferred: basic_sand.rs's

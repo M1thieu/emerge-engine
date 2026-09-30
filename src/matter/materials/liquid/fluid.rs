@@ -520,20 +520,6 @@ impl MaterialModel for NewtonianFluidMaterial {
 
         dt_bound
     }
-
-    /// `false`: this material does not read a kernel-density measurement.
-    /// `init_particle` seeds `rho = rho0/J` and `update_particle` maintains it,
-    /// which `owns_deformation_volume_state -> true` declares; the trait's
-    /// doc says strict WC-MPM liquids own `rho = rho0 / J` together with
-    /// `V = V0 J`.
-    ///
-    /// `true` would also cost a full `grid.clear()` and mass scatter in
-    /// `estimate_particle_volumes`, thrown away for each particle that owns
-    /// its volume: measured on `basic_fluids_gui.rs`, 12000-13700 us of a
-    /// ~54000 us step.
-    fn needs_density_recompute(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]
