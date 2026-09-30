@@ -261,7 +261,11 @@ its own to explain or calm that particular runaway.
   instead of geometry. Consequence: the wall-contact column survives 120
   frames only with J at the [0.5, 2.0] safety clamp from about frame 20, so
   the frame rates quoted for it (about 30 to 90 fps on CPU, 188 fps on GPU)
-  measure cost, not a valid run. The experiments and their toggles live on
+  measure cost, not a valid run. That column is the `fluid_pressure_projection`
+  example, and it no longer gets that far: it panics on its first frame, a
+  particle reaching about 4e7 cells/s within 16 substeps while the CFL step
+  collapses to about 3e-9. Replayed at commits back to 13 September 2026, it
+  ran two frames at most. The experiments and their toggles live on
   the fork branch `archive/pressure-rhs-audit-2026-09-21`.
 
   **The rebuild on the standard formulation is experimental and has not

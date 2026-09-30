@@ -9,10 +9,12 @@ use egui_wgpu::ScreenDescriptor;
 /// acoustic CFL limit that made sustained wall contact (a puddle resting
 /// against a floor or wall) either explode or crawl at ~1 fps.
 ///
-/// Known limitation: in this wall-contact scene the volume ratio J reaches
-/// the [0.5, 2.0] safety clamp from about frame 20 and stays there. The run
-/// survives (no NaN, no particle lost), but it is not a physically valid
-/// incompressible flow; see the pressure projection entry in
+/// Known limitation: this scene does not run. It panics on its first frame
+/// ("adaptive timestep cannot advance the requested simulation time"): after
+/// 16 substeps a particle moves at about 4e7 cells/s with J at the [0.5, 2.0]
+/// safety clamp, and the CFL step collapses to about 3e-9 against the 0.1
+/// still to advance. Replayed at commits back to 13 September 2026, it ran
+/// two frames at most. See the pressure projection entry in
 /// `KNOWN_LIMITATIONS.md`.
 ///
 /// A separate example rather than a change to `basic_fluids.rs`: that demo's
@@ -63,10 +65,8 @@ fn make_sim() -> Simulation {
         // derivation): predictively tightens the gravity-CFL bound for
         // strict-fluid particles near a wall, BEFORE any compression has
         // happened (unlike the field's original acoustic-only tightening,
-        // structurally inert once `eos_stiffness=0`). Verified headless:
-        // this exact scene completes all 120 frames with no crash, no
-        // non-finite state (a disclosed remaining slow drift
-        // late in the run, not eliminated, but bounded).
+        // structurally inert once `eos_stiffness=0`). Not enough for this
+        // scene today, which panics on its first frame (see the file doc).
         fluid_near_wall_cfl_scale: 20.0,
         fluid_near_wall_compression_threshold: 0.0,
         ..SimConfig::earth(GRID, 0.01, DT)
