@@ -60,6 +60,9 @@ fn main() {
         cfl_include_affine_speed: false,
         material_cfl_coefficient: 0.4,
         gravity: Vec2::new(0.0, -981.0 * 0.003),
+        // The out-of-plane thickness this 2-D slice stands for (SLAB_M), read
+        // by the physical render contract below.
+        slice_thickness_m: Some(env_or("SLAB_M", 0.3)),
         ..SimConfig::earth(GRID, 0.01, dt)
     };
     let particles = build_particles(
@@ -127,7 +130,6 @@ fn main() {
     // honest way to make water look blue -- the coefficients are measured and
     // are not ours to inflate.
     if std::env::var("PHYS").is_ok() {
-        let slab_m = env_or("SLAB_M", 0.3);
         // Radiance the scene declares, W/(m^2 sr). Defaults put an equally
         // bright light and backdrop everywhere, which is the simplest case
         // and also the one where reflection and scattering cancel out of
@@ -153,7 +155,8 @@ fn main() {
             emerge::render::PhysicalRenderContract::new(
                 emerge::render::PhysicalRenderContractParams {
                     dx_meters: config.dx_meters,
-                    view_thickness_meters: slab_m,
+                    slice_thickness_m: config
+                        .require_slice_thickness_m("the physical render contract"),
                     incident_radiance_w_m2_sr: [incident; 3],
                     background_radiance_w_m2_sr: [background; 3],
                     display_white_radiance_w_m2_sr: [white; 3],

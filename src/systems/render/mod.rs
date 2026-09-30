@@ -1232,12 +1232,7 @@ impl Renderer {
         let background = contract.background_radiance_w_m2_sr();
         let display_white = contract.display_white_radiance_w_m2_sr();
         let params = PhysicalRenderParams {
-            spatial: [
-                contract.dx_meters(),
-                contract.view_thickness_meters(),
-                1.0,
-                0.0,
-            ],
+            spatial: [contract.dx_meters(), contract.slice_thickness_m(), 1.0, 0.0],
             incident_radiance: [incident[0], incident[1], incident[2], 0.0],
             background_radiance: [background[0], background[1], background[2], 0.0],
             display_white_radiance: [display_white[0], display_white[1], display_white[2], 0.0],

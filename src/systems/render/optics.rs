@@ -26,7 +26,7 @@ use glam::Vec3;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalRenderContract {
     dx_meters: f32,
-    view_thickness_meters: f32,
+    slice_thickness_m: f32,
     incident_radiance_w_m2_sr: [f32; 3],
     background_radiance_w_m2_sr: [f32; 3],
     display_white_radiance_w_m2_sr: [f32; 3],
@@ -41,8 +41,13 @@ pub struct PhysicalRenderContract {
 /// its own output fields, not a workaround for the lint alone.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicalRenderContractParams {
+    /// Physical cell size, the scene's `SimConfig::dx_meters`.
     pub dx_meters: f32,
-    pub view_thickness_meters: f32,
+    /// Out-of-plane thickness of the slab the 2D scene stands for, the
+    /// path light takes through it: the scene's `SimConfig::slice_thickness_m`
+    /// (`SimConfig::require_slice_thickness_m`), the same value radiative
+    /// cooling and the gravity conversion use.
+    pub slice_thickness_m: f32,
     pub incident_radiance_w_m2_sr: [f32; 3],
     pub background_radiance_w_m2_sr: [f32; 3],
     pub display_white_radiance_w_m2_sr: [f32; 3],
@@ -54,7 +59,7 @@ impl PhysicalRenderContract {
     pub fn new(params: PhysicalRenderContractParams) -> Result<Self, PhysicalRenderContractError> {
         let PhysicalRenderContractParams {
             dx_meters,
-            view_thickness_meters,
+            slice_thickness_m,
             incident_radiance_w_m2_sr,
             background_radiance_w_m2_sr,
             display_white_radiance_w_m2_sr,
@@ -64,8 +69,8 @@ impl PhysicalRenderContract {
         if !dx_meters.is_finite() || dx_meters <= 0.0 {
             return Err(PhysicalRenderContractError::NonPositiveDx);
         }
-        if !view_thickness_meters.is_finite() || view_thickness_meters <= 0.0 {
-            return Err(PhysicalRenderContractError::NonPositiveViewThickness);
+        if !slice_thickness_m.is_finite() || slice_thickness_m <= 0.0 {
+            return Err(PhysicalRenderContractError::NonPositiveSliceThickness);
         }
         validate_radiance(incident_radiance_w_m2_sr)?;
         validate_radiance(background_radiance_w_m2_sr)?;
@@ -81,7 +86,7 @@ impl PhysicalRenderContract {
 
         Ok(Self {
             dx_meters,
-            view_thickness_meters,
+            slice_thickness_m,
             incident_radiance_w_m2_sr,
             background_radiance_w_m2_sr,
             display_white_radiance_w_m2_sr,
@@ -94,8 +99,8 @@ impl PhysicalRenderContract {
         self.dx_meters
     }
 
-    pub fn view_thickness_meters(self) -> f32 {
-        self.view_thickness_meters
+    pub fn slice_thickness_m(self) -> f32 {
+        self.slice_thickness_m
     }
 
     pub fn incident_radiance_w_m2_sr(self) -> [f32; 3] {
@@ -125,7 +130,7 @@ impl PhysicalRenderContract {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicalRenderContractError {
     NonPositiveDx,
-    NonPositiveViewThickness,
+    NonPositiveSliceThickness,
     InvalidRadiance,
     InvalidDisplayWhiteRadiance,
     InvalidCameraDirection,
@@ -136,7 +141,7 @@ impl fmt::Display for PhysicalRenderContractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::NonPositiveDx => "dx_meters must be finite and positive",
-            Self::NonPositiveViewThickness => "view_thickness_meters must be finite and positive",
+            Self::NonPositiveSliceThickness => "slice_thickness_m must be finite and positive",
             Self::InvalidRadiance => "radiance channels must be finite and non-negative",
             Self::InvalidDisplayWhiteRadiance => {
                 "display-white radiance channels must be finite and positive"
@@ -188,7 +193,7 @@ mod tests {
     fn contract_rejects_missing_physical_scale() {
         let result = PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.0,
-            view_thickness_meters: 0.01,
+            slice_thickness_m: 0.01,
             incident_radiance_w_m2_sr: [1.0; 3],
             background_radiance_w_m2_sr: [0.0; 3],
             display_white_radiance_w_m2_sr: [1.0; 3],
@@ -202,7 +207,7 @@ mod tests {
     fn contract_normalizes_real_directions() {
         let contract = PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.01,
-            view_thickness_meters: 0.02,
+            slice_thickness_m: 0.02,
             incident_radiance_w_m2_sr: [1.0; 3],
             background_radiance_w_m2_sr: [0.0; 3],
             display_white_radiance_w_m2_sr: [1.0; 3],

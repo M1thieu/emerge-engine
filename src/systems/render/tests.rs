@@ -100,7 +100,7 @@ fn physical_contract_drives_cpu_beer_lambert_in_si() {
         &queue,
         PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.01,
-            view_thickness_meters: 0.25,
+            slice_thickness_m: 0.25,
             incident_radiance_w_m2_sr: [10.0; 3],
             background_radiance_w_m2_sr: [10.0, 20.0, 30.0],
             display_white_radiance_w_m2_sr: [10.0, 20.0, 30.0],
@@ -160,7 +160,7 @@ fn physical_contract_drives_gpu_particle_beer_lambert_in_si() {
         &queue,
         PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.01,
-            view_thickness_meters: 0.25,
+            slice_thickness_m: 0.25,
             incident_radiance_w_m2_sr: [10.0; 3],
             background_radiance_w_m2_sr: [10.0, 20.0, 30.0],
             display_white_radiance_w_m2_sr: [10.0, 20.0, 30.0],
@@ -398,7 +398,7 @@ fn si_contract_path_keeps_scattering_and_fresnel() {
         &queue,
         PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.01,
-            view_thickness_meters: 1.0,
+            slice_thickness_m: 1.0,
             incident_radiance_w_m2_sr: [1.0; 3],
             background_radiance_w_m2_sr: [0.5; 3],
             display_white_radiance_w_m2_sr: [1.0; 3],
@@ -1103,7 +1103,7 @@ fn render_surface_reconstruction_survives_end_to_end() {
         &queue,
         PhysicalRenderContract::new(PhysicalRenderContractParams {
             dx_meters: 0.1,
-            view_thickness_meters: 0.5,
+            slice_thickness_m: 0.5,
             incident_radiance_w_m2_sr: [1.0; 3],
             background_radiance_w_m2_sr: [1.0; 3],
             display_white_radiance_w_m2_sr: [1.0; 3],
@@ -2056,7 +2056,7 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
                 &queue,
                 PhysicalRenderContract::new(PhysicalRenderContractParams {
                     dx_meters: 0.1,
-                    view_thickness_meters: thickness,
+                    slice_thickness_m: thickness,
                     incident_radiance_w_m2_sr: [1.0; 3],
                     background_radiance_w_m2_sr: [1.0; 3],
                     display_white_radiance_w_m2_sr: [1.0; 3],

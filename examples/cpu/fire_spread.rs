@@ -56,13 +56,12 @@ const AMBIENT_K: f32 = 293.15;
 // in still air, chosen empirically so a several-minute play session shows
 // meaningful, differentiated spread across materials.
 const COOLING_RATE: f32 = 0.001;
-// Emissivity off: at this demo's dt/dx scale, radiation removes heat faster than
-// conduction and combustion build it. On the wood setup, every nonzero emissivity tried
-// (including 0.02 and 0.01, with and without COOLING_RATE) stalls the fire at 6-7%
-// burned within a few hundred seconds, against 18% and climbing without it:
-// Stefan-Boltzmann's T^4 term outgrows this conduction-only spread in the temperature
-// range spread depends on. `ThermalConfig::emissivity` is there for scenes where it
-// fits (e.g. lava cooling).
+// Emissivity off. Measured before issue #58 was fixed, when radiation used grid mass
+// and volume as kilograms and square metres, so every particle radiated like a 1 mm
+// slab: every nonzero emissivity tried (down to 0.01) then stalled the fire at 6-7%
+// burned, against 18% and climbing without it. Not re-measured since. Turning it on
+// now also needs `SimConfig::slice_thickness_m`, the plank thickness this 2D scene
+// stands for.
 const EMISSIVITY_DEMO_SCALE: f32 = 0.0;
 
 const PLANK_HALF_LEN: i32 = 22;

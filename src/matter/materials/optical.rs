@@ -19,7 +19,7 @@
 //! blue, which is why water is blue. It is also why a glass of water is
 //! colourless: over 10 cm even the red loses only ~2%. Scenes that want
 //! visibly blue water state a path length through
-//! `PhysicalRenderContract::view_thickness_meters`; inflating the
+//! `SimConfig::slice_thickness_m`; inflating the
 //! coefficient instead would be painting, not measuring.
 
 use crate::energy::radiation::{OpticalCoefficientsSi, spectral_band_average};

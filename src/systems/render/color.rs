@@ -78,7 +78,7 @@ impl Renderer {
                     // `radiative_transfer.inc.wgsl` runs on the GPU. A
                     // particle carries no surface normal, so Fresnel is
                     // evaluated at normal incidence (`cos_view = 1`).
-                    let path_m = (1.0 / j) * contract.view_thickness_meters()
+                    let path_m = (1.0 / j) * contract.slice_thickness_m()
                         / contract.camera_direction().z.abs().max(1.0e-6);
                     let radiance = slab_radiance(
                         contract.background_radiance_w_m2_sr(),

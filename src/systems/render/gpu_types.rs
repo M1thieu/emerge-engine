@@ -130,7 +130,7 @@ const _: () = assert!(mem::size_of::<SnapshotConfig>() == 16);
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(super) struct PhysicalRenderParams {
-    /// x = dx [m], y = out-of-plane view thickness [m], z = enabled flag.
+    /// x = dx [m], y = slice thickness [m] (`SimConfig::slice_thickness_m`), z = enabled flag.
     pub(super) spatial: [f32; 4],
     /// Linear RGB spectral-band radiance [W / (m^2 sr)].
     pub(super) incident_radiance: [f32; 4],

@@ -105,16 +105,16 @@ pub struct ThermalConfig {
     pub cooling_rate: f32,
 
     /// Surface emissivity ε ∈ [0,1] for Stefan-Boltzmann radiative loss
-    /// (`transfer::heat_radiation`, σ·ε·A·(T⁴−T_ambient⁴)). 0.0 = disabled (default).
+    /// (`transfer::heat_radiation`, σ·ε·(T⁴−T_ambient⁴) per unit area). 0.0 =
+    /// disabled (default).
     ///
-    /// Same blanket per-particle approximation `cooling_rate` already makes (every
-    /// particle treated as if radiating to ambient, not gated on real free-surface
-    /// exposure) -- this is a second, more accurate term for the SAME simplification,
-    /// not a new architecture. `A` is the particle's own current `volume` (this
-    /// engine's 2D areal-density convention already treats it as a real m² footprint
-    /// with implicit unit depth, same convention `Elastic::particle_mass` uses) -- the
-    /// face the render emission pass would show, per `heat_radiation`'s own doc
-    /// ("physical basis for blackbody glow in the render emission pass").
+    /// Each particle is a patch of the scene's slab, `L` thick
+    /// (`SimConfig::slice_thickness_m`), radiating from the one face the
+    /// camera sees: per unit face area it holds `density * L` of mass, so
+    /// it cools at `σ·ε·(T⁴−T_ambient⁴) / (density * heat_capacity * L)`.
+    /// Same blanket approximation `cooling_rate` makes: every particle
+    /// radiates, not only those on a free surface. A nonzero emissivity
+    /// needs the slice thickness; `apply` panics without it.
     pub emissivity: f32,
 }
 
@@ -189,18 +189,35 @@ impl ThermalDiffusion {
     /// stable step, each pass the whole way from particles to grid and
     /// back (same reason as `ScalarDiffusionField::apply`); Newton cooling
     /// is exact.
-    pub fn apply(&mut self, particles: &mut Particles, dt: f32) {
+    /// `slice_thickness_m` is the scene's `SimConfig::slice_thickness_m`,
+    /// read only by the radiative loss (see `ThermalConfig::emissivity`).
+    pub fn apply(&mut self, particles: &mut Particles, dt: f32, slice_thickness_m: Option<f32>) {
         let passes = super::stencil::stable_sub_steps(
             self.config.alpha_grid() * dt,
             self.stability_fraction,
         );
         let pass_dt = dt / passes as f32;
+        // Heat capacity of one square metre of the radiating slab, J/(m^2 K).
+        let face_heat_capacity = (self.config.emissivity > 0.0).then(|| {
+            let l = match slice_thickness_m {
+                Some(l) if l.is_finite() && l > 0.0 => l,
+                other => panic!(
+                    "ThermalConfig::emissivity > 0 needs SimConfig::slice_thickness_m, the                      out-of-plane thickness in metres the 2D scene stands for; got {other:?}"
+                ),
+            };
+            self.config.density * self.config.heat_capacity * l
+        });
         for _ in 0..passes {
-            self.apply_pass(particles, pass_dt);
+            self.apply_pass(particles, pass_dt, face_heat_capacity);
         }
     }
 
-    fn apply_pass(&mut self, particles: &mut Particles, sub_dt: f32) {
+    fn apply_pass(
+        &mut self,
+        particles: &mut Particles,
+        sub_dt: f32,
+        face_heat_capacity: Option<f32>,
+    ) {
         let n = self.grid_res * self.grid_res;
         let res = self.grid_res as i32;
 
@@ -291,25 +308,19 @@ impl ThermalDiffusion {
             }
         }
 
-        // Stefan-Boltzmann radiative loss: dT/dt = -q/(m·c_p), q = heat_radiation(...).
-        // See `ThermalConfig::emissivity`'s own doc for why area = particle volume and
-        // why this is the same blanket-exposure approximation as Newton cooling above.
-        if self.config.emissivity > 0.0 {
-            let c_p = self.config.heat_capacity;
+        // Stefan-Boltzmann radiative loss from each particle's face, over
+        // the slab's heat capacity per unit face area (`ThermalConfig::
+        // emissivity`): dT/dt = -sigma*eps*(T^4 - T_a^4) / (rho*c_p*L).
+        if let Some(face_heat_capacity) = face_heat_capacity {
             for pi in 0..particles.len() {
-                let heat_capacity_j_per_k = particles.mass[pi] * c_p;
-                if heat_capacity_j_per_k <= 0.0 {
-                    continue;
-                }
-                let area = particles.volume[pi];
-                let q_watts = heat_radiation(
+                let flux_w_m2 = heat_radiation(
                     particles.temperature[pi],
                     ambient,
-                    area,
+                    1.0,
                     self.config.emissivity,
                     1.0,
                 );
-                particles.add_temperature(pi, -q_watts / heat_capacity_j_per_k * sub_dt);
+                particles.add_temperature(pi, -flux_w_m2 / face_heat_capacity * sub_dt);
             }
         }
     }
@@ -354,7 +365,7 @@ mod tests {
             32,
         );
         for _ in 0..600 {
-            thermal.apply(&mut particles, 1.0 / 60.0);
+            thermal.apply(&mut particles, 1.0 / 60.0, None);
         }
         particles
             .temperature

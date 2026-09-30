@@ -288,7 +288,7 @@ impl Operator {
                     },
                     GRID,
                 );
-                Box::new(move |particles, dt| thermal.apply(particles, dt))
+                Box::new(move |particles, dt| thermal.apply(particles, dt, None))
             }
         }
     }

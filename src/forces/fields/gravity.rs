@@ -38,12 +38,9 @@ pub struct GravityWellField {
     /// in grid mass (`(rho / reference_density_kg_m3) * cells^2`, as
     /// `SpawnRegion` spawns them), accelerations in cells/s².
     ///
-    /// The real `G_SI` (6.674×10⁻¹¹ N·m²/kg²) converts as
-    /// `G_SI * reference_density_kg_m3 * L / dx_meters`, where `L` is the
-    /// out-of-plane thickness in metres a 2D mass stands for: a grid mass
-    /// is `m_SI / (reference_density_kg_m3 * dx_meters^2 * L)`, and a grid
-    /// acceleration is the SI one over `dx_meters`. No `L` is stated
-    /// anywhere in the engine yet (issue #58).
+    /// The real `G_SI` (6.674×10⁻¹¹ N·m²/kg²) converts through
+    /// `SimConfig::gravitational_constant_from_si`, which needs the scene's
+    /// `SimConfig::slice_thickness_m`.
     pub gravitational_constant: f32,
 
     /// Plummer softening length ε in grid coordinates.

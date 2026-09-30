@@ -417,7 +417,11 @@ impl Simulation {
             let fraction = self.config.material_cfl_coefficient;
             if let Some(thermal) = &mut self.thermal {
                 thermal.stability_fraction = fraction;
-                thermal.apply(&mut self.particles, diffusion_dt);
+                thermal.apply(
+                    &mut self.particles,
+                    diffusion_dt,
+                    self.config.slice_thickness_m,
+                );
             }
             for field in &mut self.scalar_fields {
                 field.stability_fraction = fraction;

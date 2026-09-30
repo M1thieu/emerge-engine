@@ -56,7 +56,7 @@ fn apply_optics(
     renderer: &mut Renderer,
     queue: &wgpu::Queue,
     registry: &emerge::MaterialRegistry,
-    dx_meters: f32,
+    config: &SimConfig,
 ) {
     // Measured constants come from the materials themselves. Adding a
     // material with declared optics needs no change here at all.
@@ -64,13 +64,8 @@ fn apply_optics(
     renderer.set_physical_render_contract(
         queue,
         PhysicalRenderContract::new(PhysicalRenderContractParams {
-            dx_meters,
-            // What this 2-D slice stands for out of plane. The domain is 64
-            // cells of 1 cm, so the tank it represents is about this deep.
-            // It is a statement about the scene, not a dial for how blue the
-            // water should look -- water this shallow is nearly colourless,
-            // and that is what a 30 cm tank looks like.
-            view_thickness_meters: 0.3,
+            dx_meters: config.dx_meters,
+            slice_thickness_m: config.require_slice_thickness_m("the physical render contract"),
             // Declared lighting: an overcast sky above, a darker backdrop
             // behind. Equal values would make reflection and scattering
             // cancel out of view.
@@ -227,6 +222,12 @@ fn make_sim_data(
         // No regional substepping: its precondition, a calm region next to a
         // violent one, does not hold on this scene (see KNOWN_LIMITATIONS.md,
         // entry 2).
+        // What this 2-D slice stands for out of plane. The domain is 64
+        // cells of 1 cm, so the tank it represents is about this deep. It is
+        // a statement about the scene, not a dial for how blue the water
+        // should look -- water this shallow is nearly colourless, and that
+        // is what a 30 cm tank looks like.
+        slice_thickness_m: Some(0.3),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     // Mass set explicitly: a uniform material-point lattice represents a filled
@@ -581,8 +582,7 @@ impl State {
         // density noise as speckle (live-reported: bumpy, mottled Surface
         // mode). 4x gives each cell a sample, at 0.44x the cost.
         renderer.set_surface_res_multiplier(4);
-        let dx = sim.config().dx_meters;
-        apply_optics(&mut renderer, sim.queue(), sim.registry(), dx);
+        apply_optics(&mut renderer, sim.queue(), sim.registry(), sim.config());
         // NOTE: `Renderer::set_light_dir` (real infrastructure, reuses
         // `SimConfig::light_dir`) exists but is deliberately NOT called here
         // yet -- this config's own `light_dir` is left at its default

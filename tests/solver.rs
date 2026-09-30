@@ -1844,6 +1844,7 @@ fn radiative_cooling_scales_with_emissivity() {
     let run = |emissivity: f32| -> f32 {
         let config = SimConfig {
             gravity: Vec2::ZERO,
+            slice_thickness_m: Some(0.02),
             ..small_solver_config()
         };
         let thermal = ThermalDiffusion::new(
@@ -1891,6 +1892,119 @@ fn radiative_cooling_scales_with_emissivity() {
          emissivity, not just present): low_eps_mean={mean_low_emissivity:.2} \
          high_eps_mean={mean_high_emissivity:.2}"
     );
+}
+
+/// The radiative loss at its real magnitude, not only its sign: a 2 cm
+/// slab of water-like matter (rho 1000 kg/m^3, c_p 1000 J/(kg K)) at
+/// 1000 K, emissivity 0.9, radiating from one face into 293.15 K, cools
+/// by `sigma*eps*(T^4 - T_a^4) / (rho*c_p*L)`, about 2.5 K/s. The slab's
+/// own mean over 2 s is compared with that equation integrated finely.
+/// Before the slice thickness was stated, the code used the grid mass and
+/// volume as kilograms and square metres and cooled this slab 20 times
+/// faster, a 1 mm slab (issue #58).
+#[test]
+fn radiative_cooling_matches_stefan_boltzmann_for_the_stated_slab() {
+    let (hot, ambient, eps, rho, c_p, slab) = (1000.0_f32, 293.15_f32, 0.9, 1000.0, 1000.0, 0.02);
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        slice_thickness_m: Some(slab),
+        ..small_solver_config()
+    };
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            conductivity: 0.0,
+            heat_capacity: c_p,
+            density: rho,
+            ambient,
+            grid_cell_size: 0.1,
+            cooling_rate: 0.0,
+            emissivity: eps,
+        },
+        config.grid_res,
+    );
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_thermal(thermal);
+    for t in solver.particles_mut().temperature.iter_mut() {
+        *t = hot;
+    }
+    let steps = 20;
+    solver.step_n(steps);
+    let mean = solver
+        .particles()
+        .iter()
+        .map(|p| p.temperature)
+        .sum::<f32>()
+        / solver.particles().len() as f32;
+
+    // dT/dt = -a (T^4 - T_a^4), integrated in f64 with fine steps.
+    let sigma = 5.670_374_419e-8_f64;
+    let a = sigma * f64::from(eps) / (f64::from(rho) * f64::from(c_p) * f64::from(slab));
+    let total_s = f64::from(steps as f32 * config.dt);
+    let n = 200_000;
+    let h = total_s / f64::from(n);
+    let mut t = f64::from(hot);
+    for _ in 0..n {
+        t -= a * (t.powi(4) - f64::from(ambient).powi(4)) * h;
+    }
+    let expected_drop = f64::from(hot) - t;
+    let drop = f64::from(hot - mean);
+    assert!(
+        (drop - expected_drop).abs() < 0.02 * expected_drop,
+        "slab cooled by {drop:.4} K over {total_s} s, Stefan-Boltzmann gives {expected_drop:.4} K"
+    );
+}
+
+/// `SimConfig::gravitational_constant_from_si` against the same attraction
+/// computed in SI: two kilograms, 30 cm away, in a 5 cm slice at 1 cm
+/// cells. The grid mass is `m / (rho_ref * dx^2 * L)` and the grid
+/// distance `r / dx`; the grid acceleration times `dx` must be the SI one.
+#[test]
+fn gravitational_constant_from_si_gives_the_si_acceleration() {
+    let config = SimConfig {
+        slice_thickness_m: Some(0.05),
+        ..SimConfig::earth(64, 0.01, 0.1)
+    };
+    let g_si = 6.674e-11_f32;
+    let (m_kg, r_m) = (2.0_f32, 0.3_f32);
+    let a_si = g_si * m_kg / (r_m * r_m);
+
+    let dx = config.dx_meters;
+    let m_grid = m_kg / (config.reference_density_kg_m3 * dx * dx * 0.05);
+    let r_cells = r_m / dx;
+    let a_grid = config.gravitational_constant_from_si(g_si) * m_grid / (r_cells * r_cells);
+    assert!(
+        (a_grid * dx - a_si).abs() < 1.0e-5 * a_si,
+        "grid acceleration {} m/s^2 against SI {a_si}",
+        a_grid * dx
+    );
+}
+
+/// A nonzero emissivity with no stated slice thickness is refused rather
+/// than run on an assumed one.
+#[test]
+#[should_panic(expected = "slice_thickness_m")]
+fn radiative_cooling_without_a_slice_thickness_panics() {
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        ..small_solver_config()
+    };
+    let thermal = ThermalDiffusion::new(
+        ThermalConfig {
+            conductivity: 0.0,
+            heat_capacity: 1000.0,
+            density: 1000.0,
+            ambient: 293.15,
+            grid_cell_size: 0.1,
+            cooling_rate: 0.0,
+            emissivity: 0.9,
+        },
+        config.grid_res,
+    );
+    let mut solver = Simulation::new(config, small_spawn_config(16.0))
+        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
+        .with_thermal(thermal);
+    solver.step();
 }
 
 // --- LP integration API tests ---

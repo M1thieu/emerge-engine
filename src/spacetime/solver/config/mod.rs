@@ -387,6 +387,19 @@ pub struct SimConfig {
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
     pub dx_meters: f32,
 
+    /// Out-of-plane thickness, in metres, of the slab the 2D scene stands
+    /// for. `None` (the default) means the scene has not stated one.
+    ///
+    /// The solver itself never needs it: 2D mechanics works per unit depth.
+    /// It matters wherever a real 3D quantity meets a 2D particle: a
+    /// particle's radiating face against the mass behind it
+    /// (`ThermalConfig::emissivity`), a grid mass turned into kilograms
+    /// ([`Self::gravitational_constant_from_si`]), and the path light takes
+    /// through the slab (`render::PhysicalRenderContractParams::slice_thickness_m`).
+    /// Each of those panics without it rather than assume a thickness, as
+    /// each once did (1 mm, 1 m, and none, all different).
+    pub slice_thickness_m: Option<f32>,
+
     /// Opt-in implicit (Newton-CG) grid-velocity update (see
     /// `spacetime::solver::implicit_corotated`: Klar 2016 operator split, an
     /// implicit elastic solve on the shared Corotated branch, then each
@@ -448,6 +461,7 @@ impl Default for SimConfig {
             fluid_pressure_iterations: 0,
             spatial_sort_enabled: false,
             dx_meters: 1.0,
+            slice_thickness_m: None,
             implicit_corotated_elastic: false,
         }
     }
@@ -531,6 +545,33 @@ impl SimConfig {
     /// rate in 1/s).
     pub fn visc_from_si(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
         eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    }
+
+    /// The stated slice thickness, for a feature that cannot work without
+    /// one. Panics naming `feature` when [`Self::slice_thickness_m`] is
+    /// unset or not a positive finite length.
+    pub fn require_slice_thickness_m(&self, feature: &str) -> f32 {
+        match self.slice_thickness_m {
+            Some(l) if l.is_finite() && l > 0.0 => l,
+            other => panic!(
+                "{feature} needs SimConfig::slice_thickness_m, the out-of-plane thickness in \
+                 metres the 2D scene stands for; got {other:?}"
+            ),
+        }
+    }
+
+    /// Real gravitational constant (`N m^2 / kg^2`) to the grid units the
+    /// gravity fields apply it in: positions in cells, grid masses
+    /// (`(rho / reference_density_kg_m3) * cells^2`), accelerations in
+    /// cells/s^2.
+    ///
+    /// A grid mass is `m_SI / (reference_density_kg_m3 * dx_meters^2 * L)`
+    /// with `L` the slice thickness, and a grid acceleration is the SI one
+    /// over `dx_meters`, so `G_grid = G_SI * reference_density_kg_m3 * L /
+    /// dx_meters`. Panics without a stated slice thickness.
+    pub fn gravitational_constant_from_si(&self, g_si: f32) -> f32 {
+        let l = self.require_slice_thickness_m("gravitational_constant_from_si");
+        g_si * self.reference_density_kg_m3 * l / self.dx_meters
     }
 
     /// Validate solver-side numerical and domain constraints.
