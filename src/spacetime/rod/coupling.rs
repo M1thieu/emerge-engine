@@ -14,8 +14,8 @@ use glam::Vec2;
 use crate::grid::Grid;
 use crate::grid::kernel::quadratic_weights;
 
-use super::integrator::advance_position;
 use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces, rod_cfl_dt};
+use crate::spacetime::integration::advance_position;
 
 /// Kernel support radius for `quadratic_weights` is 1.5 grid cells -- two
 /// scatter locations spaced up to this far apart still have overlapping
@@ -256,7 +256,7 @@ pub(crate) fn push_acceleration(
 /// moving the points, so a stiff rod neither needs a tiny mechanics substep
 /// nor leaves the grid. Returns the number of sub-steps.
 ///
-/// Positions use compensated summation (`integrator::advance_position`).
+/// Positions use compensated summation (`spacetime::integration::advance_position`).
 ///
 /// Bundles this function's own scalar/optional parameters -- the fix
 /// for clippy::too_many_arguments rather than suppressing the lint.

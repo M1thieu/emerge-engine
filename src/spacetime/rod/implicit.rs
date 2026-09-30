@@ -43,8 +43,8 @@ use super::coupling::push_acceleration;
 use super::forces::{
     axial_force_and_jacobian, bending_jacobian_gauss_newton, discrete_curvature_gradient,
 };
-use super::integrator::advance_position;
 use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
+use crate::spacetime::integration::advance_position;
 
 /// Solve `A x = b` via Gaussian elimination with partial pivoting.
 /// `a` is row-major `n*n`, destroyed in the process. Returns `None` if `A`

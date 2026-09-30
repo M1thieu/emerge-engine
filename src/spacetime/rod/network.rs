@@ -20,7 +20,7 @@
 use glam::Vec2;
 
 use super::forces::{discrete_curvature, discrete_curvature_gradient};
-use super::integrator::advance_position;
+use crate::spacetime::integration::advance_position;
 
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkEdge {

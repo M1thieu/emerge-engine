@@ -24,6 +24,7 @@ use crate::matter::materials::granular::grain_contact_law::{
     resolve_wall_contact_hertzian,
 };
 use crate::matter::particle::Grain;
+use crate::spacetime::integration::advance_position;
 
 /// Which real contact force law a `GrainPopulation` resolves every contact
 /// through -- `Linear` (Cundall & Strack 1979, constant stiffness, the
@@ -71,6 +72,12 @@ pub struct GrainPopulation {
     /// `resolve_terrain_contact_forces`'s doc for why this exists as
     /// a separate mechanism.
     terrain_springs: Vec<ContactSpring>,
+    /// Per-grain rounding residual of the position update
+    /// (`spacetime::integration::advance_position`), resized lazily like
+    /// `wall_springs`. A contact's stable step moves a slow grain by less
+    /// than the f32 spacing at its coordinate, and without this the lost
+    /// part keeps the grain from converging as the step shrinks.
+    pub(super) position_compensation: Vec<Vec2>,
     pub config: ContactModel,
     /// Sweeps of `resolve_contact_forces`'s iterative relaxation (see that
     /// function). `1` via `new`/`new_hertzian` is the single pass; raise it
@@ -127,6 +134,7 @@ impl GrainPopulation {
             grains,
             contacts: Vec::new(),
             wall_springs: Vec::new(),
+            position_compensation: Vec::new(),
             terrain_springs: Vec::new(),
             config: ContactModel::Linear(config),
             contact_iterations: 1,
@@ -145,6 +153,7 @@ impl GrainPopulation {
             grains,
             contacts: Vec::new(),
             wall_springs: Vec::new(),
+            position_compensation: Vec::new(),
             terrain_springs: Vec::new(),
             config: ContactModel::Hertzian(config),
             contact_iterations: 1,
@@ -163,6 +172,7 @@ impl GrainPopulation {
             grains,
             contacts: Vec::new(),
             wall_springs: Vec::new(),
+            position_compensation: Vec::new(),
             terrain_springs: Vec::new(),
             config: ContactModel::Disc2D(config),
             contact_iterations: 1,
@@ -713,7 +723,14 @@ impl GrainPopulation {
     /// a grid-coupled scene actually needs one).
     pub fn step(&mut self, gravity: Vec2, dt: f32) {
         let (forces, torques) = self.resolve_contact_forces(dt);
-        for (idx, grain) in self.grains.iter_mut().enumerate() {
+        self.position_compensation
+            .resize(self.grains.len(), Vec2::ZERO);
+        for (idx, (grain, compensation)) in self
+            .grains
+            .iter_mut()
+            .zip(self.position_compensation.iter_mut())
+            .enumerate()
+        {
             let mut accel = gravity + forces[idx] / grain.mass;
             for field in &self.grain_fields {
                 accel += field.acceleration(grain);
@@ -722,7 +739,7 @@ impl GrainPopulation {
             let angular_accel = torques[idx] / grain.moment_of_inertia();
             grain.spin += angular_accel * dt;
             grain.orientation += grain.spin * dt;
-            grain.x += grain.v * dt;
+            advance_position(&mut grain.x, compensation, grain.v * dt);
         }
     }
 }

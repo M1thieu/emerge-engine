@@ -21,6 +21,7 @@
 pub mod diff;
 pub mod grains;
 pub mod grid;
+pub(crate) mod integration;
 pub mod rod;
 pub mod solver;
 pub mod transfer;

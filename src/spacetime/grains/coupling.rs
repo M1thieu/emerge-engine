@@ -19,6 +19,7 @@ use crate::boundary::BoundaryCondition;
 use crate::grid::kernel::quadratic_weights;
 use crate::grid::{Grid, VelocitySnapshot};
 use crate::solver::config::KERNEL_D_INVERSE;
+use crate::spacetime::integration::advance_position;
 
 use super::population::GrainPopulation;
 
@@ -199,11 +200,21 @@ fn contact_sub_step(
         forces[i] += wall_forces[i] + terrain_forces[i];
         torques[i] += wall_torques[i] + terrain_torques[i];
     }
-    for (idx, grain) in grains.grains.iter_mut().enumerate() {
+    grains
+        .position_compensation
+        .resize(grains.grains.len(), Vec2::ZERO);
+    for (idx, (grain, compensation)) in grains
+        .grains
+        .iter_mut()
+        .zip(grains.position_compensation.iter_mut())
+        .enumerate()
+    {
         grain.v += (forces[idx] / grain.mass) * dt;
         grain.spin += (torques[idx] / grain.moment_of_inertia()) * dt;
         grain.orientation += grain.spin * dt;
-        let mut new_pos = grain.x + grain.v * dt;
+        let mut new_pos = grain.x;
+        advance_position(&mut new_pos, compensation, grain.v * dt);
+        let advanced = new_pos;
         // Radius-aware backstop, owned by each boundary
         // (`BoundaryCondition::clamp_grain_position`): the particle clamp
         // (`clamp_particle_position`) assumes a "+1" vertical clearance,
@@ -212,6 +223,11 @@ fn contact_sub_step(
         // grew negative).
         for boundary in boundaries {
             new_pos = boundary.clamp_grain_position(new_pos, grain.radius, grid_res);
+        }
+        // A clamped grain sits exactly where the boundary put it; the
+        // residual of the step it did not take is dropped with that step.
+        if new_pos != advanced {
+            *compensation = Vec2::ZERO;
         }
         grain.x = new_pos;
     }

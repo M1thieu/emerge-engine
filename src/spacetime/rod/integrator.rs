@@ -5,6 +5,7 @@
 use glam::Vec2;
 
 use super::{RodMaterial, RodPoints, RodRestState, compute_internal_forces};
+use crate::spacetime::integration::advance_position;
 
 /// One explicit (symplectic Euler) rod substep. Pinned points held at
 /// `v=0`/position fixed -- identical semantics to `Particle::pinned`'s own
@@ -63,19 +64,6 @@ pub fn step_rod(
             rod.v[i] * dt,
         );
     }
-}
-
-/// `x += step` with compensated (Kahan 1965) summation: `compensation`
-/// carries the part of each step f32 rounded away and adds it back on the
-/// next. A rod's stable step makes each increment small next to `x`'s grid
-/// coordinate: a 81-point cantilever at 1 cm cells, advanced plainly,
-/// froze every point within 5 s while its first mode still rang at 5 mm
-/// (`tests/subsystem_time_steps.rs`, `probe_cantilever_reference_absorption`).
-pub(crate) fn advance_position(x: &mut Vec2, compensation: &mut Vec2, step: Vec2) {
-    let y = step - *compensation;
-    let t = *x + y;
-    *compensation = (t - *x) - y;
-    *x = t;
 }
 
 /// Longest step the rod's own explicit integrator (`step_rod`: symplectic
@@ -196,7 +184,7 @@ pub fn apply_mass_scaling_for_target_dt(
 mod tests {
     use glam::Vec2;
 
-    use super::{advance_position, rod_cfl_dt, step_rod};
+    use super::{rod_cfl_dt, step_rod};
     use crate::rod::{
         RodForceParams, RodImplicitStepParams, RodMaterial, RodPoints, YBranchSpec, advance_rod,
         build_straight_rod, build_y_branch, step_network, step_rod_implicit,
@@ -205,27 +193,6 @@ mod tests {
     /// Half the spacing of f32 values around 40, where these tests sit.
     fn half_ulp_at_40() -> f32 {
         0.5 * (40.0f32.next_up() - 40.0)
-    }
-
-    #[test]
-    fn increments_below_half_an_ulp_add_up_when_compensated() {
-        let start = Vec2::splat(40.0);
-        let step = Vec2::splat(0.2 * half_ulp_at_40());
-        let (mut plain, mut compensated, mut residual) = (start, start, Vec2::ZERO);
-        let count = 100_000;
-        for _ in 0..count {
-            plain += step;
-            advance_position(&mut compensated, &mut residual, step);
-        }
-        // The premise: plain f32 addition never moves.
-        assert_eq!(plain, start);
-        let expected = count as f32 * step.x;
-        let moved = compensated - start;
-        assert!(
-            (moved.x - expected).abs() < 1.0e-3 * expected
-                && (moved.y - expected).abs() < 1.0e-3 * expected,
-            "moved {moved:?}, expected {expected} on each axis"
-        );
     }
 
     /// A straight three-point rod near x = y = 40 cells at rest length,
