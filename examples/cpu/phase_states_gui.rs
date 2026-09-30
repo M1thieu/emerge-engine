@@ -38,12 +38,13 @@ use egui_wgpu::ScreenDescriptor;
 /// steam rises into the room above.
 ///
 /// G cycles the view: particles, the grid-volume view, the curvature-flow
-/// surface. Only the ice declares measured optics (`optical::pure_ice`,
-/// Warren & Brandt 2008), and clear ice absorbs about as little as water
-/// does, so the volume and surface views still tell the phases apart mostly
-/// by density (steam holds a sixth of water's mass per cell) and by the ice
-/// being drawn flat, as a solid; the particle view keeps `ByMaterial`'s
-/// placeholder colours.
+/// surface. Ice, water and the boiling mixture declare measured optics
+/// (`optical::pure_ice`, Warren & Brandt 2008; `optical::pure_water`, Pope &
+/// Fry 1997). Clear ice absorbs about as little as water does, so those two
+/// views tell ice from water mostly by the ice being drawn flat, as a solid,
+/// and the steam by its density (a sixth of water's mass per cell; it
+/// declares no optics). The particle view keeps `ByMaterial`'s placeholder
+/// colours.
 ///
 ///   cargo run --example phase_states_gui --features "render,experimental"
 ///
@@ -303,7 +304,9 @@ fn make_sim() -> (
         // discrete enthalpy-driven swap to `STEAM_ID` is expected to fire
         // well before that, but the EOS itself stays real and well-defined
         // with headroom past it.
-        CavitatingFluidMaterial::new(table, config.dx_meters, 1.0e-3, 0.5, 8.0)
+        let mut water = CavitatingFluidMaterial::new(table, config.dx_meters, 1.0e-3, 0.5, 8.0);
+        water.optics = Some(optical::pure_water());
+        water
     };
     // Mid-boil mixture material, built from `water`'s own table, so `BOILING_ID`'s
     // liquid-side reference matches `WATER_ID`'s exactly (continuity at the `x=0`
@@ -311,8 +314,13 @@ fn make_sim() -> (
     // `volume_ratio_max=8.0` as `water`: full vaporization's equilibrium `J` is
     // `rho_l_ref/rho_v_ref=6.0` (WATER_RHO_KG_M3/STEAM_RHO_KG_M3), so the same
     // headroom covers this material.
-    let boiling =
+    //
+    // Same water, so the same measured absorption. The bubbles would also
+    // scatter, but that depends on their size, which nothing here measures,
+    // so no scattering is declared.
+    let mut boiling =
         BoilingMixtureMaterial::from_table(&water.table, config.dx_meters, 1.0e-3, 0.5, 8.0);
+    boiling.optics = Some(optical::pure_water());
     let steam = {
         // `IdealGasMaterial` needs bulk viscosity to resist over-expansion (it
         // otherwise resists only compression, see that field's doc). Magnitude:

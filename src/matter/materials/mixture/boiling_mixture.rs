@@ -150,6 +150,12 @@ pub struct BoilingMixtureMaterial {
     pub min_volume: f32,
     pub volume_ratio_min: f32,
     pub volume_ratio_max: f32,
+    /// Measured optical coefficients (absorption and reduced scattering,
+    /// `m^-1`) the caller declares for what this material represents, or
+    /// `None`. Filled from `matter::materials::optical`'s datasets
+    /// (`pure_water`, ...), never chosen by the model: see
+    /// `NewtonianFluidMaterial::optics` for why this is not a substance flag.
+    pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
 }
 
 impl BoilingMixtureMaterial {
@@ -218,6 +224,7 @@ impl BoilingMixtureMaterial {
             min_volume: 1.0e-9,
             volume_ratio_min,
             volume_ratio_max,
+            optics: None,
         }
     }
 
@@ -268,6 +275,11 @@ impl BoilingMixtureMaterial {
 }
 
 impl MaterialModel for BoilingMixtureMaterial {
+    /// Whatever the caller measured, verbatim (see the `optics` field).
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        self.optics
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Fluid
     }
