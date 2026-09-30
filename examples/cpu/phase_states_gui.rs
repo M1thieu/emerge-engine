@@ -2,6 +2,8 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 #[path = "../gui_common/scripted.rs"]
 mod scripted;
 
@@ -35,6 +37,12 @@ use egui_wgpu::ScreenDescriptor;
 /// it would nudge the starting ice block upward). Ice and water fall under gravity;
 /// steam rises into the room above.
 ///
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. None of the four materials declares measured optics yet, so the
+/// volume and surface views tell the phases apart by density (steam holds a
+/// sixth of water's mass per cell), not by colour; the particle view keeps
+/// `ByMaterial`'s placeholder colours.
+///
 ///   cargo run --example phase_states_gui --features "render,experimental"
 ///
 /// `EMERGE_SCRIPT_LOG=<file>` runs a scripted hand instead of the mouse and
@@ -48,12 +56,13 @@ use emerge::grid::kernel::quadratic_weights;
 use emerge::matter::materials::solid::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
 };
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     BoilingMixtureMaterial, CavitatingEosTable, CavitatingFluidMaterial, IdealGasMaterial,
     MaterialModel, RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion,
 };
 use glam::{IVec2, Mat2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -62,6 +71,10 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 const GRID: usize = 64;
+/// Particle pitch of the ice column, in grid cells.
+const SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 /// The push slider's top, which a scripted run presses at.
 const PUSH_STRENGTH_MAX: f32 = 30.0;
 const ICE_ID: u32 = 0;
@@ -324,9 +337,9 @@ fn make_sim() -> (
     // "Chimney" geometry: a narrow column spawned low in a tall domain. Gravity
     // keeps it from spreading sideways, and there is room above for steam to rise
     // into instead of hitting the domain edge at once.
-    let mass_for = |rho_kg_m3: f32| rho_kg_m3 * (0.5 * config.dx_meters).powi(2);
+    let mass_for = |rho_kg_m3: f32| rho_kg_m3 * (SPACING * config.dx_meters).powi(2);
     let spawn = SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(6, 10),
         box_center: Vec2::new(config.grid_res as f32 * 0.5, config.grid_res as f32 * 0.22),
         material_id: ICE_ID,
@@ -520,6 +533,44 @@ struct State {
     /// Disclosed capture aid -- see `CaptureState`'s doc. `None`
     /// (default, every normal run) unless `PHASE_STATES_CAPTURE_DIR` is set.
     capture: Option<CaptureState>,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
+}
+
+/// Draws one frame of `sim` into `target` through `mode`'s render path: the
+/// swapchain view and the capture texture both go through here, so a capture
+/// shows what the window does.
+fn draw_frame(
+    renderer: &mut Renderer,
+    bridge: &mut CpuRenderBridge,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    sim: &Simulation,
+    mode: RenderMode,
+    target: &wgpu::TextureView,
+) {
+    match mode {
+        RenderMode::Particles => renderer.render(device, queue, sim.particles(), target, true),
+        RenderMode::GridVolume => {
+            bridge.upload_grid(queue, sim.particles(), sim.grid());
+            renderer.render_grid_volume(device, queue, bridge.grid_volume_source(), target, true);
+        }
+        RenderMode::Surface => {
+            bridge.upload_particles(device, queue, sim.particles());
+            // Per-material colouring: each phase keeps its own optics slot
+            // where the surfaces meet.
+            renderer.render_surface_reconstruction(
+                device,
+                queue,
+                bridge.surface_source(ICE_ID, true, sim.config().dt),
+                target,
+                true,
+            );
+        }
+    }
 }
 
 impl State {
@@ -625,6 +676,12 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell of the starting ice, which holds
+        // 1/SPACING^2 particles; steam, a sixth as dense, reads thinner.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -645,7 +702,7 @@ impl State {
         );
 
         println!(
-            "phase_states_gui: {} particles  |  drag Target temperature to heat/cool  |  LMB push  RMB pull  |  R reset  Q quit",
+            "phase_states_gui: {} particles  |  drag Target temperature to heat/cool  |  LMB push  RMB pull  |  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         // A scripted run (see `gui_common/scripted.rs`): the hand pushes into
@@ -721,6 +778,8 @@ impl State {
             steam_material,
             water_jmax_prev_idx: None,
             capture,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -1575,8 +1634,15 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        draw_frame(
+            &mut self.renderer,
+            &mut self.render_bridge,
+            &self.device,
+            &self.queue,
+            &self.sim,
+            self.render_mode,
+            &view,
+        );
 
         // Disclosed capture aid -- see `CaptureState`'s doc.
         // Renders a SECOND time into the dedicated offscreen capture
@@ -1591,12 +1657,14 @@ impl State {
             let capture_view = cap
                 .texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
-            self.renderer.render(
+            draw_frame(
+                &mut self.renderer,
+                &mut self.render_bridge,
                 &self.device,
                 &self.queue,
-                self.sim.particles(),
+                &self.sim,
+                self.render_mode,
                 &capture_view,
-                true,
             );
             let raw = read_full_frame_rgba(
                 &self.device,
@@ -1686,7 +1754,7 @@ impl State {
                          Real gravity: ice falls and water pools. Real Archimedes \
                          buoyancy: steam rises once it exists.",
                     );
-                    ui.label("LMB push  RMB pull  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -1805,6 +1873,10 @@ impl ApplicationHandler for App {
                 let pressed = key_state == ElementState::Pressed;
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::KeyR if pressed => {
                         let (sim, ice_material, water_material, boiling_material, steam_material) =
                             make_sim();
