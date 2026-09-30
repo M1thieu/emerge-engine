@@ -2,6 +2,8 @@ extern crate emerge_engine as emerge;
 
 #[path = "../gui_common/coords.rs"]
 mod gui_common;
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
 
 use egui_wgpu::ScreenDescriptor;
 /// Two snowballs colliding (Stomakhin 2013 snow plasticity; soft powder vs packed snow,
@@ -13,12 +15,18 @@ use egui_wgpu::ScreenDescriptor;
 /// 1.0 finite, and 0.01 (the checkpoint used for sand and fluids) adds only ~12
 /// grid-units/s on top of the scene's ~15 grid-units/s collision-launch speed.
 ///
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. The snow and its fragments declare no measured optics yet, so
+/// the volume and surface views show the matter by density, not colour;
+/// the particle view keeps `ByMaterial`'s placeholder colours.
+///
 ///   cargo run --example basic_snow --features render
-use emerge::render::{ColorMode, Renderer};
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
 };
 use glam::{IVec2, Vec2};
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -37,6 +45,10 @@ const BALL_B: Vec2 = Vec2::new(48.0, 44.0);
 const SPEED: f32 = 15.0;
 // Radius of the directional dig nudge, grid cells -- matches basic_sand.rs.
 const DIG_RADIUS: f32 = 4.0;
+/// Particle pitch of both snowballs, in grid cells.
+const SPACING: f32 = 0.5;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 
 // Snow: `StomakhinMaterial::from_young_modulus`'s doc cites this E/nu as "Canonical...
 // matches MPM2D reference and sparkl snow demos" (Stomakhin et al. 2013). Density: fresh
@@ -68,9 +80,9 @@ fn make_sim() -> Simulation {
     // Mass from the same density as the stiffness above, not the `grid_density=1.0`
     // default, through `ParticleMass::particle_mass`'s formula, since the raw
     // `StomakhinMaterial::new` constructor bypasses `mass_from`.
-    let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
+    let mass_grid = (SNOW_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
     let spawn = SpawnRegion {
-        spacing: 0.5,
+        spacing: SPACING,
         box_size: IVec2::new(58, 58),
         rng_seed: 7,
         mass_override: Some(mass_grid),
@@ -132,6 +144,11 @@ struct State {
     fps_timer: std::time::Instant,
     fps_frames: u64,
     last_fps: f32,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 impl State {
@@ -177,6 +194,11 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell of snow, which holds 1/SPACING^2 particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -197,7 +219,7 @@ impl State {
         );
 
         println!(
-            "basic_snow: {} particles  |  LMB push  RMB pull  D toggle dig  R reset  Q quit",
+            "basic_snow: {} particles  |  LMB push  RMB pull  D toggle dig  G render mode  R reset  Q quit",
             sim.particles().len()
         );
         Self {
@@ -224,6 +246,8 @@ impl State {
             fps_timer: std::time::Instant::now(),
             fps_frames: 0,
             last_fps: 0.0,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -297,12 +321,44 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), &view, true)
+            }
+            RenderMode::GridVolume => {
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
+                // Per-material colouring: the two snows and the fragments
+                // keep their own optics slot where the surfaces meet.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.surface_source(MAT_SOFT, true, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         // --- egui panel ---
         let raw_input = self.egui_state.take_egui_input(window);
         let fps = self.last_fps;
+        let render_mode = self.render_mode;
         let mut push_strength = self.push_strength;
         let mut dig_strength = self.dig_strength;
         let mut gravity_fraction = self.gravity_fraction;
@@ -334,6 +390,7 @@ impl State {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("fps={fps:.0}"));
+                    ui.label(format!("render: {} (G to cycle)", render_mode.label()));
                     ui.label(format!(
                         "soft={soft_n}  packed={packed_n}  shatter={shatter_n}"
                     ));
@@ -346,7 +403,7 @@ impl State {
                     ui.checkbox(&mut digging, "Digging active (or press D)");
                     ui.add(egui::Slider::new(&mut dig_strength, 0.0..=40.0).text("Dig strength"));
                     ui.separator();
-                    ui.label("LMB push  RMB pull  D toggle dig  R reset  Q quit");
+                    ui.label("LMB push  RMB pull  D dig  G render  R reset  Q quit");
                     if ui.button("Reset").clicked() {
                         reset = true;
                     }
@@ -460,6 +517,10 @@ impl ApplicationHandler for App {
                 match key {
                     KeyCode::Escape | KeyCode::KeyQ if pressed => el.exit(),
                     KeyCode::KeyD if pressed => s.digging = !s.digging,
+                    KeyCode::KeyG if pressed => {
+                        s.render_mode = s.render_mode.next();
+                        println!("render mode: {}", s.render_mode.label());
+                    }
                     KeyCode::KeyR if pressed => {
                         let sim = make_sim();
                         s.real_gravity = sim.config().gravity;
