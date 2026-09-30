@@ -1,7 +1,11 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../gui_common/render_mode.rs"]
+mod render_mode;
+
 use egui_wgpu::ScreenDescriptor;
-use emerge::render::{ColorMode, Renderer};
+use emerge::materials::optical::pure_water;
+use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     KinematicCircleBoundary, NewtonianFluidMaterial, SimConfig, Simulation, SlipBoundary,
     SpawnRegion,
@@ -30,7 +34,13 @@ use glam::{IVec2, Vec2};
 /// out of contact) -- this demo drives that same mechanism from live cursor
 /// input instead of a scripted initial velocity.
 ///
+/// G cycles the view: particles, the grid-volume view, the curvature-flow
+/// surface. The water carries pure water's measured absorption
+/// (`materials::optical::pure_water`). The obstacle is a boundary, not
+/// matter, so every view shows it only through the marker drawn over it.
+///
 ///   cargo run --example kinematic_obstacle_in_water --features render
+use render_mode::RenderMode;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -45,6 +55,10 @@ const SETTLE_STEPS: usize = 150;
 const OBSTACLE_RADIUS: f32 = 2.0;
 const OBSTACLE_MASS: f32 = 8.0;
 const PARTICLE_RENDER_DIAMETER: f32 = 0.9;
+/// Particle pitch of the pool, in grid cells.
+const SPACING: f32 = 0.9;
+/// Surface grid resolution as a multiple of the physics grid.
+const SURFACE_RES_MULTIPLIER: u32 = 4;
 // Control law: the cursor sets a target position, and the obstacle is pulled toward it
 // by a virtual spring-damper (impedance control, Hogan 1985, the principle haptic
 // interfaces use to let a human feel resistance through a driven object). The spring
@@ -93,6 +107,11 @@ struct State {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// Which render path draws the frame, cycled with G.
+    render_mode: RenderMode,
+    /// GPU buffers the grid-volume and surface modes read, rebuilt from the
+    /// CPU solver on the frames those modes are shown.
+    render_bridge: CpuRenderBridge,
 }
 
 /// `Renderer::set_camera`'s `grid_res` frames a square-ish region from world origin
@@ -124,8 +143,8 @@ fn make_sim() -> Simulation {
         cfl_include_affine_speed: false,
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let water = NewtonianFluidMaterial::low_viscosity(0.1, 2.5);
-    const SPACING: f32 = 0.9;
+    let mut water = NewtonianFluidMaterial::low_viscosity(0.1, 2.5);
+    water.optics = Some(pure_water());
     let spawn_water = SpawnRegion {
         spacing: SPACING,
         mass_override: Some(0.1 * SPACING * SPACING),
@@ -230,7 +249,13 @@ impl State {
             PARTICLE_RENDER_DIAMETER,
             true,
         );
-        renderer.set_color_mode(ColorMode::ByMaterial);
+        renderer.set_color_mode(ColorMode::ByPhysics);
+        renderer.adopt_material_optics(&queue, sim.materials());
+        // The grid-volume and surface modes threshold on cell mass as a
+        // fraction of a full cell, which holds 1/SPACING^2 particles.
+        renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
+        renderer.set_surface_res_multiplier(SURFACE_RES_MULTIPLIER);
+        let render_bridge = CpuRenderBridge::new(&device, GRID);
 
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
@@ -264,7 +289,7 @@ impl State {
              cursor, moving harder fights back",
             obstacle_pos.x, obstacle_pos.y
         );
-        println!("R reset  Q quit");
+        println!("G render mode  R reset  Q quit");
 
         let omega = std::f32::consts::TAU / (CONTROL_RESPONSE_PERIODS_OF_DT * DT);
         let control_stiffness = OBSTACLE_MASS * omega * omega;
@@ -290,6 +315,8 @@ impl State {
             egui_ctx,
             egui_state,
             egui_renderer,
+            render_mode: RenderMode::Particles,
+            render_bridge,
         }
     }
 
@@ -403,8 +430,38 @@ impl State {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.renderer
-            .render(&self.device, &self.queue, self.sim.particles(), &view, true);
+        match self.render_mode {
+            RenderMode::Particles => {
+                self.renderer
+                    .render(&self.device, &self.queue, self.sim.particles(), &view, true)
+            }
+            RenderMode::GridVolume => {
+                self.render_bridge
+                    .upload_grid(&self.queue, self.sim.particles(), self.sim.grid());
+                self.renderer.render_grid_volume(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.grid_volume_source(),
+                    &view,
+                    true,
+                );
+            }
+            RenderMode::Surface => {
+                self.render_bridge.upload_particles(
+                    &self.device,
+                    &self.queue,
+                    self.sim.particles(),
+                );
+                // One material, so one optics slot colours the whole surface.
+                self.renderer.render_surface_reconstruction(
+                    &self.device,
+                    &self.queue,
+                    self.render_bridge.surface_source(MAT_WATER, false, DT),
+                    &view,
+                    true,
+                );
+            }
+        }
 
         // The particle renderer has no notion of the obstacle: it is a
         // `BoundaryCondition`, not a `Particle`, and making it one would inject mass
@@ -532,6 +589,10 @@ impl ApplicationHandler for App {
             } => match key {
                 KeyCode::Escape | KeyCode::KeyQ => el.exit(),
                 KeyCode::KeyR => s.reset(),
+                KeyCode::KeyG => {
+                    s.render_mode = s.render_mode.next();
+                    println!("render mode: {}", s.render_mode.label());
+                }
                 _ => {}
             },
             WindowEvent::CursorMoved { position, .. } => {
