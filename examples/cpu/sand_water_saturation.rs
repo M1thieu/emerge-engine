@@ -258,6 +258,13 @@ fn make_sim() -> Simulation {
         // tests/physics_correctness.rs), so the crash's cause is open (see the
         // repeated-transition test there). An `init_particle_from_transition` like
         // `GasMaterial`'s made the measured spike worse (see granular_fluid.rs).
+        //
+        // A fast repro: pouring the demo's own 2x1 box every frame at (24, 50),
+        // onto the pile's top, ends the same way within ~85 frames (0.0046 of the
+        // 0.01 s step dropped at 400 substeps), identically before and after the
+        // P2G friction change. No particle had turned into the mixture yet (0 at
+        // frame 80), so the transition's deformation-gradient reset is not what
+        // triggers it there. Pouring at (10, 50), beside the pile, also ends so.
         .with_phase_rule(|p| {
             if p.material_id == MAT_SAND && p.scalar_field > PENDULAR_REGIME_CEILING {
                 Some(MAT_MIXTURE)
