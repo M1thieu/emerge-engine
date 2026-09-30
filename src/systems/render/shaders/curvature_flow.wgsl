@@ -1381,23 +1381,34 @@ fn sample_visibility(cx: i32, cy: i32) -> f32 {
 // field exists) -- an approximation that still holds under the paper's
 // micro-homogeneous assumption, since one surface cell represents many
 // particles, not a single sharp interface.
-fn blended_optical_slot(cx: i32, cy: i32) -> vec4<f32> {
+//
+// The shape-holding flag (`OpticalTable::specular[slot].y`, see
+// `cel_lambert`) is blended by the same mass fractions.
+struct BlendedOptics {
+    slot: vec4<f32>,
+    holds_shape: f32,
+}
+
+fn blended_optical_slot(cx: i32, cy: i32) -> BlendedOptics {
     let idx = u32(cy) * render_params.surface_res + u32(cx);
     let base = idx * MAX_RENDER_MATERIAL_SLOTS;
     var total_mass: f32 = 0.0;
     var accum: vec4<f32> = vec4<f32>(0.0);
+    var holds_shape_accum: f32 = 0.0;
     for (var s: u32 = 0u; s < MAX_RENDER_MATERIAL_SLOTS; s++) {
         let m = f32(max(surface_material_mass[base + s], 0));
         total_mass += m;
         accum += m * optics.slots[s];
+        holds_shape_accum += m * optics.specular[s].y;
     }
     if total_mass <= 0.0 {
         // No per-slot data reached this cell (the raw splat footprint is
         // narrower than the smoothed silhouette, see module doc): fall back to
         // the caller-chosen slot, as with N-material tracking off.
-        return optics.slots[render_params.material_slot % 16u];
+        let fallback = render_params.material_slot % 16u;
+        return BlendedOptics(optics.slots[fallback], optics.specular[fallback].y);
     }
-    return accum / total_mass;
+    return BlendedOptics(accum / total_mass, holds_shape_accum / total_mass);
 }
 
 fn heat(t: f32) -> vec4<f32> {
@@ -1503,8 +1514,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // mass-fraction-weighted blend per cell when enabled, v1 fallback (one
     // caller-chosen slot) otherwise.
     var optical_slot: vec4<f32> = optics.slots[render_params.material_slot % 16u];
+    var holds_shape: f32 = optics.specular[render_params.material_slot % 16u].y;
     if render_params.material_mass_enabled != 0u {
-        optical_slot = blended_optical_slot(nx_c, ny_c);
+        let blended = blended_optical_slot(nx_c, ny_c);
+        optical_slot = blended.slot;
+        holds_shape = blended.holds_shape;
     }
     let sigma_a = optical_slot.rgb;
     // Quantized from the same bilinear `mass` the alpha/silhouette uses, so
@@ -1575,7 +1589,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // (`cel_lighting.inc.wgsl`), weighted by the gradient's size so a
         // density ripple inside a body is not shaded like its edge.
         let shaded = with_scattering
-            * cel_lambert(grad, render_params.light_dir, render_params.free_surface_step);
+            * cel_lambert(grad, render_params.light_dir, render_params.free_surface_step, holds_shape);
 
         let wave_len = length(wave_grad);
         var wave_highlight = vec3<f32>(0.0, 0.0, 0.0);
@@ -1791,7 +1805,8 @@ fn shade_phase(
     if grad_len > 1.0e-5 {
         let light_dir = normalize(p.light_dir);
         // Same shared cel-shaded base as `fs_main`.
-        let shaded = with_scattering * cel_lambert(grad, p.light_dir, p.free_surface_step);
+        let shaded = with_scattering
+            * cel_lambert(grad, p.light_dir, p.free_surface_step, optics.specular[slot].y);
 
         // Wave motion as a separate, small, CONTINUOUS highlight, NOT fed
         // into the quantized `diffuse` above -- same wave/light-band

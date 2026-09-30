@@ -209,6 +209,9 @@ struct MaterialAccum {
     // holding sand and water reflects like the mixture, not like whichever
     // of the two happens to weigh more.
     specular_accum: f32,
+    // Mass-weighted shape-holding flag (`OpticalTable::specular[slot].y`),
+    // blended the same way.
+    holds_shape_accum: f32,
     total_mass: f32,
 }
 
@@ -218,13 +221,15 @@ fn material_accum_at(cx: i32, cy: i32) -> MaterialAccum {
     var total_mass: f32 = 0.0;
     var accum: vec4<f32> = vec4<f32>(0.0);
     var specular_accum: f32 = 0.0;
+    var holds_shape_accum: f32 = 0.0;
     for (var s: u32 = 0u; s < MAX_RENDER_MATERIAL_SLOTS; s++) {
         let m = f32(max(material_mass[base + s], 0));
         total_mass += m;
         accum += m * optics.slots[s];
         specular_accum += m * optics.specular[s].x;
+        holds_shape_accum += m * optics.specular[s].y;
     }
-    return MaterialAccum(accum, specular_accum, total_mass);
+    return MaterialAccum(accum, specular_accum, holds_shape_accum, total_mass);
 }
 
 @fragment
@@ -291,6 +296,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Slot 0 only when all 4 corners are empty, as with material tracking off.
     var optical_slot: vec4<f32> = optics.slots[0];
     var specular_r0: f32 = optics.specular[0].x;
+    var holds_shape: f32 = optics.specular[0].y;
     if params.material_mass_enabled != 0u {
         let ma00 = material_accum_at(bx, by);
         let ma10 = material_accum_at(bx + 1, by);
@@ -311,9 +317,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             mix(ma01.specular_accum, ma11.specular_accum, frac.x),
             frac.y,
         );
+        let holds_shape_blend = mix(
+            mix(ma00.holds_shape_accum, ma10.holds_shape_accum, frac.x),
+            mix(ma01.holds_shape_accum, ma11.holds_shape_accum, frac.x),
+            frac.y,
+        );
         if mass_blend > 0.0 {
             optical_slot = accum_blend / mass_blend;
             specular_r0 = specular_blend / mass_blend;
+            holds_shape = holds_shape_blend / mass_blend;
         }
     }
 
@@ -359,6 +371,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // a camera ray. `accumulate_column_depth` marches up to the free surface
     // summing mass, discretizing tau = integral sigma_a*rho ds along y.
     //
+    // Matter that holds its shape (`holds_shape`, see `cel_lambert`) skips
+    // it: the column models light crossing a liquid, and on a solid body it
+    // shaded the body like a lit cylinder, dark at the bottom whatever its
+    // shape. Measured on a still square and disc: top-to-bottom gradient
+    // with it, one flat tone without it.
+    //
     // Both depths count full cells, mass over `reference_cell_mass`, as the
     // visibility floor and the SI branch's `relative_density` do: in raw mass
     // a scene of 1 m cells (about 900 per cell) saturated every column black,
@@ -366,7 +384,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ref_mass = max(params.reference_cell_mass, 1.0e-12);
     let column_depth = accumulate_column_depth(bx, by) / ref_mass;
     let depth_banded = floor(clamp(mass / ref_mass, 0.0, 4.0) * DEPTH_BANDS) / DEPTH_BANDS;
-    let column_banded = floor(clamp(column_depth, 0.0, 16.0) * DEPTH_BANDS) / DEPTH_BANDS;
+    let column_banded = floor(clamp(column_depth, 0.0, 16.0) * DEPTH_BANDS) / DEPTH_BANDS
+        * (1.0 - clamp(holds_shape, 0.0, 1.0));
     let optical_depth = max(max(depth_banded, column_banded), EDGE_COLOR_REFERENCE_DEPTH);
     let transmitted = exp(-sigma_a * optical_depth);
 
@@ -423,7 +442,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         ((m01 - m00) + (m11 - m10)) * 0.5,
     );
     let lit = clamp(
-        with_scattering * cel_lambert(grad, params.light_dir, params.free_surface_step),
+        with_scattering * cel_lambert(grad, params.light_dir, params.free_surface_step, holds_shape),
         vec3(0.0),
         vec3(1.0),
     );

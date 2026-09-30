@@ -2216,14 +2216,17 @@ fn grid_volume_blackbody_emission_brightens_hot_cells() {
     );
 }
 
-/// Column-depth attenuation: water darkens with depth (Pope & Fry 1997, the
-/// source of the sigma_a table), so with the same local mass at the query
-/// cell a tall column above it (deep) renders darker than a thin band
-/// (shallow). Only what lies above the cell differs.
-#[test]
-#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
-fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
-    let (device, queue) = headless_device();
+/// Grid-volume centre pixel of a scene whose every column is filled with
+/// mass 1.0 from y = 0 up to (not including) `fill_to_y_exclusive`, on a
+/// 24-cell grid. With `shape_holding`, slot 0 is adopted from a Neo-Hookean
+/// solid, whose nonzero shear modulus marks it as holding its shape.
+fn column_scene_centre_pixel(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    fill_to_y_exclusive: u32,
+    shape_holding: bool,
+) -> [u8; 4] {
+    use crate::{MaterialRegistry, NeoHookeanMaterial};
     let grid_res = 24u32;
     let cell_count = (grid_res * grid_res) as usize;
     const SLOTS: usize = 16;
@@ -2239,80 +2242,104 @@ fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
         0,
         bytemuck::cast_slice(&vec![0f32; cell_count * SLOTS]),
     );
+    let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test_column_depth_grid_int"),
+        size: (cell_count * 4 * std::mem::size_of::<u32>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut cells = vec![0u32; cell_count * 4];
+    let mass = 1.0f32;
+    for cy in 0..fill_to_y_exclusive.min(grid_res) {
+        for cx in 0..grid_res {
+            let c = (cy * grid_res + cx) as usize;
+            cells[c * 4 + 2] = mass.to_bits();
+        }
+    }
+    queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
 
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
-    // `fill_to_y_exclusive`: real mass fills every column, every row from
-    // y=0 up to (not including) this value. Both scenes fill generously past
-    // the domain's vertical middle (17 of 24 rows) -- deliberately NOT
-    // trying to guess the exact grid row the center readback pixel maps to,
-    // just guaranteeing it lands solidly inside real filled material for
-    // BOTH scenes (same local mass either way), so the only real difference
-    // between them is whether more mass exists further above that point.
-    let render_with_fill_top = |fill_to_y_exclusive: u32| -> [u8; 4] {
-        let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("test_column_depth_grid_int"),
-            size: (cell_count * 4 * std::mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut cells = vec![0u32; cell_count * 4];
-        let mass = 1.0f32;
-        for cy in 0..fill_to_y_exclusive.min(grid_res) {
-            for cx in 0..grid_res {
-                let c = (cy * grid_res + cx) as usize;
-                cells[c * 4 + 2] = mass.to_bits();
-            }
-        }
-        queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
+    let mut r = Renderer::new(device, 1, fmt);
+    // A water-like sigma_a (Pope & Fry 1997, as in render_plan.md): with a
+    // near-zero absorption depth would barely matter.
+    r.set_optical_params(queue, 0, [0.35, 0.033, 0.011]);
+    if shape_holding {
+        // Declares no optics, so the sigma_a above stays.
+        let registry =
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
+        r.adopt_material_optics(queue, &registry);
+    }
+    r.set_camera(queue, grid_res, 64, 64, 0.6, true);
 
-        let mut r = Renderer::new(&device, 1, fmt);
-        // A water-like sigma_a (Pope & Fry 1997, as in render_plan.md): with a
-        // near-zero absorption depth would barely matter.
-        r.set_optical_params(&queue, 0, [0.35, 0.033, 0.011]);
-        r.set_camera(&queue, grid_res, 64, 64, 0.6, true);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("column_depth_test_target"),
+        size: wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("column_depth_test_target"),
-            size: wgpu::Extent3d {
-                width: 64,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: fmt,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    r.render_grid_volume(
+        device,
+        queue,
+        GridVolumeSource {
+            grid: &grid_buf,
+            material_mass: &material_mass_buf,
+            material_mass_enabled: false,
+            grid_res,
+        },
+        &view,
+        true,
+    );
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    readback_pixel(device, queue, &texture, 64, 64, 32, 32)
+}
 
-        r.render_grid_volume(
-            &device,
-            &queue,
-            GridVolumeSource {
-                grid: &grid_buf,
-                material_mass: &material_mass_buf,
-                material_mass_enabled: false,
-                grid_res,
-            },
-            &view,
-            true,
-        );
-        device.poll(wgpu::PollType::wait_indefinitely()).ok();
-        readback_pixel(&device, &queue, &texture, 64, 64, 32, 32)
-    };
+fn pixel_brightness(p: [u8; 4]) -> u32 {
+    u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])
+}
 
-    let shallow = render_with_fill_top(17); // past the domain's vertical middle, well short of the top
-    let deep = render_with_fill_top(grid_res); // filled all the way to the domain edge
-    let shallow_brightness: u32 = shallow[0] as u32 + shallow[1] as u32 + shallow[2] as u32;
-    let deep_brightness: u32 = deep[0] as u32 + deep[1] as u32 + deep[2] as u32;
-
+/// Column-depth attenuation: water darkens with depth (Pope & Fry 1997, the
+/// source of the sigma_a table), so with the same local mass at the query
+/// cell a tall column above it (deep) renders darker than a thin band
+/// (shallow). Only what lies above the cell differs.
+///
+/// Both scenes fill past the domain's vertical middle (17 of 24 rows), so the
+/// centre pixel lands inside material either way without guessing which row
+/// it maps to.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn grid_volume_column_depth_darkens_deep_regions_more_than_shallow() {
+    let (device, queue) = headless_device();
+    let shallow = column_scene_centre_pixel(&device, &queue, 17, false);
+    let deep = column_scene_centre_pixel(&device, &queue, 24, false);
+    let (shallow_brightness, deep_brightness) = (pixel_brightness(shallow), pixel_brightness(deep));
     assert!(
         deep_brightness < shallow_brightness,
-        "a deep column must render measurably darker than a shallow one at the SAME \
-         local mass (real solar attenuation with depth, not local density alone) -- \
-         shallow={shallow:?} (sum={shallow_brightness}) deep={deep:?} (sum={deep_brightness})"
+        "a deep column must render measurably darker than a shallow one at the SAME          local mass (real solar attenuation with depth, not local density alone) --          shallow={shallow:?} (sum={shallow_brightness}) deep={deep:?} (sum={deep_brightness})"
+    );
+}
+
+/// The same two scenes as above, but the matter holds its shape: no
+/// column-depth darkening, so a solid body reads as one flat tone instead of
+/// a lit cylinder dark at the bottom.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn grid_volume_shape_holding_matter_does_not_darken_with_column_depth() {
+    let (device, queue) = headless_device();
+    let shallow = column_scene_centre_pixel(&device, &queue, 17, true);
+    let deep = column_scene_centre_pixel(&device, &queue, 24, true);
+    assert_eq!(
+        shallow, deep,
+        "a solid must not darken with the depth of matter above it"
     );
 }
 

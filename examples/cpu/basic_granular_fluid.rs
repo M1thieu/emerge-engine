@@ -181,6 +181,10 @@ impl State {
         let mut renderer = Renderer::new(&device, render_capacity, fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.9, true);
         renderer.set_color_mode(ColorMode::ByPhysics);
+        // Marks the materials that hold their shape (a nonzero shear
+        // modulus), which the grid-volume and surface modes draw flat; also
+        // picks up any measured optics a material declares.
+        renderer.adopt_material_optics(&queue, sim.materials());
         renderer.set_optical_params(&queue, MAT_LOAM as usize, SIGMA_LOAM);
         renderer.set_optical_params(&queue, MAT_CLAY as usize, SIGMA_CLAY);
         renderer.set_optical_params(&queue, MAT_CYTO as usize, SIGMA_CYTO);

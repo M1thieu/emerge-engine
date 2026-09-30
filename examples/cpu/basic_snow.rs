@@ -194,6 +194,10 @@ impl State {
         let mut renderer = Renderer::new(&device, sim.particles().len(), fmt);
         renderer.set_camera(&queue, GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // Marks the materials that hold their shape (a nonzero shear
+        // modulus), which the grid-volume and surface modes draw flat; also
+        // picks up any measured optics a material declares.
+        renderer.adopt_material_optics(&queue, sim.materials());
         // The grid-volume and surface modes threshold on cell mass as a
         // fraction of a full cell of snow, which holds 1/SPACING^2 particles.
         renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));

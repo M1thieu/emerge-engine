@@ -68,6 +68,7 @@ impl Renderer {
             &self.sigma_a,
             &self.sigma_s,
             &self.specular_r0,
+            &self.holds_shape,
         );
 
         // Hysteresis visibility step (see `grid_volume.wgsl`'s

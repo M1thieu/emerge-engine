@@ -375,8 +375,11 @@ pub(super) struct OpticalTable {
     /// scattering is much less wavelength-dependent than absorption in the visible
     /// range, Jacques 2013, a legitimate simplification for that reason).
     pub(super) slots: [[f32; 4]; 16],
-    /// .x = specular Fresnel base reflectance R0 (Schlick 1994 approximation),
-    /// rest padding. Cited, but bounded: this renderer has no surface-normal
+    /// .y = 1.0 if the slot's material holds its shape (see
+    /// `Renderer::adopt_material_optics`), else 0.0; .zw padding.
+    ///
+    /// .x = specular Fresnel base reflectance R0 (Schlick 1994 approximation).
+    /// Cited, but bounded: this renderer has no surface-normal
     /// estimation (it tints particle instances, doesn't raytrace a reconstructed
     /// surface), so this is a constant near-normal-incidence reflectance, NOT a
     /// full view-angle-dependent Fresnel term -- honestly a simplification, not a

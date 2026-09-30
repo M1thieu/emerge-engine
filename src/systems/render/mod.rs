@@ -616,6 +616,10 @@ pub struct Renderer {
     /// Specular Fresnel base reflectance R0 per material slot (see `OpticalTable`'s
     /// doc for the real-but-bounded caveat).
     specular_r0: [f32; 16],
+    /// Whether each slot's material holds its shape, a nonzero shear
+    /// modulus (see `adopt_material_optics`). The grid-volume and surface
+    /// views draw such a body with flat faces.
+    holds_shape: [bool; 16],
     /// Refractive index of the dry solid/grain per material slot (see
     /// `set_refractive_index`: pore-fluid index matching darkens wet
     /// material, for any material and scalar field). `1.0`, air, means no
@@ -854,6 +858,7 @@ impl Renderer {
             sigma_a: [[0.3f32; 3]; 16],
             sigma_s: [0.0f32; 16],
             specular_r0: [0.0f32; 16],
+            holds_shape: [false; 16],
             refractive_index: [1.0f32; 16],
             luminous_emission: [0.0f32; 16],
         }
@@ -1258,6 +1263,15 @@ impl Renderer {
     /// that declares nothing is left untouched, keeping whatever the caller
     /// set, and falls back to the placeholder palette in `ByMaterial`.
     ///
+    /// It also records which materials hold their shape: a nonzero shear
+    /// modulus (`MaterialParams::mu`), so the body resists being sheared and
+    /// keeps flat faces. The grid-volume and surface views then draw it
+    /// flat: no rim shading from the density ramp at its edge, which is the
+    /// reconstruction kernel's width and not a rounded surface, and no
+    /// self-darkening down its own column, which the grid-volume view
+    /// models as sunlight crossing a liquid. A liquid or gas (zero shear
+    /// modulus) keeps both.
+    ///
     /// Returns how many materials declared optics, so a caller can see at a
     /// glance how much of its scene is physically coloured and how much is
     /// still standing on a placeholder.
@@ -1278,6 +1292,7 @@ impl Renderer {
         for slot in 0..registered {
             let material = registry.get(slot as u32);
             self.luminous_emission[slot] = material.luminous_emission_w_m3();
+            self.holds_shape[slot] = material.params().mu > 0.0;
             if let Some(optics) = material.optical_properties() {
                 self.sigma_a[slot] = optics.absorption_m_inv;
                 self.sigma_s[slot] = optics.reduced_scattering_m_inv;
@@ -1491,6 +1506,7 @@ impl Renderer {
             &self.sigma_a,
             &self.sigma_s,
             &self.specular_r0,
+            &self.holds_shape,
         );
     }
 
@@ -1602,6 +1618,7 @@ impl Renderer {
             &self.sigma_a,
             &self.sigma_s,
             &self.specular_r0,
+            &self.holds_shape,
         );
 
         let prep_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {

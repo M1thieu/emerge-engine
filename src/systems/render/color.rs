@@ -141,6 +141,7 @@ pub(super) fn write_optical_table(
     sigma_a: &[[f32; 3]; 16],
     sigma_s: &[f32; 16],
     specular_r0: &[f32; 16],
+    holds_shape: &[bool; 16],
 ) {
     let mut table = OpticalTable {
         slots: [[0.0; 4]; 16],
@@ -148,7 +149,8 @@ pub(super) fn write_optical_table(
     };
     for (i, s) in sigma_a.iter().enumerate() {
         table.slots[i] = [s[0], s[1], s[2], sigma_s[i]];
-        table.specular[i] = [specular_r0[i], 0.0, 0.0, 0.0];
+        let shape = if holds_shape[i] { 1.0 } else { 0.0 };
+        table.specular[i] = [specular_r0[i], shape, 0.0, 0.0];
     }
     queue.write_buffer(buf, 0, bytemuck::bytes_of(&table));
 }

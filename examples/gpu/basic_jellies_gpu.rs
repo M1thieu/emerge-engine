@@ -193,6 +193,10 @@ impl State {
         let mut renderer = Renderer::new(sim.device(), sim.particle_count(), fmt);
         renderer.set_camera(sim.queue(), GRID as u32, size.width, size.height, 0.6, true);
         renderer.set_color_mode(ColorMode::ByMaterial);
+        // Marks the materials that hold their shape (a nonzero shear
+        // modulus), which the grid-volume and surface modes draw flat; also
+        // picks up any measured optics a material declares.
+        renderer.adopt_material_optics(sim.queue(), sim.registry());
         // Distinct optics per material slot -- ByMaterial splat mode has its own
         // separate hardcoded palette (but unrelated to the Beer-Lambert
         // OpticalTable), so grid-volume mode's per-cell dominant-material coloring
