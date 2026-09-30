@@ -167,18 +167,55 @@ fn packed_grain_reduced_scattering(grain_diameter_m: f32) -> f32 {
     }
 }
 
-/// Optical coefficients of snow, a packed bed of ice grains, from its grain
-/// size.
+/// Intrinsic density of ice, `kg/m^3`: 916.5, the value C. Henley, J. L.
+/// Hollmann, C. R. Meyer and R. Raskar use in "Measurement of Snowpack
+/// Density, Grain Size, and Black Carbon Concentration Using Time-domain
+/// Diffuse Optics", arXiv:2310.20068v2 (2024), submitted to the Journal of
+/// Glaciology, p. 9. A dry snowpack's ice volume fraction is its bulk
+/// density over this (their p. 5; air's share of the mass is negligible).
+pub const ICE_DENSITY_KG_M3: f32 = 916.5;
+
+/// Absorption enhancement factor `B` of snow: internal reflections lengthen
+/// a photon's path inside the ice. Henley et al. 2024 (see
+/// [`ICE_DENSITY_KG_M3`]), p. 6, use `B = 1.7`, around which they report,
+/// citing Robledano and others (2023), that most real snow samples cluster.
+pub const SNOW_ABSORPTION_ENHANCEMENT: f32 = 1.7;
+
+/// Scattering asymmetry parameter `g` of snow, the mean cosine of the
+/// scattering angle. Henley et al. 2024, p. 6, use `g = 0.825`, from the
+/// same Robledano and others (2023) clustering as
+/// [`SNOW_ABSORPTION_ENHANCEMENT`].
+pub const SNOW_SCATTERING_ASYMMETRY: f32 = 0.825;
+
+/// Optical coefficients of dry, clean snow, from its grain radius and ice
+/// volume fraction.
 ///
-/// The same substance as [`pure_ice`], and the same absorption; what makes
-/// snow white and opaque where ice is clear is scattering at the grain
-/// boundaries ([`packed_grain_reduced_scattering`]), exactly as for sand.
-/// Grain size is the caller's to state: it spans orders of magnitude
-/// between fresh and old snow, and no single value is the right one.
-pub fn snow(grain_diameter_m: f32) -> OpticalCoefficientsSi {
+/// Henley et al. 2024 (see [`ICE_DENSITY_KG_M3`]), p. 6, Eqs. 5 and 6, from
+/// the geometric-optics snow model of Kokhanovsky and Zege (2004):
+///
+/// - absorption `sigma_a = B * v_i * alpha_ice`, with `alpha_ice` pure
+///   ice's own ([`pure_ice`]): snow absorbs less than solid ice, by its ice
+///   fraction, and a little more per unit ice, by `B`;
+/// - reduced scattering `sigma_s' = 3/2 * (1 - g) * v_i / r_e`.
+///
+/// `grain_radius_m` is their optical grain radius `r_e`: the radius of the
+/// ice sphere with the same surface-area-to-volume ratio as the snow's ice,
+/// `3 <V> / <S>` over mean grain volume and area. `ice_volume_fraction` is
+/// `v_i`, bulk density over [`ICE_DENSITY_KG_M3`] for dry snow. Scattering
+/// outweighs absorption by thousands of times, which is why a clear
+/// substance makes a white, opaque pack.
+pub fn snow(grain_radius_m: f32, ice_volume_fraction: f32) -> OpticalCoefficientsSi {
+    let v_i = ice_volume_fraction.clamp(0.0, 1.0);
+    let reduced_scattering_m_inv = if grain_radius_m > 0.0 {
+        1.5 * (1.0 - SNOW_SCATTERING_ASYMMETRY) * v_i / grain_radius_m
+    } else {
+        0.0
+    };
     OpticalCoefficientsSi {
-        absorption_m_inv: pure_ice().absorption_m_inv,
-        reduced_scattering_m_inv: packed_grain_reduced_scattering(grain_diameter_m),
+        absorption_m_inv: pure_ice()
+            .absorption_m_inv
+            .map(|alpha| SNOW_ABSORPTION_ENHANCEMENT * v_i * alpha),
+        reduced_scattering_m_inv,
     }
 }
 
@@ -267,14 +304,35 @@ mod tests {
         }
     }
 
-    /// Snow is ice that scatters: same absorption, and scattering that
-    /// dominates it by orders of magnitude, so it is white where ice is
+    /// Henley et al. 2024's Eqs. 5 and 6 on their own ground-truth sample
+    /// (p. 21: `v_i = 0.465`, `r_e = 242.5` micrometres), worked by hand:
+    /// `sigma_s' = 1.5 * 0.175 * 0.465 / 242.5e-6 = 503.3 m^-1`, and
+    /// absorption `1.7 * 0.465 = 0.79` times pure ice's in every band.
+    #[test]
+    fn snow_follows_henley_eqs_5_and_6_on_their_measured_sample() {
+        let ice = pure_ice();
+        let snow = snow(242.5e-6, 0.465);
+        assert!(
+            (snow.reduced_scattering_m_inv - 503.3).abs() < 0.5,
+            "got {} m^-1",
+            snow.reduced_scattering_m_inv
+        );
+        for channel in 0..3 {
+            let ratio = snow.absorption_m_inv[channel] / ice.absorption_m_inv[channel];
+            assert!(
+                (ratio - 0.7905).abs() < 1.0e-4,
+                "band {channel}: ratio {ratio}"
+            );
+        }
+    }
+
+    /// Snow is ice that scatters: ice scatters nothing, snow scatters
+    /// thousands of times more than it absorbs, so it is white where ice is
     /// clear.
     #[test]
     fn snow_is_ice_that_scatters() {
         let ice = pure_ice();
-        let snow = snow(0.5e-3);
-        assert_eq!(snow.absorption_m_inv, ice.absorption_m_inv);
+        let snow = snow(242.5e-6, 0.465);
         assert_eq!(ice.reduced_scattering_m_inv, 0.0);
         let strongest_absorption = snow.absorption_m_inv[0];
         assert!(

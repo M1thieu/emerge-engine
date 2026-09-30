@@ -16,9 +16,9 @@ use egui_wgpu::ScreenDescriptor;
 /// grid-units/s on top of the scene's ~15 grid-units/s collision-launch speed.
 ///
 /// G cycles the view: particles, the grid-volume view, the curvature-flow
-/// surface. Those two views colour the snow from measured ice optics
-/// (`optical::snow`, Warren & Brandt 2008 absorption, scattering from the
-/// grain size), which makes it white; the particle view keeps
+/// surface. Those two views colour the snow from measured optics
+/// (`optical::snow`: Henley et al. 2024's snow model on Warren & Brandt
+/// 2008's ice absorption), which makes it white; the particle view keeps
 /// `ByMaterial`'s placeholder colours.
 ///
 ///   cargo run --example basic_snow --features render
@@ -61,12 +61,12 @@ const SURFACE_RES_MULTIPLIER: u32 = 4;
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
 const SNOW_POISSON_RATIO: f32 = 0.2;
 const SNOW_DENSITY_KG_M3: f32 = 200.0;
-// Grain diameter for the snow's optics (`optical::snow`). An assumed value,
-// not a measured or cited one: this demo's snow is no particular sample. It
-// only sets how strongly the snow scatters (about 1/d), and any grain size
-// from micrometres to centimetres keeps that at least a hundred times ice's
-// strongest absorption (0.15 m^-1, red), so the snow reads white either way.
-const SNOW_GRAIN_DIAMETER_M: f32 = 0.5e-3;
+// Optical grain radius for the snow's optics (`optical::snow`): 242.5
+// micrometres, the ground-truth radius Henley et al. measured on one real
+// natural snow sample (arXiv:2310.20068v2, p. 21; their samples ran from
+// fine fresh powder to coarse refrozen snow, p. 21). A real measured grain,
+// not this demo's own snow, which no one measured.
+const SNOW_GRAIN_RADIUS_M: f32 = 242.5e-6;
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
@@ -98,13 +98,19 @@ fn make_sim() -> Simulation {
     };
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(StomakhinMaterial {
-            optics: Some(optical::snow(SNOW_GRAIN_DIAMETER_M)),
+            optics: Some(optical::snow(
+                SNOW_GRAIN_RADIUS_M,
+                SNOW_DENSITY_KG_M3 / optical::ICE_DENSITY_KG_M3,
+            )),
             ..StomakhinMaterial::new(lambda, mu, 7.0, 0.025, 0.0075, 0.6, 20.0)
         }))
         .with_material(
             MAT_PACKED,
             Box::new(StomakhinMaterial {
-                optics: Some(optical::snow(SNOW_GRAIN_DIAMETER_M)),
+                optics: Some(optical::snow(
+                    SNOW_GRAIN_RADIUS_M,
+                    SNOW_DENSITY_KG_M3 / optical::ICE_DENSITY_KG_M3,
+                )),
                 ..StomakhinMaterial::new(lambda, mu, 10.0, 0.012, 0.004, 0.6, 20.0)
                     .with_cohesion(400.0)
             }),
@@ -210,7 +216,10 @@ impl State {
         renderer.adopt_material_optics(&queue, sim.materials());
         // The fragments are the same snow, broken up; their granular model
         // carries no optics of its own, so they get the snow's here.
-        let fragment_optics = optical::snow(SNOW_GRAIN_DIAMETER_M);
+        let fragment_optics = optical::snow(
+            SNOW_GRAIN_RADIUS_M,
+            SNOW_DENSITY_KG_M3 / optical::ICE_DENSITY_KG_M3,
+        );
         renderer.set_optical_params(
             &queue,
             MAT_SHATTER as usize,
