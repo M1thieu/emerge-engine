@@ -529,6 +529,22 @@ there is no panic, no backtrace and no validation warning, so it is not
 a Rust panic reaching abort. Consequence: the parity matrix stays a
 manual test on real hardware and must not gate CI on DX12.
 
+### A grain stops at a boundary instead of bouncing
+
+A grain that meets a boundary loses its whole normal velocity, whatever
+its restitution. In a grid-coupled step (`grains::coupling`),
+`GrainPopulation::clean_wall_normal_velocity` removes the inbound normal
+velocity of every grain touching a boundary, and
+`resolve_wall_contact_forces` applies only the contact's tangential force
+and moments. The normal force is left out on purpose: applied against the
+grid's position clamp, which keeps resetting the overlap, it refilled
+every step and launched the grain. So in its normal direction a boundary
+is a perfectly inelastic stop; grain-grain contact is not affected. A
+scene that needs a grain to bounce off a wall, such as the
+colliding-blocks count in `tests/grains_pi_collisions.rs`, uses a third
+grain held in place as the wall. A restitution-aware normal response at
+the boundary would close this.
+
 ### Not audited yet
 
 Rendering (`systems/render`); rod biology (growth, gravitropism, networks,
