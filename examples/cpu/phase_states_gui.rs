@@ -38,10 +38,12 @@ use egui_wgpu::ScreenDescriptor;
 /// steam rises into the room above.
 ///
 /// G cycles the view: particles, the grid-volume view, the curvature-flow
-/// surface. None of the four materials declares measured optics yet, so the
-/// volume and surface views tell the phases apart by density (steam holds a
-/// sixth of water's mass per cell), not by colour; the particle view keeps
-/// `ByMaterial`'s placeholder colours.
+/// surface. Only the ice declares measured optics (`optical::pure_ice`,
+/// Warren & Brandt 2008), and clear ice absorbs about as little as water
+/// does, so the volume and surface views still tell the phases apart mostly
+/// by density (steam holds a sixth of water's mass per cell) and by the ice
+/// being drawn flat, as a solid; the particle view keeps `ByMaterial`'s
+/// placeholder colours.
 ///
 ///   cargo run --example phase_states_gui --features "render,experimental"
 ///
@@ -53,6 +55,7 @@ use egui_wgpu::ScreenDescriptor;
 /// moves at 0.09 m/s, and the strongest push throws it at 75.7 m/s, Mach
 /// 0.42 against the sized 0.1.
 use emerge::grid::kernel::quadratic_weights;
+use emerge::materials::optical;
 use emerge::matter::materials::solid::rankine::{
     ICE_Q_REFERENCE_FREQUENCY_HZ, q_factor_elastic_viscosity_pa_s,
 };
@@ -274,6 +277,7 @@ fn make_sim() -> (
         RankineMaterial {
             elastic_viscosity: elastic_viscosity_pa_s,
             tensile_strength: ICE_TENSILE_STRENGTH_REAL_PA,
+            optics: Some(optical::pure_ice()),
             ..RankineMaterial::ice(ICE_YOUNG_MODULUS_SCALED_PA, 0.20)
         }
     };

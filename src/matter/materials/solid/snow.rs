@@ -42,6 +42,12 @@ pub struct StomakhinMaterial {
     /// 0.0 = no cohesion (Stomakhin 2013 default -- powder, loose snow).
     /// ~500–2000 for packed/wet snow that sticks after impact.
     pub cohesion_coeff: f32,
+    /// Measured optical coefficients (absorption and reduced scattering,
+    /// `m^-1`) the caller declares for what this material represents, or
+    /// `None`. Filled from `matter::materials::optical`'s datasets
+    /// (`pure_ice`, `snow`, ...), never chosen by the model: see
+    /// `NewtonianFluidMaterial::optics` for why this is not a substance flag.
+    pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
 }
 
 impl StomakhinMaterial {
@@ -68,6 +74,7 @@ impl StomakhinMaterial {
             min_plastic_jacobian,
             max_plastic_jacobian,
             cohesion_coeff: 0.0,
+            optics: None,
         }
     }
 
@@ -119,6 +126,11 @@ impl FromSI<SnowProps> for StomakhinMaterial {
 }
 
 impl MaterialModel for StomakhinMaterial {
+    /// Whatever the caller measured, verbatim (see the `optics` field).
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        self.optics
+    }
+
     fn rest_density(&self) -> Option<f32> {
         self.rest_density
     }

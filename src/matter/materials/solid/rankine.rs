@@ -125,6 +125,12 @@ pub struct RankineMaterial {
     /// elastically on any sub-fracture impact, and a borderline impact looks
     /// like a bounce with partial fracture.
     pub elastic_viscosity: f32,
+    /// Measured optical coefficients (absorption and reduced scattering,
+    /// `m^-1`) the caller declares for what this material represents, or
+    /// `None`. Filled from `matter::materials::optical`'s datasets
+    /// (`pure_ice`, `snow`, ...), never chosen by the model: see
+    /// `NewtonianFluidMaterial::optics` for why this is not a substance flag.
+    pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
 }
 
 impl RankineMaterial {
@@ -139,6 +145,7 @@ impl RankineMaterial {
             tensile_strength,
             softening_rate,
             elastic_viscosity: 0.0,
+            optics: None,
         }
     }
 
@@ -320,6 +327,11 @@ impl RankineMaterial {
 }
 
 impl MaterialModel for RankineMaterial {
+    /// Whatever the caller measured, verbatim (see the `optics` field).
+    fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+        self.optics
+    }
+
     fn rest_density(&self) -> Option<f32> {
         self.rest_density
     }

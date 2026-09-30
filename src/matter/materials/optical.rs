@@ -96,6 +96,92 @@ pub fn pure_water() -> OpticalCoefficientsSi {
     }
 }
 
+/// Imaginary part `k` of the complex refractive index of ice Ih across the
+/// visible band, `(wavelength nm, k)`.
+///
+/// S. G. Warren and R. E. Brandt, "Optical constants of ice from the
+/// ultraviolet to the microwave: A revised compilation", J. Geophys. Res.
+/// 113, D14220 (2008), doi:10.1029/2007JD009744. Copied from the authors'
+/// distributed table (`IOP_2008_ASCIItable.dat`), wavelength converted from
+/// micrometres to nanometres, `k` verbatim. Stored as `k`, the quantity the
+/// table gives, rather than as an absorption coefficient: [`pure_ice`]
+/// derives that.
+// Four measurements per line, like `PURE_WATER_ABSORPTION`.
+#[rustfmt::skip]
+pub const ICE_IMAGINARY_INDEX: [(f32, f32); 37] = [
+    (390.0, 2.0e-11), (400.0, 2.365e-11), (410.0, 2.669e-11), (420.0, 3.135e-11),
+    (430.0, 4.140e-11), (440.0, 6.268e-11), (450.0, 9.239e-11), (460.0, 1.325e-10),
+    (470.0, 1.956e-10), (480.0, 2.861e-10), (490.0, 4.172e-10), (500.0, 5.889e-10),
+    (510.0, 8.036e-10), (520.0, 1.076e-9), (530.0, 1.409e-9), (540.0, 1.813e-9),
+    (550.0, 2.289e-9), (560.0, 2.839e-9), (570.0, 3.461e-9), (580.0, 4.159e-9),
+    (590.0, 4.930e-9), (600.0, 5.730e-9), (610.0, 6.890e-9), (620.0, 8.580e-9),
+    (630.0, 1.040e-8), (640.0, 1.220e-8), (650.0, 1.430e-8), (660.0, 1.660e-8),
+    (670.0, 1.890e-8), (680.0, 2.090e-8), (690.0, 2.400e-8), (700.0, 2.900e-8),
+    (710.0, 3.440e-8), (720.0, 4.030e-8), (730.0, 4.300e-8), (740.0, 4.920e-8),
+    (750.0, 5.870e-8),
+];
+
+/// Absorption coefficient, `m^-1`, of a medium whose refractive index has
+/// imaginary part `k` at `wavelength_nm`: `4 pi k / lambda`.
+///
+/// A plane wave in a medium of index `n + ik` carries the factor
+/// `exp(i 2 pi (n + ik) z / lambda)`; its intensity, the squared magnitude,
+/// decays as `exp(-4 pi k z / lambda)`, which is Beer-Lambert with that
+/// coefficient.
+pub fn absorption_from_imaginary_index(wavelength_nm: f32, k: f32) -> f32 {
+    4.0 * std::f32::consts::PI * k / (wavelength_nm * 1.0e-9)
+}
+
+/// Clear, bubble-free ice's optical coefficients, band-averaged to linear
+/// sRGB from [`ICE_IMAGINARY_INDEX`].
+///
+/// Ice absorbs about as weakly as water, and like water more in the red
+/// than the blue, so on its own it looks like clear water: at 650 nm ice
+/// absorbs 0.28 m^-1 against water's 0.34, and at 450 nm it is clearer
+/// still. Scattering is left at zero: the milky look of lake or glacier ice
+/// comes from the bubbles and cracks of a particular sample, not from ice,
+/// just as murky water owes its look to what is suspended in it.
+pub fn pure_ice() -> OpticalCoefficientsSi {
+    let absorption =
+        ICE_IMAGINARY_INDEX.map(|(nm, k)| (nm, absorption_from_imaginary_index(nm, k)));
+    OpticalCoefficientsSi {
+        absorption_m_inv: spectral_band_average(&absorption),
+        reduced_scattering_m_inv: 0.0,
+    }
+}
+
+/// Reduced scattering coefficient, `m^-1`, of a densely packed bed of
+/// transparent grains of diameter `grain_diameter_m`: about `1/d`.
+///
+/// Light scatters at every grain boundary. In a densely packed medium of
+/// strongly scattering particles the transport mean free path is on the
+/// order of one scatterer, so the reduced scattering coefficient is
+/// approximately `1/d` -- the standard transport argument, and the reason
+/// finer powders look whiter than coarse ones. 0 for a non-positive
+/// diameter.
+fn packed_grain_reduced_scattering(grain_diameter_m: f32) -> f32 {
+    if grain_diameter_m > 0.0 {
+        1.0 / grain_diameter_m
+    } else {
+        0.0
+    }
+}
+
+/// Optical coefficients of snow, a packed bed of ice grains, from its grain
+/// size.
+///
+/// The same substance as [`pure_ice`], and the same absorption; what makes
+/// snow white and opaque where ice is clear is scattering at the grain
+/// boundaries ([`packed_grain_reduced_scattering`]), exactly as for sand.
+/// Grain size is the caller's to state: it spans orders of magnitude
+/// between fresh and old snow, and no single value is the right one.
+pub fn snow(grain_diameter_m: f32) -> OpticalCoefficientsSi {
+    OpticalCoefficientsSi {
+        absorption_m_inv: pure_ice().absorption_m_inv,
+        reduced_scattering_m_inv: packed_grain_reduced_scattering(grain_diameter_m),
+    }
+}
+
 /// Absorption of bulk quartz across the visible band, `m^-1`.
 ///
 /// Quartz is the same substance as window glass and is essentially
@@ -113,24 +199,16 @@ pub const DRY_QUARTZ_ABSORPTION_M_INV: f32 = 0.01;
 /// Optical coefficients of a dry granular quartz bed, from its grain size.
 ///
 /// Sand looks pale and opaque despite being made of a transparent mineral,
-/// because light scatters at every grain boundary. In a densely packed
-/// medium of strongly scattering particles the transport mean free path is
-/// on the order of one scatterer, so the reduced scattering coefficient is
-/// approximately `1/d` -- the standard transport argument, and the reason
-/// finer powders look whiter than coarse ones.
+/// because light scatters at every grain boundary
+/// ([`packed_grain_reduced_scattering`]).
 ///
 /// So the appearance is derived from a mechanical property the material
 /// already carries, not chosen: state the grain diameter and the optics
 /// follow.
 pub fn dry_quartz_sand(grain_diameter_m: f32) -> OpticalCoefficientsSi {
-    let reduced_scattering_m_inv = if grain_diameter_m > 0.0 {
-        1.0 / grain_diameter_m
-    } else {
-        0.0
-    };
     OpticalCoefficientsSi {
         absorption_m_inv: [DRY_QUARTZ_ABSORPTION_M_INV; 3],
-        reduced_scattering_m_inv,
+        reduced_scattering_m_inv: packed_grain_reduced_scattering(grain_diameter_m),
     }
 }
 
@@ -155,6 +233,54 @@ mod tests {
         assert!(
             fine.reduced_scattering_m_inv > medium.reduced_scattering_m_inv,
             "finer grains must scatter more"
+        );
+    }
+
+    /// The conversion from `k` against a value worked by hand from the
+    /// table: at 650 nm, `k = 1.430e-8`, so `4 pi k / lambda` is
+    /// `4 * 3.14159 * 1.430e-8 / 650e-9 = 0.2765 m^-1`.
+    #[test]
+    fn ice_absorption_follows_from_the_tabulated_imaginary_index() {
+        let (nm, k) = ICE_IMAGINARY_INDEX[26];
+        assert_eq!(nm, 650.0, "row 26 must be the 650 nm sample");
+        let alpha = absorption_from_imaginary_index(nm, k);
+        assert!((alpha - 0.2765).abs() < 1.0e-3, "got {alpha} m^-1");
+    }
+
+    /// Ice, like water, absorbs red more than blue, and by a large factor;
+    /// and it is not more absorbing than water in any band, which is why a
+    /// block of clear ice looks like clear water.
+    #[test]
+    fn ice_absorbs_red_more_than_blue_and_no_more_than_water() {
+        let ice = pure_ice().absorption_m_inv;
+        let water = pure_water().absorption_m_inv;
+        assert!(
+            ice[0] > ice[1] && ice[1] > ice[2],
+            "expected red > green > blue, got {ice:?}"
+        );
+        assert!(ice[0] / ice[2] > 20.0, "red/blue ratio too weak: {ice:?}");
+        for channel in 0..3 {
+            assert!(
+                ice[channel] <= water[channel],
+                "ice {ice:?} must not absorb more than water {water:?}"
+            );
+        }
+    }
+
+    /// Snow is ice that scatters: same absorption, and scattering that
+    /// dominates it by orders of magnitude, so it is white where ice is
+    /// clear.
+    #[test]
+    fn snow_is_ice_that_scatters() {
+        let ice = pure_ice();
+        let snow = snow(0.5e-3);
+        assert_eq!(snow.absorption_m_inv, ice.absorption_m_inv);
+        assert_eq!(ice.reduced_scattering_m_inv, 0.0);
+        let strongest_absorption = snow.absorption_m_inv[0];
+        assert!(
+            snow.reduced_scattering_m_inv > 1000.0 * strongest_absorption,
+            "snow must be scattering dominated: sigma_s {} vs red sigma_a {strongest_absorption}",
+            snow.reduced_scattering_m_inv
         );
     }
 

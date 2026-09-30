@@ -16,11 +16,13 @@ use egui_wgpu::ScreenDescriptor;
 /// grid-units/s on top of the scene's ~15 grid-units/s collision-launch speed.
 ///
 /// G cycles the view: particles, the grid-volume view, the curvature-flow
-/// surface. The snow and its fragments declare no measured optics yet, so
-/// the volume and surface views show the matter by density, not colour;
-/// the particle view keeps `ByMaterial`'s placeholder colours.
+/// surface. Those two views colour the snow from measured ice optics
+/// (`optical::snow`, Warren & Brandt 2008 absorption, scattering from the
+/// grain size), which makes it white; the particle view keeps
+/// `ByMaterial`'s placeholder colours.
 ///
 ///   cargo run --example basic_snow --features render
+use emerge::materials::optical;
 use emerge::render::{ColorMode, CpuRenderBridge, Renderer};
 use emerge::{
     DruckerPragerMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
@@ -59,6 +61,12 @@ const SURFACE_RES_MULTIPLIER: u32 = 4;
 const SNOW_YOUNG_MODULUS_PA: f32 = 1.4e5;
 const SNOW_POISSON_RATIO: f32 = 0.2;
 const SNOW_DENSITY_KG_M3: f32 = 200.0;
+// Grain diameter for the snow's optics (`optical::snow`). An assumed value,
+// not a measured or cited one: this demo's snow is no particular sample. It
+// only sets how strongly the snow scatters (about 1/d), and any grain size
+// from micrometres to centimetres keeps that at least a hundred times ice's
+// strongest absorption (0.15 m^-1, red), so the snow reads white either way.
+const SNOW_GRAIN_DIAMETER_M: f32 = 0.5e-3;
 
 fn make_sim() -> Simulation {
     let config = SimConfig {
@@ -89,15 +97,17 @@ fn make_sim() -> Simulation {
         ..SpawnRegion::for_sim(&config)
     };
     let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(StomakhinMaterial::new(
-            lambda, mu, 7.0, 0.025, 0.0075, 0.6, 20.0,
-        )))
+        .with_default_material(Box::new(StomakhinMaterial {
+            optics: Some(optical::snow(SNOW_GRAIN_DIAMETER_M)),
+            ..StomakhinMaterial::new(lambda, mu, 7.0, 0.025, 0.0075, 0.6, 20.0)
+        }))
         .with_material(
             MAT_PACKED,
-            Box::new(
-                StomakhinMaterial::new(lambda, mu, 10.0, 0.012, 0.004, 0.6, 20.0)
-                    .with_cohesion(400.0),
-            ),
+            Box::new(StomakhinMaterial {
+                optics: Some(optical::snow(SNOW_GRAIN_DIAMETER_M)),
+                ..StomakhinMaterial::new(lambda, mu, 10.0, 0.012, 0.004, 0.6, 20.0)
+                    .with_cohesion(400.0)
+            }),
         )
         .with_material(
             MAT_SHATTER,
@@ -198,6 +208,19 @@ impl State {
         // modulus), which the grid-volume and surface modes draw flat; also
         // picks up any measured optics a material declares.
         renderer.adopt_material_optics(&queue, sim.materials());
+        // The fragments are the same snow, broken up; their granular model
+        // carries no optics of its own, so they get the snow's here.
+        let fragment_optics = optical::snow(SNOW_GRAIN_DIAMETER_M);
+        renderer.set_optical_params(
+            &queue,
+            MAT_SHATTER as usize,
+            fragment_optics.absorption_m_inv,
+        );
+        renderer.set_optical_scattering(
+            &queue,
+            MAT_SHATTER as usize,
+            fragment_optics.reduced_scattering_m_inv,
+        );
         // The grid-volume and surface modes threshold on cell mass as a
         // fraction of a full cell of snow, which holds 1/SPACING^2 particles.
         renderer.set_grid_reference_cell_mass(sim.particles().mass[0] / (SPACING * SPACING));
