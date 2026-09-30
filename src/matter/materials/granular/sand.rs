@@ -16,8 +16,11 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// continuum window (see that module for the formula).
 pub const GRAIN_DIAMETER_M: f32 = 0.3e-3;
 
-/// Surface tension of water at 20 C (CRC Handbook of Chemistry and Physics).
-pub const WATER_SURFACE_TENSION_N_M: f32 = 0.072;
+/// Surface tension of water at 20 C, `N/m`: 72.74 mN/m, IAPWS R1-76(2014),
+/// "Revised Release on Surface Tension of Ordinary Water Substance", Table
+/// 1, which its equation `B * tau^mu * (1 - b * tau)` (`tau = 1 - T/Tc`)
+/// reproduces. Was 0.072, the value at 25 C (71.97 mN/m in the same table).
+pub const WATER_SURFACE_TENSION_N_M: f32 = 0.07274;
 
 /// Capillary cohesion stress (SI Pa) of wet sand from grain-scale physics,
 /// so it follows grain diameter and porosity instead of a flat

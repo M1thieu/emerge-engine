@@ -28,9 +28,12 @@
 /// Atmosphere 1976).
 pub const AIR_SPECIFIC_GAS_CONSTANT_J_KG_K: f32 = 287.05;
 
-/// Adiabatic index (ratio of specific heats Cp/Cv) for air -- diatomic
-/// ideal gas, standard textbook value.
-pub const AIR_ADIABATIC_INDEX: f32 = 1.4;
+/// Adiabatic index (ratio of specific heats Cp/Cv) for air, derived: air
+/// is almost entirely diatomic N2 and O2, whose molecules near room
+/// temperature carry 5 quadratic degrees of freedom (3 translational, 2
+/// rotational; vibration is not yet excited). Equipartition gives
+/// `Cv = (5/2) R` per mole and `Cp = Cv + R`, so `gamma = 7/5`.
+pub const AIR_ADIABATIC_INDEX: f32 = 7.0 / 5.0;
 
 /// Ideal gas law: p = ρ·R·T.
 ///
