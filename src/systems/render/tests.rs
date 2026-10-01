@@ -2343,6 +2343,199 @@ fn grid_volume_shape_holding_matter_does_not_darken_with_column_depth() {
     );
 }
 
+/// Runs the grid-volume light pass on a grid whose cell `(x, y)` holds
+/// `mass(x, y)` (reference cell mass 1), slot 0 with absorption `sigma_a`
+/// and reduced scattering `sigma_s`, under a contract of cell size `dx` and light toward
+/// `light`; returns the per-cell RGB transmittance, row-major (y * res + x).
+fn light_pass_transmittance(
+    res: u32,
+    dx: f32,
+    sigma_a: [f32; 3],
+    sigma_s: f32,
+    light: glam::Vec3,
+    mass: impl Fn(u32, u32) -> f32,
+) -> Vec<[f32; 3]> {
+    use crate::render::{PhysicalRenderContract, PhysicalRenderContractParams};
+    let (device, queue) = headless_device();
+    let cells = (res * res) as usize;
+    let mut words = vec![0u32; cells * 4];
+    for y in 0..res {
+        for x in 0..res {
+            words[(y * res + x) as usize * 4 + 2] = mass(x, y).to_bits();
+        }
+    }
+    let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("light_pass_grid"),
+        size: (cells * 16) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&words));
+    let material_mass_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("light_pass_material_mass"),
+        size: (cells * 16 * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, 1, fmt);
+    r.set_optical_params(&queue, 0, sigma_a);
+    r.set_optical_scattering(&queue, 0, sigma_s);
+    r.set_physical_render_contract(
+        &queue,
+        PhysicalRenderContract::new(PhysicalRenderContractParams {
+            dx_meters: dx,
+            slice_thickness_m: 0.5,
+            incident_radiance_w_m2_sr: [1.0; 3],
+            background_radiance_w_m2_sr: [0.25; 3],
+            display_white_radiance_w_m2_sr: [1.0; 3],
+            camera_direction: glam::Vec3::new(0.0, 0.0, -1.0),
+            light_direction: light,
+        })
+        .unwrap(),
+    );
+    r.set_camera(&queue, res, 64, 64, 0.6, true);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("light_pass_target"),
+        size: wgpu::Extent3d {
+            width: 64,
+            height: 64,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    r.render_grid_volume(
+        &device,
+        &queue,
+        GridVolumeSource {
+            grid: &grid_buf,
+            material_mass: &material_mass_buf,
+            material_mass_enabled: false,
+            grid_res: res,
+        },
+        &view,
+        true,
+    );
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let raw = readback_f32_blocking(&device, &queue, &r.light_transmittance_buf, cells * 4);
+    raw.chunks(4).map(|c| [c[0], c[1], c[2]]).collect()
+}
+
+/// Gate (a) of the volumetric-shadow pass: in a uniform medium lit from
+/// straight above, the light reaching a cell has crossed every cell above
+/// it, so its transmittance is Beer-Lambert's `exp(-sigma * dx * n)` with
+/// `n` the number of cells between it and the top edge.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn light_pass_matches_beer_lambert_in_a_uniform_medium() {
+    let (res, dx, sigma) = (24u32, 0.1f32, [0.5f32, 1.0, 2.0]);
+    let t = light_pass_transmittance(res, dx, sigma, 0.0, glam::Vec3::Y, |_, _| 1.0);
+    for y in 0..res {
+        let cells_above = (res - 1 - y) as f32;
+        for x in [0u32, 7, res - 1] {
+            let got = t[(y * res + x) as usize];
+            for ch in 0..3 {
+                let expected = (-sigma[ch] * dx * cells_above).exp();
+                assert!(
+                    (got[ch] - expected).abs() < 1.0e-3,
+                    "cell ({x},{y}) channel {ch}: {} against exp(-{} * {dx} * {cells_above}) = {expected}",
+                    got[ch],
+                    sigma[ch]
+                );
+            }
+        }
+    }
+}
+
+/// The diffusion regime: in a strongly scattering, weakly absorbing medium
+/// (snow's measured coefficients) light reaching a depth has mostly
+/// scattered on the way, and it dies out with diffusion theory's effective
+/// attenuation sqrt(3 mu_a (mu_a + mu_s')) (Jacques and Prahl, ECE532 notes),
+/// far slower than the unscattered beam's mu_a + mu_s'.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn light_pass_uses_diffusion_attenuation_in_a_scattering_medium() {
+    let (res, dx, sigma_a, sigma_s) = (24u32, 0.01f32, [0.055f32, 0.018, 0.0014], 236.0f32);
+    let t = light_pass_transmittance(res, dx, sigma_a, sigma_s, glam::Vec3::Y, |_, _| 1.0);
+    for y in 0..res {
+        let cells_above = (res - 1 - y) as f32;
+        let got = t[(y * res + 5) as usize];
+        for ch in 0..3 {
+            let mu_eff = (3.0 * sigma_a[ch] * (sigma_a[ch] + sigma_s)).sqrt();
+            assert!(
+                mu_eff < sigma_a[ch] + sigma_s,
+                "the diffuse rate must be the slower one"
+            );
+            let expected = (-mu_eff * dx * cells_above).exp();
+            assert!(
+                (got[ch] - expected).abs() < 1.0e-3,
+                "cell (5,{y}) channel {ch}: {} against exp(-{mu_eff} * {dx} * {cells_above}) = {expected}",
+                got[ch]
+            );
+        }
+    }
+}
+
+/// Gate (b): an opaque block under oblique light (toward +x, +y) shadows
+/// exactly the cells whose ray toward the light crosses it. Cells whose ray
+/// passes the block shrunk by one cell must be dark, cells whose ray misses
+/// it grown by one cell must be fully lit; the one-cell band between is the
+/// march's own discretisation and is not judged.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn light_pass_shadow_edge_follows_the_ray_geometry() {
+    let res = 32u32;
+    let (x0, x1, y0, y1) = (12.0f32, 16.0f32, 20.0f32, 24.0f32);
+    let in_block = |x: u32, y: u32| {
+        let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+        cx > x0 && cx < x1 && cy > y0 && cy < y1
+    };
+    let t = light_pass_transmittance(
+        res,
+        0.1,
+        [100.0; 3],
+        0.0,
+        glam::Vec3::new(1.0, 1.0, 0.0),
+        |x, y| if in_block(x, y) { 1.0 } else { 0.0 },
+    );
+    // Slab test of the ray from the cell centre along (1, 1)/sqrt(2) against
+    // the box grown by `margin` cells.
+    let hits = |x: u32, y: u32, margin: f32| {
+        let (ox, oy) = (x as f32 + 0.5, y as f32 + 0.5);
+        let (lo_x, hi_x) = (x0 - margin, x1 + margin);
+        let (lo_y, hi_y) = (y0 - margin, y1 + margin);
+        let t_enter = (lo_x - ox).max(lo_y - oy);
+        let t_exit = (hi_x - ox).min(hi_y - oy);
+        t_exit > t_enter.max(0.0)
+    };
+    let (mut dark, mut lit) = (0, 0);
+    for y in 0..res {
+        for x in 0..res {
+            if in_block(x, y) {
+                continue;
+            }
+            let got = t[(y * res + x) as usize][0];
+            if hits(x, y, -1.0) {
+                assert!(got < 0.01, "cell ({x},{y}) behind the block got {got}");
+                dark += 1;
+            } else if !hits(x, y, 1.0) {
+                assert!(got > 0.99, "cell ({x},{y}) clear of the block got {got}");
+                lit += 1;
+            }
+        }
+    }
+    assert!(
+        dark > 20 && lit > 500,
+        "too few judged cells: {dark} dark, {lit} lit"
+    );
+}
+
 /// `dominant_material` reads `material_mass` as i32: read as bit-reinterpreted
 /// f32, this GPU flushes the denormal values to zero in the fragment shader.
 /// Two grid halves with different dominant slots render their own colours,

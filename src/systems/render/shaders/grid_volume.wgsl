@@ -65,6 +65,9 @@ struct PhysicalRenderParams {
 @group(0) @binding(3) var<storage, read> material_mass: array<i32>;
 @group(0) @binding(4) var<storage, read> grid_visibility_field: array<f32>;
 @group(0) @binding(5) var<uniform> physical: PhysicalRenderParams;
+// Per-cell transmittance of the declared light (`light_march_main`), read by
+// the SI branch only.
+@group(0) @binding(6) var<storage, read> light_transmittance_field: array<vec4<f32>>;
 
 // ── Hysteresis visibility state ──────────────────────────────────────────────
 //
@@ -103,6 +106,118 @@ fn grid_visibility_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         * select(GRID_VISIBILITY_HIGH_FACTOR, GRID_VISIBILITY_LOW_FACTOR, was_visible);
     let now_visible = mass > threshold;
     grid_visibility_state[idx] = select(0.0, 1.0, now_visible);
+}
+
+// ── Light transmittance: 2D volumetric shadows ──────────────────────────────
+//
+// The light pass of Hillaire's unified volumetric rendering ("Physically Based
+// and Unified Volumetric Rendering in Frostbite", SIGGRAPH 2015 Advances in
+// Real-Time Rendering) on the 2D slab: the declared light reaching a cell has
+// crossed the matter between that cell and the domain edge on the light's
+// side, so it arrives attenuated along that path. Two passes:
+// `light_extinction_main` stores each cell's attenuation per metre of path
+// (`light_attenuation * rho_rel`, the mass-fraction blend of the slots'
+// measured optics);
+// `light_march_main` sums it toward the light into a per-channel
+// transmittance, which `fs_main`'s SI branch multiplies into the incident
+// radiance. Only the SI branch reads it: these are metres, and the legacy
+// branch has no length unit (issue #57).
+//
+// The scene is taken as a cross-section of a world uniform in depth, the
+// side view of a 2D platformer: light comes from the scene's own sky and
+// travels in the plane, not in through the slab's faces.
+// `PhysicalRenderParams::light_direction` points toward the light; its
+// in-plane part sets the march, and since the medium does not vary in
+// depth, one cell step in the plane is a 3D path of `dx / |l_xy|`. A light
+// with no in-plane component casts no in-plane shadow.
+@group(0) @binding(0) var<storage, read> light_grid_int: array<u32>;
+@group(0) @binding(1) var<storage, read> light_material_mass: array<i32>;
+@group(0) @binding(2) var<uniform> light_optics: OpticalTable;
+@group(0) @binding(3) var<uniform> light_params: GridVolumeParams;
+@group(0) @binding(4) var<uniform> light_physical: PhysicalRenderParams;
+@group(0) @binding(5) var<storage, read_write> light_extinction: array<vec4<f32>>;
+@group(0) @binding(6) var<storage, read_write> light_transmittance: array<vec4<f32>>;
+
+// Optical depth past which the transmittance, exp(-9) < 1/8000, is below the
+// last step of an 8-bit display channel: marching further changes no pixel.
+const LIGHT_TAU_CUTOFF: f32 = 9.0;
+
+// How fast light dies out inside one material, per metre, for its measured
+// absorption `sigma_a` and reduced scattering `sigma_s` (per channel).
+//
+// Light reaching a point inside matter is the part never scattered, which
+// decays with the full extinction `sigma_a + sigma_s`, plus the part that
+// scattered and kept going. Where scattering dominates, that diffuse part
+// decays far more slowly, with the effective attenuation of diffusion
+// theory, 1 / delta = sqrt(mu_a / D) with D = 1 / (3 (mu_s' + mu_a)), i.e.
+// sqrt(3 mu_a (mu_a + mu_s')) (S. L. Jacques and S. A. Prahl, ECE532
+// Biomedical Optics course notes, Oregon Graduate Institute 1998,
+// "Steady-state diffusion theory" and "Limits of diffusion theory",
+// omlc.org/classroom/ece532/class5). Deep enough, the slower of the two
+// exponentials carries all the light, so the slower rate is used. In snow
+// it gives light a reach of about 16 cm in red and about 1 m in blue,
+// against 4 mm for the unscattered beam alone: snow is white inside, and
+// blue deep down. With no scattering it falls back to `sigma_a`, Beer-Lambert.
+// The notes state the diffusion form fails where absorption is not small
+// against scattering; there the unscattered rate is the smaller one anyway.
+fn light_attenuation(sigma_a: vec3<f32>, sigma_s: f32) -> vec3<f32> {
+    let a = max(sigma_a, vec3(0.0));
+    let s = max(sigma_s, 0.0);
+    let unscattered = a + vec3(s);
+    let diffuse = sqrt(3.0 * a * (a + vec3(s)));
+    return min(unscattered, diffuse);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn light_extinction_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let res = light_params.grid_res;
+    if gid.x >= res || gid.y >= res { return; }
+    let idx = gid.y * res + gid.x;
+    let mass = bitcast<f32>(light_grid_int[idx * 4u + 2u]);
+    let rho_rel = max(mass, 0.0) / max(light_params.reference_cell_mass, 1.0e-12);
+    var attenuation = light_attenuation(light_optics.slots[0].rgb, light_optics.slots[0].w);
+    if light_params.material_mass_enabled != 0u {
+        let base = idx * MAX_RENDER_MATERIAL_SLOTS;
+        var total = 0.0;
+        var accum = vec3<f32>(0.0);
+        for (var s: u32 = 0u; s < MAX_RENDER_MATERIAL_SLOTS; s++) {
+            let m = f32(max(light_material_mass[base + s], 0));
+            total += m;
+            accum += m * light_attenuation(light_optics.slots[s].rgb, light_optics.slots[s].w);
+        }
+        if total > 0.0 {
+            attenuation = accum / total;
+        }
+    }
+    light_extinction[idx] = vec4<f32>(attenuation * rho_rel, 0.0);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn light_march_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let res = light_params.grid_res;
+    if gid.x >= res || gid.y >= res { return; }
+    let idx = gid.y * res + gid.x;
+    let l_xy = light_physical.light_direction.xy;
+    let in_plane = length(l_xy);
+    if light_physical.spatial.z < 0.5 || in_plane < 1.0e-6 {
+        light_transmittance[idx] = vec4<f32>(1.0);
+        return;
+    }
+    let step = l_xy / in_plane;
+    let path_per_step_m = light_physical.spatial.x / in_plane;
+    // Start one step upwind: the cell's own thickness along the view is
+    // already in `slab_radiance`'s scattered term.
+    var p = vec2<f32>(f32(gid.x) + 0.5, f32(gid.y) + 0.5) + step;
+    var tau = vec3<f32>(0.0);
+    let max_steps = i32(2u * res);
+    for (var k: i32 = 0; k < max_steps; k++) {
+        let c = vec2<i32>(floor(p));
+        if c.x < 0 || c.y < 0 || c.x >= i32(res) || c.y >= i32(res) { break; }
+        tau += light_extinction[u32(c.y) * res + u32(c.x)].rgb * path_per_step_m;
+        if min(tau.r, min(tau.g, tau.b)) > LIGHT_TAU_CUTOFF { break; }
+        p += step;
+    }
+    light_transmittance[idx] = vec4<f32>(exp(-tau), 1.0);
 }
 
 struct VsOut {
@@ -166,6 +281,16 @@ fn accumulate_column_depth(cx: i32, cy: i32) -> f32 {
         depth += m;
     }
     return depth;
+}
+
+// Light transmittance at cell (cx, cy); 1 (unattenuated) outside the
+// domain, where no matter stands between the cell and the light.
+fn light_at(cx: i32, cy: i32) -> vec3<f32> {
+    let res = i32(params.grid_res);
+    if cx < 0 || cy < 0 || cx >= res || cy >= res {
+        return vec3<f32>(1.0);
+    }
+    return light_transmittance_field[u32(cy) * params.grid_res + u32(cx)].rgb;
 }
 
 // Mass-weighted temperature at grid cell (cx, cy): sum(mass_p *
@@ -464,9 +589,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let view_length_m = physical.spatial.y / max(abs(physical.camera_direction.z), 1.0e-6);
         let path_m = relative_density * view_length_m;
         let cos_view = 1.0 / sqrt(1.0 + dot(grad, grad));
+        // The declared light as it reaches this point, after crossing the
+        // matter on the light's side (`light_march_main`), bilinear over the
+        // same four cells as `mass`.
+        let light_reaching = mix(
+            mix(light_at(bx, by), light_at(bx + 1, by), frac.x),
+            mix(light_at(bx, by + 1), light_at(bx + 1, by + 1), frac.x),
+            frac.y,
+        );
         let radiance = slab_radiance(
             physical.background_radiance.rgb,
-            physical.incident_radiance.rgb,
+            physical.incident_radiance.rgb * light_reaching,
             sigma_a,
             sigma_s,
             path_m,

@@ -255,9 +255,9 @@ use gpu_types::{
 };
 use pipelines::{
     build_band_hysteresis_step_pipeline, build_grid_visibility_step_pipeline,
-    build_grid_volume_pipeline, build_light_diffuse_pipeline, build_particle_pipeline,
-    build_post_total_reduce_pipeline, build_prep_pipeline, build_snapshot_pipeline,
-    build_surface_clear_pipeline, build_surface_convert_pipeline,
+    build_grid_volume_pipeline, build_light_diffuse_pipeline, build_light_pass_pipelines,
+    build_particle_pipeline, build_post_total_reduce_pipeline, build_prep_pipeline,
+    build_snapshot_pipeline, build_surface_clear_pipeline, build_surface_convert_pipeline,
     build_surface_dual_render_pipeline, build_surface_iterate_pipeline,
     build_surface_moments_pipeline, build_surface_render_pipeline, build_surface_splat_pipeline,
     build_temp_avg_pipeline, build_temp_diffuse_pipeline, build_visibility_step_pipeline,
@@ -312,6 +312,15 @@ pub struct Renderer {
     /// `ensure_grid_visibility_capacity` regrows it when a caller's
     /// `grid_res` exceeds this, same lazy-growth convention as `surface_res`.
     grid_visibility_res: u32,
+    /// The light pass of `grid_volume.wgsl`: per-cell extinction, then the
+    /// transmittance of the declared light to each cell, at `light_pass_res`.
+    /// Run only under a `PhysicalRenderContract`.
+    light_extinction_pipeline: wgpu::ComputePipeline,
+    light_march_pipeline: wgpu::ComputePipeline,
+    light_pass_bgl: wgpu::BindGroupLayout,
+    light_extinction_buf: wgpu::Buffer,
+    light_transmittance_buf: wgpu::Buffer,
+    light_pass_res: u32,
     /// Cached ortho projection + grid_res (set by `set_camera`) -- lets
     /// `render_grid_volume` take just (device, queue, grid_buf, material_mass_buf,
     /// view, clear) instead of repeating width/height/grid_res, keeping it under
@@ -707,6 +716,8 @@ impl Renderer {
             build_grid_volume_pipeline(device, output_format);
         let (grid_visibility_step_pipeline, grid_visibility_step_bgl) =
             build_grid_visibility_step_pipeline(device);
+        let (light_extinction_pipeline, light_march_pipeline, light_pass_bgl) =
+            build_light_pass_pipelines(device);
         let (surface_clear_pipeline, surface_clear_bgl) = build_surface_clear_pipeline(device);
         let (surface_splat_pipeline, surface_splat_bgl) = build_surface_splat_pipeline(device);
         let surface_moments_pipeline = build_surface_moments_pipeline(device, &surface_splat_bgl);
@@ -754,6 +765,12 @@ impl Renderer {
             grid_visibility_buf,
             grid_visibility_params_buf,
             grid_visibility_res: 1,
+            light_extinction_pipeline,
+            light_march_pipeline,
+            light_pass_bgl,
+            light_extinction_buf: light_field_buffer(device, 1, "light_extinction"),
+            light_transmittance_buf: light_field_buffer(device, 1, "light_transmittance"),
+            light_pass_res: 1,
             cached_ortho: (1.0, 0.0, 1.0, 0.0),
             light_dir: (-0.5, 0.7),
             grid_reference_cell_mass: 1.0,
@@ -1815,6 +1832,7 @@ impl Renderer {
 // that file's doc comment.
 mod color;
 use color::write_optical_table;
+use grid_volume::light_field_buffer;
 
 // Test suite split into its own file -- was ~150 of this file's ~930 lines,
 // same pattern as `gpu/solver/device_lost_tests.rs`.

@@ -52,6 +52,10 @@ pub struct PhysicalRenderContractParams {
     pub background_radiance_w_m2_sr: [f32; 3],
     pub display_white_radiance_w_m2_sr: [f32; 3],
     pub camera_direction: Vec3,
+    /// Direction from the scene toward the light. The scene is read as a
+    /// cross-section lit by its own sky, so the in-plane part sets which way
+    /// the light crosses the matter to reach each point (the grid-volume
+    /// light pass, `grid_volume.wgsl`); `(0, 1, z)` is light from above.
     pub light_direction: Vec3,
 }
 

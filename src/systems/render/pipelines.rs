@@ -259,6 +259,49 @@ pub(super) fn build_grid_visibility_step_pipeline(
     (pipeline, bgl)
 }
 
+/// `grid_volume.wgsl`'s light pass, `light_extinction_main` then
+/// `light_march_main`: the transmittance of the declared light to each grid
+/// cell (see that shader's "Light transmittance" doc). One layout serves both.
+pub(super) fn build_light_pass_pipelines(
+    device: &wgpu::Device,
+) -> (
+    wgpu::ComputePipeline,
+    wgpu::ComputePipeline,
+    wgpu::BindGroupLayout,
+) {
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("light_pass_bgl"),
+        entries: &[
+            bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_ro(1, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
+            bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_rw(5, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
+        ],
+    });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("grid_volume_light_pass"),
+        source: wgpu::ShaderSource::Wgsl(super::GRID_VOLUME_SHADER.into()),
+    });
+    let extinction = build_compute_pipeline(
+        device,
+        "light_extinction_pipeline",
+        &bgl,
+        &shader,
+        "light_extinction_main",
+    );
+    let march = build_compute_pipeline(
+        device,
+        "light_march_pipeline",
+        &bgl,
+        &shader,
+        "light_march_main",
+    );
+    (extinction, march, bgl)
+}
+
 pub(super) fn build_grid_volume_pipeline(
     device: &wgpu::Device,
     output_format: wgpu::TextureFormat,
@@ -272,6 +315,7 @@ pub(super) fn build_grid_volume_pipeline(
             bgl_storage_ro(3, wgpu::ShaderStages::FRAGMENT),
             bgl_storage_ro(4, wgpu::ShaderStages::FRAGMENT),
             bgl_uniform(5, wgpu::ShaderStages::FRAGMENT),
+            bgl_storage_ro(6, wgpu::ShaderStages::FRAGMENT),
         ],
     });
 
