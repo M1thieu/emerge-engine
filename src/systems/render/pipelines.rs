@@ -259,13 +259,14 @@ pub(super) fn build_grid_visibility_step_pipeline(
     (pipeline, bgl)
 }
 
-/// `grid_volume.wgsl`'s light pass, `light_extinction_main` then
-/// `light_march_main`: the transmittance of the declared light to each grid
-/// cell (see that shader's "Light transmittance" doc). One layout serves both.
+/// `light_pass.wgsl`: the extinction from the grid, the surface path's two
+/// extinction steps (per surface cell, then per grid cell), and the march
+/// toward the light, in that order. One layout serves all four.
 pub(super) fn build_light_pass_pipelines(
     device: &wgpu::Device,
 ) -> (
     wgpu::ComputePipeline,
+    [wgpu::ComputePipeline; 2],
     wgpu::ComputePipeline,
     wgpu::BindGroupLayout,
 ) {
@@ -276,22 +277,38 @@ pub(super) fn build_light_pass_pipelines(
             bgl_storage_ro(1, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(2, wgpu::ShaderStages::COMPUTE),
             bgl_uniform(3, wgpu::ShaderStages::COMPUTE),
-            bgl_uniform(4, wgpu::ShaderStages::COMPUTE),
+            bgl_storage_rw(4, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(5, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(6, wgpu::ShaderStages::COMPUTE),
         ],
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("grid_volume_light_pass"),
-        source: wgpu::ShaderSource::Wgsl(super::GRID_VOLUME_SHADER.into()),
+        label: Some("light_pass"),
+        source: wgpu::ShaderSource::Wgsl(super::LIGHT_PASS_SHADER.into()),
     });
-    let extinction = build_compute_pipeline(
+    let extinction_grid = build_compute_pipeline(
         device,
-        "light_extinction_pipeline",
+        "light_extinction_grid_pipeline",
         &bgl,
         &shader,
-        "light_extinction_main",
+        "light_extinction_grid_main",
     );
+    let extinction_surface = [
+        build_compute_pipeline(
+            device,
+            "light_surface_cell_extinction_pipeline",
+            &bgl,
+            &shader,
+            "light_surface_cell_extinction_main",
+        ),
+        build_compute_pipeline(
+            device,
+            "light_extinction_surface_pipeline",
+            &bgl,
+            &shader,
+            "light_extinction_surface_main",
+        ),
+    ];
     let march = build_compute_pipeline(
         device,
         "light_march_pipeline",
@@ -299,7 +316,7 @@ pub(super) fn build_light_pass_pipelines(
         &shader,
         "light_march_main",
     );
-    (extinction, march, bgl)
+    (extinction_grid, extinction_surface, march, bgl)
 }
 
 pub(super) fn build_grid_volume_pipeline(
@@ -791,6 +808,9 @@ pub(super) fn build_surface_render_pipeline(
             // Diffused light fluence, single-phase only (see
             // `surface_light_phi` in the shader).
             bgl_storage_ro(8, wgpu::ShaderStages::FRAGMENT),
+            // Transmittance of the declared light, single-phase only (see
+            // `light_transmittance_field` in the shader).
+            bgl_storage_ro(9, wgpu::ShaderStages::FRAGMENT),
             bgl_uniform(11, wgpu::ShaderStages::FRAGMENT),
         ],
     });

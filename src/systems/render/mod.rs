@@ -37,6 +37,7 @@ const GRID_VOLUME_SHADER: &str = concat!(
     include_str!("shaders/cel_lighting.inc.wgsl"),
     include_str!("shaders/grid_volume.wgsl")
 );
+const LIGHT_PASS_SHADER: &str = include_str!("shaders/light_pass.wgsl");
 const CURVATURE_FLOW_SHADER: &str = concat!(
     include_str!("shaders/blackbody.inc.wgsl"),
     include_str!("shaders/radiative_transfer.inc.wgsl"),
@@ -211,6 +212,11 @@ use buffers::RenderBuffers;
 // grid_volume.rs -- see that file's doc.
 mod grid_volume;
 
+// Transmittance of the declared light through the matter, shared by the
+// grid-volume and surface paths -- see that file's doc.
+mod light_pass;
+use light_pass::{LightPassSource, light_field_buffer};
+
 // Buffers a CPU `Simulation` needs to use the grid-volume and surface paths,
 // which read GPU-resident state -- see that file's doc.
 mod cpu_bridge;
@@ -312,12 +318,20 @@ pub struct Renderer {
     /// `ensure_grid_visibility_capacity` regrows it when a caller's
     /// `grid_res` exceeds this, same lazy-growth convention as `surface_res`.
     grid_visibility_res: u32,
-    /// The light pass of `grid_volume.wgsl`: per-cell extinction, then the
-    /// transmittance of the declared light to each cell, at `light_pass_res`.
-    /// Run only under a `PhysicalRenderContract`.
-    light_extinction_pipeline: wgpu::ComputePipeline,
+    /// The light pass (`light_pass.rs`): per-cell extinction from the grid or
+    /// from the surface density, then the transmittance of the declared light
+    /// to each physics-grid cell, at `light_pass_res`. Run only under a
+    /// `PhysicalRenderContract`.
+    light_extinction_grid_pipeline: wgpu::ComputePipeline,
+    /// Per surface cell, then each grid cell's mean (`light_pass.wgsl`).
+    light_extinction_surface_pipelines: [wgpu::ComputePipeline; 2],
     light_march_pipeline: wgpu::ComputePipeline,
     light_pass_bgl: wgpu::BindGroupLayout,
+    light_pass_params_buf: wgpu::Buffer,
+    /// The surface path's per-surface-cell extinction, at
+    /// `light_surface_extinction_res`.
+    light_surface_extinction_buf: wgpu::Buffer,
+    light_surface_extinction_res: u32,
     light_extinction_buf: wgpu::Buffer,
     light_transmittance_buf: wgpu::Buffer,
     light_pass_res: u32,
@@ -663,6 +677,7 @@ impl Renderer {
             grid_volume_params_buf,
             grid_visibility_buf,
             grid_visibility_params_buf,
+            light_pass_params_buf,
             surface_atomic_buf,
             surface_temp_atomic_buf,
             surface_temp_float_buf,
@@ -716,8 +731,12 @@ impl Renderer {
             build_grid_volume_pipeline(device, output_format);
         let (grid_visibility_step_pipeline, grid_visibility_step_bgl) =
             build_grid_visibility_step_pipeline(device);
-        let (light_extinction_pipeline, light_march_pipeline, light_pass_bgl) =
-            build_light_pass_pipelines(device);
+        let (
+            light_extinction_grid_pipeline,
+            light_extinction_surface_pipelines,
+            light_march_pipeline,
+            light_pass_bgl,
+        ) = build_light_pass_pipelines(device);
         let (surface_clear_pipeline, surface_clear_bgl) = build_surface_clear_pipeline(device);
         let (surface_splat_pipeline, surface_splat_bgl) = build_surface_splat_pipeline(device);
         let surface_moments_pipeline = build_surface_moments_pipeline(device, &surface_splat_bgl);
@@ -765,9 +784,13 @@ impl Renderer {
             grid_visibility_buf,
             grid_visibility_params_buf,
             grid_visibility_res: 1,
-            light_extinction_pipeline,
+            light_extinction_grid_pipeline,
+            light_extinction_surface_pipelines,
             light_march_pipeline,
             light_pass_bgl,
+            light_pass_params_buf,
+            light_surface_extinction_buf: light_field_buffer(device, 1, "light_surface_extinction"),
+            light_surface_extinction_res: 1,
             light_extinction_buf: light_field_buffer(device, 1, "light_extinction"),
             light_transmittance_buf: light_field_buffer(device, 1, "light_transmittance"),
             light_pass_res: 1,
@@ -1832,7 +1855,6 @@ impl Renderer {
 // that file's doc comment.
 mod color;
 use color::write_optical_table;
-use grid_volume::light_field_buffer;
 
 // Test suite split into its own file -- was ~150 of this file's ~930 lines,
 // same pattern as `gpu/solver/device_lost_tests.rs`.

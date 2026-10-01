@@ -19,8 +19,8 @@ use wgpu::util::DeviceExt;
 
 use super::gpu_types::{
     BandHysteresisParams, CameraParams, GridVisibilityParams, GridVolumeParams, InstanceData,
-    LightDiffuseParams, OpticalTable, PhysicalRenderParams, RenderConfig, SnapshotConfig,
-    SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
+    LightDiffuseParams, LightPassParams, OpticalTable, PhysicalRenderParams, RenderConfig,
+    SnapshotConfig, SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
 
 /// 4-byte lazy-growth storage placeholder -- standard convention used
@@ -72,6 +72,7 @@ pub(super) struct RenderBuffers {
     pub grid_volume_params_buf: wgpu::Buffer,
     pub grid_visibility_buf: wgpu::Buffer,
     pub grid_visibility_params_buf: wgpu::Buffer,
+    pub light_pass_params_buf: wgpu::Buffer,
     pub surface_atomic_buf: wgpu::Buffer,
     pub surface_temp_atomic_buf: wgpu::Buffer,
     pub surface_temp_float_buf: wgpu::Buffer,
@@ -187,6 +188,7 @@ impl RenderBuffers {
             placeholder_buffer(device, "grid_visibility_state", /* copy_src */ true);
         let grid_visibility_params_buf =
             uniform_buffer::<GridVisibilityParams>(device, "grid_visibility_params");
+        let light_pass_params_buf = uniform_buffer::<LightPassParams>(device, "light_pass_params");
 
         // Curvature-flow surface buffers -- allocated at a minimal 1-cell
         // placeholder size; `ensure_surface_capacity` (called from
@@ -333,6 +335,7 @@ impl RenderBuffers {
             grid_volume_params_buf,
             grid_visibility_buf,
             grid_visibility_params_buf,
+            light_pass_params_buf,
             surface_atomic_buf,
             surface_temp_atomic_buf,
             surface_temp_float_buf,

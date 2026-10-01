@@ -61,6 +61,9 @@ impl Renderer {
         if material_mass_enabled {
             self.ensure_surface_material_mass_capacity(device, surface_res);
         }
+        // Before the draw's bind group takes `light_transmittance_buf`.
+        self.ensure_light_pass_capacity(device, grid_res);
+        self.ensure_light_surface_capacity(device, surface_res);
 
         queue.write_buffer(
             &self.surface_params_buf,
@@ -103,7 +106,8 @@ impl Renderer {
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
                 free_surface_step,
-                _pad: [0; 3],
+                light_res: grid_res,
+                _pad: [0; 2],
             }),
         );
 
@@ -505,6 +509,10 @@ impl Renderer {
                     resource: self.light_phi_bufs[light_next_idx].as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: self.light_transmittance_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
                     binding: 11,
                     resource: self.physical_render_params_buf.as_entire_binding(),
                 },
@@ -739,6 +747,20 @@ impl Renderer {
             cp.set_bind_group(0, &band_hysteresis_step_bg, &[]);
             cp.dispatch_workgroups(iterate_wg_x, iterate_wg_y, 1);
         }
+        // Light pass from the settled density, the same field the draw reads.
+        self.encode_light_pass(
+            device,
+            queue,
+            &mut enc,
+            grid_res,
+            LightPassSource::Surface {
+                density: &self.surface_a_buf,
+                material_mass: &self.surface_material_mass_buf,
+                material_mass_enabled,
+                surface_res,
+                material_slot,
+            },
+        );
 
         let load = if clear {
             wgpu::LoadOp::Clear(self.clear_color())
@@ -1145,7 +1167,8 @@ impl Renderer {
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
                 free_surface_step,
-                _pad: [0; 3],
+                light_res: grid_res,
+                _pad: [0; 2],
             }),
         );
         queue.write_buffer(
@@ -1164,7 +1187,8 @@ impl Renderer {
                 reference_cell_mass: self.grid_reference_cell_mass,
                 edge_reference_depth: self.edge_reference_depth,
                 free_surface_step,
-                _pad: [0; 3],
+                light_res: grid_res,
+                _pad: [0; 2],
             }),
         );
 

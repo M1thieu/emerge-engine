@@ -195,7 +195,9 @@ struct SurfaceRenderParams {
     // `free_surface_cell_step`). The Lambertian term is weighted by the
     // density gradient against it.
     free_surface_step: f32,
-    _pad_a: u32,
+    // Side of the physics grid `light_pass.wgsl` marched the declared light
+    // on; the surface covers the same domain at `surface_res`.
+    light_res: u32,
     _pad_b: u32,
     _pad_c: u32,
 }
@@ -1309,10 +1311,24 @@ fn band_hysteresis_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `dominant_material`).
 @group(0) @binding(7) var<storage, read> surface_material_mass: array<i32>;
 // Diffused light fluence (Pass 1e, `light_diffuse_main`), single-phase
-// only: this bind group uses 6 of the 8 guaranteed storage buffers (the
-// limit note above is about `fs_main_dual_phase`'s own bind group).
+// only (the limit note above is about `fs_main_dual_phase`'s own bind
+// group; this one's count is at `light_transmittance_field`).
 @group(0) @binding(8) var<storage, read> surface_light_phi: array<f32>;
+// Transmittance of the declared light to each physics-grid cell
+// (`light_pass.wgsl`), single-phase SI branch only. The eighth storage
+// buffer of this bind group, WebGPU's guaranteed minimum.
+@group(0) @binding(9) var<storage, read> light_transmittance_field: array<vec4<f32>>;
 @group(0) @binding(11) var<uniform> physical_render: PhysicalRenderParams;
+
+// Light transmittance at physics-grid cell (cx, cy); 1 (unattenuated)
+// outside the domain, where no matter stands between the cell and the light.
+fn light_at(cx: i32, cy: i32) -> vec3<f32> {
+    let res = i32(render_params.light_res);
+    if cx < 0 || cy < 0 || cx >= res || cy >= res {
+        return vec3<f32>(1.0);
+    }
+    return light_transmittance_field[u32(cy) * render_params.light_res + u32(cx)].rgb;
+}
 
 fn sample_light_phi_final(cx: i32, cy: i32) -> f32 {
     let res = i32(render_params.surface_res);
@@ -1694,9 +1710,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             / max(abs(physical_render.camera_direction.z), 1.0e-6);
         let path_m = relative_density * view_length_m;
         let normal3 = normalize(vec3<f32>(-grad, FRESNEL_HEIGHT_SCALE));
+        // The declared light as it reaches this point, after crossing the
+        // matter on the light's side, bilinear over the physics-grid cells
+        // around it (the surface covers the same domain, finer).
+        let light_pos = surf_pos * (f32(render_params.light_res) / res) - vec2<f32>(0.5, 0.5);
+        let light_cell = floor(light_pos);
+        let light_frac = light_pos - light_cell;
+        let lx = i32(light_cell.x);
+        let ly = i32(light_cell.y);
+        let light_reaching = mix(
+            mix(light_at(lx, ly), light_at(lx + 1, ly), light_frac.x),
+            mix(light_at(lx, ly + 1), light_at(lx + 1, ly + 1), light_frac.x),
+            light_frac.y,
+        );
         let radiance = slab_radiance(
             physical_render.background_radiance.rgb,
-            physical_render.incident_radiance.rgb,
+            physical_render.incident_radiance.rgb * light_reaching,
             sigma_a,
             sigma_s,
             path_m,

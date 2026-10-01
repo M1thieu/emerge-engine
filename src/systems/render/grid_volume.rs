@@ -7,18 +7,7 @@
 
 use super::color::write_optical_table;
 use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource};
-use super::{Renderer, free_surface_cell_step};
-
-/// A per-cell `vec4<f32>` field at `res x res`, as the light pass reads and
-/// writes.
-pub(super) fn light_field_buffer(device: &wgpu::Device, res: u32, label: &str) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: u64::from(res) * u64::from(res) * 16,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    })
-}
+use super::{LightPassSource, Renderer, free_surface_cell_step};
 
 impl Renderer {
     /// Renders the solver's own grid mass field directly (see `grid_volume.wgsl`'s
@@ -36,12 +25,8 @@ impl Renderer {
         let (sx, tx, sy, ty) = self.cached_ortho;
         let grid_res = source.grid_res;
         self.ensure_grid_visibility_capacity(device, grid_res);
-        if grid_res > self.light_pass_res {
-            self.light_extinction_buf = light_field_buffer(device, grid_res, "light_extinction");
-            self.light_transmittance_buf =
-                light_field_buffer(device, grid_res, "light_transmittance");
-            self.light_pass_res = grid_res;
-        }
+        // Before the draw's bind group takes `light_transmittance_buf`.
+        self.ensure_light_pass_capacity(device, grid_res);
         // A fraction of the caller's full-cell mass (see
         // `Renderer::grid_reference_cell_mass`, default 1.0): a cell needs
         // non-trivial local density (0.15 of a full cell) before it shows,
@@ -149,53 +134,17 @@ impl Renderer {
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("render_grid_volume"),
         });
-        // Light pass, SI rendering only: the legacy branch never reads the
-        // transmittance, and its depths have no length unit to march in.
-        if self.physical_render_contract.is_some() {
-            let light_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("light_pass_bg"),
-                layout: &self.light_pass_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: source.grid.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: source.material_mass.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.optical_table_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.grid_volume_params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: self.physical_render_params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: self.light_extinction_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: self.light_transmittance_buf.as_entire_binding(),
-                    },
-                ],
-            });
-            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("light_pass"),
-                timestamp_writes: None,
-            });
-            cp.set_bind_group(0, &light_bg, &[]);
-            cp.set_pipeline(&self.light_extinction_pipeline);
-            cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
-            cp.set_pipeline(&self.light_march_pipeline);
-            cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
-        }
+        self.encode_light_pass(
+            device,
+            queue,
+            &mut enc,
+            grid_res,
+            LightPassSource::Grid {
+                grid: source.grid,
+                material_mass: source.material_mass,
+                material_mass_enabled: source.material_mass_enabled,
+            },
+        );
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("grid_visibility_step"),

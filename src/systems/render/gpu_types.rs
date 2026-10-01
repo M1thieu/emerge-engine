@@ -316,9 +316,31 @@ pub(super) struct SurfaceRenderParams {
     /// their Lambertian term by the density gradient against it, so a
     /// density ripple inside a body is not shaded like an edge.
     pub(super) free_surface_step: f32,
-    pub(super) _pad: [u32; 3],
+    /// Side of the physics grid the light pass marched on (`light_pass.wgsl`);
+    /// the surface covers the same domain at `surface_res`.
+    pub(super) light_res: u32,
+    pub(super) _pad: [u32; 2],
 }
 const _: () = assert!(mem::size_of::<SurfaceRenderParams>() == 64);
+
+/// Mirrors `light_pass.wgsl`'s `LightPassParams`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(super) struct LightPassParams {
+    /// Side of the physics grid the light is marched on.
+    pub(super) res: u32,
+    /// Side of the density field the extinction is read from.
+    pub(super) source_res: u32,
+    pub(super) reference_cell_mass: f32,
+    pub(super) material_mass_enabled: u32,
+    /// Slot whose optics a cell takes when it carries no per-slot mass.
+    pub(super) fallback_slot: u32,
+    pub(super) _pad: [u32; 3],
+    /// Each slot's `energy::radiation::penetration_attenuation_m_inv`, per
+    /// metre, rgb (w unused).
+    pub(super) slot_attenuation: [[f32; 4]; 16],
+}
+const _: () = assert!(mem::size_of::<LightPassParams>() == 32 + 16 * 16);
 
 /// Bundles `render_surface_reconstruction`'s buffer/scene args -- same real
 /// precedent as `GridVolumeSource` above (a struct instead of a suppressed

@@ -109,6 +109,40 @@ pub fn slab_radiance(
     out
 }
 
+/// How fast light dies out with depth inside a medium, per metre, per channel,
+/// for its absorption `mu_a` and reduced scattering `mu_s'`.
+///
+/// Light reaching a point inside matter is the part never scattered, which
+/// decays with the full extinction `mu_a + mu_s'`, plus the part that
+/// scattered and kept going. Where scattering dominates, that diffuse part
+/// decays far more slowly, with the effective attenuation of diffusion
+/// theory, `1 / delta = sqrt(mu_a / D)` with `D = 1 / (3 (mu_a + mu_s'))`,
+/// i.e. `sqrt(3 mu_a (mu_a + mu_s'))` (S. L. Jacques and S. A. Prahl, ECE532
+/// Biomedical Optics course notes, Oregon Graduate Institute 1998,
+/// "Steady-state diffusion theory" and "Limits of diffusion theory",
+/// omlc.org/classroom/ece532/class5). Deep enough, the slower of the two
+/// exponentials carries all the light, so the slower rate is returned. In
+/// snow it gives light a reach of about 16 cm in red and about 1 m in blue,
+/// against 4 mm for the unscattered beam alone: snow is white inside, and
+/// blue deep down. With no scattering it is `mu_a`, Beer-Lambert. The notes
+/// state the diffusion form fails where absorption is not small against
+/// scattering; there the unscattered rate is the smaller one anyway.
+///
+/// The renderer's light pass (`systems/render/shaders/light_pass.wgsl`)
+/// marches this rate toward the light.
+pub fn penetration_attenuation_m_inv(
+    absorption_m_inv: [f32; 3],
+    reduced_scattering_m_inv: f32,
+) -> [f32; 3] {
+    let scattering = reduced_scattering_m_inv.max(0.0);
+    absorption_m_inv.map(|absorption| {
+        let absorption = absorption.max(0.0);
+        let unscattered = absorption + scattering;
+        let diffuse = (3.0 * absorption * unscattered).sqrt();
+        unscattered.min(diffuse)
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpticalCoefficientsError {
     InvalidAbsorption,
@@ -130,6 +164,31 @@ impl Error for OpticalCoefficientsError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn penetration_without_scattering_is_beer_lambert() {
+        let absorption = [0.5, 1.0, 2.0];
+        assert_eq!(penetration_attenuation_m_inv(absorption, 0.0), absorption);
+    }
+
+    /// Snow's measured coefficients (`optical::snow` at a 242.5 um grain
+    /// and 200 kg/m^3): scattering dominates, so light penetrates at the
+    /// diffusion rate, far slower than the unscattered beam's.
+    #[test]
+    fn penetration_in_snow_follows_diffusion_theory() {
+        let snow = crate::materials::optical::snow(
+            242.5e-6,
+            200.0 / crate::materials::optical::ICE_DENSITY_KG_M3,
+        );
+        let got =
+            penetration_attenuation_m_inv(snow.absorption_m_inv, snow.reduced_scattering_m_inv);
+        let mu_s = snow.reduced_scattering_m_inv;
+        for (rate, mu_a) in got.into_iter().zip(snow.absorption_m_inv) {
+            let diffuse = (3.0 * mu_a * (mu_a + mu_s)).sqrt();
+            assert!(diffuse < mu_a + mu_s);
+            assert!((rate - diffuse).abs() <= 1.0e-6 * diffuse);
+        }
+    }
 
     #[test]
     fn beer_lambert_matches_known_homogeneous_slab() {

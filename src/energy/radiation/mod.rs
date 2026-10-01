@@ -28,7 +28,8 @@ pub mod fresnel;
 pub mod spectrum;
 
 pub use attenuation::{
-    OpticalCoefficientsError, OpticalCoefficientsSi, beer_lambert_transmittance, slab_radiance,
+    OpticalCoefficientsError, OpticalCoefficientsSi, beer_lambert_transmittance,
+    penetration_attenuation_m_inv, slab_radiance,
 };
 pub use blackbody::{
     BOLTZMANN, PLANCK, SPEED_OF_LIGHT, WIEN_DISPLACEMENT, blackbody_radiance_w_m2_sr,
