@@ -32,6 +32,8 @@ struct GridVolumeParams {
     // `Renderer::set_light_dir`, the value `rod::Phototropism` uses.
     light_dir: vec2<f32>,
     grid_res: u32,
+    // A cell lighter than this is open air for the legacy column-depth term
+    // (`accumulate_column_depth`), its only reader.
     mass_floor: f32,
     material_mass_enabled: u32,
     reference_cell_mass: f32,
@@ -63,49 +65,66 @@ struct PhysicalRenderParams {
 @group(0) @binding(2) var<uniform> optics: OpticalTable;
 // Read as i32, not reinterpreted as f32 (see `dominant_material`).
 @group(0) @binding(3) var<storage, read> material_mass: array<i32>;
-@group(0) @binding(4) var<storage, read> grid_visibility_field: array<f32>;
+// Local peak of the cell mass (`grid_peak_main`), for the edge.
+@group(0) @binding(4) var<storage, read> grid_peak_field: array<f32>;
 @group(0) @binding(5) var<uniform> physical: PhysicalRenderParams;
 // Per-cell transmittance of the declared light (`light_pass.wgsl`), read by
 // the SI branch only.
 @group(0) @binding(6) var<storage, read> light_transmittance_field: array<vec4<f32>>;
 
-// ── Hysteresis visibility state ──────────────────────────────────────────────
+// ── Where matter ends on screen ─────────────────────────────────────────────
 //
-// Same Schmitt-trigger technique as `curvature_flow.wgsl`'s Pass 2c, ported
-// here since this mode's `mass_floor` discard (below) has the identical
-// single-threshold flicker risk. Own persistent buffer at `grid_res`, not
-// curvature-flow's `surface_res` one, since this mode samples the physics
-// grid directly.
-struct GridVisibilityParams {
+// The P2G mass is the matter's mass spread by the quadratic B-spline, a
+// symmetric kernel of unit integral, so across a straight boundary it follows
+// the kernel's cumulative and crosses half the mass the matter holds inside
+// exactly at the boundary. `fs_main` draws the edge there: where the bilinear
+// mass equals half the local peak, the largest cell mass within the kernel's
+// reach. A material denser or lighter than the scene's reference finds its
+// own edge, and matter thinner than the kernel (a lone particle, whose peak is
+// a fraction of a full cell) still shows, at the kernel's size: the grid
+// resolves nothing finer.
+//
+// The premise is matter of near-uniform density with a sharp boundary, a
+// liquid or a solid. A gas has no free surface: its density varies
+// continuously, and this contour cuts it into blobs wherever it falls under
+// half its neighbourhood's peak. It should be drawn by its own transmittance
+// instead (issue #60).
+//
+// The reach: one cell inside a straight boundary the field already holds
+// 1 - 1/48 of the full mass (the B-spline's tail beyond one cell), and every
+// bilinear corner of a pixel on the edge has a cell at least one cell inside
+// the matter within two cells of it. The peak found is then within 1/48 of
+// the full value, which moves the edge by under 0.02 cell.
+struct GridPeakParams {
     grid_res: u32,
-    mass_floor: f32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
-@group(0) @binding(0) var<storage, read> grid_visibility_density_in: array<u32>;
-@group(0) @binding(1) var<storage, read_write> grid_visibility_state: array<f32>;
-@group(0) @binding(2) var<uniform> grid_visibility_params: GridVisibilityParams;
+@group(0) @binding(0) var<storage, read> grid_peak_density_in: array<u32>;
+@group(0) @binding(1) var<storage, read_write> grid_peak_out: array<f32>;
+@group(0) @binding(2) var<uniform> grid_peak_params: GridPeakParams;
 
-// MUST stay equal to `curvature_flow.wgsl`'s own `VISIBILITY_HIGH_FACTOR`/
-// `VISIBILITY_LOW_FACTOR` -- same Schmitt-trigger technique, no cross-module
-// const sharing to enforce it automatically. See that file's doc.
-const GRID_VISIBILITY_HIGH_FACTOR: f32 = 1.3;
-const GRID_VISIBILITY_LOW_FACTOR: f32 = 0.7;
+const PEAK_REACH_CELLS: i32 = 2;
 
 @compute @workgroup_size(8, 8, 1)
-fn grid_visibility_step_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn grid_peak_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let res = i32(grid_peak_params.grid_res);
     let cx = i32(gid.x);
     let cy = i32(gid.y);
-    if cx >= i32(grid_visibility_params.grid_res) || cy >= i32(grid_visibility_params.grid_res) { return; }
-    let idx = u32(cy) * grid_visibility_params.grid_res + u32(cx);
-    let mass = bitcast<f32>(grid_visibility_density_in[idx * 4u + 2u]);
-
-    let was_visible = grid_visibility_state[idx] > 0.5;
-    let threshold = grid_visibility_params.mass_floor
-        * select(GRID_VISIBILITY_HIGH_FACTOR, GRID_VISIBILITY_LOW_FACTOR, was_visible);
-    let now_visible = mass > threshold;
-    grid_visibility_state[idx] = select(0.0, 1.0, now_visible);
+    if cx >= res || cy >= res { return; }
+    var peak = 0.0;
+    for (var dy = -PEAK_REACH_CELLS; dy <= PEAK_REACH_CELLS; dy++) {
+        for (var dx = -PEAK_REACH_CELLS; dx <= PEAK_REACH_CELLS; dx++) {
+            let x = cx + dx;
+            let y = cy + dy;
+            if x >= 0 && y >= 0 && x < res && y < res {
+                peak = max(peak, bitcast<f32>(grid_peak_density_in[u32(y * res + x) * 4u + 2u]));
+            }
+        }
+    }
+    grid_peak_out[u32(cy * res + cx)] = peak;
 }
 
 struct VsOut {
@@ -137,6 +156,16 @@ fn sample_mass(cx: i32, cy: i32) -> f32 {
     }
     let idx = u32(cy) * params.grid_res + u32(cx);
     return bitcast<f32>(grid_int[idx * 4u + 2u]);
+}
+
+// Local peak at grid cell (cx, cy) (`grid_peak_main`), 0.0 outside the domain
+// like `sample_mass`.
+fn sample_peak(cx: i32, cy: i32) -> f32 {
+    let res = i32(params.grid_res);
+    if cx < 0 || cy < 0 || cx >= res || cy >= res {
+        return 0.0;
+    }
+    return grid_peak_field[u32(cy) * params.grid_res + u32(cx)];
 }
 
 // Vertical mass integral above this cell up to open air (see `optical_depth`
@@ -289,18 +318,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // 4 cells, floored against near-zero mass at sparse edges.
     let avg_temp = weighted_temp / max(mass, 1.0e-4);
 
-    // Gate visibility on the NEAREST cell's mass, not the bilinear-blended value --
-    // the blend is nonzero up to a full cell beyond the nearest occupied cell, which
-    // would overshoot true particle extent no matter how high mass_floor is raised.
-    // Bilinear mass is still used for interior shading below.
-    let nx = i32(round(grid_pos.x - 0.5));
-    let ny = i32(round(grid_pos.y - 0.5));
-    let nx_c = clamp(nx, 0, i32(params.grid_res) - 1);
-    let ny_c = clamp(ny, 0, i32(params.grid_res) - 1);
-    // Hysteresis-stabilized visible/invisible decision (see the hysteresis
-    // visibility state above) instead of a flat `mass < mass_floor`.
-    let vis_idx = u32(ny_c) * params.grid_res + u32(nx_c);
-    if grid_visibility_field[vis_idx] < 0.5 {
+    // Where the matter ends (see "Where matter ends on screen" above): the
+    // bilinear mass against half the local peak, over the same four cells.
+    let peak = mix(
+        mix(sample_peak(bx, by), sample_peak(bx + 1, by), frac.x),
+        mix(sample_peak(bx, by + 1), sample_peak(bx + 1, by + 1), frac.x),
+        frac.y,
+    );
+    // The share of the local peak held here, less one half: zero on the
+    // edge, -1/2 where there is no matter at all. (Measured as a difference
+    // of masses instead, it fades to zero without crossing it where both the
+    // mass and the peak fade out, and the anti-aliasing below drew a line
+    // there.)
+    let inside = mass / max(peak, 1.0e-12) - 0.5;
+    // How fast `inside` changes across this pixel: the edge below is
+    // anti-aliased over it. A pixel wholly outside the matter (alpha 0) stops
+    // here, before the shading it would not show.
+    let edge_width = max(fwidth(inside), 1.0e-9);
+    if peak <= 0.0 || inside <= -0.5 * edge_width {
         discard;
     }
 
@@ -349,9 +384,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // falloff at the shape's own edge instead of a hard per-particle silhouette.
     //
     // Color depth is floored at EDGE_COLOR_REFERENCE_DEPTH, separately from the
-    // alpha ramp below which still uses the true raw mass -- without this split,
-    // the thin edge-transition band (where mass -> mass_floor) renders as a
-    // near-white halo before reaching full alpha.
+    // edge alpha below, which still uses the true raw mass -- without this
+    // split, the band where the mass falls off renders as a near-white halo
+    // before reaching full alpha.
     //
     // Depth QUANTIZED into flat bands (same real cel-shading technique the
     // lighting below already uses, extended here to the density-driven
@@ -426,18 +461,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         physical.emission.x,
     );
 
-    // Thin anti-aliased edge: the nearest-cell discard above fixes WHERE the shape
-    // ends exactly, this just softens the last couple pixels via alpha blending
-    // so it doesn't read as a hard stair-step. `edge_margin` is widened past
-    // `mass_floor` itself (was a narrow 0.5x band) -- a narrow ramp means a
-    // small, real frame-to-frame density fluctuation in a sparse/thin region
-    // (particle jitter, motion) swings alpha across nearly its whole [0,1]
-    // range, reading as flicker there even though the dense main body (alpha
-    // pinned at 1 well past this ramp) never shows it. Standard real-time
-    // volume-rendering fix: widen the transfer-function ramp to reduce its
-    // sensitivity to small input noise, at the cost of a slightly softer
-    // edge overall.
-    //
     // Density gradient from the bilinear corners (standard volume-rendering
     // technique), pointing toward increasing mass; `cel_lambert`
     // (`cel_lighting.inc.wgsl`) shades it, weighted by its size against
@@ -466,8 +489,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // glowing rather than just a brighter base color.
     let with_emission = clamp(lit + emission, vec3(0.0), vec3(1.0));
 
-    let edge_margin = max(params.mass_floor * 1.5, 1.0e-4);
-    let alpha = smoothstep(params.mass_floor, params.mass_floor + edge_margin, mass);
+    // The edge anti-aliased over one pixel: the share of this pixel on the
+    // matter's side of `inside = 0`.
+    let alpha = clamp(inside / edge_width + 0.5, 0.0, 1.0);
     if physical.spatial.z > 0.5 {
         // SI radiative transfer: absorption, single scattering and Fresnel
         // together (`radiative_transfer.inc.wgsl`). `cos_view` comes from the

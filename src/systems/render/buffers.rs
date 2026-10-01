@@ -18,7 +18,7 @@ use std::mem;
 use wgpu::util::DeviceExt;
 
 use super::gpu_types::{
-    BandHysteresisParams, CameraParams, GridVisibilityParams, GridVolumeParams, InstanceData,
+    BandHysteresisParams, CameraParams, GridPeakParams, GridVolumeParams, InstanceData,
     LightDiffuseParams, LightPassParams, OpticalTable, PhysicalRenderParams, RenderConfig,
     SnapshotConfig, SurfaceParams, SurfaceRenderParams, VisibilityParams, WaveStepParams,
 };
@@ -70,8 +70,8 @@ pub(super) struct RenderBuffers {
     pub optical_table_buf: wgpu::Buffer,
     pub physical_render_params_buf: wgpu::Buffer,
     pub grid_volume_params_buf: wgpu::Buffer,
-    pub grid_visibility_buf: wgpu::Buffer,
-    pub grid_visibility_params_buf: wgpu::Buffer,
+    pub grid_peak_buf: wgpu::Buffer,
+    pub grid_peak_params_buf: wgpu::Buffer,
     pub light_pass_params_buf: wgpu::Buffer,
     pub surface_atomic_buf: wgpu::Buffer,
     pub surface_temp_atomic_buf: wgpu::Buffer,
@@ -181,13 +181,9 @@ impl RenderBuffers {
         let grid_volume_params_buf =
             uniform_buffer::<GridVolumeParams>(device, "grid_volume_params");
 
-        // Hysteresis visibility state for the grid-native path; like
-        // `visibility_buf`, every cell starts "not visible" until its first
-        // frame earns it.
-        let grid_visibility_buf =
-            placeholder_buffer(device, "grid_visibility_state", /* copy_src */ true);
-        let grid_visibility_params_buf =
-            uniform_buffer::<GridVisibilityParams>(device, "grid_visibility_params");
+        // Local peak of the cell mass for the grid-native path's edge.
+        let grid_peak_buf = placeholder_buffer(device, "grid_peak", /* copy_src */ true);
+        let grid_peak_params_buf = uniform_buffer::<GridPeakParams>(device, "grid_peak_params");
         let light_pass_params_buf = uniform_buffer::<LightPassParams>(device, "light_pass_params");
 
         // Curvature-flow surface buffers -- allocated at a minimal 1-cell
@@ -333,8 +329,8 @@ impl RenderBuffers {
             optical_table_buf,
             physical_render_params_buf,
             grid_volume_params_buf,
-            grid_visibility_buf,
-            grid_visibility_params_buf,
+            grid_peak_buf,
+            grid_peak_params_buf,
             light_pass_params_buf,
             surface_atomic_buf,
             surface_temp_atomic_buf,

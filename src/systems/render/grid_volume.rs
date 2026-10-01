@@ -6,7 +6,7 @@
 //! reconstruction.
 
 use super::color::write_optical_table;
-use super::gpu_types::{GridVisibilityParams, GridVolumeParams, GridVolumeSource};
+use super::gpu_types::{GridPeakParams, GridVolumeParams, GridVolumeSource};
 use super::{LightPassSource, Renderer, free_surface_cell_step};
 
 impl Renderer {
@@ -24,16 +24,12 @@ impl Renderer {
     ) {
         let (sx, tx, sy, ty) = self.cached_ortho;
         let grid_res = source.grid_res;
-        self.ensure_grid_visibility_capacity(device, grid_res);
+        self.ensure_grid_peak_capacity(device, grid_res);
         // Before the draw's bind group takes `light_transmittance_buf`.
         self.ensure_light_pass_capacity(device, grid_res);
-        // A fraction of the caller's full-cell mass (see
-        // `Renderer::grid_reference_cell_mass`, default 1.0): a cell needs
-        // non-trivial local density (0.15 of a full cell) before it shows,
-        // not any measurable trace, which with bilinear smoothing would
-        // overshoot the particles' true extent. The visibility step below
-        // gates on the same floor, so the hysteresis band and the raw
-        // discard agree.
+        // Open air for the legacy column-depth term: a cell under 0.15 of a
+        // full cell (see `Renderer::grid_reference_cell_mass`). The edge of
+        // the matter no longer reads it (see `grid_peak_main`).
         let mass_floor = 0.15 * self.grid_reference_cell_mass;
         queue.write_buffer(
             &self.grid_volume_params_buf,
@@ -55,13 +51,11 @@ impl Renderer {
             }),
         );
         queue.write_buffer(
-            &self.grid_visibility_params_buf,
+            &self.grid_peak_params_buf,
             0,
-            bytemuck::bytes_of(&GridVisibilityParams {
+            bytemuck::bytes_of(&GridPeakParams {
                 grid_res,
-                mass_floor,
-                _pad0: 0,
-                _pad1: 0,
+                _pad: [0; 3],
             }),
         );
         write_optical_table(
@@ -73,13 +67,12 @@ impl Renderer {
             &self.holds_shape,
         );
 
-        // Hysteresis visibility step (see `grid_volume.wgsl`'s
-        // `grid_visibility_step_main`). Reads the raw grid buffer the render
-        // pass below samples, and runs before it in this encoder so
-        // `fs_main`'s discard sees this frame's decision, not last frame's.
-        let grid_visibility_step_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("grid_visibility_step_bg"),
-            layout: &self.grid_visibility_step_bgl,
+        // Local peak of the cell mass (`grid_volume.wgsl`'s `grid_peak_main`),
+        // from the grid buffer the render pass below samples, encoded before
+        // it so `fs_main` reads this frame's.
+        let grid_peak_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("grid_peak_bg"),
+            layout: &self.grid_peak_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -87,11 +80,11 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: self.grid_visibility_buf.as_entire_binding(),
+                    resource: self.grid_peak_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: self.grid_visibility_params_buf.as_entire_binding(),
+                    resource: self.grid_peak_params_buf.as_entire_binding(),
                 },
             ],
         });
@@ -118,7 +111,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: self.grid_visibility_buf.as_entire_binding(),
+                    resource: self.grid_peak_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
@@ -147,11 +140,11 @@ impl Renderer {
         );
         {
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("grid_visibility_step"),
+                label: Some("grid_peak"),
                 timestamp_writes: None,
             });
-            cp.set_pipeline(&self.grid_visibility_step_pipeline);
-            cp.set_bind_group(0, &grid_visibility_step_bg, &[]);
+            cp.set_pipeline(&self.grid_peak_pipeline);
+            cp.set_bind_group(0, &grid_peak_bg, &[]);
             cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
         }
         let load = if clear {

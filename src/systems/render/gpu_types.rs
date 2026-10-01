@@ -246,19 +246,14 @@ pub(super) struct VisibilityParams {
 }
 const _: () = assert!(mem::size_of::<VisibilityParams>() == 16);
 
-/// Mirrors `grid_volume.wgsl`'s `GridVisibilityParams` -- the SAME real
-/// hysteresis technique as `VisibilityParams` above, ported to the
-/// grid-native render path's own `mass_floor` discard (a separate buffer
-/// since this operates at `grid_res`, not `surface_res`).
+/// Mirrors `grid_volume.wgsl`'s `GridPeakParams` (`grid_peak_main`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(super) struct GridVisibilityParams {
+pub(super) struct GridPeakParams {
     pub(super) grid_res: u32,
-    pub(super) mass_floor: f32,
-    pub(super) _pad0: u32,
-    pub(super) _pad1: u32,
+    pub(super) _pad: [u32; 3],
 }
-const _: () = assert!(mem::size_of::<GridVisibilityParams>() == 16);
+const _: () = assert!(mem::size_of::<GridPeakParams>() == 16);
 
 /// Mirrors `curvature_flow.wgsl`'s `BandHysteresisParams` -- the real
 /// hysteresis color-band state pass's own uniform. See that shader's own

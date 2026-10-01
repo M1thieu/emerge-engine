@@ -230,15 +230,13 @@ pub(super) fn build_snapshot_pipeline(
 
 /// `grid_volume.wgsl` pipeline -- samples the solver's own P2G mass field
 /// directly instead of per-particle splats (see that shader's doc).
-/// `grid_volume.wgsl`'s `grid_visibility_step_main` pipeline -- the SAME
-/// real hysteresis technique `build_visibility_step_pipeline` already
-/// ships for the curvature-flow surface, ported to this mode's own
-/// `mass_floor` discard.
-pub(super) fn build_grid_visibility_step_pipeline(
+/// `grid_volume.wgsl`'s `grid_peak_main` pipeline: the local peak of the
+/// cell mass the grid volume draws its edge against.
+pub(super) fn build_grid_peak_pipeline(
     device: &wgpu::Device,
 ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
     let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("grid_visibility_step_bgl"),
+        label: Some("grid_peak_bgl"),
         entries: &[
             bgl_storage_ro(0, wgpu::ShaderStages::COMPUTE),
             bgl_storage_rw(1, wgpu::ShaderStages::COMPUTE),
@@ -251,10 +249,10 @@ pub(super) fn build_grid_visibility_step_pipeline(
     });
     let pipeline = build_compute_pipeline(
         device,
-        "grid_visibility_step_pipeline",
+        "grid_peak_pipeline",
         &bgl,
         &shader,
-        "grid_visibility_step_main",
+        "grid_peak_main",
     );
     (pipeline, bgl)
 }

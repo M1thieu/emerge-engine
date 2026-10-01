@@ -1836,23 +1836,23 @@ impl Renderer {
         self.surface_material_mass_res = surface_res;
     }
 
-    /// Grows `grid_visibility_buf` when a caller's `grid_res` exceeds the
-    /// currently allocated `grid_visibility_res` -- same lazy-growth
+    /// Grows `grid_peak_buf` when a caller's `grid_res` exceeds the
+    /// currently allocated `grid_peak_res` -- same lazy-growth
     /// pattern `ensure_surface_capacity` uses above, just keyed on the
     /// solver's own `grid_res` instead of the finer `surface_res`.
-    pub(super) fn ensure_grid_visibility_capacity(&mut self, device: &wgpu::Device, grid_res: u32) {
-        if grid_res <= self.grid_visibility_res {
+    pub(super) fn ensure_grid_peak_capacity(&mut self, device: &wgpu::Device, grid_res: u32) {
+        if grid_res <= self.grid_peak_res {
             return;
         }
         let cell_count = (grid_res * grid_res) as u64;
-        self.grid_visibility_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grid_visibility_state"),
+        self.grid_peak_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grid_peak"),
             size: cell_count * mem::size_of::<f32>() as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        self.grid_visibility_res = grid_res;
+        self.grid_peak_res = grid_res;
     }
 }

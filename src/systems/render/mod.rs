@@ -260,10 +260,10 @@ use gpu_types::{
     WaveStepParams,
 };
 use pipelines::{
-    build_band_hysteresis_step_pipeline, build_grid_visibility_step_pipeline,
-    build_grid_volume_pipeline, build_light_diffuse_pipeline, build_light_pass_pipelines,
-    build_particle_pipeline, build_post_total_reduce_pipeline, build_prep_pipeline,
-    build_snapshot_pipeline, build_surface_clear_pipeline, build_surface_convert_pipeline,
+    build_band_hysteresis_step_pipeline, build_grid_peak_pipeline, build_grid_volume_pipeline,
+    build_light_diffuse_pipeline, build_light_pass_pipelines, build_particle_pipeline,
+    build_post_total_reduce_pipeline, build_prep_pipeline, build_snapshot_pipeline,
+    build_surface_clear_pipeline, build_surface_convert_pipeline,
     build_surface_dual_render_pipeline, build_surface_iterate_pipeline,
     build_surface_moments_pipeline, build_surface_render_pipeline, build_surface_splat_pipeline,
     build_temp_avg_pipeline, build_temp_diffuse_pipeline, build_visibility_step_pipeline,
@@ -306,18 +306,16 @@ pub struct Renderer {
     grid_volume_pipeline: wgpu::RenderPipeline,
     grid_volume_bgl: wgpu::BindGroupLayout,
     grid_volume_params_buf: wgpu::Buffer,
-    /// Persistent hysteresis visible/invisible state for the grid-native
-    /// path: the `visibility_buf` technique (`curvature_flow.wgsl`'s Pass 2c)
-    /// applied to `grid_volume.wgsl`'s `mass_floor` discard, at `grid_res`
-    /// instead of `surface_res`.
-    grid_visibility_step_pipeline: wgpu::ComputePipeline,
-    grid_visibility_step_bgl: wgpu::BindGroupLayout,
-    grid_visibility_buf: wgpu::Buffer,
-    grid_visibility_params_buf: wgpu::Buffer,
-    /// Resolution `grid_visibility_buf` is currently allocated at --
-    /// `ensure_grid_visibility_capacity` regrows it when a caller's
+    /// Local peak of the cell mass, the grid-native path's edge reference
+    /// (`grid_volume.wgsl`'s `grid_peak_main`), at `grid_res`.
+    grid_peak_pipeline: wgpu::ComputePipeline,
+    grid_peak_bgl: wgpu::BindGroupLayout,
+    grid_peak_buf: wgpu::Buffer,
+    grid_peak_params_buf: wgpu::Buffer,
+    /// Resolution `grid_peak_buf` is currently allocated at --
+    /// `ensure_grid_peak_capacity` regrows it when a caller's
     /// `grid_res` exceeds this, same lazy-growth convention as `surface_res`.
-    grid_visibility_res: u32,
+    grid_peak_res: u32,
     /// The light pass (`light_pass.rs`): per-cell extinction from the grid or
     /// from the surface density, then the transmittance of the declared light
     /// to each physics-grid cell, at `light_pass_res`. Run only under a
@@ -675,8 +673,8 @@ impl Renderer {
             optical_table_buf,
             physical_render_params_buf,
             grid_volume_params_buf,
-            grid_visibility_buf,
-            grid_visibility_params_buf,
+            grid_peak_buf,
+            grid_peak_params_buf,
             light_pass_params_buf,
             surface_atomic_buf,
             surface_temp_atomic_buf,
@@ -729,8 +727,7 @@ impl Renderer {
         let (snapshot_pipeline, snapshot_bgl) = build_snapshot_pipeline(device);
         let (grid_volume_pipeline, grid_volume_bgl) =
             build_grid_volume_pipeline(device, output_format);
-        let (grid_visibility_step_pipeline, grid_visibility_step_bgl) =
-            build_grid_visibility_step_pipeline(device);
+        let (grid_peak_pipeline, grid_peak_bgl) = build_grid_peak_pipeline(device);
         let (
             light_extinction_grid_pipeline,
             light_extinction_surface_pipelines,
@@ -779,11 +776,11 @@ impl Renderer {
             grid_volume_pipeline,
             grid_volume_bgl,
             grid_volume_params_buf,
-            grid_visibility_step_pipeline,
-            grid_visibility_step_bgl,
-            grid_visibility_buf,
-            grid_visibility_params_buf,
-            grid_visibility_res: 1,
+            grid_peak_pipeline,
+            grid_peak_bgl,
+            grid_peak_buf,
+            grid_peak_params_buf,
+            grid_peak_res: 1,
             light_extinction_grid_pipeline,
             light_extinction_surface_pipelines,
             light_march_pipeline,

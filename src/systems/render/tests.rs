@@ -1,7 +1,7 @@
 //! Test suite for `Renderer` -- split out of `mod.rs` (was ~150 of its ~930
 //! lines), same pattern as `gpu/solver/device_lost_tests.rs`.
 
-use super::gpu_types::GridVisibilityParams;
+use super::gpu_types::GridPeakParams;
 use super::*;
 use crate::particle::Particle;
 use glam::Mat2;
@@ -2121,8 +2121,8 @@ fn grid_volume_scattering_and_specular_change_rendered_color() {
 /// `grid_volume.wgsl` renders blackbody emission from a mass-weighted
 /// temperature scattered into the buffer's channel 0. The `grid_int` buffer
 /// is built by hand (the layout of
-/// `grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds`:
-/// 4 u32 slots per cell, mass at offset 2) so mass stays equal and
+/// `grid_peak_is_the_largest_mass_within_two_cells`: 4 u32 slots per cell,
+/// mass at offset 2) so mass stays equal and
 /// temperature differs between the two renders.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
@@ -2153,9 +2153,8 @@ fn grid_volume_blackbody_emission_brightens_hot_cells() {
             mapped_at_creation: false,
         });
         let mut cells = vec![0u32; cell_count * 4];
-        // EVERY cell, not just one: comfortably above the real 0.15 mass_floor
-        // (well past even the HIGH hysteresis factor) so visibility is
-        // unambiguous everywhere, and a mass-weighted temperature consistent
+        // EVERY cell, not just one: a uniform full field, drawn everywhere,
+        // and a mass-weighted temperature consistent
         // with that same mass (slot 0 = mass*temp, slot 2 = mass, so
         // `avg_temp = slot0/slot2 = temp_k` exactly, matching
         // `sample_weighted_temp`'s own real convention) -- uniform fill
@@ -4069,108 +4068,302 @@ fn visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds() {
     );
 }
 
-/// Same real hysteresis technique as `visibility_hysteresis_does_not_
-/// flicker_in_the_gap_between_thresholds` above, ported to `grid_volume.
-/// wgsl`'s `grid_visibility_step_main` (see that shader's doc). The
-/// only structural difference: this pass reads mass out of the solver's
-/// own P2G grid-cell layout (4 u32 slots/cell, mass at offset 2, via
-/// `bitcast<f32>`), not a plain f32 density array -- the test buffer below
-/// mirrors that layout directly rather than reusing `surface_a_buf`.
+/// `grid_peak_main` writes, for each cell, the largest cell mass within two
+/// cells of it, the reach `grid_volume.wgsl`'s edge needs: one heavy cell in
+/// a uniform field shows in its 5 x 5 neighbourhood and nowhere else.
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
-fn grid_visibility_hysteresis_does_not_flicker_in_the_gap_between_thresholds() {
+fn grid_peak_is_the_largest_mass_within_two_cells() {
     let (device, queue) = headless_device();
     let mut r = Renderer::new(&device, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
     let grid_res = 32u32;
-    r.ensure_grid_visibility_capacity(&device, grid_res);
+    r.ensure_grid_peak_capacity(&device, grid_res);
     let cell_count = (grid_res * grid_res) as usize;
-
-    const MASS_FLOOR: f32 = 0.15;
-
+    let (heavy, background, hx, hy) = (3.0f32, 0.25f32, 10i32, 12i32);
+    let mut cells = vec![0u32; cell_count * 4];
+    for c in 0..cell_count {
+        cells[c * 4 + 2] = background.to_bits();
+    }
+    cells[(hy as usize * grid_res as usize + hx as usize) * 4 + 2] = heavy.to_bits();
     let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("test_grid_visibility_density"),
+        label: Some("test_grid_peak_density"),
         size: (cell_count * 4 * std::mem::size_of::<u32>()) as u64,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-
-    let dispatch_visibility_step = |mass_value: f32| {
-        let mut cells = vec![0u32; cell_count * 4];
-        cells[2] = mass_value.to_bits(); // cell 0, slot 2 = mass (see grid_volume.wgsl's layout doc)
-        queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
-        queue.write_buffer(
-            &r.grid_visibility_params_buf,
-            0,
-            bytemuck::bytes_of(&GridVisibilityParams {
-                grid_res,
-                mass_floor: MASS_FLOOR,
-                _pad0: 0,
-                _pad1: 0,
-            }),
-        );
-        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test_grid_visibility_step_bg"),
-            layout: &r.grid_visibility_step_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: grid_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: r.grid_visibility_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: r.grid_visibility_params_buf.as_entire_binding(),
-                },
-            ],
+    queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&cells));
+    queue.write_buffer(
+        &r.grid_peak_params_buf,
+        0,
+        bytemuck::bytes_of(&GridPeakParams {
+            grid_res,
+            _pad: [0; 3],
+        }),
+    );
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("test_grid_peak_bg"),
+        layout: &r.grid_peak_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: grid_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: r.grid_peak_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: r.grid_peak_params_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    {
+        let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
         });
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            cp.set_pipeline(&r.grid_visibility_step_pipeline);
-            cp.set_bind_group(0, &bg, &[]);
-            cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
+        cp.set_pipeline(&r.grid_peak_pipeline);
+        cp.set_bind_group(0, &bg, &[]);
+        cp.dispatch_workgroups(grid_res.div_ceil(8), grid_res.div_ceil(8), 1);
+    }
+    queue.submit(std::iter::once(enc.finish()));
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let peak = readback_f32_blocking(&device, &queue, &r.grid_peak_buf, cell_count);
+    for y in 0..grid_res as i32 {
+        for x in 0..grid_res as i32 {
+            let near = (x - hx).abs() <= 2 && (y - hy).abs() <= 2;
+            let expected = if near { heavy } else { background };
+            assert_eq!(
+                peak[(y * grid_res as i32 + x) as usize],
+                expected,
+                "cell ({x},{y})"
+            );
         }
-        queue.submit(std::iter::once(enc.finish()));
-        device.poll(wgpu::PollType::wait_indefinitely()).ok();
-    };
+    }
+}
 
-    let read_visibility_cell0 =
-        || -> f32 { readback_f32_blocking(&device, &queue, &r.grid_visibility_buf, cell_count)[0] };
+/// Grid mass of particles at `positions` (in cells), `mass_each` each,
+/// scattered with the solver's own quadratic B-spline (`grid::kernel`).
+fn scatter_particle_mass(grid_res: u32, positions: &[glam::Vec2], mass_each: f32) -> Vec<f32> {
+    use crate::spacetime::grid::kernel::quadratic_weights;
+    let mut mass = vec![0.0f32; (grid_res * grid_res) as usize];
+    for &x in positions {
+        let w = quadratic_weights(x);
+        for (gx, wx) in w.wx.iter().enumerate() {
+            for (gy, wy) in w.wy.iter().enumerate() {
+                let c = w.base_cell + glam::IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                if c.x >= 0 && c.y >= 0 && c.x < grid_res as i32 && c.y < grid_res as i32 {
+                    mass[(c.y as u32 * grid_res + c.x as u32) as usize] += mass_each * wx * wy;
+                }
+            }
+        }
+    }
+    mass
+}
 
-    // Same 4-frame gap-stability sequence as the curvature-flow test above.
-    dispatch_visibility_step(MASS_FLOOR * 1.5);
-    assert!(
-        read_visibility_cell0() > 0.5,
-        "mass clearly above the HIGH hysteresis threshold must turn the cell visible"
+/// Renders the grid `mass` (reference cell mass 1, the default) through
+/// `render_grid_volume` over a transparent `size` x `size` target, and
+/// returns every pixel's alpha, the drawn coverage, row-major from the top.
+fn grid_volume_coverage(grid_res: u32, size: u32, mass: &[f32]) -> Vec<u8> {
+    let (device, queue) = headless_device();
+    let cell_count = (grid_res * grid_res) as usize;
+    let mut words = vec![0u32; cell_count * 4];
+    for (c, m) in mass.iter().enumerate() {
+        words[c * 4 + 2] = m.to_bits();
+    }
+    let grid_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test_coverage_grid"),
+        size: (cell_count * 16) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&grid_buf, 0, bytemuck::cast_slice(&words));
+    let material_mass_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test_coverage_material_mass"),
+        size: (cell_count * 16 * 4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut r = Renderer::new(&device, 1, fmt);
+    r.set_camera(&queue, grid_res, size, size, 0.6, true);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("test_coverage_target"),
+        size: wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: fmt,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // A transparent target, so each pixel's alpha is the drawn coverage.
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("test_coverage_clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    queue.submit(std::iter::once(enc.finish()));
+    r.render_grid_volume(
+        &device,
+        &queue,
+        GridVolumeSource {
+            grid: &grid_buf,
+            material_mass: &material_mass_buf,
+            material_mass_enabled: false,
+            grid_res,
+        },
+        &view,
+        false,
     );
-
-    dispatch_visibility_step(MASS_FLOOR * 0.9);
-    assert!(
-        read_visibility_cell0() > 0.5,
-        "a cell already visible must NOT turn invisible just because its mass \
-         dropped below mass_floor itself, as long as it stays above the LOW \
-         hysteresis threshold"
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let padded = (size * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("test_coverage_staging"),
+        size: (padded * size) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    enc.copy_texture_to_buffer(
+        texture.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(size),
+            },
+        },
+        wgpu::Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
     );
+    queue.submit(std::iter::once(enc.finish()));
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+    let mapped = slice.get_mapped_range();
+    (0..size)
+        .flat_map(|y| (0..size).map(move |x| (y, x)))
+        .map(|(y, x)| mapped[(y * padded + x * 4 + 3) as usize])
+        .collect()
+}
 
-    dispatch_visibility_step(MASS_FLOOR * 0.5);
+/// The grid volume draws matter's edge where the matter ends. A slab of
+/// particles filling x < 16.25 (a boundary between cell edges), scattered
+/// with the solver's own kernel, must render its edge within 0.1 cell of
+/// 16.25: 0.05 is the bilinear interpolation of the sampled field (the
+/// crossing of its four cell values is at 16.20), the rest half a pixel at 8
+/// pixels per cell. The edge criterion it replaced, a nearest-cell gate at
+/// 0.15 of a full cell, put this edge at 16.66.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn grid_volume_edge_sits_where_the_matter_ends() {
+    let (grid_res, size) = (32u32, 256u32);
+    let px_per_cell = size as f32 / grid_res as f32;
+    // Particles at spacing 0.5, a quarter of a full cell's mass each, so the
+    // inside holds exactly the reference cell mass.
+    let (spacing, last_x) = (0.5f32, 16.0f32);
+    let mut positions = Vec::new();
+    let mut x = last_x;
+    while x > 0.0 {
+        let mut y = spacing / 2.0;
+        while y < grid_res as f32 {
+            positions.push(glam::Vec2::new(x, y));
+            y += spacing;
+        }
+        x -= spacing;
+    }
+    let true_edge = last_x + spacing / 2.0;
+    let mass = scatter_particle_mass(grid_res, &positions, spacing * spacing);
+    let coverage = grid_volume_coverage(grid_res, size, &mass);
+    // A row through the middle of the slab, away from the domain's walls.
+    let row = (size / 2 + 4) as usize;
+    let alpha: Vec<f32> = coverage[row * size as usize..(row + 1) * size as usize]
+        .iter()
+        .map(|&a| a as f32)
+        .collect();
+    let start = (true_edge * px_per_cell) as usize - 2 * px_per_cell as usize;
+    let crossing = (start..size as usize - 1)
+        .find(|&c| alpha[c] >= 127.5 && alpha[c + 1] < 127.5)
+        .expect("the slab must have an edge on this row");
+    let fraction = (alpha[crossing] - 127.5) / (alpha[crossing] - alpha[crossing + 1]);
+    let edge = (crossing as f32 + 0.5 + fraction) / px_per_cell;
     assert!(
-        read_visibility_cell0() <= 0.5,
-        "mass clearly below the LOW hysteresis threshold must turn the cell invisible"
+        (edge - true_edge).abs() < 0.1,
+        "edge drawn at x = {edge}, the matter ends at {true_edge}"
     );
+}
 
-    dispatch_visibility_step(MASS_FLOOR * 1.1);
+/// Nothing is drawn where there is no matter. Past a body's edge both the
+/// mass and its local peak fade to zero, two cells beyond the kernel's
+/// reach; there the edge test must not find a crossing that is not there.
+/// (Written as a mass difference, `mass - peak / 2` approaches zero without
+/// crossing it, and the anti-aliasing drew a one-pixel ring around every
+/// body.) A disk off the grid's lattice puts that fade-out at every offset
+/// from the pixel centres.
+#[test]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+fn grid_volume_draws_nothing_past_the_matter() {
+    let (grid_res, size) = (32u32, 256u32);
+    let px_per_cell = size as f32 / grid_res as f32;
+    let (spacing, centre, radius) = (0.5f32, glam::Vec2::new(16.3, 15.7), 6.0f32);
+    let mut positions = Vec::new();
+    let mut x = centre.x - radius;
+    while x <= centre.x + radius {
+        let mut y = centre.y - radius;
+        while y <= centre.y + radius {
+            if (glam::Vec2::new(x, y) - centre).length() <= radius {
+                positions.push(glam::Vec2::new(x, y));
+            }
+            y += spacing;
+        }
+        x += spacing;
+    }
+    let mass = scatter_particle_mass(grid_res, &positions, spacing * spacing);
+    let coverage = grid_volume_coverage(grid_res, size, &mass);
+    // The matter reaches half a spacing past the outermost particle.
+    let matter_radius = radius + spacing / 2.0;
+    let mut stray = Vec::new();
+    for row in 0..size {
+        for col in 0..size {
+            let p = glam::Vec2::new(
+                (col as f32 + 0.5) / px_per_cell,
+                grid_res as f32 - (row as f32 + 0.5) / px_per_cell,
+            );
+            let a = coverage[(row * size + col) as usize];
+            if (p - centre).length() > matter_radius + 1.0 && a > 0 {
+                stray.push((col, row, a));
+            }
+        }
+    }
     assert!(
-        read_visibility_cell0() <= 0.5,
-        "a cell already invisible must NOT turn visible just because its mass \
-         rose above mass_floor itself, as long as it stays below the HIGH \
-         hysteresis threshold"
+        stray.is_empty(),
+        "{} pixels drawn more than a cell past the matter, e.g. {:?}",
+        stray.len(),
+        &stray[..stray.len().min(5)]
     );
 }
 
