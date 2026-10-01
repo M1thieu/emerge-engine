@@ -179,11 +179,12 @@ fn peak_speeds(dt: f32, peak_natural: &[f32; 3]) {
         for _ in 0..frames(2.0) {
             sim.step();
         }
-        let fastest = |sim: &emerge::Simulation| {
-            (0..3u32)
-                .filter_map(|k| deposit(sim, k).map(|(_, _, v)| v))
-                .fold(0.0f32, f32::max)
-        };
+        // The pushed column's own fastest particle. Not the fastest of all
+        // three: the 5000 Pa push sprays droplets of the 2 Pa column across
+        // the tank, and one that lands on another column's top is launched
+        // alone by the next push, which then read as that column's peak.
+        let fastest =
+            |sim: &emerge::Simulation, slot: u32| deposit(sim, slot).map_or(0.0, |(_, _, v)| v);
         println!(
             "     column   pushed at {push_pa:.0} Pa (traction measured, particles)   after release"
         );
@@ -199,7 +200,7 @@ fn peak_speeds(dt: f32, peak_natural: &[f32; 3]) {
             let (mut push_peak, mut traction, mut touched) = (0.0f32, 0.0f32, 0usize);
             for _ in 0..frames(0.5) {
                 sim.step();
-                push_peak = push_peak.max(fastest(&sim));
+                push_peak = push_peak.max(fastest(&sim, slot));
                 if let Some(contact) = cursor.shared().contact {
                     traction = traction.max(contact.traction_pa());
                     touched = touched.max(contact.particles);
@@ -209,7 +210,7 @@ fn peak_speeds(dt: f32, peak_natural: &[f32; 3]) {
             let mut release_peak = 0.0f32;
             for _ in 0..frames(0.5) {
                 sim.step();
-                release_peak = release_peak.max(fastest(&sim));
+                release_peak = release_peak.max(fastest(&sim, slot));
             }
             println!(
                 "  {:>7}   {} ({traction:.0} Pa, {touched})   {}",
