@@ -367,7 +367,8 @@ pub struct DruckerPragerMaterial {
     /// plasticity.cpp`), since the original targets an implicit solve.
     /// `false` (default) = off.
     ///
-    /// `project`'s tension-cutoff branch (`dev_norm == 0.0 || trace > 0.0`;
+    /// `project`'s tension-cutoff branch (`trace > 0.0`, or a zero deviator
+    /// found outside the cone;
     /// "Case III" in this file is the shear-yield cone branch) returns the
     /// deformation to `sigma = (1,1)`, the textbook cone-apex return (the same
     /// as `sparkl`'s `plasticity_drucker_prager.rs`), every time it fires,
@@ -616,13 +617,22 @@ impl DruckerPragerMaterial {
         let dev = eps - Vec2::splat(trace * 0.5);
         let dev_norm = dev.length();
 
-        // Tension cutoff or purely volumetric deformation: project to identity (σ = 1).
+        // Tension cutoff: expansion projects to identity (σ = 1), the cone's tip.
         // dq = dev_norm only -- friction hardening is driven by shear, not volumetric expansion.
         // Using eps.length() here would include the log_volume_strain offset and cause
         // unbounded q growth in static/settled sand. The cone-apex return itself is
         // the textbook one (as in `sparkl`); its repeated firing is what
         // `use_pradhana` limits.
-        if dev_norm == 0.0 || trace > 0.0 {
+        //
+        // A zero deviator under compression is NOT sent to the tip here.
+        // Klar et al. 2016 (sec. 7.1) test their Case I (`gamma <= 0`: inside
+        // the cone, returned unchanged) before Case II (the tip, for a zero
+        // deviator or expansion), and a purely isotropic compression sits on
+        // the cone's axis, inside it. Testing `dev_norm == 0.0` first, as
+        // `sparkl` does, made such a particle stress-free and booked its
+        // compression as plastic `log_volume_strain`; a zero deviator is only
+        // sent to the tip below, once the cone check has found it outside.
+        if trace > 0.0 {
             // Pradhana limiter (`use_pradhana`): a later firing within the same
             // compaction cycle (`eps_pl_vol_pradhana` already set) passes the
             // trial state through unchanged, no update of `log_volume_strain`/
@@ -757,6 +767,16 @@ impl DruckerPragerMaterial {
             return None; // Yielded, but NGF's local fluidity hasn't built up
             // enough yet to permit real flow this step -- an elastic step
             // for now, not a bug (the whole point of a finite-rate coupling).
+        }
+
+        // Klar et al. 2016's Case II for a zero deviator outside the cone: no
+        // direction to project along, so the tip. Under compression (all that
+        // reaches here) this needs a negative friction term, so no preset takes it.
+        if dev_norm == 0.0 {
+            if self.use_pradhana && eps_pl_vol_pradhana > 0.0 {
+                return Some((sigma, 0.0, ProjectedBranch::DebtBlocked));
+            }
+            return Some((Vec2::ONE, 0.0, ProjectedBranch::TensionCutoff));
         }
 
         // Project onto yield surface in log-strain space, then exponentiate.

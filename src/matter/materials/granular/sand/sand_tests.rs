@@ -162,6 +162,25 @@ mod marginal_yield_tests {
         assert!(particles.log_volume_strain[0].abs() < 1.0e-6);
     }
 
+    /// A purely isotropic compression has a zero deviator but sits on the
+    /// cone's axis, inside it: Klar et al. 2016 (sec. 7.1) return it
+    /// unchanged (their Case I is tested before the tip's Case II). Sent to
+    /// the tip instead, it came back as `F = I`, stress-free, with its
+    /// compression booked as plastic `log_volume_strain`.
+    #[test]
+    fn isotropic_compression_at_rest_stays_elastic() {
+        let sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        let compressed = Mat2::from_diagonal(Vec2::splat(0.99));
+        let mut particles = rate_particle(compressed, &sand);
+        let q_before = particles.friction_hardening[0];
+
+        run_rate_step(&sand, &mut particles, Mat2::ZERO, 1.0);
+
+        assert_eq!(particles.deformation_gradient[0], compressed);
+        assert_eq!(particles.friction_hardening[0], q_before);
+        assert_eq!(particles.log_volume_strain[0], 0.0);
+    }
+
     #[test]
     fn nonzero_rate_crossing_yield_updates_q_and_preserves_positive_volume() {
         let sand = DruckerPragerMaterial::new(2000.0, 3000.0);
@@ -472,10 +491,10 @@ mod pradhana_correction_tests {
 
     /// Drives one particle through an anisotropic expansion impact (a purely
     /// isotropic `diag(a,a)` keeps `dev_norm` at exactly 0.0 the whole run,
-    /// tripping the branch's `dev_norm == 0.0` OR-condition whatever the
-    /// pradhana shift), then holds it under sustained anisotropic compression
-    /// (not `L=0`, which freezes `F` at the tension cutoff's rotation-only
-    /// output and re-triggers `dev_norm == 0.0` forever whatever the debt).
+    /// so nothing but the cutoff ever acts on it), then holds it under
+    /// sustained anisotropic compression (not `L=0`, which leaves `F` at the
+    /// tension cutoff's rotation-only output: zero strain, an elastic step
+    /// every substep, nothing for the debt to act on).
     /// Returns the full `(log_volume_strain, friction_hardening)` trajectory.
     fn run_impact_then_sustained_load(use_pradhana: bool, settle_steps: usize) -> Vec<(f32, f32)> {
         let dp = DruckerPragerMaterial {
@@ -546,10 +565,9 @@ mod pradhana_correction_tests {
     ///
     /// Each rest phase starts with a brief compression (the gradient that
     /// brings the particle to elastic equilibrium by step ~91 in the
-    /// sustained-load test) before `L = 0`: tension cutoff leaves an exact
-    /// pure rotation (`dev_norm = 0`), and with `L = 0` right after it
-    /// `dev_norm` stays exactly 0 and retriggers the branch's own
-    /// `dev_norm == 0.0` condition, an artifact of the test.
+    /// sustained-load test) before `L = 0`, so the rest holds a loaded
+    /// elastic state rather than the stress-free pure rotation the tension
+    /// cutoff leaves.
     #[test]
     #[ignore = "premise no longer holds: the baseline it compares against was the f32 round-off in the F product, now pinned by advance_deformation_gradient. Baseline log_volume_strain over 15 episodes read a small positive number before the pin and -2.19e-8 after, so the sign this test asserts is round-off, not the physical volume gain Pradhana corrects. Needs a scene where that gain is real."]
     fn pradhana_effect_across_repeated_separate_impact_episodes() {

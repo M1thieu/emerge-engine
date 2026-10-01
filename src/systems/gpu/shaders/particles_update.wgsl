@@ -224,7 +224,11 @@ fn dp_plasticity(sigma_in: vec2<f32>, log_volume_strain: f32, q: f32, mat: Mater
     let dev   = eps - vec2<f32>(tr * 0.5);
     let dn    = length(dev);
 
-    if dn < NUM_FLOOR_TIGHT || tr > 0.0 {
+    // Tension cutoff: expansion goes to the cone's tip. A zero deviator under
+    // compression stays elastic (Klar et al. 2016 sec. 7.1 test Case I before
+    // Case II; see sand.rs `project`) and is only sent to the tip below, once
+    // gamma has found it outside the cone.
+    if tr > 0.0 {
         // dq = dn only (not length(eps)) -- log_volume_strain offset must not contribute.
         // length(eps) causes unbounded q growth in settled sand. Mirrors sand.rs:130.
         let prev_det = sigma.x * sigma.y;
@@ -245,6 +249,10 @@ fn dp_plasticity(sigma_in: vec2<f32>, log_volume_strain: f32, q: f32, mat: Mater
 
     if gamma <= 0.0 {
         return DpReturn(sigma, 0.0, 0.0);
+    }
+    if dn < NUM_FLOOR_TIGHT {
+        let prev_det = sigma.x * sigma.y;
+        return DpReturn(vec2<f32>(1.0), 0.0, log(max(prev_det, NUM_FLOOR_TIGHT * NUM_FLOOR_TIGHT)));
     }
 
     let h_eps     = eps - gamma * (dev / dn);
