@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, NaccProps, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, carried_volume_ratio, elastic_wave_dt, lame_from_young,
+    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -583,11 +583,8 @@ impl MaterialModel for NaccMaterial {
         // Exact constant-C integration prevents forward Euler's O(dt^2)
         // volume drift from being mistaken for permanent Cam-Clay cap
         // plasticity and accumulated preconsolidation history.
-        let (f_trial, _) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        let f_trial =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
         let alpha = *ctx.log_volume_strain;
         let (new_f, new_alpha) =
             self.project(f_trial, alpha, self.cohesion_bonus_pa(ctx.scalar_field));

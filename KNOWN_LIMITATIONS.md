@@ -330,43 +330,48 @@ its own to explain or calm that particular runaway.
 
 ### Volume a body loses to nothing
 
-`advance_deformation_gradient` now takes the step's volume ratio from the
-continuity equation, `det(exp(dt C)) = exp(dt tr C)`, and rescales the
-product onto it, instead of letting f32 round-off decide it. What is left
-after that, measured on the anchored body of
+`advance_deformation_gradient` applies each substep as
+`F + (exp(dt C) - I) F`, on CPU and GPU alike, with the increment never
+formed as one plus a small number. An f32 near 1 is spaced 1.19e-7 above
+it and 5.96e-8 below it, so an increment written as `1 + small` was
+rounded one way every substep: the plain product `exp(dt C) F` lost
+determinant steadily, and the first fix, rescaling `F` each substep onto a
+volume ratio carried beside it, fed the same rounding back into the
+shape. Measured on the anchored body of
 `tests/probes/no_compression_drift_horizon.rs` at one substep of 4.37 ms
 (the same substep the adaptive loop picks), mean `J - 1` over the body:
 
-| substeps | tension-only, before | tension-only, after | ordinary elastic, after |
-| --- | --- | --- | --- |
-| 150 000 | -0.00066 | -0.000042 | +0.000025 |
-| 450 000 | -0.00323 | -0.00027 | +0.000020 |
-| 900 000 | -0.00709 | -0.0115 | +0.000011 |
+| substeps | tension-only, plain product | tension-only, rescaled | tension-only, now | ordinary elastic, rescaled | ordinary elastic, now |
+| --- | --- | --- | --- | --- | --- |
+| 150 000 | -0.00066 | -0.000042 | +0.000020 | +0.000025 | +0.000031 |
+| 450 000 | -0.00323 | -0.00027 | +0.000015 | +0.000020 | +0.000031 |
+| 900 000 | -0.00709 | -0.0115 | +0.000001 | +0.000011 | +0.000031 |
 
-- **An unloaded tension-only body creeps, and past about 450 000 substeps
-  it runs away.** The bands one to four cells below the anchor hold a
-  steady positive `J` (a hanging body in tension, which is right), but the
-  bottom band carries no load at all, so the moment round-off in the SHAPE
-  of `F` pushes one principal stretch below 1, a tension-only law offers no
-  restoring force and the compression feeds itself: `max |J - 1|` reaches
-  0.131 at 900 000 substeps, past the 0.028 the old code reached. Pinning
-  the volume moves the error from the volume into the shape, which this one
-  material converts back into volume at zero load. The same body in
-  `NeoHookeanMaterial`, which resists compression, is flat over the whole
-  horizon (+0.000011, max 0.00085). Real cables and membranes are not
+- **The tension-only body no longer runs away within this horizon.**
+  `max |J - 1|` after 900 000 substeps is 0.0011, where the rescaled form
+  reached 0.131 and the plain product 0.028. What drove the runaway was
+  one-way round-off in the shape of `F`, which a law with no compressive
+  stiffness turns into volume. The physical gap itself is unchanged: a
+  tension-only body still has no restoring force in compression, so a
+  real disturbance there is unresisted. Real cables and membranes are not
   purely tension-only either (bending stiffness, a small compressive
-  modulus); adding one is the candidate fix, and it is not built (issue #37).
-- **The pin is CPU only.** On GPU `volume` is rewritten every step by the
-  g2p grid-mass gather, so it cannot carry the volume, and `Particle` is
-  full at its asserted 128 bytes with no spare slot for a carrier. The GPU
-  shaders keep the plain product and its round-off. This belongs with the
-  parity work, which already owns the volume/density divergence between the
-  two paths.
+  modulus); adding one is the candidate fix, and it is not built
+  (issue #37).
+- **What is left is unbiased, not zero.** Over 900 000 substeps of a
+  prescribed oscillation from a loaded `F` (`tests/probes/f_rounding_horizon.rs`
+  with ROUND_FXX=1.0027 ROUND_FYY=0.9899 ROUND_AMP=0.4 ROUND_DT=2.94e-4),
+  `ln det F` ends +7.9e-5 from the f64 integral and `ln(F_xx / F_yy)`
+  +6.3e-5, about what an unbiased walk of f32 roundings reaches in that
+  many steps; the rescaled form held the volume to -1.2e-7 but put -5.6e-3
+  into the shape. Storing `F - I` in place of `F` would make each rounding
+  relative to the strain rather than to 1; that changes the particle
+  layout on both paths and is not built.
 - **A sand test lost its premise.**
   `pradhana_effect_across_repeated_separate_impact_episodes` asserted that
   its uncorrected baseline gains volume across repeated impact episodes.
-  That gain was the round-off: the baseline now reads -2.19e-8, so the sign
-  the test needs is gone and it is ignored under that reason. Guarding the
+  That gain was round-off: the baseline read -2.19e-8 with the rescaled
+  form and reads +1.91e-8 now, so the sign the test needs is round-off
+  either way and it stays ignored under that reason. Guarding the
   Pradhana correction needs a scene where the volume gain it corrects is
   physical.
 

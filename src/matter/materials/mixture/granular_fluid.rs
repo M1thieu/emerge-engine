@@ -2,8 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, carried_volume_ratio, elastic_wave_dt, lame_from_young,
-    polar_decomposition_2d,
+    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young, polar_decomposition_2d,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -292,11 +291,8 @@ impl MaterialModel for GranularFluidMaterial {
         // response and the corotated/SVD branch. Exact constant-C integration
         // prevents Euler volume drift from becoming false EOS pressure or
         // permanent Jp/hardening.
-        let (f_trial, _) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        let f_trial =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
 
         if self.compression_limit > 0.0 || self.stretch_limit > 0.0 {
             let (u, sigma, vt) = svd2(f_trial);

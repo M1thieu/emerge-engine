@@ -2955,13 +2955,13 @@ fn von_mises_gpu_cpu_bounded_agreement_under_soft_contact() {
 }
 
 /// Cross-backend check: NeoHookean (2)/Corotated (3)/Viscoelastic (9) use
-/// `deformation_increment_exp` on CPU, like Von Mises (see its single-substep
-/// test above for the rationale and caveats: this excludes a formula mismatch
-/// between the Rust CPU helper and its hand-duplicated WGSL twin, it does not
-/// isolate the constitutive kernel from P2G/G2P transfer differences). None of
-/// the three has a plastic projection, but this runs the exponential
-/// integrator through a P2G->G2P round trip on GPU, which the CPU-only unit
-/// tests do not.
+/// `deformation_increment_exp_minus_identity` on CPU, like Von Mises (see its
+/// single-substep test above for the rationale and caveats: this excludes a
+/// formula mismatch between the Rust CPU helper and its hand-duplicated WGSL
+/// twin, it does not isolate the constitutive kernel from P2G/G2P transfer
+/// differences). None of the three has a plastic projection, but this runs
+/// the exponential integrator through a P2G->G2P round trip on GPU, which
+/// the CPU-only unit tests do not.
 #[cfg(feature = "gpu")]
 #[test]
 #[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
@@ -2986,8 +2986,8 @@ fn elastic_family_gpu_cpu_single_substep_matches_under_combined_shear_and_spin()
             for i in 0..particles.len() {
                 // Combined shear + rigid spin, not pure shear -- the whole
                 // point of the exponential fix is handling rotation and
-                // strain together correctly (see `deformation_increment_exp`'s
-                // own rigid-rotation test); a pure-shear-only imposed C would
+                // strain together correctly (see the rigid-rotation test
+                // beside `deformation_increment_exp_minus_identity`); a pure-shear-only imposed C would
                 // not exercise that interaction at all.
                 particles.velocity_gradient[i] =
                     Mat2::from_cols(Vec2::new(0.2, 0.6), Vec2::new(-0.6, -0.1));

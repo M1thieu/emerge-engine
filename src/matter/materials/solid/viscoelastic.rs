@@ -2,7 +2,7 @@ use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame, scale_visc};
 use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, carried_volume_ratio, elastic_wave_dt, lame_from_young,
+    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
@@ -154,15 +154,12 @@ impl MaterialModel for ViscoelasticMaterial {
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         // Exact matrix exponential, not forward Euler: see
-        // `deformation_increment_exp` for the O(dt^2) volumetric ratchet
-        // Euler causes in every tensor-F material.
-        let (f_new, carried) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        // `deformation_increment_exp_minus_identity` for the O(dt^2)
+        // volumetric ratchet Euler causes in every tensor-F material.
+        let f_new =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
         *ctx.deformation_gradient = f_new;
-        let j = carried.max(MIN_J);
+        let j = f_new.determinant().max(MIN_J);
         let v = (ctx.initial_volume * j).max(1.0e-6);
         *ctx.volume = v;
         *ctx.density = ctx.mass / v;
@@ -346,9 +343,9 @@ mod analytical_validation_tests {
 }
 
 /// `update_particle` uses the exponential integrator
-/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
-/// ratchet forward Euler causes). Tests the call site, not the helper (which
-/// has its own 3 tests in `utils.rs`).
+/// (`deformation_increment_exp_minus_identity`, see its doc for the O(dt^2)
+/// volumetric ratchet forward Euler causes). Tests the call site, not the
+/// helper (which has its own tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;

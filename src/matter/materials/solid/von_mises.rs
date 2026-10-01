@@ -3,8 +3,8 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{DuctileProps, FromSI, scale_lame, scale_stress};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, advance_deformation_gradient, carried_volume_ratio, corotated_elastic_stress,
-    elastic_wave_dt, hencky_strains, lame_from_young, reconstruct_f,
+    LOG_CLAMP, MIN_J, advance_deformation_gradient, corotated_elastic_stress, elastic_wave_dt,
+    hencky_strains, lame_from_young, reconstruct_f,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{ParticleUpdateCtx, Particles};
@@ -204,13 +204,11 @@ impl MaterialModel for VonMisesMaterial {
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         // Exact matrix exponential `exp(dt*C)*F`, not forward Euler `(I+dt*C)*F`
-        // (see `deformation_increment_exp` for the O(dt^2) volumetric ratchet);
-        // the return mapping below works on whatever F_trial it receives.
-        let (f_trial, _) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        // (see `deformation_increment_exp_minus_identity` for the O(dt^2)
+        // volumetric ratchet); the return mapping below works on whatever
+        // F_trial it receives.
+        let f_trial =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
         let (u, sigma, vt) = svd2(f_trial);
 
         let (dev, tr, elastic_dev) = self.deviatoric_state(sigma);

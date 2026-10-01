@@ -528,9 +528,9 @@ mod kirchhoff_stress_vjp_tests {
 }
 
 /// `update_particle` uses the exponential integrator
-/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
-/// ratchet of forward Euler), checked at the call site rather than on the
-/// helper (covered by its own 3 tests in `utils.rs`).
+/// (`deformation_increment_exp_minus_identity`, see its doc for the O(dt^2)
+/// volumetric ratchet of forward Euler), checked at the call site rather
+/// than on the helper (covered by its own tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;

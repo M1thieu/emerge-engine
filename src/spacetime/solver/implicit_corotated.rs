@@ -157,8 +157,10 @@ impl ImplicitProblem {
         g
     }
 
-    /// Exact closed-form `exp(dt*grad_v)*F_n` (`deformation_increment_exp`),
-    /// not the linear `(I+dt*grad_v)*F_n`. A settled DruckerPrager particle's
+    /// Exact closed-form `exp(dt*grad_v)*F_n`, applied as
+    /// `F_n + (exp(dt*grad_v) - I)*F_n` (`advance_deformation_gradient`, whose
+    /// doc has why the increment is never formed as one plus a small
+    /// number), not the linear `(I+dt*grad_v)*F_n`. A settled DruckerPrager particle's
     /// rest `F_n` is a pure rotation (zero corotated stress), ~34 degrees in
     /// `diag_properly_isolated_equilibrium_maintenance`; composing the linear
     /// increment onto it is not orthogonal to first order, and the spurious
@@ -171,7 +173,7 @@ impl ImplicitProblem {
     /// never what the solve converges to.
     fn deformed_f(p: &ImplicitParticle, v: &[Vec2], dt: f32) -> Mat2 {
         let grad_v = Self::velocity_gradient(&p.entries, v);
-        crate::materials::utils::deformation_increment_exp(dt * grad_v) * p.f_n
+        crate::materials::utils::advance_deformation_gradient(p.f_n, dt * grad_v)
     }
 
     /// The LINEAR (forward-Euler-style) `(I+dt*grad_v)*F_n` `deformed_f`'s

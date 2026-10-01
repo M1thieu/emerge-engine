@@ -569,7 +569,7 @@ mod pradhana_correction_tests {
     /// elastic state rather than the stress-free pure rotation the tension
     /// cutoff leaves.
     #[test]
-    #[ignore = "premise no longer holds: the baseline it compares against was the f32 round-off in the F product, now pinned by advance_deformation_gradient. Baseline log_volume_strain over 15 episodes read a small positive number before the pin and -2.19e-8 after, so the sign this test asserts is round-off, not the physical volume gain Pradhana corrects. Needs a scene where that gain is real."]
+    #[ignore = "premise no longer holds: the baseline it compares against was f32 round-off in the F product. Baseline log_volume_strain over 15 episodes read a small positive number with the plain product, -2.19e-8 with the carried-volume rescale and +1.91e-8 with the exp - I form of advance_deformation_gradient: round-off of either sign, not the physical volume gain Pradhana corrects. Needs a scene where that gain is real."]
     fn pradhana_effect_across_repeated_separate_impact_episodes() {
         fn run_repeated_episodes(use_pradhana: bool, episodes: usize) -> f32 {
             let dp = DruckerPragerMaterial {

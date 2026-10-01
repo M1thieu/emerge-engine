@@ -81,9 +81,9 @@ mod render_mode;
 ///
 /// ```text
 ///     tau_0 in   deposit h   half-width L   h/L    standing shear   read back
-///        2 Pa       5.5 mm      96.0 mm     0.06       1.18         1.6 Pa, thin layer, creeping
-///       60 Pa      20.9 mm      26.3 mm     0.79       0.98          56 Pa, planar law
-///     1200 Pa      38.9 mm       9.5 mm     4.08       0.34        > 151 Pa, held its shape
+///        2 Pa       5.5 mm      95.9 mm     0.06       1.24         1.6 Pa, thin layer, creeping
+///       60 Pa      20.8 mm      26.3 mm     0.79       0.97          56 Pa, planar law
+///     1200 Pa      38.9 mm       9.5 mm     4.08       0.24        > 151 Pa, held its shape
 /// ```
 ///
 /// Each reading is what its relation is worth and no more. The 2 Pa deposit
@@ -95,10 +95,10 @@ mod render_mode;
 ///
 /// The standing-shear column does not depend on any geometry, and it is
 /// what actually tests the law: at rest a yield-stress fluid holds a shear
-/// stress up to tau_0 and no further. The middle column sits at 0.98 of its
+/// stress up to tau_0 and no further. The middle column sits at 0.97 of its
 /// own yield, a material at its limit holding a slope. The right one sits at
-/// 0.34, well below, so it is elastic and does not flow. The left one reads
-/// 1.18, above its yield, because it has not stopped: it is still flowing.
+/// 0.24, well below, so it is elastic and does not flow. The left one reads
+/// 1.24, above its yield, because it has not stopped: it is still flowing.
 ///
 /// The floor grips. On a frictionless one the thin-layer reading comes out
 /// five to ten times low, because without basal shear the material spreads

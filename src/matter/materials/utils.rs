@@ -28,8 +28,23 @@ pub(crate) const LOG_CLAMP: f32 = 1e-10;
 /// update and reports an inadmissible state instead of clamping it.
 pub(crate) const MIN_J: f32 = 1e-6;
 
-/// Exact 2D deformation-gradient increment for a velocity gradient held
-/// constant over one substep.
+/// Below this `|delta^2|` (a stretch or rotation under one radian per
+/// substep, every substep the CFL bounds allow) the even and odd factors of
+/// the exponential come from their Taylor series to `x^5`. The first
+/// omitted terms, `x^6 / 12!` and `x^6 / 13!`, are then under 5e-9 of the
+/// leading ones, below f32 resolution.
+///
+/// The series is used this far, rather than only near zero, because the
+/// GPU copy cannot rely on its built-ins for small arguments: WGSL (W3C,
+/// section 15.7.4 Floating Point Accuracy) gives `sinh` only the accuracy
+/// of `(exp(x) - exp(-x)) * 0.5` and allows `sin` an absolute error of
+/// 2^-11 on [-pi, pi], either of which can be the whole of a substep's
+/// value. Both solvers use the same series so they agree.
+const INCREMENT_SERIES_LIMIT: f32 = 1.0;
+
+/// `exp(A) - I` for a 2x2 `A`, never formed as one plus a small number:
+/// the exact deformation-gradient increment for a velocity gradient held
+/// constant over one substep, minus the identity.
 ///
 /// Continuum kinematics gives `dF/dt = L F`.  The exact update for constant
 /// `L` is therefore `F(t+dt) = exp(dt L) F(t)`.  The commonly used forward-
@@ -43,18 +58,29 @@ pub(crate) const MIN_J: f32 = 1e-6;
 /// Cayley-Hamilton.  The trigonometric branch covers complex-conjugate
 /// eigenvalues (including rigid rotation); the hyperbolic branch covers real
 /// eigenvalues.  Series expansions remove the removable singularity at zero.
+///
+/// A substep's `exp(dt L)` is within a few parts in 1e4 of the identity.
+/// An f32 near 1 is spaced 1.19e-7 above it and 5.96e-8 below it, so
+/// writing the increment as `1 + small` rounds the small part onto steps of
+/// two different sizes, and a factor that should be just above or just
+/// below 1 is quantized differently in each direction. Multiplied into an
+/// `F` whose entries straddle 1 (a loaded body: 1.0027 across, 0.9899 along
+/// the load), the rounding stops averaging out and pushes one way, every
+/// substep. Measured on a resting self-weight column (E = 1e5 Pa, earth
+/// gravity, 240 particles), with each particle's `F` re-integrated in f64
+/// from the solver's own velocity gradients: the former update (this
+/// increment formed as `1 + small`, then rescaled onto a carried volume)
+/// drifted the mean `F_xx` by -3.6e-4 and `F_yy` by +3.0e-4 in 10 s, so `F`
+/// read the body as less deformed than it was, while this form, applied as
+/// `F + (exp(dt L) - I) F`, stayed within 5e-7 of the f64 integral.
+/// Equilibrium holds `F` at the load, so in the solver that drift showed up
+/// as the body's shape creeping instead (shorter and wider, without end, at
+/// a rate proportional to the number of substeps).
+///
+/// Every term here stays small: `exp_m1` for the trace part and the
+/// half-angle form `cosh x - 1 = 2 sinh^2(x / 2)` for the even part.
 #[inline]
-pub(crate) fn deformation_increment_exp(dt_velocity_gradient: Mat2) -> Mat2 {
-    deformation_increment_exp_with_det(dt_velocity_gradient).0
-}
-
-/// The same increment, returning its determinant from the closed form
-/// rather than from the matrix: `det(exp(A)) = exp(tr A)` exactly, and
-/// `exp(tr A)` is already computed here as the scalar prefactor, so the
-/// caller gets the volume change for free instead of re-deriving it from
-/// four rounded entries.
-#[inline]
-fn deformation_increment_exp_with_det(dt_velocity_gradient: Mat2) -> (Mat2, f32) {
+fn deformation_increment_exp_minus_identity(dt_velocity_gradient: Mat2) -> Mat2 {
     // glam is column-major: [[a,b],[c,d]] is stored as columns (a,c),(b,d).
     let a = dt_velocity_gradient.x_axis.x;
     let b = dt_velocity_gradient.y_axis.x;
@@ -64,28 +90,36 @@ fn deformation_increment_exp_with_det(dt_velocity_gradient: Mat2) -> (Mat2, f32)
     let half_difference = 0.5 * (a - d);
     let delta_sq = half_difference * half_difference + b * c;
 
-    let (even, odd) = if delta_sq.abs() < 1.0e-8 {
-        // cosh(sqrt(x)) and sinh(sqrt(x))/sqrt(x), continued analytically
-        // through x=0.  Retaining x^2 is ample at this threshold in f32.
-        let x2 = delta_sq * delta_sq;
+    // cosh(sqrt(x)) - 1 and sinh(sqrt(x))/sqrt(x), continued analytically
+    // through x = 0 (cos and sin of sqrt(-x) for x < 0).
+    let (even_minus_one, odd) = if delta_sq.abs() < INCREMENT_SERIES_LIMIT {
+        let x = delta_sq;
         (
-            1.0 + 0.5 * delta_sq + x2 / 24.0,
-            1.0 + delta_sq / 6.0 + x2 / 120.0,
+            x * (1.0 / 2.0
+                + x * (1.0 / 24.0 + x * (1.0 / 720.0 + x * (1.0 / 40320.0 + x / 3628800.0)))),
+            1.0 + x
+                * (1.0 / 6.0
+                    + x * (1.0 / 120.0
+                        + x * (1.0 / 5040.0 + x * (1.0 / 362880.0 + x / 39916800.0)))),
         )
     } else if delta_sq > 0.0 {
         let delta = delta_sq.sqrt();
-        (delta.cosh(), delta.sinh() / delta)
+        let half = (0.5 * delta).sinh();
+        (2.0 * half * half, delta.sinh() / delta)
     } else {
         let omega = (-delta_sq).sqrt();
-        (omega.cos(), omega.sin() / omega)
+        let half = (0.5 * omega).sin();
+        (-2.0 * half * half, omega.sin() / omega)
     };
 
+    // exp(A) = e^h (cosh I + odd (A - h I)) with h = tr(A) / 2; writing
+    // s = e^h - 1 and e = cosh - 1 gives
+    // exp(A) - I = (e + s (1 + e)) I + (1 + s) odd (A - h I).
+    let scale_minus_one = half_trace.exp_m1();
     let traceless = dt_velocity_gradient - Mat2::from_diagonal(Vec2::splat(half_trace));
-    let scale = half_trace.exp();
-    (
-        scale * (Mat2::IDENTITY * even + traceless * odd),
-        scale * scale,
-    )
+    Mat2::from_diagonal(Vec2::splat(
+        even_minus_one + scale_minus_one * (1.0 + even_minus_one),
+    )) + traceless * ((1.0 + scale_minus_one) * odd)
 }
 
 /// One substep of the continuity equation for a material that owns its
@@ -121,81 +155,35 @@ pub(crate) fn advance_log_volume_ratio(
     (clamped, clamped.exp())
 }
 
-/// The volume ratio a particle is already carrying, read from `volume`
-/// rather than recomputed from `det(F)`: near the identity that
-/// determinant is a cancelling difference, and reading it back every step
-/// is what `advance_deformation_gradient`'s doc measures as the worse
-/// of the two options.
+/// One substep of `dF/dt = L F`, as `F + (exp(dt L) - I) F`.
 ///
-/// Zero means the particle is not carrying a usable volume yet (a bare
-/// `Particle::zeroed()`, or a state written before `volume` was set), and
-/// `advance_deformation_gradient` then falls back to `det(F)` for that
-/// one step rather than pinning the volume to a floor.
+/// Applying the increment as a correction to `F`, rather than multiplying
+/// by a matrix that sits on the f32 grid around 1, keeps each rounding
+/// relative to the small part (see `deformation_increment_exp_minus_identity`),
+/// so what rounding is left averages out instead of pushing one way.
+///
+/// The form this replaces multiplied by `exp(dt L)` and then rescaled the
+/// product every substep onto a volume ratio carried beside `F`, to undo
+/// the steady loss of determinant that product had. The rescale factor
+/// was itself within a few ULP of 1, so it fed the same one-way rounding
+/// back into the shape, and once the carried ratio and `det(F)` drifted
+/// more than 1e-3 apart it stopped rescaling for good. Measured on one
+/// particle driven by a prescribed oscillation, no solver
+/// (`tests/probes/f_rounding_horizon.rs`, ROUND_FXX=1.0027
+/// ROUND_FYY=0.9899, ROUND_AMP=0.4, 900 000 steps of 2.94e-4 s), error
+/// against the f64 integral: the rescaled form held `ln det F` to -1.2e-7
+/// but put -5.6e-3 into `ln(F_xx / F_yy)`; this form leaves +7.9e-5 and
+/// +6.3e-5, about what an unbiased walk of f32 roundings reaches in that
+/// many steps. On the anchored tension-only body of
+/// `tests/probes/no_compression_drift_horizon.rs` (one 4.37 ms substep per
+/// step), where shape error is what turned into volume, `max |J - 1|` after
+/// 900 000 substeps goes from 0.131 to 0.0011.
+///
+/// The volume ratio is `det(F)`, as in any MPM: with no bias left to
+/// cancel, nothing needs a second copy kept in step with it.
 #[inline]
-pub(crate) fn carried_volume_ratio(volume: f32, initial_volume: f32) -> f32 {
-    if initial_volume > 0.0 && volume > 0.0 {
-        volume / initial_volume
-    } else {
-        0.0
-    }
-}
-
-/// One substep of `dF/dt = L F`, with the volume taken from the
-/// continuity equation instead of from round-off.
-///
-/// `deformation_increment_exp` is exact in exact arithmetic, but the
-/// product `exp(dt L) F` is not: in f32 each step loses about a tenth of
-/// an ULP of determinant, always the same way. Measured on one particle
-/// driven by a prescribed oscillation of zero trace, with no solver, no
-/// grid and no gravity (`tests/probes/f_rounding_horizon.rs`), where
-/// `ln det F` must stay at zero: after 900 000 steps it reads -2.8e-3
-/// with the plain product and +3e-14 when the same formula runs in f64,
-/// so the gap is precision, not the scheme. A body that keeps
-/// oscillating (one hanging from an anchor, which nothing damps) turns
-/// that into visible, one-way volume loss.
-///
-/// `det(exp(dt L)) = exp(dt tr L)` fixes the step's volume ratio before
-/// any arithmetic happens, so the volume is carried multiplicatively and
-/// the product is rescaled onto it; only the shape then carries
-/// round-off. Same probe, same 900 000 steps: -6e-8, one ULP. Rescaling
-/// onto `det(F)` re-read each step instead is measurably WORSE
-/// (-4.0e-3): near the identity that determinant is a cancelling
-/// difference, and feeding it back amplifies its own noise.
-///
-/// Returns the advanced `F` and the volume ratio it now has. A material
-/// that then projects `F` plastically changes the volume for a physical
-/// reason and takes its own `det` afterwards, as it already did.
-#[inline]
-pub(crate) fn advance_deformation_gradient(
-    f_old: Mat2,
-    dt_velocity_gradient: Mat2,
-    carried_volume_ratio: f32,
-) -> (Mat2, f32) {
-    let (increment, increment_det) = deformation_increment_exp_with_det(dt_velocity_gradient);
-    let product = increment * f_old;
-    let base = if carried_volume_ratio > 0.0 {
-        carried_volume_ratio
-    } else {
-        f_old.determinant()
-    };
-    let carried = base * increment_det;
-    let det = product.determinant();
-    if carried > 0.0 && det > 0.0 {
-        // Analytically `det(product) == det(f_old) * increment_det`, so
-        // this ratio is not the step's own volume change: it is whatever
-        // disagreement the carried volume and `det(F)` already had.
-        // Round-off is a few parts in 1e7, so anything past a part in
-        // 1e3 means the two are out of step -- a state this
-        // correction must not silently repair by rescaling F.
-        const MAX_PINNED_CORRECTION: f32 = 1.0e-3;
-        let ratio = carried / det;
-        if (ratio - 1.0).abs() <= MAX_PINNED_CORRECTION {
-            return (product * ratio.sqrt(), carried);
-        }
-    }
-    // Degenerate, inverted, or already inconsistent: leave the product
-    // alone and let the caller's own floor handle it, as before.
-    (product, det)
+pub(crate) fn advance_deformation_gradient(f_old: Mat2, dt_velocity_gradient: Mat2) -> Mat2 {
+    f_old + deformation_increment_exp_minus_identity(dt_velocity_gradient) * f_old
 }
 
 /// Floor on Rankine's exponentially-softened effective tensile strength, as a
@@ -899,6 +887,10 @@ mod rankine_damage_estimate_tests {
 mod deformation_increment_tests {
     use super::*;
 
+    fn deformation_increment_exp(a: Mat2) -> Mat2 {
+        Mat2::IDENTITY + deformation_increment_exp_minus_identity(a)
+    }
+
     fn matrix_error(a: Mat2, b: Mat2) -> f32 {
         (a.x_axis - b.x_axis).length() + (a.y_axis - b.y_axis).length()
     }
@@ -939,6 +931,84 @@ mod deformation_increment_tests {
             "det(exp(A)) must equal exp(trace(A)): expected={expected_det} got={}",
             increment.determinant()
         );
+    }
+
+    /// The same closed form in f64, row-major `[m00, m01, m10, m11]`.
+    fn exp_f64(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
+        let half_trace = 0.5 * (a + d);
+        let half_difference = 0.5 * (a - d);
+        let delta_sq = half_difference * half_difference + b * c;
+        let (even, odd) = if delta_sq == 0.0 {
+            (1.0, 1.0)
+        } else if delta_sq > 0.0 {
+            let delta = delta_sq.sqrt();
+            (delta.cosh(), delta.sinh() / delta)
+        } else {
+            let omega = (-delta_sq).sqrt();
+            (omega.cos(), omega.sin() / omega)
+        };
+        let scale = half_trace.exp();
+        [
+            scale * (even + (a - half_trace) * odd),
+            scale * b * odd,
+            scale * c * odd,
+            scale * (even + (d - half_trace) * odd),
+        ]
+    }
+
+    /// 200 000 substeps of an oscillating velocity gradient applied to a
+    /// loaded `F` (1.0027 across, 0.9899 along the load, entries on both
+    /// sides of 1), against the same exponential integrated in f64. The
+    /// former update (the increment formed as `1 + small`, then rescaled
+    /// onto a carried volume) ended this at -4.7e-3 (0.04 / s), -1.4e-3
+    /// (0.4 / s) and -4.6e-4 (4 / s) in `ln(F_xx / F_yy)`, and -2.5e-3 in
+    /// `ln det F` at 4 / s: a one-way drift. What this form leaves is the
+    /// size of an unbiased walk of f32 roundings over that many steps.
+    #[test]
+    fn repeated_substeps_do_not_bias_a_loaded_shape_or_volume() {
+        let dt = 2.94e-4_f32;
+        let omega = std::f32::consts::TAU / 200.0;
+        for amplitude in [0.04_f32, 0.4, 4.0] {
+            let mut f = Mat2::from_diagonal(Vec2::new(1.0027, 0.9899));
+            let mut exact = [f64::from(f.x_axis.x), 0.0, 0.0, f64::from(f.y_axis.y)];
+            for step in 1..=200_000 {
+                let phase = omega * step as f32;
+                let c = Mat2::from_cols_array(&[
+                    amplitude * phase.cos(),
+                    amplitude * (phase * 0.37).sin(),
+                    amplitude * (phase * 0.61).cos(),
+                    -amplitude * phase.cos() + 0.3 * amplitude * (phase * 1.3).sin(),
+                ]);
+                let dc = dt * c;
+                let m = exp_f64(
+                    f64::from(dc.x_axis.x),
+                    f64::from(dc.y_axis.x),
+                    f64::from(dc.x_axis.y),
+                    f64::from(dc.y_axis.y),
+                );
+                exact = [
+                    m[0] * exact[0] + m[1] * exact[2],
+                    m[0] * exact[1] + m[1] * exact[3],
+                    m[2] * exact[0] + m[3] * exact[2],
+                    m[2] * exact[1] + m[3] * exact[3],
+                ];
+                f = advance_deformation_gradient(f, dc);
+            }
+            let det_error = (f64::from(f.x_axis.x) * f64::from(f.y_axis.y)
+                - f64::from(f.y_axis.x) * f64::from(f.x_axis.y))
+            .ln()
+                - (exact[0] * exact[3] - exact[1] * exact[2]).ln();
+            let shape_error =
+                (f64::from(f.x_axis.x) / f64::from(f.y_axis.y)).ln() - (exact[0] / exact[3]).ln();
+            println!(
+                "amplitude {amplitude}/s: ln det error {det_error:+.2e}, ln(F_xx/F_yy) error {shape_error:+.2e}"
+            );
+            assert!(
+                det_error.abs() < 3.0e-4 && shape_error.abs() < 3.0e-4,
+                "200 000 substeps at {amplitude}/s must not drift F one way: \
+                 ln det error {det_error:+.2e}, ln(F_xx/F_yy) error {shape_error:+.2e}"
+            );
+        }
     }
 }
 

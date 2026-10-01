@@ -4,12 +4,18 @@
 //! so `ln det F` must equal the running sum of `dt tr(C)` whatever C does.
 //! This drives one particle through a prescribed oscillation with NO solver,
 //! no grid and no gravity, and prints both sides. Any gap is what f32 costs
-//! per step. Knobs: ROUND_STEPS, ROUND_DT, ROUND_AMP (the size of C).
+//! per step. Knobs: ROUND_STEPS, ROUND_DT, ROUND_AMP (the size of C), and
+//! ROUND_FXX / ROUND_FYY, the starting diagonal of F (default 1, 1). A loaded
+//! body's F straddles 1 (1.0027 across and 0.9899 along the load in a
+//! resting self-weight column), which is where the f32 grid differs above
+//! and below 1; `shape` then prints `ln(F_xx / F_yy)` against the f64 law,
+//! the one-way drift that made such a column creep.
 //!
 //!   ROUND_AMP=1e-6 cargo test --profile quick --test probes f_rounding_horizon:: -- --ignored --nocapture
+//!   ROUND_AMP=0.4 ROUND_DT=2.94e-4 ROUND_STEPS=900000 ROUND_FXX=1.0027 ROUND_FYY=0.9899 cargo test ...
 
 use emerge::{MaterialModel, NoCompressionMaterial, Particle, Particles};
-use glam::Mat2;
+use glam::{Mat2, Vec2};
 
 #[test]
 #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
@@ -28,37 +34,43 @@ fn f_update_volume_under_a_prescribed_oscillation() {
 
     let material = NoCompressionMaterial::new(2000.0, 4000.0);
     let mut p = Particle::zeroed();
-    p.deformation_gradient = Mat2::IDENTITY;
+    let f0 = Mat2::from_diagonal(Vec2::new(
+        env("ROUND_FXX", 1.0) as f32,
+        env("ROUND_FYY", 1.0) as f32,
+    ));
+    p.deformation_gradient = f0;
     p.mass = 1.0;
     p.initial_volume = 1.0;
-    p.volume = 1.0;
+    p.volume = f0.determinant();
     p.density = 1.0;
     let mut particles = Particles::from(vec![p]);
 
-    let mut exact = 0.0_f64;
+    let mut exact = f64::from(f0.determinant()).ln();
     // Same law, same formula, everything in f64: separates what the
     // increment costs from what the repeated product costs.
-    let mut f64_f = [1.0_f64, 0.0, 0.0, 1.0];
+    let mut f64_f = [f64::from(f0.x_axis.x), 0.0, 0.0, f64::from(f0.y_axis.y)];
     // What the f32 increments alone say the volume should be: the sum of
     // ln det of each increment, before any product accumulates.
-    let mut f32_increment_ln_det = 0.0_f64;
+    let mut f32_increment_ln_det = f64::from(f0.determinant()).ln();
     // What the f32 increment MATRIX alone loses, before any product.
-    let mut f32_increment_only = 0.0_f64;
+    let mut f32_increment_only = f64::from(f0.determinant()).ln();
     // The candidate fix, carried through its own full f32 product.
-    let mut fixed_f = Mat2::IDENTITY;
+    let mut fixed_f = f0;
     // Second candidate: f32 storage, but the product itself done in f64
     // and rounded back once -- prices what the accumulation costs.
-    let mut mixed_f = Mat2::IDENTITY;
+    let mut mixed_f = f0;
     // Third candidate: ordinary f32 product, then the step's volume
     // pinned onto what the continuity equation says it must be.
-    let mut pinned_f = Mat2::IDENTITY;
+    let mut pinned_f = f0;
     // The volume the continuity equation asks for, carried in its own f32
     // accumulator instead of being re-read from a near-singular det(F).
-    let mut carried_ln_j = 0.0_f32;
+    let mut carried_ln_j = f0.determinant().ln();
     // Same idea, but carrying the volume ratio itself rather than its
-    // logarithm: one multiply per step instead of an add plus an exp.
-    let mut vol_f = Mat2::IDENTITY;
-    let mut carried_j = 1.0_f32;
+    // logarithm: one multiply per step instead of an add plus an exp. This
+    // is the form the engine shipped before `exp - I`; `carried_ratio_shape`
+    // prints the shape error its rescale feeds back.
+    let mut vol_f = f0;
+    let mut carried_j = f0.determinant();
     for step in 1..=steps {
         let phase = omega * step as f32;
         // Deviatoric stretch plus a shear, both oscillating: the trace is not
@@ -139,9 +151,12 @@ fn f_update_volume_under_a_prescribed_oscillation() {
             (f64::from(after.determinant()) / f64::from(before.determinant())).ln();
         exact += f64::from(dt) * f64::from(c.x_axis.x + c.y_axis.y);
         if step % (steps / 9).max(1) == 0 {
-            let ln_det = f64::from(particles.deformation_gradient[0].determinant()).ln();
+            let engine_f = particles.deformation_gradient[0];
+            let ln_det = f64::from(engine_f.determinant()).ln();
+            let shape = (f64::from(engine_f.x_axis.x) / f64::from(engine_f.y_axis.y)).ln()
+                - (f64_f[0] / f64_f[3]).ln();
             println!(
-                "step={step:7} ln(det F)={ln_det:+.3e} exact={exact:+.3e} gap={:+.3e} gap/step={:+.3e} f64_same_law={:+.3e} f32_total={:+.3e} f32_increment_matrix={:+.3e} rescaled_f32={:+.3e} f64_product_f32_storage={:+.3e} carried_log={:+.3e} carried_ratio={:+.3e}",
+                "step={step:7} shape={shape:+.3e} ln(det F)={ln_det:+.3e} exact={exact:+.3e} gap={:+.3e} gap/step={:+.3e} f64_same_law={:+.3e} f32_total={:+.3e} f32_increment_matrix={:+.3e} rescaled_f32={:+.3e} f64_product_f32_storage={:+.3e} carried_log={:+.3e} carried_ratio={:+.3e} carried_ratio_shape={:+.3e}",
                 ln_det - exact,
                 (ln_det - exact) / step as f64,
                 (f64_f[0] * f64_f[3] - f64_f[1] * f64_f[2]).ln() - exact,
@@ -150,14 +165,17 @@ fn f_update_volume_under_a_prescribed_oscillation() {
                 f64::from(fixed_f.determinant()).ln() - exact,
                 f64::from(mixed_f.determinant()).ln() - exact,
                 f64::from(pinned_f.determinant()).ln() - exact,
-                f64::from(vol_f.determinant()).ln() - exact
+                f64::from(vol_f.determinant()).ln() - exact,
+                (f64::from(vol_f.x_axis.x) / f64::from(vol_f.y_axis.y)).ln()
+                    - (f64_f[0] / f64_f[3]).ln()
             );
         }
     }
 }
 
-/// The engine's own 2x2 closed-form exponential, in f64: same formula, same
-/// branches, so the only difference from the shipped f32 one is precision.
+/// The 2x2 closed-form exponential as the engine formed it before the
+/// `exp - I` form, in f64: same formula, same branches, so the only
+/// difference from the f32 copy below is precision.
 fn increment_exp_f64(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
     let half_trace = 0.5 * (a + d);
     let half_difference = 0.5 * (a - d);
@@ -184,8 +202,8 @@ fn increment_exp_f64(a: f64, b: f64, c: f64, d: f64) -> [f64; 4] {
     ]
 }
 
-/// The same formula again, this time in f32, so the determinant of the
-/// increment ITSELF can be read -- the shipped helper is crate-private.
+/// The same former formula again, this time in f32, so the determinant of
+/// the increment ITSELF can be read.
 fn increment_exp_f32(m: Mat2) -> Mat2 {
     let (a, b, c, d) = (m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y);
     let half_trace = 0.5 * (a + d);

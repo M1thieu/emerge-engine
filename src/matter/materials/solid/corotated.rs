@@ -2,7 +2,7 @@ use glam::Mat2;
 
 use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
 use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, carried_volume_ratio, elastic_wave_dt, lame_from_young,
+    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -161,15 +161,12 @@ impl MaterialModel for CorotatedMaterial {
 
     fn update_particle(&self, ctx: &mut ParticleUpdateCtx, dt: f32) {
         // Exact matrix exponential, not forward Euler: see
-        // `deformation_increment_exp` for the O(dt^2) volumetric ratchet it
-        // removes from every tensor-F material.
-        let (f_new, carried) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        // `deformation_increment_exp_minus_identity` for the O(dt^2)
+        // volumetric ratchet it removes from every tensor-F material.
+        let f_new =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
         *ctx.deformation_gradient = f_new;
-        let j = carried.max(MIN_J);
+        let j = f_new.determinant().max(MIN_J);
         let v = (ctx.initial_volume * j).max(1.0e-6);
         *ctx.volume = v;
         *ctx.density = ctx.mass / v;
@@ -471,9 +468,9 @@ mod elastic_viscosity_tests {
 }
 
 /// `update_particle` uses the exponential integrator
-/// (`deformation_increment_exp`, see its doc for the O(dt^2) volumetric
-/// ratchet of forward Euler), checked at the call site rather than on the
-/// helper (covered by its own 3 tests in `utils.rs`).
+/// (`deformation_increment_exp_minus_identity`, see its doc for the O(dt^2)
+/// volumetric ratchet of forward Euler), checked at the call site rather
+/// than on the helper (covered by its own tests in `utils.rs`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;

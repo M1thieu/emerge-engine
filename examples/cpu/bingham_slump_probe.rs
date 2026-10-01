@@ -153,9 +153,9 @@ fn main() {
 /// Found, 1 ms frames: the natural slump stays under the assumed 0.886 m/s
 /// (0.662, 0.239 and 0.041 m/s for the 2, 60 and 1200 Pa columns), and so
 /// does the default push (0.371, 0.265 and 0.077 m/s, at most 0.42 of it);
-/// the largest push takes each column to about twice it (2.01, 1.87 and
-/// 1.73 m/s, Mach 0.23, 0.21 and 0.20 against the sized 0.1), with a
-/// traction measured under the cursor of 3950 to 5080 Pa. The earlier
+/// the largest push takes each column to about twice it (2.01, 1.86 and
+/// 1.62 m/s, Mach 0.23, 0.21 and 0.18 against the sized 0.1), with a
+/// traction measured under the cursor of 3940 to 4910 Pa. The earlier
 /// scene's 0.787 m/s natural peak was the slip floor mostly: the 2 Pa column
 /// alone peaks at 0.762 on a slip floor and 0.662 on this one
 /// (`tests/probes/bingham_isolated_slump.rs`).

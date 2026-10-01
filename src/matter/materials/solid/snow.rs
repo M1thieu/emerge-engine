@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 use crate::materials::physical_props::{FromSI, SnowProps, scale_lame};
 use crate::materials::svd::svd2;
 use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, carried_volume_ratio, elastic_wave_dt, lame_from_young,
+    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
 };
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -181,11 +181,8 @@ impl MaterialModel for StomakhinMaterial {
         // Euler introduces an O(dt^2) determinant ratchet under alternating
         // rates/rotation; for snow that numerical volume error can be mistaken
         // for real SVD-clamp plasticity and permanently alter Jp/hardening.
-        let (f_trial, _) = advance_deformation_gradient(
-            *ctx.deformation_gradient,
-            dt * *ctx.velocity_gradient,
-            carried_volume_ratio(*ctx.volume, ctx.initial_volume),
-        );
+        let f_trial =
+            advance_deformation_gradient(*ctx.deformation_gradient, dt * *ctx.velocity_gradient);
 
         let (u, sigma, vt) = svd2(f_trial);
 

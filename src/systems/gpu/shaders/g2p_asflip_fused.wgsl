@@ -406,31 +406,55 @@ fn frob2_sq(m: mat2x2<f32>) -> f32 {
     return dot(m[0], m[0]) + dot(m[1], m[1]);
 }
 
-// Exact 2D exp(A), matching CPU `deformation_increment_exp`. Keep this
-// duplicate bit-identical to particles_update.wgsl: these are two separate
-// production G2P/update paths, not shared textual includes.
-fn deformation_increment_exp(a: mat2x2<f32>) -> mat2x2<f32> {
+// exp(A) - I, matching CPU `deformation_increment_exp_minus_identity`: see
+// its doc for why the increment is never formed as one plus a small number
+// (a loaded body's F straddles 1, where f32 steps differ above and below,
+// and `1 + small` then rounds one way every substep), and
+// `INCREMENT_SERIES_LIMIT`'s for why the series runs to |delta^2| < 1: the
+// accuracy WGSL requires of sinh, sin and exp (W3C WGSL, section 15.7.4
+// Floating Point Accuracy) can lose a substep's small argument entirely.
+// Keep this duplicate bit-identical to particles_update.wgsl: these are two
+// separate production G2P/update paths, not shared textual includes.
+fn deformation_increment_exp_minus_identity(a: mat2x2<f32>) -> mat2x2<f32> {
     let identity = mat2x2<f32>(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0));
     let half_trace = 0.5 * (a[0][0] + a[1][1]);
     let half_difference = 0.5 * (a[0][0] - a[1][1]);
     let delta_sq = half_difference * half_difference + a[1][0] * a[0][1];
-    var even_factor = 0.0;
+    // cosh(sqrt(x)) - 1 and sinh(sqrt(x))/sqrt(x), cos/sin of sqrt(-x) for x < 0.
+    var even_minus_one = 0.0;
     var odd_factor = 0.0;
-    if abs(delta_sq) < 1e-8 {
-        let x2 = delta_sq * delta_sq;
-        even_factor = 1.0 + 0.5 * delta_sq + x2 / 24.0;
-        odd_factor = 1.0 + delta_sq / 6.0 + x2 / 120.0;
+    if abs(delta_sq) < 1.0 {
+        let x = delta_sq;
+        even_minus_one = x * (1.0 / 2.0
+            + x * (1.0 / 24.0 + x * (1.0 / 720.0 + x * (1.0 / 40320.0 + x / 3628800.0))));
+        odd_factor = 1.0 + x * (1.0 / 6.0
+            + x * (1.0 / 120.0 + x * (1.0 / 5040.0 + x * (1.0 / 362880.0 + x / 39916800.0))));
     } else if delta_sq > 0.0 {
         let delta = sqrt(delta_sq);
-        even_factor = cosh(delta);
+        let half = sinh(0.5 * delta);
+        even_minus_one = 2.0 * half * half;
         odd_factor = sinh(delta) / delta;
     } else {
         let omega = sqrt(-delta_sq);
-        even_factor = cos(omega);
+        let half = sin(0.5 * omega);
+        even_minus_one = -2.0 * half * half;
         odd_factor = sin(omega) / omega;
     }
+    // e^h - 1 for h = tr(A) / 2. WGSL's exp may be 3 + 2|x| ULP off a result
+    // near 1, so below |h| < 0.5 this is the Taylor series to h^8 (first
+    // omitted term under 1.1e-8 of h); the CPU calls f32::exp_m1.
+    var scale_minus_one = 0.0;
+    if abs(half_trace) < 0.5 {
+        let h = half_trace;
+        scale_minus_one = h * (1.0 + h * (1.0 / 2.0 + h * (1.0 / 6.0 + h * (1.0 / 24.0
+            + h * (1.0 / 120.0 + h * (1.0 / 720.0 + h * (1.0 / 5040.0 + h / 40320.0)))))));
+    } else {
+        scale_minus_one = exp(half_trace) - 1.0;
+    }
+    // exp(A) - I = (e + s (1 + e)) I + (1 + s) odd (A - h I).
     let traceless = a - half_trace * identity;
-    return exp(half_trace) * (even_factor * identity + odd_factor * traceless);
+    return (even_minus_one + scale_minus_one * (1.0 + even_minus_one)) * identity
+        + ((1.0 + scale_minus_one) * odd_factor) * traceless;
 }
 
 // Workgroup size MUST match WG_PARTICLES (= 64) in src/gpu/mod.rs, same as g2p/particles_update.
@@ -617,17 +641,18 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if !(abs(p.friction_hardening) < 3.4e+38)  { p.friction_hardening = 0.0; }
     if !(abs(p.log_volume_strain)  < 3.4e+38)  { p.log_volume_strain  = 0.0; }
 
+    // F_new = F + (exp(dt C) - I) F  (C = velocity_gradient written by the g2p pass),
+    // never (I + dt C) F or exp(dt C) F: the increment stays a small number added to F
+    // (see `deformation_increment_exp_minus_identity` above).
     // NeoHookean (2)/Corotated (3)/Snow (4)/Drucker-Prager (5)/Von Mises (6)/Rankine (7)/
-    // Viscoelastic (9)/GranularFluid (11) are independently verified with the exact kinematic
-    // increment. Plastic models were migrated one family at a time with
-    // marginal-yield and CPU/GPU checks; see `deformation_increment_exp`.
-    // Remaining tensor-F model SandMuI (8) stays on the original path until
-    // their own plastic projections receive the same audit.
-    var f_increment = identity + dt * p.velocity_gradient;
+    // SandMuI (8)/Viscoelastic (9)/GranularFluid (11) use the exact kinematic increment;
+    // plastic models were migrated one family at a time with marginal-yield and CPU/GPU
+    // checks. Every other model keeps the linear increment dt C.
+    var f_step = dt * p.velocity_gradient;
     if mat.model == 2u || mat.model == 3u || mat.model == 4u || mat.model == 5u || mat.model == 6u || mat.model == 7u || mat.model == 8u || mat.model == 9u || mat.model == 11u {
-        f_increment = deformation_increment_exp(dt * p.velocity_gradient);
+        f_step = deformation_increment_exp_minus_identity(dt * p.velocity_gradient);
     }
-    var new_F = f_increment * p.deformation_gradient;
+    var new_F = p.deformation_gradient + f_step * p.deformation_gradient;
 
     if mat.model == 4u && mat.compression_limit > 0.0 {
         let sr = snow_plasticity(new_F, p.plastic_volume_ratio, mat);

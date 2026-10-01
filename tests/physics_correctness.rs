@@ -4466,10 +4466,10 @@ fn ratchet_friction_produces_real_directed_locomotion() {
 
     let mut mat = NeoHookeanMaterial::new(5.0, 10.0);
     // 120: with NeoHookean's exact exponential F-integration (see
-    // `deformation_increment_exp`) the crawl distance at the old setting was
-    // 3.42 against the >10.0 threshold; forward Euler's volumetric drift had
-    // added net motion to this activation-vs-ratchet-friction cycle (the
-    // direction, +X, was right). Sweep at the corrected physics: 25->3.42,
+    // `deformation_increment_exp_minus_identity`) the crawl distance at the
+    // old setting was 3.42 against the >10.0 threshold; forward Euler's
+    // volumetric drift had added net motion to this activation-vs-ratchet-
+    // friction cycle (the direction, +X, was right). Sweep at the corrected physics: 25->3.42,
     // 35->7.86, 50->7.25 (non-monotonic: a resonance between the activation
     // cycle and the ratchet-friction release cycle), 75->9.19, 100->10.34,
     // 110->8.82, 120->13.14, 140->13.73. 120 is the first value with a clear
@@ -5983,10 +5983,22 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
 /// -- which is precisely why it stayed hidden. Every refinement of a scene
 /// silently strengthened gravity relative to stiffness.
 ///
-/// The absolute ratio sits near 0.85 rather than 1.0 for a discretization
-/// reason unrelated to the bug: particle centers sit half a spacing inside the
-/// free surface, so the measured height slightly understates the column.
-/// What this test pins is that the ratio is CONSTANT.
+/// The absolute ratio is not 1.0, and this test does not pin it. The window
+/// it averages (2 to 4 s after release) is still inside the release's
+/// undamped oscillation: at spacing 0.5 and 1000 kg/m^3 the running mean
+/// reads 0.84 at 2 s and settles at 0.917 by 50 s (measured over 60 s).
+/// Two known effects predict about 1.01 instead: the particle span stops
+/// half a spacing short of each end of the column while the mean stress
+/// over it is still `rho*g*L/2` (a factor `L / h0`, 10 / 9.5 here), and a 2D
+/// body built from 3D Lame constants is in plane strain, `1 - nu^2` = 0.96
+/// of the uniaxial formula. The remaining gap is not explained yet.
+///
+/// Before the deformation-gradient update became `F + (exp(dt L) - I) F`,
+/// this column never settled at all: the update rounded one way every
+/// substep and the body crept, shorter and wider, at a rate proportional
+/// to the substep count (see `advance_deformation_gradient`), so the value
+/// in this window was a moment of a drift, not an equilibrium. What this test pins is that the
+/// ratio is CONSTANT.
 #[test]
 fn self_weight_strain_is_spacing_independent() {
     const E_PA: f32 = 1.0e5;
