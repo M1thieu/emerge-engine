@@ -1,5 +1,8 @@
 extern crate emerge_engine as emerge;
 
+#[path = "../gui_common/declared_light.rs"]
+mod declared_light;
+
 /// GPU Newtonian water dam-break, zero CPU readback.
 ///
 ///   Mat 0  Newtonian water (blue) -- Tait EOS + deviatoric viscosity
@@ -9,8 +12,7 @@ use std::sync::Arc;
 
 use emerge::diagnostics::log_frame_gpu;
 use emerge::render::{
-    ColorMode, GpuRenderParams, GridVolumeSource, PhysicalRenderContract,
-    PhysicalRenderContractParams, Renderer, SurfaceReconstructionSource,
+    ColorMode, GpuRenderParams, GridVolumeSource, Renderer, SurfaceReconstructionSource,
 };
 use emerge::{
     FixedStepConfig, FixedStepController, GpuFieldEntry, GpuSimulation, MaterialRegistry,
@@ -61,22 +63,7 @@ fn apply_optics(
     // Measured constants come from the materials themselves. Adding a
     // material with declared optics needs no change here at all.
     renderer.adopt_material_optics(queue, registry);
-    renderer.set_physical_render_contract(
-        queue,
-        PhysicalRenderContract::new(PhysicalRenderContractParams {
-            dx_meters: config.dx_meters,
-            slice_thickness_m: config.require_slice_thickness_m("the physical render contract"),
-            // Declared lighting: an overcast sky above, a darker backdrop
-            // behind. Equal values would make reflection and scattering
-            // cancel out of view.
-            incident_radiance_w_m2_sr: [1.0; 3],
-            background_radiance_w_m2_sr: [0.25; 3],
-            display_white_radiance_w_m2_sr: [1.0; 3],
-            camera_direction: glam::Vec3::new(0.0, 0.0, -1.0),
-            light_direction: glam::Vec3::new(0.0, 1.0, -1.0),
-        })
-        .expect("physical render contract"),
-    );
+    renderer.set_physical_render_contract(queue, declared_light::overcast_contract(config));
     // Fresnel base reflectance from water's real refractive index:
     // R0 = ((1.333 - 1) / (1.333 + 1))^2.
     renderer.set_specular_r0(queue, MAT_WATER as usize, 0.0204);
