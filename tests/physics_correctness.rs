@@ -5983,22 +5983,28 @@ fn diag_wcsph_unit_consistency_sweep_under_full_real_gravity() {
 /// -- which is precisely why it stayed hidden. Every refinement of a scene
 /// silently strengthened gravity relative to stiffness.
 ///
-/// The absolute ratio is not 1.0, and this test does not pin it. The window
-/// it averages (2 to 4 s after release) is still inside the release's
-/// undamped oscillation: at spacing 0.5 and 1000 kg/m^3 the running mean
-/// reads 0.84 at 2 s and settles at 0.917 by 50 s (measured over 60 s).
-/// Two known effects predict about 1.01 instead: the particle span stops
-/// half a spacing short of each end of the column while the mean stress
-/// over it is still `rho*g*L/2` (a factor `L / h0`, 10 / 9.5 here), and a 2D
-/// body built from 3D Lame constants is in plane strain, `1 - nu^2` = 0.96
-/// of the uniaxial formula. The remaining gap is not explained yet.
+/// The absolute ratio is not 1.0, and this test does not pin it. Two known
+/// effects put the exact answer at about 1.01 of the formula above: the
+/// particle span stops half a spacing short of each end of the column while
+/// the mean stress over it is still `rho*g*L/2` (a factor `L / h0`, 10 / 9.5
+/// here), and a 2D body built from 3D Lame constants is in plane strain,
+/// `1 - nu^2` = 0.96 of the uniaxial formula. At rest (settled with a little
+/// viscosity, which adds no stress at rest) this column reads 0.840 at
+/// spacing 0.5 and 1000 kg/m^3, and the gap to the exact answer closes as
+/// the cells shrink: 16.9, 9.9, 6.7 and 4.5 % at 10, 20, 40 and 80 cells over
+/// the height (`tests/probes/self_weight_shortening_convergence.rs`). The
+/// window this test averages (2 to 4 s after release) is still inside the
+/// undamped oscillation, 0.848 at 2 s here; left to ring down, the undamped
+/// column drifts on to 0.926 by 50 s, an extra shortening the motion leaves
+/// behind (see that probe's doc).
 ///
 /// Before the deformation-gradient update became `F + (exp(dt L) - I) F`,
 /// this column never settled at all: the update rounded one way every
 /// substep and the body crept, shorter and wider, at a rate proportional
 /// to the substep count (see `advance_deformation_gradient`), so the value
-/// in this window was a moment of a drift, not an equilibrium. What this test pins is that the
-/// ratio is CONSTANT.
+/// in this window was a moment of a drift, not an equilibrium.
+///
+/// What this test pins is that the ratio is CONSTANT.
 #[test]
 fn self_weight_strain_is_spacing_independent() {
     const E_PA: f32 = 1.0e5;
