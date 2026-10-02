@@ -14,15 +14,14 @@
 //! not rung by the loading, then held.
 //!
 //! The base is a substrate of pinned particles, which constrains its grid
-//! nodes: a no-slip plane. The demos' `FrictionBoundary` floor cannot be
-//! used here, because it does not hold a static load: its Coulomb law acts
-//! only on velocity INTO the wall each substep (`apply_coulomb_wall`), and a
-//! layer at rest presses on the floor through stress, with almost no inward
-//! velocity, so the floor barely grips. On it, at tan(theta) = 0.30 against
-//! mu = 1, within 2 s of the ramp a layer at 0.95 h_c moved its bottom
-//! particle row 2.7 mm, the next 4.7 mm and every row above 5.4 mm: it
-//! slides on the floor as well as shearing above it
-//! (`BINGHAM_SLOPE_FLOOR=friction BINGHAM_SLOPE_HOLD=2`).
+//! nodes: a no-slip plane. The demos' `FrictionBoundary` floor (Coulomb,
+//! mu = 1, at tan(theta) = 0.30) gives nearly the same layer
+//! (`BINGHAM_SLOPE_FLOOR=friction`): at 0.85 h_c both rest after 0.33 mm,
+//! and at 0.95 h_c, 2 s after the ramp, the rows from the base move 2.7,
+//! 4.7 and 5.4 mm on the friction floor against 2.5, 4.4 and 5.0 mm on the
+//! pinned base. The bottom rows lag the same way on a base that cannot
+//! slide, so that lag is the shear in the bottom cell, not the floor giving
+//! way.
 //!
 //! Measured, 2 mm cells (10 over the thickness), middle third, 4 s after the
 //! ramp:
