@@ -16,6 +16,7 @@ mod bingham_column_volume_loss;
 mod bingham_cursor_yield;
 mod bingham_deposit_state;
 mod bingham_isolated_slump;
+mod bingham_slope_yield;
 mod bingham_substep_gap;
 mod column_convergence;
 mod contact_cost;
