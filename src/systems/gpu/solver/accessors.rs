@@ -88,7 +88,7 @@ impl GpuSimulation {
     }
 
     /// The GPU particle storage buffer -- bind this in LP's custom render shader.
-    /// Layout: `array<Particle>`, each Particle is 112 bytes, repr(C).
+    /// Layout: `array<Particle>`, each Particle is 128 bytes, repr(C).
     /// Stays in VRAM between frames; read-only from the render side.
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.buffers.particles

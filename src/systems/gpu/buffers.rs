@@ -1,10 +1,10 @@
 /// GPU buffer management for the MLS-MPM solver.
 ///
 /// Persistent buffers in VRAM for the simulation lifetime:
-///   - `particles`:          array<Particle>          -- 112 bytes each, repr(C)
+///   - `particles`:          array<Particle>          -- 128 bytes each, repr(C)
 ///   - `grid`:               array<Cell>              -- 16 bytes each, repr(C)
-///   - `materials`:          array<MaterialParams, N> -- 96 bytes each, 16-byte aligned
-///   - `step_params`:        GpuStepParams            -- 32 bytes, uploaded once per substep
+///   - `materials`:          array<MaterialParams, N> -- 112 bytes each, 16-byte aligned
+///   - `step_params`:        GpuStepParams            -- 64 bytes, uploaded once per substep
 ///   - `force_fields_params: GpuFieldsParams     -- 784 bytes, uploaded when fields change
 ///
 /// Upload path (CPU → GPU, via write_buffer):
