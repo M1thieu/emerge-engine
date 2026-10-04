@@ -58,11 +58,11 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 ///
 /// We spawn a column, let it fully settle, and measure the final pile slope.
 ///
-/// Open (GH #28): the pile settles at 26.4° as run, below dry sand's 30-35°. The
-/// 64-substep cap binds on every step (this scene needs 107) and drops 40 % of the
-/// simulated time; run for the full 150 time units the pile reads 26.0° and is still
+/// Open (GH #28): the pile settles at 26.0°, below dry sand's 30-35°, and is still
 /// flattening, about 0.2° per 300 steps, the slow creep of
-/// `sand_collapse_relaxation_long_horizon_plateau_check`.
+/// `sand_collapse_relaxation_long_horizon_plateau_check`. The CFL limit asks for 107
+/// substeps per step here; a cap of 64 used to drop 40 % of the simulated time and
+/// read 26.4°, so the test now fails if any time is dropped.
 ///
 /// The ~12° recorded here before was a frictionless floor, not the model. Until
 /// 70a1b75, `with_boundary` stacked the `FrictionBoundary` under the default
@@ -79,14 +79,15 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 /// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gave 50.7/58.3/63.3/68.9/76.4°, the column
 /// barely collapsing. That much dissipation helps a quasi-static creep but removes the
 /// kinetic energy a dynamic collapse needs to topple and spread.
-#[ignore = "open accuracy gap (GH #28): settles at 26.4 deg as run (26.0 deg with no \
-            simulated time dropped, still flattening) vs 30-35 deg for dry sand; passes \
-            its own 15-50 deg bound. the old ~12 deg was a frictionless floor, fixed in \
-            70a1b75. do not tune to pass"]
+#[ignore = "open accuracy gap (GH #28): settles at 26.0 deg, still flattening, vs \
+            30-35 deg for dry sand; passes its own 15-50 deg bound. the old ~12 deg was \
+            a frictionless floor, fixed in 70a1b75. do not tune to pass"]
 #[test]
 fn sand_angle_of_repose_is_physical() {
+    // The CFL limit asks for 107 substeps per step in this scene; 128 leaves
+    // headroom so no simulated time is dropped (asserted below).
     let config = SimConfig {
-        max_substeps_per_step: 64,
+        max_substeps_per_step: 128,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
 
@@ -103,7 +104,15 @@ fn sand_angle_of_repose_is_physical() {
         .with_default_material(Box::new(sand))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    solver.step_n(1500);
+    let mut dropped = 0.0f32;
+    for _ in 0..1500 {
+        solver.step();
+        dropped += solver.diagnostics_snapshot().sim_time_dropped;
+    }
+    assert_eq!(
+        dropped, 0.0,
+        "the substep cap dropped {dropped} of the simulated time"
+    );
 
     let xs: Vec<Vec2> = solver.particles().x.clone();
     let n = xs.len() as f32;
