@@ -993,10 +993,12 @@ mod gpu_tests {
         );
     }
 
-    /// GPU-side mirror of `tests/accuracy.rs::sand_angle_of_repose_is_physical`
-    /// (which is `#[ignore]`d on CPU: observed ~12 deg vs expected 30-35 deg). Checks
-    /// whether GPU's calmer collapse dynamics (see
-    /// `gpu_sand_column_collapse_runout_matches_lajeunesse_scaling`) also close this gap.
+    /// GPU-side mirror of `tests/accuracy.rs::sand_angle_of_repose_is_physical`, except
+    /// for the floor: the CPU test uses `FrictionBoundary(2, 0.7)`, while GPU walls are
+    /// slip-only (`grid_update.wgsl`). Here the sand slides to the walls (reach 30.1
+    /// cells, as the CPU test did before its floor friction took effect in 70a1b75) and
+    /// the guard below fails, so this compares the two solvers only once the GPU has a
+    /// friction wall.
     ///
     /// `#[ignore]`d for CI alongside that test -- same real-hardware-only verdict, see
     /// its doc for the evidence trail.

@@ -58,19 +58,31 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 ///
 /// We spawn a column, let it fully settle, and measure the final pile slope.
 ///
-/// Open (GH #28): with the friction angle at 35° (Klar h₀), the dynamic collapse settles
-/// at ~12°, the sand over-spreading to the walls; the GPU gives 12.1°, so the gap is the
-/// model's, not one solver's numerics. `#[ignore]` keeps the suite green while
-/// recording the expected value below.
+/// Open (GH #28): the pile settles at 26.4° as run, below dry sand's 30-35°. The
+/// 64-substep cap binds on every step (this scene needs 107) and drops 40 % of the
+/// simulated time; run for the full 150 time units the pile reads 26.0° and is still
+/// flattening, about 0.2° per 300 steps, the slow creep of
+/// `sand_collapse_relaxation_long_horizon_plateau_check`.
+///
+/// The ~12° recorded here before was a frictionless floor, not the model. Until
+/// 70a1b75, `with_boundary` stacked the `FrictionBoundary` under the default
+/// `SlipBoundary`, which zeroed the into-floor velocity before the Coulomb term saw it,
+/// so the sand slid to the walls. With the floor's friction the pile reads 24.2°;
+/// caa97df then derived particle mass from the grid density (this column had been 4x
+/// too heavy for its stiffness at spacing 0.5), giving 26.4°. Each step is reproduced
+/// exactly by its parent commit with only that one change applied to this test. The
+/// GPU mirror in `tests/gpu.rs` still reaches the walls: GPU walls are slip-only.
 ///
 /// The quasi-static holding recipe of `sand_preshaped_pile_at_30deg_holds_its_slope`
-/// (`apic_blend=0.05` + `cundall_damping`) does not transfer: at `apic_blend=0.05`,
-/// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gives 50.7/58.3/63.3/68.9/76.4°, the column
+/// (`apic_blend=0.05` + `cundall_damping`) did not transfer when measured on
+/// 2026-08-02, before both fixes above (not re-run since): at `apic_blend=0.05`,
+/// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gave 50.7/58.3/63.3/68.9/76.4°, the column
 /// barely collapsing. That much dissipation helps a quasi-static creep but removes the
 /// kinetic energy a dynamic collapse needs to topple and spread.
-#[ignore = "accuracy gap under investigation: dynamic collapse settles ~12° vs expected \
-            30-35° -- the quasi-static fix (apic_blend+cundall_damping) makes this WORSE \
-            (up to 76°), real negative result, see 16th finding above. do not tune to pass"]
+#[ignore = "open accuracy gap (GH #28): settles at 26.4 deg as run (26.0 deg with no \
+            simulated time dropped, still flattening) vs 30-35 deg for dry sand; passes \
+            its own 15-50 deg bound. the old ~12 deg was a frictionless floor, fixed in \
+            70a1b75. do not tune to pass"]
 #[test]
 fn sand_angle_of_repose_is_physical() {
     let config = SimConfig {
