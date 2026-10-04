@@ -7,20 +7,23 @@ mod render_mode;
 
 /// CPU ideal-gas EOS -- five real dry-air pockets (287.05 J/(kg*K),
 /// gamma=1.4), same temperature, five different densities, scattered
-/// around a sealed box with real gaps of vacuum between them. No gravity
-/// by default, no scripted push: each pocket's own pressure (p=p0*(rho/
-/// rho0)^gamma, isentropic -- see `IdealGasMaterial`'s doc for why NOT
-/// the naive isothermal p=rho*R*T) is what drives it to expand into its
-/// neighbors and the empty space around it, then settle.
+/// around a box. No gravity by default, no scripted push: each pocket's
+/// own pressure (p=p0*(rho/rho0)^gamma, isentropic -- see
+/// `IdealGasMaterial`'s doc for why NOT the naive isothermal p=rho*R*T)
+/// against the ambient pressure is what moves it.
+///
+/// The gaps between pockets are not vacuum. The gas's mechanical stress
+/// is gauge pressure (`IdealGasMaterial::reference_pressure_pa`, one
+/// standard atmosphere), so an empty region stands for ambient air at
+/// that pressure. Pockets denser than ambient expand into it; the 0.6x
+/// pocket is compressed instead (mean J 0.69 by 1.5 s) and the 1.0x
+/// pocket stays put (mean J 0.99).
 ///
 /// Disclosed simplification: this is 5 separately-released pockets
 /// interacting, not a single continuous atmosphere -- filling the WHOLE
 /// domain with one smoothly-varying density field would need a real
 /// procedural spawn (per-particle density from a noise/field function),
-/// not yet built. Gaps between pockets are real physical vacuum, not a
-/// rendering artifact -- a real gas released next to real vacuum keeps
-/// expanding into it until it fills the available space or hits a wall,
-/// which is exactly what you're watching.
+/// not yet built.
 ///
 ///   Mat 0  rarefied   (0.6x ambient) -- top-left
 ///   Mat 1  dense       (4.0x ambient) -- top-right

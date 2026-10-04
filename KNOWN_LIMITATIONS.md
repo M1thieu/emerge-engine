@@ -554,6 +554,43 @@ colliding-blocks count in `tests/grains_pi_collisions.rs`, uses a third
 grain held in place as the wall. A restitution-aware normal response at
 the boundary would close this.
 
+### A wall cannot tell a sealed container from an open one
+
+The equations of state give gauge pressure, zero at the ambient state, so an
+empty region next to a body stands for ambient air. A one-sided wall
+(`SlipBoundary::new`, `apply_slip_wall_velocity`; the Coulomb walls of
+`FrictionBoundary` act only on motion into the wall too) lets matter leave
+whenever its velocity points away from the wall. Together they put ambient
+air behind every wall: a fluid below ambient pressure pulls itself off the
+wall. That is right for an open container and for solids and grains, wrong
+for a sealed one, where the absolute pressure stays positive and the fluid
+never leaves the wall. Measured on a sealed box of air
+(`tests/probes/gas_sound_speed.rs`, `a_rarefaction_...`): a rarefaction
+reflects off the one-sided wall with a coefficient of -0.84, like off a free
+surface, where a rigid wall gives +1, and a wave running along the top and
+bottom walls loses 10 % over 56 cells.
+
+Fixed for sealed containers: `SlipBoundary::sealed` holds matter at its wall
+nodes in both directions (reflection +0.93 in the same probe), and a scene
+whose container is sealed chooses it. The sound-speed probe, a box filled
+wall to wall, uses it.
+
+Still open:
+- A wall that decides by itself. The physical rule is that a fluid leaves a
+  wall only where ambient air can reach it, at a free surface touching the
+  wall, or where it cavitates. Holding every fluid at every wall instead
+  would keep water with a free surface stuck under an overhang it should
+  fall from. A wall node would need to know whether a free surface reaches
+  it, which the grid does not record today.
+- The Coulomb friction walls and the GPU walls (`grid_update.wgsl`,
+  slip-only and one-sided, see #61) have no sealed variant.
+- No gas can sit next to real vacuum. Under gauge pressure every empty
+  region is ambient air, so in `examples/cpu/basic_gas.rs` the 0.6x pocket
+  is compressed to a mean J of 0.69 by 1.5 s instead of expanding (its
+  header says so). Absolute pressure is what vacuum needs, and the gas
+  law's own doc records why it was dropped: an unbalanced atmosphere on
+  every particle drove J to its maximum.
+
 ### Not audited yet
 
 Rendering (`systems/render`); rod biology (growth, gravitropism, networks,

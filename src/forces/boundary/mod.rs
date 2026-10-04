@@ -4,7 +4,8 @@
 //! `heightmap`/`slip` are each standalone, one file apiece.
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
-//! `clamp_position_inside_grid`) and their direct unit tests live here,
+//! `apply_sealed_wall_velocity`, `clamp_position_inside_grid`) and their
+//! direct unit tests live here,
 //! since they're shared math, not any one model's own logic.
 
 use glam::Vec2;
@@ -243,6 +244,37 @@ pub(crate) const fn apply_slip_wall_velocity(
     }
 }
 
+/// The wall nodes of `apply_slip_wall_velocity`, with the normal velocity
+/// set to zero in BOTH directions: matter at a wall node can neither enter
+/// the wall nor leave it. Tangential velocity passes through unchanged.
+///
+/// The one-sided rule above lets matter leave whenever its velocity points
+/// away. The engine's equations of state give gauge pressure (zero at the
+/// ambient state), so under that rule a material below ambient pressure
+/// pulls itself off the wall as if ambient air stood behind it. Behind a
+/// sealed wall there is no such air: a gas's absolute pressure stays
+/// positive and it never leaves the wall, and a rarefaction reflects off
+/// the wall as a rarefaction. Measured in
+/// `tests/probes/gas_sound_speed.rs`: reflection coefficient +0.93 off this
+/// wall, -0.84 off the one-sided one, where a rigid wall gives +1 and a
+/// pressure-release surface -1.
+pub(crate) const fn apply_sealed_wall_velocity(
+    thickness: usize,
+    cell_index: usize,
+    grid_res: usize,
+    velocity: &mut Vec2,
+) {
+    let hi = grid_res - (thickness + 1);
+    let x = cell_index / grid_res;
+    let y = cell_index % grid_res;
+    if x < thickness || x > hi {
+        velocity.x = 0.0;
+    }
+    if y < thickness || y > hi {
+        velocity.y = 0.0;
+    }
+}
+
 pub(crate) fn clamp_position_inside_grid(
     thickness: usize,
     position: Vec2,
@@ -292,6 +324,40 @@ mod boundary_physics_tests {
             Vec2::new(4.0, -2.0),
             "outward velocity must be completely untouched"
         );
+    }
+
+    /// A sealed wall holds matter against it: the normal velocity is zeroed
+    /// whether it points into the wall or away from it, and the tangential
+    /// velocity is untouched, on every side of the grid.
+    #[test]
+    fn sealed_wall_zeroes_normal_velocity_in_both_directions() {
+        let (thickness, res) = (2usize, 64usize);
+        let index = |x: usize, y: usize| x * res + y;
+        // (node, velocity in, expected out): left, right, bottom and top walls,
+        // each away from the corners, once moving into the wall and once away.
+        let cases = [
+            (index(0, 32), Vec2::new(-3.0, 7.5), Vec2::new(0.0, 7.5)),
+            (index(0, 32), Vec2::new(4.0, -2.0), Vec2::new(0.0, -2.0)),
+            (index(63, 32), Vec2::new(3.0, 7.5), Vec2::new(0.0, 7.5)),
+            (index(63, 32), Vec2::new(-4.0, -2.0), Vec2::new(0.0, -2.0)),
+            (index(32, 0), Vec2::new(7.5, -3.0), Vec2::new(7.5, 0.0)),
+            (index(32, 0), Vec2::new(-2.0, 4.0), Vec2::new(-2.0, 0.0)),
+            (index(32, 63), Vec2::new(7.5, 3.0), Vec2::new(7.5, 0.0)),
+            (index(32, 63), Vec2::new(-2.0, -4.0), Vec2::new(-2.0, 0.0)),
+        ];
+        for (cell, v_in, expected) in cases {
+            let mut v = v_in;
+            apply_sealed_wall_velocity(thickness, cell, res, &mut v);
+            assert_eq!(v, expected, "cell {cell}, velocity in {v_in}");
+        }
+    }
+
+    /// Away from the walls a sealed boundary does nothing.
+    #[test]
+    fn sealed_wall_leaves_interior_nodes_untouched() {
+        let mut v = Vec2::new(-3.0, 7.5);
+        apply_sealed_wall_velocity(2, 32 * 64 + 32, 64, &mut v);
+        assert_eq!(v, Vec2::new(-3.0, 7.5));
     }
 
     /// mu=0 must behave IDENTICALLY to a pure slip wall -- FrictionBoundary's own
