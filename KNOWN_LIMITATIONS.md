@@ -602,6 +602,17 @@ Not measured to a cause yet. The pile it leaves stands at 26.3° where dry
 sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
 same collapse both stops short and ends too flat.
 
+Three candidates are measured and ruled out. Matching the cone to 2D
+Mohr-Coulomb moves the pile 0.3°. The tension cutoff, which takes 70 % of a
+settled pile's particles each substep (`dp_update_cost_breakdown`), is what
+lets this sand flow: without its volume correction the pile reads 26.9° and
+the runout is unchanged, and with `use_pradhana` the column does not
+collapse. Finer cells do not close the gap either: an SI column (8 x 16 cm,
+E 1 MPa, 35°, friction floor) reads 21.3°, 19.6° and 17.0° at 1, 0.5 and
+0.25 cm cells after 3 s. Its height stays at 5.8-6.0 cm while the base
+widens; the base is the farthest particle near the floor, so part of that
+widening may be lone grains rather than the pile.
+
 The test used to hide this behind `cohesion = 5.0`, tuned to compensate a
 "4.7x too far" runout that was the frictionless floor fixed in 70a1b75; with
 particles at their real mass (caa97df) that cohesion holds the column up
