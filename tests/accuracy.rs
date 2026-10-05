@@ -3425,16 +3425,20 @@ fn earth_gravity_freefall_velocity_matches_gt() {
 /// `FromSI` impl uses, so the material's own claimed physics is checked against the
 /// analytical law, not against a second unit system.
 ///
-/// Open, see the `#[ignore]` reason: the recorded numbers (density plateau ~1.3x rest
-/// density, pressure ~500x rho*g*h, a rho*g*h signal of ~0.3 grid units under 100-400
-/// units of particle noise) predate the current SI conversion and the spawn's mass
-/// unit, so they are not measurements of the current code. Geostatic pre-stress
-/// initialization (spawning at equilibrium compression instead of settling from F=I) is
-/// the likely remaining step.
-#[ignore = "not rerun since its expected pressure moved to the material's own SI \
-            conversion (the one used before carried an extra dt^2, 1e-4 here, so the \
-            recorded ~500x overshoot is not a measurement); its spawn also passes an SI \
-            kilogram mass as grid mass, 10x too light (see SpawnRegion::mass_override)"]
+/// The walls are `SlipBoundary`: the strict weakly compressible water refuses a
+/// `FrictionBoundary`, and a column at rest needs no floor friction.
+///
+/// Open, see the `#[ignore]` reason. Measured after 3000 steps (30 s): mean density
+/// 1.00, as it should be, but the column has not come to rest (particles still moving
+/// at up to 1.4 cm/s), and the mean pressure over one-cell depth bands reads 0.95,
+/// 0.79 and 1.49 of rho*g*h from 3 cells down to the floor. One particle's pressure
+/// scatters by thousands of grid units around its band: at this bulk modulus
+/// (c = 15 m/s) `dp = c^2 d_rho` turns a small density noise into a pressure error
+/// c^2 / (g h) ~ 460 times larger relative to rho*g*h at 5 cm. The numbers recorded
+/// before (a ~1.3x density plateau, ~500x pressure) came from a spawn that passed SI
+/// kilograms as grid mass, 10x too light.
+#[ignore = "open: the column is still moving after 30 s and its depth-band mean \
+            pressure reads 0.79-1.49 of rho*g*h; not yet a settled hydrostatic state"]
 #[test]
 fn hydrostatic_pressure_matches_rho_g_h() {
     let dx_m = 0.01_f32;
@@ -3465,12 +3469,12 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         spacing: 0.5,
         box_size: glam::IVec2::new(width, 6),
         box_center: glam::Vec2::new(GRID_RES as f32 * 0.5, 5.0),
-        mass_override: Some(water.particle_mass(0.5, &config)),
         ..SpawnRegion::for_sim(&config)
-    };
+    }
+    .mass_from(&water, &config);
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(water.material(&config))
-        .with_boundary(Box::new(FrictionBoundary::new(2, 0.3)));
+        .with_boundary(Box::new(SlipBoundary::new(2)));
 
     // Progress printing per chunk: wall-clock per chunk and current
     // density/speed, so a multi-hour settle shows whether it is progressing.
@@ -3543,11 +3547,27 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         "  max relative error vs rho*g*h        = {:.1}%",
         max_rel_err * 100.0
     );
-    println!("  depth(cells) | expected(grid) | measured(grid)");
-    for chunk_idx in 0..10 {
-        let idx = (chunk_idx * (by_depth.len() - 1)) / 9;
-        let (d, e, m) = by_depth[idx];
-        println!("  {d:8.2}     | {e:10.2}     | {m:10.2}");
+    // One particle's pressure carries the EOS-amplified density noise; the mean
+    // over a one-cell depth band is what Pascal's law predicts.
+    println!("  depth band (cells) | particles | mean expected | mean measured | ratio");
+    let mut band_start = 3.0f32;
+    while band_start < max_y {
+        let band: Vec<&(f32, f32, f32)> = by_depth
+            .iter()
+            .filter(|(d, _, _)| (band_start..band_start + 1.0).contains(d))
+            .collect();
+        if !band.is_empty() {
+            let n_band = band.len() as f32;
+            let expected = band.iter().map(|b| b.1).sum::<f32>() / n_band;
+            let measured = band.iter().map(|b| b.2).sum::<f32>() / n_band;
+            println!(
+                "  {band_start:5.1}-{:5.1}        | {:9} | {expected:13.1} | {measured:13.1} | {:.3}",
+                band_start + 1.0,
+                band.len(),
+                measured / expected
+            );
+        }
+        band_start += 1.0;
     }
 
     // Qualitative check that survives even with the known density-overshoot

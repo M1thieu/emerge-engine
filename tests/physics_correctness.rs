@@ -8962,13 +8962,13 @@ fn boiling_mixture_confined_column_matches_analytical_profile_at_earth_gravity()
     // Disclosed, deliberately loose bound: `e_p` is a genuinely
     // poorly-conditioned metric for THIS material at `X=0.5` regardless of
     // how good the underlying density profile is -- its own stiffness
-    // there (`c_mix2~3.6e4 m^2/s^2`, `rho*c_mix^2~3.6e7 Pa` bulk-modulus
+    // there (`c_mix2~3.6e4 m^2/s^2`, `rho_eq*c_mix^2~1.0e7 Pa` bulk-modulus
     // scale) is intrinsically large relative to this scene's own modest
-    // hydrostatic pressure scale (`rho*g*h~4.5e4 Pa` at Earth gravity/16m),
-    // so even the small density RMS error `e_rho` asserts above
-    // (0.36% measured, i.e. ~3.6 kg/m^3 absolute) amplifies through
-    // `dp=c_mix2*d_rho` into an absolute pressure error (~1.3e5 Pa)
-    // several times the reference scale itself -- a structural
+    // hydrostatic pressure scale (`rho_eq*g*h~4.5e4 Pa` at Earth gravity/16m).
+    // Both errors are normalised by `rho_eq`, so `dp=c_mix2*d_rho` makes
+    // `e_p = e_rho * c_mix2 / (g*h)` for small errors: 0.0036 * 229 = 0.83,
+    // the measured 0.834. The pressure error is the density error seen
+    // through the stiffness, not a separate fault -- a structural
     // consequence of this material's own real stiffness, not something a
     // better test design can fix. `e_rho` above is the well-
     // conditioned quantitative check; this bound exists only to catch a
