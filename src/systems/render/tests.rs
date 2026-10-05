@@ -639,23 +639,17 @@ fn gpu_thermal_emission_gets_bluer_with_temperature() {
 /// single pixel. Real particles at a known grid position, `ByMaterial`
 /// color mode (material 0's real palette entry, `material_color(0)` in
 /// `prep_instances.wgsl` = `vec4(0.35, 0.65, 1.00, 1.0)`, a distinct blue),
-/// must show up as that color roughly at the texture center the camera
-/// maps them to -- not the clear color (0.05, 0.05, 0.08).
+/// must show up as that color, not the clear color (0.05, 0.05, 0.08).
 ///
-/// `#[ignore]`d, and failing on real hardware since it was written: issue
-/// #45. The full-texture scan finds no particle-coloured pixel; the
-/// brightest pixel is the clear colour itself, `[63, 63, 80, 255]`, so
-/// nothing brighter than the background is written. The buffer reads below
-/// show `storage_instances` and `instance_buffer` both holding correct data
-/// (`position=[10.0, 16.0]`, `color=[0.35, 0.65, 1.0, 1.0]`) after
-/// `render_gpu`, and the CPU control next to this test fails the same way,
-/// so the loss is after instance preparation and common to both paths.
-/// Where exactly is not measured; the issue lists what would tell.
-#[ignore = "fails on real hardware, nothing reaches the target: issue #45"]
+/// The target matches the 256 x 256 window `set_camera` is given. Until
+/// issue #45 it was 64 x 64 and nothing was drawn:
+/// `subpixel_particles_light_only_pixels_whose_centre_they_cover` below
+/// measures why.
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 #[test]
 fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     use crate::gpu::GpuSimulation;
-    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
+    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig};
     use std::sync::Arc;
 
     let (device, queue) = headless_device();
@@ -663,14 +657,7 @@ fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     let queue = Arc::new(queue);
 
     let config = SimConfig::standard(32, 0.1, glam::Vec2::new(0.0, -0.3));
-    let particles = build_particles(
-        &config,
-        SpawnRegion::for_sim(&config)
-            .at(glam::Vec2::splat(16.0))
-            .disk(6.0)
-            .spacing(0.5)
-            .material(0),
-    );
+    let particles = pixel_test_disk(0.0);
     let registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
     let sim =
         GpuSimulation::with_device(device.clone(), queue.clone(), config, particles, registry);
@@ -680,22 +667,7 @@ fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     let mut r = Renderer::new(&device, sim.particle_count(), fmt);
     r.set_color_mode(ColorMode::ByMaterial);
     r.set_camera(&queue, 32, 256, 256, 0.6, true);
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("render_gpu_pixel_test_target"),
-        size: wgpu::Extent3d {
-            width: 64,
-            height: 64,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: fmt,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let (texture, view) = pixel_test_target(&device, fmt, 256);
 
     r.render_gpu(
         &device,
@@ -710,128 +682,128 @@ fn render_gpu_produces_visible_particle_pixels_not_just_clear_color() {
     );
     device.poll(wgpu::PollType::wait_indefinitely()).ok();
 
-    // Scan the WHOLE texture (only 64x64=4096 pixels, cheap) rather than
-    // guessing a window from the camera projection math -- avoids a second
-    // source of error (getting the NDC->pixel arithmetic wrong in the test
-    // itself) confounding what this test is actually trying to isolate.
-    let mut found_particle_color = false;
-    for y in 0..64 {
-        for x in 0..64 {
-            let px = readback_pixel(&device, &queue, &texture, 64, 64, x, y);
-            // Clear color (0.05,0.05,0.08 linear) is near-black; real
-            // material-0 blue (0.35,0.65,1.00) is bright, especially in the
-            // blue channel. A wide, generous margin so this isn't brittle
-            // to exact sRGB rounding -- just "clearly not background".
-            if px[2] > 120 && px[0] < 180 {
-                found_particle_color = true;
-                break;
-            }
-        }
-        if found_particle_color {
-            break;
-        }
-    }
-    if !found_particle_color {
-        let raw = readback_f32_blocking(&device, &queue, &r.storage_instances, 12);
-        eprintln!(
-            "DEBUG storage_instances[0]: deform_col0={:?} deform_col1={:?} position={:?} pad={:?} color={:?}",
-            &raw[0..2],
-            &raw[2..4],
-            &raw[4..6],
-            &raw[6..8],
-            &raw[8..12],
-        );
-        let raw2 = readback_f32_blocking(&device, &queue, &r.instance_buffer, 12);
-        eprintln!(
-            "DEBUG instance_buffer[0]:   deform_col0={:?} deform_col1={:?} position={:?} pad={:?} color={:?}",
-            &raw2[0..2],
-            &raw2[2..4],
-            &raw2[4..6],
-            &raw2[6..8],
-            &raw2[8..12],
-        );
-    }
-    // What the texture holds instead, so a failure says what it read.
-    let brightest = readback_brightest_pixel(&device, &queue, &texture, 64, 64);
+    // A partly covered pixel is blended toward the background, so the
+    // brightest pixel carries the particles' own colour. Clear color
+    // (0.05,0.05,0.08 linear) is near-black; material-0 blue
+    // (0.35,0.65,1.00) is bright, especially in the blue channel.
+    let brightest = readback_brightest_pixel(&device, &queue, &texture, 256, 256);
     assert!(
-        found_particle_color,
-        "render_gpu must produce visible material-0 (blue) particle pixels \
-         near the texture center, not just the clear color -- prep_instances.wgsl \
-         either isn't running, isn't writing real data, or isn't reaching the draw pass; \
-         brightest pixel in the target {brightest:?}"
+        brightest[2] > 120 && brightest[0] < 180,
+        "render_gpu must produce visible material-0 (blue) particle pixels, \
+         not just the clear color; brightest pixel in the target {brightest:?}"
     );
 }
 
 /// Control test for the above: SAME scene/camera/texture, but through the
-/// CPU `render()` path instead of `render_gpu` -- isolates whether a found
+/// CPU `render_slice()` path instead of `render_gpu` -- isolates whether a
 /// blank result is specific to the GPU compute-prep path or a shared
 /// `draw_pass`/pipeline problem that would affect both.
-///
-/// `#[ignore]`d alongside the test above and failing the same way, issue
-/// #45: the brightest pixel is the clear colour.
-#[ignore = "fails on real hardware like the GPU test above: issue #45"]
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
 #[test]
 fn render_cpu_produces_visible_particle_pixels_control() {
-    use crate::{MaterialRegistry, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles};
-
     let (device, queue) = headless_device();
-
-    let config = SimConfig::standard(32, 0.1, glam::Vec2::new(0.0, -0.3));
-    let particles = build_particles(
-        &config,
-        SpawnRegion::for_sim(&config)
-            .at(glam::Vec2::splat(16.0))
-            .disk(6.0)
-            .spacing(0.5)
-            .material(0),
-    );
-    let _registry = MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(100.0, 50.0)));
-    assert!(!particles.is_empty(), "test setup must spawn particles");
-
+    let particles = pixel_test_disk(0.0);
     let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut r = Renderer::new(&device, particles.len(), fmt);
     r.set_color_mode(ColorMode::ByMaterial);
     r.set_camera(&queue, 32, 256, 256, 0.6, true);
+    let (texture, view) = pixel_test_target(&device, fmt, 256);
 
+    r.render_slice(&device, &queue, &particles, &view, true);
+    device.poll(wgpu::PollType::wait_indefinitely()).ok();
+
+    let brightest = readback_brightest_pixel(&device, &queue, &texture, 256, 256);
+    assert!(
+        brightest[2] > 120 && brightest[0] < 180,
+        "control: CPU render_slice() must produce visible particle pixels with the \
+         exact same scene/camera/texture params as the GPU test above; brightest \
+         pixel in the target {brightest:?}"
+    );
+}
+
+/// Issue #45, measured. The particle pass point-samples: a fragment exists
+/// only where a pixel centre falls inside a particle's quad, and the round
+/// clip keeps it only within half the quad's width of the particle. A
+/// particle smaller than a pixel therefore lights one pixel or none,
+/// depending on where it sits, with no partial coverage.
+///
+/// The two tests above drew into a 64 x 64 target until this was found: 2
+/// pixels per cell, so a 0.6-cell particle is a disc of radius 0.6 px. The
+/// spawn lattice, 0.5 cells apart from x = 10.0, puts every particle on a
+/// pixel corner, 0.71 px from the nearest pixel centre, and every fragment
+/// was discarded: 0 of 4096 pixels lit. A quarter-cell (half-pixel) shift
+/// puts each particle on a pixel centre and lights exactly one pixel per
+/// particle. On the same 64 x 64 target a 4-cell particle, or a square one,
+/// lights the disk.
+#[ignore = "needs a real GPU adapter: run manually on hardware, see CONTRIBUTING.md"]
+#[test]
+fn subpixel_particles_light_only_pixels_whose_centre_they_cover() {
+    let (device, queue) = headless_device();
+    let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let lit_pixels = |shift: f32| -> usize {
+        let particles = pixel_test_disk(shift);
+        let mut r = Renderer::new(&device, particles.len(), fmt);
+        r.set_color_mode(ColorMode::ByMaterial);
+        r.set_camera(&queue, 32, 64, 64, 0.6, true);
+        let (texture, view) = pixel_test_target(&device, fmt, 64);
+        r.render_slice(&device, &queue, &particles, &view, true);
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let luminance = readback_luminance_grid(&device, &queue, &texture, 64, 64, 1);
+        let background = luminance[0];
+        luminance
+            .iter()
+            .filter(|&&l| (l - background).abs() > 0.5)
+            .count()
+    };
+    let count = pixel_test_disk(0.0).len();
+    let on_corners = lit_pixels(0.0);
+    let on_centres = lit_pixels(0.25);
+    assert_eq!(
+        (on_corners, on_centres),
+        (0, count),
+        "a 0.6 px disc lights no pixel from a pixel corner and exactly one from \
+         a pixel centre ({count} particles)"
+    );
+}
+
+/// The disk of particles the pixel tests above draw: radius 6 cells at the
+/// centre of a 32-cell grid, 0.5 cells apart, material 0, moved by `shift`
+/// cells along both axes.
+fn pixel_test_disk(shift: f32) -> Vec<crate::Particle> {
+    use crate::{SimConfig, SpawnRegion, build_particles};
+    let config = SimConfig::standard(32, 0.1, glam::Vec2::new(0.0, -0.3));
+    build_particles(
+        &config,
+        SpawnRegion::for_sim(&config)
+            .at(glam::Vec2::splat(16.0 + shift))
+            .disk(6.0)
+            .spacing(0.5)
+            .material(0),
+    )
+}
+
+/// A square render target for the pixel tests, with its view.
+fn pixel_test_target(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    size: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("render_cpu_pixel_test_target"),
+        label: Some("pixel_test_target"),
         size: wgpu::Extent3d {
-            width: 64,
-            height: 64,
+            width: size,
+            height: size,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: fmt,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-    r.render_slice(&device, &queue, &particles, &view, true);
-    device.poll(wgpu::PollType::wait_indefinitely()).ok();
-
-    let mut found_particle_color = false;
-    for y in 0..64 {
-        for x in 0..64 {
-            let px = readback_pixel(&device, &queue, &texture, 64, 64, x, y);
-            if px[2] > 120 && px[0] < 180 {
-                found_particle_color = true;
-                break;
-            }
-        }
-        if found_particle_color {
-            break;
-        }
-    }
-    let brightest = readback_brightest_pixel(&device, &queue, &texture, 64, 64);
-    assert!(
-        found_particle_color,
-        "control: CPU render_slice() must produce visible particle pixels with the \
-         exact same scene/camera/texture params as the GPU test above; brightest \
-         pixel in the target {brightest:?}"
-    );
+    (texture, view)
 }
 
 /// Blocking single-pixel RGBA8 texture readback -- test-only. Same
