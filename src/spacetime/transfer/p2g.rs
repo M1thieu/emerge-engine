@@ -112,7 +112,16 @@ fn scatter_one_into(
         );
     }
 
+    // Node momentum `m (v + C d) + s (S d)` is `A + B d`, with `A = m v` and
+    // `B = m C + s S` built once per particle, and `d` steps by one cell
+    // between nodes, so each node adds `B`'s columns to `A + B d0` instead of
+    // computing two matrix-vector products. The same sum, rounded in a
+    // different order (`p2g_cost_breakdown`: the node math 106-128 ns -> 55 ns
+    // per particle).
     let weights = quadratic_weights(x);
+    let affine_and_stress = c_i * mass_i + stress * stress_coeff;
+    let cell_dist_base = weights.base_cell.as_vec2() - x + Vec2::splat(0.5);
+    let momentum_at_base = mass_i * v_i + affine_and_stress * cell_dist_base;
     for gx in 0..3 {
         for gy in 0..3 {
             let weight = weights.wx[gx] * weights.wy[gy];
@@ -120,9 +129,10 @@ fn scatter_one_into(
             let Some(idx) = flat_index(cell_pos, resolution) else {
                 continue;
             };
-            let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
-            let momentum =
-                weight * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
+            let momentum = weight
+                * (momentum_at_base
+                    + (gx as f32 - 1.0) * affine_and_stress.x_axis
+                    + (gy as f32 - 1.0) * affine_and_stress.y_axis);
             let entry = acc.entry(idx).or_default();
             entry.mass += weight * mass_i;
             entry.momentum += momentum;

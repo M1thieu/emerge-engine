@@ -708,6 +708,36 @@ mod p2g_cost_breakdown {
                 }
             }
         });
+        // The same momentum factored per particle: m (v + C d) + s (S d) is
+        // A + B d with A = m v and B = m C + s S, and d steps by whole cells
+        // between nodes, so each node adds B's columns instead of two
+        // matrix-vector products.
+        let mut dense_f = vec![(0.0f32, Vec2::ZERO); GRID * GRID];
+        let node_math_factored = per_particle_ns(&mut || {
+            for (i, &stress) in passive.iter().enumerate() {
+                let x = particles.x[i];
+                let w = quadratic_weights(x);
+                let stress_coeff = -1.0e-3;
+                let m = particles.mass[i];
+                let a = m * particles.v[i];
+                let b = particles.velocity_gradient[i] * m + stress * stress_coeff;
+                let d0 = w.base_cell.as_vec2() - x + Vec2::splat(0.5);
+                let at_base = a + b * d0;
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let weight = w.wx[gx] * w.wy[gy];
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let momentum = weight
+                            * (at_base
+                                + (gx as f32 - 1.0) * b.x_axis
+                                + (gy as f32 - 1.0) * b.y_axis);
+                        let node = &mut dense_f[cell.x as usize * GRID + cell.y as usize];
+                        node.0 += weight * m;
+                        node.1 += momentum;
+                    }
+                }
+            }
+        });
         // The same nine adds into the map type P2G's fold uses.
         let map_adds = per_particle_ns(&mut || {
             let mut acc = CellMap::default();
@@ -755,6 +785,7 @@ mod p2g_cost_breakdown {
         println!("  owns_deformation_volume_state      {owns_volume:7.1}");
         println!("  quadratic_weights                  {weights:7.1}");
         println!("  9-node APIC + stress math, array   {node_math:7.1}");
+        println!("  same, factored per particle        {node_math_factored:7.1}");
         println!("  9 adds into a CellMap              {map_adds:7.1}");
         println!("  whole P2G, 1 thread                {full_one_thread:7.1}");
         println!(
