@@ -602,12 +602,37 @@ Not measured to a cause yet. The pile it leaves stands at 26.3° where dry
 sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
 same collapse both stops short and ends too flat.
 
-Three candidates are measured and ruled out. Matching the cone to 2D
-Mohr-Coulomb moves the pile 0.3°. The tension cutoff, which takes 70 % of a
-settled pile's particles each substep (`dp_update_cost_breakdown`), is what
-lets this sand flow: without its volume correction the pile reads 26.9° and
-the runout is unchanged, and with `use_pradhana` the column does not
-collapse. Finer cells do not close the gap either. An SI column (8 x 16 cm,
+Five candidates are measured and ruled out:
+- Matching the cone to 2D Mohr-Coulomb moves the pile 0.3°.
+- The tension cutoff, which takes 70 % of a settled pile's particles each
+  substep (`dp_update_cost_breakdown`), is what lets this sand flow: with
+  `use_pradhana` the column does not collapse.
+- The volume a cutoff removes, carried in `log_volume_strain`: without it
+  (`volume_correction = 0`) the pile reads 26.9° and the runout is
+  unchanged.
+- Forgetting that history once a particle leaves the cutoff, as the
+  reference code of Tampubolon et al. 2017 does (ziran2020's
+  `DruckerPragerStvkHencky::projectStrain` sets `logJp = 0` outside its
+  tension case; this engine, like sparkl, never does): measured in a scratch
+  build, repose, runout and fitted slope are unchanged, because the
+  particles concerned never leave the cutoff.
+- Resolution, below.
+
+A property of this model found on the way, not a cause of either gap: most
+of a settled pile sits at the tip of the cone, stress-free, every substep.
+More than 8 cells deep, 66 % of the particles take the tension cutoff under
+the pile's weight (`settled_pile_creep_by_depth`). Each carries a small
+positive volume history (about 1e-3) from the impact, repaid only by
+accumulated compression and grown again by any expansion, so it hovers at
+the tip; without the history only 1.2 % do. The load is carried by the rest.
+
+Whether the history drives the slow flattening that
+`sand_collapse_relaxation_long_horizon_plateau_check` records (29.6° to
+10.8° over 100 000 steps of a grid-unit scene) is not settled: an SI column
+held its fitted slope at 20.2-20.8° over 25 s with the history and at 20.3°
+without it, a far shorter horizon than that test's.
+
+Finer cells do not close the gap either. An SI column (8 x 16 cm,
 E 1 MPa, 35°, friction floor) settles to a flank slope of 20.7° at 0.5 cm
 cells and 21.4° at 0.25 cm after 3 s, fitted by least squares through the
 surface between 20 % and 80 % of the peak (at 1 cm the surface is too
