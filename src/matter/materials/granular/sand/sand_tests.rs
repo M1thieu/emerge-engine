@@ -802,3 +802,119 @@ mod dp_update_cost_breakdown {
         );
     }
 }
+
+/// Where a settled pile keeps creeping, and in which state. The same block
+/// as `dp_update_cost_breakdown` falls, spreads and settles for
+/// `CREEP_PROBE_STEPS` steps; then every particle is binned by its depth
+/// below the pile's local surface (the highest particle within half a cell of
+/// its x), and each depth band reports how many particles take each branch
+/// of `project` and their mean speed. Ignored, read-only:
+///
+///   cargo test --profile quick --lib settled_pile_creep_by_depth -- --ignored --nocapture
+///
+/// First reading, step 400: speed does not depend on the branch within a
+/// band (1.4e-3 cells/s in the top half cell for all three, 4-6e-4 below 8
+/// cells), so the whole pile creeps, about 3 times faster at its surface,
+/// rather than its stress-free particles sliding. The tension cutoff takes
+/// 66 % of the particles even more than 8 cells deep, under the pile's
+/// weight.
+#[cfg(test)]
+mod settled_pile_creep_by_depth {
+    use super::*;
+    use crate::materials::svd::svd2;
+    use crate::materials::utils::advance_deformation_gradient;
+    use crate::{FrictionBoundary, SimConfig, Simulation, SpawnRegion};
+    use glam::IVec2;
+
+    #[test]
+    #[ignore = "diagnostic probe kept for reruns, not part of the CI suite"]
+    fn settled_pile_creep_by_depth() {
+        let config = SimConfig {
+            max_substeps_per_step: 256,
+            ..SimConfig::standard(128, 0.1, Vec2::new(0.0, -0.3))
+        };
+        let block = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(60, 60),
+            box_center: Vec2::new(64.0, 40.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        let mut sim = Simulation::new(config, block)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let steps: usize = std::env::var("CREEP_PROBE_STEPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(400);
+        for _ in 0..steps {
+            sim.step();
+        }
+        let substeps = sim.diagnostics_snapshot().substeps_last_step.max(1);
+        let dt = config.dt / substeps as f32;
+        let p = sim.particles();
+        let n = p.len();
+
+        // Local surface: highest particle per half-cell column.
+        let columns = 2 * config.grid_res;
+        let mut surface = vec![f32::MIN; columns];
+        for x in &p.x {
+            let c = ((x.x * 2.0) as usize).min(columns - 1);
+            surface[c] = surface[c].max(x.y);
+        }
+        // Depth bands in cells below the local surface.
+        const BANDS: [f32; 6] = [0.5, 1.0, 2.0, 4.0, 8.0, f32::INFINITY];
+        let mut count = [[0usize; 3]; 6]; // [band][elastic, tension, shear]
+        let mut speed = [[0.0f64; 3]; 6];
+        for i in 0..n {
+            let c = ((p.x[i].x * 2.0) as usize).min(columns - 1);
+            let depth = surface[c] - p.x[i].y;
+            let band = BANDS.iter().position(|&b| depth < b).unwrap_or(5);
+            let trial = advance_deformation_gradient(
+                p.deformation_gradient[i],
+                dt * p.velocity_gradient[i],
+            );
+            let (_, sigma, _) = svd2(trial);
+            let branch = match sand.project(ProjectInputs {
+                sigma,
+                log_volume_strain: p.log_volume_strain[i],
+                q: p.friction_hardening[i],
+                dt,
+                nonlocal_fluidity: 0.0,
+                strain_rate_norm: 0.0,
+                cosserat_curvature: Vec2::ZERO,
+                cohesion_bonus_pa: 0.0,
+                eps_pl_vol_pradhana: 0.0,
+            }) {
+                None => 0,
+                Some((_, _, ProjectedBranch::TensionCutoff)) => 1,
+                Some(_) => 2,
+            };
+            count[band][branch] += 1;
+            speed[band][branch] += f64::from(p.v[i].length());
+        }
+        println!(
+            "{n} particles after {steps} steps; speed in cells/s; depth below the local surface:"
+        );
+        let mut lower = 0.0f32;
+        for (band, &upper) in BANDS.iter().enumerate() {
+            let cell = |k: usize| {
+                let c = count[band][k];
+                let s = if c > 0 {
+                    speed[band][k] / c as f64
+                } else {
+                    0.0
+                };
+                format!("{c:5} at {s:.2e}")
+            };
+            println!(
+                "  {lower:4.1}-{upper:4.1}: elastic {}, tension cutoff {}, shear yield {}",
+                cell(0),
+                cell(1),
+                cell(2)
+            );
+            lower = upper;
+        }
+    }
+}
