@@ -614,3 +614,185 @@ mod pradhana_correction_tests {
         );
     }
 }
+
+/// Where Drucker-Prager's per-particle plasticity update spends its time.
+/// A 60x60-cell block of sand falls and spreads for 40 steps, so its
+/// particles carry real deformation states; then, on one thread, the whole
+/// `update_particle` and each of its pieces (the F advance, the SVD,
+/// `project`, the rebuild of F) are timed alone over every particle, and
+/// `project`'s branches are counted. Optimised profile only:
+///
+///   cargo test --profile quick --lib dp_update_cost_breakdown -- --ignored --nocapture
+///
+/// Knob: DP_PROBE_STEPS (40), the steps run before timing. The block lands
+/// at about step 73; 80 catches the impact, 300 a settled pile.
+///
+/// First reading: the whole update 315-420 ns per particle, of which the F
+/// advance 41, `svd2` 37-104, `project` 80-205, the rebuild 6. Its branch
+/// counts were the bigger finding: after the impact the tension cutoff takes
+/// 95 % of the particles each substep, and still 70 % of a settled pile at
+/// step 300. 83 % of those particles carry a positive `log_volume_strain`,
+/// and for 40 % of all particles it alone tips an elastically compressed
+/// state into the cutoff: each cutoff adds the expansion it removed to that
+/// history (`volume_correction = 1`), so the particle stays stress-free until
+/// a compression pays it back.
+#[cfg(test)]
+mod dp_update_cost_breakdown {
+    use super::*;
+    use crate::materials::svd::svd2;
+    use crate::materials::utils::advance_deformation_gradient;
+    use crate::{FrictionBoundary, SimConfig, Simulation, SpawnRegion};
+    use glam::IVec2;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "timing probe kept for reruns, not part of the CI suite"]
+    fn dp_update_cost_breakdown() {
+        const REPS: usize = 20;
+        let config = SimConfig {
+            max_substeps_per_step: 256,
+            ..SimConfig::standard(128, 0.1, Vec2::new(0.0, -0.3))
+        };
+        let block = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(60, 60),
+            box_center: Vec2::new(64.0, 40.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        let mut sim = Simulation::new(config, block)
+            .with_default_material(Box::new(sand))
+            .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        let steps: usize = std::env::var("DP_PROBE_STEPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(40);
+        for _ in 0..steps {
+            sim.step();
+        }
+        let substeps = sim.diagnostics_snapshot().substeps_last_step.max(1);
+        let dt = config.dt / substeps as f32;
+        let particles = sim.particles().clone();
+        let n = particles.len();
+        let per_particle_ns = |total: f64| total * 1e9 / (REPS * n) as f64;
+
+        let mut whole = 0.0;
+        for _ in 0..REPS {
+            let mut copy = particles.clone();
+            let t0 = Instant::now();
+            for i in 0..n {
+                sand.update_particle(&mut copy.update_ctx(i), dt);
+            }
+            whole += t0.elapsed().as_secs_f64();
+        }
+
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            for (&f, &l) in particles
+                .deformation_gradient
+                .iter()
+                .zip(&particles.velocity_gradient)
+            {
+                black_box(advance_deformation_gradient(f, dt * l));
+            }
+        }
+        let advance = t0.elapsed().as_secs_f64();
+
+        let trials: Vec<Mat2> = particles
+            .deformation_gradient
+            .iter()
+            .zip(&particles.velocity_gradient)
+            .map(|(&f, &l)| advance_deformation_gradient(f, dt * l))
+            .collect();
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            for &f in &trials {
+                black_box(svd2(f));
+            }
+        }
+        let svd = t0.elapsed().as_secs_f64();
+
+        let decomposed: Vec<(Mat2, Vec2, Mat2)> = trials.iter().map(|&f| svd2(f)).collect();
+        let inputs = |i: usize| ProjectInputs {
+            sigma: decomposed[i].1,
+            log_volume_strain: particles.log_volume_strain[i],
+            q: particles.friction_hardening[i],
+            dt,
+            nonlocal_fluidity: 0.0,
+            strain_rate_norm: 0.0,
+            cosserat_curvature: Vec2::ZERO,
+            cohesion_bonus_pa: 0.0,
+            eps_pl_vol_pradhana: 0.0,
+        };
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            for i in 0..n {
+                black_box(sand.project(inputs(i)));
+            }
+        }
+        let project = t0.elapsed().as_secs_f64();
+        let (mut elastic, mut tension, mut shear, mut other) = (0usize, 0usize, 0usize, 0usize);
+        for i in 0..n {
+            match sand.project(inputs(i)) {
+                None => elastic += 1,
+                Some((_, _, ProjectedBranch::TensionCutoff)) => tension += 1,
+                Some((_, _, ProjectedBranch::ShearYield)) => shear += 1,
+                Some(_) => other += 1,
+            }
+        }
+
+        let t0 = Instant::now();
+        for _ in 0..REPS {
+            for &(u, sigma, vt) in &decomposed {
+                let s = Mat2::from_cols(Vec2::new(sigma.x, 0.0), Vec2::new(0.0, sigma.y));
+                black_box(u * s * vt);
+            }
+        }
+        let rebuild = t0.elapsed().as_secs_f64();
+
+        println!("{n} particles of sand after {steps} steps, substep {dt:.2e}, ns per particle:");
+        println!("  whole update_particle     {:7.1}", per_particle_ns(whole));
+        println!(
+            "  advance F                 {:7.1}",
+            per_particle_ns(advance)
+        );
+        println!("  svd2                      {:7.1}", per_particle_ns(svd));
+        println!(
+            "  project                   {:7.1}",
+            per_particle_ns(project)
+        );
+        println!(
+            "  rebuild F = U S V^T       {:7.1}",
+            per_particle_ns(rebuild)
+        );
+        println!(
+            "  project branches: elastic {elastic}, tension cutoff {tension}, shear yield {shear}, other {other}"
+        );
+        // Why tension: `project` tests the trace of ln(sigma) plus the
+        // carried volumetric history `log_volume_strain`.
+        let (mut history_positive, mut tension_from_history) = (0usize, 0usize);
+        let mut history: Vec<f32> = particles.log_volume_strain.clone();
+        for (i, &(_, sigma, _)) in decomposed.iter().enumerate() {
+            let lvs = particles.log_volume_strain[i];
+            if lvs > 0.0 {
+                history_positive += 1;
+            }
+            let s = sigma
+                .abs()
+                .max(Vec2::splat(crate::materials::utils::LOG_CLAMP));
+            let elastic_trace = s.x.ln() + s.y.ln();
+            if elastic_trace <= 0.0 && elastic_trace + lvs > 0.0 {
+                tension_from_history += 1;
+            }
+        }
+        history.sort_by(f32::total_cmp);
+        println!(
+            "  log_volume_strain > 0 on {history_positive}; tension only through it on {tension_from_history}; median {:.2e}, p10 {:.2e}, p90 {:.2e}",
+            history[n / 2],
+            history[n / 10],
+            history[9 * n / 10]
+        );
+    }
+}
