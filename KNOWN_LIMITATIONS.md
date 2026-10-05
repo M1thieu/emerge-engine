@@ -607,11 +607,14 @@ Mohr-Coulomb moves the pile 0.3°. The tension cutoff, which takes 70 % of a
 settled pile's particles each substep (`dp_update_cost_breakdown`), is what
 lets this sand flow: without its volume correction the pile reads 26.9° and
 the runout is unchanged, and with `use_pradhana` the column does not
-collapse. Finer cells do not close the gap either: an SI column (8 x 16 cm,
-E 1 MPa, 35°, friction floor) reads 21.3°, 19.6° and 17.0° at 1, 0.5 and
-0.25 cm cells after 3 s. Its height stays at 5.8-6.0 cm while the base
-widens; the base is the farthest particle near the floor, so part of that
-widening may be lone grains rather than the pile.
+collapse. Finer cells do not close the gap either. An SI column (8 x 16 cm,
+E 1 MPa, 35°, friction floor) settles to a flank slope of 20.7° at 0.5 cm
+cells and 21.4° at 0.25 cm after 3 s, fitted by least squares through the
+surface between 20 % and 80 % of the peak (at 1 cm the surface is too
+coarse to fit). Height over farthest base particle reads 21.3°, 19.6° and
+17.0° at 1, 0.5 and 0.25 cm, but that drop is the measure, not the slope:
+the height holds at 5.8-6.0 cm while a thin foot spreads further at finer
+cells (98th-percentile base half-width 14.9, 16.0 and 18.3 cm).
 
 The test used to hide this behind `cohesion = 5.0`, tuned to compensate a
 "4.7x too far" runout that was the frictionless floor fixed in 70a1b75; with
