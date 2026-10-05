@@ -162,13 +162,13 @@ const TISSUE_VISCOSITY_PA_S: f32 = 1.0;
 fn make_registry(config: &SimConfig) -> MaterialRegistry {
     // Reused verbatim from already-shipped demos -- not new invented numbers.
     let jelly = NeoHookeanMaterial::new(40.0, 80.0); // basic_showcase_gpu
-    // Cohesionless sand at this MPM resolution under-measures angle of repose (a
-    // documented continuum-resolution artifact -- pressure-proportional friction
-    // vanishes in thin/fast-flowing layers). This (E, nu, cohesion) triple is
-    // calibrated against the Lajeunesse et al. 2004 runout scaling law, not
-    // a fresh guess.
+    // The cohesion of 5.0 has no measured basis. It was tuned on the
+    // column-collapse test of tests/accuracy.rs against Lajeunesse et al. 2004,
+    // a law for an axisymmetric pile, not this 2D column, and since particles
+    // got their real mass (caa97df) it holds that test's column up entirely.
+    // Kept for this demo's look until a re-tuning pass (KNOWN_LIMITATIONS.md).
     let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
-    sand.cohesion = 5.0; // calibrated against the real Lajeunesse benchmark, see above
+    sand.cohesion = 5.0;
     // `low_viscosity()`, not a raw constructor -- water viscosity (1.0e-3, Becker &
     // Teschner 2007) and Tait EOS exponent (7.0, Cole 1948). rest_density=0.1
     // (`rho*dx^2` for water at dx=0.01, see basic_fluids.rs). eos_stiffness=0.25: with

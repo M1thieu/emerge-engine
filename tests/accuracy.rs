@@ -58,11 +58,12 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 ///
 /// We spawn a column, let it fully settle, and measure the final pile slope.
 ///
-/// Open (GH #28): the pile settles at 26.4° as run, below dry sand's 30-35°. The
-/// 64-substep cap binds on every step (this scene needs 107) and drops 40 % of the
-/// simulated time; run for the full 150 time units the pile reads 26.0° and is still
-/// flattening, about 0.2° per 300 steps, the slow creep of
-/// `sand_collapse_relaxation_long_horizon_plateau_check`.
+/// Open (GH #28): the pile settles at 26.3°, below dry sand's 30-35°, and is still
+/// flattening, the slow creep of `sand_collapse_relaxation_long_horizon_plateau_check`.
+/// It read 26.0° before the cone's coefficient was matched to Mohr-Coulomb in 2D
+/// (`alpha` in `sand.rs`). The CFL limit asks for 107 substeps per step here; a cap
+/// of 64 used to drop 40 % of the simulated time and read 26.4°, so the test now
+/// fails if any time is dropped.
 ///
 /// The ~12° recorded here before was a frictionless floor, not the model. Until
 /// 70a1b75, `with_boundary` stacked the `FrictionBoundary` under the default
@@ -79,14 +80,15 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 /// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gave 50.7/58.3/63.3/68.9/76.4°, the column
 /// barely collapsing. That much dissipation helps a quasi-static creep but removes the
 /// kinetic energy a dynamic collapse needs to topple and spread.
-#[ignore = "open accuracy gap (GH #28): settles at 26.4 deg as run (26.0 deg with no \
-            simulated time dropped, still flattening) vs 30-35 deg for dry sand; passes \
-            its own 15-50 deg bound. the old ~12 deg was a frictionless floor, fixed in \
-            70a1b75. do not tune to pass"]
+#[ignore = "open accuracy gap (GH #28): settles at 26.3 deg, still flattening, vs \
+            30-35 deg for dry sand; passes its own 15-50 deg bound. the old ~12 deg was \
+            a frictionless floor, fixed in 70a1b75. do not tune to pass"]
 #[test]
 fn sand_angle_of_repose_is_physical() {
+    // The CFL limit asks for 107 substeps per step in this scene; 128 leaves
+    // headroom so no simulated time is dropped (asserted below).
     let config = SimConfig {
-        max_substeps_per_step: 64,
+        max_substeps_per_step: 128,
         ..SimConfig::standard(GRID, DT, Vec2::new(0.0, -0.3))
     };
 
@@ -103,7 +105,15 @@ fn sand_angle_of_repose_is_physical() {
         .with_default_material(Box::new(sand))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    solver.step_n(1500);
+    let mut dropped = 0.0f32;
+    for _ in 0..1500 {
+        solver.step();
+        dropped += solver.diagnostics_snapshot().sim_time_dropped;
+    }
+    assert_eq!(
+        dropped, 0.0,
+        "the substep cap dropped {dropped} of the simulated time"
+    );
 
     let xs: Vec<Vec2> = solver.particles().x.clone();
     let n = xs.len() as f32;
@@ -2206,42 +2216,51 @@ fn sand_pile_built_by_patient_pour_matching_real_creep_timescale() {
     );
 }
 
-/// **Granular column collapse runout scaling** -- Lajeunesse, Mangeney-Castelnau &
-/// Vilotte, 2004, "Spreading of a granular mass on a horizontal plane", Phys. Fluids
-/// 16(7), the experimental measurement of granular column collapse runout vs aspect
-/// ratio. Their empirical law for a = H0/R0 >= 0.74 (our column, a=4, is in this
-/// regime):
+/// **Granular column collapse runout** -- Lube, Huppert, Sparks & Freundt 2005,
+/// "Collapses of two-dimensional granular columns", Phys. Rev. E 72, 041301. Their
+/// series A releases a column of height `h_i` and half-width `d_i` on both sides at
+/// once along a channel, the setup here. For `a = h_i / d_i > 2.8` the runout beyond
+/// the column's edge and the deposit's central height follow their Eqs. 4 and 7,
 ///
-///   (R_inf - R0) / R0 ~= 2.0 * sqrt(a)
+///   (d_inf - d_i) / d_i = 1.9 a^(2/3),    h_inf / d_i = 1.1 a^(2/5),
 ///
-/// A falsifiable, literature-sourced quantitative target. Violent disturbances
-/// (explosions, impacts, sudden terrain collapse) are LP scenarios: tall columns do
-/// spread more, by a bounded, measured amount, not by whatever the domain allows.
+/// whatever the grain type and the floor's roughness. Their grains were chosen so
+/// that cohesion is negligible, and this sand has none. At `a = 4`: `d_inf` = 23.2
+/// cells and `h_inf` = 7.7 cells.
 ///
-/// Uncalibrated, cohesionless DP sand spread ~4.7x the prediction, filling the domain
-/// (same at GRID=192/384, wall-independent, and across 3 friction configs): pressure-
-/// proportional friction (alpha*pressure) vanishes in thin, fast-flowing layers whatever
-/// the friction coefficient. `DruckerPragerMaterial::cohesion` adds a
-/// pressure-independent resistance floor (not a claim that dry sand is cohesive, see its
-/// doc), calibrated on this benchmark at GRID=384: a steep threshold (cohesion=5 ->
-/// 1.41x, cohesion=6 -> 0.74x), 5.0 giving 1.50x at GRID=192. `cohesion` defaults to 0.0.
+/// Open gap: the column stops at `d_inf` = 13.3 cells, a runout beyond the edge of
+/// 2.33 `d_i`, 0.49 of the experiment's, with `h_inf` = 6.6 cells (0.86). The band
+/// asserted below, 0.25 to 2 times the experimental runout, only catches a column
+/// that stands or one that floods the domain; it is not the target.
 ///
-/// Current measurement: ratio=0.19x (measured_r_inf=3.75 cells, barely past r0=4.0),
-/// reproduced twice, not the 1.50x above. Likely cause (not bisected): the
-/// `min_volume_jacobian` default moving from 0.6 to 0.807 (DiMaggio & Sandler 1971 /
-/// Resende & Martin 1985), as in `post_event_relax_long_horizon_full_confirmation`. The
-/// `ratio < 2.0` bound still holds, so the drift did not fail the test: a loose bound
-/// hides it.
+/// This test used to give the sand `cohesion = 5.0`, calibrated to land near
+/// Lajeunesse, Mangeney-Castelnau & Vilotte 2004 (Phys. Fluids 16, 2371). That law is
+/// for an axisymmetric pile and gives its total radius, `R_f / R_i = sqrt(3a / 0.74)`,
+/// where the test compared it with the runout beyond the edge. The cohesion
+/// compensated a "4.7x too far" spread that was a frictionless floor: until 70a1b75
+/// `with_boundary` left this `FrictionBoundary` without friction, and at that
+/// commit's parent the cohesionless column runs out to 94.1 cells, 14.1 with the
+/// floor's friction applied. Since caa97df gave particles their real mass, cohesion
+/// 5 holds the column up entirely (3.75 cells, unmoved).
+#[ignore = "open accuracy gap: the cohesionless column runs out 0.49 of the 2D \
+            experiment (Lube et al. 2005, a = 4); passes its own 0.25-2x band. do not \
+            tune to pass"]
 #[test]
-fn sand_column_collapse_runout_matches_lajeunesse_scaling() {
+fn sand_column_collapse_runout_against_lube_2005() {
     const BIG_GRID: usize = 192;
-    let r0 = 4.0_f32; // half-width of the 8-cell-wide column
-    let h0 = 16.0_f32;
-    let aspect_ratio = h0 / r0;
-    let predicted_r_inf = r0 * (1.0 + 2.0 * aspect_ratio.sqrt());
+    // Lube et al. 2005, series A: Eq. 4 (runout) and Eq. 7 (central height).
+    const RUNOUT_COEFF: f32 = 1.9;
+    const HEIGHT_COEFF: f32 = 1.1;
+    let d_i = 4.0_f32; // half-width of the 8-cell-wide column
+    let h_i = 16.0_f32;
+    let a = h_i / d_i;
+    let lube_runout = d_i * RUNOUT_COEFF * a.powf(2.0 / 3.0);
+    let lube_height = d_i * HEIGHT_COEFF * a.powf(2.0 / 5.0);
 
+    // The CFL limit asks for 107 substeps per step in this scene; 128 leaves
+    // headroom so no simulated time is dropped (asserted below).
     let config = SimConfig {
-        max_substeps_per_step: 64,
+        max_substeps_per_step: 128,
         ..SimConfig::standard(BIG_GRID, DT, Vec2::new(0.0, -0.3))
     };
     let column = SpawnRegion {
@@ -2251,34 +2270,44 @@ fn sand_column_collapse_runout_matches_lajeunesse_scaling() {
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
     };
-    let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
-    sand.cohesion = 5.0; // calibrated against this exact benchmark, see DruckerPragerMaterial::cohesion
+    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     let mut solver = Simulation::new(config, column)
         .with_default_material(Box::new(sand))
         .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
 
-    solver.step_n(1500);
+    let mut dropped = 0.0f32;
+    for _ in 0..1500 {
+        solver.step();
+        dropped += solver.diagnostics_snapshot().sim_time_dropped;
+    }
+    assert_eq!(
+        dropped, 0.0,
+        "the substep cap dropped {dropped} of the simulated time"
+    );
 
     let xs: Vec<Vec2> = solver.particles().x.clone();
     let n = xs.len() as f32;
     let center_x = xs.iter().map(|p| p.x).sum::<f32>() / n;
-    let measured_r_inf = xs
+    let d_inf = xs
         .iter()
         .map(|p| (p.x - center_x).abs())
         .fold(0.0f32, f32::max);
-    let ratio = measured_r_inf / predicted_r_inf;
+    let h_inf = measure_pile_shape(&xs, FLOOR).height;
+    let ratio = (d_inf - d_i) / lube_runout;
 
-    println!("── LAJEUNESSE 2004 RUNOUT SCALING ──");
-    println!("  aspect ratio a = H0/R0 = {aspect_ratio:.2}");
-    println!("  predicted R_inf (Lajeunesse 2004) = {predicted_r_inf:.2} cells");
-    println!("  measured R_inf (this engine)      = {measured_r_inf:.2} cells");
-    println!("  ratio measured/predicted          = {ratio:.2}x");
+    println!("── GRANULAR COLUMN COLLAPSE, LUBE ET AL. 2005 SERIES A ──");
+    println!("  aspect ratio a = h_i / d_i = {a:.2}");
+    println!(
+        "  d_inf: measured {d_inf:.2} cells, experiment {:.2}",
+        d_i + lube_runout
+    );
+    println!("  h_inf: measured {h_inf:.2} cells, experiment {lube_height:.2}");
+    println!("  runout beyond the edge, measured / experiment = {ratio:.2}");
 
     assert!(
-        ratio < 2.0,
-        "runout {measured_r_inf:.1} cells is {ratio:.1}x the Lajeunesse 2004 prediction \
-         ({predicted_r_inf:.1} cells) for aspect ratio {aspect_ratio:.1} -- real granular \
-         columns spread more for tall aspect ratios, but not unboundedly so"
+        (0.25..=2.0).contains(&ratio),
+        "runout beyond the edge is {ratio:.2} of Lube et al. 2005's ({lube_runout:.1} \
+         cells at a = {a:.1}): the column stood, or flooded the domain"
     );
 }
 
@@ -3396,16 +3425,20 @@ fn earth_gravity_freefall_velocity_matches_gt() {
 /// `FromSI` impl uses, so the material's own claimed physics is checked against the
 /// analytical law, not against a second unit system.
 ///
-/// Open, see the `#[ignore]` reason: the recorded numbers (density plateau ~1.3x rest
-/// density, pressure ~500x rho*g*h, a rho*g*h signal of ~0.3 grid units under 100-400
-/// units of particle noise) predate the current SI conversion and the spawn's mass
-/// unit, so they are not measurements of the current code. Geostatic pre-stress
-/// initialization (spawning at equilibrium compression instead of settling from F=I) is
-/// the likely remaining step.
-#[ignore = "not rerun since its expected pressure moved to the material's own SI \
-            conversion (the one used before carried an extra dt^2, 1e-4 here, so the \
-            recorded ~500x overshoot is not a measurement); its spawn also passes an SI \
-            kilogram mass as grid mass, 10x too light (see SpawnRegion::mass_override)"]
+/// The walls are `SlipBoundary`: the strict weakly compressible water refuses a
+/// `FrictionBoundary`, and a column at rest needs no floor friction.
+///
+/// Open, see the `#[ignore]` reason. Measured after 3000 steps (30 s): mean density
+/// 1.00, as it should be, but the column has not come to rest (particles still moving
+/// at up to 1.4 cm/s), and the mean pressure over one-cell depth bands reads 0.95,
+/// 0.79 and 1.49 of rho*g*h from 3 cells down to the floor. One particle's pressure
+/// scatters by thousands of grid units around its band: at this bulk modulus
+/// (c = 15 m/s) `dp = c^2 d_rho` turns a small density noise into a pressure error
+/// c^2 / (g h) ~ 460 times larger relative to rho*g*h at 5 cm. The numbers recorded
+/// before (a ~1.3x density plateau, ~500x pressure) came from a spawn that passed SI
+/// kilograms as grid mass, 10x too light.
+#[ignore = "open: the column is still moving after 30 s and its depth-band mean \
+            pressure reads 0.79-1.49 of rho*g*h; not yet a settled hydrostatic state"]
 #[test]
 fn hydrostatic_pressure_matches_rho_g_h() {
     let dx_m = 0.01_f32;
@@ -3436,12 +3469,12 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         spacing: 0.5,
         box_size: glam::IVec2::new(width, 6),
         box_center: glam::Vec2::new(GRID_RES as f32 * 0.5, 5.0),
-        mass_override: Some(water.particle_mass(0.5, &config)),
         ..SpawnRegion::for_sim(&config)
-    };
+    }
+    .mass_from(&water, &config);
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(water.material(&config))
-        .with_boundary(Box::new(FrictionBoundary::new(2, 0.3)));
+        .with_boundary(Box::new(SlipBoundary::new(2)));
 
     // Progress printing per chunk: wall-clock per chunk and current
     // density/speed, so a multi-hour settle shows whether it is progressing.
@@ -3514,11 +3547,27 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         "  max relative error vs rho*g*h        = {:.1}%",
         max_rel_err * 100.0
     );
-    println!("  depth(cells) | expected(grid) | measured(grid)");
-    for chunk_idx in 0..10 {
-        let idx = (chunk_idx * (by_depth.len() - 1)) / 9;
-        let (d, e, m) = by_depth[idx];
-        println!("  {d:8.2}     | {e:10.2}     | {m:10.2}");
+    // One particle's pressure carries the EOS-amplified density noise; the mean
+    // over a one-cell depth band is what Pascal's law predicts.
+    println!("  depth band (cells) | particles | mean expected | mean measured | ratio");
+    let mut band_start = 3.0f32;
+    while band_start < max_y {
+        let band: Vec<&(f32, f32, f32)> = by_depth
+            .iter()
+            .filter(|(d, _, _)| (band_start..band_start + 1.0).contains(d))
+            .collect();
+        if !band.is_empty() {
+            let n_band = band.len() as f32;
+            let expected = band.iter().map(|b| b.1).sum::<f32>() / n_band;
+            let measured = band.iter().map(|b| b.2).sum::<f32>() / n_band;
+            println!(
+                "  {band_start:5.1}-{:5.1}        | {:9} | {expected:13.1} | {measured:13.1} | {:.3}",
+                band_start + 1.0,
+                band.len(),
+                measured / expected
+            );
+        }
+        band_start += 1.0;
     }
 
     // Qualitative check that survives even with the known density-overshoot

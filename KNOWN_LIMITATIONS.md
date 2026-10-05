@@ -554,6 +554,110 @@ colliding-blocks count in `tests/grains_pi_collisions.rs`, uses a third
 grain held in place as the wall. A restitution-aware normal response at
 the boundary would close this.
 
+### A wall cannot tell a sealed container from an open one
+
+The equations of state give gauge pressure, zero at the ambient state, so an
+empty region next to a body stands for ambient air. A one-sided wall
+(`SlipBoundary::new`, `apply_slip_wall_velocity`; the Coulomb walls of
+`FrictionBoundary` act only on motion into the wall too) lets matter leave
+whenever its velocity points away from the wall. Together they put ambient
+air behind every wall: a fluid below ambient pressure pulls itself off the
+wall. That is right for an open container and for solids and grains, wrong
+for a sealed one, where the absolute pressure stays positive and the fluid
+never leaves the wall. Measured on a sealed box of air
+(`tests/probes/gas_sound_speed.rs`, `a_rarefaction_...`): a rarefaction
+reflects off the one-sided wall with a coefficient of -0.84, like off a free
+surface, where a rigid wall gives +1, and a wave running along the top and
+bottom walls loses 10 % over 56 cells.
+
+Fixed for sealed containers: `SlipBoundary::sealed` holds matter at its wall
+nodes in both directions (reflection +0.93 in the same probe), and a scene
+whose container is sealed chooses it. The sound-speed probe, a box filled
+wall to wall, uses it.
+
+Still open:
+- A wall that decides by itself. The physical rule is that a fluid leaves a
+  wall only where ambient air can reach it, at a free surface touching the
+  wall, or where it cavitates. Holding every fluid at every wall instead
+  would keep water with a free surface stuck under an overhang it should
+  fall from. A wall node would need to know whether a free surface reaches
+  it, which the grid does not record today.
+- The Coulomb friction walls and the GPU walls (`grid_update.wgsl`,
+  slip-only and one-sided, see #61) have no sealed variant.
+- No gas can sit next to real vacuum. Under gauge pressure every empty
+  region is ambient air, so in `examples/cpu/basic_gas.rs` the 0.6x pocket
+  is compressed to a mean J of 0.69 by 1.5 s instead of expanding (its
+  header says so). Absolute pressure is what vacuum needs, and the gas
+  law's own doc records why it was dropped: an unbalanced atmosphere on
+  every particle drove J to its maximum.
+
+### A granular column runs out half as far as the experiment
+
+A cohesionless Drucker-Prager column of aspect ratio 4, released on both
+sides on a friction floor, stops at 13.3 cells where Lube, Huppert, Sparks
+and Freundt 2005 (Phys. Rev. E 72, 041301, series A, Eq. 4) measured 23.2:
+its runout beyond the column's edge is 0.49 of theirs, its central height
+6.6 cells against 7.7 (`sand_column_collapse_runout_against_lube_2005`).
+Not measured to a cause yet. The pile it leaves stands at 26.3° where dry
+sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
+same collapse both stops short and ends too flat.
+
+Five candidates are measured and ruled out:
+- Matching the cone to 2D Mohr-Coulomb moves the pile 0.3°.
+- The tension cutoff, which takes 70 % of a settled pile's particles each
+  substep (`dp_update_cost_breakdown`), is what lets this sand flow: with
+  `use_pradhana` the column does not collapse.
+- The volume a cutoff removes, carried in `log_volume_strain`: without it
+  (`volume_correction = 0`) the pile reads 26.9° and the runout is
+  unchanged.
+- Forgetting that history once a particle leaves the cutoff, as the
+  reference code of Tampubolon et al. 2017 does (ziran2020's
+  `DruckerPragerStvkHencky::projectStrain` sets `logJp = 0` outside its
+  tension case; this engine, like sparkl, never does): measured in a scratch
+  build, repose, runout and fitted slope are unchanged, because the
+  particles concerned never leave the cutoff.
+- Resolution, below.
+
+A property of this model found on the way, not a cause of either gap: most
+of a settled pile sits at the tip of the cone, stress-free, every substep.
+More than 8 cells deep, 66 % of the particles take the tension cutoff under
+the pile's weight (`settled_pile_creep_by_depth`). Each carries a small
+positive volume history (about 1e-3) from the impact, repaid only by
+accumulated compression and grown again by any expansion, so it hovers at
+the tip; without the history only 1.2 % do. The load is carried by the rest.
+
+Whether the history drives the slow flattening that
+`sand_collapse_relaxation_long_horizon_plateau_check` records (29.6° to
+10.8° over 100 000 steps of a grid-unit scene) is not settled: an SI column
+held its fitted slope at 20.2-20.8° over 25 s with the history and at 20.3°
+without it, a far shorter horizon than that test's.
+
+Finer cells do not close the gap either. An SI column (8 x 16 cm,
+E 1 MPa, 35°, friction floor) settles to a flank slope of 20.7° at 0.5 cm
+cells and 21.4° at 0.25 cm after 3 s, fitted by least squares through the
+surface between 20 % and 80 % of the peak (at 1 cm the surface is too
+coarse to fit). Height over farthest base particle reads 21.3°, 19.6° and
+17.0° at 1, 0.5 and 0.25 cm, but that drop is the measure, not the slope:
+the height holds at 5.8-6.0 cm while a thin foot spreads further at finer
+cells (98th-percentile base half-width 14.9, 16.0 and 18.3 cm).
+
+The test used to hide this behind `cohesion = 5.0`, tuned to compensate a
+"4.7x too far" runout that was the frictionless floor fixed in 70a1b75; with
+particles at their real mass (caa97df) that cohesion holds the column up
+entirely. `examples/gpu/material_sandbox_gpu.rs` still gives its sand the
+same `cohesion = 5.0` for its look; the value has no measured basis and
+needs its own re-tuning pass.
+
+### A slow pour builds a tower, not a pile
+
+`sand_pile_built_by_patient_pour_matching_real_creep_timescale` (ignored)
+records 30.8°, measured on a frictionless floor; on the current engine the
+same pour stands at 84.9° (83.4° before the cone was matched to 2D
+Mohr-Coulomb) and fails its own 25-40° band. Like the ~12°
+once recorded for `sand_angle_of_repose_is_physical`, the number predates
+the floor's friction (70a1b75) and the particles' real mass (caa97df). Not
+measured to a cause.
+
 ### Not audited yet
 
 Rendering (`systems/render`); rod biology (growth, gravitropism, networks,
