@@ -8,7 +8,7 @@ use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
-    AabbConfinementField, DruckerPragerMaterial, Elastic, FrictionBoundary, FromSI,
+    AabbConfinementField, DruckerPragerMaterial, Elastic, FrictionBoundary, FromSI, GranularProps,
     MaterialRegistry, MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
     Simulation, SlipBoundary, SpawnRegion,
 };
@@ -2219,64 +2219,101 @@ fn sand_pile_built_by_patient_pour_matching_real_creep_timescale() {
 /// **Granular column collapse runout** -- Lube, Huppert, Sparks & Freundt 2005,
 /// "Collapses of two-dimensional granular columns", Phys. Rev. E 72, 041301. Their
 /// series A releases a column of height `h_i` and half-width `d_i` on both sides at
-/// once along a channel, the setup here. For `a = h_i / d_i > 2.8` the runout beyond
-/// the column's edge and the deposit's central height follow their Eqs. 4 and 7,
+/// once along a channel, the setup here, and measures `d_inf`, the farthest point the
+/// deposit reaches. For `a = h_i / d_i > 2.8` it follows their Eq. 4,
 ///
-///   (d_inf - d_i) / d_i = 1.9 a^(2/3),    h_inf / d_i = 1.1 a^(2/5),
+///   (d_inf - d_i) / d_i = 1.9 a^(2/3),
 ///
-/// whatever the grain type and the floor's roughness. Their grains were chosen so
-/// that cohesion is negligible, and this sand has none. At `a = 4`: `d_inf` = 23.2
-/// cells and `h_inf` = 7.7 cells.
+/// whatever the grain type and the floor's roughness: a thin layer of grains settles
+/// on the floor and the flow runs over it. The scene is their fine quartz sand at its
+/// real size (Tables I and II: `d_i` = 1.95 cm, grain density 2600 kg/m^3, angle of
+/// repose 29.5 deg, used here as the friction angle of the sand and of the floor),
+/// packed at a solid fraction of 0.6 as Dunatunga & Kamrin assume for theirs
+/// ("Continuum modeling and simulation of granular flows through their many phases",
+/// arXiv:1411.5447, Sec. 4). The elastic constants are Fern & Soga's ("The role of
+/// constitutive models in MPM simulations of granular column collapses", Acta
+/// Geotech. 11, 659, 2016, Table 1: E = 10 MPa, nu = 0.2). At `a = 4` Lube's runout
+/// beyond the edge is 4.79 `d_i`.
 ///
-/// Open gap: the column stops at `d_inf` = 13.3 cells, a runout beyond the edge of
-/// 2.33 `d_i`, 0.49 of the experiment's, with `h_inf` = 6.6 cells (0.86). The band
-/// asserted below, 0.25 to 2 times the experimental runout, only catches a column
-/// that stands or one that floods the domain; it is not the target.
+/// The column is 16 cells per `d_i`, because resolution decides this result. A 1 m SI
+/// column (E 10 MPa, 33 deg, rough floor, no friction hardening) runs out 3.56, 4.60,
+/// 5.78 and 6.84 `d_i` at 4, 8, 16 and 40 cells per `d_i`. Its farthest particles are
+/// a thin foot that creeps out further with every refinement, while the 98th
+/// percentile of the deposit converges by 16 cells (4.86, then 4.94 at 40). Both are
+/// printed. With this sand's default friction hardening, as here, the same column
+/// reads 4.99 and 3.72 at 40 cells. This test used to run an 8 x 16-cell column in
+/// grid units, 4 cells per `d_i`, and recorded 0.49 of Lube's runout as an open gap
+/// whose cause was not found; most of it was that coarse column.
+///
+/// Open: a stiffer material runs shorter, and less so at finer cells, which a
+/// friction-set collapse should not do. The 1 m column at E = 1 GPa instead of 10 MPa
+/// runs out 24 %, 22 % and 15 % less at 4, 8 and 16 cells per `d_i`. Not measured to
+/// a cause. The old grid-unit column, stiff relative to its own weight like the 1 GPa
+/// one, ran 25 % shorter than the 10 MPa SI column at its resolution.
+///
+/// The band, 0.5 to 2 times Lube's runout, is wide on purpose: plane-strain
+/// simulations of this collapse run past this experiment, which has side walls 10 cm
+/// apart (Dunatunga & Kamrin, Table 3: 2.28a in their MPM against Lube's 1.2a at
+/// small `a`).
 ///
 /// This test used to give the sand `cohesion = 5.0`, calibrated to land near
 /// Lajeunesse, Mangeney-Castelnau & Vilotte 2004 (Phys. Fluids 16, 2371). That law is
 /// for an axisymmetric pile and gives its total radius, `R_f / R_i = sqrt(3a / 0.74)`,
 /// where the test compared it with the runout beyond the edge. The cohesion
 /// compensated a "4.7x too far" spread that was a frictionless floor: until 70a1b75
-/// `with_boundary` left this `FrictionBoundary` without friction, and at that
-/// commit's parent the cohesionless column runs out to 94.1 cells, 14.1 with the
-/// floor's friction applied. Since caa97df gave particles their real mass, cohesion
-/// 5 holds the column up entirely (3.75 cells, unmoved).
-#[ignore = "open accuracy gap: the cohesionless column runs out 0.49 of the 2D \
-            experiment (Lube et al. 2005, a = 4); passes its own 0.25-2x band. do not \
-            tune to pass"]
+/// `with_boundary` left this `FrictionBoundary` without friction. Since caa97df gave
+/// particles their real mass, cohesion 5 holds the column up entirely.
+#[ignore = "slow: about 7 min in the quick profile, runs in the slow-tests workflow"]
 #[test]
 fn sand_column_collapse_runout_against_lube_2005() {
-    const BIG_GRID: usize = 192;
-    // Lube et al. 2005, series A: Eq. 4 (runout) and Eq. 7 (central height).
+    // Lube et al. 2005, series A: Eq. 4 (runout), Tables I and II (the sand).
     const RUNOUT_COEFF: f32 = 1.9;
-    const HEIGHT_COEFF: f32 = 1.1;
-    let d_i = 4.0_f32; // half-width of the 8-cell-wide column
-    let h_i = 16.0_f32;
-    let a = h_i / d_i;
-    let lube_runout = d_i * RUNOUT_COEFF * a.powf(2.0 / 3.0);
-    let lube_height = d_i * HEIGHT_COEFF * a.powf(2.0 / 5.0);
+    const D_I_M: f32 = 0.0195;
+    const REPOSE_DEG: f32 = 29.5;
+    const GRAIN_DENSITY_KG_M3: f32 = 2600.0;
+    // Dunatunga & Kamrin 2015, Sec. 4: solid fraction of a random packing.
+    const SOLID_FRACTION: f32 = 0.6;
+    const CELLS_PER_D_I: f32 = 16.0;
+    let a = 4.0_f32;
+    let lube_runout = RUNOUT_COEFF * a.powf(2.0 / 3.0); // in d_i
 
-    // The CFL limit asks for 107 substeps per step in this scene; 128 leaves
-    // headroom so no simulated time is dropped (asserted below).
+    // 10 d_i either side of the centre holds the farthest runout measured (7.8 d_i).
+    let grid = (2.0 * 10.0 * CELLS_PER_D_I) as usize;
+    let dx_m = D_I_M / CELLS_PER_D_I;
     let config = SimConfig {
-        max_substeps_per_step: 128,
-        ..SimConfig::standard(BIG_GRID, DT, Vec2::new(0.0, -0.3))
+        max_substeps_per_step: 1024,
+        ..SimConfig::earth(grid, dx_m, 0.002)
     };
+    let props = GranularProps {
+        elastic: Elastic {
+            e_pa: 10.0e6,
+            nu: 0.2,
+            rho_kg_m3: SOLID_FRACTION * GRAIN_DENSITY_KG_M3,
+        },
+        friction_angle_deg: REPOSE_DEG,
+        dilatancy_angle_deg: 0.0,
+    };
+    let floor = config.boundary_thickness as f32;
+    let centre = grid as f32 * 0.5;
     let column = SpawnRegion {
         spacing: 0.5,
-        box_size: IVec2::new(8, 16),
-        box_center: Vec2::new(BIG_GRID as f32 * 0.5, FLOOR + 8.0),
+        box_size: IVec2::new((2.0 * CELLS_PER_D_I) as i32, (a * CELLS_PER_D_I) as i32),
+        box_center: Vec2::new(centre, floor + a * CELLS_PER_D_I * 0.5),
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
-    };
-    let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+    }
+    .mass_from(&props.elastic, &config);
+    let sand = DruckerPragerMaterial::from_physical(&props, &config);
     let mut solver = Simulation::new(config, column)
         .with_default_material(Box::new(sand))
-        .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
+        .with_boundary(Box::new(FrictionBoundary::new(
+            config.boundary_thickness,
+            REPOSE_DEG.to_radians().tan(),
+        )));
 
+    // 0.6 s: the deposit stops moving by about 0.35 s at this size.
     let mut dropped = 0.0f32;
-    for _ in 0..1500 {
+    for _ in 0..300 {
         solver.step();
         dropped += solver.diagnostics_snapshot().sim_time_dropped;
     }
@@ -2285,29 +2322,29 @@ fn sand_column_collapse_runout_against_lube_2005() {
         "the substep cap dropped {dropped} of the simulated time"
     );
 
-    let xs: Vec<Vec2> = solver.particles().x.clone();
-    let n = xs.len() as f32;
-    let center_x = xs.iter().map(|p| p.x).sum::<f32>() / n;
-    let d_inf = xs
+    let mut reach: Vec<f32> = solver
+        .particles()
+        .x
         .iter()
-        .map(|p| (p.x - center_x).abs())
-        .fold(0.0f32, f32::max);
-    let h_inf = measure_pile_shape(&xs, FLOOR).height;
-    let ratio = (d_inf - d_i) / lube_runout;
+        .map(|p| (p.x - centre).abs() / CELLS_PER_D_I)
+        .collect();
+    reach.sort_by(f32::total_cmp);
+    let front = reach[reach.len() - 1] - 1.0;
+    let bulk = reach[reach.len() * 98 / 100] - 1.0;
 
     println!("── GRANULAR COLUMN COLLAPSE, LUBE ET AL. 2005 SERIES A ──");
-    println!("  aspect ratio a = h_i / d_i = {a:.2}");
+    println!("  a = {a:.1}, {CELLS_PER_D_I} cells per d_i");
+    println!("  runout beyond the edge, in d_i: experiment {lube_runout:.2}");
     println!(
-        "  d_inf: measured {d_inf:.2} cells, experiment {:.2}",
-        d_i + lube_runout
+        "    farthest particle {front:.2} ({:.2}x), 98th percentile {bulk:.2} ({:.2}x)",
+        front / lube_runout,
+        bulk / lube_runout
     );
-    println!("  h_inf: measured {h_inf:.2} cells, experiment {lube_height:.2}");
-    println!("  runout beyond the edge, measured / experiment = {ratio:.2}");
 
+    let ratio = front / lube_runout;
     assert!(
-        (0.25..=2.0).contains(&ratio),
-        "runout beyond the edge is {ratio:.2} of Lube et al. 2005's ({lube_runout:.1} \
-         cells at a = {a:.1}): the column stood, or flooded the domain"
+        (0.5..=2.0).contains(&ratio),
+        "runout beyond the edge is {ratio:.2} of Lube et al. 2005's ({lube_runout:.2} d_i          at a = {a:.1})"
     );
 }
 
