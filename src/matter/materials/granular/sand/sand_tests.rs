@@ -808,7 +808,8 @@ mod dp_update_cost_breakdown {
 /// `CREEP_PROBE_STEPS` steps; then every particle is binned by its depth
 /// below the pile's local surface (the highest particle within half a cell of
 /// its x), and each depth band reports how many particles take each branch
-/// of `project` and their mean speed. Ignored, read-only:
+/// of `project` and their mean speed. Knobs: CREEP_PROBE_STEPS (400),
+/// CREEP_PROBE_VOLUME_CORRECTION (the material's 1.0). Ignored, read-only:
 ///
 ///   cargo test --profile quick --lib settled_pile_creep_by_depth -- --ignored --nocapture
 ///
@@ -817,7 +818,11 @@ mod dp_update_cost_breakdown {
 /// cells), so the whole pile creeps, about 3 times faster at its surface,
 /// rather than its stress-free particles sliding. The tension cutoff takes
 /// 66 % of the particles even more than 8 cells deep, under the pile's
-/// weight.
+/// weight. With `volume_correction = 0` (no history carried from a cutoff)
+/// only 1.2 % of the deep particles take the cutoff, 91 % stay elastic, and
+/// the deep pile creeps about 4 times slower (elastic particles 9.6e-5
+/// cells/s); the branch then sets the speed, cutoff and shear particles
+/// moving fastest. The deep cutoff is the carried history, not creep noise.
 #[cfg(test)]
 mod settled_pile_creep_by_depth {
     use super::*;
@@ -840,7 +845,13 @@ mod settled_pile_creep_by_depth {
             material_id: 0,
             ..SpawnRegion::for_sim(&config)
         };
-        let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        let mut sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
+        if let Some(c) = std::env::var("CREEP_PROBE_VOLUME_CORRECTION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
+            sand.volume_correction = c;
+        }
         let mut sim = Simulation::new(config, block)
             .with_default_material(Box::new(sand))
             .with_boundary(Box::new(FrictionBoundary::new(2, 0.7)));
