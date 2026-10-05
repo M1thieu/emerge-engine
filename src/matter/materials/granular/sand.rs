@@ -523,7 +523,15 @@ impl DruckerPragerMaterial {
 
     /// Friction coefficient α(q) derived from friction angle φ(q).
     /// φ(q) = friction_angle + compaction_boost + (hardening_peak·q − friction_residual)·exp(−hardening_decay·q)
-    /// α(q) = √(2/3) · 2·sin(φ) / (3 − sin(φ))
+    /// α(q) = sin(φ) / √2
+    ///
+    /// `project` yields at `‖dev σ‖ = 2 α p`. In two dimensions a stress's
+    /// Mohr circle has radius `R = ‖dev σ‖ / √2` about the mean pressure `p`,
+    /// and cohesionless Mohr-Coulomb yields at `R = p sin φ`, so the cone and
+    /// Mohr-Coulomb coincide exactly at `α = sin φ / √2`. Klar et al. 2016
+    /// (eq. 31) use `√(2/3) · 2 sin φ / (3 − sin φ)` in 2D and 3D alike, the
+    /// 3D cone fitted to Mohr-Coulomb; in 2D that is 0.386 at 35° against
+    /// 0.406, a cone of 33.1°.
     ///
     /// `compaction_boost = compaction_sensitivity * max(0, -trace_ln_volume_ratio)` --
     /// `trace_ln_volume_ratio` is `project`'s own `trace` (ln of the current net
@@ -556,8 +564,7 @@ impl DruckerPragerMaterial {
     /// `static_friction_boost`'s doc). `phi_delta=0.0` makes this
     /// byte-identical to `alpha`.
     fn alpha_with_phi_delta(&self, q: f32, trace_ln_volume_ratio: f32, phi_delta: f32) -> f32 {
-        let s = self.phi(q, trace_ln_volume_ratio, phi_delta).sin();
-        (2.0_f32 / 3.0).sqrt() * (2.0 * s) / (3.0 - s)
+        self.phi(q, trace_ln_volume_ratio, phi_delta).sin() * std::f32::consts::FRAC_1_SQRT_2
     }
 
     /// Drucker-Prager return mapping in log-strain (Hencky) space.
@@ -642,7 +649,7 @@ impl DruckerPragerMaterial {
         // Klar 2016 eq. 25, d=2: (d·λ + 2µ)/(2µ) = (2λ+2µ)/(2µ) = (λ+µ)/µ.
         // Verified against sparkl DruckerPragerPlasticity::project and wgsparkl drucker_prager.wgsl.
         // The cohesion term shifts the yield threshold by a pressure-INDEPENDENT amount --
-        // converting stress-space Mohr-Coulomb cohesion c (||dev(sigma)|| <= alpha*p + c)
+        // converting a stress-space cohesion c (||dev(sigma)|| <= 2*alpha*p + c)
         // into this strain-space equation via dev(sigma) = 2*mu*dev(eps) gives the c/(2*mu)
         // divisor below. See `cohesion`'s doc comment for why this exists.
         let ratio = (self.lambda + self.mu) / self.mu;

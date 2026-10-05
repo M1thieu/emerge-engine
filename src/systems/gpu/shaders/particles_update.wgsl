@@ -203,16 +203,16 @@ fn snow_plasticity(f_trial: mat2x2<f32>, jp_in: f32, mat: MaterialParams) -> Sno
 // ── Drucker-Prager plasticity ─────────────────────────────────────────────────
 // Log-strain (Hencky) return mapping. Klar et al. 2016.
 // Hardening formula:  φ(q) = h0 + (h1·q − h3)·exp(−h2·q)
-//                     α(q) = √(2/3) · 2·sin(φ) / (3 − sin(φ))
-// Yield function:     γ = |dev_ε| + (λ+2µ)/(2µ) · tr_ε · α
+//                     α(q) = sin(φ) / √2
+// Yield function:     γ = |dev_ε| + (λ+µ)/µ · tr_ε · α
 // Return mapping:     ε_proj = ε − γ · dev_ε/|dev_ε|,  σ_proj = exp(ε_proj)
 // Volume correction:  log_volume_strain += ln(det_old) − ln(det_new)
 // Reynolds dilatancy: log_volume_strain += sin(ψ)·γ  [mat.compression_limit = ψ]
 
 fn dp_alpha(q: f32, mat: MaterialParams) -> f32 {
     let phi = mat.dp_h0 + (mat.dp_h1 * q - mat.dp_h3) * exp(-mat.dp_h2 * q);
-    let s   = sin(phi);
-    return sqrt(2.0 / 3.0) * (2.0 * s) / max(3.0 - s, NUM_FLOOR_TIGHT);
+    // The 2D Mohr-Coulomb match, sin(phi) / sqrt(2) (see sand.rs `alpha`).
+    return sin(phi) * 0.70710678;
 }
 
 struct DpReturn { sigma: vec2<f32>, dq: f32, log_vol_delta: f32 }
@@ -238,10 +238,7 @@ fn dp_plasticity(sigma_in: vec2<f32>, log_volume_strain: f32, q: f32, mat: Mater
     // Single-pass: alpha evaluated once from the pre-step q, matching
     // wgsparkl::models::drucker_prager::project_deformation_gradient exactly (the
     // reference GPU implementation of Klar et al. 2016 -- no self-consistency corrector).
-    // stretch_limit repurposed for DP: cohesion floor, see sand.rs's `cohesion` doc
-    // comment -- NOT real "sand cohesion" (dry sand is ~0), a continuum-MPM-resolution
-    // regularization for thin flowing layers, calibrated against the Lajeunesse 2004
-    // runout benchmark.
+    // stretch_limit carries DP's `cohesion` (see sand.rs), 0 for dry sand.
     let ratio = (mat.lambda + mat.mu) / max(mat.mu, NUM_FLOOR_TIGHT);
     let alpha = dp_alpha(q, mat);
     let cohesion_term = mat.stretch_limit / (2.0 * max(mat.mu, NUM_FLOOR_TIGHT));

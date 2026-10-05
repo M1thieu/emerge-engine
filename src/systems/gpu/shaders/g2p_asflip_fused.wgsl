@@ -241,8 +241,8 @@ fn snow_plasticity(f_trial: mat2x2<f32>, jp_in: f32, mat: MaterialParams) -> Sno
 
 fn dp_alpha(q: f32, mat: MaterialParams) -> f32 {
     let phi = mat.dp_h0 + (mat.dp_h1 * q - mat.dp_h3) * exp(-mat.dp_h2 * q);
-    let s   = sin(phi);
-    return sqrt(2.0 / 3.0) * (2.0 * s) / max(3.0 - s, NUM_FLOOR_TIGHT);
+    // The 2D Mohr-Coulomb match, sin(phi) / sqrt(2) (see sand.rs `alpha`).
+    return sin(phi) * 0.70710678;
 }
 
 struct DpReturn { sigma: vec2<f32>, dq: f32, log_vol_delta: f32 }

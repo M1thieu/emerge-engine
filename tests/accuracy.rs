@@ -58,11 +58,12 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 ///
 /// We spawn a column, let it fully settle, and measure the final pile slope.
 ///
-/// Open (GH #28): the pile settles at 26.0°, below dry sand's 30-35°, and is still
-/// flattening, about 0.2° per 300 steps, the slow creep of
-/// `sand_collapse_relaxation_long_horizon_plateau_check`. The CFL limit asks for 107
-/// substeps per step here; a cap of 64 used to drop 40 % of the simulated time and
-/// read 26.4°, so the test now fails if any time is dropped.
+/// Open (GH #28): the pile settles at 26.3°, below dry sand's 30-35°, and is still
+/// flattening, the slow creep of `sand_collapse_relaxation_long_horizon_plateau_check`.
+/// It read 26.0° before the cone's coefficient was matched to Mohr-Coulomb in 2D
+/// (`alpha` in `sand.rs`). The CFL limit asks for 107 substeps per step here; a cap
+/// of 64 used to drop 40 % of the simulated time and read 26.4°, so the test now
+/// fails if any time is dropped.
 ///
 /// The ~12° recorded here before was a frictionless floor, not the model. Until
 /// 70a1b75, `with_boundary` stacked the `FrictionBoundary` under the default
@@ -79,7 +80,7 @@ fn measure_pile_shape(xs: &[Vec2], floor: f32) -> PileShape {
 /// `cundall_damping` 0.0/0.3/0.5/0.7/1.0 gave 50.7/58.3/63.3/68.9/76.4°, the column
 /// barely collapsing. That much dissipation helps a quasi-static creep but removes the
 /// kinetic energy a dynamic collapse needs to topple and spread.
-#[ignore = "open accuracy gap (GH #28): settles at 26.0 deg, still flattening, vs \
+#[ignore = "open accuracy gap (GH #28): settles at 26.3 deg, still flattening, vs \
             30-35 deg for dry sand; passes its own 15-50 deg bound. the old ~12 deg was \
             a frictionless floor, fixed in 70a1b75. do not tune to pass"]
 #[test]

@@ -598,7 +598,7 @@ sides on a friction floor, stops at 13.3 cells where Lube, Huppert, Sparks
 and Freundt 2005 (Phys. Rev. E 72, 041301, series A, Eq. 4) measured 23.2:
 its runout beyond the column's edge is 0.49 of theirs, its central height
 6.6 cells against 7.7 (`sand_column_collapse_runout_against_lube_2005`).
-Not measured to a cause yet. The pile it leaves stands at 26.0° where dry
+Not measured to a cause yet. The pile it leaves stands at 26.3° where dry
 sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
 same collapse both stops short and ends too flat.
 
@@ -608,6 +608,16 @@ particles at their real mass (caa97df) that cohesion holds the column up
 entirely. `examples/gpu/material_sandbox_gpu.rs` still gives its sand the
 same `cohesion = 5.0` for its look; the value has no measured basis and
 needs its own re-tuning pass.
+
+### A slow pour builds a tower, not a pile
+
+`sand_pile_built_by_patient_pour_matching_real_creep_timescale` (ignored)
+records 30.8°, measured on a frictionless floor; on the current engine the
+same pour stands at 84.9° (83.4° before the cone was matched to 2D
+Mohr-Coulomb) and fails its own 25-40° band. Like the ~12°
+once recorded for `sand_angle_of_repose_is_physical`, the number predates
+the floor's friction (70a1b75) and the particles' real mass (caa97df). Not
+measured to a cause.
 
 ### Not audited yet
 
