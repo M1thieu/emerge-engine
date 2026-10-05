@@ -595,3 +595,202 @@ mod spatial_sort_tests {
         );
     }
 }
+
+/// Where a particle's P2G time goes. Each sub-call of the per-particle work
+/// in `scatter_particles_to_grid` is timed alone over every particle of a
+/// 57 600-particle block on one thread, then the whole P2G is timed for
+/// reference. Run it in an optimised profile, a debug build times the
+/// wrong code:
+///
+///   cargo test --profile quick --lib p2g_cost_breakdown -- --ignored --nocapture
+///
+/// Knob: P2G_PROBE_MATERIAL (`elastic`, or `sand` for Drucker-Prager).
+#[cfg(test)]
+mod p2g_cost_breakdown {
+    use super::*;
+    use crate::grid::CellMap;
+    use crate::materials::registry::MaterialRegistry;
+    use crate::{
+        DruckerPragerMaterial, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles,
+        lame_from_young,
+    };
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "timing probe kept for reruns, not part of the CI suite"]
+    fn p2g_cost_breakdown() {
+        const GRID: usize = 256;
+        const REPS: usize = 20;
+        let config = SimConfig::standard(GRID, 0.02, Vec2::new(0.0, -0.3));
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(120, 120),
+            box_center: Vec2::new(128.0, 70.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = Particles::from(build_particles(&config, spawn));
+        let n = particles.len();
+        let sand = std::env::var("P2G_PROBE_MATERIAL").as_deref() == Ok("sand");
+        let (l, u) = lame_from_young(1.0e4, 0.3);
+        let registry = if sand {
+            MaterialRegistry::with_default(Box::new(DruckerPragerMaterial::new(l, u)))
+        } else {
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(l, u)))
+        };
+        let dt = config.dt;
+        let per_particle_ns = |f: &mut dyn FnMut()| -> f64 {
+            f();
+            let t0 = Instant::now();
+            for _ in 0..REPS {
+                f();
+            }
+            t0.elapsed().as_secs_f64() * 1e9 / (REPS * n) as f64
+        };
+        let ids = &particles.material_id;
+
+        let kirchhoff = per_particle_ns(&mut || {
+            for (i, &id) in ids.iter().enumerate() {
+                black_box(registry.kirchhoff_stress(id, &particles, i));
+            }
+        });
+        let get = per_particle_ns(&mut || {
+            for &id in ids {
+                black_box(registry.get(id));
+            }
+        });
+        let passive: Vec<Mat2> = (0..n)
+            .map(|i| registry.kirchhoff_stress(ids[i], &particles, i))
+            .collect();
+        let combined = per_particle_ns(&mut || {
+            for (i, (&id, &tau)) in ids.iter().zip(&passive).enumerate() {
+                let material = registry.get(id);
+                black_box(combined_kirchhoff_stress_from(tau, material, &particles, i));
+            }
+        });
+        let stress_volume = per_particle_ns(&mut || {
+            for (i, &id) in ids.iter().enumerate() {
+                black_box(registry.stress_volume(id, &particles, i));
+            }
+        });
+        let owns_volume = per_particle_ns(&mut || {
+            for &id in ids {
+                black_box(registry.owns_deformation_volume_state(id));
+            }
+        });
+        let weights = per_particle_ns(&mut || {
+            for &x in &particles.x {
+                black_box(quadratic_weights(x));
+            }
+        });
+        // The nine nodes' APIC and stress momentum, with stress and weights
+        // already in hand, into an indexed array.
+        let mut dense = vec![(0.0f32, Vec2::ZERO); GRID * GRID];
+        let node_math = per_particle_ns(&mut || {
+            for (i, &stress) in passive.iter().enumerate() {
+                let x = particles.x[i];
+                let w = quadratic_weights(x);
+                let stress_coeff = -1.0e-3;
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let weight = w.wx[gx] * w.wy[gy];
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let d = cell.as_vec2() - x + Vec2::splat(0.5);
+                        let m = particles.mass[i];
+                        let momentum = weight
+                            * (m * (particles.v[i] + particles.velocity_gradient[i] * d)
+                                + stress_coeff * (stress * d));
+                        let node = &mut dense[cell.x as usize * GRID + cell.y as usize];
+                        node.0 += weight * m;
+                        node.1 += momentum;
+                    }
+                }
+            }
+        });
+        // The same momentum factored per particle: m (v + C d) + s (S d) is
+        // A + B d with A = m v and B = m C + s S, and d steps by whole cells
+        // between nodes, so each node adds B's columns instead of two
+        // matrix-vector products.
+        let mut dense_f = vec![(0.0f32, Vec2::ZERO); GRID * GRID];
+        let node_math_factored = per_particle_ns(&mut || {
+            for (i, &stress) in passive.iter().enumerate() {
+                let x = particles.x[i];
+                let w = quadratic_weights(x);
+                let stress_coeff = -1.0e-3;
+                let m = particles.mass[i];
+                let a = m * particles.v[i];
+                let b = particles.velocity_gradient[i] * m + stress * stress_coeff;
+                let d0 = w.base_cell.as_vec2() - x + Vec2::splat(0.5);
+                let at_base = a + b * d0;
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let weight = w.wx[gx] * w.wy[gy];
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let momentum = weight
+                            * (at_base
+                                + (gx as f32 - 1.0) * b.x_axis
+                                + (gy as f32 - 1.0) * b.y_axis);
+                        let node = &mut dense_f[cell.x as usize * GRID + cell.y as usize];
+                        node.0 += weight * m;
+                        node.1 += momentum;
+                    }
+                }
+            }
+        });
+        // The same nine adds into the map type P2G's fold uses.
+        let map_adds = per_particle_ns(&mut || {
+            let mut acc = CellMap::default();
+            for i in 0..n {
+                let w = quadratic_weights(particles.x[i]);
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let idx = (cell.x as usize * GRID + cell.y as usize) as u32;
+                        let entry = acc.entry(idx).or_default();
+                        entry.mass += w.wx[gx] * w.wy[gy];
+                    }
+                }
+            }
+            black_box(acc);
+        });
+        let mut grid = Grid::new(GRID);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let full_one_thread = per_particle_ns(&mut || {
+            pool.install(|| {
+                grid.clear();
+                super::super::scatter_particles_to_grid(&particles, &mut grid, &registry, dt, n);
+            });
+        });
+        let full_all_threads = per_particle_ns(&mut || {
+            grid.clear();
+            super::super::scatter_particles_to_grid(&particles, &mut grid, &registry, dt, n);
+        });
+
+        println!(
+            "{n} particles, {}, ns per particle:",
+            if sand {
+                "Drucker-Prager sand"
+            } else {
+                "NeoHookean"
+            }
+        );
+        println!("  kirchhoff_stress (enum dispatch)   {kirchhoff:7.1}");
+        println!("  registry.get (trait object)        {get:7.1}");
+        println!("  combined_kirchhoff_stress_from     {combined:7.1}");
+        println!("  stress_volume                      {stress_volume:7.1}");
+        println!("  owns_deformation_volume_state      {owns_volume:7.1}");
+        println!("  quadratic_weights                  {weights:7.1}");
+        println!("  9-node APIC + stress math, array   {node_math:7.1}");
+        println!("  same, factored per particle        {node_math_factored:7.1}");
+        println!("  9 adds into a CellMap              {map_adds:7.1}");
+        println!("  whole P2G, 1 thread                {full_one_thread:7.1}");
+        println!(
+            "  whole P2G, {} threads               {full_all_threads:7.1}",
+            rayon::current_num_threads()
+        );
+    }
+}

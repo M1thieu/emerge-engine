@@ -112,7 +112,16 @@ fn scatter_one_into(
         );
     }
 
+    // Node momentum `m (v + C d) + s (S d)` is `A + B d`, with `A = m v` and
+    // `B = m C + s S` built once per particle, and `d` steps by one cell
+    // between nodes, so each node adds `B`'s columns to `A + B d0` instead of
+    // computing two matrix-vector products. The same sum, rounded in a
+    // different order (`p2g_cost_breakdown`: the node math 106-128 ns -> 55 ns
+    // per particle).
     let weights = quadratic_weights(x);
+    let affine_and_stress = c_i * mass_i + stress * stress_coeff;
+    let cell_dist_base = weights.base_cell.as_vec2() - x + Vec2::splat(0.5);
+    let momentum_at_base = mass_i * v_i + affine_and_stress * cell_dist_base;
     for gx in 0..3 {
         for gy in 0..3 {
             let weight = weights.wx[gx] * weights.wy[gy];
@@ -120,9 +129,10 @@ fn scatter_one_into(
             let Some(idx) = flat_index(cell_pos, resolution) else {
                 continue;
             };
-            let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
-            let momentum =
-                weight * (mass_i * (v_i + c_i * cell_dist) + stress_coeff * (stress * cell_dist));
+            let momentum = weight
+                * (momentum_at_base
+                    + (gx as f32 - 1.0) * affine_and_stress.x_axis
+                    + (gy as f32 - 1.0) * affine_and_stress.y_axis);
             let entry = acc.entry(idx).or_default();
             entry.mass += weight * mass_i;
             entry.momentum += momentum;
@@ -157,6 +167,22 @@ fn merge_cell_maps(a: &mut CellMap, b: CellMap) {
 /// shared by several particles, which can move a chaotic run: checked
 /// against `fluid_spreads_more_than_elastic_under_gravity` (600 steps,
 /// asserting `ar_fluid_final > ar_elastic_final`) and the full suite.
+///
+/// On 8 threads (4 cores) this fold runs no faster than a serial map
+/// scatter (57 600 particles: 4.8-5.6 ms either way), yet the structure is
+/// not what costs. Measured serially, a particle's work here is 220-320 ns,
+/// of which its Kirchhoff stress is about 35 ns and the nine weighted adds
+/// about 25 ns; the rest is the per-particle math of `scatter_one_into`.
+/// Two rewrites aimed at the storage and the reduce were measured against
+/// this one, alternating release binaries, and reverted:
+/// - Block-sparse cell storage (8x8 blocks, a block table, touched masks):
+///   grid passes +30 to 40 %, a serial scatter slower than the map, P2G
+///   unchanged; the bookkeeping costs as much as the hash it replaces.
+/// - Per-block 10x10 tiles filled in parallel, then committed to the map:
+///   P2G -9 to -12 %, but grid passes +50 to 100 % on a large body (not
+///   measured to a cause) and +30 % P2G on a small body in
+///   a 1024-cell domain (the counting sort walks every block of the domain
+///   each substep).
 ///
 /// Pinned nodes and the contact, mixture and friction scatters follow in a
 /// serial second pass, `scatter_second_pass`.

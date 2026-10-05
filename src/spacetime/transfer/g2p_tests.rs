@@ -1031,3 +1031,178 @@ mod multistep_backprop_tests {
         });
     }
 }
+
+/// Where a particle's G2P cost goes, the twin of `p2g_cost_breakdown`: the
+/// nine grid reads, the gathered velocity and affine matrix built from them,
+/// the same matrix factored per particle, then the whole G2P (gather,
+/// plasticity, boundaries) on one thread and on all threads, per particle,
+/// on a 57 600-particle block. Optimised profile only:
+///
+///   cargo test --profile quick --lib g2p_cost_breakdown -- --ignored --nocapture
+///
+/// Knob: G2P_PROBE_MATERIAL (`elastic`, or `sand` for Drucker-Prager).
+///
+/// First reading, NeoHookean, ns per particle: reads 122, reads plus the
+/// gather 134, factored 150 (factoring buys nothing here, unlike P2G), whole
+/// G2P 303 on one thread. Drucker-Prager: whole G2P 1368, about 1200 of it in
+/// the plasticity update.
+#[cfg(test)]
+mod g2p_cost_breakdown {
+    use super::*;
+    use crate::boundary::{BoundaryCondition, SlipBoundary};
+    use crate::materials::registry::MaterialRegistry;
+    use crate::{
+        DruckerPragerMaterial, NeoHookeanMaterial, SimConfig, SpawnRegion, build_particles,
+        lame_from_young,
+    };
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore = "timing probe kept for reruns, not part of the CI suite"]
+    fn g2p_cost_breakdown() {
+        const GRID: usize = 256;
+        const REPS: usize = 20;
+        let config = SimConfig::standard(GRID, 0.02, Vec2::new(0.0, -0.3));
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(120, 120),
+            box_center: Vec2::new(128.0, 70.0),
+            material_id: 0,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = Particles::from(build_particles(&config, spawn));
+        let n = particles.len();
+        let sand = std::env::var("G2P_PROBE_MATERIAL").as_deref() == Ok("sand");
+        let (l, u) = lame_from_young(1.0e4, 0.3);
+        let registry = if sand {
+            MaterialRegistry::with_default(Box::new(DruckerPragerMaterial::new(l, u)))
+        } else {
+            MaterialRegistry::with_default(Box::new(NeoHookeanMaterial::new(l, u)))
+        };
+        let (dt, gravity) = (config.dt, config.gravity);
+        let mut grid = Grid::new(GRID);
+        super::super::scatter_particles_to_grid(&particles, &mut grid, &registry, dt, n);
+        grid.update_velocities(dt, gravity);
+        let thickness = config.boundary_thickness;
+        let per_particle_ns = |f: &mut dyn FnMut()| -> f64 {
+            f();
+            let t0 = Instant::now();
+            for _ in 0..REPS {
+                f();
+            }
+            t0.elapsed().as_secs_f64() * 1e9 / (REPS * n) as f64
+        };
+
+        let reads = per_particle_ns(&mut || {
+            for (&x, &v) in particles.x.iter().zip(&particles.v) {
+                let w = quadratic_weights(x);
+                for gx in 0..3 {
+                    for gy in 0..3 {
+                        let cell = w.base_cell + IVec2::new(gx - 1, gy - 1);
+                        black_box(
+                            grid.velocity_at_or_extrapolated(cell, v, gravity, dt, thickness),
+                        );
+                    }
+                }
+            }
+        });
+        let gather = per_particle_ns(&mut || {
+            for (&x, &v) in particles.x.iter().zip(&particles.v) {
+                let w = quadratic_weights(x);
+                let (mut new_v, mut b) = (Vec2::ZERO, Mat2::ZERO);
+                for (gx, &wx) in w.wx.iter().enumerate() {
+                    for (gy, &wy) in w.wy.iter().enumerate() {
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let dist = cell.as_vec2() - x + Vec2::splat(0.5);
+                        let node_v =
+                            grid.velocity_at_or_extrapolated(cell, v, gravity, dt, thickness);
+                        let weighted = node_v * (wx * wy);
+                        new_v += weighted;
+                        b += Mat2::from_cols(weighted * dist.x, weighted * dist.y);
+                    }
+                }
+                black_box((new_v, b));
+            }
+        });
+        // sum_c w_c v_c (d0 + e_c)^T = new_v d0^T + [sum (gx-1) w v, sum (gy-1) w v].
+        let gather_factored = per_particle_ns(&mut || {
+            for (&x, &v) in particles.x.iter().zip(&particles.v) {
+                let w = quadratic_weights(x);
+                let (mut new_v, mut col_x, mut col_y) = (Vec2::ZERO, Vec2::ZERO, Vec2::ZERO);
+                for (gx, &wx) in w.wx.iter().enumerate() {
+                    for (gy, &wy) in w.wy.iter().enumerate() {
+                        let cell = w.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                        let node_v =
+                            grid.velocity_at_or_extrapolated(cell, v, gravity, dt, thickness);
+                        let weighted = node_v * (wx * wy);
+                        new_v += weighted;
+                        col_x += (gx as f32 - 1.0) * weighted;
+                        col_y += (gy as f32 - 1.0) * weighted;
+                    }
+                }
+                let d0 = w.base_cell.as_vec2() - x + Vec2::splat(0.5);
+                let b = Mat2::from_cols(new_v * d0.x + col_x, new_v * d0.y + col_y);
+                black_box((new_v, b));
+            }
+        });
+        let boundaries: Vec<Box<dyn BoundaryCondition>> =
+            vec![Box::new(SlipBoundary::new(thickness))];
+        let params = || super::super::G2PParams {
+            apic_blend: 1.0,
+            active_count: n,
+            asflip_blend: 0.0,
+            pre_force_snapshot: None,
+            nonlocal_fluidity: &[],
+            cosserat_curvature: &[],
+            boundary_thickness: thickness,
+        };
+        let whole = |threads: Option<usize>| -> f64 {
+            let mut total = 0.0;
+            for _ in 0..REPS {
+                let mut copy = particles.clone();
+                let t0 = Instant::now();
+                let run = |p: &mut Particles| {
+                    super::super::gather_grid_to_particles(
+                        p,
+                        &grid,
+                        dt,
+                        gravity,
+                        &boundaries,
+                        &registry,
+                        params(),
+                    );
+                };
+                match threads {
+                    Some(t) => rayon::ThreadPoolBuilder::new()
+                        .num_threads(t)
+                        .build()
+                        .unwrap()
+                        .install(|| run(&mut copy)),
+                    None => run(&mut copy),
+                }
+                total += t0.elapsed().as_secs_f64();
+            }
+            total * 1e9 / (REPS * n) as f64
+        };
+        let whole_one = whole(Some(1));
+        let whole_all = whole(None);
+
+        println!(
+            "{n} particles, {}, ns per particle:",
+            if sand {
+                "Drucker-Prager sand"
+            } else {
+                "NeoHookean"
+            }
+        );
+        println!("  9 grid reads                       {reads:7.1}");
+        println!("  9 reads + new_v and affine b       {gather:7.1}");
+        println!("  same, b factored per particle      {gather_factored:7.1}");
+        println!("  whole G2P, 1 thread                {whole_one:7.1}");
+        println!(
+            "  whole G2P, {} threads               {whole_all:7.1}",
+            rayon::current_num_threads()
+        );
+    }
+}
