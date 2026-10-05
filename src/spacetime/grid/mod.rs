@@ -122,6 +122,9 @@ pub struct Cell {
 ///
 /// All P2G/G2P callers go through the public API. The HashMap key is the flat
 /// index `x * resolution + y`, matching the boundary condition convention.
+///
+/// Block-sparse storage was tried in place of the map and measured slower;
+/// see `transfer::scatter_particles_to_grid`'s doc before trying again.
 #[derive(Debug)]
 pub struct Grid {
     resolution: usize,

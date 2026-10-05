@@ -158,6 +158,22 @@ fn merge_cell_maps(a: &mut CellMap, b: CellMap) {
 /// against `fluid_spreads_more_than_elastic_under_gravity` (600 steps,
 /// asserting `ar_fluid_final > ar_elastic_final`) and the full suite.
 ///
+/// On 8 threads (4 cores) this fold runs no faster than a serial map
+/// scatter (57 600 particles: 4.8-5.6 ms either way), yet the structure is
+/// not what costs. Measured serially, a particle's work here is 220-320 ns,
+/// of which its Kirchhoff stress is about 35 ns and the nine weighted adds
+/// about 25 ns; the rest is the per-particle math of `scatter_one_into`.
+/// Two rewrites aimed at the storage and the reduce were measured against
+/// this one, alternating release binaries, and reverted:
+/// - Block-sparse cell storage (8x8 blocks, a block table, touched masks):
+///   grid passes +30 to 40 %, a serial scatter slower than the map, P2G
+///   unchanged; the bookkeeping costs as much as the hash it replaces.
+/// - Per-block 10x10 tiles filled in parallel, then committed to the map:
+///   P2G -9 to -12 %, but grid passes +50 to 100 % on a large body (not
+///   measured to a cause) and +30 % P2G on a small body in
+///   a 1024-cell domain (the counting sort walks every block of the domain
+///   each substep).
+///
 /// Pinned nodes and the contact, mixture and friction scatters follow in a
 /// serial second pass, `scatter_second_pass`.
 pub fn scatter_particles_to_grid(
