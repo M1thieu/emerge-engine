@@ -636,6 +636,12 @@ mod pradhana_correction_tests {
 /// state into the cutoff: each cutoff adds the expansion it removed to that
 /// history (`volume_correction = 1`), so the particle stays stress-free until
 /// a compression pays it back.
+///
+/// Controls on the repose column and the Lube column collapse (64- and
+/// 192-cell grids, 128-substep cap): defaults 26.3 deg and a runout 0.49 of
+/// the experiment's; `volume_correction = 0` 26.9 deg and 0.49; `use_pradhana`
+/// 76.4 deg and a column that does not collapse (runout -0.01). The repeated
+/// cutoff is what lets this sand flow at all, not the cause of either gap.
 #[cfg(test)]
 mod dp_update_cost_breakdown {
     use super::*;
