@@ -914,40 +914,47 @@ mod gpu_tests {
         }
     }
 
-    /// GPU-side mirror of `tests/accuracy.rs::sand_column_collapse_runout_matches_lajeunesse_scaling`.
+    /// GPU-side mirror of `tests/accuracy.rs::sand_column_collapse_runout_against_lube_2005`
+    /// (Lube et al. 2005, series A, Eq. 4), except for the floor: GPU walls are
+    /// slip-only (`grid_update.wgsl`, #61), so this column spreads on a
+    /// frictionless floor where the CPU one has `FrictionBoundary(2, 0.7)`.
     ///
-    /// The CPU-calibrated `cohesion=5.0` fix does NOT transfer to GPU: GPU's
-    /// atomic-scatter P2G is a different floating-point accumulation than
-    /// CPU's sequential P2G, and GPU's collapse is measurably less energetic here -- it
-    /// never had CPU's overspread problem, so cohesion=0.0 (true Klar 2016 cohesionless
-    /// default) already gives ratio=0.94x; adding cohesion only pushes it further from
-    /// 1.0x. Same known atomic-scatter-ordering effect `gpu_cpu_parity`'s looser
-    /// tolerance already documents, just shown here to matter for a sensitive scenario.
+    /// Its old doc ruled the floor out because the CPU gave the same ratio with a
+    /// `SlipBoundary` as with its `FrictionBoundary`. Both were frictionless then:
+    /// until 70a1b75, `with_boundary` stacked the friction floor under the default
+    /// slip wall, which zeroed the into-floor velocity before Coulomb saw it.
     ///
-    /// GPU has no pluggable `BoundaryCondition` (unlike CPU's `FrictionBoundary`), only
-    /// a fixed slip boundary via `config.boundary_thickness` -- ruled out as the
-    /// explanation (CPU with a frictionless `SlipBoundary` gives the identical 1.50x
-    /// ratio; the column never reaches the domain wall either way).
+    /// Measured with no simulated time dropped, the column floods the domain:
+    /// `d_inf` = 94.1 cells, a runout 4.71 times the experiment's, the same as the
+    /// CPU column on its frictionless floor before 70a1b75 (94.1 cells). The 0.94x
+    /// recorded here before came from a 64-substep cap that dropped part of every
+    /// step and stopped the collapse early. This test fails until the GPU has a
+    /// friction wall (#61).
     ///
     /// `#[ignore]`d for CI: real-hardware-only. The software WARP rasterizer at this
     /// grid size starves the windows-latest hosted runner to death rather than failing
-    /// cleanly. Passes in normal time on a GPU and on ubuntu's lavapipe.
+    /// cleanly.
     #[test]
     #[ignore = "real-hardware-only benchmark: starves windows-latest's WARP runner to \
                 death (56min then runner lost, run 28954055245) -- run manually on a \
-                real GPU, see doc comment for the full evidence trail"]
-    fn gpu_sand_column_collapse_runout_matches_lajeunesse_scaling() {
+                real GPU. fails until the GPU has a friction wall (#61): on its slip \
+                floor the column floods the domain"]
+    fn gpu_sand_column_collapse_runout_against_lube_2005() {
         if !gpu_available() {
             return;
         }
         const BIG_GRID: usize = 192;
-        let r0 = 4.0_f32;
-        let h0 = 16.0_f32;
-        let aspect_ratio = h0 / r0;
-        let predicted_r_inf = r0 * (1.0 + 2.0 * aspect_ratio.sqrt());
+        // Lube et al. 2005, series A, Eq. 4.
+        const RUNOUT_COEFF: f32 = 1.9;
+        let d_i = 4.0_f32;
+        let h_i = 16.0_f32;
+        let a = h_i / d_i;
+        let lube_runout = d_i * RUNOUT_COEFF * a.powf(2.0 / 3.0);
 
+        // The GPU path asks for up to 192 substeps per step here; 256 leaves
+        // headroom so no simulated time is dropped (asserted below).
         let config = SimConfig {
-            max_substeps_per_step: 64,
+            max_substeps_per_step: 256,
             ..SimConfig::standard(BIG_GRID, 0.1, Vec2::new(0.0, -0.3))
         };
         let spawn = SpawnRegion {
@@ -957,39 +964,43 @@ mod gpu_tests {
             ..SpawnRegion::for_sim(&config)
         };
         let particles = build_particles(&config, spawn);
-        // cohesion left at 0.0 (default, true Klar 2016 cohesionless sand), NOT ported
-        // from CPU's calibrated cohesion=5.0 -- see doc comment above for why.
         let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
         let registry = MaterialRegistry::with_default(Box::new(sand));
         let mut solver = block_on(GpuSimulation::new(config, particles, registry));
 
+        let mut dropped = 0.0f32;
         for _ in 0..1500 {
             solver.step_frame();
+            dropped += solver.last_sim_time_dropped();
         }
         solver.sync_particles_blocking();
+        assert_eq!(
+            dropped, 0.0,
+            "the substep cap dropped {dropped} of the simulated time"
+        );
 
         let xs: Vec<Vec2> = solver.particles().iter().map(|p| p.x).collect();
         let n = xs.len() as f32;
         let center_x = xs.iter().map(|p| p.x).sum::<f32>() / n;
-        let measured_r_inf = xs
+        let d_inf = xs
             .iter()
             .map(|p| (p.x - center_x).abs())
             .fold(0.0f32, f32::max);
-        let ratio = measured_r_inf / predicted_r_inf;
+        let ratio = (d_inf - d_i) / lube_runout;
 
-        println!("── GPU LAJEUNESSE 2004 RUNOUT SCALING ──");
-        println!("  aspect ratio a = H0/R0 = {aspect_ratio:.2}");
-        println!("  predicted R_inf (Lajeunesse 2004) = {predicted_r_inf:.2} cells");
-        println!("  measured R_inf (GPU path)         = {measured_r_inf:.2} cells");
-        println!("  ratio measured/predicted          = {ratio:.2}x");
+        println!("── GPU GRANULAR COLUMN COLLAPSE, LUBE ET AL. 2005 SERIES A ──");
+        println!("  aspect ratio a = h_i / d_i = {a:.2}");
+        println!(
+            "  d_inf: measured {d_inf:.2} cells, experiment {:.2}",
+            d_i + lube_runout
+        );
+        println!("  runout beyond the edge, measured / experiment = {ratio:.2}");
 
         assert!(
-            (0.3..2.0).contains(&ratio),
-            "GPU runout {measured_r_inf:.1} cells is {ratio:.1}x the Lajeunesse 2004 \
-             prediction ({predicted_r_inf:.1} cells) for aspect ratio {aspect_ratio:.1} \
-             -- expected ~0.94x at cohesion=0.0 (measured 2026-07-07); if this moved \
-             significantly, GPU's collapse dynamics changed and cohesion may need \
-             revisiting on this path specifically"
+            (0.25..=2.0).contains(&ratio),
+            "GPU runout beyond the edge is {ratio:.2} of Lube et al. 2005's \
+             ({lube_runout:.1} cells at a = {a:.1}): the column stood, or flooded the \
+             domain"
         );
     }
 

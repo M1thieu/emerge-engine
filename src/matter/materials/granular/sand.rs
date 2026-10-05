@@ -136,18 +136,14 @@ pub struct DruckerPragerMaterial {
     /// units as `lambda`/`mu`). 0.0 = true cohesionless Mohr-Coulomb (real dry sand,
     /// the Klar 2016 default).
     ///
-    /// NOT a claim that dry sand has real cohesion -- it doesn't. This compensates for
-    /// a measured continuum-MPM-resolution artifact: pressure-proportional
-    /// friction (`alpha * trace`) vanishes in thin, fast-flowing layers where local
-    /// confining pressure is near zero, regardless of the friction angle -- confirmed
-    /// by three different friction coefficients (DP 35°, µ(I) 20.9-32.8°, µ(I)
-    /// 35-40°) all producing IDENTICAL excess runout (~4.7x the Lajeunesse et al. 2004
-    /// empirical scaling law for this aspect ratio -- see
-    /// `sand_column_collapse_runout_matches_lajeunesse_scaling`). Real grain-scale
-    /// effects (interlocking, local rearrangement) give actual sand a baseline
-    /// resistance in thin layers that point-wise continuum MPM at this resolution
-    /// doesn't capture. Calibrate against that benchmark, not against a literature
-    /// "sand cohesion" value (which is ~0 and would be the wrong justification).
+    /// Dry sand has none, so set it only for a material measured to be cohesive.
+    /// It used to be presented as a compensation for thin, fast layers losing
+    /// their pressure-proportional friction, calibrated on a column collapse
+    /// that ran out "4.7x too far". That excess was a frictionless floor: until
+    /// 70a1b75, `with_boundary` left the test's `FrictionBoundary` without
+    /// friction. With it applied, the cohesionless column runs out about half the
+    /// experimental distance (`sand_column_collapse_runout_against_lube_2005`), so
+    /// there is no excess for a cohesion to take away.
     pub cohesion: f32,
     /// The Drucker-Prager cone yield surface, BY CONSTRUCTION in the published model
     /// (Klar 2016, verified identical in sparkl/wgsparkl), only ever trims DEVIATORIC
@@ -330,11 +326,10 @@ pub struct DruckerPragerMaterial {
     /// `cohesion_bonus_pa`). 0.0 (default) = off; inert unless a scene wires a
     /// `ScalarDiffusionField` to `scalar_field` and sets this.
     ///
-    /// Separate from `cohesion`, which compensates an MPM resolution artifact
-    /// and is calibrated against the Lajeunesse runout; this one is cited
-    /// capillary cohesion. Merging them would spoil that calibration, so
-    /// they are added side by side at the yield check, like
-    /// `couple_stress_term` next to `cohesion_term`.
+    /// Separate from `cohesion`, a material's own cohesion; this one is
+    /// capillary cohesion that follows the saturation field. They are added
+    /// side by side at the yield check, like `couple_stress_term` next to
+    /// `cohesion_term`.
     pub saturation_cohesion_coeff: f32,
     /// Saturation degree (0-1) at which apparent capillary cohesion peaks
     /// (see `cohesion_bonus_pa`). The pendular-regime peak lies at low
@@ -520,8 +515,8 @@ impl DruckerPragerMaterial {
     /// the internal friction angle (Coulomb 1776; Lambe & Whitman, *Soil
     /// Mechanics*, 1969), so this returns `friction_angle` in degrees, for a
     /// demo panel, a test or LP's material authoring. Exact only for the pure
-    /// cohesionless case: a nonzero `cohesion` (a numerical compensation
-    /// here) or `dilatancy_angle` moves a pile's angle away from it.
+    /// cohesionless case: a nonzero `cohesion` or `dilatancy_angle` moves a
+    /// pile's angle away from it.
     pub const fn predicted_repose_angle_deg(&self) -> f32 {
         self.friction_angle.to_degrees()
     }

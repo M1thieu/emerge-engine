@@ -591,6 +591,24 @@ Still open:
   law's own doc records why it was dropped: an unbalanced atmosphere on
   every particle drove J to its maximum.
 
+### A granular column runs out half as far as the experiment
+
+A cohesionless Drucker-Prager column of aspect ratio 4, released on both
+sides on a friction floor, stops at 13.3 cells where Lube, Huppert, Sparks
+and Freundt 2005 (Phys. Rev. E 72, 041301, series A, Eq. 4) measured 23.2:
+its runout beyond the column's edge is 0.49 of theirs, its central height
+6.6 cells against 7.7 (`sand_column_collapse_runout_against_lube_2005`).
+Not measured to a cause yet. The pile it leaves stands at 26.0° where dry
+sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
+same collapse both stops short and ends too flat.
+
+The test used to hide this behind `cohesion = 5.0`, tuned to compensate a
+"4.7x too far" runout that was the frictionless floor fixed in 70a1b75; with
+particles at their real mass (caa97df) that cohesion holds the column up
+entirely. `examples/gpu/material_sandbox_gpu.rs` still gives its sand the
+same `cohesion = 5.0` for its look; the value has no measured basis and
+needs its own re-tuning pass.
+
 ### Not audited yet
 
 Rendering (`systems/render`); rod biology (growth, gravitropism, networks,
