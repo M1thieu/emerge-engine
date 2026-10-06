@@ -1130,7 +1130,9 @@ fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
 ///
 /// What moves the angle: lateral confinement (7.7° -> 21.8°) and, independently,
 /// `apic_blend` (unconfined, 1.0/0.7/0.4/0.1/0.05/0.0 -> 6.82/17.86/22.31/24.39/24.62/
-/// 21.15°; ASFLIP at `asflip_blend=0.97` collapses the pile to 1.14°). Both cap near
+/// 21.15°; ASFLIP at `asflip_blend=0.97` collapsed the pile to 1.14°, measured while
+/// ASFLIP's pre-force snapshot still carried the stress impulse and applied only 3 % of
+/// the stress force, see `scatter_particle_stress_impulse`). Both cap near
 /// 24.6° at GRID=128/DT=0.016; unconfined, the `apic_blend` gain is resolution-sensitive
 /// (12.07° at GRID=64/DT=0.1). `MuIRheologyMaterial::dense_packed` reaches 26.16°
 /// confined and 12.32° unconfined at GRID=64 (local µ(I) is ill-posed at low inertial
@@ -1232,8 +1234,11 @@ fn sand_preshaped_pile_at_30deg_holds_its_slope() {
 ///    rest and little on directed motion, built for an explicit dynamic solver applied
 ///    to a quasi-static settling problem. The dominant contributor: cundall alone
 ///    20.43->25.46° as it rises 0->0.9 at the default apic_blend; with apic_blend=0.05,
-///    26.34->29.48° over the same range. A numerical technique layered on the
-///    return-mapping fix, not a replacement for it.
+///    26.34->29.48° over the same range. Those sweeps predate the pre-force snapshot
+///    fix: until then the damping's force proxy missed the internal stress force and
+///    held only gravity, walls and contact. This test and the five other slow Cundall
+///    tests read within 0.1° of their old results after it (30.04° here). A numerical technique
+///    layered on the return-mapping fix, not a replacement for it.
 ///
 /// `cundall_damping` is an opt-in `SimConfig` field (default 0.0); this test opts in.
 /// Confinement is not needed (see the unconfined test below).
