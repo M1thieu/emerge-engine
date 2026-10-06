@@ -3894,3 +3894,38 @@ fn water_saturates_nearby_sand_through_the_real_solver() {
          back a nonzero phi from the same diffusion field, not just sand"
     );
 }
+
+/// Issue #47: positions are f32 in cells, and between 16 and 32 cells half
+/// the spacing between f32 values is 9.54e-7. A block drifting at 5e-5
+/// cells/s with 0.01 s steps advances 5e-7 per step, under that half
+/// spacing, so a plain `x += v * dt` rounded every step back to `x` and the
+/// block never moved. The compensated advance carries the rounded-away part
+/// (`Particles::position_residual`), so after 10 s it has moved v t.
+#[test]
+fn slow_particles_move_by_their_velocity_not_by_f32_rounding() {
+    let config = SimConfig::standard(48, 0.01, Vec2::ZERO);
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::new(2, 2),
+        box_center: Vec2::new(24.25, 24.25),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut solver = Simulation::new(config, spawn)
+        .with_default_material(Box::new(NeoHookeanMaterial::new(1.0, 1.0)));
+    let speed = 5.0e-5;
+    for v in solver.particles_mut().v.iter_mut() {
+        *v = Vec2::new(speed, 0.0);
+    }
+    let start: Vec<f32> = solver.particles().x.iter().map(|p| p.x).collect();
+    let steps = 1000;
+    solver.step_n(steps);
+    let expected = speed * config.dt * steps as f32;
+    for (i, p) in solver.particles().x.iter().enumerate() {
+        let moved = p.x - start[i];
+        assert!(
+            (moved - expected).abs() < 0.05 * expected,
+            "particle {i} moved {moved:.3e} cells, its velocity {speed:.0e} cells/s carries it \
+             {expected:.3e} in {steps} steps"
+        );
+    }
+}

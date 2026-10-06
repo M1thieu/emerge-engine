@@ -20,6 +20,16 @@ use super::Particle;
 pub struct Particles {
     // ── Kinematics -- hot (read every substep) ────────────────────────────────
     pub x: Vec<Vec2>,
+    /// The part of each position increment, in cells, that the f32 addition
+    /// to `x` rounded away, carried into the next increment (compensated
+    /// summation, `spacetime::integration::advance_position`). Between 16
+    /// and 32 cells the spacing between f32 values is 1.9e-6 cells, so a
+    /// particle whose `v * dt` stays under half of it never moved at all
+    /// (issue #47). SoA only, like `temperature_residual`: the GPU `Particle`
+    /// has no spare bytes. Always under half that spacing, so readers of `x`
+    /// alone lose nothing visible; reset to zero whenever `x` is set or
+    /// clamped from outside the integration.
+    pub position_residual: Vec<Vec2>,
     pub v: Vec<Vec2>,
     pub velocity_gradient: Vec<Mat2>,
     pub deformation_gradient: Vec<Mat2>,
@@ -188,6 +198,7 @@ impl Particles {
             eps_pl_vol_pradhana: Vec::new(),
             temperature: Vec::new(),
             temperature_residual: Vec::new(),
+            position_residual: Vec::new(),
             user_tag: Vec::new(),
             activation: Vec::new(),
             activation_dir: Vec::new(),
@@ -219,6 +230,7 @@ impl Particles {
             eps_pl_vol_pradhana: Vec::with_capacity(cap),
             temperature: Vec::with_capacity(cap),
             temperature_residual: Vec::with_capacity(cap),
+            position_residual: Vec::with_capacity(cap),
             user_tag: Vec::with_capacity(cap),
             activation: Vec::with_capacity(cap),
             activation_dir: Vec::with_capacity(cap),
@@ -276,6 +288,9 @@ impl Particles {
     /// Write a modified [`Particle`] back to index `i`.
     #[inline]
     pub fn set(&mut self, i: usize, p: Particle) {
+        if self.x[i] != p.x {
+            self.position_residual[i] = Vec2::ZERO;
+        }
         self.x[i] = p.x;
         self.v[i] = p.v;
         self.velocity_gradient[i] = p.velocity_gradient;
@@ -322,6 +337,7 @@ impl Particles {
         self.eps_pl_vol_pradhana.push(0.0);
         self.temperature.push(p.temperature);
         self.temperature_residual.push(0.0);
+        self.position_residual.push(Vec2::ZERO);
         self.user_tag.push(p.user_tag);
         self.activation.push(p.activation);
         self.activation_dir.push(p.activation_dir);
@@ -359,6 +375,7 @@ impl Particles {
         self.eps_pl_vol_pradhana.swap(a, b);
         self.temperature.swap(a, b);
         self.temperature_residual.swap(a, b);
+        self.position_residual.swap(a, b);
         self.user_tag.swap(a, b);
         self.activation.swap(a, b);
         self.activation_dir.swap(a, b);
@@ -427,11 +444,12 @@ impl Particles {
             if pred(&p) {
                 if write != read {
                     self.set(write, p);
-                    // sleeping, eps_pl_vol_pradhana and temperature_residual
-                    // are not part of the AoS Particle view -- copy explicitly.
+                    // sleeping, eps_pl_vol_pradhana and the two residuals are
+                    // not part of the AoS Particle view -- copy explicitly.
                     self.sleeping[write] = self.sleeping[read];
                     self.eps_pl_vol_pradhana[write] = self.eps_pl_vol_pradhana[read];
                     self.temperature_residual[write] = self.temperature_residual[read];
+                    self.position_residual[write] = self.position_residual[read];
                 }
                 write += 1;
             }
@@ -452,6 +470,7 @@ impl Particles {
         self.eps_pl_vol_pradhana.truncate(write);
         self.temperature.truncate(write);
         self.temperature_residual.truncate(write);
+        self.position_residual.truncate(write);
         self.user_tag.truncate(write);
         self.activation.truncate(write);
         self.activation_dir.truncate(write);

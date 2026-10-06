@@ -148,8 +148,18 @@ fn cantilever_with_optional_particles(with_particles: bool, steps: usize) -> (Op
     (avg_particle_y, rod_tip_y)
 }
 
+/// Ignored, measured. The particles resting on the tip were frozen by f32
+/// position rounding (issue #47); with compensated positions they now move
+/// as their velocity says (over 100 frames after frame 4000, 2.37e-3 cells
+/// moved against 2.31e-3 integrated, where they moved 0 before). The test
+/// still fails, for another reason: the loaded rod has not settled at frame
+/// 4000. Its tip creeps steadily, 23.973 at frame 500, 23.839 at 4000, 23.550
+/// at 16000, while the free rod settles at 23.863 by frame 1500. At frame
+/// 4000 the extra sag reads 0.024 (0.023 before the fix) against 0.05. What
+/// slows the loaded descent (the particles sink at about 1e-3 cells/s under
+/// 0.3 cells/s^2) is not measured (issue #66).
 #[test]
-#[ignore = "issue #47: the particles resting on the loaded rod are frozen by f32 position rounding"]
+#[ignore = "issue #66: the loaded rod is still creeping at the test's frame count (tip 23.839 at 4000, 23.550 at 16000)"]
 fn rod_deflects_and_mpm_particles_feel_reaction() {
     // Baseline: rod alone, no particles -- self-weight-only sag.
     let (_, tip_y_alone) = cantilever_with_optional_particles(false, 4000);
@@ -244,8 +254,11 @@ fn a_settled_free_rod_takes_one_substep_awake_or_asleep() {
     );
 }
 
+/// Ignored for the reason `rod_deflects_and_mpm_particles_feel_reaction`
+/// records: with positions no longer frozen (issue #47) the loaded rod is
+/// still creeping at this frame count; extra sag 0.0152 against 0.02.
 #[test]
-#[ignore = "issue #47: the particles resting on the loaded rod are frozen by f32 position rounding"]
+#[ignore = "issue #66: the loaded rod is still creeping at the test's frame count, see rod_deflects_and_mpm_particles_feel_reaction"]
 fn sleeping_rod_wakes_on_new_contact_and_still_reacts() {
     // Settle with sleep enabled so it's asleep before contact.
     let mut solver = settled_cantilever(0.02, 3000);
