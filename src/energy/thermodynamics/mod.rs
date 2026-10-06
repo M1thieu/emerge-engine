@@ -16,6 +16,7 @@ pub mod granular_fluidity;
 pub mod ideal_gas;
 pub mod scalar_field;
 mod stencil;
+#[cfg(feature = "gpu")]
 pub(crate) use stencil::stable_sub_steps;
 pub mod transfer;
 pub mod water_saturation;
