@@ -157,9 +157,9 @@ fn cantilever_with_optional_particles(with_particles: bool, steps: usize) -> (Op
 /// at 16000, while the free rod settles at 23.863 by frame 1500. At frame
 /// 4000 the extra sag reads 0.024 (0.023 before the fix) against 0.05. What
 /// slows the loaded descent (the particles sink at about 1e-3 cells/s under
-/// 0.3 cells/s^2) is not measured.
+/// 0.3 cells/s^2) is not measured (issue #66).
 #[test]
-#[ignore = "the loaded rod is still creeping at the test's frame count (tip 23.839 at 4000, 23.550 at 16000): cause not measured"]
+#[ignore = "issue #66: the loaded rod is still creeping at the test's frame count (tip 23.839 at 4000, 23.550 at 16000)"]
 fn rod_deflects_and_mpm_particles_feel_reaction() {
     // Baseline: rod alone, no particles -- self-weight-only sag.
     let (_, tip_y_alone) = cantilever_with_optional_particles(false, 4000);
@@ -258,7 +258,7 @@ fn a_settled_free_rod_takes_one_substep_awake_or_asleep() {
 /// records: with positions no longer frozen (issue #47) the loaded rod is
 /// still creeping at this frame count; extra sag 0.0152 against 0.02.
 #[test]
-#[ignore = "the loaded rod is still creeping at the test's frame count, see rod_deflects_and_mpm_particles_feel_reaction"]
+#[ignore = "issue #66: the loaded rod is still creeping at the test's frame count, see rod_deflects_and_mpm_particles_feel_reaction"]
 fn sleeping_rod_wakes_on_new_contact_and_still_reacts() {
     // Settle with sleep enabled so it's asleep before contact.
     let mut solver = settled_cantilever(0.02, 3000);
