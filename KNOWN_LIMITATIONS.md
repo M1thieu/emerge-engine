@@ -316,9 +316,13 @@ its own to explain or calm that particular runaway.
 - **Time convergence and energy lost per substep.** With APIC, a free
   elastic block keeps 0.69, 0.51 and 0.37 of its energy after the same
   physical time at 256, 1024 and 4096 steps (the exact answer is 1.0):
-  smaller steps mean more artificial damping. ASFLIP, available through
-  `asflip_blend`, does not fix it: 0.53 at blend 0.5, and at blend 0.97 it
-  creates energy (1.16 at 4096 steps). Candidates: PolyPIC (Fu et al. 2017,
+  smaller steps mean more artificial damping. The figures once recorded
+  here for `asflip_blend` (0.53 at blend 0.5, energy gain at 0.97) were
+  measured against a pre-force snapshot that still carried P2G's fused
+  stress impulse, the real bug fixed in `f19e331`; see "A sheared column
+  runs out less with more substeps" for the corrected, re-measured
+  behaviour and its remaining, expected `(1 - blend)` residual. Candidates
+  for APIC's own loss above, unaffected by that fix: PolyPIC (Fu et al. 2017,
   [doi:10.1145/3130800.3130878](https://doi.org/10.1145/3130800.3130878)),
   which lowers the loss per transfer without changing the order, and an
   energy-momentum consistent implicit MPM (Love and Sulsky 2006, [doi:10.1002/nme.1512](https://doi.org/10.1002/nme.1512)), which
@@ -676,22 +680,42 @@ second, so a material needing more substeps (stiffer, or any scene run at
 a finer CFL) loses more of a shear flow's energy, independent of plasticity
 or walls.
 
-A side finding from the same probe, not yet confirmed: this engine's own
-`asflip_blend` (meant to reduce exactly this dissipation, Fei et al. 2021)
-GAINS energy in the same test instead, 24-34x early and still 1.3x (1000
-substeps) to 12x (9000) by 0.5 s. Consistent with an earlier, separately
-found oddity (ASFLIP flattening a Drucker-Prager column instead of holding
-its shape), but measured with one probe's own energy accounting, so it
-needs its own check before being stated as settled.
+A side finding from the same probe GAINED energy instead of reducing this
+dissipation: confirmed as a real bug, not a property of `asflip_blend`
+itself, and fixed in `f19e331`. ASFLIP's FLIP residual and Cundall
+damping both compare the grid against its velocity before this substep's
+forces; the snapshot was taken after P2G's own momentum normalization,
+which already carries this substep's stress impulse (the fused MLS-MPM
+transfer adds it there), so the comparison point was never actually
+pre-force. At blend 0.97 that let only 3% of the real elastic restoring
+force reach the FLIP correction, while the deformation gradient kept
+accumulating strain normally: energy gain, not conservation. Cundall
+damping shared the identical bug and, with no gravity, wall or contact
+force to see, did nothing at all regardless of its coefficient.
 
-Three directions exist, none designed or started: audit `asflip_blend`'s
-energy behaviour, since it already exists in the engine and is meant to
-help here; Nairn and Hammerquist's own remedy, a full-mass-matrix velocity
-with lower dissipation than FLIP from a 4-term expansion, whose affine
-(APIC-compatible) form their own paper calls a future publication, so
-using it here would be new derivation, not an existing method; or reducing
-transfers per real second where the physics allows (a larger CFL fraction,
-or stepping some subsystems less often), a mitigation rather than a cure.
+Fixed by recomputing the stress term alone (`scatter_particle_stress_impulse`)
+and subtracting it back out of the snapshot (`Grid::snapshot_velocities_before_stress`),
+matching Fei et al. 2021's own Eq. 12, which transfers the pre-force
+velocity without the stress impulse. Re-measured on the same shear-wave
+probe: ASFLIP at blend 0.97 now reads 1.31 of its start energy at 0.5 s
+(was 24-34x), Cundall damping at 0.75 now reads 0.0026 of an otherwise
+undamped 1.04 (was identical to no damping at all). GPU matches CPU to
+four digits.
+
+The substep-count dependence on the real sand column shrinks under the
+fixed ASFLIP but is not zero: at blend 0.97, x10 substeps run 14% shorter
+than x1, against 24% under plain APIC. This is not a remaining bug: the
+gather itself is `v_store = new_v + asflip_blend * diff_vel`
+(`transfer::g2p`), a direct blend between the dissipative APIC gather and
+the FLIP residual that cancels it, so an incomplete correction of order
+`(1 - asflip_blend)` is expected by construction, not a leftover defect.
+A blend sweep on the same column (0.97, 0.99, 0.995) shows the residual
+shrinking toward 0 as blend approaches 1, the signature of that
+`(1 - blend)` term, not of an unresolved mechanism. Running every scene
+at `asflip_blend` near 1.0 is not free: ASFLIP costs about +20% on this
+scene (one extra stress pass every substep) and the FLIP side of the
+blend is itself noisier, so this is a real tradeoff, not a strictly
+better default.
 
 A property of this model found on the way, not a cause of the repose gap or
 the stiffness dependence above: most of a settled pile sits at the tip of

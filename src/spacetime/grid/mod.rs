@@ -520,7 +520,6 @@ impl Grid {
     /// no gravity, coefficient 0.75 damped nothing at all, and it now stops the
     /// block's shear wave within 0.1 s. It
     /// damps the component of velocity that delta is driving -- proportional to the
-    /// damps the component of velocity that delta is driving -- proportional to the
     /// FORCE magnitude, not velocity magnitude (that distinction is the whole point:
     /// ordinary viscous damping scales with speed, this scales with how hard something
     /// was just pushed). Component-wise, matching the Cundall formulation exactly
