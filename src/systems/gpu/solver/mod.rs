@@ -148,7 +148,7 @@ pub struct GpuSimulation {
     /// `contact_bind_group`, see `SimPipelines::make_thermal_bind_group`'s doc.
     thermal_bind_group: wgpu::BindGroup,
     /// Live day-night/ambient thermal diffusion state -- `enabled: 0` (default) skips
-    /// all 4 thermal passes entirely, every existing scene pays nothing. Set via
+    /// the thermal passes entirely, every existing scene pays nothing. Set via
     /// `attach_thermal_gpu`/`set_thermal_ambient`.
     thermal_params: GpuThermalParams,
     /// `heat_capacity` as passed to `attach_thermal_gpu`, retained CPU-side only for

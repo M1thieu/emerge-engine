@@ -88,7 +88,7 @@ impl GpuSimulation {
     /// Attach day-night/ambient thermal diffusion -- GPU counterpart to CPU's
     /// `Simulation::with_thermal`/`thermal_config_mut`. Fourier's law
     /// `∂T/∂t = α·∇²T` plus Newton cooling, see `GpuThermalParams`. Enables
-    /// all 4 thermal passes starting next `step_frame`; call `set_thermal_ambient`
+    /// the thermal passes starting next `step_frame`; call `set_thermal_ambient`
     /// afterward for live day-night oscillation.
     ///
     /// - `conductivity_w_m_k` / `heat_capacity_j_kg_k` / `density_kg_m3`: SI
@@ -119,6 +119,8 @@ impl GpuSimulation {
             ambient,
             cooling_rate,
             enabled: 1,
+            dt: 0.0,
+            _pad: [0; 3],
         };
         // Retained separately for phase_transition's latent-heat debit -- alpha already
         // folds heat_capacity in and can't be recovered back out of it.
@@ -160,7 +162,8 @@ impl GpuSimulation {
             resource_r,
             resource_k,
             enabled: 1,
-            _pad: [0; 3],
+            dt: 0.0,
+            _pad: [0; 2],
         };
     }
 
