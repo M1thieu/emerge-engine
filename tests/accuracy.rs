@@ -163,8 +163,11 @@ fn sand_angle_of_repose_is_physical() {
 ///
 /// `apic_blend` sweep with the `FrictionBoundary(2, 0.7)` floor (all stable, max reach
 /// well inside the wall guard): 0.6 -> 49.3, 0.7 -> 45.0, 0.8 -> 40.2, 0.9 -> 35.5,
-/// 0.94 -> 33.2, 0.96 -> 32.0, 0.98 -> 29.6, 1.0 -> 24.2°. 0.96 is centered in the
-/// 30-35° dry-sand target and close to the engine's APIC default (1.0).
+/// 0.94 -> 33.2, 0.96 -> 32.0, 0.98 -> 29.6, 1.0 -> 24.2°. 0.96 was chosen there as
+/// centered in the 30-35° dry-sand target and close to the engine's APIC default (1.0).
+/// That sweep predates caa97df, which gave particles their real mass: since then the
+/// same 0.96 lands at 37.8° (bisected: 32.0° at caa97df's parent, 37.7° at caa97df).
+/// The sweep has not been rerun.
 #[test]
 #[ignore = "slow: about 5 min in the CI debug profile, runs in the slow-tests workflow"]
 fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
@@ -174,8 +177,8 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     // material can hit the wall at that size; a first attempt at this
     // test did exactly that, real bug caught, not silently accepted).
     const LOCAL_GRID: usize = 128;
-    // apic_blend=0.96 (see this function's doc): lands at 32.0°, centered in
-    // the 30-35° dry-sand target.
+    // apic_blend=0.96 (see this function's doc): lands at 37.8° since particles
+    // carry their real mass (caa97df); 32.0° before.
     let config = SimConfig {
         max_substeps_per_step: 64,
         apic_blend: 0.96,
@@ -229,11 +232,11 @@ fn sand_collapse_with_phase_gated_relaxation_after_dynamics() {
     // collapse landing near the repose angle, measured right when the
     // dynamics finish -- not after further relaxation, which the trajectory
     // below shows erases it (the same excess creep as the patient pour). A
-    // band, not a razor-thin threshold: measured 32.0°.
+    // band, not a razor-thin threshold: measured 37.8° (32.0° before caa97df).
     assert!(
         (25.0..=40.0).contains(&shape_mid.angle_deg),
         "expected apic_blend=0.96 to land a dynamic collapse near the real dry-sand \
-         repose regime (measured: 32.0 deg) -- got {:.1} deg, investigate before \
+         repose regime (measured: 37.8 deg) -- got {:.1} deg, investigate before \
          loosening this band",
         shape_mid.angle_deg
     );
