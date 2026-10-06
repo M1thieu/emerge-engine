@@ -9,7 +9,7 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// Granular-fluid mixture: Tait EOS bulk pressure + corotated elastic deviatoric + SVD plasticity.
 ///
-/// Constitutive law (Dunatunga & Kamrin 2015, §3):
+/// Constitutive law, this engine's own composition of the three parts below:
 ///   τ = τ_EOS + τ_corotated_dev
 ///   τ_EOS  = −k·((ρ/ρ₀)^γ − 1)·I                 -- weakly-compressible fluid bulk (Tait EOS)
 ///   τ_dev  = 2µ·h·dev[(F−R)·Fᵀ] + λ·h·(J−1)·J·I  -- corotated elastic (shape-restoring + vol)
@@ -23,10 +23,13 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 ///   - `StomakhinMaterial` (no EOS, purely elastic+plastic)
 ///
 /// Use for: wet terrain substrates, wet granular flows, biological cell matrices.
-/// Ref: Kamrin 2015 granular-fluid; SoftZoo's own mud material (`mud.py`) independently
-/// confirms the same fluid-EOS + corotated blend CONCEPT -- but its own specific
-/// parameters (a single fixed set, linear not Tait EOS, θ_c=0.025) do NOT match this
-/// file's three presets below; see each preset's own honest-disclosure doc comment.
+/// Not Dunatunga & Kamrin 2015 ("Continuum modeling and simulation of granular
+/// flows through their many phases", arXiv:1411.5447): their pressure is `(K_c / rho)(rho - rho_c)` above a critical
+/// density and zero below it (Eq. 2.7), with a hypoelastic Jaumann-rate stress
+/// update (Eq. 2.8-2.9), neither Tait nor corotated. SoftZoo's mud material
+/// (`mud.py`) blends a fluid EOS with a corotated term the same way, with its
+/// own parameters (linear, not Tait, EOS; theta_c = 0.025) that do NOT match this
+/// file's three presets; see each preset's own doc comment.
 #[derive(Debug, Clone, Copy)]
 pub struct GranularFluidMaterial {
     /// Elastic shear modulus µ -- corotated deviatoric stiffness.

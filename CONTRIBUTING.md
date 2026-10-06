@@ -160,10 +160,10 @@ Before changing numerical constants or plasticity return-mapping, check the sour
 | Snow | Stomakhin et al. 2013, [*A Material Point Method for Snow Simulation*](https://doi.org/10.1145/2461912.2461948) |
 | Sand (DP) | Klar et al. 2016, [*Drucker-Prager Elastoplasticity for Sand Animation*](https://doi.org/10.1145/2897824.2925906) |
 | SandMuI (µ(I)) | Dunatunga & Kamrin 2015, [*Continuum modelling and simulation of granular flows through their many phases*](https://doi.org/10.1017/jfm.2015.383) |
-| GranularFluid | Dunatunga & Kamrin 2015 (Tait EOS + corotated deviatoric) |
+| GranularFluid | This engine's composition: Tait-form EOS bulk pressure, corotated deviatoric stress and the SVD plasticity of `StomakhinMaterial`. Not Dunatunga & Kamrin 2015, whose pressure (their Eq. 2.7) and hypoelastic stress update differ |
 | Rankine | Rankine 1876 (original criterion); [Wolper et al. 2019](https://doi.org/10.1145/3306346.3322949) (MPM brittle fracture) |
-| NACC | Klar et al. 2016; sparkl `plasticity_nacc.rs` |
-| Surface tension | Stomakhin et al. 2014, *Augmented MPM for cloth and soft bodies* (ψ=γ·J) |
+| NACC | [Wolper et al. 2019](https://doi.org/10.1145/3306346.3322949), supplemental document, Algorithm 2 (NACC plasticity) |
+| Surface tension | ziran2020 reference code, [`SurfaceTension.h`](https://github.com/penn-graphics-research/ziran2020) (ψ = γ·J) |
 | N-body gravity | Barnes & Hut 1986, [*A hierarchical O(N log N) force-calculation algorithm*](https://doi.org/10.1038/324446a0) |
 | Viscoelastic | Fung 1993, [*Biomechanics: Mechanical Properties of Living Tissues*](https://doi.org/10.1007/978-1-4757-2257-4) (Kelvin-Voigt) |
 | Rod (`spacetime::rod`) | Bergou, Wardetzky, Robinson, Audoly, Grinspun 2008, [*Discrete Elastic Rods*](https://doi.org/10.1145/1360612.1360662) (SIGGRAPH); modern discrete form of Cosserat rod theory (Cosserat brothers, 1909) |

@@ -297,7 +297,7 @@ Windowed examples (everything except `headless` and `validate_materials`) need `
 | Snow | Stomakhin et al. 2013, [*A Material Point Method for Snow Simulation*](https://doi.org/10.1145/2461912.2461948) |
 | Sand | Klar et al. 2016, [*Drucker-Prager Elastoplasticity for Sand Animation*](https://doi.org/10.1145/2897824.2925906) |
 | µ(I)-rheology | Dunatunga & Kamrin 2015, [*Continuum modelling and simulation of granular flows through their many phases*](https://doi.org/10.1017/jfm.2015.383) |
-| Surface tension | Stomakhin et al. 2014, *Augmented MPM for cloth and soft bodies* |
+| Surface tension | ziran2020 reference code, [`SurfaceTension.h`](https://github.com/penn-graphics-research/ziran2020) (ψ = γ·J) |
 | N-body gravity | Barnes & Hut 1986, [*A hierarchical O(N log N) force-calculation algorithm*](https://doi.org/10.1038/324446a0) |
 | Rod (Cosserat) | Bergou, Wardetzky, Robinson, Audoly & Grinspun 2008, [*Discrete Elastic Rods*](https://doi.org/10.1145/1360612.1360662) |
 

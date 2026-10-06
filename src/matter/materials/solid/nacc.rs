@@ -26,7 +26,11 @@ use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 /// Unlike Drucker-Prager (cone), NACC has a *cap* -- it limits compression too.
 /// This captures preconsolidation: previously consolidated soils yield at lower stress.
 ///
-/// Reference: Klar et al. 2016; sparkl `plasticity_nacc.rs`.
+/// Reference: Wolper, Fang, Li, Lu, Gao & Jiang 2019, "CD-MPM: Continuum damage
+/// material point methods for dynamic fracture animation", ACM Trans. Graph.
+/// 38(4), supplemental document, Algorithm 2: the yield function
+/// `(1 + 2 beta)((6 - d)/2)|s|^2 + M^2 (p + beta p0)(p - p0)`, the hardening
+/// `p0 = kappa (1e-5 + xi sinh(max(-alpha, 0)))` and the projection used here.
 ///
 /// # Natural phenomena
 /// - Saturated clay / soft sediment: κ ≈ 1e4–1e5, M ≈ 1.2–1.8
