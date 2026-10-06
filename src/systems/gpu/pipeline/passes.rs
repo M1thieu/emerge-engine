@@ -387,9 +387,10 @@ pub(super) fn build_contact_resolve_pipelines(
     (debug_fit_normal, resolve_contact)
 }
 
-/// Day-night/ambient thermal diffusion (GPU port) -- 4 passes mirroring CPU's own
-/// `ThermalDiffusion::apply` stages exactly: clear scratch, P2G scalar scatter,
-/// normalize+Laplacian+Newton-cooling, G2P delta-gather. None of these entry points
+/// Day-night/ambient thermal diffusion (GPU port) -- 5 passes mirroring CPU's own
+/// `ThermalDiffusion::apply` stages: clear scratch, P2G scalar scatter, normalize,
+/// Laplacian+Newton-cooling, G2P delta-gather. Normalize and Laplacian are separate
+/// dispatches because the stencil reads cells other workgroups normalize. None of these entry points
 /// take WGSL `override` constants.
 pub(super) fn build_thermal_pipelines(
     device: &wgpu::Device,
@@ -397,7 +398,8 @@ pub(super) fn build_thermal_pipelines(
 ) -> (
     wgpu::ComputePipeline, // thermal_clear
     wgpu::ComputePipeline, // thermal_p2g
-    wgpu::ComputePipeline, // thermal_normalize_laplacian
+    wgpu::ComputePipeline, // thermal_normalize
+    wgpu::ComputePipeline, // thermal_laplacian
     wgpu::ComputePipeline, // thermal_g2p
 ) {
     let thermal_clear = make_pipeline(
@@ -418,12 +420,21 @@ pub(super) fn build_thermal_pipelines(
         &[],
         false,
     );
-    let thermal_normalize_laplacian = make_pipeline(
+    let thermal_normalize = make_pipeline(
         device,
         layout,
         shaders::THERMAL,
-        "thermal_normalize_laplacian_main",
-        "thermal_normalize_laplacian",
+        "thermal_normalize_main",
+        "thermal_normalize",
+        &[],
+        false,
+    );
+    let thermal_laplacian = make_pipeline(
+        device,
+        layout,
+        shaders::THERMAL,
+        "thermal_laplacian_main",
+        "thermal_laplacian",
         &[],
         false,
     );
@@ -440,12 +451,13 @@ pub(super) fn build_thermal_pipelines(
     (
         thermal_clear,
         thermal_p2g,
-        thermal_normalize_laplacian,
+        thermal_normalize,
+        thermal_laplacian,
         thermal_g2p,
     )
 }
 
-/// Resource regrowth (GPU port) -- same 4-pass shape as the thermal passes above,
+/// Resource regrowth (GPU port) -- same 5-pass shape as the thermal passes above,
 /// logistic growth as the reaction term instead of Newton cooling.
 pub(super) fn build_resource_pipelines(
     device: &wgpu::Device,
@@ -453,7 +465,8 @@ pub(super) fn build_resource_pipelines(
 ) -> (
     wgpu::ComputePipeline, // resource_clear
     wgpu::ComputePipeline, // resource_p2g
-    wgpu::ComputePipeline, // resource_normalize_laplacian
+    wgpu::ComputePipeline, // resource_normalize
+    wgpu::ComputePipeline, // resource_laplacian
     wgpu::ComputePipeline, // resource_g2p
 ) {
     let resource_clear = make_pipeline(
@@ -474,12 +487,21 @@ pub(super) fn build_resource_pipelines(
         &[],
         false,
     );
-    let resource_normalize_laplacian = make_pipeline(
+    let resource_normalize = make_pipeline(
         device,
         layout,
         shaders::RESOURCE_FIELD,
-        "resource_normalize_laplacian_main",
-        "resource_normalize_laplacian",
+        "resource_normalize_main",
+        "resource_normalize",
+        &[],
+        false,
+    );
+    let resource_laplacian = make_pipeline(
+        device,
+        layout,
+        shaders::RESOURCE_FIELD,
+        "resource_laplacian_main",
+        "resource_laplacian",
         &[],
         false,
     );
@@ -496,7 +518,8 @@ pub(super) fn build_resource_pipelines(
     (
         resource_clear,
         resource_p2g,
-        resource_normalize_laplacian,
+        resource_normalize,
+        resource_laplacian,
         resource_g2p,
     )
 }

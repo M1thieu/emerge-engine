@@ -59,6 +59,10 @@ struct ResourceParams {
     resource_r:  f32,
     resource_k:  f32,
     enabled:     u32,
+    // Seconds one pass advances; the field runs once per frame, see thermal.wgsl.
+    dt:          f32,
+    _pad0:       u32,
+    _pad1:       u32,
 }
 
 const BSPLINE_INNER_LIMIT:  f32 = 0.5;
@@ -70,27 +74,6 @@ const RESOURCE_ATOMIC_SCALE: f32 = 100000.0;
 
 @group(0) @binding(0) var<storage, read_write> particles:   array<Particle>;
 @group(0) @binding(3) var<uniform>             step_params: StepParams;
-
-// This substep's timestep and velocity cap, decided on the GPU at the end of the previous
-// substep -- see `adaptive_cfl.wgsl`. `substep_dt()`/`vel_limit` are the CPU's
-// frame-start values and are NOT authoritative any more (the GPU may only tighten them).
-@group(2) @binding(37) var<storage, read_write> adaptive_dt: array<atomic<u32>, 5>;
-
-// Cached per invocation: this is an atomic storage load, and reading it at every use
-// site cost ~40% of a substep (measured: 0.29 -> 0.41ms per substep on the dam break).
-var<private> substep_dt_cache: f32 = -1.0;
-
-fn substep_dt() -> f32 {
-    if substep_dt_cache < 0.0 {
-        substep_dt_cache = bitcast<f32>(atomicLoad(&adaptive_dt[0]));
-    }
-    return substep_dt_cache;
-}
-
-fn substep_vel_limit(dt: f32) -> f32 {
-    return step_params.grid_cell_size / max(dt, 1.0e-12);
-}
-
 
 @group(3) @binding(24) var<uniform>             resource_params:  ResourceParams;
 @group(3) @binding(25) var<storage, read_write> resource_mass:    array<atomic<i32>>;
@@ -155,22 +138,27 @@ fn resource_p2g_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
+// Normalize in its own dispatch, for the cross-workgroup reason given in thermal.wgsl.
 @compute @workgroup_size(64, 1, 1)
-fn resource_normalize_laplacian_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn resource_normalize_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if resource_params.enabled == 0u { return; }
     let res = step_params.grid_res;
-    let n = res * res;
     let i = gid.x;
-    if i >= n { return; }
-
+    if i >= res * res { return; }
     let mass_i = f32(atomicLoad(&resource_mass[i])) / RESOURCE_ATOMIC_SCALE;
     let raw_i = f32(atomicLoad(&resource_work[i])) / RESOURCE_ATOMIC_SCALE;
+    resource_phi_old[i] = select(resource_params.ambient, raw_i / mass_i, mass_i > 1e-10);
+}
+
+@compute @workgroup_size(64, 1, 1)
+fn resource_laplacian_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if resource_params.enabled == 0u { return; }
+    let res = step_params.grid_res;
+    let i = gid.x;
+    if i >= res * res { return; }
     let ambient = resource_params.ambient;
-    let phi_old_i = select(ambient, raw_i / mass_i, mass_i > 1e-10);
-    resource_phi_old[i] = phi_old_i;
-
-    storageBarrier();
-
+    let dt = resource_params.dt;
+    let phi_old_i = resource_phi_old[i];
     let cx = i32(i % res);
     let cy = i32(i / res);
     let p_xm = select(ambient, resource_phi_old[u32(cy) * res + u32(cx - 1)], cx > 0);
@@ -178,12 +166,15 @@ fn resource_normalize_laplacian_main(@builtin(global_invocation_id) gid: vec3<u3
     let p_ym = select(ambient, resource_phi_old[u32(cy - 1) * res + u32(cx)], cy > 0);
     let p_yp = select(ambient, resource_phi_old[u32(cy + 1) * res + u32(cx)], cy + 1 < i32(res));
     let laplacian = p_xm + p_xp + p_ym + p_yp - 4.0 * phi_old_i;
-    var phi_new = phi_old_i + resource_params.diffusivity * substep_dt() * laplacian;
+    var phi_new = phi_old_i + resource_params.diffusivity * dt * laplacian;
 
-    // Logistic growth: dφ/dt = r·φ·(1−φ/K) (Verhulst 1838).
+    // Logistic growth, dφ/dt = r·φ·(1−φ/K) (Verhulst 1838), by its exact solution
+    // over the pass, φ K e^{r dt} / (K + φ (e^{r dt} − 1)), as Newton cooling is in
+    // thermal.wgsl: the explicit `φ + r φ (1 − φ/K) dt` lost 1.3 % on the logistic
+    // test once passes became a frame long.
     let k = max(resource_params.resource_k, 1e-6);
-    let growth = resource_params.resource_r * phi_new * (1.0 - phi_new / k);
-    phi_new += growth * substep_dt();
+    let e = exp(resource_params.resource_r * dt);
+    phi_new = phi_new * k * e / (k + phi_new * (e - 1.0));
 
     atomicStore(&resource_work[i], i32(round(phi_new * RESOURCE_ATOMIC_SCALE)));
 }

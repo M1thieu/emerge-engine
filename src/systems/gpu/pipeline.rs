@@ -146,20 +146,22 @@ pub struct SimPipelines {
     /// after grid_update, before g2p. See `resolve_contact.wgsl`'s `resolve_contact_main`
     /// doc.
     pub resolve_contact: wgpu::ComputePipeline,
-    /// Day-night/ambient thermal diffusion (GPU port) -- 4 passes mirroring CPU's own
-    /// `ThermalDiffusion::apply` stages exactly: clear scratch, P2G scalar scatter,
-    /// normalize+Laplacian+Newton-cooling, G2P delta-gather. Dispatched over the WHOLE
-    /// dense grid every substep when enabled (no active-block optimization -- matches
-    /// CPU's own unconditional-dense-grid behavior, real but bounded scope).
+    /// Day-night/ambient thermal diffusion (GPU port) -- 5 passes mirroring CPU's own
+    /// `ThermalDiffusion::apply` stages: clear scratch, P2G scalar scatter, normalize,
+    /// Laplacian+Newton-cooling, G2P delta-gather. Dispatched over the whole dense grid,
+    /// once per frame after the mechanics substeps (`GpuSimulation::encode_slow_fields`),
+    /// as CPU applies heat once per `step()`.
     pub thermal_clear: wgpu::ComputePipeline,
     pub thermal_p2g: wgpu::ComputePipeline,
-    pub thermal_normalize_laplacian: wgpu::ComputePipeline,
+    pub thermal_normalize: wgpu::ComputePipeline,
+    pub thermal_laplacian: wgpu::ComputePipeline,
     pub thermal_g2p: wgpu::ComputePipeline,
-    /// Resource regrowth (GPU port) -- same 4-pass shape as the thermal passes above,
+    /// Resource regrowth (GPU port) -- same 5-pass shape as the thermal passes above,
     /// logistic growth as the reaction term instead of Newton cooling.
     pub resource_clear: wgpu::ComputePipeline,
     pub resource_p2g: wgpu::ComputePipeline,
-    pub resource_normalize_laplacian: wgpu::ComputePipeline,
+    pub resource_normalize: wgpu::ComputePipeline,
+    pub resource_laplacian: wgpu::ComputePipeline,
     pub resource_g2p: wgpu::ComputePipeline,
     /// ASFLIP (GPU port, Fei et al. 2021) -- replaces `g2p` + `particles_update` for a
     /// substep, ONLY dispatched when `SimConfig::asflip_blend > 0.0` (see
@@ -306,11 +308,11 @@ impl SimPipelines {
             build_contact_resolve_pipelines(device, &pipeline_layout, resolve_contact_consts);
 
         // Day-night/ambient thermal diffusion (GPU port) -- 4 passes, see field docs.
-        let (thermal_clear, thermal_p2g, thermal_normalize_laplacian, thermal_g2p) =
+        let (thermal_clear, thermal_p2g, thermal_normalize, thermal_laplacian, thermal_g2p) =
             build_thermal_pipelines(device, &pipeline_layout);
 
-        // Resource regrowth (GPU port) -- same 4-pass shape, see field docs.
-        let (resource_clear, resource_p2g, resource_normalize_laplacian, resource_g2p) =
+        // Resource regrowth (GPU port) -- same 5-pass shape, see field docs.
+        let (resource_clear, resource_p2g, resource_normalize, resource_laplacian, resource_g2p) =
             build_resource_pipelines(device, &pipeline_layout);
 
         // Fluid incompressibility pressure projection (GPU port) -- see field docs.
@@ -343,11 +345,13 @@ impl SimPipelines {
             resolve_contact,
             thermal_clear,
             thermal_p2g,
-            thermal_normalize_laplacian,
+            thermal_normalize,
+            thermal_laplacian,
             thermal_g2p,
             resource_clear,
             resource_p2g,
-            resource_normalize_laplacian,
+            resource_normalize,
+            resource_laplacian,
             resource_g2p,
             g2p_asflip_fused,
             fluid_pressure_setup,

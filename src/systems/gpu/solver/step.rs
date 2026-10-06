@@ -288,19 +288,42 @@ impl GpuSimulation {
         self.buffers
             .upload_grip_params(&self.queue, &self.grip_params);
 
-        // Day-night/ambient thermal diffusion (GPU port) -- uploaded once per frame,
-        // same pattern as grip_params above. `enabled == 0` (the default, every
-        // existing scene) makes the 4 thermal passes below skip their dispatch
-        // entirely, not just early-return per-thread -- not just disabled-in-name.
+        // The slow fields -- thermal diffusion and resource regrowth -- advance once per
+        // frame after the substeps (`encode_slow_fields`), over the frame's `config.dt`
+        // split into as many equal explicit passes as keep each at
+        // `material_cfl_coefficient` of its stable step, the same split CPU's
+        // `ThermalDiffusion::apply` makes. `enabled == 0` (the default) runs none. The
+        // reaction terms (Newton cooling, logistic growth) are applied by their exact
+        // solutions, so they set no step limit of their own.
+        let frame_dt = self.config.dt;
+        let fraction = self.config.material_cfl_coefficient;
+        let thermal_passes = if self.thermal_params.enabled != 0 {
+            crate::energy::thermodynamics::stable_sub_steps(
+                self.thermal_params.alpha * frame_dt,
+                fraction,
+            )
+        } else {
+            0
+        };
+        if thermal_passes > 0 {
+            self.thermal_params.dt = frame_dt / thermal_passes as f32;
+        }
         self.buffers
             .upload_thermal_params(&self.queue, &self.thermal_params);
-        let thermal_active = self.thermal_params.enabled != 0;
 
-        // Resource regrowth (GPU port) -- same upload + real dispatch-skip pattern as
-        // thermal above.
+        let resource_passes = if self.resource_params.enabled != 0 {
+            crate::energy::thermodynamics::stable_sub_steps(
+                self.resource_params.diffusivity * frame_dt,
+                fraction,
+            )
+        } else {
+            0
+        };
+        if resource_passes > 0 {
+            self.resource_params.dt = frame_dt / resource_passes as f32;
+        }
         self.buffers
             .upload_resource_params(&self.queue, &self.resource_params);
-        let resource_active = self.resource_params.enabled != 0;
 
         // ASFLIP (GPU port) -- same upload + real dispatch-skip pattern as thermal/
         // resource above, but the "skip" here means the fused g2p_asflip_fused pass
@@ -550,8 +573,6 @@ impl GpuSimulation {
                         SubstepGates {
                             force_fields_needed,
                             contact_active,
-                            thermal_active,
-                            resource_active,
                             asflip_active,
                             // Reuses the SAME `SimConfig` field CPU's own
                             // `step.rs` already gates on -- automatic
@@ -578,6 +599,29 @@ impl GpuSimulation {
                 wait_ns += wait_start.elapsed().as_secs_f32() * 1.0e9;
                 since_block = 0;
             }
+        }
+        if thermal_passes + resource_passes > 0
+            && let Some(bg) = bind_groups[..encoded_substeps].last()
+        {
+            let slow_start = std::time::Instant::now();
+            let mut slow_encoder =
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("mpm_slow_fields"),
+                    });
+            {
+                let mut pass = slow_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("mpm_slow_fields"),
+                    timestamp_writes: None,
+                });
+                pass.set_bind_group(0, bg, &[]);
+                pass.set_bind_group(1, &self.contact_bind_group, &[]);
+                pass.set_bind_group(2, &self.thermal_bind_group, &[]);
+                pass.set_bind_group(3, &self.resource_bind_group, &[]);
+                self.encode_slow_fields(&mut pass, particle_wg, thermal_passes, resource_passes);
+            }
+            self.queue.submit(std::iter::once(slow_encoder.finish()));
+            pure_encode_ns += slow_start.elapsed().as_secs_f32() * 1.0e9;
         }
         let encode_ns = pure_encode_ns;
         // Repurposed: real GPU-completion wait time between chunks, not always 0 --

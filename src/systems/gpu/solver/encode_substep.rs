@@ -16,8 +16,6 @@ use super::GpuSimulation;
 pub(super) struct SubstepGates {
     pub(super) force_fields_needed: bool,
     pub(super) contact_active: bool,
-    pub(super) thermal_active: bool,
-    pub(super) resource_active: bool,
     /// `true` means `g2p_asflip_fused` runs INSTEAD OF the ordinary `g2p` +
     /// `particles_update` pair for this substep -- not an extra optional pass being
     /// skipped, a REPLACEMENT of two passes with one. See `g2p_asflip_fused.wgsl`'s own
@@ -58,8 +56,6 @@ impl GpuSimulation {
             refresh_active_blocks,
             force_fields_needed,
             contact_active,
-            thermal_active,
-            resource_active,
             asflip_active,
             fluid_pressure_iterations,
         } = gates;
@@ -222,70 +218,57 @@ impl GpuSimulation {
             pass.dispatch_workgroups(particle_wg, 1, 1);
             self.profile_stamp(pass, 6, true);
         }
-        // Day-night/ambient thermal diffusion (GPU port) -- skipped ENTIRELY (not just
-        // early-returning per-thread) when no thermal system is attached, same
-        // dispatch-skip discipline as contact_active/force_fields_needed above. Runs
-        // after force_fields, matching CPU's own `ThermalDiffusion::apply` ordering
-        // ("after force fields, before state projection") -- fully decoupled from
-        // mechanics (operates only on particle.temperature), so exact ordering
-        // relative to force_fields doesn't affect correctness, just matches CPU's own
-        // call site for consistency.
-        if thermal_active {
-            let grid_res = self.config.grid_res as u32;
-            let cell_wg = (grid_res * grid_res).div_ceil(64);
-            {
-                pass.set_pipeline(&self.pipelines.thermal_clear);
-                pass.dispatch_workgroups(cell_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.thermal_p2g);
-                pass.dispatch_workgroups(particle_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.thermal_normalize_laplacian);
-                pass.dispatch_workgroups(cell_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.thermal_g2p);
-                pass.dispatch_workgroups(particle_wg, 1, 1);
-            }
-        }
-        // Resource regrowth (GPU port) -- same real dispatch-skip discipline as thermal
-        // above. Independent system (own buffers/group), can run alongside thermal in
-        // the same frame (both gated separately) even though both currently carry
-        // state in particle.temperature -- a scene using both simultaneously
-        // would need a second carrier, same limitation the CPU precedent has.
-        if resource_active {
-            let grid_res = self.config.grid_res as u32;
-            let cell_wg = (grid_res * grid_res).div_ceil(64);
-            {
-                pass.set_pipeline(&self.pipelines.resource_clear);
-                pass.dispatch_workgroups(cell_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.resource_p2g);
-                pass.dispatch_workgroups(particle_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.resource_normalize_laplacian);
-                pass.dispatch_workgroups(cell_wg, 1, 1);
-            }
-            {
-                pass.set_pipeline(&self.pipelines.resource_g2p);
-                pass.dispatch_workgroups(particle_wg, 1, 1);
-            }
-        }
         // The GPU's own CFL, LAST in the substep: it folds the particles' post-update
         // bounds (accumulated by `g2p_update`) into the NEXT substep's timestep, so every
-        // pass that consumes this substep's dt -- thermal diffusion and resource regrowth
-        // included -- must already have run. (Dispatching it earlier silently gave those
-        // two the next substep's dt, and zero on the frame's last substep: the thermal
-        // cooling test measured 95.5 where the analytical answer is 68.5.)
+        // pass that consumes this substep's dt must already have run.
         {
             self.profile_stamp(pass, 8, false);
             pass.set_pipeline(&self.pipelines.cfl_commit);
             pass.dispatch_workgroups(1, 1, 1);
             self.profile_stamp(pass, 8, true);
+        }
+    }
+
+    /// Encode the slow fields -- thermal diffusion and resource regrowth -- once per
+    /// frame, after the mechanics substeps, as CPU's `Simulation` applies
+    /// `ThermalDiffusion` once per `step()`. Each runs `passes` times, each pass
+    /// advancing its params' `dt` (the frame's `config.dt` over `passes`, set by
+    /// `step_frame`). Run every substep instead, the 8 dispatches cost 2.3 times the
+    /// mechanics of a 20 000-particle water pool at 78 substeps a frame. The caller has
+    /// set bind groups 0-3.
+    pub(super) fn encode_slow_fields(
+        &self,
+        pass: &mut wgpu::ComputePass<'_>,
+        particle_wg: u32,
+        thermal_passes: u32,
+        resource_passes: u32,
+    ) {
+        let grid_res = self.config.grid_res as u32;
+        let cell_wg = (grid_res * grid_res).div_ceil(64);
+        let p = &self.pipelines;
+        for _ in 0..thermal_passes {
+            for (pipeline, groups) in [
+                (&p.thermal_clear, cell_wg),
+                (&p.thermal_p2g, particle_wg),
+                (&p.thermal_normalize, cell_wg),
+                (&p.thermal_laplacian, cell_wg),
+                (&p.thermal_g2p, particle_wg),
+            ] {
+                pass.set_pipeline(pipeline);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
+        }
+        for _ in 0..resource_passes {
+            for (pipeline, groups) in [
+                (&p.resource_clear, cell_wg),
+                (&p.resource_p2g, particle_wg),
+                (&p.resource_normalize, cell_wg),
+                (&p.resource_laplacian, cell_wg),
+                (&p.resource_g2p, particle_wg),
+            ] {
+                pass.set_pipeline(pipeline);
+                pass.dispatch_workgroups(groups, 1, 1);
+            }
         }
     }
 }

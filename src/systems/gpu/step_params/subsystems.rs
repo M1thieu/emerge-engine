@@ -8,10 +8,11 @@
 /// Grid-based Fourier heat diffusion -- GPU mirror of `ThermalDiffusion`/`ThermalConfig`
 /// (`src/energy/thermodynamics/diffusion.rs`). Implements the same real PDE:
 /// `∂T/∂t = α·∇²T` (Fourier's law) plus Newton cooling `dT/dt = −k_c·(T−ambient)`.
-/// `dt` itself is NOT stored here -- the thermal pass reads `step_params.dt` (group 0)
-/// directly, since substep `dt` is already the single source of truth uploaded there
-/// every substep; duplicating it here would risk the two going out of sync.
-/// `enabled == 0` skips all 4 thermal passes entirely (see `contact_active`'s identical
+/// Advanced once per frame, after the mechanics substeps, as CPU's `Simulation`
+/// applies `ThermalDiffusion` once per `step()`: the frame's `config.dt` split into
+/// `stable_sub_steps` equal passes of `dt` each. Run every substep, the passes cost
+/// 2.3 times the mechanics of a 20 000-particle water pool (78 substeps a frame).
+/// `enabled == 0` skips all thermal passes entirely (see `contact_active`'s identical
 /// gate-when-unused pattern) -- every scene that never attaches thermal pays nothing.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -26,6 +27,10 @@ pub struct GpuThermalParams {
     /// 0 = no thermal system attached (default, every existing scene) -- skips all 4
     /// thermal passes. 1 = attached and active.
     pub enabled: u32,
+    /// Seconds one thermal pass advances: the frame's `config.dt` over the number of
+    /// passes `step_frame` runs. Written by `step_frame` before upload.
+    pub dt: f32,
+    pub _pad: [u32; 3],
 }
 
 impl GpuThermalParams {
@@ -35,11 +40,13 @@ impl GpuThermalParams {
             ambient: 0.0,
             cooling_rate: 0.0,
             enabled: 0,
+            dt: 0.0,
+            _pad: [0; 3],
         }
     }
 }
 
-const _: () = assert!(core::mem::size_of::<GpuThermalParams>() == 16);
+const _: () = assert!(core::mem::size_of::<GpuThermalParams>() == 32);
 
 /// Generic reaction-diffusion resource field -- GPU mirror of `ScalarDiffusionField`
 /// (`src/energy/thermodynamics/scalar_field.rs`), specialized to the one source term
@@ -59,9 +66,12 @@ pub struct GpuResourceParams {
     pub resource_r: f32,
     /// Logistic carrying capacity K.
     pub resource_k: f32,
-    /// 0 = no resource system attached (default) -- skips all 4 passes entirely.
+    /// 0 = no resource system attached (default) -- skips all passes entirely.
     pub enabled: u32,
-    pub _pad: [u32; 3],
+    /// Seconds one resource pass advances, as `GpuThermalParams::dt`: the field runs
+    /// once per frame, not every mechanics substep.
+    pub dt: f32,
+    pub _pad: [u32; 2],
 }
 
 impl GpuResourceParams {
@@ -72,7 +82,8 @@ impl GpuResourceParams {
             resource_r: 0.0,
             resource_k: 0.0,
             enabled: 0,
-            _pad: [0; 3],
+            dt: 0.0,
+            _pad: [0; 2],
         }
     }
 }
