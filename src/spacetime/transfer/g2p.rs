@@ -7,6 +7,7 @@ use crate::grid::kernel::quadratic_weights;
 use crate::materials::registry::MaterialRegistry;
 use crate::particle::{ParticleUpdateCtx, Particles};
 use crate::solver::config::KERNEL_D_INVERSE;
+use crate::spacetime::integration::advance_position;
 
 /// Raw pointers to every mutable field `gather_grid_to_particles`' merged
 /// parallel pass needs, taken once before the loop -- see that function's own
@@ -23,6 +24,7 @@ struct MutFieldPtrs {
     log_volume_strain: *mut f32,
     friction_hardening: *mut f32,
     eps_pl_vol_pradhana: *mut f32,
+    position_residual: *mut Vec2,
 }
 // SAFETY: raw pointers aren't Send/Sync by default, but this type is only ever
 // used to derive disjoint per-index references (see the SAFETY comment where
@@ -59,6 +61,14 @@ impl MutFieldPtrs {
     ///
     /// SAFETY: caller must ensure `i` is unique across every concurrent call
     /// (see the SAFETY comment where `MutFieldPtrs` is constructed).
+    /// Pointer to the position residual of particle `i`
+    /// (`Particles::position_residual`). Not part of `ParticleUpdateCtx`: only
+    /// the position advance reads it. A method for the same capture reason as
+    /// `ctx_at`; dereferencing it carries `ctx_at`'s SAFETY contract.
+    fn position_residual_ptr(&self, i: usize) -> *mut Vec2 {
+        self.position_residual.wrapping_add(i)
+    }
+
     unsafe fn ctx_at(&self, i: usize, s: ParticleReadOnlyScalars) -> ParticleUpdateCtx<'_> {
         unsafe {
             ParticleUpdateCtx {
@@ -306,6 +316,7 @@ pub fn gather_grid_to_particles(
         log_volume_strain: particles.log_volume_strain.as_mut_ptr(),
         friction_hardening: particles.friction_hardening.as_mut_ptr(),
         eps_pl_vol_pradhana: particles.eps_pl_vol_pradhana.as_mut_ptr(),
+        position_residual: particles.position_residual.as_mut_ptr(),
     };
     // Gate once, not per particle: when no grip particle ever touched the grid this
     // substep (every scene that doesn't use `Particle::contact_group`), this is false
@@ -461,10 +472,21 @@ pub fn gather_grid_to_particles(
                     v_position = new_v + gamma * asflip_blend * diff_vel;
                 }
 
+                // Compensated `x += v dt` (issue #47): the part of the step
+                // f32 rounds away at this coordinate is carried to the next.
+                // SAFETY: see the SAFETY comment on `ptrs` above.
+                let residual = unsafe { &mut *ptrs.position_residual_ptr(i) };
+                let mut new_pos = *ctx.x;
+                advance_position(&mut new_pos, residual, v_position * dt);
+                let advanced = new_pos;
                 // Apply all boundaries' position clamp (pure function, no particle-struct access).
-                let mut new_pos = *ctx.x + v_position * dt;
                 for boundary in boundaries.iter() {
                     new_pos = boundary.clamp_particle_position(new_pos, grid_res);
+                }
+                // A clamped particle sits exactly where the boundary put it; the
+                // residual of the step it did not take is dropped with that step.
+                if new_pos != advanced {
+                    *residual = Vec2::ZERO;
                 }
 
                 *ctx.v = v_store;

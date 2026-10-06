@@ -61,9 +61,14 @@ pub(super) fn project_particle_state_to_admissible(
 
     if !particles.x[i].is_finite() {
         particles.x[i] = domain_center;
+        particles.position_residual[i] = Vec2::ZERO;
         projected = true;
     } else {
-        particles.x[i] = particles.x[i].clamp(Vec2::splat(min), Vec2::splat(max));
+        let clamped = particles.x[i].clamp(Vec2::splat(min), Vec2::splat(max));
+        if clamped != particles.x[i] {
+            particles.position_residual[i] = Vec2::ZERO;
+        }
+        particles.x[i] = clamped;
     }
 
     if !particles.v[i].is_finite() {
