@@ -305,7 +305,14 @@ const SAND_ID: u32 = 1;
 const WATER_ID: u32 = 2;
 
 fn build_mixed_sim(n_each: usize) -> Simulation {
-    let config = base_config();
+    // The CFL limit asks for 112-114 substeps per step in this scene at every
+    // size benched (the stiffest material binds); 128 leaves headroom. At the
+    // shared config's 64 the strict WC-MPM fluid drops 43 % of the first step
+    // and panics, as it should rather than advance short.
+    let config = SimConfig {
+        max_substeps_per_step: 128,
+        ..base_config()
+    };
     let side = ((n_each as f32).sqrt() * 0.5).ceil() as i32;
 
     let jelly_spawn = SpawnRegion {
@@ -809,24 +816,6 @@ fn bench_grains_contact_resolution(c: &mut Criterion) {
 
 // ── registry ──────────────────────────────────────────────────────────────
 
-// KNOWN BROKEN (found 2026-08-21, not fixed, real and disclosed): running
-// the full group below via `cargo bench --bench scaling` currently panics
-// inside `bench_mixed_materials`'s own setup (`build_mixed_sim`'s `sim.
-// step_n(10)`) -- "strict WC-MPM fluid could not advance the full requested
-// dt ... a genuine CFL/retry instability, not a false alarm". NOT reproduced
-// in any debug-mode test tonight (the whole `cargo test` suite is green,
-// see [[grain_apic_and_boundary_default_stacking_bug_2026-08-20]]) -- this
-// bench file compiles in the `bench` (release-like, optimized) profile,
-// and criterion only skips a filtered-out benchmark's TIMED closure, not
-// the setup code every `fn bench_xxx` runs unconditionally before it, so
-// even `-- grains` doesn't avoid it. Plausibly a real release-only
-// numerical-precision instability (different FP rounding/optimization than
-// this whole project's debug-only convention has ever exercised), not yet
-// investigated -- a genuinely separate issue from the grain perf work this
-// session's own investigation was actually scoped to. `bench_g2p`'s call to
-// `gather_grid_to_particles` was ALSO found and fixed here tonight (missing
-// two args the function's own signature has long since gained -- this whole
-// file had clearly not been run/maintained in a while).
 criterion_group!(
     benches,
     step_scaling,
