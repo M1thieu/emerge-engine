@@ -66,13 +66,14 @@ mod render_mode;
 /// measurements, and the scene is worth nothing without them stated:
 ///
 ///   0. Gravity starts at zero, and not to make the scene behave.
-///      Three free pools of water under real gravity flatten and run
-///      into each other within two seconds (measured: 38 to 47 cells
-///      across in a 64-cell tank), and a strict weakly-compressible
-///      liquid has no wall in this engine it is declared compatible
-///      with, so there is nothing honest to keep them apart. Weightless
-///      is what isolates the one law this scene is about. The gravity
-///      slider turns it back on, and they do flood.
+///      `StaticBoxBoundary` can now hold three pools apart in beakers,
+///      but under gravity a resting liquid in this engine packs its
+///      particles closer than their own volume says, so the levels sink
+///      below the rule: measured in three 18-cell beakers, 7 to 9 % low
+///      after two seconds while every density stays within 0.05 % of
+///      it (see `KNOWN_LIMITATIONS.md`). Weightless is what isolates the
+///      one law this scene is about. The gravity slider turns it back
+///      on, and with no beakers here the pools do flood.
 ///   1. Steam at 100 C and one atmosphere is 0.598 kg/m3, a 1673:1 ratio
 ///      against water. This scene runs 6:1, so a fully boiled particle
 ///      expands six times rather than sixteen hundred. The rule is exact;

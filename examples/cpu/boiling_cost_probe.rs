@@ -76,10 +76,11 @@ fn main() {
     // Zero by default, and not to make the scene behave: three free
     // pools of water under gravity flatten and run into each other
     // within two seconds (measured: 38 to 47 cells across in a 64-cell
-    // tank), and the engine has no wall a strict WC-MPM liquid is
-    // declared compatible with to keep them apart. Without gravity each
-    // column holds its own shape, which is what isolates the mixture
-    // rule being tested here.
+    // tank). Beakers built from `StaticBoxBoundary` keep them apart, but
+    // a resting liquid under gravity packs its particles below the level
+    // its own volume says (see `KNOWN_LIMITATIONS.md`), which would sit
+    // on top of the rule being tested. Without gravity each column holds
+    // its own shape, which is what isolates the mixture rule.
     let gravity_fraction = env("BOIL_PROBE_G", 0.0);
     let mut config = SimConfig {
         min_dt: 1.0e-7,
