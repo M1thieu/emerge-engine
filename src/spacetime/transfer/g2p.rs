@@ -429,8 +429,9 @@ pub fn gather_grid_to_particles(
                 // Material Point Method" -- see `SimConfig::asflip_blend` doc). Reintroduces
                 // the classic FLIP residual (`v_p_old - old_v`) on top of the PIC/APIC gather
                 // above -- `old_v` is a PIC-style gather against the grid's PRE-FORCE velocity
-                // (`pre_force_snapshot`, taken right after P2G's own momentum normalization,
-                // before this substep's gravity/boundary/contact modified it), using the SAME
+                // (`pre_force_snapshot`: P2G's normalized momentum with its fused stress
+                // impulse taken back out, before this substep's gravity/boundary/contact
+                // modified it; `Grid::snapshot_velocities_before_stress`), using the SAME
                 // stencil weights as `new_v` above. `pre_force_snapshot` being `None` (the
                 // default, `asflip_blend=0.0`) is the gate: `v_store`/`v_position` both
                 // stay exactly `new_v`, reproducing the original formula below bit-for-bit.

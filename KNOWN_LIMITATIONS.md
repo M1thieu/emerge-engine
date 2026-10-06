@@ -316,9 +316,13 @@ its own to explain or calm that particular runaway.
 - **Time convergence and energy lost per substep.** With APIC, a free
   elastic block keeps 0.69, 0.51 and 0.37 of its energy after the same
   physical time at 256, 1024 and 4096 steps (the exact answer is 1.0):
-  smaller steps mean more artificial damping. ASFLIP, available through
-  `asflip_blend`, does not fix it: 0.53 at blend 0.5, and at blend 0.97 it
-  creates energy (1.16 at 4096 steps). Candidates: PolyPIC (Fu et al. 2017,
+  smaller steps mean more artificial damping. The figures once recorded
+  here for `asflip_blend` (0.53 at blend 0.5, energy gain at 0.97) were
+  measured against a pre-force snapshot that still carried P2G's fused
+  stress impulse, the real bug fixed in `f19e331`; see "A sheared column
+  runs out less with more substeps" for the corrected, re-measured
+  behaviour and its remaining, expected `(1 - blend)` residual. Candidates
+  for APIC's own loss above, unaffected by that fix: PolyPIC (Fu et al. 2017,
   [doi:10.1145/3130800.3130878](https://doi.org/10.1145/3130800.3130878)),
   which lowers the loss per transfer without changing the order, and an
   energy-momentum consistent implicit MPM (Love and Sulsky 2006, [doi:10.1002/nme.1512](https://doi.org/10.1002/nme.1512)), which
@@ -591,24 +595,28 @@ Still open:
   law's own doc records why it was dropped: an unbalanced atmosphere on
   every particle drove J to its maximum.
 
-### A granular column runs out half as far as the experiment
+### A sheared column runs out less with more substeps: APIC transfer dissipation
 
-A cohesionless Drucker-Prager column of aspect ratio 4, released on both
-sides on a friction floor, stops at 13.3 cells where Lube, Huppert, Sparks
-and Freundt 2005 (Phys. Rev. E 72, 041301, series A, Eq. 4) measured 23.2:
-its runout beyond the column's edge is 0.49 of theirs, its central height
-6.6 cells against 7.7 (`sand_column_collapse_runout_against_lube_2005`).
-Not measured to a cause yet. The pile it leaves stands at 26.3° where dry
-sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH #28), so the
-same collapse both stops short and ends too flat.
+`sand_column_collapse_runout_against_lube_2005` used to run an 8x16-cell
+grid-unit column (4 cells per half-width) and record 0.49 of Lube, Huppert,
+Sparks and Freundt 2005's (Phys. Rev. E 72, 041301, series A, Eq. 4)
+predicted runout as an unexplained gap. Rebuilt at the sand's real size
+(their Tables I-II: 1.95 cm half-width, 29.5° repose) and 16 cells per
+half-width, it reproduces their runout within measurement: the farthest
+particle (what they measured) reads 0.96 of their prediction, the deposit's
+98th percentile 0.79. Most of the old 0.49 was that coarse column, not a
+general defect. The pile this same collapse leaves still stands at 26.3°
+where dry sand stands at 30-35° (`sand_angle_of_repose_is_physical`, GH
+#28), a separate gap from the runout question above, and stays open; see
+below.
 
-Five candidates are measured and ruled out:
-- Matching the cone to 2D Mohr-Coulomb moves the pile 0.3°.
+Four candidates were checked for the old gap and ruled out:
+- Matching the cone to 2D Mohr-Coulomb moves the repose pile 0.3°.
 - The tension cutoff, which takes 70 % of a settled pile's particles each
   substep (`dp_update_cost_breakdown`), is what lets this sand flow: with
   `use_pradhana` the column does not collapse.
 - The volume a cutoff removes, carried in `log_volume_strain`: without it
-  (`volume_correction = 0`) the pile reads 26.9° and the runout is
+  (`volume_correction = 0`) the repose pile reads 26.9° and the runout is
   unchanged.
 - Forgetting that history once a particle leaves the cutoff, as the
   reference code of Tampubolon et al. 2017 does (ziran2020's
@@ -616,10 +624,102 @@ Five candidates are measured and ruled out:
   tension case; this engine, like sparkl, never does): measured in a scratch
   build, repose, runout and fitted slope are unchanged, because the
   particles concerned never leave the cutoff.
-- Resolution, below.
 
-A property of this model found on the way, not a cause of either gap: most
-of a settled pile sits at the tip of the cone, stress-free, every substep.
+The real missing piece was resolution, but not the resolution sweep below:
+that one measured the repose pile's *slope* converging near 21°, never this
+test's *runout*, so it never actually checked whether runout had converged.
+Run at the column's own real size, the bulk deposit (98th percentile)
+converges by 16 cells per half-width (4.86 then 4.94 half-widths at 16 vs
+40 cells, no friction hardening); the farthest particle keeps creeping out
+with every refinement, the same thin-foot effect as the repose test's base.
+Release geometry (symmetric vs against a back wall) was checked too and
+ruled out, matching within 1% at both 4 and 16 cells per half-width.
+
+New: runout falls with substep count, not stiffness. At 4 cells per
+half-width, E = 10 MPa with `material_cfl_coefficient` cut by 10 (36 000
+substeps instead of 3 600)
+gives the same runout as E = 1 GPa at the normal coefficient (r* 2.70/2.40
+against 2.69/2.39, front/98th percentile): the two are the same effect,
+and it is the substep count, not E.
+
+First suspected a `FrictionBoundary` wall artefact (the earlier text here
+said so); a later control rules that out. A column of this sand resting on
+an 8-cell bed of the SAME sand, its own shear at least 8 cells from any
+wall, well past the quadratic kernel's 1.5-cell reach, shows the same size
+of dependence with no wall anywhere near the shear: r* 4.23/3.66 at x1,
+3.11/2.98 at x10, -26%/-19%. A sticking floor, the Coulomb floor, and a
+two-field contact floor all show the same 15-37% range; only a frictionless
+`SlipBoundary` does not, because that floor lets the column slide as a
+near-plug flow with little real shear to begin with, not because walls are
+immune to this. So the dependence lives in sheared flow itself, not in how
+a wall condition is imposed; a wall-side fix (Nairn's multi-node boundary
+condition, Toyota & Umetani's augmented grid points, or reusing the
+two-field contact machinery for walls) would not address it.
+
+Isolated with no plasticity and no wall at all: a free `CorotatedMaterial`
+block with a standing shear wave as its initial condition (the exact
+gradient given to APIC's C matrix), tracked by total energy (kinetic plus
+corotated strain energy), which a real elastic solid should conserve. After
+13 wave periods, total energy over its start reads 0.72 at 1000 substeps
+and 0.13 at 9000 for the same real time; the coherent mode's kinetic peak
+reads 0.45 against 0.087. Same mechanism, same direction, with nothing
+plastic and nothing granular involved.
+
+The cause is APIC's own transfer dissipation, a documented property of
+this transfer family, not an engine-specific defect: Nairn and Hammerquist,
+*Material Point Method Simulations using an Approximate Full Mass Matrix
+Inverse* (preprint, dated 10 October 2025 on the copy read, no journal
+reference found in the text), Sec. 1 calls the lumped mass matrix's energy
+loss "detrimental"; Sec. 3.1 states that their PIC-family transfer "does
+not converge with reduced time step, dissipation increases as the time
+step decreases", because every step replaces particle velocities with
+grid-extrapolated ones; Sec. 2.6 states "APIC has significant dissipation
+(albeit much less dissipation than non-affine PIC methods)". APIC is this
+engine's own transfer. More substeps means more such replacements per real
+second, so a material needing more substeps (stiffer, or any scene run at
+a finer CFL) loses more of a shear flow's energy, independent of plasticity
+or walls.
+
+A side finding from the same probe GAINED energy instead of reducing this
+dissipation: confirmed as a real bug, not a property of `asflip_blend`
+itself, and fixed in `f19e331`. ASFLIP's FLIP residual and Cundall
+damping both compare the grid against its velocity before this substep's
+forces; the snapshot was taken after P2G's own momentum normalization,
+which already carries this substep's stress impulse (the fused MLS-MPM
+transfer adds it there), so the comparison point was never actually
+pre-force. At blend 0.97 that let only 3% of the real elastic restoring
+force reach the FLIP correction, while the deformation gradient kept
+accumulating strain normally: energy gain, not conservation. Cundall
+damping shared the identical bug and, with no gravity, wall or contact
+force to see, did nothing at all regardless of its coefficient.
+
+Fixed by recomputing the stress term alone (`scatter_particle_stress_impulse`)
+and subtracting it back out of the snapshot (`Grid::snapshot_velocities_before_stress`),
+matching Fei et al. 2021's own Eq. 12, which transfers the pre-force
+velocity without the stress impulse. Re-measured on the same shear-wave
+probe: ASFLIP at blend 0.97 now reads 1.31 of its start energy at 0.5 s
+(was 24-34x), Cundall damping at 0.75 now reads 0.0026 of an otherwise
+undamped 1.04 (was identical to no damping at all). GPU matches CPU to
+four digits.
+
+The substep-count dependence on the real sand column shrinks under the
+fixed ASFLIP but is not zero: at blend 0.97, x10 substeps run 14% shorter
+than x1, against 24% under plain APIC. This is not a remaining bug: the
+gather itself is `v_store = new_v + asflip_blend * diff_vel`
+(`transfer::g2p`), a direct blend between the dissipative APIC gather and
+the FLIP residual that cancels it, so an incomplete correction of order
+`(1 - asflip_blend)` is expected by construction, not a leftover defect.
+A blend sweep on the same column (0.97, 0.99, 0.995) shows the residual
+shrinking toward 0 as blend approaches 1, the signature of that
+`(1 - blend)` term, not of an unresolved mechanism. Running every scene
+at `asflip_blend` near 1.0 is not free: ASFLIP costs about +20% on this
+scene (one extra stress pass every substep) and the FLIP side of the
+blend is itself noisier, so this is a real tradeoff, not a strictly
+better default.
+
+A property of this model found on the way, not a cause of the repose gap or
+the stiffness dependence above: most of a settled pile sits at the tip of
+the cone, stress-free, every substep.
 More than 8 cells deep, 66 % of the particles take the tension cutoff under
 the pile's weight (`settled_pile_creep_by_depth`). Each carries a small
 positive volume history (about 1e-3) from the impact, repaid only by

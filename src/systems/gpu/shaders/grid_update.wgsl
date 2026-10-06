@@ -170,11 +170,15 @@ fn update_cell(cx: u32, cy: u32, res: u32) {
 
     // ASFLIP: snapshot the pre-force velocity right after momentum normalization,
     // before gravity/boundary/CFL-clamp below modify it -- the exact same instant CPU's
-    // Grid::snapshot_velocities captures (see solver/step.rs's normalize_velocities ->
-    // snapshot -> apply_gravity ordering). Real gate: `enabled == 0` (default) means
-    // this write never happens, zero cost for every scene that never attaches ASFLIP.
+    // Grid::snapshot_velocities_before_stress captures (see solver/step.rs's
+    // normalize_velocities -> snapshot -> apply_gravity ordering). The slot holds the
+    // stress impulse p2g.wgsl accumulated there; it is taken back out of the fused
+    // momentum, as Fei et al.'s Eq. 12 transfers the velocity without it. Real gate:
+    // `enabled == 0` (default) means this never runs, zero cost for every scene that
+    // never attaches ASFLIP.
     if asflip_params.enabled != 0u {
-        asflip_snapshot[cy * res + cx] = vel;
+        let stress_impulse = asflip_snapshot[cy * res + cx];
+        asflip_snapshot[cy * res + cx] = vel - stress_impulse / mass;
     }
 
     vel += step_params.gravity * substep_dt();

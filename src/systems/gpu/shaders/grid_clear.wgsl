@@ -84,6 +84,17 @@ const MAX_RENDER_MATERIAL_SLOTS: u32 = 16u;
 @group(1) @binding(30) var<storage, read_write> material_mass:        array<f32>;
 @group(1) @binding(31) var<uniform>              material_mass_params: MaterialMassParams;
 
+// ASFLIP (Fei et al. 2021) -- see GpuAsflipParams' own Rust doc. `asflip_snapshot`
+// first accumulates p2g's stress impulse, so it is zeroed with the grid.
+struct AsflipParams {
+    blend:   f32,
+    enabled: u32,
+    _pad0:   u32,
+    _pad1:   u32,
+}
+@group(3) @binding(28) var<uniform>             asflip_params:   AsflipParams;
+@group(3) @binding(29) var<storage, read_write> asflip_snapshot: array<vec2<f32>>;
+
 // Dispatch: (2 * NUM_BLOCKS, 1, 1) workgroups, every frame, fixed -- worst case (every block
 // active, in both lists) never overflows. workgroup_id.x is a SLOT, not a block ID. Slots
 // 0..NUM_BLOCKS index THIS substep's active_block_ids; slots NUM_BLOCKS..2*NUM_BLOCKS index
@@ -144,6 +155,9 @@ fn grid_clear_main(
                 grip_grid[idx].momentum = vec2<f32>(0.0, 0.0);
                 grip_grid[idx].mass     = 0.0;
                 grip_grid[idx]._pad     = 0.0;
+            }
+            if asflip_params.enabled != 0u {
+                asflip_snapshot[idx] = vec2<f32>(0.0, 0.0);
             }
             if material_mass_params.enabled != 0u {
                 let mm_base = idx * MAX_RENDER_MATERIAL_SLOTS;

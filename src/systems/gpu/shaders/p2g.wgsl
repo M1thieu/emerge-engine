@@ -190,6 +190,21 @@ struct MaterialMassParams {
 @group(1) @binding(30) var<storage, read_write> material_mass_atomic: array<atomic<i32>>;
 @group(1) @binding(31) var<uniform>              material_mass_params: MaterialMassParams;
 
+// ASFLIP (Fei et al. 2021) -- see GpuAsflipParams' own Rust doc. While ASFLIP is on,
+// `asflip_snapshot` (bound here as raw atomics, the same dual-view convention as `grid`)
+// first accumulates each node's stress impulse, which grid_update.wgsl takes back out
+// of the node velocity for the pre-force snapshot: Fei et al.'s Eq. 12 transfers
+// `m_p (v_p + C_p (x_i - x_p))` alone for that velocity, and the fused momentum below
+// carries the stress impulse too. See CPU's `scatter_particle_stress_impulse`.
+struct AsflipParams {
+    blend:   f32,
+    enabled: u32,
+    _pad0:   u32,
+    _pad1:   u32,
+}
+@group(3) @binding(28) var<uniform>             asflip_params:          AsflipParams;
+@group(3) @binding(29) var<storage, read_write> asflip_stress_atomic:   array<atomic<i32>>;
+
 // Exact copy of resolve_contact.wgsl's block_index_of -- WGSL has no cross-file
 // includes, so this is duplicated the same way MASS_ATOMIC_SCALE etc. already are
 // across shader files. Must stay byte-for-byte identical: gather_contact_points_main
@@ -504,6 +519,20 @@ fn atomic_add_f32_grid(idx: u32, val: f32) {
         old = swapped.old_value;
     }
 }
+// Exact f32 add into the ASFLIP stress-impulse accumulator, same CAS loop as
+// `atomic_add_f32_grid`.
+fn asflip_stress_add_f32(idx: u32, val: f32) {
+    var old = atomicLoad(&asflip_stress_atomic[idx]);
+    loop {
+        let swapped = atomicCompareExchangeWeak(
+            &asflip_stress_atomic[idx],
+            old,
+            bitcast<i32>(bitcast<f32>(old) + val),
+        );
+        if swapped.exchanged { break; }
+        old = swapped.old_value;
+    }
+}
 fn grip_atomic_addf_mass(idx: u32, val: f32) {
     atomicAdd(&grip_grid_atomic[idx], i32(round(val * MASS_ATOMIC_SCALE)));
 }
@@ -660,6 +689,12 @@ fn scatter_particle(p: Particle, base: vec2<i32>, origin: vec2<i32>) {
                 atomic_add_f32_grid(base4 + 0u, apic_mom.x + stress_mom.x);
                 atomic_add_f32_grid(base4 + 1u, apic_mom.y + stress_mom.y);
                 atomic_add_f32_grid(base4 + 2u, mass_w);
+            }
+
+            if asflip_params.enabled != 0u {
+                let node2 = (u32(cy) * res + u32(cx)) * 2u;
+                asflip_stress_add_f32(node2 + 0u, stress_mom.x);
+                asflip_stress_add_f32(node2 + 1u, stress_mom.y);
             }
 
             // Multi-field contact (GPU port, first slice): additive second scatter for

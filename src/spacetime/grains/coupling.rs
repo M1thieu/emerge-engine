@@ -69,8 +69,9 @@ pub fn scatter_grains_to_grid(grains: &GrainPopulation, grid: &mut Grid) {
 /// ASFLIP (Fei, Guo, Wu, Huang & Gao 2021, as in
 /// `gather_grid_to_particles`): adds the FLIP residual (`v_old - old_v`) on
 /// top of the APIC gather, `old_v` gathered with the same weights from the
-/// pre-force snapshot (`pre_force_snapshot`, taken after P2G's momentum
-/// normalization, before gravity, boundaries and contact). `None`
+/// pre-force snapshot (`pre_force_snapshot`: P2G's normalized momentum
+/// with its fused particle stress impulse taken back out, before gravity,
+/// boundaries and contact; `Grid::snapshot_velocities_before_stress`). `None`
 /// (`asflip_blend = 0.0`, the default) leaves `grain.v = new_v`. No
 /// compression-aware `gamma` split: that exists because particle G2P also
 /// advances position, while grains advance in `apply_grain_contact_forces`.

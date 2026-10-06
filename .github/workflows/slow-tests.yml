@@ -29,6 +29,7 @@ jobs:
               unconfined_pile_with_cundall_damping_reaches_real_repose_angle
               confined_pile_with_cundall_damping_reaches_real_repose_angle
               sand_collapse_with_phase_gated_relaxation_after_dynamics
+              sand_column_collapse_runout_against_lube_2005
           - suite: physics
             target: physics_correctness
             tests: >-

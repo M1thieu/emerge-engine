@@ -471,24 +471,37 @@ impl Grid {
         }
     }
 
-    /// Snapshot of every active cell's CURRENT velocity, keyed the same way as `cells`
-    /// (flat index → velocity). Used only by ASFLIP (`SimConfig::asflip_blend > 0.0`) to
-    /// capture the grid's velocity right after `normalize_velocities` -- i.e. before this
-    /// substep's gravity, boundary conditions, or contact resolution modify it -- so G2P
-    /// can later compute the classic FLIP residual `v_p_old - old_v` (Fei et al. 2021).
-    /// O(touched cells), not O(grid²): iterates `dirty`, not the full domain. Never called
-    /// when ASFLIP is disabled (the default), so this has zero cost for every other scene.
-    pub fn snapshot_velocities(&self) -> VelocitySnapshot {
+    /// Every active cell's velocity before this substep's forces, keyed the same way
+    /// as `cells` (flat index -> velocity), for ASFLIP's FLIP residual
+    /// `v_p_old - old_v` (Fei et al. 2021) and Cundall damping's unbalanced-force
+    /// proxy. Call it right after `normalize_velocities`, before gravity, boundary
+    /// conditions or contact touch the grid, with `stress_impulse` from
+    /// `transfer::scatter_particle_stress_impulse`: the fused P2G has already added
+    /// this substep's stress impulse to each node, and it is taken back out here
+    /// (see that function's doc). A pinned node keeps its prescribed zero.
+    /// O(touched cells), not O(grid²): iterates `dirty`, not the full domain. Never
+    /// called when both features are off (the default).
+    pub(crate) fn snapshot_velocities_before_stress(
+        &self,
+        stress_impulse: &CellMap,
+    ) -> VelocitySnapshot {
         let mut snapshot = HashMap::with_capacity_and_hasher(self.dirty.len(), FxU32BuildHasher);
         for &idx in &self.dirty {
             if let Some(cell) = self.cells.get(&idx) {
-                snapshot.insert(idx, cell.momentum);
+                let mut velocity = cell.momentum;
+                if cell.mass > 0.0
+                    && !self.pinned_nodes.contains(&idx)
+                    && let Some(impulse) = stress_impulse.get(&idx)
+                {
+                    velocity -= impulse.momentum / cell.mass;
+                }
+                snapshot.insert(idx, velocity);
             }
         }
         snapshot
     }
 
-    /// Reads a pre-force velocity snapshot (see `snapshot_velocities`) at `cell_pos`,
+    /// Reads a pre-force velocity snapshot (see `snapshot_velocities_before_stress`) at `cell_pos`,
     /// mirroring `velocity_at`'s own OOB/untouched-is-zero convention exactly.
     pub fn pre_force_velocity_at(&self, snapshot: &VelocitySnapshot, cell_pos: IVec2) -> Vec2 {
         let Some(idx) = flat_index(cell_pos, self.resolution) else {
@@ -499,9 +512,13 @@ impl Grid {
 
     /// Cundall (1982/1987) local non-viscous damping -- see `SimConfig::cundall_damping`'s
     /// doc for the citation/rationale. Compares each active cell's CURRENT
-    /// velocity against `pre_force` (the same pre-gravity/boundary/contact snapshot
-    /// ASFLIP already takes -- see `snapshot_velocities`), treating the delta as a real
-    /// proxy for the force applied this substep (Δv = F·dt/m at fixed dt/mass), and
+    /// velocity against `pre_force` (the same pre-force snapshot ASFLIP takes -- see
+    /// `snapshot_velocities_before_stress`), treating the delta as a real proxy for the
+    /// force applied this substep (Δv = F·dt/m at fixed dt/mass), internal stress
+    /// included. Until the snapshot took P2G's fused stress impulse back out, the
+    /// delta held only gravity, walls and contact: on a free elastic block with
+    /// no gravity, coefficient 0.75 damped nothing at all, and it now stops the
+    /// block's shear wave within 0.1 s. It
     /// damps the component of velocity that delta is driving -- proportional to the
     /// FORCE magnitude, not velocity magnitude (that distinction is the whole point:
     /// ordinary viscous damping scales with speed, this scales with how hard something

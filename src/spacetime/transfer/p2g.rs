@@ -227,6 +227,63 @@ pub fn scatter_particles_to_grid(
     scatter_second_pass(particles, grid, materials, dt, active_count);
 }
 
+/// The stress term of `scatter_one_into`'s node momentum on its own,
+/// `sum_p w_ip s_p (S_p d_ip)`, for every node a particle touches. Each
+/// entry's `momentum` holds that impulse; `mass` stays zero.
+///
+/// ASFLIP's FLIP residual and Cundall damping both need the grid velocity
+/// from before this substep's forces. The fused MLS-MPM transfer has
+/// already added the stress impulse to the node momentum, so
+/// `Grid::snapshot_velocities_before_stress` takes this map back out. Fei,
+/// Guo, Wu, Huang and Gao 2021 (ACM TOG 40(4) 109, Eq. 12) transfer
+/// `m_p (v_p + C_p (x_i - x_p))` alone for that velocity, and their
+/// reference code (pyasflip) scatters it as a separate `grid_v0`. Left in,
+/// the residual cancels the stress force: at blend 0.97 particles received
+/// 3 % of it while `F` kept straining, and an elastic shear wave gained
+/// 12-34x its energy.
+///
+/// Recomputes each particle's stress, so it is called only when one of
+/// the two features is on.
+pub(crate) fn scatter_particle_stress_impulse(
+    particles: &Particles,
+    materials: &MaterialRegistry,
+    dt: f32,
+    resolution: usize,
+    active_count: usize,
+) -> CellMap {
+    let min_len = (active_count / (rayon::current_num_threads() * 2)).max(1);
+    (0..active_count)
+        .into_par_iter()
+        .with_min_len(min_len)
+        .fold(CellMap::default, |mut acc, i| {
+            let material_id = particles.material_id[i];
+            let x = particles.x[i];
+            let passive_tau = materials.kirchhoff_stress(material_id, particles, i);
+            let material = materials.get(material_id);
+            let stress = combined_kirchhoff_stress_from(passive_tau, material, particles, i);
+            let stress_coeff =
+                -materials.stress_volume(material_id, particles, i) * KERNEL_D_INVERSE * dt;
+            let weights = quadratic_weights(x);
+            let impulse = stress * stress_coeff;
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    let cell_pos = weights.base_cell + IVec2::new(gx as i32 - 1, gy as i32 - 1);
+                    let Some(idx) = flat_index(cell_pos, resolution) else {
+                        continue;
+                    };
+                    let weight = weights.wx[gx] * weights.wy[gy];
+                    let cell_dist = cell_pos.as_vec2() - x + Vec2::splat(0.5);
+                    acc.entry(idx).or_default().momentum += weight * (impulse * cell_dist);
+                }
+            }
+            acc
+        })
+        .reduce(CellMap::default, |mut a, b| {
+            merge_cell_maps(&mut a, b);
+            a
+        })
+}
+
 /// Opt-in spatial-sort variant of `scatter_particles_to_grid`'s dense first
 /// pass (`SimConfig::spatial_sort_enabled`; Gao et al. 2018 SIGGRAPH Asia,
 /// "GPU Optimization of Material Point Methods": periodic reordering for cache

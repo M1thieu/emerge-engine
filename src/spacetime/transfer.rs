@@ -22,6 +22,7 @@ pub use friction_heat::{gather_friction_heat_to_particles, grid_kinetic_energy};
 pub use g2p::{
     G2PParams, f_update_vjp, g2p_affine_vjp, g2p_velocity_vjp, gather_grid_to_particles,
 };
+pub(crate) use p2g::scatter_particle_stress_impulse;
 #[cfg(any(test, feature = "research-diagnostics"))]
 pub use p2g::{GridNodeP2GComponents, diagnose_grid_p2g_components};
 pub use p2g::{

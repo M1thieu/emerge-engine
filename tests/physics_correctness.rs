@@ -9476,3 +9476,96 @@ fn a_settling_fluid_slab_does_not_gain_volume() {
         "a fluid that can be pulled on should rarely hit its cavitation pressure, {clamped} of {expanded} expanded particles clamped"
     );
 }
+
+/// A free elastic block (corotated, E 10 MPa, nu 0.2, rho 1500, 8 cells/m, no
+/// gravity, far from every wall) starting with a standing shear wave of
+/// wavelength 16 cells. Returns its total energy (kinetic plus corotated strain
+/// energy) over the initial value after `frames` 1 ms frames.
+fn shear_wave_energy_ratio(asflip_blend: f32, cundall_damping: f32, frames: usize) -> f64 {
+    let cells = 8.0f32;
+    let wavelength = 16.0f32;
+    let block = 2.0 * wavelength;
+    let grid = (block + 24.0) as usize;
+    let config = SimConfig {
+        gravity: Vec2::ZERO,
+        asflip_blend,
+        cundall_damping,
+        max_substeps_per_step: 1000,
+        ..SimConfig::earth(grid, 1.0 / cells, 0.001)
+    };
+    let rho = 1500.0;
+    let (lambda, mu) = config.lame_from_si(10.0e6, 0.2, rho);
+    let mid = grid as f32 * 0.5;
+    let spawn = SpawnRegion {
+        spacing: 0.5,
+        box_size: IVec2::splat(block as i32),
+        box_center: Vec2::splat(mid),
+        material_id: 0,
+        mass_override: Some((rho / config.reference_density_kg_m3) * 0.25),
+        ..SpawnRegion::for_sim(&config)
+    };
+    let mut sim = Simulation::new(config, spawn)
+        .with_default_material(Box::new(CorotatedMaterial::new(lambda, mu)))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
+    let amplitude = 0.05 * cells;
+    let k = std::f32::consts::TAU / wavelength;
+    {
+        let p = sim.particles_mut();
+        for i in 0..p.len() {
+            let y = p.x[i].y - mid;
+            p.v[i] = Vec2::new(amplitude * (k * y).sin(), 0.0);
+            p.velocity_gradient[i] =
+                Mat2::from_cols(Vec2::ZERO, Vec2::new(amplitude * k * (k * y).cos(), 0.0));
+        }
+    }
+    // Strain energy in grid stress units times rho / rho_ref, to share the
+    // kinetic energy's mass units.
+    let mass_scale = f64::from(rho / config.reference_density_kg_m3);
+    let energy = |sim: &Simulation| -> f64 {
+        let p = sim.particles();
+        (0..p.len())
+            .map(|i| {
+                let f = p.deformation_gradient[i];
+                let theta = (f.x_axis.y - f.y_axis.x).atan2(f.x_axis.x + f.y_axis.y);
+                let d = f - Mat2::from_angle(theta);
+                let strain = f64::from(d.x_axis.length_squared() + d.y_axis.length_squared());
+                let j = f64::from(f.determinant());
+                let elastic = f64::from(p.initial_volume[i])
+                    * (f64::from(mu) * strain + 0.5 * f64::from(lambda) * (j - 1.0).powi(2))
+                    * mass_scale;
+                0.5 * f64::from(p.mass[i]) * f64::from(p.v[i].length_squared()) + elastic
+            })
+            .sum()
+    };
+    let initial = energy(&sim);
+    sim.step_n(frames);
+    energy(&sim) / initial
+}
+
+/// ASFLIP's FLIP residual and Cundall damping both compare the grid with its
+/// velocity before this substep's forces. The fused MLS-MPM transfer puts the
+/// stress impulse into the node momentum, and until it was taken back out of
+/// that snapshot (`Grid::snapshot_velocities_before_stress`) neither feature saw
+/// the internal force: ASFLIP at blend 0.97 passed on 3 % of it, and this wave
+/// read 20.9x its initial energy at 50 ms; Cundall damping at 0.75 left a
+/// larger block's wave exactly as undamped as 0.0 did. With the snapshot of Fei
+/// et al. 2021's Eq. 12 it reads 1.31 under ASFLIP at 50 ms, and at 100 ms
+/// 1.04 under plain APIC and 0.0026 under Cundall damping.
+#[test]
+fn asflip_and_cundall_see_the_internal_stress_force() {
+    let asflip = shear_wave_energy_ratio(0.97, 0.0, 50);
+    assert!(
+        asflip < 1.5,
+        "an elastic shear wave under ASFLIP should keep its energy, read {asflip:.2}x"
+    );
+    let undamped = shear_wave_energy_ratio(0.0, 0.0, 100);
+    let damped = shear_wave_energy_ratio(0.0, 0.75, 100);
+    println!(
+        "energy / initial: ASFLIP at 50 ms {asflip:.3}, APIC {undamped:.3}, Cundall {damped:.4}"
+    );
+    assert!(
+        damped < 0.1 * undamped,
+        "Cundall damping should stop an unbalanced elastic oscillation: \
+         {damped:.3} of the initial energy left, {undamped:.3} undamped"
+    );
+}

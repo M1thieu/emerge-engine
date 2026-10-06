@@ -29,8 +29,9 @@ use crate::rod::{
     gather_grid_to_rod, rod_touches_grid_mass, scatter_rod_to_grid, step_rod_implicit,
 };
 use crate::transfer::{
-    G2PParams, gather_contact_point_cloud, gather_grid_to_particles, scatter_particles_to_grid,
-    scatter_particles_to_grid_sorted, spatial_sort_order,
+    G2PParams, gather_contact_point_cloud, gather_grid_to_particles,
+    scatter_particle_stress_impulse, scatter_particles_to_grid, scatter_particles_to_grid_sorted,
+    spatial_sort_order,
 };
 
 impl Simulation {
@@ -808,8 +809,8 @@ impl Simulation {
         // ── Grid update ───────────────────────────────────────────────────────
         let t1 = std::time::Instant::now();
         // ASFLIP (SimConfig::asflip_blend, Fei et al. 2021) needs the grid's velocity
-        // right after P2G's own momentum normalization -- before THIS substep's gravity,
-        // boundary conditions, or contact resolution modify it -- to compute G2P's FLIP
+        // before THIS substep's forces -- the stress impulse P2G fused into the node
+        // momentum, gravity, boundary conditions, contact -- to compute G2P's FLIP
         // residual. Cundall damping (SimConfig::cundall_damping) needs the exact same
         // pre-force reference point -- see `Grid::apply_cundall_damping`'s doc --
         // so both features share one snapshot. Taking it only when either feature is
@@ -817,6 +818,13 @@ impl Simulation {
         // cost, zero behavior change).
         let pre_force_snapshot =
             if self.config.asflip_blend > 0.0 || self.config.cundall_damping > 0.0 {
+                let stress_impulse = scatter_particle_stress_impulse(
+                    &self.particles,
+                    &self.materials,
+                    sub_dt,
+                    self.grid.resolution(),
+                    self.active_count,
+                );
                 self.grid.normalize_velocities();
                 self.grid.normalize_friction();
                 // A prescribed particle anchor is an essential boundary on
@@ -824,7 +832,7 @@ impl Simulation {
                 // snapshot so FLIP/Cundall never treat forbidden anchor
                 // motion as a previous velocity.
                 self.grid.apply_pinned_node_constraints();
-                let snapshot = self.grid.snapshot_velocities();
+                let snapshot = self.grid.snapshot_velocities_before_stress(&stress_impulse);
                 self.grid.apply_gravity(sub_dt, self.config.gravity);
                 Some(snapshot)
             } else {
