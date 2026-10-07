@@ -268,8 +268,8 @@ its own to explain or calm that particular runaway.
   ran two frames at most. The experiments and their toggles live on
   the fork branch `archive/pressure-rhs-audit-2026-09-21`.
 
-  **The rebuild on the standard formulation is experimental and has not
-  passed its gates yet.** `grid::mac` (feature `experimental`) holds it,
+  **The rebuild on the standard formulation is experimental. It now passes
+  its four gates, on its own; it is not wired into the step yet.** `grid::mac` (feature `experimental`) holds it,
   apart from the step, which does not call it: a staggered grid, a liquid
   level set from the particles, solid face weights, a ghost-fluid free
   surface and a MIC(0) conjugate gradient (Bridson and Muller-Fischer 2007
@@ -282,12 +282,12 @@ its own to explain or calm that particular runaway.
   (`cargo test --features experimental --lib grid::mac::gates -- --ignored
   --nocapture`).
 
-  | scene | first run | second run |
-  | --- | --- | --- |
-  | column at rest, 0.38, 1, 2.5 g | pass | pass |
-  | droplet in free fall, 0.38, 1, 2.5 g | pass | pass |
-  | dam break | fail | fail |
-  | drop into a pool | fail | fail |
+  | scene | first run | second run | third attempt |
+  | --- | --- | --- | --- |
+  | column at rest, 0.38, 1, 2.5 g | pass | pass | pass |
+  | droplet in free fall, 0.38, 1, 2.5 g | pass | pass | pass |
+  | dam break | fail | fail | pass |
+  | drop into a pool | fail | fail | pass |
 
   The column holds hydrostatic pressure within 0.046 cell of head, and the
   error halves at 0.5 cm cells; the falling droplet keeps zero pressure and
@@ -300,19 +300,38 @@ its own to explain or calm that particular runaway.
   image of the flow, so the normal velocity read at a flat wall is zero:
   crossings fell from 474 to 107 and the pool keeps every particle.
 
-  Still failing, counted by the probes in `grid/mac/gates.rs`:
+  What the second run still failed, and the third attempt's three changes,
+  each counted by the probes in `grid/mac/gates.rs` before it was made.
+  The criteria did not move; two of the changes are to the setup and are
+  declared in that file.
 
-  - Particles that come near the free surface drift in volume, their mean
-    J between 0.96 and 1.03 over 2 s, because the velocity extrapolated
-    into the air is not divergence free and the gather reads it. The dam break
-    ends 6.7 percent off, the pool 3.4.
-  - The 107 remaining crossings are at the tank's corners, where one
-    wall's mirror is not the image across both, at up to 3.4 m/s.
+  - Tank corners: all 107 crossings started within two cells of a corner,
+    where the mirror reflected across the corner's diagonal and reversed
+    only the diagonal component. The solid now gives its own image
+    (`solid::box_container_image`): across both walls in a corner, the
+    method of images for a right angle. Particles out of the tank: 79 to 44.
+  - Positions: 71 of the 72 remaining crossings were water stopping against
+    the lid within one cell. Forward Euler crosses a wall whose normal
+    velocity falls linearly to zero once that gradient times the substep
+    exceeds one; the midpoint rule never does, and Bridson and
+    Muller-Fischer 3.1 recommend it for trajectories. Out of the tank: 0.
+    The particles per interior cell, which had risen from 4.16 to 5.19 over
+    the dam break, now hold at 4.01: the packing came from the same Euler
+    step.
+  - Volume: J drifted only for particles that had come near the free
+    surface (mean 0.95 against 0.998 for the others), because the gather
+    reads velocity extrapolated into the air, which no solve made divergence
+    free. J now advances by the liquid cells' divergence at the particle,
+    the one the projection holds. Volume change 0.0000 in both scenes, no J
+    at its bounds, in agreement with the particle count.
 
-  Energy never rose in any run. The track goes on: after phase 7, a new
-  bounded attempt with new criteria written first, aimed at these two
-  points. Once the new projection passes, the old one (`grid/pressure.rs`)
-  is removed.
+  Energy never rose in any run. Cost, release build, unoptimised and
+  single-threaded: dam break 5.6 substeps per frame and about 2.2 s per
+  simulated second for 3200 particles; the weakly compressible liquid needs
+  about 67 substeps per frame for a pool of similar size. Not done yet:
+  wiring it into `Simulation::step` (the coupling to the nodal grid, with
+  its own sources read first), then removing the old projection
+  (`grid/pressure.rs`).
 - **Time convergence and energy lost per substep.** With APIC, a free
   elastic block keeps 0.69, 0.51 and 0.37 of its energy after the same
   physical time at 256, 1024 and 4096 steps (the exact answer is 1.0):

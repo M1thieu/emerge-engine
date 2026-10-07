@@ -15,16 +15,23 @@
 //!   surface tension: the projection alone holds the fluid.
 //! - Frame 1/60 s. Substeps are chosen so a particle moving at the largest
 //!   speed, plus what gravity adds over the substep, travels at most one
-//!   cell (Zhu and Bridson 4.2.5). Particles move with the velocity they
-//!   gather, `x += v dt`, as the engine's G2P does.
+//!   cell (Zhu and Bridson 4.2.5). Particles keep the velocity they
+//!   gather. Positions: `x += v dt`, as the engine's G2P does, for the
+//!   first two gate runs; from the third, the midpoint rule through the
+//!   projected velocity (Bridson and Muller-Fischer 3.1), a declared
+//!   change of setup with its reason at `Scene::substep`. The criteria
+//!   below did not move.
 //! - Four particles per cell, each placed at random inside its quarter of
 //!   the cell; those within one cell of a free surface are moved along its
 //!   normal to half a cell from it (Zhu and Bridson 4.2.1). Particle radius
 //!   in the level set: the particle spacing; kernel radius: twice that
 //!   (their section 5).
-//! - J is the fluid's own: its logarithm advances by `dt tr(C)` each
+//! - J is the fluid's own: its logarithm advances by `dt div v` each
 //!   substep through `advance_log_volume_ratio`, with the engine's bounds
-//!   [0.5, 2.0]. `C` is the velocity gradient gathered from the MAC grid.
+//!   [0.5, 2.0]. For the first three gate runs `div v` was `tr C`, `C` the
+//!   velocity gradient gathered from the MAC grid; from the fourth, the
+//!   divergence of the liquid cells at the particle, a declared change of
+//!   setup with its reason at `Scene::substep`.
 //!   The fluid's volume is `sum(V0 J)`.
 //! - Named settings, each with its reason at its definition: the ghost
 //!   fraction floor (0.01, as `apic2d`), the conjugate gradient tolerance
@@ -107,7 +114,9 @@ use glam::{IVec2, Mat2, Vec2};
 
 use super::field::{Field2, MacLayout};
 use super::level_set::{SurfaceSettings, liquid_phi};
-use super::solid::{FaceWeights, box_container, face_weights, sample_centres, sample_corners};
+use super::solid::{
+    FaceWeights, box_container, box_container_image, face_weights, sample_centres, sample_corners,
+};
 use super::transfer::{faces_to_particles, particles_to_faces};
 use super::{ProjectionSettings, project, travel_limited_dt};
 use crate::diagnostics::{OCCUPANCY_BANDS, scene_map};
@@ -131,7 +140,6 @@ struct Scene {
     gravity: Vec2,
     tank: (Vec2, Vec2),
     weights: FaceWeights,
-    corners: Field2,
     solid_centres: Field2,
     surface: SurfaceSettings,
     settings: ProjectionSettings,
@@ -155,6 +163,11 @@ struct Probe {
     /// Particles leaving the tank: time, position before, velocity,
     /// distance to the nearest wall before.
     crossings: Vec<(f32, Vec2, Vec2, f32)>,
+    /// Wall-clock time per phase of the substep, in microseconds: P2G and
+    /// gravity, level set, assembly for the frame record, projection
+    /// (assembly, solve, update, extrapolation, walls), the two gathers,
+    /// the particle update.
+    phase_us: [u128; 6],
 }
 
 /// What one frame's last substep left, and what the frame cost.
@@ -189,7 +202,6 @@ impl Scene {
             gravity: Vec2::new(0.0, -g_fraction * EARTH_GRAVITY_M_S2 / cell_m),
             tank,
             weights: face_weights(&layout, &corners),
-            corners,
             solid_centres: sample_centres(&layout, solid),
             surface: SurfaceSettings::from_spacing(spacing),
             settings: ProjectionSettings::default(),
@@ -219,6 +231,11 @@ impl Scene {
     }
 
     fn substep(&mut self, dt: f32, frame: &mut Frame) {
+        let mut clock = Instant::now();
+        let mut lap = |probe: &mut Probe, k: usize| {
+            probe.phase_us[k] += clock.elapsed().as_micros();
+            clock = Instant::now();
+        };
         let (mut vel, _) = particles_to_faces(&self.layout, &self.x, &self.v, &self.c, &self.mass);
         for value in vel.u.data_mut() {
             *value += self.gravity.x * dt;
@@ -226,7 +243,9 @@ impl Scene {
         for value in vel.v.data_mut() {
             *value += self.gravity.y * dt;
         }
+        lap(&mut self.probe, 0);
         let phi = self.phi();
+        lap(&mut self.probe, 1);
         let system = super::pressure::assemble(
             &self.layout,
             dt,
@@ -235,19 +254,79 @@ impl Scene {
             &phi,
             self.settings.theta_floor,
         );
+        lap(&mut self.probe, 2);
+        let image = box_container_image(self.tank.0, self.tank.1);
         let solution = project(
             &self.layout,
             dt,
             &mut vel,
             &self.weights,
-            &self.corners,
+            &image,
             &phi,
             &self.settings,
         );
+        lap(&mut self.probe, 3);
         faces_to_particles(&self.layout, &vel, &self.x, &mut self.v, &mut self.c);
+        // Positions advance by the midpoint rule (RK2) through the projected
+        // face velocity, as Bridson and Muller-Fischer 3.1 recommend over
+        // forward Euler for trajectories. Against a wall the normal velocity
+        // falls linearly to zero, `v = -a d`: forward Euler moves `d` to `d (1
+        // - a dt)`, which crosses the wall once `a dt > 1`, while the midpoint
+        // rule gives `d (1 - a dt + (a dt)^2 / 2)`, positive for every step.
+        // After the corner fix, 71 of the 72 remaining crossings were water
+        // decelerating against the lid within one cell. The particle keeps
+        // the velocity and `C` gathered at its start, as before.
+        let midpoint: Vec<Vec2> = (0..self.x.len())
+            .map(|p| self.x[p] + 0.5 * dt * self.v[p])
+            .collect();
+        let mut v_mid = vec![Vec2::ZERO; self.x.len()];
+        let mut c_mid = vec![Mat2::ZERO; self.x.len()];
+        faces_to_particles(&self.layout, &vel, &midpoint, &mut v_mid, &mut c_mid);
+        lap(&mut self.probe, 4);
         let ln_bounds = (J_BOUNDS.0.ln(), J_BOUNDS.1.ln());
-        for p in 0..self.x.len() {
-            let dt_div = dt * (self.c[p].x_axis.x + self.c[p].y_axis.y);
+        // J advances by the divergence the projection holds: the cells'
+        // divergence interpolated bilinearly at the particle, over liquid
+        // cells only. `tr C` reads the same in the bulk (the bulk divergence
+        // probe: 1.32e-5 against 1.31e-5 1/s), but near the free surface the
+        // gather reaches the velocity extrapolated into the air, which no
+        // solve made divergence free (Bridson and Muller-Fischer 6.3's
+        // constant extension is not either), and J drifted 5 % there while
+        // the particles per interior cell, a volume measure that does not
+        // read J, held at 4.01. A particle with no liquid cell around it is
+        // in free flight and reads zero.
+        let (nx, ny) = (self.layout.nx as i32, self.layout.ny as i32);
+        let liquid = |i: i32, j: i32| {
+            i >= 0
+                && j >= 0
+                && i < nx
+                && j < ny
+                && phi.get(i as usize, j as usize) < 0.0
+                && self.solid_centres.get(i as usize, j as usize) > 0.0
+        };
+        let cell_div = |i: i32, j: i32| {
+            let (i, j) = (i as usize, j as usize);
+            (vel.u.get(i + 1, j) - vel.u.get(i, j) + vel.v.get(i, j + 1) - vel.v.get(i, j))
+                / self.layout.dx
+        };
+        for (p, v_step) in v_mid.iter().enumerate() {
+            let dt_div = {
+                let t = self.x[p] / self.layout.dx - Vec2::splat(0.5);
+                let (i0, j0) = (t.x.floor() as i32, t.y.floor() as i32);
+                let (fx, fy) = (t.x - i0 as f32, t.y - j0 as f32);
+                let (mut sum, mut weight) = (0.0f32, 0.0f32);
+                for (di, dj, w) in [
+                    (0, 0, (1.0 - fx) * (1.0 - fy)),
+                    (1, 0, fx * (1.0 - fy)),
+                    (0, 1, (1.0 - fx) * fy),
+                    (1, 1, fx * fy),
+                ] {
+                    if liquid(i0 + di, j0 + dj) {
+                        sum += w * cell_div(i0 + di, j0 + dj);
+                        weight += w;
+                    }
+                }
+                if weight > 0.0 { dt * sum / weight } else { 0.0 }
+            };
             let advanced = self.log_j[p] + dt_div;
             let was_inside = self.inside_tank(p);
             if advanced <= ln_bounds.0 || advanced >= ln_bounds.1 {
@@ -265,7 +344,7 @@ impl Scene {
             }
             self.log_j[p] =
                 advance_log_volume_ratio(self.log_j[p], dt_div, J_BOUNDS.0, J_BOUNDS.1).0;
-            let step = self.v[p] * dt;
+            let step = *v_step * dt;
             frame.largest_travel = frame.largest_travel.max(step.length());
             let before = self.x[p];
             self.x[p] += step;
@@ -277,6 +356,7 @@ impl Scene {
                     .push((self.time, before, self.v[p], wall));
             }
         }
+        lap(&mut self.probe, 5);
         self.time += dt;
         frame.substeps += 1;
         frame.iterations.push(solution.iterations);
@@ -529,14 +609,19 @@ impl Cost {
     fn print(&self, label: &str, wall_s: f32, simulated_s: f32) {
         println!(
             "  cost {label}: {:.1} substeps/frame (max {}), CG {:.1} it/solve (max {}), \
-             {} capped, largest travel {:.3} cell, {:.0} ms per simulated s (debug)",
+             {} capped, largest travel {:.3} cell, {:.0} ms per simulated s ({})",
             self.substeps as f32 / self.frames.max(1) as f32,
             self.max_substeps,
             self.iterations as f32 / self.solves.max(1) as f32,
             self.max_iterations,
             self.capped,
             self.largest_travel,
-            1000.0 * wall_s / simulated_s
+            1000.0 * wall_s / simulated_s,
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
         );
     }
 }
@@ -886,6 +971,20 @@ fn probe_dam_break_walls_and_bounds() {
     }
     let close = crossings.iter().filter(|c| c.3 < 0.1).count();
     println!("  gap below 0.1: {close}");
+    // Within two cells of a second wall as well: a tank corner.
+    let corner = crossings
+        .iter()
+        .filter(|&&(_, before, _, _)| {
+            let (lo, hi) = (before - tank.0, tank.1 - before);
+            let mut d = [lo.x, hi.x, lo.y, hi.y];
+            d.sort_by(f32::total_cmp);
+            d[1] < 2.0
+        })
+        .count();
+    println!(
+        "  within two cells of a corner: {corner} of {}",
+        crossings.len()
+    );
 }
 
 /// Whether the volume change and the packing come from the particles that
@@ -1066,5 +1165,98 @@ fn probe_dam_break_volume_at_the_free_surface() {
                 scene.time, deep.0, deep.1, surface.0, surface.1
             );
         }
+    }
+}
+
+/// The dam break and the drop into a pool, their particle positions every
+/// fourth frame written as JSON to the path in `EMERGE_GATE_DUMP` (tenths
+/// of a cell), and the time each phase of the substep took. A probe.
+#[test]
+#[ignore = "visual dump and phase timings: run with --ignored --nocapture"]
+fn probe_dump_and_phase_costs() {
+    let path = std::env::var("EMERGE_GATE_DUMP").ok();
+    let mut json = String::from("{\"scenes\":[");
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    for (k, name) in ["dam break", "drop into pool"].into_iter().enumerate() {
+        let mut rng = LcgRng::new(if k == 0 { 3 } else { 5 });
+        let x = if k == 0 {
+            seed(
+                (IVec2::new(4, 4), IVec2::new(24, 44)),
+                |_| true,
+                |q| box_free_sides(q, Some(44.0), Some(24.0)),
+                &mut rng,
+            )
+        } else {
+            let mut x = seed(
+                (IVec2::new(4, 4), IVec2::new(68, 19)),
+                |_| true,
+                |q| box_free_sides(q, Some(19.0), None),
+                &mut rng,
+            );
+            let (centre, radius) = (Vec2::new(36.0, 44.0), 5.0);
+            x.extend(seed(
+                (IVec2::new(30, 38), IVec2::new(42, 50)),
+                |q| (q - centre).length() < radius,
+                |q| disc_side(q, centre, radius),
+                &mut rng,
+            ));
+            x
+        };
+        let n = x.len();
+        let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x);
+        if k > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"name\":\"{name}\",\"grid\":72,\"frame_dt\":{FRAME},\"every\":4,\"boxes\":[],\"tags\":[{}],\"frames\":[",
+            vec!["0"; n].join(",")
+        ));
+        let frames = (2.0 / FRAME).round() as u32;
+        let wall = Instant::now();
+        for f in 0..=frames {
+            if f % 4 == 0 {
+                if f > 0 {
+                    json.push(',');
+                }
+                let xs: Vec<String> = scene
+                    .x
+                    .iter()
+                    .flat_map(|q| [(q.x * 10.0).round() as i32, (q.y * 10.0).round() as i32])
+                    .map(|v| v.to_string())
+                    .collect();
+                json.push('[');
+                json.push_str(&xs.join(","));
+                json.push(']');
+            }
+            if f < frames {
+                scene.frame();
+            }
+        }
+        json.push_str("]}");
+        let total = wall.elapsed().as_micros().max(1) as f64;
+        let names = [
+            "P2G",
+            "level set",
+            "assembly (record)",
+            "projection",
+            "two gathers",
+            "particle update",
+        ];
+        println!(
+            "{name}: {} particles, {:.0} ms for 2 s simulated",
+            n,
+            total / 1e3
+        );
+        for (label, us) in names.iter().zip(scene.probe.phase_us) {
+            println!(
+                "  {label:<18} {:6.0} ms  {:5.1} %",
+                us as f64 / 1e3,
+                100.0 * us as f64 / total
+            );
+        }
+    }
+    json.push_str("]}");
+    if let Some(path) = path {
+        std::fs::write(path, json).expect("write dump");
     }
 }

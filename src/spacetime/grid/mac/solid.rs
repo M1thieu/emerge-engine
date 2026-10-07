@@ -82,6 +82,29 @@ pub fn box_container(min: Vec2, max: Vec2) -> impl Fn(Vec2) -> f32 + Copy {
     }
 }
 
+/// For a point inside a box container's walls, the point the flow there
+/// is the mirror image of, and the sign each velocity component takes in
+/// the mirror. The image is reflected across every wall plane the point
+/// lies beyond: one plane along a wall, which reverses the component
+/// normal to it, and both planes in a corner, which reverses both. That is
+/// the method of images for a right-angled corner: reflecting across one
+/// plane, then the other. Reflecting across the corner's diagonal instead,
+/// the direction a signed distance's gradient points there, reverses only
+/// the diagonal component and leaves a flow along the diagonal running
+/// into the corner; all 107 wall crossings of the second dam break gate
+/// run started within two cells of a corner.
+pub fn box_container_image(min: Vec2, max: Vec2) -> impl Fn(Vec2) -> (Vec2, Vec2) + Copy {
+    move |q: Vec2| {
+        let below = (min - q).max(Vec2::ZERO);
+        let above = (q - max).max(Vec2::ZERO);
+        let flip = |beyond: f32| if beyond > 0.0 { -1.0 } else { 1.0 };
+        (
+            q + 2.0 * below - 2.0 * above,
+            Vec2::new(flip(below.x + above.x), flip(below.y + above.y)),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

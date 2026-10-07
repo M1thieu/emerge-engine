@@ -17,7 +17,8 @@
 //! inside the wall keep zero divergence too. Derived here from those two
 //! conditions; the sources read push particles back out of the wall after
 //! they move instead (Zhu and Bridson 4.2.5, `apic2d`), which the gates do
-//! not allow.
+//! not allow. The solid supplies the image (`solid::box_container_image`):
+//! in a corner it is the reflection across both walls.
 
 use glam::Vec2;
 
@@ -71,26 +72,19 @@ pub fn extrapolate_velocity(vel: &mut MacVelocity, valid: &mut FaceFlags, layers
 }
 
 /// On every closed face, the mirror image of the flow across the wall
-/// (module doc). The solid's distance at the face gives the depth, its
-/// gradient the normal. On the grid's own edge, the edge is the wall and
-/// the component normal to it is zero.
+/// (module doc): `image` gives, for a point in the solid, the point it
+/// mirrors and the sign of each velocity component there. On the grid's
+/// own edge, the edge is the wall and the component normal to it is zero.
 pub fn constrain_to_solids(
     layout: &MacLayout,
     vel: &mut MacVelocity,
     weights: &FaceWeights,
-    corners: &Field2,
+    image: &dyn Fn(Vec2) -> (Vec2, Vec2),
 ) {
     let before = vel.clone();
     let mirror = |position: Vec2| -> Vec2 {
-        let at = position / layout.dx;
-        let n = corners.bilinear_gradient(at);
-        if n.length_squared() == 0.0 {
-            return Vec2::ZERO;
-        }
-        let n = n.normalize();
-        let depth = (-corners.bilinear(at)).max(0.0);
-        let outside = before.at(layout, position + 2.0 * depth * n);
-        outside - 2.0 * outside.dot(n) * n
+        let (at, sign) = image(position);
+        before.at(layout, at) * sign
     };
     for j in 0..layout.ny {
         for i in 0..=layout.nx {
@@ -122,7 +116,7 @@ pub fn constrain_to_solids(
 
 #[cfg(test)]
 mod tests {
-    use super::super::solid::{box_container, face_weights, sample_corners};
+    use super::super::solid::{box_container, box_container_image, face_weights, sample_corners};
     use super::super::transfer::faces_to_particles;
     use super::*;
 
@@ -142,9 +136,10 @@ mod tests {
     #[test]
     fn a_closed_face_mirrors_the_flow_across_its_wall() {
         let layout = MacLayout::new(8, 8, 1.0);
-        let solid = box_container(Vec2::new(2.0, 2.0), Vec2::new(6.0, 7.0));
-        let corners = sample_corners(&layout, solid);
+        let (min, max) = (Vec2::new(2.0, 2.0), Vec2::new(6.0, 7.0));
+        let corners = sample_corners(&layout, box_container(min, max));
         let weights = face_weights(&layout, &corners);
+        let image = box_container_image(min, max);
         let mut vel = MacVelocity::zeros(&layout);
         for value in vel.u.data_mut() {
             *value = 1.0;
@@ -152,7 +147,7 @@ mod tests {
         for value in vel.v.data_mut() {
             *value = -2.0;
         }
-        constrain_to_solids(&layout, &mut vel, &weights, &corners);
+        constrain_to_solids(&layout, &mut vel, &weights, &image);
         // One cell inside the left wall: the flow one cell into the tank,
         // its normal part reversed.
         assert!((vel.u.get(1, 4) + 1.0).abs() < 1e-6);
@@ -169,9 +164,10 @@ mod tests {
     #[test]
     fn the_normal_velocity_read_at_a_wall_is_zero() {
         let layout = MacLayout::new(16, 16, 1.0);
-        let solid = box_container(Vec2::new(4.0, 2.0), Vec2::new(14.0, 14.0));
-        let corners = sample_corners(&layout, solid);
+        let (min, max) = (Vec2::new(4.0, 2.0), Vec2::new(14.0, 14.0));
+        let corners = sample_corners(&layout, box_container(min, max));
         let weights = face_weights(&layout, &corners);
+        let image = box_container_image(min, max);
         let mut vel = MacVelocity::zeros(&layout);
         let flow = -3.0;
         for j in 0..16 {
@@ -180,7 +176,7 @@ mod tests {
             }
         }
         // The solve leaves the face on the wall at zero.
-        constrain_to_solids(&layout, &mut vel, &weights, &corners);
+        constrain_to_solids(&layout, &mut vel, &weights, &image);
         for d in [0.0f32, 0.1, 0.25, 0.4] {
             let x = [Vec2::new(4.0 + d, 8.3)];
             let mut v = [Vec2::ZERO];
