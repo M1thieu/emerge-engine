@@ -96,20 +96,39 @@ pub fn travel_limited_dt(max_speed: f32, gravity: f32, dx: f32, max_cells: f32) 
     (-v + (v * v + 4.0 * g * reach).sqrt()) / (2.0 * g)
 }
 
+/// The still solids: their open fraction of every face, and the mirror
+/// image of the flow inside them (`extrapolate::constrain_to_solids`).
+#[derive(Clone, Copy)]
+pub struct Walls<'a> {
+    pub weights: &'a FaceWeights,
+    pub image: &'a dyn Fn(Vec2) -> (Vec2, Vec2),
+}
+
 /// One projection of the face velocity: equations, solve, update, then
 /// the velocity extended past the liquid and held along the walls
-/// (`solid_image`: see `extrapolate::constrain_to_solids`). The level set
+/// (`Walls`). The level set
 /// must already have the solid folded in (`pressure` module doc).
+/// `compressible`, `(c^2, q before the step per cell, whether the cell's
+/// centre is outside every solid)`, makes it the
+/// compressible projection (`pressure::add_compressibility`); `None` is the
+/// incompressible limit.
 pub fn project(
     layout: &MacLayout,
     dt: f32,
     vel: &mut MacVelocity,
-    weights: &FaceWeights,
-    solid_image: &dyn Fn(Vec2) -> (Vec2, Vec2),
+    walls: Walls<'_>,
     liquid_phi: &Field2,
     settings: &ProjectionSettings,
+    compressible: Option<(f32, &[f32], &[bool])>,
 ) -> Solution {
-    let system = pressure::assemble(layout, dt, vel, weights, liquid_phi, settings.theta_floor);
+    let Walls {
+        weights,
+        image: solid_image,
+    } = walls;
+    let mut system = pressure::assemble(layout, dt, vel, weights, liquid_phi, settings.theta_floor);
+    if let Some((sound_speed2, q_before, material)) = compressible {
+        pressure::add_compressibility(&mut system, dt, sound_speed2, q_before, material);
+    }
     let solution = pcg::solve(&system, &settings.solver);
     let mut valid = pressure::apply_pressure(
         layout,

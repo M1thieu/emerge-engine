@@ -141,7 +141,7 @@ impl Level {
             && self.kind[i as usize + self.nx * j as usize] != Kind::Solid
     }
 
-    fn new(nx: usize, ny: usize, kind: Vec<Kind>, coupling: f32) -> Self {
+    fn new(nx: usize, ny: usize, kind: Vec<Kind>, coupling: f32, extra_diag: f32) -> Self {
         let mut level = Self {
             nx,
             ny,
@@ -161,7 +161,7 @@ impl Level {
                     .iter()
                     .filter(|(di, dj)| level.open(i + di, j + dj))
                     .count();
-                level.diag[c] = open as f32 * coupling;
+                level.diag[c] = open as f32 * coupling + extra_diag;
             }
         }
         level.band = boundary_band(nx, ny, |c| level.kind[c] == Kind::Liquid);
@@ -276,7 +276,13 @@ impl Multigrid {
                 }
             }
             coupling *= 0.25;
-            levels.push(Level::new(cx, cy, coarse.clone(), coupling));
+            levels.push(Level::new(
+                cx,
+                cy,
+                coarse.clone(),
+                coupling,
+                sys.compressibility,
+            ));
             (nx, ny, kind) = (cx, cy, coarse);
         }
         let work = levels
@@ -563,6 +569,7 @@ mod tests {
             rhs: vec![0.0; size],
             air: vec![false; size],
             scale: 1.0,
+            compressibility: 0.0,
         };
         sys.active[0] = false;
         sys.air[0] = true;
@@ -652,6 +659,7 @@ mod scaling_probe {
             rhs: vec![0.0; size],
             air: vec![false; size],
             scale: 1.0,
+            compressibility: 0.0,
         };
         let surface = 3 * n / 4;
         for j in 0..n {

@@ -41,6 +41,10 @@ pub struct PressureSystem {
     pub air: Vec<bool>,
     /// `dt / dx^2`, the coefficient of a fully open face.
     pub scale: f32,
+    /// `1 / (c^2 dt)` added to every active diagonal by
+    /// `add_compressibility`, zero for an incompressible liquid. The
+    /// multigrid preconditioner adds it on its coarse levels too.
+    pub compressibility: f32,
 }
 
 impl PressureSystem {
@@ -71,6 +75,7 @@ pub fn assemble(
         rhs: vec![0.0; n],
         air: vec![false; n],
         scale: dt / (dx * dx),
+        compressibility: 0.0,
     };
     let scale = sys.scale;
     for j in 0..ny {
@@ -133,6 +138,38 @@ pub fn assemble(
         }
     }
     sys
+}
+
+/// Turns the incompressible system into the compressible one of
+/// Stomakhin, Schroeder, Jiang, Chai, Teran and Selle 2014 (eqs. 14 to 18):
+/// `dp/dt = -K div v`, taken implicitly with the pressure update `v = v* -
+/// dt grad q`, gives `div v* + A q = (q_n - q) / (c^2 dt)` in this
+/// system's units (`q = p / rho`, `c^2 = K / rho`, `A q = -dt lap q`), so
+/// every active row gains `1 / (c^2 dt)` on its diagonal and `q_n / (c^2
+/// dt)` on its right-hand side. `q_n` is the cell's pressure before the
+/// step. The system stays symmetric positive definite, and as `c` grows it
+/// becomes the incompressible one.
+///
+/// Only cells of the material: `material[c]` false for a cell whose centre
+/// lies in a solid. Those cells are unknowns only so that the wall's open
+/// face carries no flux (module doc); made compressible, they let the
+/// liquid flow into the wall, which the first gate run of this step
+/// counted: 34 particles through the floor of the column in 5 s.
+pub fn add_compressibility(
+    sys: &mut PressureSystem,
+    dt: f32,
+    sound_speed2: f32,
+    q_before: &[f32],
+    material: &[bool],
+) {
+    let term = 1.0 / (sound_speed2 * dt);
+    sys.compressibility = term;
+    for c in 0..sys.active.len() {
+        if sys.active[c] && material[c] {
+            sys.diag[c] += term;
+            sys.rhs[c] += term * q_before[c];
+        }
+    }
 }
 
 /// Subtracts `dt grad p` from every open face with liquid on at least one

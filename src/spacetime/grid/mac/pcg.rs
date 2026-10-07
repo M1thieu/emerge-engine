@@ -358,6 +358,7 @@ mod tests {
             rhs: vec![0.0; size],
             air: vec![false; size],
             scale: 1.0,
+            compressibility: 0.0,
         };
         for j in 0..n {
             for i in 0..n {
