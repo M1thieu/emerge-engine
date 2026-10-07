@@ -3,7 +3,17 @@
 //! written out in 2D). It takes a system and returns a solution; nothing
 //! else in the projection depends on how the solution was found.
 
+use super::multigrid::Multigrid;
 use super::pressure::PressureSystem;
+
+/// Which preconditioner the conjugate gradient uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Preconditioner {
+    /// Modified incomplete Cholesky, the notes' choice (4.3.3).
+    Mic0,
+    /// One multigrid V-cycle (`multigrid` module).
+    Multigrid,
+}
 
 /// When the solve stops, and the preconditioner's two parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,6 +39,13 @@ pub struct SolverSettings {
     /// diagonal, `apic2d`'s guard (0.25). The preconditioner only changes
     /// how fast the solve converges, not what it converges to.
     pub mic_min_diagonal_ratio: f32,
+    /// The multigrid cycle by default: on a basin three quarters full
+    /// (`multigrid::scaling_probe`), the iterations to the same tolerance
+    /// go from 45, 85, 160 and 322 with MIC(0) to 8, 11, 14 and 20 at 128,
+    /// 256, 512 and 1024 cells a side, and the time, serial, by 1.3, 1.9,
+    /// 2.9 and 4.1 times. On the 72-cell gate scenes it is about 20 %
+    /// slower overall; the engine's grids are larger.
+    pub preconditioner: Preconditioner,
 }
 
 impl Default for SolverSettings {
@@ -39,6 +56,7 @@ impl Default for SolverSettings {
             max_iterations: 100,
             mic_tau: 0.97,
             mic_min_diagonal_ratio: 0.25,
+            preconditioner: Preconditioner::Multigrid,
         }
     }
 }
@@ -76,10 +94,13 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
             converged: true,
         };
     }
-    let precon = mic0(sys, settings);
+    let mut precon = match settings.preconditioner {
+        Preconditioner::Mic0 => Precon::Mic0(mic0(sys, settings)),
+        Preconditioner::Multigrid => Precon::Multigrid(Multigrid::new(sys, 4, 2, 40)),
+    };
     let mut z = vec![0.0f32; n];
     let mut q = vec![0.0f32; n];
-    apply_preconditioner(sys, &precon, &r, &mut q, &mut z);
+    precon.apply(sys, &r, &mut q, &mut z);
     let mut s = z.clone();
     let mut sigma = dot(&z, &r, &sys.active);
     let mut residual = initial;
@@ -101,7 +122,7 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
                 converged: true,
             };
         }
-        apply_preconditioner(sys, &precon, &r, &mut q, &mut z);
+        precon.apply(sys, &r, &mut q, &mut z);
         let sigma_new = dot(&z, &r, &sys.active);
         let beta = sigma_new / sigma;
         for c in 0..n {
@@ -116,6 +137,20 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
         iterations: settings.max_iterations,
         residual,
         converged: false,
+    }
+}
+
+enum Precon {
+    Mic0(Vec<f32>),
+    Multigrid(Multigrid),
+}
+
+impl Precon {
+    fn apply(&mut self, sys: &PressureSystem, r: &[f32], q: &mut [f32], z: &mut [f32]) {
+        match self {
+            Self::Mic0(precon) => apply_preconditioner(sys, precon, r, q, z),
+            Self::Multigrid(mg) => mg.apply(sys, r, z),
+        }
     }
 }
 
@@ -257,6 +292,8 @@ mod tests {
             plus_i: vec![0.0; size],
             plus_j: vec![0.0; size],
             rhs: vec![0.0; size],
+            air: vec![false; size],
+            scale: 1.0,
         };
         for j in 0..n {
             for i in 0..n {
@@ -308,6 +345,7 @@ mod tests {
             relative_tolerance: 1e-5,
             absolute_tolerance: 0.0,
             max_iterations: 1000,
+            preconditioner: Preconditioner::Mic0,
             ..SolverSettings::default()
         };
         let modified = solve(&sys, &strict);

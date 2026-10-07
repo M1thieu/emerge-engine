@@ -40,6 +40,7 @@ use glam::Vec2;
 pub mod extrapolate;
 pub mod field;
 pub mod level_set;
+pub mod multigrid;
 pub mod pcg;
 pub mod pressure;
 pub mod solid;

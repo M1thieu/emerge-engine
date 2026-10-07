@@ -328,7 +328,11 @@ its own to explain or calm that particular runaway.
   Energy never rose in any run. Cost, release build, unoptimised and
   single-threaded: dam break 5.6 substeps per frame and about 2.2 s per
   simulated second for 3200 particles; the weakly compressible liquid needs
-  about 67 substeps per frame for a pool of similar size. Not done yet:
+  about 67 substeps per frame for a pool of similar size. The pressure
+  solve is preconditioned by a multigrid V-cycle (McAdams, Sifakis and
+  Teran 2010) instead of MIC(0): iterations nearly flat with grid size (8
+  to 20 from 128 to 1024 cells a side, against 45 to 322), and every
+  step order independent, so it can run in parallel. Not done yet:
   wiring it into `Simulation::step` (the coupling to the nodal grid, with
   its own sources read first), then removing the old projection
   (`grid/pressure.rs`).
