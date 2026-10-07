@@ -335,23 +335,18 @@ its own to explain or calm that particular runaway.
   step order independent, so it can run in parallel.
 
   **Step A1, the compressible projection (Stomakhin et al. 2014, eqs. 14
-  to 18), stopped after two gate runs, on a test-design conflict.** Its
-  criteria (in `grid/mac/gates.rs`) were written first. Run 1 found a real
-  bug, fixed: the compressible term was also given to the cells inside the
-  walls, which let the liquid flow into them (34 particles through the
-  column's floor in 5 s; the sound pulse also arrived 15 % late). With it
-  fixed, run 2: real water (K = 2.2 GPa) needs 5.68 substeps per frame on
-  the dam break against 5.41 incompressible, so the real bulk modulus
-  brings back no acoustic step; the sound speed at `c = 10 m/s` arrives 4.1
-  % off; the column's J matches `1 - g (h - y) / c^2` to 3e-5 and its
-  pressure to 0.016 cell of head. What failed: scene 5 asks for the right
-  pressure at every frame and for the surface to sink by `g h^2 / (2 c^2)`
-  from its start. Starting uncompressed, the surface sinks 0.41 cell (0.441
-  expected) but the pressure rings for half a second while the column
-  settles; starting at the equilibrium J (run 2), the pressure is right from
-  the first frame but particle positions start uncompressed and the surface
-  cannot sink. No initial state satisfies both as written; amending them is
-  the user's decision. Not done yet:
+  to 18), passes its gates** after one amendment the user approved. Run 1
+  found a real bug, fixed: the compressible term was also given to the
+  cells inside the walls, which let the liquid flow into them (34
+  particles through the column's floor in 5 s). Run 2 failed on a pair of
+  criteria no initial state could meet (the right pressure at every frame,
+  and the surface sinking from an uncompressed start); the pressure is now
+  judged from t = 1 s, once the released column has settled. Results: real
+  water (K = 2.2 GPa) needs 5.68 substeps per frame on the dam break
+  against 5.41 incompressible, so the real bulk modulus brings back no
+  acoustic step; sound at `c = 10 m/s` arrives 4.1 % off; the column's J
+  matches `1 - g (h - y) / c^2` to 3e-5, its pressure to 0.015 cell of
+  head, its surface sinks 0.411 cell for 0.441. Not done yet:
   wiring it into `Simulation::step` (the coupling to the nodal grid, with
   its own sources read first), then removing the old projection
   (`grid/pressure.rs`).

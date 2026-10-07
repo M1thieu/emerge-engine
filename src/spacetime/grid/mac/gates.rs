@@ -122,7 +122,11 @@
 //!
 //! - Scene 5, compressible column at rest: scene 1's tank, 1 cm cells,
 //!   1 g, `c = 10 m/s`, 5 s. Pressure within half a cell of head of
-//!   `g (h - y)` with `h` the surface height of that frame; the mean J of
+//!   `g (h - y)` with `h` the surface height of that frame, from t = 1 s
+//!   (amended with the user's approval after the second run: a column
+//!   released uncompressed rings while it settles, and no initial state met
+//!   both this criterion at every frame and the surface one below); the
+//!   mean J of
 //!   the particles in each 5-cell band within 0.005 of `1 - g (h - y) /
 //!   c^2` over the last second; the surface, averaged over the last second,
 //!   lowered from its start by `g h^2 / (2 c^2)` within 0.15 cell.
@@ -1432,13 +1436,6 @@ fn gate_compressible_column() {
     let mut scene = Scene::new((nx, ny), 0.01, 1.0, tank, x).with_sound_speed(c_m_s);
     let c2 = scene.sound_speed2.unwrap_or(0.0);
     let g = scene.g();
-    // "At rest": in hydrostatic equilibrium, each particle's J where its
-    // depth puts it. Declared after the first run, where the column started
-    // at J = 1 and its pressure rang for half a second before settling.
-    for p in 0..scene.x.len() {
-        let j = 1.0 - g * (h0 - scene.x[p].y).max(0.0) / c2;
-        scene.log_j[p] = j.ln();
-    }
     let centre_i = nx / 2;
     let surface_start = surface_height(&scene.phi(), centre_i, wall).expect("no surface");
     let expected_drop = g * (depth as f32).powi(2) / (2.0 * c2);
@@ -1460,7 +1457,11 @@ fn gate_compressible_column() {
         for j in wall..ny {
             let c = centre_i + nx * j;
             let y = j as f32 + 0.5;
-            if y >= h - 0.5 || !frame.active[c] || scene.solid_centres.get(centre_i, j) <= 0.0 {
+            if scene.time < 1.0
+                || y >= h - 0.5
+                || !frame.active[c]
+                || scene.solid_centres.get(centre_i, j) <= 0.0
+            {
                 continue;
             }
             worst_p = worst_p.max((frame.pressure[c] - g * (h - y)).abs());
