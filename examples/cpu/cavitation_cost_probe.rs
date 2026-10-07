@@ -69,8 +69,8 @@ fn main() {
     let grip_m_s = env("CAV_PROBE_GRIP", 2.0);
     // Weightless, for the same measured reason the boiling scene states:
     // free pools of liquid under gravity flatten and run into each other,
-    // and no wall in this engine is declared compatible with a strict
-    // weakly-compressible liquid (issue #38).
+    // and in beakers a resting liquid packs its particles below the level
+    // its own volume says (see `KNOWN_LIMITATIONS.md`).
     let gravity_fraction = env("CAV_PROBE_G", 0.0);
 
     let mut config = SimConfig {

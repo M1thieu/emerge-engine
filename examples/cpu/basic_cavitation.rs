@@ -60,10 +60,11 @@ mod render_mode;
 ///
 ///   1. Gravity starts at zero, and not to make the scene behave. Free
 ///      pools of liquid under gravity flatten and run into each other
-///      within two seconds, and no wall in this engine is declared
-///      compatible with a strict weakly-compressible liquid (issue #38),
-///      so there is nothing honest to keep three of them apart. The
-///      gravity slider turns it back on.
+///      within two seconds. `StaticBoxBoundary` could keep three apart,
+///      but a resting liquid under gravity packs its particles below the
+///      level its own volume says (see `KNOWN_LIMITATIONS.md`), and
+///      hydrostatic pressure would add to the tension being measured.
+///      The gravity slider turns it back on.
 ///   2. The liquid's sound speed is 60 m/s, not water's real 1480 m/s:
 ///      the artificial compressibility rule (Monaghan 1994) asks for ten
 ///      times the fastest speed the scene produces, and this is well past

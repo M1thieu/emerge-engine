@@ -3929,3 +3929,70 @@ fn slow_particles_move_by_their_velocity_not_by_f32_rounding() {
         );
     }
 }
+
+/// Issue #38: two pools of strict water at different depths, under real
+/// gravity, held apart by a `StaticBoxBoundary` ridge (solid over x in
+/// [22, 26]). The ridge's left face mirrors the domain's left slip wall
+/// (both effective walls sit on the node midplanes at x = 2 and x = 22), so
+/// the left pool must settle about their midpoint, x = 12, as it would
+/// between two domain walls. The liquid never crosses, and no particle
+/// reaches the backstop one cell inside the solid: the grid condition
+/// alone holds it.
+#[test]
+fn static_box_holds_two_pools_of_strict_water_apart_under_gravity() {
+    const GRID: usize = 48;
+    let config = SimConfig {
+        max_substeps_per_step: 256,
+        ..SimConfig::earth(GRID, 0.02, 1.0 / 60.0)
+    };
+    let water = emerge::Fluid {
+        rho_kg_m3: 1000.0,
+        eta_pa_s: 0.001,
+        bulk_modulus_pa: 2.25e5,
+        yield_stress_pa: None,
+    };
+    let pool = |center: Vec2, size: IVec2| {
+        SpawnRegion {
+            spacing: 0.5,
+            box_size: size,
+            box_center: center,
+            ..SpawnRegion::for_sim(&config)
+        }
+        .mass_from(&water, &config)
+    };
+    let mut sim = Simulation::new(config, pool(Vec2::new(12.0, 10.0), IVec2::new(18, 14)))
+        .with_default_material(water.material(&config))
+        .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)))
+        .with_boundary(Box::new(emerge::StaticBoxBoundary::new(
+            Vec2::new(22.0, 0.0),
+            Vec2::new(26.0, 30.0),
+        )));
+    let n_left = sim.particles().len();
+    let _ = sim.add_body(pool(Vec2::new(36.0, 6.0), IVec2::new(18, 6)));
+    let n = sim.particles().len();
+
+    for _ in 0..60 {
+        sim.step();
+        let p = sim.particles();
+        assert!(p.x.iter().all(|x| x.is_finite()));
+        let crossed = (0..n)
+            .filter(|&i| (i < n_left) != (p.x[i].x < 24.0))
+            .count();
+        assert_eq!(crossed, 0, "liquid crossed the ridge");
+        let deepest =
+            p.x.iter()
+                .filter(|x| x.x > 22.0 && x.x < 26.0 && x.y < 30.0)
+                .map(|x| (x.x - 22.0).min(26.0 - x.x).min(30.0 - x.y))
+                .fold(0.0f32, f32::max);
+        assert!(
+            deepest < 1.0,
+            "a particle reached the backstop: {deepest} cells deep"
+        );
+    }
+    let p = sim.particles();
+    let com_x = (0..n_left).map(|i| p.x[i].x).sum::<f32>() / n_left as f32;
+    assert!(
+        (com_x - 12.0).abs() < 0.5,
+        "left pool centre {com_x}, mirror of the two walls 12"
+    );
+}

@@ -1,7 +1,8 @@
-//! Boundary conditions: the `BoundaryCondition` trait plus 5 real models.
+//! Boundary conditions: the `BoundaryCondition` trait plus 7 real models.
 //! The 3 Coulomb-friction variants (plain/grip/ratchet) are a tightly
 //! related family -- grouped under `friction/` (see that module's doc);
-//! `heightmap`/`slip` are each standalone, one file apiece.
+//! `heightmap`/`kinematic_obstacle`/`slip`/`static_box` are each
+//! standalone, one file apiece.
 //!
 //! Shared helpers (`apply_coulomb_wall`, `apply_slip_wall_velocity`,
 //! `apply_sealed_wall_velocity`, `clamp_position_inside_grid`) and their
@@ -16,11 +17,13 @@ mod friction;
 mod heightmap;
 mod kinematic_obstacle;
 mod slip;
+mod static_box;
 
 pub use friction::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary};
 pub use heightmap::HeightmapBoundary;
 pub use kinematic_obstacle::KinematicCircleBoundary;
 pub use slip::SlipBoundary;
+pub use static_box::StaticBoxBoundary;
 
 pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     /// Correct one grid node's velocity, returning the specific kinetic

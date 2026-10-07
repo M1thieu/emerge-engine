@@ -96,6 +96,7 @@ pub use crate::{
     SpawnShape,
     StabilityStatus,
     StabilityThresholds,
+    StaticBoxBoundary,
     StepTiming,
     StomakhinMaterial,
     // Thermodynamics

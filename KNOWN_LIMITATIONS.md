@@ -379,6 +379,62 @@ shape. Measured on the anchored body of
   Pradhana correction needs a scene where the volume gain it corrects is
   physical.
 
+### A resting liquid packs its particles closer than its volume says
+
+A strict weakly compressible liquid takes its pressure from each
+particle's own `J = det F`, which the grid's velocity divergence updates.
+The particles themselves move with the gathered grid velocity, and the two
+drift apart: under gravity a pool at rest packs its particles toward the
+floor while every particle's `J` stays where hydrostatics puts it, so no
+pressure answers the packing. The volume the solver accounts for is
+conserved; the room the liquid visibly fills is not.
+
+Measured on a pool of water 42 x 20 cells at 1 cm cells, 4 particles per
+cell, between slip walls under real gravity (K = 2.25e5 Pa, 300 frames of
+1/60 s), particles per cell area against the `4 / mean J` the particles'
+own volumes give, per 4-cell band:
+
+| band (cells above the floor plane) | t = 0 | t = 1 s | t = 3 s | t = 5 s | 4 / J at 5 s |
+| --- | --- | --- | --- | --- | --- |
+| 0 to 4 | 4.000 | 4.143 | 4.607 | 4.845 | 4.023 |
+| 4 to 8 | 4.000 | 4.095 | 4.256 | 4.464 | 4.018 |
+| 8 to 12 | 4.000 | 4.095 | 4.214 | 4.214 | 4.012 |
+
+- Viscosity 100 times water's (0.1 Pa s) leaves it unchanged (bottom band
+  4.952 at 5 s), so it is not the stirring of a low-viscosity pool.
+- It shrinks with particles per cell, not with the grid. The same physical
+  pool, the bottom 4 cm after 5 s, particle number density times mean `J`
+  (1.000 = no packing):
+
+  | cell size | particles per cell | bottom 4 cm | next 4 cm |
+  | --- | --- | --- | --- |
+  | 2 cm | 4 | 1.159 | 1.019 |
+  | 1 cm | 4 | 1.205 | 1.111 |
+  | 0.5 cm | 4 | 1.256 | 1.103 |
+  | 1 cm | 9 | 1.075 | 1.023 |
+  | 1 cm | 1 | 2.059 | 1.711 |
+
+  Refining the grid at fixed particles per cell does not converge it, which
+  points at the particle quadrature rather than at the grid discretisation.
+- It is not the wall: a pool against a `StaticBoxBoundary` face and the
+  same pool between the domain's own walls give the same levels and the same
+  mean `J` (0.9949 against 0.9952).
+- It slows down as the pool settles. A shallower pool (56 x 8 cells, same
+  water, cell size and gravity) run for 30 s keeps its bottom band 10.4 to
+  12.6 % denser than `4 / J` from 20 to 28 s, while its fastest particle
+  stays below 1 cell/s; the bands above stay within 3 %. The last two
+  samples read 12.2 and 14.1 % as that speed rose again to 1.9 cells/s,
+  so whether it levels off over a longer horizon is not measured.
+- What it costs a scene: the free surface sits low. In
+  `boiling_cost_probe`'s three columns put in 18-cell beakers under
+  gravity, the levels sit 7 to 9 % below the mixture rule after two
+  seconds while the densities stay within 0.05 % of it. The boiling and
+  cavitation scenes stay weightless for this reason.
+- The grid's own mass density does see the packing; the fluid's stress
+  reads `J` instead because the grid density lags one substep (see
+  `NewtonianFluidMaterial::kirchhoff_stress`). Which correction is right
+  is open and not built.
+
 ### Solids throw their friction heat away
 
 Only `BinghamFluidMaterial` and `NewtonianFluidMaterial` declare a
