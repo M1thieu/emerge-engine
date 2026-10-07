@@ -107,6 +107,36 @@
 //! first: one diagnosis, one fix, labelled real fix or declared
 //! approximation; a crutch is not allowed. After the second: stop, record
 //! it in `KNOWN_LIMITATIONS.md` and the plan, and phase 7 goes first.
+//!
+//! # Compressible projection (step A1), criteria written before its code
+//!
+//! The generalized Chorin projection of Stomakhin, Schroeder, Jiang, Chai,
+//! Teran and Selle, *Augmented MPM for phase-change and varied materials*,
+//! 2014, eqs. 14 to 18: `dp/dt = -K div v` taken implicitly with the
+//! pressure update, so the pressure system gains `1 / (c^2 dt)` on its
+//! diagonal and `q_n / (c^2 dt)` on its right-hand side (`q = p / rho`,
+//! `c^2 = K / rho`, `q_n` from the particles' J through the linear
+//! equation of state `q = -c^2 (J - 1)`, their eq. 10 without plasticity).
+//! As `c` grows the system becomes scenes 1 to 4's. Same rules as above:
+//! no clamp, no damping, no relaxation; positions and J as declared above.
+//!
+//! - Scene 5, compressible column at rest: scene 1's tank, 1 cm cells,
+//!   1 g, `c = 10 m/s`, 5 s. Pressure within half a cell of head of
+//!   `g (h - y)` with `h` the surface height of that frame; the mean J of
+//!   the particles in each 5-cell band within 0.005 of `1 - g (h - y) /
+//!   c^2` over the last second; the surface, averaged over the last second,
+//!   lowered from its start by `g h^2 / (2 c^2)` within 0.15 cell.
+//! - Scene 6, sound speed: a closed tube 200 cells long and 8 high, full,
+//!   no gravity, `c = 10 m/s`, the 10 cells at one end starting at J =
+//!   0.99, substeps of `dx / c`. The pressure peak reaches the cell 150
+//!   from that end at `(150 - 5) dx / c` within 5 percent.
+//! - Scene 7, real water: scenes 3 and 4 with `K = 2.2e9 Pa`, the same
+//!   criteria as there, and substeps per frame at most 1.1 times those of
+//!   the incompressible runs: the real bulk modulus must not bring back an
+//!   acoustic time step.
+//! - Scenes 1 to 4 keep passing unchanged.
+//!
+//! Failures counted as above: two failed full runs stop the step.
 
 use std::time::Instant;
 
