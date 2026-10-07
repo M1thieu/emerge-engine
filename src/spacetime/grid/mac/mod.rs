@@ -5,9 +5,10 @@
 //! it. The fluid solver in use stays the weakly compressible one;
 //! `Grid::project_fluid_incompressibility` is the older projection this
 //! replaces, and is removed, once it passes its gates (`gates.rs`, criteria
-//! written before the code). Two gate runs so far: the column at rest and
-//! the falling droplet pass, the dam break and the drop into a pool do not;
-//! `KNOWN_LIMITATIONS.md` has what remains.
+//! written before the code). The first two gate runs failed the dam break
+//! and the drop into a pool; the third attempt passes all four, with the
+//! solid image, the midpoint advance and the J update `gates.rs` declares.
+//! `KNOWN_LIMITATIONS.md` has the history and what remains.
 //!
 //! Sources, read on the documents themselves:
 //!
@@ -33,6 +34,8 @@
 //! set sit at cell centres, `u` at `(i dx, (j + 1/2) dx)`, `v` at
 //! `((i + 1/2) dx, j dx)`. Pressure is kinematic, `p / rho`, as in
 //! `apic2d`: one fluid of uniform density needs no density in the solve.
+
+use glam::Vec2;
 
 pub mod extrapolate;
 pub mod field;
@@ -93,15 +96,15 @@ pub fn travel_limited_dt(max_speed: f32, gravity: f32, dx: f32, max_cells: f32) 
 }
 
 /// One projection of the face velocity: equations, solve, update, then
-/// the velocity extended past the liquid and held along the walls. The
-/// level set must already have the solid folded in (`pressure` module
-/// doc).
+/// the velocity extended past the liquid and held along the walls
+/// (`solid_image`: see `extrapolate::constrain_to_solids`). The level set
+/// must already have the solid folded in (`pressure` module doc).
 pub fn project(
     layout: &MacLayout,
     dt: f32,
     vel: &mut MacVelocity,
     weights: &FaceWeights,
-    solid_corners: &Field2,
+    solid_image: &dyn Fn(Vec2) -> (Vec2, Vec2),
     liquid_phi: &Field2,
     settings: &ProjectionSettings,
 ) -> Solution {
@@ -117,7 +120,7 @@ pub fn project(
         vel,
     );
     extrapolate::extrapolate_velocity(vel, &mut valid, settings.extrapolation_layers);
-    extrapolate::constrain_to_solids(layout, vel, weights, solid_corners);
+    extrapolate::constrain_to_solids(layout, vel, weights, solid_image);
     solution
 }
 
