@@ -3,8 +3,14 @@
 //! written out in 2D). It takes a system and returns a solution; nothing
 //! else in the projection depends on how the solution was found.
 
-use super::multigrid::Multigrid;
+use rayon::prelude::*;
+
+use super::multigrid::{Multigrid, PARALLEL_MIN_CELLS, for_rows};
 use super::pressure::PressureSystem;
+
+/// Cells per parallel chunk of the vector operations; fixed, so the
+/// partial sums of a dot product are always the same ones.
+const CHUNK: usize = 4096;
 
 /// Which preconditioner the conjugate gradient uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,11 +113,25 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
     for iteration in 0..settings.max_iterations {
         apply_a(sys, &s, &mut z);
         let alpha = sigma / dot(&z, &s, &sys.active);
-        for c in 0..n {
-            if sys.active[c] {
-                p[c] += (alpha * s[c] as f64) as f32;
-                r[c] -= (alpha * z[c] as f64) as f32;
+        let update = |(k, (pk, rk)): (usize, (&mut [f32], &mut [f32]))| {
+            for (m, (pc, rc)) in pk.iter_mut().zip(rk.iter_mut()).enumerate() {
+                let c = k * CHUNK + m;
+                if sys.active[c] {
+                    *pc += (alpha * s[c] as f64) as f32;
+                    *rc -= (alpha * z[c] as f64) as f32;
+                }
             }
+        };
+        if n >= PARALLEL_MIN_CELLS {
+            p.par_chunks_mut(CHUNK)
+                .zip(r.par_chunks_mut(CHUNK))
+                .enumerate()
+                .for_each(update);
+        } else {
+            p.chunks_mut(CHUNK)
+                .zip(r.chunks_mut(CHUNK))
+                .enumerate()
+                .for_each(update);
         }
         residual = max_abs(&r, &sys.active);
         if residual <= tolerance {
@@ -125,10 +145,18 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
         precon.apply(sys, &r, &mut q, &mut z);
         let sigma_new = dot(&z, &r, &sys.active);
         let beta = sigma_new / sigma;
-        for c in 0..n {
-            if sys.active[c] {
-                s[c] = z[c] + (beta * s[c] as f64) as f32;
+        let step = |(k, sk): (usize, &mut [f32])| {
+            for (m, sc) in sk.iter_mut().enumerate() {
+                let c = k * CHUNK + m;
+                if sys.active[c] {
+                    *sc = z[c] + (beta * *sc as f64) as f32;
+                }
             }
+        };
+        if n >= PARALLEL_MIN_CELLS {
+            s.par_chunks_mut(CHUNK).enumerate().for_each(step);
+        } else {
+            s.chunks_mut(CHUNK).enumerate().for_each(step);
         }
         sigma = sigma_new;
     }
@@ -155,31 +183,67 @@ impl Precon {
 }
 
 fn max_abs(v: &[f32], active: &[bool]) -> f32 {
-    v.iter()
-        .zip(active)
-        .filter(|(_, a)| **a)
-        .fold(0.0f32, |m, (x, _)| m.max(x.abs()))
+    let chunk = |(vk, ak): (&[f32], &[bool])| {
+        vk.iter()
+            .zip(ak)
+            .filter(|(_, a)| **a)
+            .fold(0.0f32, |m, (x, _)| m.max(x.abs()))
+    };
+    if v.len() >= PARALLEL_MIN_CELLS {
+        v.par_chunks(CHUNK)
+            .zip(active.par_chunks(CHUNK))
+            .map(chunk)
+            .reduce(|| 0.0, f32::max)
+    } else {
+        v.chunks(CHUNK)
+            .zip(active.chunks(CHUNK))
+            .map(chunk)
+            .fold(0.0, f32::max)
+    }
 }
 
 /// Dot product accumulated in f64, so the step lengths do not carry the
-/// round-off of a long f32 sum.
+/// round-off of a long f32 sum. Partial sums over fixed chunks, added in
+/// chunk order: the same answer whatever the threads do, and whether
+/// they are used at all.
 fn dot(a: &[f32], b: &[f32], active: &[bool]) -> f64 {
-    a.iter()
-        .zip(b)
-        .zip(active)
-        .filter(|(_, act)| **act)
-        .map(|((x, y), _)| *x as f64 * *y as f64)
-        .sum()
+    let chunk = |((ak, bk), act): ((&[f32], &[f32]), &[bool])| {
+        ak.iter()
+            .zip(bk)
+            .zip(act)
+            .filter(|(_, a)| **a)
+            .map(|((x, y), _)| *x as f64 * *y as f64)
+            .sum::<f64>()
+    };
+    let partial: Vec<f64> = if a.len() >= PARALLEL_MIN_CELLS {
+        a.par_chunks(CHUNK)
+            .zip(b.par_chunks(CHUNK))
+            .zip(active.par_chunks(CHUNK))
+            .map(chunk)
+            .collect()
+    } else {
+        a.chunks(CHUNK)
+            .zip(b.chunks(CHUNK))
+            .zip(active.chunks(CHUNK))
+            .map(chunk)
+            .collect()
+    };
+    partial.iter().sum()
 }
 
 /// `out = A s`.
 fn apply_a(sys: &PressureSystem, s: &[f32], out: &mut [f32]) {
     let nx = sys.nx;
-    for j in 0..sys.ny {
-        for i in 0..nx {
+    for_rows(out, nx, |j, row| apply_a_row(sys, s, j, row));
+}
+
+fn apply_a_row(sys: &PressureSystem, s: &[f32], j: usize, out: &mut [f32]) {
+    let nx = sys.nx;
+    {
+        for (i, slot) in out.iter_mut().enumerate() {
             let c = i + nx * j;
             if !sys.active[c] {
-                out[c] = 0.0;
+                *slot = 0.0;
                 continue;
             }
             let mut v = sys.diag[c] * s[c];
@@ -195,7 +259,7 @@ fn apply_a(sys: &PressureSystem, s: &[f32], out: &mut [f32]) {
             if j > 0 {
                 v += sys.plus_j[c - nx] * s[c - nx];
             }
-            out[c] = v;
+            *slot = v;
         }
     }
 }

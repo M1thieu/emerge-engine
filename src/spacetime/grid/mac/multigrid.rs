@@ -35,7 +35,34 @@
 //! convergence, they are not needed for it (their section 4), and Jacobi
 //! alone keeps every sweep order independent.
 
+use rayon::prelude::*;
+
 use super::pressure::PressureSystem;
+
+/// Rows a parallel task takes at least: below it the threads cost more
+/// than the cells do.
+const ROWS_PER_TASK: usize = 16;
+
+/// Grids smaller than this run their sweeps on the calling thread: a cycle
+/// is hundreds of short passes, and on the 72-cell gate scenes handing each
+/// to the thread pool made the whole run 75 % slower. The arithmetic is
+/// the same either way.
+pub(super) const PARALLEL_MIN_CELLS: usize = 128 * 128;
+
+/// Runs `f(row index, row)` over the rows of `out`, in parallel when the
+/// grid is large enough.
+pub(super) fn for_rows(out: &mut [f32], width: usize, f: impl Fn(usize, &mut [f32]) + Sync + Send) {
+    if out.len() >= PARALLEL_MIN_CELLS {
+        out.par_chunks_mut(width)
+            .with_min_len(ROWS_PER_TASK)
+            .enumerate()
+            .for_each(|(j, row)| f(j, row));
+    } else {
+        out.chunks_mut(width)
+            .enumerate()
+            .for_each(|(j, row)| f(j, row));
+    }
+}
 
 const OMEGA: f32 = 2.0 / 3.0;
 
@@ -165,13 +192,14 @@ impl Level {
         }
     }
 
-    /// `out = b - A u` on the liquid cells, zero elsewhere.
+    /// `out = b - A u` on the liquid cells, zero elsewhere. Rows in
+    /// parallel: every cell's value is its own.
     fn residual(&self, u: &[f32], b: &[f32], out: &mut [f32]) {
-        for j in 0..self.ny {
-            for i in 0..self.nx {
+        for_rows(out, self.nx, |j, row| {
+            for (i, slot) in row.iter_mut().enumerate() {
                 let c = i + self.nx * j;
                 if self.kind[c] != Kind::Liquid {
-                    out[c] = 0.0;
+                    *slot = 0.0;
                     continue;
                 }
                 let mut au = self.diag[c] * u[c];
@@ -182,9 +210,9 @@ impl Level {
                         au -= self.coupling * u[n];
                     }
                 }
-                out[c] = b[c] - au;
+                *slot = b[c] - au;
             }
-        }
+        });
     }
 }
 
@@ -369,33 +397,48 @@ fn gauss_seidel_fine(
 fn jacobi_fine(sys: &PressureSystem, b: &[f32], u: &mut [f32], scratch: &mut [f32], sweeps: u32) {
     for _ in 0..sweeps {
         fine_residual(sys, u, b, scratch);
-        for c in 0..u.len() {
-            if sys.active[c] && sys.diag[c] > 0.0 {
-                u[c] += OMEGA * scratch[c] / sys.diag[c];
+        let nx = sys.nx;
+        let scratch = &*scratch;
+        for_rows(u, nx, |j, row| {
+            for (i, value) in row.iter_mut().enumerate() {
+                let c = i + nx * j;
+                if sys.active[c] && sys.diag[c] > 0.0 {
+                    *value += OMEGA * scratch[c] / sys.diag[c];
+                }
             }
-        }
+        });
     }
 }
 
 fn jacobi_coarse(level: &Level, b: &[f32], u: &mut [f32], scratch: &mut [f32], sweeps: u32) {
     for _ in 0..sweeps {
         level.residual(u, b, scratch);
-        for c in 0..u.len() {
-            if level.kind[c] == Kind::Liquid && level.diag[c] > 0.0 {
-                u[c] += OMEGA * scratch[c] / level.diag[c];
+        let nx = level.nx;
+        let scratch = &*scratch;
+        for_rows(u, nx, |j, row| {
+            for (i, value) in row.iter_mut().enumerate() {
+                let c = i + nx * j;
+                if level.kind[c] == Kind::Liquid && level.diag[c] > 0.0 {
+                    *value += OMEGA * scratch[c] / level.diag[c];
+                }
             }
-        }
+        });
     }
 }
 
 /// `out = b - A u` for the fine system, zero off the active cells.
 fn fine_residual(sys: &PressureSystem, u: &[f32], b: &[f32], out: &mut [f32]) {
     let nx = sys.nx;
-    for j in 0..sys.ny {
-        for i in 0..nx {
+    for_rows(out, nx, |j, row| fine_residual_row(sys, u, b, j, row));
+}
+
+fn fine_residual_row(sys: &PressureSystem, u: &[f32], b: &[f32], j: usize, out: &mut [f32]) {
+    let nx = sys.nx;
+    {
+        for (i, slot) in out.iter_mut().enumerate() {
             let c = i + nx * j;
             if !sys.active[c] {
-                out[c] = 0.0;
+                *slot = 0.0;
                 continue;
             }
             let mut au = sys.diag[c] * u[c];
@@ -411,7 +454,7 @@ fn fine_residual(sys: &PressureSystem, u: &[f32], b: &[f32], out: &mut [f32]) {
             if j > 0 {
                 au += sys.plus_j[c - nx] * u[c - nx];
             }
-            out[c] = b[c] - au;
+            *slot = b[c] - au;
         }
     }
 }
@@ -421,8 +464,14 @@ fn fine_residual(sys: &PressureSystem, u: &[f32], b: &[f32], out: &mut [f32]) {
 const B: [(isize, f32); 4] = [(-1, 0.125), (0, 0.375), (1, 0.375), (2, 0.125)];
 
 fn restrict(fine: &[f32], fnx: usize, fny: usize, coarse: &Level, out: &mut [f32]) {
-    for cj in 0..coarse.ny {
-        for ci in 0..coarse.nx {
+    for_rows(out, coarse.nx, |cj, row| {
+        restrict_row(fine, fnx, fny, coarse, cj, row)
+    });
+}
+
+fn restrict_row(fine: &[f32], fnx: usize, fny: usize, coarse: &Level, cj: usize, out: &mut [f32]) {
+    {
+        for (ci, slot) in out.iter_mut().enumerate() {
             let c = ci + coarse.nx * cj;
             if coarse.kind[c] != Kind::Liquid {
                 continue;
@@ -441,60 +490,59 @@ fn restrict(fine: &[f32], fnx: usize, fny: usize, coarse: &Level, out: &mut [f32
                     sum += wi * wj * fine[i as usize + fnx * j as usize];
                 }
             }
-            out[c] = sum;
+            *slot = sum;
         }
     }
 }
 
 /// Adds `4 B^T` of the coarse values to the liquid fine cells: bilinear
-/// interpolation, the transpose of `restrict` up to that factor.
+/// interpolation, the transpose of `restrict` up to that factor. Written
+/// as each fine cell gathering from the coarse cells whose stencil covers
+/// it (fine `f` is in coarse `I`'s stencil when `f - 2I` is one of `B`'s
+/// offsets), so rows can run in parallel.
 fn prolongate_into(
     coarse: &[f32],
     cl: &Level,
     fnx: usize,
-    fny: usize,
-    fine_liquid: impl Fn(usize) -> bool,
+    fine_liquid: impl Fn(usize) -> bool + Sync,
     out: &mut [f32],
 ) {
-    for cj in 0..cl.ny {
-        for ci in 0..cl.nx {
-            let value = coarse[ci + cl.nx * cj];
-            if value == 0.0 {
-                continue;
-            }
-            for &(dj, wj) in &B {
-                let j = 2 * cj as isize + dj;
-                if j < 0 || j as usize >= fny {
-                    continue;
-                }
-                for &(di, wi) in &B {
-                    let i = 2 * ci as isize + di;
-                    if i < 0 || i as usize >= fnx {
-                        continue;
-                    }
-                    let f = i as usize + fnx * j as usize;
-                    if fine_liquid(f) {
-                        out[f] += 4.0 * wi * wj * value;
-                    }
-                }
+    let parents = |f: usize, len: usize| {
+        let mut found = [(0usize, 0.0f32); 2];
+        let mut count = 0;
+        for &(offset, w) in &B {
+            let twice = f as isize - offset;
+            if twice >= 0 && twice % 2 == 0 && ((twice / 2) as usize) < len {
+                found[count] = ((twice / 2) as usize, w);
+                count += 1;
             }
         }
-    }
+        (found, count)
+    };
+    for_rows(out, fnx, |j, row| {
+        let (pj, nj) = parents(j, cl.ny);
+        for (i, slot) in row.iter_mut().enumerate() {
+            if !fine_liquid(i + fnx * j) {
+                continue;
+            }
+            let (pi, ni) = parents(i, cl.nx);
+            let mut sum = 0.0;
+            for &(cj, wj) in &pj[..nj] {
+                for &(ci, wi) in &pi[..ni] {
+                    sum += 4.0 * wi * wj * coarse[ci + cl.nx * cj];
+                }
+            }
+            *slot += sum;
+        }
+    });
 }
 
 fn prolongate(coarse: &[f32], cl: &Level, fine: &Level, out: &mut [f32]) {
-    prolongate_into(
-        coarse,
-        cl,
-        fine.nx,
-        fine.ny,
-        |f| fine.kind[f] == Kind::Liquid,
-        out,
-    );
+    prolongate_into(coarse, cl, fine.nx, |f| fine.kind[f] == Kind::Liquid, out);
 }
 
 fn prolongate_fine(coarse: &[f32], cl: &Level, sys: &PressureSystem, out: &mut [f32]) {
-    prolongate_into(coarse, cl, sys.nx, sys.ny, |f| sys.active[f], out);
+    prolongate_into(coarse, cl, sys.nx, |f| sys.active[f], out);
 }
 
 #[cfg(test)]
