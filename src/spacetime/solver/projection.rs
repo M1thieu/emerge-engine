@@ -55,8 +55,8 @@ pub(super) fn project_particle_state_to_admissible(
     config: &SimConfig,
 ) -> bool {
     let mut projected = false;
-    let min = config.boundary_thickness.saturating_sub(1) as f32;
-    let max = config.grid_res.saturating_sub(config.boundary_thickness) as f32;
+    let (min, max) =
+        crate::boundary::position_clamp_bounds(config.boundary_thickness, config.grid_res);
     let domain_center = Vec2::splat((min + max) * 0.5);
 
     if !particles.x[i].is_finite() {

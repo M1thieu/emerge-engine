@@ -2733,9 +2733,13 @@ fn fluid_dam_break_collapses_and_runs_out_away_from_wall() {
 /// so it never diffuses on its own; any change in local temperature homogeneity can ONLY
 /// come from real particle-position interpenetration, not a diffusion shortcut. Two
 /// adjacent blocks of the IDENTICAL `NewtonianFluidMaterial` (hot=373K left, cold=273K
-/// right, a gap between them at t=0, no overlap) are dropped together under gravity;
-/// a real fluid must spread/collide into ONE shared puddle where hot- and cold-tagged
-/// particles are spatially interspersed. Measured via `solver.particles_near`
+/// right, a gap between them at t=0, no overlap) fall under gravity, the hot one from
+/// 8 cells higher, so it lands on the cold one as it spreads; a real fluid must
+/// collide into ONE shared puddle where hot- and cold-tagged particles are spatially
+/// interspersed. The two used to fall from the same height: that scene is a mirror
+/// image about the midline, where a symmetric slump has no flow across, and the mixing
+/// it measured came from the walls' position clamp sitting one cell closer on the
+/// right than on the left (midline crossings 4.9 % before that fix, 1.2 % after). Measured via `solver.particles_near`
 /// (the engine's own existing real spatial-neighbor query, not a new mechanism) -- the
 /// fraction of each particle's nearby neighbors carrying the OPPOSITE tag, averaged, must
 /// rise from near-zero (segregated) to a substantial fraction (intermixed).
@@ -2752,7 +2756,7 @@ fn fluid_mixes_via_real_advection_not_left_segregated() {
     let gap = 1.0_f32; // real, deliberate separation at t=0 -- no overlap to start
     let cx = GRID as f32 * 0.5;
     let y_center = FLOOR + side as f32 * 0.5 + 4.0;
-    let left_center = Vec2::new(cx - side as f32 * 0.5 - gap * 0.5, y_center);
+    let left_center = Vec2::new(cx - side as f32 * 0.5 - gap * 0.5, y_center + 8.0);
     let right_center = Vec2::new(cx + side as f32 * 0.5 + gap * 0.5, y_center);
 
     let left_spawn = SpawnRegion {
@@ -2836,7 +2840,7 @@ fn fluid_mixes_via_real_advection_not_left_segregated() {
     // blocks start with a gap, zero boundary contact) -- a purely RELATIVE
     // "final > initial * 3" bound would be vacuously true for ANY nonzero final value,
     // so this needs an absolute floor too, not just a ratio. 0.03 is a real,
-    // meaningful non-trivial fraction (measured value: 0.0726), well below the
+    // meaningful non-trivial fraction (measured value: 0.248), well below the
     // measurement so this isn't tuned to just barely pass it.
     assert!(
         final_cross_fraction > initial_cross_fraction * 3.0,

@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-use super::BoundaryCondition;
+use super::{BoundaryCondition, position_clamp_bounds};
 
 /// Heightmap terrain boundary -- arbitrary ground profile + outer box walls.
 ///
@@ -172,8 +172,7 @@ impl BoundaryCondition for HeightmapBoundary {
 
     fn clamp_particle_position(&self, position: Vec2, grid_res: usize) -> Vec2 {
         // Outer walls.
-        let wall_min = self.wall_thickness.saturating_sub(1) as f32;
-        let wall_max = grid_res.saturating_sub(self.wall_thickness) as f32;
+        let (wall_min, wall_max) = position_clamp_bounds(self.wall_thickness, grid_res);
         let mut pos = position.clamp(Vec2::splat(wall_min), Vec2::splat(wall_max));
 
         // Terrain: push particles above the surface. Keeps the per-column
@@ -229,8 +228,7 @@ impl BoundaryCondition for HeightmapBoundary {
     /// surface, while resting and rolling contact overlaps a few percent of
     /// the radius.
     fn clamp_grain_position(&self, position: Vec2, radius: f32, grid_res: usize) -> Vec2 {
-        let wall_min = self.wall_thickness.saturating_sub(1) as f32;
-        let wall_max = grid_res.saturating_sub(self.wall_thickness) as f32;
+        let (wall_min, wall_max) = position_clamp_bounds(self.wall_thickness, grid_res);
         let mut pos = position.clamp(Vec2::splat(wall_min), Vec2::splat(wall_max));
         if let Some((normal, overlap)) = self.grain_contact(pos, radius, grid_res)
             && overlap > radius
