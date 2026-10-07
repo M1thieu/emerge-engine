@@ -283,9 +283,28 @@ pub(crate) fn clamp_position_inside_grid(
     position: Vec2,
     grid_res: usize,
 ) -> Vec2 {
-    let min = thickness.saturating_sub(1) as f32;
-    let max = grid_res.saturating_sub(thickness) as f32;
+    let (min, max) = position_clamp_bounds(thickness, grid_res);
     position.clamp(Vec2::splat(min), Vec2::splat(max))
+}
+
+/// The last-resort position bounds for outer walls `thickness` cells thick:
+/// one cell past each wall plane, on every side alike.
+///
+/// The wall planes sit at `thickness` and `grid_res - thickness`
+/// (`apply_slip_wall_velocity`'s wall nodes end half a cell before them).
+/// The bounds used to be `thickness - 1` and `grid_res - thickness`: one
+/// cell of room past the left wall and the floor, none past the right wall
+/// and the ceiling, so a liquid at rest against the right wall sat on the
+/// clamp (14 particles of a 3360-particle pool after 5 s) while it never
+/// reached the left one (0.60 cells past its plane at most).
+///
+/// Both bounds also keep the quadratic stencil, `floor(x) - 1 ..= floor(x)
+/// + 1`, inside the grid: `x >= 1` and `x < grid_res - 1`.
+pub(crate) fn position_clamp_bounds(thickness: usize, grid_res: usize) -> (f32, f32) {
+    let room = thickness.saturating_sub(1) as f32;
+    let min = room.max(1.0);
+    let max = (grid_res as f32 - room).min((grid_res as f32 - 1.0).next_down());
+    (min, max)
 }
 
 #[cfg(test)]

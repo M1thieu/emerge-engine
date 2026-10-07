@@ -744,8 +744,13 @@ fn g2p_asflip_fused_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // framing). Identical to p.v*dt when ASFLIP disabled or gamma=1.
     var new_x = p.x + v_position * dt;
 
-    let lo = max(0.0, bt - 1.0);
-    let hi = f32(res) - bt;
+    // Mirrors CPU's `position_clamp_bounds`: one cell past each wall plane
+    // on every side, and the quadratic stencil kept inside the grid
+    // (x >= 1, x < res - 1; the largest f32 below res - 1 is one bit under
+    // it, positive floats being ordered like their bits).
+    let room = max(0.0, bt - 1.0);
+    let lo = max(room, 1.0);
+    let hi = min(f32(res) - room, bitcast<f32>(bitcast<u32>(f32(res) - 1.0) - 1u));
     new_x  = clamp(new_x, vec2<f32>(lo), vec2<f32>(hi));
 
     particles[p_idx].x                    = new_x;

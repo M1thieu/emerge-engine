@@ -16,7 +16,7 @@
 //   4. Von Mises      (model 6): 2D SVD → J2 yield check → deviatoric return mapping
 //   5. J = det(F), volume = initial_volume × J, density = mass / volume
 //   6. Position: x = x + v · dt
-//   7. Boundary clamp: slip -- clamp x within [bt, grid_res−bt)
+//   7. Boundary clamp: one cell past each wall plane, stencil kept in the grid
 
 struct Particle {
     x:                    vec2<f32>,
@@ -847,10 +847,14 @@ fn update_particle(p_idx: u32, pp: ptr<function, Particle>) {
     // Position update: x += v · dt  (v written by g2p pass)
     var new_x = p.x + p.v * dt;
 
-    // Boundary clamp (slip boundary -- mirrors clamp_position_inside_grid in boundary.rs).
-    // CPU: min = thickness.saturating_sub(1) = bt-1, max = grid_res - bt.
-    let lo = max(0.0, bt - 1.0);
-    let hi = f32(res) - bt;
+    // Boundary clamp (slip boundary -- mirrors clamp_position_inside_grid).
+    // Mirrors CPU's `position_clamp_bounds`: one cell past each wall plane
+    // on every side, and the quadratic stencil kept inside the grid
+    // (x >= 1, x < res - 1; the largest f32 below res - 1 is one bit under
+    // it, positive floats being ordered like their bits).
+    let room = max(0.0, bt - 1.0);
+    let lo = max(room, 1.0);
+    let hi = min(f32(res) - room, bitcast<f32>(bitcast<u32>(f32(res) - 1.0) - 1u));
     new_x  = clamp(new_x, vec2<f32>(lo), vec2<f32>(hi));
 
     // Write updated fields back.
