@@ -402,6 +402,20 @@ own volumes give, per 4-cell band:
 
 - Viscosity 100 times water's (0.1 Pa s) leaves it unchanged (bottom band
   4.952 at 5 s), so it is not the stirring of a low-viscosity pool.
+- It shrinks with particles per cell, not with the grid. The same physical
+  pool, the bottom 4 cm after 5 s, particle number density times mean `J`
+  (1.000 = no packing):
+
+  | cell size | particles per cell | bottom 4 cm | next 4 cm |
+  | --- | --- | --- | --- |
+  | 2 cm | 4 | 1.159 | 1.019 |
+  | 1 cm | 4 | 1.205 | 1.111 |
+  | 0.5 cm | 4 | 1.256 | 1.103 |
+  | 1 cm | 9 | 1.075 | 1.023 |
+  | 1 cm | 1 | 2.059 | 1.711 |
+
+  Refining the grid at fixed particles per cell does not converge it, which
+  points at the particle quadrature rather than at the grid discretisation.
 - It is not the wall: a pool against a `StaticBoxBoundary` face and the
   same pool between the domain's own walls give the same levels and the same
   mean `J` (0.9949 against 0.9952).
