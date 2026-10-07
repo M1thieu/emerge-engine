@@ -148,7 +148,7 @@ use super::solid::{
     FaceWeights, box_container, box_container_image, face_weights, sample_centres, sample_corners,
 };
 use super::transfer::{faces_to_particles, particles_to_faces};
-use super::{ProjectionSettings, project, travel_limited_dt};
+use super::{ProjectionSettings, Walls, project, travel_limited_dt};
 use crate::diagnostics::{OCCUPANCY_BANDS, scene_map};
 use crate::fields::EARTH_GRAVITY_M_S2;
 use crate::materials::utils::advance_log_volume_ratio;
@@ -182,6 +182,11 @@ struct Scene {
     j_at_bounds: usize,
     time: f32,
     probe: Probe,
+    /// `c^2` in cells^2/s^2 for the compressible projection (step A1);
+    /// `None` is the incompressible limit.
+    sound_speed2: Option<f32>,
+    /// A substep length that replaces the travel limit (scene 6).
+    fixed_dt: Option<f32>,
 }
 
 /// Where things happen, for diagnosis only: no criterion reads it.
@@ -198,6 +203,9 @@ struct Probe {
     /// (assembly, solve, update, extrapolation, walls), the two gathers,
     /// the particle update.
     phase_us: [u128; 6],
+    /// Cell whose pressure every substep records, with the time (scene 6).
+    watch: Option<usize>,
+    watch_history: Vec<(f32, f32)>,
 }
 
 /// What one frame's last substep left, and what the frame cost.
@@ -244,11 +252,58 @@ impl Scene {
             j_at_bounds: 0,
             time: 0.0,
             probe: Probe::default(),
+            sound_speed2: None,
+            fixed_dt: None,
         }
     }
 
     fn g(&self) -> f32 {
         self.gravity.length()
+    }
+
+    /// The compressible projection at `c_m_s`.
+    fn with_sound_speed(mut self, c_m_s: f32) -> Self {
+        let c = c_m_s / self.cell_m;
+        self.sound_speed2 = Some(c * c);
+        self
+    }
+
+    /// Mass-weighted J at the cell centres, bilinear, and the pressure the
+    /// linear equation of state gives it, `q = -c^2 (J - 1)`; zero where no
+    /// particle reaches.
+    fn cell_pressure_from_j(&self, sound_speed2: f32) -> Vec<f32> {
+        let (nx, ny) = (self.layout.nx, self.layout.ny);
+        let mut sum_j = vec![0.0f32; nx * ny];
+        let mut sum_w = vec![0.0f32; nx * ny];
+        for p in 0..self.x.len() {
+            let t = self.x[p] / self.layout.dx - Vec2::splat(0.5);
+            let (i0, j0) = (t.x.floor() as i32, t.y.floor() as i32);
+            let (fx, fy) = (t.x - i0 as f32, t.y - j0 as f32);
+            let j_p = self.j(p);
+            for (di, dj, w) in [
+                (0, 0, (1.0 - fx) * (1.0 - fy)),
+                (1, 0, fx * (1.0 - fy)),
+                (0, 1, (1.0 - fx) * fy),
+                (1, 1, fx * fy),
+            ] {
+                let (i, j) = (i0 + di, j0 + dj);
+                if i < 0 || j < 0 || i as usize >= nx || j as usize >= ny {
+                    continue;
+                }
+                let c = i as usize + nx * j as usize;
+                sum_w[c] += w * self.mass[p];
+                sum_j[c] += w * self.mass[p] * j_p;
+            }
+        }
+        (0..nx * ny)
+            .map(|c| {
+                if sum_w[c] > 0.0 {
+                    -sound_speed2 * (sum_j[c] / sum_w[c] - 1.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect()
     }
 
     /// The liquid level set with the tank's walls folded in (`apic2d`).
@@ -286,14 +341,23 @@ impl Scene {
         );
         lap(&mut self.probe, 2);
         let image = box_container_image(self.tank.0, self.tank.1);
+        let q_before = self
+            .sound_speed2
+            .map(|c2| (c2, self.cell_pressure_from_j(c2)));
+        let material: Vec<bool> = self.solid_centres.data().iter().map(|&d| d > 0.0).collect();
         let solution = project(
             &self.layout,
             dt,
             &mut vel,
-            &self.weights,
-            &image,
+            Walls {
+                weights: &self.weights,
+                image: &image,
+            },
             &phi,
             &self.settings,
+            q_before
+                .as_ref()
+                .map(|(c2, q)| (*c2, q.as_slice(), material.as_slice())),
         );
         lap(&mut self.probe, 3);
         faces_to_particles(&self.layout, &vel, &self.x, &mut self.v, &mut self.c);
@@ -391,6 +455,11 @@ impl Scene {
         frame.substeps += 1;
         frame.iterations.push(solution.iterations);
         frame.capped += u32::from(!solution.converged);
+        if let Some(c) = self.probe.watch {
+            self.probe
+                .watch_history
+                .push((self.time, solution.pressure[c]));
+        }
         frame.pressure = solution.pressure;
         frame.active = system.active;
         frame.phi = phi;
@@ -411,12 +480,14 @@ impl Scene {
         let mut left = FRAME;
         while left > 1e-7 {
             let speed = self.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
-            let limit = travel_limited_dt(
-                speed,
-                self.g(),
-                self.layout.dx,
-                self.settings.max_cells_per_substep,
-            );
+            let limit = self.fixed_dt.unwrap_or_else(|| {
+                travel_limited_dt(
+                    speed,
+                    self.g(),
+                    self.layout.dx,
+                    self.settings.max_cells_per_substep,
+                )
+            });
             let dt = limit.min(left);
             self.substep(dt, &mut frame);
             left -= dt;
@@ -847,9 +918,23 @@ fn gate_droplet_in_free_fall() {
 }
 
 /// Scenes 3 and 4 share their tank, their duration and their criteria.
-fn violent_scene(label: &str, x: Vec<Vec2>, report: &mut Report) {
+fn violent_scene(label: &str, x: Vec<Vec2>, report: &mut Report) -> f32 {
+    violent_scene_at(label, x, None, report)
+}
+
+/// Scenes 3 and 4, and scene 7 with `sound_speed` in m/s. Returns the mean
+/// substeps per frame.
+fn violent_scene_at(
+    label: &str,
+    x: Vec<Vec2>,
+    sound_speed: Option<f32>,
+    report: &mut Report,
+) -> f32 {
     let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
     let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x);
+    if let Some(c) = sound_speed {
+        scene = scene.with_sound_speed(c);
+    }
     let (volume_start, energy_start) = (scene.volume(), scene.energy());
     let mut cost = Cost::default();
     let (mut worst_volume, mut worst_energy) = (0.0f32, f32::NEG_INFINITY);
@@ -906,6 +991,7 @@ fn violent_scene(label: &str, x: Vec<Vec2>, report: &mut Report) {
     report.check(scene.j_at_bounds == 0, || {
         format!("{label}: {} J at bounds", scene.j_at_bounds)
     });
+    cost.substeps as f32 / cost.frames.max(1) as f32
 }
 
 #[test]
@@ -1288,5 +1374,326 @@ fn probe_dump_and_phase_costs() {
     json.push_str("]}");
     if let Some(path) = path {
         std::fs::write(path, json).expect("write dump");
+    }
+}
+
+/// The seeds of scenes 3 and 4.
+fn dam_break_seed() -> Vec<Vec2> {
+    let mut rng = LcgRng::new(3);
+    seed(
+        (IVec2::new(4, 4), IVec2::new(24, 44)),
+        |_| true,
+        |q| box_free_sides(q, Some(44.0), Some(24.0)),
+        &mut rng,
+    )
+}
+
+fn drop_into_pool_seed() -> Vec<Vec2> {
+    let mut rng = LcgRng::new(5);
+    let mut x = seed(
+        (IVec2::new(4, 4), IVec2::new(68, 19)),
+        |_| true,
+        |q| box_free_sides(q, Some(19.0), None),
+        &mut rng,
+    );
+    let (centre, radius) = (Vec2::new(36.0, 44.0), 5.0);
+    x.extend(seed(
+        (IVec2::new(30, 38), IVec2::new(42, 50)),
+        |q| (q - centre).length() < radius,
+        |q| disc_side(q, centre, radius),
+        &mut rng,
+    ));
+    x
+}
+
+#[test]
+#[ignore = "compressible projection gate, scene 5: run with --ignored --nocapture"]
+fn gate_compressible_column() {
+    let mut report = Report::new();
+    let c_m_s = 10.0;
+    let (wall, width, depth) = (4usize, 40usize, 30usize);
+    let (nx, ny) = (width + 2 * wall, wall + depth + 18);
+    let floor = wall as f32;
+    let tank = (
+        Vec2::new(wall as f32, floor),
+        Vec2::new((wall + width) as f32, 1.0e6),
+    );
+    let mut rng = LcgRng::new(7);
+    let h0 = floor + depth as f32;
+    let x = seed(
+        (
+            IVec2::new(wall as i32, wall as i32),
+            IVec2::new((wall + width) as i32, (wall + depth) as i32),
+        ),
+        |_| true,
+        |q| box_free_sides(q, Some(h0), None),
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 1.0, tank, x).with_sound_speed(c_m_s);
+    let c2 = scene.sound_speed2.unwrap_or(0.0);
+    let g = scene.g();
+    // "At rest": in hydrostatic equilibrium, each particle's J where its
+    // depth puts it. Declared after the first run, where the column started
+    // at J = 1 and its pressure rang for half a second before settling.
+    for p in 0..scene.x.len() {
+        let j = 1.0 - g * (h0 - scene.x[p].y).max(0.0) / c2;
+        scene.log_j[p] = j.ln();
+    }
+    let centre_i = nx / 2;
+    let surface_start = surface_height(&scene.phi(), centre_i, wall).expect("no surface");
+    let expected_drop = g * (depth as f32).powi(2) / (2.0 * c2);
+    let frames = (5.0 / FRAME).round() as u32;
+    let last_second = frames - (1.0 / FRAME).round() as u32;
+    let (mut worst_p, mut surface_sum, mut surface_n) = (0.0f32, 0.0f32, 0u32);
+    let bands = depth / 5;
+    let mut band_j = vec![(0.0f64, 0u64); bands];
+    let mut band_h = 0.0f32;
+    let mut cost = Cost::default();
+    let wall_clock = Instant::now();
+    for f in 1..=frames {
+        let frame = scene.frame();
+        cost.add(&frame);
+        let Some(h) = surface_height(&frame.phi, centre_i, wall) else {
+            report.check(false, || "column: no surface".to_string());
+            break;
+        };
+        for j in wall..ny {
+            let c = centre_i + nx * j;
+            let y = j as f32 + 0.5;
+            if y >= h - 0.5 || !frame.active[c] || scene.solid_centres.get(centre_i, j) <= 0.0 {
+                continue;
+            }
+            worst_p = worst_p.max((frame.pressure[c] - g * (h - y)).abs());
+        }
+        if f > last_second {
+            surface_sum += h;
+            surface_n += 1;
+            band_h += h;
+            for p in 0..scene.x.len() {
+                let k = ((scene.x[p].y - floor) / 5.0).floor();
+                if k >= 0.0 && (k as usize) < bands {
+                    let entry = &mut band_j[k as usize];
+                    entry.0 += f64::from(scene.j(p));
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let surface = surface_sum / surface_n.max(1) as f32;
+    let h_mean = band_h / surface_n.max(1) as f32;
+    let drop = surface_start - surface;
+    println!(
+        "compressible column: pressure error {:.3} cell of head, surface drop {drop:.3} cell against {expected_drop:.3}",
+        worst_p / g
+    );
+    report.check(worst_p <= 0.5 * g, || {
+        format!("column: pressure off by {:.3} cell of head", worst_p / g)
+    });
+    report.check((drop - expected_drop).abs() <= 0.15, || {
+        format!("column: surface dropped {drop:.3} cell, expected {expected_drop:.3}")
+    });
+    for (k, &(sum, n)) in band_j.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let mean = (sum / n as f64) as f32;
+        let y = floor + 5.0 * k as f32 + 2.5;
+        let expected = 1.0 - g * (h_mean - y) / c2;
+        println!("  band {k}: mean J {mean:.5}, expected {expected:.5}");
+        report.check((mean - expected).abs() <= 0.005, || {
+            format!("column: band {k} mean J {mean:.5}, expected {expected:.5}")
+        });
+    }
+    cost.print("compressible column", wall_s, 5.0);
+    report.finish();
+}
+
+#[test]
+#[ignore = "compressible projection gate, scene 6: run with --ignored --nocapture"]
+fn gate_sound_speed() {
+    let mut report = Report::new();
+    let c_m_s = 10.0;
+    let (wall, length, height) = (4usize, 200usize, 8usize);
+    let (nx, ny) = (length + 2 * wall, height + 2 * wall);
+    let tank = (
+        Vec2::splat(wall as f32),
+        Vec2::new((wall + length) as f32, (wall + height) as f32),
+    );
+    let mut rng = LcgRng::new(11);
+    let x = seed(
+        (
+            IVec2::splat(wall as i32),
+            IVec2::new((wall + length) as i32, (wall + height) as i32),
+        ),
+        |_| true,
+        |_| (f32::INFINITY, Vec2::Y),
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 0.0, tank, x).with_sound_speed(c_m_s);
+    let c = c_m_s / scene.cell_m;
+    scene.fixed_dt = Some(scene.layout.dx / c);
+    for p in 0..scene.x.len() {
+        if scene.x[p].x < wall as f32 + 10.0 {
+            scene.log_j[p] = 0.99f32.ln();
+        }
+    }
+    let watch_i = wall + 150;
+    scene.probe.watch = Some(watch_i + nx * (wall + height / 2));
+    let expected = (150.0 - 5.0) / c;
+    let mut cost = Cost::default();
+    let wall_clock = Instant::now();
+    while scene.time < 1.5 * expected {
+        let frame = scene.frame();
+        cost.add(&frame);
+    }
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let (arrival, peak) = scene
+        .probe
+        .watch_history
+        .iter()
+        .filter(|(t, _)| *t < 1.5 * expected)
+        .fold((0.0f32, f32::NEG_INFINITY), |m, &(t, q)| {
+            if q > m.1 { (t, q) } else { m }
+        });
+    let error = (arrival - expected).abs() / expected;
+    println!(
+        "sound speed: peak {peak:.1} at t={arrival:.4}s, expected {expected:.4}s, off by {:.1} %",
+        100.0 * error
+    );
+    report.check(error <= 0.05, || {
+        format!("sound speed: arrival off by {:.1} %", 100.0 * error)
+    });
+    cost.print("sound speed", wall_s, scene.time);
+    report.finish();
+}
+
+#[test]
+#[ignore = "compressible projection gate, scene 7: run with --ignored --nocapture"]
+fn gate_real_water() {
+    let mut report = Report::new();
+    let water = 1483.0;
+    for (name, seed_fn) in [
+        ("dam break", dam_break_seed as fn() -> Vec<Vec2>),
+        ("drop into pool", drop_into_pool_seed as fn() -> Vec<Vec2>),
+    ] {
+        let mut quiet = Report::new();
+        let incompressible = violent_scene_at(name, seed_fn(), None, &mut quiet);
+        let label = format!("{name}, real water");
+        let compressible = violent_scene_at(&label, seed_fn(), Some(water), &mut report);
+        println!(
+            "{label}: {compressible:.2} substeps/frame against {incompressible:.2} incompressible"
+        );
+        report.check(compressible <= 1.1 * incompressible, || {
+            format!("{label}: {compressible:.2} substeps/frame, over 1.1 x {incompressible:.2}")
+        });
+    }
+    report.finish();
+}
+
+/// Diagnosis of A1's first run: the sound-speed arrival at substeps of
+/// `dx / c`, half and a quarter of it (a time-discretisation error shrinks
+/// with the step; a wrong `c` does not), and the compressible column's
+/// largest pressure error per half second. A probe.
+#[test]
+#[ignore = "diagnostic probe for A1's first run: run with --ignored --nocapture"]
+fn probe_a1_first_run() {
+    let c_m_s = 10.0;
+    for fraction in [1.0f32, 0.5, 0.25] {
+        let (wall, length, height) = (4usize, 200usize, 8usize);
+        let (nx, ny) = (length + 2 * wall, height + 2 * wall);
+        let tank = (
+            Vec2::splat(wall as f32),
+            Vec2::new((wall + length) as f32, (wall + height) as f32),
+        );
+        let mut rng = LcgRng::new(11);
+        let x = seed(
+            (
+                IVec2::splat(wall as i32),
+                IVec2::new((wall + length) as i32, (wall + height) as i32),
+            ),
+            |_| true,
+            |_| (f32::INFINITY, Vec2::Y),
+            &mut rng,
+        );
+        let mut scene = Scene::new((nx, ny), 0.01, 0.0, tank, x).with_sound_speed(c_m_s);
+        let c = c_m_s / scene.cell_m;
+        scene.fixed_dt = Some(fraction * scene.layout.dx / c);
+        for p in 0..scene.x.len() {
+            if scene.x[p].x < wall as f32 + 10.0 {
+                scene.log_j[p] = 0.99f32.ln();
+            }
+        }
+        scene.probe.watch = Some(wall + 150 + nx * (wall + height / 2));
+        let expected = (150.0 - 5.0) / c;
+        while scene.time < 1.5 * expected {
+            scene.frame();
+        }
+        let (arrival, peak) = scene
+            .probe
+            .watch_history
+            .iter()
+            .filter(|(t, _)| *t < 1.5 * expected)
+            .fold((0.0f32, f32::NEG_INFINITY), |m, &(t, q)| {
+                if q > m.1 { (t, q) } else { m }
+            });
+        println!(
+            "dt = {fraction} dx/c: peak {peak:.1} at {arrival:.4} s, expected {expected:.4} s ({:+.1} %)",
+            100.0 * (arrival - expected) / expected
+        );
+    }
+    // Column: largest pressure error per half second.
+    let (wall, width, depth) = (4usize, 40usize, 30usize);
+    let (nx, ny) = (width + 2 * wall, wall + depth + 18);
+    let floor = wall as f32;
+    let tank = (
+        Vec2::new(wall as f32, floor),
+        Vec2::new((wall + width) as f32, 1.0e6),
+    );
+    let mut rng = LcgRng::new(7);
+    let h0 = floor + depth as f32;
+    let x = seed(
+        (
+            IVec2::new(wall as i32, wall as i32),
+            IVec2::new((wall + width) as i32, (wall + depth) as i32),
+        ),
+        |_| true,
+        |q| box_free_sides(q, Some(h0), None),
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 1.0, tank, x).with_sound_speed(c_m_s);
+    let g = scene.g();
+    let centre_i = nx / 2;
+    let mut worst = 0.0f32;
+    let mut worst_y = 0.0f32;
+    for f in 1..=(5.0 / FRAME).round() as u32 {
+        let frame = scene.frame();
+        let h = surface_height(&frame.phi, centre_i, wall).unwrap_or(0.0);
+        for j in wall..ny {
+            let c = centre_i + nx * j;
+            let y = j as f32 + 0.5;
+            if y >= h - 0.5 || !frame.active[c] || scene.solid_centres.get(centre_i, j) <= 0.0 {
+                continue;
+            }
+            let e = (frame.pressure[c] - g * (h - y)).abs();
+            if e > worst {
+                worst = e;
+                worst_y = y;
+            }
+        }
+        if f % 30 == 0 {
+            let outside = (0..scene.x.len())
+                .filter(|&p| !scene.inside_tank(p))
+                .count();
+            let lowest = scene.x.iter().map(|q| q.y).fold(f32::INFINITY, f32::min);
+            let geometric = scene.interior_particles_per_cell();
+            let mean_j = (0..scene.x.len()).map(|p| scene.j(p)).sum::<f32>() / scene.x.len() as f32;
+            println!(
+                "column t={:.1}s: largest pressure error {:.3} cell of head (at y={worst_y:.1}), surface {h:.3}, outside {outside}, lowest y {lowest:.3}, {geometric:.3} per interior cell, mean J {mean_j:.5}",
+                scene.time,
+                worst / g
+            );
+            worst = 0.0;
+        }
     }
 }
