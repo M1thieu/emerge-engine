@@ -40,30 +40,48 @@ impl SurfaceSettings {
 /// thin out, and positive (air) beyond that.
 pub fn liquid_phi(layout: &MacLayout, x: &[Vec2], surface: &SurfaceSettings) -> Field2 {
     let (nx, ny, dx) = (layout.nx, layout.ny, layout.dx);
-    let bins = Bins::new(layout, x);
     let reach_len = 2.0 * surface.kernel_radius;
-    let reach = (reach_len / dx).ceil() as i32 + 1;
     let r2_kernel = surface.kernel_radius * surface.kernel_radius;
+    // Each particle adds itself to the cells whose centre it reaches,
+    // rather than each cell searching for its particles: the same sums,
+    // about a fifteenth of the distance tests at four particles per cell.
+    let n = nx * ny;
+    let mut sum_w = vec![0.0f32; n];
+    let mut sum_x = vec![Vec2::ZERO; n];
+    let mut nearest2 = vec![f32::INFINITY; n];
+    // Cells whose centre lies within `radius` of `q`.
+    let span = |q: f32, radius: f32, len: usize| {
+        let lo = ((q - radius) / dx - 0.5).ceil().max(0.0) as usize;
+        let hi = ((q + radius) / dx - 0.5).floor().min(len as f32 - 1.0);
+        (lo, hi)
+    };
+    for &q in x {
+        let (i0, i1) = span(q.x, reach_len, nx);
+        let (j0, j1) = span(q.y, reach_len, ny);
+        if i1 < 0.0 || j1 < 0.0 {
+            continue;
+        }
+        for j in j0..=j1 as usize {
+            for i in i0..=i1 as usize {
+                let k = i + nx * j;
+                let d2 = (q - layout.cell_centre(i, j)).length_squared();
+                nearest2[k] = nearest2[k].min(d2);
+                if d2 < r2_kernel {
+                    let w = (1.0 - d2 / r2_kernel).powi(3);
+                    sum_w[k] += w;
+                    sum_x[k] += w * q;
+                }
+            }
+        }
+    }
     let mut phi = layout.cells(0.0);
     for j in 0..ny {
         for i in 0..nx {
-            let centre = layout.cell_centre(i, j);
-            let mut sum_w = 0.0f32;
-            let mut sum_x = Vec2::ZERO;
-            let mut nearest2 = f32::INFINITY;
-            bins.for_each_near(i as i32, j as i32, reach, |p| {
-                let d2 = (x[p] - centre).length_squared();
-                nearest2 = nearest2.min(d2);
-                if d2 < r2_kernel {
-                    let k = (1.0 - d2 / r2_kernel).powi(3);
-                    sum_w += k;
-                    sum_x += k * x[p];
-                }
-            });
-            let value = if sum_w > 0.0 {
-                (centre - sum_x / sum_w).length() - surface.radius
-            } else if nearest2 <= reach_len * reach_len {
-                nearest2.sqrt() - surface.radius
+            let k = i + nx * j;
+            let value = if sum_w[k] > 0.0 {
+                (layout.cell_centre(i, j) - sum_x[k] / sum_w[k]).length() - surface.radius
+            } else if nearest2[k] <= reach_len * reach_len {
+                nearest2[k].sqrt() - surface.radius
             } else {
                 reach_len - surface.radius
             };
@@ -71,60 +89,6 @@ pub fn liquid_phi(layout: &MacLayout, x: &[Vec2], surface: &SurfaceSettings) -> 
         }
     }
     phi
-}
-
-/// Particles sorted by the cell they sit in.
-struct Bins {
-    nx: i32,
-    ny: i32,
-    start: Vec<u32>,
-    order: Vec<u32>,
-}
-
-impl Bins {
-    fn new(layout: &MacLayout, x: &[Vec2]) -> Self {
-        let (nx, ny) = (layout.nx as i32, layout.ny as i32);
-        let cell = |q: Vec2| -> Option<usize> {
-            let c = (q / layout.dx).floor().as_ivec2();
-            (c.x >= 0 && c.y >= 0 && c.x < nx && c.y < ny).then(|| (c.x + nx * c.y) as usize)
-        };
-        let n = (nx * ny) as usize;
-        let mut count = vec![0u32; n + 1];
-        for &q in x {
-            if let Some(k) = cell(q) {
-                count[k + 1] += 1;
-            }
-        }
-        for k in 0..n {
-            count[k + 1] += count[k];
-        }
-        let start = count.clone();
-        let mut fill = count;
-        let mut order = vec![0u32; start[n] as usize];
-        for (p, &q) in x.iter().enumerate() {
-            if let Some(k) = cell(q) {
-                order[fill[k] as usize] = p as u32;
-                fill[k] += 1;
-            }
-        }
-        Self {
-            nx,
-            ny,
-            start,
-            order,
-        }
-    }
-
-    fn for_each_near(&self, i: i32, j: i32, reach: i32, mut f: impl FnMut(usize)) {
-        for cj in (j - reach).max(0)..=(j + reach).min(self.ny - 1) {
-            for ci in (i - reach).max(0)..=(i + reach).min(self.nx - 1) {
-                let k = (ci + self.nx * cj) as usize;
-                for &p in &self.order[self.start[k] as usize..self.start[k + 1] as usize] {
-                    f(p as usize);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

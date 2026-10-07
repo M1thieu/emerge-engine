@@ -35,6 +35,12 @@ pub struct PressureSystem {
     /// Minus the weighted divergence of the velocity before the update, in
     /// 1/s.
     pub rhs: Vec<f32>,
+    /// Cell centre in the air: where a neighbour's pressure is zero. What
+    /// is neither active nor air is solid. Read only by the multigrid
+    /// preconditioner, which coarsens these three kinds of cell.
+    pub air: Vec<bool>,
+    /// `dt / dx^2`, the coefficient of a fully open face.
+    pub scale: f32,
 }
 
 impl PressureSystem {
@@ -63,11 +69,14 @@ pub fn assemble(
         plus_i: vec![0.0; n],
         plus_j: vec![0.0; n],
         rhs: vec![0.0; n],
+        air: vec![false; n],
+        scale: dt / (dx * dx),
     };
-    let scale = dt / (dx * dx);
+    let scale = sys.scale;
     for j in 0..ny {
         for i in 0..nx {
             let centre = liquid_phi.get(i, j);
+            sys.air[i + nx * j] = centre >= 0.0;
             let faces = [
                 // (open fraction, neighbour, face velocity, sign in div)
                 (
