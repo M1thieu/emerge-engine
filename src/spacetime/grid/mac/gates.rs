@@ -141,6 +141,38 @@
 //! - Scenes 1 to 4 keep passing unchanged.
 //!
 //! Failures counted as above: two failed full runs stop the step.
+//!
+//! # Elastic solid on the staggered grid (step A2), criteria first
+//!
+//! Stomakhin et al. 2014's split (their eqs. 7, 8, 13): the shear part of
+//! the fixed corotated energy taken on the isochoric deformation,
+//! `mu |J^(-1/d) F - R|^2`, gives a deviatoric Kirchhoff stress applied as
+//! forces on the faces, explicitly; the volume part `lambda / 2 (J - 1)^2`
+//! is the compressible projection of step A1 with `c^2 = lambda / rho`.
+//! Plane strain, `lambda` and `mu` from `E` and `nu`. Same rules: no clamp,
+//! no damping, no relaxation.
+//!
+//! - Scene 8, confined elastic column at rest: scene 5's tank filled with
+//!   the solid, `nu = 0.3`, `E` such that `(lambda + mu) / rho = (10
+//!   m/s)^2`, the uniaxial-strain stiffness of this split in 2D; starting
+//!   unstressed, 5 s. Over the last second, the mean J of each 5-cell band
+//!   within 0.005 of `1 - g (h - y) rho / (lambda + mu)`; no particle out
+//!   of the tank; no NaN.
+//! - Scene 9, shear wave: a free strip 200 cells long and 16 high, no
+//!   gravity, `nu = 0.3`, `E` such that `c_s = sqrt(mu / rho) = 5 m/s`,
+//!   the 10 cells at one end starting with an upward velocity of 0.05
+//!   m/s, substeps of `dx / (2 c_s)`. The peak of the mean vertical
+//!   velocity of the particles within one cell of `x = 150` cells from
+//!   that end arrives at `(150 - 5) dx / c_s` within 5 percent.
+//! - Scene 10, elastic block dropped: a 10 by 10 cell block, `nu = 0.3`,
+//!   `c_s = 5 m/s`, released at rest with its base 20 cells above the
+//!   floor of scenes 3 and 4's closed tank, 1 g, 2 s. Kinetic, potential
+//!   and elastic energy never above the start by more than 1 percent; no
+//!   particle out; no NaN; at 2 s the block's radius of gyration about its
+//!   centre within 5 percent of its start (it springs back).
+//! - Scenes 1 to 7 keep passing unchanged.
+//!
+//! Failures counted as above: two failed full runs stop the step.
 
 use std::time::Instant;
 
