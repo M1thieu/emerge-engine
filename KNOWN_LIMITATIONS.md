@@ -419,7 +419,11 @@ own volumes give, per 4-cell band:
 - It is not the wall: a pool against a `StaticBoxBoundary` face and the
   same pool between the domain's own walls give the same levels and the same
   mean `J` (0.9949 against 0.9952).
-- What it costs a scene: the free surface sits low and keeps sinking. In
+- It does not grow without bound. A shallower pool (56 x 8 cells, same
+  water, cell size and gravity) run for 30 s until its fastest particle
+  fell below 1 cell/s settles with its bottom band 11 to 12 % denser than
+  `4 / J` and holds there; the bands above stay within 3 %.
+- What it costs a scene: the free surface sits low. In
   `boiling_cost_probe`'s three columns put in 18-cell beakers under
   gravity, the levels sit 7 to 9 % below the mixture rule after two
   seconds while the densities stay within 0.05 % of it. The boiling and
