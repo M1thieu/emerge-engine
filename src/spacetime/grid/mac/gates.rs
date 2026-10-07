@@ -163,6 +163,11 @@ struct Probe {
     /// Particles leaving the tank: time, position before, velocity,
     /// distance to the nearest wall before.
     crossings: Vec<(f32, Vec2, Vec2, f32)>,
+    /// Wall-clock time per phase of the substep, in microseconds: P2G and
+    /// gravity, level set, assembly for the frame record, projection
+    /// (assembly, solve, update, extrapolation, walls), the two gathers,
+    /// the particle update.
+    phase_us: [u128; 6],
 }
 
 /// What one frame's last substep left, and what the frame cost.
@@ -226,6 +231,11 @@ impl Scene {
     }
 
     fn substep(&mut self, dt: f32, frame: &mut Frame) {
+        let mut clock = Instant::now();
+        let mut lap = |probe: &mut Probe, k: usize| {
+            probe.phase_us[k] += clock.elapsed().as_micros();
+            clock = Instant::now();
+        };
         let (mut vel, _) = particles_to_faces(&self.layout, &self.x, &self.v, &self.c, &self.mass);
         for value in vel.u.data_mut() {
             *value += self.gravity.x * dt;
@@ -233,7 +243,9 @@ impl Scene {
         for value in vel.v.data_mut() {
             *value += self.gravity.y * dt;
         }
+        lap(&mut self.probe, 0);
         let phi = self.phi();
+        lap(&mut self.probe, 1);
         let system = super::pressure::assemble(
             &self.layout,
             dt,
@@ -242,6 +254,7 @@ impl Scene {
             &phi,
             self.settings.theta_floor,
         );
+        lap(&mut self.probe, 2);
         let image = box_container_image(self.tank.0, self.tank.1);
         let solution = project(
             &self.layout,
@@ -252,6 +265,7 @@ impl Scene {
             &phi,
             &self.settings,
         );
+        lap(&mut self.probe, 3);
         faces_to_particles(&self.layout, &vel, &self.x, &mut self.v, &mut self.c);
         // Positions advance by the midpoint rule (RK2) through the projected
         // face velocity, as Bridson and Muller-Fischer 3.1 recommend over
@@ -268,6 +282,7 @@ impl Scene {
         let mut v_mid = vec![Vec2::ZERO; self.x.len()];
         let mut c_mid = vec![Mat2::ZERO; self.x.len()];
         faces_to_particles(&self.layout, &vel, &midpoint, &mut v_mid, &mut c_mid);
+        lap(&mut self.probe, 4);
         let ln_bounds = (J_BOUNDS.0.ln(), J_BOUNDS.1.ln());
         // J advances by the divergence the projection holds: the cells'
         // divergence interpolated bilinearly at the particle, over liquid
@@ -341,6 +356,7 @@ impl Scene {
                     .push((self.time, before, self.v[p], wall));
             }
         }
+        lap(&mut self.probe, 5);
         self.time += dt;
         frame.substeps += 1;
         frame.iterations.push(solution.iterations);
@@ -1149,5 +1165,98 @@ fn probe_dam_break_volume_at_the_free_surface() {
                 scene.time, deep.0, deep.1, surface.0, surface.1
             );
         }
+    }
+}
+
+/// The dam break and the drop into a pool, their particle positions every
+/// fourth frame written as JSON to the path in `EMERGE_GATE_DUMP` (tenths
+/// of a cell), and the time each phase of the substep took. A probe.
+#[test]
+#[ignore = "visual dump and phase timings: run with --ignored --nocapture"]
+fn probe_dump_and_phase_costs() {
+    let path = std::env::var("EMERGE_GATE_DUMP").ok();
+    let mut json = String::from("{\"scenes\":[");
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    for (k, name) in ["dam break", "drop into pool"].into_iter().enumerate() {
+        let mut rng = LcgRng::new(if k == 0 { 3 } else { 5 });
+        let x = if k == 0 {
+            seed(
+                (IVec2::new(4, 4), IVec2::new(24, 44)),
+                |_| true,
+                |q| box_free_sides(q, Some(44.0), Some(24.0)),
+                &mut rng,
+            )
+        } else {
+            let mut x = seed(
+                (IVec2::new(4, 4), IVec2::new(68, 19)),
+                |_| true,
+                |q| box_free_sides(q, Some(19.0), None),
+                &mut rng,
+            );
+            let (centre, radius) = (Vec2::new(36.0, 44.0), 5.0);
+            x.extend(seed(
+                (IVec2::new(30, 38), IVec2::new(42, 50)),
+                |q| (q - centre).length() < radius,
+                |q| disc_side(q, centre, radius),
+                &mut rng,
+            ));
+            x
+        };
+        let n = x.len();
+        let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x);
+        if k > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            "{{\"name\":\"{name}\",\"grid\":72,\"frame_dt\":{FRAME},\"every\":4,\"boxes\":[],\"tags\":[{}],\"frames\":[",
+            vec!["0"; n].join(",")
+        ));
+        let frames = (2.0 / FRAME).round() as u32;
+        let wall = Instant::now();
+        for f in 0..=frames {
+            if f % 4 == 0 {
+                if f > 0 {
+                    json.push(',');
+                }
+                let xs: Vec<String> = scene
+                    .x
+                    .iter()
+                    .flat_map(|q| [(q.x * 10.0).round() as i32, (q.y * 10.0).round() as i32])
+                    .map(|v| v.to_string())
+                    .collect();
+                json.push('[');
+                json.push_str(&xs.join(","));
+                json.push(']');
+            }
+            if f < frames {
+                scene.frame();
+            }
+        }
+        json.push_str("]}");
+        let total = wall.elapsed().as_micros().max(1) as f64;
+        let names = [
+            "P2G",
+            "level set",
+            "assembly (record)",
+            "projection",
+            "two gathers",
+            "particle update",
+        ];
+        println!(
+            "{name}: {} particles, {:.0} ms for 2 s simulated",
+            n,
+            total / 1e3
+        );
+        for (label, us) in names.iter().zip(scene.probe.phase_us) {
+            println!(
+                "  {label:<18} {:6.0} ms  {:5.1} %",
+                us as f64 / 1e3,
+                100.0 * us as f64 / total
+            );
+        }
+    }
+    json.push_str("]}");
+    if let Some(path) = path {
+        std::fs::write(path, json).expect("write dump");
     }
 }
