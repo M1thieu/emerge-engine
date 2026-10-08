@@ -245,6 +245,25 @@
 //! - Every scene: no NaN, no particle beyond a wall past its budget, and
 //!   its wall time per simulated second against real time, reported.
 //!
+//! Added, criteria first (step M2): the scenes at the substep each material
+//! runs at in a game, where its cost against real time is the verdict.
+//!
+//! - Rest: a column 40 cells wide and 30 deep filling a tank of slip
+//!   walls, 1 cm cells, released unstressed under 1 g, 2 s. Over the last
+//!   second the mean J of each 5-cell band within `0.05 rho g h / M + a T`
+//!   of `1 - rho g (h - y) / M`, `M = lambda + 2 mu` (uniaxial strain),
+//!   where `a T` is the drift the pressure solve's absolute tolerance `a`
+//!   (1/s) allows J over the run's `T` seconds.
+//! - Drop: a 10 by 10 cell block of the material released at rest 20
+//!   cells above the floor of a closed tank, 1 g, 1 s. Kinetic,
+//!   potential, shear and volume energy never above the start by more than
+//!   1 percent; for `mu > 0`, the radius of gyration about the centre
+//!   within 5 percent of the start at the end (it springs back); for `mu =
+//!   0`, the volume within 2 percent (scenes 3 and 4's bound).
+//! - Both: the wall time per simulated second, reported against real time
+//!   (1000 ms); no criterion yet, as A2's explicit shear bounds the
+//!   substep by the shear wave, so the stiffer the solid the slower.
+//!
 //! Failures counted as above: two failed full runs stop the step.
 
 use std::time::Instant;
@@ -3248,4 +3267,228 @@ fn gate_matrix_s_waves() {
         plane_wave(row, false, &mut report);
     }
     report.finish();
+}
+
+/// Kinetic, potential, shear and volume energy, the floor as zero: the
+/// drop's measure for any row.
+fn row_energy(scene: &Scene) -> f64 {
+    let floor = scene.tank.0.y;
+    (0..scene.x.len())
+        .map(|p| {
+            let shear = scene
+                .shear
+                .map_or(0.0, |mu| shear_energy(scene.deformation[p], mu));
+            let volume = scene
+                .sound_speed2
+                .map_or(0.0, |kappa| 0.5 * kappa * (scene.j(p) - 1.0).powi(2));
+            f64::from(
+                scene.mass[p]
+                    * (0.5 * scene.v[p].length_squared() + scene.g() * (scene.x[p].y - floor))
+                    + scene.v0[p] * (shear + volume),
+            )
+        })
+        .sum()
+}
+
+/// The rest scene for one row (criteria, step M2). Returns the wall time
+/// per simulated second, in ms.
+fn rest_column(row: &MaterialRow, report: &mut Report) -> f32 {
+    let label = format!("{}, at rest", row.name);
+    let (wall, width, depth) = (4usize, 40usize, 30usize);
+    let (nx, ny) = (width + 2 * wall, wall + depth + 18);
+    let floor = wall as f32;
+    let tank = (
+        Vec2::new(wall as f32, floor),
+        Vec2::new((wall + width) as f32, 1.0e6),
+    );
+    let mut rng = LcgRng::new(7);
+    let h0 = floor + depth as f32;
+    let x = seed(
+        (
+            IVec2::new(wall as i32, wall as i32),
+            IVec2::new((wall + width) as i32, (wall + depth) as i32),
+        ),
+        |_| true,
+        |q| box_free_sides(q, Some(h0), None),
+        &mut rng,
+    );
+    let mut scene =
+        Scene::new((nx, ny), 0.01, 1.0, tank, x).with_lame(row.lambda / row.rho, row.mu / row.rho);
+    let g = scene.g();
+    let m_over_rho = (row.lambda + 2.0 * row.mu) / row.rho / (scene.cell_m * scene.cell_m);
+    let seconds = 2.0f32;
+    let frames = (seconds / FRAME).round() as u32;
+    let last_second = frames - (1.0 / FRAME).round() as u32;
+    let bands = depth / 5;
+    let mut band_j = vec![(0.0f64, 0u64); bands];
+    let mut nan = false;
+    let wall_clock = Instant::now();
+    for f in 1..=frames {
+        scene.frame();
+        nan |= scene.x.iter().chain(&scene.v).any(|q| !q.is_finite());
+        if f > last_second {
+            for p in 0..scene.x.len() {
+                let k = ((scene.x[p].y - floor) / 5.0).floor();
+                if k >= 0.0 && (k as usize) < bands {
+                    let entry = &mut band_j[k as usize];
+                    entry.0 += f64::from(scene.j(p));
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+    let ms = 1000.0 * wall_clock.elapsed().as_secs_f32() / seconds;
+    let drift = scene.settings.solver.absolute_tolerance * seconds;
+    let full_strain = g * depth as f32 / m_over_rho;
+    let mut worst = 0.0f32;
+    for (k, &(sum, n)) in band_j.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let mean = (sum / n as f64) as f32;
+        let y = floor + 5.0 * k as f32 + 2.5;
+        let expected = 1.0 - g * (h0 - y) / m_over_rho;
+        let bound = 0.05 * full_strain + drift;
+        worst = worst.max((mean - expected).abs() / bound);
+        report.check((mean - expected).abs() <= bound, || {
+            format!("{label}: band {k} mean J {mean:.6}, expected {expected:.6}, bound {bound:.1e}")
+        });
+    }
+    println!(
+        "{label}: strain at the floor {full_strain:.2e}, worst band {worst:.2} of its bound, {ms:.0} ms per simulated s ({:.2}x real time)",
+        1000.0 / ms
+    );
+    report.check(!nan, || format!("{label}: NaN"));
+    scene.check_reflections(&label, report);
+    ms
+}
+
+/// The drop for one row (criteria, step M2). Returns the wall time per
+/// simulated second, in ms.
+fn drop_block(row: &MaterialRow, report: &mut Report) -> f32 {
+    let label = format!("{}, dropped", row.name);
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - lo.y, Vec2::NEG_Y),
+                (hi.y - q.y, Vec2::Y),
+                (q.x - lo.x, Vec2::NEG_X),
+                (hi.x - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene =
+        Scene::new((72, 72), 0.01, 1.0, tank, x).with_lame(row.lambda / row.rho, row.mu / row.rho);
+    let gyration = |scene: &Scene| {
+        let (com, _) = scene.centre_of_mass();
+        let n = scene.x.len() as f32;
+        (scene
+            .x
+            .iter()
+            .map(|q| (*q - com).length_squared())
+            .sum::<f32>()
+            / n)
+            .sqrt()
+    };
+    let (energy_start, gyration_start, volume_start) =
+        (row_energy(&scene), gyration(&scene), scene.volume());
+    let seconds = 1.0f32;
+    let (mut worst_energy, mut nan) = (f64::NEG_INFINITY, false);
+    let wall_clock = Instant::now();
+    for _ in 1..=(seconds / FRAME).round() as u32 {
+        scene.frame();
+        nan |= scene.x.iter().chain(&scene.v).any(|q| !q.is_finite());
+        worst_energy = worst_energy.max(row_energy(&scene) / energy_start - 1.0);
+    }
+    let ms = 1000.0 * wall_clock.elapsed().as_secs_f32() / seconds;
+    let change = (gyration(&scene) / gyration_start - 1.0).abs();
+    let volume_change = (scene.volume() / volume_start - 1.0).abs();
+    // Reported, not judged yet: what the run dissipated, a realism defect
+    // the criteria do not bound (the very soft clay lost 60 percent in 1 s,
+    // bouncing).
+    let energy_end = row_energy(&scene) / energy_start - 1.0;
+    println!(
+        "{label}: highest energy {worst_energy:+.4} of the start, at the end {energy_end:+.4}, gyration change {change:.4}, volume change {volume_change:.4}, {ms:.0} ms per simulated s ({:.2}x real time)",
+        1000.0 / ms
+    );
+    report.check(!nan, || format!("{label}: NaN"));
+    report.check(worst_energy <= 0.01, || {
+        format!("{label}: energy rose {worst_energy:+.4}")
+    });
+    if row.mu > 0.0 {
+        report.check(change <= 0.05, || {
+            format!("{label}: gyration changed {change:.4}")
+        });
+    } else {
+        report.check(volume_change <= 0.02, || {
+            format!("{label}: volume changed {volume_change:.4}")
+        });
+    }
+    scene.check_reflections(&label, report);
+    ms
+}
+
+#[test]
+#[ignore = "material matrix, rest: run with --ignored --nocapture"]
+fn gate_matrix_rest() {
+    let mut report = Report::new();
+    for row in material_rows() {
+        rest_column(&row, &mut report);
+    }
+    report.finish();
+}
+
+#[test]
+#[ignore = "material matrix, drop: run with --ignored --nocapture"]
+fn gate_matrix_drop() {
+    let mut report = Report::new();
+    for row in material_rows() {
+        drop_block(&row, &mut report);
+    }
+    report.finish();
+}
+
+/// Check of step M2's first run: the very soft clay's drop kept its energy
+/// to 1e-4. Does it reach the floor and bounce? Lowest particle, energy
+/// and centre speed every tenth of a second. A probe.
+#[test]
+#[ignore = "diagnostic probe for step M2: run with --ignored --nocapture"]
+fn probe_m2_clay_drop_trajectory() {
+    let row = &material_rows()[1];
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |_| (f32::INFINITY, Vec2::Y),
+        &mut rng,
+    );
+    let mut scene =
+        Scene::new((72, 72), 0.01, 1.0, tank, x).with_lame(row.lambda / row.rho, row.mu / row.rho);
+    let e0 = row_energy(&scene);
+    for f in 1..=60u32 {
+        scene.frame();
+        if f % 6 == 0 {
+            let (_, v) = scene.centre_of_mass();
+            let lowest = scene.x.iter().map(|q| q.y).fold(f32::INFINITY, f32::min);
+            println!(
+                "{} t={:.2}: lowest y {lowest:.3}, centre vy {:.2} m/s, energy {:+.5}",
+                row.name,
+                scene.time,
+                v.y * scene.cell_m,
+                row_energy(&scene) / e0 - 1.0
+            );
+        }
+    }
 }
