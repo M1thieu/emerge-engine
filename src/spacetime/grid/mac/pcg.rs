@@ -19,7 +19,21 @@ pub enum Preconditioner {
     Mic0,
     /// One multigrid V-cycle (`multigrid` module).
     Multigrid,
+    /// MIC(0) below `AUTO_MULTIGRID_UNKNOWNS` unknowns, the multigrid
+    /// cycle from there.
+    Auto,
 }
+
+/// Where `Preconditioner::Auto` turns to the multigrid cycle. Measured on
+/// the basin of `multigrid::scaling_probe` (serial, release, the list of
+/// unknowns used below the parallel size): MIC(0) 0.25, 0.45, 1.5, 3.2 and
+/// 9.2 ms against the cycle's 0.61, 0.96, 2.4, 4.1 and 10.0 ms at 432, 768,
+/// 1728, 3072 and 6912 unknowns; at 12288 the cycle wins, 18.0 against
+/// 22.0 ms, and by 3.3 to 8.3 times from 49152 up. The cycle smooths every
+/// cell of every level whatever the unknowns, MIC(0) only the unknowns, so
+/// a small body in a large grid favours MIC(0) further: on scene 10's
+/// block, 366 unknowns on a 72 by 72 grid, 113 against 887 us.
+pub const AUTO_MULTIGRID_UNKNOWNS: usize = 8192;
 
 /// When the solve stops, and the preconditioner's two parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,12 +59,11 @@ pub struct SolverSettings {
     /// diagonal, `apic2d`'s guard (0.25). The preconditioner only changes
     /// how fast the solve converges, not what it converges to.
     pub mic_min_diagonal_ratio: f32,
-    /// The multigrid cycle by default: on a basin three quarters full
-    /// (`multigrid::scaling_probe`), the iterations to the same tolerance
-    /// go from 45, 85, 160 and 322 with MIC(0) to 8, 11, 14 and 20 at 128,
-    /// 256, 512 and 1024 cells a side, and the time, serial, by 1.3, 1.9,
-    /// 2.9 and 4.1 times. On the 72-cell gate scenes it is about 20 %
-    /// slower overall; the engine's grids are larger.
+    /// `Auto` by default (`AUTO_MULTIGRID_UNKNOWNS`): the multigrid cycle
+    /// keeps its iterations nearly flat as the grid grows (8, 11, 14, 20 at
+    /// 128 to 1024 cells a side against MIC(0)'s 45, 85, 161, 321), MIC(0)
+    /// costs less on small problems; 1.2 to 1.6 times faster on the gate
+    /// scenes than the cycle alone.
     pub preconditioner: Preconditioner,
 }
 
@@ -62,7 +75,7 @@ impl Default for SolverSettings {
             max_iterations: 100,
             mic_tau: 0.97,
             mic_min_diagonal_ratio: 0.25,
-            preconditioner: Preconditioner::Multigrid,
+            preconditioner: Preconditioner::Auto,
         }
     }
 }
@@ -82,7 +95,7 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
     let n = sys.nx * sys.ny;
     let mut p = vec![0.0f32; n];
     let mut r = sys.rhs.clone();
-    let initial = max_abs(&r, &sys.active);
+    let initial = max_abs(&r, &sys.active, None);
     if initial == 0.0 {
         return Solution {
             pressure: p,
@@ -100,19 +113,33 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
             converged: true,
         };
     }
-    let mut precon = match settings.preconditioner {
-        Preconditioner::Mic0 => Precon::Mic0(mic0(sys, settings)),
-        Preconditioner::Multigrid => Precon::Multigrid(Multigrid::new(sys, 4, 2, 40)),
+    // Below the parallel size, the vector operations, `A` and MIC(0) run
+    // over the list of unknowns only. Couplings to a cell without an
+    // unknown are zero, so whatever such a cell's entry holds is never
+    // read. Measured on scene 10's block, 366 unknowns on a 72 by 72 grid:
+    // the grid-wide loops spent about 1.5 ns on each of the 5184 cells per
+    // pass, the solve 498 us with MIC(0).
+    let cells: Vec<usize> = (0..n).filter(|&c| sys.active[c]).collect();
+    let list = (cells.len() < PARALLEL_MIN_CELLS).then_some(cells.as_slice());
+    let multigrid = match settings.preconditioner {
+        Preconditioner::Mic0 => false,
+        Preconditioner::Multigrid => true,
+        Preconditioner::Auto => cells.len() >= AUTO_MULTIGRID_UNKNOWNS,
+    };
+    let mut precon = if multigrid {
+        Precon::Multigrid(Multigrid::new(sys, 4, 2, 40))
+    } else {
+        Precon::Mic0(mic0(sys, settings, list))
     };
     let mut z = vec![0.0f32; n];
     let mut q = vec![0.0f32; n];
-    precon.apply(sys, &r, &mut q, &mut z);
+    precon.apply(sys, &r, &mut q, &mut z, list);
     let mut s = z.clone();
-    let mut sigma = dot(&z, &r, &sys.active);
+    let mut sigma = dot(&z, &r, &sys.active, list);
     let mut residual = initial;
     for iteration in 0..settings.max_iterations {
-        apply_a(sys, &s, &mut z);
-        let alpha = sigma / dot(&z, &s, &sys.active);
+        apply_a(sys, &s, &mut z, list);
+        let alpha = sigma / dot(&z, &s, &sys.active, list);
         let update = |(k, (pk, rk)): (usize, (&mut [f32], &mut [f32]))| {
             for (m, (pc, rc)) in pk.iter_mut().zip(rk.iter_mut()).enumerate() {
                 let c = k * CHUNK + m;
@@ -122,7 +149,12 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
                 }
             }
         };
-        if n >= PARALLEL_MIN_CELLS {
+        if let Some(cells) = list {
+            for &c in cells {
+                p[c] += (alpha * s[c] as f64) as f32;
+                r[c] -= (alpha * z[c] as f64) as f32;
+            }
+        } else if n >= PARALLEL_MIN_CELLS {
             p.par_chunks_mut(CHUNK)
                 .zip(r.par_chunks_mut(CHUNK))
                 .enumerate()
@@ -133,7 +165,7 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
                 .enumerate()
                 .for_each(update);
         }
-        residual = max_abs(&r, &sys.active);
+        residual = max_abs(&r, &sys.active, list);
         if residual <= tolerance {
             return Solution {
                 pressure: p,
@@ -142,8 +174,8 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
                 converged: true,
             };
         }
-        precon.apply(sys, &r, &mut q, &mut z);
-        let sigma_new = dot(&z, &r, &sys.active);
+        precon.apply(sys, &r, &mut q, &mut z, list);
+        let sigma_new = dot(&z, &r, &sys.active, list);
         let beta = sigma_new / sigma;
         let step = |(k, sk): (usize, &mut [f32])| {
             for (m, sc) in sk.iter_mut().enumerate() {
@@ -153,7 +185,11 @@ pub fn solve(sys: &PressureSystem, settings: &SolverSettings) -> Solution {
                 }
             }
         };
-        if n >= PARALLEL_MIN_CELLS {
+        if let Some(cells) = list {
+            for &c in cells {
+                s[c] = z[c] + (beta * s[c] as f64) as f32;
+            }
+        } else if n >= PARALLEL_MIN_CELLS {
             s.par_chunks_mut(CHUNK).enumerate().for_each(step);
         } else {
             s.chunks_mut(CHUNK).enumerate().for_each(step);
@@ -174,15 +210,25 @@ enum Precon {
 }
 
 impl Precon {
-    fn apply(&mut self, sys: &PressureSystem, r: &[f32], q: &mut [f32], z: &mut [f32]) {
+    fn apply(
+        &mut self,
+        sys: &PressureSystem,
+        r: &[f32],
+        q: &mut [f32],
+        z: &mut [f32],
+        list: Option<&[usize]>,
+    ) {
         match self {
-            Self::Mic0(precon) => apply_preconditioner(sys, precon, r, q, z),
+            Self::Mic0(precon) => apply_preconditioner(sys, precon, r, (q, z), list),
             Self::Multigrid(mg) => mg.apply(sys, r, z),
         }
     }
 }
 
-fn max_abs(v: &[f32], active: &[bool]) -> f32 {
+fn max_abs(v: &[f32], active: &[bool], list: Option<&[usize]>) -> f32 {
+    if let Some(cells) = list {
+        return cells.iter().fold(0.0f32, |m, &c| m.max(v[c].abs()));
+    }
     let chunk = |(vk, ak): (&[f32], &[bool])| {
         vk.iter()
             .zip(ak)
@@ -206,7 +252,10 @@ fn max_abs(v: &[f32], active: &[bool]) -> f32 {
 /// round-off of a long f32 sum. Partial sums over fixed chunks, added in
 /// chunk order: the same answer whatever the threads do, and whether
 /// they are used at all.
-fn dot(a: &[f32], b: &[f32], active: &[bool]) -> f64 {
+fn dot(a: &[f32], b: &[f32], active: &[bool], list: Option<&[usize]>) -> f64 {
+    if let Some(cells) = list {
+        return cells.iter().map(|&c| a[c] as f64 * b[c] as f64).sum();
+    }
     let chunk = |((ak, bk), act): ((&[f32], &[f32]), &[bool])| {
         ak.iter()
             .zip(bk)
@@ -231,9 +280,15 @@ fn dot(a: &[f32], b: &[f32], active: &[bool]) -> f64 {
     partial.iter().sum()
 }
 
-/// `out = A s`.
-fn apply_a(sys: &PressureSystem, s: &[f32], out: &mut [f32]) {
+/// `out = A s`, at the unknowns of `list` only when given.
+fn apply_a(sys: &PressureSystem, s: &[f32], out: &mut [f32], list: Option<&[usize]>) {
     let nx = sys.nx;
+    if let Some(cells) = list {
+        for &c in cells {
+            out[c] = a_row(sys, s, c);
+        }
+        return;
+    }
     for_rows(out, nx, |j, row| apply_a_row(sys, s, j, row));
 }
 
@@ -246,36 +301,48 @@ fn apply_a_row(sys: &PressureSystem, s: &[f32], j: usize, out: &mut [f32]) {
                 *slot = 0.0;
                 continue;
             }
-            let mut v = sys.diag[c] * s[c];
-            if i + 1 < nx {
-                v += sys.plus_i[c] * s[c + 1];
-            }
-            if i > 0 {
-                v += sys.plus_i[c - 1] * s[c - 1];
-            }
-            if j + 1 < sys.ny {
-                v += sys.plus_j[c] * s[c + nx];
-            }
-            if j > 0 {
-                v += sys.plus_j[c - nx] * s[c - nx];
-            }
-            *slot = v;
+            *slot = a_row(sys, s, c);
         }
     }
 }
 
+/// Row `c` of `A s`.
+fn a_row(sys: &PressureSystem, s: &[f32], c: usize) -> f32 {
+    let nx = sys.nx;
+    let (i, j) = (c % nx, c / nx);
+    let mut v = sys.diag[c] * s[c];
+    if i + 1 < nx {
+        v += sys.plus_i[c] * s[c + 1];
+    }
+    if i > 0 {
+        v += sys.plus_i[c - 1] * s[c - 1];
+    }
+    if j + 1 < sys.ny {
+        v += sys.plus_j[c] * s[c + nx];
+    }
+    if j > 0 {
+        v += sys.plus_j[c - nx] * s[c - nx];
+    }
+    v
+}
+
 /// Reciprocals of the MIC(0) factor's diagonal (the notes' fig. 4.2, in
 /// 2D, with `apic2d`'s small-pivot guard).
-fn mic0(sys: &PressureSystem, settings: &SolverSettings) -> Vec<f32> {
+fn mic0(sys: &PressureSystem, settings: &SolverSettings, list: Option<&[usize]>) -> Vec<f32> {
     let nx = sys.nx;
     let tau = settings.mic_tau;
     let mut precon = vec![0.0f32; nx * sys.ny];
-    for j in 0..sys.ny {
-        for i in 0..nx {
-            let c = i + nx * j;
-            if !sys.active[c] {
-                continue;
-            }
+    let all: Vec<usize>;
+    let cells = match list {
+        Some(cells) => cells,
+        None => {
+            all = (0..nx * sys.ny).filter(|&c| sys.active[c]).collect();
+            &all
+        }
+    };
+    for &c in cells {
+        let (i, j) = (c % nx, c / nx);
+        {
             let mut e = sys.diag[c];
             if i > 0 {
                 let (a, pre) = (sys.plus_i[c - 1], precon[c - 1]);
@@ -294,48 +361,45 @@ fn mic0(sys: &PressureSystem, settings: &SolverSettings) -> Vec<f32> {
     precon
 }
 
-/// `z = M r` by the two triangular solves of the notes' fig. 4.3, in 2D.
+/// `z = M r` by the two triangular solves of the notes' fig. 4.3, in 2D,
+/// over the unknowns in grid order (the list when given).
 fn apply_preconditioner(
     sys: &PressureSystem,
     precon: &[f32],
     r: &[f32],
-    q: &mut [f32],
-    z: &mut [f32],
+    (q, z): (&mut [f32], &mut [f32]),
+    list: Option<&[usize]>,
 ) {
-    let (nx, ny) = (sys.nx, sys.ny);
-    for j in 0..ny {
-        for i in 0..nx {
-            let c = i + nx * j;
-            if !sys.active[c] {
-                q[c] = 0.0;
-                continue;
-            }
-            let mut t = r[c];
-            if i > 0 {
-                t -= sys.plus_i[c - 1] * precon[c - 1] * q[c - 1];
-            }
-            if j > 0 {
-                t -= sys.plus_j[c - nx] * precon[c - nx] * q[c - nx];
-            }
-            q[c] = t * precon[c];
+    let nx = sys.nx;
+    let all: Vec<usize>;
+    let cells = match list {
+        Some(cells) => cells,
+        None => {
+            all = (0..nx * sys.ny).filter(|&c| sys.active[c]).collect();
+            &all
         }
+    };
+    for &c in cells {
+        let (i, j) = (c % nx, c / nx);
+        let mut t = r[c];
+        if i > 0 {
+            t -= sys.plus_i[c - 1] * precon[c - 1] * q[c - 1];
+        }
+        if j > 0 {
+            t -= sys.plus_j[c - nx] * precon[c - nx] * q[c - nx];
+        }
+        q[c] = t * precon[c];
     }
-    for j in (0..ny).rev() {
-        for i in (0..nx).rev() {
-            let c = i + nx * j;
-            if !sys.active[c] {
-                z[c] = 0.0;
-                continue;
-            }
-            let mut t = q[c];
-            if i + 1 < nx {
-                t -= sys.plus_i[c] * precon[c] * z[c + 1];
-            }
-            if j + 1 < ny {
-                t -= sys.plus_j[c] * precon[c] * z[c + nx];
-            }
-            z[c] = t * precon[c];
+    for &c in cells.iter().rev() {
+        let (i, j) = (c % nx, c / nx);
+        let mut t = q[c];
+        if i + 1 < nx {
+            t -= sys.plus_i[c] * precon[c] * z[c + 1];
         }
+        if j + 1 < sys.ny {
+            t -= sys.plus_j[c] * precon[c] * z[c + nx];
+        }
+        z[c] = t * precon[c];
     }
 }
 
@@ -382,7 +446,7 @@ mod tests {
             .map(|c| ((c % n) as f32 * 0.3).sin() + ((c / n) as f32 * 0.2).cos())
             .collect();
         let mut rhs = vec![0.0; n * n];
-        apply_a(&sys, &exact, &mut rhs);
+        apply_a(&sys, &exact, &mut rhs, None);
         sys.rhs = rhs;
         let settings = SolverSettings {
             relative_tolerance: 1e-6,
