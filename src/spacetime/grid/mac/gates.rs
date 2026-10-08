@@ -157,7 +157,11 @@
 //!   m/s)^2`, the uniaxial-strain stiffness of this split in 2D; starting
 //!   unstressed, 5 s. Over the last second, the mean J of each 5-cell band
 //!   within 0.005 of `1 - g (h - y) rho / (lambda + mu)`; no particle out
-//!   of the tank; no NaN.
+//!   of the tank; no NaN. Amended with the material matrix (step M1): that
+//!   stiffness was the split's own, with `lambda` as its volume modulus;
+//!   real plane-strain elasticity has `lambda + 2 mu`, which the volume part
+//!   now gives (`Scene::with_lame`), and the expected J is `1 - g (h - y)
+//!   rho / (lambda + 2 mu)`, read from the scene's own coefficients.
 //! - Scene 9, plane shear wave (amended after run 2, user's approval: the
 //!   first version was a free strip 16 cells high timed by the peak of its
 //!   velocity; a free surface along the strip forces `sigma_xy = 0`, which
@@ -216,6 +220,32 @@
 //! dx r`, `r` the residual that substep's solve actually reached, the same
 //! declared factor of 4 over both terms. A crossing at a physical
 //! velocity stays orders of magnitude above it.
+
+//!
+//! # The material matrix (step M1), criteria first
+//!
+//! Every material runs the same scenes, set up and judged from its
+//! measured coefficients alone, `rho`, Lame `lambda` and `mu` (plane
+//! strain): no scene, tolerance or expected value is written for one
+//! material. A row is a material; adding one adds no code. Rows: water
+//! (`K = 2.2e9 Pa`, `rho = 1000 kg/m^3`, `mu = 0`), and the elastic part
+//! of the very soft and medium clays of `examples/cpu/vonmises_clay_scene`
+//! (FHWA NHI-06-088 and NAVFAC DM 7.01: `E = 300 c`, `c = q_u / 2`, `q_u`
+//! 20 and 75 kPa, `nu = 0.45`, `rho = 1700 kg/m^3`).
+//!
+//! - P wave: a free block, no gravity, its first 10 cells kicked along x
+//!   at 0.05 m/s over the whole height. The mean x velocity within one
+//!   cell of 50 cells from the end, and 4 cells of mid-height, first
+//!   reaches a quarter of the kick at `40 dx / c_p` within 5 percent, `c_p
+//!   = sqrt((lambda + 2 mu) / rho)` (d'Alembert, as scene 9). The block is
+//!   high enough that its free edges' disturbance, at most `c_p`, arrives
+//!   after the window.
+//! - S wave, for `mu > 0`: scene 9 with the row's coefficients, the height
+//!   from the row's own `c_p / c_s`; `c_s = sqrt(mu / rho)`.
+//! - Every scene: no NaN, no particle beyond a wall past its budget, and
+//!   its wall time per simulated second against real time, reported.
+//!
+//! Failures counted as above: two failed full runs stop the step.
 
 use std::time::Instant;
 
@@ -304,6 +334,8 @@ struct Probe {
     /// Particles within one cell of this x and between these two heights:
     /// their mean vertical velocity every substep (scene 9).
     watch_x: Option<(f32, f32, f32)>,
+    /// The watch reads the x velocity instead of y (a P wave along x).
+    watch_longitudinal: bool,
     watch_x_history: Vec<(f32, f32)>,
 }
 
@@ -363,15 +395,27 @@ impl Scene {
     }
 
     /// A plane-strain elastic solid of Young's modulus over density
-    /// `e_over_rho` (m^2/s^2) and Poisson's ratio `nu`: the shear part on
-    /// the faces, the volume part in the compressible projection with
-    /// `c^2 = lambda / rho`.
-    fn with_elastic(mut self, e_over_rho: f32, nu: f32) -> Self {
+    /// `e_over_rho` (m^2/s^2) and Poisson's ratio `nu` (`with_lame`).
+    fn with_elastic(self, e_over_rho: f32, nu: f32) -> Self {
+        let mu = e_over_rho / (2.0 * (1.0 + nu));
+        let lambda = e_over_rho * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));
+        self.with_lame(lambda, mu)
+    }
+
+    /// A material by its plane-strain Lame coefficients over its density,
+    /// `lambda / rho` and `mu / rho` in m^2/s^2: the shear part on the faces
+    /// when `mu > 0`, the volume part in the compressible projection.
+    fn with_lame(mut self, lambda_over_rho: f32, mu_over_rho: f32) -> Self {
         let cells2 = 1.0 / (self.cell_m * self.cell_m);
-        let mu = e_over_rho / (2.0 * (1.0 + nu)) * cells2;
-        let lambda = e_over_rho * nu / ((1.0 + nu) * (1.0 - 2.0 * nu)) * cells2;
-        self.shear = Some(mu);
-        self.sound_speed2 = Some(lambda);
+        self.shear = (mu_over_rho > 0.0).then_some(mu_over_rho * cells2);
+        // The shear part acts on the isochoric deformation only, so all
+        // the volume stiffness is the projection's: the plane-strain bulk
+        // modulus `kappa = lambda + mu`. With it, `2 mu dev(e) + kappa tr(e)
+        // I = 2 mu e + lambda tr(e) I`, Lame's law; with `lambda` alone, as
+        // Stomakhin et al.'s split writes the volume energy, the P wave ran
+        // at `sqrt((lambda + mu) / rho)`: 6.0 percent late on the clays of
+        // the matrix (`nu = 0.45`), against water's 1.0.
+        self.sound_speed2 = Some((lambda_over_rho + mu_over_rho) * cells2);
         self
     }
 
@@ -531,7 +575,14 @@ impl Scene {
                 .filter(|&p| {
                     (self.x[p].x - x0).abs() < self.layout.dx && (y_lo..y_hi).contains(&self.x[p].y)
                 })
-                .fold((0.0f32, 0u32), |(s, n), p| (s + self.v[p].y, n + 1));
+                .fold((0.0f32, 0u32), |(s, n), p| {
+                    let v = if self.probe.watch_longitudinal {
+                        self.v[p].x
+                    } else {
+                        self.v[p].y
+                    };
+                    (s + v, n + 1)
+                });
             self.probe
                 .watch_x_history
                 .push((self.time + dt, sum / n.max(1) as f32));
@@ -627,6 +678,25 @@ impl Scene {
         frame.active = system.active;
         frame.phi = phi;
         frame.vel = vel;
+    }
+
+    /// Fixed substeps (`fixed_dt`) until `t_end`, for scenes shorter than
+    /// a frame.
+    fn run_until(&mut self, t_end: f32) {
+        let dt = self.fixed_dt.expect("run_until needs a fixed substep");
+        let mut frame = Frame {
+            pressure: Vec::new(),
+            active: Vec::new(),
+            phi: self.layout.cells(0.0),
+            vel: super::field::MacVelocity::zeros(&self.layout),
+            substeps: 0,
+            iterations: Vec::new(),
+            capped: 0,
+            largest_travel: 0.0,
+        };
+        while self.time < t_end {
+            self.substep(dt.min(t_end - self.time).max(1e-9), &mut frame);
+        }
     }
 
     fn frame(&mut self) -> Frame {
@@ -3028,4 +3098,154 @@ fn probe_projection_pieces() {
     time("level set", &mut || {
         std::hint::black_box(scene.phi());
     });
+}
+
+/// One row of the material matrix: measured coefficients only.
+struct MaterialRow {
+    name: &'static str,
+    /// kg/m^3.
+    rho: f32,
+    /// Plane-strain Lame coefficients, Pa.
+    lambda: f32,
+    mu: f32,
+}
+
+impl MaterialRow {
+    fn from_young(name: &'static str, rho: f32, e: f32, nu: f32) -> Self {
+        Self {
+            name,
+            rho,
+            lambda: e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu)),
+            mu: e / (2.0 * (1.0 + nu)),
+        }
+    }
+
+    fn c_p(&self) -> f32 {
+        ((self.lambda + 2.0 * self.mu) / self.rho).sqrt()
+    }
+
+    fn c_s(&self) -> f32 {
+        (self.mu / self.rho).sqrt()
+    }
+}
+
+/// The rows (criteria, step M1).
+fn material_rows() -> Vec<MaterialRow> {
+    let clay = |name, q_u: f32| MaterialRow::from_young(name, 1700.0, 300.0 * q_u / 2.0, 0.45);
+    vec![
+        MaterialRow {
+            name: "water",
+            rho: 1000.0,
+            lambda: 2.2e9,
+            mu: 0.0,
+        },
+        clay("very soft clay", 20.0e3),
+        clay("medium clay", 75.0e3),
+    ]
+}
+
+/// A plane wave through a free block of the row's material: longitudinal
+/// (P) or transverse (S). Returns the arrival's relative error and the wall
+/// time per simulated second, in ms.
+fn plane_wave(row: &MaterialRow, longitudinal: bool, report: &mut Report) -> (f32, f32) {
+    let kind = if longitudinal { "P" } else { "S" };
+    let label = format!("{}, {kind} wave", row.name);
+    let speed = if longitudinal { row.c_p() } else { row.c_s() };
+    // Edges' disturbances travel at most `c_p`; the window ends when the
+    // kick's back has passed the probe, 50 cells, and they must arrive
+    // from half the height later.
+    let height = (2.0 * (50.0 * row.c_p() / speed + 4.0)).ceil() as usize + 4;
+    let length = 100usize;
+    let (nx, ny) = (length + 8, height + 8);
+    let (x0, y0) = (4.0f32, 4.0f32);
+    let tank = (
+        Vec2::splat(1.0),
+        Vec2::new(nx as f32 - 1.0, ny as f32 - 1.0),
+    );
+    let mut rng = LcgRng::new(13);
+    let (top, right) = (y0 + height as f32, x0 + length as f32);
+    let x = seed(
+        (
+            IVec2::new(x0 as i32, y0 as i32),
+            IVec2::new(right as i32, top as i32),
+        ),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - y0, Vec2::NEG_Y),
+                (top - q.y, Vec2::Y),
+                (q.x - x0, Vec2::NEG_X),
+                (right - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene =
+        Scene::new((nx, ny), 0.01, 0.0, tank, x).with_lame(row.lambda / row.rho, row.mu / row.rho);
+    let c = speed / scene.cell_m;
+    scene.fixed_dt = Some(0.5 * scene.layout.dx / (row.c_p().max(row.c_s()) / scene.cell_m));
+    let kick = 0.05 / scene.cell_m;
+    for p in 0..scene.x.len() {
+        if scene.x[p].x < x0 + 10.0 {
+            if longitudinal {
+                scene.v[p].x = kick;
+            } else {
+                scene.v[p].y = kick;
+            }
+        }
+    }
+    let mid = y0 + 0.5 * height as f32;
+    scene.probe.watch_x = Some((x0 + 50.0, mid - 4.0, mid + 4.0));
+    scene.probe.watch_longitudinal = longitudinal;
+    let expected = 40.0 / c;
+    let window = 50.0 / c;
+    let mut nan = false;
+    let wall_clock = Instant::now();
+    scene.run_until(window);
+    nan |= scene.x.iter().chain(&scene.v).any(|q| !q.is_finite());
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let history = &scene.probe.watch_x_history;
+    let half = 0.25 * kick;
+    let arrival = history.windows(2).find_map(|pair| {
+        let ((t0, v0), (t1, v1)) = (pair[0], pair[1]);
+        (v0 < half && v1 >= half).then(|| t0 + (t1 - t0) * (half - v0) / (v1 - v0))
+    });
+    let error = arrival.map_or(f32::INFINITY, |t| (t - expected) / expected);
+    let ms = 1000.0 * wall_s / scene.time.max(f32::MIN_POSITIVE);
+    println!(
+        "{label}: {} m/s expected, arrival {:+.1} % ({} particles, {height} cells high), {ms:.0} ms per simulated s",
+        speed,
+        100.0 * error,
+        scene.x.len()
+    );
+    report.check(!nan, || format!("{label}: NaN"));
+    report.check(error.abs() <= 0.05, || {
+        format!("{label}: arrival off by {:+.1} %", 100.0 * error)
+    });
+    scene.check_reflections(&label, report);
+    (error, ms)
+}
+
+#[test]
+#[ignore = "material matrix, P waves: run with --ignored --nocapture"]
+fn gate_matrix_p_waves() {
+    let mut report = Report::new();
+    for row in material_rows() {
+        plane_wave(&row, true, &mut report);
+    }
+    report.finish();
+}
+
+#[test]
+#[ignore = "material matrix, S waves: run with --ignored --nocapture"]
+fn gate_matrix_s_waves() {
+    let mut report = Report::new();
+    for row in material_rows().iter().filter(|r| r.mu > 0.0) {
+        plane_wave(row, false, &mut report);
+    }
+    report.finish();
 }
