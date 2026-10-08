@@ -53,16 +53,30 @@ impl PressureSystem {
     }
 }
 
+/// Where the material is, as the equations and the update read it.
+#[derive(Clone, Copy)]
+pub struct Surface<'a> {
+    /// Negative at the centre of a cell with a pressure unknown, the
+    /// solids folded in; the free surface cuts the line to a neighbour at
+    /// or above zero where this crosses zero (ghost fluid).
+    pub phi: &'a Field2,
+    /// `ProjectionSettings::theta_floor`.
+    pub theta_floor: f32,
+}
+
 /// Builds the equations for `dt` from the velocity before the update, the
-/// open fraction of the faces and the liquid level set at the centres.
+/// open fraction of the faces and where the material is.
 pub fn assemble(
     layout: &MacLayout,
     dt: f32,
     vel: &MacVelocity,
     weights: &FaceWeights,
-    liquid_phi: &Field2,
-    theta_floor: f32,
+    surface: Surface<'_>,
 ) -> PressureSystem {
+    let Surface {
+        phi: liquid_phi,
+        theta_floor,
+    } = surface;
     let (nx, ny, dx) = (layout.nx, layout.ny, layout.dx);
     let n = nx * ny;
     let mut sys = PressureSystem {
@@ -180,10 +194,13 @@ pub fn apply_pressure(
     dt: f32,
     pressure: &[f32],
     weights: &FaceWeights,
-    liquid_phi: &Field2,
-    theta_floor: f32,
+    surface: Surface<'_>,
     vel: &mut MacVelocity,
 ) -> FaceFlags {
+    let Surface {
+        phi: liquid_phi,
+        theta_floor,
+    } = surface;
     let (nx, ny, dx) = (layout.nx, layout.ny, layout.dx);
     let p = |i: usize, j: usize| pressure[i + nx * j];
     let update = |phi_a: f32, phi_b: f32, p_a: f32, p_b: f32| -> Option<f32> {
@@ -260,6 +277,14 @@ pub fn divergence(
 
 #[cfg(test)]
 mod tests {
+    /// The level set alone, uniform density.
+    fn uniform(phi: &Field2) -> Surface<'_> {
+        Surface {
+            phi,
+            theta_floor: THETA_FLOOR,
+        }
+    }
+
     use super::super::pcg::{SolverSettings, solve};
     use super::super::solid::{box_container, face_weights, sample_centres, sample_corners};
     use super::*;
@@ -291,7 +316,7 @@ mod tests {
         weights: &FaceWeights,
         phi: &Field2,
     ) -> Vec<f32> {
-        let sys = assemble(layout, dt, vel, weights, phi, THETA_FLOOR);
+        let sys = assemble(layout, dt, vel, weights, uniform(phi));
         let settings = SolverSettings {
             relative_tolerance: 1e-6,
             absolute_tolerance: 1e-5,
@@ -300,15 +325,7 @@ mod tests {
         };
         let solution = solve(&sys, &settings);
         assert!(solution.converged, "solve did not converge");
-        apply_pressure(
-            layout,
-            dt,
-            &solution.pressure,
-            weights,
-            phi,
-            THETA_FLOOR,
-            vel,
-        );
+        apply_pressure(layout, dt, &solution.pressure, weights, uniform(phi), vel);
         solution.pressure
     }
 
@@ -393,7 +410,7 @@ mod tests {
     fn the_matrix_is_symmetric() {
         let (layout, weights, phi) = tank(8.4);
         let vel = MacVelocity::zeros(&layout);
-        let sys = assemble(&layout, 0.02, &vel, &weights, &phi, THETA_FLOOR);
+        let sys = assemble(&layout, 0.02, &vel, &weights, uniform(&phi));
         for j in 0..layout.ny {
             for i in 0..layout.nx {
                 let c = i + layout.nx * j;
