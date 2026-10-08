@@ -158,12 +158,25 @@
 //!   unstressed, 5 s. Over the last second, the mean J of each 5-cell band
 //!   within 0.005 of `1 - g (h - y) rho / (lambda + mu)`; no particle out
 //!   of the tank; no NaN.
-//! - Scene 9, shear wave: a free strip 200 cells long and 16 high, no
-//!   gravity, `nu = 0.3`, `E` such that `c_s = sqrt(mu / rho) = 5 m/s`,
-//!   the 10 cells at one end starting with an upward velocity of 0.05
-//!   m/s, substeps of `dx / (2 c_s)`. The peak of the mean vertical
-//!   velocity of the particles within one cell of `x = 150` cells from
-//!   that end arrives at `(150 - 5) dx / c_s` within 5 percent.
+//! - Scene 9, plane shear wave (amended after run 2, user's approval: the
+//!   first version was a free strip 16 cells high timed by the peak of its
+//!   velocity; a free surface along the strip forces `sigma_xy = 0`, which
+//!   no plane shear wave satisfies, so the strip bends instead, and the
+//!   peak at 150 cells was 1 to 6 percent of the kick and moved from 14
+//!   percent early to 50 percent late with the height; it measured no
+//!   speed). Now a free block 100 cells long and 208 high, no gravity,
+//!   `nu = 0.3`, `E` such that `c_s = sqrt(mu / rho) = 5 m/s`, the 10
+//!   cells at one end starting with an upward velocity `v0` = 0.05 m/s
+//!   over the whole height, substeps of `dx / (2 c_s)`. Motion uniform
+//!   along y obeys the 1D wave equation for `v_y` at `c_s`, so by
+//!   d'Alembert a front of height `v0 / 2` leaves the kicked slab. Within 4
+//!   cells of mid-height, a free edge's disturbance needs `(104 - 4) dx /
+//!   c_p` (`c_p / c_s = sqrt(2 (1 - nu) / (1 - 2 nu))`, 53 `dx / c_s`) to
+//!   arrive, after the window below. The mean vertical velocity of the
+//!   particles within one cell of `x = 50` cells from that end, and within
+//!   4 cells of mid-height, first reaches `v0 / 4` (half the front) at
+//!   `40 dx / c_s` within 5 percent: the front leaves from the slab's inner
+//!   edge, 10 cells from the end, 40 cells before the probe.
 //! - Scene 10, elastic block dropped: a 10 by 10 cell block, `nu = 0.3`,
 //!   `c_s = 5 m/s`, released at rest with its base 20 cells above the
 //!   floor of scenes 3 and 4's closed tank, 1 g, 2 s. Kinetic, potential
@@ -173,18 +186,38 @@
 //! - Scenes 1 to 7 keep passing unchanged.
 //!
 //! Failures counted as above: two failed full runs stop the step.
+//!
+//! Amended for the third attempt, with the user's approval: a particle
+//! found beyond a wall after its step is moved to its mirror point (`x ->
+//! 2 w - x`), the map the walls' image construction implies
+//! (`extrapolate::constrain_to_solids`; Zhu and Bridson 4.2.5 push
+//! particles back out of solids). Why: a wall is an invariant line of the
+//! mirrored flow, where the normal velocity is zero, and where the liquid
+//! leaves the wall it is an unstable one. The image continues the same
+//! line, `u = a (x - w)`, behind the wall, so a particle put an ulp beyond
+//! it by rounding is carried away as `exp(a t)`. Measured in the second
+//! attempt's run 2: a dam-break particle gliding on the left wall plane
+//! went 4 ulps beyond it with the f32 noise of the gathered normal velocity
+//! (1.6e-5 cells/s), then 4.45 cells into the wall with `a = 26 1/s`. So
+//! that the reflection cannot hide a real crossing, every reflection is
+//! counted with its depth before it, and every scene with walls requires
+//! the deepest at most 4 ulps of the wall's coordinate: one rounding of
+//! the position's sum is half an ulp, and the noise step, `1.6e-5 x 3 ms`,
+//! a tenth of one, with a declared factor of 4 over that.
 
 use std::time::Instant;
 
 use glam::{IVec2, Mat2, Vec2};
 
+use super::elastic::{deformation_step, shear_energy, shear_kirchhoff};
+use super::extrapolate::fold_onto_images;
 use super::field::{Field2, MacLayout};
 use super::level_set::{SurfaceSettings, liquid_phi};
 use super::solid::{
     FaceWeights, box_container, box_container_image, face_weights, sample_centres, sample_corners,
 };
-use super::transfer::{faces_to_particles, particles_to_faces};
-use super::{ProjectionSettings, Walls, project, travel_limited_dt};
+use super::transfer::{faces_to_particles, particles_to_faces, stress_to_faces};
+use super::{Liquid, ProjectionSettings, Walls, project, travel_limited_dt};
 use crate::diagnostics::{OCCUPANCY_BANDS, scene_map};
 use crate::fields::EARTH_GRAVITY_M_S2;
 use crate::materials::utils::advance_log_volume_ratio;
@@ -223,6 +256,11 @@ struct Scene {
     sound_speed2: Option<f32>,
     /// A substep length that replaces the travel limit (scene 6).
     fixed_dt: Option<f32>,
+    /// `mu / rho` in cells^2/s^2 for an elastic solid (step A2); `None`
+    /// for a liquid.
+    shear: Option<f32>,
+    /// Each particle's deformation gradient, for the shear stress.
+    deformation: Vec<Mat2>,
 }
 
 /// Where things happen, for diagnosis only: no criterion reads it.
@@ -231,6 +269,10 @@ struct Probe {
     /// J reaching its bounds, by where the particle was: in a liquid cell
     /// of the tank, in an air cell of the tank, inside a wall.
     j_at_bounds_by_place: [usize; 3],
+    /// Particles moved back from beyond a wall (`substep`), and the
+    /// deepest of them before the move, in ulps of the wall's coordinate.
+    reflections: u32,
+    deepest_reflection_ulps: f32,
     /// Particles leaving the tank: time, position before, velocity,
     /// distance to the nearest wall before.
     crossings: Vec<(f32, Vec2, Vec2, f32)>,
@@ -242,6 +284,10 @@ struct Probe {
     /// Cell whose pressure every substep records, with the time (scene 6).
     watch: Option<usize>,
     watch_history: Vec<(f32, f32)>,
+    /// Particles within one cell of this x and between these two heights:
+    /// their mean vertical velocity every substep (scene 9).
+    watch_x: Option<(f32, f32, f32)>,
+    watch_x_history: Vec<(f32, f32)>,
 }
 
 /// What one frame's last substep left, and what the frame cost.
@@ -290,11 +336,26 @@ impl Scene {
             probe: Probe::default(),
             sound_speed2: None,
             fixed_dt: None,
+            shear: None,
+            deformation: vec![Mat2::IDENTITY; n],
         }
     }
 
     fn g(&self) -> f32 {
         self.gravity.length()
+    }
+
+    /// A plane-strain elastic solid of Young's modulus over density
+    /// `e_over_rho` (m^2/s^2) and Poisson's ratio `nu`: the shear part on
+    /// the faces, the volume part in the compressible projection with
+    /// `c^2 = lambda / rho`.
+    fn with_elastic(mut self, e_over_rho: f32, nu: f32) -> Self {
+        let cells2 = 1.0 / (self.cell_m * self.cell_m);
+        let mu = e_over_rho / (2.0 * (1.0 + nu)) * cells2;
+        let lambda = e_over_rho * nu / ((1.0 + nu) * (1.0 - 2.0 * nu)) * cells2;
+        self.shear = Some(mu);
+        self.sound_speed2 = Some(lambda);
+        self
     }
 
     /// The compressible projection at `c_m_s`.
@@ -357,7 +418,31 @@ impl Scene {
             probe.phase_us[k] += clock.elapsed().as_micros();
             clock = Instant::now();
         };
-        let (mut vel, _) = particles_to_faces(&self.layout, &self.x, &self.v, &self.c, &self.mass);
+        let (mut vel, face_mass) =
+            particles_to_faces(&self.layout, &self.x, &self.v, &self.c, &self.mass);
+        if let Some(mu) = self.shear {
+            let tau_v0: Vec<Mat2> = (0..self.x.len())
+                .map(|p| self.v0[p] * shear_kirchhoff(self.deformation[p], mu))
+                .collect();
+            let mut force = stress_to_faces(&self.layout, &self.x, &tau_v0);
+            let mut lent = super::field::MacVelocity {
+                u: face_mass.u.clone(),
+                v: face_mass.v.clone(),
+            };
+            let image = box_container_image(self.tank.0, self.tank.1);
+            fold_onto_images(&self.layout, &mut force, &self.weights, &image, true);
+            fold_onto_images(&self.layout, &mut lent, &self.weights, &image, false);
+            for (field, f, m) in [
+                (&mut vel.u, &force.u, &lent.u),
+                (&mut vel.v, &force.v, &lent.v),
+            ] {
+                for ((value, &f), &m) in field.data_mut().iter_mut().zip(f.data()).zip(m.data()) {
+                    if m > 0.0 {
+                        *value += dt * f / m;
+                    }
+                }
+            }
+        }
         for value in vel.u.data_mut() {
             *value += self.gravity.x * dt;
         }
@@ -372,8 +457,10 @@ impl Scene {
             dt,
             &vel,
             &self.weights,
-            &phi,
-            self.settings.theta_floor,
+            super::pressure::Surface {
+                phi: &phi,
+                theta_floor: self.settings.theta_floor,
+            },
         );
         lap(&mut self.probe, 2);
         let image = box_container_image(self.tank.0, self.tank.1);
@@ -388,8 +475,12 @@ impl Scene {
             Walls {
                 weights: &self.weights,
                 image: &image,
+                open: &material,
             },
-            &phi,
+            Liquid {
+                phi: &phi,
+                face_mass: &face_mass,
+            },
             &self.settings,
             q_before
                 .as_ref()
@@ -413,6 +504,21 @@ impl Scene {
         let mut c_mid = vec![Mat2::ZERO; self.x.len()];
         faces_to_particles(&self.layout, &vel, &midpoint, &mut v_mid, &mut c_mid);
         lap(&mut self.probe, 4);
+        if self.shear.is_some() {
+            for p in 0..self.x.len() {
+                self.deformation[p] = deformation_step(dt * self.c[p]) * self.deformation[p];
+            }
+        }
+        if let Some((x0, y_lo, y_hi)) = self.probe.watch_x {
+            let (sum, n) = (0..self.x.len())
+                .filter(|&p| {
+                    (self.x[p].x - x0).abs() < self.layout.dx && (y_lo..y_hi).contains(&self.x[p].y)
+                })
+                .fold((0.0f32, 0u32), |(s, n), p| (s + self.v[p].y, n + 1));
+            self.probe
+                .watch_x_history
+                .push((self.time + dt, sum / n.max(1) as f32));
+        }
         let ln_bounds = (J_BOUNDS.0.ln(), J_BOUNDS.1.ln());
         // J advances by the divergence the projection holds: the cells'
         // divergence interpolated bilinearly at the particle, over liquid
@@ -486,6 +592,9 @@ impl Scene {
                     .push((self.time, before, self.v[p], wall));
             }
         }
+        for p in 0..self.x.len() {
+            self.reflect_off_walls(p);
+        }
         lap(&mut self.probe, 5);
         self.time += dt;
         frame.substeps += 1;
@@ -516,19 +625,62 @@ impl Scene {
         let mut left = FRAME;
         while left > 1e-7 {
             let speed = self.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
+            // Half a cell per shear wave crossing, under the explicit
+            // limit `2 / sqrt(12) = 0.577` the transfer's stiffest mode
+            // allows (`transfer::the_stiffest_mode_stays_bounded_...`).
+            let shear_limit = self
+                .shear
+                .map_or(f32::INFINITY, |mu| 0.5 * self.layout.dx / mu.sqrt());
             let limit = self.fixed_dt.unwrap_or_else(|| {
-                travel_limited_dt(
+                shear_limit.min(travel_limited_dt(
                     speed,
                     self.g(),
                     self.layout.dx,
                     self.settings.max_cells_per_substep,
-                )
+                ))
             });
             let dt = limit.min(left);
             self.substep(dt, &mut frame);
             left -= dt;
         }
         frame
+    }
+
+    /// Moves particle `p`, if beyond a wall, to its mirror point across it,
+    /// and counts it (criteria, third attempt's amendment).
+    fn reflect_off_walls(&mut self, p: usize) {
+        let ulp = |w: f32| f32::from_bits(w.abs().to_bits() + 1) - w.abs();
+        let (lo, hi) = self.tank;
+        let mut q = self.x[p];
+        let mut deepest = 0.0f32;
+        for (coord, low, high) in [(&mut q.x, lo.x, hi.x), (&mut q.y, lo.y, hi.y)] {
+            if *coord < low {
+                deepest = deepest.max((low - *coord) / ulp(low));
+                *coord = 2.0 * low - *coord;
+            } else if *coord > high {
+                deepest = deepest.max((*coord - high) / ulp(high));
+                *coord = 2.0 * high - *coord;
+            }
+        }
+        if deepest > 0.0 {
+            self.x[p] = q;
+            self.probe.reflections += 1;
+            self.probe.deepest_reflection_ulps = self.probe.deepest_reflection_ulps.max(deepest);
+        }
+    }
+
+    /// The reflection criterion (third attempt's amendment).
+    fn check_reflections(&self, label: &str, report: &mut Report) {
+        let (n, deepest) = (self.probe.reflections, self.probe.deepest_reflection_ulps);
+        println!("{label}: {n} reflections off a wall, deepest {deepest:.2} ulps before it");
+        report.check(deepest <= 4.0, || {
+            format!("{label}: a particle went {deepest:.1} ulps beyond a wall")
+        });
+    }
+
+    /// Which cells have their centre outside every solid.
+    fn open_centres(&self) -> Vec<bool> {
+        self.solid_centres.data().iter().map(|&d| d > 0.0).collect()
     }
 
     fn j(&self, p: usize) -> f32 {
@@ -549,17 +701,32 @@ impl Scene {
     /// Kinetic plus potential energy, the floor of the tank as zero.
     fn energy(&self) -> f32 {
         let floor = self.tank.0.y;
+        let elastic = |p: usize| match (self.shear, self.sound_speed2) {
+            (Some(mu), Some(lambda)) => {
+                let j = self.j(p);
+                self.v0[p]
+                    * (shear_energy(self.deformation[p], mu) + 0.5 * lambda * (j - 1.0).powi(2))
+            }
+            _ => 0.0,
+        };
         (0..self.x.len())
             .map(|p| {
                 let kinetic = 0.5 * self.v[p].length_squared();
-                self.mass[p] * (kinetic + self.g() * (self.x[p].y - floor))
+                self.mass[p] * (kinetic + self.g() * (self.x[p].y - floor)) + elastic(p)
             })
             .sum()
     }
 
+    /// In the tank or on its walls: out means beyond a wall. A particle
+    /// gliding along a wall approaches it geometrically (the normal velocity
+    /// falls linearly to zero there, `substep` doc) and, in f32, ends on
+    /// it: measured in scene 4 after step A2's changes, a particle reached
+    /// `x = 4.0000005`, one ulp from the wall at 4, with `v_x = -1.6e-5`
+    /// cells/s, sat exactly on the wall for one frame and went back in,
+    /// never beyond it. The strict test counted it out.
     fn inside_tank(&self, p: usize) -> bool {
         let q = self.x[p];
-        q.x > self.tank.0.x && q.x < self.tank.1.x && q.y > self.tank.0.y && q.y < self.tank.1.y
+        q.x >= self.tank.0.x && q.x <= self.tank.1.x && q.y >= self.tank.0.y && q.y <= self.tank.1.y
     }
 
     /// Particles per cell over cells whose eight neighbours also hold
@@ -825,6 +992,7 @@ fn column_at_rest(k: usize, g_fraction: f32, report: &mut Report) -> f32 {
         surface_start,
         scene.j_at_bounds
     );
+    scene.check_reflections(&label, report);
     cost.print(&label, wall_s, 5.0);
     report.check(worst_p <= 0.5 * g, || {
         format!("{label}: pressure off by {:.3} cell of head", worst_p / g)
@@ -921,6 +1089,7 @@ fn droplet_in_free_fall(g_fraction: f32, report: &mut Report) {
          {:.2e} of g t, gyration {:.2e}, |J-1| {:.2e}, lowest particle y={lowest:.1}",
         worst[0], worst[1], worst[2], worst[3], worst[4]
     );
+    scene.check_reflections(&label, report);
     cost.print(&label, wall_s, 0.3);
     report.check(lowest > 1.0, || {
         format!("{label}: the droplet reached the floor")
@@ -1013,6 +1182,7 @@ fn violent_scene_at(
          energy rise {worst_energy:+.4}, J at bounds {}",
         scene.j_at_bounds
     );
+    scene.check_reflections(label, report);
     cost.print(label, wall_s, 2.0);
     report.check(!nan, || format!("{label}: NaN"));
     report.check(outside == 0, || {
@@ -1193,9 +1363,10 @@ fn probe_dam_break_volume_away_from_walls() {
 /// Deep in the liquid, is the divergence J reads (`tr C` of the gather in
 /// use) the divergence the grid keeps after the solve, or larger? Beside
 /// it, the cells' divergence interpolated bilinearly, which is what a
-/// gather quadratic along each component and linear across it reads. A
-/// probe: it measured the first gate run's quadratic gather at 1000 to
-/// 3000 times the grid's divergence.
+/// gather quadratic along each component and linear across it would read.
+/// A probe: it measured the first gate run's quadratic gather at 1000 to
+/// 3000 times the grid's divergence, which is why J integrates the cells'
+/// divergence.
 #[test]
 #[ignore = "diagnostic probe for the first gate failure: run with --ignored --nocapture"]
 fn probe_dam_break_bulk_divergence() {
@@ -1538,6 +1709,7 @@ fn gate_compressible_column() {
             format!("column: band {k} mean J {mean:.5}, expected {expected:.5}")
         });
     }
+    scene.check_reflections("compressible column", &mut report);
     cost.print("compressible column", wall_s, 5.0);
     report.finish();
 }
@@ -1597,6 +1769,7 @@ fn gate_sound_speed() {
     report.check(error <= 0.05, || {
         format!("sound speed: arrival off by {:.1} %", 100.0 * error)
     });
+    scene.check_reflections("sound speed", &mut report);
     cost.print("sound speed", wall_s, scene.time);
     report.finish();
 }
@@ -1728,5 +1901,970 @@ fn probe_a1_first_run() {
             );
             worst = 0.0;
         }
+    }
+}
+
+/// `E / rho` (m^2/s^2) giving plane-strain shear speed `c_s` at `nu`.
+fn e_over_rho_for_shear_speed(c_s: f32, nu: f32) -> f32 {
+    2.0 * (1.0 + nu) * c_s * c_s
+}
+
+#[test]
+#[ignore = "staggered elastic solid gate, scene 8: run with --ignored --nocapture"]
+fn gate_elastic_column() {
+    let mut report = Report::new();
+    let nu = 0.3f32;
+    // (lambda + mu) / rho = E / rho * (nu / ((1 + nu)(1 - 2 nu)) + 1 / (2 (1 + nu))).
+    let stiffness_per_e = nu / ((1.0 + nu) * (1.0 - 2.0 * nu)) + 0.5 / (1.0 + nu);
+    let e_over_rho = 100.0 / stiffness_per_e;
+    let (wall, width, depth) = (4usize, 40usize, 30usize);
+    let (nx, ny) = (width + 2 * wall, wall + depth + 18);
+    let floor = wall as f32;
+    let tank = (
+        Vec2::new(wall as f32, floor),
+        Vec2::new((wall + width) as f32, 1.0e6),
+    );
+    let mut rng = LcgRng::new(7);
+    let h0 = floor + depth as f32;
+    let x = seed(
+        (
+            IVec2::new(wall as i32, wall as i32),
+            IVec2::new((wall + width) as i32, (wall + depth) as i32),
+        ),
+        |_| true,
+        |q| box_free_sides(q, Some(h0), None),
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 1.0, tank, x).with_elastic(e_over_rho, nu);
+    let g = scene.g();
+    let cp2 = scene.shear.unwrap_or(0.0) + scene.sound_speed2.unwrap_or(0.0);
+    let centre_i = nx / 2;
+    let frames = (5.0 / FRAME).round() as u32;
+    let last_second = frames - (1.0 / FRAME).round() as u32;
+    let bands = depth / 5;
+    let mut band_j = vec![(0.0f64, 0u64); bands];
+    let (mut h_sum, mut h_n, mut nan, mut outside) = (0.0f32, 0u32, false, 0usize);
+    let mut cost = Cost::default();
+    let wall_clock = Instant::now();
+    for f in 1..=frames {
+        let frame = scene.frame();
+        cost.add(&frame);
+        nan |= scene.x.iter().chain(&scene.v).any(|q| !q.is_finite());
+        outside = outside.max(
+            (0..scene.x.len())
+                .filter(|&p| !scene.inside_tank(p))
+                .count(),
+        );
+        if f > last_second {
+            if let Some(h) = surface_height(&frame.phi, centre_i, wall) {
+                h_sum += h;
+                h_n += 1;
+            }
+            for p in 0..scene.x.len() {
+                let k = ((scene.x[p].y - floor) / 5.0).floor();
+                if k >= 0.0 && (k as usize) < bands {
+                    let entry = &mut band_j[k as usize];
+                    entry.0 += f64::from(scene.j(p));
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let h = h_sum / h_n.max(1) as f32;
+    report.check(!nan, || "elastic column: NaN".to_string());
+    report.check(outside == 0, || {
+        format!("elastic column: {outside} particles out")
+    });
+    for (k, &(sum, n)) in band_j.iter().enumerate() {
+        if n == 0 {
+            continue;
+        }
+        let mean = (sum / n as f64) as f32;
+        let y = floor + 5.0 * k as f32 + 2.5;
+        let expected = 1.0 - g * (h - y) / cp2;
+        println!("  elastic band {k}: mean J {mean:.5}, expected {expected:.5}");
+        report.check((mean - expected).abs() <= 0.005, || {
+            format!("elastic column: band {k} mean J {mean:.5}, expected {expected:.5}")
+        });
+    }
+    scene.check_reflections("elastic column", &mut report);
+    cost.print("elastic column", wall_s, 5.0);
+    report.finish();
+}
+
+#[test]
+#[ignore = "staggered elastic solid gate, scene 9: run with --ignored --nocapture"]
+fn gate_shear_wave() {
+    let mut report = Report::new();
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let (length, height) = (100usize, 208usize);
+    let (nx, ny) = (length + 8, height + 8);
+    let (x0, y0) = (4.0f32, 4.0f32);
+    let tank = (
+        Vec2::splat(1.0),
+        Vec2::new(nx as f32 - 1.0, ny as f32 - 1.0),
+    );
+    let mut rng = LcgRng::new(13);
+    let top = y0 + height as f32;
+    let right = x0 + length as f32;
+    let x = seed(
+        (
+            IVec2::new(x0 as i32, y0 as i32),
+            IVec2::new(right as i32, top as i32),
+        ),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - y0, Vec2::NEG_Y),
+                (top - q.y, Vec2::Y),
+                (q.x - x0, Vec2::NEG_X),
+                (right - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 0.0, tank, x)
+        .with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    let c = c_s / scene.cell_m;
+    scene.fixed_dt = Some(0.5 * scene.layout.dx / c);
+    let kick = 0.05 / scene.cell_m;
+    for p in 0..scene.x.len() {
+        if scene.x[p].x < x0 + 10.0 {
+            scene.v[p].y = kick;
+        }
+    }
+    let mid = y0 + 0.5 * height as f32;
+    scene.probe.watch_x = Some((x0 + 50.0, mid - 4.0, mid + 4.0));
+    let expected = 40.0 / c;
+    // The window: the front's plateau ends at 50 dx / c_s, the edges'
+    // disturbance arrives at 53 (criteria).
+    let window = 50.0 / c;
+    let mut cost = Cost::default();
+    let wall_clock = Instant::now();
+    while scene.time < window {
+        let frame = scene.frame();
+        cost.add(&frame);
+    }
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let history = &scene.probe.watch_x_history;
+    let half = 0.25 * kick;
+    let arrival = history.windows(2).find_map(|pair| {
+        let ((t0, v0), (t1, v1)) = (pair[0], pair[1]);
+        (v0 < half && v1 >= half).then(|| t0 + (t1 - t0) * (half - v0) / (v1 - v0))
+    });
+    let plateau = history
+        .iter()
+        .filter(|(t, _)| *t > expected && *t < window)
+        .map(|&(_, v)| v)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let error = arrival.map_or(f32::INFINITY, |t| (t - expected).abs() / expected);
+    println!(
+        "shear wave: v0/4 reached at t={:?}s, expected {expected:.4}s, off by {:.1} %; largest velocity after it {:.3} of v0 (d'Alembert: 0.5)",
+        arrival,
+        100.0 * error,
+        plateau / kick
+    );
+    report.check(error <= 0.05, || {
+        format!("shear wave: arrival off by {:.1} %", 100.0 * error)
+    });
+    scene.check_reflections("shear wave", &mut report);
+    cost.print("shear wave", wall_s, scene.time);
+    report.finish();
+}
+
+#[test]
+#[ignore = "staggered elastic solid gate, scene 10: run with --ignored --nocapture"]
+fn gate_elastic_drop() {
+    let mut report = Report::new();
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - lo.y, Vec2::NEG_Y),
+                (hi.y - q.y, Vec2::Y),
+                (q.x - lo.x, Vec2::NEG_X),
+                (hi.x - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x)
+        .with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    let gyration = |scene: &Scene| {
+        let (com, _) = scene.centre_of_mass();
+        let n = scene.x.len() as f32;
+        (scene
+            .x
+            .iter()
+            .map(|q| (*q - com).length_squared())
+            .sum::<f32>()
+            / n)
+            .sqrt()
+    };
+    let (energy_start, gyration_start) = (scene.energy(), gyration(&scene));
+    let (mut worst_energy, mut nan, mut outside) = (f32::NEG_INFINITY, false, 0usize);
+    let mut cost = Cost::default();
+    let wall_clock = Instant::now();
+    for f in 1..=(2.0 / FRAME).round() as u32 {
+        let frame = scene.frame();
+        cost.add(&frame);
+        nan |= scene.x.iter().chain(&scene.v).any(|q| !q.is_finite());
+        outside = outside.max(
+            (0..scene.x.len())
+                .filter(|&p| !scene.inside_tank(p))
+                .count(),
+        );
+        worst_energy = worst_energy.max(scene.energy() / energy_start - 1.0);
+        if f % 12 == 0 {
+            println!(
+                "  elastic drop t={:.2}s: energy {:+.4}, gyration {:.3} (start {gyration_start:.3}), lowest y {:.2}",
+                scene.time,
+                scene.energy() / energy_start - 1.0,
+                gyration(&scene),
+                scene.x.iter().map(|q| q.y).fold(f32::INFINITY, f32::min)
+            );
+        }
+    }
+    let wall_s = wall_clock.elapsed().as_secs_f32();
+    let change = (gyration(&scene) / gyration_start - 1.0).abs();
+    println!(
+        "elastic drop: NaN {nan}, most outside {outside}, energy rise {worst_energy:+.4}, gyration change {change:.4}"
+    );
+    report.check(!nan, || "elastic drop: NaN".to_string());
+    report.check(outside == 0, || {
+        format!("elastic drop: {outside} particles out")
+    });
+    report.check(worst_energy <= 0.01, || {
+        format!("elastic drop: energy rose {worst_energy:+.4}")
+    });
+    report.check(change <= 0.05, || {
+        format!("elastic drop: gyration changed {change:.4}")
+    });
+    scene.check_reflections("elastic drop", &mut report);
+    cost.print("elastic drop", wall_s, 2.0);
+    report.finish();
+}
+
+/// Diagnosis of A2's first run: scene 10's energy split into its parts
+/// every frame. A probe.
+#[test]
+#[ignore = "diagnostic probe for A2's first run: run with --ignored --nocapture"]
+fn probe_a2_energy_parts() {
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    // EMERGE_A2_SCENARIO: "drop" (scene 10), "rest" (on the floor, at
+    // rest), "spin" (no gravity, no contact, spinning at 2 rad/s).
+    let scenario = std::env::var("EMERGE_A2_SCENARIO").unwrap_or_else(|_| "drop".into());
+    let base = if scenario == "rest" { 4.0 } else { 24.0 };
+    let scenario = scenario.as_str();
+    let (lo, hi) = (Vec2::new(31.0, base), Vec2::new(41.0, base + 10.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - lo.y, Vec2::NEG_Y),
+                (hi.y - q.y, Vec2::Y),
+                (q.x - lo.x, Vec2::NEG_X),
+                (hi.x - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let spinning = scenario.starts_with("spin");
+    let g_fraction = if spinning { 0.0 } else { 1.0 };
+    let mut scene = Scene::new((72, 72), 0.01, g_fraction, tank, x);
+    if scenario != "spin_liquid" {
+        scene = scene.with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    }
+    if spinning {
+        let centre = 0.5 * (lo + hi);
+        for p in 0..scene.x.len() {
+            let r = scene.x[p] - centre;
+            let w = std::env::var("EMERGE_A2_OMEGA")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(2.0);
+            if std::env::var_os("EMERGE_A2_TRANSLATE").is_some() {
+                scene.v[p] = Vec2::new(w * 5.0, 0.0);
+            } else {
+                scene.v[p] = w * Vec2::new(-r.y, r.x);
+                scene.c[p] = Mat2::from_cols(Vec2::new(0.0, w), Vec2::new(-w, 0.0));
+            }
+        }
+    }
+    let (mu, lambda) = (
+        scene.shear.unwrap_or(0.0),
+        scene.sound_speed2.unwrap_or(0.0),
+    );
+    let parts = |s: &Scene| {
+        let floor = s.tank.0.y;
+        let mut out = [0.0f64; 5];
+        for p in 0..s.x.len() {
+            out[0] += f64::from(s.mass[p] * 0.5 * s.v[p].length_squared());
+            out[1] += f64::from(s.mass[p] * s.g() * (s.x[p].y - floor));
+            out[2] += f64::from(s.v0[p] * shear_energy(s.deformation[p], mu));
+            out[3] += f64::from(s.v0[p] * 0.5 * lambda * (s.j(p) - 1.0).powi(2));
+            out[4] += f64::from(s.deformation[p].determinant() / s.j(p) - 1.0).abs();
+        }
+        out[4] /= s.x.len() as f64;
+        out
+    };
+    let start = parts(&scene);
+    let total0 = (start[0] + start[1] + start[2] + start[3]).max(1.0);
+    for f in 1..=72u32 {
+        scene.frame();
+        if f <= 2 && spinning {
+            for p in [0usize, scene.x.len() / 2] {
+                let fm = scene.deformation[p];
+                let r = super::elastic::rotation(fm);
+                let fh = fm * fm.determinant().sqrt().recip();
+                println!(
+                    "  particle {p} at {:?}: F {:?} (det {:.5}), angle of R {:.4}, |F^ - R| {:.5}, C {:?}",
+                    scene.x[p],
+                    fm,
+                    fm.determinant(),
+                    r.x_axis.y.atan2(r.x_axis.x),
+                    (fh - r).x_axis.length() + (fh - r).y_axis.length(),
+                    scene.c[p]
+                );
+            }
+            // Strain rate |sym C| of the particles within one cell of the
+            // block's edge against those deeper in, after this frame.
+            let (lo_now, hi_now) = scene.x.iter().fold(
+                (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+                |(a, b), q| (a.min(*q), b.max(*q)),
+            );
+            let (mut edge, mut ne, mut inner, mut ni) = (0.0f32, 0u32, 0.0f32, 0u32);
+            for p in 0..scene.x.len() {
+                let q = scene.x[p];
+                let d = (q - lo_now).min(hi_now - q).min_element();
+                let c = scene.c[p];
+                let sym = 0.5 * (c + c.transpose());
+                let rate = (sym.x_axis.length_squared() + sym.y_axis.length_squared()).sqrt();
+                if d < 1.0 {
+                    edge += rate;
+                    ne += 1;
+                } else if d > 2.0 {
+                    inner += rate;
+                    ni += 1;
+                }
+            }
+            println!(
+                "  strain rate after frame {f}: edge {:.3} 1/s ({ne} particles), interior {:.3} 1/s ({ni}); rotation rate 2",
+                edge / ne.max(1) as f32,
+                inner / ni.max(1) as f32
+            );
+        }
+        let e = parts(&scene);
+        let total = e[0] + e[1] + e[2] + e[3];
+        println!(
+            "f{f:3} t={:.3}: total {:+.4} | kinetic {:.4} potential {:.4} shear {:.4} volume {:.4} (fractions of start) | mean |det F / J - 1| {:.5}",
+            scene.time,
+            total / total0 - 1.0,
+            e[0] / total0,
+            e[1] / total0,
+            e[2] / total0,
+            e[3] / total0,
+            e[4]
+        );
+    }
+}
+
+/// Diagnosis of A2's first run: one substep of a rigidly spinning liquid
+/// block, no gravity, and the velocity gradient at an edge particle after
+/// each stage. A probe.
+#[test]
+#[ignore = "diagnostic probe for A2's first run: run with --ignored --nocapture"]
+fn probe_a2_one_substep_rotation() {
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |_| (f32::INFINITY, Vec2::Y),
+        &mut rng,
+    );
+    let mut scene = Scene::new((72, 72), 0.01, 0.0, tank, x);
+    let centre = 0.5 * (lo + hi);
+    for p in 0..scene.x.len() {
+        let r = scene.x[p] - centre;
+        scene.v[p] = 2.0 * Vec2::new(-r.y, r.x);
+        scene.c[p] = Mat2::from_cols(Vec2::new(0.0, 2.0), Vec2::new(-2.0, 0.0));
+    }
+    let edge = (0..scene.x.len())
+        .min_by(|&a, &b| scene.x[a].y.total_cmp(&scene.x[b].y))
+        .unwrap_or(0);
+    let dt = 1.0e-3;
+    let (mut vel, face_mass) =
+        particles_to_faces(&scene.layout, &scene.x, &scene.v, &scene.c, &scene.mass);
+    let read = |vel: &super::field::MacVelocity| {
+        let mut v = [Vec2::ZERO];
+        let mut c = [Mat2::ZERO];
+        faces_to_particles(&scene.layout, vel, &[scene.x[edge]], &mut v, &mut c);
+        (v[0], c[0])
+    };
+    println!(
+        "edge particle at {:?}, exact v {:?}",
+        scene.x[edge], scene.v[edge]
+    );
+    println!("after P2G: {:?}", read(&vel));
+    let phi = scene.phi();
+    for j in 21..27usize {
+        let i = 38usize;
+        let q = scene.layout.u_position(i, j);
+        let g = phi.bilinear_gradient(q - Vec2::splat(0.5));
+        println!(
+            "  u face ({i},{j}) at y={:.1}: u {:.3} (exact {:.3}), phi left/right {:.3}/{:.3}, grad phi {:?}",
+            q.y,
+            vel.u.get(i, j),
+            -2.0 * (q.y - centre.y),
+            phi.get(i - 1, j),
+            phi.get(i, j),
+            g
+        );
+    }
+    let image = box_container_image(tank.0, tank.1);
+    let mut projected = vel.clone();
+    let solution = project(
+        &scene.layout,
+        dt,
+        &mut projected,
+        Walls {
+            weights: &scene.weights,
+            image: &image,
+            open: &scene.open_centres(),
+        },
+        Liquid {
+            phi: &phi,
+            face_mass: &face_mass,
+        },
+        &scene.settings,
+        None,
+    );
+    println!(
+        "after projection + extension: {:?}, largest pressure {}",
+        read(&projected),
+        solution.pressure.iter().fold(0.0f32, |m, p| m.max(p.abs()))
+    );
+    vel = projected;
+    let _ = vel;
+}
+
+/// Diagnosis of A2's second run: the transfer round trip alone (scatter,
+/// projection, gather, particles held still, no gravity) on a resting
+/// column with small random velocities. Kinetic energy must never grow.
+/// A probe.
+#[test]
+#[ignore = "diagnostic probe for A2's second run: run with --ignored --nocapture"]
+fn probe_a2_round_trip_energy() {
+    let (wall, width, depth) = (4usize, 40usize, 30usize);
+    let (nx, ny) = (width + 2 * wall, wall + depth + 18);
+    let h = (wall + depth) as f32;
+    let tank = (
+        Vec2::new(wall as f32, wall as f32),
+        Vec2::new((wall + width) as f32, 1.0e6),
+    );
+    let mut rng = LcgRng::new(7);
+    let x = seed(
+        (
+            IVec2::new(wall as i32, wall as i32),
+            IVec2::new((wall + width) as i32, (wall + depth) as i32),
+        ),
+        |_| true,
+        |q| box_free_sides(q, Some(h), None),
+        &mut rng,
+    );
+    let mut scene = Scene::new((nx, ny), 0.01, 0.0, tank, x);
+    let mut noise = LcgRng::new(3);
+    for p in 0..scene.x.len() {
+        scene.v[p] = Vec2::new(noise.next_f32() - 0.5, noise.next_f32() - 0.5);
+    }
+    let phi = scene.phi();
+    let image = box_container_image(scene.tank.0, scene.tank.1);
+    let kinetic = |s: &Scene| -> f64 {
+        (0..s.x.len())
+            .map(|p| f64::from(0.5 * s.mass[p] * s.v[p].length_squared()))
+            .sum()
+    };
+    let mut previous = kinetic(&scene);
+    let mut rises = 0;
+    for round in 1..=200 {
+        let (mut vel, face_mass) =
+            particles_to_faces(&scene.layout, &scene.x, &scene.v, &scene.c, &scene.mass);
+        project(
+            &scene.layout,
+            1.0e-3,
+            &mut vel,
+            Walls {
+                weights: &scene.weights,
+                image: &image,
+                open: &scene.open_centres(),
+            },
+            Liquid {
+                phi: &phi,
+                face_mass: &face_mass,
+            },
+            &scene.settings,
+            None,
+        );
+        faces_to_particles(&scene.layout, &vel, &scene.x, &mut scene.v, &mut scene.c);
+        let now = kinetic(&scene);
+        if now > previous * (1.0 + 1.0e-6) {
+            rises += 1;
+        }
+        if round <= 5 || round % 40 == 0 {
+            println!(
+                "round {round}: kinetic {now:.6e} ({:+.3e} of the round before)",
+                now / previous - 1.0
+            );
+        }
+        previous = now;
+    }
+    println!("rounds where kinetic energy rose: {rises} of 200");
+}
+
+/// Diagnosis of the new A2 attempt's first run: scene 10's block, resting
+/// on the floor at 1 s, went to NaN before 1.2 s. Substep by substep from
+/// 0.95 s: the largest `|C|`, speed, `|F^ - R^|` and J range, until the
+/// first value that is not finite. A probe.
+#[test]
+#[ignore = "diagnostic probe for the new A2 attempt: run with --ignored --nocapture"]
+fn probe_a2_drop_first_nan() {
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - lo.y, Vec2::NEG_Y),
+                (hi.y - q.y, Vec2::Y),
+                (q.x - lo.x, Vec2::NEG_X),
+                (hi.x - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x)
+        .with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    while scene.time < 0.95 {
+        scene.frame();
+    }
+    let mu = scene.shear.unwrap_or(0.0);
+    let dt = 0.5 * scene.layout.dx / mu.sqrt();
+    let mut frame = scene.frame();
+    for step in 0..20000 {
+        scene.substep(dt, &mut frame);
+        scene.time += dt;
+        let bad: Vec<usize> = (0..scene.x.len())
+            .filter(|&p| {
+                !(scene.x[p].is_finite()
+                    && scene.v[p].is_finite()
+                    && scene.c[p].is_finite()
+                    && scene.deformation[p].is_finite()
+                    && scene.log_j[p].is_finite())
+            })
+            .collect();
+        let (mut c_max, mut c_at, mut speed, mut dev, mut j_lo, mut j_hi) =
+            (0.0f32, 0usize, 0.0f32, 0.0f32, f32::INFINITY, 0.0f32);
+        for p in 0..scene.x.len() {
+            let c = scene.c[p]
+                .to_cols_array()
+                .iter()
+                .fold(0.0f32, |m, e| m.max(e.abs()));
+            if c > c_max {
+                c_max = c;
+                c_at = p;
+            }
+            speed = speed.max(scene.v[p].length());
+            dev = dev.max(shear_energy(scene.deformation[p], 1.0).sqrt());
+            j_lo = j_lo.min(scene.j(p));
+            j_hi = j_hi.max(scene.j(p));
+        }
+        if step % 200 == 0 || !bad.is_empty() || c_max > 500.0 {
+            println!(
+                "t={:.5} step {step}: |C| max {c_max:.3} at {:?} (F det {:.4}, J {:.4}), speed {speed:.3}, |F^-R^| max {dev:.4}, J {j_lo:.4}..{j_hi:.4}",
+                scene.time,
+                scene.x[c_at],
+                scene.deformation[c_at].determinant(),
+                scene.j(c_at)
+            );
+        }
+        if !bad.is_empty() {
+            for &p in bad.iter().take(5) {
+                println!(
+                    "  bad {p}: x {:?} v {:?} F {:?} log J {}",
+                    scene.x[p], scene.v[p], scene.deformation[p], scene.log_j[p]
+                );
+            }
+            break;
+        }
+    }
+}
+
+/// Diagnosis of the new A2 attempt's first run: when do particles of
+/// scene 10's elastic block lose every neighbour within one cell (an
+/// elastic body must never shed a piece)? A probe.
+#[test]
+#[ignore = "diagnostic probe for the new A2 attempt: run with --ignored --nocapture"]
+fn probe_a2_drop_detached() {
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut rng = LcgRng::new(17);
+    let (lo, hi) = (Vec2::new(31.0, 24.0), Vec2::new(41.0, 34.0));
+    let x = seed(
+        (lo.as_ivec2(), hi.as_ivec2()),
+        |_| true,
+        |q| {
+            let d = [
+                (q.y - lo.y, Vec2::NEG_Y),
+                (hi.y - q.y, Vec2::Y),
+                (q.x - lo.x, Vec2::NEG_X),
+                (hi.x - q.x, Vec2::X),
+            ];
+            d.into_iter().fold(
+                (f32::INFINITY, Vec2::Y),
+                |m, c| if c.0 < m.0 { c } else { m },
+            )
+        },
+        &mut rng,
+    );
+    let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, x)
+        .with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    for f in 1..=66u32 {
+        scene.frame();
+        let n = scene.x.len();
+        let mut lonely = Vec::new();
+        for p in 0..n {
+            let nearest = (0..n)
+                .filter(|&q| q != p)
+                .map(|q| (scene.x[q] - scene.x[p]).length())
+                .fold(f32::INFINITY, f32::min);
+            if nearest > 1.0 {
+                lonely.push((p, nearest));
+            }
+        }
+        let lowest = scene.x.iter().map(|q| q.y).fold(f32::INFINITY, f32::min);
+        let speed = scene.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
+        println!(
+            "f{f} t={:.3}: {} particles with no neighbour within 1 cell, lowest y {lowest:.2}, top speed {speed:.1}",
+            scene.time,
+            lonely.len()
+        );
+        for &(p, d) in lonely.iter().take(3) {
+            println!(
+                "   {p} at {:?}, nearest {d:.2}, v {:?}, F det {:.3}, J {:.3}",
+                scene.x[p],
+                scene.v[p],
+                scene.deformation[p].determinant(),
+                scene.j(p)
+            );
+        }
+    }
+}
+
+/// Diagnosis of the new A2 attempt's first run: the mirror wall stands for
+/// an image body, so a block hitting the floor must move exactly as one of
+/// two identical blocks hitting each other head on, with no wall near.
+/// No gravity; kinetic plus elastic energy and the top speed of each case
+/// (`EMERGE_A2_CASE` = wall or pair). A probe.
+#[test]
+#[ignore = "diagnostic probe for the new A2 attempt: run with --ignored --nocapture"]
+fn probe_a2_wall_against_image_pair() {
+    let (nu, c_s) = (0.3f32, 5.0f32);
+    let case = std::env::var("EMERGE_A2_CASE").unwrap_or_else(|_| "wall".into());
+    let tank = (Vec2::splat(4.0), Vec2::new(68.0, 106.0));
+    let block = |lo: Vec2, rng: &mut LcgRng| {
+        let hi = lo + Vec2::splat(10.0);
+        seed(
+            (lo.as_ivec2(), hi.as_ivec2()),
+            |_| true,
+            |q| {
+                let d = [
+                    (q.y - lo.y, Vec2::NEG_Y),
+                    (hi.y - q.y, Vec2::Y),
+                    (q.x - lo.x, Vec2::NEG_X),
+                    (hi.x - q.x, Vec2::X),
+                ];
+                d.into_iter().fold(
+                    (f32::INFINITY, Vec2::Y),
+                    |m, c| if c.0 < m.0 { c } else { m },
+                )
+            },
+            rng,
+        )
+    };
+    let mut rng = LcgRng::new(17);
+    // Wall: base 6 cells above the floor (y = 4). Pair: the same gap to the
+    // plane y = 46 on both sides.
+    let (mut x, below) = if case == "pair" {
+        let lower = block(Vec2::new(31.0, 30.0), &mut rng);
+        let n = lower.len();
+        let upper: Vec<Vec2> = lower.iter().map(|q| Vec2::new(q.x, 92.0 - q.y)).collect();
+        let mut all = upper;
+        all.extend(lower);
+        (all, n)
+    } else {
+        (block(Vec2::new(31.0, 10.0), &mut rng), 0)
+    };
+    x.shrink_to_fit();
+    let mut scene = Scene::new((72, 110), 0.01, 0.0, tank, x)
+        .with_elastic(e_over_rho_for_shear_speed(c_s, nu), nu);
+    let speed0 = 2.0 / scene.cell_m;
+    let n = scene.x.len();
+    for p in 0..n {
+        // The upper block (all of the wall case, the first half of the
+        // pair) moves down, the lower block of the pair up.
+        let down = case != "pair" || p < n - below;
+        scene.v[p].y = if down { -speed0 } else { speed0 };
+    }
+    let (mu, lambda) = (
+        scene.shear.unwrap_or(0.0),
+        scene.sound_speed2.unwrap_or(0.0),
+    );
+    let energy = |s: &Scene| -> f64 {
+        (0..s.x.len())
+            .map(|p| {
+                f64::from(
+                    s.mass[p] * 0.5 * s.v[p].length_squared()
+                        + s.v0[p]
+                            * (shear_energy(s.deformation[p], mu)
+                                + 0.5 * lambda * (s.j(p) - 1.0).powi(2)),
+                )
+            })
+            .sum::<f64>()
+            / s.x.len() as f64
+    };
+    let e0 = energy(&scene);
+    if std::env::var_os("EMERGE_A2_TRACE").is_some() {
+        let start: f32 = std::env::var("EMERGE_A2_TRACE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.25);
+        while scene.time < start {
+            scene.frame();
+        }
+        let mut frame = scene.frame();
+        for step in 0..3000 {
+            // The frame's own choice of substep (`Scene::frame`).
+            let speed = scene.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
+            let dt = (0.5 * scene.layout.dx / mu.sqrt()).min(travel_limited_dt(
+                speed,
+                scene.g(),
+                scene.layout.dx,
+                scene.settings.max_cells_per_substep,
+            ));
+            scene.substep(dt, &mut frame);
+            scene.time += dt;
+            let (mut c_max, mut at) = (0.0f32, 0usize);
+            for p in 0..scene.x.len() {
+                let c = scene.c[p].to_cols_array().iter().fold(0.0f32, |m, e| {
+                    if e.is_finite() {
+                        m.max(e.abs())
+                    } else {
+                        f32::NAN
+                    }
+                });
+                if c.is_nan() {
+                    c_max = c;
+                    at = p;
+                    break;
+                }
+                if c > c_max {
+                    c_max = c;
+                    at = p;
+                }
+            }
+            let f = scene.deformation[at];
+            let fh = f / f.determinant().abs().sqrt();
+            let tau = shear_kirchhoff(f, mu);
+            let phi = scene.phi();
+            let cell = scene.x[at].floor().as_ivec2();
+            let near = (0..scene.x.len())
+                .filter(|&q| (scene.x[q] - scene.x[at]).length() < 1.0)
+                .count();
+            if step % 5 == 0 || c_max > 300.0 || !c_max.is_finite() {
+                println!(
+                    "trace t={:.4}: |C| {c_max:.1} at {:?} phi {:.2}, {near} within 1 cell, det F {:.3}, J {:.3}, |F^| cols {:.3} {:.3}, |tau|/mu {:.3}, C {:?}",
+                    scene.time,
+                    scene.x[at],
+                    phi.get_signed(cell.x, cell.y).unwrap_or(f32::NAN),
+                    f.determinant(),
+                    scene.j(at),
+                    fh.x_axis.length(),
+                    fh.y_axis.length(),
+                    (tau.x_axis.length() + tau.y_axis.length()) / mu,
+                    scene.c[at]
+                );
+            }
+            if !c_max.is_finite() {
+                break;
+            }
+        }
+        return;
+    }
+    for f in 1..=180u32 {
+        scene.frame();
+        let top = scene.v.iter().fold(0.0f32, |m, v| m.max(v.length()));
+        if f % 3 == 0 || !top.is_finite() {
+            let (com, _) = scene.centre_of_mass();
+            let dx2 = scene.layout.dx * scene.layout.dx;
+            let (mut l_orbit, mut l_spin, mut p_tot) = (0.0f64, 0.0f64, Vec2::ZERO);
+            let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+            for q in 0..scene.x.len() {
+                let r = scene.x[q] - com;
+                l_orbit += f64::from(scene.mass[q] * (r.x * scene.v[q].y - r.y * scene.v[q].x));
+                l_spin += f64::from(
+                    scene.mass[q] * 0.25 * dx2 * (scene.c[q].x_axis.y - scene.c[q].y_axis.x),
+                );
+                p_tot += scene.mass[q] * scene.v[q];
+                lo = lo.min(scene.x[q]);
+                hi = hi.max(scene.x[q]);
+            }
+            let m: f32 = scene.mass.iter().sum();
+            println!(
+                "{case} f{f} t={:.3}: energy {:+.4}, top speed {:.2} of impact, L orbit {:.3e} spin {:.3e} (scale {:.3e}), momentum {:?} of impact, extent {:?}..{:?}",
+                scene.time,
+                energy(&scene) / e0 - 1.0,
+                top / speed0,
+                l_orbit,
+                l_spin,
+                f64::from(m * speed0 * 5.0),
+                p_tot / (m * speed0),
+                lo,
+                hi
+            );
+        }
+        if !top.is_finite() {
+            break;
+        }
+    }
+}
+
+/// Where scene 4's drop into a pool loses a particle through a wall, after
+/// the A2 transfer changes. A probe.
+#[test]
+#[ignore = "diagnostic probe for the new A2 attempt: run with --ignored --nocapture"]
+fn probe_pool_crossings() {
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, drop_into_pool_seed());
+    let mut deepest = (0.0f32, 0usize, 0u32);
+    for f in 0..(2.0 / FRAME).round() as u32 {
+        scene.frame();
+        for p in 0..scene.x.len() {
+            let q = scene.x[p];
+            let beyond = (tank.0 - q).max(q - tank.1).max_element();
+            if beyond >= 0.0 && beyond >= deepest.0 {
+                deepest = (beyond, p, f);
+            }
+        }
+        let out = (0..scene.x.len())
+            .filter(|&p| !scene.inside_tank(p))
+            .count();
+        if out > 0 {
+            println!("frame {f}: {out} out");
+        }
+    }
+    println!(
+        "deepest beyond a wall: {:e} cell (particle {}, frame {})",
+        deepest.0, deepest.1, deepest.2
+    );
+    for &(t, before, v, gap) in &scene.probe.crossings {
+        println!(
+            "crossing t={t:.4}s from ({:.7},{:.4}) v=({:e},{:.1}) gap {gap:e}",
+            before.x, before.y, v.x, v.y
+        );
+    }
+}
+
+/// Where the dam break (scene 3, and scene 7's real water with
+/// `EMERGE_PROBE_WATER`) loses particles after the ghost pressure: how far
+/// beyond which wall, when, and how fast. A probe.
+#[test]
+#[ignore = "diagnostic probe for the third A2 attempt: run with --ignored --nocapture"]
+fn probe_dam_break_crossings() {
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut scene = Scene::new((72, 72), 0.01, 1.0, tank, dam_break_seed());
+    if std::env::var_os("EMERGE_PROBE_WATER").is_some() {
+        scene = scene.with_sound_speed(1483.0);
+    }
+    let mut seen = std::collections::BTreeMap::new();
+    for f in 0..(2.0 / FRAME).round() as u32 {
+        scene.frame();
+        for p in 0..scene.x.len() {
+            let q = scene.x[p];
+            let beyond = (tank.0 - q).max(q - tank.1).max_element();
+            if beyond > 0.0 {
+                let entry = seen.entry(p).or_insert((f, 0.0f32, q, scene.v[p], 0u32));
+                entry.4 += 1;
+                if beyond > entry.1 {
+                    entry.1 = beyond;
+                    entry.2 = q;
+                    entry.3 = scene.v[p];
+                }
+            }
+        }
+    }
+    println!("{} particles ever beyond a wall", seen.len());
+    println!(
+        "{} reflections, deepest {:.2} ulps",
+        scene.probe.reflections, scene.probe.deepest_reflection_ulps
+    );
+    for (p, (first, depth, q, v, frames)) in &seen {
+        println!(
+            "particle {p}: first frame {first}, {frames} frames out, deepest {depth:e} cell at ({:.4},{:.4}), v ({:.1},{:.1})",
+            q.x, q.y, v.x, v.y
+        );
+    }
+}
+
+/// Particle 478 of the real-water dam break, the first to pass through
+/// the left wall in the third A2 attempt: its position and the velocity it
+/// gathers every substep around the moment it enters the wall. A probe.
+#[test]
+#[ignore = "diagnostic probe for the third A2 attempt: run with --ignored --nocapture"]
+fn probe_dam_break_particle_through_wall() {
+    let tank = (Vec2::splat(4.0), Vec2::splat(68.0));
+    let mut scene =
+        Scene::new((72, 72), 0.01, 1.0, tank, dam_break_seed()).with_sound_speed(1483.0);
+    let p = 478usize;
+    for f in 0..48u32 {
+        if f < 40 {
+            scene.frame();
+            continue;
+        }
+        let before = scene.x[p];
+        scene.frame();
+        println!(
+            "frame {f}: x ({:.6},{:.6}) -> ({:.6},{:.6}), v ({:.3},{:.3}), C {:?}",
+            before.x, before.y, scene.x[p].x, scene.x[p].y, scene.v[p].x, scene.v[p].y, scene.c[p]
+        );
     }
 }

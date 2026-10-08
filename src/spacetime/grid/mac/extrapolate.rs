@@ -1,7 +1,9 @@
 //! After the update only the faces touching liquid hold a projected
-//! velocity. The gather reads a little beyond them, so the velocity is
-//! extended outward first (Bridson and Muller-Fischer 6.3), here layer by
-//! layer as the average of the valid neighbours (`apic2d`'s
+//! velocity. The gather reads a little beyond them. A face there that the
+//! particles reached keeps its own velocity, with the pressure correction
+//! of the faces next to it carried over (`keep_reached_faces`); the rest
+//! take the velocity extended outward (Bridson and Muller-Fischer 6.3),
+//! layer by layer as the average of the valid neighbours (`apic2d`'s
 //! `extrapolate`).
 //!
 //! Faces closed by a solid then take the mirror image of the flow across
@@ -23,7 +25,8 @@
 use glam::Vec2;
 
 use super::field::{FaceFlags, Field2, MacLayout, MacVelocity};
-use super::solid::FaceWeights;
+use super::solid::{FaceWeights, fraction_inside};
+use super::transfer::FaceMass;
 
 /// Extends `field` over `layers` rings of invalid samples; each new sample
 /// is the mean of its valid neighbours from the ring before.
@@ -71,6 +74,149 @@ pub fn extrapolate_velocity(vel: &mut MacVelocity, valid: &mut FaceFlags, layers
     extrapolate(&mut vel.v, &mut valid.v, layers);
 }
 
+/// The pressure continued past the free surface, per cell: the solved
+/// pressure in the material, and in the air within `layers` cells of it
+/// the ghost fluid's own straight line (Bridson and Muller-Fischer 4.5.1)
+/// carried on: along each grid axis from the last material cell `a`
+/// through the point where the surface cuts the line (`theta` of the way
+/// to the next centre, `p = 0` there), so the `k`-th air cell reads `p_a
+/// (1 - k / theta)`, averaged over the axes that reach material. Cells in
+/// a solid are never a source: their unknowns only hold `u . n = 0` at the
+/// wall (`pressure` module doc).
+pub struct GhostPressure {
+    nx: usize,
+    value: Vec<Option<f32>>,
+    /// `dt / dx`, so a face's correction is `-scale (p_b - p_a)`.
+    scale: f32,
+}
+
+/// Builds `GhostPressure` from the level set with the solids folded in,
+/// the solved pressure, which cells have their centre outside every solid
+/// (`open`), and the ghost fluid's floor on `theta`.
+pub fn ghost_pressure(
+    layout: &MacLayout,
+    dt: f32,
+    phi: &Field2,
+    pressure: &[f32],
+    open: &[bool],
+    (theta_floor, layers): (f32, u32),
+) -> GhostPressure {
+    let (nx, ny) = (layout.nx as i32, layout.ny as i32);
+    let at = |i: i32, j: i32| (i + nx * j) as usize;
+    let inside = |i: i32, j: i32| i >= 0 && j >= 0 && i < nx && j < ny;
+    let material =
+        |i: i32, j: i32| inside(i, j) && open[at(i, j)] && phi.get(i as usize, j as usize) < 0.0;
+    let air =
+        |i: i32, j: i32| inside(i, j) && open[at(i, j)] && phi.get(i as usize, j as usize) >= 0.0;
+    let mut value = vec![None; (nx * ny) as usize];
+    for j in 0..ny {
+        for i in 0..nx {
+            if material(i, j) {
+                value[at(i, j)] = Some(pressure[at(i, j)]);
+                continue;
+            }
+            if !air(i, j) {
+                continue;
+            }
+            let (mut sum, mut count) = (0.0f32, 0u32);
+            for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                // Walk towards the material along this axis, through air.
+                for k in 1..=layers as i32 {
+                    let (ai, aj) = (i + di * k, j + dj * k);
+                    if material(ai, aj) {
+                        let (bi, bj) = (ai - di, aj - dj);
+                        let theta = fraction_inside(
+                            phi.get(ai as usize, aj as usize),
+                            phi.get(bi as usize, bj as usize),
+                        )
+                        .max(theta_floor);
+                        sum += pressure[at(ai, aj)] * (1.0 - k as f32 / theta);
+                        count += 1;
+                        break;
+                    }
+                    if !air(ai, aj) {
+                        break;
+                    }
+                }
+            }
+            if count > 0 {
+                value[at(i, j)] = Some(sum / count as f32);
+            }
+        }
+    }
+    GhostPressure {
+        nx: layout.nx,
+        value,
+        scale: dt / layout.dx,
+    }
+}
+
+impl GhostPressure {
+    /// The correction `-dt (p_b - p_a) / dx` across a face between cells
+    /// `a` and `b`, when both have a pressure.
+    fn correction(&self, a: (usize, usize), b: (usize, usize)) -> Option<f32> {
+        let p = |(i, j): (usize, usize)| self.value[i + self.nx * j];
+        Some(-self.scale * (p(b)? - p(a)?))
+    }
+}
+
+/// Every open face the particles reached (`mass > 0`) outside the
+/// projected ones keeps the velocity it held before the projection,
+/// `before`, plus the correction `-dt grad p` of the pressure continued
+/// past the surface (`GhostPressure`); a face beyond that continuation
+/// gets none, as a particle alone in the air feels no pressure. Such faces
+/// become valid.
+///
+/// Why not the velocity extension alone: it is constant along the normal,
+/// so it replaces the velocity the particles gave these faces with their
+/// neighbours' and loses its gradient across the surface. A rigid rotation
+/// read at the edge of a block then shows a strain rate: measured at a
+/// block spinning at 2 rad/s, the edge particle's `du/dy` fell from the
+/// exact -2 after the transfer to 0.003 after the extension, which an
+/// elastic solid turns into stress. Keeping the face's own velocity without
+/// any correction is wrong the other way: at a resting surface the pressure
+/// gradient balances gravity up to the surface itself, where `p` vanishes
+/// but its gradient does not; without it a liquid column's surface
+/// particles moved up to 5.8 cells. A first version carried the
+/// neighbouring faces' corrections over instead of the pressure: at a
+/// solid's corner against a wall it copied the wall's impact reaction onto
+/// faces that do not bear it, and the corner particle's velocity gradient
+/// jumped from 85 to 712 1/s in one substep, then NaN. The continued
+/// pressure is exact for a pressure linear across the surface (the resting
+/// column) and gives each face the gradient of its own line. Derived here
+/// from the ghost fluid's construction; no source read gives it.
+pub fn keep_reached_faces(
+    vel: &mut MacVelocity,
+    before: &MacVelocity,
+    valid: &mut FaceFlags,
+    mass: &FaceMass,
+    weights: &FaceWeights,
+    ghost: &GhostPressure,
+) {
+    for j in 0..vel.u.nj() {
+        for i in 0..vel.u.ni() {
+            let k = vel.u.index(i, j);
+            if valid.u[k] || mass.u.get(i, j) <= 0.0 || weights.u.get(i, j) <= 0.0 {
+                continue;
+            }
+            let extra = ghost.correction((i - 1, j), (i, j)).unwrap_or(0.0);
+            vel.u.set(i, j, before.u.get(i, j) + extra);
+            valid.u[k] = true;
+        }
+    }
+    for j in 0..vel.v.nj() {
+        for i in 0..vel.v.ni() {
+            let k = vel.v.index(i, j);
+            if valid.v[k] || mass.v.get(i, j) <= 0.0 || weights.v.get(i, j) <= 0.0 {
+                continue;
+            }
+            let extra = ghost.correction((i, j - 1), (i, j)).unwrap_or(0.0);
+            vel.v.set(i, j, before.v.get(i, j) + extra);
+            valid.v[k] = true;
+        }
+    }
+}
+
 /// On every closed face, the mirror image of the flow across the wall
 /// (module doc): `image` gives, for a point in the solid, the point it
 /// mirrors and the sign of each velocity component there. On the grid's
@@ -110,6 +256,75 @@ pub fn constrain_to_solids(
                 mirror(layout.v_position(i, j)).y
             };
             vel.v.set(i, j, value);
+        }
+    }
+}
+
+/// The adjoint of `constrain_to_solids`: every closed face's value, times
+/// the sign of its component in the image (`signed`), is added to the
+/// faces around the point it mirrors, with the bilinear weights the mirror
+/// reads them with, and the closed face is cleared. The mirror stands for
+/// an image body across the wall; the gather reads that body's velocity,
+/// so the forces it would exert, and the mass it would lend the faces near
+/// the wall, are what the particles' own forces and masses on the closed
+/// faces become under the same reflection. Dropping them, as the faces are
+/// then overwritten, makes the gather and the forces no longer adjoint
+/// next to a wall: in step A2 an elastic block hitting a wall read a
+/// velocity gradient of 500 to 1800 1/s in its first layer, sheared 9 to 1
+/// and blew up, while two identical blocks hitting each other with no wall
+/// near bounced apart. Derived here from the image construction; no
+/// source read gives it.
+pub fn fold_onto_images(
+    layout: &MacLayout,
+    field: &mut MacVelocity,
+    weights: &FaceWeights,
+    image: &dyn Fn(Vec2) -> (Vec2, Vec2),
+    signed: bool,
+) {
+    let spread = |lattice: &mut Field2, at: Vec2, value: f32| {
+        let (i0, j0) = (at.x.floor(), at.y.floor());
+        let (fx, fy) = (at.x - i0, at.y - j0);
+        for (di, dj, w) in [
+            (0, 0, (1.0 - fx) * (1.0 - fy)),
+            (1, 0, fx * (1.0 - fy)),
+            (0, 1, (1.0 - fx) * fy),
+            (1, 1, fx * fy),
+        ] {
+            let (i, j) = (i0 as i32 + di, j0 as i32 + dj);
+            if w > 0.0
+                && i >= 0
+                && j >= 0
+                && (i as usize) < lattice.ni()
+                && (j as usize) < lattice.nj()
+            {
+                lattice.add(i as usize, j as usize, w * value);
+            }
+        }
+    };
+    for j in 0..layout.ny {
+        for i in 1..layout.nx {
+            let value = field.u.get(i, j);
+            if weights.u.get(i, j) > 0.0 || value == 0.0 {
+                continue;
+            }
+            let (at, sign) = image(layout.u_position(i, j));
+            let p = at / layout.dx;
+            field.u.set(i, j, 0.0);
+            let factor = if signed { sign.x } else { 1.0 };
+            spread(&mut field.u, Vec2::new(p.x, p.y - 0.5), factor * value);
+        }
+    }
+    for j in 1..layout.ny {
+        for i in 0..layout.nx {
+            let value = field.v.get(i, j);
+            if weights.v.get(i, j) > 0.0 || value == 0.0 {
+                continue;
+            }
+            let (at, sign) = image(layout.v_position(i, j));
+            let p = at / layout.dx;
+            field.v.set(i, j, 0.0);
+            let factor = if signed { sign.y } else { 1.0 };
+            spread(&mut field.v, Vec2::new(p.x - 0.5, p.y), factor * value);
         }
     }
 }
@@ -184,5 +399,39 @@ mod tests {
             faces_to_particles(&layout, &vel, &x, &mut v, &mut c);
             assert!((v[0].x - d * flow).abs() < 1e-5, "d={d}: {}", v[0].x);
         }
+    }
+
+    /// Above a resting column the continued pressure is the hydrostatic
+    /// line itself: a face the particles reached two cells into the air
+    /// takes exactly the correction of the surface face below it.
+    #[test]
+    fn the_continued_pressure_carries_the_hydrostatic_gradient() {
+        let layout = MacLayout::new(6, 10, 1.0);
+        let (g, h, dt) = (9.0f32, 5.3f32, 0.01f32);
+        let mut phi = layout.cells(0.0);
+        let mut pressure = vec![0.0f32; 60];
+        for j in 0..10 {
+            for i in 0..6 {
+                let y = j as f32 + 0.5;
+                phi.set(i, j, y - h);
+                if y < h {
+                    pressure[i + 6 * j] = g * (h - y);
+                }
+            }
+        }
+        let open = vec![true; 60];
+        let ghost = ghost_pressure(&layout, dt, &phi, &pressure, &open, (0.01, 2));
+        // The surface face (between rows 4 and 5) and the two above it.
+        let surface = ghost.correction((2, 4), (2, 5)).expect("surface face");
+        assert!((surface - g * dt).abs() < 1e-4, "{surface}");
+        for j in 6..=6 {
+            let above = ghost.correction((2, j - 1), (2, j)).expect("air face");
+            assert!(
+                (above - surface).abs() < 1e-4,
+                "row {j}: {above} vs {surface}"
+            );
+        }
+        // Beyond the continuation: nothing.
+        assert!(ghost.correction((2, 7), (2, 8)).is_none());
     }
 }

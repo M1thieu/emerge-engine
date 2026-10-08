@@ -37,6 +37,7 @@
 
 use glam::Vec2;
 
+pub mod elastic;
 pub mod extrapolate;
 pub mod field;
 pub mod level_set;
@@ -96,16 +97,40 @@ pub fn travel_limited_dt(max_speed: f32, gravity: f32, dx: f32, max_cells: f32) 
     (-v + (v * v + 4.0 * g * reach).sqrt()) / (2.0 * g)
 }
 
-/// The still solids: their open fraction of every face, and the mirror
-/// image of the flow inside them (`extrapolate::constrain_to_solids`).
+/// Where the material is: the level set, negative inside, with the solids
+/// folded in, and the particle mass each face received
+/// (`extrapolate::keep_reached_faces`).
+///
+/// Measured and not kept: Stomakhin et al. 2014's cells classified by the
+/// mass they receive (5.4) with the density correction of 5.7, in place of
+/// the level set. On scene 1's resting column it read the pressure 0.47
+/// cell of head high from the first frame (zero pressure at the first
+/// empty cell's centre, half a cell above the surface; the level set:
+/// 0.04), and the per-face density `m / V` it corrects with carries the
+/// particles' sampling noise (0.89 to 1.13 of the rest density at four
+/// per cell). A density varying across gravity has no hydrostatic balance
+/// (`curl(rho g) = grad rho x g`), so the column convected: face currents
+/// of 0.5 to 1.6 cells/s after one frame, particles 44 cells from their
+/// start after 5 s.
+#[derive(Clone, Copy)]
+pub struct Liquid<'a> {
+    pub phi: &'a Field2,
+    pub face_mass: &'a transfer::FaceMass,
+}
+
+/// The still solids: their open fraction of every face, the mirror image
+/// of the flow inside them (`extrapolate::constrain_to_solids`), and which
+/// cells have their centre outside every solid.
 #[derive(Clone, Copy)]
 pub struct Walls<'a> {
     pub weights: &'a FaceWeights,
     pub image: &'a dyn Fn(Vec2) -> (Vec2, Vec2),
+    pub open: &'a [bool],
 }
 
 /// One projection of the face velocity: equations, solve, update, then
-/// the velocity extended past the liquid and held along the walls
+/// the faces the particles reached kept with the pressure continued past
+/// the surface, the velocity extended past them, and held along the walls
 /// (`Walls`). The level set
 /// must already have the solid folded in (`pressure` module doc).
 /// `compressible`, `(c^2, q before the step per cell, whether the cell's
@@ -117,28 +142,36 @@ pub fn project(
     dt: f32,
     vel: &mut MacVelocity,
     walls: Walls<'_>,
-    liquid_phi: &Field2,
+    liquid: Liquid<'_>,
     settings: &ProjectionSettings,
     compressible: Option<(f32, &[f32], &[bool])>,
 ) -> Solution {
+    let liquid_phi = liquid.phi;
     let Walls {
         weights,
         image: solid_image,
+        open,
     } = walls;
-    let mut system = pressure::assemble(layout, dt, vel, weights, liquid_phi, settings.theta_floor);
+    let before = vel.clone();
+    let surface = pressure::Surface {
+        phi: liquid_phi,
+        theta_floor: settings.theta_floor,
+    };
+    let mut system = pressure::assemble(layout, dt, vel, weights, surface);
     if let Some((sound_speed2, q_before, material)) = compressible {
         pressure::add_compressibility(&mut system, dt, sound_speed2, q_before, material);
     }
     let solution = pcg::solve(&system, &settings.solver);
-    let mut valid = pressure::apply_pressure(
+    let mut valid = pressure::apply_pressure(layout, dt, &solution.pressure, weights, surface, vel);
+    let ghost = extrapolate::ghost_pressure(
         layout,
         dt,
-        &solution.pressure,
-        weights,
         liquid_phi,
-        settings.theta_floor,
-        vel,
+        &solution.pressure,
+        open,
+        (settings.theta_floor, settings.extrapolation_layers),
     );
+    extrapolate::keep_reached_faces(vel, &before, &mut valid, liquid.face_mass, weights, &ghost);
     extrapolate::extrapolate_velocity(vel, &mut valid, settings.extrapolation_layers);
     extrapolate::constrain_to_solids(layout, vel, weights, solid_image);
     solution
