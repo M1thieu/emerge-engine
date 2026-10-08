@@ -697,8 +697,10 @@ mod scaling_probe {
     #[test]
     #[ignore = "solver scaling probe: run with --ignored --nocapture"]
     fn probe_solver_scaling() {
-        for n in [128usize, 256, 512, 1024] {
+        for n in [24usize, 32, 48, 64, 96, 128, 256, 512, 1024] {
             let sys = basin(n);
+            // Small solves repeated, so their time is not one call's noise.
+            let reps = if n <= 128 { 20 } else { 1 };
             for p in [Preconditioner::Mic0, Preconditioner::Multigrid] {
                 let settings = SolverSettings {
                     preconditioner: p,
@@ -706,11 +708,15 @@ mod scaling_probe {
                     ..SolverSettings::default()
                 };
                 let t = std::time::Instant::now();
-                let s = solve(&sys, &settings);
+                let mut s = solve(&sys, &settings);
+                for _ in 1..reps {
+                    s = solve(&sys, &settings);
+                }
                 println!(
-                    "{n}^2 {p:?}: {} iterations, {:.1} ms, converged {}",
+                    "{n}^2 ({} unknowns) {p:?}: {} iterations, {:.3} ms, converged {}",
+                    sys.unknowns(),
                     s.iterations,
-                    t.elapsed().as_secs_f64() * 1e3,
+                    t.elapsed().as_secs_f64() * 1e3 / f64::from(reps),
                     s.converged
                 );
             }

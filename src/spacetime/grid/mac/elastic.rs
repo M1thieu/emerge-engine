@@ -58,7 +58,9 @@ pub fn shear_energy(f: Mat2, mu: f32) -> f32 {
 /// exponential's (unit test); it guarantees the sign, not the accuracy.
 pub fn deformation_step(m: Mat2) -> Mat2 {
     let plain = Mat2::IDENTITY + m;
-    if plain.determinant() > 0.0 {
+    // A non-finite `M` never halves into a positive determinant: return
+    // it as it is, so the NaN shows where it arose instead of recursing.
+    if plain.determinant() > 0.0 || !m.is_finite() {
         plain
     } else {
         let half = deformation_step(0.5 * m);
