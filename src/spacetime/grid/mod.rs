@@ -18,7 +18,6 @@ pub mod mac;
 mod contact;
 mod contact_normal;
 mod dct;
-mod directional_grip;
 mod friction;
 mod mixture;
 mod pressure;
@@ -31,7 +30,6 @@ use glam::DVec2;
 use glam::{IVec2, Vec2};
 
 use contact::ContactCellMap;
-pub use directional_grip::DirectionalContactGrip;
 pub(crate) use friction::{FrictionCellMap, accumulate_friction, merge_friction_maps};
 use mixture::MixtureCellMap;
 

@@ -276,13 +276,13 @@ pub fn gather_grid_to_particles(
     let grid_res = grid.resolution();
 
     // Single parallel pass: grid gather -> v/velocity_gradient/position advance
-    // -> plasticity update -> boundary post-hooks, one particle at a time, in
-    // parallel across particles. Used to be two phases (a parallel gather, then
-    // a forced-sequential plasticity/boundary pass, because `MaterialModel::
-    // update_particle`/`BoundaryCondition::post_g2p_particle` used to need
-    // `&mut Particles` -- the WHOLE struct -- per call). Now both take a
-    // `ParticleUpdateCtx` (disjoint per-field borrows of just this particle's
-    // own state), so the whole thing runs as one parallel loop -- measured
+    // -> plasticity update, one particle at a time, in parallel across
+    // particles. Used to be two phases (a parallel gather, then a
+    // forced-sequential plasticity pass, because `MaterialModel::
+    // update_particle` used to need `&mut Particles` -- the WHOLE struct --
+    // per call). Now it takes a `ParticleUpdateCtx` (disjoint per-field
+    // borrows of just this particle's own state), so the whole thing runs as
+    // one parallel loop -- measured
     // win: the plasticity/SVD update is the single most expensive per-particle
     // math in the solver, and it was serial before this.
     //
@@ -494,14 +494,11 @@ pub fn gather_grid_to_particles(
                 *ctx.x = new_pos;
             }
 
-            // Plasticity update + boundary post-hooks, inline in the same
-            // parallel task (see this function's doc). Runs unconditionally, even for a
+            // Plasticity update, inline in the same parallel task (see this
+            // function's doc). Runs unconditionally, even for a
             // pinned particle above: its kinematic x/v/velocity_gradient are
             // frozen, but its stress/plastic state must keep evolving normally
             // (matches the pinned branch's own "acts as an anchor" comment).
             materials.update_particle(material_id, &mut ctx, dt);
-            for boundary in boundaries.iter() {
-                boundary.post_g2p_particle(&mut ctx, grid_res, dt);
-            }
         });
 }

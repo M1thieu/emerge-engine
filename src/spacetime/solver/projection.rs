@@ -38,7 +38,8 @@ pub(super) fn apply_boundary_conditions_to_grid(
             // on_grid_correction`). The default hook is empty, so other scenes
             // pay one subtraction and one vector compare.
             if delta_v != Vec2::ZERO {
-                let cell_pos = Vec2::new((i / grid_res) as f32, (i % grid_res) as f32);
+                // Grid node `i` sits at `i + 0.5` (`grid::kernel::quadratic_weights`).
+                let cell_pos = Vec2::new((i / grid_res) as f32 + 0.5, (i % grid_res) as f32 + 0.5);
                 boundary.on_grid_correction(cell_pos, -delta_v * cell.mass);
             }
         }
@@ -261,8 +262,9 @@ mod grid_correction_tests {
     /// `apply_boundary_conditions_to_grid` deliver the reaction impulse?
     /// (`KinematicCircleBoundary`'s contact projection is tested elsewhere.)
     ///
-    /// Setup: one grid cell at (8,8), mass=2.0, velocity=(5,0) (moving in
-    /// +x). Obstacle centered at (9,8), radius=2.0, friction=0.0 -- the
+    /// Setup: one grid cell at index (8,8), which sits at (8.5,8.5), mass=2.0,
+    /// velocity=(5,0) (moving in +x). Obstacle centered at (9.5,8.5),
+    /// radius=2.0, friction=0.0 -- the
     /// cell sits exactly 1 unit from the center along -x, so its outward
     /// normal is (-1,0) and its velocity (+x) points directly INTO the
     /// obstacle. With friction=0, Coulomb projection zeroes the full
@@ -279,7 +281,7 @@ mod grid_correction_tests {
         let mass = 2.0;
         grid.add_mass_momentum(cell, mass, Vec2::new(5.0, 0.0));
 
-        let obstacle = KinematicCircleBoundary::new(Vec2::new(9.0, 8.0), 2.0, 0.0);
+        let obstacle = KinematicCircleBoundary::new(Vec2::new(9.5, 8.5), 2.0, 0.0);
         apply_boundary_conditions_to_grid(&mut grid, grid_res, &obstacle);
 
         let impulse = obstacle.take_reaction_impulse();

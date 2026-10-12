@@ -1,26 +1,26 @@
 use glam::Vec2;
 
-use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_position_inside_grid};
+use crate::forces::boundary::{
+    BoundaryCondition, apply_coulomb_wall, assert_friction_coefficient, clamp_position_inside_grid,
+};
 
 /// Grid-level Coulomb wall boundary.
 ///
-/// No-penetration (normal zeroed) + Coulomb friction on tangential component,
-/// applied to grid cell velocities during grid update. Matches the Lagrangian
-/// particle experience to first order -- this is the standard MPM friction model.
+/// No-penetration (normal zeroed) + Coulomb friction on the tangential
+/// component, applied to grid node velocities during the grid update: the
+/// tangential impulse is at most `mu` times the normal one, the rigid-wall case
+/// of the multi-material contact correction (Nairn, Hammerquist & Smith 2020,
+/// eqs. 8-10, with the wall's mass infinite). It is grid-level friction, not
+/// per-surface-element friction.
 ///
-/// `friction_coefficient = 0.0` → pure slip (same as SlipBoundary).
-/// `friction_coefficient = 1.0` → strong friction.
-/// IRL µ values: rock-on-rock ≈ 0.6, wet clay ≈ 0.2, ice ≈ 0.05.
-///
-/// # Note
-/// This is grid-level friction (applied to grid cell velocities during grid update),
-/// which is the standard MPM friction model. It matches the Lagrangian particle
-/// experience to first order but is not per-surface-element friction.
+/// `friction_coefficient = 0.0` → pure slip (same as `SlipBoundary`).
+/// The coefficient is a measured property of the pair of surfaces in contact.
 #[derive(Debug, Clone, Copy)]
 pub struct FrictionBoundary {
     pub thickness: usize,
-    /// Coulomb friction coefficient µ ∈ [0, 1].
-    /// 0 = slip (no friction), 1 = strong friction (full tangential damping at normal speed).
+    /// Coulomb friction coefficient µ >= 0, the ratio of tangential to normal
+    /// impulse at sliding. No upper bound: rubber on dry rough surfaces exceeds
+    /// 1 (Persson, Tartaglino, Albohr & Tosatti 2005, Phys. Rev. B 71, 035428).
     pub friction_coefficient: f32,
     /// Opt-in Material-Induced Boundary Friction (MIBF, Blatny & Gaume 2025).
     /// When `true`, a colliding node's friction comes from
@@ -36,10 +36,7 @@ pub struct FrictionBoundary {
 
 impl FrictionBoundary {
     pub fn new(thickness: usize, friction_coefficient: f32) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&friction_coefficient),
-            "friction_coefficient must be in [0.0, 1.0], got {friction_coefficient}"
-        );
+        assert_friction_coefficient(friction_coefficient, "friction_coefficient");
         Self {
             thickness,
             friction_coefficient,

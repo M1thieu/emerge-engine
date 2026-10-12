@@ -29,7 +29,7 @@ use emerge::{
 // Boundary types kept on their own `use` line (not merged into the material
 // import block above) so this test file's imports don't collide with other
 // branches that also add to that block -- keeps independent PRs conflict-free.
-use emerge::{FrictionBoundary, GripFrictionBoundary, RatchetFrictionBoundary, SlipBoundary};
+use emerge::{FrictionBoundary, RatchetFrictionBoundary, SlipBoundary};
 use glam::{IVec2, Mat2, Vec2};
 // The structural-boundary ledger exists only in a `research-diagnostics` build.
 #[cfg(feature = "research-diagnostics")]
@@ -4350,15 +4350,11 @@ fn muscle_creature_stays_bounded_at_full_activation() {
     }
 }
 
-/// Three locomotion mechanisms compared:
-/// 1. Plain `FrictionBoundary` -- near-zero net drift (scallop theorem: symmetric
-///    muscle cycle against constant friction cancels its own displacement).
-/// 2. `GripFrictionBoundary` (phase-gated grip) -- still only near-zero drift.
-/// 3. `RatchetFrictionBoundary` (directional/setae-style, asymmetric by tangential
-///    velocity sign, phase-independent) -- what actually works, matching SoftZoo and
-///    real-crawler literature (structural asymmetry, not phase-gating).
+/// `RatchetFrictionBoundary` (directional/setae-style, asymmetric by tangential
+/// velocity sign, phase-independent) across a range of anisotropies, symmetric
+/// included: the drift stays physically sane in every case.
 #[test]
-fn grip_friction_locomotion_sweep() {
+fn ratchet_friction_locomotion_sweep() {
     const GRID: usize = 64;
     const DT: f32 = 0.1;
     const MUSCLE_GROUPS: usize = 8;
@@ -4420,24 +4416,15 @@ fn grip_friction_locomotion_sweep() {
     }
 
     for fiber_dir in [Vec2::Y, Vec2::X] {
-        for grip_gain in [0.0, 0.3, 0.6, 0.9] {
-            let drift_x = run(
-                Box::new(GripFrictionBoundary::new(4, 0.65, grip_gain)),
-                fiber_dir,
-            );
-            println!("fiber={fiber_dir:?} grip_gain={grip_gain:.1} drift.x={drift_x:.2}");
-            assert!(
-                drift_x.is_finite() && drift_x.abs() < 20.0,
-                "fiber={fiber_dir:?} grip_gain={grip_gain}: drift.x={drift_x:.2} not physically sane"
-            );
-        }
-    }
-
-    println!("--- RatchetFrictionBoundary (directional/setae-style, no phase gating) ---");
-    for fiber_dir in [Vec2::Y, Vec2::X] {
         for (mu_easy, mu_resist) in [(0.65, 0.65), (0.1, 0.95), (0.02, 1.0)] {
             let drift_x = run(
-                Box::new(RatchetFrictionBoundary::new(4, mu_easy, mu_resist, Vec2::X)),
+                Box::new(RatchetFrictionBoundary::new(
+                    4,
+                    mu_easy,
+                    mu_resist,
+                    Vec2::X,
+                    0.5 * (mu_easy + mu_resist),
+                )),
                 fiber_dir,
             );
             println!(
@@ -4455,8 +4442,7 @@ fn grip_friction_locomotion_sweep() {
 }
 
 /// `RatchetFrictionBoundary` must produce substantial, correctly-directed net
-/// locomotion for a muscle-driven soft body (see `grip_friction_locomotion_sweep` for
-/// the mechanisms that don't). Body is 24 units long; a working crawl should cover a
+/// locomotion for a muscle-driven soft body (see `ratchet_friction_locomotion_sweep`). Body is 24 units long; a working crawl should cover a
 /// meaningful fraction of that, in the commanded `easy_direction`.
 #[test]
 fn ratchet_friction_produces_real_directed_locomotion() {
@@ -4500,6 +4486,9 @@ fn ratchet_friction_produces_real_directed_locomotion() {
             0.1,
             0.95,
             Vec2::X,
+            // Side walls: this scene's former value, the mean of the floor's two
+            // coefficients, which the boundary used to compute internally.
+            0.525,
         )));
 
     let body_range = 0..sim.particles().len();
@@ -4583,7 +4572,9 @@ fn ratchet_easy_direction_is_live_and_reversible() {
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
     };
-    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut sim = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(std::sync::Arc::clone(&ratchet)));
@@ -4830,7 +4821,9 @@ fn neohookean_viscosity_prevents_compaction_ratchet() {
         material_id: 0,
         ..SpawnRegion::for_sim(&config)
     };
-    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = std::sync::Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut sim = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(ratchet));

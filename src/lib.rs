@@ -14,7 +14,7 @@
 //   │                    MaterialRegistry; granular/ groups the sand research thread)
 //   ├── forces/          Forces domain: boundary (BoundaryCondition + impls,
 //   │                    friction/ groups the Coulomb-friction family), fields
-//   │                    (Field trait + impls: gravity, Coulomb, EM, confinement, cutoff)
+//   │                    (Field trait + impls: gravity, Coulomb, EM, rotating frame, drag)
 //   ├── information/     Information domain: control (Lnn), measures (entropy/MI) [experimental]
 //   ├── energy/          Energy domain: thermodynamics (ThermalDiffusion,
 //   │                    ScalarDiffusionField), acoustics (WaveEquation2D) [experimental]
@@ -73,7 +73,7 @@ pub mod prelude;
 // `use emerge::Simulation` instead of `use emerge::solver::Simulation`.
 
 // Solver core
-pub use grid::{Cell, DirectionalContactGrip, Grid};
+pub use grid::{Cell, Grid};
 pub use particle::{Particle, Particles};
 pub use solver::Simulation;
 pub use solver::config::{SimConfig, SpawnRegion, SpawnShape};
@@ -99,20 +99,19 @@ pub use materials::{
 
 // Boundary conditions
 pub use boundary::{
-    BoundaryCondition, FrictionBoundary, GripFrictionBoundary, HeightmapBoundary,
+    BoundaryCondition, DirectionalContactGrip, FrictionBoundary, HeightmapBoundary,
     KinematicCircleBoundary, RatchetFrictionBoundary, SlipBoundary, StaticBoxBoundary,
 };
 
 // Force fields
 pub use fields::Field;
 pub use fields::{
-    AabbConfinementField, BuoyancyField, ChemotaxisField, CoulombField, GravityWellField,
-    LinearDragField, NBodyGravityField, RadialConfinementField, SpatialDragField,
-    UniformElectricField,
+    BuoyancyField, CoriolisField, CoulombField, GravityWellField, LinearDragField,
+    NBodyGravityField, RotatingSlice, SpatialDragField, UniformElectricField, UniformMagneticField,
 };
 
 // State queries + density export for rendering
-pub use control::Lnn;
+pub use control::{ChemotaxisSensor, Lnn};
 pub use solver::body_state::BodyState;
 pub use solver::density::compute_density_grid;
 

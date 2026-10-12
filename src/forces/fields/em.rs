@@ -7,7 +7,8 @@
 //!
 //! Distinct from `CoulombField` (`fields::coulomb`), which models discrete point-source
 //! interactions rather than a uniform field. Use `UniformElectricField` for capacitor plates,
-//! external confinement fields, or EM traps.
+//! external confinement fields, or EM traps. The magnetic part of the Lorentz force is
+//! `fields::UniformMagneticField`.
 
 use std::collections::HashMap;
 

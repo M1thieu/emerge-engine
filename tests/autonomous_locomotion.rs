@@ -64,7 +64,9 @@ fn make_sim() -> (
         material_id: MAT_BODY,
         ..SpawnRegion::for_sim(&config)
     };
-    let ratchet = Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X));
+    // Side walls keep this scene's former value: the mean of the floor's two
+    // coefficients, which the boundary used to compute internally.
+    let ratchet = Arc::new(RatchetFrictionBoundary::new(4, 0.1, 0.95, Vec2::X, 0.525));
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(mat))
         .with_boundary(Box::new(Arc::clone(&ratchet)));

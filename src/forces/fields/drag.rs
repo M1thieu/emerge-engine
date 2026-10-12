@@ -11,13 +11,12 @@
 //! # Physics
 //! Linear drag toward a target velocity: **a = k·(v_target − v_particle)**
 //!
-//! This is the same mathematical form as two independently-established real techniques:
-//! Stokes drag (`F = -b·(v - v_ambient)`, the textbook low-Reynolds-number linear drag law
-//! for a particle in a flow) and Rayleigh friction / Newtonian relaxation (used in real
-//! atmospheric/ocean models to represent large-scale boundary-layer forcing -- a velocity
-//! field relaxes toward a target on a damping timescale `1/k`). Real aeolian sand-transport
-//! literature confirms a wind-blown grain's actual equation of motion is exactly gravity
-//! plus a drag term depending on `(wind velocity − grain velocity)` -- the same formula.
+//! This is the form of Stokes drag on a small sphere at low Reynolds number,
+//! `F = -6 pi mu r (v - v_ambient)` (`materials::stokes_drag_rate_from_si`), the
+//! drag term of the Maxey-Riley equation for an inertial particle in a flow
+//! (Farazmand & Haller 2015, arXiv:1310.2450, eq. 1). That equation has more
+//! terms (fluid acceleration, added mass, buoyancy, history); this field keeps
+//! the drag alone.
 //!
 //! `drag_coefficient` (`k`, units 1/time) sets the relaxation rate: a particle's velocity
 //! decays toward `target_velocity` as `v(t) = target + (v0 − target)·exp(−k·t)` with no
@@ -44,8 +43,9 @@ pub struct LinearDragField {
 
     /// Drag/relaxation rate `k` in 1/time. Larger = faster relaxation toward
     /// `target_velocity` (stiffer coupling to the ambient flow). The velocity-decay
-    /// timescale is `1/k`. Real dry-sand-in-wind and open-channel-flow scenes: start
-    /// around 0.5–5.0 and tune against the scene's own gravity/material stiffness.
+    /// timescale is `1/k`. For a small sphere at low Reynolds number this is the
+    /// Stokes rate `6 pi mu r / m` (`materials::stokes_drag_rate_from_si`); for
+    /// anything else the caller supplies it and states where it comes from.
     pub drag_coefficient: f32,
 
     /// Bitmask over `material_id` (`1 << material_id`) selecting which particles feel this

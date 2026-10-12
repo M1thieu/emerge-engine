@@ -8,10 +8,7 @@ extern crate emerge_engine as emerge;
 
 use std::collections::HashMap;
 
-use emerge::fields::{
-    AabbConfinementField, CoulombField, GravityWellField, LinearDragField, RadialConfinementField,
-    SpatialDragField,
-};
+use emerge::fields::{CoulombField, GravityWellField, LinearDragField, SpatialDragField};
 use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{
@@ -22,7 +19,7 @@ use emerge::{
     BinghamFluidMaterial, CorotatedMaterial, GranularFluidMaterial, ViscoelasticMaterial,
 };
 use emerge::{
-    DruckerPragerMaterial, Elastic, Field, GripFrictionBoundary, MixturePhase, MuIRheologyMaterial,
+    DruckerPragerMaterial, Elastic, Field, FrictionBoundary, MixturePhase, MuIRheologyMaterial,
     NaccMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompressionMaterial,
     RankineMaterial, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
     VonMisesMaterial, WithLatentHeat, WithMixturePhase,
@@ -374,11 +371,11 @@ fn strict_fluid_rejects_attenuated_velocity_gradient() {
 }
 
 #[test]
-#[should_panic(expected = "undeclared post-G2P particle mutation")]
-fn strict_fluid_rejects_grip_velocity_hook() {
+#[should_panic(expected = "without a declared strict-fluid wall discretisation")]
+fn strict_fluid_rejects_an_undeclared_wall() {
     let mut solver = Simulation::new(small_solver_config(), small_spawn_config(16.0))
         .with_default_material(Box::new(NewtonianFluidMaterial::new(4.0, 0.0, 10.0, 4.0)));
-    solver.add_boundary_condition(Box::new(GripFrictionBoundary::new(3, 0.5, 0.5)));
+    solver.add_boundary_condition(Box::new(FrictionBoundary::new(3, 0.5)));
     solver.step();
 }
 
@@ -1153,8 +1150,7 @@ fn gravity_well_pulls_particles_toward_source() {
         vec![(well_pos, 1_000.0)],
         0.1, // gravitational_constant
         1.0, // softening (grid cells)
-    )
-    .with_cutoff(30.0);
+    );
 
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
@@ -1182,44 +1178,6 @@ fn gravity_well_pulls_particles_toward_source() {
         cx_after > cx_before,
         "gravity_well: CoM did not move toward well (before={cx_before:.2}, after={cx_after:.2})"
     );
-}
-
-#[test]
-fn radial_confinement_keeps_particles_inside() {
-    // High-velocity particles should not escape beyond confinement radius + 2 cell tolerance.
-    let config = SimConfig {
-        gravity: Vec2::ZERO,
-        ..small_solver_config()
-    };
-    let center = Vec2::splat(16.0);
-    let radius = 6.0_f32;
-
-    let spawn = SpawnRegion {
-        box_center: center,
-        box_size: IVec2::new(4, 4),
-        initial_velocity_scale: 15.0,
-        ..SpawnRegion::default()
-    };
-
-    let field = RadialConfinementField::new(center, radius, 500.0);
-
-    let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
-        .with_force_field(Box::new(field));
-
-    solver.step_n(200);
-
-    for (i, p) in solver.particles().iter().enumerate() {
-        assert!(
-            p.x.is_finite(),
-            "confinement: particle {i} position non-finite"
-        );
-        let dist = (p.x - center).length();
-        assert!(
-            dist <= radius + 2.0,
-            "confinement: particle {i} escaped (dist={dist:.2}, radius={radius:.2})"
-        );
-    }
 }
 
 /// `LinearDragField` (Stokes drag / Rayleigh friction toward a target flow velocity, see its
@@ -1440,8 +1398,7 @@ fn coulomb_repulsion_pushes_charged_particles_away() {
         mat_charges,
         50.0, // coulomb_constant
         0.5,  // softening (grid cells)
-    )
-    .with_cutoff(20.0);
+    );
 
     let mut solver = Simulation::new(config, spawn)
         .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
@@ -2151,46 +2108,6 @@ fn region_state_returns_subset_in_radius() {
 }
 
 #[test]
-fn aabb_confinement_keeps_particles_inside() {
-    // High-velocity particles should stay within the AABB soft wall bounds.
-    let config = SimConfig {
-        gravity: Vec2::ZERO,
-        ..small_solver_config()
-    };
-    let min = Vec2::new(8.0, 8.0);
-    let max = Vec2::new(24.0, 24.0);
-
-    let spawn = SpawnRegion {
-        box_center: Vec2::splat(16.0),
-        box_size: IVec2::new(4, 4),
-        initial_velocity_scale: 15.0,
-        ..SpawnRegion::default()
-    };
-
-    let field = AabbConfinementField::new(min, max, 500.0);
-    let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
-        .with_force_field(Box::new(field));
-
-    solver.step_n(200);
-
-    for (i, p) in solver.particles().iter().enumerate() {
-        assert!(p.x.is_finite(), "aabb_confinement: particle {i} non-finite");
-        // Allow 2-cell overshoot before restoring force fully acts.
-        assert!(
-            p.x.x >= min.x - 2.0 && p.x.x <= max.x + 2.0,
-            "aabb_confinement: particle {i} escaped in x (x={:.2})",
-            p.x.x
-        );
-        assert!(
-            p.x.y >= min.y - 2.0 && p.x.y <= max.y + 2.0,
-            "aabb_confinement: particle {i} escaped in y (y={:.2})",
-            p.x.y
-        );
-    }
-}
-
-#[test]
 fn spawn_region_appends_particles() {
     // First region at left side, second region at right side.
     // spawn_region must return the correct index range and increase particle count.
@@ -2267,47 +2184,6 @@ fn diagnostics_snapshot_is_clean_after_stable_sim() {
         "snapshot: invalid physical values"
     );
     assert!(snap.min_deformation_j > 0.0, "snapshot: min J collapsed");
-}
-
-#[test]
-fn gravity_well_cutoff_prevents_far_particles_from_moving() {
-    // Particles placed far beyond cutoff. With gravity=0, they should not accelerate.
-    let config = SimConfig {
-        gravity: Vec2::ZERO,
-        grid_res: 64,
-        ..SimConfig::default()
-    };
-    // Well at center (32,32), cutoff=5 cells. Particles far away at (56,32) â†’ dist=24 >> cutoff.
-    let well = GravityWellField::new(
-        vec![(Vec2::new(32.0, 32.0), 1_000_000.0)],
-        1.0, // strong G
-        1.0, // softening
-    )
-    .with_cutoff(5.0); // cutoff â€” particles at dist=24 are 4.8Ã-- beyond cutoff
-    let spawn = SpawnRegion {
-        box_center: Vec2::new(56.0, 32.0),
-        box_size: IVec2::new(4, 4),
-        initial_velocity_scale: 0.0,
-        ..SpawnRegion::default()
-    };
-    let mut solver = Simulation::new(config, spawn)
-        .with_default_material(Box::new(NeoHookeanMaterial::new(10.0, 20.0)))
-        .with_force_field(Box::new(well));
-
-    let cx_before: f32 =
-        solver.particles().iter().map(|p| p.x.x).sum::<f32>() / solver.particles().len() as f32;
-
-    solver.step_n(30);
-
-    let cx_after: f32 =
-        solver.particles().iter().map(|p| p.x.x).sum::<f32>() / solver.particles().len() as f32;
-
-    // CoM should not have drifted left (toward well) â€” cutoff blocks the force.
-    // Allow 0.5-cell drift from boundary reflection and elastic oscillation.
-    assert!(
-        (cx_after - cx_before).abs() < 0.5,
-        "gravity_well cutoff: far particles moved toward well (before={cx_before:.2}, after={cx_after:.2})"
-    );
 }
 
 /// GPU and CPU solvers must produce statistically equivalent physics.

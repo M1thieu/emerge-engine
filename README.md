@@ -173,15 +173,16 @@ Same sleep/wake pattern as MPM particles, at rod granularity (a rod's points are
 
 ## Force fields & boundaries
 
-Ten force fields, six boundary conditions -- mix and match, all optional, zero cost when unused.
+Nine force fields, six boundary conditions -- mix and match, all optional, zero cost when unused.
 
 | Group | Types |
 |---|---|
 | **External fields** | `GravityWellField` / `NBodyGravityField` (Barnes-Hut N-body), `CoulombField` / `UniformElectricField`, `BuoyancyField` |
+| **Workless (gyroscopic)** | `UniformMagneticField` (magnetic Lorentz force), `CoriolisField` (rotating planet), integrated by the Boris rotation |
 | **Flow / drag** | `LinearDragField` (fixed target velocity -- wind, current), `SpatialDragField` (spatially-varying flow) |
-| **Confinement** | `RadialConfinementField`, `AabbConfinementField` |
-| **Chemotaxis** | `ChemotaxisField` (gradient-following, Keller-Segel) |
-| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `GripFrictionBoundary` (strain-rate-gated grip), `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile), `StaticBoxBoundary` (solid rectangle inside the domain: a ridge, a sill, a beaker wall; holds strict liquids), `KinematicCircleBoundary` (moving circle, two-way) |
+| **Domain walls** | `SlipBoundary` (default), `FrictionBoundary`, `RatchetFrictionBoundary` (direction-dependent), `HeightmapBoundary` (terrain profile), `StaticBoxBoundary` (solid rectangle inside the domain: a ridge, a sill, a beaker wall; holds strict liquids), `KinematicCircleBoundary` (moving circle, two-way) |
+
+Chemotaxis is sensing, not a force: `ChemotaxisSensor` (`control`) gives the Keller-Segel drift velocity a controller steers toward.
 
 ## Particle fields
 

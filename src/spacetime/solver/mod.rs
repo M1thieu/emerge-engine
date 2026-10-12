@@ -104,7 +104,7 @@ pub struct Simulation {
     /// "grip" field -- see `DirectionalContactGrip`'s doc. `None` (default) keeps
     /// the existing plain symmetric `contact_friction` behavior; every scene that
     /// never opts in is completely unaffected.
-    contact_grip: Option<std::sync::Arc<crate::grid::DirectionalContactGrip>>,
+    contact_grip: Option<std::sync::Arc<crate::boundary::DirectionalContactGrip>>,
     force_fields: Vec<(String, Box<dyn Field>)>,
     thermal: Option<ThermalDiffusion>,
     /// Scalar diffusion fields (pheromone, nutrients, morphogen) -- run automatically each substep.

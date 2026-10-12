@@ -41,10 +41,10 @@ use emerge::grains::population::GrainPopulation;
 use emerge::materials::granular::grain_contact_law::{ContactLawConfig, critical_timestep};
 use emerge::particle::Grain;
 use emerge::{
-    BoundaryCondition, DruckerPragerMaterial, FrictionBoundary, Grid, MAX_MATERIAL_SLOTS,
-    MaterialModel, MaterialRegistry, NeoHookeanMaterial, NewtonianFluidMaterial, Particles,
-    RadialConfinementField, SimConfig, Simulation, SlipBoundary, SpawnRegion, StomakhinMaterial,
-    ViscoelasticMaterial, build_particles, lame_from_young,
+    BoundaryCondition, DruckerPragerMaterial, FrictionBoundary, GravityWellField, Grid,
+    MAX_MATERIAL_SLOTS, MaterialModel, MaterialRegistry, NeoHookeanMaterial,
+    NewtonianFluidMaterial, Particles, SimConfig, Simulation, SlipBoundary, SpawnRegion,
+    StomakhinMaterial, ViscoelasticMaterial, build_particles, lame_from_young,
 };
 use glam::{IVec2, Vec2};
 
@@ -435,10 +435,10 @@ fn build_force_field_sim(n: usize, k: usize) -> Simulation {
         .with_default_material(Box::new(NeoHookeanMaterial::new(l, u)))
         .with_boundary(Box::new(SlipBoundary::new(2)));
     for i in 0..k {
-        // Centers far outside the particle cluster -- fields contribute negligible force,
-        // isolating dispatch overhead from confinement-induced dynamics.
-        let center = Vec2::new(GRID as f32 * 2.0 + i as f32, GRID as f32 * 2.0);
-        sim.add_force_field(Box::new(RadialConfinementField::new(center, 5.0, 100.0)));
+        // Sources far outside the particle cluster with a small mass -- fields
+        // contribute negligible force, isolating dispatch overhead from dynamics.
+        let source = Vec2::new(GRID as f32 * 2.0 + i as f32, GRID as f32 * 2.0);
+        sim.add_force_field(Box::new(GravityWellField::point(source, 1.0, 1.0, 1.0)));
     }
     sim
 }

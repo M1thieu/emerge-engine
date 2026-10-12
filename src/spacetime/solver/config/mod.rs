@@ -310,9 +310,11 @@ pub struct SimConfig {
     /// N-phase mixture coupling drag coefficient (generalizes Tampubolon et al.
     /// 2017, "Multi-species simulation of porous sand and water mixtures" --
     /// Darcy-style momentum exchange between materials wrapped in different
-    /// `MixturePhase` slots, see `WithMixturePhase`). Units: mass/time (a per-node drag rate,
-    /// not the paper's permeability-derived `c_E`; mapping it to soil
-    /// permeability and porosity is future work).
+    /// `MixturePhase` slots, see `WithMixturePhase`). Units: grid mass per
+    /// second, one shared value for every pair of phases at a node.
+    /// `mixture_drag_from_darcy` derives it from a soil's measured porosity
+    /// and hydraulic conductivity (the paper's `c_E`); any other value is the
+    /// caller's own choice and should say where it comes from.
     /// 0.0 = disabled (default) -- `Grid::has_mixture_activity()` gates the extra
     /// P2G scatter and the whole resolve pass, zero cost for every scene that
     /// doesn't use `WithMixturePhase`, matching `asflip_blend`'s own convention.
@@ -567,6 +569,34 @@ impl SimConfig {
     pub fn gravitational_constant_from_si(&self, g_si: f32) -> f32 {
         let l = self.require_slice_thickness_m("gravitational_constant_from_si");
         g_si * self.reference_density_kg_m3 * l / self.dx_meters
+    }
+
+    /// `mixture_drag_coefficient` from measured soil properties: the Darcy
+    /// exchange coefficient `c_E = n^2 rho_w g / k_hat`
+    /// (`forces::interphase::darcy_exchange_coefficient`, Tampubolon et al.
+    /// 2017 eq. 13) in the grid units the mixture solve uses.
+    ///
+    /// `c_E` is a force per unit volume per unit relative velocity. A node
+    /// stands for the volume `dx_meters^2 * L` (one cell times the slice
+    /// thickness), a grid mass is `m_SI / (reference_density_kg_m3 *
+    /// dx_meters^2 * L)` (see `gravitational_constant_from_si`) and a grid
+    /// velocity is the SI one over `dx_meters`, so the node equation
+    /// `m dv/dt = k (v_other - v)` holds in grid units with
+    /// `k = c_E / reference_density_kg_m3`: `dx_meters` and `L` cancel, and no
+    /// slice thickness is needed.
+    pub fn mixture_drag_from_darcy(
+        &self,
+        porosity: f32,
+        hydraulic_conductivity_m_s: f32,
+        fluid_density_kg_m3: f32,
+        gravity_m_s2: f32,
+    ) -> f32 {
+        crate::forces::interphase::darcy_exchange_coefficient(
+            porosity,
+            hydraulic_conductivity_m_s,
+            fluid_density_kg_m3,
+            gravity_m_s2,
+        ) / self.reference_density_kg_m3
     }
 
     /// Validate solver-side numerical and domain constraints.

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use glam::{IVec2, Mat2, Vec2};
 
 use super::contact_normal::fit_contact_normal_lr;
-use super::directional_grip::DirectionalContactGrip;
 use super::{FxU32BuildHasher, Grid, flat_index};
+use crate::forces::boundary::DirectionalContactGrip;
 
 /// Second velocity field for multi-field frictional contact (Bardenhagen, Guilkey,
 /// Roessig, Brackbill 2001) -- see `Particle::contact_group`'s doc for the full
@@ -315,20 +315,16 @@ impl Grid {
             let wall_normal = -n;
             let mut friction_per_reduced_mass = 0.0;
             if touching {
-                match directional_grip {
+                // Multi-field contact between two bodies dissipates too, and
+                // feeds the same frictional-heating ledger as a wall
+                // (`energy::thermodynamics::frictional_heating`), converted
+                // below: both laws report energy per unit mass of what they
+                // moved, here the RELATIVE velocity, so per unit reduced mass
+                // `m_grip m_rest / m_total`; the ledger is per unit node mass.
+                friction_per_reduced_mass = match directional_grip {
                     Some(grip) => grip.resolve(&mut v_rel, wall_normal),
-                    // Multi-field contact between two bodies dissipates too, and
-                    // feeds the same frictional-heating ledger as a wall
-                    // (`energy::thermodynamics::frictional_heating`), converted
-                    // below: `apply_coulomb_wall` reports energy per unit mass of
-                    // what it moved, here the RELATIVE velocity, so per unit
-                    // reduced mass `m_grip m_rest / m_total`; the ledger is per
-                    // unit node mass.
-                    None => {
-                        friction_per_reduced_mass =
-                            crate::boundary::apply_coulomb_wall(&mut v_rel, wall_normal, friction);
-                    }
-                }
+                    None => crate::boundary::apply_coulomb_wall(&mut v_rel, wall_normal, friction),
+                };
             }
 
             // Small nodal mass (Bardenhagen et al. 2001, eq. 17-22, see this

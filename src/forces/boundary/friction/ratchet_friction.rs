@@ -1,58 +1,66 @@
 use glam::Vec2;
 
-use crate::forces::boundary::{BoundaryCondition, apply_coulomb_wall, clamp_position_inside_grid};
+use crate::forces::boundary::{
+    BoundaryCondition, apply_anisotropic_coulomb_wall, apply_coulomb_wall,
+    assert_friction_coefficient, clamp_position_inside_grid,
+};
 
-/// Directional (anisotropic) Coulomb floor friction -- a real "ratchet" mechanism,
-/// not a phase-gated one.
+/// Directional (anisotropic) Coulomb friction on the floor: sliding along
+/// `easy_direction` meets `mu_easy`, sliding against it meets `mu_resist`.
 ///
-/// Research finding (checked against SoftZoo, the published MPM soft-robot
-/// locomotion benchmark, `tmp/softzoo`): its ground contact uses only constant,
-/// SYMMETRIC Coulomb friction (`Sticky`/`Slip`/`Separate` in
-/// `engine/static/flat_surface.py`) -- no activation-gated or phase-coupled
-/// friction anywhere. Real crawlers (earthworms) don't gate friction on muscle
-/// state either -- they use a structurally asymmetric surface: setae (directional
-/// bristles) that resist sliding one way and permit it the other, a real
-/// mechanical ratchet independent of muscle timing. This is that mechanism,
-/// applied to the floor wall's tangential (horizontal) friction: sliding in
-/// `easy_direction` sees `mu_easy`, sliding against it sees `mu_resist`. Combined
-/// with any traveling-wave contraction (no special phase-coordination required --
-/// this is the point: the asymmetry lives in the boundary, not in choreographing
-/// the gait against it), net drift accumulates in `easy_direction` because
-/// backward slip is preferentially resisted.
-/// `easy_direction` is LIVE, not baked in at construction -- real animals decide
-/// which way to anchor moment to moment (a neural/behavioral choice, not a
-/// fixed body plan), so this is `set_easy_direction`-updatable from outside
-/// (e.g. every frame, from player/AI steering input) with no reconstruction and
-/// no boundary-swap. Stored as two `AtomicU32` (bit-cast f32) rather than a plain
-/// `Vec2` field so the type stays `Sync` or the `BoundaryCondition: Send + Sync`
-/// bound is impossible -- a `Cell` would be `Send` but not `Sync`.
+/// The law is the forward/backward part of the anisotropic Coulomb friction
+/// measured on snake skin by Hu, Nirody, Scott & Shelley 2009 ("The mechanics
+/// of slithering locomotion", PNAS 106:10081, eq. 2): the friction force
+/// opposes the sliding direction with a coefficient that depends on whether
+/// the surface slides forward (`mu_f`, 0.11 on cloth) or backward (`mu_b`,
+/// 0.14), set by scales that snag on asperities; on a smooth substrate the
+/// coefficients become nearly equal. Their third, transverse coefficient has
+/// no counterpart in a two-dimensional vertical slice, where the floor tangent
+/// is one-dimensional. The same paper describes earthworms crawling by this
+/// kind of ratcheting, engaging their hairs in the ground.
+///
+/// Declared simplification: the anisotropy belongs to the body's surface,
+/// oriented by the body itself (the snake's tangent `s` in Hu et al.); here it
+/// is attached to the floor and oriented by `easy_direction`, which the caller
+/// sets. It applies to whatever slides on the floor.
+///
+/// SoftZoo, the published MPM soft-robot locomotion benchmark (`tmp/softzoo`),
+/// uses only constant, symmetric Coulomb ground contact
+/// (`engine/static/flat_surface.py`).
+///
+/// `easy_direction` and both coefficients are live (`set_easy_direction`,
+/// `set_friction`), stored as `AtomicU32` (bit-cast f32) so the type stays
+/// `Sync`, as `BoundaryCondition: Send + Sync` requires.
 #[derive(Debug)]
 pub struct RatchetFrictionBoundary {
     pub thickness: usize,
+    /// Isotropic Coulomb coefficient of the side walls and ceiling, which have
+    /// no ratchet surface.
+    pub wall_friction: f32,
     easy_dir_x_bits: std::sync::atomic::AtomicU32,
     easy_dir_y_bits: std::sync::atomic::AtomicU32,
-    // Must be live-adjustable via atomics, same pattern as `easy_direction`
-    // below, not plain construction-only fields -- otherwise the ratchet's
-    // directional asymmetry stays ALWAYS active, even with zero steering
-    // input, and ordinary passive settling jitter (a body dropped under
-    // gravity always wobbles a little while it settles) gets converted into
-    // spurious crawl drift. The caller sets mu_easy==mu_resist (symmetric, no
-    // ratchet effect) whenever there's no steering intent, and restores the
-    // asymmetric values only while actively steered -- same "no bias without
-    // input" principle `set_easy_direction`'s doc establishes for direction.
     mu_easy_bits: std::sync::atomic::AtomicU32,
     mu_resist_bits: std::sync::atomic::AtomicU32,
 }
 
 impl RatchetFrictionBoundary {
-    pub fn new(thickness: usize, mu_easy: f32, mu_resist: f32, easy_direction: Vec2) -> Self {
-        assert!(
-            (0.0..=1.0).contains(&mu_easy) && (0.0..=1.0).contains(&mu_resist),
-            "mu_easy and mu_resist must be in [0.0, 1.0]"
-        );
+    /// `mu_easy`/`mu_resist`: the floor's coefficients for sliding along and
+    /// against `easy_direction`. `wall_friction`: the side walls' and
+    /// ceiling's own coefficient. All are measured surface properties, `>= 0`.
+    pub fn new(
+        thickness: usize,
+        mu_easy: f32,
+        mu_resist: f32,
+        easy_direction: Vec2,
+        wall_friction: f32,
+    ) -> Self {
+        assert_friction_coefficient(mu_easy, "mu_easy");
+        assert_friction_coefficient(mu_resist, "mu_resist");
+        assert_friction_coefficient(wall_friction, "wall_friction");
         let d = easy_direction.normalize_or_zero();
         Self {
             thickness,
+            wall_friction,
             easy_dir_x_bits: std::sync::atomic::AtomicU32::new(d.x.to_bits()),
             easy_dir_y_bits: std::sync::atomic::AtomicU32::new(d.y.to_bits()),
             mu_easy_bits: std::sync::atomic::AtomicU32::new(mu_easy.to_bits()),
@@ -60,9 +68,7 @@ impl RatchetFrictionBoundary {
         }
     }
 
-    /// Update the ratchet's preferred crawl direction live -- e.g. driven by
-    /// real-time player or AI steering input. Takes effect on the very next
-    /// substep; no reconstruction, no boundary replacement.
+    /// Update the easy direction live. Takes effect on the next substep.
     pub fn set_easy_direction(&self, direction: Vec2) {
         let d = direction.normalize_or_zero();
         self.easy_dir_x_bits
@@ -71,16 +77,10 @@ impl RatchetFrictionBoundary {
             .store(d.y.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Update the ratchet's own friction coefficients live. Set `mu_easy ==
-    /// mu_resist` to disable the directional asymmetry entirely (ordinary
-    /// symmetric Coulomb friction, no ratchet effect) when there's no real
-    /// steering intent, so passive settling jitter can't be converted into an
-    /// unsolicited directional crawl. Takes effect on the very next substep.
+    /// Update the floor's two coefficients live. Takes effect on the next substep.
     pub fn set_friction(&self, mu_easy: f32, mu_resist: f32) {
-        assert!(
-            (0.0..=1.0).contains(&mu_easy) && (0.0..=1.0).contains(&mu_resist),
-            "mu_easy and mu_resist must be in [0.0, 1.0]"
-        );
+        assert_friction_coefficient(mu_easy, "mu_easy");
+        assert_friction_coefficient(mu_resist, "mu_resist");
         self.mu_easy_bits
             .store(mu_easy.to_bits(), std::sync::atomic::Ordering::Relaxed);
         self.mu_resist_bits
@@ -125,35 +125,28 @@ impl BoundaryCondition for RatchetFrictionBoundary {
         let x = cell_index / grid_res;
         let y = cell_index % grid_res;
 
-        // Side and ceiling walls: plain symmetric slip+friction, same as
-        // FrictionBoundary -- the ratchet only applies to the floor, where a
-        // resting/crawling body actually spends its contact time.
-        let mu_side = 0.5 * (self.mu_easy() + self.mu_resist());
+        // Side walls and ceiling: isotropic Coulomb friction with their own
+        // coefficient.
         if x < t {
-            dissipated += apply_coulomb_wall(velocity, Vec2::X, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::X, self.wall_friction);
         }
         if x > hi {
-            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_X, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_X, self.wall_friction);
         }
         if y > hi {
-            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_Y, mu_side);
+            dissipated += apply_coulomb_wall(velocity, Vec2::NEG_Y, self.wall_friction);
         }
 
-        // Floor: directional friction. Tangential (horizontal) motion aligned
-        // with the LIVE easy_direction gets mu_easy; opposing motion gets mu_resist.
+        // Floor: sliding along `easy_direction` meets `mu_easy`, against it
+        // `mu_resist`.
         if y < t {
-            let v_n_scalar = velocity.dot(Vec2::Y);
-            if v_n_scalar < 0.0 {
-                let easy_direction = self.easy_direction();
-                let tangential = velocity.x;
-                let aligned = tangential * easy_direction.x >= 0.0;
-                let mu = if aligned {
-                    self.mu_easy()
-                } else {
-                    self.mu_resist()
-                };
-                dissipated += apply_coulomb_wall(velocity, Vec2::Y, mu);
-            }
+            dissipated += apply_anisotropic_coulomb_wall(
+                velocity,
+                Vec2::Y,
+                self.easy_direction(),
+                self.mu_easy(),
+                self.mu_resist(),
+            );
         }
         dissipated
     }

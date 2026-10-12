@@ -9,7 +9,6 @@
 //! diagnostics, and runtime. Does not include experimental or GPU-backend types.
 
 pub use crate::{
-    AabbConfinementField,
     ActivationStatsPlugin,
     // Materials -- all seventeen (*Material types only)
     BinghamFluidMaterial,
@@ -22,7 +21,9 @@ pub use crate::{
     BrittleProps,
     BuoyancyField,
     CavitatingFluidMaterial,
-    ChemotaxisField,
+    // Chemical-gradient sensing (Keller-Segel drift velocity)
+    ChemotaxisSensor,
+    CoriolisField,
     CorotatedMaterial,
     CoulombField,
     DiagnosticsFrame,
@@ -48,9 +49,6 @@ pub use crate::{
     GranularFluidMaterial,
     GranularProps,
     GravityWellField,
-    // Directional/phase-gated grip boundaries (shipped with the ratchet
-    // locomotion work).
-    GripFrictionBoundary,
     HeightmapBoundary,
 
     IdealGasMaterial,
@@ -79,7 +77,6 @@ pub use crate::{
 
     PlasticityModel,
     Pressurized,
-    RadialConfinementField,
     RankineMaterial,
     RatchetFrictionBoundary,
     RollingPlugin,
@@ -104,6 +101,7 @@ pub use crate::{
     ThermalDiffusion,
     ThermalStatsPlugin,
     UniformElectricField,
+    UniformMagneticField,
 
     Viscoelastic,
     ViscoelasticMaterial,

@@ -368,9 +368,15 @@ impl Quadtree {
 /// # Parameters
 /// - `gravitational_constant`: G in grid units, converted from SI as
 ///   `GravityWellField::gravitational_constant` describes.
-/// - `softening`: Plummer ε (grid cells). Prevents divergence as r→0. Typ. 0.5–2.0.
-/// - `theta`: Barnes-Hut opening angle. Must be in (0, 1].
-///   0.5 = a common trade-off value in practice; lower = more accurate; higher = faster.
+/// - `softening`: Plummer ε (grid cells), a regularization of the r → 0
+///   singularity whose value the caller chooses (see `GravityWellField::softening`).
+/// - `theta`: Barnes-Hut geometric opening angle, in (0, 1]: a cell of width `l`
+///   at distance `r` acts as one mass when `l / r < theta`. Smaller is more
+///   accurate and slower. Springel 2005 (GADGET-2, arXiv:astro-ph/0505010,
+///   sec. 3.1.1 and Fig. 1) measures the force error of theta = 0.3-0.8 against
+///   a relative criterion, `G M / r^2 (l / r)^2 <= alpha |a|` (eq. 18), that
+///   bounds the error per interaction directly; that criterion is not
+///   implemented here.
 pub struct NBodyGravityField {
     pub gravitational_constant: f32,
     pub softening: f32,
@@ -396,8 +402,7 @@ impl NBodyGravityField {
     pub fn new(gravitational_constant: f32, softening: f32, theta: f32) -> Self {
         assert!(
             theta > 0.0 && theta <= 1.0,
-            "theta must be in (0, 1]; got {theta}. \
-             0.5 is a common Barnes-Hut trade-off value in practice."
+            "theta must be in (0, 1]; got {theta}"
         );
         Self {
             gravitational_constant,

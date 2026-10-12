@@ -43,13 +43,14 @@ src/
                         coupling.rs (scatter/gather to the shared Grid)
     grains/             DEM grain dynamics: population/coupling/oracle
                         (state lives in matter::particle::Grain)
-  forces/             boundary/ (Slip / Heightmap / friction/
-                      [Friction / GripFriction / RatchetFriction]) ·
-                      fields/ (NBody / GravityWell / Coulomb / Confinement / cutoff) ·
+  forces/             boundary/ (Slip / StaticBox / Heightmap / KinematicCircle /
+                      friction/ [Friction / RatchetFriction]) ·
+                      fields/ (NBody / GravityWell / Coulomb / uniform E / gyroscopic
+                      [magnetic, Coriolis] / buoyancy / drag) ·
                       electromagnetics.rs
   energy/             thermodynamics/ (ThermalDiffusion · ScalarDiffusionField) ·
                       acoustics/, electromagnetics.rs [feature=experimental]
-  information/        control/ (Lnn neural locomotion controller) · measures/
+  information/        control/ (Lnn neural locomotion controller · ChemotaxisSensor) · measures/
   runtime/            FixedStepController
   systems/            gpu/ [feature=gpu] GpuSimulation + WGSL shaders ·
                       render/ [feature=render] instanced particle renderer ·

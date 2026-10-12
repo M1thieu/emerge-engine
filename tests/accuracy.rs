@@ -8,9 +8,9 @@ use emerge::materials::MaterialModel;
 use emerge::particle::{Particle, Particles};
 use emerge::thermodynamics::{ScalarDiffusionConfig, ScalarDiffusionField};
 use emerge::{
-    AabbConfinementField, DruckerPragerMaterial, Elastic, FrictionBoundary, FromSI, GranularProps,
-    MaterialRegistry, MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig,
-    Simulation, SlipBoundary, SpawnRegion,
+    DruckerPragerMaterial, Elastic, FrictionBoundary, FromSI, GranularProps, MaterialRegistry,
+    MuIRheologyMaterial, NeoHookeanMaterial, NewtonianFluidMaterial, SimConfig, Simulation,
+    SlipBoundary, SpawnRegion, StaticBoxBoundary,
 };
 use glam::{IVec2, Mat2, Vec2};
 
@@ -1115,7 +1115,7 @@ fn diag_preshaped_pile_with_realistic_jitter_still_holds() {
 ///
 /// Without it the pile creeps to a static ~5-8°, resolution-independent (same at 2x
 /// height and 2x particle density). Ruled out on this scene or its laterally confined
-/// variant (`AabbConfinementField`):
+/// variant (lateral confinement, then by a penalty force field):
 /// - dilatancy: 0/5/12/20/30° give 7.7/6.8/5.5/4.0/2.4° unconfined and
 ///   21.8/21.2/20.2/18.9/17.2° confined, worse with more dilatancy either way, even
 ///   though `sand.rs`'s `marginal_30deg_state_does_not_yield_for_35deg_friction`
@@ -1277,11 +1277,18 @@ fn confined_pile_with_cundall_damping_reaches_real_repose_angle() {
         let dx = (p.x.x - cx).abs();
         dy >= 0.0 && dy <= height && dx <= half_base * (1.0 - dy / height).max(0.0)
     });
+    // Lateral confinement by two rigid side walls one cell past the footprint.
+    // It was a penalty force field before; with the rigid walls the measured
+    // angle is the same 30.04°.
     let footprint_half = half_base + 1.0;
-    solver.add_force_field(Box::new(AabbConfinementField::new(
-        Vec2::new(cx - footprint_half, FLOOR),
-        Vec2::new(cx + footprint_half, FLOOR + height + 20.0),
-        500.0,
+    let wall_top = FLOOR + height + 20.0;
+    solver.add_boundary_condition(Box::new(StaticBoxBoundary::new(
+        Vec2::new(cx - footprint_half - 2.0, FLOOR),
+        Vec2::new(cx - footprint_half, wall_top),
+    )));
+    solver.add_boundary_condition(Box::new(StaticBoxBoundary::new(
+        Vec2::new(cx + footprint_half, FLOOR),
+        Vec2::new(cx + footprint_half + 2.0, wall_top),
     )));
 
     solver.step_n(6000); // long horizon -- confirmed flat to 12000 in the real investigation
@@ -1305,7 +1312,7 @@ fn confined_pile_with_cundall_damping_reaches_real_repose_angle() {
 }
 
 /// The same recipe holds the free, unconfined pile (the scene of
-/// `sand_preshaped_pile_at_30deg_holds_its_slope`, no `AabbConfinementField`).
+/// `sand_preshaped_pile_at_30deg_holds_its_slope`, no lateral confinement).
 /// `cundall_damping` sweep on this geometry:
 ///
 ///   apic=1.0, cundall=0.0 (self-consistent alone, no tuning) -> 6.82°

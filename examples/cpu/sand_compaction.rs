@@ -17,8 +17,7 @@ use egui_wgpu::ScreenDescriptor;
 ///   cargo run --example sand_compaction --features render
 use emerge::render::{ColorMode, Renderer};
 use emerge::{
-    AabbConfinementField, DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation,
-    SpawnRegion,
+    DruckerPragerMaterial, FrictionBoundary, SimConfig, Simulation, SpawnRegion, StaticBoxBoundary,
 };
 use glam::{IVec2, Vec2};
 use std::sync::Arc;
@@ -77,11 +76,18 @@ fn make_sim() -> Simulation {
         let dx = (p.x.x - cx).abs();
         dy >= 0.0 && dy <= height && dx <= half_base * (1.0 - dy / height).max(0.0)
     });
+    // Lateral confinement: two rigid side walls one cell past the pile's
+    // footprint, each two cells thick (`StaticBoxBoundary` needs two cells per
+    // axis so each face owns its wall nodes).
     let footprint_half = half_base + 1.0;
-    solver.add_force_field(Box::new(AabbConfinementField::new(
-        Vec2::new(cx - footprint_half, floor),
-        Vec2::new(cx + footprint_half, floor + height + 20.0),
-        500.0,
+    let wall_top = floor + height + 20.0;
+    solver.add_boundary_condition(Box::new(StaticBoxBoundary::new(
+        Vec2::new(cx - footprint_half - 2.0, floor),
+        Vec2::new(cx - footprint_half, wall_top),
+    )));
+    solver.add_boundary_condition(Box::new(StaticBoxBoundary::new(
+        Vec2::new(cx + footprint_half, floor),
+        Vec2::new(cx + footprint_half + 2.0, wall_top),
     )));
     solver
 }

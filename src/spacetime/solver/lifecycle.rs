@@ -176,7 +176,7 @@ impl Simulation {
     /// that field is completely unaffected whether or not this is set.
     pub fn with_contact_grip(
         mut self,
-        grip: std::sync::Arc<crate::grid::DirectionalContactGrip>,
+        grip: std::sync::Arc<crate::boundary::DirectionalContactGrip>,
     ) -> Self {
         self.contact_grip = Some(grip);
         self
