@@ -1,12 +1,14 @@
 use glam::{Mat2, Vec2};
 
+use crate::materials::lame_parameters::lame_from_young;
 use crate::materials::physical_props::{FromSI, SnowProps, scale_lame};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
-use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
+use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::svd2;
 
 /// Snow constitutive model: corotated elasticity + SVD-based plasticity.
 ///

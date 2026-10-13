@@ -89,7 +89,7 @@ fn finite_scalar(value: f32) -> bool {
     return abs(value) <= 3.4e38;
 }
 
-// Mirrors `utils::fast_pow` (Rust, CPU): for a whole-numbered exponent,
+// Mirrors `materials::equation_of_state::fast_pow` (Rust, CPU): for a whole-numbered exponent,
 // exponentiation by squaring instead of WGSL's `pow()`, which evaluates
 // `exp2(e*log2(x))` even for integers and is less precise near x = 1: at
 // eos_power = 4.0 (the shock viscosity takes eos_power - 1.0 = 3.0) `pow()`
@@ -304,7 +304,7 @@ fn kirchhoff(p: Particle, mat: MaterialParams) -> mat2x2<f32> {
             // Shock-capturing viscosity (von Neumann & Richtmyer 1950 +
             // Landshoff), ported from the CPU formula
             // (`fluid.rs::artificial_bulk_viscosity`/
-            // `utils::von_neumann_richtmyer_q`), weak-shock coefficient
+            // `spacetime::artificial_viscosity::von_neumann_richtmyer_q`), weak-shock coefficient
             // `(gamma+1)/4` as there. Gated to compression (div_v < 0). Uses
             // its own `rho = rest_density/J` (floored only through `J`), not
             // the ceiling-clamped `rho` of this branch's pressure term, as

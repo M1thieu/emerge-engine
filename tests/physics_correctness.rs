@@ -7327,7 +7327,7 @@ fn diag_phase_transition_under_load_causes_stress_discontinuity() {
         // `::new()` constructor's 7.0 (which `GranularFluidMaterial::saturated_loam`'s
         // doc names as causing "runaway pressure under gravity-settling
         // compression, driving dilation... in an unbounded feedback loop").
-        let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+        let (lambda, mu) = emerge::materials::lame_parameters::lame_from_young(1.0e5, 0.2);
         const EOS_STIFFNESS: f32 = 200.0;
         let mixture = GranularFluidMaterial {
             mu,
@@ -7437,7 +7437,7 @@ fn diag_repeated_phase_transitions_do_not_cause_cumulative_instability() {
     let sand = DruckerPragerMaterial::from_young_modulus(1.0e5, 0.2);
     // Same construction as the test above: eos_power=2.0, as the scene's
     // `make_mixture`, not the raw ::new() constructor's 7.0.
-    let (lambda, mu) = emerge::materials::utils::lame_from_young(1.0e5, 0.2);
+    let (lambda, mu) = emerge::materials::lame_parameters::lame_from_young(1.0e5, 0.2);
     const EOS_STIFFNESS: f32 = 200.0;
     let mixture = GranularFluidMaterial {
         mu,

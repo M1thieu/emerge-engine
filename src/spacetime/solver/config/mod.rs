@@ -1,5 +1,7 @@
 use glam::Vec2;
 
+use crate::materials::lame_from_young;
+
 /// D⁻¹ = 4.0 for the quadratic B-spline MLS-MPM kernel (always).
 /// Not a tunable parameter -- hardcoded from Hu 2018 Table 1.
 pub(crate) const KERNEL_D_INVERSE: f32 = 4.0;
@@ -379,7 +381,7 @@ pub struct SimConfig {
 
     // ── Physical unit scaling ──────────────────────────────────────────────────
     // Default 1.0 = simulation units (no scaling). Set these to enable SI-calibrated materials
-    // (`FromSI::from_physical`, or `lame_from_si` / `gravity_to_grid` in `materials::utils`).
+    // (`FromSI::from_physical`, or `lame_from_si` / `gravity_to_grid` below).
     /// Physical length of one grid cell in meters. Default 1.0 (grid units).
     ///
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
@@ -527,9 +529,9 @@ impl SimConfig {
     // every term added into one stress tensor.
 
     /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters,
-    /// through [`crate::materials::lame_from_si`] at this config's `dx_meters`.
+    /// through [`lame_from_si`] at this config's `dx_meters`.
     pub fn lame_from_si(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
-        crate::materials::lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters)
+        lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters)
     }
 
     /// SI stress or pressure (Pa) to grid units: `p / (rho dx^2)`.
@@ -670,3 +672,34 @@ impl SimConfig {
 // re-export in lib.rs) keeps resolving unchanged.
 mod spawn;
 pub use spawn::{SpawnRegion, SpawnShape};
+
+/// SI Young's modulus and Poisson's ratio to grid Lamé parameters:
+/// `lambda_SI / (rho dx^2)`, the squared elastic wave speed in cells/s, the
+/// same at every timestep.
+pub fn lame_from_si(
+    young_modulus_pa: f32,
+    poisson_ratio: f32,
+    rest_density_kg_m3: f32,
+    dx_meters: f32,
+) -> (f32, f32) {
+    let (lambda_si, mu_si) = lame_from_young(young_modulus_pa, poisson_ratio);
+    let scale = 1.0 / (rest_density_kg_m3 * dx_meters * dx_meters);
+    (lambda_si * scale, mu_si * scale)
+}
+
+/// Convert SI gravity (m/s²) to solver units (grid cells / s²).
+///
+/// In the solver `v += gravity * sub_dt` where sub_dt is in real seconds,
+/// so gravity must be in [cells/s²] = g_SI / dx_meters.
+///
+/// # Example -- Earth gravity at 1 cm/cell
+/// ```rust,no_run
+/// # extern crate emerge_engine as emerge;
+/// use emerge::gravity_to_grid;
+/// use glam::Vec2;
+/// let g = gravity_to_grid(Vec2::new(0.0, -9.81), 0.01);
+/// // g ≈ Vec2::new(0.0, -981.0) cells/s²
+/// ```
+pub fn gravity_to_grid(g_si: glam::Vec2, dx_meters: f32) -> glam::Vec2 {
+    g_si / dx_meters
+}

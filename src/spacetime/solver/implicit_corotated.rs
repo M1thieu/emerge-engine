@@ -45,7 +45,7 @@
 //! chain (`direct_solve`, `assemble_free_dof_system`,
 //! `particle_stiffness_block`, `cholesky_solve`, `free_dof_map`,
 //! `grad_basis`, `build_particle_matrices`), the eigenvalue-clamp PSD
-//! projection chain in `materials::utils`
+//! projection chain in `materials::solid::corotated::stress`
 //! (`corotated_kirchhoff_dtau_dl_psd_matrix`, `spd_project_symmetric_4x4`,
 //! `jacobi_eigen_symmetric_4x4`, `corotated_elastic_energy_density`), the
 //! energy formulation `model_residual`/`total_energy` that
@@ -58,10 +58,11 @@ use super::Simulation;
 use super::projection::apply_boundary_conditions_to_grid;
 use crate::grid::kernel::{axis_weights_derivative, quadratic_weights};
 #[cfg(test)]
-use crate::materials::utils::{
-    corotated_elastic_energy_density, corotated_kirchhoff_dtau_dl_psd_matrix,
-};
-use crate::materials::utils::{corotated_elastic_stress, corotated_elastic_stress_jvp};
+use crate::materials::solid::corotated::stress::corotated_elastic_energy_density;
+use crate::materials::solid::corotated::stress::corotated_elastic_stress;
+use crate::materials::solid::corotated::stress::corotated_elastic_stress_jvp;
+#[cfg(test)]
+use crate::materials::solid::corotated::stress::corotated_kirchhoff_dtau_dl_psd_matrix;
 use crate::transfer::{G2PParams, gather_grid_to_particles};
 
 /// Max Newton iterations and relative tolerance: the values of the probe
@@ -173,7 +174,10 @@ impl ImplicitProblem {
     /// never what the solve converges to.
     fn deformed_f(p: &ImplicitParticle, v: &[Vec2], dt: f32) -> Mat2 {
         let grad_v = Self::velocity_gradient(&p.entries, v);
-        crate::materials::utils::advance_deformation_gradient(p.f_n, dt * grad_v)
+        crate::matter::kinematics::deformation_gradient::advance_deformation_gradient(
+            p.f_n,
+            dt * grad_v,
+        )
     }
 
     /// The LINEAR (forward-Euler-style) `(I+dt*grad_v)*F_n` `deformed_f`'s
@@ -1185,7 +1189,7 @@ impl Simulation {
 #[cfg(test)]
 mod direct_solve_consistency_tests {
     use super::*;
-    use crate::materials::utils::apply_dtau_dl_psd_matrix;
+    use crate::materials::solid::corotated::stress::apply_dtau_dl_psd_matrix;
 
     /// Self-consistency of `particle_stiffness_block`: summed over every pair
     /// of a particle's stencil nodes, `dr_i = v0 * (B_i^T * M * B_j) * dv_j`

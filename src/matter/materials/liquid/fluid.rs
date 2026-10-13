@@ -1,9 +1,10 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
-use crate::materials::utils::{advance_log_volume_ratio, von_neumann_richtmyer_q};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::artificial_viscosity::von_neumann_richtmyer_q;
 
 /// Current volume ratio `J = V/V0` from the material's own conserved volume
 /// state (not a kernel-density gather, which is free-surface biased).
@@ -55,7 +56,7 @@ pub(crate) fn artificial_bulk_viscosity(
     let density_ratio = 1.0 / j;
     let c2 = eos_stiffness
         * eos_power
-        * crate::materials::utils::fast_pow(density_ratio, eos_power - 1.0)
+        * crate::materials::equation_of_state::fast_pow(density_ratio, eos_power - 1.0)
         / rest_density;
     let c_sound = c2.max(0.0).sqrt();
     von_neumann_richtmyer_q(rest_density, j, div_v, grid_cell_size, c_sound, eos_power)

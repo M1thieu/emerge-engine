@@ -1775,7 +1775,7 @@ fn sand_pile_built_by_slow_pour_with_pradhana_correction() {
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_single_batch_impact_stress_ratio_trace() {
-    use emerge::materials::utils::lame_from_young;
+    use emerge::materials::lame_parameters::lame_from_young;
 
     const GRID: usize = 128;
     const DT: f32 = 0.016;
@@ -1999,7 +1999,7 @@ fn sand_pile_built_by_pour_with_randomized_drop_position() {
 #[test]
 #[ignore = "investigation probe, no regression assertion -- real findings preserved in this test's own doc comment, not the pass/fail signal"]
 fn diag_batch_impact_on_sloped_flank_stress_ratio_trace() {
-    use emerge::materials::utils::lame_from_young;
+    use emerge::materials::lame_parameters::lame_from_young;
 
     const GRID: usize = 128;
     const DT: f32 = 0.016;

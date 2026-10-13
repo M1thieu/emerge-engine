@@ -10,5 +10,6 @@
 //! `emerge::materials::`/`emerge::particle::` path keeps resolving unchanged --
 //! this move only changes where the files physically live, not any public API.
 
+pub mod kinematics;
 pub mod materials;
 pub mod particle;

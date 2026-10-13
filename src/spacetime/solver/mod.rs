@@ -1,7 +1,7 @@
 pub mod body_state;
 #[cfg(any(test, feature = "research-diagnostics"))]
 mod boundary_diagnostics;
-mod cfl;
+pub(crate) mod cfl;
 pub mod config;
 pub mod density;
 pub mod handle;

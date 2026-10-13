@@ -1,11 +1,12 @@
 use glam::Mat2;
 
+use crate::materials::lame_parameters::lame_from_young;
 use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
 
 /// Compressible Neo-Hookean hyperelastic solid (jelly, soft tissue).
 ///

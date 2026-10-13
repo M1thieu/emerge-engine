@@ -1,11 +1,12 @@
 use glam::{Mat2, Vec2};
 
+use crate::materials::lame_parameters::lame_from_young;
 use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame, scale_visc};
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
 
 /// Kelvin-Voigt viscoelastic solid.
 ///
@@ -345,7 +346,7 @@ mod analytical_validation_tests {
 /// `update_particle` uses the exponential integrator
 /// (`deformation_increment_exp_minus_identity`, see its doc for the O(dt^2)
 /// volumetric ratchet forward Euler causes). Tests the call site, not the
-/// helper (which has its own tests in `utils.rs`).
+/// helper (which has its own tests in `matter::kinematics::deformation_gradient`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;

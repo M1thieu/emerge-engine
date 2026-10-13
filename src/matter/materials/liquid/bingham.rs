@@ -1,13 +1,16 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{BinghamProps, FromSI, scale_stress, scale_visc};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    LOG_CLAMP, MIN_J, advance_deformation_gradient, advance_log_volume_ratio, elastic_wave_dt,
-    hencky_strains, reconstruct_f,
-};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::LOG_CLAMP;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_f;
+use crate::tensor_algebra::svd::svd2;
 
 /// Bingham viscoplastic fluid.
 ///

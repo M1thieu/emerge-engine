@@ -14,7 +14,7 @@
 //! sound in air two ways (see the tests).
 //! `matter::materials::gas::IdealGasMaterial` is the `MaterialModel` on top:
 //! Kirchhoff stress from `ideal_gas_pressure`, shock viscosity from the
-//! shared `matter::materials::utils::von_neumann_richtmyer_q` (Von Neumann
+//! shared `spacetime::artificial_viscosity::von_neumann_richtmyer_q` (Von Neumann
 //! & Richtmyer 1950, the term liquids use) with this EOS's γ. CPU only, no
 //! GPU shader branch yet (see `ConstitutiveModel::Gas`). Not yet checked
 //! against Sod's shock tube, the exact-solution benchmark for compressible

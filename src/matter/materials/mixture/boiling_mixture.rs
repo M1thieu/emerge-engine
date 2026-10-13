@@ -71,8 +71,8 @@
 use glam::{Mat2, Vec2};
 
 use super::cavitating_eos::CavitatingEosTable;
-use crate::materials::utils::advance_log_volume_ratio;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
 
 /// HEM mixture density (kg/m^3) at mass quality `x in [0,1]`. `x = 0` and

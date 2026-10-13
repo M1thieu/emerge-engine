@@ -4,7 +4,7 @@
 //!
 //! `IdealGasMaterial`: `p = ρRT` as an isentropic law, adiabatic sound speed
 //! `c = √(γRT)`, and von Neumann-Richtmyer shock viscosity through the
-//! shared `matter::materials::utils::von_neumann_richtmyer_q`, fed this
+//! shared `spacetime::artificial_viscosity::von_neumann_richtmyer_q`, fed this
 //! material's own γ. CPU only: `p2g.wgsl`/`particles_update.wgsl` have no
 //! `case 13u` branch (see `ConstitutiveModel::Gas`). Not yet checked against
 //! Sod's shock tube (Toro, *Riemann Solvers and Numerical Methods for Fluid
@@ -15,9 +15,9 @@ use glam::{Mat2, Vec2};
 use crate::energy::thermodynamics::ideal_gas::{
     AIR_ADIABATIC_INDEX, AIR_SPECIFIC_GAS_CONSTANT_J_KG_K, ideal_gas_sound_speed_from_temperature,
 };
-use crate::materials::utils::von_neumann_richtmyer_q;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::artificial_viscosity::von_neumann_richtmyer_q;
 
 /// Standard sea-level atmospheric pressure (Pa), the default ambient
 /// `IdealGasMaterial::reference_pressure_pa`.
@@ -347,7 +347,10 @@ impl MaterialModel for IdealGasMaterial {
         // `timestep_bound` use.
         let p0 = self.rest_density * self.specific_gas_constant * temperature;
         let pressure_abs = (p0
-            * crate::materials::utils::fast_pow(density / self.rest_density, self.adiabatic_index))
+            * crate::materials::equation_of_state::fast_pow(
+                density / self.rest_density,
+                self.adiabatic_index,
+            ))
         .max(0.0); // physically required floor: ρ,T >= 0 => p_abs >= 0, nothing to configure
 
         // Mechanical stress is gauge (see `reference_pressure_pa`); `p_abs`
@@ -376,7 +379,7 @@ impl MaterialModel for IdealGasMaterial {
 
         // Artificial (shock) viscosity -- von Neumann & Richtmyer 1950,
         // reusing the SAME shared q-formula `NewtonianFluidMaterial` uses
-        // (`materials::utils::von_neumann_richtmyer_q`), fed this
+        // (`spacetime::artificial_viscosity::von_neumann_richtmyer_q`), fed this
         // material's own real adiabatic sound speed and real γ rather
         // than a Tait-EOS-derived stand-in (see that function's doc).
         let c_sound = ideal_gas_sound_speed_from_temperature(

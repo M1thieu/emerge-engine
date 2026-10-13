@@ -70,13 +70,14 @@ can read any one of them without knowing the others; each has its own README.
 
 | Folder | What lives there |
 |---|---|
-| [`matter/`](src/matter) | What things are made of -- the particle, and 17 material models with their measured constants |
+| [`matter/`](src/matter) | What things are made of -- the particle, how it moves and deforms (kinematics), and 17 material models with their measured constants |
 | [`spacetime/`](src/spacetime) | How matter moves -- the solver itself: particle-to-grid transfer, grid update, grid-to-particle, plus a separate solver for slender bodies |
 | [`forces/`](src/forces) | What pushes on matter -- gravity, drag, buoyancy, walls and friction |
 | [`energy/`](src/energy) | Heat and light -- conduction, diffusion, radiation, and the optics that turn a spectrum into a colour |
 | [`information/`](src/information) | Control and measurement -- a neural locomotion controller, information-theoretic measures |
 | [`systems/`](src/systems) | The machinery, not the physics -- GPU compute, rendering, diagnostics |
 | [`runtime/`](src/runtime) | Fixed-timestep stepping |
+| [`tensor_algebra/`](src/tensor_algebra) | The mathematics the physics is written in -- matrix decompositions and products, no physical law |
 
 The rule the tree follows: a piece of code lives where its *concept* belongs,
 never where it happens to be used. Beer-Lambert absorption is a law of energy

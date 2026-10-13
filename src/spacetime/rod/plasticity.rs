@@ -13,7 +13,7 @@
 //! to `kappa` through each vertex's `ei/voronoi_length`.
 //!
 //! The return mapping of `VonMisesMaterial` with a scalar in place of the
-//! stress tensor, through `matter::materials::utils::scalar_return_map`
+//! stress tensor, through `spacetime::return_mapping::scalar_return_map`
 //! (the core behind `self_consistent_plastic_multiplier`). Rate-independent
 //! (no `dt`): an algebraic projection per call.
 //!
@@ -38,7 +38,7 @@
 
 use super::RodPoints;
 use super::forces::discrete_curvature;
-use crate::matter::materials::utils::scalar_return_map;
+use crate::spacetime::return_mapping::scalar_return_map;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RodPlasticity {

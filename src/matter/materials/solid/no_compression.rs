@@ -1,13 +1,14 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::svd::svd2;
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, hencky_strains,
-    reconstruct_stress_from_principal,
-};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::hencky_strain::hencky_strains;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::Particles;
+use crate::spacetime::solver::cfl::elastic_wave_dt;
+use crate::tensor_algebra::svd::reconstruct_stress_from_principal;
+use crate::tensor_algebra::svd::svd2;
 
 /// No-compression (tension-only) elastic material, the dual of no-tension
 /// masonry theory, for cables, membranes, tendons and spider silk. Its

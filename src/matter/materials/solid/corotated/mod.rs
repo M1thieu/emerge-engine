@@ -1,11 +1,15 @@
 use glam::Mat2;
 
+pub(crate) mod stress;
+
+use crate::materials::lame_parameters::lame_from_young;
 use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
-use crate::materials::utils::{
-    MIN_J, advance_deformation_gradient, elastic_wave_dt, lame_from_young,
-};
-use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams, polar_decomposition_2d};
+use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
+use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
+use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
+use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
+use crate::spacetime::solver::cfl::elastic_wave_dt;
 
 /// Corotated linear elasticity.
 ///
@@ -470,7 +474,7 @@ mod elastic_viscosity_tests {
 /// `update_particle` uses the exponential integrator
 /// (`deformation_increment_exp_minus_identity`, see its doc for the O(dt^2)
 /// volumetric ratchet of forward Euler), checked at the call site rather
-/// than on the helper (covered by its own tests in `utils.rs`).
+/// than on the helper (covered by its own tests in `matter::kinematics::deformation_gradient`).
 #[cfg(test)]
 mod kinematic_integrator_tests {
     use super::*;

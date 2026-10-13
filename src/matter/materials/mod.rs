@@ -2,10 +2,13 @@
 //! of matter it describes: `solid`, `liquid`, `gas`, `granular`, `mixture`.
 //! The files at this level are shared by all of them: the `MaterialModel`
 //! trait and `MaterialRegistry`, parameters, SI conversions and property
-//! dispatch, optical data, the rod material, SVD and utilities.
+//! dispatch, optical data, the rod material, the Lamé parameters of linear
+//! elasticity and the power terms of the equations of state.
 
+pub(crate) mod equation_of_state;
 pub mod gas;
 pub mod granular;
+pub mod lame_parameters;
 pub mod liquid;
 pub mod mixture;
 pub mod optical;
@@ -15,8 +18,6 @@ mod property_dispatch;
 pub mod registry;
 pub mod rod_material;
 pub mod solid;
-pub(crate) mod svd;
-pub mod utils;
 
 pub use physical_props::{
     BinghamProps, BrittleProps, DuctileProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,
@@ -27,6 +28,7 @@ pub use physical_props::{
 pub use gas::{IdealGasMaterial, IdealGasPhysicalParams};
 pub use granular::sand::DruckerPragerMaterial;
 pub use granular::sand_mui::MuIRheologyMaterial;
+pub use lame_parameters::lame_from_young;
 pub use liquid::bingham::BinghamFluidMaterial;
 pub use liquid::fluid::NewtonianFluidMaterial;
 pub use mixture::boiling_mixture::BoilingMixtureMaterial;
@@ -44,13 +46,10 @@ pub use solid::elastic::NeoHookeanMaterial;
 pub use solid::nacc::{NaccMaterial, NaccMaterialParams};
 pub use solid::no_compression::NoCompressionMaterial;
 pub use solid::rankine::RankineMaterial;
+pub use solid::rankine::damage::rankine_damage_estimate;
 pub use solid::snow::StomakhinMaterial;
 pub use solid::viscoelastic::ViscoelasticMaterial;
 pub use solid::von_mises::VonMisesMaterial;
-pub use utils::{
-    elastic_wave_dt, gravity_to_grid, lame_from_si, lame_from_young, polar_decomposition_2d,
-    rankine_damage_estimate, stokes_drag_rate_from_si,
-};
 
 use glam::Mat2;
 

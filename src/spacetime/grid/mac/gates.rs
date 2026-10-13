@@ -363,7 +363,7 @@ use super::transfer::{faces_to_particles, particles_to_faces, stress_to_faces};
 use super::{Liquid, ProjectionSettings, Walls, project, travel_limited_dt};
 use crate::diagnostics::{OCCUPANCY_BANDS, scene_map};
 use crate::fields::EARTH_GRAVITY_M_S2;
-use crate::materials::utils::advance_log_volume_ratio;
+use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, Particles};
 use crate::solver::LcgRng;
 

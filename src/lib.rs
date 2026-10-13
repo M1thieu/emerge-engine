@@ -38,6 +38,7 @@ pub mod matter;
 pub mod runtime;
 pub mod spacetime;
 pub mod systems;
+pub(crate) mod tensor_algebra;
 
 // Domain folders re-export their contents at the old crate-root paths --
 // every existing internal `crate::x::` path and every LP `emerge::x::` path
@@ -82,6 +83,7 @@ pub use solver::handle::{MaterialHandle, ParticleGroup};
 pub use solver::{BoundaryImpulseExperiment, BoundaryImpulseReport};
 
 // Materials
+pub use fields::drag::stokes_drag_rate_from_si;
 pub use materials::{
     BinghamFluidMaterial, BinghamProps, BoilingMixtureMaterial, BrittleProps, CavitatingEosParams,
     CavitatingEosTable, CavitatingFluidMaterial, CavitatingFluidMaterialParams, ConstitutiveModel,
@@ -93,9 +95,9 @@ pub use materials::{
     NaccProps, NeoHookeanMaterial, NewtonianFluidMaterial, NoCompression, NoCompressionMaterial,
     ParticleMass, PlasticityModel, Pressurized, RankineMaterial, StomakhinMaterial, Viscoelastic,
     ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase,
-    WithPreStress, gravity_to_grid, lame_from_si, lame_from_young, rankine_damage_estimate,
-    stokes_drag_rate_from_si,
+    WithPreStress, lame_from_young, rankine_damage_estimate,
 };
+pub use solver::config::{gravity_to_grid, lame_from_si};
 
 // Boundary conditions
 pub use boundary::{

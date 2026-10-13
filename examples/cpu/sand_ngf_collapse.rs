@@ -64,14 +64,14 @@ enum Mode {
 //
 // Recovers the 2 singular values of `deformation_gradient` from two
 // rotation-invariant scalars instead of calling the engine's own SVD
-// (`materials::svd` is `pub(crate)`, not reachable from example code):
+// (`tensor_algebra::svd` is `pub(crate)`, not reachable from example code):
 // Frobenius norm² = sigma1²+sigma2² (SVD-invariant: trace(FᵀF)), and
 // det(F) = sigma1*sigma2 whenever F isn't inverted (real settling sand
 // never is). Two equations, two unknowns -- exact, not an approximation,
 // same real Hencky-strain pressure/stress-ratio formula
 // `MuIRheologyMaterial::update_particle` uses either way.
 fn ngf_pressure_and_ratio(p: &Particle) -> (f32, f32) {
-    use emerge::materials::utils::lame_from_young;
+    use emerge::materials::lame_parameters::lame_from_young;
     let (lambda, mu) = lame_from_young(YOUNG_MODULUS_PA, POISSON_RATIO);
     let f = p.deformation_gradient;
     let sum_sq = f.x_axis.length_squared() + f.y_axis.length_squared(); // sigma1^2+sigma2^2

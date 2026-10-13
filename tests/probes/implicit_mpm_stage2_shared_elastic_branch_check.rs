@@ -1,4 +1,4 @@
-//! Cheap consolidation: `src/matter/materials/utils.rs::
+//! Cheap consolidation: `src/matter/materials/solid/corotated/stress.rs::
 //! corotated_elastic_stress` (verified via JVP/finite-difference/symmetry in
 //! `implicit_mpm_stage2_corotated_jvp.rs`) is the SAME shared
 //! function `DruckerPragerMaterial` (sand), `VonMisesMaterial`,
