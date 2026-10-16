@@ -17,7 +17,6 @@ const MAT_VIS: u32 = 2;
 
 const JELLY_YOUNG_MODULUS_PA: f32 = 500.0;
 const JELLY_POISSON_RATIO: f32 = 0.45;
-const JELLY_DENSITY_KG_M3: f32 = 1000.0;
 const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 
 fn make_sim(max_substeps_per_step: usize, gravity_fraction: f32, drop_y: f32) -> Simulation {
@@ -27,12 +26,8 @@ fn make_sim(max_substeps_per_step: usize, gravity_fraction: f32, drop_y: f32) ->
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= gravity_fraction;
-    let (lambda, mu) = config.lame_from_si(
-        JELLY_YOUNG_MODULUS_PA,
-        JELLY_POISSON_RATIO,
-        JELLY_DENSITY_KG_M3,
-    );
-    let visc = config.visc_from_si(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3);
+    let (lambda, mu) = config.lame_from_si(JELLY_YOUNG_MODULUS_PA, JELLY_POISSON_RATIO);
+    let visc = config.visc_from_si(JELLY_VISCOSITY_PA_S);
     println!("[jellies-probe] lambda={lambda} mu={mu} visc={visc}");
     let spawn = |c: Vec2, mat| SpawnRegion {
         spacing: 0.5,

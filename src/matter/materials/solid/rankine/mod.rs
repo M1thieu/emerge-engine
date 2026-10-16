@@ -3,7 +3,7 @@ use glam::{Mat2, Vec2};
 pub mod damage;
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{BrittleProps, FromSI, scale_lame, scale_stress};
+use crate::materials::physical_props::{BrittleProps, FromSI};
 use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::solid::rankine::damage::RANKINE_MIN_RESIDUAL_TENSILE_FRACTION;
 use crate::materials::solid::rankine::damage::rankine_damage_saturation_point;
@@ -302,13 +302,8 @@ impl RankineMaterial {
 
 impl FromSI<BrittleProps> for RankineMaterial {
     fn from_physical(props: &BrittleProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
-        let ts = scale_stress(props.tensile_strength_pa, props.elastic.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
+        let ts = config.stress_from_si(props.tensile_strength_pa);
         Self {
             rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu, ts, props.softening_rate)

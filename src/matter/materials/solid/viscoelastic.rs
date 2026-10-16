@@ -1,7 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{FromSI, Viscoelastic, scale_lame, scale_visc};
+use crate::materials::physical_props::{FromSI, Viscoelastic};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
 use crate::matter::kinematics::volume_ratio::MIN_J;
@@ -101,13 +101,8 @@ impl ViscoelasticMaterial {
 
 impl FromSI<Viscoelastic> for ViscoelasticMaterial {
     fn from_physical(props: &Viscoelastic, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
-        let visc = scale_visc(props.eta_pa_s, props.elastic.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
+        let visc = config.visc_from_si(props.eta_pa_s);
         Self {
             rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu, visc)

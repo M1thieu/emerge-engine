@@ -6016,9 +6016,13 @@ fn self_weight_strain_is_spacing_independent() {
             box_center: Vec2::new(32.0, 8.0),
             material_id: 0,
             initial_velocity_scale: 0.0,
+            // The column's density lives in its mass: the material is built
+            // from grid units and declares none, and the stress unit is the
+            // same for every material (`SimConfig::grid_mass_unit_kg_per_m`).
+            mass_override: Some(config.density_from_si(rho) * spacing * spacing),
             ..SpawnRegion::for_sim(&config)
         };
-        let (lambda, mu) = config.lame_from_si(E_PA, 0.2, rho);
+        let (lambda, mu) = config.lame_from_si(E_PA, 0.2);
         let mut sim = Simulation::new(config, spawn)
             .with_default_material(Box::new(NeoHookeanMaterial::new(lambda, mu)))
             .with_boundary(Box::new(SlipBoundary::new(config.boundary_thickness)));
@@ -6102,7 +6106,7 @@ fn sand_push_leaves_permanent_displacement_not_full_elastic_rebound() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     // Small-strain Kelvin-Voigt damping -- see
     // `small_strain_elastic_viscosity_pa_s`'s doc (Seed & Idriss 1970 +
     // Darendeli 2001, zeta 0.5%-2% for clean sand); the bottom of the range,
@@ -6116,7 +6120,7 @@ fn sand_push_leaves_permanent_displacement_not_full_elastic_rebound() {
         );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6218,7 +6222,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_grid_for = |damping_ratio: f32| {
         let eta_pa_s =
@@ -6226,7 +6230,7 @@ fn diag_elastic_viscosity_substep_cost_vs_baseline() {
                 shear_modulus_pa,
                 damping_ratio,
             );
-        config.visc_from_si(eta_pa_s, 1600.0)
+        config.visc_from_si(eta_pa_s)
     };
 
     let cases = [
@@ -6313,14 +6317,14 @@ fn diag_wet_sand_cohesion_spread_after_realistic_pour() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
         emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
         0.4792,
         0.0,
     );
-    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, 1600.0);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa);
     let elastic_viscosity_pa_s =
         emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
             shear_modulus_pa,
@@ -6330,7 +6334,7 @@ fn diag_wet_sand_cohesion_spread_after_realistic_pour() {
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
         pendular_regime_ceiling: 0.3,
-        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(elastic_viscosity_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6445,7 +6449,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_grid_for = |damping_ratio: f32| {
         let eta_pa_s =
@@ -6453,7 +6457,7 @@ fn diag_elastic_viscosity_effect_on_active_dry_flow_speed() {
                 shear_modulus_pa,
                 damping_ratio,
             );
-        config.visc_from_si(eta_pa_s, 1600.0)
+        config.visc_from_si(eta_pa_s)
     };
 
     let mut results = Vec::new();
@@ -6541,7 +6545,7 @@ fn diag_compression_floor_trigger_rate_old_vs_new_threshold_passive_settle() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
 
     for (label, min_j) in [
         ("OLD threshold (0.6)", 0.6f32),
@@ -6622,13 +6626,13 @@ fn diag_stress_test_all_real_interaction_scenarios() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
         0.005,
     );
-    let elastic_viscosity = config.visc_from_si(eta_pa_s, 1600.0);
+    let elastic_viscosity = config.visc_from_si(eta_pa_s);
     let make_sand = || DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
         elastic_viscosity,
@@ -6744,14 +6748,14 @@ fn diag_wet_sand_push_combined_never_tested_before() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let cohesion_pa = emerge::matter::materials::granular::sand::capillary_cohesion_stress_pa(
         emerge::matter::materials::granular::sand::GRAIN_DIAMETER_M,
         0.4792,
         0.0,
     );
-    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, 1600.0);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa);
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
         0.005,
@@ -6760,7 +6764,7 @@ fn diag_wet_sand_push_combined_never_tested_before() {
         friction_angle: 33.0_f32.to_radians(),
         saturation_cohesion_coeff,
         pendular_regime_ceiling: 0.3,
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6877,7 +6881,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -6885,7 +6889,7 @@ fn diag_lifted_chunk_dispersion_not_just_retained_position() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -6999,7 +7003,7 @@ fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7007,7 +7011,7 @@ fn diag_lifted_chunk_dispersion_from_surface_with_strong_pull() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -7127,7 +7131,7 @@ fn diag_push_weights_sweep_real_lift_within_ui_range() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7135,7 +7139,7 @@ fn diag_push_weights_sweep_real_lift_within_ui_range() {
     );
     let make_sand = || DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
 
@@ -7208,7 +7212,7 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
         position_jitter: 0.5,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2, 1600.0);
+    let (lambda, mu) = config.lame_from_si(1.0e5, 0.2);
     let shear_modulus_pa = 1.0e5 / (2.0 * (1.0 + 0.2));
     let eta_pa_s = emerge::matter::materials::granular::sand::small_strain_elastic_viscosity_pa_s(
         shear_modulus_pa,
@@ -7216,7 +7220,7 @@ fn diag_lmb_push_stability_at_new_stronger_default() {
     );
     let sand = DruckerPragerMaterial {
         friction_angle: 33.0_f32.to_radians(),
-        elastic_viscosity: config.visc_from_si(eta_pa_s, 1600.0),
+        elastic_viscosity: config.visc_from_si(eta_pa_s),
         ..DruckerPragerMaterial::new(lambda, mu)
     };
     let mut sim = Simulation::new(config, spawn)
@@ -7724,11 +7728,7 @@ fn no_compression_tendon_hangs_taut_survives_pull_and_extreme_impulse() {
         max_substeps_per_step: 20_000,
         ..SimConfig::earth(GRID, 0.02, DT)
     };
-    let (lambda, mu) = config.lame_from_si(
-        TENDON_YOUNG_MODULUS_PA,
-        TENDON_POISSON_RATIO,
-        TENDON_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(TENDON_YOUNG_MODULUS_PA, TENDON_POISSON_RATIO);
     let material = NoCompressionMaterial::new(lambda, mu);
     let mass_grid = (TENDON_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
 
@@ -9487,7 +9487,7 @@ fn shear_wave_energy_ratio(asflip_blend: f32, cundall_damping: f32, frames: usiz
         ..SimConfig::earth(grid, 1.0 / cells, 0.001)
     };
     let rho = 1500.0;
-    let (lambda, mu) = config.lame_from_si(10.0e6, 0.2, rho);
+    let (lambda, mu) = config.lame_from_si(10.0e6, 0.2);
     let mid = grid as f32 * 0.5;
     let spawn = SpawnRegion {
         spacing: 0.5,

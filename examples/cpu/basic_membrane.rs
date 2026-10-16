@@ -136,11 +136,7 @@ const MEMBRANE_DENSITY_KG_M3: f32 = 1100.0;
 /// SI -> grid Lamé conversion; `config` must carry the `dx_meters` this
 /// scene spawns at.
 fn membrane_lame(config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si(
-        MEMBRANE_YOUNG_MODULUS_PA,
-        MEMBRANE_POISSON_RATIO,
-        MEMBRANE_DENSITY_KG_M3,
-    )
+    config.lame_from_si(MEMBRANE_YOUNG_MODULUS_PA, MEMBRANE_POISSON_RATIO)
 }
 
 fn make_sim(lambda: f32, mu: f32) -> Simulation {

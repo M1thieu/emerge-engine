@@ -135,7 +135,7 @@ fn make_sim(mode: Mode) -> Simulation {
         mass_override: Some(mass_grid),
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(YOUNG_MODULUS_PA, POISSON_RATIO, BULK_DENSITY_KG_M3);
+    let (lambda, mu) = config.lame_from_si(YOUNG_MODULUS_PA, POISSON_RATIO);
     let sand = DruckerPragerMaterial {
         friction_angle: FRICTION_DEG.to_radians(),
         dilatancy_angle: 0.0,

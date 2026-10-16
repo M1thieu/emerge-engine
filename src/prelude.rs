@@ -115,7 +115,6 @@ pub use crate::{
     collect_snapshot_particles_only,
     evaluate_stability,
     gravity_to_grid,
-    lame_from_si,
     lame_from_young,
     log_frame_full,
     log_frame_gpu,

@@ -1,7 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{FromSI, GranularProps, scale_lame};
+use crate::materials::physical_props::{FromSI, GranularProps};
 use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
@@ -796,12 +796,7 @@ impl DruckerPragerMaterial {
 
 impl FromSI<GranularProps> for DruckerPragerMaterial {
     fn from_physical(props: &GranularProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         Self {
             friction_angle: props.friction_angle_deg.to_radians(),
             dilatancy_angle: props.dilatancy_angle_deg.to_radians(),

@@ -85,11 +85,7 @@ fn make_sim_data(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> GpuSimul
         gravity: Vec2::new(0.0, -0.08),
         ..SimConfig::earth(GRID, 0.01, DT)
     };
-    let (lambda, mu) = config.lame_from_si(
-        SNOW_YOUNG_MODULUS_PA,
-        SNOW_POISSON_RATIO,
-        SNOW_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(SNOW_YOUNG_MODULUS_PA, SNOW_POISSON_RATIO);
     // Same density-consistency fix as basic_snow.rs: mass must share the
     // same real SNOW_DENSITY_KG_M3 the stiffness above uses, not
     // `config.grid_density`'s unrelated bare default.

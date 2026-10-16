@@ -141,11 +141,7 @@ fn run_probe(
 #[ignore = "temporary manual probe, not a regression test"]
 fn membrane_scene_at_full_gravity_fraction() {
     let si_config = SimConfig::earth(GRID, 0.01, DT);
-    let (lambda, mu) = si_config.lame_from_si(
-        MEMBRANE_YOUNG_MODULUS_PA,
-        MEMBRANE_POISSON_RATIO,
-        MEMBRANE_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = si_config.lame_from_si(MEMBRANE_YOUNG_MODULUS_PA, MEMBRANE_POISSON_RATIO);
     run_probe(
         "new_stiffness+full_gravity",
         lambda,
@@ -165,11 +161,7 @@ fn membrane_scene_at_full_gravity_fraction() {
 #[ignore = "temporary manual probe, not a regression test"]
 fn membrane_scene_new_stiffness_old_gravity() {
     let si_config = SimConfig::earth(GRID, 0.01, DT);
-    let (lambda, mu) = si_config.lame_from_si(
-        MEMBRANE_YOUNG_MODULUS_PA,
-        MEMBRANE_POISSON_RATIO,
-        MEMBRANE_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = si_config.lame_from_si(MEMBRANE_YOUNG_MODULUS_PA, MEMBRANE_POISSON_RATIO);
     run_probe(
         "new_stiffness+old_gravity",
         lambda,

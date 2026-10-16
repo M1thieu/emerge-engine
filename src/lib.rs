@@ -97,7 +97,7 @@ pub use materials::{
     ViscoelasticMaterial, VonMisesMaterial, WithLatentHeat, WithLatentHeatTable, WithMixturePhase,
     WithPreStress, lame_from_young, rankine_damage_estimate,
 };
-pub use solver::config::{gravity_to_grid, lame_from_si};
+pub use solver::config::gravity_to_grid;
 
 // Boundary conditions
 pub use boundary::{

@@ -151,9 +151,8 @@ impl Pressurized {
     /// conversion already used for `e_pa`/`bulk_modulus_pa` elsewhere -- pressure is the
     /// same physical quantity (stress), so no new conversion formula is needed.
     pub fn material(&self, config: &crate::SimConfig) -> Box<dyn MaterialModel> {
-        use super::physical_props::scale_stress;
         let base = NeoHookeanMaterial::from_physical(&self.elastic, config);
-        let pressure_grid = scale_stress(self.internal_pressure_pa, self.elastic.rho_kg_m3, config);
+        let pressure_grid = config.stress_from_si(self.internal_pressure_pa);
         Box::new(WithPreStress::new(base, pressure_grid))
     }
 
@@ -181,18 +180,17 @@ impl FluidGranular {
     }
 
     fn granular_fluid_material(&self, config: &crate::SimConfig) -> GranularFluidMaterial {
-        use super::physical_props::{scale_lame, scale_stress};
         // Tait EOS polytropic exponent -- Cole 1948, "Underwater Explosions"; standard
         // in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
-        let (lambda, mu) = scale_lame(self.e_pa, self.nu, self.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(self.e_pa, self.nu);
         // The EOS pressure (`p = k*((rho/rho0)^gamma - 1)`, see
         // `GranularFluidMaterial::kirchhoff_stress`) converts exactly as
         // `NewtonianFluidMaterial::from_physical` does: the stiffness through
         // `scale_stress` at this material's density, the rest density as a
         // ratio to the scene's reference density, the unit
         // `particles.density[i]` comes out in.
-        let eos = scale_stress(self.bulk_modulus_pa / GAMMA, self.rho_kg_m3, config);
+        let eos = config.stress_from_si(self.bulk_modulus_pa / GAMMA);
         let rho_grid = self.rho_kg_m3 / config.reference_density_kg_m3;
         GranularFluidMaterial {
             mu,

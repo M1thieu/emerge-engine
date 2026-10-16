@@ -1,7 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{FromSI, SnowProps, scale_lame};
+use crate::materials::physical_props::{FromSI, SnowProps};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
 use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
@@ -114,12 +114,7 @@ impl StomakhinMaterial {
 impl FromSI<SnowProps> for StomakhinMaterial {
     /// Plasticity params fixed to Stomakhin 2013: ξ=10, θ_c=0.025, θ_s=0.0075.
     fn from_physical(props: &SnowProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         Self {
             rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu, 10.0, 0.025, 0.0075, 0.6, 20.0)

@@ -30,11 +30,7 @@ fn make_sim(max_substeps_per_step: usize) -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let (sand_lambda, sand_mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (sand_lambda, sand_mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     let sand = DruckerPragerMaterial::new(sand_lambda, sand_mu);
     let fluid = NewtonianFluidMaterial::low_viscosity(0.1, 0.25);
     let sand_mass = (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * SPACING * SPACING;
@@ -128,13 +124,7 @@ fn basic_showcase_sand_substep_cost_vs_dx_meters_sweep() {
     let config = SimConfig::earth(GRID, 0.01, DT);
     for factor in [1.0f32, 1.5, 2.0, 3.0, 5.0, 8.0] {
         let dx = 0.01 * factor;
-        let (lambda, mu) = lame_at_dx(
-            &config,
-            dx,
-            SAND_YOUNG_MODULUS_PA,
-            SAND_POISSON_RATIO,
-            SAND_DENSITY_KG_M3,
-        );
+        let (lambda, mu) = lame_at_dx(&config, dx, SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
         let sand = DruckerPragerMaterial::new(lambda, mu);
         let density = SAND_DENSITY_KG_M3 / config.reference_density_kg_m3;
         let dt = sand.timestep_bound(
@@ -172,7 +162,7 @@ fn basic_showcase_sand_substep_cost_at_published_relaxed_modulus() {
         ),
         ("published relaxed (paper's own 15.8% error case)", 0.15e6),
     ] {
-        let (lambda, mu) = lame_at_dx(&config, 0.01, e_pa, SAND_POISSON_RATIO, SAND_DENSITY_KG_M3);
+        let (lambda, mu) = lame_at_dx(&config, 0.01, e_pa, SAND_POISSON_RATIO);
         let sand = DruckerPragerMaterial::new(lambda, mu);
         let density = SAND_DENSITY_KG_M3 / config.reference_density_kg_m3;
         let dt = sand.timestep_bound(
@@ -189,16 +179,10 @@ fn basic_showcase_sand_substep_cost_at_published_relaxed_modulus() {
     }
 }
 
-fn lame_at_dx(
-    config: &SimConfig,
-    dx_meters: f32,
-    e_pa: f32,
-    nu: f32,
-    rho_kg_m3: f32,
-) -> (f32, f32) {
+fn lame_at_dx(config: &SimConfig, dx_meters: f32, e_pa: f32, nu: f32) -> (f32, f32) {
     let mut cfg = *config;
     cfg.dx_meters = dx_meters;
-    cfg.lame_from_si(e_pa, nu, rho_kg_m3)
+    cfg.lame_from_si(e_pa, nu)
 }
 
 /// Root-cause which of the 3 materials in this scene actually drives the
@@ -229,11 +213,7 @@ fn basic_showcase_substep_cost_breakdown_by_material() {
     // so calling it directly on freshly-built values (not through the
     // registry, which only exposes this as `pub(crate)`) is exact, not an
     // approximation.
-    let (sand_lambda, sand_mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (sand_lambda, sand_mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     let cases: [(&str, u32, &dyn MaterialModel); 3] = [
         (
             "elastic (NeoHookean 40/80)",

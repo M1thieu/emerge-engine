@@ -63,11 +63,7 @@ fn make_sim() -> Simulation {
         max_substeps_per_step: 20_000,
         ..SimConfig::standard(GRID, DT, Vec2::ZERO)
     };
-    let (lambda, mu) = config.lame_from_si(
-        BODY_YOUNG_MODULUS_PA,
-        BODY_POISSON_RATIO,
-        BODY_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(BODY_YOUNG_MODULUS_PA, BODY_POISSON_RATIO);
     const SPACING: f32 = 0.6;
     // Same density-consistency fix as basic_jellies.rs/basic_sand.rs: mass
     // must use the same real BODY_DENSITY_KG_M3 the stiffness above uses,

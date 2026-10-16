@@ -125,11 +125,7 @@ const SAND_POROSITY_LOOSE: f32 = 0.4792;
 /// that actually decides whether a pile holds its shape (`rho*g*h/E`) comes
 /// out physically correct on its own instead of being hand-tuned.
 fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
-    let (lambda, mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     // Capillary cohesion from real grain-scale physics (Lian, Thornton &
     // Adams 1993 bridge force + Rumpf 1962 tensile-stress model -- see
     // `capillary_cohesion_stress_pa`'s doc), not a hand-picked
@@ -142,7 +138,7 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         SAND_POROSITY_LOOSE,
         0.0, // water on clean quartz: fully wetting
     );
-    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa, SAND_DENSITY_KG_M3);
+    let saturation_cohesion_coeff = config.stress_from_si(cohesion_pa);
     // Small-strain Kelvin-Voigt damping -- see `small_strain_elastic_viscosity_pa_s`'s
     // doc (Seed & Idriss 1970 + Darendeli 2001, zeta 0.5%-2% for clean sand). Below the
     // Drucker-Prager yield cone this material has no dissipation of its own, and a firm
@@ -155,7 +151,7 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
             shear_modulus_pa,
             0.005,
         );
-    let elastic_viscosity = config.visc_from_si(elastic_viscosity_pa_s, SAND_DENSITY_KG_M3);
+    let elastic_viscosity = config.visc_from_si(elastic_viscosity_pa_s);
     DruckerPragerMaterial {
         // Quartz critical-state friction angle (Bolton 1986, "The strength and
         // dilatancy of sands", Geotechnique 36(1):65-78): an intrinsic property
@@ -165,6 +161,9 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
         saturation_cohesion_coeff,
         pendular_regime_ceiling: PENDULAR_REGIME_CEILING,
         elastic_viscosity,
+        // Its density, so a body spawned without a stated mass weighs what
+        // this sand does (`SpawnRegion::declared_mass`).
+        rest_density: Some(config.density_from_si(SAND_DENSITY_KG_M3)),
         ..DruckerPragerMaterial::new(lambda, mu)
     }
 }
@@ -189,11 +188,7 @@ fn make_sand(config: &SimConfig) -> DruckerPragerMaterial {
 /// water carries part of the total stress once saturated, so the grain skeleton is
 /// softer); the direction is physical, the factor is not a measured wet-sand modulus.
 fn make_mixture(config: &SimConfig) -> GranularFluidMaterial {
-    let (lambda, mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA * 0.5,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA * 0.5, SAND_POISSON_RATIO);
     const EOS_STIFFNESS: f32 = 200.0;
     GranularFluidMaterial {
         mu,

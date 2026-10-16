@@ -187,9 +187,7 @@ fn make_sim() -> Simulation {
     // `q_factor_elastic_viscosity_pa_s` for a ~917x instance of that mistake). The
     // raw 1.0e-3 would be ~10x too weak here (grid value 0.01).
     const WATER_DYNAMIC_VISCOSITY_PA_S: f32 = 1.0e-3;
-    const WATER_RHO_SI_KG_M3_FOR_VISC: f32 = 1000.0;
-    let water_dynamic_viscosity =
-        config.visc_from_si(WATER_DYNAMIC_VISCOSITY_PA_S, WATER_RHO_SI_KG_M3_FOR_VISC);
+    let water_dynamic_viscosity = config.visc_from_si(WATER_DYNAMIC_VISCOSITY_PA_S);
     let mut water = NewtonianFluidMaterial::new(
         0.1,
         water_dynamic_viscosity,
@@ -203,8 +201,7 @@ fn make_sim() -> Simulation {
     // essentially never cavitates from ordinary splashing. The unit gap does not
     // depend on the backend.
     const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
-    const WATER_RHO_SI_KG_M3: f32 = 1000.0;
-    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA, WATER_RHO_SI_KG_M3);
+    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA);
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {

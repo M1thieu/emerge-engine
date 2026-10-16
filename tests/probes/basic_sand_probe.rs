@@ -29,11 +29,7 @@ fn make_sim(max_substeps_per_step: usize, gravity_fraction: f32) -> Simulation {
         ..SimConfig::earth(GRID, 0.01, DT)
     };
     config.gravity *= gravity_fraction;
-    let (lambda, mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (lambda, mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     let mass_grid = (SAND_DENSITY_KG_M3 / config.reference_density_kg_m3) * 0.5 * 0.5;
     let spawn = |c: Vec2, mat, seed| SpawnRegion {
         spacing: 0.5,

@@ -3582,7 +3582,7 @@ fn hydrostatic_pressure_matches_rho_g_h() {
         }
         let depth_m = depth_cells * dx_m;
         let p_expected_pa = water.rho_kg_m3 * g_si * depth_m;
-        let p_expected_grid = config.stress_from_si(p_expected_pa, water.rho_kg_m3);
+        let p_expected_grid = config.stress_from_si(p_expected_pa);
 
         let soa = Particles::from(vec![particles.get(i)]);
         let tau = mat.kirchhoff_stress(&soa, 0);

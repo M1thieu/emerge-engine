@@ -536,24 +536,6 @@ impl BinghamProps {
 // All three divide by `rho dx^2` (see `SimConfig::stress_from_si`), so they
 // move together and never mix with raw grid-unit Lamé parameters.
 
-/// Scale SI stress (Pa) to grid units: `p_grid = p_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_stress(pa: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.stress_from_si(pa, rho)
-}
-
-/// Scale SI viscosity (Pa·s) to grid units: `η_grid = η_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_visc(eta: f32, rho: f32, config: &SimConfig) -> f32 {
-    config.visc_from_si(eta, rho)
-}
-
-/// Scale SI Young's modulus to grid Lamé parameters: `λ_SI / (ρ · dx²)`.
-#[inline]
-pub(super) fn scale_lame(e_pa: f32, nu: f32, rho: f32, config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si(e_pa, nu, rho)
-}
-
 // ── Reference SI values used in unit tests below ─────────────────────────────
 #[cfg(test)]
 mod _ref {

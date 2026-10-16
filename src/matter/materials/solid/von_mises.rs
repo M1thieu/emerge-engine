@@ -1,7 +1,7 @@
 use glam::{Mat2, Vec2};
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{DuctileProps, FromSI, scale_lame, scale_stress};
+use crate::materials::physical_props::{DuctileProps, FromSI};
 use crate::materials::solid::corotated::stress::corotated_elastic_stress;
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
@@ -146,12 +146,7 @@ impl VonMisesMaterial {
 
 impl FromSI<DuctileProps> for VonMisesMaterial {
     fn from_physical(props: &DuctileProps, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(
-            props.elastic.e_pa,
-            props.elastic.nu,
-            props.elastic.rho_kg_m3,
-            config,
-        );
+        let (lambda, mu) = config.lame_from_si(props.elastic.e_pa, props.elastic.nu);
         // Tables give the uniaxial yield stress. J2 flow yields where
         // sqrt(3 J2) reaches it, J2 = s:s / 2, so |s|_F = sqrt(2/3) sigma_Y. In
         // plane strain with incompressible plastic flow the out-of-plane
@@ -159,7 +154,7 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
         // material tests. Fed in as is, a table value set the threshold
         // sqrt(3/2), about 1.22, times too high.
         let yield_frobenius = (2.0f32 / 3.0).sqrt() * props.yield_stress_pa;
-        let yield_stress = scale_stress(yield_frobenius, props.elastic.rho_kg_m3, config);
+        let yield_stress = config.stress_from_si(yield_frobenius);
         Self {
             rest_density: Some(props.elastic.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu, yield_stress)
@@ -320,7 +315,7 @@ mod uniaxial_yield_tests {
             yield_stress_pa: 30_000.0,
         };
         let mat = VonMisesMaterial::from_physical(&props, &config);
-        let sigma_y = scale_stress(props.yield_stress_pa, props.elastic.rho_kg_m3, &config);
+        let sigma_y = &config.stress_from_si(props.yield_stress_pa);
         // Hencky strains (a, -a, 0): deviator 2 mu (a, -a, 0), so J2 = 4 mu^2 a^2
         // and sqrt(3 J2) = 2 sqrt(3) mu a.
         let a = sigma_y / (2.0 * 3.0f32.sqrt() * mat.mu);

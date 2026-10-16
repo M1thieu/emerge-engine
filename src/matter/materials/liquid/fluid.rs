@@ -1,6 +1,6 @@
 use glam::{Mat2, Vec2};
 
-use crate::materials::physical_props::{FromSI, NewtonianFluid, scale_stress, scale_visc};
+use crate::materials::physical_props::{FromSI, NewtonianFluid};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::volume_ratio::advance_log_volume_ratio;
 use crate::particle::{Particle, ParticleUpdateCtx, Particles};
@@ -202,8 +202,8 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // Tait EOS polytropic exponent for water -- Cole 1948, "Underwater Explosions";
         // standard in SPH/MPM weakly-compressible fluid solvers (Monaghan 1994).
         const GAMMA: f32 = 7.0;
-        let visc = scale_visc(props.eta_pa_s, props.rho_kg_m3, config);
-        let eos = scale_stress(props.bulk_modulus_pa / GAMMA, props.rho_kg_m3, config);
+        let visc = config.visc_from_si(props.eta_pa_s);
+        let eos = config.stress_from_si(props.bulk_modulus_pa / GAMMA);
         // rest_density must be in the SAME units `particles.density[i]` actually
         // comes out in. A particle spawned at `spacing` carries
         // `grid_density * spacing^2` of mass in a `spacing^2` cell area, so the
@@ -225,13 +225,18 @@ impl FromSI<NewtonianFluid> for NewtonianFluidMaterial {
         // `scale_stress`/`stress_from_si` as `eos`, at this material's own
         // `props.rho_kg_m3`.
         const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
-        material.pressure_floor =
-            scale_stress(REAL_CAVITATION_PRESSURE_PA, props.rho_kg_m3, config);
+        material.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA);
         material
     }
 }
 
 impl MaterialModel for NewtonianFluidMaterial {
+    /// The fluid's rest density in the grid's mass unit per cell area: a
+    /// body spawned without a stated mass takes it (`Simulation::add_body`).
+    fn rest_density(&self) -> Option<f32> {
+        Some(self.rest_density)
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Fluid
     }
@@ -562,7 +567,7 @@ mod si_construction_tests {
             bulk_modulus_pa: 1000.0 * 20.0 * 20.0,
         };
         let si = NewtonianFluidMaterial::from_physical(&props, &cfg);
-        let expected = cfg.stress_from_si(-100_000.0, props.rho_kg_m3);
+        let expected = cfg.stress_from_si(-100_000.0);
         assert!(
             (si.pressure_floor - expected).abs() < 1.0e-6,
             "from_physical: pressure_floor={} -- expected {expected} (real cavitation \

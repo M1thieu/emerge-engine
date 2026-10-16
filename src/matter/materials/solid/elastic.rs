@@ -1,7 +1,7 @@
 use glam::Mat2;
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
+use crate::materials::physical_props::{Elastic, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
 use crate::matter::kinematics::volume_ratio::MIN_J;
@@ -189,7 +189,7 @@ impl NeoHookeanMaterial {
 
 impl FromSI<Elastic> for NeoHookeanMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.e_pa, props.nu);
         Self {
             rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)

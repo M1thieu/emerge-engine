@@ -73,7 +73,7 @@ fn self_weight_shortening_against_plane_strain_elasticity() {
         initial_velocity_scale: 0.0,
         ..SpawnRegion::for_sim(&config)
     };
-    let (lambda, mu) = config.lame_from_si(E_PA, NU, RHO);
+    let (lambda, mu) = config.lame_from_si(E_PA, NU);
     let mut material = NeoHookeanMaterial::new(lambda, mu);
     material.viscosity = damp * mu;
     let mut sim = Simulation::new(config, spawn)

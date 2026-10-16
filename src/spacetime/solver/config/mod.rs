@@ -386,6 +386,11 @@ pub struct SimConfig {
     ///
     /// Example: if the simulation domain is 64 cells representing 0.64 m, set `dx_meters = 0.01`.
     pub dx_meters: f32,
+    /// The opt-in total Lagrangian path for elastic solids (energy kept
+    /// exactly, walls and bodies by contact; `total_lagrangian_solids`).
+    /// `None` (default): the explicit MLS-MPM step.
+    pub total_lagrangian:
+        Option<crate::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig>,
 
     /// Out-of-plane thickness, in metres, of the slab the 2D scene stands
     /// for. `None` (the default) means the scene has not stated one.
@@ -460,6 +465,7 @@ impl Default for SimConfig {
             fluid_pressure_iterations: 0,
             spatial_sort_enabled: false,
             dx_meters: 1.0,
+            total_lagrangian: None,
             slice_thickness_m: None,
             implicit_corotated_elastic: false,
         }
@@ -523,27 +529,46 @@ impl SimConfig {
     }
 
     // ── SI conversion helpers ─────────────────────────────────────────────────
-    // Grid stress is SI stress over `rho dx^2` (a squared speed in cells/s),
-    // never dt-dependent. Pair stress and viscosity conversions only with
-    // Lamé parameters from `lame_from_si`: the same `rho dx^2` must divide
-    // every term added into one stress tensor.
+    // The grid's units: length `dx_meters` (a cell), time the second, mass
+    // per metre of depth `grid_mass_unit` = `reference_density_kg_m3 *
+    // dx_meters^2` (one cell's area at the reference density). Substituting
+    // them into `m a = -sum A sigma grad N` (SI, per metre of depth) gives
+    // `m~ a~ = -sum A~ sigma~ grad~N` with `sigma~ = sigma / grid_mass_unit`
+    // and `m~ = rho A / grid_mass_unit`: ONE stress unit for every material
+    // (Lame parameters, pressure, EOS stiffness, viscosity alike), and each
+    // particle's mass from its material's own density. `reference_density`
+    // is a conditioning constant of that layer, not physics: any value
+    // gives the same motion.
 
-    /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters,
-    /// through [`lame_from_si`] at this config's `dx_meters`.
-    pub fn lame_from_si(&self, e_pa: f32, nu: f32, rho_kg_m3: f32) -> (f32, f32) {
-        lame_from_si(e_pa, nu, rho_kg_m3, self.dx_meters)
+    /// The grid's mass unit per metre of depth, kg/m: one cell's area at the
+    /// reference density. Grid stress is SI stress over it.
+    pub fn grid_mass_unit_kg_per_m(&self) -> f32 {
+        self.reference_density_kg_m3 * self.dx_meters * self.dx_meters
     }
 
-    /// SI stress or pressure (Pa) to grid units: `p / (rho dx^2)`.
-    pub fn stress_from_si(&self, pa: f32, rho_kg_m3: f32) -> f32 {
-        pa / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    /// SI Young's modulus (Pa) and Poisson's ratio to grid Lamé parameters.
+    pub fn lame_from_si(&self, e_pa: f32, nu: f32) -> (f32, f32) {
+        let (lambda, mu) = lame_from_young(e_pa, nu);
+        let unit = self.grid_mass_unit_kg_per_m();
+        (lambda / unit, mu / unit)
     }
 
-    /// SI dynamic viscosity (Pa s) to grid units: `eta / (rho dx^2)`, the
-    /// kinematic viscosity in cells^2/s (grid stress += viscosity * strain
-    /// rate in 1/s).
-    pub fn visc_from_si(&self, eta_pa_s: f32, rho_kg_m3: f32) -> f32 {
-        eta_pa_s / (rho_kg_m3 * self.dx_meters * self.dx_meters)
+    /// SI stress or pressure (Pa) to grid units.
+    pub fn stress_from_si(&self, pa: f32) -> f32 {
+        pa / self.grid_mass_unit_kg_per_m()
+    }
+
+    /// SI dynamic viscosity (Pa s) to grid units (grid stress = viscosity
+    /// times a strain rate in 1/s).
+    pub fn visc_from_si(&self, eta_pa_s: f32) -> f32 {
+        eta_pa_s / self.grid_mass_unit_kg_per_m()
+    }
+
+    /// A material's SI density as the grid's density (mass per cell area,
+    /// in `grid_mass_unit` per cell): the particle mass a lattice at
+    /// `spacing` cells gives it is this times `spacing^2`.
+    pub fn density_from_si(&self, rho_kg_m3: f32) -> f32 {
+        rho_kg_m3 / self.reference_density_kg_m3
     }
 
     /// The stated slice thickness, for a feature that cannot work without
@@ -672,20 +697,6 @@ impl SimConfig {
 // re-export in lib.rs) keeps resolving unchanged.
 mod spawn;
 pub use spawn::{SpawnRegion, SpawnShape};
-
-/// SI Young's modulus and Poisson's ratio to grid Lamé parameters:
-/// `lambda_SI / (rho dx^2)`, the squared elastic wave speed in cells/s, the
-/// same at every timestep.
-pub fn lame_from_si(
-    young_modulus_pa: f32,
-    poisson_ratio: f32,
-    rest_density_kg_m3: f32,
-    dx_meters: f32,
-) -> (f32, f32) {
-    let (lambda_si, mu_si) = lame_from_young(young_modulus_pa, poisson_ratio);
-    let scale = 1.0 / (rest_density_kg_m3 * dx_meters * dx_meters);
-    (lambda_si * scale, mu_si * scale)
-}
 
 /// Convert SI gravity (m/s²) to solver units (grid cells / s²).
 ///

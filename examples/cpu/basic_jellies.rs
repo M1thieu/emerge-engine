@@ -68,15 +68,11 @@ const JELLY_VISCOSITY_PA_S: f32 = 1.0;
 /// `lame_from_young` directly, never touching `dx_meters` or density, so its
 /// `young_modulus` is not in pascals despite the name.
 fn jelly_lame(config: &SimConfig) -> (f32, f32) {
-    config.lame_from_si(
-        JELLY_YOUNG_MODULUS_PA,
-        JELLY_POISSON_RATIO,
-        JELLY_DENSITY_KG_M3,
-    )
+    config.lame_from_si(JELLY_YOUNG_MODULUS_PA, JELLY_POISSON_RATIO)
 }
 
 fn jelly_visc_grid(config: &SimConfig) -> f32 {
-    config.visc_from_si(JELLY_VISCOSITY_PA_S, JELLY_DENSITY_KG_M3)
+    config.visc_from_si(JELLY_VISCOSITY_PA_S)
 }
 
 impl Params {

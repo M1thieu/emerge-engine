@@ -102,11 +102,7 @@ fn make_sim() -> Simulation {
     // checking live (is it still controllable), not only with a headless stability
     // probe.
     let elastic = NeoHookeanMaterial::new(40.0, 80.0);
-    let (sand_lambda, sand_mu) = config.lame_from_si(
-        SAND_YOUNG_MODULUS_PA,
-        SAND_POISSON_RATIO,
-        SAND_DENSITY_KG_M3,
-    );
+    let (sand_lambda, sand_mu) = config.lame_from_si(SAND_YOUNG_MODULUS_PA, SAND_POISSON_RATIO);
     let sand = DruckerPragerMaterial::new(sand_lambda, sand_mu);
     // Water through `NewtonianFluidMaterial::low_viscosity` (Tait exponent 7.0, Cole
     // 1948; water viscosity). rest_density=0.1 (`rho*dx^2` for water at dx=0.01, see
