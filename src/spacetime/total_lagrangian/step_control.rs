@@ -84,6 +84,13 @@ pub fn tolerance_energy<'a>(
     kinetic_and_stored + work
 }
 
+/// Whether `EMERGE_PROBE_ERROR_SPLIT` is set (read once): the controller's
+/// error split probe (`controlled_step`).
+fn error_split() -> bool {
+    static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_ERROR_SPLIT").is_some())
+}
+
 /// The controller's settings: `tolerance` relative to the square root of
 /// the scene's `tolerance_energy`, `safety` their `rho`, `growth` the largest ratio of one step to
 /// the last, `largest` the longest step (s).
@@ -196,14 +203,15 @@ pub fn controlled_step(
     (control, scale): (&StepControl, f64),
 ) -> ControlledStep {
     let Particles { x, v, f, mass, v0 } = particles;
-    // The tries' time by part, and theirs in all, the rest the
-    // controller's own.
+    // The tries' time by part, and their wall time in all (each try's
+    // whole run, timed around it: their phases leave out the multipliers'
+    // responses and the contact passes, which then read as the
+    // controller's), the rest the controller's own.
     let controlling = std::time::Instant::now();
-    let (mut timing, mut stepping) = (Timing::default(), 0.0);
-    let account = |reports: &[StepReport], timing: &mut Timing, stepping: &mut f64| {
+    let (mut timing, trying) = (Timing::default(), std::cell::Cell::new(0.0f64));
+    let account = |reports: &[StepReport], timing: &mut Timing| {
         for r in reports {
             timing.add(&r.timing);
-            *stepping += r.phases.iter().sum::<f64>();
         }
     };
     let start = State {
@@ -253,6 +261,7 @@ pub fn controlled_step(
     };
     let mut solves = 0u32;
     let mut run = |pieces: usize, dt: f64| -> (State, Vec<StepReport>, bool) {
+        let tried = std::time::Instant::now();
         let mut s = start.clone();
         let mut reports = Vec::with_capacity(pieces);
         let mut contact = false;
@@ -303,6 +312,7 @@ pub fn controlled_step(
             reports.push(report);
         }
         solves += pieces as u32;
+        trying.set(trying.get() + tried.elapsed().as_secs_f64());
         (s, reports, contact)
     };
     let target = control.tolerance * scale;
@@ -344,10 +354,43 @@ pub fn controlled_step(
         if control.estimator == Estimator::Acary {
             let (whole, whole_reports, _) = run(1, dt);
             let (halves, halves_reports, _) = run(2, dt);
-            account(&whole_reports, &mut timing, &mut stepping);
-            account(&halves_reports, &mut timing, &mut stepping);
+            account(&whole_reports, &mut timing);
+            account(&halves_reports, &mut timing);
             let difference = combine(1.0, &halves, -1.0, &whole);
             let parts = split(&difference, dt);
+            // `EMERGE_PROBE_ERROR_SPLIT`, a measurement:
+            // the estimate's energy split between the particles' rigid motion
+            // as one body (the only motion below the frame rate for a block
+            // whose first elastic mode is far above it) and the rest, its
+            // deformation's error included; one line per pair of tries.
+            if error_split() {
+                let massive = (0..start.x.len()).filter(|&p| mass[p] > 0.0);
+                let total: f64 = massive.clone().map(|p| mass[p]).sum();
+                let centre = massive.clone().map(|p| mass[p] * start.x[p]).sum::<DVec2>() / total;
+                let w = |p: usize| difference.x[p] / dt;
+                let drift = massive.clone().map(|p| mass[p] * w(p)).sum::<DVec2>() / total;
+                let arm = |p: usize| start.x[p] - centre;
+                let inertia: f64 = massive
+                    .clone()
+                    .map(|p| mass[p] * arm(p).length_squared())
+                    .sum();
+                let spin = massive
+                    .clone()
+                    .map(|p| mass[p] * arm(p).perp_dot(w(p) - drift))
+                    .sum::<f64>()
+                    / inertia.max(f64::MIN_POSITIVE);
+                let rigid: f64 = massive
+                    .map(|p| 0.5 * mass[p] * (drift + spin * arm(p).perp()).length_squared())
+                    .sum();
+                let all = parts.0 * parts.0 + parts.1 * parts.1;
+                println!(
+                    "error split: dt {dt:.3e}, error {:.3e} of the target, energy {all:.3e} (kinetic {:.3e}, strain {:.3e}), rigid share {:.4e}",
+                    norm(&difference, dt) / 3.0 / target.max(f64::MIN_POSITIVE),
+                    parts.0 * parts.0,
+                    parts.1 * parts.1,
+                    rigid / all.max(f64::MIN_POSITIVE)
+                );
+            }
             // Eqs. 68-70: free at the start, beyond at the end, in either.
             let reaching = [beyond(&whole.x), beyond(&halves.x)]
                 .iter()
@@ -366,7 +409,7 @@ pub fn controlled_step(
             let next = (ratio * dt).clamp(floor, control.largest);
             let at_floor = error > target && dt <= floor;
             #[cfg(all(test, feature = "experimental"))]
-            if std::env::var_os("EMERGE_PROBE_CONTROL_TRACE").is_some() {
+            if std::env::var_os("EMERGE_PROBE_CONTROL_TRACE").is_some() || hooks::control_trace() {
                 println!(
                     "  try dt {dt:.3e}: error {:.3e} of the target (kinetic {:.2e}, elastic {:.2e}), reaching {reaching}, ratio {ratio:.3e}{}",
                     error / target,
@@ -400,7 +443,7 @@ pub fn controlled_step(
                     .iter()
                     .any(|r| r.push > 0.0 || r.contacts > 0);
                 let stalled = halves_reports.iter().filter(|r| r.stagnated).count() as u32;
-                timing.controller = controlling.elapsed().as_secs_f64() - stepping;
+                timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
                 return ControlledStep {
                     timing,
                     dt,
@@ -423,8 +466,8 @@ pub fn controlled_step(
         }
         let (first, first_reports, contact_first) = run(control.substeps[0], dt);
         let (second, second_reports, contact_second) = run(control.substeps[1], dt);
-        account(&first_reports, &mut timing, &mut stepping);
-        account(&second_reports, &mut timing, &mut stepping);
+        account(&first_reports, &mut timing);
+        account(&second_reports, &mut timing);
         let (c1, c2, beta) = pair(k1, k2);
         let second_two = combine(c1, &first, c2, &second);
         let contact = contact_first || contact_second;
@@ -437,7 +480,7 @@ pub fn controlled_step(
             (second, second_reports, error, ratio, false, parts)
         } else {
             let (third, third_reports, _) = run(control.substeps[2], dt);
-            account(&third_reports, &mut timing, &mut stepping);
+            account(&third_reports, &mut timing);
             // Eqs. 36-38: the next pair's extrapolation and the
             // combination that cancels the `tau^(1/2)` term.
             let (d2, d3, alpha) = pair(k2, k3);
@@ -477,7 +520,7 @@ pub fn controlled_step(
         let next = (ratio.min(control.growth) * dt).clamp(floor, control.largest);
         let at_floor = error > target && dt <= floor;
         #[cfg(all(test, feature = "experimental"))]
-        if std::env::var_os("EMERGE_PROBE_CONTROL_TRACE").is_some() {
+        if std::env::var_os("EMERGE_PROBE_CONTROL_TRACE").is_some() || hooks::control_trace() {
             let onset = reports
                 .iter()
                 .position(|r| r.contacts > 0)
@@ -510,7 +553,7 @@ pub fn controlled_step(
             *cache = kept.cache;
             *tau = next;
             let stalled = reports.iter().filter(|r| r.stagnated).count() as u32;
-            timing.controller = controlling.elapsed().as_secs_f64() - stepping;
+            timing.controller = controlling.elapsed().as_secs_f64() - trying.get();
             return ControlledStep {
                 timing,
                 dt,

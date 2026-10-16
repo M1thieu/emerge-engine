@@ -9,6 +9,31 @@ pub(crate) fn set_trapezoid(on: bool) {
     TRAPEZOID.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The multipliers' responses started from zero instead of from their last
+/// ones (`Factors::responses`), to compare the warm start: a process-wide
+/// switch, set between frames.
+static COLD_RESPONSES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_cold_responses(on: bool) {
+    COLD_RESPONSES.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn cold_responses() -> bool {
+    COLD_RESPONSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Every try of the step controller printed (`controlled_step`), as
+/// `EMERGE_PROBE_CONTROL_TRACE` does, switched on for one frame by a probe.
+static CONTROL_TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_control_trace(on: bool) {
+    CONTROL_TRACE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn control_trace() -> bool {
+    CONTROL_TRACE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The MAC grid's staggered lattices instead of the collocated ones
 /// (`lattices`), to compare: on when the environment variable
 /// `EMERGE_PROBE_STAGGERED` is set.

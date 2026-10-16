@@ -166,6 +166,42 @@ pub(crate) fn step_total_lagrangian(
     report
 }
 
+/// The grid `step_total_lagrangian_contact` builds on the reference
+/// configuration and keeps in its cache.
+pub(crate) fn contact_grid(
+    layout: &GridLayout,
+    reference: &[DVec2],
+    (mass, v0): (&[f64], &[f64]),
+    settings: &ConservingSettings,
+) -> Grid {
+    Grid::new(
+        layout,
+        reference,
+        (mass, v0),
+        &|_, _, _| None,
+        settings.occupation,
+    )
+}
+
+/// The velocity field `step_total_lagrangian_contact` starts from, at every
+/// point: the points' velocities `v` projected on its grid (`contact_grid`,
+/// `grid_velocity`). A point without mass (a body's contact point) has no
+/// velocity of its own: its velocity is this field's, the one its step's
+/// increments then move.
+pub(crate) fn start_velocity_field(
+    layout: &GridLayout,
+    reference: &[DVec2],
+    (mass, v0, v): (&[f64], &[f64], &[DVec2]),
+    settings: &ConservingSettings,
+) -> Vec<DVec2> {
+    let grid = contact_grid(layout, reference, (mass, v0), settings);
+    let factor = grid.mass_band(mass, settings.epsilon);
+    let (v_n, _) = grid_velocity(&grid, (mass, v), settings.epsilon, &factor);
+    (0..reference.len())
+        .map(|p| DVec2::new(grid.read(&v_n, p, 0).0, grid.read(&v_n, p, 1).0))
+        .collect()
+}
+
 /// A contact between two bodies for `step_total_lagrangian_contact`: a
 /// particle of one, the facing particle of the other, and the plane whose
 /// axis and inward sign measure their separation (`inward (x_p - x_q) >=
@@ -265,13 +301,7 @@ pub fn step_total_lagrangian_contact(
         heat,
         traces,
     } = cache.get_or_insert_with(|| LagrangianCache {
-        grid: Grid::new(
-            layout,
-            reference,
-            (mass, v0),
-            &|_, _, _| None,
-            settings.occupation,
-        ),
+        grid: contact_grid(layout, reference, (mass, v0), settings),
         factors: Factors::default(),
         contacts: Vec::new(),
         kept: Vec::new(),

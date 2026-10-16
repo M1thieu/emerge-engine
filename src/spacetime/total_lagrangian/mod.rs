@@ -171,9 +171,18 @@ impl Default for ConservingSettings {
 pub struct Timing {
     /// The residual's evaluations: Newton's, the line search's, the starts'.
     pub residual: f64,
-    /// The Jacobian-vector products (the internal force's finite
-    /// differences and the push's derivative), inside GMRES.
+    /// The Jacobian-vector products (the internal force's derivative and
+    /// the push's), inside GMRES.
     pub jacobian: f64,
+    /// Building the particles' linearisations the products use, once per
+    /// Newton iterate (`solve`'s `Linearised`).
+    pub linearisation: f64,
+    /// Of `jacobian`, the push's derivative (central differences of the
+    /// walls' push with the active set frozen).
+    pub push_derivative: f64,
+    /// Of `jacobian`, the products the multipliers' responses took (their
+    /// own GMRES solves, `responses`).
+    pub responses_jacobian: f64,
     /// Building and factoring the preconditioner, and applying it.
     pub preconditioner_build: f64,
     pub preconditioner_solve: f64,
@@ -206,6 +215,9 @@ impl Timing {
     pub fn add(&mut self, other: &Timing) {
         self.residual += other.residual;
         self.jacobian += other.jacobian;
+        self.linearisation += other.linearisation;
+        self.push_derivative += other.push_derivative;
+        self.responses_jacobian += other.responses_jacobian;
         self.preconditioner_build += other.preconditioner_build;
         self.preconditioner_solve += other.preconditioner_solve;
         self.gmres += other.gmres;
@@ -233,6 +245,15 @@ pub struct StepReport {
     /// stored energy's change exactly), so its equations held to Newton's
     /// tolerance bound the step's energy error by this.
     pub residual_work: f64,
+    /// The unconverged residual's net force per axis, N/m: the internal
+    /// forces sum to zero (the basis's partition of unity), so the step's
+    /// momentum change differs from the external and wall impulses by `dt`
+    /// times this, up to `force_round_off`.
+    pub residual_force: DVec2,
+    /// The round-off of the internal forces' sum, N/m: `16 eps` times the
+    /// sum over unknowns of the stiffness's size there (the residual floor's
+    /// terms, `solve`, summed instead of maximised).
+    pub force_round_off: f64,
     /// The most work the contacts' normal forces can do over the step,
     /// `sum_v lambda_v a_v` with `a_v` each condition's tolerance on the
     /// gap it leaves (`step_total_lagrangian_contact`): held in velocity,

@@ -333,18 +333,30 @@ pub(crate) fn point_geometry(
                 x[c.particle][plane.axis] - plane.at,
                 moved(c.particle)[plane.axis],
             );
-            let mut spread = [(c.particle, 1.0), (c.particle, 0.0), (c.particle, 0.0)];
             if let Some(q) = c.partner {
                 start -= x[q][plane.axis];
                 displacement -= moved(q)[plane.axis];
-                spread[1] = (q, -1.0);
             }
             let separation = start + displacement;
-            let mut normal = DVec2::ZERO;
-            normal[plane.axis] = plane.inward;
+            let (normal, spread) = plane_share(planes, c);
             (plane.inward * separation, normal, spread)
         }
     }
+}
+
+/// A plane contact point's normal and spread (`point_geometry`'s plane
+/// branch): the plane's inward normal, `+1` on the point, `-1` on its
+/// partner across the plane. Neither depends on the displacement, so the
+/// point's gap is linear in it.
+pub(crate) fn plane_share(planes: &[Plane], c: &ContactPoint) -> (DVec2, [(usize, f64); 3]) {
+    let plane = planes[c.plane];
+    let mut spread = [(c.particle, 1.0), (c.particle, 0.0), (c.particle, 0.0)];
+    if let Some(q) = c.partner {
+        spread[1] = (q, -1.0);
+    }
+    let mut normal = DVec2::ZERO;
+    normal[plane.axis] = plane.inward;
+    (normal, spread)
 }
 
 /// The magnitudes the gap `point_geometry` computes is summed from, whose

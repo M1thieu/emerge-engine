@@ -10,6 +10,51 @@ fn timed(clock: &Cell<f64>, start: Instant) {
     clock.set(clock.get() + start.elapsed().as_secs_f64());
 }
 
+/// Whether `EMERGE_PROBE_PUSH_CHECK` is set (read once): the exact plane
+/// push derivative compared with central differences on every product.
+fn push_check() -> bool {
+    static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_PUSH_CHECK").is_some())
+}
+
+/// A plane contact point's part of its contact's push along a direction
+/// `d` (`plane_push_product`): its weight, normal, spread over particles,
+/// and its spread's relative motion along `d`.
+type PlaneShare = (f64, DVec2, [(usize, f64); 3], DVec2);
+
+/// The grid velocity of the points' velocities `v`: the consistent-mass
+/// projection `M_eps v_n = sum_p N(x_p) m_p v_p` (Love and Sulsky's eq. 28,
+/// with the effective mass of their eq. 26), on the unknowns with some mass
+/// (`Grid::massive`), by conjugate gradients preconditioned with the band
+/// factor `factor` of `M_eps`. Returns `v_n` and the right-hand side.
+pub(crate) fn grid_velocity(
+    grid: &Grid,
+    (mass, v): (&[f64], &[DVec2]),
+    eps: f64,
+    factor: &Band,
+) -> (Vec<f64>, Vec<f64>) {
+    let massive = grid.massive();
+    let mut rhs = vec![0.0; grid.len];
+    for (p, (&m, vp)) in mass.iter().zip(v.iter()).enumerate() {
+        for a in 0..2 {
+            let s = m * vp[a];
+            grid.visit(p, a, |k, w, _| rhs[k] += w * s);
+        }
+    }
+    for (value, &on) in rhs.iter_mut().zip(&massive) {
+        if !on {
+            *value = 0.0;
+        }
+    }
+    let v_n = preconditioned_cg(
+        &|y: &[f64]| grid.mass_times(y, mass, eps),
+        &rhs,
+        &|r: &[f64]| factor.solve(r),
+        &massive,
+    );
+    (v_n, rhs)
+}
+
 /// One step's solve on a grid with its current active set: the grid's
 /// change `u`, its velocity before `v_n` and the report.
 pub(crate) struct Solution {
@@ -67,18 +112,32 @@ pub(crate) struct Inputs<'a> {
 }
 
 /// The band factors a step's solves share across the walls' passes
-/// (`step`) while the grid stays the same: both are dropped when a face
-/// is let go or held again, and the Jacobian's is rebuilt when the held
-/// particles change, as their penalties are in it.
+/// (`step`) while the grid stays the same, and the last responses: all are
+/// dropped when a face is let go or held again, and the Jacobian's factor
+/// is rebuilt when the held particles change, as their penalties are in
+/// it.
 #[derive(Clone, Default)]
 pub(crate) struct Factors {
     pub(crate) mass: Option<Band>,
     pub(crate) jacobian: Option<(Vec<Spring>, Band)>,
+    /// The last responses computed, by contact key and direction: each
+    /// next response's GMRES starts from its own (`gmres_from`).
+    pub(crate) responses: Vec<(ContactKey, bool, Vec<f64>)>,
 }
 
 /// A held particle's penalty in the preconditioner: particle, lattice,
 /// stiffness (`Grid::approximate_jacobian`).
 pub(crate) type Spring = (usize, usize, f64);
+
+/// One particle's linearisation at a Newton iterate: its end deformation
+/// `F_{n+1}`, its step stress, and that stress's derivative in `C_{n+1}`
+/// along `E_11`, `E_22` and `E_12 + E_21` (`Elastic::step_stress_tangent`).
+#[derive(Clone, Copy, Default)]
+struct Linearised {
+    f1: DMat2,
+    s: DMat2,
+    ds: [DMat2; 3],
+}
 
 /// The step's nonlinear solve on `grid` (`step`).
 pub(crate) fn solve(
@@ -111,30 +170,11 @@ pub(crate) fn solve(
     let eps = settings.epsilon;
     // The midpoint's inertia, `2 M (u / dt - v_n) / dt`.
     let inertia = 2.0;
-    // The grid velocity: the consistent-mass projection (eq. 28), on the
-    // unknowns with some mass (`Grid::massive`).
-    let massive = grid.massive();
-    let mut rhs = vec![0.0; grid.len];
-    for (p, (&m, vp)) in mass.iter().zip(v.iter()).enumerate() {
-        for a in 0..2 {
-            let s = m * vp[a];
-            grid.visit(p, a, |k, w, _| rhs[k] += w * s);
-        }
-    }
-    for (value, &on) in rhs.iter_mut().zip(&massive) {
-        if !on {
-            *value = 0.0;
-        }
-    }
+    // The grid velocity: the consistent-mass projection (eq. 28).
     let factor = factors
         .mass
         .get_or_insert_with(|| grid.mass_band(mass, eps));
-    let v_n = preconditioned_cg(
-        &|y: &[f64]| grid.mass_times(y, mass, eps),
-        &rhs,
-        &|r: &[f64]| factor.solve(r),
-        &massive,
-    );
+    let (v_n, rhs) = grid_velocity(grid, (mass, v), eps, factor);
     let projected = grid.mass_times(&v_n, mass, eps);
     let projection = (projected
         .iter()
@@ -204,14 +244,9 @@ pub(crate) fn solve(
             let f1 = deformation_at(u, p);
             let f0 = f_now[p];
             let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
-            let s = solids[p].algorithmic_stress_over(c0, c1, dt);
-            // The Kelvin-Voigt dashpot in parallel: its stress over the
-            // step (`Elastic::viscous_stress_over`), on the same `F_n+1/2`.
-            let s = if solids[p].is_viscous() {
-                s + solids[p].viscous_stress_over(c0, c1, dt)
-            } else {
-                s
-            };
+            // The law's step stress and the Kelvin-Voigt dashpot's in
+            // parallel, on the same `F_n+1/2` (`Elastic::step_stress`).
+            let s = solids[p].step_stress(c0, c1, dt);
             #[cfg(all(test, feature = "experimental"))]
             let s = match &pressures {
                 Some((cells, pressure)) => solids[p].mixed_stress(
@@ -276,6 +311,11 @@ pub(crate) fn solve(
      -> Vec<f64> {
         let mut out = vec![0.0; grid.len];
         for (i, c) in contacts.iter().enumerate() {
+            // A frozen set's free contact pushes nothing (`contact_force`):
+            // its geometry is not needed.
+            if frozen.is_some_and(|set| !set[i].pressed) {
+                continue;
+            }
             let (mut multiplier, mut tangential) = (c.multiplier, c.tangential);
             match bump {
                 Some((j, false, amount)) if j == i => multiplier += amount,
@@ -459,7 +499,7 @@ pub(crate) fn solve(
     // configuration's size, since the stress's round-off is relative to
     // `F`, not to the stress; the factor 16 is this engine's margin over
     // the measured floor (declared).
-    let floor = {
+    let (floor, force_round_off) = {
         let rows = parallel_scatter(grid.len, n, |p, acc| {
             let f = f_now[p];
             let size = (f.x_axis.length_squared() + f.y_axis.length_squared()).sqrt();
@@ -468,7 +508,10 @@ pub(crate) fn solve(
                 grid.visit(p, a, |k, _, g| acc[k] += stiffness * g.length());
             }
         });
-        16.0 * f64::EPSILON * largest(&rows)
+        (
+            16.0 * f64::EPSILON * largest(&rows),
+            16.0 * f64::EPSILON * rows.iter().sum::<f64>(),
+        )
     };
     // Two starts, the better one kept, after Gast et al. 2015 (section 3.1,
     // "we compute both initial guesses and choose the one which produces
@@ -714,7 +757,138 @@ pub(crate) fn solve(
             })
             .collect()
     };
-    let jacobian_at = |u: &[f64], held: &[ContactBranch], d: &[f64]| -> Vec<f64> {
+    // The internal force's derivative exactly, through each particle's
+    // linearisation (`Linearised`), unless a probe changes the force outside
+    // the step stress; then central differences of the whole force.
+    #[cfg(all(test, feature = "experimental"))]
+    let exact = !(lagrangian
+        && (hooks::cells().is_some()
+            || hooks::viscosity() > 0.0
+            || hooks::trapezoid_p()
+            || hooks::cofactor()));
+    #[cfg(not(all(test, feature = "experimental")))]
+    let exact = true;
+    let (linearise_clock, push_clock) = (Cell::new(0.0), Cell::new(0.0));
+    // Each particle's linearisation at `u`, once per Newton iterate; `None`
+    // when the product is taken by differences.
+    let linearised_at = |u: &[f64]| -> Option<Vec<Linearised>> {
+        if !exact {
+            return None;
+        }
+        let start = Instant::now();
+        let unit = [
+            DMat2::from_cols(DVec2::X, DVec2::ZERO),
+            DMat2::from_cols(DVec2::ZERO, DVec2::Y),
+            DMat2::from_cols(DVec2::Y, DVec2::X),
+        ];
+        let out = (0..n)
+            .into_par_iter()
+            .map(|p| {
+                if v0[p] <= 0.0 {
+                    return Linearised::default();
+                }
+                let (f0, f1) = (f_now[p], deformation_at(u, p));
+                let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+                Linearised {
+                    f1,
+                    s: solids[p].step_stress(c0, c1, dt),
+                    ds: unit.map(|e| solids[p].step_stress_tangent(c0, c1, dt, e)),
+                }
+            })
+            .collect();
+        timed(&linearise_clock, start);
+        Some(out)
+    };
+    // The internal force's derivative along `d` from the linearisations:
+    // `dF = grad d` (the force's `F` is linear in `u`), `dC = dF^T F + F^T
+    // dF`, the stress's change from its three directions, and the first
+    // Piola stress's `V0 (1/2 dF S + F_n+1/2 dS)`, scattered as the force is.
+    let internal_product = |lin: &[Linearised], d: &[f64]| -> Vec<f64> {
+        parallel_scatter(grid.len, n, |p, acc| {
+            if v0[p] <= 0.0 {
+                return;
+            }
+            let t = &lin[p];
+            let (_, gu) = grid.read(d, p, 0);
+            let (_, gv) = grid.read(d, p, 1);
+            let grad = DMat2::from_cols(DVec2::new(gu.x, gv.x), DVec2::new(gu.y, gv.y));
+            let f0 = f_now[p];
+            let df = if lagrangian { grad } else { grad * f0 };
+            let dc = df.transpose() * t.f1 + t.f1.transpose() * df;
+            let ds = t.ds[0] * dc.x_axis.x + t.ds[1] * dc.y_axis.y + t.ds[2] * dc.y_axis.x;
+            let first = 0.5 * df * t.s + 0.5 * (f0 + t.f1) * ds;
+            let first = if lagrangian {
+                v0[p] * first
+            } else {
+                v0[p] * first * f0.transpose()
+            };
+            for a in 0..2 {
+                let row = first.row(a);
+                grid.visit(p, a, |k, _, g| acc[k] += row.dot(g));
+            }
+        })
+    };
+    // A contact holding a segment: its normal, parameter and couple move
+    // with `u`, so its push's derivative is taken by differences.
+    let holds_segment = |c: &Contact| c.points.iter().any(|(p, _)| p.segment.is_some());
+    // The plane contacts' push derivative along `d`, the active set frozen,
+    // exactly: a plane share's normal and spread do not move with `u`
+    // (`plane_share`), so with `dg = sum_s w_s n_s . sum_j c_j dm_j` and
+    // `dg_t` the same along `n_s` turned a quarter, `contact_force`'s
+    // frozen branch gives `d size = -k dg` and `d along = -k dg_t`
+    // (sticking) or `slip mu d size` (slipping), spread as the push is.
+    let plane_push_product = |held: &[ContactBranch], d: &[f64]| -> Vec<f64> {
+        let mut out = vec![0.0; grid.len];
+        let moved = |r: usize| DVec2::new(grid.read(d, r, 0).0, grid.read(d, r, 1).0);
+        for (c, branch) in contacts.iter().zip(held) {
+            if !branch.pressed || holds_segment(c) {
+                continue;
+            }
+            let k = contact_penalty(c, penalty);
+            let shares: Vec<PlaneShare> = c
+                .points
+                .iter()
+                .map(|&(point, weight)| {
+                    let (normal, spread) = plane_share(planes, &point);
+                    let relative: DVec2 = spread
+                        .iter()
+                        .filter(|(_, share)| *share != 0.0)
+                        .map(|&(r, share)| share * moved(r))
+                        .sum();
+                    (weight, normal, spread, relative)
+                })
+                .collect();
+            let (mut dg, mut dg_t) = (0.0, 0.0);
+            for (weight, normal, _, relative) in &shares {
+                dg += weight * normal.dot(*relative);
+                dg_t += weight * normal.perp().dot(*relative);
+            }
+            let d_size = -k * dg;
+            let d_along = if friction <= 0.0 {
+                0.0
+            } else if branch.slip == 0.0 {
+                -k * dg_t
+            } else {
+                branch.slip * friction * d_size
+            };
+            for (weight, normal, spread, _) in &shares {
+                let force = *weight * (d_size * *normal + d_along * normal.perp());
+                for &(r, share) in spread {
+                    let part = share * force;
+                    for a in 0..2 {
+                        if part[a] != 0.0 {
+                            grid.visit(r, a, |k, w, _| out[k] += w * part[a]);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    let jacobian_at = |u: &[f64],
+                       (held, lin): (&[ContactBranch], Option<&[Linearised]>),
+                       d: &[f64]|
+     -> Vec<f64> {
         let start = Instant::now();
         let size = d.iter().fold(0.0f64, |m, e| m.max(e.abs()));
         if size == 0.0 {
@@ -724,30 +898,76 @@ pub(crate) fn solve(
         let h = 1e-6 * (grid.cell + base) / size;
         let plus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a + h * b).collect();
         let minus: Vec<f64> = u.iter().zip(d).map(|(a, b)| a - h * b).collect();
-        // The mass exactly, the internal force by central
-        // differences: forward ones (one evaluation fewer) left Newton
-        // short of convergence on 4 of 60 frame-long steps and the
-        // energy rising 0.3 percent (measured, reverted).
+        // The mass exactly; the internal force exactly from the
+        // linearisations, or by central differences (forward ones, one
+        // evaluation fewer, left Newton short of convergence on 4 of 60
+        // frame-long steps and the energy rising 0.3 percent: measured,
+        // reverted).
         let scaled: Vec<f64> = d.iter().map(|e| inertia * e / (dt * dt)).collect();
         let mut out = grid.mass_times(&scaled, mass, eps);
-        for (o, (p, m)) in out
-            .iter_mut()
-            .zip(internal(&plus).iter().zip(internal(&minus)))
-        {
-            *o += (p - m) / (2.0 * h);
+        match lin {
+            Some(lin) => {
+                for (o, value) in out.iter_mut().zip(internal_product(lin, d)) {
+                    *o += value;
+                }
+            }
+            None => {
+                for (o, (p, m)) in out
+                    .iter_mut()
+                    .zip(internal(&plus).iter().zip(internal(&minus)))
+                {
+                    *o += (p - m) / (2.0 * h);
+                }
+            }
         }
         // Less the push's derivative with the active set frozen: a
         // smooth function then (linear against a plane; the segment's
         // normal and closest point move with `u`), by the same central
         // differences.
         if held.iter().any(|a| a.pressed) {
-            let (pp, pm) = (
-                push_with(&plus, Some(held), None),
-                push_with(&minus, Some(held), None),
-            );
-            for (o, (p, m)) in out.iter_mut().zip(pp.iter().zip(&pm)) {
-                *o -= (p - m) / (2.0 * h);
+            let pushing = Instant::now();
+            // The contacts holding a segment by central differences of
+            // their push alone (the others marked free in a copy of the
+            // set); the plane contacts exactly.
+            let only = |segments: bool| -> Vec<ContactBranch> {
+                held.iter()
+                    .zip(contacts)
+                    .map(|(b, c)| ContactBranch {
+                        pressed: b.pressed && holds_segment(c) == segments,
+                        ..*b
+                    })
+                    .collect()
+            };
+            let segment_set = only(true);
+            if segment_set.iter().any(|b| b.pressed) {
+                let (pp, pm) = (
+                    push_with(&plus, Some(&segment_set), None),
+                    push_with(&minus, Some(&segment_set), None),
+                );
+                for (o, (p, m)) in out.iter_mut().zip(pp.iter().zip(&pm)) {
+                    *o -= (p - m) / (2.0 * h);
+                }
             }
+            let exact = plane_push_product(held, d);
+            if push_check() {
+                let plane_set = only(false);
+                let (pp, pm) = (
+                    push_with(&plus, Some(&plane_set), None),
+                    push_with(&minus, Some(&plane_set), None),
+                );
+                let size = exact.iter().fold(0.0f64, |m, e| m.max(e.abs()));
+                let gap = exact
+                    .iter()
+                    .zip(pp.iter().zip(&pm))
+                    .fold(0.0f64, |m, (e, (p, q))| {
+                        m.max((e - (p - q) / (2.0 * h)).abs())
+                    });
+                println!("push check: exact {size:.3e}, against differences {gap:.3e}");
+            }
+            for (o, value) in out.iter_mut().zip(exact) {
+                *o -= value;
+            }
+            timed(&push_clock, pushing);
         }
         for (value, &on) in out.iter_mut().zip(&grid.active) {
             if !on {
@@ -800,7 +1020,8 @@ pub(crate) fn solve(
         // taken inactive), applied exactly; the internal force alone by
         // finite differences.
         let held = branches(&u);
-        let jacobian = |d: &[f64]| jacobian_at(&u, &held, d);
+        let lin = linearised_at(&u);
+        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
         let minus_r: Vec<f64> = r.iter().map(|e| -e).collect();
         // A fixed linear tolerance: Eisenstat and Walker's forcing term
         // (choice 2, capped at 0.1) left Newton short of convergence on 14
@@ -857,6 +1078,15 @@ pub(crate) fn solve(
         }
     }
     report.residual_work = r.iter().zip(&u).map(|(a, b)| (a * b).abs()).sum();
+    report.residual_force =
+        (0..grid.len)
+            .filter(|&k| grid.active[k])
+            .fold(DVec2::ZERO, |sum, k| {
+                let mut e = DVec2::ZERO;
+                e[grid.axis_of[k]] = r[k];
+                sum + e
+            });
+    report.force_round_off = force_round_off;
     #[cfg(all(test, feature = "experimental"))]
     if hooks::on() {
         let distance = homotopy_solution.as_ref().map_or(String::new(), |w| {
@@ -908,13 +1138,18 @@ pub(crate) fn solve(
     ];
     // The responses to the active multipliers, with the sets frozen at the
     // solution: each column one more linear solve with Newton's own
-    // Jacobian and preconditioner.
+    // Jacobian and preconditioner, started from the same contact's last
+    // response (`Factors::responses`): to the same tolerance, fewer
+    // iterations when a pass moved the displacement little.
     let mut responses = Vec::new();
     let responding = Instant::now();
+    let jacobian_before_responses = jacobian_clock.get();
     if wants_responses && report.converged && !contacts.is_empty() {
         let held = branches(&u);
-        let jacobian = |d: &[f64]| jacobian_at(&u, &held, d);
+        let lin = linearised_at(&u);
+        let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
         let base = push_with(&u, Some(&held), None);
+        let mut computed = Vec::new();
         for (i, branch) in held.iter().enumerate() {
             if !branch.pressed {
                 continue;
@@ -928,16 +1163,26 @@ pub(crate) fn solve(
                 for ((value, &before), &on) in b.iter_mut().zip(&base).zip(&grid.active) {
                     *value = if on { *value - before } else { 0.0 };
                 }
+                let key = contacts[i].key;
+                let last = factors
+                    .responses
+                    .iter()
+                    .find(|(k, t, _)| *k == key && *t == tangential)
+                    .map(|(_, _, du)| du.as_slice());
+                #[cfg(all(test, feature = "experimental"))]
+                let last = last.filter(|_| !hooks::cold_responses());
                 let start = Instant::now();
-                let (du, iterations) = gmres(
+                let (du, iterations) = gmres_from(
                     &jacobian,
                     &b,
+                    last,
                     (&precondition, &grid.active),
                     settings.gmres_tolerance,
                     settings,
                 );
                 report.timing.gmres += start.elapsed().as_secs_f64();
                 report.gmres += iterations;
+                computed.push((key, tangential, du.clone()));
                 responses.push(Response {
                     contact: i,
                     tangential,
@@ -945,11 +1190,15 @@ pub(crate) fn solve(
                 });
             }
         }
+        factors.responses = computed;
     }
     report.timing.responses = responding.elapsed().as_secs_f64();
     report.timing.residual = residual_clock.get();
     report.timing.jacobian = jacobian_clock.get();
     report.timing.internal_evaluations = evaluations.get();
+    report.timing.linearisation = linearise_clock.get();
+    report.timing.push_derivative = push_clock.get();
+    report.timing.responses_jacobian = jacobian_clock.get() - jacobian_before_responses;
     report.timing.preconditioner_solve = precondition_clock.get();
     report.timing.preconditioner_build = banded_at - projected_at;
     let dissipated = if solids.iter().any(Elastic::is_viscous) {

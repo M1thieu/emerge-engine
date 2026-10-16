@@ -86,21 +86,52 @@ pub(crate) fn gmres(
     tolerance: f64,
     settings: &ConservingSettings,
 ) -> (Vec<f64>, u32) {
+    gmres_from(apply, b, None, (precondition, active), tolerance, settings)
+}
+
+/// `gmres` from the iterate `start` instead of zero. The stopping test is
+/// absolute in `b`, `|b - A x| <= tolerance |b|`, so the answer meets the
+/// same tolerance from any start: a start near the solution only saves
+/// iterations. Its inactive entries are dropped, and a start whose
+/// residual is no smaller than zero's (`|b|`) is dropped for zero: a stale
+/// start would cost iterations (measured: a bounce's responses, started
+/// from those of its previous impact, took 5 times the products).
+pub(crate) fn gmres_from(
+    apply: Operator<'_>,
+    b: &[f64],
+    start: Option<&[f64]>,
+    (precondition, active): (Operator<'_>, &[bool]),
+    tolerance: f64,
+    settings: &ConservingSettings,
+) -> (Vec<f64>, u32) {
     let n = b.len();
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let norm_b = dot(b, b).sqrt();
-    let mut x = vec![0.0; n];
+    let mut x = match start {
+        Some(s) => s
+            .iter()
+            .zip(active)
+            .map(|(&e, &on)| if on { e } else { 0.0 })
+            .collect(),
+        None => vec![0.0; n],
+    };
     let mut iterations = 0u32;
     if norm_b == 0.0 {
-        return (x, 0);
+        return (vec![0.0; n], 0);
     }
     let m = settings.gmres_restart;
+    let mut first = start.is_some();
     while iterations < settings.max_gmres {
         let ax = apply(&x);
-        let r: Vec<f64> = (0..n)
+        let mut r: Vec<f64> = (0..n)
             .map(|k| if active[k] { b[k] - ax[k] } else { 0.0 })
             .collect();
-        let beta = dot(&r, &r).sqrt();
+        let mut beta = dot(&r, &r).sqrt();
+        if std::mem::take(&mut first) && beta >= norm_b {
+            x.iter_mut().for_each(|e| *e = 0.0);
+            r = (0..n).map(|k| if active[k] { b[k] } else { 0.0 }).collect();
+            beta = dot(&r, &r).sqrt();
+        }
         if beta <= tolerance * norm_b {
             break;
         }
