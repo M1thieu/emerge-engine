@@ -409,6 +409,101 @@ impl Elastic {
         mean + (2.0 * gap / norm2) * dc
     }
 
+    /// The step's whole stress between `C_n` and `C_{n+1}`: the law's
+    /// (`algorithmic_stress_over`) and the dashpot's (`viscous_stress_over`).
+    /// The one definition the internal force and its derivative use.
+    pub(crate) fn step_stress(&self, c0: DMat2, c1: DMat2, dt: f64) -> DMat2 {
+        let s = self.algorithmic_stress_over(c0, c1, dt);
+        if self.is_viscous() {
+            s + self.viscous_stress_over(c0, c1, dt)
+        } else {
+            s
+        }
+    }
+
+    /// The derivative of `step_stress` in `C_{n+1}` along `dc`.
+    ///
+    /// The corotated law's, derived here from `algorithmic_stress`: with
+    /// `C_m = (C_n + C_{n+1}) / 2`, `D = C_{n+1} - C_n`, `n = |D|^2` and `g =
+    /// dW - 1/2 S(C_m) : D`, the stress is `S(C_m) + (2 g / n) D`, so
+    /// `dS = S'(C_m)[dc / 2] + (2 dg / n - 4 g (D : dc) / n^2) D + (2 g / n)
+    /// dc`, `dg = 1/2 (S(C_{n+1}) - S(C_m)) : dc - 1/2 S'(C_m)[dc / 2] : D`
+    /// (`d(dW) = 1/2 S(C_{n+1}) : dc`, `S = 2 dW/dC`), and `S'(C_m)[dc / 2]`
+    /// alone where the quotient is not formed. `S'` is `matter`'s
+    /// `corotated_second_pk_tangent`. The dashpot's is exact, it being linear
+    /// in `C_{n+1}`.
+    ///
+    /// Declared scaffold, to be replaced by each law's derived tangent: the
+    /// plastic law, the research law and the probes' variants of the base
+    /// stress take central differences of `step_stress` itself
+    /// (`step_stress_tangent_by_differences`).
+    pub(crate) fn step_stress_tangent(&self, c0: DMat2, c1: DMat2, dt: f64, dc: DMat2) -> DMat2 {
+        #[cfg(all(test, feature = "experimental"))]
+        if hooks::split() || hooks::trapezoid() {
+            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+        }
+        if self.law != ElasticLaw::Corotated {
+            return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
+        }
+        let (lambda, mu) = (self.bulk - self.mu, self.mu);
+        let tangent = |c: DMat2, d: DMat2| {
+            crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent(
+                c, d, lambda, mu,
+            )
+        };
+        let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
+        let mid = 0.5 * (c0 + c1);
+        let d_mid = tangent(mid, 0.5 * dc);
+        let d = c1 - c0;
+        let norm2 = colon(d, d);
+        let law = if norm2 <= 1e-28 {
+            d_mid
+        } else {
+            let s_mid = self.second_pk(mid);
+            let g = self.energy_increment(c0, c1) - 0.5 * colon(s_mid, d);
+            let dg = 0.5 * colon(self.second_pk(c1) - s_mid, dc) - 0.5 * colon(d_mid, d);
+            d_mid
+                + d * (2.0 * dg / norm2 - 4.0 * g * colon(d, dc) / (norm2 * norm2))
+                + dc * (2.0 * g / norm2)
+        };
+        if self.is_viscous() {
+            law + newtonian_viscous_stress(
+                dc * (0.5 / dt),
+                self.shear_viscosity,
+                self.bulk_viscosity,
+            )
+        } else {
+            law
+        }
+    }
+
+    /// `step_stress_tangent` by central differences of `step_stress` in
+    /// `C_{n+1}`, step `h = 1e-6 max(1, |C_{n+1}|) / |dc|` (the order of the
+    /// solve's own differences): the scaffold of the laws without a derived
+    /// tangent, and the derived one's cross-check.
+    pub(crate) fn step_stress_tangent_by_differences(
+        &self,
+        c0: DMat2,
+        c1: DMat2,
+        dt: f64,
+        dc: DMat2,
+    ) -> DMat2 {
+        let size = |m: DMat2| {
+            m.x_axis
+                .x
+                .abs()
+                .max(m.x_axis.y.abs())
+                .max(m.y_axis.x.abs())
+                .max(m.y_axis.y.abs())
+        };
+        let along = size(dc);
+        if along == 0.0 {
+            return DMat2::ZERO;
+        }
+        let h = 1e-6 * size(c1).max(1.0) / along;
+        (self.step_stress(c0, c1 + dc * h, dt) - self.step_stress(c0, c1 - dc * h, dt)) * (0.5 / h)
+    }
+
     /// The solid after a kept step from `C_n` to `C_{n+1}` of length `dt`,
     /// and the energy the step dissipated per reference volume: the plastic
     /// law's state advanced by its return map; every other law unchanged,
@@ -475,5 +570,49 @@ impl Elastic {
         // fragility at small increments.
         let gap = self.energy_increment(c0, c1) - 0.5 * contracted;
         stress + (2.0 * gap / norm2) * dc
+    }
+}
+
+#[cfg(test)]
+mod step_stress_tangent_tests {
+    use super::*;
+
+    /// The derived tangent of the corotated step stress (the discrete
+    /// gradient's quotient and the dashpot included) against central
+    /// differences of the same stress: steps large and small (the quotient
+    /// formed), and one too small for it (the midpoint's tangent alone).
+    #[test]
+    fn the_step_stress_tangent_matches_its_differences() {
+        let (lambda, mu) = (2.0e6, 1.3e6);
+        let solids = [
+            Elastic::corotated(lambda, mu),
+            Elastic::corotated(lambda, mu).with_viscosity(50.0, 100.0 / 3.0),
+        ];
+        let c0 = DMat2::from_cols(DVec2::new(1.1, 0.04), DVec2::new(0.04, 0.93));
+        let steps = [
+            DMat2::from_cols(DVec2::new(0.02, -0.01), DVec2::new(-0.01, 0.03)),
+            DMat2::from_cols(DVec2::new(2e-5, 1e-5), DVec2::new(1e-5, -3e-5)),
+            DMat2::ZERO,
+        ];
+        let units = [
+            DMat2::from_cols(DVec2::X, DVec2::ZERO),
+            DMat2::from_cols(DVec2::ZERO, DVec2::Y),
+            DMat2::from_cols(DVec2::Y, DVec2::X),
+        ];
+        let size = |m: DMat2| (m.x_axis.length_squared() + m.y_axis.length_squared()).sqrt();
+        for solid in solids {
+            for step in steps {
+                let c1 = c0 + step;
+                for dc in units {
+                    let derived = solid.step_stress_tangent(c0, c1, 1e-3, dc);
+                    let differences = solid.step_stress_tangent_by_differences(c0, c1, 1e-3, dc);
+                    let error = size(derived - differences);
+                    assert!(
+                        error <= 1e-5 * size(derived).max(mu),
+                        "step {step}, dC {dc}: derived {derived}, differences {differences}"
+                    );
+                }
+            }
+        }
     }
 }

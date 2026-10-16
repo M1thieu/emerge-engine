@@ -4,9 +4,9 @@
 //! Source: Stomakhin et al. 2013, eq. (5)-(8), the corotated model this
 //! engine's snow material also cites.
 
-use glam::Mat2;
 #[cfg(test)]
 use glam::Vec2;
+use glam::{DMat2, DVec2, Mat2};
 
 use crate::matter::kinematics::polar_decomposition::{
     polar_decomposition_2d, polar_decomposition_2d_jvp,
@@ -96,6 +96,40 @@ pub(crate) fn corotated_energy_increment<M: Matrix2>(
     let tr_u_change = (tr_change + two * j_change) / (tr_u0 + tr_u1);
     mu * (tr_change - two * tr_u_change)
         + M::Scalar::from(0.5) * lambda * j_change * (j0 + j1 - two)
+}
+
+/// The derivative of the corotated law's second Piola-Kirchhoff stress in
+/// `C`, along `dc`: `dS/dC [dC]`, in `f64` for the total Lagrangian step
+/// (the explicit path differentiates in `F`, `corotated_elastic_stress_jvp`).
+///
+/// Derived here. With `F = U = C^1/2` (then `R = I`) this file's Kirchhoff
+/// stress pulls back to `S(C) = U^-1 tau U^-1 = 2 mu (I - U^-1) + lambda J
+/// (J - 1) C^-1`, `J = det U`: the gradient `2 dW/dC` of the `W(C)` of
+/// `corotated_energy_increment` (`d tr U = 1/2 tr(U^-1 dC)`, `dJ = J/2
+/// tr(C^-1 dC)`). Its derivative is
+/// `dS = 2 mu U^-1 dU U^-1 + lambda (2J - 1) dJ C^-1 - lambda J (J - 1) C^-1 dC C^-1`,
+/// with `dU` the solution of `dU U + U dU = dC`. That 2 x 2 Sylvester
+/// equation in closed form, from Cayley-Hamilton (`U^2 = t U - J I`, `t = tr
+/// U`):
+/// `dU = (t / (2J) + 1 / (2t)) dC - (U dC + dC U) / (2J) + U dC U / (2 J t)`
+/// (it gives `dU = dC / (2v)` at `U = v I`). No eigenvectors and no
+/// difference quotient, so it is smooth through equal stretches. Zero at `J
+/// <= MIN_J`, like the stress.
+pub(crate) fn corotated_second_pk_tangent(c: DMat2, dc: DMat2, lambda: f64, mu: f64) -> DMat2 {
+    let j = c.determinant().max(0.0).sqrt();
+    if j <= f64::from(MIN_J) {
+        return DMat2::ZERO;
+    }
+    // `U = (C + J I) / sqrt(tr C + 2 J)`, `tr U = sqrt(tr C + 2 J)`.
+    let t = (c.x_axis.x + c.y_axis.y + 2.0 * j).sqrt();
+    let u = (c + DMat2::from_diagonal(DVec2::splat(j))) * t.recip();
+    let du = dc * (t / (2.0 * j) + 0.5 / t) - (u * dc + dc * u) * (0.5 / j)
+        + u * dc * u * (0.5 / (j * t));
+    let (u_inv, c_inv) = (u.inverse(), c.inverse());
+    let trace = |m: DMat2| m.x_axis.x + m.y_axis.y;
+    let dj = 0.5 * j * trace(c_inv * dc);
+    u_inv * du * u_inv * (2.0 * mu) + c_inv * (lambda * (2.0 * j - 1.0) * dj)
+        - c_inv * dc * c_inv * (lambda * j * (j - 1.0))
 }
 
 /// Analytic Jacobian-vector product of `corotated_elastic_stress`'s
@@ -519,5 +553,57 @@ mod corotated_energy_increment_tests {
             (d2 / d1 / carried - 1.0).abs() < 1e-6,
             "{d1} and {d2}, carried ratio {carried}"
         );
+    }
+}
+
+#[cfg(test)]
+mod second_pk_tangent_tests {
+    use super::*;
+
+    /// `S(C) = U^-1 tau(U) U^-1` from this file's Kirchhoff stress at `F =
+    /// sqrt(C)`.
+    fn second_pk(c: DMat2, lambda: f64, mu: f64) -> DMat2 {
+        let j = c.determinant().sqrt();
+        let t = (c.x_axis.x + c.y_axis.y + 2.0 * j).sqrt();
+        let u = (c + DMat2::from_diagonal(DVec2::splat(j))) * t.recip();
+        let u_inv = u.inverse();
+        u_inv * corotated_elastic_stress(u, lambda, mu) * u_inv
+    }
+
+    /// The tangent against central differences of the stress, at sheared,
+    /// stretched and nearly isotropic `C` (equal stretches included), to the
+    /// differences' own truncation `O(h^2)` and round-off `eps / h`.
+    #[test]
+    fn the_tangent_is_the_stress_derivative() {
+        let (lambda, mu) = (2.0e6, 1.3e6);
+        let cases = [
+            DMat2::from_cols(DVec2::new(1.21, 0.07), DVec2::new(0.07, 0.86)),
+            DMat2::from_cols(DVec2::new(0.64, -0.2), DVec2::new(-0.2, 1.5)),
+            DMat2::from_cols(DVec2::new(1.0, 0.0), DVec2::new(0.0, 1.0)),
+            DMat2::from_cols(DVec2::new(1.0 + 1e-9, 0.0), DVec2::new(0.0, 1.0)),
+        ];
+        let directions = [
+            DMat2::from_cols(DVec2::new(1.0, 0.0), DVec2::new(0.0, 0.0)),
+            DMat2::from_cols(DVec2::new(0.0, 0.0), DVec2::new(0.0, 1.0)),
+            DMat2::from_cols(DVec2::new(0.0, 1.0), DVec2::new(1.0, 0.0)),
+            DMat2::from_cols(DVec2::new(0.3, -0.5), DVec2::new(-0.5, 0.8)),
+        ];
+        let h = 1e-6;
+        for c in cases {
+            for dc in directions {
+                let exact = corotated_second_pk_tangent(c, dc, lambda, mu);
+                let fd = (second_pk(c + dc * h, lambda, mu) - second_pk(c - dc * h, lambda, mu))
+                    * (0.5 / h);
+                let size = (exact.x_axis.length_squared() + exact.y_axis.length_squared())
+                    .sqrt()
+                    .max(mu);
+                let gap = exact - fd;
+                let error = (gap.x_axis.length_squared() + gap.y_axis.length_squared()).sqrt();
+                assert!(
+                    error <= 1e-6 * size,
+                    "C {c}, dC {dc}: tangent {exact} against differences {fd}"
+                );
+            }
+        }
     }
 }
