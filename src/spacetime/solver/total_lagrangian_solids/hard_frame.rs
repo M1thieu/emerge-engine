@@ -115,3 +115,41 @@ fn probe_e2_hard_frame_controller() {
         f.stagnated
     );
 }
+
+/// A block at rest on the floor (`tests/realtime_profile.rs`'s E1): why its
+/// frames still build Jacobian factors, each build printed with what was
+/// new (the step's inertia coefficient, or the held springs).
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_rest_factorizations() {
+    let props = ElasticProps {
+        e_pa: 1.125e7,
+        nu: 0.3,
+        rho_kg_m3: 1700.0,
+    };
+    let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+    config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
+        .0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(20.0, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&props, &config),
+    );
+    for k in 1..=6 {
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(k > 4);
+        sim.step();
+        let f = sim.total_lagrangian_frame().expect("on the path");
+        println!(
+            "frame {k}: steps {}, rejected {}, passes {}, factorizations {}",
+            f.steps, f.rejected, f.passes, f.timing.factorizations
+        );
+    }
+    crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
+}

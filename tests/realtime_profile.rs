@@ -166,6 +166,7 @@ struct Totals {
     newton: u64,
     krylov: u64,
     evaluations: u64,
+    factorizations: u64,
     passes: u64,
     steps: u64,
     rejected: u64,
@@ -212,6 +213,7 @@ fn profile(sim: &mut Simulation, frames: usize, mut each: impl FnMut(&Simulation
         t.newton += u64::from(f.newton);
         t.krylov += u64::from(f.gmres);
         t.evaluations += p.internal_evaluations;
+        t.factorizations += p.factorizations;
         t.passes += u64::from(f.passes);
         t.steps += u64::from(f.steps);
         t.rejected += u64::from(f.rejected);
@@ -286,7 +288,7 @@ fn frame_classes(scene: &str, t: &Totals) {
 /// The table's header, printed with every row so a single run reads alone.
 fn header() {
     println!(
-        "| scene | particles | threads | ms/frame (of {BUDGET_MS:.1}) | CPU ms/frame (all threads) | residual | Jv | of Jv: push | of Jv: responses' | linearisation | precond build | precond solve | GMRES algebra | responses | contact | multipliers | grid | finishing | controller | Newton | GMRES | force evaluations | passes | steps | rejected | gate | balance / bound |"
+        "| scene | particles | threads | ms/frame (of {BUDGET_MS:.1}) | CPU ms/frame (all threads) | residual | Jv | of Jv: push | of Jv: responses' | linearisation | precond build | precond solve | GMRES algebra | responses | contact | multipliers | grid | finishing | controller | Newton | GMRES | force evaluations | factorizations | passes | steps | rejected | gate | balance / bound |"
     );
 }
 
@@ -298,7 +300,7 @@ fn row(scene: &str, sim: &Simulation, t: &Totals, gate: (&str, f64)) {
     let ms = |s: f64| 1000.0 * s / n;
     let per = |c: u64| c as f64 / n;
     println!(
-        "| {scene} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {} {:.4e} | {:.2e} |",
+        "| {scene} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {} {:.4e} | {:.2e} |",
         sim.particles().len(),
         rayon::current_num_threads(),
         ms(t.wall),
@@ -320,6 +322,7 @@ fn row(scene: &str, sim: &Simulation, t: &Totals, gate: (&str, f64)) {
         per(t.newton),
         per(t.krylov),
         per(t.evaluations),
+        per(t.factorizations),
         per(t.passes),
         per(t.steps),
         per(t.rejected),

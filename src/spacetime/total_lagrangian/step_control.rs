@@ -438,6 +438,9 @@ pub fn controlled_step(
                 v.copy_from_slice(&halves.v);
                 f.copy_from_slice(&halves.f);
                 *cache = halves.cache;
+                if let (Some(kept), Some(other)) = (cache.as_mut(), whole.cache.as_ref()) {
+                    kept.factors.absorb(&other.factors);
+                }
                 *tau = next;
                 let contact = halves_reports
                     .iter()
@@ -468,6 +471,11 @@ pub fn controlled_step(
         let (second, second_reports, contact_second) = run(control.substeps[1], dt);
         account(&first_reports, &mut timing);
         account(&second_reports, &mut timing);
+        // The factors the tries built, for the kept one's cache.
+        let spare: Vec<Factors> = [&first, &second]
+            .iter()
+            .filter_map(|s| s.cache.as_ref().map(|c| c.factors.clone()))
+            .collect();
         let (c1, c2, beta) = pair(k1, k2);
         let second_two = combine(c1, &first, c2, &second);
         let contact = contact_first || contact_second;
@@ -551,6 +559,11 @@ pub fn controlled_step(
             v.copy_from_slice(&kept.v);
             f.copy_from_slice(&kept.f);
             *cache = kept.cache;
+            if let Some(kept) = cache.as_mut() {
+                for other in &spare {
+                    kept.factors.absorb(other);
+                }
+            }
             *tau = next;
             let stalled = reports.iter().filter(|r| r.stagnated).count() as u32;
             timing.controller = controlling.elapsed().as_secs_f64() - trying.get();

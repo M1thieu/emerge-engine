@@ -119,11 +119,45 @@ pub(crate) struct Inputs<'a> {
 #[derive(Clone, Default)]
 pub(crate) struct Factors {
     pub(crate) mass: Option<Band>,
-    pub(crate) jacobian: Option<(Vec<Spring>, Band)>,
+    /// The Jacobian's band factors by the system each factors, its
+    /// inertia coefficient `2 / dt^2` and its held springs, the most
+    /// recent first: one per try length the step controller makes in a
+    /// step (`JACOBIAN_FACTORS`), so a run of equal steps factors each
+    /// once instead of at every try (`solve`).
+    pub(crate) jacobian: Vec<(f64, Vec<Spring>, Band)>,
     /// The last responses computed, by contact key and direction: each
     /// next response's GMRES starts from its own (`gmres_from`).
     pub(crate) responses: Vec<(ContactKey, bool, Vec<f64>)>,
 }
+
+impl Factors {
+    /// Takes in `other`'s Jacobian factors this one lacks, after its own,
+    /// up to `JACOBIAN_FACTORS`: the step controller keeps one try's cache,
+    /// and the other tries' factors (their own lengths') would otherwise be
+    /// lost and rebuilt at the next step.
+    pub(crate) fn absorb(&mut self, other: &Factors) {
+        for (c, springs, band) in &other.jacobian {
+            if self.jacobian.len() >= JACOBIAN_FACTORS {
+                break;
+            }
+            if !self
+                .jacobian
+                .iter()
+                .any(|(mine, held, _)| mine == c && held == springs)
+            {
+                self.jacobian.push((*c, springs.clone(), band.clone()));
+            }
+        }
+    }
+}
+
+/// How many Jacobian factors `Factors` keeps: the step controller's try
+/// lengths per step (the whole step, its halves and its thirds,
+/// `StepControl::substeps`), times the two held sets each try's passes
+/// solve with (none held at the first pass, then the contacts held). With
+/// three, a block at rest evicted and rebuilt two factors a frame
+/// (measured, `hard_frame::probe_rest_factorizations`).
+const JACOBIAN_FACTORS: usize = 6;
 
 /// A held particle's penalty in the preconditioner: particle, lattice,
 /// stiffness (`Grid::approximate_jacobian`).
@@ -444,16 +478,39 @@ pub(crate) fn solve(
         })
         .collect();
     let projected_at = clock.elapsed().as_secs_f64();
-    if factors
+    // This system's own factor, kept if a recent step built it: a
+    // preconditioner changes the iterations to the solution, never the
+    // solution (Chen and Chacon eqs. 15-16).
+    let coefficient = inertia / (dt * dt);
+    let mut factorizations = 0;
+    match factors
         .jacobian
-        .as_ref()
-        .is_none_or(|(built, _)| *built != springs)
+        .iter()
+        .position(|(c, built, _)| *c == coefficient && *built == springs)
     {
-        let band =
-            grid.approximate_jacobian((mass, v0, solids), eps, inertia / (dt * dt), &springs);
-        factors.jacobian = Some((springs, band));
+        Some(0) => {}
+        Some(found) => {
+            let entry = factors.jacobian.remove(found);
+            factors.jacobian.insert(0, entry);
+        }
+        None => {
+            #[cfg(all(test, feature = "experimental"))]
+            if hooks::control_trace() {
+                let same_springs = factors.jacobian.iter().any(|(_, b, _)| *b == springs);
+                let same_coefficient = factors.jacobian.iter().any(|(c, _, _)| *c == coefficient);
+                println!(
+                    "  factor: coefficient {coefficient:.6e} (seen {same_coefficient}), springs {} (seen {same_springs}), kept {}",
+                    springs.len(),
+                    factors.jacobian.len()
+                );
+            }
+            let band = grid.approximate_jacobian((mass, v0, solids), eps, coefficient, &springs);
+            factorizations += 1;
+            factors.jacobian.insert(0, (coefficient, springs, band));
+            factors.jacobian.truncate(JACOBIAN_FACTORS);
+        }
     }
-    let band = &factors.jacobian.as_ref().expect("built above").1;
+    let band = &factors.jacobian[0].2;
     let banded_at = clock.elapsed().as_secs_f64();
     // No particle inverted: the iterates the line search may take. Li et
     // al. 2020 (section 4.4, after Smith and Schaefer 2015) bound the step
@@ -473,6 +530,7 @@ pub(crate) fn solve(
         projection,
         ..Default::default()
     };
+    report.timing.factorizations = factorizations;
     let mut r = residual(&u);
     // The residual's scale: the forces of the step's own physics, its
     // inertia, its weight and the stress it starts with. Not the residual
