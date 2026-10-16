@@ -82,13 +82,78 @@ fn weight_scale(sim: &Simulation) -> f64 {
     mass * f64::from(sim.config().gravity.length()) * energy_unit(sim)
 }
 
+/// The process's CPU time so far, s, all threads (`GetProcessTimes`):
+/// beside the wall time, it reads a row under some background load. NaN
+/// off Windows (not measured there).
+#[cfg(windows)]
+fn process_cpu_seconds() -> f64 {
+    #[repr(C)]
+    #[derive(Default)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn GetProcessTimes(
+            process: *mut core::ffi::c_void,
+            creation: *mut FileTime,
+            exit: *mut FileTime,
+            kernel: *mut FileTime,
+            user: *mut FileTime,
+        ) -> i32;
+    }
+    let (mut creation, mut exit, mut kernel, mut user) = Default::default();
+    // SAFETY: the current process's pseudo-handle and four out-structures
+    // of the layout the call writes.
+    let ok = unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok == 0 {
+        return f64::NAN;
+    }
+    let ticks = |t: &FileTime| (u64::from(t.high) << 32 | u64::from(t.low)) as f64;
+    // FILETIME counts 100 ns.
+    (ticks(&kernel) + ticks(&user)) * 1e-7
+}
+
+#[cfg(not(windows))]
+fn process_cpu_seconds() -> f64 {
+    f64::NAN
+}
+
+/// One frame's record, for the frames' classes.
+#[derive(Clone, Copy)]
+struct FrameRecord {
+    wall: f64,
+    steps: u32,
+    newton: u32,
+    krylov: u32,
+    /// The kept steps' contact work bound (`sum lambda a`): zero when no
+    /// contact multiplier acted in the frame.
+    contact_bound: f64,
+    reaching: u32,
+}
+
 /// What a run's frames add up to.
 #[derive(Default)]
 struct Totals {
     frames: usize,
     wall: f64,
+    /// The process's CPU time over the run, s (`process_cpu_seconds`).
+    cpu: f64,
+    records: Vec<FrameRecord>,
     residual: f64,
     jacobian: f64,
+    linearisation: f64,
+    push: f64,
+    responses_jacobian: f64,
     build: f64,
     solve: f64,
     gmres: f64,
@@ -116,6 +181,7 @@ fn profile(sim: &mut Simulation, frames: usize, mut each: impl FnMut(&Simulation
     // The bound `run` asserts: the solves' residual and contact work,
     // accumulated, plus the sums' round-off.
     let mut allowed = 0.0f64;
+    let cpu_start = process_cpu_seconds();
     for _ in 0..frames {
         sim.step();
         let f = sim.total_lagrangian_frame().expect("the path is on");
@@ -131,6 +197,9 @@ fn profile(sim: &mut Simulation, frames: usize, mut each: impl FnMut(&Simulation
         t.wall += f.wall;
         t.residual += p.residual;
         t.jacobian += p.jacobian;
+        t.linearisation += p.linearisation;
+        t.push += p.push_derivative;
+        t.responses_jacobian += p.responses_jacobian;
         t.build += p.preconditioner_build;
         t.solve += p.preconditioner_solve;
         t.gmres += p.gmres;
@@ -146,15 +215,78 @@ fn profile(sim: &mut Simulation, frames: usize, mut each: impl FnMut(&Simulation
         t.passes += u64::from(f.passes);
         t.steps += u64::from(f.steps);
         t.rejected += u64::from(f.rejected);
+        t.records.push(FrameRecord {
+            wall: f.wall,
+            steps: f.steps,
+            newton: f.newton,
+            krylov: f.gmres,
+            contact_bound: f.contact_work_bound,
+            reaching: f.reaching,
+        });
         each(sim);
     }
+    t.cpu = process_cpu_seconds() - cpu_start;
     t
+}
+
+/// Whether a frame belongs to a class.
+type Member = fn(&FrameRecord) -> bool;
+
+/// The frames by class, one line each: free flight (no contact multiplier
+/// acted, none reached), impact (a point reached a wall in a kept step),
+/// held contact (multipliers acting, none reached): their count, mean and
+/// worst wall time and mean steps, Newton and GMRES; then every frame's
+/// steps and wall. The real-time question is the worst frame (a missed
+/// frame is a visible hitch), not the mean.
+fn frame_classes(scene: &str, t: &Totals) {
+    let classes: [(&str, Member); 3] = [
+        ("free flight", |r| r.contact_bound == 0.0 && r.reaching == 0),
+        ("impact", |r| r.reaching > 0),
+        ("held contact", |r| r.contact_bound > 0.0 && r.reaching == 0),
+    ];
+    for (name, member) in classes {
+        let picked: Vec<&FrameRecord> = t.records.iter().filter(|r| member(r)).collect();
+        if picked.is_empty() {
+            println!("| {scene}: {name} | 0 frames |");
+            continue;
+        }
+        let n = picked.len() as f64;
+        let mean = |f: fn(&FrameRecord) -> f64| picked.iter().map(|r| f(r)).sum::<f64>() / n;
+        let worst = picked.iter().map(|r| r.wall).fold(0.0f64, f64::max);
+        println!(
+            "| {scene}: {name} | {} frames | wall mean {:.1} ms, worst {:.1} ms (of {BUDGET_MS:.1}) | steps {:.1}, Newton {:.1}, GMRES {:.1} per frame |",
+            picked.len(),
+            1000.0 * mean(|r| r.wall),
+            1000.0 * worst,
+            mean(|r| f64::from(r.steps)),
+            mean(|r| f64::from(r.newton)),
+            mean(|r| f64::from(r.krylov)),
+        );
+    }
+    let list: Vec<String> = t
+        .records
+        .iter()
+        .map(|r| {
+            let class = if r.reaching > 0 {
+                "I"
+            } else if r.contact_bound > 0.0 {
+                "C"
+            } else {
+                "F"
+            };
+            format!("{class}{}:{:.0}", r.steps, 1000.0 * r.wall)
+        })
+        .collect();
+    println!(
+        "| {scene}: frames (class steps:ms; F flight, I impact, C contact) | {} |",
+        list.join(" ")
+    );
 }
 
 /// The table's header, printed with every row so a single run reads alone.
 fn header() {
     println!(
-        "| scene | particles | threads | ms/frame (of {BUDGET_MS:.1}) | residual | Jv | precond build | precond solve | GMRES algebra | responses | contact | multipliers | grid | finishing | controller | Newton | GMRES | force evaluations | passes | steps | rejected | gate | balance / bound |"
+        "| scene | particles | threads | ms/frame (of {BUDGET_MS:.1}) | CPU ms/frame (all threads) | residual | Jv | of Jv: push | of Jv: responses' | linearisation | precond build | precond solve | GMRES algebra | responses | contact | multipliers | grid | finishing | controller | Newton | GMRES | force evaluations | passes | steps | rejected | gate | balance / bound |"
     );
 }
 
@@ -166,12 +298,16 @@ fn row(scene: &str, sim: &Simulation, t: &Totals, gate: (&str, f64)) {
     let ms = |s: f64| 1000.0 * s / n;
     let per = |c: u64| c as f64 / n;
     println!(
-        "| {scene} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {} {:.4e} | {:.2e} |",
+        "| {scene} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {} {:.4e} | {:.2e} |",
         sim.particles().len(),
         rayon::current_num_threads(),
         ms(t.wall),
+        ms(t.cpu),
         ms(t.residual),
         ms(t.jacobian),
+        ms(t.push),
+        ms(t.responses_jacobian),
+        ms(t.linearisation),
         ms(t.build),
         ms(t.solve),
         ms(t.gmres - t.jacobian - t.solve),
@@ -230,11 +366,22 @@ fn e1_rest(scale: (i32, i32)) {
 /// `tolerance`. Gate: the deepest sink below the floor over the declared
 /// penetration `v dt` (its test: at most 1).
 fn e2_bounce(tolerance: f64, label: &str) {
+    e2_bounce_damped(tolerance, 0.0, label);
+}
+
+/// E2 with the generic Newtonian dashpot in the clay (shear viscosity
+/// `eta` Pa s, bulk `2 eta / 3`, as `tests/kelvin_voigt_bar.rs`): a scene
+/// parameter, the material's own damping, not a change of method. For
+/// scale: the block's first mode `omega = pi c / L` (c = sqrt(E / rho), L
+/// its 8 cm) is critically damped at `eta = E / omega`, about 3.5e3 Pa s;
+/// the cell's modes, ten times faster, at a tenth of it.
+fn e2_bounce_damped(tolerance: f64, eta_pa_s: f32, label: &str) {
     let config = config(RES, tolerance);
     let mut sim = Simulation::empty(config);
-    let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
-        .0;
+    let mut material = CorotatedMaterial::from_physical(&clay(), &config);
+    material.elastic_viscosity = config.visc_from_si(eta_pa_s);
+    material.elastic_bulk_viscosity = config.visc_from_si(2.0 * eta_pa_s / 3.0);
+    let id = sim.register_material(Box::new(material)).0;
     let _block = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 10.0));
     let floor = config.boundary_thickness as f32;
     let bound = (2.0 * config.gravity.length() * 10.0).sqrt() / 60.0;
@@ -249,6 +396,7 @@ fn e2_bounce(tolerance: f64, label: &str) {
         deepest = deepest.max(floor - lowest);
     });
     row(label, &sim, &t, ("sink / v dt", f64::from(deepest / bound)));
+    frame_classes(label, &t);
 }
 
 /// E3: the block sliding at 1 m/s on a Coulomb floor, mu 0.3, 30 frames.
@@ -447,6 +595,7 @@ fn e6_splat() {
         &t,
         ("area change / bound", (area - a0).abs() / bound),
     );
+    frame_classes("E6 J2 splat", &t);
 }
 
 #[test]
@@ -458,7 +607,7 @@ fn profile_e1_rest() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e2_bounce() {
-    e2_bounce(1e-1, "E2 bounce");
+    e2_bounce(1e-1, "E2 bounce, tol 1e-1");
 }
 
 /// E2 under the step tolerance's earlier scale, the start's total energy
@@ -479,6 +628,33 @@ fn profile_e2_bounce_at_the_earlier_scale() {
     let f = sim.total_lagrangian_frame().expect("the path is on");
     let factor = (f.start_energy.abs() / f.tolerance_energy).sqrt();
     e2_bounce(1e-1 * factor, "E2 bounce, earlier scale");
+}
+
+/// E2 at a looser and a tighter step tolerance (a lever that changes the
+/// answer, so each row's gate stands beside its cost): how much of the
+/// impacts' steps the tolerance sets.
+#[test]
+#[ignore = "real-time profile: a quiet machine only, one scene at a time"]
+fn profile_e2_bounce_tolerances() {
+    e2_bounce(3e-1, "E2 bounce, tol 3e-1");
+    e2_bounce(1e-2, "E2 bounce, tol 1e-2");
+}
+
+/// E2 with the clay's own damping at three viscosities and two step
+/// tolerances: a scene parameter (real clay is not undamped), measured for
+/// the user's decision, not a method change.
+#[test]
+#[ignore = "real-time profile: a quiet machine only, one scene at a time"]
+fn profile_e2_bounce_damped() {
+    for tolerance in [1e-1, 1e-2] {
+        for eta in [10.0f32, 300.0, 1.0e4] {
+            e2_bounce_damped(
+                tolerance,
+                eta,
+                &format!("E2 bounce, eta {eta} Pa s, tol {tolerance:e}"),
+            );
+        }
+    }
 }
 
 #[test]

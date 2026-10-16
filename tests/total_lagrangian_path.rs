@@ -180,6 +180,13 @@ fn write_replay(sim: &Simulation, frames: &[String]) {
 }
 
 fn run(sim: &mut Simulation, frames: usize) -> (f64, f32) {
+    let (worst, deepest, _) = run_measured(sim, frames);
+    (worst, deepest)
+}
+
+/// `run`, and what the solves allow the horizontal momentum to drift by,
+/// N s/m: the frames' `residual_impulse.x + impulse_round_off` summed.
+fn run_measured(sim: &mut Simulation, frames: usize) -> (f64, f32, f64) {
     let floor = sim.config().boundary_thickness as f32;
     let scale = weight_scale(sim);
     let (mut worst, mut deepest) = (0.0f64, 0.0f32);
@@ -187,6 +194,7 @@ fn run(sim: &mut Simulation, frames: usize) -> (f64, f32) {
     // The drift the solves allow (their residuals' and contacts' work
     // bounds, accumulated) and the round-off of the energy's sums.
     let mut allowed = 0.0f64;
+    let mut impulse = 0.0f64;
     let mut tightest = 0.0f64;
     let mut replay = Vec::new();
     let frame_s = f64::from(sim.config().dt);
@@ -196,6 +204,7 @@ fn run(sim: &mut Simulation, frames: usize) -> (f64, f32) {
         let frame = sim.total_lagrangian_frame().expect("the path is on");
         assert!(frame.energy.is_finite(), "energy not finite");
         allowed += frame.residual_work + frame.contact_work_bound;
+        impulse += frame.residual_impulse.x + frame.impulse_round_off;
         let round_off = count
             * f64::EPSILON
             * (frame.parts.iter().map(|e| e.abs()).sum::<f64>()
@@ -315,7 +324,7 @@ fn run(sim: &mut Simulation, frames: usize) -> (f64, f32) {
     // drift (1e-6 of it, say) would hide a defect below it.
     println!("balance over the solves' bound: at most {tightest:.3e}");
     write_replay(sim, &replay);
-    (worst, deepest)
+    (worst, deepest, impulse)
 }
 
 #[test]
@@ -478,11 +487,39 @@ fn two_blocks_collide_with_their_energy_and_momentum_kept() {
             .sum()
     };
     let start = momentum(&sim);
-    let (worst, _) = run(&mut sim, 30);
+    let (worst, _, allowed) = run_measured(&mut sim, 30);
     let drift = (momentum(&sim) - start).abs() / start.abs();
-    println!("collision: worst balance {worst:.2e}, horizontal momentum off by {drift:.2e}");
+    // The path's own f64 momentum against what its solves allow: no
+    // external horizontal force acts (gravity and the floor's push are
+    // vertical, the side walls are not reached, the bodies' pushes are
+    // equal and opposite), so it moves only by the residuals' impulses and
+    // their round-off (`run_measured`), plus the f64 sums' own round-off,
+    // `n eps sum |m v_x|`, `sum |m v_x|` at most `sqrt(2 M KE)` at the end
+    // and `|p_x|` at the start (one body moving, uniformly).
+    let frame = sim.total_lagrangian_frame().expect("the path is on");
+    let unit = f64::from(sim.config().grid_mass_unit_kg_per_m());
+    let total_mass: f64 = sim
+        .particles()
+        .mass
+        .iter()
+        .map(|&m| f64::from(m))
+        .sum::<f64>()
+        * unit;
+    let count = sim.particles().len() as f64;
+    let sums = count
+        * f64::EPSILON
+        * (frame.start_momentum.x.abs() + (2.0 * total_mass * frame.parts[0]).sqrt());
+    let moved = (frame.momentum.x - frame.start_momentum.x).abs();
+    println!(
+        "collision: worst balance {worst:.2e}, horizontal momentum off by {drift:.2e} (f32 copies); f64 drift {moved:.3e} N s/m against the solves' bound {:.3e} ({:.3e} of it)",
+        allowed + sums,
+        moved / (allowed + sums)
+    );
     assert!(worst < 1e-6, "balance {worst:e}");
-    assert!(drift < 1e-5, "momentum off by {drift:e}");
+    assert!(
+        moved <= allowed + sums,
+        "the momentum moved {moved:e} N s/m, beyond what the solves allow, {allowed:e} plus {sums:e} (sums)"
+    );
 }
 
 #[test]
