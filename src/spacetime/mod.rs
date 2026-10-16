@@ -26,4 +26,5 @@ pub(crate) mod integration;
 pub mod return_mapping;
 pub mod rod;
 pub mod solver;
+pub mod total_lagrangian;
 pub mod transfer;

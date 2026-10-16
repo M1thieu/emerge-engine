@@ -5,9 +5,9 @@
 //! it. The fluid solver in use stays the weakly compressible one;
 //! `Grid::project_fluid_incompressibility` is the older projection this
 //! replaces, and is removed, once it passes its gates (`gates.rs`, criteria
-//! written before the code). The first two gate runs failed the dam break
-//! and the drop into a pool; the third attempt passes all four, with the
-//! solid image, the midpoint advance and the J update `gates.rs` declares.
+//! written before the code). It passes the four incompressible scenes with
+//! the solid image, the midpoint advance and the J update `gates.rs`
+//! declares.
 //! `KNOWN_LIMITATIONS.md` has the history and what remains.
 //!
 //! Sources, read on the documents themselves:
@@ -103,7 +103,7 @@ pub fn travel_limited_dt(max_speed: f32, gravity: f32, dx: f32, max_cells: f32) 
 ///
 /// Measured and not kept: Stomakhin et al. 2014's cells classified by the
 /// mass they receive (5.4) with the density correction of 5.7, in place of
-/// the level set. On scene 1's resting column it read the pressure 0.47
+/// the level set. On the resting column it read the pressure 0.47
 /// cell of head high from the first frame (zero pressure at the first
 /// empty cell's centre, half a cell above the surface; the level set:
 /// 0.04), and the per-face density `m / V` it corrects with carries the

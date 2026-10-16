@@ -4,6 +4,7 @@ mod boundary_diagnostics;
 pub(crate) mod cfl;
 pub mod config;
 pub mod density;
+pub(crate) mod grid_units;
 pub mod handle;
 mod implicit_corotated;
 mod lifecycle;
@@ -12,6 +13,7 @@ mod projection;
 mod queries;
 pub mod spatial_hash;
 mod step;
+pub mod total_lagrangian_solids;
 
 pub use body_state::{BodyState, body_state_of, region_body_state_of};
 #[cfg(any(test, feature = "research-diagnostics"))]
@@ -90,6 +92,11 @@ pub struct Simulation {
     /// be accumulated before it can be added to an `f32` temperature.
     /// Empty and untouched in every scene where nothing rubs.
     friction_heat_debt: Vec<f32>,
+    /// The initial body's lattice spacing and material when it was spawned
+    /// without a stated mass: its particles take their material's own
+    /// density once that material is set (`apply_declared_density`), as
+    /// `add_body` gives a later body at spawn.
+    initial_mass_pending: Option<(config::SpawnRegion, u32)>,
     boundaries: Vec<Box<dyn BoundaryCondition>>,
     /// True while `boundaries` still holds only the default `SlipBoundary`
     /// inserted at construction (see `empty`/`new`). The first
@@ -229,6 +236,12 @@ pub struct Simulation {
     /// `grains::oracle` packing-fraction signal and
     /// `enrich_region_into_grain`.
     grain_populations: Vec<crate::grains::population::GrainPopulation>,
+    /// The total Lagrangian solid path's state (`SimConfig::total_lagrangian`).
+    total_lagrangian: Option<total_lagrangian_solids::TotalLagrangianState>,
+    /// Each body's contact outline (points and the indices of its corners,
+    /// `spawn_outline`) and material, recorded at its spawn for that path
+    /// (empty when it is off).
+    total_lagrangian_outlines: Vec<total_lagrangian_solids::SpawnedBody>,
     /// Scratch buffer for wake/sleep candidates -- pre-allocated once, cleared per substep.
     /// Pattern from ziran2020 MpmSimulationBase: scratch_xp/scratch_vp member fields.
     scratch_indices: Vec<usize>,
@@ -265,9 +278,17 @@ pub(crate) fn initialize_particles(
     let min = spawn.box_center - half;
     let max = spawn.box_center + half;
 
-    let mut i = min.x;
+    // The lattice at the sub-cells' centres, `min + s/2 + k s`: each
+    // particle's own area `s^2` tiles the requested box exactly, so the
+    // body's mass, its volume and its outline describe the same region,
+    // centred where it was asked. Laid from `min` itself, every body sat
+    // half a spacing below and left of its centre (issue #42); a flat block
+    // dropped flat on the total Lagrangian path then took the floor's
+    // impulse a quarter cell off its centre of mass and left the bounce
+    // turning (measured: 1.2e-4 then 1.8e-2 kg m^2/s per m).
+    let mut i = min.x + 0.5 * spawn.spacing;
     while i < max.x {
-        let mut j = min.y;
+        let mut j = min.y + 0.5 * spawn.spacing;
         while j < max.y {
             let pos = Vec2::new(i, j);
 

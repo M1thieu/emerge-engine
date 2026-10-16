@@ -59,7 +59,7 @@ const MAX_LOOKED_UP_MATERIALS: usize = 16;
 /// of magnitude while holding back an amount of heat far below anything
 /// physically meaningful here. Larger would delay visible heating for no
 /// gain; smaller would start losing increments to rounding again.
-const MIN_APPLIED_TEMPERATURE_RISE_K: f32 = 1.0e-3;
+pub(crate) const MIN_APPLIED_TEMPERATURE_RISE_K: f32 = 1.0e-3;
 
 /// Applies the substep's recorded frictional dissipation to particle
 /// temperatures, returning the total energy delivered in J (for auditing).

@@ -269,11 +269,11 @@ pub fn constrain_to_solids(
 /// the wall, are what the particles' own forces and masses on the closed
 /// faces become under the same reflection. Dropping them, as the faces are
 /// then overwritten, makes the gather and the forces no longer adjoint
-/// next to a wall: in step A2 an elastic block hitting a wall read a
-/// velocity gradient of 500 to 1800 1/s in its first layer, sheared 9 to 1
-/// and blew up, while two identical blocks hitting each other with no wall
-/// near bounced apart. Derived here from the image construction; no
-/// source read gives it.
+/// next to a wall: on the staggered grid an elastic block hitting a wall
+/// read a velocity gradient of 500 to 1800 1/s in its first layer, sheared
+/// 9 to 1 and blew up, while two identical blocks hitting each other with
+/// no wall near bounced apart. Derived here from the image construction;
+/// no source read gives it.
 pub fn fold_onto_images(
     layout: &MacLayout,
     field: &mut MacVelocity,

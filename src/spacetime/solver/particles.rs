@@ -612,8 +612,22 @@ impl Simulation {
             spawn.material_id,
         );
         let mut rng = LcgRng::new(spawn.rng_seed);
+        if self.config.total_lagrangian.is_some() {
+            self.total_lagrangian_outlines
+                .push(super::total_lagrangian_solids::SpawnedBody {
+                    outline: super::total_lagrangian_solids::spawn_outline(&spawn),
+                    material: spawn.material_id,
+                    tag,
+                });
+        }
+        // Spawned without a stated mass, a body takes its material's
+        // (`SpawnRegion::declared_mass`).
+        let declared = spawn.declared_mass(self.materials.get(spawn.material_id));
         let new_particles = initialize_particles(&self.config, spawn, &mut rng);
-        for p in new_particles {
+        for mut p in new_particles {
+            if let Some(mass) = declared {
+                p.mass = mass;
+            }
             self.particles.push(p);
         }
         let new_len = self.particles.len();

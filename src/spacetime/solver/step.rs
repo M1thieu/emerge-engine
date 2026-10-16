@@ -103,6 +103,14 @@ impl Simulation {
     /// One MLS-MPM timestep: particle→grid→particle cycle.
     /// The grid is temporary scratch -- only particles hold long-term material memory.
     pub fn step(&mut self) {
+        if let Some(path) = self.config.total_lagrangian {
+            self.step_total_lagrangian_solids(path);
+            return;
+        }
+        assert!(
+            self.total_lagrangian_frame().is_none(),
+            "the total Lagrangian solid path cannot be switched off in a run"
+        );
         self.assert_strict_fluid_mode_is_supported();
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).
