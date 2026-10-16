@@ -1,6 +1,8 @@
-//! Eigenvalues of a small real symmetric matrix, and the nearest symmetric
-//! positive semidefinite matrix. Test-only: the oracles of
-//! `spacetime::solver::implicit_corotated`'s dense direct solve.
+//! Eigenvalues of a real symmetric matrix, and the nearest symmetric
+//! positive semidefinite matrix. The 4x4 forms are test-only, the oracles
+//! of `spacetime::solver::implicit_corotated`'s dense direct solve; the
+//! definite `n` by `n` form gives a body's modes (`total_lagrangian::
+//! modes`).
 
 /// Nearest symmetric positive semidefinite matrix in the Frobenius norm:
 /// eigendecompose, clamp every negative eigenvalue to zero, rebuild.
@@ -105,7 +107,6 @@ pub(crate) fn jacobi_eigen_symmetric_4x4(mut a: [[f32; 4]; 4]) -> ([f32; 4], [[f
 /// (h_ii h_jj)^(1/2) <= tol`. Read: sections 1 and 3's algorithm; its error
 /// analyses are not used here. Rutishauser's rotation, the one of
 /// `jacobi_eigen_symmetric_4x4`, in `f64` for any size.
-#[cfg(all(test, feature = "experimental"))]
 pub(crate) fn jacobi_eigen_symmetric_definite(
     mut h: Vec<f64>,
     n: usize,

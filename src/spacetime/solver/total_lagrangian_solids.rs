@@ -35,8 +35,9 @@ use crate::matter::materials::solid::von_mises::VonMisesMaterial;
 use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
-    ConservingSettings, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache, Particles,
-    Plane, StepControl, Timing, controlled_step, start_velocity_field, tolerance_energy,
+    ConservingSettings, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache, Modes,
+    Particles, Plane, StepControl, Timing, body_modes, contact_grid, controlled_step,
+    start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
 
@@ -48,6 +49,9 @@ use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
 pub struct TotalLagrangianConfig {
     pub tolerance: f64,
     pub settings: ConservingSettings,
+    /// Carry a lone body's flights between contacts by its modes (`flight`)
+    /// instead of stepping them. Off by default.
+    pub modal_flight: bool,
 }
 
 impl TotalLagrangianConfig {
@@ -57,7 +61,14 @@ impl TotalLagrangianConfig {
         Self {
             tolerance,
             settings: ConservingSettings::default(),
+            modal_flight: false,
         }
+    }
+
+    /// The same, a lone body's flights carried by its modes (`flight`).
+    pub fn with_modal_flight(mut self) -> Self {
+        self.modal_flight = true;
+        self
     }
 }
 
@@ -138,6 +149,16 @@ pub struct TotalLagrangianFrame {
     /// can drift by their sum, beyond the external and wall impulses.
     pub residual_impulse: DVec2,
     pub impulse_round_off: f64,
+    /// Whether the frame was a flight carried by the body's modes, with no
+    /// step (`TotalLagrangianConfig::modal_flight`); and then its energy's
+    /// change under the material's own law, J/m, which the linear modes do
+    /// not keep (the law's nonlinearity; zero in a stepped frame).
+    pub modal: bool,
+    pub modal_energy_change: f64,
+    /// Since the start: the frames flown by the modes, and the flights
+    /// ended at a frame the body could touch a wall (handed to the step).
+    pub modal_frames: u64,
+    pub hand_backs: u64,
 }
 
 /// The path's state, kept between frames.
@@ -167,6 +188,15 @@ pub(crate) struct TotalLagrangianState {
     tolerance_energy: f64,
     /// The particles' momentum at the start.
     start_momentum: DVec2,
+    /// The time since the start, s.
+    time: f64,
+    /// The lone body's modes once a flight needed them (`None` inside when
+    /// its law has none), and the flight under way.
+    modes: Option<Option<Modes>>,
+    flight: Option<Flight>,
+    /// `TotalLagrangianFrame::modal_frames` and `hand_backs`.
+    modal_frames: u64,
+    hand_backs: u64,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -323,8 +353,13 @@ impl Simulation {
     }
 
     /// Builds the path's state from the particles as they are now, which
-    /// becomes the reference configuration; `settings` are the step's.
-    fn build_total_lagrangian_state(&self, settings: &ConservingSettings) -> TotalLagrangianState {
+    /// becomes the reference configuration; `settings` are the step's. With
+    /// `modal_flight`, a lone body's modes are computed here, at its spawn,
+    /// on the grid the step will keep, not inside its first flight.
+    fn build_total_lagrangian_state(
+        &self,
+        (settings, modal_flight): (&ConservingSettings, bool),
+    ) -> TotalLagrangianState {
         let n = self.particles.len();
         let units = GridUnits::of(&self.config);
         let mut reference: Vec<DVec2> = self
@@ -425,9 +460,27 @@ impl Simulation {
             start_energy: 0.0,
             tolerance_energy: 0.0,
             start_momentum: DVec2::ZERO,
+            time: 0.0,
+            modes: None,
+            flight: None,
+            modal_frames: 0,
+            hand_backs: 0,
             frame: TotalLagrangianFrame::default(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
+        if modal_flight && state.outlines.len() == 1 {
+            let grid = contact_grid(
+                &self.total_lagrangian_layout(),
+                &state.reference,
+                (&state.mass, &state.v0),
+                settings,
+            );
+            state.modes = Some(body_modes(
+                &grid,
+                (&state.mass, &state.v0, &state.solids),
+                (state.particles, state.x.len()),
+            ));
+        }
         state.start_energy = self.total_lagrangian_energy(&state);
         let kinetic_and_stored: f64 = (0..n)
             .map(|p| {
@@ -515,7 +568,8 @@ impl Simulation {
         // state. A body added later is refused, not silently re-referenced.
         match &self.total_lagrangian {
             None => {
-                self.total_lagrangian = Some(self.build_total_lagrangian_state(&config.settings))
+                self.total_lagrangian =
+                    Some(self.build_total_lagrangian_state((&config.settings, config.modal_flight)))
             }
             Some(state) => assert!(
                 state.particles == self.particles.len(),
@@ -537,7 +591,11 @@ impl Simulation {
         let scale = state.tolerance_energy.max(f64::MIN_POSITIVE).sqrt();
         let mut frame = TotalLagrangianFrame::default();
         let framing = std::time::Instant::now();
-        let mut remaining = f64::from(self.config.dt);
+        let length = f64::from(self.config.dt);
+        frame.modal = config.modal_flight
+            && Self::fly_total_lagrangian_frame(&mut state, (&planes, gravity), length);
+        // A modal frame takes no step.
+        let mut remaining = if frame.modal { 0.0 } else { length };
         while remaining > 4.0 * f64::EPSILON * f64::from(self.config.dt) {
             // A step cut short to end on the frame's time says nothing
             // about the step the solution allows: kept at its first try,
@@ -607,6 +665,10 @@ impl Simulation {
             .unwrap_or_default();
         self.deposit_total_lagrangian_heat(&mut state, &heat);
         frame.energy = self.total_lagrangian_energy(&state);
+        if frame.modal {
+            frame.modal_energy_change = frame.energy - state.frame.energy;
+        }
+        state.time += length;
         frame.parts = (0..state.particles).fold([0.0; 3], |[k, e, g], p| {
             [
                 k + 0.5 * state.mass[p] * state.v[p].length_squared(),
@@ -635,6 +697,7 @@ impl Simulation {
         frame.wall = framing.elapsed().as_secs_f64();
         frame.start_energy = state.start_energy;
         frame.start_momentum = state.start_momentum;
+        (frame.modal_frames, frame.hand_backs) = (state.modal_frames, state.hand_backs);
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
@@ -654,6 +717,62 @@ impl Simulation {
         }
         self.total_lagrangian = Some(state);
         self.frame_index = self.frame_index.saturating_add(1);
+    }
+
+    /// One frame of a lone body's flight carried by its modes, when it may
+    /// fly (`flight`): no contact held at the last step, no turning, and
+    /// every contact point provably clear of the walls to the frame's end.
+    /// False hands the frame to the step, the flight (if any) ended there.
+    fn fly_total_lagrangian_frame(
+        state: &mut TotalLagrangianState,
+        (planes, gravity): (&[Plane], DVec2),
+        length: f64,
+    ) -> bool {
+        let (t0, t1) = (state.time, state.time + length);
+        if state.flight.is_none() {
+            let free = state.outlines.len() == 1
+                && state.cache.as_ref().is_some_and(|c| c.contacts.is_empty());
+            if !free {
+                return false;
+            }
+            if state.modes.is_none() {
+                let grid = &state.cache.as_ref().expect("checked above").grid;
+                let modes = body_modes(
+                    grid,
+                    (&state.mass, &state.v0, &state.solids),
+                    (state.particles, state.x.len()),
+                );
+                state.modes = Some(modes);
+            }
+            let Some(Some(modes)) = &state.modes else {
+                return false;
+            };
+            let started = Flight::start(state, modes, t0);
+            state.flight = started;
+        }
+        let Some(flight) = state.flight.take() else {
+            return false;
+        };
+        if !flight.clear(gravity, planes, (t0, t1)) {
+            state.hand_backs += 1;
+            return false;
+        }
+        let Some(Some(modes)) = state.modes.take() else {
+            return false;
+        };
+        let start = (state.x.clone(), state.v.clone(), state.f.clone());
+        flight.rebuild(&modes, gravity, t1, state);
+        state.modes = Some(Some(modes));
+        // A frame whose rebuilt state does not keep the angular momentum is
+        // stepped instead, from the frame's start (`flight`).
+        if !flight.keeps_angular_momentum(state) {
+            (state.x, state.v, state.f) = start;
+            state.hand_backs += 1;
+            return false;
+        }
+        state.flight = Some(flight);
+        state.modal_frames += 1;
+        true
     }
 
     /// Friction's heat into the particles' temperatures, banked until a
@@ -691,6 +810,9 @@ impl Simulation {
         self.total_lagrangian.as_ref().map(|s| s.frame)
     }
 }
+
+mod flight;
+use flight::Flight;
 
 #[cfg(all(test, feature = "experimental"))]
 mod vibration;
@@ -739,7 +861,7 @@ mod outline_velocity_tests {
         for v in sim.particles_mut().v.iter_mut() {
             *v = spawned;
         }
-        let state = sim.build_total_lagrangian_state(&ConservingSettings::default());
+        let state = sim.build_total_lagrangian_state((&ConservingSettings::default(), false));
         let expected = GridUnits::of(&config).velocity(spawned);
         assert!(
             state.x.len() > state.particles,

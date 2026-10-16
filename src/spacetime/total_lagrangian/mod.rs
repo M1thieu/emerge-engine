@@ -72,6 +72,7 @@ mod galerkin2;
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) mod hooks;
 mod krylov;
+mod modes;
 mod multipliers;
 mod solve;
 mod step;
@@ -91,6 +92,7 @@ pub use elastic::*;
 #[cfg(all(test, feature = "experimental"))]
 pub(crate) use galerkin2::*;
 pub(crate) use krylov::*;
+pub(crate) use modes::*;
 pub(crate) use multipliers::*;
 pub(crate) use solve::*;
 pub use step::*;
@@ -208,6 +210,9 @@ pub struct Timing {
     /// the products by central differences taking two each. A count, kept
     /// with the times it explains.
     pub internal_evaluations: u64,
+    /// The Jacobian band factors built (`Factors::jacobian`), each an
+    /// `approximate_jacobian`.
+    pub factorizations: u64,
 }
 
 impl Timing {
@@ -228,6 +233,7 @@ impl Timing {
         self.finishing += other.finishing;
         self.controller += other.controller;
         self.internal_evaluations += other.internal_evaluations;
+        self.factorizations += other.factorizations;
     }
 }
 
