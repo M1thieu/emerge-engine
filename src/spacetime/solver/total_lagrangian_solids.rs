@@ -36,7 +36,7 @@ use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
     ConservingSettings, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache, Particles,
-    Plane, StepControl, Timing, controlled_step, tolerance_energy,
+    Plane, StepControl, Timing, controlled_step, start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
 
@@ -128,9 +128,20 @@ pub struct TotalLagrangianFrame {
     /// state; and their moment of inertia about it, kg m^2 per metre.
     pub angular_momentum: f64,
     pub moment_of_inertia: f64,
+    /// The particles' momentum at the frame's end and at the start, kg m/s
+    /// per metre of depth, from the path's own `f64` state.
+    pub momentum: DVec2,
+    pub start_momentum: DVec2,
+    /// What this frame's solves can leave of the momentum unbalanced, per
+    /// axis, N s/m: each kept step's `dt |StepReport::residual_force|`;
+    /// and their round-off, `dt StepReport::force_round_off`. The momentum
+    /// can drift by their sum, beyond the external and wall impulses.
+    pub residual_impulse: DVec2,
+    pub impulse_round_off: f64,
 }
 
 /// The path's state, kept between frames.
+#[cfg_attr(all(test, feature = "experimental"), derive(Clone))]
 pub(crate) struct TotalLagrangianState {
     /// The solids' particles first, the bodies' contact points after them.
     reference: Vec<DVec2>,
@@ -154,6 +165,8 @@ pub(crate) struct TotalLagrangianState {
     start_energy: f64,
     /// The step tolerance's energy (`tolerance_energy`), fixed at the start.
     tolerance_energy: f64,
+    /// The particles' momentum at the start.
+    start_momentum: DVec2,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -300,9 +313,18 @@ impl Simulation {
         }
     }
 
+    /// The step's grid layout: the simulation's grid, in metres.
+    fn total_lagrangian_layout(&self) -> GridLayout {
+        GridLayout::new(
+            self.config.grid_res,
+            self.config.grid_res,
+            self.config.dx_meters,
+        )
+    }
+
     /// Builds the path's state from the particles as they are now, which
-    /// becomes the reference configuration.
-    fn build_total_lagrangian_state(&self) -> TotalLagrangianState {
+    /// becomes the reference configuration; `settings` are the step's.
+    fn build_total_lagrangian_state(&self, settings: &ConservingSettings) -> TotalLagrangianState {
         let n = self.particles.len();
         let units = GridUnits::of(&self.config);
         let mut reference: Vec<DVec2> = self
@@ -371,6 +393,18 @@ impl Simulation {
                 .sum();
             bodies.push((body_mass, start..reference.len()));
         }
+        // The contact points carry no mass, so no velocity of their own:
+        // they start at the body's velocity field, the one the step's
+        // increments then move (`start_velocity_field`). Started at rest,
+        // they lagged a body spawned moving by its spawn velocity, read by
+        // the contact tolerance's motion scale.
+        let field = start_velocity_field(
+            &self.total_lagrangian_layout(),
+            &reference,
+            (&mass, &v0, &v),
+            settings,
+        );
+        v[n..].copy_from_slice(&field[n..]);
         let x = reference.clone();
         let mut state = TotalLagrangianState {
             reference,
@@ -390,8 +424,10 @@ impl Simulation {
             heat: 0.0,
             start_energy: 0.0,
             tolerance_energy: 0.0,
+            start_momentum: DVec2::ZERO,
             frame: TotalLagrangianFrame::default(),
         };
+        state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
         state.start_energy = self.total_lagrangian_energy(&state);
         let kinetic_and_stored: f64 = (0..n)
             .map(|p| {
@@ -478,18 +514,16 @@ impl Simulation {
         // would take their deformed shape as their reference and lose that
         // state. A body added later is refused, not silently re-referenced.
         match &self.total_lagrangian {
-            None => self.total_lagrangian = Some(self.build_total_lagrangian_state()),
+            None => {
+                self.total_lagrangian = Some(self.build_total_lagrangian_state(&config.settings))
+            }
             Some(state) => assert!(
                 state.particles == self.particles.len(),
                 "the total Lagrangian solid path does not support adding bodies after its first frame (its reference configuration is the bodies' start)"
             ),
         }
         let (planes, friction) = self.total_lagrangian_walls();
-        let layout = GridLayout::new(
-            self.config.grid_res,
-            self.config.grid_res,
-            self.config.dx_meters,
-        );
+        let layout = self.total_lagrangian_layout();
         let control = StepControl {
             tolerance: config.tolerance,
             safety: 0.9,
@@ -542,7 +576,10 @@ impl Simulation {
             if cut && step.rejected == 0 {
                 state.step_length = state.step_length.max(proposed);
             }
+            let substep = step.dt / step.kept.len().max(1) as f64;
             for kept in &step.kept {
+                frame.residual_impulse += substep * kept.residual_force.abs();
+                frame.impulse_round_off += substep * kept.force_round_off;
                 frame.newton += kept.newton;
                 frame.passes += kept.passes;
                 frame.residual_work += kept.residual_work;
@@ -586,6 +623,7 @@ impl Simulation {
                         m + state.mass[p] * state.v[p],
                     )
                 });
+            frame.momentum = momentum;
             let (centre, velocity) = (centre / total, momentum / total);
             for p in 0..state.particles {
                 let arm = state.x[p] - centre;
@@ -596,6 +634,7 @@ impl Simulation {
         frame.heat = state.heat;
         frame.wall = framing.elapsed().as_secs_f64();
         frame.start_energy = state.start_energy;
+        frame.start_momentum = state.start_momentum;
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
@@ -650,6 +689,69 @@ impl Simulation {
     /// The last frame on the total Lagrangian solid path, when it is on.
     pub fn total_lagrangian_frame(&self) -> Option<TotalLagrangianFrame> {
         self.total_lagrangian.as_ref().map(|s| s.frame)
+    }
+}
+
+#[cfg(all(test, feature = "experimental"))]
+mod vibration;
+
+#[cfg(all(test, feature = "experimental"))]
+mod modal_flight;
+
+#[cfg(all(test, feature = "experimental"))]
+mod impact;
+
+#[cfg(all(test, feature = "experimental"))]
+mod hard_frame;
+
+#[cfg(test)]
+mod outline_velocity_tests {
+    use super::*;
+    use crate::materials::physical_props::Elastic as ElasticProps;
+    use crate::{CorotatedMaterial, FromSI, SimConfig};
+    use glam::IVec2;
+
+    /// A body spawned moving: its contact points start at its velocity,
+    /// not at rest (they have no mass, so no velocity of their own).
+    #[test]
+    fn a_body_spawned_moving_carries_its_contact_points() {
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
+        let props = ElasticProps {
+            e_pa: 1.125e7,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        };
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
+            .0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 5.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
+        );
+        let spawned = Vec2::new(30.0, -140.0);
+        for v in sim.particles_mut().v.iter_mut() {
+            *v = spawned;
+        }
+        let state = sim.build_total_lagrangian_state(&ConservingSettings::default());
+        let expected = GridUnits::of(&config).velocity(spawned);
+        assert!(
+            state.x.len() > state.particles,
+            "the body has contact points"
+        );
+        for q in state.particles..state.x.len() {
+            assert!(
+                (state.v[q] - expected).length() <= 1e-10 * expected.length(),
+                "contact point {q}: {:?} against {expected:?}",
+                state.v[q]
+            );
+        }
     }
 }
 

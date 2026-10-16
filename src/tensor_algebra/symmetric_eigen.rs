@@ -93,3 +93,87 @@ pub(crate) fn jacobi_eigen_symmetric_4x4(mut a: [[f32; 4]; 4]) -> ([f32; 4], [[f
     }
     ([a[0][0], a[1][1], a[2][2], a[3][3]], v)
 }
+
+/// Two-sided Jacobi for a real symmetric positive definite `n` by `n`
+/// matrix `h` (row-major). Returns the eigenvalues and the eigenvector
+/// matrix `v` (row-major, its columns the eigenvectors), `h = v
+/// diag(lambda) v^T`.
+///
+/// Source: Demmel and Veselic, *Jacobi's method is more accurate than QR*,
+/// LAPACK Working Note 15 (SIAM J. Matrix Anal. Appl. 13, 1992), Algorithm
+/// 3.1: its rotation and its stopping criterion, every pair `|h_ij| /
+/// (h_ii h_jj)^(1/2) <= tol`. Read: sections 1 and 3's algorithm; its error
+/// analyses are not used here. Rutishauser's rotation, the one of
+/// `jacobi_eigen_symmetric_4x4`, in `f64` for any size.
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn jacobi_eigen_symmetric_definite(
+    mut h: Vec<f64>,
+    n: usize,
+    tol: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let mut v = vec![0.0; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+    for _sweep in 0..100 {
+        let mut rotated = false;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let (a, b, c) = (h[i * n + i], h[j * n + j], h[i * n + j]);
+                if c.abs() <= tol * (a * b).sqrt() {
+                    continue;
+                }
+                rotated = true;
+                let zeta = (b - a) / (2.0 * c);
+                let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
+                let cs = 1.0 / (1.0 + t * t).sqrt();
+                let sn = cs * t;
+                h[i * n + i] = a - c * t;
+                h[j * n + j] = b + c * t;
+                h[i * n + j] = 0.0;
+                h[j * n + i] = 0.0;
+                for k in (0..n).filter(|&k| k != i && k != j) {
+                    let tmp = h[i * n + k];
+                    h[i * n + k] = cs * tmp - sn * h[j * n + k];
+                    h[j * n + k] = sn * tmp + cs * h[j * n + k];
+                    h[k * n + i] = h[i * n + k];
+                    h[k * n + j] = h[j * n + k];
+                }
+                for k in 0..n {
+                    let tmp = v[k * n + i];
+                    v[k * n + i] = cs * tmp - sn * v[k * n + j];
+                    v[k * n + j] = sn * tmp + cs * v[k * n + j];
+                }
+            }
+        }
+        if !rotated {
+            break;
+        }
+    }
+    ((0..n).map(|i| h[i * n + i]).collect(), v)
+}
+
+#[cfg(all(test, feature = "experimental"))]
+mod definite_tests {
+    use super::*;
+
+    /// A 3 x 3 definite matrix's eigenpairs: `h v = lambda v`, `v`
+    /// orthonormal.
+    #[test]
+    fn the_jacobi_eigenpairs_satisfy_the_definition() {
+        let n = 3;
+        let h = vec![4.0, 1.0, 0.5, 1.0, 3.0, 0.25, 0.5, 0.25, 2.0];
+        let (lambda, v) = jacobi_eigen_symmetric_definite(h.clone(), n, 1e-15);
+        for e in 0..n {
+            for i in 0..n {
+                let hv: f64 = (0..n).map(|k| h[i * n + k] * v[k * n + e]).sum();
+                assert!((hv - lambda[e] * v[i * n + e]).abs() < 1e-13, "pair {e}");
+            }
+            for f in 0..n {
+                let dot: f64 = (0..n).map(|k| v[k * n + e] * v[k * n + f]).sum();
+                let expected = if e == f { 1.0 } else { 0.0 };
+                assert!((dot - expected).abs() < 1e-13, "columns {e}, {f}");
+            }
+        }
+    }
+}
