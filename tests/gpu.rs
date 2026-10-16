@@ -142,9 +142,18 @@ mod gpu_tests {
     /// `particles_knn` (see `Simulation::particles_knn`, CPU side, for the full
     /// rationale -- a topological neighbor rule, Ballerini et al. 2008)
     /// mirrored on the GPU backend must match a brute-force k-nearest scan.
-    /// Query point is off either disk's own center so no two particles land at
-    /// the exact same distance (a tie right at the k-th cutoff is
-    /// ambiguous, not a bug -- see the CPU-side test's own note).
+    ///
+    /// Compared tie-invariantly: the two disks overlap and both lay their
+    /// particles on the same lattice (`min + s/2 + k s`, 5.25 + 0.5 k and
+    /// 9.25 + 0.5 k, exact in `f32`, no jitter), so the overlap holds pairs
+    /// of particles at identical positions, at identical distances from any
+    /// query. Here the nearest squared distances 0.0193, 0.1493, 0.1993 and
+    /// 0.3293 are each such a pair, so the 7th and 8th nearest tie exactly
+    /// and which of the two is "the" 7th is not defined (measured: the GPU
+    /// kept particle 420, the scan 266, at the same point). Asserted: `k`
+    /// particles, every one no farther than the scan's k-th distance, and
+    /// every particle strictly closer than it among them; distances are
+    /// recomputed here by the scan's own arithmetic.
     #[test]
     fn gpu_particles_knn_matches_brute_force_scan() {
         if !gpu_available() {
@@ -168,15 +177,30 @@ mod gpu_tests {
             .map(|(i, p)| (i, (p.x - center).length_squared()))
             .collect();
         brute.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
-        let mut expected: Vec<usize> = brute.into_iter().take(k).map(|(i, _)| i).collect();
-        expected.sort_unstable();
+        let kth = brute[k - 1].1;
+        let distance = |i: usize| (solver.particles()[i].x - center).length_squared();
 
         let mut got = solver.particles_knn(center, k);
         got.sort_unstable();
+        got.dedup();
         assert_eq!(
-            got, expected,
-            "particles_knn must match a brute-force k-nearest scan (same particle set)"
+            got.len(),
+            k,
+            "particles_knn must return k distinct particles"
         );
+        for &i in &got {
+            assert!(
+                distance(i) <= kth,
+                "particle {i} at {} is farther than the k-th nearest, {kth}",
+                distance(i)
+            );
+        }
+        for &(i, d) in brute.iter().take_while(|(_, d)| *d < kth) {
+            assert!(
+                got.contains(&i),
+                "particle {i} at {d}, strictly closer than the k-th nearest {kth}, is missing"
+            );
+        }
     }
 
     #[test]

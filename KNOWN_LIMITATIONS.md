@@ -901,11 +901,6 @@ field's stability bound does not reduce to seconds in the units it states.
   depth (shallow 0.132, deep 0.259). The ordering the test expects held only
   while the cap return over-hardened compaction. It should be rechecked once
   bodies spawn in equilibrium (the spawn contract in the core plan).
-- Two renderer tests (`render_gpu_produces_visible_particle_pixels_not_just_clear_color`
-  and its CPU control) find no particle pixel in a 64x64 headless render, on
-  real hardware too. The instance buffers hold correct data, so the fault is
-  in the draw pass or in quads about 2 pixels wide at that scale; which one
-  is not known. Both stay ignored with that reason.
 - The Cam-Clay soil model carries four disclosed approximations, all in
   `src/matter/materials/solid/nacc.rs`:
   - Its elastic response uses a constant bulk modulus. Real Cam-Clay
