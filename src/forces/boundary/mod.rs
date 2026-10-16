@@ -4,6 +4,9 @@
 //! (`DirectionalContactGrip`), see that module's doc;
 //! `heightmap`/`kinematic_obstacle`/`slip`/`static_box` are each
 //! standalone, one file apiece.
+//! `signorini_coulomb` states the contact law itself (push but never
+//! pull, Coulomb friction) for the solvers that enforce it on their own
+//! unknowns.
 //!
 //! Every wall acts at the grid nodes it contains; grid node `i` sits at
 //! `i + 0.5` (`grid::kernel::quadratic_weights`).
@@ -15,9 +18,20 @@
 
 use glam::Vec2;
 
+/// Walls on the domain's four sides, as the contact law sees them: planes
+/// `thickness` cells in from each edge (where every outer wall's plane
+/// sits, `position_clamp_bounds`), matter pushed but never pulled, and
+/// Coulomb's coefficient along them (`signorini_coulomb`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DomainWalls {
+    pub thickness: usize,
+    pub friction: f32,
+}
+
 mod friction;
 mod heightmap;
 mod kinematic_obstacle;
+pub mod signorini_coulomb;
 mod slip;
 mod static_box;
 
@@ -54,6 +68,14 @@ pub trait BoundaryCondition: Send + Sync + core::fmt::Debug {
     /// explicitly.
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         false
+    }
+
+    /// The domain's walls as the contact law sees them (`DomainWalls`),
+    /// for a solver that holds them by contact on its own unknowns (the
+    /// total Lagrangian solid step). `None`: this boundary has no such
+    /// form yet, and that solver refuses it.
+    fn domain_walls(&self) -> Option<DomainWalls> {
+        None
     }
 
     /// Local contact normal and penetration overlap for a grain of `radius` at

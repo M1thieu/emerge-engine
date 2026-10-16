@@ -1,9 +1,10 @@
+use crate::matter::materials::viscous_stress::newtonian_viscous_stress;
 use glam::Mat2;
 
 pub(crate) mod stress;
 
 use crate::materials::lame_parameters::lame_from_young;
-use crate::materials::physical_props::{Elastic, FromSI, scale_lame};
+use crate::materials::physical_props::{Elastic, FromSI};
 use crate::materials::{ConstitutiveModel, MaterialModel, MaterialParams};
 use crate::matter::kinematics::deformation_gradient::advance_deformation_gradient;
 use crate::matter::kinematics::polar_decomposition::polar_decomposition_2d;
@@ -48,11 +49,17 @@ pub struct CorotatedMaterial {
     /// the clamp removes the permanent-zero-stress trap, it doesn't give
     /// this model NeoHookean's stronger barrier.
     pub j_min: f32,
-    /// Kelvin-Voigt viscous damping on the deviatoric elastic strain rate
-    /// (SI Pa.s, converted like `lambda`/`mu`, see
-    /// `rankine::q_factor_elastic_viscosity_pa_s`), the formula of
-    /// `RankineMaterial::elastic_viscosity` / `DruckerPragerMaterial::elastic_viscosity`.
-    /// `0.0` (default) = off.
+    /// Kelvin-Voigt shear viscosity `eta`, the dashpot in parallel with the
+    /// elastic law: `tau_v = J (2 eta dev(D) + zeta tr(D) I)`, the Newtonian
+    /// law of `materials::viscous_stress` (plane strain from 3D), with
+    /// `zeta` = `elastic_bulk_viscosity`. In grid units, converted from Pa s
+    /// by `SimConfig::visc_from_si` like `lambda`/`mu`. `0.0` (default) =
+    /// off. This is the textbook `eta`: for a target quality factor Q at
+    /// angular frequency `omega`, `eta = G / (Q omega)`. (The Rankine /
+    /// Drucker-Prager / NACC / von Mises `elastic_viscosity` still holds
+    /// twice that with a `eta D_dev` dashpot, see
+    /// `rankine::q_factor_elastic_viscosity_pa_s`: an engine-wide unification
+    /// pending.)
     ///
     /// Without it an elastic solid dissipates nothing and rings under repeated
     /// impact, while real solids lose energy to internal friction (dislocation
@@ -60,6 +67,9 @@ pub struct CorotatedMaterial {
     /// `q_factor_elastic_viscosity_pa_s`). `RankineMaterial::ice()` shares this
     /// elastic base.
     pub elastic_viscosity: f32,
+    /// Kelvin-Voigt bulk viscosity `zeta`, grid units like
+    /// `elastic_viscosity`. `0.0` (default) = off.
+    pub elastic_bulk_viscosity: f32,
 }
 
 impl CorotatedMaterial {
@@ -75,6 +85,7 @@ impl CorotatedMaterial {
             active_stress_coeff: 0.0,
             j_min: 0.01,
             elastic_viscosity: 0.0,
+            elastic_bulk_viscosity: 0.0,
         }
     }
 
@@ -90,7 +101,7 @@ impl CorotatedMaterial {
 
 impl FromSI<Elastic> for CorotatedMaterial {
     fn from_physical(props: &Elastic, config: &crate::SimConfig) -> Self {
-        let (lambda, mu) = scale_lame(props.e_pa, props.nu, props.rho_kg_m3, config);
+        let (lambda, mu) = config.lame_from_si(props.e_pa, props.nu);
         Self {
             rest_density: Some(props.rho_kg_m3 / config.reference_density_kg_m3),
             ..Self::new(lambda, mu)
@@ -121,6 +132,7 @@ impl MaterialModel for CorotatedMaterial {
         // for all materials: `DruckerPragerMaterial` uses the field as
         // strain-rate edge memory.
         if self.elastic_viscosity == 0.0
+            && self.elastic_bulk_viscosity == 0.0
             && self.thermal_expansion == 0.0
             && self.active_stress_coeff == 0.0
         {
@@ -144,19 +156,16 @@ impl MaterialModel for CorotatedMaterial {
 
         let f_t = f.transpose();
         let elastic = 2.0 * mu_eff * (f - r) * f_t + lambda_eff * (j - 1.0) * j * Mat2::IDENTITY;
-        if self.elastic_viscosity == 0.0 {
+        if self.elastic_viscosity == 0.0 && self.elastic_bulk_viscosity == 0.0 {
             return elastic;
         }
-        // Same Kelvin-Voigt dashpot formula as `RankineMaterial`/
-        // `DruckerPragerMaterial`/`ViscoelasticMaterial`: tau_v = eta*D_dev
-        // (NOT 2*eta*D_dev -- see `RankineMaterial::kirchhoff_stress`'s own
-        // doc for why), D the symmetric part of the APIC velocity gradient.
+        // The Kelvin-Voigt dashpot (`elastic_viscosity`'s doc), on D, the
+        // symmetric part of the APIC velocity gradient; Kirchhoff, so `J`
+        // times the Cauchy viscous stress.
         let c = particles.velocity_gradient[i];
-        let sym = c + c.transpose();
-        let d = sym * 0.5;
-        let trace = d.x_axis.x + d.y_axis.y;
-        let d_dev = d - Mat2::from_diagonal(glam::Vec2::splat(trace * 0.5));
-        elastic + self.elastic_viscosity * d_dev
+        let d = (c + c.transpose()) * 0.5;
+        elastic
+            + j * newtonian_viscous_stress(d, self.elastic_viscosity, self.elastic_bulk_viscosity)
     }
 
     fn stress_volume(&self, particles: &Particles, i: usize) -> f32 {
@@ -223,9 +232,12 @@ impl MaterialModel for CorotatedMaterial {
         // `DruckerPragerMaterial` already use for their own Kelvin-Voigt term --
         // without this, `elastic_viscosity` adds real stiffness the substep
         // selector never sees.
-        let viscous_dt = if self.elastic_viscosity > 0.0 {
+        let viscous_dt = if self.elastic_viscosity > 0.0 || self.elastic_bulk_viscosity > 0.0 {
             let density = density.max(1.0e-6);
-            let kinematic = self.elastic_viscosity / density;
+            // The longitudinal viscous diffusivity, `(4/3 eta + zeta) / rho`
+            // (the dashpot's normal stress per normal rate).
+            let kinematic =
+                (4.0 / 3.0 * self.elastic_viscosity + self.elastic_bulk_viscosity) / density;
             if kinematic > f32::EPSILON {
                 viscous_cfl * cell_width * cell_width / kinematic
             } else {

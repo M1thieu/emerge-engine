@@ -13,6 +13,7 @@ use crate::matter::kinematics::polar_decomposition::{
 };
 use crate::matter::kinematics::volume_ratio::MIN_J;
 use crate::tensor_algebra::frobenius::frob;
+use crate::tensor_algebra::matrix2::{Matrix2, Real};
 #[cfg(test)]
 use crate::tensor_algebra::symmetric_eigen::spd_project_symmetric_4x4;
 
@@ -24,15 +25,19 @@ use crate::tensor_algebra::symmetric_eigen::spd_project_symmetric_4x4;
 /// MuIRheologyMaterial) used to hand-duplicate this exact formula in its own
 /// `kirchhoff_stress` -- each material's plasticity lives entirely in its
 /// own `update_particle`, this function owns only the shared elastic stress
-/// evaluated on the (already plastically corrected) current F.
+/// evaluated on the (already plastically corrected) current F. One
+/// definition at any precision: `f32` for the explicit solver, `f64` for
+/// the total Lagrangian step.
 #[inline]
-pub(crate) fn corotated_elastic_stress(f: Mat2, lambda: f32, mu: f32) -> Mat2 {
+pub(crate) fn corotated_elastic_stress<M: Matrix2>(f: M, lambda: M::Scalar, mu: M::Scalar) -> M {
     let j = f.determinant();
-    if j <= MIN_J {
-        return Mat2::ZERO;
+    if j <= M::Scalar::from(MIN_J) {
+        return M::ZERO;
     }
     let r = polar_decomposition_2d(f);
-    2.0 * mu * (f - r) * f.transpose() + lambda * (j - 1.0) * j * Mat2::IDENTITY
+    let one = M::Scalar::from(1.0);
+    (f - r).scaled(M::Scalar::from(2.0) * mu) * f.transpose()
+        + M::IDENTITY.scaled(lambda * (j - one) * j)
 }
 
 /// Corotated elastic energy density `Psi(F) = mu*||F-R||_F^2 +
@@ -40,20 +45,57 @@ pub(crate) fn corotated_elastic_stress(f: Mat2, lambda: f32, mu: f32) -> Mat2 {
 /// its First-Piola gradient times `F^T`: `dPsi/dF = 2*mu*(F-R) +
 /// lambda*(J-1)*J*F^-T`, and `(dPsi/dF)*F^T = 2*mu*(F-R)*F^T +
 /// lambda*(J-1)*J*I`. Zero at `J <= MIN_J`, like the stress ("no force").
-///
-/// Test-only: the oracle `model_residual`'s gradient is checked against in
-/// `spacetime::solver::implicit_corotated`, whose trust region measures a
-/// Gauss-Newton `0.5*||residual||^2` merit instead (see `newton_solve`).
-#[cfg(test)]
+/// The total Lagrangian step's discrete gradient reads it at `f64`; the
+/// oracle `model_residual`'s gradient is checked against it at `f32` in
+/// `spacetime::solver::implicit_corotated`.
 #[inline]
-pub(crate) fn corotated_elastic_energy_density(f: Mat2, lambda: f32, mu: f32) -> f32 {
+pub(crate) fn corotated_elastic_energy_density<M: Matrix2>(
+    f: M,
+    lambda: M::Scalar,
+    mu: M::Scalar,
+) -> M::Scalar {
     let j = f.determinant();
-    if j <= MIN_J {
-        return 0.0;
+    if j <= M::Scalar::from(MIN_J) {
+        return M::Scalar::from(0.0);
     }
     let r = polar_decomposition_2d(f);
     let dev = f - r;
-    mu * frob(dev, dev) + 0.5 * lambda * (j - 1.0) * (j - 1.0)
+    let one = M::Scalar::from(1.0);
+    mu * frob(dev, dev) + M::Scalar::from(0.5) * lambda * (j - one) * (j - one)
+}
+
+/// The corotated energy's change between right Cauchy-Green tensors `c0`
+/// and `c1`, `W(C_1) - W(C_0)`, computed from the increment `dC = C_1 -
+/// C_0` itself, so its round-off is relative to the change, not to the
+/// energies (whose own, about `eps |S| |C|`, does not shrink with `dC`).
+/// With `F = U` (`R = I`), `W(C) = mu (tr C - 2 tr U + 2) + lambda/2 (J -
+/// 1)^2`, `J = sqrt(det C)`, `tr U = sqrt(tr C + 2 J)` (a 2 x 2 symmetric
+/// positive definite `U`, `(tr U)^2 = tr C + 2 det U`). Exact identities:
+/// `det(C_0 + dC) - det C_0 = tr(adj(C_0) dC) + det(dC)`, `J_1 - J_0 =
+/// (det C_1 - det C_0) / (J_1 + J_0)`, `tr U_1 - tr U_0 = (tr dC + 2 (J_1 -
+/// J_0)) / (tr U_1 + tr U_0)`, `(J_1 - 1)^2 - (J_0 - 1)^2 = (J_1 - J_0) (J_1
+/// + J_0 - 2)`. Derived on the page from `corotated_elastic_energy_density`
+/// (Stomakhin et al. 2013), the same energy at `F = sqrt(C)`.
+#[inline]
+pub(crate) fn corotated_energy_increment<M: Matrix2>(
+    c0: M,
+    c1: M,
+    lambda: M::Scalar,
+    mu: M::Scalar,
+) -> M::Scalar {
+    let dc = c1 - c0;
+    let [[a, b], [c, d]] = c0.columns();
+    let [[da, db], [dcc, dd]] = dc.columns();
+    let two = M::Scalar::from(2.0);
+    let det_change = a * dd + d * da - b * dcc - c * db + (da * dd - db * dcc);
+    let (j0, j1) = (c0.determinant().sqrt(), c1.determinant().sqrt());
+    let j_change = det_change / (j0 + j1);
+    let tr_change = da + dd;
+    let [[a1, _], [_, d1]] = c1.columns();
+    let (tr_u0, tr_u1) = ((a + d + two * j0).sqrt(), (a1 + d1 + two * j1).sqrt());
+    let tr_u_change = (tr_change + two * j_change) / (tr_u0 + tr_u1);
+    mu * (tr_change - two * tr_u_change)
+        + M::Scalar::from(0.5) * lambda * j_change * (j0 + j1 - two)
 }
 
 /// Analytic Jacobian-vector product of `corotated_elastic_stress`'s
@@ -432,6 +474,50 @@ mod corotated_kirchhoff_dtau_dl_psd_tests {
         assert!(
             out.x_axis.is_finite() && out.y_axis.is_finite(),
             "must stay finite even in the indefinite regime: {out:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod corotated_energy_increment_tests {
+    use super::*;
+    use glam::{DMat2, DVec2};
+
+    fn sqrt_spd(c: DMat2) -> DMat2 {
+        let s = c.determinant().sqrt();
+        let t = (c.x_axis.x + c.y_axis.y + 2.0 * s).sqrt();
+        (c + DMat2::IDENTITY * s) * (1.0 / t)
+    }
+
+    /// The increment equals the energies' difference at `F = sqrt(C)`, for
+    /// a sizeable change (where the difference is accurate), and stays
+    /// relative to the change for a tiny one (where it is not).
+    #[test]
+    fn the_increment_is_the_energy_difference() {
+        let (lambda, mu) = (3.0, 2.0);
+        let f0 = DMat2::from_cols(DVec2::new(1.05, 0.02), DVec2::new(-0.01, 0.97));
+        let f1 = DMat2::from_cols(DVec2::new(1.1, -0.03), DVec2::new(0.04, 0.9));
+        let (c0, c1) = (f0.transpose() * f0, f1.transpose() * f1);
+        let direct = corotated_elastic_energy_density(sqrt_spd(c1), lambda, mu)
+            - corotated_elastic_energy_density(sqrt_spd(c0), lambda, mu);
+        let increment = corotated_energy_increment(c0, c1, lambda, mu);
+        assert!(
+            (increment - direct).abs() < 1e-12 * direct.abs(),
+            "{increment} against {direct}"
+        );
+        // Changes of 1e-12 and 2e-12: the increment is linear in the change
+        // the inputs actually carry, `C_1 - C_0` as rounded (`C_0 + 1e-12`
+        // holds it only to `eps |C_0|`, 2e-4 of it), to 1e-6 relative.
+        let tiny = c0 + DMat2::from_cols(DVec2::new(1e-12, 0.0), DVec2::new(0.0, 0.0));
+        let tiny2 = c0 + DMat2::from_cols(DVec2::new(2e-12, 0.0), DVec2::new(0.0, 0.0));
+        let (d1, d2) = (
+            corotated_energy_increment(c0, tiny, lambda, mu),
+            corotated_energy_increment(c0, tiny2, lambda, mu),
+        );
+        let carried = (tiny2.x_axis.x - c0.x_axis.x) / (tiny.x_axis.x - c0.x_axis.x);
+        assert!(
+            (d2 / d1 / carried - 1.0).abs() < 1e-6,
+            "{d1} and {d2}, carried ratio {carried}"
         );
     }
 }

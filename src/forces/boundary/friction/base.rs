@@ -46,6 +46,15 @@ impl FrictionBoundary {
 }
 
 impl BoundaryCondition for FrictionBoundary {
+    /// Coulomb walls with this coefficient; the material-induced friction
+    /// (one coefficient per node) has no such form yet.
+    fn domain_walls(&self) -> Option<crate::boundary::DomainWalls> {
+        (!self.use_material_friction).then_some(crate::boundary::DomainWalls {
+            thickness: self.thickness,
+            friction: self.friction_coefficient,
+        })
+    }
+
     fn apply_to_grid_velocity(
         &self,
         cell_index: usize,

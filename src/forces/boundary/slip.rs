@@ -63,4 +63,13 @@ impl BoundaryCondition for SlipBoundary {
     fn is_strict_wc_mpm_fluid_compatible(&self) -> bool {
         true
     }
+
+    /// Frictionless walls; a sealed wall (matter held against it) is not a
+    /// contact and has no such form.
+    fn domain_walls(&self) -> Option<super::DomainWalls> {
+        (!self.sealed).then_some(super::DomainWalls {
+            thickness: self.thickness,
+            friction: 0.0,
+        })
+    }
 }

@@ -12,6 +12,7 @@
 
 pub mod corotated;
 pub mod elastic;
+pub(crate) mod j2_hencky;
 pub mod nacc;
 pub mod no_compression;
 pub mod rankine;

@@ -5,20 +5,24 @@
 
 use glam::{Mat2, Vec2};
 
+use crate::tensor_algebra::matrix2::{Matrix2, Real};
+
 /// 2D polar decomposition: returns the rotation R such that F = R·S.
 ///
 /// Uses the analytical formula for 2×2 matrices (no SVD needed):
 ///   x = F₀₀+F₁₁, y = F₁₀−F₀₁, norm = √(x²+y²), R = `[[x,−y],[y,x]]`/norm
-/// Returns Mat2::IDENTITY when F is near-singular (norm ≤ ε).
-/// Used identically by CorotatedMaterial, StomakhinMaterial, VonMisesMaterial, DruckerPragerMaterial.
-pub fn polar_decomposition_2d(f: Mat2) -> Mat2 {
-    let x = f.x_axis.x + f.y_axis.y;
-    let y = f.x_axis.y - f.y_axis.x;
+/// Returns the identity when F is near-singular (norm ≤ ε).
+/// Used identically by CorotatedMaterial, StomakhinMaterial, VonMisesMaterial, DruckerPragerMaterial,
+/// and at `f64` by the total Lagrangian step (one definition, any precision).
+pub fn polar_decomposition_2d<M: Matrix2>(f: M) -> M {
+    let [[f00, f01], [f10, f11]] = f.columns();
+    let x = f00 + f11;
+    let y = f01 - f10;
     let norm = (x * x + y * y).sqrt();
-    if norm > f32::EPSILON {
-        Mat2::from_cols(Vec2::new(x, y) / norm, Vec2::new(-y, x) / norm)
+    if norm > M::Scalar::EPSILON {
+        M::from_columns([x / norm, y / norm], [-y / norm, x / norm])
     } else {
-        Mat2::IDENTITY
+        M::IDENTITY
     }
 }
 

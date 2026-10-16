@@ -6,5 +6,6 @@
 //! Anand, *The Mechanics and Thermodynamics of Continua*, 2010, parts I-II).
 
 pub(crate) mod frobenius;
+pub mod matrix2;
 pub(crate) mod svd;
 pub(crate) mod symmetric_eigen;

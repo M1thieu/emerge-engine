@@ -18,6 +18,7 @@ mod property_dispatch;
 pub mod registry;
 pub mod rod_material;
 pub mod solid;
+pub(crate) mod viscous_stress;
 
 pub use physical_props::{
     BinghamProps, BrittleProps, DuctileProps, Elastic, Elastoplastic, Fluid, FluidGranular, FromSI,

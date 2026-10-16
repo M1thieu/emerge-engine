@@ -1,0 +1,571 @@
+//! J2 (von Mises) plasticity on Hencky elasticity, multiplicative, in plane
+//! strain: what a ductile solid is, its stored energy, its yield and its
+//! plastic flow.
+//!
+//! Source: Love & Sulsky, *An energy consistent material-point method for
+//! dynamic finite deformation plasticity*, HPC@UNM TR 2005-001 (read in
+//! full): the Hencky energy `W = G |dev e|^2 + U(J^e) + H alpha^2 / 2` in the
+//! principal elastic log strains `e_A = log lambda^e_A` (eq. 43, 45), the
+//! yield function `phi = |dev tau| - sqrt(2/3) (Y + H alpha)` (eq. 37, with
+//! `q = -H alpha`), the backward-Euler exponential return in principal log
+//! strains (eq. 71), its closed form `Delta-gamma = phi_tr / (eta/dt + 2H/3 +
+//! 2G)` (eq. 73), and the step's dissipation `Delta-gamma (eta
+//! Delta-gamma/dt + sqrt(2/3) Y) >= 0` (eq. 74). The volumetric energy is
+//! the Hencky one, `U(J^e) = K/2 (ln J^e)^2`, its pressure `K ln J^e`.
+//! Adaptation, declared: plane strain. The elastic left Cauchy-Green
+//! tensor `b^e` keeps its out-of-plane component `b^e_33` (the flow is
+//! isochoric in 3D, so with the total `F_33 = 1` the plastic flow moves
+//! `b^e_33`), a per-particle internal variable beside the in-plane 2 x 2.
+//!
+//! Written in the total Lagrangian variables: the state is the plastic
+//! metric `Gp = C_p^-1` (with `Gp_33`) and `alpha`, `be = F Gp F^T`, whose
+//! eigenvalues are those of `C Gp`; the stress `S = F^-1 tau F^-T = Gp g(C
+//! Gp)` and the return's new metric `Gp k(C Gp)` are the eigenvalue maps
+//! carried by that similarity (derived here: `F^T be F^-T = C Gp`), so no
+//! `F` and no rotation enter; the step's energy change is exact from the
+//! increment (`HenckyJ2::step`).
+//!
+//! (The explicit path's `VonMisesMaterial` is a different, 2D in-plane
+//! form, its return applied to the deformation gradient of a corotated law:
+//! a migration onto this law is pending, an engine-wide decision.)
+
+use glam::{DMat2, DVec2};
+
+/// The law's moduli: shear `G`, bulk `K`, yield stress `Y` (uniaxial),
+/// linear isotropic hardening `H`, viscoplastic viscosity `eta` (zero:
+/// rate independent). Any consistent units (Pa and Pa s in SI).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HenckyJ2 {
+    pub shear: f64,
+    pub bulk: f64,
+    pub yield_stress: f64,
+    pub hardening: f64,
+    pub viscosity: f64,
+}
+
+/// The elastic state in the total Lagrangian variables: the plastic metric
+/// `Gp = C_p^-1` (in plane) and its out-of-plane component, and `alpha`;
+/// `be = F Gp F^T`, whose eigenvalues are those of `C Gp`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlasticMetric {
+    pub gp: DMat2,
+    pub gp33: f64,
+    pub alpha: f64,
+}
+
+impl PlasticMetric {
+    /// No plastic strain yet.
+    pub(crate) fn unstrained() -> Self {
+        Self {
+            gp: DMat2::IDENTITY,
+            gp33: 1.0,
+            alpha: 0.0,
+        }
+    }
+}
+
+/// The two eigenvalues (larger first) of the 2x2 matrix `m` with real ones
+/// (`C Gp`, similar to the symmetric `be`): its half trace and `r`, `l = m
+/// +- r`.
+fn mean_and_radius(m: DMat2) -> (f64, f64) {
+    let half = 0.5 * (m.x_axis.x + m.y_axis.y);
+    (half, radius_squared(m).max(0.0).sqrt())
+}
+
+/// `r^2 = (tr/2)^2 - det`, written `((m11 - m22)/2)^2 + m12 m21` (the same
+/// identity for any 2 x 2 matrix): no cancellation. Through `(tr/2)^2 -
+/// det`, both near 1 for a small strain, `r` lost its digits to the
+/// subtraction (measured: the energy 1e-10 off at a 1e-3 strain).
+fn radius_squared(m: DMat2) -> f64 {
+    let q = 0.5 * (m.x_axis.x - m.y_axis.y);
+    q * q + m.y_axis.x * m.x_axis.y
+}
+
+/// `g(M) = alpha I + beta M`, the matrix function taking the eigenvalue
+/// `l_A` of `M` to `g_A`, by Lagrange interpolation on the two eigenvalues;
+/// `slope` the divided difference `(g_1 - g_2) / (l_1 - l_2)` supplied by
+/// the caller in a form stable when they meet.
+fn interpolate(m: DMat2, (l1, g1): (f64, f64), slope: f64) -> DMat2 {
+    let alpha = g1 - slope * l1;
+    DMat2::from_diagonal(DVec2::splat(alpha)) + m * slope
+}
+
+impl HenckyJ2 {
+    /// The principal elastic log strains `(e1, e2, e3)` of the state at `C`.
+    fn logs(&self, c: DMat2, state: &PlasticMetric) -> ([f64; 3], f64, f64) {
+        let (half, r) = mean_and_radius(c * state.gp);
+        let (l1, l2) = (half + r, half - r);
+        (
+            [0.5 * l1.ln(), 0.5 * l2.ln(), 0.5 * state.gp33.ln()],
+            l1,
+            l2,
+        )
+    }
+
+    /// The stored energy per reference volume at `C` in the state.
+    pub(crate) fn energy_at(&self, c: DMat2, state: &PlasticMetric) -> f64 {
+        let (e, _, _) = self.logs(c, state);
+        let tr = e[0] + e[1] + e[2];
+        let dev2 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum::<f64>();
+        self.shear * dev2 + 0.5 * self.bulk * tr * tr + 0.5 * self.hardening * state.alpha.powi(2)
+    }
+
+    /// The second Piola-Kirchhoff stress `S = F^-1 tau F^-T` at `C` in the
+    /// state, and `tau_33`: `S = Gp g(C Gp)`, `g(l_A) = tau_A / l_A`.
+    pub(crate) fn second_pk_at(&self, c: DMat2, state: &PlasticMetric) -> (DMat2, f64) {
+        let m = c * state.gp;
+        let (e, l1, l2) = self.logs(c, state);
+        let tr = e[0] + e[1] + e[2];
+        let tau = |a: usize| 2.0 * self.shear * (e[a] - tr / 3.0) + self.bulk * tr;
+        let t1 = tau(0);
+        // (g1 - g2) / (l1 - l2), with tau1 - tau2 = G ln(l1 / l2):
+        // [-t1 + l1 G ln(l1/l2) / (l1 - l2)] / (l1 l2), the last ratio
+        // ln1p(d) / (d l2), d = (l1 - l2) / l2, -> 1 / l2 as l1 -> l2.
+        let d = (l1 - l2) / l2;
+        let log_ratio = if d == 0.0 { 1.0 } else { d.ln_1p() / d };
+        let slope = (-t1 + l1 * self.shear * log_ratio / l2) / (l1 * l2);
+        let g = interpolate(m, (l1, t1 / l1), slope);
+        (state.gp * g, tau(2))
+    }
+}
+
+/// What a step's return map gives in the total Lagrangian variables.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Stepped {
+    pub(crate) state: PlasticMetric,
+    /// `W(C1, state_n+1) - W(C0, state_n)`, from the increment (exact to
+    /// round-off of the increment, never a difference of two energies).
+    pub(crate) energy_change: f64,
+    /// The step's dissipation per reference volume (Love and Sulsky eq. 74).
+    pub(crate) dissipated: f64,
+}
+
+impl HenckyJ2 {
+    /// The step from `C0` to `C1 = C0 + dC` in `state`, step length `dt`:
+    /// the trial `be_tr = F1 Gp F1^T` (eigenvalues of `C1 Gp`), the return
+    /// in principal logs (eq. 71-73), the new metric `Gp_n+1 = Gp k(C1 Gp)`
+    /// with `k(l_A) = exp(-2 dgamma nu_A)` (the eigen-scaling of the
+    /// return, carried back by the same similarity), and the energy's change
+    /// exactly: the trial's from the increments of `C Gp`'s trace and
+    /// determinant, the return's in principal logs.
+    pub(crate) fn step(&self, c0: DMat2, c1: DMat2, state: &PlasticMetric, dt: f64) -> Stepped {
+        let gp = state.gp;
+        let dc = c1 - c0;
+        // Trial invariants of M = C Gp and their increments, from the
+        // entries (`radius_squared`): `dM = dC Gp` exactly, `half` the half
+        // trace, `q = (m11 - m22) / 2`, `r^2 = q^2 + m12 m21`.
+        let m0 = c0 * gp;
+        let dm = dc * gp;
+        let half0 = 0.5 * (m0.x_axis.x + m0.y_axis.y);
+        let d_half = 0.5 * (dm.x_axis.x + dm.y_axis.y);
+        let q0 = 0.5 * (m0.x_axis.x - m0.y_axis.y);
+        let d_q = 0.5 * (dm.x_axis.x - dm.y_axis.y);
+        let (b0, c0m) = (m0.y_axis.x, m0.x_axis.y);
+        let (db, dcm) = (dm.y_axis.x, dm.x_axis.y);
+        let r0 = radius_squared(m0).max(0.0).sqrt();
+        let d_r2 = d_q * (2.0 * q0 + d_q) + db * (c0m + dcm) + b0 * dcm;
+        let r1 = (r0 * r0 + d_r2).max(0.0).sqrt();
+        let d_r = if r0 + r1 > 0.0 { d_r2 / (r0 + r1) } else { 0.0 };
+        let half1 = half0 + d_half;
+        let m1 = m0 + dm;
+        let (l0, k0) = (half0 + r0, half0 - r0);
+        let (dl1, dl2) = (d_half + d_r, d_half - d_r);
+        // Log differences, ln(l1 / l0) = ln1p(dl / l0), per branch.
+        let dln = [(dl1 / l0).ln_1p(), (dl2 / k0).ln_1p()];
+        let ln0 = [l0.ln(), k0.ln()];
+        let e0 = [0.5 * ln0[0], 0.5 * ln0[1], 0.5 * state.gp33.ln()];
+        let de = [0.5 * dln[0], 0.5 * dln[1], 0.0];
+        let e_tr = [e0[0] + de[0], e0[1] + de[1], e0[2]];
+        // The trial's energy change, from the increments: |dev e|^2 =
+        // q + e3^2 - (tr e)^2 / 3 with q = e1^2 + e2^2.
+        let d_q = de[0] * (2.0 * e0[0] + de[0]) + de[1] * (2.0 * e0[1] + de[1]);
+        let (tr0, d_tr) = (e0[0] + e0[1] + e0[2], de[0] + de[1]);
+        let d_tr2 = d_tr * (2.0 * tr0 + d_tr);
+        let mut energy_change = self.shear * (d_q - d_tr2 / 3.0) + 0.5 * self.bulk * d_tr2;
+        // The return (eq. 71-74), on the trial's principal logs.
+        let tr = e_tr[0] + e_tr[1] + e_tr[2];
+        let dev = [e_tr[0] - tr / 3.0, e_tr[1] - tr / 3.0, e_tr[2] - tr / 3.0];
+        let norm = (dev[0] * dev[0] + dev[1] * dev[1] + dev[2] * dev[2]).sqrt();
+        let phi = 2.0 * self.shear * norm
+            - (2.0f64 / 3.0).sqrt() * (self.yield_stress + self.hardening * state.alpha);
+        let mut next = PlasticMetric {
+            gp: state.gp,
+            gp33: state.gp33,
+            alpha: state.alpha,
+        };
+        let mut dissipated = 0.0;
+        if phi > 0.0 && norm > 0.0 {
+            let rate = if dt > 0.0 { self.viscosity / dt } else { 0.0 };
+            let dgamma = phi / (rate + 2.0 / 3.0 * self.hardening + 2.0 * self.shear);
+            let alpha1 = state.alpha + (2.0f64 / 3.0).sqrt() * dgamma;
+            // dev e shrinks by dgamma along itself: |dev|^2 changes by
+            // dgamma (dgamma - 2 |dev|); the volume part does not move.
+            energy_change += self.shear * dgamma * (dgamma - 2.0 * norm)
+                + 0.5 * self.hardening * (alpha1 * alpha1 - state.alpha * state.alpha);
+            dissipated = dgamma * (rate * dgamma + (2.0f64 / 3.0).sqrt() * self.yield_stress);
+            // be_A scales by exp(-2 dgamma nu_A), nu = dev / |dev|.
+            let scale = |a: usize| (-2.0 * dgamma * dev[a] / norm).exp();
+            let (k1, k2) = (scale(0), scale(1));
+            // k(M1) by interpolation on M1's eigenvalues (larger first).
+            let (h1, r1m) = (half1, r1);
+            let (lam1, lam2) = (h1 + r1m, h1 - r1m);
+            let slope = if lam1 > lam2 {
+                (k1 - k2) / (lam1 - lam2)
+            } else {
+                0.0
+            };
+            let kmat = interpolate(m1, (lam1, k1), slope);
+            next.gp = gp * kmat;
+            next.gp33 = state.gp33 * scale(2);
+            next.alpha = alpha1;
+        }
+        Stepped {
+            state: next,
+            energy_change,
+            dissipated,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn law(hardening: f64, viscosity: f64) -> HenckyJ2 {
+        HenckyJ2 {
+            shear: 1.0e6,
+            bulk: 2.0e6,
+            yield_stress: 1.0e4,
+            hardening,
+            viscosity,
+        }
+    }
+
+    /// In-plane pure shear in principal axes, `F = diag(lambda, 1/lambda,
+    /// 1)`, `e = ln lambda`, driven in `steps` equal increments to `e_end`;
+    /// returns, per step, `e`, `tau_11 = F S F^T`, `alpha`.
+    fn pure_shear(law: &HenckyJ2, e_end: f64, steps: usize) -> Vec<(f64, f64, f64)> {
+        let mut state = PlasticMetric::unstrained();
+        let de = e_end / steps as f64;
+        let c_at = |e: f64| DMat2::from_diagonal(DVec2::new((2.0 * e).exp(), (-2.0 * e).exp()));
+        (1..=steps)
+            .map(|k| {
+                let (e0, e1) = ((k - 1) as f64 * de, k as f64 * de);
+                state = law.step(c_at(e0), c_at(e1), &state, 1e-3).state;
+                let (s, _) = law.second_pk_at(c_at(e1), &state);
+                (e1, (2.0 * e1).exp() * s.x_axis.x, state.alpha)
+            })
+            .collect()
+    }
+
+    /// (b1) Past yield, `tau_11 = (Y + H alpha) / sqrt 3` and `alpha =
+    /// (2 G e - Y / sqrt 3) / (sqrt 3 G + H / sqrt 3)` exactly (the return
+    /// is exact along a fixed flow direction), whatever the increments.
+    #[test]
+    fn pure_shear_follows_the_exact_hardening_plateau() {
+        let law = law(2.0e5, 0.0);
+        let (g, y, h) = (law.shear, law.yield_stress, law.hardening);
+        let s3 = 3f64.sqrt();
+        let onset = y / (2.0 * s3 * g);
+        for steps in [7, 50] {
+            for (e, tau, alpha) in pure_shear(&law, 4.0 * onset, steps) {
+                if e <= onset {
+                    assert!(
+                        (tau - 2.0 * g * e).abs() <= 1e-9 * tau.abs(),
+                        "elastic {tau}"
+                    );
+                    assert_eq!(alpha, 0.0);
+                    continue;
+                }
+                let exact_alpha = (2.0 * g * e - y / s3) / (s3 * g + h / s3);
+                assert!(
+                    (alpha / exact_alpha - 1.0).abs() < 1e-9,
+                    "alpha {alpha} vs {exact_alpha}"
+                );
+                let plateau = (y + h * alpha) / s3;
+                assert!((tau / plateau - 1.0).abs() < 1e-9, "tau {tau} vs {plateau}");
+            }
+        }
+    }
+
+    /// (b2) Without hardening the plateau is flat, `Y / sqrt 3`.
+    #[test]
+    fn perfect_plasticity_has_a_flat_plateau() {
+        let law = law(0.0, 0.0);
+        let s3 = 3f64.sqrt();
+        let onset = law.yield_stress / (2.0 * s3 * law.shear);
+        let last = *pure_shear(&law, 5.0 * onset, 20).last().unwrap();
+        assert!((last.1 / (law.yield_stress / s3) - 1.0).abs() < 1e-12);
+    }
+
+    /// (b3) Viscoplastic (eq. 35, 73): after the step the overstress is
+    /// `eta Delta-gamma / dt`, `|dev tau| - sqrt(2/3)(Y + H alpha) = eta
+    /// Delta-gamma / dt`, and the dissipation is eq. 74's.
+    #[test]
+    fn viscoplastic_overstress_is_eta_times_the_rate() {
+        let law = law(1.0e5, 50.0);
+        let dt = 1e-3;
+        let r = 0.03f64.exp();
+        let c1 = DMat2::from_diagonal(DVec2::new(r * r, 1.0 / (r * r)));
+        let stepped = law.step(DMat2::IDENTITY, c1, &PlasticMetric::unstrained(), dt);
+        let delta_gamma = stepped.state.alpha / (2.0f64 / 3.0).sqrt();
+        let (s, tau33) = law.second_pk_at(c1, &stepped.state);
+        let f = DMat2::from_diagonal(DVec2::new(r, 1.0 / r));
+        let tau = f * s * f.transpose();
+        let mean = (tau.x_axis.x + tau.y_axis.y + tau33) / 3.0;
+        let dev = ((tau.x_axis.x - mean).powi(2)
+            + (tau.y_axis.y - mean).powi(2)
+            + (tau33 - mean).powi(2)
+            + 2.0 * tau.x_axis.y.powi(2))
+        .sqrt();
+        let over =
+            dev - (2.0f64 / 3.0).sqrt() * (law.yield_stress + law.hardening * stepped.state.alpha);
+        let expected = law.viscosity * delta_gamma / dt;
+        assert!(delta_gamma > 0.0);
+        assert!((over / expected - 1.0).abs() < 1e-9, "{over} vs {expected}");
+        let dissipation = delta_gamma
+            * (law.viscosity * delta_gamma / dt + (2.0f64 / 3.0).sqrt() * law.yield_stress);
+        assert!((stepped.dissipated / dissipation - 1.0).abs() < 1e-12);
+    }
+
+    /// The total Lagrangian path reads a `VonMisesMaterial` into this law
+    /// with `Y = sqrt(3/2) yield_stress` and `H = 3/2 H_m`
+    /// (`total_lagrangian_solids`): in pure shear, where the in-plane and
+    /// 3D deviators coincide, the plastic strain it accumulates at each
+    /// applied strain `e` is the explicit path's return's, `gamma = (2
+    /// sqrt 2 mu e - yield_stress) / (2 mu + H_m)` (its strain deviator's
+    /// Frobenius norm is `sqrt 2 e`; small strain there, log strain here,
+    /// the same in pure shear's principal axes).
+    #[test]
+    fn the_von_mises_mapping_matches_in_pure_shear() {
+        let (mu, frobenius_yield, slope) = (1.0e6, 8.0e3, 1.5e5);
+        let law = HenckyJ2 {
+            shear: mu,
+            bulk: 3.0e6,
+            yield_stress: (1.5f64).sqrt() * frobenius_yield,
+            hardening: 1.5 * slope,
+            viscosity: 0.0,
+        };
+        let onset = frobenius_yield / (2.0 * 2f64.sqrt() * mu);
+        for (e, _, alpha) in pure_shear(&law, 6.0 * onset, 40) {
+            let gamma = alpha / (2.0f64 / 3.0).sqrt();
+            let explicit =
+                ((2.0 * 2f64.sqrt() * mu * e - frobenius_yield) / (2.0 * mu + slope)).max(0.0);
+            assert!(
+                (gamma - explicit).abs() <= 1e-9 * explicit.max(onset),
+                "e {e}: {gamma} vs {explicit}"
+            );
+        }
+    }
+
+    fn clay_like() -> HenckyJ2 {
+        HenckyJ2 {
+            shear: 3.9e6,
+            bulk: 9.4e6,
+            yield_stress: 5.0e4,
+            hardening: 1.0e5,
+            viscosity: 0.0,
+        }
+    }
+
+    fn some_c(a: f64, b: f64, s: f64) -> DMat2 {
+        let f = DMat2::from_cols(DVec2::new(1.0 + a, s), DVec2::new(0.3 * s, 1.0 + b));
+        f.transpose() * f
+    }
+
+    /// The step's energy change, computed from the increment, is the
+    /// difference of the two states' energies (to round-off of the
+    /// energies, at increments where that difference is well resolved),
+    /// elastic and plastic alike.
+    #[test]
+    fn the_step_energy_change_is_the_energy_difference() {
+        let law = clay_like();
+        let start = PlasticMetric {
+            gp: DMat2::IDENTITY,
+            gp33: 1.0,
+            alpha: 0.0,
+        };
+        for (c0, c1) in [
+            (some_c(0.0, 0.0, 0.0), some_c(1e-3, -5e-4, 2e-4)),
+            (some_c(1e-3, -5e-4, 2e-4), some_c(4e-2, -3e-2, 1e-2)),
+        ] {
+            let stepped = law.step(c0, c1, &start, 1e-3);
+            let difference = law.energy_at(c1, &stepped.state) - law.energy_at(c0, &start);
+            let scale = law
+                .energy_at(c1, &stepped.state)
+                .abs()
+                .max(law.energy_at(c0, &start).abs());
+            assert!(
+                (stepped.energy_change - difference).abs() <= 1e-12 * scale,
+                "{} against {difference}",
+                stepped.energy_change
+            );
+        }
+    }
+
+    /// The second Piola-Kirchhoff stress is twice the energy's derivative in
+    /// `C` (central differences), in a plastically deformed state.
+    #[test]
+    fn the_second_piola_kirchhoff_stress_is_the_energy_gradient() {
+        let law = clay_like();
+        let start = PlasticMetric {
+            gp: DMat2::IDENTITY,
+            gp33: 1.0,
+            alpha: 0.0,
+        };
+        let deformed = law
+            .step(
+                some_c(0.0, 0.0, 0.0),
+                some_c(5e-2, -4e-2, 1e-2),
+                &start,
+                1e-3,
+            )
+            .state;
+        let c = some_c(3e-2, -1e-2, 5e-3);
+        let (s, _) = law.second_pk_at(c, &deformed);
+        let h = 1e-7;
+        for (i, j) in [(0usize, 0usize), (1, 1), (0, 1)] {
+            let mut e = DMat2::ZERO;
+            e.col_mut(j)[i] += 0.5;
+            e.col_mut(i)[j] += 0.5;
+            let d = (law.energy_at(c + h * e, &deformed) - law.energy_at(c - h * e, &deformed))
+                / (2.0 * h);
+            let contracted = (s * e).x_axis.x + (s * e).y_axis.y;
+            assert!(
+                (2.0 * d - contracted).abs()
+                    <= 1e-6
+                        * s.x_axis
+                            .abs()
+                            .max_element()
+                            .max(s.y_axis.abs().max_element()),
+                "{i}{j}: {} vs {contracted}",
+                2.0 * d
+            );
+        }
+    }
+
+    /// The metric the step returns gives back the returned state's logs: its
+    /// energy at `C1` is the trial's less the return's change, and the yield
+    /// function there is on the hardened surface (pure shear past yield).
+    #[test]
+    fn the_returned_metric_lies_on_the_yield_surface() {
+        let law = clay_like();
+        let start = PlasticMetric {
+            gp: DMat2::IDENTITY,
+            gp33: 1.0,
+            alpha: 0.0,
+        };
+        let c1 = some_c(5e-2, -5e-2, 0.0);
+        let stepped = law.step(DMat2::IDENTITY, c1, &start, 1e-3);
+        assert!(stepped.dissipated > 0.0);
+        let (s, tau33) = law.second_pk_at(c1, &stepped.state);
+        // Back to tau: F = diag in this pure stretch, tau = F S F^T.
+        let f = DMat2::from_diagonal(DVec2::new(c1.x_axis.x.sqrt(), c1.y_axis.y.sqrt()));
+        let tau = f * s * f.transpose();
+        let mean = (tau.x_axis.x + tau.y_axis.y + tau33) / 3.0;
+        let dev = ((tau.x_axis.x - mean).powi(2)
+            + (tau.y_axis.y - mean).powi(2)
+            + (tau33 - mean).powi(2))
+        .sqrt();
+        let radius =
+            (2.0f64 / 3.0).sqrt() * (law.yield_stress + law.hardening * stepped.state.alpha);
+        assert!((dev / radius - 1.0).abs() < 1e-9, "{dev} vs {radius}");
+    }
+
+    /// The law alone along the plastic slab's path (`tests/plastic_slab.rs`):
+    /// monotone uniaxial strain, `F = diag(1, 1 - eps)`, `e = ln(1 - eps)`.
+    /// Hencky in log strains gives exactly `tau_yy = (K + 4G/3) e` up to
+    /// the yield (`|e| = Y / (2G)`), then, the deviator saturated along the
+    /// same direction, `tau_yy = K e - 2Y/3` (no hardening): the slab's
+    /// closed form, checked on the law with no solver. The slab's moduli:
+    /// `E = 1 MPa`, `nu = 0.3`, `Y = 300 Pa`.
+    #[test]
+    fn uniaxial_strain_follows_the_slab_closed_form() {
+        let (e_pa, nu) = (1.0e6, 0.3);
+        let law = HenckyJ2 {
+            shear: e_pa / (2.0 * (1.0 + nu)),
+            bulk: e_pa / (3.0 * (1.0 - 2.0 * nu)),
+            yield_stress: 300.0,
+            hardening: 0.0,
+            viscosity: 0.0,
+        };
+        let onset = law.yield_stress / (2.0 * law.shear);
+        let mut state = PlasticMetric::unstrained();
+        let c_at = |e: f64| DMat2::from_diagonal(DVec2::new(1.0, (2.0 * e).exp()));
+        let steps = 60;
+        for k in 1..=steps {
+            let (e0, e1) = (
+                -3.0 * onset * (k - 1) as f64 / steps as f64,
+                -3.0 * onset * k as f64 / steps as f64,
+            );
+            state = law.step(c_at(e0), c_at(e1), &state, 1e-3).state;
+            let (s, _) = law.second_pk_at(c_at(e1), &state);
+            let tau = (2.0 * e1).exp() * s.y_axis.y;
+            let modulus = law.bulk + 4.0 * law.shear / 3.0;
+            let exact = if -e1 <= onset {
+                modulus * e1
+            } else {
+                law.bulk * e1 - 2.0 * law.yield_stress / 3.0
+            };
+            assert!(
+                (tau - exact).abs() <= 1e-9 * exact.abs(),
+                "e {e1}: {tau} vs {exact}"
+            );
+        }
+    }
+
+    /// Criterion (f) of the law's adoption: with `Y` infinite and no
+    /// viscosity the law is elastic Hencky. Along a sheared and rotated
+    /// path the state never moves, nothing is dissipated, the steps' energy
+    /// changes sum to the energy at the end, and that energy is `G |dev
+    /// e|^2 + K/2 (tr e)^2` on `e_A = 1/2 ln` of `C`'s own eigenvalues (the
+    /// symmetric 2 x 2 closed form, `e_3 = 0`), computed here apart.
+    #[test]
+    fn without_yield_the_law_is_elastic_hencky() {
+        let law = HenckyJ2 {
+            shear: 1.0e6,
+            bulk: 2.0e6,
+            yield_stress: f64::INFINITY,
+            hardening: 0.0,
+            viscosity: 0.0,
+        };
+        let (sin, cos) = 0.3f64.sin_cos();
+        let rotation = DMat2::from_cols(DVec2::new(cos, sin), DVec2::new(-sin, cos));
+        let target = DMat2::from_cols(DVec2::new(1.02, 0.01), DVec2::new(0.03, 0.97));
+        let c_at = |t: f64| {
+            let f = rotation * (DMat2::IDENTITY + (target - DMat2::IDENTITY) * t);
+            f.transpose() * f
+        };
+        let hencky = |c: DMat2| {
+            let half = 0.5 * (c.x_axis.x + c.y_axis.y);
+            let r = (0.25 * (c.x_axis.x - c.y_axis.y).powi(2) + c.x_axis.y * c.y_axis.x).sqrt();
+            let e = [0.5 * (half + r).ln(), 0.5 * (half - r).ln(), 0.0];
+            let tr = e[0] + e[1] + e[2];
+            let dev2 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum::<f64>();
+            law.shear * dev2 + 0.5 * law.bulk * tr * tr
+        };
+        let unstrained = PlasticMetric::unstrained();
+        let mut state = unstrained;
+        let mut total = 0.0;
+        let steps = 10;
+        for k in 1..=steps {
+            let (c0, c1) = (
+                c_at((k - 1) as f64 / steps as f64),
+                c_at(k as f64 / steps as f64),
+            );
+            let stepped = law.step(c0, c1, &state, 1e-3);
+            assert_eq!(stepped.state, unstrained);
+            assert_eq!(stepped.dissipated, 0.0);
+            total += stepped.energy_change;
+            state = stepped.state;
+            let exact = hencky(c1);
+            assert!(
+                (law.energy_at(c1, &state) - exact).abs() <= 1e-12 * exact,
+                "energy {} vs {exact}",
+                law.energy_at(c1, &state)
+            );
+        }
+        let end = hencky(c_at(1.0));
+        assert!((total - end).abs() <= 1e-12 * end, "{total} vs {end}");
+    }
+}
