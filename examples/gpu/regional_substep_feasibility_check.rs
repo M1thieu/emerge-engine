@@ -117,7 +117,8 @@ fn main() {
         WATER_EOS_POWER,
     );
     water.bulk_viscosity = 3.0 * water_dynamic_viscosity;
-    water.pressure_floor = config.stress_from_si(-100_000.0);
+    water.pressure_floor =
+        config.stress_from_si(NewtonianFluidMaterial::water_cavitation_pressure_pa());
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim = GpuSimulation::with_device(device, queue, config, particles, registry);

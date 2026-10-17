@@ -97,7 +97,8 @@ fn main() {
         3.0,
     );
     water.bulk_viscosity = 3.0 * visc;
-    water.pressure_floor = config.stress_from_si(-100_000.0);
+    water.pressure_floor =
+        config.stress_from_si(NewtonianFluidMaterial::water_cavitation_pressure_pa());
 
     let registry = MaterialRegistry::with_default(Box::new(water));
     let mut sim =

@@ -196,12 +196,12 @@ fn make_sim() -> Simulation {
     );
     // Cavitation floor converted to grid units, as in the GPU twin. The
     // constructor's `pressure_floor` default (-0.1) is a bare grid-unit constant;
-    // water's practical cavitation onset (dissolved-gas nucleation) is ~-100,000 Pa
-    // gauge, which through `stress_from_si` lands far below the EOS scale, so water
-    // essentially never cavitates from ordinary splashing. The unit gap does not
-    // depend on the backend.
-    const REAL_CAVITATION_PRESSURE_PA: f32 = -100_000.0;
-    water.pressure_floor = config.stress_from_si(REAL_CAVITATION_PRESSURE_PA);
+    // water's cavitation pressure is its vapour-pressure criterion, about
+    // -99,000 Pa gauge (`water_cavitation_pressure_pa`), which through
+    // `stress_from_si` lands far below the EOS scale, so water essentially never
+    // cavitates from ordinary splashing. The unit gap does not depend on the backend.
+    water.pressure_floor =
+        config.stress_from_si(NewtonianFluidMaterial::water_cavitation_pressure_pa());
     let ice = WithLatentHeat::new(NeoHookeanMaterial::new(4.0, 8.0), ICE_LATENT_HEAT);
     let thermal = ThermalDiffusion::new(
         ThermalConfig {
