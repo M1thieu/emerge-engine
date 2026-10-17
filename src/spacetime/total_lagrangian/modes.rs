@@ -19,6 +19,7 @@
 
 use super::*;
 use crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent;
+pub(crate) use crate::tensor_algebra::dense::product;
 use crate::tensor_algebra::symmetric_eigen::jacobi_eigen_symmetric_definite;
 
 /// A free body's rigid modes in the plane: two translations and the
@@ -67,13 +68,6 @@ fn stiffness_times(grid: &Grid, d: &[f64], (v0, solids): (&[f64], &[Elastic])) -
         }
     }
     out
-}
-
-/// `a b` for row-major `n` by `n` matrices.
-pub(crate) fn product(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-    (0..n * n)
-        .map(|ij| (0..n).map(|e| a[ij / n * n + e] * b[e * n + ij % n]).sum())
-        .collect()
 }
 
 /// Mirrors the upper triangle's mean into both halves (round-off only).

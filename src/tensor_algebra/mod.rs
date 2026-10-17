@@ -5,6 +5,7 @@
 //! as its own part before any kinematics or balance law (Gurtin, Fried &
 //! Anand, *The Mechanics and Thermodynamics of Continua*, 2010, parts I-II).
 
+pub(crate) mod dense;
 pub(crate) mod frobenius;
 pub mod matrix2;
 pub(crate) mod svd;

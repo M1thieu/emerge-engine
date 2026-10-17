@@ -20,6 +20,7 @@ use super::*;
 use crate::materials::physical_props::Elastic as ElasticProps;
 use crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent;
 use crate::spacetime::total_lagrangian::{ElasticLaw, Grid};
+use crate::tensor_algebra::dense::product;
 use crate::tensor_algebra::symmetric_eigen::jacobi_eigen_symmetric_definite;
 use crate::{CorotatedMaterial, FromSI, SimConfig};
 use glam::IVec2;
@@ -112,13 +113,6 @@ pub(super) struct Modes {
     pub(super) at: Vec<Vec<DVec2>>,
     /// Per mode, its material gradient at every particle.
     pub(super) gradients: Vec<Vec<DMat2>>,
-}
-
-/// `a b` for row-major `n` by `n` matrices.
-fn product(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
-    (0..n * n)
-        .map(|ij| (0..n).map(|e| a[ij / n * n + e] * b[e * n + ij % n]).sum())
-        .collect()
 }
 
 /// The modes, by two-sided Jacobi on `M`, then on `M^-1/2 (K + sigma M)
