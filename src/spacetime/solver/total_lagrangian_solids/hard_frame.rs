@@ -268,9 +268,12 @@ fn settled_rest() {
         let cache = state.cache.as_ref().expect("stepped");
         let basis =
             super::rest::Basis::build(&state, (&cache.grid, &planes, 0.0)).expect("a basis");
-        let Ok(rest) =
-            super::rest::Rest::start(basis, &state, (&cache.grid, &planes), (gravity, state.time))
-        else {
+        let Ok(rest) = super::rest::Rest::start(
+            basis,
+            &state,
+            (&cache.grid, &planes),
+            (gravity, state.time, f64::from(sim.config().dt)),
+        ) else {
             panic!("a compressive start");
         };
         rest.settle(kick, &mut state);

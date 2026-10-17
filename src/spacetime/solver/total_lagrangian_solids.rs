@@ -196,6 +196,10 @@ pub struct TotalLagrangianFrame {
     /// lengthened a mode's state (the exact one never does; `flight`), handed
     /// to the step.
     pub modal_check_failed: u64,
+    /// Since the start, the rests a body with relaxation branches was refused
+    /// (`TotalLagrangianConfig::modal_rest`): branches the constrained modes
+    /// do not carry, or a strain that could pass the record's limit.
+    pub modal_rest_refused: u64,
 }
 
 /// The path's state, kept between frames.
@@ -246,6 +250,7 @@ pub(crate) struct TotalLagrangianState {
     rest_hand_backs: u64,
     modal_refused: u64,
     modal_check_failed: u64,
+    modal_rest_refused: u64,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -530,6 +535,7 @@ impl Simulation {
             rest_hand_backs: 0,
             modal_refused: 0,
             modal_check_failed: 0,
+            modal_rest_refused: 0,
             frame: TotalLagrangianFrame::default(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
@@ -673,6 +679,16 @@ impl Simulation {
         frame.modal_rest = !frame.modal
             && config.modal_rest
             && rest::rest_frame(&mut state, (&planes, friction, gravity), (now, length));
+        // A damped rest's heat (`Rest::carry_branches`), deposited like the
+        // step's.
+        if frame.modal_rest
+            && let Some(rest) = state.rest.as_mut()
+        {
+            let made = std::mem::take(&mut rest.heat);
+            frame.relaxation_heat = made.iter().sum();
+            frame.relaxation_strain = rest.strain;
+            self.deposit_total_lagrangian_heat(&mut state, &made);
+        }
         // A modal frame takes no step; a stepped one first records the held
         // set it starts from (a rest needs two stepped frames ending on the
         // same set).
@@ -796,6 +812,7 @@ impl Simulation {
             (state.modal_rest_frames, state.rest_hand_backs);
         frame.modal_refused = state.modal_refused;
         frame.modal_check_failed = state.modal_check_failed;
+        frame.modal_rest_refused = state.modal_rest_refused;
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;

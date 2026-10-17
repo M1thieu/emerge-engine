@@ -106,22 +106,10 @@ pub(crate) struct System {
 }
 
 /// The dense consistent mass and stiffness at rest of the body whose
-/// `particles` points carry mass on `grid`; `None` when a law is not the
-/// undamped corotated solid's.
-pub(crate) fn system(
-    grid: &Grid,
-    (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
-    particles: usize,
-) -> Option<System> {
-    if solids[..particles].iter().any(|s| s.is_relaxing()) {
-        return None;
-    }
-    relaxed_system(grid, (mass, v0, solids), particles)
-}
-
-/// The same with the relaxed moduli of a body that carries relaxation
-/// branches (its memory is then the caller's); `None` when a law is not
-/// the corotated solid's or carries a dashpot.
+/// `particles` points carry mass on `grid`, with the relaxed moduli of a
+/// body that carries relaxation branches (its memory is then the
+/// caller's, `damped_system`); `None` when a law is not the corotated
+/// solid's or carries a dashpot.
 fn relaxed_system(
     grid: &Grid,
     (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
@@ -202,6 +190,27 @@ pub(crate) fn field_at(
         .collect();
     let gradients = (0..particles).map(|p| gradient(grid, &field, p)).collect();
     (at, gradients)
+}
+
+/// A body's dense system with its relaxation (`damped_system`): the
+/// system, the mechanisms as `(theta, kappa)` and the strain limit.
+pub(crate) type DampedSystem = (System, Vec<(f64, f64)>, f64);
+
+/// The dense system of a body with the relaxation its modes carry
+/// (`common_memory`): the system with the relaxed moduli, the mechanisms as
+/// `(theta, kappa)` (empty without relaxation) and the record's strain
+/// limit; `None` when the modes do not carry the body's law.
+pub(crate) fn damped_system(
+    grid: &Grid,
+    (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
+    particles: usize,
+) -> Option<DampedSystem> {
+    let (memory, limit) = common_memory(&solids[..particles])?;
+    Some((
+        relaxed_system(grid, (mass, v0, solids), particles)?,
+        memory,
+        limit,
+    ))
 }
 
 /// The relaxation the modes carry for these particles: none (`Some` of an

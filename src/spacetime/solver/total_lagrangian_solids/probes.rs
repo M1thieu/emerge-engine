@@ -193,12 +193,13 @@ fn probe_modes_rotation_leak() {
             // The eigen-solve itself: each elastic mode's residual and its
             // mass inner product with the solve's own rigid modes.
             let grid = &state.cache.as_ref().expect("stepped").grid;
-            let system = crate::spacetime::total_lagrangian::system(
+            let system = crate::spacetime::total_lagrangian::damped_system(
                 grid,
                 (&state.mass, &state.v0, &state.solids),
                 n,
             )
-            .expect("an elastic body");
+            .expect("an elastic body")
+            .0;
             let k = system.n;
             let (squared, phi, _) =
                 crate::spacetime::total_lagrangian::eigen_pairs(system.m.clone(), &system.k, k)

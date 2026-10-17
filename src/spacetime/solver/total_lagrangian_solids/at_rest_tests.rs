@@ -39,8 +39,12 @@ fn settled_block(kick: f64) -> Simulation {
     let mut state = sim.total_lagrangian.take().expect("on the path");
     let cache = state.cache.as_ref().expect("stepped");
     let basis = rest::Basis::build(&state, (&cache.grid, &planes, 0.0)).expect("a basis");
-    let Ok(rest) = rest::Rest::start(basis, &state, (&cache.grid, &planes), (gravity, state.time))
-    else {
+    let Ok(rest) = rest::Rest::start(
+        basis,
+        &state,
+        (&cache.grid, &planes),
+        (gravity, state.time, f64::from(sim.config().dt)),
+    ) else {
         panic!("a compressive start");
     };
     rest.settle(kick, &mut state);
