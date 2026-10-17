@@ -885,4 +885,7 @@ mod hard_frame;
 mod outline_velocity_tests;
 
 #[cfg(all(test, feature = "experimental"))]
+mod at_rest_tests;
+
+#[cfg(all(test, feature = "experimental"))]
 mod probes;

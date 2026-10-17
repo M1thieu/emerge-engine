@@ -84,18 +84,25 @@ pub(crate) fn contact_penalty(c: &Contact, penalty: &[f64]) -> f64 {
 /// A contact's tolerance on the gap it leaves at the step's end: a
 /// fraction (`contact_tolerance`) of its points' relative motion over the
 /// step at the step's start velocity `v`, so its work stays that fraction
-/// of the work it does at any step length; never below the round-off of
-/// the gap as computed (`contact_round_off_scale`). The floor was `8 eps
-/// (1 + |x|)`: at a step of 4e-15 s (the controller's, at a block's
-/// impact) that is 2 percent of the step's motion, and the contact's work
-/// kept 5e-4 of the impact energy (measured).
+/// of the work it does at any step length; never below what the step
+/// resolves:
+/// - the round-off of the gap as computed (`contact_round_off_scale`). The
+///   floor was `8 eps (1 + |x|)`: at a step of 4e-15 s (the controller's,
+///   at a block's impact) that is 2 percent of the step's motion, and the
+///   contact's work kept 5e-4 of the impact energy (measured).
+/// - `resolution`, the gap the solve resolves (`gap_resolution`). With its
+///   points at rest the motion is zero and the round-off alone asked for
+///   a gap finer than Newton's solve resolves (measured, a block at rest on
+///   the floor: the gap at 1e-21 to 8e-18 of a cell against an allowance
+///   of 1e-25, every try at the passes' cap, the step controller halving
+///   to 2e-9 s).
 pub(crate) fn contact_allowance(
     grid: &Grid,
     (x, v): (&[DVec2], &[DVec2]),
     planes: &[Plane],
     u: &[f64],
     shares: &[Share],
-    (contact_tolerance, dt): (f64, f64),
+    (contact_tolerance, dt, resolution): (f64, f64, f64),
 ) -> f64 {
     let motion: f64 = shares
         .iter()
@@ -107,7 +114,30 @@ pub(crate) fn contact_allowance(
     let round_off = contact_round_off_scale(grid, x, planes, u, shares);
     (contact_tolerance * motion * dt)
         .max(8.0 * f64::EPSILON * round_off)
+        .max(resolution)
         .max(f64::MIN_POSITIVE)
+}
+
+/// The gap the solve resolves at a contact: Newton stops with residual
+/// entries up to `residual` (`StepReport::residual_allowed`), and the push
+/// `max(0, lambda - k g)` adds the contact's penalty `k` to the Jacobian
+/// along its gap's gradient `n`. With `J = A + k n n^T`, `A` the rest
+/// (positive definite at rest), `J w = n` is solved by `w = A^-1 n / (1 + k
+/// s)`, `s = n^T A^-1 n` (substitute: `A w + k (n^T w) n = n`), so a
+/// residual `r` along `n` moves the gap by `n^T J^-1 n r = r s / (1 + k s)
+/// < r / k`: the gap is resolved to about `residual / k`, a finer gap asking
+/// a finer solve than the step's equations are held to. Measured against
+/// the noise it covers: 1e-21 to 8e-18 of a cell at rest, the floor about
+/// 8e-17.
+/// `k` is the contact's own penalty (`contact_penalty`), the one its push
+/// uses.
+pub(crate) fn gap_resolution(c: &Contact, penalty: &[f64], residual: f64) -> f64 {
+    let k = contact_penalty(c, penalty);
+    #[cfg(all(test, feature = "experimental"))]
+    if super::hooks::no_resolution_floor() {
+        return 0.0;
+    }
+    if k > 0.0 { residual / k } else { 0.0 }
 }
 
 /// One point's part of a contact at the step's displacement: its weight,

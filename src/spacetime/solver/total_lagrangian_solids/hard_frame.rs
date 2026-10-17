@@ -15,6 +15,11 @@ use glam::IVec2;
 /// `tests/realtime_profile.rs`'s E2: the 8 x 4 cm clay block dropped 10
 /// cells, frame 1/60 s, step tolerance 1e-1.
 fn e2() -> Simulation {
+    e2_lifted(0.0)
+}
+
+/// E2 with its lift raised by `offset` cells.
+fn e2_lifted(offset: f32) -> Simulation {
     let props = ElasticProps {
         e_pa: 1.125e7,
         nu: 0.3,
@@ -30,7 +35,7 @@ fn e2() -> Simulation {
     let _block = sim.add_body(
         SpawnRegion::for_sim(&config)
             .box_of(IVec2::new(8, 4))
-            .at(Vec2::new(20.0, floor + 10.0 + 2.0))
+            .at(Vec2::new(20.0, floor + 10.0 + 2.0 + offset))
             .spacing(0.5)
             .material(id)
             .mass_from(&props, &config),
@@ -362,4 +367,84 @@ fn settled_rest() {
             );
         }
     }
+}
+
+/// E2's rejections by cause, with the walls' resolution floor and without
+/// it (`hooks::set_no_resolution_floor`): per frame with any rejection, the
+/// tries rejected unconverged (Newton's or the walls' passes) and those
+/// rejected on the error estimate, then the run's totals. Report only.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_e2_rejections_by_cause() {
+    super::cap::capped("probe_e2_rejections_by_cause", 3600, || {
+        const FRAMES: usize = 50;
+        for floored in [false, true] {
+            crate::spacetime::total_lagrangian::hooks::set_no_resolution_floor(!floored);
+            let mut sim = e2();
+            let (mut kept, mut unconverged, mut error, mut wall) = (0u32, 0u32, 0u32, 0.0f64);
+            for k in 1..=FRAMES {
+                sim.step();
+                let f = sim.total_lagrangian_frame().expect("on the path");
+                kept += f.steps;
+                unconverged += f.rejected_unconverged;
+                error += f.rejected.saturating_sub(f.rejected_unconverged);
+                wall += f.wall;
+                if f.rejected > 0 {
+                    println!(
+                        "  floor {floored}, frame {k}: kept {}, rejected unconverged {}, on the error {}, passes {}, {:.2} s",
+                        f.steps,
+                        f.rejected_unconverged,
+                        f.rejected.saturating_sub(f.rejected_unconverged),
+                        f.passes,
+                        f.wall
+                    );
+                }
+            }
+            println!(
+                "floor {floored}, {FRAMES} frames: kept {kept}, rejected unconverged {unconverged}, on the error {error}, wall {wall:.1} s"
+            );
+        }
+        crate::spacetime::total_lagrangian::hooks::set_no_resolution_floor(false);
+    });
+}
+
+/// Whether E2's frames of hundreds of rejections (543 in one smoke run of
+/// the live harness, none in this tree's E2) are a property of the ringing
+/// block on the floor, met on some trajectories: E2 rerun from lifts a few
+/// f32 ulps apart (`k` x 1e-6 cell; the ulp near 12 cells is 9.5e-7), per
+/// run the most rejections in a frame and how the frames spread over
+/// rejection counts. Counts only.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_e2_rejection_tail() {
+    super::cap::capped("probe_e2_rejection_tail", 10800, || {
+        const FRAMES: usize = 45;
+        let bins = [0u32, 10, 50, 100, 300];
+        for k in 0..6 {
+            let mut sim = e2_lifted(k as f32 * 1e-6);
+            let mut spread = [0u32; 6];
+            let (mut most, mut at, mut kept, mut rejected, mut unconverged) =
+                (0u32, 0usize, 0, 0, 0);
+            for frame in 1..=FRAMES {
+                sim.step();
+                let f = sim.total_lagrangian_frame().expect("on the path");
+                kept += f.steps;
+                rejected += f.rejected;
+                unconverged += f.rejected_unconverged;
+                if f.rejected > most {
+                    (most, at) = (f.rejected, frame);
+                }
+                spread[bins.iter().filter(|&&b| f.rejected > b).count()] += 1;
+                if f.rejected > 100 {
+                    println!(
+                        "  lift +{k}e-6: frame {frame} rejected {} ({} unconverged), kept {}, {:.1} s",
+                        f.rejected, f.rejected_unconverged, f.steps, f.wall
+                    );
+                }
+            }
+            println!(
+                "lift +{k}e-6 cell, {FRAMES} frames: kept {kept}, rejected {rejected} ({unconverged} unconverged); most in a frame {most} (frame {at}); frames with 0 / 1-10 / 11-50 / 51-100 / 101-300 / over 300 rejections: {spread:?}"
+            );
+        }
+    });
 }

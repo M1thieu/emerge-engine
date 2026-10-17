@@ -34,6 +34,24 @@ pub(super) fn control_trace() -> bool {
     CONTROL_TRACE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The contacts' gap tolerance without its resolution floor
+/// (`contact::gap_resolution`), as it was before it, to compare: a
+/// process-wide switch, set between frames, or on for the whole run when
+/// the environment variable `EMERGE_PROBE_NO_RESOLUTION_FLOOR` is set.
+static NO_RESOLUTION_FLOOR: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_no_resolution_floor(on: bool) {
+    NO_RESOLUTION_FLOOR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn no_resolution_floor() -> bool {
+    static FROM_ENVIRONMENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    NO_RESOLUTION_FLOOR.load(std::sync::atomic::Ordering::Relaxed)
+        || *FROM_ENVIRONMENT
+            .get_or_init(|| std::env::var_os("EMERGE_PROBE_NO_RESOLUTION_FLOOR").is_some())
+}
+
 /// The MAC grid's staggered lattices instead of the collocated ones
 /// (`lattices`), to compare: on when the environment variable
 /// `EMERGE_PROBE_STAGGERED` is set.

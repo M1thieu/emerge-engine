@@ -598,6 +598,7 @@ pub(crate) fn solve(
         }
     }
     report.start_residual = largest(&r) / scale;
+    report.residual_allowed = (settings.newton_tolerance * scale).max(floor);
     report.grid_speed = largest(&v_n);
     #[cfg(all(test, feature = "experimental"))]
     let least_det = |w: &[f64]| {

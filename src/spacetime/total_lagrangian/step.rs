@@ -475,14 +475,18 @@ pub fn step_total_lagrangian_contact(
         }
         // Each contact's own tolerance on what it leaves
         // (`contact_allowance`).
-        let allowed = |shares: &[Share]| -> f64 {
+        let allowed = |c: &Contact, shares: &[Share]| -> f64 {
             contact_allowance(
                 grid,
                 (x, v),
                 used,
                 &solution.u,
                 shares,
-                (settings.contact_tolerance, dt),
+                (
+                    settings.contact_tolerance,
+                    dt,
+                    gap_resolution(c, penalty, solution.report.residual_allowed),
+                ),
             )
         };
         // A point joins the set only when it ends beyond its plane by more
@@ -493,7 +497,7 @@ pub fn step_total_lagrangian_contact(
         // to Uzawa's cap on a sliding block.
         let beyond_tolerance = |c: &Contact| -> bool {
             let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
-            -g > allowed(&shares)
+            -g > allowed(c, &shares)
         };
         let mut moved = false;
         let mut deepest = 0.0f64;
@@ -503,7 +507,7 @@ pub fn step_total_lagrangian_contact(
             .collect();
         contacts.retain_mut(|c| {
             let (g, shares) = contact_geometry(grid, x, used, &solution.u, c);
-            let scale = allowed(&shares);
+            let scale = allowed(c, &shares);
             deepest = deepest.max(-g / scale);
             let g_t = if friction > 0.0 {
                 contact_tangential_gap(grid, &solution.u, &shares)
@@ -659,7 +663,11 @@ pub fn step_total_lagrangian_contact(
                     used,
                     &u,
                     &shares,
-                    (settings.contact_tolerance, dt),
+                    (
+                        settings.contact_tolerance,
+                        dt,
+                        gap_resolution(c, penalty, report.residual_allowed),
+                    ),
                 )
         })
         .sum();

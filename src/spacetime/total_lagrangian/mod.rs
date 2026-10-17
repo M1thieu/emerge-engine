@@ -299,6 +299,10 @@ pub struct StepReport {
     /// Newton's start, the better of its two, as its largest residual entry
     /// over the tolerance's scale (`solve`).
     pub start_residual: f64,
+    /// The largest residual entry Newton's stop guarantees, N/m: the
+    /// tolerance times the residual's scale, or the round-off floor when
+    /// that is larger (`solve`).
+    pub residual_allowed: f64,
     /// The largest grid velocity the projection gave (eq. 28), cells/s: on
     /// a near singular mass it can exceed every particle's speed.
     pub grid_speed: f64,
