@@ -14,6 +14,10 @@ world is flat and Newtonian.
 
 The arena: the discretized space+time domain balance laws (mass/momentum conservation) are solved over. In the numerical-PDE sense of "space-time discretization" (established term, e.g. space-time finite element methods), not literal GR geometry -- this engine is flat, non-relativistic.
 
+## Solver status
+
+The explicit MPM solver described below (`solver::Simulation`, P2G -> grid update -> G2P) is **deprecated**: it is kept for maintenance only, with no new features or materials. The target is the precise path (`total_lagrangian`, with `solver::total_lagrangian_solids`): a conserving implicit step in SI units, double precision, with exact energy accounting. The explicit solver still carries what is not yet ported (fluids, sand, snow, rods, the GPU path) and will be removed only once the main materials reach proven parity on the precise path, a GPU strategy exists, and its dependants have migrated. No `#[deprecated]` attribute is applied yet, so that dependent builds stay free of warnings.
+
 ## Core API
 
 - `grid` -- `Grid`/`Cell`, the sparse Eulerian background grid + quadratic B-spline kernel. `ContactCell`/`ContactCellMap` (multi-field frictional contact, Bardenhagen 2001 + Nairn/Hammerquist/Smith 2020), `MixtureCell`/`MixtureCellMap` (N-phase mixture coupling) each add their own `impl Grid` block from a sibling file.
