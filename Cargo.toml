@@ -254,6 +254,10 @@ name = "corotated_cost_probe"
 path = "examples/cpu/corotated_cost_probe.rs"
 
 [[example]]
+name = "tl_live"
+path = "examples/cpu/tl_live.rs"
+
+[[example]]
 name = "basic_corotated"
 path = "examples/cpu/basic_corotated.rs"
 required-features = ["render"]
