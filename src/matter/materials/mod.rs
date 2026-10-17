@@ -618,11 +618,41 @@ macro_rules! forward_material_model_common {
         fn params(&self) -> MaterialParams {
             self.inner.params()
         }
-        // A wrapped material still stores heat: without this, wrapping a
-        // material that declares `c_p` (ice in `WithLatentHeat`) silently
-        // turned its frictional heat back into no temperature rise.
+        // A wrapped material is still the same substance: everything the
+        // trait lets a material declare about itself reaches the caller
+        // unchanged. Without these, wrapping a material (ice in
+        // `WithLatentHeat`) silently dropped its heat capacity, its wall
+        // friction coefficient, its optics, its glow and its sound speed
+        // back to the trait defaults ("undeclared").
         fn specific_heat_j_kg_k(&self) -> f32 {
             self.inner.specific_heat_j_kg_k()
+        }
+        fn optical_properties(&self) -> Option<crate::energy::radiation::OpticalCoefficientsSi> {
+            self.inner.optical_properties()
+        }
+        fn luminous_emission_w_m3(&self) -> f32 {
+            self.inner.luminous_emission_w_m3()
+        }
+        fn current_friction_coefficient(&self, particles: &Particles, i: usize) -> Option<f32> {
+            self.inner.current_friction_coefficient(particles, i)
+        }
+        fn corotated_lame_params(&self) -> Option<(f32, f32)> {
+            self.inner.corotated_lame_params()
+        }
+        fn hydrostatic_volume_ratio(&self, pressure: f32) -> Option<f32> {
+            self.inner.hydrostatic_volume_ratio(pressure)
+        }
+        fn rest_acoustic_c2(&self) -> Option<f32> {
+            self.inner.rest_acoustic_c2()
+        }
+        fn acoustic_c2_at_temperature(&self, temperature_k: f32) -> Option<f32> {
+            self.inner.acoustic_c2_at_temperature(temperature_k)
+        }
+        fn acoustic_c2_at(&self, density: f32, temperature_k: f32) -> Option<f32> {
+            self.inner.acoustic_c2_at(density, temperature_k)
+        }
+        fn acoustic_c2_at_particle(&self, particles: &Particles, i: usize) -> Option<f32> {
+            self.inner.acoustic_c2_at_particle(particles, i)
         }
     };
 }
@@ -889,6 +919,112 @@ mod current_friction_coefficient_default_tests {
             None,
             "GranularFluidMaterial has SVD-clamp plasticity, no Drucker-Prager cone -- \
              must not silently claim a friction coefficient it has no real concept of"
+        );
+    }
+}
+
+/// A wrapper changes how a material is reached by a phase change, never what
+/// substance it is: every property the trait lets a material declare must
+/// come out of `WithLatentHeat`, `WithLatentHeatTable`, `WithMixturePhase`
+/// and `WithPreStress` exactly as it comes out of the inner material.
+#[cfg(test)]
+mod wrapper_forwarding_tests {
+    use super::*;
+    use crate::energy::radiation::OpticalCoefficientsSi;
+    use crate::materials::{DruckerPragerMaterial, NewtonianFluidMaterial};
+    use crate::particle::Particle;
+
+    /// A material that declares a glow, the one hook no built-in law uses.
+    #[derive(Debug, Clone, Copy)]
+    struct Glowing;
+    impl MaterialModel for Glowing {
+        fn luminous_emission_w_m3(&self) -> f32 {
+            7.5
+        }
+    }
+
+    fn sand() -> DruckerPragerMaterial {
+        DruckerPragerMaterial::cohesionless(1.0e6, 0.3)
+    }
+
+    fn water() -> NewtonianFluidMaterial {
+        let mut water = NewtonianFluidMaterial::low_viscosity(1000.0, 1.0e5);
+        water.specific_heat_j_kg_k = 4182.0;
+        water.optics = Some(OpticalCoefficientsSi::new([0.5, 0.1, 0.02], 3.0).unwrap());
+        water
+    }
+
+    /// Every forwarded property of `wrapped` equals `inner`'s, and the inner
+    /// material really declares it (so the check is not vacuous).
+    fn assert_forwards(wrapped: &dyn MaterialModel, inner: &dyn MaterialModel) {
+        let particles = Particles::from(vec![Particle::zeroed()]);
+        assert_eq!(wrapped.specific_heat_j_kg_k(), inner.specific_heat_j_kg_k());
+        assert_eq!(wrapped.optical_properties(), inner.optical_properties());
+        assert_eq!(
+            wrapped.luminous_emission_w_m3(),
+            inner.luminous_emission_w_m3()
+        );
+        assert_eq!(
+            wrapped.current_friction_coefficient(&particles, 0),
+            inner.current_friction_coefficient(&particles, 0)
+        );
+        assert_eq!(
+            wrapped.corotated_lame_params(),
+            inner.corotated_lame_params()
+        );
+        assert_eq!(
+            wrapped.hydrostatic_volume_ratio(1.0e4),
+            inner.hydrostatic_volume_ratio(1.0e4)
+        );
+        assert_eq!(wrapped.rest_acoustic_c2(), inner.rest_acoustic_c2());
+        assert_eq!(
+            wrapped.acoustic_c2_at_temperature(300.0),
+            inner.acoustic_c2_at_temperature(300.0)
+        );
+        assert_eq!(
+            wrapped.acoustic_c2_at(1000.0, 300.0),
+            inner.acoustic_c2_at(1000.0, 300.0)
+        );
+        assert_eq!(
+            wrapped.acoustic_c2_at_particle(&particles, 0),
+            inner.acoustic_c2_at_particle(&particles, 0)
+        );
+    }
+
+    #[test]
+    fn a_wrapped_granular_solid_keeps_its_friction_and_elastic_moduli() {
+        let inner = sand();
+        let particles = Particles::from(vec![Particle::zeroed()]);
+        assert!(inner.current_friction_coefficient(&particles, 0).is_some());
+        assert!(inner.corotated_lame_params().is_some());
+        assert_forwards(&WithLatentHeat::new(sand(), 1.0), &inner);
+        assert_forwards(&WithLatentHeatTable::new(sand(), vec![(0, 1.0)]), &inner);
+        assert_forwards(&WithPreStress::new(sand(), 1.0e3), &inner);
+    }
+
+    #[test]
+    fn a_wrapped_liquid_keeps_its_optics_heat_capacity_and_sound_speed() {
+        let inner = water();
+        assert!(inner.optical_properties().is_some());
+        assert!(inner.rest_acoustic_c2().is_some());
+        assert!(inner.hydrostatic_volume_ratio(1.0e4).is_some());
+        assert_eq!(inner.specific_heat_j_kg_k(), 4182.0);
+        assert_forwards(&WithLatentHeat::new(water(), 334_000.0), &inner);
+        assert_forwards(
+            &WithLatentHeatTable::new(water(), vec![(0, 334_000.0)]),
+            &inner,
+        );
+    }
+
+    #[test]
+    fn a_wrapped_material_keeps_its_glow() {
+        assert_eq!(
+            WithLatentHeat::new(Glowing, 1.0).luminous_emission_w_m3(),
+            7.5
+        );
+        assert_eq!(
+            WithLatentHeatTable::new(Glowing, vec![]).luminous_emission_w_m3(),
+            7.5
         );
     }
 }
