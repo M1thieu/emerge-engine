@@ -1465,3 +1465,72 @@ fn probe_plasticine_block_drop() {
         );
     }
 }
+
+/// The Plasticine block of `probe_plasticine_block_drop` at step tolerance
+/// 1e-2, stepped only against modal flight and modal rest asked for: per
+/// run, the frames flown, rested and stepped, the hand-backs, the refusals,
+/// the steps and the wall per frame, and the frames' rest of the energy
+/// ledger. Report only: the impact is beyond the record's linear limit, so
+/// most refusals are expected there.
+#[test]
+#[ignore = "scene probe: a quiet machine, run with --ignored --nocapture"]
+fn probe_plasticine_block_modal_report() {
+    let record =
+        emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
+    for modal in [false, true] {
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        let path = TotalLagrangianConfig::new(1e-2);
+        config.total_lagrangian = Some(if modal {
+            path.with_modal_flight().with_modal_rest()
+        } else {
+            path
+        });
+        let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+        material.relaxation = Some(record.spectrum);
+        let mut sim = Simulation::empty(config);
+        let id = sim.register_material(Box::new(material)).0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 12.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&record.relaxed, &config),
+        );
+        let mut ledger = Ledger::default();
+        let (mut steps, mut wall, mut stepped, mut flown_wall, mut stepped_wall) =
+            (0u32, 0.0f64, 0u32, 0.0f64, 0.0f64);
+        let mut statuses = String::new();
+        for _ in 1..=45 {
+            sim.step();
+            ledger.frame(&sim);
+            let f = sim.total_lagrangian_frame().expect("the path is on");
+            steps += f.steps;
+            wall += f.wall;
+            if f.modal || f.modal_rest {
+                flown_wall += f.wall;
+                statuses.push(if f.modal { 'F' } else { 'R' });
+            } else {
+                stepped += 1;
+                stepped_wall += f.wall;
+                statuses.push(if f.contacts > 0 { 'c' } else { 's' });
+            }
+        }
+        let f = sim.total_lagrangian_frame().expect("the path is on");
+        println!(
+            "{}: flown {}, rested {}, stepped {stepped}; hand-backs {} (flight) {} (rest); refused {}, checks failed {}; {steps} steps, {wall:.1} s, {:.3} ms per modal frame, {:.0} ms per stepped frame",
+            if modal { "modal asked" } else { "stepped only" },
+            f.modal_frames,
+            f.modal_rest_frames,
+            f.hand_backs,
+            f.rest_hand_backs,
+            f.modal_refused,
+            f.modal_check_failed,
+            1e3 * flown_wall / (45 - stepped).max(1) as f64,
+            1e3 * stepped_wall / stepped.max(1) as f64
+        );
+        println!("  frames (F flown, R rested, c stepped in contact, s stepped free): {statuses}");
+        println!("  {}", ledger.summary());
+    }
+}

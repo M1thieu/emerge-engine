@@ -304,6 +304,11 @@ struct Damped {
     outside: Vec<(f64, Vec<f64>)>,
 }
 
+/// Per damped mode, `(omega, y at the last frame's start, y at its end)`,
+/// and the mechanisms `(theta, kappa)` (`Rest::damped_modes`).
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) type DampedModes = (Vec<(f64, Vec<f64>, Vec<f64>)>, Vec<(f64, f64)>);
+
 /// Why a rest did not start, with its basis back (boxed, it is large).
 pub(crate) struct Refused {
     pub(crate) basis: Box<Basis>,
@@ -440,6 +445,42 @@ impl Rest {
                 beyond_limit: true,
             });
         }
+        Ok(rest)
+    }
+
+    /// For the gates: per damped mode, its `omega`, its state at the last
+    /// frame's start and end, and the mechanisms `(theta, kappa)`.
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn damped_modes(&self) -> Option<DampedModes> {
+        let damped = self.damped.as_ref()?;
+        let modes = (0..self.basis.omega.len())
+            .filter(|&i| !damped.y[i].is_empty())
+            .map(|i| {
+                (
+                    self.basis.omega[i],
+                    damped.previous[i].clone(),
+                    damped.y[i].clone(),
+                )
+            })
+            .collect();
+        Some((modes, self.basis.memory.clone()))
+    }
+
+    /// `start` without the strain check, for the probes' `settle`: the
+    /// resting state of a body whose current motion is beyond its record's
+    /// limit (it is then placed at rest, inside it).
+    #[cfg(all(test, feature = "experimental"))]
+    pub(crate) fn start_for_settling(
+        basis: Basis,
+        state: &TotalLagrangianState,
+        (grid, planes): (&Grid, &[Plane]),
+        (gravity, t, length): (DVec2, f64, f64),
+    ) -> Result<Self, Refused> {
+        let limit = basis.strain_limit;
+        let mut unchecked = basis;
+        unchecked.strain_limit = f64::INFINITY;
+        let mut rest = Self::start(unchecked, state, (grid, planes), (gravity, t, length))?;
+        rest.basis.strain_limit = limit;
         Ok(rest)
     }
 

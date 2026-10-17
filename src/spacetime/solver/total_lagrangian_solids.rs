@@ -966,4 +966,7 @@ mod outline_velocity_tests;
 mod at_rest_tests;
 
 #[cfg(all(test, feature = "experimental"))]
+mod damped_rest_tests;
+
+#[cfg(all(test, feature = "experimental"))]
 mod probes;
