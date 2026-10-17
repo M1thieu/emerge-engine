@@ -261,6 +261,10 @@ fn synthetic() -> RelaxationSpectrum {
 ///   energy sums' round-off `n eps (sum |parts| + |heat| + |start|)`. At or
 ///   below 1, the balance is the solves' own residual;
 /// - the branches' heat, and the particle-steps beyond the record's limit.
+///
+/// A frame flown by the modes adds its linearisation residual
+/// (`modal_energy_change`) to what the solves allow, as the modal flight
+/// gate does (`tests/modal_flight.rs`).
 #[derive(Default)]
 struct Ledger {
     allowed: f64,
@@ -271,13 +275,25 @@ struct Ledger {
     heat: f64,
     beyond: u32,
     strain: f64,
+    /// The frames flown by the modes, the least heat a frame made, and the
+    /// damped frames whose propagator check failed.
+    flown: u32,
+    least_heat: f64,
+    check_failed: u64,
+    refused: u64,
+    hand_backs: u64,
 }
 
 impl Ledger {
     fn frame(&mut self, sim: &Simulation) {
         let f = sim.total_lagrangian_frame().expect("the path is on");
         assert!(f.energy.is_finite());
-        self.allowed += f.residual_work + f.contact_work_bound;
+        self.allowed += f.residual_work + f.contact_work_bound + f.modal_energy_change.abs();
+        self.flown += u32::from(f.modal);
+        self.least_heat = self.least_heat.min(f.relaxation_heat);
+        self.check_failed = f.modal_check_failed;
+        self.refused = f.modal_refused;
+        self.hand_backs = f.hand_backs;
         let round_off = sim.particles().len() as f64
             * f64::EPSILON
             * (f.parts.iter().map(|e| e.abs()).sum::<f64>() + f.heat.abs() + f.start_energy.abs());
@@ -338,6 +354,8 @@ struct Rod {
     speed_m_s: f32,
     /// The step controller's tolerance.
     tolerance: f64,
+    /// Whether its flights are carried by its modes.
+    modal_flight: bool,
 }
 
 /// The ringing gate's bar: quarter-wave 7.81 Hz, 1 cm cells.
@@ -347,6 +365,7 @@ const BAR: Rod = Rod {
     frame_s: FRAME_S,
     speed_m_s: SPEED_M_S,
     tolerance: 1e-2,
+    modal_flight: false,
 };
 
 impl Rod {
@@ -358,7 +377,12 @@ impl Rod {
         let mut config = SimConfig::earth(self.cells(0.48) as usize, self.dx, self.frame_s);
         config.gravity = Vec2::ZERO;
         config.min_dt = config.min_dt.min(1e-9);
-        config.total_lagrangian = Some(TotalLagrangianConfig::new(self.tolerance));
+        let path = TotalLagrangianConfig::new(self.tolerance);
+        config.total_lagrangian = Some(if self.modal_flight {
+            path.with_modal_flight()
+        } else {
+            path
+        });
         config
     }
 
@@ -510,6 +534,61 @@ fn a_zener_bar_rings_down_at_the_exact_rate_and_its_energy_becomes_heat() {
         (decrement / decrement_ref - 1.0).abs() < 0.05,
         "{name}: decrement {decrement} against {decrement_ref}"
     );
+}
+
+/// The ringing bar flown by its damped modes: Plasticine's proportional
+/// record, zero gravity, no wall. Criteria fixed before measuring (the
+/// design's gates 1 and 2):
+/// - every frame after the first flown (the first builds the contact cache
+///   that tells the body is free), no propagator check failing;
+/// - its period and decrement within 5 % of the exact Zener mode at the
+///   bar's own elastic frequency, and within 2 % of the stepped damped bar;
+/// - the ledger: the balance within the solves' bound plus each flown
+///   frame's linearisation residual, heat made, none beyond the limit, and
+///   no frame's heat negative.
+#[test]
+fn a_damped_bar_flies_by_its_modes_at_the_exact_rate() {
+    const FRAMES: usize = 100;
+    let dt = f64::from(FRAME_S);
+    let record = RelaxationSpectrum::plasticine_crandall_1970();
+    let free = ring_bar(None, FRAMES);
+    let (period, _) = period_and_decrement(&free.samples, dt);
+    let omega = 2.0 * PI / period;
+    let stepped = ring_bar(Some(record), FRAMES);
+    let flying = Rod {
+        modal_flight: true,
+        ..BAR
+    };
+    let flown = ring_bar_at(&flying, Some(record), FRAMES);
+    let (period_s, decrement_s) = period_and_decrement(&stepped.samples, dt);
+    let (period_f, decrement_f) = period_and_decrement(&flown.samples, dt);
+    let (period_ref, decrement_ref) = reference(&record, |m| m.kappa_shear, omega, FRAMES);
+    println!(
+        "damped bar flown: {} of {FRAMES} frames flown, {} refused, {} hand-backs, {} checks failed; period {period_f:.5} s against the exact {period_ref:.5} ({:.4}) and the stepped {period_s:.5} ({:.4}); decrement {decrement_f:.5} against {decrement_ref:.5} ({:.4}) and {decrement_s:.5} ({:.4}); least heat in a frame {:.3e} J/m; {}",
+        flown.ledger.flown,
+        flown.ledger.refused,
+        flown.ledger.hand_backs,
+        flown.ledger.check_failed,
+        period_f / period_ref,
+        period_f / period_s,
+        decrement_f / decrement_ref,
+        decrement_f / decrement_s,
+        flown.ledger.least_heat,
+        flown.ledger.summary()
+    );
+    println!("stepped: {}", stepped.ledger.summary());
+    assert_eq!(
+        flown.ledger.flown as usize,
+        FRAMES - 1,
+        "every frame after the first flown"
+    );
+    assert_eq!(flown.ledger.check_failed, 0, "a propagator check failed");
+    flown.ledger.check("damped bar flown");
+    assert!(flown.ledger.least_heat >= 0.0, "a frame's heat negative");
+    assert!((period_f / period_ref - 1.0).abs() < 0.05);
+    assert!((decrement_f / decrement_ref - 1.0).abs() < 0.05);
+    assert!((period_f / period_s - 1.0).abs() < 0.02);
+    assert!((decrement_f / decrement_s - 1.0).abs() < 0.02);
 }
 
 /// Runs `frames` frames of `sim`, sampling `amplitude` after each.
@@ -952,6 +1031,7 @@ fn a_zener_rod_in_its_records_band_leaves_with_the_exact_restitution() {
         frame_s: 5.0e-5,
         speed_m_s: 4.0e-3,
         tolerance: 1e-2,
+        modal_flight: false,
     };
     let (ratio, damped) = rod_row("rod in the band", &coarse, FRAMES);
     damped.ledger.check("rod in the band");
@@ -966,6 +1046,72 @@ fn a_zener_rod_in_its_records_band_leaves_with_the_exact_restitution() {
         (half_ratio - 1.0).abs() < 0.05,
         "restitution {half_ratio} of the exact at 0.5 cm"
     );
+}
+
+/// A free bar of `nu` with `record`, released in its first mode's shape at
+/// `speed` m/s, modal flight asked for: `frames` frames, and how many were
+/// flown and refused.
+fn flight_asked(record: RelaxationSpectrum, nu: f32, speed: f32, frames: usize) -> (u32, u64) {
+    let props = Elastic {
+        e_pa: E_PA,
+        nu,
+        rho_kg_m3: RHO,
+    };
+    let mut config = SimConfig::earth(48, DX_M, FRAME_S);
+    config.gravity = Vec2::ZERO;
+    config.min_dt = config.min_dt.min(1e-9);
+    config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2).with_modal_flight());
+    let mut material = CorotatedMaterial::from_physical(&props, &config);
+    material.relaxation = Some(record);
+    let mut sim = Simulation::empty(config);
+    let id = sim.register_material(Box::new(material)).0;
+    let _bar = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(LENGTH_CELLS, 2))
+            .at(Vec2::new(24.0, 24.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&props, &config),
+    );
+    let positions = sim.particles().x.clone();
+    for (v, x) in sim.particles_mut().v.iter_mut().zip(positions) {
+        let shape = (std::f32::consts::PI * (x.x - 8.0) / LENGTH_CELLS as f32).cos();
+        *v = Vec2::new(shape * speed / DX_M, 0.0);
+    }
+    let mut flown = 0u32;
+    for _ in 0..frames {
+        sim.step();
+        flown += u32::from(sim.total_lagrangian_frame().expect("on").modal);
+    }
+    (
+        flown,
+        sim.total_lagrangian_frame().expect("on").modal_refused,
+    )
+}
+
+/// What the damped modes do not carry is never flown, and each refusal is
+/// counted (the design's gate 5), criteria fixed before measuring:
+/// - the synthetic record (P weights twice the shear's): not proportional,
+///   its branches do not act through the body's stiffness;
+/// - Plasticine rung at 1 cm/s, a strain of 1e-3: its flight's strain bound
+///   passes the record's limit of 1e-5.
+///
+/// Every frame after the first asks to fly and is refused. (A body of two
+/// spectra: `a_body_of_two_materials_is_stepped_and_its_damped_half_alone_heats`.)
+#[test]
+fn damped_flight_refuses_what_its_modes_do_not_carry() {
+    const FRAMES: usize = 10;
+    let (flown, refused) = flight_asked(synthetic(), 0.25, SPEED_M_S, FRAMES);
+    println!("synthetic record: flown {flown}, refused {refused}");
+    assert_eq!((flown, refused), (0, FRAMES as u64 - 1));
+    let (flown, refused) = flight_asked(
+        RelaxationSpectrum::plasticine_crandall_1970(),
+        0.0,
+        0.01,
+        FRAMES,
+    );
+    println!("beyond the strain limit: flown {flown}, refused {refused}");
+    assert_eq!((flown, refused), (0, FRAMES as u64 - 1));
 }
 
 /// The validity ledger reports, never hides: the bar rung at a strain of
@@ -1018,7 +1164,8 @@ fn branches_applied_beyond_their_records_strain_limit_are_reported() {
 
 /// One body of two materials: the ringing bar's right half carries
 /// Plasticine's record, its left half none. With modal flight asked for, a
-/// free body: its modes refuse the branches, so every frame is stepped and
+/// free body: its particles do not all carry one spectrum, so the modes do
+/// not decouple its branches and refuse them; every frame is stepped and
 /// counted as refused; the ledger closes and only the damped half heats.
 #[test]
 fn a_body_of_two_materials_is_stepped_and_its_damped_half_alone_heats() {
@@ -1072,7 +1219,7 @@ fn a_body_of_two_materials_is_stepped_and_its_damped_half_alone_heats() {
         frame.heat,
         ledger.summary()
     );
-    assert_eq!(flown, 0, "a body with branches never flies");
+    assert_eq!(flown, 0, "a body of two spectra never flies");
     // The first frame is stepped before a flight can be asked (the free
     // body is told by the contact cache its first step builds): every later
     // frame asks, and is refused and counted.
@@ -1242,49 +1389,79 @@ fn probe_rod_restitution_against_the_step_tolerance() {
 fn probe_plasticine_block_drop() {
     let record =
         emerge::materials::relaxation::ViscoelasticRecord::plasticine_crandall_1970_fresh();
-    let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
-    config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-    let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
-    material.relaxation = Some(record.spectrum);
-    let mut sim = Simulation::empty(config);
-    let id = sim.register_material(Box::new(material)).0;
-    let floor = config.boundary_thickness as f32;
-    let _block = sim.add_body(
-        SpawnRegion::for_sim(&config)
-            .box_of(IVec2::new(8, 4))
-            .at(Vec2::new(20.0, floor + 12.0))
-            .spacing(0.5)
-            .material(id)
-            .mass_from(&record.relaxed, &config),
-    );
     println!(
         "Plasticine block ({}): E_r {:.3e} Pa, nu {}, rho {} kg/m^3",
         record.state, record.relaxed.e_pa, record.relaxed.nu, record.relaxed.rho_kg_m3
     );
-    let mut ledger = Ledger::default();
-    for k in 1..=45 {
-        sim.step();
-        ledger.frame(&sim);
-        let f = sim.total_lagrangian_frame().expect("the path is on");
-        let p = sim.particles();
-        let mass: f64 = p.mass.iter().map(|&m| f64::from(m)).sum();
-        let vy =
-            p.v.iter()
-                .zip(&p.mass)
-                .map(|(v, &m)| f64::from(v.y) * f64::from(m))
-                .sum::<f64>()
-                / mass
-                * f64::from(config.dx_meters);
+    // The step tolerance the E2 drop runs at, then tighter: whether the
+    // hopping at the frame rate after the first impacts, with almost no heat,
+    // is the long steps' (an artefact of the time step) or the scene's.
+    // Measured: at 1e-1 the block hops (0.147 m/s at frames 31-45, 14 of
+    // frames 21-45 in contact, 0.465 J/m less heat by frame 20); at 1e-2 and
+    // 1e-3 it rests and the heat agrees to 1.3 %. A declared gap: the
+    // tolerance is relative to the start's `tolerance_energy` (2.1 to 2.4
+    // J/m here), which lets a step at 1e-1 carry 0.02 J/m of error while the
+    // block's floor mode has `omega dt` near 67 to 117 (an estimate: a
+    // quarter wave over the height, not yet measured). Removal criterion: a
+    // reference scale derived from the physics, then the gates re-run.
+    for tolerance in [1e-1, 1e-2, 1e-3] {
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(tolerance));
+        let mut material = CorotatedMaterial::from_physical(&record.relaxed, &config);
+        material.relaxation = Some(record.spectrum);
+        let mut sim = Simulation::empty(config);
+        let id = sim.register_material(Box::new(material)).0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 12.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&record.relaxed, &config),
+        );
+        let mut ledger = Ledger::default();
+        let (mut steps, mut wall, mut touching, mut heat_21, mut late_speed) =
+            (0u32, 0.0f64, 0u32, 0.0f64, 0.0f64);
+        for k in 1..=45 {
+            sim.step();
+            ledger.frame(&sim);
+            let f = sim.total_lagrangian_frame().expect("the path is on");
+            let p = sim.particles();
+            let mass: f64 = p.mass.iter().map(|&m| f64::from(m)).sum();
+            let vy =
+                p.v.iter()
+                    .zip(&p.mass)
+                    .map(|(v, &m)| f64::from(v.y) * f64::from(m))
+                    .sum::<f64>()
+                    / mass
+                    * f64::from(config.dx_meters);
+            steps += f.steps;
+            wall += f.wall;
+            if k == 20 {
+                heat_21 = -f.heat;
+            }
+            if k == 45 {
+                heat_21 += f.heat;
+            }
+            if k > 20 && f.contacts > 0 {
+                touching += 1;
+            }
+            if k > 30 {
+                late_speed = late_speed.max(vy.abs());
+            }
+            println!(
+                "  tolerance {tolerance:.0e} frame {k}: {} steps, {} rejected, contacts {}, centre speed {vy:+.4} m/s, heat {:.4e} J/m, {:.0} ms",
+                f.steps,
+                f.rejected,
+                f.contacts,
+                f.heat,
+                1e3 * f.wall
+            );
+        }
         println!(
-            "  frame {k}: {} steps, {} rejected, contacts {}, centre speed {vy:+.4} m/s, heat {:.4e} J/m, beyond {}, strain {:.2e}, {:.0} ms",
-            f.steps,
-            f.rejected,
-            f.contacts,
-            f.heat,
-            f.relaxation_beyond,
-            f.relaxation_strain,
-            1e3 * f.wall
+            "tolerance {tolerance:.0e}: {steps} steps, {wall:.1} s; frames 21-45: {touching} in contact, heat made {heat_21:.4e} J/m; frames 31-45: largest centre speed {late_speed:.4} m/s; {}",
+            ledger.summary()
         );
     }
-    println!("Plasticine block: {}", ledger.summary());
 }
