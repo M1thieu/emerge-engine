@@ -73,6 +73,7 @@ impl Elastic {
                     yield_stress,
                     hardening,
                     viscosity,
+                    norton: None,
                 },
                 PlasticMetric::unstrained(),
             ),
@@ -552,24 +553,26 @@ impl Elastic {
     }
 
     /// The solid after a kept step from `C_n` to `C_{n+1}` of length `dt`,
-    /// the energy the plastic law dissipated per reference volume, and what
-    /// the step did to the relaxation branches (their heat, the strain
-    /// against their record's limit): the plastic law's state advanced by its
-    /// return map, the branches' internal strains by their update; every
-    /// other solid unchanged.
-    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> (Self, f64, Relaxed) {
+    /// the energy the plastic law dissipated per reference volume, what the
+    /// step did to the relaxation branches (their heat, the strain against
+    /// their record's limit), and the iterations Norton's return took
+    /// (`j2_hencky::norton_return`; zero for any other law): the plastic
+    /// law's state advanced by its return map, the branches' internal
+    /// strains by their update; every other solid unchanged.
+    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> (Self, f64, Relaxed, u32) {
         let mut next = *self;
-        let mut plastic = 0.0;
+        let (mut plastic, mut iterations) = (0.0, 0);
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             let stepped = law.step(c0, c1, state, dt);
             next.law = ElasticLaw::HenckyJ2(*law, stepped.state);
             plastic = stepped.dissipated;
+            iterations = stepped.iterations;
         }
         let mut relaxed = Relaxed::default();
         if self.is_relaxing() {
             (next.relaxation, relaxed) = self.relaxation.committed(c0, c1, dt, self.lame());
         }
-        (next, plastic, relaxed)
+        (next, plastic, relaxed, iterations)
     }
 
     /// Whether the law carries a state its steps advance.

@@ -153,6 +153,9 @@ pub struct TotalLagrangianFrame {
     pub relaxation_heat: f64,
     pub relaxation_strain: f64,
     pub relaxation_beyond: u32,
+    /// The most iterations Norton's return took at a particle in the
+    /// frame's kept steps (`j2_hencky::norton_return`).
+    pub norton_iterations: u32,
     /// The particles' angular momentum about their centre of mass at the
     /// frame's end, kg m^2/s per metre of depth, from the path's own `f64`
     /// state; and their moment of inertia about it, kg m^2 per metre.
@@ -756,6 +759,7 @@ impl Simulation {
                 frame.relaxation_heat += kept.relaxation;
                 frame.relaxation_strain = frame.relaxation_strain.max(kept.relaxation_strain);
                 frame.relaxation_beyond += kept.relaxation_beyond;
+                frame.norton_iterations = frame.norton_iterations.max(kept.norton_iterations);
             }
             frame.steps += 1;
             frame.timing.add(&step.timing);

@@ -335,6 +335,9 @@ pub struct StepReport {
     /// measured over is not, a step's frequency content being unknown.
     pub relaxation_strain: f64,
     pub relaxation_beyond: u32,
+    /// The most iterations Norton's return took at a particle of the kept
+    /// step (`j2_hencky::norton_return`; zero for any other law).
+    pub norton_iterations: u32,
 }
 
 /// The particles' state the step reads and writes.

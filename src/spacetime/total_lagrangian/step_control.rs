@@ -300,8 +300,9 @@ pub fn controlled_step(
                         before[p].transpose() * before[p],
                         s.f[p].transpose() * s.f[p],
                     );
-                    let (next, dissipated, relaxed) =
+                    let (next, dissipated, relaxed, iterations) =
                         s.solids[p].committed(c0, c1, dt / pieces as f64);
+                    report.norton_iterations = report.norton_iterations.max(iterations);
                     if s.solids[p].is_relaxing() {
                         report.relaxation_strain = report.relaxation_strain.max(relaxed.strain);
                         report.relaxation_beyond += u32::from(relaxed.beyond);

@@ -28,6 +28,22 @@
 //! (The explicit path's `VonMisesMaterial` is a different, 2D in-plane
 //! form, its return applied to the deformation gradient of a corotated law:
 //! a migration onto this law is pending, an engine-wide decision.)
+//!
+//! A second flow law, Norton's power law with no static yield (`Norton`),
+//! in the same variables: `eps_bar_dot^p = rate_0 (sigma_eq / K)^(1/m)`,
+//! `sigma_eq = sqrt(3/2) |dev tau|`, `eps_bar^p = sqrt(2/3) gamma` (LS05
+//! eq. 37-41; the law as in Nguyen, Amores, Sanz and Montans, Comput. Mech.
+//! 67 (2021), eq. 123-125, with no yield stress, read through the agent's
+//! report, `VISCOPLAST_SOURCES_REPORT` row 9). Its backward-Euler return
+//! (eq. 71) is the one scalar equation `r(d) = sigma_eq,tr - 3G d - K (d /
+//! (rate_0 dt))^m = 0` in `d = Delta eps_bar^p`, solved by a bracketed
+//! Newton (`norton_return`), and its step's dissipation is the step's own
+//! irreversible work `sigma_eq,n+1 d` (eq. 74's third line with this law's
+//! `phi_n+1`), fed to the algorithmic stress (eq. 81-83) as the linear
+//! case's is. Adaptation, declared: LS05 writes the linear case only. The
+//! variational alternative `dt psi*(d / dt)` is not used: it is not the
+//! irreversible work for a power law (Noels, Stainier and Ponthot, CMAME
+//! 197 (2008), p. 6 footnote 4 and eq. 99, read).
 
 use glam::{DMat2, DVec2};
 
@@ -41,6 +57,55 @@ pub struct HenckyJ2 {
     pub yield_stress: f64,
     pub hardening: f64,
     pub viscosity: f64,
+    /// Norton's flow law in place of the yield, hardening and linear
+    /// viscosity above (which must then be zero); `None`: that law.
+    pub norton: Option<Norton>,
+}
+
+/// Norton's power law (no static yield): `eps_bar_dot^p = rate_0 (sigma_eq
+/// / K)^(1/m)`, `K` in the stress's units, `m` its rate sensitivity, `rate_0`
+/// the reference rate (1/s).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Norton {
+    pub k: f64,
+    pub m: f64,
+    pub rate_0: f64,
+}
+
+/// The root of Norton's return, `r(d) = sigma_tr - 3G d - K (d / (rate_0
+/// dt))^m = 0` on `(0, sigma_tr / 3G)`, and the iterations it took.
+///
+/// `r(0) = sigma_tr > 0`, `r` strictly decreasing and `r(sigma_tr / 3G) =
+/// -K (.)^m < 0`: one root in the bracket. For `m < 1`, `r'(0) = -infinity`,
+/// so a Newton step is kept only inside the current bracket, else the
+/// bracket is bisected; the bracket shrinks by the sign of `r` at each
+/// iterate. Stops when the bracket is within `4 eps` of the root.
+pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
+    let scale = law.rate_0 * dt;
+    let r = |d: f64| sigma_tr - 3.0 * shear * d - law.k * (d / scale).powf(law.m);
+    let slope = |d: f64| -3.0 * shear - law.k * law.m * (d / scale).powf(law.m - 1.0) / scale;
+    let (mut low, mut high) = (0.0f64, sigma_tr / (3.0 * shear));
+    let mut d = 0.5 * high;
+    let mut iterations = 0u32;
+    while high - low > 4.0 * f64::EPSILON * high && iterations < 200 {
+        iterations += 1;
+        let value = r(d);
+        if value == 0.0 {
+            return (d, iterations);
+        }
+        if value > 0.0 {
+            low = d;
+        } else {
+            high = d;
+        }
+        let newton = d - value / slope(d);
+        d = if newton > low && newton < high {
+            newton
+        } else {
+            0.5 * (low + high)
+        };
+    }
+    (d, iterations)
 }
 
 /// The elastic state in the total Lagrangian variables: the plastic metric
@@ -138,6 +203,8 @@ pub(crate) struct Stepped {
     pub(crate) energy_change: f64,
     /// The step's dissipation per reference volume (Love and Sulsky eq. 74).
     pub(crate) dissipated: f64,
+    /// Norton's return's iterations (`norton_return`); zero otherwise.
+    pub(crate) iterations: u32,
 }
 
 impl HenckyJ2 {
@@ -186,23 +253,47 @@ impl HenckyJ2 {
         let tr = e_tr[0] + e_tr[1] + e_tr[2];
         let dev = [e_tr[0] - tr / 3.0, e_tr[1] - tr / 3.0, e_tr[2] - tr / 3.0];
         let norm = (dev[0] * dev[0] + dev[1] * dev[1] + dev[2] * dev[2]).sqrt();
-        let phi = 2.0 * self.shear * norm
-            - (2.0f64 / 3.0).sqrt() * (self.yield_stress + self.hardening * state.alpha);
+        let phi = match self.norton {
+            // No static yield: any deviator flows.
+            Some(_) => 2.0 * self.shear * norm,
+            None => {
+                2.0 * self.shear * norm
+                    - (2.0f64 / 3.0).sqrt() * (self.yield_stress + self.hardening * state.alpha)
+            }
+        };
         let mut next = PlasticMetric {
             gp: state.gp,
             gp33: state.gp33,
             alpha: state.alpha,
         };
         let mut dissipated = 0.0;
-        if phi > 0.0 && norm > 0.0 {
-            let rate = if dt > 0.0 { self.viscosity / dt } else { 0.0 };
-            let dgamma = phi / (rate + 2.0 / 3.0 * self.hardening + 2.0 * self.shear);
+        let mut iterations = 0;
+        if phi > 0.0 && norm > 0.0 && (self.norton.is_none() || dt > 0.0) {
+            let dgamma = match &self.norton {
+                Some(law) => {
+                    // `sigma_eq,tr = sqrt(3/2) |dev tau_tr|`, `dgamma =
+                    // sqrt(3/2) d`.
+                    let sigma_tr = (1.5f64).sqrt() * phi;
+                    let (d, count) = norton_return(sigma_tr, self.shear, law, dt);
+                    iterations = count;
+                    // The step's irreversible work, `sigma_eq,n+1 d`, with
+                    // `sigma_eq,n+1 = sigma_tr - 3G d` the returned stress.
+                    dissipated = (sigma_tr - 3.0 * self.shear * d) * d;
+                    (1.5f64).sqrt() * d
+                }
+                None => {
+                    let rate = if dt > 0.0 { self.viscosity / dt } else { 0.0 };
+                    let dgamma = phi / (rate + 2.0 / 3.0 * self.hardening + 2.0 * self.shear);
+                    dissipated =
+                        dgamma * (rate * dgamma + (2.0f64 / 3.0).sqrt() * self.yield_stress);
+                    dgamma
+                }
+            };
             let alpha1 = state.alpha + (2.0f64 / 3.0).sqrt() * dgamma;
             // dev e shrinks by dgamma along itself: |dev|^2 changes by
             // dgamma (dgamma - 2 |dev|); the volume part does not move.
             energy_change += self.shear * dgamma * (dgamma - 2.0 * norm)
                 + 0.5 * self.hardening * (alpha1 * alpha1 - state.alpha * state.alpha);
-            dissipated = dgamma * (rate * dgamma + (2.0f64 / 3.0).sqrt() * self.yield_stress);
             // be_A scales by exp(-2 dgamma nu_A), nu = dev / |dev|.
             let scale = |a: usize| (-2.0 * dgamma * dev[a] / norm).exp();
             let (k1, k2) = (scale(0), scale(1));
@@ -223,6 +314,7 @@ impl HenckyJ2 {
             state: next,
             energy_change,
             dissipated,
+            iterations,
         }
     }
 }
@@ -238,6 +330,7 @@ mod tests {
             yield_stress: 1.0e4,
             hardening,
             viscosity,
+            norton: None,
         }
     }
 
@@ -345,6 +438,7 @@ mod tests {
             yield_stress: (1.5f64).sqrt() * frobenius_yield,
             hardening: 1.5 * slope,
             viscosity: 0.0,
+            norton: None,
         };
         let onset = frobenius_yield / (2.0 * 2f64.sqrt() * mu);
         for (e, _, alpha) in pure_shear(&law, 6.0 * onset, 40) {
@@ -365,6 +459,7 @@ mod tests {
             yield_stress: 5.0e4,
             hardening: 1.0e5,
             viscosity: 0.0,
+            norton: None,
         }
     }
 
@@ -488,6 +583,7 @@ mod tests {
             yield_stress: 300.0,
             hardening: 0.0,
             viscosity: 0.0,
+            norton: None,
         };
         let onset = law.yield_stress / (2.0 * law.shear);
         let mut state = PlasticMetric::unstrained();
@@ -528,6 +624,7 @@ mod tests {
             yield_stress: f64::INFINITY,
             hardening: 0.0,
             viscosity: 0.0,
+            norton: None,
         };
         let (sin, cos) = 0.3f64.sin_cos();
         let rotation = DMat2::from_cols(DVec2::new(cos, sin), DVec2::new(-sin, cos));
@@ -567,5 +664,177 @@ mod tests {
         }
         let end = hencky(c_at(1.0));
         assert!((total - end).abs() <= 1e-12 * end, "{total} vs {end}");
+    }
+
+    /// Norton's law on SI14's technical plasticine (`K` 6.37e5 Pa, `m`
+    /// 0.266, `rate_0` 1/s; `E` 30 MPa, `nu` 0.3 for the shear modulus):
+    /// test data from the record's source, the record itself comes later.
+    fn norton(m: f64) -> HenckyJ2 {
+        let (e, nu) = (30.0e6, 0.3);
+        let shear = e / (2.0 * (1.0 + nu));
+        HenckyJ2 {
+            shear,
+            bulk: e / (3.0 * (1.0 - 2.0 * nu)),
+            yield_stress: 0.0,
+            hardening: 0.0,
+            viscosity: 0.0,
+            norton: Some(Norton {
+                k: 6.37e5,
+                m,
+                rate_0: 1.0,
+            }),
+        }
+    }
+
+    /// `sigma_eq = sqrt(3/2) |dev tau|` of the state at `C`.
+    fn sigma_eq(law: &HenckyJ2, c: DMat2, state: &PlasticMetric) -> f64 {
+        let (e, _, _) = law.logs(c, state);
+        let tr = e[0] + e[1] + e[2];
+        let dev2: f64 = e.iter().map(|x| (x - tr / 3.0).powi(2)).sum();
+        (1.5f64).sqrt() * 2.0 * law.shear * dev2.sqrt()
+    }
+
+    /// In-plane pure shear at the log rate `rate`: `C(t) = diag(e^(2 rate
+    /// t), e^(-2 rate t))`, the equivalent total rate `(2 / sqrt 3) rate`.
+    fn pure_shear_c(rate: f64, t: f64) -> DMat2 {
+        DMat2::from_diagonal(DVec2::new((2.0 * rate * t).exp(), (-2.0 * rate * t).exp()))
+    }
+
+    /// The stepped pure shear: `sigma_eq` after each of `steps` steps of
+    /// `dt`, at log rate `rate` while `t < hold`, then the strain held.
+    fn norton_run(law: &HenckyJ2, rate: f64, dt: f64, steps: usize, hold: f64) -> Vec<f64> {
+        let mut state = PlasticMetric::unstrained();
+        let strain_at = |t: f64| t.min(hold);
+        (0..steps)
+            .map(|k| {
+                let (t0, t1) = (k as f64 * dt, (k + 1) as f64 * dt);
+                let (c0, c1) = (
+                    pure_shear_c(rate, strain_at(t0)),
+                    pure_shear_c(rate, strain_at(t1)),
+                );
+                state = law.step(c0, c1, &state, dt).state;
+                sigma_eq(law, c1, &state)
+            })
+            .collect()
+    }
+
+    /// Gate T4: at a constant log rate, steady flow is the backward-Euler
+    /// fixed point `d = rate_eq dt`, whose stress is `K (rate_eq /
+    /// rate_0)^m` exactly for ANY `dt`: to 1e-10 at dt 1e-6, 1e-3 and 1 s
+    /// (criterion fixed before measuring).
+    #[test]
+    fn norton_steady_flow_is_exact_at_any_step() {
+        let law = norton(0.266);
+        let rate = 1.0;
+        let exact = 6.37e5 * (2.0 / 3.0f64.sqrt() * rate).powf(0.266);
+        for (dt, steps) in [(1e-6, 1_000_000), (1e-3, 2000), (1.0, 12)] {
+            let run = norton_run(&law, rate, dt, steps, f64::INFINITY);
+            let last = *run.last().expect("steps");
+            assert!(
+                (last / exact - 1.0).abs() < 1e-10,
+                "dt {dt}: {last} against {exact}"
+            );
+        }
+    }
+
+    /// `2F1(1, m; 1 + m; z) = sum_k m z^k / (m + k)`, `0 <= z < 1`.
+    fn hypergeometric(m: f64, z: f64) -> f64 {
+        let (mut sum, mut power, mut k) = (0.0, 1.0, 0.0);
+        while power > 1e-18 {
+            sum += m * power / (m + k);
+            power *= z;
+            k += 1.0;
+        }
+        sum
+    }
+
+    /// Gates T2 and T5 (criteria fixed before measuring): the transient from
+    /// rest to `0.9` of the steady stress against its closed form, `t =
+    /// sigma / (3G r) 2F1(1, m; 1 + m; (sigma / sigma_ss)^(1/m))` (`r` the
+    /// equivalent rate; derived: `dsigma/dt = 3G r (1 - (sigma /
+    /// sigma_ss)^(1/m))`), and the relaxation at held strain from the
+    /// steady stress, `sigma(t) = [sigma_0^(1-n) + (n-1) 3G rate_0 K^-n
+    /// t]^(-1/(n-1))`, `n = 1/m`, at `t = 1 s`. The backward-Euler flow is
+    /// first order: each error falls with `dt` at an order between 0.8 and
+    /// 1.2, and is below 1e-3 at the finest `dt`.
+    #[test]
+    fn norton_transient_and_relaxation_follow_their_closed_forms() {
+        let m = 0.266;
+        let law = norton(m);
+        let (k, g, rate) = (6.37e5, law.shear, 1.0);
+        let r = 2.0 / 3.0f64.sqrt() * rate;
+        let steady = k * r.powf(m);
+        let target = 0.9 * steady;
+        let t_exact = target / (3.0 * g * r) * hypergeometric(m, (target / steady).powf(1.0 / m));
+        let n = 1.0 / m;
+        let relaxed_exact =
+            (steady.powf(1.0 - n) + (n - 1.0) * 3.0 * g * k.powf(-n) * 1.0).powf(-1.0 / (n - 1.0));
+        let mut errors = Vec::new();
+        for dt in [4e-5, 2e-5, 1e-5] {
+            let ramp = norton_run(&law, rate, dt, (0.05 / dt) as usize, f64::INFINITY);
+            let k1 = ramp.iter().position(|&s| s >= target).expect("reached");
+            let (s0, s1) = (if k1 > 0 { ramp[k1 - 1] } else { 0.0 }, ramp[k1]);
+            let t = (k1 as f64 + (target - s0) / (s1 - s0)) * dt;
+            // Held from steady (after 0.5 s of flow) for 1 s.
+            let hold = 0.5;
+            let held = norton_run(&law, rate, dt, ((hold + 1.0) / dt).round() as usize, hold);
+            let relaxed = *held.last().expect("steps");
+            errors.push((
+                (t / t_exact - 1.0).abs(),
+                (relaxed / relaxed_exact - 1.0).abs(),
+            ));
+            println!(
+                "dt {dt:e}: transient t(0.9) {t:.6e} s against {t_exact:.6e}; relaxed {relaxed:.6e} Pa against {relaxed_exact:.6e}"
+            );
+        }
+        for which in 0..2 {
+            let e: Vec<f64> = errors
+                .iter()
+                .map(|p| if which == 0 { p.0 } else { p.1 })
+                .collect();
+            let orders = [(e[0] / e[1]).log2(), (e[1] / e[2]).log2()];
+            println!("errors {e:?}, orders {orders:?}");
+            assert!(e[2] < 1e-3, "finest error {}", e[2]);
+            for order in orders {
+                assert!((0.8..=1.2).contains(&order), "order {order}");
+            }
+        }
+    }
+
+    /// Gate T8: `m -> 0`. `K (d / (rate_0 dt))^m = K (1 + m ln(d / (rate_0
+    /// dt)) + O(m^2))`, so Norton's root differs from the rate-independent
+    /// return with `sigma_eq` yield `K` by `K m |ln(d / (rate_0 dt))| / 3G`
+    /// to first order (`r` moves by `K m ln(.)`, `|dr/dd| >= 3G`). Asserted
+    /// within 1.1 of that bound at `m = 1e-6`, and the gap at `m = 1e-9`
+    /// about 1e3 smaller (between 1e2 and 1e4 smaller). Not to round-off.
+    #[test]
+    fn norton_tends_to_rate_independent_j2() {
+        let dt = 1e-3;
+        let c0 = DMat2::IDENTITY;
+        let c1 = pure_shear_c(1.0, 0.05);
+        let mut j2 = norton(0.5);
+        j2.norton = None;
+        j2.yield_stress = 6.37e5;
+        let independent = j2
+            .step(c0, c1, &PlasticMetric::unstrained(), dt)
+            .state
+            .alpha;
+        let mut gaps = Vec::new();
+        for m in [1e-6, 1e-9] {
+            let law = norton(m);
+            let flowed = law
+                .step(c0, c1, &PlasticMetric::unstrained(), dt)
+                .state
+                .alpha;
+            let bound = 6.37e5 * m * (flowed / dt).ln().abs() / (3.0 * law.shear);
+            let gap = (flowed - independent).abs();
+            println!(
+                "m {m:e}: alpha {flowed:.12e} against {independent:.12e}, gap {gap:.3e}, first-order bound {bound:.3e}"
+            );
+            assert!(gap <= 1.1 * bound, "m {m}: gap {gap:e} beyond {bound:e}");
+            gaps.push(gap);
+        }
+        let shrink = gaps[0] / gaps[1];
+        assert!((1e2..=1e4).contains(&shrink), "shrink {shrink}");
     }
 }
