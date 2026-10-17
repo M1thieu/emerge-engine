@@ -900,6 +900,7 @@ fn rod_row(name: &str, rod: &Rod, frames: usize) -> (f64, Drop) {
 /// - 1 cm cells: elastic 0.97858, damped 0.84177 against the exact
 ///   0.83858 (1.0038);
 /// - 0.5 cm cells: elastic 0.98496, damped 0.84211 (1.0042).
+///
 /// The elastic loss shrinks with the cell; the damped excess does not move
 /// with it.
 ///
@@ -1202,6 +1203,7 @@ fn probe_relaxation_cost() {
 /// - damped over exact 1.0038, 1.0025, 1.0014 (125, 166, 345 steps);
 /// - elastic 0.97858, 0.98624, 0.98563 (243, 2628, 3859 steps), not
 ///   monotone.
+///
 /// The damped excess is the step's, not the cell's.
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
