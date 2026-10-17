@@ -146,6 +146,13 @@ pub struct TotalLagrangianFrame {
     pub timing: Timing,
     /// The frame's plastic dissipation, J/m (turned into heat).
     pub plastic_work: f64,
+    /// The frame's heat from the relaxation branches, J/m
+    /// (`StepReport::relaxation`); the largest Green strain a particle with
+    /// branches ended a kept step at, and the particle-steps beyond their
+    /// record's validity limit (`StepReport::relaxation_beyond`).
+    pub relaxation_heat: f64,
+    pub relaxation_strain: f64,
+    pub relaxation_beyond: u32,
     /// The particles' angular momentum about their centre of mass at the
     /// frame's end, kg m^2/s per metre of depth, from the path's own `f64`
     /// state; and their moment of inertia about it, kg m^2 per metre.
@@ -178,6 +185,11 @@ pub struct TotalLagrangianFrame {
     pub modal_rest: bool,
     pub modal_rest_frames: u64,
     pub rest_hand_backs: u64,
+    /// Since the start, the frames a lone body was free to fly
+    /// (`TotalLagrangianConfig::modal_flight`) but had no modes to fly by: a
+    /// law the modes do not carry (a dashpot, relaxation branches, J2), so
+    /// the step took the frame.
+    pub modal_refused: u64,
 }
 
 /// The path's state, kept between frames.
@@ -226,6 +238,7 @@ pub(crate) struct TotalLagrangianState {
     last_held: Vec<ContactKey>,
     modal_rest_frames: u64,
     rest_hand_backs: u64,
+    modal_refused: u64,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -358,10 +371,19 @@ impl Simulation {
                 // Viscosities in Pa s: time is the second on both sides,
                 // so they convert as stresses do.
                 let units = GridUnits::of(&self.config);
-                Elastic::corotated(units.stress(m.lambda), units.stress(m.mu)).with_viscosity(
-                    units.stress(m.elastic_viscosity),
-                    units.stress(m.elastic_bulk_viscosity),
-                )
+                let solid = Elastic::corotated(units.stress(m.lambda), units.stress(m.mu))
+                    .with_viscosity(
+                        units.stress(m.elastic_viscosity),
+                        units.stress(m.elastic_bulk_viscosity),
+                    );
+                // The relaxation spectrum's frequencies are per second, the
+                // path's time unit; its weights are ratios.
+                match &m.relaxation {
+                    None => solid,
+                    Some(spectrum) => solid.with_relaxation(spectrum).unwrap_or_else(|e| {
+                        panic!("material {id}: its relaxation spectrum is refused: {e}")
+                    }),
+                }
             }
             None if any.downcast_ref::<NeoHookeanMaterial>().is_some() => panic!(
                 "neo-Hookean on the total Lagrangian solid path: not yet (the step needs its own law in f64);                  material {id}"
@@ -499,6 +521,7 @@ impl Simulation {
             last_held: Vec::new(),
             modal_rest_frames: 0,
             rest_hand_backs: 0,
+            modal_refused: 0,
             frame: TotalLagrangianFrame::default(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
@@ -696,6 +719,9 @@ impl Simulation {
                 frame.contact_work += kept.work.0;
                 frame.dissipated += kept.viscous;
                 frame.plastic_work += kept.plastic;
+                frame.relaxation_heat += kept.relaxation;
+                frame.relaxation_strain = frame.relaxation_strain.max(kept.relaxation_strain);
+                frame.relaxation_beyond += kept.relaxation_beyond;
             }
             frame.steps += 1;
             frame.timing.add(&step.timing);
@@ -747,6 +773,7 @@ impl Simulation {
         (frame.modal_frames, frame.hand_backs) = (state.modal_frames, state.hand_backs);
         (frame.modal_rest_frames, frame.rest_hand_backs) =
             (state.modal_rest_frames, state.rest_hand_backs);
+        frame.modal_refused = state.modal_refused;
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
@@ -794,6 +821,7 @@ impl Simulation {
                 state.modes = Some(modes);
             }
             let Some(Some(modes)) = &state.modes else {
+                state.modal_refused += 1;
                 return false;
             };
             let started = Flight::start(state, modes, t0);

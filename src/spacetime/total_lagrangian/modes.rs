@@ -108,7 +108,7 @@ pub(crate) fn system(
 ) -> Option<System> {
     if solids[..particles]
         .iter()
-        .any(|s| s.law != ElasticLaw::Corotated || s.is_viscous())
+        .any(|s| s.law != ElasticLaw::Corotated || s.is_viscous() || s.is_relaxing())
     {
         return None;
     }

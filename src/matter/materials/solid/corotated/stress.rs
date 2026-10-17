@@ -98,6 +98,66 @@ pub(crate) fn corotated_energy_increment<M: Matrix2>(
         + M::Scalar::from(0.5) * lambda * j_change * (j0 + j1 - two)
 }
 
+/// The corotated law's second Piola-Kirchhoff stress as a function of `C`,
+/// `S(C) = 2 mu (I - U^-1) + lambda (1 - 1/J) adj(C)`, in `f64` for the total
+/// Lagrangian step. It is `2 dW/dC` of the `W(C)` of
+/// `corotated_energy_increment` (see `corotated_second_pk_tangent`), with
+/// two 2 x 2 identities derived on the page: Cayley-Hamilton gives `U^-1 =
+/// (t I - U) / J` and `U = (C + J I) / t`, `t = tr U = sqrt(tr C + 2J)`, so
+/// `U^-1 = ((tr C + J) I - C) / (t J)`; and `J (J - 1) C^-1 = (1 - 1/J)
+/// adj(C)`, `adj(C) = tr(C) I - C`. Linear in `(lambda, mu)`: `(0, mu)` is
+/// the law's shear part (`mu |F - R|^2`), `(lambda, 0)` its volume part
+/// (`lambda/2 (J - 1)^2`). Zero at `J <= MIN_J`, like the stress.
+pub(crate) fn corotated_second_pk(c: DMat2, lambda: f64, mu: f64) -> DMat2 {
+    let j = c.determinant().max(0.0).sqrt();
+    if j <= f64::from(MIN_J) {
+        return DMat2::ZERO;
+    }
+    let tr = c.x_axis.x + c.y_axis.y;
+    let t = (tr + 2.0 * j).sqrt();
+    let identity = DMat2::IDENTITY;
+    let u_inv = (identity * (tr + j) - c) * (t * j).recip();
+    let adj = identity * tr - c;
+    (identity - u_inv) * (2.0 * mu) + adj * (lambda * (1.0 - j.recip()))
+}
+
+/// `corotated_second_pk(c1) - corotated_second_pk(c0)` computed from the
+/// increment `dC = C_1 - C_0` itself, so its round-off is relative to the
+/// change (`corotated_energy_increment`'s reason). From the forms of
+/// `corotated_second_pk`, with `a = tr C + J` and the exact increments
+/// `d(det C) = tr(adj(C_0) dC) + det(dC)`, `dJ = d(det C) / (J_0 + J_1)`,
+/// `dt = (tr dC + 2 dJ) / (t_0 + t_1)`, `d(t J) = t_1 dJ + J_0 dt` (derived
+/// on the page):
+/// - `d(U^-1) = (da I - dC) / (t_1 J_1) - (a_0 I - C_0) d(t J) / (t_0 J_0 t_1
+///   J_1)`, `da = tr dC + dJ`;
+/// - `d((1 - 1/J) adj C) = (1 - 1/J_1) adj(dC) + dJ / (J_0 J_1) adj(C_0)`.
+///
+/// Zero where either end is at `J <= MIN_J` (the stress is pinned there).
+pub(crate) fn corotated_second_pk_increment(c0: DMat2, c1: DMat2, lambda: f64, mu: f64) -> DMat2 {
+    let (j0, j1) = (
+        c0.determinant().max(0.0).sqrt(),
+        c1.determinant().max(0.0).sqrt(),
+    );
+    if j0 <= f64::from(MIN_J) || j1 <= f64::from(MIN_J) {
+        return corotated_second_pk(c1, lambda, mu) - corotated_second_pk(c0, lambda, mu);
+    }
+    let dc = c1 - c0;
+    let [[a, b], [c, d]] = [c0.x_axis.to_array(), c0.y_axis.to_array()];
+    let [[da, db], [dcc, dd]] = [dc.x_axis.to_array(), dc.y_axis.to_array()];
+    let det_change = a * dd + d * da - b * dcc - c * db + (da * dd - db * dcc);
+    let dj = det_change / (j0 + j1);
+    let (tr0, tr_change) = (a + d, da + dd);
+    let (t0, t1) = ((tr0 + 2.0 * j0).sqrt(), (tr0 + tr_change + 2.0 * j1).sqrt());
+    let dt = (tr_change + 2.0 * dj) / (t0 + t1);
+    let d_tj = t1 * dj + j0 * dt;
+    let identity = DMat2::IDENTITY;
+    let d_u_inv = (identity * (tr_change + dj) - dc) * (t1 * j1).recip()
+        - (identity * (tr0 + j0) - c0) * (d_tj / (t0 * j0 * t1 * j1));
+    let d_volume =
+        (identity * tr_change - dc) * (1.0 - j1.recip()) + (identity * tr0 - c0) * (dj / (j0 * j1));
+    d_u_inv * (-2.0 * mu) + d_volume * lambda
+}
+
 /// The derivative of the corotated law's second Piola-Kirchhoff stress in
 /// `C`, along `dc`: `dS/dC [dC]`, in `f64` for the total Lagrangian step
 /// (the explicit path differentiates in `F`, `corotated_elastic_stress_jvp`).
@@ -568,6 +628,58 @@ mod second_pk_tangent_tests {
         let u = (c + DMat2::from_diagonal(DVec2::splat(j))) * t.recip();
         let u_inv = u.inverse();
         u_inv * corotated_elastic_stress(u, lambda, mu) * u_inv
+    }
+
+    /// The closed form `corotated_second_pk` against the stress pulled back
+    /// from the Kirchhoff stress, both parts, to round-off; and its increment
+    /// against the two ends' difference where that difference is accurate (a
+    /// large step), and against the increment's own `eps |dC|` scale on a
+    /// step too small for the difference (1e-13: the difference's round-off,
+    /// `eps |S|`, is then a thousand times the change).
+    #[test]
+    fn the_closed_form_stress_and_its_increment_are_exact() {
+        let (lambda, mu) = (2.0e6, 1.3e6);
+        let size = |m: DMat2| (m.x_axis.length_squared() + m.y_axis.length_squared()).sqrt();
+        let cases = [
+            DMat2::from_cols(DVec2::new(1.21, 0.07), DVec2::new(0.07, 0.86)),
+            DMat2::from_cols(DVec2::new(0.64, -0.2), DVec2::new(-0.2, 1.5)),
+            DMat2::IDENTITY,
+        ];
+        for c in cases {
+            for (l, m) in [(lambda, 0.0), (0.0, mu), (lambda, mu)] {
+                let (closed, pulled) = (corotated_second_pk(c, l, m), second_pk(c, l, m));
+                assert!(
+                    size(closed - pulled) <= 1e-12 * size(pulled).max(l.max(m)),
+                    "C {c}, (lambda, mu) ({l}, {m}): {closed} against {pulled}"
+                );
+            }
+        }
+        let c0 = DMat2::from_cols(DVec2::new(1.1, 0.04), DVec2::new(0.04, 0.93));
+        let direction = DMat2::from_cols(DVec2::new(0.3, -0.5), DVec2::new(-0.5, 0.8));
+        for (l, m) in [(lambda, 0.0), (0.0, mu)] {
+            let large = c0 + direction * 0.05;
+            let (increment, difference) = (
+                corotated_second_pk_increment(c0, large, l, m),
+                corotated_second_pk(large, l, m) - corotated_second_pk(c0, l, m),
+            );
+            assert!(
+                size(increment - difference) <= 1e-12 * size(difference),
+                "large step: {increment} against {difference}"
+            );
+            // A tiny step: the increment against the tangent's first-order
+            // change along the step `C_1` actually holds (`C_0 + h D` rounds
+            // the step by `eps |C|`, 2e-3 of it here), to the step's second
+            // order and the increment's own round-off, both far below the
+            // difference's.
+            let h = 1e-13;
+            let c1 = c0 + direction * h;
+            let tiny = corotated_second_pk_increment(c0, c1, l, m);
+            let linear = corotated_second_pk_tangent(c0, c1 - c0, l, m);
+            assert!(
+                size(tiny - linear) <= 1e-9 * size(linear),
+                "tiny step: {tiny} against the tangent's {linear}"
+            );
+        }
     }
 
     /// The tangent against central differences of the stress, at sheared,

@@ -112,6 +112,18 @@ impl Simulation {
             "the total Lagrangian solid path cannot be switched off in a run"
         );
         self.assert_strict_fluid_mode_is_supported();
+        for id in 0..self.materials.len() as u32 {
+            let relaxing = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::CorotatedMaterial>()
+                .is_some_and(|m| m.relaxation.is_some());
+            assert!(
+                !relaxing,
+                "material {id} carries a relaxation spectrum, which only the total Lagrangian solid path carries"
+            );
+        }
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).
         // Without this loop, the FixedStepController accounts for config.dt per call but the

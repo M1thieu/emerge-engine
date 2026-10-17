@@ -268,8 +268,8 @@ pub fn controlled_step(
         let mut reports = Vec::with_capacity(pieces);
         let mut contact = false;
         for _ in 0..pieces {
-            let plastic = s.solids.iter().any(Elastic::is_plastic);
-            let before = if plastic { s.f.clone() } else { Vec::new() };
+            let stateful = s.solids.iter().any(Elastic::carries_state);
+            let before = if stateful { s.f.clone() } else { Vec::new() };
             let mut report = step_total_lagrangian_contact(
                 layout,
                 Particles {
@@ -286,23 +286,32 @@ pub fn controlled_step(
                 &mut s.cache,
             );
             // The kept step advances the plastic states (the return map at
-            // the step's end), its dissipation into the particles' heat.
-            if plastic {
+            // the step's end) and the relaxation branches (their update), their
+            // dissipation into the particles' heat.
+            if stateful {
                 let heat = s.cache.as_mut().map(|c| &mut c.heat);
                 let mut made = vec![0.0; s.solids.len()];
+                let (mut plastic, mut relaxation) = (0.0, 0.0);
                 for p in 0..s.solids.len() {
-                    if !s.solids[p].is_plastic() || v0[p] <= 0.0 {
+                    if !s.solids[p].carries_state() || v0[p] <= 0.0 {
                         continue;
                     }
                     let (c0, c1) = (
                         before[p].transpose() * before[p],
                         s.f[p].transpose() * s.f[p],
                     );
-                    let (next, dissipated) = s.solids[p].committed(c0, c1, dt / pieces as f64);
+                    let (next, dissipated, relaxed) =
+                        s.solids[p].committed(c0, c1, dt / pieces as f64);
+                    if s.solids[p].is_relaxing() {
+                        report.relaxation_strain = report.relaxation_strain.max(relaxed.strain);
+                        report.relaxation_beyond += u32::from(relaxed.beyond);
+                    }
                     s.solids[p] = next;
-                    made[p] = v0[p] * dissipated;
+                    plastic += v0[p] * dissipated;
+                    relaxation += v0[p] * relaxed.heat;
+                    made[p] = v0[p] * (dissipated + relaxed.heat);
                 }
-                report.plastic = made.iter().sum();
+                (report.plastic, report.relaxation) = (plastic, relaxation);
                 if let Some(heat) = heat {
                     heat.resize(made.len().max(heat.len()), 0.0);
                     for (h, m) in heat.iter_mut().zip(&made) {

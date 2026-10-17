@@ -75,6 +75,12 @@ pub struct CorotatedMaterial {
     /// values in `materials::heat_capacity`. Set after construction, as
     /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
     pub specific_heat_j_kg_k: f32,
+    /// The measured relaxation spectrum (`materials::relaxation`), its
+    /// mechanisms acting on this law's shear and volume parts, `lambda` and
+    /// `mu` the relaxed moduli. `None` (the default): none. Read by the total
+    /// Lagrangian solid path only; the explicit path refuses a material that
+    /// carries one rather than ignore it.
+    pub relaxation: Option<crate::matter::materials::relaxation::RelaxationSpectrum>,
 }
 
 impl CorotatedMaterial {
@@ -92,6 +98,7 @@ impl CorotatedMaterial {
             elastic_viscosity: 0.0,
             elastic_bulk_viscosity: 0.0,
             specific_heat_j_kg_k: 0.0,
+            relaxation: None,
         }
     }
 

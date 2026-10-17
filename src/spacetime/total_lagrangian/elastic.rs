@@ -5,8 +5,9 @@
 use super::*;
 
 /// The solid: the shear modulus and the bulk modulus (`lambda + mu` in
-/// plane strain), which stored energy they enter, and the Kelvin-Voigt
-/// dashpot in parallel (shear and bulk viscosity; zero, none).
+/// plane strain), which stored energy they enter, the Kelvin-Voigt dashpot
+/// in parallel (shear and bulk viscosity; zero, none), and the measured
+/// relaxation branches on the law's parts (`relaxation`; empty, none).
 #[derive(Clone, Copy, Debug)]
 pub struct Elastic {
     pub mu: f64,
@@ -14,6 +15,7 @@ pub struct Elastic {
     pub law: ElasticLaw,
     pub shear_viscosity: f64,
     pub bulk_viscosity: f64,
+    pub relaxation: Relaxation,
 }
 
 /// The stored energy the step differentiates.
@@ -46,6 +48,7 @@ impl Elastic {
             law: ElasticLaw::Isochoric,
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
+            relaxation: Relaxation::none(),
         }
     }
 
@@ -75,6 +78,7 @@ impl Elastic {
             ),
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
+            relaxation: Relaxation::none(),
         }
     }
 
@@ -86,6 +90,7 @@ impl Elastic {
             law: ElasticLaw::Corotated,
             shear_viscosity: 0.0,
             bulk_viscosity: 0.0,
+            relaxation: Relaxation::none(),
         }
     }
 
@@ -100,9 +105,37 @@ impl Elastic {
         }
     }
 
+    /// The same solid with the relaxation spectrum `spectrum` on its law's
+    /// parts, its moduli the relaxed ones (`materials::relaxation`). The
+    /// corotated law only: J2 with branches is not built (its combination
+    /// with plasticity is unverified).
+    pub fn with_relaxation(
+        self,
+        spectrum: &crate::matter::materials::relaxation::RelaxationSpectrum,
+    ) -> Result<Self, crate::matter::materials::relaxation::RelaxationError> {
+        assert!(
+            self.law == ElasticLaw::Corotated,
+            "relaxation branches on the corotated law only (J2 with branches is not built)"
+        );
+        Ok(Self {
+            relaxation: Relaxation::corotated(spectrum, self.bulk - self.mu, self.mu)?,
+            ..self
+        })
+    }
+
     /// Whether the solid has a dashpot.
     pub(crate) fn is_viscous(&self) -> bool {
         self.shear_viscosity != 0.0 || self.bulk_viscosity != 0.0
+    }
+
+    /// Whether the solid has relaxation branches.
+    pub(crate) fn is_relaxing(&self) -> bool {
+        !self.relaxation.is_empty()
+    }
+
+    /// The relaxed Lame moduli the branches' parts take, `(lambda, mu)`.
+    fn lame(&self) -> (f64, f64) {
+        (self.bulk - self.mu, self.mu)
     }
 
     /// The dashpot's second Piola-Kirchhoff stress over a step of length
@@ -144,6 +177,16 @@ impl Elastic {
     /// `mu |F^ - R^|^2 + K / 2 (J - 1)^2`, as `elastic::shear_energy` and
     /// the gates' volume energy write it.
     pub fn energy(&self, f: DMat2) -> f64 {
+        let base = self.law_energy(f);
+        if self.is_relaxing() {
+            base + self.relaxation.energy(f.transpose() * f, self.lame())
+        } else {
+            base
+        }
+    }
+
+    /// The elastic law's own stored energy, the branches' left out.
+    fn law_energy(&self, f: DMat2) -> f64 {
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             return law.energy_at(f.transpose() * f, state);
         }
@@ -410,15 +453,18 @@ impl Elastic {
     }
 
     /// The step's whole stress between `C_n` and `C_{n+1}`: the law's
-    /// (`algorithmic_stress_over`) and the dashpot's (`viscous_stress_over`).
-    /// The one definition the internal force and its derivative use.
+    /// (`algorithmic_stress_over`), the dashpot's (`viscous_stress_over`) and
+    /// the relaxation branches' (`Relaxation::step_stress`). The one
+    /// definition the internal force and its derivative use.
     pub(crate) fn step_stress(&self, c0: DMat2, c1: DMat2, dt: f64) -> DMat2 {
-        let s = self.algorithmic_stress_over(c0, c1, dt);
+        let mut s = self.algorithmic_stress_over(c0, c1, dt);
         if self.is_viscous() {
-            s + self.viscous_stress_over(c0, c1, dt)
-        } else {
-            s
+            s += self.viscous_stress_over(c0, c1, dt);
         }
+        if self.is_relaxing() {
+            s += self.relaxation.step_stress(c0, c1, dt, self.lame());
+        }
+        s
     }
 
     /// The derivative of `step_stress` in `C_{n+1}` along `dc`.
@@ -434,15 +480,16 @@ impl Elastic {
     /// in `C_{n+1}`.
     ///
     /// Declared scaffold, to be replaced by each law's derived tangent: the
-    /// plastic law, the research law and the probes' variants of the base
-    /// stress take central differences of `step_stress` itself
-    /// (`step_stress_tangent_by_differences`).
+    /// plastic law, the research law, a solid with relaxation branches (Liu
+    /// and Guan's derived tangent, their App. B eq. B.10, not built) and the
+    /// probes' variants of the base stress take central differences of
+    /// `step_stress` itself (`step_stress_tangent_by_differences`).
     pub(crate) fn step_stress_tangent(&self, c0: DMat2, c1: DMat2, dt: f64, dc: DMat2) -> DMat2 {
         #[cfg(all(test, feature = "experimental"))]
         if hooks::split() || hooks::trapezoid() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
-        if self.law != ElasticLaw::Corotated {
+        if self.law != ElasticLaw::Corotated || self.is_relaxing() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
         let (lambda, mu) = (self.bulk - self.mu, self.mu);
@@ -505,22 +552,35 @@ impl Elastic {
     }
 
     /// The solid after a kept step from `C_n` to `C_{n+1}` of length `dt`,
-    /// and the energy the step dissipated per reference volume: the plastic
-    /// law's state advanced by its return map; every other law unchanged,
-    /// none.
-    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> (Self, f64) {
-        let ElasticLaw::HenckyJ2(law, state) = &self.law else {
-            return (*self, 0.0);
-        };
-        let stepped = law.step(c0, c1, state, dt);
+    /// the energy the plastic law dissipated per reference volume, and what
+    /// the step did to the relaxation branches (their heat, the strain
+    /// against their record's limit): the plastic law's state advanced by its
+    /// return map, the branches' internal strains by their update; every
+    /// other solid unchanged.
+    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> (Self, f64, Relaxed) {
         let mut next = *self;
-        next.law = ElasticLaw::HenckyJ2(*law, stepped.state);
-        (next, stepped.dissipated)
+        let mut plastic = 0.0;
+        if let ElasticLaw::HenckyJ2(law, state) = &self.law {
+            let stepped = law.step(c0, c1, state, dt);
+            next.law = ElasticLaw::HenckyJ2(*law, stepped.state);
+            plastic = stepped.dissipated;
+        }
+        let mut relaxed = Relaxed::default();
+        if self.is_relaxing() {
+            (next.relaxation, relaxed) = self.relaxation.committed(c0, c1, dt, self.lame());
+        }
+        (next, plastic, relaxed)
     }
 
     /// Whether the law carries a state its steps advance.
     pub(crate) fn is_plastic(&self) -> bool {
         matches!(self.law, ElasticLaw::HenckyJ2(..))
+    }
+
+    /// Whether the solid carries a state its kept steps advance: a plastic
+    /// law's, or relaxation branches'.
+    pub(crate) fn carries_state(&self) -> bool {
+        self.is_plastic() || self.is_relaxing()
     }
 
     /// The second Piola-Kirchhoff stress `S(C) = F^-1 tau F^-T` with `F =

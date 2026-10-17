@@ -74,6 +74,7 @@ pub(crate) mod hooks;
 mod krylov;
 mod modes;
 mod multipliers;
+mod relaxation;
 mod solve;
 mod step;
 mod step_control;
@@ -94,6 +95,8 @@ pub(crate) use galerkin2::*;
 pub(crate) use krylov::*;
 pub(crate) use modes::*;
 pub(crate) use multipliers::*;
+pub use relaxation::Relaxation;
+pub(crate) use relaxation::Relaxed;
 pub(crate) use solve::*;
 pub use step::*;
 pub use step_control::*;
@@ -320,6 +323,18 @@ pub struct StepReport {
     /// and Sulsky eq. 74 times each particle's volume), turned into heat with
     /// friction's (`Elastic::committed`).
     pub plastic: f64,
+    /// The heat the solids' relaxation branches made over the step (Liu and
+    /// Guan's `eta |dGamma|^2 / (2 dt)` times each particle's volume,
+    /// `Relaxation::committed`), per unit density.
+    pub relaxation: f64,
+    /// The largest Green strain `|C - I| / 2` a particle with branches
+    /// ended the step at, and how many such particles ended it beyond their
+    /// record's validity limit (`RelaxationSpectrum::strain_limit`): the
+    /// branches are applied there outside their measured data, reported,
+    /// never silently. Only the strain is checkable: the band a record was
+    /// measured over is not, a step's frequency content being unknown.
+    pub relaxation_strain: f64,
+    pub relaxation_beyond: u32,
 }
 
 /// The particles' state the step reads and writes.
