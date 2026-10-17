@@ -35,8 +35,8 @@ use crate::matter::materials::solid::von_mises::VonMisesMaterial;
 use crate::spacetime::solver::config::SpawnRegion;
 use crate::spacetime::solver::config::SpawnShape;
 use crate::spacetime::total_lagrangian::{
-    ConservingSettings, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache, Modes,
-    Particles, Plane, StepControl, Timing, body_modes, contact_grid, controlled_step,
+    ConservingSettings, ContactKey, ContactSet, Elastic, Estimator, GridLayout, LagrangianCache,
+    Modes, Particles, Plane, StepControl, Timing, body_modes, contact_grid, controlled_step,
     start_velocity_field, tolerance_energy,
 };
 use crate::spacetime::transfer::friction_heat::MIN_APPLIED_TEMPERATURE_RISE_K;
@@ -52,6 +52,10 @@ pub struct TotalLagrangianConfig {
     /// Carry a lone body's flights between contacts by its modes (`flight`)
     /// instead of stepping them. Off by default.
     pub modal_flight: bool,
+    /// Carry a lone body's rest on frictionless walls by its constrained
+    /// modes (`rest`) while its held contacts provably stay compressive.
+    /// Off by default.
+    pub modal_rest: bool,
 }
 
 impl TotalLagrangianConfig {
@@ -62,7 +66,15 @@ impl TotalLagrangianConfig {
             tolerance,
             settings: ConservingSettings::default(),
             modal_flight: false,
+            modal_rest: false,
         }
+    }
+
+    /// The same, a lone body's rest carried by its constrained modes
+    /// (`rest`).
+    pub fn with_modal_rest(mut self) -> Self {
+        self.modal_rest = true;
+        self
     }
 
     /// The same, a lone body's flights carried by its modes (`flight`).
@@ -159,6 +171,13 @@ pub struct TotalLagrangianFrame {
     /// ended at a frame the body could touch a wall (handed to the step).
     pub modal_frames: u64,
     pub hand_backs: u64,
+    /// Whether the frame was a rest carried by the constrained modes, with
+    /// no step (`TotalLagrangianConfig::modal_rest`; its energy change in
+    /// `modal_energy_change`); and since the start, the rest frames and the
+    /// rests ended (handed to the step).
+    pub modal_rest: bool,
+    pub modal_rest_frames: u64,
+    pub rest_hand_backs: u64,
 }
 
 /// The path's state, kept between frames.
@@ -197,6 +216,16 @@ pub(crate) struct TotalLagrangianState {
     /// `TotalLagrangianFrame::modal_frames` and `hand_backs`.
     modal_frames: u64,
     hand_backs: u64,
+    /// The rest under way, the held set the stepped frame before the last
+    /// ended on, and `TotalLagrangianFrame::modal_rest_frames` and
+    /// `rest_hand_backs`.
+    rest: Option<Rest>,
+    /// The last held set's rest basis (`rest::Basis`), kept so a refused
+    /// rest is not rebuilt at every frame on the same set.
+    rest_basis: Option<rest::Basis>,
+    last_held: Vec<ContactKey>,
+    modal_rest_frames: u64,
+    rest_hand_backs: u64,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -465,6 +494,11 @@ impl Simulation {
             flight: None,
             modal_frames: 0,
             hand_backs: 0,
+            rest: None,
+            rest_basis: None,
+            last_held: Vec::new(),
+            modal_rest_frames: 0,
+            rest_hand_backs: 0,
             frame: TotalLagrangianFrame::default(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
@@ -594,8 +628,21 @@ impl Simulation {
         let length = f64::from(self.config.dt);
         frame.modal = config.modal_flight
             && Self::fly_total_lagrangian_frame(&mut state, (&planes, gravity), length);
-        // A modal frame takes no step.
-        let mut remaining = if frame.modal { 0.0 } else { length };
+        let now = state.time;
+        frame.modal_rest = !frame.modal
+            && config.modal_rest
+            && rest::rest_frame(&mut state, (&planes, friction, gravity), (now, length));
+        // A modal frame takes no step; a stepped one first records the held
+        // set it starts from (a rest needs two stepped frames ending on the
+        // same set).
+        if !frame.modal && !frame.modal_rest {
+            state.last_held = rest::held_keys(&state);
+        }
+        let mut remaining = if frame.modal || frame.modal_rest {
+            0.0
+        } else {
+            length
+        };
         while remaining > 4.0 * f64::EPSILON * f64::from(self.config.dt) {
             // A step cut short to end on the frame's time says nothing
             // about the step the solution allows: kept at its first try,
@@ -665,7 +712,7 @@ impl Simulation {
             .unwrap_or_default();
         self.deposit_total_lagrangian_heat(&mut state, &heat);
         frame.energy = self.total_lagrangian_energy(&state);
-        if frame.modal {
+        if frame.modal || frame.modal_rest {
             frame.modal_energy_change = frame.energy - state.frame.energy;
         }
         state.time += length;
@@ -698,6 +745,8 @@ impl Simulation {
         frame.start_energy = state.start_energy;
         frame.start_momentum = state.start_momentum;
         (frame.modal_frames, frame.hand_backs) = (state.modal_frames, state.hand_backs);
+        (frame.modal_rest_frames, frame.rest_hand_backs) =
+            (state.modal_rest_frames, state.rest_hand_backs);
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
@@ -813,6 +862,9 @@ impl Simulation {
 
 mod flight;
 use flight::Flight;
+
+mod rest;
+use rest::Rest;
 
 #[cfg(all(test, feature = "experimental"))]
 mod cap;

@@ -266,3 +266,74 @@ fn probe_spinning_flight() {
         }
     });
 }
+
+/// E1's block on the floor (`tests/realtime_profile.rs`), its rest carried
+/// by its constrained modes or stepped.
+fn resting(modal: bool) -> Simulation {
+    let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+    let path = TotalLagrangianConfig::new(1e-1);
+    config.total_lagrangian = Some(if modal { path.with_modal_rest() } else { path });
+    let mut sim = Simulation::empty(config);
+    let id = sim
+        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+        .0;
+    let floor = config.boundary_thickness as f32;
+    let _block = sim.add_body(
+        SpawnRegion::for_sim(&config)
+            .box_of(IVec2::new(8, 4))
+            .at(Vec2::new(20.0, floor + 2.0))
+            .spacing(0.5)
+            .material(id)
+            .mass_from(&clay(), &config),
+    );
+    sim
+}
+
+/// The rest block stepped against its rest carried by its constrained
+/// modes, frame by frame: what the step resolves and what the modes carry.
+/// A probe.
+#[test]
+#[ignore = "probe: run with --ignored --nocapture"]
+fn probe_modal_rest_against_stepped() {
+    cap::capped("probe_modal_rest_against_stepped", 1800, || {
+        let (mut modal, mut stepped) = (resting(true), resting(false));
+        let (mut modal_wall, mut stepped_wall) = (0.0f64, 0.0f64);
+        println!("frame | stepped: energy+heat, stored, kinetic J/m, y | modal rest: same, rest?");
+        for k in 1..=60 {
+            stepped.step();
+            modal.step();
+            let (fs, fm) = (
+                stepped.total_lagrangian_frame().expect("on"),
+                modal.total_lagrangian_frame().expect("on"),
+            );
+            (stepped_wall, modal_wall) = (stepped_wall + fs.wall, modal_wall + fm.wall);
+            let mean_y = |sim: &Simulation| -> f64 {
+                let p = sim.particles();
+                let total: f64 = p.mass.iter().map(|&m| f64::from(m)).sum();
+                (0..p.len())
+                    .map(|i| f64::from(p.mass[i]) * f64::from(p.x[i].y))
+                    .sum::<f64>()
+                    / total
+            };
+            if k <= 12 || k % 6 == 0 {
+                println!(
+                    "{k:5} | {:.7e} {:.4e} {:.4e} {:.6} | {:.7e} {:.4e} {:.4e} {:.6} {}",
+                    fs.energy + fs.heat,
+                    fs.parts[1],
+                    fs.parts[0],
+                    mean_y(&stepped),
+                    fm.energy + fm.heat,
+                    fm.parts[1],
+                    fm.parts[0],
+                    mean_y(&modal),
+                    if fm.modal_rest { "rest" } else { "stepped" }
+                );
+            }
+        }
+        let f = modal.total_lagrangian_frame().expect("on");
+        println!(
+            "modal run: {} rest frames, {} rest hand-backs; wall {:.2} s against the stepped run's {:.2} s",
+            f.modal_rest_frames, f.rest_hand_backs, modal_wall, stepped_wall
+        );
+    });
+}

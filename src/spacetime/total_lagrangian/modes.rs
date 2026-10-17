@@ -70,14 +70,14 @@ fn stiffness_times(grid: &Grid, d: &[f64], (v0, solids): (&[f64], &[Elastic])) -
 }
 
 /// `a b` for row-major `n` by `n` matrices.
-fn product(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
+pub(crate) fn product(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     (0..n * n)
         .map(|ij| (0..n).map(|e| a[ij / n * n + e] * b[e * n + ij % n]).sum())
         .collect()
 }
 
 /// Mirrors the upper triangle's mean into both halves (round-off only).
-fn symmetrise(a: &mut [f64], n: usize) {
+pub(crate) fn symmetrise(a: &mut [f64], n: usize) {
     for i in 0..n {
         for j in (i + 1)..n {
             let mean = 0.5 * (a[i * n + j] + a[j * n + i]);
@@ -86,15 +86,26 @@ fn symmetrise(a: &mut [f64], n: usize) {
     }
 }
 
-/// The modes of the body whose `particles` points carry mass on `grid`
-/// (its contact points after them carry none). `None` when a law is not
-/// the undamped corotated solid's (another law's modes are not built), or
-/// when the mass is not definite.
-pub(crate) fn body_modes(
+/// Demmel and Veselic's `tol`, "usually machine precision"; 64 eps here,
+/// declared (the modes' orthonormality held to 5e-14 with 45 eps, measured).
+pub(crate) const JACOBI_TOLERANCE: f64 = 64.0 * f64::EPSILON;
+
+/// A body's dense mass and stiffness on the grid's active unknowns.
+pub(crate) struct System {
+    pub(crate) unknowns: Vec<usize>,
+    pub(crate) n: usize,
+    pub(crate) m: Vec<f64>,
+    pub(crate) k: Vec<f64>,
+}
+
+/// The dense consistent mass and stiffness at rest of the body whose
+/// `particles` points carry mass on `grid`; `None` when a law is not the
+/// undamped corotated solid's.
+pub(crate) fn system(
     grid: &Grid,
     (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
-    (particles, points): (usize, usize),
-) -> Option<Modes> {
+    particles: usize,
+) -> Option<System> {
     if solids[..particles]
         .iter()
         .any(|s| s.law != ElasticLaw::Corotated || s.is_viscous())
@@ -103,9 +114,6 @@ pub(crate) fn body_modes(
     }
     let unknowns: Vec<usize> = (0..grid.len).filter(|&k| grid.active[k]).collect();
     let n = unknowns.len();
-    if n <= RIGID_MODES {
-        return None;
-    }
     let (mut m, mut k) = (vec![0.0; n * n], vec![0.0; n * n]);
     for (j, &column) in unknowns.iter().enumerate() {
         let mut unit = vec![0.0; grid.len];
@@ -119,10 +127,16 @@ pub(crate) fn body_modes(
     }
     symmetrise(&mut m, n);
     symmetrise(&mut k, n);
-    // Demmel and Veselic's `tol`, "usually machine precision"; 64 eps here,
-    // declared (the modes' orthonormality held to 5e-14 with 45 eps, measured).
-    let tol = 64.0 * f64::EPSILON;
-    let (d, q) = jacobi_eigen_symmetric_definite(m, n, tol);
+    Some(System { unknowns, n, m, k })
+}
+
+/// The generalised eigenpairs `k phi = omega^2 m phi`, `phi^T m phi = 1`,
+/// of an `n` by `n` pair (`m` definite): `omega^2` ascending, the shift
+/// removed, and the modes as the columns of a row-major `n` by `n` matrix;
+/// also the shift, the scale of the eigenvalues' round-off. `None` when `m`
+/// is not definite.
+pub(crate) fn eigen_pairs(m: Vec<f64>, k: &[f64], n: usize) -> Option<(Vec<f64>, Vec<f64>, f64)> {
+    let (d, q) = jacobi_eigen_symmetric_definite(m, n, JACOBI_TOLERANCE);
     if d.iter().any(|&e| e <= 0.0) {
         return None;
     }
@@ -134,39 +148,70 @@ pub(crate) fn body_modes(
                 .sum()
         })
         .collect();
-    let mut reduced = product(&product(&root, &k, n), &root, n);
+    let mut reduced = product(&product(&root, k, n), &root, n);
     symmetrise(&mut reduced, n);
     let shift = (0..n).map(|i| reduced[i * n + i]).sum::<f64>() / n as f64;
     for i in 0..n {
         reduced[i * n + i] += shift;
     }
-    let (lambda, y) = jacobi_eigen_symmetric_definite(reduced, n, tol);
+    let (lambda, y) = jacobi_eigen_symmetric_definite(reduced, n, JACOBI_TOLERANCE);
     let phi = product(&root, &y, n);
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| lambda[a].total_cmp(&lambda[b]));
-    let omega = order
+    let squared = order.iter().map(|&e| lambda[e] - shift).collect();
+    let sorted = (0..n * n)
+        .map(|ij| phi[ij / n * n + order[ij % n]])
+        .collect();
+    Some((squared, sorted, shift))
+}
+
+/// A grid field's values at every point and its material gradients at the
+/// particles, from its entries on `unknowns`.
+pub(crate) fn field_at(
+    grid: &Grid,
+    (unknowns, values): (&[usize], &[f64]),
+    (particles, points): (usize, usize),
+) -> (Vec<DVec2>, Vec<DMat2>) {
+    let mut field = vec![0.0; grid.len];
+    for (&unknown, &value) in unknowns.iter().zip(values) {
+        field[unknown] = value;
+    }
+    let at = (0..points)
+        .map(|p| DVec2::new(grid.read(&field, p, 0).0, grid.read(&field, p, 1).0))
+        .collect();
+    let gradients = (0..particles).map(|p| gradient(grid, &field, p)).collect();
+    (at, gradients)
+}
+
+/// The modes of the body whose `particles` points carry mass on `grid`
+/// (its contact points after them carry none). `None` when a law is not
+/// the undamped corotated solid's (another law's modes are not built), or
+/// when the mass is not definite.
+pub(crate) fn body_modes(
+    grid: &Grid,
+    (mass, v0, solids): (&[f64], &[f64], &[Elastic]),
+    (particles, points): (usize, usize),
+) -> Option<Modes> {
+    let System { unknowns, n, m, k } = system(grid, (mass, v0, solids), particles)?;
+    if n <= RIGID_MODES {
+        return None;
+    }
+    let (squared, phi, _) = eigen_pairs(m, &k, n)?;
+    let omega = squared
         .iter()
         .enumerate()
-        .map(|(rank, &e)| {
+        .map(|(rank, &w2)| {
             if rank < RIGID_MODES {
                 0.0
             } else {
-                (lambda[e] - shift).max(0.0).sqrt()
+                w2.max(0.0).sqrt()
             }
         })
         .collect();
-    let (at, gradients) = order
-        .iter()
-        .map(|&e| {
-            let mut field = vec![0.0; grid.len];
-            for (i, &unknown) in unknowns.iter().enumerate() {
-                field[unknown] = phi[i * n + e];
-            }
-            let at = (0..points)
-                .map(|p| DVec2::new(grid.read(&field, p, 0).0, grid.read(&field, p, 1).0))
-                .collect();
-            let gradients = (0..particles).map(|p| gradient(grid, &field, p)).collect();
-            (at, gradients)
+    let (at, gradients) = (0..n)
+        .map(|e| {
+            let column: Vec<f64> = (0..n).map(|i| phi[i * n + e]).collect();
+            field_at(grid, (&unknowns, &column), (particles, points))
         })
         .unzip();
     Some(Modes {
