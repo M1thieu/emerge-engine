@@ -134,7 +134,7 @@ impl Elastic {
     }
 
     /// The relaxed Lame moduli the branches' parts take, `(lambda, mu)`.
-    fn lame(&self) -> (f64, f64) {
+    pub(crate) fn lame(&self) -> (f64, f64) {
         (self.bulk - self.mu, self.mu)
     }
 

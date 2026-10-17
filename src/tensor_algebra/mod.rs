@@ -8,5 +8,6 @@
 pub(crate) mod dense;
 pub(crate) mod frobenius;
 pub mod matrix2;
+pub(crate) mod matrix_exponential;
 pub(crate) mod svd;
 pub(crate) mod symmetric_eigen;

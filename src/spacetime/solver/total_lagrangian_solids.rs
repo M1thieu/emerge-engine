@@ -187,9 +187,15 @@ pub struct TotalLagrangianFrame {
     pub rest_hand_backs: u64,
     /// Since the start, the frames a lone body was free to fly
     /// (`TotalLagrangianConfig::modal_flight`) but had no modes to fly by: a
-    /// law the modes do not carry (a dashpot, relaxation branches, J2), so
-    /// the step took the frame.
+    /// law the modes do not carry (a dashpot, J2, relaxation branches that do
+    /// not decouple on them: two spectra in one body, a record whose shear
+    /// and P weights differ), or a damped flight whose strain could pass its
+    /// record's limit; the step took the frame.
     pub modal_refused: u64,
+    /// Since the start, the damped frames whose computed propagator
+    /// lengthened a mode's state (the exact one never does; `flight`), handed
+    /// to the step.
+    pub modal_check_failed: u64,
 }
 
 /// The path's state, kept between frames.
@@ -239,6 +245,7 @@ pub(crate) struct TotalLagrangianState {
     modal_rest_frames: u64,
     rest_hand_backs: u64,
     modal_refused: u64,
+    modal_check_failed: u64,
     pub(crate) frame: TotalLagrangianFrame,
 }
 
@@ -522,6 +529,7 @@ impl Simulation {
             modal_rest_frames: 0,
             rest_hand_backs: 0,
             modal_refused: 0,
+            modal_check_failed: 0,
             frame: TotalLagrangianFrame::default(),
         };
         state.start_momentum = (0..n).fold(DVec2::ZERO, |sum, p| sum + state.mass[p] * state.v[p]);
@@ -651,6 +659,16 @@ impl Simulation {
         let length = f64::from(self.config.dt);
         frame.modal = config.modal_flight
             && Self::fly_total_lagrangian_frame(&mut state, (&planes, gravity), length);
+        // A damped flight's heat (`Flight::carry_branches`), deposited like
+        // the step's.
+        if frame.modal
+            && let Some(flight) = state.flight.as_mut()
+        {
+            let made = std::mem::take(&mut flight.heat);
+            frame.relaxation_heat = made.iter().sum();
+            frame.relaxation_strain = flight.strain;
+            self.deposit_total_lagrangian_heat(&mut state, &made);
+        }
         let now = state.time;
         frame.modal_rest = !frame.modal
             && config.modal_rest
@@ -738,8 +756,11 @@ impl Simulation {
             .unwrap_or_default();
         self.deposit_total_lagrangian_heat(&mut state, &heat);
         frame.energy = self.total_lagrangian_energy(&state);
+        // The linearisation's residual: the energy's change less the heat a
+        // damped flight made (none otherwise, the heat's change then zero).
         if frame.modal || frame.modal_rest {
-            frame.modal_energy_change = frame.energy - state.frame.energy;
+            frame.modal_energy_change =
+                frame.energy - state.frame.energy + (state.heat - state.frame.heat);
         }
         state.time += length;
         frame.parts = (0..state.particles).fold([0.0; 3], |[k, e, g], p| {
@@ -774,6 +795,7 @@ impl Simulation {
         (frame.modal_rest_frames, frame.rest_hand_backs) =
             (state.modal_rest_frames, state.rest_hand_backs);
         frame.modal_refused = state.modal_refused;
+        frame.modal_check_failed = state.modal_check_failed;
         frame.tolerance_energy = state.tolerance_energy;
         frame.balance = frame.energy + frame.heat - frame.start_energy;
         state.frame = frame;
@@ -824,10 +846,14 @@ impl Simulation {
                 state.modal_refused += 1;
                 return false;
             };
-            let started = Flight::start(state, modes, t0);
+            let started = Flight::start(state, modes, (t0, length));
+            // Refused only when damped, beyond the record's strain limit.
+            if started.is_none() && !modes.memory.is_empty() {
+                state.modal_refused += 1;
+            }
             state.flight = started;
         }
-        let Some(flight) = state.flight.take() else {
+        let Some(mut flight) = state.flight.take() else {
             return false;
         };
         if !flight.clear(gravity, planes, (t0, t1)) {
@@ -838,15 +864,22 @@ impl Simulation {
             return false;
         };
         let start = (state.x.clone(), state.v.clone(), state.f.clone());
-        flight.rebuild(&modes, gravity, t1, state);
-        state.modes = Some(Some(modes));
+        if !flight.rebuild(&modes, gravity, t1, state) {
+            state.modes = Some(Some(modes));
+            state.modal_check_failed += 1;
+            state.hand_backs += 1;
+            return false;
+        }
         // A frame whose rebuilt state does not keep the angular momentum is
         // stepped instead, from the frame's start (`flight`).
         if !flight.keeps_angular_momentum(state) {
             (state.x, state.v, state.f) = start;
+            state.modes = Some(Some(modes));
             state.hand_backs += 1;
             return false;
         }
+        flight.carry_branches(&modes, state, &start.2);
+        state.modes = Some(Some(modes));
         state.flight = Some(flight);
         state.modal_frames += 1;
         true

@@ -96,7 +96,7 @@ pub(crate) use krylov::*;
 pub(crate) use modes::*;
 pub(crate) use multipliers::*;
 pub use relaxation::Relaxation;
-pub(crate) use relaxation::Relaxed;
+pub(crate) use relaxation::{CarriedMemory, Relaxed};
 pub(crate) use solve::*;
 pub use step::*;
 pub use step_control::*;
