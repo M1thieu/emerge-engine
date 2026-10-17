@@ -18,6 +18,7 @@ pub mod params;
 pub mod physical_props;
 mod property_dispatch;
 pub mod registry;
+pub mod relaxation;
 pub mod rod_material;
 pub mod solid;
 pub(crate) mod viscous_stress;
