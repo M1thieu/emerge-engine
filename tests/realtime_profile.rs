@@ -24,6 +24,9 @@
 
 extern crate emerge_engine as emerge;
 
+#[path = "common/cap.rs"]
+mod cap;
+
 use emerge::boundary::FrictionBoundary;
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
@@ -604,13 +607,17 @@ fn e6_splat() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e1_rest() {
-    e1_rest((1, 1));
+    cap::capped("profile_e1_rest", 3600, || {
+        e1_rest((1, 1));
+    });
 }
 
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e2_bounce() {
-    e2_bounce(1e-1, "E2 bounce, tol 1e-1");
+    cap::capped("profile_e2_bounce", 3600, || {
+        e2_bounce(1e-1, "E2 bounce, tol 1e-1");
+    });
 }
 
 /// E2 under the step tolerance's earlier scale, the start's total energy
@@ -621,16 +628,18 @@ fn profile_e2_bounce() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e2_bounce_at_the_earlier_scale() {
-    let config = config(RES, 1e-1);
-    let mut sim = Simulation::empty(config);
-    let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
-        .0;
-    let _block = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 10.0));
-    sim.step();
-    let f = sim.total_lagrangian_frame().expect("the path is on");
-    let factor = (f.start_energy.abs() / f.tolerance_energy).sqrt();
-    e2_bounce(1e-1 * factor, "E2 bounce, earlier scale");
+    cap::capped("profile_e2_bounce_at_the_earlier_scale", 3600, || {
+        let config = config(RES, 1e-1);
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+            .0;
+        let _block = sim.add_body(block(&config, id, (8, 4), RES as f32 * 0.5, 10.0));
+        sim.step();
+        let f = sim.total_lagrangian_frame().expect("the path is on");
+        let factor = (f.start_energy.abs() / f.tolerance_energy).sqrt();
+        e2_bounce(1e-1 * factor, "E2 bounce, earlier scale");
+    });
 }
 
 /// E2 at a looser and a tighter step tolerance (a lever that changes the
@@ -639,8 +648,10 @@ fn profile_e2_bounce_at_the_earlier_scale() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e2_bounce_tolerances() {
-    e2_bounce(3e-1, "E2 bounce, tol 3e-1");
-    e2_bounce(1e-2, "E2 bounce, tol 1e-2");
+    cap::capped("profile_e2_bounce_tolerances", 3600, || {
+        e2_bounce(3e-1, "E2 bounce, tol 3e-1");
+        e2_bounce(1e-2, "E2 bounce, tol 1e-2");
+    });
 }
 
 /// E2 with the clay's own damping at three viscosities and two step
@@ -649,39 +660,49 @@ fn profile_e2_bounce_tolerances() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e2_bounce_damped() {
-    for tolerance in [1e-1, 1e-2] {
-        for eta in [10.0f32, 300.0, 1.0e4] {
-            e2_bounce_damped(
-                tolerance,
-                eta,
-                &format!("E2 bounce, eta {eta} Pa s, tol {tolerance:e}"),
-            );
+    cap::capped("profile_e2_bounce_damped", 3600, || {
+        for tolerance in [1e-1, 1e-2] {
+            for eta in [10.0f32, 300.0, 1.0e4] {
+                e2_bounce_damped(
+                    tolerance,
+                    eta,
+                    &format!("E2 bounce, eta {eta} Pa s, tol {tolerance:e}"),
+                );
+            }
         }
-    }
+    });
 }
 
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e3_slide() {
-    e3_slide();
+    cap::capped("profile_e3_slide", 3600, || {
+        e3_slide();
+    });
 }
 
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e4_collision() {
-    e4_collision((1, 1));
+    cap::capped("profile_e4_collision", 3600, || {
+        e4_collision((1, 1));
+    });
 }
 
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e5_kelvin_voigt() {
-    e5_kelvin_voigt();
+    cap::capped("profile_e5_kelvin_voigt", 3600, || {
+        e5_kelvin_voigt();
+    });
 }
 
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_e6_splat() {
-    e6_splat();
+    cap::capped("profile_e6_splat", 3600, || {
+        e6_splat();
+    });
 }
 
 /// E1 and E4 at 2 and 4 times the particles (the blocks twice as wide,
@@ -689,20 +710,24 @@ fn profile_e6_splat() {
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_size_scaling() {
-    for scale in [(2, 1), (2, 2)] {
-        e1_rest(scale);
-        e4_collision(scale);
-    }
+    cap::capped("profile_size_scaling", 3600, || {
+        for scale in [(2, 1), (2, 2)] {
+            e1_rest(scale);
+            e4_collision(scale);
+        }
+    });
 }
 
 /// E1 and E4 on 1, 4 and 8 threads.
 #[test]
 #[ignore = "real-time profile: a quiet machine only, one scene at a time"]
 fn profile_thread_scaling() {
-    for threads in [1, 4, 8] {
-        on_threads(threads, || {
-            e1_rest((1, 1));
-            e4_collision((1, 1));
-        });
-    }
+    cap::capped("profile_thread_scaling", 3600, || {
+        for threads in [1, 4, 8] {
+            on_threads(threads, || {
+                e1_rest((1, 1));
+                e4_collision((1, 1));
+            });
+        }
+    });
 }

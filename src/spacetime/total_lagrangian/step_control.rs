@@ -85,7 +85,9 @@ pub fn tolerance_energy<'a>(
 }
 
 /// Whether `EMERGE_PROBE_ERROR_SPLIT` is set (read once): the controller's
-/// error split probe (`controlled_step`).
+/// error split probe (`controlled_step`). A probe knob, in test builds
+/// only.
+#[cfg(all(test, feature = "experimental"))]
 fn error_split() -> bool {
     static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_ERROR_SPLIT").is_some())
@@ -363,6 +365,7 @@ pub fn controlled_step(
             // as one body (the only motion below the frame rate for a block
             // whose first elastic mode is far above it) and the rest, its
             // deformation's error included; one line per pair of tries.
+            #[cfg(all(test, feature = "experimental"))]
             if error_split() {
                 let massive = (0..start.x.len()).filter(|&p| mass[p] > 0.0);
                 let total: f64 = massive.clone().map(|p| mass[p]).sum();

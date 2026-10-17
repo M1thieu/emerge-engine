@@ -5,6 +5,9 @@
 
 extern crate emerge_engine as emerge;
 
+#[path = "common/cap.rs"]
+mod cap;
+
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
 use emerge::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
@@ -179,45 +182,47 @@ fn sensors(sim: &Simulation) -> [usize; 3] {
 #[test]
 #[ignore = "probe: run with --ignored --nocapture"]
 fn probe_modal_against_stepped_drop() {
-    let (mut modal, mut stepped) = (scene(10.0, true), scene(10.0, false));
-    let sensors = sensors(&stepped);
-    let (mut sensor_error, mut sensor_size) = ([0.0f64; 3], [0.0f64; 3]);
-    println!(
-        "frame | stepped: y cells, vy cells/s, contacts, energy+heat J/m | modal: same, modal?"
-    );
-    for k in 1..=45 {
-        stepped.step();
-        modal.step();
-        let (fs, fm) = (
-            stepped.total_lagrangian_frame().expect("on"),
-            modal.total_lagrangian_frame().expect("on"),
+    cap::capped("probe_modal_against_stepped_drop", 1800, || {
+        let (mut modal, mut stepped) = (scene(10.0, true), scene(10.0, false));
+        let sensors = sensors(&stepped);
+        let (mut sensor_error, mut sensor_size) = ([0.0f64; 3], [0.0f64; 3]);
+        println!(
+            "frame | stepped: y cells, vy cells/s, contacts, energy+heat J/m | modal: same, modal?"
         );
-        let (ys, vys, ss) = observe(&stepped, &sensors);
-        let (ym, vym, sm) = observe(&modal, &sensors);
-        for s in 0..3 {
-            sensor_error[s] += f64::from((sm[s] - ss[s]).length_squared());
-            sensor_size[s] += f64::from(ss[s].length_squared());
+        for k in 1..=45 {
+            stepped.step();
+            modal.step();
+            let (fs, fm) = (
+                stepped.total_lagrangian_frame().expect("on"),
+                modal.total_lagrangian_frame().expect("on"),
+            );
+            let (ys, vys, ss) = observe(&stepped, &sensors);
+            let (ym, vym, sm) = observe(&modal, &sensors);
+            for s in 0..3 {
+                sensor_error[s] += f64::from((sm[s] - ss[s]).length_squared());
+                sensor_size[s] += f64::from(ss[s].length_squared());
+            }
+            println!(
+                "{k:5} | {ys:8.4} {vys:+9.3} {:2} {:.6e} | {ym:8.4} {vym:+9.3} {:2} {:.6e} {}",
+                fs.contacts,
+                fs.energy + fs.heat,
+                fm.contacts,
+                fm.energy + fm.heat,
+                if fm.modal { "modal" } else { "stepped" }
+            );
         }
+        for s in 0..3 {
+            println!(
+                "sensor {s}: modal against stepped, RMS velocity difference {:.3e} of the stepped RMS",
+                (sensor_error[s] / sensor_size[s]).sqrt()
+            );
+        }
+        let f = modal.total_lagrangian_frame().expect("on");
         println!(
-            "{k:5} | {ys:8.4} {vys:+9.3} {:2} {:.6e} | {ym:8.4} {vym:+9.3} {:2} {:.6e} {}",
-            fs.contacts,
-            fs.energy + fs.heat,
-            fm.contacts,
-            fm.energy + fm.heat,
-            if fm.modal { "modal" } else { "stepped" }
+            "modal run: {} modal frames, {} hand-backs",
+            f.modal_frames, f.hand_backs
         );
-    }
-    for s in 0..3 {
-        println!(
-            "sensor {s}: modal against stepped, RMS velocity difference {:.3e} of the stepped RMS",
-            (sensor_error[s] / sensor_size[s]).sqrt()
-        );
-    }
-    let f = modal.total_lagrangian_frame().expect("on");
-    println!(
-        "modal run: {} modal frames, {} hand-backs",
-        f.modal_frames, f.hand_backs
-    );
+    });
 }
 
 /// A block spun at `spin` rad/s in free flight, modal against stepped: the
@@ -227,35 +232,37 @@ fn probe_modal_against_stepped_drop() {
 #[test]
 #[ignore = "probe: run with --ignored --nocapture"]
 fn probe_spinning_flight() {
-    for spin in [10.0f32, 50.0] {
-        let (mut modal, mut stepped) = (scene(25.0, true), scene(25.0, false));
-        for sim in [&mut modal, &mut stepped] {
-            let p = sim.particles();
-            let total: f32 = p.mass.iter().sum();
-            let centre = (0..p.len()).fold(Vec2::ZERO, |c, i| c + p.mass[i] * p.x[i]) / total;
-            let x = p.x.clone();
-            for (v, q) in sim.particles_mut().v.iter_mut().zip(&x) {
-                *v = spin * (*q - centre).perp();
+    cap::capped("probe_spinning_flight", 1800, || {
+        for spin in [10.0f32, 50.0] {
+            let (mut modal, mut stepped) = (scene(25.0, true), scene(25.0, false));
+            for sim in [&mut modal, &mut stepped] {
+                let p = sim.particles();
+                let total: f32 = p.mass.iter().sum();
+                let centre = (0..p.len()).fold(Vec2::ZERO, |c, i| c + p.mass[i] * p.x[i]) / total;
+                let x = p.x.clone();
+                for (v, q) in sim.particles_mut().v.iter_mut().zip(&x) {
+                    *v = spin * (*q - centre).perp();
+                }
+            }
+            println!("spin {spin} rad/s:");
+            for k in 1..=10 {
+                stepped.step();
+                modal.step();
+                let (fs, fm) = (
+                    stepped.total_lagrangian_frame().expect("on"),
+                    modal.total_lagrangian_frame().expect("on"),
+                );
+                println!(
+                    "  frame {k:2}: stepped L {:.6e}, stored {:.4e} J/m, energy {:.6e}; modal L {:.6e}, stored {:.4e}, energy {:.6e}, {}",
+                    fs.angular_momentum,
+                    fs.parts[1],
+                    fs.energy + fs.heat,
+                    fm.angular_momentum,
+                    fm.parts[1],
+                    fm.energy + fm.heat,
+                    if fm.modal { "modal" } else { "stepped" }
+                );
             }
         }
-        println!("spin {spin} rad/s:");
-        for k in 1..=10 {
-            stepped.step();
-            modal.step();
-            let (fs, fm) = (
-                stepped.total_lagrangian_frame().expect("on"),
-                modal.total_lagrangian_frame().expect("on"),
-            );
-            println!(
-                "  frame {k:2}: stepped L {:.6e}, stored {:.4e} J/m, energy {:.6e}; modal L {:.6e}, stored {:.4e}, energy {:.6e}, {}",
-                fs.angular_momentum,
-                fs.parts[1],
-                fs.energy + fs.heat,
-                fm.angular_momentum,
-                fm.parts[1],
-                fm.energy + fm.heat,
-                if fm.modal { "modal" } else { "stepped" }
-            );
-        }
-    }
+    });
 }

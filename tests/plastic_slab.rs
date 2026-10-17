@@ -55,6 +55,9 @@
 //! part is within 0.3 percent, below the cell's.
 extern crate emerge_engine as emerge;
 
+#[path = "common/cap.rs"]
+mod cap;
+
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
 use emerge::{DuctileProps, FromSI, SimConfig, Simulation, SpawnRegion, VonMisesMaterial};
@@ -266,26 +269,32 @@ fn settled_ratio(dx: f32) -> f64 {
 #[test]
 #[ignore = "long: the three resolutions' settling, hours at 0.5 cm"]
 fn a_ductile_slab_settles_to_the_exact_uniaxial_strain_compression() {
-    // `EMERGE_SLAB_CELL`: one resolution alone (m), for exploring.
-    if let Some(dx) = std::env::var("EMERGE_SLAB_CELL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-    {
-        settled_ratio(dx);
-        return;
-    }
-    let (r2, r1, r05) = (
-        settled_ratio(0.02),
-        settled_ratio(0.01),
-        settled_ratio(0.005),
-    );
-    let order = ((r1 - r2) / (r05 - r1)).abs().log2();
-    let extrapolated = r05 + (r05 - r1) / (2f64.powf(order) - 1.0);
-    println!(
-        "compression over exact: {r2:.4} at 2 cm, {r1:.4} at 1 cm, {r05:.4} at 0.5 cm; observed order {order:.2}; extrapolated to dx -> 0 {extrapolated:.4}"
-    );
-    assert!(
-        (extrapolated - 1.0).abs() < 0.05,
-        "extrapolated compression {extrapolated} of exact"
+    cap::capped(
+        "a_ductile_slab_settles_to_the_exact_uniaxial_strain_compression",
+        21600,
+        || {
+            // `EMERGE_SLAB_CELL`: one resolution alone (m), for exploring.
+            if let Some(dx) = std::env::var("EMERGE_SLAB_CELL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+            {
+                settled_ratio(dx);
+                return;
+            }
+            let (r2, r1, r05) = (
+                settled_ratio(0.02),
+                settled_ratio(0.01),
+                settled_ratio(0.005),
+            );
+            let order = ((r1 - r2) / (r05 - r1)).abs().log2();
+            let extrapolated = r05 + (r05 - r1) / (2f64.powf(order) - 1.0);
+            println!(
+                "compression over exact: {r2:.4} at 2 cm, {r1:.4} at 1 cm, {r05:.4} at 0.5 cm; observed order {order:.2}; extrapolated to dx -> 0 {extrapolated:.4}"
+            );
+            assert!(
+                (extrapolated - 1.0).abs() < 0.05,
+                "extrapolated compression {extrapolated} of exact"
+            );
+        },
     );
 }

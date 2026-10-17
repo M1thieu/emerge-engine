@@ -56,84 +56,86 @@ fn through_the_impact(
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_fast_modes_at_the_impact() {
-    let fine = (FRAME / 1024.0) as f32;
-    let mut a = scene(fine, 1e-2);
-    a.step();
-    let state = a.total_lagrangian.as_ref().expect("on the path");
-    let modes = modes(state);
-    let sensors = sensors(state);
-    let runs: Vec<(f64, Vec<Sample>, Vec<usize>)> = [1.0f32, 2.0, 4.0]
-        .iter()
-        .map(|&d| {
-            let (samples, held) = through_the_impact(fine / d, &modes, &sensors);
-            (f64::from(fine / d), samples, held)
-        })
-        .collect();
-    for (h, samples, held) in &runs {
-        let first = held.iter().position(|&n| n > 0).expect("an impact");
-        let last = held.iter().rposition(|&n| n > 0).expect("an impact");
-        let release = &samples[last + 1];
-        let during = &held[first..=last];
-        let (peak, at) = samples[first..=last]
+    super::cap::capped("probe_fast_modes_at_the_impact", 1800, || {
+        let fine = (FRAME / 1024.0) as f32;
+        let mut a = scene(fine, 1e-2);
+        a.step();
+        let state = a.total_lagrangian.as_ref().expect("on the path");
+        let modes = modes(state);
+        let sensors = sensors(state);
+        let runs: Vec<(f64, Vec<Sample>, Vec<usize>)> = [1.0f32, 2.0, 4.0]
             .iter()
-            .map(|s| (parts(&modes, s).1, s.t))
-            .fold((0.0, 0.0), |b, c| if c.0 > b.0 { c } else { b });
-        let (slow_first, fast_first) = parts(&modes, &samples[first]);
-        let (slow_end, fast_end) = parts(&modes, release);
-        println!(
-            "frame {:.3} us: touch {:.4} ms, release {:.4} ms ({:.4} ms; 2 H / c_p = 0.848 ms); contact held in {} of its {} frames",
-            h * 1e6,
-            samples[first].t * 1e3,
-            release.t * 1e3,
-            (release.t - samples[first].t) * 1e3,
-            during.iter().filter(|&&n| n > 0).count(),
-            during.len()
-        );
-        println!(
-            "  vibration J/m after the first touch's frame: below {FAST} Hz {slow_first:.5e}, above {fast_first:.5e}; above at its peak {peak:.4e} ({:.1} us after the touch); at the release: below {slow_end:.5e}, above {fast_end:.5e}",
-            (at - samples[first].t) * 1e6
-        );
-    }
-    // The three runs at common times through the impact, every 32.55 us
-    // from the finest run's touch.
-    let (_, finest, finest_held) = &runs[2];
-    let touch = finest[finest_held.iter().position(|&n| n > 0).expect("an impact")].t;
-    println!(
-        "  t from the touch us | above {FAST} Hz J/m at 16.3 / 8.1 / 4.1 us | contacts held since the last row (16.3 / 8.1 / 4.1 us)"
-    );
-    let (mut row_t, mut previous) = (touch, touch - 2.0 * f64::from(fine));
-    while row_t
-        <= runs
-            .iter()
-            .map(|r| r.1.last().expect("sampled").t)
-            .fold(f64::INFINITY, f64::min)
-            - 1e-3
-    {
-        let cells: Vec<String> = runs
-            .iter()
-            .map(|(h, samples, _)| {
-                let j = ((row_t / h).round() as usize).clamp(1, samples.len()) - 1;
-                format!("{:.4e}", parts(&modes, &samples[j]).1)
+            .map(|&d| {
+                let (samples, held) = through_the_impact(fine / d, &modes, &sensors);
+                (f64::from(fine / d), samples, held)
             })
             .collect();
-        let held: Vec<String> = runs
-            .iter()
-            .map(|(h, _, held)| {
-                let (from, to) = (
-                    (previous / h).round() as usize,
-                    (row_t / h).round() as usize,
-                );
-                let count = (from..to.min(held.len())).filter(|&j| held[j] > 0).count();
-                format!("{count}/{}", to.saturating_sub(from))
-            })
-            .collect();
+        for (h, samples, held) in &runs {
+            let first = held.iter().position(|&n| n > 0).expect("an impact");
+            let last = held.iter().rposition(|&n| n > 0).expect("an impact");
+            let release = &samples[last + 1];
+            let during = &held[first..=last];
+            let (peak, at) = samples[first..=last]
+                .iter()
+                .map(|s| (parts(&modes, s).1, s.t))
+                .fold((0.0, 0.0), |b, c| if c.0 > b.0 { c } else { b });
+            let (slow_first, fast_first) = parts(&modes, &samples[first]);
+            let (slow_end, fast_end) = parts(&modes, release);
+            println!(
+                "frame {:.3} us: touch {:.4} ms, release {:.4} ms ({:.4} ms; 2 H / c_p = 0.848 ms); contact held in {} of its {} frames",
+                h * 1e6,
+                samples[first].t * 1e3,
+                release.t * 1e3,
+                (release.t - samples[first].t) * 1e3,
+                during.iter().filter(|&&n| n > 0).count(),
+                during.len()
+            );
+            println!(
+                "  vibration J/m after the first touch's frame: below {FAST} Hz {slow_first:.5e}, above {fast_first:.5e}; above at its peak {peak:.4e} ({:.1} us after the touch); at the release: below {slow_end:.5e}, above {fast_end:.5e}",
+                (at - samples[first].t) * 1e6
+            );
+        }
+        // The three runs at common times through the impact, every 32.55 us
+        // from the finest run's touch.
+        let (_, finest, finest_held) = &runs[2];
+        let touch = finest[finest_held.iter().position(|&n| n > 0).expect("an impact")].t;
         println!(
-            "    {:8.2} | {} | {}",
-            (row_t - touch) * 1e6,
-            cells.join(" "),
-            held.join(" ")
+            "  t from the touch us | above {FAST} Hz J/m at 16.3 / 8.1 / 4.1 us | contacts held since the last row (16.3 / 8.1 / 4.1 us)"
         );
-        previous = row_t;
-        row_t += 2.0 * f64::from(fine);
-    }
+        let (mut row_t, mut previous) = (touch, touch - 2.0 * f64::from(fine));
+        while row_t
+            <= runs
+                .iter()
+                .map(|r| r.1.last().expect("sampled").t)
+                .fold(f64::INFINITY, f64::min)
+                - 1e-3
+        {
+            let cells: Vec<String> = runs
+                .iter()
+                .map(|(h, samples, _)| {
+                    let j = ((row_t / h).round() as usize).clamp(1, samples.len()) - 1;
+                    format!("{:.4e}", parts(&modes, &samples[j]).1)
+                })
+                .collect();
+            let held: Vec<String> = runs
+                .iter()
+                .map(|(h, _, held)| {
+                    let (from, to) = (
+                        (previous / h).round() as usize,
+                        (row_t / h).round() as usize,
+                    );
+                    let count = (from..to.min(held.len())).filter(|&j| held[j] > 0).count();
+                    format!("{count}/{}", to.saturating_sub(from))
+                })
+                .collect();
+            println!(
+                "    {:8.2} | {} | {}",
+                (row_t - touch) * 1e6,
+                cells.join(" "),
+                held.join(" ")
+            );
+            previous = row_t;
+            row_t += 2.0 * f64::from(fine);
+        }
+    });
 }

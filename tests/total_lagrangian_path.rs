@@ -10,6 +10,9 @@
 
 extern crate emerge_engine as emerge;
 
+#[path = "common/cap.rs"]
+mod cap;
+
 use emerge::boundary::FrictionBoundary;
 use emerge::fields::LinearDragField;
 use emerge::materials::physical_props::Elastic;
@@ -553,19 +556,21 @@ fn the_path_refuses_a_body_added_after_its_first_frame() {
 #[test]
 #[ignore = "long: 60 s simulated; run with --ignored --nocapture"]
 fn probe_a_block_at_rest_for_a_minute() {
-    let mut sim = scene(config(1e-1), 0.0);
-    let scale = weight_scale(&sim);
-    for second in 1..=60 {
-        let (worst, deepest) = run(&mut sim, 60);
-        let frame = sim.total_lagrangian_frame().expect("the path is on");
-        println!(
-            "t {second} s: balance {:+.3e} of the weight scale (worst this second {worst:.2e}), deepest {deepest:.2e} cells, steps {} rejected {} at the floor {}",
-            frame.balance / scale,
-            frame.steps,
-            frame.rejected,
-            frame.at_floor
-        );
-    }
+    cap::capped("probe_a_block_at_rest_for_a_minute", 3600, || {
+        let mut sim = scene(config(1e-1), 0.0);
+        let scale = weight_scale(&sim);
+        for second in 1..=60 {
+            let (worst, deepest) = run(&mut sim, 60);
+            let frame = sim.total_lagrangian_frame().expect("the path is on");
+            println!(
+                "t {second} s: balance {:+.3e} of the weight scale (worst this second {worst:.2e}), deepest {deepest:.2e} cells, steps {} rejected {} at the floor {}",
+                frame.balance / scale,
+                frame.steps,
+                frame.rejected,
+                frame.at_floor
+            );
+        }
+    });
 }
 
 #[test]
@@ -806,41 +811,43 @@ fn a_flat_drop_does_not_turn_the_block() {
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_corner_sink_at_two_cells() {
-    for (res, cell) in [(40usize, 0.01f32), (80, 0.005)] {
-        let mut config = SimConfig::earth(res, cell, 1.0 / 60.0);
-        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-        let mut sim = Simulation::empty(config);
-        let id = sim
-            .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
-            .0;
-        let (w, h) = ((0.08 / cell).round() as i32, (0.04 / cell).round() as i32);
-        let floor = config.boundary_thickness as f32;
-        let _block = sim.add_body(
-            SpawnRegion::for_sim(&config)
-                .box_of(IVec2::new(w, h))
-                .at(Vec2::new(res as f32 * 0.5, floor + h as f32 * 0.5))
-                .spacing(0.5)
-                .material(id)
-                .mass_from(&clay(), &config),
-        );
-        let mut deepest = 0.0f32;
-        for _ in 0..20 {
-            sim.step();
-            let lowest = sim
-                .particles()
-                .x
-                .iter()
-                .map(|q| q.y)
-                .fold(f32::INFINITY, f32::min);
-            deepest = deepest.max(floor + 0.25 - lowest);
+    cap::capped("probe_corner_sink_at_two_cells", 1800, || {
+        for (res, cell) in [(40usize, 0.01f32), (80, 0.005)] {
+            let mut config = SimConfig::earth(res, cell, 1.0 / 60.0);
+            config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+            let mut sim = Simulation::empty(config);
+            let id = sim
+                .register_material(Box::new(CorotatedMaterial::from_physical(&clay(), &config)))
+                .0;
+            let (w, h) = ((0.08 / cell).round() as i32, (0.04 / cell).round() as i32);
+            let floor = config.boundary_thickness as f32;
+            let _block = sim.add_body(
+                SpawnRegion::for_sim(&config)
+                    .box_of(IVec2::new(w, h))
+                    .at(Vec2::new(res as f32 * 0.5, floor + h as f32 * 0.5))
+                    .spacing(0.5)
+                    .material(id)
+                    .mass_from(&clay(), &config),
+            );
+            let mut deepest = 0.0f32;
+            for _ in 0..20 {
+                sim.step();
+                let lowest = sim
+                    .particles()
+                    .x
+                    .iter()
+                    .map(|q| q.y)
+                    .fold(f32::INFINITY, f32::min);
+                deepest = deepest.max(floor + 0.25 - lowest);
+            }
+            println!(
+                "cell {} mm: the bottom row's deepest sink below its rest height {:.4} cells = {:.4} mm",
+                cell * 1000.0,
+                deepest,
+                deepest * cell * 1000.0
+            );
         }
-        println!(
-            "cell {} mm: the bottom row's deepest sink below its rest height {:.4} cells = {:.4} mm",
-            cell * 1000.0,
-            deepest,
-            deepest * cell * 1000.0
-        );
-    }
+    });
 }
 
 /// The same scene moved by 1 m steps the same: the 4-cell drop as

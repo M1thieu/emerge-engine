@@ -66,24 +66,26 @@ fn frame_from(sim: &mut Simulation, state: &TotalLagrangianState, on: bool) -> S
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_e2_hard_frame_from_one_state() {
-    // The frame of E2's 4th impact in the profile's frame list (1-based).
-    const FRAME: usize = 44;
-    for (label, on) in [
-        ("the run without warm start", false),
-        ("the run with it", true),
-    ] {
-        let mut sim = e2();
-        warm_start(on);
-        for _ in 1..FRAME {
-            sim.step();
+    super::cap::capped("probe_e2_hard_frame_from_one_state", 1800, || {
+        // The frame of E2's 4th impact in the profile's frame list (1-based).
+        const FRAME: usize = 44;
+        for (label, on) in [
+            ("the run without warm start", false),
+            ("the run with it", true),
+        ] {
+            let mut sim = e2();
+            warm_start(on);
+            for _ in 1..FRAME {
+                sim.step();
+            }
+            let state = sim.total_lagrangian.as_ref().expect("on the path").clone();
+            println!("frame {FRAME} from the state {label} reached:");
+            for second in [false, true] {
+                println!("  {}", frame_from(&mut sim, &state, second));
+            }
         }
-        let state = sim.total_lagrangian.as_ref().expect("on the path").clone();
-        println!("frame {FRAME} from the state {label} reached:");
-        for second in [false, true] {
-            println!("  {}", frame_from(&mut sim, &state, second));
-        }
-    }
-    warm_start(true);
+        warm_start(true);
+    });
 }
 
 /// What the controller does in that frame, from the state the warm-start
@@ -93,27 +95,29 @@ fn probe_e2_hard_frame_from_one_state() {
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_e2_hard_frame_controller() {
-    const FRAME: usize = 44;
-    let mut sim = e2();
-    warm_start(true);
-    for _ in 1..FRAME {
+    super::cap::capped("probe_e2_hard_frame_controller", 1800, || {
+        const FRAME: usize = 44;
+        let mut sim = e2();
+        warm_start(true);
+        for _ in 1..FRAME {
+            sim.step();
+        }
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(true);
         sim.step();
-    }
-    crate::spacetime::total_lagrangian::hooks::set_control_trace(true);
-    sim.step();
-    crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
-    let f = sim.total_lagrangian_frame().expect("on the path");
-    println!(
-        "frame {FRAME}: kept {}, rejected {} (Newton unconverged {}), at the estimator's floor {}, reaching {}, passes {}, unconverged kept {}, stagnated {}",
-        f.steps,
-        f.rejected,
-        f.rejected_unconverged,
-        f.at_floor,
-        f.reaching,
-        f.passes,
-        f.unconverged,
-        f.stagnated
-    );
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
+        let f = sim.total_lagrangian_frame().expect("on the path");
+        println!(
+            "frame {FRAME}: kept {}, rejected {} (Newton unconverged {}), at the estimator's floor {}, reaching {}, passes {}, unconverged kept {}, stagnated {}",
+            f.steps,
+            f.rejected,
+            f.rejected_unconverged,
+            f.at_floor,
+            f.reaching,
+            f.passes,
+            f.unconverged,
+            f.stagnated
+        );
+    });
 }
 
 /// A block at rest on the floor (`tests/realtime_profile.rs`'s E1): why its
@@ -122,34 +126,36 @@ fn probe_e2_hard_frame_controller() {
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_rest_factorizations() {
-    let props = ElasticProps {
-        e_pa: 1.125e7,
-        nu: 0.3,
-        rho_kg_m3: 1700.0,
-    };
-    let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
-    config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
-    let mut sim = Simulation::empty(config);
-    let id = sim
-        .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
-        .0;
-    let floor = config.boundary_thickness as f32;
-    let _block = sim.add_body(
-        SpawnRegion::for_sim(&config)
-            .box_of(IVec2::new(8, 4))
-            .at(Vec2::new(20.0, floor + 2.0))
-            .spacing(0.5)
-            .material(id)
-            .mass_from(&props, &config),
-    );
-    for k in 1..=6 {
-        crate::spacetime::total_lagrangian::hooks::set_control_trace(k > 4);
-        sim.step();
-        let f = sim.total_lagrangian_frame().expect("on the path");
-        println!(
-            "frame {k}: steps {}, rejected {}, passes {}, factorizations {}",
-            f.steps, f.rejected, f.passes, f.timing.factorizations
+    super::cap::capped("probe_rest_factorizations", 1800, || {
+        let props = ElasticProps {
+            e_pa: 1.125e7,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        };
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+        let mut sim = Simulation::empty(config);
+        let id = sim
+            .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
+            .0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 2.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
         );
-    }
-    crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
+        for k in 1..=6 {
+            crate::spacetime::total_lagrangian::hooks::set_control_trace(k > 4);
+            sim.step();
+            let f = sim.total_lagrangian_frame().expect("on the path");
+            println!(
+                "frame {k}: steps {}, rejected {}, passes {}, factorizations {}",
+                f.steps, f.rejected, f.passes, f.timing.factorizations
+            );
+        }
+        crate::spacetime::total_lagrangian::hooks::set_control_trace(false);
+    });
 }

@@ -11,7 +11,9 @@ fn timed(clock: &Cell<f64>, start: Instant) {
 }
 
 /// Whether `EMERGE_PROBE_PUSH_CHECK` is set (read once): the exact plane
-/// push derivative compared with central differences on every product.
+/// push derivative compared with central differences on every product. A
+/// probe knob, in test builds only.
+#[cfg(all(test, feature = "experimental"))]
 fn push_check() -> bool {
     static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SET.get_or_init(|| std::env::var_os("EMERGE_PROBE_PUSH_CHECK").is_some())
@@ -1007,6 +1009,7 @@ pub(crate) fn solve(
                 }
             }
             let exact = plane_push_product(held, d);
+            #[cfg(all(test, feature = "experimental"))]
             if push_check() {
                 let plane_set = only(false);
                 let (pp, pm) = (

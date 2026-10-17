@@ -28,6 +28,9 @@
 
 extern crate emerge_engine as emerge;
 
+#[path = "common/cap.rs"]
+mod cap;
+
 use emerge::materials::physical_props::Elastic;
 use emerge::spacetime::solver::total_lagrangian_solids::TotalLagrangianConfig;
 use emerge::{CorotatedMaterial, FromSI, SimConfig, Simulation, SpawnRegion};
@@ -140,20 +143,26 @@ fn settled_ratio(dx: f32) -> f64 {
 #[test]
 #[ignore = "long: about 10 minutes (the 1 cm slab's 60 floor contacts)"]
 fn a_damped_slab_settles_to_the_exact_self_weight_compression() {
-    let (r4, r2, r1) = (
-        settled_ratio(0.04),
-        settled_ratio(0.02),
-        settled_ratio(0.01),
-    );
-    // The observed order of the gap, and the compression extrapolated with
-    // it (Richardson): `r1 + (r1 - r2) / (2^p - 1)`.
-    let order = ((r2 - r4) / (r1 - r2)).log2();
-    let extrapolated = r1 + (r1 - r2) / (2f64.powf(order) - 1.0);
-    println!(
-        "compression over exact: {r4:.4} at 4 cm, {r2:.4} at 2 cm, {r1:.4} at 1 cm; observed order {order:.2}; extrapolated to dx -> 0 {extrapolated:.4}"
-    );
-    assert!(
-        (extrapolated - 1.0).abs() < 0.05,
-        "extrapolated compression {extrapolated} of exact"
+    cap::capped(
+        "a_damped_slab_settles_to_the_exact_self_weight_compression",
+        3600,
+        || {
+            let (r4, r2, r1) = (
+                settled_ratio(0.04),
+                settled_ratio(0.02),
+                settled_ratio(0.01),
+            );
+            // The observed order of the gap, and the compression extrapolated with
+            // it (Richardson): `r1 + (r1 - r2) / (2^p - 1)`.
+            let order = ((r2 - r4) / (r1 - r2)).log2();
+            let extrapolated = r1 + (r1 - r2) / (2f64.powf(order) - 1.0);
+            println!(
+                "compression over exact: {r4:.4} at 4 cm, {r2:.4} at 2 cm, {r1:.4} at 1 cm; observed order {order:.2}; extrapolated to dx -> 0 {extrapolated:.4}"
+            );
+            assert!(
+                (extrapolated - 1.0).abs() < 0.05,
+                "extrapolated compression {extrapolated} of exact"
+            );
+        },
     );
 }

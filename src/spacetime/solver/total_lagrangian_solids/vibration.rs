@@ -423,284 +423,286 @@ pub(super) fn wrap(angle: f64) -> f64 {
 #[test]
 #[ignore = "diagnostic probe: run with --ignored --nocapture"]
 fn probe_vibration_recovery() {
-    let fine = (FRAME / 1024.0) as f32;
-    let h = f64::from(fine);
-    let mut a = scene(fine, 1e-2);
-    a.step();
-    let state = a.total_lagrangian.as_ref().expect("on the path");
-    let modes = modes(state);
-    let sensors = sensors(state);
-    let count = modes.omega.len();
-    // (A) The fine reference: until 30 ms after the release and at least
-    // three real-time frames.
-    let clock = Instant::now();
-    let mut record = vec![sample(&a, &modes, &sensors, h)];
-    let (mut touched, mut release, mut fork) = (false, None::<usize>, None);
-    let (mut steps, mut contact_frames, mut onset) = (0u64, 0u32, None::<f64>);
-    let end = |r: usize| (r as f64 * h + 0.030).max(3.0 * FRAME);
-    while release.is_none_or(|r| record.last().expect("sampled").t < end(r)) {
+    super::cap::capped("probe_vibration_recovery", 1800, || {
+        let fine = (FRAME / 1024.0) as f32;
+        let h = f64::from(fine);
+        let mut a = scene(fine, 1e-2);
         a.step();
-        let frame = a.total_lagrangian_frame().expect("on the path");
-        steps += u64::from(frame.steps);
-        let t = (record.len() + 1) as f64 * h;
-        if frame.contacts > 0 {
-            (touched, release) = (true, None);
-            contact_frames += 1;
-            onset.get_or_insert(t);
-        } else if touched && release.is_none() {
-            release = Some(record.len());
-            fork = a.total_lagrangian.clone();
-        }
-        record.push(sample(&a, &modes, &sensors, t));
-        assert!(t < 0.2, "no release");
-    }
-    let r = release.expect("released");
-    let (start, last) = (&record[r], record.last().expect("sampled"));
-    println!(
-        "(A) fine: frame {:.3} us, {} frames, {steps} steps, {:.0} s; contact over {contact_frames} frames, release at {:.3} ms",
-        h * 1e6,
-        record.len(),
-        clock.elapsed().as_secs_f64(),
-        start.t * 1e3
-    );
-    print_ledger("(A) at the release", &start.ledger);
-    print_ledger("(A) at the end", &last.ledger);
-    let energy = |s: &Sample, i: usize| 0.5 * z(modes.omega[i], s.q[i]).length_squared();
-    let elastic: f64 = (RIGID..count).map(|i| energy(start, i)).sum();
-    let excited: Vec<usize> = (RIGID..count)
-        .filter(|&i| energy(start, i) >= EXCITED * elastic)
-        .collect();
-    // Per excited mode: the reference's rate, least squares on its
-    // unwrapped phase, and its amplitude's change.
-    println!(
-        "  excited modes (>= {EXCITED:e} of the elastic energy at release): {}",
-        excited.len()
-    );
-    let mut rates = vec![0.0; count];
-    for &i in &excited {
-        let w = modes.omega[i];
-        let mut phase = 0.0;
-        let mut points = vec![(0.0, 0.0)];
-        for j in (r + 1)..record.len() {
-            phase += turn(z(w, record[j - 1].q[i]), z(w, record[j].q[i]));
-            points.push((record[j].t - start.t, phase));
-        }
-        let mean =
-            |f: fn(&(f64, f64)) -> f64| points.iter().map(f).sum::<f64>() / points.len() as f64;
-        let (mt, mp) = (mean(|p| p.0), mean(|p| p.1));
-        let slope = points.iter().map(|p| (p.0 - mt) * (p.1 - mp)).sum::<f64>()
-            / points.iter().map(|p| (p.0 - mt).powi(2)).sum::<f64>();
-        rates[i] = slope;
-        let own = 4.0 * (w * h / 4.0).atan() / (w * h) - 1.0;
-        println!(
-            "    mode {i:3}: {:7.1} Hz, {:.4} of the elastic energy; reference rate {:+.2e} off the mode (the fine step's own shift {:+.2e}); amplitude end / release {:.5}",
-            w / TAU,
-            energy(start, i) / elastic,
-            slope / w - 1.0,
-            own,
-            z(w, last.q[i]).length() / z(w, start.q[i]).length()
-        );
-    }
-    // The beat of the two closest excited modes.
-    let mut by_frequency = excited.clone();
-    by_frequency.sort_by(|&a, &b| modes.omega[a].total_cmp(&modes.omega[b]));
-    if let Some((i, j)) = by_frequency
-        .windows(2)
-        .map(|p| (p[0], p[1]))
-        .min_by(|a, b| {
-            let gap = |p: &(usize, usize)| modes.omega[p.1] - modes.omega[p.0];
-            gap(a).total_cmp(&gap(b))
-        })
-    {
-        println!(
-            "  beat of the closest pair (modes {i}, {j}): modal {:.3} Hz, reference {:.3} Hz",
-            (modes.omega[j] - modes.omega[i]) / TAU,
-            (rates[j] - rates[i]) / TAU
-        );
-    }
-    // The modal prediction from the release state at the sensors: each mode
-    // at its own frequency (the linear system's exact solution), and at the
-    // fine step's own rate `4 atan(omega h / 4) / h` (like for like: the
-    // reference is that step's solution).
-    println!(
-        "  sensors' velocity against the field the modes rebuild: at most {:.1e} m/s over the run",
-        record.iter().map(|s| s.off_field).fold(0.0, f64::max)
-    );
-    for (s, &(p, axis)) in sensors.iter().enumerate() {
-        let rms = |window: f64, rate: &dyn Fn(f64) -> f64| -> (f64, f64) {
-            let (mut error, mut size, mut count_in) = (0.0, 0.0, 0usize);
-            for sample in record[r..].iter().filter(|s| s.t - start.t <= window) {
-                let predicted: f64 = (RIGID..count)
-                    .map(|i| {
-                        let w = modes.omega[i];
-                        let turned = DVec2::from_angle(rate(w) * (sample.t - start.t));
-                        modes.at[i][p][axis] * -turned.rotate(z(w, start.q[i])).y
-                    })
-                    .sum();
-                error += (predicted - sample.sensors[s]).powi(2);
-                size += sample.sensors[s].powi(2);
-                count_in += 1;
+        let state = a.total_lagrangian.as_ref().expect("on the path");
+        let modes = modes(state);
+        let sensors = sensors(state);
+        let count = modes.omega.len();
+        // (A) The fine reference: until 30 ms after the release and at least
+        // three real-time frames.
+        let clock = Instant::now();
+        let mut record = vec![sample(&a, &modes, &sensors, h)];
+        let (mut touched, mut release, mut fork) = (false, None::<usize>, None);
+        let (mut steps, mut contact_frames, mut onset) = (0u64, 0u32, None::<f64>);
+        let end = |r: usize| (r as f64 * h + 0.030).max(3.0 * FRAME);
+        while release.is_none_or(|r| record.last().expect("sampled").t < end(r)) {
+            a.step();
+            let frame = a.total_lagrangian_frame().expect("on the path");
+            steps += u64::from(frame.steps);
+            let t = (record.len() + 1) as f64 * h;
+            if frame.contacts > 0 {
+                (touched, release) = (true, None);
+                contact_frames += 1;
+                onset.get_or_insert(t);
+            } else if touched && release.is_none() {
+                release = Some(record.len());
+                fork = a.total_lagrangian.clone();
             }
-            ((error / size).sqrt(), (size / count_in as f64).sqrt())
-        };
-        let exact = |w: f64| w;
-        let stepped = |w: f64| 4.0 * (w * h / 4.0).atan() / h;
-        let (short_exact, size) = rms(0.005, &exact);
-        let (short_stepped, _) = rms(0.005, &stepped);
-        let (long_exact, _) = rms(f64::INFINITY, &exact);
-        let (long_stepped, _) = rms(f64::INFINITY, &stepped);
-        println!(
-            "  sensor {s} (point {p}, axis {axis}, elastic RMS {size:.3e} m/s over 5 ms): RMS error of the prediction at the modes' frequencies {short_exact:.2e} over 5 ms, {long_exact:.2e} over the window; at the fine step's rate {short_stepped:.2e}, {long_stepped:.2e}"
-        );
-    }
-    // (A') Half and a quarter of (A)'s frame, to 1 ms after (A)'s release
-    // (each run past its own release): is (A) converged through the
-    // impact? Amplitudes compare directly (the step keeps each mode's
-    // energy in flight); phases after removing the steps' own dispersion
-    // since the contact's onset.
-    let onset = onset.expect("touched");
-    let at = &record[r + (0.001 / h).round() as usize];
-    let elastic_of = |s: &Sample| s.ledger[1] + s.ledger[2] + s.ledger[3];
-    let mut finer = Vec::new();
-    for divisor in [2.0f32, 4.0] {
-        let hd = f64::from(fine / divisor);
-        let mut run = scene(fine / divisor, 1e-2);
-        let (mut frames, mut touched, mut released) = (0usize, false, None::<f64>);
-        while (frames as f64 + 0.5) * hd < at.t {
-            run.step();
-            frames += 1;
-            if run.total_lagrangian_frame().expect("on the path").contacts > 0 {
-                (touched, released) = (true, None);
-            } else if touched && released.is_none() {
-                released = Some(frames as f64 * hd);
-            }
+            record.push(sample(&a, &modes, &sensors, t));
+            assert!(t < 0.2, "no release");
         }
-        let s = sample(&run, &modes, &sensors, frames as f64 * hd);
+        let r = release.expect("released");
+        let (start, last) = (&record[r], record.last().expect("sampled"));
         println!(
-            "(A') frame {:.3} us: release at {:.3} ms ((A): {:.3} ms); at {:.3} ms ((A): {:.3} ms) its elastic energy over (A)'s {:.5}",
-            hd * 1e6,
-            released.expect("released") * 1e3,
-            start.t * 1e3,
-            s.t * 1e3,
-            at.t * 1e3,
-            elastic_of(&s) / elastic_of(at)
+            "(A) fine: frame {:.3} us, {} frames, {steps} steps, {:.0} s; contact over {contact_frames} frames, release at {:.3} ms",
+            h * 1e6,
+            record.len(),
+            clock.elapsed().as_secs_f64(),
+            start.t * 1e3
         );
-        print_ledger("(A')", &s.ledger);
-        finer.push((hd, s));
-    }
-    let mut weighted = vec![0.0; finer.len()];
-    for &i in &excited {
-        let w = modes.omega[i];
-        let rate = |step: f64| 4.0 * (w * step / 4.0).atan() / step;
-        let parts: Vec<String> = finer
-            .iter()
-            .zip(&mut weighted)
-            .map(|((hd, s), sum)| {
-                let ratio = z(w, s.q[i]).length() / z(w, at.q[i]).length();
-                *sum += energy(at, i) / elastic * (ratio - 1.0).abs();
-                let phase = wrap(
-                    turn(z(w, at.q[i]), z(w, s.q[i])) - (rate(*hd) - rate(h)) * (at.t - onset),
-                );
-                format!(
-                    "{:.3} us: amplitude {ratio:.4}, phase {phase:+.4} rad",
-                    hd * 1e6
-                )
-            })
+        print_ledger("(A) at the release", &start.ledger);
+        print_ledger("(A) at the end", &last.ledger);
+        let energy = |s: &Sample, i: usize| 0.5 * z(modes.omega[i], s.q[i]).length_squared();
+        let elastic: f64 = (RIGID..count).map(|i| energy(start, i)).sum();
+        let excited: Vec<usize> = (RIGID..count)
+            .filter(|&i| energy(start, i) >= EXCITED * elastic)
             .collect();
-        println!("    mode {i:3} ({:6.0} Hz): {}", w / TAU, parts.join("; "));
-    }
-    println!(
-        "  energy-weighted |amplitude ratio - 1| against (A): {}",
-        finer
-            .iter()
-            .zip(&weighted)
-            .map(|((hd, _), e)| format!("{:.3} us {e:.4}", hd * 1e6))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    // (B) Coarse fixed steps forked at the release: each excited mode's
-    // rotation per kept step (two half steps) against the midpoint's.
-    for divisor in [1.0, 10.0, 100.0] {
-        let coarse = (FRAME / divisor) as f32;
-        let hc = f64::from(coarse);
-        let mut b = scene(coarse, 1e30);
-        let mut state = fork.clone().expect("forked at the release");
-        state.step_length = hc;
-        b.total_lagrangian = Some(state);
-        let mut previous = sample(&b, &modes, &sensors, start.t);
-        let first = previous.q.clone();
-        let mut turns = vec![Vec::new(); count];
-        let (mut taken, mut rejected) = (0, 0);
-        for k in 1..=10 {
-            b.step();
-            let frame = b.total_lagrangian_frame().expect("on the path");
-            (taken, rejected) = (taken + frame.steps, rejected + frame.rejected);
-            let now = sample(&b, &modes, &sensors, start.t + k as f64 * hc);
+        // Per excited mode: the reference's rate, least squares on its
+        // unwrapped phase, and its amplitude's change.
+        println!(
+            "  excited modes (>= {EXCITED:e} of the elastic energy at release): {}",
+            excited.len()
+        );
+        let mut rates = vec![0.0; count];
+        for &i in &excited {
+            let w = modes.omega[i];
+            let mut phase = 0.0;
+            let mut points = vec![(0.0, 0.0)];
+            for j in (r + 1)..record.len() {
+                phase += turn(z(w, record[j - 1].q[i]), z(w, record[j].q[i]));
+                points.push((record[j].t - start.t, phase));
+            }
+            let mean =
+                |f: fn(&(f64, f64)) -> f64| points.iter().map(f).sum::<f64>() / points.len() as f64;
+            let (mt, mp) = (mean(|p| p.0), mean(|p| p.1));
+            let slope = points.iter().map(|p| (p.0 - mt) * (p.1 - mp)).sum::<f64>()
+                / points.iter().map(|p| (p.0 - mt).powi(2)).sum::<f64>();
+            rates[i] = slope;
+            let own = 4.0 * (w * h / 4.0).atan() / (w * h) - 1.0;
+            println!(
+                "    mode {i:3}: {:7.1} Hz, {:.4} of the elastic energy; reference rate {:+.2e} off the mode (the fine step's own shift {:+.2e}); amplitude end / release {:.5}",
+                w / TAU,
+                energy(start, i) / elastic,
+                slope / w - 1.0,
+                own,
+                z(w, last.q[i]).length() / z(w, start.q[i]).length()
+            );
+        }
+        // The beat of the two closest excited modes.
+        let mut by_frequency = excited.clone();
+        by_frequency.sort_by(|&a, &b| modes.omega[a].total_cmp(&modes.omega[b]));
+        if let Some((i, j)) = by_frequency
+            .windows(2)
+            .map(|p| (p[0], p[1]))
+            .min_by(|a, b| {
+                let gap = |p: &(usize, usize)| modes.omega[p.1] - modes.omega[p.0];
+                gap(a).total_cmp(&gap(b))
+            })
+        {
+            println!(
+                "  beat of the closest pair (modes {i}, {j}): modal {:.3} Hz, reference {:.3} Hz",
+                (modes.omega[j] - modes.omega[i]) / TAU,
+                (rates[j] - rates[i]) / TAU
+            );
+        }
+        // The modal prediction from the release state at the sensors: each mode
+        // at its own frequency (the linear system's exact solution), and at the
+        // fine step's own rate `4 atan(omega h / 4) / h` (like for like: the
+        // reference is that step's solution).
+        println!(
+            "  sensors' velocity against the field the modes rebuild: at most {:.1e} m/s over the run",
+            record.iter().map(|s| s.off_field).fold(0.0, f64::max)
+        );
+        for (s, &(p, axis)) in sensors.iter().enumerate() {
+            let rms = |window: f64, rate: &dyn Fn(f64) -> f64| -> (f64, f64) {
+                let (mut error, mut size, mut count_in) = (0.0, 0.0, 0usize);
+                for sample in record[r..].iter().filter(|s| s.t - start.t <= window) {
+                    let predicted: f64 = (RIGID..count)
+                        .map(|i| {
+                            let w = modes.omega[i];
+                            let turned = DVec2::from_angle(rate(w) * (sample.t - start.t));
+                            modes.at[i][p][axis] * -turned.rotate(z(w, start.q[i])).y
+                        })
+                        .sum();
+                    error += (predicted - sample.sensors[s]).powi(2);
+                    size += sample.sensors[s].powi(2);
+                    count_in += 1;
+                }
+                ((error / size).sqrt(), (size / count_in as f64).sqrt())
+            };
+            let exact = |w: f64| w;
+            let stepped = |w: f64| 4.0 * (w * h / 4.0).atan() / h;
+            let (short_exact, size) = rms(0.005, &exact);
+            let (short_stepped, _) = rms(0.005, &stepped);
+            let (long_exact, _) = rms(f64::INFINITY, &exact);
+            let (long_stepped, _) = rms(f64::INFINITY, &stepped);
+            println!(
+                "  sensor {s} (point {p}, axis {axis}, elastic RMS {size:.3e} m/s over 5 ms): RMS error of the prediction at the modes' frequencies {short_exact:.2e} over 5 ms, {long_exact:.2e} over the window; at the fine step's rate {short_stepped:.2e}, {long_stepped:.2e}"
+            );
+        }
+        // (A') Half and a quarter of (A)'s frame, to 1 ms after (A)'s release
+        // (each run past its own release): is (A) converged through the
+        // impact? Amplitudes compare directly (the step keeps each mode's
+        // energy in flight); phases after removing the steps' own dispersion
+        // since the contact's onset.
+        let onset = onset.expect("touched");
+        let at = &record[r + (0.001 / h).round() as usize];
+        let elastic_of = |s: &Sample| s.ledger[1] + s.ledger[2] + s.ledger[3];
+        let mut finer = Vec::new();
+        for divisor in [2.0f32, 4.0] {
+            let hd = f64::from(fine / divisor);
+            let mut run = scene(fine / divisor, 1e-2);
+            let (mut frames, mut touched, mut released) = (0usize, false, None::<f64>);
+            while (frames as f64 + 0.5) * hd < at.t {
+                run.step();
+                frames += 1;
+                if run.total_lagrangian_frame().expect("on the path").contacts > 0 {
+                    (touched, released) = (true, None);
+                } else if touched && released.is_none() {
+                    released = Some(frames as f64 * hd);
+                }
+            }
+            let s = sample(&run, &modes, &sensors, frames as f64 * hd);
+            println!(
+                "(A') frame {:.3} us: release at {:.3} ms ((A): {:.3} ms); at {:.3} ms ((A): {:.3} ms) its elastic energy over (A)'s {:.5}",
+                hd * 1e6,
+                released.expect("released") * 1e3,
+                start.t * 1e3,
+                s.t * 1e3,
+                at.t * 1e3,
+                elastic_of(&s) / elastic_of(at)
+            );
+            print_ledger("(A')", &s.ledger);
+            finer.push((hd, s));
+        }
+        let mut weighted = vec![0.0; finer.len()];
+        for &i in &excited {
+            let w = modes.omega[i];
+            let rate = |step: f64| 4.0 * (w * step / 4.0).atan() / step;
+            let parts: Vec<String> = finer
+                .iter()
+                .zip(&mut weighted)
+                .map(|((hd, s), sum)| {
+                    let ratio = z(w, s.q[i]).length() / z(w, at.q[i]).length();
+                    *sum += energy(at, i) / elastic * (ratio - 1.0).abs();
+                    let phase = wrap(
+                        turn(z(w, at.q[i]), z(w, s.q[i])) - (rate(*hd) - rate(h)) * (at.t - onset),
+                    );
+                    format!(
+                        "{:.3} us: amplitude {ratio:.4}, phase {phase:+.4} rad",
+                        hd * 1e6
+                    )
+                })
+                .collect();
+            println!("    mode {i:3} ({:6.0} Hz): {}", w / TAU, parts.join("; "));
+        }
+        println!(
+            "  energy-weighted |amplitude ratio - 1| against (A): {}",
+            finer
+                .iter()
+                .zip(&weighted)
+                .map(|((hd, _), e)| format!("{:.3} us {e:.4}", hd * 1e6))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // (B) Coarse fixed steps forked at the release: each excited mode's
+        // rotation per kept step (two half steps) against the midpoint's.
+        for divisor in [1.0, 10.0, 100.0] {
+            let coarse = (FRAME / divisor) as f32;
+            let hc = f64::from(coarse);
+            let mut b = scene(coarse, 1e30);
+            let mut state = fork.clone().expect("forked at the release");
+            state.step_length = hc;
+            b.total_lagrangian = Some(state);
+            let mut previous = sample(&b, &modes, &sensors, start.t);
+            let first = previous.q.clone();
+            let mut turns = vec![Vec::new(); count];
+            let (mut taken, mut rejected) = (0, 0);
+            for k in 1..=10 {
+                b.step();
+                let frame = b.total_lagrangian_frame().expect("on the path");
+                (taken, rejected) = (taken + frame.steps, rejected + frame.rejected);
+                let now = sample(&b, &modes, &sensors, start.t + k as f64 * hc);
+                for &i in &excited {
+                    let w = modes.omega[i];
+                    turns[i].push(turn(z(w, previous.q[i]), z(w, now.q[i])));
+                }
+                previous = now;
+            }
+            println!(
+                "(B) step {:.4e} s forked at the release: {taken} steps, {rejected} rejected in 10 frames",
+                hc
+            );
+            print_ledger("(B) after 10 steps", &previous.ledger);
             for &i in &excited {
                 let w = modes.omega[i];
-                turns[i].push(turn(z(w, previous.q[i]), z(w, now.q[i])));
+                let sum = turns[i]
+                    .iter()
+                    .fold(DVec2::ZERO, |acc, &t| acc + DVec2::from_angle(t));
+                let mean = sum.y.atan2(sum.x);
+                let spread = turns[i]
+                    .iter()
+                    .map(|&t| wrap(t - mean).abs())
+                    .fold(0.0, f64::max);
+                println!(
+                    "    mode {i:3} (w h {:8.3}): rotation per step {:+.5} (spread {:.1e}), midpoint halves 4 atan(w h / 4) {:+.5}, exact w h {:+.5} (mod 2 pi); one step against halves {:+.4}; amplitude after / before {:.5}",
+                    w * hc,
+                    mean,
+                    spread,
+                    wrap(4.0 * (w * hc / 4.0).atan()),
+                    wrap(w * hc),
+                    wrap(2.0 * (w * hc / 2.0).atan() - 4.0 * (w * hc / 4.0).atan()),
+                    z(w, previous.q[i]).length() / z(w, first[i]).length()
+                );
             }
-            previous = now;
         }
-        println!(
-            "(B) step {:.4e} s forked at the release: {taken} steps, {rejected} rejected in 10 frames",
-            hc
-        );
-        print_ledger("(B) after 10 steps", &previous.ledger);
-        for &i in &excited {
-            let w = modes.omega[i];
-            let sum = turns[i]
-                .iter()
-                .fold(DVec2::ZERO, |acc, &t| acc + DVec2::from_angle(t));
-            let mean = sum.y.atan2(sum.x);
-            let spread = turns[i]
-                .iter()
-                .map(|&t| wrap(t - mean).abs())
-                .fold(0.0, f64::max);
+        // (C) The gate's coarse run from the start, against (A) at its frames.
+        let mut c = scene(FRAME as f32, 1e-2);
+        let hframe = f64::from(FRAME as f32);
+        for k in 1..=6 {
+            let clock = Instant::now();
+            c.step();
+            let frame = c.total_lagrangian_frame().expect("on the path");
+            let now = sample(&c, &modes, &sensors, k as f64 * hframe);
             println!(
-                "    mode {i:3} (w h {:8.3}): rotation per step {:+.5} (spread {:.1e}), midpoint halves 4 atan(w h / 4) {:+.5}, exact w h {:+.5} (mod 2 pi); one step against halves {:+.4}; amplitude after / before {:.5}",
-                w * hc,
-                mean,
-                spread,
-                wrap(4.0 * (w * hc / 4.0).atan()),
-                wrap(w * hc),
-                wrap(2.0 * (w * hc / 2.0).atan() - 4.0 * (w * hc / 4.0).atan()),
-                z(w, previous.q[i]).length() / z(w, first[i]).length()
+                "(C) frame {k}: {} steps, {} rejected, contacts {}, {:.1} s",
+                frame.steps,
+                frame.rejected,
+                frame.contacts,
+                clock.elapsed().as_secs_f64()
             );
+            print_ledger("(C)", &now.ledger);
+            let Some(j) = record.iter().position(|s| s.t >= now.t) else {
+                continue;
+            };
+            print_ledger("(A) same time", &record[j].ledger);
+            for &i in &excited {
+                let w = modes.omega[i];
+                // (A) carried to (C)'s exact time along its own mode.
+                let reference =
+                    DVec2::from_angle(w * (now.t - record[j].t)).rotate(z(w, record[j].q[i]));
+                let coarse = z(w, now.q[i]);
+                println!(
+                    "    mode {i:3}: (C) / (A) amplitude {:.4}, phase {:+.4} rad (of pi: {:+.3})",
+                    coarse.length() / reference.length(),
+                    turn(reference, coarse),
+                    turn(reference, coarse) / PI
+                );
+            }
         }
-    }
-    // (C) The gate's coarse run from the start, against (A) at its frames.
-    let mut c = scene(FRAME as f32, 1e-2);
-    let hframe = f64::from(FRAME as f32);
-    for k in 1..=6 {
-        let clock = Instant::now();
-        c.step();
-        let frame = c.total_lagrangian_frame().expect("on the path");
-        let now = sample(&c, &modes, &sensors, k as f64 * hframe);
-        println!(
-            "(C) frame {k}: {} steps, {} rejected, contacts {}, {:.1} s",
-            frame.steps,
-            frame.rejected,
-            frame.contacts,
-            clock.elapsed().as_secs_f64()
-        );
-        print_ledger("(C)", &now.ledger);
-        let Some(j) = record.iter().position(|s| s.t >= now.t) else {
-            continue;
-        };
-        print_ledger("(A) same time", &record[j].ledger);
-        for &i in &excited {
-            let w = modes.omega[i];
-            // (A) carried to (C)'s exact time along its own mode.
-            let reference =
-                DVec2::from_angle(w * (now.t - record[j].t)).rotate(z(w, record[j].q[i]));
-            let coarse = z(w, now.q[i]);
-            println!(
-                "    mode {i:3}: (C) / (A) amplitude {:.4}, phase {:+.4} rad (of pi: {:+.3})",
-                coarse.length() / reference.length(),
-                turn(reference, coarse),
-                turn(reference, coarse) / PI
-            );
-        }
-    }
+    });
 }
