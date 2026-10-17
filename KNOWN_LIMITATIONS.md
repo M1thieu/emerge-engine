@@ -472,22 +472,30 @@ own volumes give, per 4-cell band:
   `NewtonianFluidMaterial::kirchhoff_stress`). Which correction is right
   is open and not built.
 
-### Solids throw their friction heat away
+### Solids throw part of their dissipated heat away
 
-Only `BinghamFluidMaterial` and `NewtonianFluidMaterial` declare a
-specific heat. Every solid and plastic law returns the trait's default,
-so the work their yielding and friction dissipate raises nothing's
-temperature: sand shearing, metal yielding and rock fracturing are all
-adiabatic in the wrong direction, losing the energy instead of keeping
-it as heat.
+A solid can now declare its specific heat: `CorotatedMaterial`,
+`VonMisesMaterial`, `RankineMaterial`, `NeoHookeanMaterial`,
+`ViscoelasticMaterial` and `DruckerPragerMaterial` carry a
+`specific_heat_j_kg_k` field, filled by the caller from the measured
+values of `matter::materials::heat_capacity` (ice Ih, quartz, copper,
+natural rubber, each with its source), and the wrappers
+(`WithLatentHeat`, ...) pass it through. Undeclared stays 0, which keeps
+the temperature unchanged rather than inventing a rise.
 
-Found in the first pass of the core audit, alongside the spawn contract
-and mu(I)'s Euler integration. Both of those are now fixed and this one
-is not: it belongs to no phase of the plan, which is why it is written
-here rather than left in a note. It is the cross-domain energy question,
-not a one-line fix: a law that heats itself needs somewhere for that
-heat to go, which is the thermal coupling this engine has for fluids and
-not for solids.
+What is still lost:
+
+- On the explicit path only Coulomb friction (walls, multi-field
+  contact) becomes heat. The work plastic flow and Kelvin-Voigt dashpots
+  dissipate there is not measured, so it heats nothing whatever the
+  material declares. The total Lagrangian path does turn its plastic,
+  dashpot and friction dissipation into heat.
+- `StomakhinMaterial`, `NaccMaterial`, `MuIRheologyMaterial`,
+  `GranularFluidMaterial` and `NoCompressionMaterial` have no field yet.
+  Snow and wet clay also lack a read source: snow's value is ice's plus
+  its air, clay's depends on its water content.
+- Each value holds at one temperature; ice's `c_p` falls well below it
+  in colder ice (see `heat_capacity`'s doc).
 
 ### A fluid's cavitation pressure is only half derived
 

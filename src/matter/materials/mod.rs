@@ -2,12 +2,14 @@
 //! of matter it describes: `solid`, `liquid`, `gas`, `granular`, `mixture`.
 //! The files at this level are shared by all of them: the `MaterialModel`
 //! trait and `MaterialRegistry`, parameters, SI conversions and property
-//! dispatch, optical data, the rod material, the Lamé parameters of linear
-//! elasticity and the power terms of the equations of state.
+//! dispatch, optical data and heat capacities, the rod material, the Lamé
+//! parameters of linear elasticity and the power terms of the equations of
+//! state.
 
 pub(crate) mod equation_of_state;
 pub mod gas;
 pub mod granular;
+pub mod heat_capacity;
 pub mod lame_parameters;
 pub mod liquid;
 pub mod mixture;
@@ -494,7 +496,8 @@ pub trait MaterialModel: Send + Sync + core::fmt::Debug + AsAny {
     /// work to become a real temperature (see
     /// `energy::thermodynamics::frictional_heating`) declares it on the
     /// material it built; a scene that does not gets no temperature change
-    /// rather than an invented one.
+    /// rather than an invented one. Measured values, with their sources:
+    /// `materials::heat_capacity`.
     fn specific_heat_j_kg_k(&self) -> f32 {
         0.0
     }
@@ -614,6 +617,12 @@ macro_rules! forward_material_model_common {
         }
         fn params(&self) -> MaterialParams {
             self.inner.params()
+        }
+        // A wrapped material still stores heat: without this, wrapping a
+        // material that declares `c_p` (ice in `WithLatentHeat`) silently
+        // turned its frictional heat back into no temperature rise.
+        fn specific_heat_j_kg_k(&self) -> f32 {
+            self.inner.specific_heat_j_kg_k()
         }
     };
 }

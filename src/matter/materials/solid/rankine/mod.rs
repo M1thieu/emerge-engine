@@ -138,6 +138,11 @@ pub struct RankineMaterial {
     /// (`pure_ice`, `snow`, ...), never chosen by the model: see
     /// `NewtonianFluidMaterial::optics` for why this is not a substance flag.
     pub optics: Option<crate::energy::radiation::OpticalCoefficientsSi>,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`. Declared by
+    /// the caller like `optics`, from `matter::materials::heat_capacity`
+    /// (`ICE_IH_AT_MELTING_POINT_J_KG_K` for `ice()`), never by a preset.
+    pub specific_heat_j_kg_k: f32,
 }
 
 impl RankineMaterial {
@@ -153,6 +158,7 @@ impl RankineMaterial {
             softening_rate,
             elastic_viscosity: 0.0,
             optics: None,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -334,6 +340,10 @@ impl MaterialModel for RankineMaterial {
         self.optics
     }
 
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
     fn rest_density(&self) -> Option<f32> {
         self.rest_density
     }
@@ -422,6 +432,7 @@ impl MaterialModel for RankineMaterial {
             hardening_exponent: self.tensile_strength,
             // softening_rate → hardening_modulus slot
             hardening_modulus: self.softening_rate,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
     }

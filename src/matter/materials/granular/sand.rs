@@ -384,6 +384,12 @@ pub struct DruckerPragerMaterial {
     /// hardening update). The persistent flag is
     /// `Particles::eps_pl_vol_pradhana`.
     pub use_pradhana: bool,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity` (`ALPHA_QUARTZ_AT_298_K_J_KG_K`
+    /// for quartz sand). Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
 }
 
 /// Bundled inputs for `DruckerPragerMaterial::project` -- grew past clippy's
@@ -453,6 +459,7 @@ impl DruckerPragerMaterial {
             pendular_regime_ceiling: 0.3,
             elastic_viscosity: 0.0,
             use_pradhana: false,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -1160,8 +1167,13 @@ impl MaterialModel for DruckerPragerMaterial {
             // Not read by the GPU's model==5u branch for any other purpose.
             stretch_limit: self.cohesion,
             volume_ratio_min: self.min_volume_jacobian,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
+    }
+
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
     }
 
     fn timestep_bound(

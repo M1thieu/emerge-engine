@@ -342,6 +342,79 @@ mod tests {
         );
     }
 
+    /// A solid that declares its heat capacity warms by exactly
+    /// `dT = Q / (m c)`: the first law at constant pressure
+    /// (`frictional_heating`), with `c` the measured value of
+    /// `materials::heat_capacity`.
+    ///
+    /// Every node of the particle's stencil holds the same specific energy
+    /// `e`; the quadratic weights sum to one, so the particle receives
+    /// `Q = m e dx^2`, known in advance. Checked for a bare solid law and for
+    /// one wrapped in `WithLatentHeat`, which must not hide the declared `c`.
+    #[test]
+    fn a_solid_declaring_its_heat_capacity_warms_by_q_over_m_c() {
+        use crate::materials::heat_capacity::{
+            COPPER_AT_298_K_J_KG_K, ICE_IH_AT_MELTING_POINT_J_KG_K,
+        };
+        use crate::materials::{CorotatedMaterial, RankineMaterial, WithLatentHeat};
+
+        let mut copper = CorotatedMaterial::new(1.0, 1.0);
+        copper.specific_heat_j_kg_k = COPPER_AT_298_K_J_KG_K;
+        let mut ice = RankineMaterial::ice(9.0e9, 0.3);
+        ice.specific_heat_j_kg_k = ICE_IH_AT_MELTING_POINT_J_KG_K;
+        let cases = [
+            (
+                MaterialRegistry::with_default(Box::new(copper)),
+                COPPER_AT_298_K_J_KG_K,
+            ),
+            (
+                MaterialRegistry::with_default(Box::new(WithLatentHeat::new(ice, 334_000.0))),
+                ICE_IH_AT_MELTING_POINT_J_KG_K,
+            ),
+        ];
+        // (cells/s)^2: 500 J/kg at 1 cm cells, about a kelvin in copper.
+        let specific_grid = 5.0e6f32;
+        let mass = 2.0;
+        for (registry, c) in cases {
+            let mut particles = Particles::default();
+            particles.push(particle_at(Vec2::new(8.3, 6.6), mass));
+            let mut grid = Grid::new(32);
+            scatter_masses(&mut grid, &particles);
+            let w = quadratic_weights(particles.x[0]);
+            for gx in 0..3 {
+                for gy in 0..3 {
+                    let cell = w.base_cell + IVec2::new(gx - 1, gy - 1);
+                    grid.add_friction_heat((cell.x as usize) * 32 + cell.y as usize, specific_grid);
+                }
+            }
+            let q = mass * specific_grid * DX_METERS * DX_METERS;
+            let before = particles.temperature[0];
+
+            let delivered = gather_friction_heat_to_particles(
+                &grid,
+                &mut particles,
+                &registry,
+                DX_METERS,
+                &mut Vec::new(),
+            );
+
+            assert!(
+                (delivered - q).abs() <= 4.0 * f32::EPSILON * q,
+                "the particle must receive the known Q: {delivered} vs {q}"
+            );
+            let rise = particles.temperature[0] - before;
+            let expected = q / (mass * c);
+            // Round-off: one representable step of a temperature near
+            // 300 K (the subtraction above cannot resolve less), plus the
+            // relative round-off of the rise itself.
+            let bound = f32::EPSILON * 300.0 + 4.0 * f32::EPSILON * expected;
+            assert!(
+                (rise - expected).abs() <= bound,
+                "c = {c}: rise {rise:e} K vs Q/(m c) = {expected:e} K (bound {bound:e})"
+            );
+        }
+    }
+
     /// A frictionless scene pays nothing and changes nothing.
     #[test]
     fn no_dissipation_means_no_work_and_no_change() {

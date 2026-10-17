@@ -56,6 +56,11 @@ pub struct ViscoelasticMaterial {
     /// Thermal softening: λ_eff = λ·(1 + thermal_expansion·T), same for µ.
     /// Negative = soften on heat (typical). 0.0 = isothermal (default).
     pub thermal_expansion: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity`. Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
 }
 
 impl ViscoelasticMaterial {
@@ -71,6 +76,7 @@ impl ViscoelasticMaterial {
             j_min: 0.01,
             active_stress_coeff: 0.0,
             thermal_expansion: 0.0,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -173,6 +179,10 @@ impl MaterialModel for ViscoelasticMaterial {
         1.0
     }
 
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::Viscoelastic as u32,
@@ -184,6 +194,7 @@ impl MaterialModel for ViscoelasticMaterial {
             dynamic_viscosity: self.viscosity,
             active_stress_coeff: self.active_stress_coeff,
             volume_ratio_min: self.j_min, // GPU uses this to clamp J in ln(J) stress term
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
     }

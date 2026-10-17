@@ -59,6 +59,11 @@ pub struct NeoHookeanMaterial {
     /// keeps the barrier LARGE-BUT-FINITE at the floor: finite because an
     /// un-clamped `mu/J` at J=1e-6 would blow up to `mu*1e6`.
     pub j_min: f32,
+    /// Specific heat capacity `c_p`, J/(kg*K). 0 (the default) means
+    /// undeclared -- see `MaterialModel::specific_heat_j_kg_k`; measured
+    /// values in `materials::heat_capacity`. Set after construction, as
+    /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
+    pub specific_heat_j_kg_k: f32,
 }
 
 impl NeoHookeanMaterial {
@@ -76,6 +81,7 @@ impl NeoHookeanMaterial {
             damage_softening_rate: 0.0,
             viscosity: 0.0,
             j_min: 0.01,
+            specific_heat_j_kg_k: 0.0,
         }
     }
 
@@ -292,6 +298,10 @@ impl MaterialModel for NeoHookeanMaterial {
         1.0
     }
 
+    fn specific_heat_j_kg_k(&self) -> f32 {
+        self.specific_heat_j_kg_k
+    }
+
     fn params(&self) -> MaterialParams {
         MaterialParams {
             model: ConstitutiveModel::NeoHookean as u32,
@@ -309,6 +319,7 @@ impl MaterialModel for NeoHookeanMaterial {
             // Same GPU param slot `ViscoelasticMaterial` already uses for its
             // own `j_min` -- see this field's doc.
             volume_ratio_min: self.j_min,
+            specific_heat_j_kg_k: self.specific_heat_j_kg_k,
             ..Default::default()
         }
     }
