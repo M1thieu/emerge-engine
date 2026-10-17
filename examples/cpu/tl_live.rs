@@ -50,6 +50,10 @@ struct Args {
     threads: usize,
     /// Sleep to each frame's deadline; off, the frames run back to back.
     paced: bool,
+    /// Carry the block's flights between contacts by its modes
+    /// (`TotalLagrangianConfig::with_modal_flight`); off, every frame is
+    /// stepped, as in the reference scene.
+    modal_flight: bool,
     json: Option<String>,
 }
 
@@ -70,6 +74,7 @@ impl Default for Args {
             spacing: 0.5,
             threads: 0,
             paced: true,
+            modal_flight: false,
             json: None,
         }
     }
@@ -92,6 +97,7 @@ Defaults: the 10-cell drop of tests/total_lagrangian_path.rs
   --spacing S      particle spacing, cells        [0.5]
   --threads N      rayon threads, 0 = rayon's pool [0]
   --unpaced        run frames back to back (no sleep to the deadline)
+  --modal-flight   carry flights between contacts by the body's modes [off]
   --json PATH      write the per-frame record to PATH";
 
 fn parse_args() -> Result<Args, String> {
@@ -103,6 +109,10 @@ fn parse_args() -> Result<Args, String> {
         }
         if flag == "--unpaced" {
             args.paced = false;
+            continue;
+        }
+        if flag == "--modal-flight" {
+            args.modal_flight = true;
             continue;
         }
         let value = it.next().ok_or(format!("{flag} needs a value"))?;
@@ -140,7 +150,12 @@ fn scene(args: &Args) -> Simulation {
         rho_kg_m3: args.rho_kg_m3,
     };
     let mut config = SimConfig::earth(args.res, args.cell_m, (1.0 / args.frame_hz) as f32);
-    config.total_lagrangian = Some(TotalLagrangianConfig::new(args.tolerance));
+    let path = TotalLagrangianConfig::new(args.tolerance);
+    config.total_lagrangian = Some(if args.modal_flight {
+        path.with_modal_flight()
+    } else {
+        path
+    });
     let mut sim = Simulation::empty(config);
     let id = sim
         .register_material(Box::new(CorotatedMaterial::from_physical(&props, &config)))
@@ -189,11 +204,12 @@ fn header(args: &Args) {
     };
     let env_threads = std::env::var("RAYON_NUM_THREADS").unwrap_or_else(|_| "unset".into());
     println!(
-        "tl_live | build: {profile} | threads: {} (RAYON_NUM_THREADS {env_threads}, --threads {}) | commit: {} | paced: {}",
+        "tl_live | build: {profile} | threads: {} (RAYON_NUM_THREADS {env_threads}, --threads {}) | commit: {} | paced: {} | modal flight: {}",
         rayon::current_num_threads(),
         args.threads,
         git_commit(),
-        args.paced
+        args.paced,
+        args.modal_flight
     );
 }
 
@@ -281,7 +297,7 @@ fn summary(args: &Args, records: &[Record], elapsed: f64) {
     for (i, r) in hitches {
         let f = &r.frame;
         println!(
-            "  frame {i} t {:.4} s | {:.2} ms (report {:.2}) | steps {} rejected {} (unconverged {}) reaching {} Newton {} GMRES {}",
+            "  frame {i} t {:.4} s | {:.2} ms (report {:.2}) | steps {} rejected {} (unconverged {}) reaching {} Newton {} GMRES {} modal {}",
             r.time,
             1000.0 * r.wall,
             1000.0 * f.wall,
@@ -290,9 +306,31 @@ fn summary(args: &Args, records: &[Record], elapsed: f64) {
             f.rejected_unconverged,
             f.reaching,
             f.newton,
-            f.gmres
+            f.gmres,
+            f.modal
         );
     }
+    modal_summary(records);
+}
+
+/// The frames the modes carried (`TotalLagrangianFrame::modal`) and the
+/// path's counters since the start at the last frame (`modal_frames`,
+/// `hand_backs`): all zero unless `--modal-flight` is on.
+fn modal_summary(records: &[Record]) {
+    let modal: Vec<String> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.frame.modal)
+        .map(|(i, _)| i.to_string())
+        .collect();
+    let last = records.last().map(|r| r.frame).unwrap_or_default();
+    println!(
+        "modal frames: {} [{}] | modal_frames {} hand_backs {} (since the start)",
+        modal.len(),
+        modal.join(" "),
+        last.modal_frames,
+        last.hand_backs
+    );
 }
 
 /// The per-frame record as JSON, in the replay layout of
@@ -304,7 +342,7 @@ fn write_json(path: &str, sim: &Simulation, args: &Args, records: &[Record]) {
     let mut body = String::new();
     let _ = writeln!(
         body,
-        "{{\"header\":{{\"scene\":\"tl_live drop\",\"dx_m\":{},\"frame_s\":{},\"gravity_m_s2\":{},\"floor_y_m\":{},\"budget_ms\":{},\"threads\":{},\"commit\":\"{}\",\"debug_assertions\":{},\"paced\":{},\"path\":\"total Lagrangian, weighted-gap contact\",\"precomputed\":true}},\"frames\":[",
+        "{{\"header\":{{\"scene\":\"tl_live drop\",\"dx_m\":{},\"frame_s\":{},\"gravity_m_s2\":{},\"floor_y_m\":{},\"budget_ms\":{},\"threads\":{},\"commit\":\"{}\",\"debug_assertions\":{},\"paced\":{},\"modal_flight\":{},\"path\":\"total Lagrangian, weighted-gap contact\",\"precomputed\":true}},\"frames\":[",
         config.dx_meters,
         config.dt,
         config.gravity.length() * config.dx_meters,
@@ -313,7 +351,8 @@ fn write_json(path: &str, sim: &Simulation, args: &Args, records: &[Record]) {
         rayon::current_num_threads(),
         git_commit(),
         cfg!(debug_assertions),
-        args.paced
+        args.paced,
+        args.modal_flight
     );
     for (i, r) in records.iter().enumerate() {
         let f = &r.frame;
@@ -324,7 +363,7 @@ fn write_json(path: &str, sim: &Simulation, args: &Args, records: &[Record]) {
             .collect();
         let _ = write!(
             body,
-            "{}{{\"index\":{i},\"time\":{:.6},\"wall_ms\":{:.4},\"report_wall_ms\":{:.4},\"steps\":{},\"rejected\":{},\"rejected_unconverged\":{},\"reaching\":{},\"newton\":{},\"gmres\":{},\"contacts\":{},\"energy\":{:.9e},\"heat\":{:.9e},\"balance\":{:.3e},\"positions\":[{}]}}",
+            "{}{{\"index\":{i},\"time\":{:.6},\"wall_ms\":{:.4},\"report_wall_ms\":{:.4},\"steps\":{},\"rejected\":{},\"rejected_unconverged\":{},\"reaching\":{},\"newton\":{},\"gmres\":{},\"contacts\":{},\"energy\":{:.9e},\"heat\":{:.9e},\"balance\":{:.3e},\"modal\":{},\"modal_energy_change\":{:.3e},\"modal_frames\":{},\"hand_backs\":{},\"positions\":[{}]}}",
             if i == 0 { "" } else { ",\n" },
             r.time,
             1000.0 * r.wall,
@@ -339,6 +378,10 @@ fn write_json(path: &str, sim: &Simulation, args: &Args, records: &[Record]) {
             f.energy,
             f.heat,
             f.balance,
+            f.modal,
+            f.modal_energy_change,
+            f.modal_frames,
+            f.hand_backs,
             positions.join(",")
         );
     }
