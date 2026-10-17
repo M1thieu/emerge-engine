@@ -1084,6 +1084,8 @@ pub(crate) fn solve(
         let held = branches(&u);
         let lin = linearised_at(&u);
         let jacobian = |d: &[f64]| jacobian_at(&u, (&held, lin.as_deref()), d);
+        #[cfg(all(test, feature = "experimental"))]
+        hooks::record_condition(&jacobian, grid, mass);
         let minus_r: Vec<f64> = r.iter().map(|e| -e).collect();
         // A fixed linear tolerance: Eisenstat and Walker's forcing term
         // (choice 2, capped at 0.1) left Newton short of convergence on 14

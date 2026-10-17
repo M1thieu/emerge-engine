@@ -240,3 +240,99 @@ pub(super) fn line(text: String) {
         }
     });
 }
+
+/// The condition probe: per Newton iteration of the next `samples` ones,
+/// the active unknowns' count and the infinity-norm condition numbers of
+/// the Jacobian and of the consistent mass, `|A|_inf |A^-1|_inf`, each
+/// assembled dense column by column from the solve's own products.
+/// Process-wide (the tries may run on worker threads).
+static CONDITION: std::sync::Mutex<(usize, Vec<ConditionRow>)> =
+    std::sync::Mutex::new((0, Vec::new()));
+
+/// One Newton iteration's row: the active unknowns, the Jacobian's and the
+/// mass's `kappa_inf`.
+pub(crate) type ConditionRow = (usize, f64, f64);
+
+pub(crate) fn watch_condition(samples: usize) {
+    *CONDITION.lock().expect("condition lock") = (samples, Vec::new());
+}
+
+pub(crate) fn take_condition() -> Vec<ConditionRow> {
+    std::mem::take(&mut CONDITION.lock().expect("condition lock").1)
+}
+
+/// `|A|_inf |A^-1|_inf` of the dense `n` by `n` row-major `a`, the inverse
+/// by Gaussian elimination with partial pivoting; infinite when a pivot
+/// vanishes.
+fn condition_inf(mut a: Vec<f64>, n: usize) -> f64 {
+    let norm = |m: &[f64]| {
+        (0..n)
+            .map(|i| m[i * n..(i + 1) * n].iter().map(|e| e.abs()).sum::<f64>())
+            .fold(0.0f64, f64::max)
+    };
+    let size = norm(&a);
+    let mut inverse: Vec<f64> = (0..n * n)
+        .map(|k| if k / n == k % n { 1.0 } else { 0.0 })
+        .collect();
+    for col in 0..n {
+        let pivot = (col..n)
+            .max_by(|&i, &j| a[i * n + col].abs().total_cmp(&a[j * n + col].abs()))
+            .expect("a row");
+        if a[pivot * n + col] == 0.0 {
+            return f64::INFINITY;
+        }
+        for k in 0..n {
+            a.swap(col * n + k, pivot * n + k);
+            inverse.swap(col * n + k, pivot * n + k);
+        }
+        let d = a[col * n + col];
+        for k in 0..n {
+            a[col * n + k] /= d;
+            inverse[col * n + k] /= d;
+        }
+        for row in 0..n {
+            let factor = a[row * n + col];
+            if row == col || factor == 0.0 {
+                continue;
+            }
+            for k in 0..n {
+                a[row * n + k] -= factor * a[col * n + k];
+                inverse[row * n + k] -= factor * inverse[col * n + k];
+            }
+        }
+    }
+    size * norm(&inverse)
+}
+
+/// Records one Newton iteration's condition numbers while the probe asks
+/// for samples (`watch_condition`).
+pub(super) fn record_condition(
+    jacobian: &dyn Fn(&[f64]) -> Vec<f64>,
+    grid: &super::Grid,
+    mass: &[f64],
+) {
+    {
+        let state = CONDITION.lock().expect("condition lock");
+        if state.0 == 0 {
+            return;
+        }
+    }
+    let unknowns: Vec<usize> = (0..grid.len).filter(|&k| grid.active[k]).collect();
+    let n = unknowns.len();
+    let (mut j, mut m) = (vec![0.0; n * n], vec![0.0; n * n]);
+    for (c, &column) in unknowns.iter().enumerate() {
+        let mut unit = vec![0.0; grid.len];
+        unit[column] = 1.0;
+        let (jc, mc) = (jacobian(&unit), grid.mass_times(&unit, mass, 0.0));
+        for (r, &row) in unknowns.iter().enumerate() {
+            j[r * n + c] = jc[row];
+            m[r * n + c] = mc[row];
+        }
+    }
+    let row = (n, condition_inf(j, n), condition_inf(m, n));
+    let mut state = CONDITION.lock().expect("condition lock");
+    if state.0 > 0 {
+        state.0 -= 1;
+        state.1.push(row);
+    }
+}

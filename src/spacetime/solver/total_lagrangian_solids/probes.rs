@@ -336,3 +336,93 @@ fn probe_flown_frames_against_the_step() {
         }
     });
 }
+
+/// The condition numbers of the step's Newton Jacobian and of its consistent
+/// mass (`hooks::watch_condition`, infinity norm), per Newton iteration, on
+/// E2's drop (the clay block of `tests/modal_flight.rs` dropped 10 cells,
+/// tolerance 1e-1, 45 frames) and on the settled slab of
+/// `tests/settled_slab.rs` (1 cm cells, 30 frames): their least, median and
+/// largest, and the iterations sampled. Whether an inner solve in f32 is
+/// possible: Carson and Higham's simple LU-IR needs `kappa_inf` up to about
+/// 1e8 (agent report, `tmp/SCALE_DEMANDS.md`, not read here). A probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_tangent_condition_numbers() {
+    super::cap::capped("probe_tangent_condition_numbers", 3000, || {
+        let clay = ElasticProps {
+            e_pa: 1.125e7,
+            nu: 0.3,
+            rho_kg_m3: 1700.0,
+        };
+        let e2 = || {
+            let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+            config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+            let mut sim = Simulation::empty(config);
+            let id = sim
+                .register_material(Box::new(CorotatedMaterial::from_physical(&clay, &config)))
+                .0;
+            let floor = config.boundary_thickness as f32;
+            let _block = sim.add_body(
+                SpawnRegion::for_sim(&config)
+                    .box_of(IVec2::new(8, 4))
+                    .at(Vec2::new(20.0, floor + 12.0))
+                    .spacing(0.5)
+                    .material(id)
+                    .mass_from(&clay, &config),
+            );
+            (sim, 45)
+        };
+        let slab = || {
+            // `tests/settled_slab.rs`'s scene at 1 cm: E 1e5 Pa, nu 0,
+            // 1000 kg/m^3, 0.30 m by 0.12 m on the floor, its dashpot 400 Pa s.
+            let props = ElasticProps {
+                e_pa: 1.0e5,
+                nu: 0.0,
+                rho_kg_m3: 1000.0,
+            };
+            let dx = 0.01f32;
+            let mut config = SimConfig::earth(48, dx, 1.0 / 60.0);
+            config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-1));
+            let mut material = CorotatedMaterial::from_physical(&props, &config);
+            material.elastic_viscosity = config.visc_from_si(400.0);
+            material.elastic_bulk_viscosity = config.visc_from_si(2.0 * 400.0 / 3.0);
+            let mut sim = Simulation::empty(config);
+            let id = sim.register_material(Box::new(material)).0;
+            let floor = config.boundary_thickness as f32;
+            let _slab = sim.add_body(
+                SpawnRegion::for_sim(&config)
+                    .box_of(IVec2::new(30, 12))
+                    .at(Vec2::new(24.0, floor + 6.0))
+                    .spacing(0.5)
+                    .material(id)
+                    .mass_from(&props, &config),
+            );
+            (sim, 30)
+        };
+        for (name, (mut sim, frames)) in [("E2 drop", e2()), ("settled slab", slab())] {
+            crate::spacetime::total_lagrangian::hooks::watch_condition(400);
+            for _ in 0..frames {
+                sim.step();
+            }
+            let rows = crate::spacetime::total_lagrangian::hooks::take_condition();
+            let stats = |pick: &dyn Fn(&(usize, f64, f64)) -> f64| -> (f64, f64, f64) {
+                let mut v: Vec<f64> = rows.iter().map(pick).collect();
+                v.sort_by(f64::total_cmp);
+                (v[0], v[v.len() / 2], v[v.len() - 1])
+            };
+            let (j, m) = (stats(&|r| r.1), stats(&|r| r.2));
+            println!(
+                "{name}: {} Newton iterations sampled, {} to {} unknowns; Jacobian kappa_inf least {:.3e}, median {:.3e}, largest {:.3e}; mass kappa_inf least {:.3e}, median {:.3e}, largest {:.3e}",
+                rows.len(),
+                rows.iter().map(|r| r.0).min().unwrap_or(0),
+                rows.iter().map(|r| r.0).max().unwrap_or(0),
+                j.0,
+                j.1,
+                j.2,
+                m.0,
+                m.1,
+                m.2
+            );
+        }
+    });
+}
