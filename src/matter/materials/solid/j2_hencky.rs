@@ -109,19 +109,32 @@ pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) ->
 }
 
 /// The root of Norton's return, `r(d) = sigma_tr - 3G d - K (d / (rate_0
-/// dt))^m = 0` on `(0, sigma_tr / 3G)`, and the iterations it took.
+/// dt))^m = 0`, and the iterations it took.
 ///
-/// `r(0) = sigma_tr > 0`, `r` strictly decreasing and `r(sigma_tr / 3G) =
-/// -K (.)^m < 0`: one root in the bracket. For `m < 1`, `r'(0) = -infinity`,
-/// so a Newton step is kept only inside the current bracket, else the
-/// bracket is bisected; the bracket shrinks by the sign of `r` at each
-/// iterate. Stops when the bracket is within `4 eps` of the root.
+/// Derived on the page. `r` is strictly decreasing, and convex for `m < 1`
+/// (`r'' = -K m (m - 1) (d / s)^(m - 2) / s^2 > 0`, `s = rate_0 dt`). Its
+/// root lies in `[low, high]`:
+/// - `high = min(sigma_tr / 3G, d_slow)`, `d_slow = s (sigma_tr / K)^(1/m)`
+///   (the root when the elastic term is negligible): `r(sigma_tr / 3G) < 0`
+///   and `r(d_slow) = -3G d_slow < 0`;
+/// - `low = s ((sigma_tr - 3G high) / K)^(1/m)`: `r(low) = 3G (high - low)
+///   >= 0`, and `low <= high`.
+///
+/// Newton's method from `low` (where `r >= 0`) on a convex decreasing `r`
+/// moves right and never passes the root (the tangent lies under the
+/// curve), so it converges monotonically inside the bracket; a step that
+/// would leave it falls back to bisection, which keeps it a bracketed
+/// method. It stops when the bracket is within `4 eps` of its top. In slow
+/// flow (`3G d << sigma_tr`, a body at round-off stress included) the
+/// bracket is already that narrow, and the return takes no iteration.
 fn norton_root(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
     let scale = law.rate_0 * dt;
     let r = |d: f64| sigma_tr - 3.0 * shear * d - law.k * (d / scale).powf(law.m);
     let slope = |d: f64| -3.0 * shear - law.k * law.m * (d / scale).powf(law.m - 1.0) / scale;
-    let (mut low, mut high) = (0.0f64, sigma_tr / (3.0 * shear));
-    let mut d = 0.5 * high;
+    let slow = scale * (sigma_tr / law.k).powf(1.0 / law.m);
+    let mut high = (sigma_tr / (3.0 * shear)).min(slow);
+    let mut low = scale * ((sigma_tr - 3.0 * shear * high).max(0.0) / law.k).powf(1.0 / law.m);
+    let mut d = low;
     let mut iterations = 0u32;
     while high - low > 4.0 * f64::EPSILON * high && iterations < 200 {
         iterations += 1;
