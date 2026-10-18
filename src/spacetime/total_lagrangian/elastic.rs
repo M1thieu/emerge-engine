@@ -53,6 +53,9 @@ pub enum ElasticLaw {
     /// is Love and Sulsky's algorithmic stress
     /// (`algorithmic_stress_over`).
     HenckyJ2(HenckyJ2, PlasticMetric),
+    /// The compressible neo-Hookean solid in plane strain (Simo and
+    /// Pister's form), `matter`'s `neo_hookean`, with `lambda = bulk - mu`.
+    NeoHookean,
 }
 
 impl Elastic {
@@ -112,6 +115,14 @@ impl Elastic {
         j2.norton = Some(law);
         self.law = ElasticLaw::HenckyJ2(j2, state);
         self
+    }
+
+    /// The neo-Hookean law (`ElasticLaw::NeoHookean`) with its Lame moduli.
+    pub fn neo_hookean(lambda: f64, mu: f64) -> Self {
+        Self {
+            law: ElasticLaw::NeoHookean,
+            ..Self::corotated(lambda, mu)
+        }
     }
 
     /// The corotated material's law with its Lame moduli.
@@ -222,6 +233,13 @@ impl Elastic {
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             return law.energy_at(f.transpose() * f, state);
         }
+        if self.law == ElasticLaw::NeoHookean {
+            return crate::matter::materials::solid::neo_hookean::neo_hookean_energy(
+                f.transpose() * f,
+                self.bulk - self.mu,
+                self.mu,
+            );
+        }
         if self.law == ElasticLaw::Corotated {
             return crate::matter::materials::solid::corotated::stress::corotated_elastic_energy_density(
                 f,
@@ -241,6 +259,13 @@ impl Elastic {
     pub(crate) fn kirchhoff(&self, f: DMat2) -> DMat2 {
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             return f * law.second_pk_at(f.transpose() * f, state).0 * f.transpose();
+        }
+        if self.law == ElasticLaw::NeoHookean {
+            return crate::matter::materials::solid::neo_hookean::neo_hookean_kirchhoff(
+                f,
+                self.bulk - self.mu,
+                self.mu,
+            );
         }
         if self.law == ElasticLaw::Corotated {
             return crate::matter::materials::solid::corotated::stress::corotated_elastic_stress(
@@ -451,6 +476,14 @@ impl Elastic {
                     self.mu,
                 )
             }
+            ElasticLaw::NeoHookean => {
+                crate::matter::materials::solid::neo_hookean::neo_hookean_energy_increment(
+                    c0,
+                    c1,
+                    self.bulk - self.mu,
+                    self.mu,
+                )
+            }
             ElasticLaw::Isochoric => self.energy_of_c(c1) - self.energy_of_c(c0),
             // Its own exact increment, the return's included (the step's
             // length enters only through the viscoplastic rate).
@@ -521,14 +554,21 @@ impl Elastic {
         if hooks::split() || hooks::trapezoid() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
-        if self.law != ElasticLaw::Corotated || self.is_relaxing() {
+        let neo_hookean = self.law == ElasticLaw::NeoHookean;
+        if !(self.law == ElasticLaw::Corotated || neo_hookean) || self.is_relaxing() {
             return self.step_stress_tangent_by_differences(c0, c1, dt, dc);
         }
         let (lambda, mu) = (self.bulk - self.mu, self.mu);
         let tangent = |c: DMat2, d: DMat2| {
-            crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent(
-                c, d, lambda, mu,
-            )
+            if neo_hookean {
+                crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk_tangent(
+                    c, d, lambda, mu,
+                )
+            } else {
+                crate::matter::materials::solid::corotated::stress::corotated_second_pk_tangent(
+                    c, d, lambda, mu,
+                )
+            }
         };
         let colon = |a: DMat2, b: DMat2| a.x_axis.dot(b.x_axis) + a.y_axis.dot(b.y_axis);
         let mid = 0.5 * (c0 + c1);
@@ -623,6 +663,13 @@ impl Elastic {
     /// The second Piola-Kirchhoff stress `S(C) = F^-1 tau F^-T` with `F =
     /// sqrt(C)`.
     pub(crate) fn second_pk(&self, c: DMat2) -> DMat2 {
+        if self.law == ElasticLaw::NeoHookean {
+            return crate::matter::materials::solid::neo_hookean::neo_hookean_second_pk(
+                c,
+                self.bulk - self.mu,
+                self.mu,
+            );
+        }
         let f = sqrt_spd(c);
         let inv = f.inverse();
         inv * self.kirchhoff(f) * inv.transpose()

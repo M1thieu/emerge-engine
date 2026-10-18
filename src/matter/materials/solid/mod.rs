@@ -14,6 +14,7 @@ pub mod corotated;
 pub mod elastic;
 pub(crate) mod j2_hencky;
 pub mod nacc;
+pub(crate) mod neo_hookean;
 pub mod no_compression;
 pub mod rankine;
 pub mod snow;
