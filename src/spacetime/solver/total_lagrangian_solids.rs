@@ -156,6 +156,12 @@ pub struct TotalLagrangianFrame {
     /// The most iterations Norton's return took at a particle in the
     /// frame's kept steps (`j2_hencky::norton_return`).
     pub norton_iterations: u32,
+    /// The frame's particle-steps whose Norton flow left what its record
+    /// covers (`StepReport::norton_slower` and the others): slower than its
+    /// measured rates, faster, or under a tensile mean stress.
+    pub norton_slower: u32,
+    pub norton_faster: u32,
+    pub norton_tension: u32,
     /// The particles' angular momentum about their centre of mass at the
     /// frame's end, kg m^2/s per metre of depth, from the path's own `f64`
     /// state; and their moment of inertia about it, kg m^2 per metre.
@@ -372,14 +378,19 @@ impl Simulation {
         // open engine-wide dashpot item).
         if let Some(m) = any.downcast_ref::<VonMisesMaterial>() {
             let units = GridUnits::of(&self.config);
-            return Elastic::hencky_j2(
+            let law = Elastic::hencky_j2(
                 units.stress(m.lambda),
                 units.stress(m.mu),
                 (1.5f64).sqrt() * units.stress(m.yield_stress),
                 1.5 * units.stress(m.hardening_modulus),
                 0.0,
-            )
-            .with_viscosity(units.stress(m.elastic_viscosity), 0.0);
+            );
+            // Norton's flow is SI already (Pa, 1/s), as the path is.
+            let law = match m.norton {
+                Some(norton) => law.with_norton(norton),
+                None => law,
+            };
+            return law.with_viscosity(units.stress(m.elastic_viscosity), 0.0);
         }
         match any.downcast_ref::<CorotatedMaterial>() {
             Some(m) => {
@@ -760,6 +771,9 @@ impl Simulation {
                 frame.relaxation_strain = frame.relaxation_strain.max(kept.relaxation_strain);
                 frame.relaxation_beyond += kept.relaxation_beyond;
                 frame.norton_iterations = frame.norton_iterations.max(kept.norton_iterations);
+                frame.norton_slower += kept.norton_slower;
+                frame.norton_faster += kept.norton_faster;
+                frame.norton_tension += kept.norton_tension;
             }
             frame.steps += 1;
             frame.timing.add(&step.timing);

@@ -63,6 +63,12 @@ pub struct VonMisesMaterial {
     /// values in `materials::heat_capacity`. Set after construction, as
     /// `NewtonianFluidMaterial::specific_heat_j_kg_k` is.
     pub specific_heat_j_kg_k: f32,
+    /// Norton's power-law flow in place of the yield (SI: Pa and 1/s;
+    /// `j2_hencky::Norton`), from a measured record
+    /// (`viscoplastic_records`). Read by the total Lagrangian solid path
+    /// only; the explicit and GPU paths refuse a material that carries one
+    /// rather than ignore it. `None` (the default): none.
+    pub norton: Option<super::j2_hencky::Norton>,
 }
 
 impl VonMisesMaterial {
@@ -89,6 +95,7 @@ impl VonMisesMaterial {
             hardening_modulus: 0.0,
             elastic_viscosity: 0.0,
             specific_heat_j_kg_k: 0.0,
+            norton: None,
         }
     }
 
@@ -104,6 +111,7 @@ impl VonMisesMaterial {
             hardening_modulus,
             elastic_viscosity: 0.0,
             specific_heat_j_kg_k: 0.0,
+            norton: None,
         }
     }
 
@@ -172,6 +180,12 @@ impl FromSI<DuctileProps> for VonMisesMaterial {
 impl MaterialModel for VonMisesMaterial {
     fn rest_density(&self) -> Option<f32> {
         self.rest_density
+    }
+
+    fn gpu_unsupported_reason(&self) -> Option<&'static str> {
+        self.norton.map(|_| {
+            "Norton's power-law flow: the shaders carry none; the total Lagrangian path carries it"
+        })
     }
 
     fn constitutive_model(&self) -> ConstitutiveModel {

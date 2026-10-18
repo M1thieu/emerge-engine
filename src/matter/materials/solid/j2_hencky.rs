@@ -63,13 +63,49 @@ pub struct HenckyJ2 {
 }
 
 /// Norton's power law (no static yield): `eps_bar_dot^p = rate_0 (sigma_eq
-/// / K)^(1/m)`, `K` in the stress's units, `m` its rate sensitivity, `rate_0`
-/// the reference rate (1/s).
+/// / K)^(1/m)`, `K` in the stress's units (Pa in SI), `m` its rate
+/// sensitivity, `rate_0` the reference rate (1/s); and the equivalent
+/// plastic rates its measurement covers, `valid_rates` (1/s), outside which
+/// a step is counted (`Stepped::outside`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Norton {
     pub k: f64,
     pub m: f64,
     pub rate_0: f64,
+    pub valid_rates: (f64, f64),
+}
+
+/// The probes' record of Norton's returns (`watch_returns`): per iteration
+/// count, how many returns took it, and the state of the slowest one
+/// (`sigma_tr`, the root, `dt`).
+#[cfg(all(test, feature = "experimental"))]
+type Returns = Option<(Vec<u64>, (u32, f64, f64, f64))>;
+
+#[cfg(all(test, feature = "experimental"))]
+static RETURNS: std::sync::Mutex<Returns> = std::sync::Mutex::new(None);
+
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn watch_returns(on: bool) {
+    *RETURNS.lock().expect("returns lock") = on.then(|| (vec![0; 202], (0, 0.0, 0.0, 0.0)));
+}
+
+#[cfg(all(test, feature = "experimental"))]
+pub(crate) fn take_returns() -> Returns {
+    RETURNS.lock().expect("returns lock").take()
+}
+
+/// Norton's return (`norton_root`), recorded for the probes when they
+/// watch (`watch_returns`).
+pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
+    let (d, iterations) = norton_root(sigma_tr, shear, law, dt);
+    #[cfg(all(test, feature = "experimental"))]
+    if let Some((counts, slowest)) = RETURNS.lock().expect("returns lock").as_mut() {
+        counts[(iterations as usize).min(201)] += 1;
+        if iterations > slowest.0 {
+            *slowest = (iterations, sigma_tr, d, dt);
+        }
+    }
+    (d, iterations)
 }
 
 /// The root of Norton's return, `r(d) = sigma_tr - 3G d - K (d / (rate_0
@@ -80,7 +116,7 @@ pub struct Norton {
 /// so a Newton step is kept only inside the current bracket, else the
 /// bracket is bisected; the bracket shrinks by the sign of `r` at each
 /// iterate. Stops when the bracket is within `4 eps` of the root.
-pub(crate) fn norton_return(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
+fn norton_root(sigma_tr: f64, shear: f64, law: &Norton, dt: f64) -> (f64, u32) {
     let scale = law.rate_0 * dt;
     let r = |d: f64| sigma_tr - 3.0 * shear * d - law.k * (d / scale).powf(law.m);
     let slope = |d: f64| -3.0 * shear - law.k * law.m * (d / scale).powf(law.m - 1.0) / scale;
@@ -205,6 +241,20 @@ pub(crate) struct Stepped {
     pub(crate) dissipated: f64,
     /// Norton's return's iterations (`norton_return`); zero otherwise.
     pub(crate) iterations: u32,
+    /// Where a Norton step flowed outside what its measurement covers, if
+    /// it did (`Beyond`).
+    pub(crate) outside: Option<Beyond>,
+}
+
+/// How a Norton step left its record's validity: an equivalent plastic rate
+/// below or above `Norton::valid_rates`, or a tensile mean stress (the
+/// record is compression-dominated). A tensile step is reported as such
+/// whatever its rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Beyond {
+    Slower,
+    Faster,
+    Tension,
 }
 
 impl HenckyJ2 {
@@ -267,7 +317,7 @@ impl HenckyJ2 {
             alpha: state.alpha,
         };
         let mut dissipated = 0.0;
-        let mut iterations = 0;
+        let (mut iterations, mut outside) = (0, None);
         if phi > 0.0 && norm > 0.0 && (self.norton.is_none() || dt > 0.0) {
             let dgamma = match &self.norton {
                 Some(law) => {
@@ -276,6 +326,18 @@ impl HenckyJ2 {
                     let sigma_tr = (1.5f64).sqrt() * phi;
                     let (d, count) = norton_return(sigma_tr, self.shear, law, dt);
                     iterations = count;
+                    let rate = d / dt;
+                    // The mean stress `K tr e` is tensile when `tr e > 0`
+                    // (the flow does not move the volume).
+                    outside = if tr > 0.0 {
+                        Some(Beyond::Tension)
+                    } else if rate < law.valid_rates.0 {
+                        Some(Beyond::Slower)
+                    } else if rate > law.valid_rates.1 {
+                        Some(Beyond::Faster)
+                    } else {
+                        None
+                    };
                     // The step's irreversible work, `sigma_eq,n+1 d`, with
                     // `sigma_eq,n+1 = sigma_tr - 3G d` the returned stress.
                     dissipated = (sigma_tr - 3.0 * self.shear * d) * d;
@@ -315,6 +377,7 @@ impl HenckyJ2 {
             energy_change,
             dissipated,
             iterations,
+            outside,
         }
     }
 }
@@ -682,6 +745,7 @@ mod tests {
                 k: 6.37e5,
                 m,
                 rate_0: 1.0,
+                valid_rates: (4e-4, 80.0),
             }),
         }
     }
@@ -755,8 +819,11 @@ mod tests {
     /// sigma_ss)^(1/m))`), and the relaxation at held strain from the
     /// steady stress, `sigma(t) = [sigma_0^(1-n) + (n-1) 3G rate_0 K^-n
     /// t]^(-1/(n-1))`, `n = 1/m`, at `t = 1 s`. The backward-Euler flow is
-    /// first order: each error falls with `dt` at an order between 0.8 and
-    /// 1.2, and is below 1e-3 at the finest `dt`.
+    /// first order: each error (relative: the time to 0.9 of the steady
+    /// stress against its exact 1.86e-2 s, the relaxed stress against its
+    /// exact value) falls with `dt` at an order between 0.8 and 1.2, and is
+    /// below 1e-3 at the finest `dt`. Measured: 1.2e-3, 6.0e-4, 3.0e-4 and
+    /// 5.0e-5, 2.5e-5, 1.3e-5 at dt 4e-5, 2e-5, 1e-5, orders 1.000.
     #[test]
     fn norton_transient_and_relaxation_follow_their_closed_forms() {
         let m = 0.266;
@@ -804,7 +871,10 @@ mod tests {
     /// Gate T8: `m -> 0`. `K (d / (rate_0 dt))^m = K (1 + m ln(d / (rate_0
     /// dt)) + O(m^2))`, so Norton's root differs from the rate-independent
     /// return with `sigma_eq` yield `K` by `K m |ln(d / (rate_0 dt))| / 3G`
-    /// to first order (`r` moves by `K m ln(.)`, `|dr/dd| >= 3G`). Asserted
+    /// to first order (`r` moves by `K m ln(.)`, `|dr/dd| >= 3G`). The bound
+    /// is that analytic expansion; the gap is the engine's own difference
+    /// between its two returns (measured 6.757e-8 against the bound 6.757e-8
+    /// at 1e-6, 1e3 smaller at 1e-9). Asserted
     /// within 1.1 of that bound at `m = 1e-6`, and the gap at `m = 1e-9`
     /// about 1e3 smaller (between 1e2 and 1e4 smaller). Not to round-off.
     #[test]

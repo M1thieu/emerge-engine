@@ -18,6 +18,22 @@ pub struct Elastic {
     pub relaxation: Relaxation,
 }
 
+/// What a kept step did to a solid (`Elastic::committed`).
+pub(crate) struct Committed {
+    /// The solid after the step.
+    pub(crate) solid: Elastic,
+    /// The energy the plastic law dissipated per reference volume.
+    pub(crate) plastic: f64,
+    /// What the step did to the relaxation branches (their heat, the strain
+    /// against their record's limit).
+    pub(crate) relaxed: Relaxed,
+    /// The iterations Norton's return took (`j2_hencky::norton_return`;
+    /// zero for any other law), and where it flowed outside its record's
+    /// validity (`Stepped::outside`).
+    pub(crate) iterations: u32,
+    pub(crate) outside: Option<crate::matter::materials::solid::j2_hencky::Beyond>,
+}
+
 /// The stored energy the step differentiates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ElasticLaw {
@@ -81,6 +97,21 @@ impl Elastic {
             bulk_viscosity: 0.0,
             relaxation: Relaxation::none(),
         }
+    }
+
+    /// The same J2 law with Norton's power-law flow in place of its yield,
+    /// hardening and linear viscosity (which must be zero).
+    pub fn with_norton(mut self, law: crate::matter::materials::Norton) -> Self {
+        let ElasticLaw::HenckyJ2(mut j2, state) = self.law else {
+            panic!("Norton's flow on the J2 law only");
+        };
+        assert!(
+            j2.yield_stress == 0.0 && j2.hardening == 0.0 && j2.viscosity == 0.0,
+            "Norton's flow replaces the yield, the hardening and the linear viscosity"
+        );
+        j2.norton = Some(law);
+        self.law = ElasticLaw::HenckyJ2(j2, state);
+        self
     }
 
     /// The corotated material's law with its Lame moduli.
@@ -553,26 +584,29 @@ impl Elastic {
     }
 
     /// The solid after a kept step from `C_n` to `C_{n+1}` of length `dt`,
-    /// the energy the plastic law dissipated per reference volume, what the
-    /// step did to the relaxation branches (their heat, the strain against
-    /// their record's limit), and the iterations Norton's return took
-    /// (`j2_hencky::norton_return`; zero for any other law): the plastic
-    /// law's state advanced by its return map, the branches' internal
-    /// strains by their update; every other solid unchanged.
-    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> (Self, f64, Relaxed, u32) {
-        let mut next = *self;
-        let (mut plastic, mut iterations) = (0.0, 0);
+    /// and what the step did (`Committed`): the plastic law's state advanced
+    /// by its return map, the branches' internal strains by their update;
+    /// every other solid unchanged.
+    pub(crate) fn committed(&self, c0: DMat2, c1: DMat2, dt: f64) -> Committed {
+        let mut out = Committed {
+            solid: *self,
+            plastic: 0.0,
+            relaxed: Relaxed::default(),
+            iterations: 0,
+            outside: None,
+        };
         if let ElasticLaw::HenckyJ2(law, state) = &self.law {
             let stepped = law.step(c0, c1, state, dt);
-            next.law = ElasticLaw::HenckyJ2(*law, stepped.state);
-            plastic = stepped.dissipated;
-            iterations = stepped.iterations;
+            out.solid.law = ElasticLaw::HenckyJ2(*law, stepped.state);
+            out.plastic = stepped.dissipated;
+            out.iterations = stepped.iterations;
+            out.outside = stepped.outside;
         }
-        let mut relaxed = Relaxed::default();
         if self.is_relaxing() {
-            (next.relaxation, relaxed) = self.relaxation.committed(c0, c1, dt, self.lame());
+            (out.solid.relaxation, out.relaxed) =
+                self.relaxation.committed(c0, c1, dt, self.lame());
         }
-        (next, plastic, relaxed, iterations)
+        out
     }
 
     /// Whether the law carries a state its steps advance.

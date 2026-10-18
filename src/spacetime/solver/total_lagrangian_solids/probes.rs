@@ -426,3 +426,113 @@ fn probe_tangent_condition_numbers() {
         }
     });
 }
+
+/// The Norton block of `tests/norton.rs` (E 30 MPa, its stand-in density),
+/// frame by frame: the largest equivalent plastic strain and the largest
+/// per-frame equivalent plastic rate (`Delta alpha / frame`) over all
+/// particles and over the bottom row (the contact particles); per frame the
+/// particles whose rate is below 4e-4 1/s, inside, above 80 1/s, and those
+/// under a tensile mean stress (`det F > 1`); and the distribution of the
+/// return's iterations over every return the steps made. A probe.
+#[test]
+#[ignore = "diagnostic probe: run with --ignored --nocapture"]
+fn probe_norton_block_flow_and_returns() {
+    super::cap::capped("probe_norton_block_flow_and_returns", 3000, || {
+        use crate::matter::materials::solid::viscoplastic_records::ViscoplasticRecord;
+        let record = ViscoplasticRecord::technical_plasticine_sapozhnikov_2014();
+        let rho = 119.0 * 0.453_592_37 / (0.3048f64 * 0.3048 * 0.3048);
+        let mut config = SimConfig::earth(40, 0.01, 1.0 / 60.0);
+        config.total_lagrangian = Some(TotalLagrangianConfig::new(1e-2));
+        let material = record.material((record.e_pa, rho), &config);
+        let props = ElasticProps {
+            e_pa: record.e_pa as f32,
+            nu: record.nu as f32,
+            rho_kg_m3: rho as f32,
+        };
+        let mut sim = Simulation::empty(config);
+        let id = sim.register_material(Box::new(material)).0;
+        let floor = config.boundary_thickness as f32;
+        let _block = sim.add_body(
+            SpawnRegion::for_sim(&config)
+                .box_of(IVec2::new(8, 4))
+                .at(Vec2::new(20.0, floor + 12.0))
+                .spacing(0.5)
+                .material(id)
+                .mass_from(&props, &config),
+        );
+        let frame = f64::from(config.dt);
+        let alpha = |state: &TotalLagrangianState, p: usize| match state.solids[p].law {
+            crate::spacetime::total_lagrangian::ElasticLaw::HenckyJ2(_, metric) => metric.alpha,
+            _ => 0.0,
+        };
+        crate::matter::materials::solid::j2_hencky::watch_returns(true);
+        let mut previous: Option<Vec<f64>> = None;
+        let mut mass_total = 0.0;
+        for k in 1..=20 {
+            sim.step();
+            let state = sim.total_lagrangian.as_ref().expect("on the path");
+            let n = state.particles;
+            if mass_total == 0.0 {
+                mass_total = state.mass[..n].iter().sum();
+            }
+            let now: Vec<f64> = (0..n).map(|p| alpha(state, p)).collect();
+            let lowest = (0..n)
+                .map(|p| state.reference[p].y)
+                .fold(f64::INFINITY, f64::min);
+            let bottom: Vec<usize> = (0..n)
+                .filter(|&p| state.reference[p].y < lowest + 1e-9)
+                .collect();
+            let rates: Vec<f64> = match &previous {
+                Some(before) => (0..n).map(|p| (now[p] - before[p]) / frame).collect(),
+                None => now.iter().map(|a| a / frame).collect(),
+            };
+            let (below, above) = (
+                rates.iter().filter(|&&r| r < 4e-4).count(),
+                rates.iter().filter(|&&r| r > 80.0).count(),
+            );
+            let tension = (0..n).filter(|&p| state.f[p].determinant() > 1.0).count();
+            let largest = |set: &mut dyn Iterator<Item = usize>, v: &[f64]| {
+                set.map(|p| v[p]).fold(0.0f64, f64::max)
+            };
+            let f = sim.total_lagrangian_frame().expect("on");
+            let vy = (0..n).map(|p| state.mass[p] * state.v[p].y).sum::<f64>() / mass_total;
+            println!(
+                "frame {k:2}: contacts {:2}, centre vy {vy:+.4} m/s; alpha max {:.3e} (bottom {:.3e}); frame rate max {:.3e} 1/s (bottom {:.3e}); particles: rate < 4e-4 {below}, in range {}, > 80 {above}; tensile {tension} of {n}; heat {:.4e} J/m",
+                f.contacts,
+                largest(&mut (0..n), &now),
+                largest(&mut bottom.iter().copied(), &now),
+                largest(&mut (0..n), &rates),
+                largest(&mut bottom.iter().copied(), &rates),
+                n - below - above,
+                f.heat
+            );
+            previous = Some(now);
+        }
+        if let Some((counts, slowest)) = crate::matter::materials::solid::j2_hencky::take_returns()
+        {
+            let total: u64 = counts.iter().sum();
+            let quantile = |q: f64| {
+                let target = (q * total as f64).ceil() as u64;
+                let mut seen = 0;
+                for (i, &c) in counts.iter().enumerate() {
+                    seen += c;
+                    if seen >= target {
+                        return i;
+                    }
+                }
+                counts.len() - 1
+            };
+            println!(
+                "returns: {total}, iterations median {}, 99th percentile {}, 99.99th {}, max {}; the slowest: sigma_tr {:.4e} Pa, root d {:.4e}, dt {:.4e} s (rate d/dt {:.4e} 1/s)",
+                quantile(0.5),
+                quantile(0.99),
+                quantile(0.9999),
+                slowest.0,
+                slowest.1,
+                slowest.2,
+                slowest.3,
+                slowest.2 / slowest.3
+            );
+        }
+    });
+}

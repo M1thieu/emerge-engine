@@ -123,6 +123,16 @@ impl Simulation {
                 !relaxing,
                 "material {id} carries a relaxation spectrum, which only the total Lagrangian solid path carries"
             );
+            let norton = self
+                .materials
+                .get(id)
+                .as_any()
+                .downcast_ref::<crate::VonMisesMaterial>()
+                .is_some_and(|m| m.norton.is_some());
+            assert!(
+                !norton,
+                "material {id} carries Norton's power-law flow, which only the total Lagrangian solid path carries"
+            );
         }
         // Adaptive substep loop: step() always advances exactly config.dt of simulation time,
         // but uses smaller sub-steps when CFL requires it (stiff materials, high velocities).

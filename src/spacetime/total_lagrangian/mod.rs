@@ -338,6 +338,13 @@ pub struct StepReport {
     /// The most iterations Norton's return took at a particle of the kept
     /// step (`j2_hencky::norton_return`; zero for any other law).
     pub norton_iterations: u32,
+    /// The particle-steps of the kept step whose Norton flow left what its
+    /// record covers (`j2_hencky::Beyond`), counted where the flow's heat
+    /// exceeds the step's residual work: slower than the record's rates,
+    /// faster, or under a tensile mean stress.
+    pub norton_slower: u32,
+    pub norton_faster: u32,
+    pub norton_tension: u32,
 }
 
 /// The particles' state the step reads and writes.

@@ -300,9 +300,24 @@ pub fn controlled_step(
                         before[p].transpose() * before[p],
                         s.f[p].transpose() * s.f[p],
                     );
-                    let (next, dissipated, relaxed, iterations) =
-                        s.solids[p].committed(c0, c1, dt / pieces as f64);
-                    report.norton_iterations = report.norton_iterations.max(iterations);
+                    let committed = s.solids[p].committed(c0, c1, dt / pieces as f64);
+                    let (next, dissipated, relaxed) =
+                        (committed.solid, committed.plastic, committed.relaxed);
+                    report.norton_iterations = report.norton_iterations.max(committed.iterations);
+                    // Counted only where the flow made more heat than the
+                    // step resolves (its residual work, the bound on its
+                    // energy error): a body at round-off stress flows at
+                    // 1e-50 1/s under a law with no yield, and that is no
+                    // flow to report.
+                    if v0[p] * committed.plastic > report.residual_work {
+                        use crate::matter::materials::solid::j2_hencky::Beyond;
+                        match committed.outside {
+                            Some(Beyond::Slower) => report.norton_slower += 1,
+                            Some(Beyond::Faster) => report.norton_faster += 1,
+                            Some(Beyond::Tension) => report.norton_tension += 1,
+                            None => {}
+                        }
+                    }
                     if s.solids[p].is_relaxing() {
                         report.relaxation_strain = report.relaxation_strain.max(relaxed.strain);
                         report.relaxation_beyond += u32::from(relaxed.beyond);

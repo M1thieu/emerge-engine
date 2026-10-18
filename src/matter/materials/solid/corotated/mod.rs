@@ -127,6 +127,12 @@ impl MaterialModel for CorotatedMaterial {
         self.rest_density
     }
 
+    fn gpu_unsupported_reason(&self) -> Option<&'static str> {
+        self.relaxation.map(|_| {
+            "a relaxation spectrum: the shaders carry none; the total Lagrangian path carries it"
+        })
+    }
+
     fn constitutive_model(&self) -> ConstitutiveModel {
         ConstitutiveModel::Corotated
     }
