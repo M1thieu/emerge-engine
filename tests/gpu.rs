@@ -5112,6 +5112,63 @@ mod gpu_tests {
         );
     }
 
+    /// `step_frame` never blocks on its own, so when the GPU is slower than the CPU
+    /// nothing used to stop frames queueing without limit: on the scene above
+    /// (integrated AMD, Vulkan) this test measured the GPU 44 to 46 frames behind
+    /// after 600 frames, and a 20,000-frame run 524 behind, holding about 11 MB per
+    /// queued frame, the growth that ended in command encoding running out of
+    /// memory under load. `step_frame` now waits for the frame before last
+    /// before encoding. The bound checked here follows from that wait: when frame
+    /// `n` returns, the compute of frame `n - 2` is done, and everything submitted
+    /// up to frame `n - 3`'s end precedes it in queue order, so a work-done marker
+    /// queued after each frame lags at most 3 frames. A GPU faster than the CPU
+    /// never gets near the bound either way.
+    #[test]
+    fn gpu_frames_queued_ahead_of_the_device_stay_bounded() {
+        if !gpu_available() {
+            return;
+        }
+        const GRID: usize = 64;
+        let config = SimConfig {
+            boundary_thickness: 3,
+            max_substeps_per_step: 12,
+            gravity: Vec2::new(0.0, -0.3),
+            ..SimConfig::earth(GRID, 0.01, 0.1)
+        };
+        let spawn = SpawnRegion {
+            spacing: 0.5,
+            box_size: IVec2::new(18, 14),
+            box_center: Vec2::new(17.0, 40.0),
+            material_id: 0,
+            rng_seed: 11,
+            position_jitter: 0.5,
+            ..SpawnRegion::for_sim(&config)
+        };
+        let particles = build_particles(&config, spawn);
+        let mut sand = DruckerPragerMaterial::new(2000.0, 3000.0);
+        sand.friction_angle = 20.0f32.to_radians();
+        let registry = MaterialRegistry::with_default(Box::new(sand));
+        let mut sim = block_on(GpuSimulation::new(config, particles, registry));
+        let queue = sim.queue().clone();
+
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut max_lag = 0usize;
+        for frame in 1..=600usize {
+            sim.step_frame();
+            let marker = done.clone();
+            queue.on_submitted_work_done(move || {
+                marker.fetch_max(frame, std::sync::atomic::Ordering::SeqCst);
+            });
+            max_lag = max_lag.max(frame - done.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        eprintln!("frames queued ahead of the device, max over 600 frames: {max_lag}");
+        assert!(
+            max_lag <= 3,
+            "the GPU fell {max_lag} frames behind step_frame; the frame-before-last \
+             wait bounds it at 3"
+        );
+    }
+
     /// Diagnostic: `basic_jellies_gpu`'s log shows `J=[0.000, ...]` around frame
     /// 7500+, a deformation-gradient determinant collapsing near zero, matching
     /// bodies that "shatter"/flatten under strong gravity impact and never recover.

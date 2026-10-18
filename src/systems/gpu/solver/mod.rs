@@ -71,6 +71,13 @@ pub struct GpuSimulation {
     last_sim_time_dropped: f32,
     /// Frame stats readback begun at the end of the last `step_frame`.
     pending_frame_stats: Option<ReadbackResult>,
+    /// Last compute submission of the most recent `step_frame`, and of the one
+    /// before it. `step_frame` waits for the older one before encoding, so at most
+    /// two frames are ever queued on the GPU: the one it is running and the one the
+    /// CPU is encoding. Without that bound nothing ever waits when the GPU is slower
+    /// than the CPU, the queue grows by a frame every few frames, and every queued
+    /// frame keeps its command buffers and staging memory alive.
+    frame_submissions: [Option<wgpu::SubmissionIndex>; 2],
     /// One-frame-lagged max particle speed -- mirrors CPU's own
     /// `Simulation::last_max_particle_speed` exactly (same convention, same
     /// consumer: `SimConfig::fluid_near_wall_compression_mach_margin`'s
@@ -382,6 +389,7 @@ impl GpuSimulation {
             last_substeps: 0,
             last_sim_time_dropped: 0.0,
             pending_frame_stats: None,
+            frame_submissions: [None, None],
             last_max_particle_speed: 0.0,
             frame_index: 0,
             last_spawn_frame: 0,
